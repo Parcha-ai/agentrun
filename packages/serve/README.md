@@ -382,6 +382,8 @@ go through `work/` by path.
 - `bash` takes pi's `{command, timeout?}`, `timeout` in seconds, 300 when the call names none; a timeout kills the
   command's process group in the container. Its answer is its output's last 2,000 lines or 50 KB. Each call is a fresh
   shell in `work/`.
+- A command that should outlive one call (a server, a watcher, a long build) goes in the background instead
+  ([background processes](#background-processes)).
 - It has no capability and can gain none (`--cap-drop ALL`, `--security-opt no-new-privileges`), so even as root (a
   server run as uid 0) it cannot make a device node in `work/`. Its Docker daemon must be this machine's: where
   `DOCKER_HOST`, or the docker context, names another machine (tcp://, ssh://), no box is made, since that daemon would
@@ -391,6 +393,36 @@ go through `work/` by path.
   the run ends (completed, failed or cancelled: a follow-up after a completed run gets a fresh one, with the same
   `work/`) and when the run is archived. A start destroys every such container whose run has ended or is archived; one
   of a run this data directory does not know is left to its 24-hour lifetime.
+
+### Background processes
+
+An agent whose place is a sandbox may also name `bash_background`, `bash_output`, `bash_input`, `bash_signal` and
+`bash_list`, to run a command that outlives one call: a dev server, a watcher, a long build, a program that reads its
+input as it goes. Each call is one short command in the run's box, on the same path as `bash`, so they work on every box
+`bash` runs on, the permission gate takes each call as it takes `bash`'s, and nothing new runs on this server.
+
+- `bash_background {command}` starts the command from `work/`, in a fresh shell (`bash`, else `sh`) under a session of
+  its own (`setsid`, its runner under `nohup`), and answers its id (`"1"`, then `"2"`, and on) at once. Its stdout and
+  stderr go together to `work/background/<id>/output.log`, beside `command`, `started`, `pid` (its process group) and,
+  once it ends, `exit` (its code; 128 + n for signal n). The run's files show them (`GET /v2/runs/{id}/files`), so the
+  console and the API show each log, during the run and after it.
+- A process runs until no live process of its group is left: a child the command starts with `&` (a server, its
+  output sent elsewhere) keeps it running, counted against the cap, signalled with it and ended at the run's end; its
+  exit code is the shell's.
+- At most 8 run at once in a run's box: a ninth start is refused, saying so, until one ends. Each log keeps the first
+  16 MiB of the output; later output is dropped while the process runs on, and `bash_output` says so.
+- `bash_output {id, offset?, max_bytes?}` reads the log from a byte offset (0 when absent), at most 48 KiB a call (the
+  default), never splitting a character (a page too small for the character it starts at is refused, saying so): whether the process still runs, its exit code once it ended, the log's size,
+  and the offset to read from next. Once it says the process ended, the log is whole.
+- `bash_input {id, text, close?}` writes `text` to the process's stdin as given (end a line with `\n`), at most 64 KiB a
+  call; `close: true` closes its stdin after it, so the process reads the end of its input. The stdin is a fifo in the
+  box's `TMPDIR` (else `/tmp`), never in `work/`.
+- `bash_signal {id, signal}` sends the process's group `TERM`, `INT` or `KILL`, and answers its state after up to 2 s.
+- `bash_list` names each process: running or how it ended, its output's size, when it started and its command's start
+  (every running one, then the newest that ended, 40 at most).
+- The run's end ends them: before its box is copied back and destroyed, the server sends each running group `TERM`,
+  then `KILL` after 3 s, and marks each with `ended` beside its log, which stays in the run's files; the server's log says
+  `background_ended` with how many. A follow-up's box starts with none running, and its ids go on from the last.
 
 ### A run in a Daytona box
 
@@ -614,6 +646,11 @@ agent_not_runnable`, with `details.unbound` and `details.missing`).
 | `write` | Write a file in the run's `work/` | nothing | yes, no |
 | `edit` | Edit a file in the run's `work/` | nothing | yes, no |
 | `bash` | Run a shell command in the run's box, from its `work/`: pi's `{command, timeout?}`, 300 s when the call names no timeout | an agentic definition whose place is a sandbox ([Sandbox](#sandbox)) | no, no |
+| `bash_background` | Start a shell command in the background in the run's box, from its `work/`, and answer its id at once: `{command}` in. Its stdout and stderr go to `work/background/<id>/output.log`, the first 16 MiB; at most 8 run at once ([background processes](#background-processes)) | an agentic definition whose place is a sandbox | no, no |
+| `bash_output` | Read a background process's output from a byte offset: `{id, offset?, max_bytes?}` in (at most 48 KiB a call), its state, exit code, the log's size and the next offset out | an agentic definition whose place is a sandbox | no, no |
+| `bash_input` | Write to a running background process's stdin: `{id, text, close?}` (at most 64 KiB a call) | an agentic definition whose place is a sandbox | no, no |
+| `bash_signal` | Send a background process's group `TERM`, `INT` or `KILL`: `{id, signal}` | an agentic definition whose place is a sandbox | no, no |
+| `bash_list` | List the run's background processes: id, state or exit code, output size, start time and command | an agentic definition whose place is a sandbox | no, no |
 | `ask_person` | Ask the person who started the run; the turn ends until a message answers | nothing | no, no |
 | `web_fetch` | Read one web page from a public host through the guarded direct fetch, or through Parallel's extract where Parallel is picked ([search and fetch](#search-and-fetch)), a part at a time: `{url, offset?, max_chars?}` in, a Page out, `{ok, url, status, title, text, chars, truncated?, original_chars?, beyond_read?, offset?, next_offset?, html_chars?, converted?, links, links_omitted?, via, parallel?, refused?, error?}` | nothing (`PARALLEL_API_KEY` for Parallel, one billed extract a page a run) | yes, yes |
 | `web_search` | Search the web, natively where the harness or the model's provider can, else through Parallel where the server holds its key, else keyless through Exa, or through the provider picked ([search and fetch](#search-and-fetch)): `{query, n?}` in, `{provider, query, results: [{url, title, snippet, published?}], text?}` or `{error}` out | nothing (`PARALLEL_API_KEY` for Parallel) | yes, yes |
@@ -624,7 +661,7 @@ agent_not_runnable`, with `details.unbound` and `details.missing`).
 | `pdf_pages` | A workflow call only: `{path, maxPages?, dpi?}` in, `{name, pageCount, dpi, pages: [{page, image}], text}` out. Draws a document's first pages (3 by default, at 110 dpi) as PNGs under the run's `work/pages/<stem>/<dpi>/` (`<stem>`: the document's path below its directory made one name, with a short hash, so two documents of one file name never share pages), the dpi lowered so a page's long side is at most 1568 px, with its text (`pdftotext`, cut at 20,000 characters). A PNG or JPEG passes through as one page, scaled down to 1568 px. `path` is under `--documents` or the run's `work/`, never outside | `pdftoppm`, `pdftotext` | no, yes |
 | `llm` | A workflow call only: `{prompt, system?, maxTokens?, tier?}` in, `{text, model, usage, cost_usd}` out. One completion on the run's model of the tier (`default`; a tier the state fills in, such as `"{requestedTier}"`, may be any of the three, and a tier with no model fails the call), no tools and no loop; `cost_usd` is null when the model has no price, never 0 | a model | no, yes |
 
-`bash` runs only in a box: a runner agent, and a workflow, get no shell on this machine (see [Safety](#safety)). In a
+`bash` and the background tools run only in a box: a runner agent, and a workflow, get no shell on this machine (see [Safety](#safety)). In a
 sandbox place `read`, `write` and `edit` run in the box too. `fetch_page` is a legacy name for `web_fetch`: a
 revision, a model node or a call node that names it still saves and runs, and gets `web_fetch` under that name (the
 same Page with `via`, resolved as `web_fetch` is: the guarded fetch, Parallel only where picked). The table lists it no
@@ -1046,8 +1083,7 @@ An agent grants a saved server's tool by its catalog name, `mcp:<server>/<tool>`
 saved, or a tool it did not list, is `422` naming the server's tools, and so is a name whose wire name,
 `mcp__<server>__<tool>`, is over 52 characters, or a tool whose `x-mcp-header` declaration cannot be sent (on a
 property not reached through `properties` alone, not a string, integer or boolean, not a header name, or declared twice). pi and claude-agent run them (`features.mcp_client.harnesses`); on
-another harness the save warns that they are not bound there yet, and a run is refused. Until the tool gate lands, a
-grant means the tool runs.
+another harness the save warns that they are not bound there yet, and a run is refused.
 
 - **Pinned.** A run's first launch keeps each granted tool as the server listed it when you saved it (its description
   and schema) and the server's URL then, in the run's directory (`mcp-tools.json`). A refresh or a new save never
@@ -1073,6 +1109,21 @@ grant means the tool runs.
   in Settings → MCP servers"; another failure names the server and the HTTP status, never a header. A stop, or a
   client that goes away, cancels the call at the server. A call a crash cut off is answered interrupted on the
   resumed run and never sent again.
+- **The gate.** Every call passes the run's one tool gate as `mcp:<server>/<tool>`, on every harness. Set
+  `mcp:<server>/<tool>` or, for all of a server's tools, `mcp:<server>/*` to `allow`, `ask` or `deny` in
+  `PUT /v2/settings/tools` or an agent's `definition.tool_settings` (the agent's exact key, then its server-wide key,
+  then the server's two, then the default). An MCP tool with no setting asks. A denied call is refused and the model
+  reads why; nothing is sent. An asked call parks, as any tool's does: its turn ends, nothing is sent, and the run
+  reads `input_required` with `pending.kind: "approval"`, the tool, its arguments and its price (or "not metered"),
+  until the owner answers `POST /v2/runs/{id}/approvals/{approval_id}` from their password session. Allowed, the run
+  sends the call once and resumes with its result; denied, it resumes with the refusal. A restart while a call is
+  parked loses nothing.
+- **Prices.** `PUT /v2/settings/mcp-servers/{name}` takes `prices`, each tool's price in USD a call
+  (`{"prices": {"search": 0.01}}`; a finite number, 0 or more, for a tool the server lists; else `422`). A priced call
+  is held at its price under the run's `max_cost_usd`, refused unsent when the cap cannot take it, and booked as the
+  run's tool cost (a `Tool cost` row, the `tools` meter of `GET /usage`). A tool with no price runs "not metered": a
+  row says so, the run's usage row counts it (`not_metered`), and `GET /usage`'s `tools` line counts the calls
+  (`not_metered_calls`); it is outside the run's cost and its cap. A run keeps the prices its first launch saw.
 - **The timeline** shows each call as `<server> · <tool>`.
 
 ## Webhooks
@@ -1952,6 +2003,15 @@ process that does not let go within the drain timeout (`--drain-timeout`, 30 s b
 follow-up goes (below). A message to a
 paused run is `409 budget_reached`; a stop does nothing more, and a cancel ends it `cancelled`. Only a refusal for room
 pauses a run: one no cap fixes (above) ends it `failed`, as does a cost found past the cap after a response.
+
+A paid tool call (monid's run, a search or a fetch through Parallel, browser time) that the cap refuses for room pauses
+the run the same way. The call is not sent, and its result says so in the cap's words. The model's next request is
+refused in those words, so the turn ends there and the model gets no turn to work around it. The run's `pending`
+holds what was taken (`spent_usd`), the call's hold as what it needs (`needs_usd`), and the raise it is offered. A
+raise sends the run on, and the model makes the call again if it still needs it: each call the model makes is one
+call, and nothing is retried for it. The refusal answers that turn's next request alone: a stop in between, then a
+message, starts a turn that is judged as any other. A paid call refused because what the run has spent is unknown
+still ends the run `failed`.
 
 `PATCH /runs/{run_id}` with `{max_cost_usd}` raises the cap, and only raises it: the new cap is above the run's current
 cap, its last raise included, by more than a float's tail (1e-9; `422` otherwise, and for a run with no cap or a workflow

@@ -45,7 +45,7 @@ export type TimelineEvent = {
   /** `so_far_usd` and `unpriced` (costsofar/1): while `usd` is null, the sum of every charge whose cost is known, and how
    *  many charges have no known cost (model requests cut, stopped, still pending or with no price, and paid tool calls
    *  charged an unknown amount or cut). Absent when `usd` is known. */
-  usage?: { usd: number | null; requests: number; so_far_usd?: number; unpriced?: number };
+  usage?: { usd: number | null; requests: number; so_far_usd?: number; unpriced?: number; not_metered?: number };
 };
 
 /** A pi conversation entry as stored: `pi.assistant`, `pi.tool-result`, a host's own kind. */
@@ -81,6 +81,10 @@ export const REQUEST_COST_LATE = "agentrun.request_cost_late";
  *  it, `usd` is the charge, or null when the call may have charged and did not say how much. It adds to the run's cost,
  *  which is then unknown on a null, and shows as a row of its own; it is no model request. */
 export const TOOL_COST = "agentrun.tool_cost";
+/** A tool call with no price, run outside the run's cost and its cap (an MCP tool its owner set no price for): `tool`,
+ *  `charged_by` and `call` name it. It shows as a row of its own, "not metered", and the usage row counts it
+ *  (`not_metered`); it is no charge and never makes the cost unknown. */
+export const TOOL_UNMETERED = "agentrun.tool_unmetered";
 /** A paid tool's call marked before it is sent (`call`, and `heldUsd`, the most it is held to charge): the TOOL_COST of
  *  the same `call` settles it. Unsettled, it is in flight while the run is; once the run is settled it was cut (a crash),
  *  and the cost is unknown, as for a cut model request: what it charged no one knows, and its held figure is the cap's
@@ -202,8 +206,9 @@ function createMeter() {
   // whether its answer's tokens were unknown: its late cost's usage then stands in for them).
   let known = 0;
   let unknown = 0;
-  // Paid tool calls whose charge is in the cost (TOOL_COST).
+  // Paid tool calls whose charge is in the cost (TOOL_COST), and calls with no price, run outside it (TOOL_UNMETERED).
   let charges = 0;
+  let notMetered = 0;
   // Paid tool calls marked and not yet settled, by call.
   const held = new Map<string, unknown>();
   const pending: boolean[] = [];
@@ -239,7 +244,7 @@ function createMeter() {
   };
   const models = new Map<string, number>();
 
-  function push(entry: EntryLike): "answer" | "continued" | "refusal" | "mark" | "charge" | undefined {
+  function push(entry: EntryLike): "answer" | "continued" | "refusal" | "mark" | "charge" | "unmetered" | undefined {
     const message = entry.model?.[0];
     const data = obj(entry.data);
     if (entry.kind === REQUEST_REFUSED) {
@@ -271,6 +276,9 @@ function createMeter() {
       charges += 1;
       addCost(data?.usd);
       return "charge";
+    } else if (entry.kind === TOOL_UNMETERED) {
+      notMetered += 1;
+      return "unmetered";
     } else if (entry.kind === REQUEST_COST_PENDING) {
       // The answer just before it was counted as a cost unknown: it is one still to come.
       if (unknown > 0) (unknown -= 1), pending.push(lastUnmetered);
@@ -319,7 +327,7 @@ function createMeter() {
    *  cost is unknown, `so_far_usd` is the sum of the charges whose cost is known and `unpriced` how many have none: each
    *  cost no one knows (an answer or summary with none, a stopped request's, a paid tool charge), each still pending, each
    *  request cut before any answer, and each paid tool call a settled run never settled. No ceiling is claimed. */
-  function usage(settled: boolean): { usd: number | null; requests: number; charges: number; so_far_usd?: number; unpriced?: number } | undefined {
+  function usage(settled: boolean): { usd: number | null; requests: number; charges: number; so_far_usd?: number; unpriced?: number; not_metered?: number } | undefined {
     // A request marked as it left with no entry for it, other than one still in flight: counted, at a cost no one knows.
     // One in flight alone makes no row yet, so the row appears where it did before requests were marked.
     // A settled run has nothing in flight: its last request with no entry, or its open compaction, was cut by the
@@ -328,11 +336,12 @@ function createMeter() {
     const cut = marked - open(inFlight) > answered || compacting - (settled ? 0 : sidesOpen) > compactions;
     // A paid tool call cut by a crash: its charge is unknown, so the cost is.
     const cutCalls = settled ? held.size : 0;
-    if (!requests && !compactions && !cut && !charges && !cutCalls) return refusedAny ? { usd: 0, requests: 0, charges: 0 } : undefined;
+    const unmetered = notMetered ? { not_metered: notMetered } : {};
+    if (!requests && !compactions && !cut && !charges && !cutCalls) return refusedAny || notMetered ? { usd: 0, requests: 0, charges: 0, ...unmetered } : undefined;
     const count = requests + Math.max(0, marked - answered) + Math.max(compactions, compacting);
     const usd = unknown > 0 || pending.length > 0 || cut || cutCalls > 0 ? null : Math.round(known * 1e6) / 1e6;
     const unpriced = unknown + pending.length + Math.max(0, marked - open(inFlight) - answered) + Math.max(0, compacting - (settled ? 0 : sidesOpen) - compactions) + cutCalls;
-    return { usd, requests: count, charges: charges + cutCalls, ...(usd === null && unpriced > 0 ? { so_far_usd: Math.round(known * 1e6) / 1e6, unpriced } : {}) };
+    return { usd, requests: count, charges: charges + cutCalls, ...(usd === null && unpriced > 0 ? { so_far_usd: Math.round(known * 1e6) / 1e6, unpriced } : {}), ...unmetered };
   }
 
   // A workflow's decision requests (Jev, Parallel), from its receipts: requests of their own, beside its entries'.
@@ -569,6 +578,11 @@ function createProjector(options: TimelineOptions) {
       // Its `usage` is the charge alone (no request): a host sums a run's paid tools from the same rows as its cost.
       const charge = typeof usd === "number" && Number.isFinite(usd) ? usd : null;
       add(make("phase", conv, base, { summary: `Tool cost: ${by} charged ${amount} for ${tool}`, tool_name: tool, tool_use_id: str(data?.call) ?? null, usage: { usd: charge, requests: 0 } }));
+    } else if (metered === "unmetered") {
+      // A call with no price: shown, never counted in the cost.
+      const data = obj(entry.data);
+      const tool = str(data?.tool) ?? "a tool";
+      add(make("phase", conv, base, { summary: `Not metered: ${tool} has no price set, so it is outside the run's cost`, tool_name: tool, tool_use_id: str(data?.call) ?? null }));
     } else if ((metered === "answer" || metered === "continued") && message) {
       const round = metered === "continued" && answers.has(conv) ? answers.get(conv) : entry.id;
       if (metered === "answer") answers.set(conv, entry.id);
@@ -774,14 +788,14 @@ function createProjector(options: TimelineOptions) {
   function usage(nothingInFlight = false): TimelineEvent | undefined {
     const counted = meter.usage(options.settled === true || nothingInFlight);
     if (!counted || root === undefined) return undefined;
-    const { usd, requests, charges, so_far_usd, unpriced } = counted;
-    const paid = charges ? ` and ${charges} paid tool call${charges === 1 ? "" : "s"}` : "";
+    const { usd, requests, charges, so_far_usd, unpriced, not_metered } = counted;
+    const paid = `${charges ? ` and ${charges} paid tool call${charges === 1 ? "" : "s"}` : ""}${not_metered ? `; ${not_metered} tool call${not_metered === 1 ? "" : "s"} not metered` : ""}`;
     const spent = usd !== null ? dollars(usd) : so_far_usd !== undefined && unpriced !== undefined ? `${dollars(so_far_usd)} known, ${unpriced} not priced,` : "unknown";
     return make("usage", root, `${root}:usage`, {
       // A run whose only request its cap refused sent none, and says so; otherwise what is known so far (costsofar/1).
       summary: requests === 0 && !charges ? "no model request sent" : `Cost so far: ${spent} over ${requests} model request${requests === 1 ? "" : "s"}${paid}`,
       // The contract's TimelineUsage and its costsofar/1 fields, while the cost is unknown: no other of the meter's reaches it.
-      usage: { usd, requests, ...(so_far_usd !== undefined && unpriced !== undefined ? { so_far_usd, unpriced } : {}) },
+      usage: { usd, requests, ...(so_far_usd !== undefined && unpriced !== undefined ? { so_far_usd, unpriced } : {}), ...(not_metered ? { not_metered } : {}) },
     });
   }
 

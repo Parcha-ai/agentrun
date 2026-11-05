@@ -1,13 +1,13 @@
 // The host tools of a run on a harness other than pi: its coding tools, from the run's coding source (coding-tools.ts:
-// pi's own read, write and edit on the run's environment, or in a box those and bash on the box's), so their arguments,
-// their confinement and their refusals are pi's, word for word, pi's web_fetch (also under its legacy name,
-// fetch_page), the public-host guard included, web_search, and monid's three (monid.ts), which stay on this machine.
+// pi's own read, write and edit on the run's environment, or in a box those, bash and the background tools on the
+// box's), so their arguments, their confinement and their refusals are pi's, word for word, pi's web_fetch (also under
+// its legacy name, fetch_page), the public-host guard included, web_search, and monid's three (monid.ts), which stay on this machine.
 // pi's tools take only the environment, their output and their diagnostics from a call's API, and a paid one its call's
 // id and the run's store, so that is all a call here gives them: the output's tail or head as the tool keeps it (pi's
-// limits), then the diagnostics, also when the tool failed. read, the web tools, monid.discover and monid.inspect may
-// run again after a crash; write, edit, bash and monid.run never: the kernel records each one's intent before it runs,
-// and a call a crash cut off is answered interrupted, not run again. A tool is named by its catalog name here and goes
-// to the harness under its wire name (catalog.ts: `monid.run` is `monid_run`), which the harness calls and journals. A
+// limits), then the diagnostics, also when the tool failed. read, the web tools, monid.discover, monid.inspect,
+// bash_output and bash_list may run again after a crash; write, edit, bash, monid.run, bash_background, bash_input and
+// bash_signal never: the kernel records each one's intent before it runs, and a call a crash cut off is answered
+// interrupted, not run again. A tool is named by its catalog name here and goes to the harness under its wire name (catalog.ts: `monid.run` is `monid_run`), which the harness calls and journals. A
 // refusal, an error and a write's or edit's result name a path in the workspace relative to it (`hello.md`), never by
 // the server's data directory (`workspaceRelative`); in a box they name the box's paths. Each call passes the run's tool
 // gate first (tool-gate.ts): a denied call is refused, an asked one parked, and the harness is told so it ends the turn.
@@ -31,7 +31,7 @@ import type { Park, RunGate } from "./tool-gate.js";
 export { workspaceRelative } from "./workspace-paths.js";
 
 /** Each tool a harness other than pi runs here, by catalog name, and whether a call a crash cut off may run again. */
-export const REPLAY: Record<string, "safe" | "never"> = { read: "safe", write: "never", edit: "never", bash: "never", [FETCH_PAGE_TOOL]: "safe", [WEB_FETCH_TOOL]: "safe", [WEB_SEARCH_TOOL]: "safe", "monid.discover": "safe", "monid.inspect": "safe", "monid.run": "never" };
+export const REPLAY: Record<string, "safe" | "never"> = { read: "safe", write: "never", edit: "never", bash: "never", [FETCH_PAGE_TOOL]: "safe", [WEB_FETCH_TOOL]: "safe", [WEB_SEARCH_TOOL]: "safe", "monid.discover": "safe", "monid.inspect": "safe", "monid.run": "never", bash_background: "never", bash_output: "safe", bash_input: "never", bash_signal: "never", bash_list: "safe" };
 
 /** pi's limits on a tool's output (its DEFAULT_MAX_BYTES and DEFAULT_MAX_LINES), unless the tool names its own: read's
  *  head and bash's tail are held to them (the host-bounds test reads pi's own words for them). */
