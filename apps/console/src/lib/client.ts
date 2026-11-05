@@ -153,7 +153,6 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     /** What an agent learned: its notes' first page, the index its next run reads, the changes, and how its runs did. */
     agentLearning: (id: string) => call<AgentLearning>("GET", `${agent(id)}/learning`),
     learningNotes: (id: string, cursor: string) => call<Page<LearningNote>>("GET", `${agent(id)}/learning/notes?cursor=${encodeURIComponent(cursor)}`),
-    /** The agent's notes that wait for its owner's OK, a page of one: its `total` is how many. */
     learningLog: (id: string, cursor: string) => call<Page<LearningChange>>("GET", `${agent(id)}/learning/log?cursor=${encodeURIComponent(cursor)}`),
     /** A note's whole text and its version, for the If-Match of an edit or a retire. */
     readNote: async (id: string, file: string) => asNote(await callTagged<string>("GET", note(id, file), { headers: noteAccept, text: true })),
