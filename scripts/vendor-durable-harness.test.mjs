@@ -16,7 +16,12 @@ const scratch = await mkdtemp(join(tmpdir(), 'agentrun-provenance-'));
 after(() => rm(scratch, { recursive: true, force: true }));
 
 test('every copied or matched file in this tree matches its recorded upstream blob and carries its header', async (t) => {
-  for (const [name, least] of [['run-adapters', 7], ['run-adapters-codex', 6]]) {
+  // The Claude Agent copy is over the 60-line budget in two files: its own patches (tool-result barrier and refusals, the
+  // recovery note, served tools with images, web search…) are product behavior upstream has no equivalent for yet. Each
+  // has a recorded ceiling at its count on 11-05 (harness.ts 214, 223 with #1674's 019; the test fake 79): it may only
+  // come down, as patches are offered upstream and taken (vendor/durable-harness/port, the offer budget).
+  const ceilings = { 'run-adapters-claude-agent': { 'src/harness.ts': 223, 'src/testing/fake-sdk.ts': 79 } };
+  for (const [name, least] of [['run-adapters', 7], ['run-adapters-codex', 6], ['run-adapters-claude-agent', 10]]) {
     const dir = join(root, 'packages', name);
     assert.deepEqual(await provenanceProblems(dir), [], name);
     const upstream = JSON.parse(await readFile(join(dir, UPSTREAM_FILE), 'utf8'));
@@ -28,7 +33,7 @@ test('every copied or matched file in this tree matches its recorded upstream bl
     assert.deepEqual(Object.entries(upstream.files).filter(([, r]) => r.kind === 'interfaces matched').map(([p]) => p).sort(), name === 'run-adapters' ? ['src/kernel/errors.ts', 'src/kernel/types.ts'] : [], name);
     const budget = await budgetLines(dir);
     for (const [path, { ours, offer }] of Object.entries(budget)) t.diagnostic(`${name}/${path}: ${ours} lines its own, ${offer} offered upstream`);
-    assert.deepEqual(await budgetProblems(dir), [], `each copy in ${name} changes few lines against upstream: ${JSON.stringify(budget)}`);
+    assert.deepEqual(await budgetProblems(dir, { ceilings: ceilings[name] }), [], `each copy in ${name} changes few lines against upstream: ${JSON.stringify(budget)}`);
   }
 });
 
