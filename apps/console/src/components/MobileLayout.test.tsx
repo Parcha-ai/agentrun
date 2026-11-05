@@ -57,6 +57,14 @@ describe("Playground in a short viewport (a phone in landscape)", () => {
     expect(toggle(host)!.getAttribute("aria-expanded")).toBe("true");
   });
 
+  it("a wide but short window gets one column too: the two-column grid applies only when the window is tall enough, so a folded panel leaves no half of the page empty", () => {
+    const host = open();
+    const grid = host.querySelector('section[aria-label="Request"]')!.parentElement;
+    expect(classes(grid)).not.toContain("lg:grid-cols-2");
+    expect(classes(grid)).toContain("lg:[@media(min-height:501px)]:grid-cols-2");
+    expect(classes(grid)).toContain("grid-cols-1");
+  });
+
   it("the agent header keeps its place and the page itself does not scroll: the form's own area scrolls", () => {
     const host = open();
     const header = host.querySelector('[aria-label="Playground agent"]');
