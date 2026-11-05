@@ -955,10 +955,7 @@ test("/usage's total counts every priced dollar of a run whose cost is unknown: 
   const { api, data } = await serve(t, { faux: new URL("./fixtures/faux-priced.mjs", import.meta.url).pathname, fauxMonid: new URL("./fixtures/faux-monid.mjs", import.meta.url).pathname });
   assert.equal((await api("POST", "/agents", agent("slow", { tools: ["monid.run"] }))).status, 201);
   const { body } = await api("POST", "/agents/slow/runs", { input: { content: "Run monid's /slow." } });
-  for (let i = 0; !(existsSync(log) && readFileSync(log, "utf8").includes('"path":"/v1/run"')); i++) {
-    assert.ok(i < 400, "the monid call is sent");
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
+  await monidRunsSent(api, body.run_id, log, 1);
   // The run's process dies mid-call: what the call charged no one knows, so the run's cost is unknown; its model
   // requests are priced.
   process.kill(JSON.parse(readFileSync(join(data, "runs", body.run_id, "run.json"), "utf8")).holder.pid, "SIGKILL");
@@ -989,11 +986,7 @@ test("/usage puts a run's known tool dollars on tools when another tool charge i
   assert.equal((await api("POST", "/agents", agent("two-calls", { tools: ["monid.run"] }))).status, 201);
   const { body } = await api("POST", "/agents/two-calls/runs", { input: { content: "Run monid's /person/enrich, then its slow endpoint." } });
   // The second monid run call, the slow one, is sent: faux monid files one line per call.
-  const runCalls = () => (existsSync(log) ? readFileSync(log, "utf8").split("\n").filter((line) => line.includes('"path":"/v1/run"')).length : 0);
-  for (let i = 0; runCalls() < 2; i++) {
-    assert.ok(i < 400, "the slow call is sent");
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
+  await monidRunsSent(api, body.run_id, log, 2);
   // A crash cuts the slow call: its charge is unknown; the first call's ($0.003) and the model requests' are known.
   process.kill(JSON.parse(readFileSync(join(data, "runs", body.run_id, "run.json"), "utf8")).holder.pid, "SIGKILL");
   await follow(api, body.run_id, ["completed"], { deadlineMs: 90_000 });
@@ -1015,4 +1008,51 @@ test("/usage puts a run's known tool dollars on tools when another tool charge i
   await check(api, "after a restart");
   for (const group of ["agent", "day"]) assert.equal((await api("GET", `/usage?group_by=${group}`)).body.total_usd, round(tokens + 0.003), group);
   assert.deepEqual(loaded.filter((id) => id === body.run_id), [], "the run's timeline is not loaded for /usage");
+});
+
+/** Waits until faux monid has filed `count` run calls in `log` (one line per call), up to a loaded runner's minute; past it,
+ *  fails saying where the run stood and what monid saw, never on a fixed count of polls. */
+async function monidRunsSent(api, runId, log, count) {
+  const sent = () => (existsSync(log) ? readFileSync(log, "utf8").split("\n").filter((line) => line.includes('"path":"/v1/run"')).length : 0);
+  for (const deadline = Date.now() + 60_000; sent() < count; await new Promise((resolve) => setTimeout(resolve, 100))) {
+    if (Date.now() > deadline) {
+      const run = (await api("GET", `/runs/${runId}`)).body;
+      assert.fail(`monid's run call ${count} was not sent in 60 s: the run is ${run.status}/${run.state} (${JSON.stringify(run.error)}), and monid saw ${existsSync(log) ? readFileSync(log, "utf8").trim() : "nothing"}`);
+    }
+  }
+}
+
+test("/usage counts an ended run of unknown cost at what it saved it spent so far, its other conversations and receipts included, never its root conversation's alone", { timeout: 150_000 }, async (t) => {
+  const log = join(await scratch(t), "monid-calls.jsonl");
+  withEnv(t, { MONID_API_KEY: MONID_KEY, AGENTRUN_TEST_FAUX_MONID_CALLS: log });
+  const data = join(await scratch(t), "agents");
+  const faux = new URL("./fixtures/faux-priced.mjs", import.meta.url).pathname;
+  const fauxMonid = new URL("./fixtures/faux-monid.mjs", import.meta.url).pathname;
+  let server = await startServe({ data, port: 0, faux, fauxMonid, drainTimeout: "5s" });
+  t.after(() => server?.close());
+  let api = client(server.baseUrl, server.token);
+  assert.equal((await api("POST", "/agents", agent("saved", { tools: ["monid.run"] }))).status, 201);
+  const { body } = await api("POST", "/agents/saved/runs", { input: { content: "Run monid's /person/enrich, then its slow endpoint." } });
+  await monidRunsSent(api, body.run_id, log, 2);
+  process.kill(JSON.parse(readFileSync(join(data, "runs", body.run_id, "run.json"), "utf8")).holder.pid, "SIGKILL");
+  await follow(api, body.run_id, ["completed"], { deadlineMs: 90_000 });
+  await server.close();
+  server = undefined;
+  // What a workflow's run keeps at its end: its spend so far across every conversation and its decisions' receipts. Its
+  // root conversation's store holds the model requests' and the paid calls' alone; the run's own figure is $0.004 more,
+  // as a decision's priced receipt and a node's priced request in another conversation would make it.
+  const { tokens } = metersIn(join(data, "runs", body.run_id, "store", "run.sqlite"));
+  const round = (usd) => Math.round(usd * 1e6) / 1e6;
+  const file = join(data, "runs", body.run_id, "serve.json");
+  const meta = JSON.parse(readFileSync(file, "utf8"));
+  assert.ok(meta.cost_so_far?.unpriced >= 1, `the run saved its spend so far: ${JSON.stringify(meta.cost_so_far)}`);
+  const saved = round(tokens + 0.003 + 0.004);
+  writeFileSync(file, `${JSON.stringify({ ...meta, cost_so_far: { ...meta.cost_so_far, so_far_usd: saved } })}\n`);
+  server = await startServe({ data, port: 0, faux, fauxMonid, drainTimeout: "5s" });
+  api = client(server.baseUrl, server.token);
+  for (const group of ["meter", "agent", "day"]) {
+    const usage = (await api("GET", `/usage?group_by=${group}`)).body;
+    assert.deepEqual([usage.total_usd, usage.unpriced_runs], [saved, 1], `${group}: ${JSON.stringify(usage)}`);
+    assert.equal(round(usage.lines.reduce((sum, line) => sum + line.usd, 0)), saved, `${group}: its lines sum to its total`);
+  }
 });
