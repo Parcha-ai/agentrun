@@ -241,6 +241,11 @@ async function echoServer(t) {
         const sent = JSON.parse(Buffer.concat(chunks).toString("utf8"));
         return res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ url: sent.url, instructions: `Call with ${Object.values(sent.auth.headers).join(" and ")}.` }));
       }
+      // One that repeats a header's value in a string and as a key of its answer.
+      if (form === "mcp-keys") {
+        const [value] = Object.values(JSON.parse(Buffer.concat(chunks).toString("utf8")).auth.headers);
+        return res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ url: "https://mcp.example.com/mcp", instructions: `Call with ${value}.`, tools: { [value]: { name: "lookup" } }, count: 2 }));
+      }
       if (form === "shape") return res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: true }));
       if (form === "raw") return res.writeHead(status, { "content-type": "text/plain" }).end(`refused ${secret}`);
       res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify({ error: { code: "input_invalid", message: `refused ${secret} ${encodeURIComponent(secret)}` }, echo: { secret } }));
@@ -314,6 +319,22 @@ test("a secret-bearing command never prints a server's error body, and cuts the 
     assert.equal(sent.code, 0, sent.err);
     for (const value of Object.values(headers)) clean(sent, value, `${args.join(" ")}, a header's value`);
     assert.match(sent.out, /"url":"https:\/\/mcp\.example\.com\/mcp"/, "the server's URL is no secret");
+  }
+
+  // A secret that is JSON's own punctuation: cut from the answer's strings and keys, never from its structure, so the
+  // answer still parses, with its non-secret values as they were.
+  Object.assign(echo.answer, { form: "mcp-keys" });
+  const strings = (value) => (typeof value === "string" ? [value] : value && typeof value === "object" ? Object.entries(value).flatMap(([k, v]) => [...(Array.isArray(value) ? [] : [k]), ...strings(v)]) : []);
+  for (const secret of ['"', ",", ":", "{"]) {
+    const sent = await cli(["mcp-servers", "preview", "--body", "-", ...base], { ...key, input: JSON.stringify({ url: "https://mcp.example.com/mcp", auth: { type: "headers", headers: { "x-api-key": secret } } }) });
+    assert.equal(sent.code, 0, sent.err);
+    let answer;
+    assert.doesNotThrow(() => (answer = JSON.parse(sent.out)), `the answer still parses with a secret of ${secret}: ${sent.out}`);
+    for (const text of strings(answer)) for (const form of formsOf(secret)) assert.ok(!text.includes(form), `${JSON.stringify(form)} in ${JSON.stringify(text)}`);
+    assert.deepEqual(Object.keys(answer), ["url", "instructions", "tools", "count"]);
+    assert.equal(answer.count, 2);
+    assert.deepEqual(Object.values(answer.tools), [{ name: "lookup" }]);
+    if (secret !== ":") assert.equal(answer.url, "https://mcp.example.com/mcp", "a value the secret is not in is as it was");
   }
 
   // A 200 that is not the agents list: not the server it says it is, so nothing is written.
