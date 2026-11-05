@@ -99,7 +99,10 @@ describe("the Learning tab's notes", () => {
     expect(a).not.toBe(b);
   });
   it("shows each note in use with its type, its body, the run that learned it and how many runs used it", async () => {
-    const t = await open(agent(true));
+    // The server names the person's note's newest change (last_change): created by them.
+    const v = view();
+    v.notes.items = v.notes.items.map((x) => (x.file === MINE ? { ...x, last_change: { kind: "created" as const, by: "person" as const, at: "2026-11-03T16:52:40Z" } } : x));
+    const t = await open(agent(true), { learning: async () => v });
     expect(t.text()).toContain("What it has learned");
     expect(t.text()).toContain("2 notes in use. Every later run reads them before it starts.");
     const first = t.card("Try /policies/refund-policy first")!;
@@ -111,7 +114,7 @@ describe("the Learning tab's notes", () => {
     expect(first.querySelector('a[href="#/runs/run-b"]')?.textContent).toBe("brooklinen.com");
     expect(first.textContent).toContain("Used in 3 runs");
     const mine = t.card("Keep it to three lines")!;
-    expect(mine.textContent).toContain("Written by you");
+    expect(mine.textContent).toMatch(/Created by you · \S/);
     expect(mine.textContent).toContain("Used in 1 run");
   });
   it("one note in use is said as one: it, not them", async () => {
@@ -815,7 +818,7 @@ describe("the Learning tab's skills and workflows", () => {
     it("one the server lists retired has no Retire and no Approve, is not counted, and says who retired it and when", async () => {
       const v = learned({ skill: "retired", workflow: "retired" });
       v.skills = [...v.skills!, { name: "read-receipts", file: "skills/read-receipts/SKILL.md", description: "Read a receipt", status: "pending", run: "run-b", bytes: 40, etag: '"rr-v1"' }];
-      v.log = { ...v.log, items: [{ by: { user: true }, commit: "c4", at: "2026-11-04T10:00:00Z", reason: "retired by a person", files: [SKILL_FILE] }, ...v.log.items] };
+      v.skills = v.skills!.map((x) => (x.file === SKILL_FILE ? { ...x, retired: { at: "2026-11-04T10:00:00Z", by: "person" as const } } : x));
       const t = await open(agent(true), { learning: async () => v, read: reads, caps: { learning: { pending: true, approve: true } } });
       const skills = t.host.querySelector('section[aria-label="Skills it learned"]') as HTMLElement;
       expect(skills.textContent).toContain("1 skill: how to do a job it does again");
@@ -829,17 +832,6 @@ describe("the Learning tab's skills and workflows", () => {
       // One that waits has Approve and Retire, as a note that waits does.
       expect(t.button(/^Approve read-receipts$/)).toBeTruthy();
       expect(t.button(/^Retire read-receipts$/)).toBeTruthy();
-    });
-
-    it("says who retired one and when even when that change is past the first page of changes: the next pages are read for it", async () => {
-      const v = learned({ skill: "retired", workflow: "retired" });
-      v.log = { ...v.log, next_cursor: "l1" };
-      const t = await open(agent(true), { learning: async () => v, read: reads, log: async () => ({ items: [{ by: { user: true }, commit: "c0", at: "2026-11-04T10:00:00Z", reason: "retired by a person", files: [SKILL_FILE, README_FILE] }], total: 4, next_cursor: null }) });
-      expect(t.calls).toContain("log after l1");
-      await t.click(/^Earlier skills/);
-      await t.click(/^Earlier workflows/);
-      expect(t.host.querySelector('section[aria-label="Earlier skills"]')!.textContent).toContain("Retired by you ·");
-      expect(t.host.querySelector('section[aria-label="Earlier workflows"]')!.textContent).toContain("Retired by you ·");
     });
 
     it("an archived agent's skills have no Retire", async () => {
@@ -936,7 +928,7 @@ describe("text in angle brackets in what it learned", () => {
 // who retired it when. Nothing to edit or retire on it: no later run reads it.
 describe("the Learning tab's retired notes and skills, opened", () => {
   const retiredView = () => view({
-    notes: { items: [note(FIRST, "Try /policies/refund-policy first"), note(MINE, "Keep it to three lines", { status: "retired" })], total: 2, next_cursor: null },
+    notes: { items: [note(FIRST, "Try /policies/refund-policy first"), note(MINE, "Keep it to three lines", { status: "retired", retired: { at: "2026-11-04T09:10:00Z", by: "person" } })], total: 2, next_cursor: null },
     log: { items: [
       { by: { user: true }, commit: "c4", at: "2026-11-04T09:10:00Z", reason: "retired by a person", files: [MINE, "MEMORY.md"] },
       { by: { run: "run-a" }, commit: "c1", at: "2026-11-03T16:52:10Z", reason: "Short answers read better.", files: [MINE, FIRST, "MEMORY.md"] },

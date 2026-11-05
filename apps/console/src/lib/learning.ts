@@ -436,14 +436,14 @@ export function noteChanges(diff: LearningDiff, learning: RunLearning | undefine
 }
 
 /** The run that first kept each note, and the last time a person changed it, from the changes on the page read. */
-export function provenance(log: readonly LearningChange[]): Map<string, { run?: { id: string; at: string; reason: string }; edited?: string }> {
-  const out = new Map<string, { run?: { id: string; at: string; reason: string }; edited?: string }>();
-  // Newest first: the last run seen for a file is its first, and the first person's change seen is the latest.
+export function provenance(log: readonly LearningChange[]): Map<string, { run?: { id: string; at: string; reason: string } }> {
+  const out = new Map<string, { run?: { id: string; at: string; reason: string } }>();
+  // Newest first: the last run seen for a file is its first. Every file a change names is in the map (its source read),
+  // a person's too; who changed it since is the server's to name (last_change), never read from here.
   for (const c of log) {
     for (const f of c.files) {
       const at = out.get(f) ?? {};
       if ("run" in c.by) at.run = { id: c.by.run, at: c.at, reason: c.reason };
-      else if (!at.edited) at.edited = c.at;
       out.set(f, at);
     }
   }

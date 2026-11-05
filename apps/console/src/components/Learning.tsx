@@ -99,9 +99,8 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent }: Learning
   useEffect(() => {
     if (view && missing && later.cursor && later.error === undefined && later.pages < MORE_PAGES) more();
   }, [view, missing, later.cursor, later.pages]); // eslint-disable-line react-hooks/exhaustive-deps
-  // A note whose source is past the changes read, or a retired skill's or draft's retirement (its status file's latest
-  // change): the next changes are read until every one is known, or they end.
-  const unknown = all.some((x) => !from.has(x.file)) || [...skills, ...workflows].some((x) => x.status === "retired" && !from.get(statusFile(x))?.edited);
+  // A note whose source is past the changes read: the next changes are read until every one is known, or they end.
+  const unknown = all.some((x) => !from.has(x.file));
   useEffect(() => {
     if (!view || !unknown || !olderLog.cursor || olderLog.pages >= MORE_PAGES) return;
     const n = asked.current;
@@ -193,7 +192,7 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent }: Learning
                   {inUse.map((x) => <li key={x.file}><LearnedCard item={x} kind={kind} v2={v2} agentId={agent.agent_id} readOnly={readOnly} runs={byRun} approves={approves} onChanged={read} /></li>)}
                 </ul>
               )}
-              {gone.length > 0 && <EarlierLearned kind={kind} items={gone} from={from} v2={v2} agentId={agent.agent_id} runs={byRun} readOnly={readOnly} onChanged={read} />}
+              {gone.length > 0 && <EarlierLearned kind={kind} items={gone} v2={v2} agentId={agent.agent_id} runs={byRun} readOnly={readOnly} onChanged={read} />}
             </section>
           );
         })}
@@ -346,7 +345,7 @@ function Empty({ on, lookedBack, switchRow, onAdd }: { on: boolean; lookedBack: 
   );
 }
 
-type From = { run?: { id: string; at: string; reason: string }; edited?: string } | undefined;
+type From = { run?: { id: string; at: string; reason: string } } | undefined;
 
 /** One note: its name, type and description, its body, where it came from and how often runs used it; Edit and Retire. */
 /** `approves`: for a note that waits, whether this caller approves from the console (undefined while that is read).
@@ -388,9 +387,9 @@ function NoteCard({ note, v2, agentId, readOnly, focused, from, runs, usedIn, us
   useEffect(() => { if (!saved) return; const t = setTimeout(() => setSaved(null), 2400); return () => clearTimeout(t); }, [saved]);
   if (editing) return <NoteEditor title="Edit note" v2={v2} agentId={agentId} file={note.file} seen={note} onDone={(ok) => { setEditing(false); if (ok) { setSaved("Saved"); onChanged(); } }} />;
   const body = bodyOf(note.text);
-  // Its newest change by a person (or a run's other than the learning), as the server names it; else, from an older
-  // server, the learning log's: written by you, or edited by you after a run learned it.
-  const person = lastChangeLine(note.last_change) ?? (note.last_change ? null : from?.edited ? `${from.run ? "Edited" : "Written"} by you · ${when(from.edited)}` : null);
+  // Its newest change by a person (or a run's other than the learning), as the server names it (last_change); none
+  // when it names none.
+  const person = lastChangeLine(note.last_change);
   return (
     <article ref={ref} id={`note-${note.file}`} tabIndex={-1} aria-label={note.name} className={cn("border bg-card/40 outline-none focus-visible:border-primary transition-[border-color,box-shadow] duration-700", flash && "border-primary shadow-[0_0_0_1px_hsl(var(--primary))]")}>
       <header className="flex flex-col gap-x-3 gap-y-1 px-5 pt-4 sm:flex-row sm:items-start">
@@ -519,10 +518,9 @@ function lastChangeLine(last: LastChange | undefined): string | null {
   return last && last.kind !== "learned" ? `${changeWords(last.kind, last.by)} · ${when(last.at)}` : null;
 }
 
-/** Who retired one and when: the server's `retired` (a newer server's), else the learning log's latest change by a person
- *  (`logged`), else just "Retired". */
-function retiredLine(retired: Retired | undefined, logged: string | undefined): string {
-  return retired ? `${changeWords("retired", retired.by)} · ${when(retired.at)}` : `Retired${logged ? ` by you · ${when(logged)}` : ""}`;
+/** Who retired one and when, as the server names it (`retired`), else just "Retired". */
+function retiredLine(retired: Retired | undefined): string {
+  return retired ? `${changeWords("retired", retired.by)} · ${when(retired.at)}` : "Retired";
 }
 
 /** "Learned in" the run that kept it, linked by its title, and when (`at`), with why it was kept as the hover (`reason`). */
@@ -782,7 +780,7 @@ function Earlier({ notes: list, all, from, focus, runs, v2, agentId, readOnly, o
               {retired && !readOnly && x.etag && restoring !== x.file && <Button size="sm" onClick={() => setRestoring(x.file)} aria-label={`Restore ${x.name}`}><RotateCcw aria-hidden /> Restore</Button>}
             </div>
             <p className="mt-1 font-mono text-[11px] text-muted-foreground">
-              {x.status === "superseded" && x.superseded_by ? <>Replaced by <button type="button" onClick={() => toNote(x.superseded_by!)} className="text-foreground/80 underline-offset-2 hover:text-foreground hover:underline">{nameOf(x.superseded_by)}</button></> : retired ? retiredLine(x.retired, from.get(x.file)?.edited) : null}
+              {x.status === "superseded" && x.superseded_by ? <>Replaced by <button type="button" onClick={() => toNote(x.superseded_by!)} className="text-foreground/80 underline-offset-2 hover:text-foreground hover:underline">{nameOf(x.superseded_by)}</button></> : retired ? retiredLine(x.retired) : null}
             </p>
             {restoring === x.file && <div className="-mx-4 mt-2"><RestoreConfirm name={x.name} kind="note" restore={() => v2.restoreNote(agentId, x.file, x.etag!)} onChanged={onChanged} onDone={() => setRestoring(null)} /></div>}
             {opened && (
@@ -815,7 +813,7 @@ function Folded({ title, count, open, onToggle, children }: { title: string; cou
 
 /** The skills or the workflows a person retired, as retired notes are shown: closed until asked, each by its name, and
  *  who retired it and when once the changes read say. No Approve and no Retire: no later run is given it. */
-function EarlierLearned({ kind, items, from, v2, agentId, runs, readOnly, onChanged }: { kind: "skill" | "workflow"; items: LearnedItem[]; from: ReturnType<typeof provenance>; v2: Client; agentId: string; runs: Map<string, Run>; readOnly: boolean; onChanged: () => void | Promise<void> }) {
+function EarlierLearned({ kind, items, v2, agentId, runs, readOnly, onChanged }: { kind: "skill" | "workflow"; items: LearnedItem[]; v2: Client; agentId: string; runs: Map<string, Run>; readOnly: boolean; onChanged: () => void | Promise<void> }) {
   const [open, setOpen] = useState(false);
   const [restoring, setRestoring] = useState<string | null>(null);
   // The ones opened to their text, read from the file when opened (a skill's SKILL.md, a workflow's workflow.json).
@@ -824,7 +822,6 @@ function EarlierLearned({ kind, items, from, v2, agentId, runs, readOnly, onChan
   return (
     <Folded title={kind === "skill" ? "Earlier skills" : "Earlier workflows"} count={`${items.length} no longer given`} open={open} onToggle={() => setOpen((o) => !o)}>
       {items.map((x) => {
-        const edited = from.get(statusFile(x))?.edited;
         return (
           <li key={x.file} className="border-b px-4 py-3 last:border-b-0">
             <div className="flex flex-wrap items-center gap-2">
@@ -834,7 +831,7 @@ function EarlierLearned({ kind, items, from, v2, agentId, runs, readOnly, onChan
               {!readOnly && restoring !== x.file && <Button size="sm" onClick={() => setRestoring(x.file)} aria-label={`Restore ${x.name}`}><RotateCcw aria-hidden /> Restore</Button>}
             </div>
             {x.description && <p className="mt-1 text-[12px] text-muted-foreground">{x.description}</p>}
-            <p className="mt-1 font-mono text-[11px] text-muted-foreground">{retiredLine(x.retired, edited)}</p>
+            <p className="mt-1 font-mono text-[11px] text-muted-foreground">{retiredLine(x.retired)}</p>
             {/* Restored by the file that says whether it is in use (a skill's SKILL.md, a draft's README), on the listed version. */}
             {restoring === x.file && <div className="-mx-4 mt-2"><RestoreConfirm name={x.name} kind={kind} restore={() => v2.restoreNote(agentId, statusFile(x), x.etag)} onChanged={onChanged} onDone={() => setRestoring(null)} /></div>}
             {shown.has(x.file) && (
