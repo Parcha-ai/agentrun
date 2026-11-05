@@ -31,7 +31,7 @@ import { withDecisions } from "./decision-rows.js";
 import { DECISION_KEY_FD_ENV, decisionKeysFor, providersNamed } from "./decisions.js";
 import { ApiError, invalid, unsupported } from "./errors.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
-import { CAP_ENV, CAP_REFUSAL_PREFIX, CAP_REFUSED_FIELD, CAP_TOLERANCE, money, type RefusalFigures, roomRefusal, SPEND_CAP_REACHED, spentIn } from "./cap.js";
+import { CAP_ENV, CAP_REFUSAL_PREFIX, CAP_REFUSED_FIELD, CAP_TOLERANCE, FIT_TOLERANCE, money, type RefusalFigures, roomRefusal, SPEND_CAP_REACHED, spentIn } from "./cap.js";
 import { DEFAULT_MODEL_ENV, EFFORT_ENV, GATEWAY_KEY_ENV, hostModel, llmTiers, modelKeys, nodeTiers, PROVIDER_KEYS, thinkingOf, type Tier, withoutFaux, workflowNodes } from "./model.js";
 import { llmAnswers, pausedIn, readNodeLog, RUN_PAUSED } from "./pause.js";
 import { durationMs } from "./print.js";
@@ -344,7 +344,7 @@ export function withAsks(rows: readonly TimelineEvent[]): TimelineEvent[] {
 export function withOverCap(rows: TimelineEvent[], cap: number | undefined): TimelineEvent[] {
   const at = rows.findLastIndex((row) => row.kind === "usage");
   const usd = rows[at]?.usage?.usd;
-  if (cap === undefined || typeof usd !== "number" || usd <= cap + CAP_TOLERANCE) return rows;
+  if (cap === undefined || typeof usd !== "number" || usd <= cap + FIT_TOLERANCE) return rows;
   const { usage: _, ...usage } = rows[at]!;
   const over: TimelineEvent = { ...usage, id: `${usage.id}:over_cap`, kind: "phase", summary: `Spent $${usd.toFixed(4)}, $${(usd - cap).toFixed(4)} over the run's cap of $${cap}`, text: null };
   return [...rows.slice(0, at + 1), over, ...rows.slice(at + 1)];
@@ -1038,7 +1038,7 @@ export class Runs {
     if (run.cancel) return undefined;
     const cap = run.meta.max_cost_usd;
     const cost = costOf(run.rows);
-    if (cap !== undefined && cost !== null && cost > cap + CAP_TOLERANCE) return { outcome: "failed", abort: true, error: { code: SPEND_CAP_REACHED, message: `The run cost $${cost.toFixed(4)}, $${(cost - cap).toFixed(4)} over its cap of $${cap}.`, retryable: false } };
+    if (cap !== undefined && cost !== null && cost > cap + FIT_TOLERANCE) return { outcome: "failed", abort: true, error: { code: SPEND_CAP_REACHED, message: `The run cost $${cost.toFixed(4)}, $${(cost - cap).toFixed(4)} over its cap of $${cap}.`, retryable: false } };
     if (run.submitted > 0) return undefined;
     if (run.turns.open > 0 || stopped(run)) return undefined;
     const end = run.turns.end();

@@ -46,6 +46,10 @@ export const SPEND_CAP_REACHED = "spend_cap_reached";
 /** How near two dollar figures are the same figure: a sum a float puts a hair past the cap (0.0028 + 0.3072 is
  *  0.31000000000000005) is the cap, and fits it. A raise must be above a run's cap by more (runs.ts). */
 export const CAP_TOLERANCE = 1e-9;
+/** How far past what is left a sum may read and still fit it: a float's own tail (0.0028 + 0.3072 is 0.31000000000000005
+ *  against a 0.31 cap), never a spend that is past the cap, by however little (a 1e-11 hair is past it). CAP_TOLERANCE
+ *  is the other question: how near two caps are the same cap. */
+export const FIT_TOLERANCE = 1e-12;
 /** The option a request's worst case rides on from the cap to its marks (request-start.ts): what the cap held for it. A
  *  symbol, so no provider ever sends it. */
 export const HELD_USD = Symbol.for("agentrun.serve.held_usd");
@@ -520,7 +524,7 @@ export async function paidCall<T>(name: string, call: () => Promise<T>, charge: 
     // What is held for requests and calls still answering, apart from what was spent, as a model request's refusal says it.
     const holding = (spend.held?.() ?? 0) + paidHolds();
     // Written so that a figure that is not a number refuses.
-    if (!(read + holding + hold.usd <= spend.cap + CAP_TOLERANCE)) return { refused: paidRefusal(spend.cap, read, holding, name, hold) };
+    if (!(read + holding + hold.usd <= spend.cap + FIT_TOLERANCE)) return { refused: paidRefusal(spend.cap, read, holding, name, hold) };
     // Held from here; settled into the spend in the same step that lets the hold go, so no check between sees neither.
     const open = { usd: hold.usd };
     paidOpen.add(open);
@@ -642,8 +646,8 @@ function paidRefusal(cap: number, spent: number, held: number, name: string, hol
 /** The most output tokens from `least` to `asked` whose request costs no more than `left` (`cost`, its price at that
  *  many, rising with them); undefined when even `least` costs more. A search, so that a price with tiers is exact. */
 function mostOutput(cost: (output: number) => number, least: number, asked: number, left: number): number | undefined {
-  // Written so that a cost that is not a number refuses; within a float's tail of what is left fits (CAP_TOLERANCE).
-  const fits = (tokens: number) => cost(tokens) <= left + CAP_TOLERANCE;
+  // Written so that a cost that is not a number refuses; within a float's tail of what is left fits (FIT_TOLERANCE).
+  const fits = (tokens: number) => cost(tokens) <= left + FIT_TOLERANCE;
   if (!fits(least)) return undefined;
   if (fits(asked)) return asked;
   let [low, high] = [least, asked];
@@ -712,7 +716,7 @@ export async function capBefore(cap: number | undefined, model: Model<Api> | und
       const left = cap - spentUsd - holding;
       const cost = (tokens: number) => price(inputTokensMax!, tokens);
       // A model whose output costs nothing and names no ceiling: nothing to limit, only its input to fit.
-      if (output === 0) return cost(0) <= left + CAP_TOLERANCE ? undefined : { refuse: capRefusal(cap, spentUsd, holding, name, cost(0)), spentUsd: spentUsd + holding, needsUsd: cost(0) };
+      if (output === 0) return cost(0) <= left + FIT_TOLERANCE ? undefined : { refuse: capRefusal(cap, spentUsd, holding, name, cost(0)), spentUsd: spentUsd + holding, needsUsd: cost(0) };
       const asked = Math.min(outputTokensAsked ?? output, output);
       const least = Math.min(outputTokensLeast ?? ANSWER_TOKENS_LEAST, asked);
       const most = mostOutput(cost, least, asked, left);
@@ -770,7 +774,7 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
     const left = cap - spent - holding;
     const name = nameOf(model);
     // A model whose output costs nothing and names no ceiling: nothing to limit, only its input and fee to fit.
-    if (ceiling === 0) return cost(0) <= left + CAP_TOLERANCE ? { worst: cost(0), stopped: () => cost(0) } : { why: capRefusal(cap, spent, holding, name, cost(0)), figures: { spentUsd: spent + holding, needsUsd: cost(0) } };
+    if (ceiling === 0) return cost(0) <= left + FIT_TOLERANCE ? { worst: cost(0), stopped: () => cost(0) } : { why: capRefusal(cap, spent, holding, name, cost(0)), figures: { spentUsd: spent + holding, needsUsd: cost(0) } };
     // What the request would send as it stands, thinking included: pi-ai clamps its maxTokens (or the model's) to what its
     // context leaves, and on an API whose thinking takes a budget adds the budget to it.
     const transcript = context as unknown as Parameters<typeof simple.clampMaxTokensToContext>[1];
