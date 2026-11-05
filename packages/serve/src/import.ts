@@ -27,6 +27,7 @@ import { SECRET_NAMES, withSecrets } from "./secrets.js";
 import { SEAL_KEY_ENV, ToolKeys } from "./tool-keys.js";
 import { WEBHOOK_FILE, webhookSecretIn } from "./webhooks.js";
 import { triggerSecretsIn } from "./trigger-secrets.js";
+import { slackSecretsIn } from "./slack.js";
 import { type RefusedReason, readWorkBytes, WorkRefused, walkWork } from "./workspace.js";
 
 /** In the data directory while an import the owner asked for at setup has not ended: the server's next start goes on with it. */
@@ -885,7 +886,7 @@ export function ownSecrets(data: string, env: NodeJS.ProcessEnv, say: (fields: R
   };
   const webhook = webhookSecretIn(data, env);
   if (webhook && "signing" in webhook) say({ condition: webhook.signing, name: SEAL_KEY_ENV, file: join(data, WEBHOOK_FILE), effect: "this server's webhook secret cannot be read, so the import does not cut it" });
-  const values = [read(TOKEN_FILE), read(DOOR_TOKEN_FILE), read(SESSION_SECRET_FILE), webhook && "secret" in webhook ? webhook.secret : "", ...triggerSecretsIn(data, env)];
+  const values = [read(TOKEN_FILE), read(DOOR_TOKEN_FILE), read(SESSION_SECRET_FILE), webhook && "secret" in webhook ? webhook.secret : "", ...triggerSecretsIn(data, env), ...slackSecretsIn(data, env)];
   return [...new Set(values)].filter((value) => value.length >= 8 && !/\s/.test(value));
 }
 

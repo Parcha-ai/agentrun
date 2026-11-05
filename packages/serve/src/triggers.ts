@@ -18,6 +18,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Cron } from "croner";
 import { ApiError, type InputIssue, invalid } from "./errors.js";
+import type { SlackMessage } from "./slack.js";
 import { writeDurableSync } from "./files.js";
 import { EFFORTS } from "./model.js";
 import { ID, IDEMPOTENCY_TTL_S, isObject, type Json, unknownFields } from "./validate.js";
@@ -40,7 +41,12 @@ const UNTOLD_KEPT = 50;
 export const MIN_EVERY_S = 60;
 /** The longest every_s: a year and a day. */
 export const MAX_EVERY_S = 366 * 86_400;
-export const SOURCE_KINDS = ["schedule", "webhook"] as const;
+export const SOURCE_KINDS = ["schedule", "webhook", "slack"] as const;
+/** The most channels a Slack trigger lists. */
+export const SLACK_CHANNELS_MAX = 50;
+/** A Slack trigger's threads are kept this long after their last mention or reply, and at most SLACK_THREADS_KEPT. */
+const THREAD_KEPT_MS = 30 * 86_400_000;
+const SLACK_THREADS_KEPT = 1_000;
 export const TARGET_KINDS = ["start_run", "message_run"] as const;
 export const OVERLAP = ["skip"] as const;
 export const FIRING_STATUSES = ["due", "started", "sent", "skipped", "failed", "missed"] as const;
@@ -70,15 +76,18 @@ const dueOf = (trigger: { firings: readonly { status: string }[] }) => trigger.f
 const LOST_AT_SETUP = "The server stopped while setting up the run.";
 
 type Schedule = { kind: "schedule"; cron: string; timezone: string } | { kind: "schedule"; at: string } | { kind: "schedule"; every_s: number; start_at: string };
-/** A signed POST to /v2/hooks/{trigger_id} (server.ts): the request is the firing. */
-type Source = Schedule | { kind: "webhook" };
+/** A signed POST to /v2/hooks/{trigger_id} (server.ts): the request is the firing. A Slack trigger's: a mention of the
+ *  app in one of its channels, signed by the server's Slack app (slack.ts). */
+/** A Slack source's `post_answer`: a completed run's line in its thread carries its final answer (default false: its
+ *  status and link only). */
+type Source = Schedule | { kind: "webhook" } | { kind: "slack"; channels: string[]; post_answer: boolean };
 /** `max_cost_usd`: each run's cap; absent, the agent's default as it stands when the firing starts (one of the two is
  *  required: server.ts targetIssues and start). */
 export type Target = { kind: "start_run"; agent_id: string; input: Json; max_cost_usd?: number; effort?: string } | { kind: "message_run"; run_id: string; input: Json };
 type FiringStatus = (typeof FIRING_STATUSES)[number];
 type Firing = {
   key: string;
-  by: "schedule" | "manual" | "webhook";
+  by: "schedule" | "manual" | "webhook" | "slack";
   nominal_at: string;
   status: FiringStatus;
   /** When it was recorded. */
@@ -99,7 +108,15 @@ type Firing = {
   paused?: boolean;
   /** A webhook firing's payload, cut to PAYLOAD_KEPT_BYTES, kept while it is due: what its run is given. */
   payload?: string;
+  /** A Slack firing's thread (its key in the trigger's `threads`) and who wrote it; `reply`: a message to the thread's
+   *  run, not its start. */
+  thread?: string;
+  user?: string;
+  reply?: boolean;
 };
+/** A Slack thread a trigger started a run for: the firing that starts it, its run once started, and when it was first
+ *  and last mentioned or replied in. */
+type Thread = { firing_key: string; channel: string; thread_ts: string; run_id?: string; at: string; last_at: string };
 /** `catchup_window_s`, `failures_in_a_row` and `disabled` came after the first version of the file: absent, they read
  *  as their defaults (settled). */
 type Trigger = {
@@ -113,6 +130,9 @@ type Trigger = {
   kept_firings?: Firing[];
   run_now_kept?: Firing[];
   catchup_window_s?: number; failures_in_a_row?: number;
+  /** A Slack trigger's threads, by `team:channel:thread_ts`: each one run, its replies messages to it. Kept apart from
+   *  the history, which drops its oldest firings, while the thread is in use (THREAD_KEPT_MS, SLACK_THREADS_KEPT). */
+  threads?: Record<string, Thread>;
   /** Why it is off, when a failure streak turned it off; null once it is on again. */
   disabled?: { at: string; reason: "auto_paused" } | { at: string; reason: "source_unreadable"; detail: string } | null;
 };
@@ -129,8 +149,9 @@ export type TriggerDeps = {
   /** Starts the target's run with `input`, as POST /agents/{id}/runs would, under `origin`; ApiError when refused. */
   start(target: Extract<Target, { kind: "start_run" }>, input: Json, origin: RunTrigger): Promise<{ run_id: string }>;
   /** Sends `input` to the target's run, as POST /runs/{id}/messages would, under `key` (the run's store takes a message
-   *  once per key); ApiError when refused. */
-  message(target: Extract<Target, { kind: "message_run" }>, input: Json, key: string): Promise<void | { skipped: string }>;
+   *  once per key); ApiError when refused. `person`: a person's reply in the run's Slack thread, which may answer the
+   *  run's question, as no other trigger's message does. */
+  message(target: Extract<Target, { kind: "message_run" }>, input: Json, key: string, options?: { person?: boolean }): Promise<void | { skipped: string }>;
   /** A webhook trigger's signing secret, made now (at its create or a rotation) and shown once; its removal. */
   secrets: { mint(triggerId: string): string; remove(triggerId: string): void };
   /** A run's status, or null when there is no such run. */
@@ -168,12 +189,12 @@ function instantOf(text: unknown): number | undefined {
   const at = Date.parse(text as string);
   return Number.isFinite(at) ? at : undefined;
 }
-export const firingKey = (kind: "schedule" | "manual" | "webhook", triggerId: string, what: string) => `fir_${createHash("sha256").update(`${kind}\n${triggerId}\n${what}`).digest("hex").slice(0, 32)}`;
+export const firingKey = (kind: "schedule" | "manual" | "webhook" | "slack", triggerId: string, what: string) => `fir_${createHash("sha256").update(`${kind}\n${triggerId}\n${what}`).digest("hex").slice(0, 32)}`;
 const cronOf = (source: { cron: string; timezone: string }) => new Cron(source.cron, { timezone: source.timezone, mode: "5-part" });
 
 /** The source's first nominal time strictly after `after`, or null when it has none (or none a Date holds). */
 function nextAfter(source: Source, after: number, cron?: Cron): number | null {
-  if (source.kind === "webhook") return null;
+  if (source.kind !== "schedule") return null;
   const at = nextOf(source, after, cron);
   return at !== null && Number.isFinite(at) && Math.abs(at) <= DATE_MAX_MS ? at : null;
 }
@@ -199,6 +220,8 @@ function latestBy(source: Schedule, first: number, now: number, cron?: Cron): nu
 /** A time in `zone` as a person reads it: "Nov 1, 2026, 1:30 AM PDT". */
 const local = (ms: number, zone: string) => new Intl.DateTimeFormat("en-US", { timeZone: validZone(zone) ? zone : "UTC", year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZoneName: "short" }).format(ms);
 const zoneOf = (source: Source) => ("timezone" in source ? source.timezone : "UTC");
+/** A Slack channel's id: a public channel's (C...) or a private one's (G...). */
+const SLACK_CHANNEL = /^[CG][A-Z0-9]{2,20}$/;
 const validZone = (zone: string) => {
   try {
     new Intl.DateTimeFormat("en-US", { timeZone: zone });
@@ -222,10 +245,19 @@ function sourceProblem(source: Source): string | undefined {
 
 function sourceOf(value: unknown, now: number, issues: InputIssue[]): Source | undefined {
   const bad = (field: string, reason: string, message: string) => void issues.push({ field: `source${field ? `.${field}` : ""}`, reason, message });
-  if (!isObject(value)) return bad("", value === undefined ? "missing" : "wrong_type", "source is an object: {kind: \"schedule\", cron, timezone}, {kind: \"schedule\", at}, {kind: \"schedule\", every_s, start_at?} or {kind: \"webhook\"}"), undefined;
+  if (!isObject(value)) return bad("", value === undefined ? "missing" : "wrong_type", "source is an object: {kind: \"schedule\", cron, timezone}, {kind: \"schedule\", at}, {kind: \"schedule\", every_s, start_at?}, {kind: \"webhook\"} or {kind: \"slack\", channels}"), undefined;
   if (value.kind === "webhook") {
     issues.push(...unknownFields(value, ["kind"]).map((i) => ({ ...i, field: `source.${i.field}` })));
     return { kind: "webhook" };
+  }
+  if (value.kind === "slack") {
+    issues.push(...unknownFields(value, ["kind", "channels", "post_answer"]).map((i) => ({ ...i, field: `source.${i.field}` })));
+    const channels = value.channels;
+    if (!Array.isArray(channels) || channels.length < 1 || channels.length > SLACK_CHANNELS_MAX || !channels.every((c) => typeof c === "string" && SLACK_CHANNEL.test(c)) || new Set(channels).size !== channels.length) {
+      return bad("channels", channels === undefined ? "missing" : "invalid", `channels lists 1 to ${SLACK_CHANNELS_MAX} distinct Slack channel ids (C... or G...): a mention of the app in one of them starts a run`), undefined;
+    }
+    if (value.post_answer !== undefined && typeof value.post_answer !== "boolean") return bad("post_answer", "wrong_type", "post_answer is true or false: whether a completed run's line in its thread carries its final answer"), undefined;
+    return { kind: "slack", channels: [...(channels as string[])], post_answer: value.post_answer === true };
   }
   if (value.kind !== "schedule") return bad("kind", "not_an_option", `source.kind is one of ${SOURCE_KINDS.join(", ")}`), undefined;
   const forms = ["cron", "at", "every_s"].filter((field) => value[field] !== undefined);
@@ -294,11 +326,12 @@ function wellFormed(t: unknown): t is Trigger {
   if (!(t.next_at === null || instantOf(t.next_at) !== undefined) || !(t.last_run_id === undefined || typeof t.last_run_id === "string")) return false;
   if (!(t.catchup_window_s === undefined || Number.isSafeInteger(t.catchup_window_s)) || !(t.failures_in_a_row === undefined || Number.isSafeInteger(t.failures_in_a_row)) || !(t.disabled === undefined || t.disabled === null || isObject(t.disabled))) return false;
   const { source, target } = t;
-  if (!isObject(source) || !(source.kind === "webhook" || source.kind === "schedule")) return false;
-  const timed = source.kind === "webhook" || (typeof source.cron === "string" ? typeof source.timezone === "string" : source.at !== undefined ? instantOf(source.at) !== undefined : Number.isSafeInteger(source.every_s) && instantOf(source.start_at) !== undefined);
+  if (!isObject(source) || !(source.kind === "webhook" || source.kind === "schedule" || source.kind === "slack")) return false;
+  if (!(t.threads === undefined || isObject(t.threads))) return false;
+  const timed = source.kind === "webhook" || (source.kind === "slack" && Array.isArray(source.channels) && source.channels.every((c) => typeof c === "string")) || (typeof source.cron === "string" ? typeof source.timezone === "string" : source.at !== undefined ? instantOf(source.at) !== undefined : Number.isSafeInteger(source.every_s) && instantOf(source.start_at) !== undefined);
   const aimed = isObject(target) && isObject(target.input) && (target.kind === "message_run" ? typeof target.run_id === "string" : target.kind === "start_run" && typeof target.agent_id === "string" && (target.max_cost_usd === undefined || typeof target.max_cost_usd === "number"));
   if (!timed || !aimed) return false;
-  const firing = (f: unknown) => isObject(f) && typeof f.key === "string" && (FIRING_STATUSES as readonly unknown[]).includes(f.status) && (f.by === "schedule" || f.by === "manual" || f.by === "webhook") && instantOf(f.nominal_at) !== undefined && typeof f.at === "string";
+  const firing = (f: unknown) => isObject(f) && typeof f.key === "string" && (FIRING_STATUSES as readonly unknown[]).includes(f.status) && (f.by === "schedule" || f.by === "manual" || f.by === "webhook" || f.by === "slack") && instantOf(f.nominal_at) !== undefined && typeof f.at === "string";
   const list = (value: unknown) => value === undefined || (Array.isArray(value) && value.every(firing));
   return Array.isArray(t.firings) && t.firings.every(firing) && list(t.kept_firings) && list(t.run_now_kept);
 }
@@ -388,10 +421,12 @@ export class Triggers {
     const settings = settingsOf(body, issues);
     if (body.name !== undefined && !(typeof body.name === "string" && body.name.trim() && body.name.length <= MAX_NAME)) issues.push({ field: "name", reason: "invalid", message: `name is a string of 1 to ${MAX_NAME} characters` });
     if (body.enabled !== undefined && typeof body.enabled !== "boolean") issues.push({ field: "enabled", reason: "wrong_type", message: "enabled is true or false" });
+    if (source?.kind === "slack" && target && target.kind !== "start_run") issues.push({ field: "target.kind", reason: "not_allowed", message: "A Slack trigger starts a run for each new thread; a reply in the thread is a message to that run." });
     // Checked as its runs are given it: the input, then the line saying what fired it (a name the trigger may yet take).
     if (target) issues.push(...(await this.deps.targetIssues(given(typeof body.name === "string" ? body.name.trim() : `trg_${"0".repeat(24)}`, source, target, now))));
     if (issues.length || !source || !target) throw invalid(issues);
     const id = `trg_${randomBytes(12).toString("hex")}`;
+    if (source.kind === "slack") this.channelsFree(source.channels, id);
     const enabled = body.enabled !== false;
     const trigger: Trigger = { id, name: typeof body.name === "string" ? body.name.trim() : id, enabled, source, target, catchup_window_s: settings.catchup_window_s ?? CATCHUP_WINDOW_S, failures_in_a_row: 0, disabled: null, created_at: iso(now), updated_at: iso(now), next_at: enabled ? nextIso(source, now) : null, firings: [] };
     // A webhook trigger's secret is kept before the trigger is: one that cannot be kept (no seal key) makes none.
@@ -429,6 +464,59 @@ export class Triggers {
     return { created: true, firing: firingView(firing) };
   }
 
+  /** A Slack message the server checked (slack.ts): in a thread this trigger started, a message to that thread's run;
+   *  else, when it mentions the app, a new thread and its run. Keyed by the message itself (its team, channel and ts),
+   *  so Slack's retries and the same message told as both app_mention and message are one firing. Recorded due, with
+   *  its thread, in one write, and driven after the answer in its trigger's turn; refused (429) while the trigger holds
+   *  DUE_KEPT firings due, as an event is. Undefined: nothing to act on (no trigger lists the channel, or a message in no
+   *  thread of one that mentions no one). */
+  receiveSlack(message: SlackMessage): { created: boolean; firing: ReturnType<typeof firingView> } | undefined {
+    const trigger = this.readable().find((t) => t.enabled && t.source.kind === "slack" && t.source.channels.includes(message.channel));
+    if (!trigger) return undefined;
+    const key = firingKey("slack", trigger.id, `${message.team}:${message.channel}:${message.ts}`);
+    const known = this.known(trigger, key);
+    if (known) return { created: false, firing: firingView(known) };
+    const thread = `${message.team}:${message.channel}:${message.thread_ts}`;
+    const now = this.clock.now();
+    // A thread untouched for THREAD_KEPT_MS is gone, whether or not a newer message has pruned it yet.
+    const kept = (t: Thread) => now - Date.parse(t.last_at) <= THREAD_KEPT_MS;
+    const held = trigger.threads?.[thread];
+    const reply = held !== undefined && kept(held);
+    if (!reply && !message.mention) return undefined;
+    this.roomFor(trigger);
+    const firing: Firing = { key, by: "slack", nominal_at: second(now), status: "due", at: iso(now), payload: cut(message.text), thread, user: message.user, ...(reply ? { reply: true } : {}) };
+    this.commit(() => {
+      this.record(trigger, firing);
+      const threads = trigger.threads ?? {};
+      threads[thread] = reply ? { ...threads[thread]!, last_at: iso(now) } : { firing_key: key, channel: message.channel, thread_ts: message.thread_ts, at: iso(now), last_at: iso(now) };
+      // Threads untouched for THREAD_KEPT_MS go, and the oldest past SLACK_THREADS_KEPT: a reply to one is ignored then.
+      trigger.threads = Object.fromEntries(Object.entries(threads).filter(([, t]) => kept(t)).sort(([, a], [, b]) => a.last_at.localeCompare(b.last_at)).slice(-SLACK_THREADS_KEPT));
+    });
+    void this.inTurn(trigger.id, key);
+    return { created: true, firing: firingView(firing) };
+  }
+
+  /** The Slack thread a trigger started `runId` in, for its posts (slack.ts), and whether that trigger posts a completed
+   *  run's answer (its source's post_answer, as it is now). */
+  slackThreadOf(runId: string): { channel: string; thread_ts: string; post_answer: boolean } | undefined {
+    for (const trigger of this.unreadable ? [] : this.triggers) for (const t of Object.values(trigger.threads ?? {})) if (t.run_id === runId) return { channel: t.channel, thread_ts: t.thread_ts, post_answer: trigger.source.kind === "slack" && trigger.source.post_answer === true };
+    return undefined;
+  }
+
+  /** Every run a Slack trigger started in a thread, for a start's catch-up of the ends their threads were not told. */
+  slackRuns(): string[] {
+    return (this.unreadable ? [] : this.triggers).flatMap((t) => Object.values(t.threads ?? {}).flatMap((thread) => (thread.run_id ? [thread.run_id] : [])));
+  }
+
+  /** `channels` listed by no other Slack trigger than `id`: one channel is one trigger's, so a mention starts one run. */
+  private channelsFree(channels: string[], id: string): void {
+    for (const t of this.readable()) {
+      if (t.id === id || t.source.kind !== "slack") continue;
+      const taken = channels.find((c) => (t.source as { channels: string[] }).channels.includes(c));
+      if (taken) throw new ApiError("channel_taken", `The channel ${taken} is the Slack trigger ${t.id}'s ("${t.name}"): a channel starts one trigger's runs.`, { details: { channel: taken, trigger_id: t.id } });
+    }
+  }
+
   /** PATCH: any of name, enabled, source, target and catchup_window_s. Enabled again, or its source changed, a trigger goes on from now: a
    *  paused range is skipped, never caught up. Only the fields named change, applied to the trigger as it stands once
    *  the target's check is done: an edit made meanwhile keeps its own. */
@@ -444,6 +532,8 @@ export class Triggers {
     if (issues.length || (body.source !== undefined && !source) || (body.target !== undefined && !target)) throw invalid(issues);
     const trigger = this.need(id);
     if (source && source.kind !== trigger.source.kind) throw invalid([{ field: "source.kind", reason: "not_allowed", message: "A trigger's source kind is fixed: make a new trigger for another." }]);
+    if (trigger.source.kind === "slack" && target && target.kind !== "start_run") throw invalid([{ field: "target.kind", reason: "not_allowed", message: "A Slack trigger starts a run for each new thread; a reply in the thread is a message to that run." }]);
+    if (source?.kind === "slack") this.channelsFree(source.channels, id);
     const now = this.clock.now();
     const enabled = typeof body.enabled === "boolean" ? body.enabled : trigger.enabled;
     const problem = enabled && !source ? sourceProblem(trigger.source) : undefined;
@@ -552,8 +642,8 @@ export class Triggers {
    *  other is one `missed` row with their count. A one-time schedule, or one that never fires again, is turned off. */
   private advance(trigger: Trigger, now: number): void {
     const { source } = trigger;
-    // A webhook trigger has no next time, so it is never here.
-    if (source.kind === "webhook") return;
+    // A webhook's or a Slack trigger has no next time, so it is never here.
+    if (source.kind !== "schedule") return;
     const cron = "cron" in source ? cronOf(source) : undefined;
     const windowMs = settled(trigger).catchup_window_s * 1000;
     const first = Date.parse(trigger.next_at!);
@@ -590,6 +680,8 @@ export class Triggers {
     try {
       const found = this.find(triggerId, key);
       if (!found || found.firing.status !== "due") return;
+      // A reply in a Slack thread is a message to the thread's run.
+      if (found.firing.reply) return await this.send(triggerId, key);
       // Its run already started (the store has its key) is its run, whatever runs now.
       const prior = await this.deps.runOf(key).then((run) => ({ run }), (error: Error) => ({ retry: error }));
       if (this.closed) return;
@@ -599,7 +691,8 @@ export class Triggers {
       if (prior.run?.setup_lost) return this.failed(triggerId, key, { code: "run_failed", message: LOST_AT_SETUP }, { run_id: prior.run.run_id, reason: LOST_AT_SETUP });
       if (prior.run) return this.started(triggerId, key, prior.run.run_id);
       if (found.trigger.target.kind === "message_run") return await this.send(triggerId, key);
-      const busy = await this.busy(found.trigger, found.firing).catch((error: Error) => ({ retry: error }));
+      // A Slack thread is one run of its own: a new thread starts its run whatever another thread's is doing.
+      const busy = found.firing.by === "slack" ? undefined : await this.busy(found.trigger, found.firing).catch((error: Error) => ({ retry: error }));
       if (this.closed) return;
       if (typeof busy === "string") return this.settle(triggerId, key, { status: "skipped", reason: busy });
       if (busy) return this.retry(triggerId, key, busy.retry);
@@ -627,15 +720,26 @@ export class Triggers {
     }
   }
 
-  /** A message_run firing: its message to the target's run, under its key. No overlap: the run's own state picks how the
-   *  message lands (steer, answer or follow-up). */
+  /** A message_run firing, or a reply in a Slack thread: its message to the target's run (the thread's), under its key.
+   *  No overlap: the run's own state picks how the message lands (steer, answer or follow-up). A reply whose thread's
+   *  run has not started yet waits for it, and one whose thread's run never started is skipped. */
   private async send(triggerId: string, key: string): Promise<void> {
     const found = this.find(triggerId, key);
-    if (!found || found.trigger.target.kind !== "message_run") return;
-    const { target } = found.trigger;
+    if (!found) return;
+    let target = found.trigger.target;
+    if (found.firing.reply) {
+      const thread = found.trigger.threads?.[found.firing.thread!];
+      if (!thread?.run_id) {
+        const start = thread && found.trigger.firings.find((f) => f.key === thread.firing_key);
+        if (start?.status === "due") return this.settle(triggerId, key, { status: "due", retry_at: iso(this.clock.now() + WORKING_RETRY_MS), reason: "The thread's run has not started yet." });
+        return this.settle(triggerId, key, { status: "skipped", reason: "The thread's run never started." });
+      }
+      target = { kind: "message_run", run_id: thread.run_id, input: {} };
+    }
+    if (target.kind !== "message_run") return;
     let skipped: string | undefined;
     try {
-      skipped = (await this.deps.message(target, inputOf(found.trigger, found.firing), key))?.skipped;
+      skipped = (await this.deps.message(target, inputOf(found.trigger, found.firing), key, { person: found.firing.reply === true }))?.skipped;
     } catch (error) {
       if (this.closed) return;
       if (error instanceof ApiError && ["rate_limited", "home_busy", "unavailable"].includes(error.code)) return this.retry(triggerId, key, error);
@@ -675,7 +779,12 @@ export class Triggers {
   }
 
   private started(triggerId: string, key: string, runId: string): void {
-    this.settle(triggerId, key, { status: "started", run_id: runId }, (t) => void (t.failures_in_a_row = 0));
+    this.settle(triggerId, key, { status: "started", run_id: runId }, (t, firing) => {
+      t.failures_in_a_row = 0;
+      // A Slack thread's start: the thread's run, which its replies message.
+      const thread = firing.thread === undefined ? undefined : t.threads?.[firing.thread];
+      if (thread && thread.firing_key === key) thread.run_id = runId;
+    });
     this.deps.say({ condition: "trigger_fired", trigger: triggerId, firing: key, run: runId });
   }
 
@@ -734,7 +843,7 @@ export class Triggers {
     const gone = over > 0 ? trigger.firings.filter((f) => f.status !== "due" && !untold.has(f) && over-- > 0) : [];
     for (const f of gone) if (unmarked(f)) this.deps.say({ condition: "trigger_notice_dropped", trigger: trigger.id, firing: f.key });
     trigger.firings = trigger.firings.filter((f) => !gone.includes(f));
-    const kept = [...(trigger.kept_firings ?? []), ...gone.filter((f) => f.by === "manual" || f.by === "webhook")].filter((f) => this.inDay(f)).slice(-KEPT_FIRINGS);
+    const kept = [...(trigger.kept_firings ?? []), ...gone.filter((f) => f.by === "manual" || f.by === "webhook" || f.by === "slack")].filter((f) => this.inDay(f)).slice(-KEPT_FIRINGS);
     if (kept.length) trigger.kept_firings = kept;
     else delete trigger.kept_firings;
   }
@@ -807,7 +916,7 @@ export class Triggers {
   }
 
   private view(trigger: Trigger) {
-    const { firings, kept_firings: _, ...rest } = trigger;
+    const { firings, kept_firings: _, threads: __, ...rest } = trigger;
     return { ...rest, last_run_id: trigger.last_run_id ?? null, ...settled(trigger), last_firing: firings.length ? firingView(firings.at(-1)!) : null };
   }
 }
@@ -831,16 +940,18 @@ function given(name: string, source: Source | undefined, target: Target, now: nu
   return { ...target, input: inputOf(trigger, { key: "", by: "manual", nominal_at: second(now), status: "due", at: iso(now) }) };
 }
 
-/** The run's input: the trigger's, then a webhook's payload marked untrusted, then a line saying what fired it and when,
- *  in the trigger's zone. */
+/** The run's input: the trigger's, then a webhook's payload or a Slack message marked untrusted, then a line saying
+ *  what fired it and when, in the trigger's zone. A reply in a Slack thread is its message and that line alone. */
 function inputOf(trigger: Trigger, firing: Firing): Json {
   const when = local(Date.parse(firing.nominal_at), zoneOf(trigger.source));
-  const what = trigger.source.kind === "webhook" ? `the webhook trigger "${trigger.name}"` : `the schedule "${trigger.name}"`;
+  const what = trigger.source.kind === "webhook" ? `the webhook trigger "${trigger.name}"` : trigger.source.kind === "slack" ? `the Slack trigger "${trigger.name}"` : `the schedule "${trigger.name}"`;
   const line = firing.by === "schedule" ? `(Started by ${what} for ${when}.)` : firing.by === "manual" ? `(Started by hand from ${what} at ${when}.)` : `(From ${what}, received at ${when}.)`;
   // The payload is whatever its sender wrote: an instruction in it is data, and its closing tag cannot end the block.
-  const payload = firing.payload === undefined ? "" : `\n\n<trigger-payload source="webhook" untrusted>\n${firing.payload.replaceAll("</trigger-payload", "<\\/trigger-payload")}\n</trigger-payload>`;
+  const from = firing.by === "slack" ? `source="slack" user="${firing.user}" channel="${firing.thread?.split(":")[1]}"` : `source="webhook"`;
+  const payload = firing.payload === undefined ? "" : `<trigger-payload ${from} untrusted>\n${firing.payload.replaceAll("</trigger-payload", "<\\/trigger-payload")}\n</trigger-payload>`;
+  if (firing.reply) return { content: `${payload}\n\n${line}` };
   const { input } = trigger.target;
-  return typeof input.content === "string" ? { ...input, content: `${input.content}${payload}\n\n${line}` } : input;
+  return typeof input.content === "string" ? { ...input, content: `${input.content}${payload ? `\n\n${payload}` : ""}\n\n${line}` } : input;
 }
 
 /** `text` cut to PAYLOAD_KEPT_BYTES of UTF-8 at a character's start, and said to be cut. */
