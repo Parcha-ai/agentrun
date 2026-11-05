@@ -796,6 +796,9 @@ export class Runs {
     if (stored) await this.learning.onLoad(row, dir, meta, () => writeWhole(join(dir, RUN_META), `${JSON.stringify(meta)}\n`));
     const known = await this.options.agents.revision(row.agent, row.revision);
     const run = this.blank(row, dir, meta, known?.version ?? 0, harnessOfBody(known?.revision.body ?? {}), known ? await toolingOf(known.revision) : undefined, known?.revision);
+    // Its browser's sign-in pointer, read back before anything of the run is read or held here: its rows, answers and
+    // errors are cut of it from the first, though no launch of this server handed it one.
+    await this.peekSignIn(run);
     this.runs.set(row.id, run);
     run.launching = existsSync(join(dir, RUN_LAUNCHING));
     run.notSetUp = row.state === "running" && !isObject(stored?.input);
@@ -814,8 +817,6 @@ export class Runs {
       if (run.outcome === "failed") run.error = errorOfRow(row, meta);
       run.settled = true;
     } else {
-      // Its browser's sign-in pointer is never shown, though no launch of this server handed it one: read back, read only.
-      await this.peekSignIn(run);
       // A cancel a server took and could not carry back before it went: its mark is written first (cancel()), so it is
       // the run's end, as it was from its 202 on, whatever the turn it cut reads.
       if (run.kind === "agentic" && existsSync(join(dir, RUN_CANCELLED))) {
@@ -1590,8 +1591,8 @@ export class Runs {
     if (run.signIn && run.signIn.ref.length >= MIN_SECRET) (run.handed ??= new Set()).add(run.signIn.ref);
   }
 
-  /** The pointer of the sign-in a run going before this server started was handed, among the values its errors and
-   *  answers never show: read only, with no lease taken (pinSignIn takes one at its next launch). */
+  /** The pointer of the sign-in a run this server loads was handed, among the values its rows, errors and answers never
+   *  show: read only, with no lease taken (pinSignIn takes one at its next launch). */
   private async peekSignIn(run: Run): Promise<void> {
     const browser = run.meta.tool_plane?.browser;
     const ref = browser ? await this.options.signIns?.peek(run.agentId, browser).catch(() => undefined) : undefined;
