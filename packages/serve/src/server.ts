@@ -1901,8 +1901,10 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     if (raw === "/llms.txt") return void answerLlms(req, res).catch(fail);
     if (answerPage(req, res, raw, { token, dir: data, authFailed, console: options.console, takesBytes, ...(owner ? { owner } : {}) })) return;
     if (!raw.startsWith("/v2/")) return fail(new ApiError("not_found", `no route ${raw}; the API is under /v2`));
+    // A run's id needs no decoding: one that is not an id as sent (a stray or malformed escape) is no run's, and is never
+    // decoded here, where a throw would leave the request listener.
     const viewing = LIVE_PATH.exec(raw);
-    if (viewing) return void liveRoute(req, res, decodeURIComponent(viewing[1]!), viewing[2]!).catch(fail);
+    if (viewing) return ID.test(viewing[1]!) ? void liveRoute(req, res, viewing[1]!, viewing[2]!).catch(fail) : fail(new ApiError("not_found", "no run's live view at that address"));
     route(req, res, url, raw.slice(3)).catch(fail);
   });
   // The one upgrade this server takes: a run's live browser viewer's WebSocket (browser-live.ts). Every other is refused.
@@ -1911,14 +1913,14 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     const raw = (req.url ?? "/").split("?")[0]!;
     const viewing = LIVE_PATH.exec(raw);
     const deny = (status: string) => void socket.end(`HTTP/1.1 ${status}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
-    if (!viewing || !/^\/v\/[A-Za-z0-9_-]{22}\/ws$/.test(viewing[2]!)) return deny("404 Not Found");
+    if (!viewing || !ID.test(viewing[1]!) || !/^\/v\/[A-Za-z0-9_-]{22}\/ws$/.test(viewing[2]!)) return deny("404 Not Found");
     if (names && !names.has(String(req.headers.host ?? "").toLowerCase())) return deny("403 Forbidden");
     // A browser always sends its page's origin on a WebSocket, which no other page's script can forge: this server's own,
     // and the owner signed in, or nothing.
     if (String(req.headers.origin ?? "").toLowerCase() !== ownOrigin(req)) return (authFailed(raw, "live_view_origin"), deny("403 Forbidden"));
     if (!owner || !signedIn(req, owner)) return (authFailed(raw, "live_view_without_session"), deny("401 Unauthorized"));
     void (async () => {
-      const run = ID.test(decodeURIComponent(viewing[1]!)) ? await runs.get(decodeURIComponent(viewing[1]!)) : null;
+      const run = await runs.get(viewing[1]!);
       const handover = run ? await readHandover(run.dir) : undefined;
       if (!handover || viewing[2] !== `/v/${handover.id}/ws`) return deny("404 Not Found");
       proxyLiveUpgrade(req, socket, head, handover, viewing[2]!);

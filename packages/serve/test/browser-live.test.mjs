@@ -27,9 +27,9 @@ const filesUnder = (dir) => readdirSync(dir, { withFileTypes: true }).flatMap((e
 });
 
 /** A signed-in owner's server with the fake browser, and a run of `watch` (browse, then ask) waiting with its session open. */
-async function watched(t) {
+async function watched(t, options = {}) {
   withEnv(t, { BROWSERBASE_API_KEY: "fake-test-key", BROWSERBASE_PROJECT_ID: "fake-project", FAUX_BROWSER_LOG: join(await scratch(t), "browser.jsonl") }, KEYS);
-  const server = await serve(t, { accounts: true, openSetup: true, console: await builtConsole(t), fauxBrowser: FAUX_BROWSER, faux: BROWSE_ASK });
+  const server = await serve(t, { accounts: true, openSetup: true, console: await builtConsole(t), fauxBrowser: FAUX_BROWSER, faux: BROWSE_ASK, ...options });
   const origin = `http://127.0.0.1:${server.port}`;
   const made = await call(server.port, { method: "POST", path: "/v2/setup", headers: { ...json, origin }, body: { password: PASSWORD } });
   assert.equal(made.status, 201, made.text);
@@ -171,4 +171,15 @@ test("the route says whether a run has a browser at all: off with why when its a
   const signed = await call(again.port, { method: "POST", path: "/v2/auth/sign-in", headers: own(again), body: { password: PASSWORD } });
   assert.equal(signed.status, 200, signed.text);
   assert.deepEqual((await browserOfRun(again, cookieOf(signed), browsed)).json, { state: "off", reason: "kernel picked, no KERNEL_API_KEY" });
+});
+
+test("a malformed run id under the live path is a 404, never a crash: the server answers the next request, for HTTP and for the upgrade", { timeout: 60_000 }, async (t) => {
+  const { port } = await serve(t);
+  for (const path of ["/v2/runs/%E0%A4%A/browser/live/viewer.js", "/v2/runs/%/browser/live/v/AAAAAAAAAAAAAAAAAAAAAA"]) {
+    assert.equal((await call(port, { path })).status, 404, path);
+    assert.equal((await call(port, { path: "/v2/health" })).status < 500, true, `the server still answers after ${path}`);
+  }
+  const upgrade = await connect(`ws://127.0.0.1:${port}/v2/runs/%E0%A4%A/browser/live/v/AAAAAAAAAAAAAAAAAAAAAA/ws`, { origin: `http://127.0.0.1:${port}` });
+  assert.equal(upgrade.status, 404);
+  assert.equal((await call(port, { path: "/v2/health" })).status < 500, true, "and after the upgrade");
 });
