@@ -9,7 +9,7 @@ import { pipeline } from "node:stream/promises";
 import { pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
 import { once } from "node:events";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import type { NewRevision, Revision, RunOrigin } from "@parcha/pi-durable-agent";
@@ -1279,6 +1279,24 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   // Each ended run's meters, from its store (meterFiguresIn): kept, as its store no longer changes, keyed by its end, so a run
   // opened again and ended again is read again. A store that cannot be read leaves it all tokens.
   const endedMeters = new Map<string, ReturnType<typeof meterFiguresIn>>();
+  // Each ended run's spend so far as it saved it at its end (serve.json's cost_so_far: every conversation's charges and
+  // its decisions' receipts, which its root store alone does not hold), kept as its meters are; undefined when it saved
+  // none (a run whose cost is known, or one ended before the figure was kept).
+  const endedSoFar = new Map<string, number | undefined>();
+  const savedSoFarOf = (row: { id: string; endedAt?: string | null }) => {
+    const key = `${row.id} ${row.endedAt}`;
+    if (!endedSoFar.has(key)) {
+      let usd: number | undefined;
+      try {
+        const kept = (JSON.parse(readFileSync(join(dirname(dirname(agents.store.runStorePath(row.id))), RUN_META), "utf8")) as { cost_so_far?: { so_far_usd?: unknown } }).cost_so_far?.so_far_usd;
+        usd = typeof kept === "number" && Number.isFinite(kept) ? kept : undefined;
+      } catch {
+        usd = undefined;
+      }
+      endedSoFar.set(key, usd);
+    }
+    return endedSoFar.get(key);
+  };
   const metersOf = (row: { id: string; endedAt?: string | null }) => {
     const key = `${row.id} ${row.endedAt}`;
     let meters = endedMeters.get(key);
@@ -1332,7 +1350,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       // A run whose cost is unknown still spent what is known of it (so_far: each meter's known dollars): that is in the
       // total and its lines, and the run is counted unpriced, so a total is never below a line of its own and reads as
       // the lower bound unpriced_runs says it is.
-      const soFar = usd !== null || !read ? 0 : live ? (runs.cost(live).so_far_usd ?? 0) : read.known.tokens + read.known.browser + read.known.others;
+      const soFar = usd !== null || !read ? 0 : live ? (runs.cost(live).so_far_usd ?? 0) : (savedSoFarOf(row) ?? read.known.tokens + read.known.browser + read.known.others);
       const meters = group === "meter" && usd !== 0 ? read : undefined;
       if (meters && meters.browser.usd !== 0) browserSeconds = browserSeconds === null || meters.browser.seconds === null ? null : browserSeconds + meters.browser.seconds;
       // Its parts of the lines (usage-lines.ts): an unknown one counts the run unpriced there and adds what is known of it.
