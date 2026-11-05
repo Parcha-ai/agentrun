@@ -366,9 +366,8 @@ go through `work/` by path.
     and an address is never dialled: `host.docker.internal`, `gateway.docker.internal`, `host.orb.internal`,
     `host.lima.internal` and the VM's own addresses cannot even be asked for. A listed name that resolves to the VM or
     the Mac is refused by the same address rule as on Linux: OrbStack's Mac host and gateway (`0.250.250.254`,
-    `0.250.250.1`, in `0.0.0.0/8`), Docker Desktop's VM network (`192.168.65.0/24`, where `host.docker.internal`
-    answers), colima's host (`192.168.5.2`), the Docker bridge (`172.16.0.0/12`), a home LAN, a Tailscale address,
-    cloud metadata and IPv6 unique local. What stays: the rule checks the container's own interfaces, not the Mac's, so
+    `0.250.250.1`, in `0.0.0.0/8`), Docker Desktop's VM network and colima's host address (both in RFC 1918 private
+    space), the Docker bridge, a home LAN, a Tailscale address, cloud metadata and IPv6 unique local. What stays: the rule checks the container's own interfaces, not the Mac's, so
     a listed name that DNS points at the Mac's public address, or at the router through hairpin NAT, would be dialled;
     and the cap of 256 connections open at once is the server's, shared by its runs, not each run's.
   - Capabilities give the list as `places.allow`, and each box's `network`: `allowlist` or `none`, with

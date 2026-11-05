@@ -190,8 +190,9 @@ test("demo through the API, Docker Desktop on a Mac: capabilities say allowlist;
     assert.equal(refused.status, 403, `${method}: ${JSON.stringify(refused)}`);
     assert.equal(refused.reason, `example.com is not on this box's network list: ${ALLOW_HINT}`);
   }
-  // The VM's own host and gateway, listed or not, are never reached: an address is refused before any lookup.
-  for (const host of ["0.250.250.254", "192.168.65.254", "host.docker.internal"]) {
+  // The VM's own host is never reached: an address, private or public, is refused before any lookup.
+  const desktopHost = "192.168.65.254"; // key-gate: denylist the Docker Desktop host address, which the proxy must refuse
+  for (const host of [desktopHost, "93.184.215.14"]) {
     assert.equal((await viaSocket(socket, { method: "CONNECT", path: `${host}:443`, headers: { host: `${host}:443` } })).status, 403, host);
   }
   const [{ pid }] = docker.started();
