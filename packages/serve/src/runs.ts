@@ -166,7 +166,9 @@ type RunMeta = {
  *  process acted on the answer. */
 type Approval = { id: string; tool: string; call_id: string; args_json: string; requested_at: string; price?: number | "not metered"; resolved?: true };
 /** `args_shown`: the call's arguments as the server shows them (shownArgs), which the gate's resume message names. */
-type ApprovalAnswer = { decision: "allow" | "deny" | "canceled" | "withdrawn"; note?: string; answered_at: string; args_shown?: string };
+/** `by`: "message", a deny a person's message gave while the call waited (Runs.message). */
+/** `superseded`: the answer a stop or a cancel overrode before the run's process acted on it, kept as it was given. */
+type ApprovalAnswer = { decision: "allow" | "deny" | "canceled" | "withdrawn"; note?: string; answered_at: string; args_shown?: string; by?: "message"; superseded?: { decision: string; answered_at: string; note?: string; by?: "message" } };
 /** A call withdrawn with its run (a cancel, or a stop while it waited): never run, and an answer after is 409. */
 const withdrawn = (answer: ApprovalAnswer | undefined) => answer?.decision === "canceled" || answer?.decision === "withdrawn";
 type RunError = { code: string; message: string; retryable: boolean; details?: { reason: string } };
@@ -403,9 +405,14 @@ function withApprovals(rows: readonly TimelineEvent[], run: Pick<Run, "approvals
     if (!approval) return [row];
     const args = shownArgs(approval, redact);
     const said = run.meta.approvals?.[approval.id]?.decision;
-    const head = approval === waiting ? "Waiting for your approval" : said === "withdrawn" ? "Withdrawn when the run was stopped" : said === "canceled" ? "Withdrawn when the run was cancelled" : "Asked your approval";
+    const byMessage = run.meta.approvals?.[approval.id]?.by === "message";
+    const head = approval === waiting ? "Waiting for your approval" : byMessage ? "Declined by your message" : said === "withdrawn" ? "Withdrawn when the run was stopped" : said === "canceled" ? "Withdrawn when the run was cancelled" : "Asked your approval";
     const summary = `${head}: ${approval.tool} ${clip(args, 400)}`;
-    return [row, { ...row, id: `${row.id}:approval`, kind: APPROVAL_ROW, summary, text: args, tool_name: approval.tool, tool_status: null, tool_input_preview: clip(args, 500), tool_result_preview: null, tool_result_size_bytes: null }];
+    // A message that would have declined the call, which a stop or a cancel overrode: its words were never sent, and
+    // the row says so (the record keeps them whole).
+    const dropped = run.meta.approvals?.[approval.id]?.superseded;
+    const text = dropped?.by === "message" && dropped.note !== undefined ? `${args}\n\nNot sent: the run was ${said === "canceled" ? "cancelled" : "stopped"}. Your message: ${redact(dropped.note)}` : args;
+    return [row, { ...row, id: `${row.id}:approval`, kind: APPROVAL_ROW, summary, text, tool_name: approval.tool, tool_status: null, tool_input_preview: clip(args, 500), tool_result_preview: null, tool_result_size_bytes: null }];
   });
 }
 /** An import's answer, the one row reading of an answer left: its records hold no turn's end (it ran elsewhere), so its
@@ -541,7 +548,7 @@ export type StartOptions = { input: Json; title: string; place: Place; effort?: 
 /** `maxRuns`: the most runs with a live process at once; `settleRetryMs`: how often a carry back the store refused is
  *  tried again; `readyTimeoutMs`: how long a request to a run waits for its door (a run's first message, sent by its
  *  start, always waits READY_TIMEOUT_MS); `log` takes a run's start and end (print.ts). */
-export type RunsOptions = { agents: Agents; token: string; /** The server's saved tool keys, read by name for its runs alone (secrets.ts). */ storedKeys?: StoredKeys; documents?: string; doorTokenFile: string; doorToken: string; /** The test switches a run's process gets (server.ts fauxEnvOf): empty outside tests. */ fauxEnv?: NodeJS.ProcessEnv; runBoxes?: BoxProvider; /** The server's Daytona provider, with its key: remote boxes are made, seeded, pulled and destroyed with it, here alone (box-relay.ts). */ remoteBoxes?: BoxProvider; /** Daytona's API and the same key, for what the provider does not do: a kept box's idle stop, and its wake at a start (daytona-api.ts). */ remoteApi?: DaytonaApi; toolSettings?: () => ToolSettingsMap; /** Whether anyone can answer a tool call's approval here (accounts on); false, the run's gate refuses each ask (tool-gate.ts). */ approvers?: boolean; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; reflectTimeoutMs?: number; gradeTimeoutMs?: number; /** The grader's model (`--grade-model`), before AGENTRUN_SERVE_GRADE_MODEL and the strong tier (grade.ts gradeModelOf). */ gradeModel?: string; /** How much of what a run learned its instructions hold, in bytes (`--learning-budget`, learning.ts learnedOf). */ learningBudget?: number; log?: (event: string, fields: Record<string, string | number>) => void; notify?: RunNotify; learning?: LearningMode };
+export type RunsOptions = { agents: Agents; token: string; /** The server's saved tool keys, read by name for its runs alone (secrets.ts). */ storedKeys?: StoredKeys; documents?: string; doorTokenFile: string; doorToken: string; /** The test switches a run's process gets (server.ts fauxEnvOf): empty outside tests. */ fauxEnv?: NodeJS.ProcessEnv; runBoxes?: BoxProvider; /** The server's Daytona provider, with its key: remote boxes are made, seeded, pulled and destroyed with it, here alone (box-relay.ts). */ remoteBoxes?: BoxProvider; /** Daytona's API and the same key, for what the provider does not do: a kept box's idle stop, and its wake at a start (daytona-api.ts). */ remoteApi?: DaytonaApi; /** The hosts a remote box may reach (run-box.ts boxAllowOf); `none`, or absent, for none. */ boxAllow?: readonly string[] | "none"; /** Called once, with the provider's refusal's code, when it cannot keep that list here: from then on each remote box is made with no network. */ onNoBoxList?: (code: string) => void; toolSettings?: () => ToolSettingsMap; /** Whether anyone can answer a tool call's approval here (accounts on); false, the run's gate refuses each ask (tool-gate.ts). */ approvers?: boolean; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; reflectTimeoutMs?: number; gradeTimeoutMs?: number; /** The grader's model (`--grade-model`), before AGENTRUN_SERVE_GRADE_MODEL and the strong tier (grade.ts gradeModelOf). */ gradeModel?: string; /** How much of what a run learned its instructions hold, in bytes (`--learning-budget`, learning.ts learnedOf). */ learningBudget?: number; log?: (event: string, fields: Record<string, string | number>) => void; notify?: RunNotify; learning?: LearningMode };
 /** Told of a run's moment each time it is seen (webhooks.ts' emit, which queues each one once): a wait it reached, and an
  *  end once the agent store has it. `marker` names the moment (the person's turn it waits at, the end's time), the same
  *  when another server sees it again. It says what came of it: `unsaved`, not in the outbox on disk yet. */
@@ -692,6 +699,8 @@ export class Runs {
   /** Each workflow run's last graph read whole: what a poll that met a busy store answers, marked stale. */
   private readonly graphs = new Map<string, object>();
   private readonly adopting = new Map<string, Promise<Run>>();
+  /** The hosts this server's next remote box asks for: the setting's, until the provider cannot keep a list here, then none. */
+  private remoteAllow: readonly string[] | "none" | undefined;
   private readonly clock = new ChangeClock();
   private readonly cli = fileURLToPath(new URL("./cli.js", import.meta.resolve("@parcha/pi-durable-disk")));
   private readonly app = fileURLToPath(new URL("./app.js", import.meta.url));
@@ -1247,7 +1256,13 @@ export class Runs {
     if (!run || !boxes || !this.servesBox(id)) return Promise.reject(new Error(`no run ${id} of this server is in a remote box`));
     // After any pull of this run's box, so a seed never meets a pull.
     run.boxing ??= (run.pulling ?? Promise.resolve())
-      .then(() => ensureRemoteBox(boxes, run, boxContext(REMOTE_SYNC_MS), this.wakeOf(run.id)))
+      .then(() =>
+        ensureRemoteBox(boxes, run, boxContext(REMOTE_SYNC_MS), this.wakeOf(run.id), (this.remoteAllow ??= this.options.boxAllow ?? "none"), (code) => {
+          if (this.remoteAllow === "none") return;
+          this.remoteAllow = "none";
+          this.options.onNoBoxList?.(code);
+        }),
+      )
       .finally(() => void (run.boxing = undefined));
     return run.boxing;
   }
@@ -2075,6 +2090,13 @@ export class Runs {
     if (run.cancel) throw this.finished(run);
     // A person's message: no turn from here on is the server's own reflect turn (tool-gate.ts's carve-out).
     await rm(join(run.dir, TURN_ORIGIN_FILE), { force: true }).catch((error: Error) => warn(run.id, `its turn's origin is not removed: ${error.message}`));
+    // A message while a tool call waits for approval declines it, with the message as the reason (as Claude Code takes
+    // what is typed at its permission prompt): the gate's resume carries the refusal and their words in one turn, and
+    // nothing else is sent, so no second turn races the parked call.
+    if (run.kind === "agentic") {
+      const waiting = waitingApproval(run);
+      if (waiting) return this.declineBy(run, waiting, content);
+    }
     // Every wait first, then a last look for a stop in flight, again after any wait a stop came during: from that look
     // to the count below nothing awaits, so no stop can begin in between.
     do {
@@ -2187,11 +2209,14 @@ export class Runs {
     // rows first, so the mark it saves (the person's last message) covers the message the turn answers; then it stops
     // the turn as it stops any working run.
     if (run.kind !== "workflow") await this.caughtUp(run);
-    // A run parked on a tool call's approval has no turn to abort: the stop withdraws the call (never run, an answer
-    // after is 409), and the run is stopped as a stop leaves one.
-    if (run.kind === "agentic" && !run.cancel && !run.outcome && !run.finishing && waitingApproval(run)) return this.withdraw(run);
+    // A tool call that waits for approval is withdrawn by the stop (never run, an answer after is 409); then a turn that
+    // runs meanwhile is stopped as any working run's is, and with none the run is stopped as a stop leaves one.
+    const open = run.kind === "agentic" && !run.cancel && !run.outcome && !run.finishing;
+    const withdrawn = open && waitingApproval(run) ? await this.withdraw(run) : false;
+    // An answer the run's process has not acted on yet is overridden too: a stop wins, so nothing runs and nothing resumes.
+    const superseded = open ? await this.supersede(run, "withdrawn") : false;
     const { status, state } = statusOf(run);
-    if (run.kind === "workflow" || !this.live(run) || !(status === "working" && state === "working") || run.submitted > 0) return false;
+    if (run.kind === "workflow" || !this.live(run) || !(status === "working" && state === "working") || run.submitted > 0) return withdrawn || superseded ? this.stopIdle(run) : false;
     run.stopping = true;
     try {
       return await this.stopTurn(run);
@@ -2200,15 +2225,50 @@ export class Runs {
     }
   }
 
-  /** stop() of a run parked on an approval: the call withdrawn, and the stop's mark saved, as a stop saves it. */
+  /** message()'s decline of the tool call that waits for approval: a deny with the message as its note, which the
+   *  run's gate acts on as any deny, resuming the session with the refusal and the person's words in one message. */
+  private async declineBy(run: Run, waiting: Approval, content: string): Promise<{ mode: "answer"; messageId: string }> {
+    // The person's message, whole: it is the reason the model reads. Nothing shows the note, so nothing cuts it.
+    run.meta.approvals = { ...run.meta.approvals, [waiting.id]: { decision: "deny", note: content, answered_at: new Date().toISOString(), args_shown: shownArgs(waiting, this.redactor(run)), by: "message" } };
+    await this.saveMeta(run);
+    this.restate(run);
+    this.refresh(run);
+    if (!run.outcome && !run.finishing && !run.cancel) void this.ensureLive(run).catch((error: Error) => warn(run.id, `its declined approval waits for its process: ${error.message}`));
+    return { mode: "answer", messageId: `m${Date.now().toString(36)}${randomBytes(4).toString("hex")}` };
+  }
+
+  /** The answers given and not acted on yet (the run's process has not resolved them), overridden by a stop or a cancel:
+   *  `withdrawn` or `canceled`, each keeping the answer it superseded, so nothing runs and nothing resumes, and the
+   *  history shows what was given. The run's gate reads the answer again just before it acts (tool-gate.ts). */
+  private async supersede(run: Run, decision: "withdrawn" | "canceled"): Promise<boolean> {
+    const given = [...(run.approvals?.values() ?? [])].filter((a) => !a.resolved && run.meta.approvals?.[a.id] && !withdrawn(run.meta.approvals[a.id]));
+    if (!given.length) return false;
+    const now = new Date().toISOString();
+    const overridden = given.map((a) => {
+      const was = run.meta.approvals![a.id]!;
+      return [a.id, { decision, answered_at: now, superseded: { decision: was.decision, answered_at: was.answered_at, ...(was.note !== undefined ? { note: was.note } : {}), ...(was.by ? { by: was.by } : {}) } }] as const;
+    });
+    run.meta.approvals = { ...run.meta.approvals, ...Object.fromEntries(overridden) };
+    await this.saveMeta(run);
+    this.restate(run);
+    return true;
+  }
+
+  /** stop()'s withdrawal of the tool call that waits for approval: never run, and an answer after is 409. */
   private async withdraw(run: Run): Promise<boolean> {
     const waiting = waitingApproval(run)!;
     run.meta.approvals = { ...run.meta.approvals, [waiting.id]: { decision: "withdrawn", answered_at: new Date().toISOString() } };
+    await this.saveMeta(run);
+    this.restate(run);
+    return true;
+  }
+
+  /** stop() of a run with no turn to abort (parked on an approval it withdrew): the stop's mark, as a stop saves it. */
+  private async stopIdle(run: Run): Promise<boolean> {
     delete run.meta.stopped_at;
     delete run.meta.stopped_after;
     Object.assign(run.meta, stopMark(run.rows));
     await this.saveMeta(run);
-    this.restate(run);
     this.refresh(run);
     return true;
   }
@@ -2268,6 +2328,8 @@ export class Runs {
       await this.saveMeta(run).catch((error: Error) => warn(run.id, `its canceled approval is not saved: ${error.message}`));
       this.restate(run);
     }
+    // An answer its process has not acted on yet is overridden too: nothing runs and nothing resumes.
+    await this.supersede(run, "canceled").catch((error: Error) => warn(run.id, `its superseded approval is not saved: ${error.message}`));
     if (run.kind === "agentic") {
       run.finishing = "cancelled";
       run.endedAt = new Date().toISOString();
