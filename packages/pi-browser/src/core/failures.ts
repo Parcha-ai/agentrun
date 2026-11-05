@@ -96,13 +96,23 @@ function withCause(own: string, cause: unknown): string {
   return `${own}${text}${tag}`;
 }
 
+/** The HTTP status an error carries. Stagehand wraps SDK failures with { cause }: the status may live on the cause. */
+const statusOf = (error: unknown, fact = transportFactOf(error)): number =>
+  fact.status ?? Number(field(error, "statusCode") ?? field(field(error, "cause"), "statusCode") ?? NaN);
+
+/** The provider refused the call (401 or 403): its own answer that it did nothing. */
+export function isRefusal(error: unknown): boolean {
+  const status = statusOf(error);
+  return status === 401 || status === 403;
+}
+
 export function classifyBrowserError(error: unknown, effectful: boolean, facts: FailureFacts = {}): BrowserFailure {
   // Stagehand wraps SDK failures with { cause }: the HTTP status and the real message live on the cause.
   const cause = field(error, "cause");
   const own = error instanceof Error ? error.message : String(error);
   const message = (facts.redact ?? ((text: string) => text))(withCause(own, cause));
   const fact = transportFactOf(error);
-  const status = fact.status ?? Number(field(error, "statusCode") ?? field(cause, "statusCode") ?? NaN);
+  const status = statusOf(error, fact);
   const effect = effectful ? "possibly_effected" : "none";
   const detail = message.slice(0, 2_000);
   if (facts.aborted || fact.errorName === "AbortError") return browserFailure("aborted", "The browser call was cancelled by the run.", { effect, detail });

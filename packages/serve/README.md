@@ -344,9 +344,24 @@ since nothing binds `work/` there):
   the key to the calls a run's tools make of their own sandbox (a read of it, and its toolbox's programs and files). It
   refuses every other call (a create, a listing, a stop, a delete, another run's sandbox or token, any other host), and
   it never follows a redirect, nor does the server's own Daytona client: a redirect would carry the key.
-- Its network is blocked (`networkBlockAll`). A sandbox Daytona does not report blocked is deleted, and the tool call
-  fails saying so. An organization on Daytona's tier 1 or 2 keeps its own network policy, which a sandbox cannot
-  override, so a run there gets no Daytona box.
+- It reaches the hosts `AGENTRUN_BOX_ALLOW` names, and no other: Daytona's domain list (`domainAllowList`), which
+  Daytona's egress proxy enforces. Unset or empty, the list is the package registries and GitHub: `pypi.org`,
+  `files.pythonhosted.org`, `registry.npmjs.org`, `registry.yarnpkg.com`, `github.com` and `codeload.github.com`. A
+  comma list of hosts (a `*.` wildcard allowed, at most 100) replaces it, so to add one, copy this list and extend it.
+  `AGENTRUN_BOX_ALLOW=none` blocks its network (`networkBlockAll`), as before the list. `*`, an IP address, a CIDR, a
+  port or a URL refuses the start. Capabilities show the hosts in `places.allow`, and the box's `network` (`allowlist` or
+  `none`) in its `places.boxes` entry. Daytona's proxy re-signs each TLS connection with Daytona's own CA, which the
+  sandbox's environment names to pip, npm, git and curl (`REQUESTS_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`, `GIT_SSL_CAINFO`,
+  `CURL_CA_BUNDLE`, `SSL_CERT_FILE`).
+- A sandbox whose own read does not carry the list it was asked for is deleted. Daytona takes a domain list on its tier 3
+  and 4 only: where it keeps none, or refuses it, the server makes the run's box again with its network blocked, never
+  open, and makes every later Daytona box that way until it starts again. The log says so once
+  (`event=box_network box=daytona network=none refused=<code>`), and capabilities show the box's `network` as `none`
+  with the reason. A box the server finds with no network is kept; one with a list when the setting is `none` is
+  destroyed and made again. A changed list applies to the boxes made after the start that reads it.
+- A sandbox Daytona does not report blocked, when blocked was asked, is deleted, and the tool call fails saying so. An
+  organization on Daytona's tier 1 or 2 keeps its own network policy, which a sandbox cannot override, so a run there
+  gets no Daytona box unless that policy blocks it.
 - A sandbox cannot bind `work/`. The server copies `work/` into it at `/run/agentrun/run/work` when it makes it, and
   copies what changed back at each turn's end (a read of the run's files waits for that copy) and once more before the
   run's end is recorded. Daytona's answer is never trusted: the copy back writes regular files and directories only,
@@ -1397,8 +1412,8 @@ neither, on the agent's own model. `GET /capabilities` names it as `learning.gra
 cheap model is a poor grader, so point the strong tier (or `--grade-model`) at a strong one. The grader reads each active
 note's index line, the whole text only of the notes the proposal supersedes, what the user said in the run (cut of the
 server's secrets, as the proposal keeps it), and the new notes, so its prompt stays under 200,000 characters however
-many notes the folder holds. Only with Jev's key here does an injection screen
-run first, on Jev: a note it scores at `INJECTION_THRESHOLD` (0.75) or over, or cannot score, drops the run. What the
+many notes the folder holds. No injection screen runs before it: a page classifier cannot see where a note came
+from, and read a preference the user stated as a planted instruction; the grader's Planted question decides. What the
 grade spends is in no run's totals: it is kept on the run's learning, and counted once on `GET /usage` under the meter
 `learning`, by agent and by day; a call cut off at its bound spent what nobody knows, so its cost is unknown, never $0.
 
@@ -1418,8 +1433,8 @@ The run's `learning` (on `GET /runs/{run_id}`, and `{state, reason, detail}` in 
 characters and no time) says how it went: `seeded`, then
 `reflecting` during the turn and until what it answered is checked, `proposed` while it is graded, and `merged`, or
 `dropped` with a reason from a closed list (`seed_failed`, `no_budget`, `unknown_cost`, `cancelled`, `crashed`,
-`reflect_timeout`, `reflect_failed`, `empty`, `unparsed`, `propose_failed`, `checker`, `screen`, `screen_down`,
-`grader`, `grade_failed`; `no_write_tool` and `tool_denied` are an older server's, still read and counted, and no run
+`reflect_timeout`, `reflect_failed`, `empty`, `unparsed`, `propose_failed`, `checker`, `grader`, `grade_failed`;
+`no_write_tool`, `tool_denied`, `screen` and `screen_down` are an older server's, still read and counted, and no run
 gets them now). It is `null` for a
 run that does not learn (its agent's `learning` is not true, the server's switch was off when it started, or it is a
 workflow's or an imported run). Its `detail` says the same in a person's words, never the machine's: "Started from 2
