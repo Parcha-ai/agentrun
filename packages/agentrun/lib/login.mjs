@@ -33,7 +33,9 @@ function scrubberOf(secrets) {
     if (typeof node === "string") return text(node);
     if (Array.isArray(node)) return node.map(value);
     if (node === null || typeof node !== "object") return node;
-    const out = {};
+    // No prototype, so every key is the object's own, __proto__ and constructor as much as any; JSON.stringify prints
+    // it as it would a plain object.
+    const out = Object.create(null);
     for (const [key, child] of Object.entries(node)) {
       let name = text(key);
       for (let n = 2; Object.hasOwn(out, name); n++) name = `${text(key)} (${n})`;
