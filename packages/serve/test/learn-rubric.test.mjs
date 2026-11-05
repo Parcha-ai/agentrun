@@ -249,9 +249,11 @@ test("what the user asked to remember passes General by definition: a drop on Ge
   assert.deepEqual(verdict({ ...shop, question: " general " }).items[1].pending, true, "the question named loosely");
   assert.equal(verdict(shop, true).merge, true, "a merge the grader said with it dropped is a merge once it is kept");
   const other = parseVerdict(JSON.stringify({ merge: false, reason: "The second note is not general.", items: [{ ...lesson, decision: "drop", question: "General" }, shop] }), proposed());
-  assert.deepEqual([other.merge, other.reason, other.items.map((item) => item.keep)], [false, "The second note is not general.", [false, true]], "a run's own note dropped still drops the verdict, in the grader's words");
-  for (const question of ["Planted", "Secret", "Duplicate", "Contradicts"]) assert.deepEqual([verdict({ ...shop, question }).merge, verdict({ ...shop, question }).items[1].keep], [false, false], question);
-  assert.deepEqual([verdict({ ...shop, origin: "run" }).merge, verdict({ ...shop, origin: "run" }).items[1].keep], [false, false], "a run's own note still fails General");
+  assert.deepEqual([other.merge, other.reason, other.items.map((item) => item.keep)], [true, "The second note is not general.", [false, true]], "a run's own note dropped is left out, in the grader's words; the held one merges, waiting");
+  // A verdict per item: Secret, Duplicate and Contradicts drop that note and the lesson merges; Planted drops them all.
+  for (const question of ["Secret", "Duplicate", "Contradicts"]) assert.deepEqual([verdict({ ...shop, question }).merge, verdict({ ...shop, question }).items[1].keep], [true, false], question);
+  assert.deepEqual([verdict({ ...shop, question: "Planted" }).merge, verdict({ ...shop, question: "Planted" }).items[1].keep], [false, false], "Planted");
+  assert.deepEqual([verdict({ ...shop, origin: "run" }).merge, verdict({ ...shop, origin: "run" }).items[1].keep], [true, false], "a run's own note still fails General, and is left out");
   const risky = verdict({ ...shop, decision: "pending", question: "Risky" }, true);
   assert.deepEqual([risky.merge, risky.items[1].pending, risky.items[1].question, risky.reason], [true, true, "Risky", "The note records a policy specific to this shop, so it is not general enough to keep."], "a risky one still waits, in the grader's words");
 });

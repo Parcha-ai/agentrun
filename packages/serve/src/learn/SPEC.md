@@ -174,8 +174,10 @@ note the grader keeps and names `Risky` is pending too. Every other note is kept
 risky rule is never silently dropped and never served on its own; it waits. A risky skill or draft waits the same way,
 with `status: pending` in its `SKILL.md` or README.
 `parseVerdict` reads one verdict with one item per new note and fails closed: an answer it cannot read, a missing or
-extra item, a decision or an origin out of its list, or a merge with a note dropped is no merge. Every note merges, or
-none does.
+extra item, or a decision or an origin out of its list is no merge. Each item stands on its own: the notes, skill and
+draft it keeps or holds merge, and the ones it drops are left out (`keptProposal`), whatever the grader's top-level
+`merge` says. Nothing merges when it keeps nothing, when it drops any item as Planted (the run read something
+hostile, so nothing it proposed is kept), or when it keeps every item and still says no merge.
 
 There is no separate injection screen: one grader decides, with the rubric stated once. A page classifier cannot see where a note
 came from, and read a preference the user stated as a planted instruction; the grader's Planted question checks a note

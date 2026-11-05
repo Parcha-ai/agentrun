@@ -733,7 +733,7 @@ export class LearningRuns {
       const proposal = JSON.parse(await readFile(join(run.dir, PROPOSAL), "utf8")) as Proposal;
       const known = await this.options.agents.revision(run.agentId, run.revision);
       if (known?.revision.kind !== "agentic") throw new Error("the run's revision is not agentic");
-      const { judgeProposal, mergeProposal, readForGrade } = await import("./grade.js");
+      const { judgeProposal, keptProposal, mergeProposal, readForGrade } = await import("./grade.js");
       const main = kept.verdict ? undefined : await readForGrade(data, run.agentId, run.id, proposal);
       // Main took a note of the same name, or superseded one it supersedes, since the run started: refused before the
       // grader is asked.
@@ -760,19 +760,22 @@ export class LearningRuns {
       }
       // A verdict kept with no `graded`: a note the proposal supersedes is refused, never marked on a text nobody knows
       // was read.
-      const merge = await mergeProposal(data, run.agentId, run.id, proposal, kept.verdict?.reason || "The grader kept every new note.", kept.graded ?? {}, kept.verdict);
+      // A verdict per item: what it keeps merges, what it drops is left out (keptProposal), and said.
+      const merging = keptProposal(proposal, kept.verdict);
+      const left = (kept.verdict?.items ?? []).filter((item) => !item.keep);
+      const merge = await mergeProposal(data, run.agentId, run.id, merging, kept.verdict?.reason || "The grader kept every new note.", kept.graded ?? {}, kept.verdict);
       if ("problems" in merge) return await end("dropped", "checker", said.stale(merge.problems), { problems: merge.problems });
       if (merge.checkout) warn(run.id, `its merge is on main, but the folder's files were not brought in line: ${merge.checkout.message}`);
       // A note the user asked for whose rule is risky waits on main for their OK: named here, and no run reads it yet.
       const waiting = new Set((kept.verdict?.items ?? []).filter((item) => item.pending).map((item) => item.file));
-      const pending = proposal.notes.filter(({ file }) => waiting.has(file)).map(({ file, text }) => ({ file, name: nameOf(file, text) }));
+      const pending = merging.notes.filter(({ file }) => waiting.has(file)).map(({ file, text }) => ({ file, name: nameOf(file, text) }));
       // What it learned: the notes it added that runs read, a note that waits for its OK not among them; and its skill
       // and workflow draft, each pending when it waits.
-      const learned = learnedOf(proposal).filter(({ file }) => !waiting.has(file));
-      const made = (suffix: string): LearnedFile[] => (proposal.files ?? []).filter(({ file }) => file.endsWith(suffix)).map(({ file }) => ({ file, name: file.split("/")[1]!, ...(waiting.has(file) ? { pending: true as const } : {}) }));
+      const learned = learnedOf(merging).filter(({ file }) => !waiting.has(file));
+      const made = (suffix: string): LearnedFile[] => (merging.files ?? []).filter(({ file }) => file.endsWith(suffix)).map(({ file }) => ({ file, name: file.split("/")[1]!, ...(waiting.has(file) ? { pending: true as const } : {}) }));
       const skills = made("/SKILL.md");
       const workflows = made("/workflow.json");
-      await end("merged", null, redactSecrets(said.merged(learned, pending, [...skills, ...workflows]), this.refused(run)), { merged: merge.merged, learned, ...(pending.length ? { pending } : {}), ...(skills.length ? { skills } : {}), ...(workflows.length ? { workflows } : {}) });
+      await end("merged", null, redactSecrets(said.merged(learned, pending, [...skills, ...workflows], left), this.refused(run)), { merged: merge.merged, learned, ...(pending.length ? { pending } : {}), ...(skills.length ? { skills } : {}), ...(workflows.length ? { workflows } : {}) });
     } catch (error) {
       // A server closing: nothing was decided, and the next start grades the run.
       if (this.closing) return;
