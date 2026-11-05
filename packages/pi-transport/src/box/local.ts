@@ -59,16 +59,17 @@ while [ "$round" -lt ${KILL_ROUNDS} ]; do
 		kill -KILL "\${pid%/environ}" 2>/dev/null
 	done
 done
-for cwd in /proc/[0-9]*/cwd; do
-	pid=\${cwd#/proc/}
-	pid=\${pid%/cwd}
-	[ "$pid" = "$$" ] && continue
-	at=$(readlink "$cwd" 2>/dev/null) || continue
-	case "\${at% (deleted)}" in "$2" | "$2"/*)
-		group=$(sed 's/.*) //' "/proc/$pid/stat" 2>/dev/null | cut -d' ' -f3)
-		[ -n "$group" ] && [ "$group" -gt 1 ] && kill -KILL "-$group" 2>/dev/null
-		kill -KILL "$pid" 2>/dev/null ;;
-	esac
+# One listing of every working directory, so a machine with thousands of processes costs two processes, not thousands.
+for pid in $(ls -l /proc/[0-9]*/cwd 2>/dev/null | awk -v d="$2" -v self="$$" '{
+	at = index($0, " -> "); if (!at) next
+	path = substr($0, at + 4); sub(/ \\(deleted\\)$/, "", path)
+	if (path != d && index(path, d "/") != 1) next
+	name = substr($0, 1, at - 1); sub(/.*\\/proc\\//, "", name); sub(/\\/cwd$/, "", name)
+	if (name != self) print name
+}'); do
+	group=$(sed 's/.*) //' "/proc/$pid/stat" 2>/dev/null | cut -d' ' -f3)
+	[ -n "$group" ] && [ "$group" -gt 1 ] && kill -KILL "-$group" 2>/dev/null
+	kill -KILL "$pid" 2>/dev/null
 done
 rm -rf -- "$2" 2>/dev/null || { chmod -R u+rwX -- "$2" 2>/dev/null; rm -rf -- "$2"; }`;
 
