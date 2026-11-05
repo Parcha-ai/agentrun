@@ -148,3 +148,30 @@ test("a store written before the metrics and import tables answers its runs with
     tools: [],
   });
 });
+
+test("analytics' pending: a running run whose end is on its way counts at that end's state in the totals, its cost never unknown, and is left out of every group's sums; a run the store ended is read as it is; a state that is no end is refused", async () => {
+  const { dir, ids } = await seeded();
+  const reader = openStoreReader(dir);
+  try {
+    const before = reader.analytics();
+    const codexNoEffort = (a) => a.byHarnessEffort.find((g) => g.harness === "codex" && g.effort === null)?.runs ?? 0;
+    // `e`, coder's run on codex, still running: the server holds its end, completed.
+    const after = reader.analytics({ pending: { [ids.e]: "completed" } });
+    assert.deepEqual(
+      { runs: after.totals.runs, completed: after.totals.completed, failed: after.totals.failed, unknown: after.totals.unknownCostRuns, tokens: after.totals.tokens, cost: usd(after.totals.costUsd), ended: after.time.endedRuns },
+      { runs: before.totals.runs, completed: before.totals.completed + 1, failed: before.totals.failed, unknown: before.totals.unknownCostRuns - 1, tokens: before.totals.tokens, cost: usd(before.totals.costUsd), ended: before.time.endedRuns },
+    );
+    assert.equal(codexNoEffort(after), codexNoEffort(before) - 1, "left out of by_harness_effort until its end, never at an unknown effort");
+    assert.equal(after.byDay.reduce((sum, g) => sum + g.runs, 0), before.byDay.reduce((sum, g) => sum + g.runs, 0) - 1);
+    assert.equal(after.bySource.reduce((sum, g) => sum + g.runs, 0), before.bySource.reduce((sum, g) => sum + g.runs, 0) - 1);
+    // A failed end counts failed, and a stopped one neither completed nor failed.
+    assert.equal(reader.analytics({ pending: { [ids.e]: "failed" } }).totals.failed, before.totals.failed + 1);
+    const stopped = reader.analytics({ pending: { [ids.e]: "stopped" } }).totals;
+    assert.deepEqual([stopped.completed, stopped.failed, stopped.unknownCostRuns], [before.totals.completed, before.totals.failed, before.totals.unknownCostRuns - 1]);
+    // `a` ended in the store already: a stale pending entry changes nothing.
+    assert.deepEqual(reader.analytics({ pending: { [ids.a]: "failed" } }), before);
+    assert.throws(() => reader.analytics({ pending: { [ids.e]: "running" } }), (error) => error instanceof AgentHomeError && error.code === "invalid");
+  } finally {
+    reader.close();
+  }
+});

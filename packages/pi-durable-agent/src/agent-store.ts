@@ -87,7 +87,13 @@ export type StoreAnalytics = {
   /** The 20 tools with the most calls (by name on a tie), each with how many failed. */
   tools: Array<{ tool: string; calls: number; errors: number }>;
 };
-export type AnalyticsFilter = { from?: string; to?: string; agent?: string };
+/** The states a run's end can have, for `AnalyticsFilter.pending`. */
+export type PendingEnd = "completed" | "escalated" | "failed" | "stopped";
+/** `pending`: runs whose end the caller holds and the store does not have yet (each by the state its end will have): their
+ *  counts are taken at that state, and their metrics, cost and effort are left out until the store has their end. A run
+ *  the store has ended already is read as it is. */
+export type AnalyticsFilter = { from?: string; to?: string; agent?: string; pending?: Readonly<Record<string, PendingEnd>> };
+const PENDING_ENDS: ReadonlySet<string> = new Set<PendingEnd>(["completed", "escalated", "failed", "stopped"]);
 export type NewRevision =
   | { kind: "agentic"; instructions: string; skills?: Record<string, string>; tools?: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: RevisionPlace; learning?: boolean; toolSettings?: Record<string, Record<string, string>>; note?: string }
   | { kind: "workflow"; workflow: Workflow; skills?: Record<string, string>; tools?: string[]; harness?: string; place?: RevisionPlace; toolSettings?: Record<string, Record<string, string>>; note?: string };
@@ -422,36 +428,46 @@ export class AgentStoreReader {
    *  `runs` and `revisions` alone, read in one snapshot; nothing under `runs/` is opened. `from` and `to` are ISO times in
    *  UTC. A store without the metrics tables answers its runs with none. */
   analytics(filter: AnalyticsFilter = {}): StoreAnalytics {
-    const params = { from: filter.from === undefined ? null : checkTime(filter.from, "from"), to: filter.to === undefined ? null : checkTime(filter.to, "to"), agent: filter.agent === undefined ? null : checkId(filter.agent, "agent") };
+    const pending: Record<string, PendingEnd> = {};
+    for (const [id, state] of Object.entries(filter.pending ?? {})) {
+      if (!PENDING_ENDS.has(state)) throw new AgentHomeError("invalid", `pending: ${String(state).slice(0, 40)} is not the state of an end`);
+      pending[checkId(id, "run")] = state;
+    }
+    const params = { from: filter.from === undefined ? null : checkTime(filter.from, "from"), to: filter.to === undefined ? null : checkTime(filter.to, "to"), agent: filter.agent === undefined ? null : checkId(filter.agent, "agent"), ...(Object.keys(pending).length ? { pending: JSON.stringify(pending) } : {}) };
     const metric = (column: string) => (this.metrics ? `m.${column}` : "NULL");
-    // Each run in scope once, with its group keys and, when it has ended, its metrics.
-    const scope = `WITH scope AS (SELECT r.id, r.state, r.started_at, r.ended_at, r.cost_usd,
+    // Each run in scope once, with its group keys and, when it has ended, its metrics. A pending run (its end on its way)
+    // has the state its end will have, and none of its metrics, cost or effort yet.
+    // No pending run (the usual read): no join at all, each run at its stored state.
+    const anyPending = Object.keys(pending).length > 0;
+    const scope = `WITH scope AS (SELECT r.id, ${anyPending ? "COALESCE(p.value, r.state) AS state, p.key IS NOT NULL AS pending" : "r.state AS state, 0 AS pending"}, r.started_at, r.ended_at, r.cost_usd,
         CASE WHEN v.kind = 'workflow' THEN 'workflow' ELSE COALESCE(json_extract(v.body_json, '$.harness'), 'pi') END AS harness,
         ${this.imports ? "COALESCE(i.source, 'live')" : "'live'"} AS source, ${this.metrics ? "m.run_id IS NOT NULL" : "0"} AS metered,
         ${["input", "cache_read", "cache_write", "output", "requests", "unmetered", "active_ms", "effort"].map((c) => `${metric(c)} AS ${c}`).join(", ")}
       FROM runs r JOIN revisions v ON v.id = r.revision_id
+        ${anyPending ? "LEFT JOIN json_each(:pending) p ON p.key = r.id AND r.state = 'running'" : ""}
         ${this.metrics ? "LEFT JOIN run_metrics m ON m.run_id = r.id AND r.state <> 'running'" : ""} ${this.imports ? "LEFT JOIN run_imports i ON i.run_id = r.id" : ""}
       WHERE ${this.runArchivedAtSql()} IS NULL AND (:from IS NULL OR r.started_at >= :from) AND (:to IS NULL OR r.started_at < :to) AND (:agent IS NULL OR r.agent_id = :agent))`;
     const group = `COUNT(*) AS runs, SUM(state IN ('completed', 'escalated')) AS completed, SUM(state = 'escalated') AS needs_review, SUM(state = 'failed') AS failed, SUM(metered) AS metered,
-      SUM(COALESCE(input + cache_read + cache_write + output, 0)) AS tokens, SUM(CASE WHEN state <> 'running' THEN cost_usd END) AS cost_usd,
-      SUM(state <> 'running' AND cost_usd IS NOT NULL) AS known`;
+      SUM(COALESCE(input + cache_read + cache_write + output, 0)) AS tokens, SUM(CASE WHEN state <> 'running' AND NOT pending THEN cost_usd END) AS cost_usd,
+      SUM(state <> 'running' AND NOT pending AND cost_usd IS NOT NULL) AS known, SUM(pending) AS pending`;
     const n = (value: unknown) => Number(value ?? 0);
     const counted = (g: Record<string, unknown>): AnalyticsGroup => ({
       runs: n(g.runs), completed: n(g.completed), needsReview: n(g.needs_review), failed: n(g.failed), runsWithMetrics: n(g.metered), tokens: n(g.tokens),
-      costUsd: n(g.known) > 0 ? Number(g.cost_usd) : null, unknownCostRuns: n(g.runs) - n(g.known),
+      costUsd: n(g.known) > 0 ? Number(g.cost_usd) : null, unknownCostRuns: n(g.runs) - n(g.known) - n(g.pending),
     });
     const all = (sql: string) => this.db.prepare(`${scope} ${sql}`).all(params) as Array<Record<string, unknown>>;
     this.db.exec("BEGIN");
     try {
       const t = all(`SELECT ${group}, SUM(input) AS input, SUM(cache_read) AS cache_read, SUM(cache_write) AS cache_write, SUM(output) AS output, SUM(requests) AS requests, SUM(unmetered) AS unmetered,
-          SUM(state <> 'running' AND ended_at IS NOT NULL) AS ended, SUM(CASE WHEN state <> 'running' AND ended_at IS NOT NULL THEN MAX(0, ROUND((julianday(ended_at) - julianday(started_at)) * 86400000)) END) AS wall_ms,
+          SUM(state <> 'running' AND NOT pending AND ended_at IS NOT NULL) AS ended, SUM(CASE WHEN state <> 'running' AND NOT pending AND ended_at IS NOT NULL THEN MAX(0, ROUND((julianday(ended_at) - julianday(started_at)) * 86400000)) END) AS wall_ms,
           SUM(active_ms IS NOT NULL) AS active_runs, SUM(active_ms) AS active_ms FROM scope`)[0]!;
       return {
         totals: { ...counted(t), input: n(t.input), cacheRead: n(t.cache_read), cacheWrite: n(t.cache_write), output: n(t.output), requests: n(t.requests), unmetered: n(t.unmetered) },
         time: { endedRuns: n(t.ended), wallMs: n(t.wall_ms), activeRuns: n(t.active_runs), activeMs: n(t.active_ms) },
-        byHarnessEffort: all(`SELECT harness, effort, ${group} FROM scope GROUP BY harness, effort ORDER BY harness, effort`).map((g) => ({ harness: g.harness as string, effort: (g.effort as string | null) ?? null, ...counted(g) })),
-        byDay: all(`SELECT substr(started_at, 1, 10) AS day, ${group} FROM scope GROUP BY day ORDER BY day`).map((g) => ({ day: g.day as string, ...counted(g) })),
-        bySource: all(`SELECT source, ${group} FROM scope GROUP BY source ORDER BY source <> 'live', source`).map((g) => ({ source: g.source as "live" | ImportSource, ...counted(g) })),
+        // A pending run is in the totals' counts alone: its effort and its day's sums wait for its end.
+        byHarnessEffort: all(`SELECT harness, effort, ${group} FROM scope WHERE NOT pending GROUP BY harness, effort ORDER BY harness, effort`).map((g) => ({ harness: g.harness as string, effort: (g.effort as string | null) ?? null, ...counted(g) })),
+        byDay: all(`SELECT substr(started_at, 1, 10) AS day, ${group} FROM scope WHERE NOT pending GROUP BY day ORDER BY day`).map((g) => ({ day: g.day as string, ...counted(g) })),
+        bySource: all(`SELECT source, ${group} FROM scope WHERE NOT pending GROUP BY source ORDER BY source <> 'live', source`).map((g) => ({ source: g.source as "live" | ImportSource, ...counted(g) })),
         tools: this.metrics
           ? all(`SELECT t.tool, SUM(t.calls) AS calls, SUM(t.errors) AS errors FROM run_tool_metrics t JOIN scope s ON s.id = t.run_id WHERE s.metered GROUP BY t.tool ORDER BY calls DESC, t.tool LIMIT 20`)
             .map((r) => ({ tool: r.tool as string, calls: n(r.calls), errors: n(r.errors) }))
