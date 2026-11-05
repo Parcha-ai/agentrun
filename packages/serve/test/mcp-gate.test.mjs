@@ -192,9 +192,13 @@ test("pi: a tool priced $0.05 under a $0.04 cap is refused unsent in the cap's w
   assert.equal(tools?.usd, 0.05, JSON.stringify(tools));
 });
 
-test("pi: a tool with no price runs, shown not metered on the timeline and in /usage, outside the run's cost", { timeout: 90_000 }, async (t) => {
+test("pi: a tool with no price runs, shown not metered on the timeline and in /usage, outside the run's cost; a $0 run shows its tools line only for such calls", { timeout: 90_000 }, async (t) => {
   const { api } = await serve(t);
   const fake = await addFake(t, api);
+  // A $0 run that calls no MCP tool reads on /usage as it always has: its tokens line, no $0 line of tools.
+  const plain = await started(api, "plain", [], "Hello.");
+  await follow(api, plain, ["completed"], { deadlineMs: 60_000 });
+  assert.deepEqual((await api("GET", "/usage?group_by=meter")).body.lines, [{ group: "tokens", meter: "tokens", usd: 0, unpriced_runs: 0 }]);
   assert.equal((await allowFake(api)).status, 200);
   const runId = await started(api, "free", ["mcp:fake/add"], ADD, { run: { max_cost_usd: 0.04 } });
   const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 60_000 });

@@ -1405,14 +1405,16 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       // By meter, what a run's paid tools charged (monid's) is `tools`, its browser session time `browser_time`, the rest
       // `tokens`, all from the same records: a live run's rows (a call still marked is no charge), else its store as it
       // ended (a call a crash cut makes `tools` unknown, never `tokens`). An unknown meter counts the run as unpriced on it.
-      // An unpriced MCP call is in none of them: counted apart as not metered, on the tools line (a $0 run's too).
-      const meters = group !== "meter" ? undefined : live ? { tools: toolCostOf(live.rows), tokens: null, browser: { usd: toolCostOf(live.rows, "browser"), seconds: null }, others: toolCostOf(live.rows.filter((r) => r.tool_name !== "browser")), notMetered: live.rows.find((one) => one.kind === "usage")?.usage?.not_metered ?? 0 } : metersOf(row);
-      notMetered += meters?.notMetered ?? 0;
+      // An unpriced MCP call is in none of them: counted apart as not metered on the tools line, which a $0 run shows only
+      // when it made one (its store or rows read for that alone).
+      const meters = group !== "meter" || usd === 0 ? undefined : live ? { tools: toolCostOf(live.rows), tokens: null, browser: { usd: toolCostOf(live.rows, "browser"), seconds: null }, others: toolCostOf(live.rows.filter((r) => r.tool_name !== "browser")), notMetered: live.rows.find((one) => one.kind === "usage")?.usage?.not_metered ?? 0 } : metersOf(row);
+      const unmetered = group !== "meter" ? 0 : meters ? (meters.notMetered ?? 0) : usd === 0 ? ((live ? live.rows.find((one) => one.kind === "usage")?.usage?.not_metered : metersOf(row).notMetered) ?? 0) : 0;
+      notMetered += unmetered;
       const tokens = meters && (usd !== null && meters.tools !== null ? usd - meters.tools : usd === null && meters.tools === null ? meters.tokens : null);
       // Each apart, an unknown one unknown (unpriced on its own line), never $0 nor the other's.
       const browser = meters ? meters.browser.usd : 0;
       const tools = meters?.others;
-      const parts: [string, number | null][] = !meters ? [[key, usd]] : [[key, tokens ?? null], ...(tools !== 0 || meters.notMetered ? [["tools", tools ?? null] as [string, number | null]] : []), ...(browser !== 0 ? [["browser_time", browser] as [string, number | null]] : [])];
+      const parts: [string, number | null][] = !meters ? [[key, usd], ...(unmetered ? [["tools", 0] as [string, number | null]] : [])] : [[key, tokens ?? null], ...(tools !== 0 || unmetered ? [["tools", tools ?? null] as [string, number | null]] : []), ...(browser !== 0 ? [["browser_time", browser] as [string, number | null]] : [])];
       if (meters && browser !== 0) browserSeconds = browserSeconds === null || meters.browser.seconds === null ? null : browserSeconds + meters.browser.seconds;
       // A run whose cost is unknown adds no dollars, so no sum turns unknown; it is counted as unpriced instead, so it
       // never passes as $0.
