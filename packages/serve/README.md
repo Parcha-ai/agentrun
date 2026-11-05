@@ -950,7 +950,7 @@ A schedule starts an agent's runs with no one there. `POST /v2/triggers` with a 
 ```
 
 A source is a cron line of five fields in an IANA zone (default UTC), `{at}` for one time (the trigger turns itself off
-after it fires), or `{every_s, start_at?}` for every N seconds, 60 or more, on the grid from `start_at`. A time a clock
+after it fires), or `{every_s, start_at?}` for every N seconds, from 60 to a year and a day, on the grid from `start_at`. A time a clock
 change repeats fires once, at its first pass; one it skips fires at the first time after the gap. Each next time is
 reckoned from the last nominal one, so a timer that wakes late does not drift. `max_cost_usd` is required: every run a
 trigger starts is capped, and a workflow agent is refused, since a workflow run's spend is not capped here. Each run's

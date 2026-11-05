@@ -27,6 +27,8 @@ export const TRIGGERS_FILE = "triggers.json";
 export const HISTORY_KEPT = 200;
 /** The shortest every_s, and so the most often a schedule fires: a cron line has no seconds field. */
 export const MIN_EVERY_S = 60;
+/** The longest every_s: a year and a day. */
+export const MAX_EVERY_S = 366 * 86_400;
 export const SOURCE_KINDS = ["schedule"] as const;
 export const TARGET_KINDS = ["start_run"] as const;
 export const OVERLAP = ["skip"] as const;
@@ -78,6 +80,9 @@ type Firing = {
  *  as their defaults (settled). */
 type Trigger = {
   id: string; name: string; enabled: boolean; source: Schedule; target: Target; created_at: string; updated_at: string; next_at: string | null; firings: Firing[];
+  /** The run its last firing that started one started, kept here and not only in the history, which drops its oldest
+   *  firings: overlap reads it. */
+  last_run_id?: string;
   catchup_window_s?: number; failures_in_a_row?: number;
   /** Why it is off, when a failure streak turned it off; null once it is on again. */
   disabled?: { at: string; reason: "auto_paused" } | null;
@@ -117,12 +122,27 @@ const REAL_CLOCK: TriggerClock = {
 const iso = (ms: number) => new Date(ms).toISOString();
 /** RFC 3339 in UTC, to the second: the form a schedule's key is made of. */
 const second = (ms: number) => iso(ms).replace(/\.\d{3}Z$/, "Z");
-const RFC3339 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/i;
+const RFC3339 = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(\.\d+)?(Z|[+-](\d{2}):(\d{2}))$/i;
+/** An RFC 3339 date-time with its offset, as an instant; undefined for one that names no real time (month 13, Feb 30,
+ *  25 o'clock, an offset past 23:59), which Date.parse would refuse or roll over. */
+function instantOf(text: unknown): number | undefined {
+  const parts = typeof text === "string" ? RFC3339.exec(text) : null;
+  if (!parts) return undefined;
+  const [y, mo, d, h, mi, s, , , oh = "0", om = "0"] = parts.slice(1).map((p) => p ?? "0").map(String);
+  const days = new Date(Date.UTC(Number(y), Number(mo), 0)).getUTCDate();
+  if (Number(mo) < 1 || Number(mo) > 12 || Number(d) < 1 || Number(d) > days || Number(h) > 23 || Number(mi) > 59 || Number(s) > 59 || Number(oh) > 23 || Number(om) > 59) return undefined;
+  const at = Date.parse(text as string);
+  return Number.isFinite(at) ? at : undefined;
+}
 export const firingKey = (kind: "schedule" | "manual", triggerId: string, what: string) => `fir_${createHash("sha256").update(`${kind}\n${triggerId}\n${what}`).digest("hex").slice(0, 32)}`;
 const cronOf = (source: { cron: string; timezone: string }) => new Cron(source.cron, { timezone: source.timezone, mode: "5-part" });
 
-/** The source's first nominal time strictly after `after`, or null when it has none. */
+/** The source's first nominal time strictly after `after`, or null when it has none (or none a Date holds). */
 function nextAfter(source: Schedule, after: number): number | null {
+  const at = nextOf(source, after);
+  return at !== null && Number.isFinite(at) && Math.abs(at) <= DATE_MAX_MS ? at : null;
+}
+function nextOf(source: Schedule, after: number): number | null {
   if ("cron" in source) return cronOf(source).nextRun(new Date(after))?.getTime() ?? null;
   if ("at" in source) return Date.parse(source.at) > after ? Date.parse(source.at) : null;
   const start = Date.parse(source.start_at);
@@ -163,16 +183,18 @@ function sourceOf(value: unknown, now: number, issues: InputIssue[]): Schedule |
   }
   if (value.at !== undefined) {
     issues.push(...unknownFields(value, ["kind", "at"]).map((i) => ({ ...i, field: `source.${i.field}` })));
-    if (typeof value.at !== "string" || !RFC3339.test(value.at)) return bad("at", "invalid", "at is an RFC 3339 date-time with its offset"), undefined;
-    const at = Math.floor(Date.parse(value.at) / 1000) * 1000;
+    const given = instantOf(value.at);
+    if (given === undefined) return bad("at", "invalid", "at is an RFC 3339 date-time with its offset"), undefined;
+    const at = Math.floor(given / 1000) * 1000;
     if (at <= now) return bad("at", "invalid", "at is in the past"), undefined;
     return { kind: "schedule", at: second(at) };
   }
   issues.push(...unknownFields(value, ["kind", "every_s", "start_at"]).map((i) => ({ ...i, field: `source.${i.field}` })));
-  if (!Number.isSafeInteger(value.every_s) || (value.every_s as number) < MIN_EVERY_S) return bad("every_s", "invalid", `every_s is a whole number of seconds, ${MIN_EVERY_S} or more`), undefined;
-  if (value.start_at !== undefined && (typeof value.start_at !== "string" || !RFC3339.test(value.start_at))) return bad("start_at", "invalid", "start_at is an RFC 3339 date-time with its offset"), undefined;
+  if (!Number.isSafeInteger(value.every_s) || (value.every_s as number) < MIN_EVERY_S || (value.every_s as number) > MAX_EVERY_S) return bad("every_s", "invalid", `every_s is a whole number of seconds, ${MIN_EVERY_S} to ${MAX_EVERY_S}`), undefined;
+  const given = value.start_at === undefined ? now : instantOf(value.start_at);
+  if (given === undefined) return bad("start_at", "invalid", "start_at is an RFC 3339 date-time with its offset"), undefined;
   // The grid's origin, to the second: the first firing is at it when it is ahead, else one step after it.
-  const start = value.start_at === undefined ? Math.ceil(now / 1000) * 1000 : Math.floor(Date.parse(value.start_at as string) / 1000) * 1000;
+  const start = value.start_at === undefined ? Math.ceil(now / 1000) * 1000 : Math.floor(given / 1000) * 1000;
   return { kind: "schedule", every_s: value.every_s as number, start_at: second(start) };
 }
 
@@ -198,6 +220,18 @@ function settingsOf(body: Json, issues: InputIssue[]): { catchup_window_s?: numb
 }
 const WRITABLE = ["name", "enabled", "source", "target", "catchup_window_s"];
 
+/** A trigger as triggers.json keeps it, whole: what the engine reads of it is there, of its type. */
+function wellFormed(t: unknown): t is Trigger {
+  if (!isObject(t) || typeof t.id !== "string" || typeof t.name !== "string" || typeof t.enabled !== "boolean" || typeof t.created_at !== "string" || typeof t.updated_at !== "string") return false;
+  if (!(t.next_at === null || instantOf(t.next_at) !== undefined) || !(t.last_run_id === undefined || typeof t.last_run_id === "string")) return false;
+  if (!(t.catchup_window_s === undefined || Number.isSafeInteger(t.catchup_window_s)) || !(t.failures_in_a_row === undefined || Number.isSafeInteger(t.failures_in_a_row)) || !(t.disabled === undefined || t.disabled === null || isObject(t.disabled))) return false;
+  const { source, target } = t;
+  if (!isObject(source) || source.kind !== "schedule") return false;
+  const timed = typeof source.cron === "string" ? typeof source.timezone === "string" : source.at !== undefined ? instantOf(source.at) !== undefined : Number.isSafeInteger(source.every_s) && instantOf(source.start_at) !== undefined;
+  if (!timed || !isObject(target) || target.kind !== "start_run" || typeof target.agent_id !== "string" || !isObject(target.input) || typeof target.max_cost_usd !== "number") return false;
+  return Array.isArray(t.firings) && t.firings.every((f) => isObject(f) && typeof f.key === "string" && (FIRING_STATUSES as readonly unknown[]).includes(f.status) && (f.by === "schedule" || f.by === "manual") && instantOf(f.nominal_at) !== undefined && typeof f.at === "string");
+}
+
 export class Triggers {
   private readonly file: string;
   private readonly clock: TriggerClock;
@@ -207,6 +241,8 @@ export class Triggers {
   private timer?: { clear(): void };
   /** The firings being driven, by key: a firing is driven once at a time. */
   private readonly driving = new Set<string>();
+  /** Due firings whose last write failed, by key, and when to drive them again: on disk they may hold no retry time. */
+  private readonly rewrite = new Map<string, number>();
   private closed = false;
 
   constructor(data: string, private readonly deps: TriggerDeps) {
@@ -222,6 +258,8 @@ export class Triggers {
     try {
       const doc = JSON.parse(text) as unknown;
       if (!isObject(doc) || doc.v !== 1 || !Array.isArray(doc.triggers)) throw new Error("not a triggers file of version 1");
+      const bad = doc.triggers.findIndex((t) => !wellFormed(t));
+      if (bad >= 0) throw new Error(`its trigger at ${bad} is not one this server reads`);
       this.triggers = doc.triggers as Trigger[];
     } catch (error) {
       this.unreadable = (error as Error).message;
@@ -275,26 +313,27 @@ export class Triggers {
     return this.view(trigger);
   }
 
-  /** PATCH: any of name, enabled, source, target and catchup_window_s. Enabled again, or its source changed, a
-   *  trigger goes on from now: a paused range is skipped, never caught up. */
+  /** PATCH: any of name, enabled, source, target and catchup_window_s. Enabled again, or its source changed, a trigger goes on from now: a
+   *  paused range is skipped, never caught up. Only the fields named change, applied to the trigger as it stands once
+   *  the target's check is done: an edit made meanwhile keeps its own. */
   async update(id: string, body: Json) {
-    const trigger = this.need(id);
-    const now = this.clock.now();
+    this.need(id);
     const issues = unknownFields(body, WRITABLE);
-    const source = body.source === undefined ? trigger.source : sourceOf(body.source, now, issues);
-    const target = body.target === undefined ? trigger.target : targetOf(body.target, issues);
+    const source = body.source === undefined ? undefined : sourceOf(body.source, this.clock.now(), issues);
+    const target = body.target === undefined ? undefined : targetOf(body.target, issues);
     const settings = settingsOf(body, issues);
     if (body.name !== undefined && !(typeof body.name === "string" && body.name.trim() && body.name.length <= MAX_NAME)) issues.push({ field: "name", reason: "invalid", message: `name is a string of 1 to ${MAX_NAME} characters` });
     if (body.enabled !== undefined && typeof body.enabled !== "boolean") issues.push({ field: "enabled", reason: "wrong_type", message: "enabled is true or false" });
-    if (body.target !== undefined && target) issues.push(...(await this.deps.targetIssues(target)));
-    if (issues.length || !source || !target) throw invalid(issues);
+    if (target) issues.push(...(await this.deps.targetIssues(target)));
+    if (issues.length || (body.source !== undefined && !source) || (body.target !== undefined && !target)) throw invalid(issues);
+    const trigger = this.need(id);
+    const now = this.clock.now();
     const enabled = typeof body.enabled === "boolean" ? body.enabled : trigger.enabled;
-    const restart = body.source !== undefined || (enabled && !trigger.enabled);
-    const next = !enabled ? null : restart ? nextIso(source, now) : trigger.next_at;
+    const next = !enabled ? null : source || !trigger.enabled ? nextIso(source ?? trigger.source, now) : trigger.next_at;
     if (enabled && next === null) throw invalid([{ field: "enabled", reason: "invalid", message: "This schedule has no time left to fire at: give it a new source." }]);
     // On again, a trigger starts a new streak: a failure streak that turned it off is behind it.
     const again = enabled && !trigger.enabled ? { failures_in_a_row: 0, disabled: null } : {};
-    this.commit(() => Object.assign(trigger, { name: typeof body.name === "string" ? body.name.trim() : trigger.name, enabled, source, target, ...settings, ...again, updated_at: iso(now), next_at: next }));
+    this.commit(() => Object.assign(trigger, { ...(typeof body.name === "string" ? { name: body.name.trim() } : {}), ...(source ? { source } : {}), ...(target ? { target } : {}), ...settings, ...again, enabled, updated_at: iso(now), next_at: next }));
     this.arm();
     return this.view(trigger);
   }
@@ -336,7 +375,8 @@ export class Triggers {
         return;
       }
     }
-    const drive = this.triggers.flatMap((t) => t.firings.filter((f) => f.status === "due" && (!f.retry_at || Date.parse(f.retry_at) <= now)).map((f) => [t.id, f.key] as const));
+    const drive = this.triggers.flatMap((t) => t.firings.filter((f) => f.status === "due" && (!f.retry_at || this.dueAt(f) <= now)).map((f) => [t.id, f.key] as const));
+    for (const [, key] of drive) this.rewrite.delete(key);
     this.arm();
     for (const [id, key] of drive) void this.drive(id, key);
   }
@@ -426,11 +466,11 @@ export class Triggers {
   private async busy(trigger: Trigger, firing: Firing): Promise<string | undefined> {
     const earlier = trigger.firings.slice(0, trigger.firings.indexOf(firing));
     if (earlier.some((f) => f.status === "due")) return "An earlier firing is still waiting to start its run.";
-    const last = earlier.findLast((f) => f.run_id !== undefined);
+    const last = trigger.last_run_id;
     if (!last) return undefined;
-    const status = await this.deps.statusOf(last.run_id!);
+    const status = await this.deps.statusOf(last);
     if (status === null || ENDED.has(status)) return undefined;
-    return status === "input_required" ? `The last run, ${last.run_id}, is waiting for a person.` : `The last run, ${last.run_id}, is still ${status}.`;
+    return status === "input_required" ? `The last run, ${last}, is waiting for a person.` : `The last run, ${last}, is still ${status}.`;
   }
 
   private retry(triggerId: string, key: string, error: Error): void {
@@ -472,10 +512,12 @@ export class Triggers {
         if (!found) return;
         // Out of due, a firing keeps no retry, nor the reason the last try gave.
         Object.assign(found.firing, change.status === "due" || change.status === undefined ? change : { reason: undefined, attempts: undefined, retry_at: undefined, ...change });
+        if (change.run_id) found.trigger.last_run_id = change.run_id;
         also?.(found.trigger, found.firing);
       });
     } catch (error) {
-      // Left due on disk: driven again at the next start, under the same origin key.
+      // Left as it was: driven again soon (arm), under the same origin key, and at the next start.
+      this.rewrite.set(key, this.clock.now() + WRITE_RETRY_MS);
       this.deps.say({ condition: "triggers_unwritable", file: this.file, error: (error as NodeJS.ErrnoException).code ?? (error as Error).message });
     }
   }
@@ -500,9 +542,15 @@ export class Triggers {
       if (t.enabled && t.next_at !== null) soonest = Math.min(soonest, Date.parse(t.next_at));
       // One being driven arms nothing: its end arms the timer again.
       // One being driven arms nothing: its end arms the timer again.
-      for (const f of t.firings) if (f.status === "due" && f.retry_at && !this.driving.has(f.key)) soonest = Math.min(soonest, Date.parse(f.retry_at));
+      for (const f of t.firings) if (f.status === "due" && !this.driving.has(f.key)) soonest = Math.min(soonest, this.dueAt(f));
     }
     if (soonest !== Infinity) this.timer = this.clock.arm(() => this.tick(), Math.max(0, soonest - this.clock.now()));
+  }
+
+  /** When a due firing is driven next: at its retry, or soon after a write of it failed; one with neither is driven by
+   *  whatever recorded it. */
+  private dueAt(firing: Firing): number {
+    return Math.min(firing.retry_at ? Date.parse(firing.retry_at) : Infinity, this.rewrite.get(firing.key) ?? Infinity);
   }
 
   /** `change` applied and written whole, or, when the write fails, undone and thrown. */
@@ -532,7 +580,7 @@ export class Triggers {
 
   private view(trigger: Trigger) {
     const { firings, ...rest } = trigger;
-    return { ...rest, ...settled(trigger), last_firing: firings.length ? firingView(firings.at(-1)!) : null };
+    return { ...rest, last_run_id: trigger.last_run_id ?? null, ...settled(trigger), last_firing: firings.length ? firingView(firings.at(-1)!) : null };
   }
 }
 
@@ -540,6 +588,8 @@ const nextIso = (source: Schedule, now: number) => {
   const at = nextAfter(source, now);
   return at === null ? null : iso(at);
 };
+/** A time a Date holds: past it (about the year 275760) a next time is none. */
+const DATE_MAX_MS = 8.64e15;
 
 function firingView(firing: Firing) {
   return { key: firing.key, by: firing.by, nominal_at: firing.nominal_at, status: firing.status, at: firing.at, run_id: firing.run_id ?? null, reason: firing.reason ?? null, error: firing.error ?? null, ...(firing.count !== undefined ? { count: firing.count } : {}), ...(firing.catch_up ? { catch_up: true } : {}), ...(firing.retry_at ? { attempts: firing.attempts ?? 0, retry_at: firing.retry_at } : {}) };
