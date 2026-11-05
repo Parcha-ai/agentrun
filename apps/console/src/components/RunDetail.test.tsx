@@ -74,10 +74,11 @@ describe("RunDetail's Report tab before an answer", () => {
   });
 
   it("a run that waits on something this console doesn't know yet says it waits for you, never for an answer below or that it stopped", () => {
-    // A kind of `pending` a newer server may send (here "approval"): only its kind is read, nothing else of it.
+    // A kind of `pending` a newer server may send (one this console knows neither as a question, an approval nor a
+    // budget pause): only its kind is read, nothing else of it.
     for (const [name, state] of [["run.input_required.waiting.1", "waiting"], ["run.input_required.idle.1", "idle"]] as const) {
       const f = runFixture(name);
-      const run = { ...f.run, state, pending: { kind: "approval" } } as unknown as Run;
+      const run = { ...f.run, state, pending: { kind: "a_future_kind" } } as unknown as Run;
       const shown = report(run, f.page.rows);
       expect(shown, name).not.toContain(WRITING);
       expect(shown, name).toContain("Waiting for you");
