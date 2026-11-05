@@ -65,6 +65,38 @@ describe("the strip, a run waiting on the person in its browser", () => {
   });
 });
 
+// The ask is the agent's words, and an agent can write a phishing-shaped one: every place it shows says it's the agent's
+// request, shows it as plain text (no Markdown, no link, no HTML), and says the console's own fixed line under it.
+describe("the agent's ask is labelled as the agent's, plain text, with the password line", () => {
+  const PHISH = { ...ASK, instruction: "[Sign in](https://evil.example) **now** <b>x</b>", completion_condition: "[done](https://evil.example/d) <i>y</i>" };
+  const phishing = { ...asking, pending: PHISH } as unknown as Run;
+  const base: NeedsYouProps = { asking: [phishing], failed: [], live: [], agentName: () => "Browsing", now: () => NOW, onAnswer: async () => null, onRunAgain: async () => ({ started: [], problem: null }), onStop: async () => null };
+  const check = (card: HTMLElement) => {
+    expect(card.textContent).toContain("The agent asks you to: [Sign in](https://evil.example) **now** <b>x</b>");
+    expect(card.textContent).toContain("Done when: [done](https://evil.example/d) <i>y</i>");
+    expect(card.querySelector('[data-agent-request]')?.textContent).toContain("Done when:");
+    expect(card.querySelector('a[href^="https://evil"]')).toBeNull();
+    expect(card.querySelector("b, i, strong, em")).toBeNull();
+    expect(card.textContent).toContain("You never need to type your AgentRun password for this.");
+  };
+  it("in the strip", () => {
+    const m = mount(createElement(NeedsYouStrip, base));
+    check(m.host.querySelector('[aria-label="Waiting for you in the browser"]') as HTMLElement);
+  });
+  it("on the run page", () => {
+    const m = mount(createElement(RunDetail, { run: phishing, agentName: "browsing", messages: messageFeatures, harnessSteers: true, rows: [], files: [], actions: {}, onMessage: () => {} } as never));
+    check(m.host.querySelector('[aria-label="Waiting for you in the browser"]') as HTMLElement);
+  });
+  it("on the timeline, its Waiting for you row reads as the agent's request, as text", async () => {
+    const { Timeline } = await import("./Timeline");
+    const row = { id: "w", seq: 3, kind: "waiting", summary: "Waiting for you: [Sign in](https://evil.example) **now** <b>x</b>", text: null, timestamp: "2026-11-05T10:00:00Z", tool_name: null } as never;
+    const m = mount(createElement(Timeline, { rows: [row], live: false }));
+    expect(m.host.textContent).toContain("The agent asks you to: [Sign in](https://evil.example) **now** <b>x</b>");
+    expect(m.host.querySelector('a[href^="https://evil"]')).toBeNull();
+    expect(m.host.querySelector("b, strong")).toBeNull();
+  });
+});
+
 describe("a hand-back the server refuses, in words", () => {
   const held = (outcome: string) => Object.assign(new ClientError(409, "handoff_answered", "answered", false), { details: { outcome } });
   it("409 handoff_answered says it was already answered, and how", () => {
