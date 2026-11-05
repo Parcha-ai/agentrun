@@ -29,9 +29,14 @@ describe("a schedule's when, in words", () => {
 // The server turns a schedule off itself after a failure streak, or when its source no longer reads (serve's
 // trigger.disabled): the schedule says why, not just that it is off.
 describe("why a schedule turned itself off", () => {
-  it("says the failure streak, or that its source can't be read; nothing for one a person paused", () => {
-    expect(disabledWords(trigger({ enabled: false, failures_in_a_row: 5, disabled: { at: "2026-11-05T09:00:00Z", reason: "auto_paused" } }))).toBe("Turned off after 5 failures in a row.");
-    expect(disabledWords(trigger({ enabled: false, failures_in_a_row: 0, disabled: { at: "2026-11-05T09:00:00Z", reason: "auto_paused" } }))).toBe("Turned off after failures in a row.");
+  // The count that turned it off is the server's threshold (capabilities' failures_to_pause), not the streak now: a
+  // failed Run now after the shutdown raises the streak, a successful one resets it, and neither changes why.
+  it("says the threshold that turned it off, or that its source can't be read; nothing for one a person paused", () => {
+    const off = { at: "2026-11-05T09:00:00Z", reason: "auto_paused" as const };
+    expect(disabledWords(trigger({ enabled: false, failures_in_a_row: 5, disabled: off }), 5)).toBe("Turned off after 5 failures in a row.");
+    expect(disabledWords(trigger({ enabled: false, failures_in_a_row: 6, disabled: off }), 5)).toBe("Turned off after 5 failures in a row.");
+    expect(disabledWords(trigger({ enabled: false, failures_in_a_row: 0, disabled: off }), 5)).toBe("Turned off after 5 failures in a row.");
+    expect(disabledWords(trigger({ enabled: false, failures_in_a_row: 6, disabled: off }))).toBe("Turned off after failures in a row.");
     expect(disabledWords(trigger({ enabled: false, disabled: { at: "2026-11-05T09:00:00Z", reason: "source_unreadable", detail: "unknown time zone Mars/Base" } }))).toBe("Turned off: its source can't be read (unknown time zone Mars/Base).");
     expect(disabledWords(trigger({ enabled: false, disabled: null }))).toBeNull();
     expect(disabledWords(trigger({ enabled: false }))).toBeNull();
