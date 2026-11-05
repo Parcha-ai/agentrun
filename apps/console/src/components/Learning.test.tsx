@@ -921,3 +921,48 @@ describe("text in angle brackets in what it learned", () => {
     expect(flow.textContent).toContain("Customer: <name>, Amount: $<amount>");
   });
 });
+
+// A retired note or skill opens as one in use does, read-only: what it says, when it applies, the run that learned it, and
+// who retired it when. Nothing to edit or retire on it: no later run reads it.
+describe("the Learning tab's retired notes and skills, opened", () => {
+  const retiredView = () => view({
+    notes: { items: [note(FIRST, "Try /policies/refund-policy first"), note(MINE, "Keep it to three lines", { status: "retired" })], total: 2, next_cursor: null },
+    log: { items: [
+      { by: { user: true }, commit: "c4", at: "2026-11-04T09:10:00Z", reason: "retired by a person", files: [MINE, "MEMORY.md"] },
+      { by: { run: "run-a" }, commit: "c1", at: "2026-11-03T16:52:10Z", reason: "Short answers read better.", files: [MINE, FIRST, "MEMORY.md"] },
+    ], total: 2, next_cursor: null },
+  });
+
+  it("a retired note opens to its text, when it applies, the run that learned it and when you retired it, with no Edit or Retire", async () => {
+    const t = await open(agent(true), { learning: async () => retiredView() });
+    await t.click(/^Earlier notes/);
+    const earlier = t.host.querySelector('section[aria-label="Earlier notes"]') as HTMLElement;
+    expect(earlier.textContent).not.toContain("The body of Keep it to three lines.");
+    await t.click(/^Show the note Keep it to three lines$/);
+    expect(earlier.textContent).toContain("The body of Keep it to three lines.");
+    expect(earlier.textContent).toContain("When keep it to three lines applies");
+    expect(earlier.textContent).toContain("Learned in");
+    expect(earlier.querySelector('a[href="#/runs/run-a"]')?.textContent).toBe("taylorstitch.com");
+    expect(earlier.textContent).toMatch(/Retired by you · \S/);
+    expect(t.button(/^Edit Keep it to three lines$/)).toBeUndefined();
+    expect(t.button(/^Retire Keep it to three lines$/)).toBeUndefined();
+    await t.click(/^Hide the note Keep it to three lines$/);
+    expect(earlier.textContent).not.toContain("The body of Keep it to three lines.");
+  });
+
+  it("a retired skill opens to its text, read from its file, and the run that learned it, with no Approve or Retire", async () => {
+    const SKILL_FILE = "skills/find-policies/SKILL.md";
+    const SKILL_TEXT = "---\nname: find-policies\ndescription: Find a store's policies\n---\n# Find policies\n\n1. Open the policies page first.\n";
+    const learned = view({ skills: [{ name: "find-policies", file: SKILL_FILE, description: "Find a store's policies", status: "retired", run: "run-b", bytes: 92, etag: '"skill-v1"' }], workflows: [] } as Partial<AgentLearning>);
+    const t = await open(agent(true), { learning: async () => learned, read: async () => ({ note: SKILL_TEXT, etag: '"skill-v1"' }) });
+    await t.click(/^Earlier skills/);
+    const earlier = t.host.querySelector('section[aria-label="Earlier skills"]') as HTMLElement;
+    await t.click(/^Show the skill find-policies$/);
+    expect(t.calls).toContain(`read ${SKILL_FILE}`);
+    expect(earlier.textContent).toContain("Open the policies page first.");
+    expect(earlier.querySelector('a[href="#/runs/run-b"]')?.textContent).toBe("brooklinen.com");
+    expect(earlier.textContent).toContain("Retired");
+    expect(t.button(/^Retire find-policies$/)).toBeUndefined();
+    expect(t.button(/^Approve find-policies$/)).toBeUndefined();
+  });
+});
