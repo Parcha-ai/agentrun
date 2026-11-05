@@ -111,3 +111,27 @@ test("a definition whose default cap would keep every default run from running i
     assert.deepEqual([picking.status, ...fields(picking)], [422, ["definition.tools[0]", "not_an_option"]], `${harness}: ${JSON.stringify(picking.body)}`);
   }
 });
+
+test("a cap that parses to Infinity (1e999) is no cap: refused on a run, a trigger's target and a definition, never taken as uncapped", { timeout: 120_000 }, async (t) => {
+  const { api, baseUrl, token } = await serve(t);
+  // JSON.stringify writes Infinity as null: the body goes as text, as a caller's would.
+  const raw = async (method, path, text) => {
+    const res = await fetch(`${baseUrl}${path}`, { method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: text });
+    return { status: res.status, body: await res.json() };
+  };
+  assert.equal((await api("POST", "/agents", agent("plain"))).status, 201);
+  const run = await raw("POST", "/agents/plain/runs", '{"input":{"content":"Answer soon."},"max_cost_usd":1e999}');
+  assert.deepEqual([run.status, ...fields(run)], [422, ["max_cost_usd", "wrong_type"]], JSON.stringify(run.body));
+  assert.equal((await api("GET", "/agents/plain/runs")).body.runs.length, 0, "no run started");
+  const target = '{"kind":"start_run","agent_id":"plain","input":{"content":"Answer soon."},"max_cost_usd":1e999}';
+  const trigger = await raw("POST", "/triggers", `{"name":"inf","source":{"kind":"schedule","every_s":600},"target":${target}}`);
+  assert.deepEqual([trigger.status, ...fields(trigger)], [422, ["target.max_cost_usd", "wrong_type"]], JSON.stringify(trigger.body));
+  const made = await api("POST", "/triggers", { name: "fine", source: { kind: "schedule", every_s: 600 }, target: { kind: "start_run", agent_id: "plain", input: { content: "Answer soon." }, max_cost_usd: 0.5 } });
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  const patched = await raw("PATCH", `/triggers/${made.body.id}`, `{"target":${target}}`);
+  assert.deepEqual([patched.status, ...fields(patched)], [422, ["target.max_cost_usd", "wrong_type"]], JSON.stringify(patched.body));
+  const definition = await raw("POST", "/agents", '{"definition":{"id":"inf","name":"inf","instructions":"Answer.","max_cost_usd":1e999}}');
+  assert.deepEqual([definition.status, ...fields(definition)], [422, ["definition.max_cost_usd", "wrong_type"]], JSON.stringify(definition.body));
+  const edit = await raw("PUT", "/agents/plain/definition", '{"definition":{"id":"plain","name":"plain","instructions":"Answer.","max_cost_usd":1e999}}');
+  assert.deepEqual([edit.status, ...fields(edit)], [422, ["definition.max_cost_usd", "wrong_type"]], JSON.stringify(edit.body));
+});
