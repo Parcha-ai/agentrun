@@ -26,6 +26,7 @@
 // after it, and the turn is interrupted once its result is in, then settled as a stopped one is, its end interrupted.
 // The answer's resume is a message of its own, sent as a person's is; a turn the park ended is not resumed at the next
 // open while the call still waits.
+import { existsSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import type { Context } from "@earendil-works/chord";
 import { AssistantEntry, type Cursor, type JsonObject, ROOT_CONVERSATION_ID, type ToolRegistration, ToolResultEntry, type Tx, UserEntry } from "@earendil-works/pi-durable";
@@ -443,6 +444,14 @@ export function adapterRun(
           // A turn the gate parked ends interrupted, never failed on the request its park refused.
           const why = refused ?? halted?.message ?? (failed === undefined || parked !== undefined ? undefined : `${harness}: ${failed}`);
           if (parked !== undefined && why === undefined) status = "interrupted";
+          // A test's seam, unset in a server (AGENTRUN_SERVE_TEST_CRASH_AFTER_ANSWER, a file that marks it once): a parked
+          // turn holds its end until the answer's message is recorded, then the process goes by a signal, as a crash
+          // between the two would leave the run.
+          if (CRASH_SEAM && parked !== undefined && !existsSync(CRASH_SEAM)) {
+            await answerIn;
+            writeFileSync(CRASH_SEAM, "");
+            process.kill(process.pid, "SIGKILL");
+          }
           const unsent = refused !== undefined && capRefused;
           const figures = unsent ? refusedFigures : undefined;
           refusedFigures = undefined;
@@ -485,6 +494,9 @@ export function adapterRun(
 
   /** The gate's resume (tool-gate.ts): the answer as a message of its own, recorded with the gate's mark in one commit,
    *  then sent as a person's is. */
+  const CRASH_SEAM = process.env.AGENTRUN_SERVE_TEST_CRASH_AFTER_ANSWER;
+  let answerRecorded: (() => void) | undefined;
+  const answerIn = new Promise<void>((resolve) => (answerRecorded = resolve));
   const resume: Resume = async (id, content, mark) => {
     await opened;
     const message: Message = { id: `approval-${id}`, content, recorded: commit(async (tx) => {
@@ -492,6 +504,7 @@ export function adapterRun(
       await mark(tx);
     }) };
     await message.recorded;
+    answerRecorded?.();
     if (turn) queue.push(message);
     else runTurns(sendOf(message));
   };
@@ -615,7 +628,8 @@ export function adapterRun(
       if (budgetUsd !== undefined) {
         useSpend({
           cap: budgetUsd,
-          spent: async () => (await bookings(BOOKING_WAIT_MS), plus(plus(booking.spentUsd(), charged), inFlight.total())),
+          spent: async () => (await bookings(BOOKING_WAIT_MS), plus(booking.spentUsd(), charged)),
+          held: () => inFlight.total(),
           add: (usd) => void (charged = plus(charged, usd)),
         });
       }
@@ -627,16 +641,18 @@ export function adapterRun(
       await gate?.load(durable, context, coding);
       // The park every gated call of the run's takes, built once: the host tools' here, and the MCP gateway's, which takes
       // the same object beside them (`{ gate, park }`). A call parked by its id or by its tool and arguments ends its turn.
-      const park: Park = { commit: (change) => commit(change as never) as never, parked: (callId) => void (parked = { callId }), parkedBy: (match) => void (parked = match) };
+      const park: Park = { commit: (change) => commit(change as never) as never, parked: (callId) => void (parked = { callId }), parkedBy: (match) => void (parked = match), turn: () => taking };
       session = await adapter.open({ ...spec, tools: hostTools(durable, tools, context, results, coding, gate ? { gate, park } : undefined) }, { writer, models: booking.models, signal: stop.signal, onEvent, ...(dir ? { dir } : {}), ...(cwd ? { cwd } : {}) });
       // A turn the person stopped is still open in the session (an interrupt writes no end there), and it is not resumed.
       // The run's stop record names the person's newest message when they stopped: with no message on the root newer than
       // it, the open turn is the stopped one. The session settles it, ended interrupted, and the next message is a turn of
       // its own. A turn a crash or a drain cut has no stop record newer than the newest message, and is resumed as before.
-      // A turn the gate parked is settled as a stopped one: its call waits for its answer, which resumes the run.
+      // A turn the gate parked is settled as a stopped one: its call waits for its answer, which resumes the run. So is
+      // one whose parked call was answered before a process went: its request names the turn (gate.parkedIn), so the
+      // answer's message, queued, follows it, and the turn is never run again.
       const stopped = (stopRecord?.stopped_at !== undefined
         ? lastUser !== undefined && lastUser <= placeOf(stopRecord.stopped_at)
-        : stopRecord?.stopped_after !== undefined && stopRecord.stopped_after === users) || gate?.waiting() === true;
+        : stopRecord?.stopped_after !== undefined && stopRecord.stopped_after === users) || gate?.waiting() === true || gate?.parkedIn(unended?.message) === true;
       // An adapter written before settleOpenTurn has none: its stopped turn is recovered, as before.
       if (session.state === "open_turn" && stopped && typeof session.settleOpenTurn === "function") await session.settleOpenTurn();
       // That turn is over in the session, and an earlier process died before it wrote the turn's end: written now, after

@@ -18,7 +18,7 @@ import { RUN_RESUMED } from "@parcha/pi-durable-agent/timeline";
 import { settleIn } from "./paid-calls.js";
 import type { AppContext, AppOptions, BeforeResume, DurableRun } from "@parcha/pi-durable-disk";
 import { capBefore, capModels, capOf, spentIn } from "./cap.js";
-import { codingSource } from "./coding-tools.js";
+import { codingSource, writesHere } from "./coding-tools.js";
 import { cancelledIn, markRequests } from "./request-start.js";
 import { decisionProvidersOf } from "./decisions.js";
 import { FOLLOW_UP_OPEN_ENV, readJson, RUN_META } from "./files.js";
@@ -128,7 +128,8 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   // Every tool call the run's model makes passes the run's tool gate (tool-gate.ts): pi's tools wrapped by name where the
   // registry composes each agent's, another harness's host tools in their call. An approved call runs on this coding
   // source, as the run's own would.
-  const toolGate = runGate(where, run.id, revision);
+  // Its reflect carve-out holds only where the file tools write this machine's work/ (coding-tools.ts writesHere).
+  const toolGate = runGate({ ...where, learningAt: () => writesHere(place, box) }, run.id, revision);
   const registry = createRegistry();
   // An agentic run's system prompt starts with the date and the workspace (environment.ts). On pi it is a section,
   // installed first so it comes before every other extension's and the instructions.
@@ -226,8 +227,8 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   const nodeTools = new Map<string, ToolBinding>();
   for (const name of workflowTools(workflowNodeList).nodes) nodeTools.set(name, await bind(name, true));
   // A model node's tools pass the gate too; one set to ask is refused there, as no node can wait for a person. A call
-  // node is the author's own step, which no gate asks about: runnable.ts refuses a run whose call node calls a denied tool, and
-  // a tool set to deny since is refused as its call node runs (runEffect).
+  // node is the author's own step, which cannot wait for an approval: runnable.ts refuses a run whose call node calls a tool
+  // set to deny or ask, and a tool set to either since is refused as its call node runs (runEffect).
   const gatedTools = toolGate.extension([...nodeTools.values()].flatMap((binding) => binding.tools));
   registry.install(gatedTools);
   // A decision node's images are files of the run's work directory (pdf_pages draws them there).
@@ -256,8 +257,11 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     log({ t: "effect.start", ...at, input, at: new Date().toISOString() });
     try {
       // Its tool's permission now, the gate's one rule read as each call node runs (tool-gate.ts policy): a tool set to
-      // deny since the run started is refused in the gate's words, never run. Ask does not apply to the author's own step.
-      if (toolGate.policy(node.tool!) === "deny") throw new Error(deniedText(node.tool!));
+      // deny since the run started is refused in the gate's words, and one set to ask too, since a call node cannot wait
+      // for an approval. Neither runs.
+      const permission = toolGate.policy(node.tool!);
+      if (permission === "deny") throw new Error(deniedText(node.tool!));
+      if (permission === "ask") throw new Error(`This ${node.tool} call needs a person's approval, which a workflow's call node cannot wait for; it was not run.`);
       const durable = opened;
       const ledger = durable ? { call: `${node.label}@${executionPath ?? ""}${item ? `#${item.index}` : ""}`, record: rootRecordOf(durable.harness) } : undefined;
       const output = await effect(input, { signal, env, work: where.work, complete, ...(ledger ? { ledger } : {}) });

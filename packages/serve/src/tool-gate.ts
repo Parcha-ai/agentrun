@@ -143,7 +143,7 @@ export type PendingApproval = {
 /** The run's journal commit for the call, which makes the request durable before the gate answers, and who is told it
  *  parked, so its turn ends (harness-app.ts endsTurn): by the call's id, or, where the caller cannot name it, by its tool
  *  and its arguments' digest. */
-export type Park = { commit<T>(change: (tx: unknown) => Promise<T>): Promise<T>; parked?(callId: string): void; parkedBy?(match: { tool: string; argsDigest: string }): void };
+export type Park = { commit<T>(change: (tx: unknown) => Promise<T>): Promise<T>; parked?(callId: string): void; parkedBy?(match: { tool: string; argsDigest: string }): void; /** The message the turn running the call took (harness-app's), kept with its request. */ turn?(): string | undefined };
 
 /** What a call's ask carries beyond the call. */
 export type EnterOptions = {
@@ -247,7 +247,7 @@ export function inLearning(work: string, path: unknown): boolean {
 }
 
 /** One call that waits for approval, as the run's store keeps it. */
-export type ApprovalRequest = { id: string; tool: string; call_id: string; args: unknown; args_preview: string; requested_at: string; price?: ApprovalPrice };
+export type ApprovalRequest = { id: string; tool: string; call_id: string; args: unknown; args_preview: string; requested_at: string; /** The message the turn that parked it took: a reopen settles that turn, answered or not. */ turn?: string; price?: ApprovalPrice };
 /** Resumes the session with `content` as one message of its own (`approval-<id>`), writing `mark` with it or after it. */
 export type Resume = (id: string, content: string, mark: (tx: Tx) => Promise<unknown>) => Promise<void>;
 
@@ -274,8 +274,8 @@ export function resumeText(request: Pick<ApprovalRequest, "tool" | "call_id">, s
 
 /** The gate of the run `runId` at `where` (its directory, under the data directory's runs/), on its pinned revision:
  *  an agentic run's parks an asked call; a workflow's model node cannot. */
-export function runGate(where: { root: string; work: string }, runId: string, revision: { kind: string; body: { toolSettings?: unknown; harness?: string } }): RunGate {
-  return new RunGate({ root: where.root, work: where.work, data: resolve(where.root, "..", ".."), runId, harness: revision.body.harness ?? "pi" }, (revision.body.toolSettings ?? {}) as PermissionSettings, revision.kind === "agentic", process.env[NO_APPROVER_ENV] !== "1");
+export function runGate(where: { root: string; work: string; learningAt?: () => Promise<boolean> }, runId: string, revision: { kind: string; body: { toolSettings?: unknown; harness?: string } }): RunGate {
+  return new RunGate({ root: where.root, work: where.work, data: resolve(where.root, "..", ".."), runId, harness: revision.body.harness ?? "pi", ...(where.learningAt ? { learningAt: where.learningAt } : {}) }, (revision.body.toolSettings ?? {}) as PermissionSettings, revision.kind === "agentic", process.env[NO_APPROVER_ENV] !== "1");
 }
 
 /** The gate in a run's process, park mode: its policy, the turn's origin, the calls that wait, and the answers acted on. */
@@ -293,7 +293,7 @@ export class RunGate {
   /** `where.data`: the server's data directory, its tool settings beside the store; `overrides`: the pinned revision's
    *  own; `parks`: whether an asked call parks the run (an agentic run's), which a workflow's model node cannot;
    *  `approvers`: whether anyone can answer an ask here (the owner's password session: accounts on). */
-  constructor(private readonly where: { root: string; work: string; data: string; runId: string; harness?: string; mcpServers?: readonly string[] }, private readonly overrides: PermissionSettings = {}, private readonly parks = true, private readonly approvers = true) {}
+  constructor(private readonly where: { root: string; work: string; data: string; runId: string; harness?: string; mcpServers?: readonly string[]; /** Whether the file tools write this machine's work/, where the carve-out's path is checked; absent, they do. */ learningAt?: () => Promise<boolean> }, private readonly overrides: PermissionSettings = {}, private readonly parks = true, private readonly approvers = true) {}
 
   /** A tool's permission now (permissionOf): the revision's own over the server's setting, read at each call, so a change
    *  reaches a live run at its next call. */
@@ -338,7 +338,11 @@ export class RunGate {
     // Held to its settings key (settingsKeyOf), the name its request, a refusal and the approved call give.
     const tool = settingsKeyOf(this.where.harness ?? "pi", name, this.where.mcpServers) ?? name;
     const permission = this.policy(name);
-    const turnOrigin = permission === "ask" ? this.turnOrigin() : undefined;
+    // The reflect turn's carve-out holds only where the path checked here is the file the tool writes (learningAt): a
+    // remote box's .learning/ is not this machine's, and a link made in it is never seen here. Read before the look for
+    // a call that waits below, which stays in one tick with its hold.
+    const origin = permission === "ask" ? this.turnOrigin() : undefined;
+    const turnOrigin = origin && (await (this.where.learningAt?.() ?? Promise.resolve(true))) ? origin : undefined;
     const verdict = gateToolCall({ tool, args }, { ...(turnOrigin ? { turnOrigin } : {}), work: this.where.work, policy: () => permission });
     if (verdict === "allow") return undefined;
     if (verdict === "deny") return { text: deniedText(tool), isError: true };
@@ -350,7 +354,8 @@ export class RunGate {
     const other = [...this.requests.values()].find((held) => !held.resolved && held.id !== id);
     if (other) return { text: `This ${tool} call was not run: the ${other.tool} call ${other.call_id} already waits for a person's approval. Call it again once that one is answered.`, isError: true };
     if (!this.requests.has(id)) {
-      const request: ApprovalRequest = { id, tool, call_id: callId, args: args ?? null, args_preview: argsPreview(args), requested_at: new Date().toISOString(), ...(options.price !== undefined ? { price: options.price } : {}) };
+      const turn = park.turn?.();
+      const request: ApprovalRequest = { id, tool, call_id: callId, args: args ?? null, args_preview: argsPreview(args), requested_at: new Date().toISOString(), ...(turn !== undefined ? { turn } : {}), ...(options.price !== undefined ? { price: options.price } : {}) };
       // Held before the commit's await, in the tick of the look above: pi runs a turn's calls in parallel, and an ask
       // entered meanwhile finds this one and is refused. A commit that fails lets it go.
       this.requests.set(id, request);
@@ -405,6 +410,12 @@ export class RunGate {
   /** Whether a call waits for its answer, or for its answer to be acted on: a harness keeps the turn it ended closed. */
   waiting(): boolean {
     return [...this.requests.values()].some((held) => !held.resolved);
+  }
+
+  /** Whether a call of the turn that took `message` was parked, answered or not: that turn ended at the park, though a
+   *  process that went before the next open settled it leaves it open in its session. */
+  parkedIn(message: string | undefined): boolean {
+    return message !== undefined && [...this.requests.values()].some((held) => held.turn === message);
   }
 
   /** Acts on the answers from now on, resuming the session through `resume`; by default pi's root conversation. */

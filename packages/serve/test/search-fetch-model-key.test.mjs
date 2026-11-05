@@ -171,7 +171,7 @@ test("a capped pi run whose auto search is Parallel, under a cap just short of o
   assert.equal((await api("PUT", "/settings/tool-keys/parallel", { values: { PARALLEL_API_KEY: PARALLEL_CANARY } })).status, 204);
   const checked = (await seen()).parallel.length; // the save checks the key against Parallel first (#1508): the run's requests are the ones after
   const run = await research(api, "auto-capped", {}, { max_cost_usd: 0.0009 });
-  assert.equal(run.results.web_search, JSON.stringify({ error: "spend_cap_reached: Parallel's search was not sent. It could cost up to $0.001 (Parallel's list price for a fast search), and with $0.000000 spent the run would pass its cap of $0.0009: the run is out of budget." }));
+  assert.equal(run.results.web_search, JSON.stringify({ error: "spend_cap_reached: Not sent: the run has spent $0 of its $0.0009 cap, and Parallel's search could cost up to $0.001 (Parallel's list price for a fast search). Raise the cap to at least $0.01 to run it." }));
   const calls = await seen();
   assert.deepEqual([calls.parallel.slice(checked), calls.exa], [[], []], "nothing sent to Parallel, nor to Exa instead");
 });
