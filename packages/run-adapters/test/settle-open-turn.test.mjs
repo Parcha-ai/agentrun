@@ -120,3 +120,72 @@ test("a follow-up placed with a carry holds the carried text in the session's st
   const note = processKit.recoveryNote(state, { prompts: true });
   assert.deepEqual([placed, note?.text.includes(`> Write five files.`)], [[`Write five files.\n\n${STOPPED_ONE}\n\nGo on.`], true]);
 });
+
+// A stop can land after the harness placed a prompt and before its CLI was sent it (the window between placeSubmissions
+// and the send): the prompt is placed, so no withdraw takes it, and nothing sent it. The harness marks each prompt just
+// before it hands it to its CLI (markSent, a kernel effect of its own); a placed prompt with no mark is unsent, and
+// settleTurn carries it (`unsent`) as it carries one stopped before it was placed. A prompt the host wrote (a follow-up's,
+// `host`) is withdrawn and never carried: a host prompt that never ran is dropped (follow-up.ts).
+
+test("a prompt placed but never sent, stopped: settleTurn's `unsent` carries it into the next one, and it stays placed, so nothing sends it on its own", async () => {
+  const store = memorySessionStore();
+  const drive = await openOn(store);
+  await drive.submit({ id: 's1', kind: 'prompt', text: 'Write five files.' });
+  await processKit.placeSubmissions(drive, drive.pending());
+  await processKit.settleTurn(drive, { unsent: ['s1'] });
+  await drive.submit({ id: 's2', kind: 'followUp', text: 'Go on.' });
+  const state = drive.state();
+  assert.deepEqual(
+    { pending: drive.pending().map((s) => s.text), placed: state.placed.has('s1') },
+    { pending: [`Write five files.\n\n${STOPPED_ONE}\n\nGo on.`], placed: true },
+    'the placed prompt is carried into the next one, and stays placed',
+  );
+  // A later process folds the same.
+  assert.deepEqual((await openOn(store)).pending().map((s) => s.text), [`Write five files.\n\n${STOPPED_ONE}\n\nGo on.`]);
+});
+
+test("a placed prompt and a pending one, both stopped: carried in the order they came, the placed one first; a placed prompt not named unsent (sent) is not carried, nor is a placed steer", async () => {
+  const store = memorySessionStore();
+  const drive = await openOn(store);
+  await drive.submit({ id: 'a', kind: 'prompt', text: 'First.' });
+  await processKit.placeSubmissions(drive, drive.pending());
+  await drive.submit({ id: 'b', kind: 'followUp', text: 'Second.' });
+  await processKit.settleTurn(drive, { unsent: ['a'] });
+  await drive.submit({ id: 'c', kind: 'followUp', text: 'Third.' });
+  assert.deepEqual(drive.pending().map((s) => s.text), [`First.\n\nSecond.\n\n${STOPPED_MANY}\n\nThird.`]);
+  const sent = await openOn(memorySessionStore());
+  await sent.submit({ id: 'x', kind: 'prompt', text: 'Sent.' });
+  await sent.submit({ id: 'y', kind: 'steer', text: 'Faster.' });
+  await processKit.placeSubmissions(sent, sent.pending());
+  await processKit.settleTurn(sent, { unsent: ['y'] });
+  await sent.submit({ id: 'z', kind: 'followUp', text: 'Next.' });
+  assert.deepEqual(sent.pending().map((s) => s.text), ['Next.'], 'a sent prompt and a steer carry nothing');
+});
+
+test("a host's follow-up prompt named to the settle (`host`) is withdrawn and never carried, pending or placed and unsent; a person's message pending beside it is left as it is", async () => {
+  const store = memorySessionStore();
+  const drive = await openOn(store);
+  await drive.submit({ id: 'follow-up:k', kind: 'prompt', text: 'Summarize the run.' });
+  await drive.submit({ id: 'person', kind: 'followUp', text: "A person's message." });
+  await processKit.settleTurn(drive, { host: 'follow-up:k' });
+  assert.deepEqual(drive.pending().map((s) => [s.id, s.text]), [['person', "A person's message."]], "only the host's prompt is withdrawn, and nothing carries it");
+  const placed = await openOn(memorySessionStore());
+  await placed.submit({ id: 'follow-up:k', kind: 'prompt', text: 'Summarize the run.' });
+  await processKit.placeSubmissions(placed, placed.pending());
+  await processKit.settleTurn(placed, { host: 'follow-up:k', unsent: ['follow-up:k'] });
+  await placed.submit({ id: 'next', kind: 'followUp', text: 'and now?' });
+  assert.deepEqual(placed.pending().map((s) => s.text), ['and now?'], "a host prompt placed and never sent is not carried either");
+});
+
+test("markSent records a prompt's send mark as a kernel effect of its own, read back by sentMarks in this process and the next; a halted drive writes none", async () => {
+  const store = memorySessionStore();
+  const drive = await openOn(store);
+  await processKit.markSent(drive, 'client-1');
+  await processKit.markSent(drive, 'client-1');
+  assert.deepEqual([...processKit.sentMarks(drive.state())], ['client-1']);
+  assert.deepEqual([...processKit.sentMarks((await openOn(store)).state())], ['client-1'], 'durable');
+  const halted = await openOn(memorySessionStore());
+  halted.halt?.(new Error('stopped'));
+  await assert.rejects(processKit.markSent(halted, 'client-2'));
+  assert.deepEqual([...processKit.sentMarks(halted.state())], []);
+});

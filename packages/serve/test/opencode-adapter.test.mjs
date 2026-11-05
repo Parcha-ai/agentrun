@@ -9,7 +9,7 @@ import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { runWorkflow } from "@parcha/agentrun-dsl";
 import { createHarnessRunner } from "@parcha/agentrun-kernel";
-import { foldSession, pendingSubmissions } from "@parcha/agentrun-kernel/kernel";
+import { foldSession, openDrive, pendingSubmissions } from "@parcha/agentrun-kernel/kernel";
 import { transcriptOf } from "@parcha/agentrun-kernel/process";
 import { memorySessionStore } from "@parcha/agentrun-kernel/testing";
 import { OPENCODE_INSTALL, OPENCODE_VERSION, openCodeAdapter } from "../dist/harness-opencode/index.js";
@@ -722,4 +722,93 @@ test("opencode, a guard: an answer cut at its output limit (response.incomplete,
   const sent = [];
   const outcome = await filteredOutcome({ type: "response.incomplete", response: { status: "incomplete", incomplete_details: { reason: "max_output_tokens" }, usage: filterUsage } }, sent, "", true, 2);
   assert.notEqual(outcome?.message, FILTERED, "not read as a content-filter stop");
+});
+
+/** The session's writer, held at the first append `match` picks (it gets each record and the prompts' submission ids by
+ *  their text) until the test lets it go. */
+function holdingWriter(inner, match) {
+  const ids = new Map();
+  let held;
+  const reached = new Promise((resolve) => { held = resolve; });
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  let done = false;
+  const writer = { key: inner.key, read: () => inner.read(), append: async (records) => {
+    for (const r of records) if (r.kind === "kernel.submission" && typeof r.data?.text === "string") ids.set(r.data.text, r.data.id);
+    if (!done && records.some((r) => match(r, ids))) { done = true; held(); await gate; }
+    return inner.append(records);
+  } };
+  return { writer, reached, release };
+}
+/** The intent of the placement of the prompt that says `text`. */
+const placing = (text) => (r, ids) => r.kind === "kernel.start" && Array.isArray(r.data?.placed) && r.data.placed.includes(ids.get(text));
+/** The journal batch that writes a prompt's send mark: its id in PROMPT_STREAM, written just before it is sent. */
+const marking = (r) => r.kind === "kernel.start" && JSON.stringify(r.data ?? {}).includes("opencode.prompt");
+
+test("an opencode turn whose stop lands after its prompt was placed and before OpenCode was sent it: the session reads open_turn, and its settle carries the placed prompt into the next message's turn", { timeout: 60_000 }, async () => {
+  const store = memorySessionStore();
+  const sp = spec([], { key: "s-placed-unsent" });
+  const { writer, reached, release } = holdingWriter(await store.open(sp.key), placing("go"));
+  const { adapter: a, provider: p } = adapter([{ text: "Now." }]);
+  const s = await session(a, store, sp, writer);
+  await s.session.send("go");
+  await reached;
+  // The stop lands while the prompt's placement is being written: once placed, OpenCode is never sent it.
+  const stopping = s.session.interrupt();
+  release();
+  await stopping;
+  assert.equal((await s.session.turnEnd()).status, "interrupted");
+  const stopped = await folded(store, sp.key);
+  const go = stopped.submissions.find((x) => x.text === "go");
+  assert.ok(go && stopped.placed.has(go.id), "setup: the stopped prompt was placed");
+  const afterStop = s.session.state;
+  if (s.session.state === "open_turn") await s.session.settleOpenTurn();
+  await s.session.send("and now?");
+  assert.equal((await s.session.turnEnd()).status, "completed");
+  await s.session.close();
+  const ended = await folded(store, sp.key);
+  const placed = ended.submissions.filter((x) => ended.placed.has(x.id)).map((x) => x.text);
+  assert.deepEqual(
+    { afterStop, follows: placed.at(-1), modelSaw: userTexts(p) },
+    { afterStop: "open_turn", follows: CARRIED, modelSaw: [CARRIED] },
+    "the placed prompt OpenCode was never sent is carried into the next message's turn",
+  );
+});
+
+test("an opencode turn whose stop lands after its prompt's send mark was written: the prompt counts as sent, and the next message's turn does not carry it again", { timeout: 60_000 }, async () => {
+  const store = memorySessionStore();
+  const sp = spec([], { key: "s-marked" });
+  const { writer, reached, release } = holdingWriter(await store.open(sp.key), marking);
+  const { adapter: a } = adapter([{ text: "Now." }]);
+  const s = await session(a, store, sp, writer);
+  await s.session.send("go");
+  await reached;
+  const stopping = s.session.interrupt();
+  release();
+  await stopping;
+  await s.session.turnEnd();
+  if (s.session.state === "open_turn") await s.session.settleOpenTurn();
+  await s.session.send("and now?");
+  assert.equal((await s.session.turnEnd()).status, "completed");
+  await s.session.close();
+  const ended = await folded(store, sp.key);
+  const placed = ended.submissions.filter((x) => ended.placed.has(x.id)).map((x) => x.text);
+  assert.equal(placed.at(-1), "and now?", "a marked prompt is not carried: marked, maybe sent, is never sent twice");
+});
+
+test("an opencode follow-up's own prompt the host names to the settle (`opening`) is withdrawn and never carried: the next message's turn is the person's alone", { timeout: 60_000 }, async () => {
+  const store = memorySessionStore();
+  const sp = spec([], { key: "s-host-follow-up" });
+  const own = "follow-up:s-host-follow-up:follow-up:check";
+  // The follow-up's prompt was recorded, and its process died before the harness took it.
+  const drive = await openDrive({ writer: await store.open(sp.key), signal: new AbortController().signal });
+  await drive.submit({ id: own, kind: "prompt", text: "Summarize the run." });
+  const { adapter: a, provider: p } = adapter([{ text: "Now." }]);
+  const s = await session(a, store, sp);
+  assert.equal(s.session.state, "open_turn", "setup: the follow-up's turn is open");
+  await s.session.settleOpenTurn({ opening: own });
+  await s.session.send("and now?");
+  assert.equal((await s.session.turnEnd()).status, "completed");
+  await s.session.close();
+  assert.deepEqual(userTexts(p), ["and now?"], "the person's message alone");
 });

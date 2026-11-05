@@ -326,3 +326,36 @@ test("a seed of files is in its private directory at acquire and again after eve
     assert.throws(() => localMachine({ dir: scratch(), proxy: { hooks, tools: [] }, seed: { dir: where, files: { 'a.md': 'x' } } }), /agentrun-harness-codex: a seed goes in one of the machine's private directories/, where);
   }
 });
+
+// The send mark: a placed prompt reaches Codex in a `turn/start`, and the session marks it there, outside the copied
+// harness. The marks must never change what the app-server is sent: every line goes unchanged and in order.
+test("a session's lines reach the app-server unchanged and in order; a turn/start waits for its send mark to commit, the lines behind it wait with it, and once the drive is stopped a turn/start is never sent (nor marked)", async () => {
+  const machine = await import('../dist/host/machine.js');
+  assert.equal(typeof machine.withSendMarks, 'function', 'the machine marks sends');
+  const got = [];
+  const proc = { send: (line) => { got.push(JSON.stringify(line)); return true; }, alive: () => true };
+  const stop = new AbortController();
+  const marks = [];
+  let commit;
+  const committed = new Promise((resolve) => { commit = resolve; });
+  const marked = machine.withSendMarks(proc, { signal: stop.signal, mark: async (id) => { marks.push(id); await committed; } });
+  const lines = [
+    { method: 'initialized', params: {} },
+    { id: 1, method: 'turn/start', params: { threadId: 't', clientUserMessageId: 's1', input: [{ type: 'text', text: 'go ✓\n{"method":"turn/start"}', text_elements: [] }] } },
+    { id: 2, method: 'thread/read', params: { threadId: 't' } },
+    { id: 3, result: { ok: true } },
+  ];
+  assert.deepEqual(lines.map((line) => marked.send(line)), [true, true, true, true]);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual([got, marks], [[JSON.stringify(lines[0])], ['s1']], 'the turn/start and what follows it wait for the mark');
+  commit();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(got, lines.map((line) => JSON.stringify(line)), 'then all of them, unchanged and in order');
+  stop.abort(new Error('stopped'));
+  const late = { id: 4, method: 'turn/start', params: { threadId: 't', clientUserMessageId: 's2', input: [] } };
+  const interrupt = { id: 5, method: 'turn/interrupt', params: { threadId: 't' } };
+  marked.send(late);
+  marked.send(interrupt);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual([got.slice(lines.length), marks], [[JSON.stringify(interrupt)], ['s1']], 'a stopped drive sends no turn and marks none; its other lines still go');
+});

@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { after, test as nodeTest } from 'node:test';
 import { runWorkflow } from '@parcha/agentrun-dsl';
 import { createHarnessRunner, RUNNER_RECORDS } from '@parcha/agentrun-kernel';
-import { foldSession, pendingSubmissions } from '@parcha/agentrun-kernel/kernel';
+import { foldSession, openDrive, pendingSubmissions } from '@parcha/agentrun-kernel/kernel';
 import { transcriptOf } from '@parcha/agentrun-kernel/process';
 import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
 import { ClaudeAgentThinkingOff, claudeAgentAdapter, thinkingOf } from '@parcha/agentrun-harness-claude';
@@ -553,4 +553,147 @@ test("an interrupt that lands while send() is still recording the prompt: the se
   // The stopped prompt stays in the conversation: the follow-up's turn carries it, and it never runs as a turn of its own.
   assert.equal(seen.length, 1, `one turn, the follow-up's: ${JSON.stringify(seen)}`);
   assert.match(seen[0], /go[\s\S]*and now\?/, "the follow-up's turn has the stopped prompt, before the follow-up");
+});
+
+/** The session's writer, held at the first append `match` picks (it gets each record and the prompts' submission ids by
+ *  their text) until the test lets it go. */
+function holdingWriter(inner, match) {
+  const ids = new Map();
+  let held;
+  const reached = new Promise((resolve) => { held = resolve; });
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  let done = false;
+  const writer = { key: inner.key, read: () => inner.read(), append: async (records) => {
+    for (const r of records) if (r.kind === 'kernel.submission' && typeof r.data?.text === 'string') ids.set(r.data.text, r.data.id);
+    if (!done && records.some((r) => match(r, ids))) { done = true; held(); await gate; }
+    return inner.append(records);
+  } };
+  return { writer, reached, release };
+}
+/** The intent of the placement of the prompt that says `text`. */
+const placing = (text) => (r, ids) => r.kind === 'kernel.start' && Array.isArray(r.data?.placed) && r.data.placed.includes(ids.get(text));
+/** The intent of a prompt's send mark. */
+const marking = (r) => r.kind === 'kernel.start' && String(r.data?.key ?? '').startsWith('sent:');
+
+/** QA's walk of F1 on claude-agent: the person's message, stopped the instant it is sent, then "Go on.". */
+const CODE_ASK = 'Reply with exactly this code and nothing else: CARRY-CLAUDE-7';
+
+test("F1, the walk on claude-agent: \"Reply with exactly this code and nothing else: CARRY-CLAUDE-7\", stopped the instant it is sent (placed, before the CLI was handed it), then \"Go on.\": the session reads open_turn, its settle withdraws the placed prompt with its carry, and Go on.'s turn has the code's ask first", async (t) => {
+  const spec = { key: 'claude:placed-unsent', label: 'placed', system: [], tools: [], context: 'fresh' };
+  const store = memorySessionStore();
+  const models = { beforeRequest: async () => {}, afterRequest: async () => {} };
+  const { writer, reached, release } = holdingWriter(await store.open(spec.key), placing(CODE_ASK));
+  const seen = [];
+  const { adapter: claudeAdapter } = await claude(t, { sdk: { onMessage: (m) => seen.push(m.text) } });
+  const a = await claudeAdapter.open(spec, { store, writer, models, signal: new AbortController().signal, onEvent: () => {} });
+  await a.send(CODE_ASK);
+  await reached;
+  // The stop lands while the prompt's placement is being written (Claude places within its first second): once placed,
+  // the CLI is never handed it.
+  const stopping = a.interrupt();
+  release();
+  await stopping;
+  assert.equal((await a.turnEnd()).status, 'interrupted');
+  const stopped = foldSession(spec.key, await store.read(spec.key));
+  const ask = stopped.submissions.find((s) => s.text === CODE_ASK);
+  assert.ok(ask && stopped.placed.has(ask.id), 'setup: the stopped prompt was placed');
+  const afterStop = a.state;
+  if (a.state === 'open_turn') await a.settleOpenTurn();
+  await a.send('Go on.');
+  assert.equal((await a.turnEnd()).status, 'completed');
+  await a.close();
+  const ended = foldSession(spec.key, await store.read(spec.key));
+  const withdraws = ended.submissions.filter((s) => s.kind === 'withdraw' && s.target === ask.id).map((s) => ({ carry: s.carry, unsent: s.unsent }));
+  assert.deepEqual(
+    { afterStop, withdraws, follows: ended.submissions.filter((s) => ended.placed.has(s.id)).map((s) => s.text).at(-1) },
+    { afterStop: 'open_turn', withdraws: [{ carry: true, unsent: true }], follows: `${CODE_ASK}\n\n(The message above was stopped before any work on it began.)\n\nGo on.` },
+    "the placed prompt the CLI was never handed is withdrawn with its carry, and Go on. carries it",
+  );
+  assert.equal(seen.length, 1, `one turn, Go on.'s: ${JSON.stringify(seen)}`);
+  assert.match(seen[0], /CARRY-CLAUDE-7[\s\S]*stopped before any work[\s\S]*Go on\./, "Go on.'s turn has the code's ask, then the stopped line, then Go on.");
+});
+
+test("an interrupt that lands after the CLI recorded the prompt (mid-turn, in a tool call): its transcript holds the prompt, so the settle carries nothing and the next message's turn is its own", async (t) => {
+  let inside;
+  const reached = new Promise((resolve) => { inside = resolve; });
+  const wait = { name: 'wait', description: 'Wait.', inputSchema: { type: 'object' }, replay: 'safe', call: (_args, { signal }) => { inside(); return new Promise((_, reject) => signal.addEventListener('abort', () => reject(new Error('cut')), { once: true })); } };
+  const spec = { key: 'claude:recorded', label: 'recorded', system: [], tools: [wait], context: 'fresh' };
+  const store = memorySessionStore();
+  const models = { beforeRequest: async () => {}, afterRequest: async () => {} };
+  const seen = [];
+  const { adapter: claudeAdapter } = await claude(t, { script: ['call wait {}'], sdk: { onMessage: (m) => seen.push(m.text) } });
+  const a = await claudeAdapter.open(spec, { store, writer: await store.open(spec.key), models, signal: new AbortController().signal, onEvent: () => {} });
+  await a.send('go');
+  await reached;
+  // The CLI's transcript lines reach the session's log once their coalesce window (150 ms) has passed.
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  await a.interrupt();
+  await a.turnEnd();
+  if (a.state === 'open_turn') await a.settleOpenTurn();
+  await a.send('and now?');
+  await a.turnEnd();
+  await a.close();
+  const ended = foldSession(spec.key, await store.read(spec.key));
+  const placed = ended.submissions.filter((s) => ended.placed.has(s.id)).map((s) => s.text);
+  assert.deepEqual({ follows: placed.at(-1), seen }, { follows: 'and now?', seen: ['go', 'and now?'] }, 'a prompt the CLI recorded is not carried: it is never sent twice');
+});
+
+test("a follow-up's own prompt the host names to the settle (`opening`) is withdrawn and never carried: the next message's turn is the person's alone", async (t) => {
+  const spec = { key: 'claude:host-follow-up', label: 'host', system: [], tools: [], context: 'fresh' };
+  const store = memorySessionStore();
+  const models = { beforeRequest: async () => {}, afterRequest: async () => {} };
+  const own = 'follow-up:claude:host-follow-up:follow-up:check';
+  // The follow-up's prompt was recorded, and its process died before the harness took it.
+  const drive = await openDrive({ writer: await store.open(spec.key), signal: new AbortController().signal });
+  await drive.submit({ id: own, kind: 'prompt', text: 'Summarize the run.' });
+  const seen = [];
+  const { adapter: claudeAdapter } = await claude(t, { sdk: { onMessage: (m) => seen.push(m.text) } });
+  const a = await claudeAdapter.open(spec, { store, writer: await store.open(spec.key), models, signal: new AbortController().signal, onEvent: () => {} });
+  assert.equal(a.state, 'open_turn', "setup: the follow-up's turn is open");
+  await a.settleOpenTurn({ opening: own });
+  await a.send('and now?');
+  assert.equal((await a.turnEnd()).status, 'completed');
+  await a.close();
+  const modelSaw = seen;
+  assert.deepEqual(modelSaw.map((text) => [/Summarize the run/.test(text), /and now\?/.test(text)]), [[false, true]], `the person's message alone: ${JSON.stringify(modelSaw)}`);
+});
+
+// The settle decides a placed prompt's carry by the CLI's transcript as the session's log keeps it. A resumed CLI is
+// given that same log, so the two must agree: a prompt is carried exactly when the history the next CLI restores lacks
+// it. The case that could break it is a stop while the CLI's transcript lines are still in their coalesce window (not
+// yet in the log): if anything wrote them after the settle read the log, the prompt would be carried AND in the history,
+// sent twice. A stopped drive writes nothing more, so it never happens.
+test("a stop while the CLI's transcript lines are still in their coalesce window, and one after they reached the log: the settle carries the prompt exactly when the history the next CLI restores lacks it, so the model has it once, never twice and never none", async (t) => {
+  const { JournalSessionStore } = await import('../dist/store.js');
+  const { uuidFrom } = await import('../dist/ids.js');
+  const { NativeJournal } = await import('@parcha/agentrun-kernel/process');
+  const outcomes = [];
+  for (const [label, settleMs] of [['in the window', 0], ['after it', 500]]) {
+    let inside;
+    const reached = new Promise((resolve) => { inside = resolve; });
+    const wait = { name: 'wait', description: 'Wait.', inputSchema: { type: 'object' }, replay: 'safe', call: (_args, { signal }) => { inside(); return new Promise((_, reject) => signal.addEventListener('abort', () => reject(new Error('cut')), { once: true })); } };
+    const spec = { key: `claude:flush-${settleMs}`, label: 'flush', system: [], tools: [wait], context: 'fresh' };
+    const store = memorySessionStore();
+    const models = { beforeRequest: async () => {}, afterRequest: async () => {} };
+    const { adapter: claudeAdapter } = await claude(t, { script: ['call wait {}'] });
+    const a = await claudeAdapter.open(spec, { store, writer: await store.open(spec.key), models, signal: new AbortController().signal, onEvent: () => {} });
+    await a.send('go');
+    await reached;
+    await new Promise((resolve) => setTimeout(resolve, settleMs));
+    await a.interrupt();
+    await a.turnEnd();
+    if (a.state === 'open_turn') await a.settleOpenTurn();
+    await a.close();
+    // What the next drive restores: the session's log, read as the harness reads it at a drive's start.
+    const drive = await openDrive({ writer: await store.open(spec.key), signal: new AbortController().signal });
+    const state = drive.state();
+    const go = state.submissions.find((s) => s.text === 'go');
+    const history = new JournalSessionStore(new NativeJournal(drive), { records: await new NativeJournal(drive).read() });
+    const recorded = history.hasUser(uuidFrom(go.id));
+    const carried = state.submissions.some((s) => s.kind === 'withdraw' && s.target === go.id && s.carry);
+    outcomes.push({ label, recorded, carried });
+  }
+  assert.deepEqual(outcomes.map((o) => o.carried !== o.recorded), [true, true], `carried exactly when the next history lacks it: ${JSON.stringify(outcomes)}`);
+  assert.deepEqual(outcomes[1], { label: 'after it', recorded: true, carried: false }, 'once the lines are in the log, nothing is carried');
 });

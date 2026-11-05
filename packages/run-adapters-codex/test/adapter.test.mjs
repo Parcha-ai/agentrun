@@ -699,3 +699,98 @@ test("a crash after the follow-up that carries a stopped prompt was placed, befo
   assert.equal(modelSaw.length, 1, `one turn, the recovered one: ${JSON.stringify(modelSaw)}`);
   assert.match(modelSaw[0], /Write five files\.[\s\S]*stopped before any work on it began[\s\S]*Go on\./, "the recovery has the stopped prompt, its line, then the follow-up");
 });
+
+/** The session's writer, held at the first append `match` picks (it gets each record and the prompts' submission ids by
+ *  their text) until the test lets it go. */
+function holdingWriter(inner, match) {
+  const ids = new Map();
+  let held;
+  const reached = new Promise((resolve) => { held = resolve; });
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  let done = false;
+  const writer = { key: inner.key, read: () => inner.read(), append: async (records) => {
+    for (const r of records) if (r.kind === 'kernel.submission' && typeof r.data?.text === 'string') ids.set(r.data.text, r.data.id);
+    if (!done && records.some((r) => match(r, ids))) { done = true; held(); await gate; }
+    return inner.append(records);
+  } };
+  return { writer, reached, release };
+}
+/** The intent of the placement of the prompt that says `text`. */
+const placing = (text) => (r, ids) => r.kind === 'kernel.start' && Array.isArray(r.data?.placed) && r.data.placed.includes(ids.get(text));
+/** The intent of a prompt's send mark. */
+const marking = (r) => r.kind === 'kernel.start' && String(r.data?.key ?? '').startsWith('sent:');
+const seenBy = (model) => model.seen.map((r) => r.body.input.map((i) => i.content.map((c) => c.text).join('')).join('\n'));
+
+test("an interrupt that lands after the prompt was placed and before Codex was sent it: the session reads open_turn, and its settle carries the placed prompt into the next message's turn", async () => {
+  const spec = { key: 'step:placed-unsent', label: 'placed', system: [], tools: [], context: 'fresh' };
+  const store = memorySessionStore();
+  const models = { beforeRequest: async () => {}, afterRequest: async () => {} };
+  const { writer, reached, release } = holdingWriter(await store.open(spec.key), placing('go'));
+  const { adapter: codex, provider: model } = adapter([]);
+  const a = await codex.open(spec, { store, writer, models, signal: new AbortController().signal, onEvent: () => {} });
+  await a.send('go');
+  await reached;
+  // The stop lands while the prompt's placement is being written: once placed, Codex is never sent it.
+  const stopping = a.interrupt();
+  release();
+  await stopping;
+  assert.equal((await a.turnEnd()).status, 'interrupted');
+  const stopped = foldSession(spec.key, await store.read(spec.key));
+  const go = stopped.submissions.find((s) => s.text === 'go');
+  assert.ok(go && stopped.placed.has(go.id), 'setup: the stopped prompt was placed');
+  const afterStop = a.state;
+  if (a.state === 'open_turn') await a.settleOpenTurn();
+  await a.send('and now?');
+  assert.equal((await a.turnEnd()).status, 'completed');
+  await a.close();
+  const ended = foldSession(spec.key, await store.read(spec.key));
+  const placed = ended.submissions.filter((s) => ended.placed.has(s.id)).map((s) => s.text);
+  const modelSaw = seenBy(model);
+  assert.deepEqual({ afterStop, follows: placed.at(-1) }, { afterStop: 'open_turn', follows: CARRIED }, "the placed prompt Codex was never sent is carried into the next message");
+  assert.equal(modelSaw.length, 1, `one turn, the follow-up's: ${JSON.stringify(modelSaw)}`);
+  assert.match(modelSaw[0], /go[\s\S]*stopped before any work[\s\S]*and now\?/, "the follow-up's turn has the stopped prompt, then the stopped line, then the follow-up");
+});
+
+test("an interrupt that lands after the prompt's send mark was written: the prompt counts as sent, and the next message's turn does not carry it again", async () => {
+  const spec = { key: 'step:marked', label: 'marked', system: [], tools: [], context: 'fresh' };
+  const store = memorySessionStore();
+  const models = { beforeRequest: async () => {}, afterRequest: async () => {} };
+  const { writer, reached, release } = holdingWriter(await store.open(spec.key), marking);
+  const { adapter: codex } = adapter([]);
+  const a = await codex.open(spec, { store, writer, models, signal: new AbortController().signal, onEvent: () => {} });
+  await a.send('go');
+  const mark = await Promise.race([reached.then(() => 'marked'), new Promise((resolve) => setTimeout(() => resolve('no mark'), 10_000))]);
+  if (mark !== 'marked') { release(); await a.close(); }
+  assert.equal(mark, 'marked', 'the prompt is marked before Codex is sent it');
+  const stopping = a.interrupt();
+  release();
+  await stopping;
+  await a.turnEnd();
+  if (a.state === 'open_turn') await a.settleOpenTurn();
+  await a.send('and now?');
+  assert.equal((await a.turnEnd()).status, 'completed');
+  await a.close();
+  const ended = foldSession(spec.key, await store.read(spec.key));
+  const placed = ended.submissions.filter((s) => ended.placed.has(s.id)).map((s) => s.text);
+  assert.equal(placed.at(-1), 'and now?', 'a marked prompt is not carried: marked, maybe sent, is never sent twice');
+});
+
+test("a follow-up's own prompt the host names to the settle (`opening`) is withdrawn and never carried: the next message's turn is the person's alone", async () => {
+  const spec = { key: 'step:host-follow-up', label: 'host', system: [], tools: [], context: 'fresh' };
+  const store = memorySessionStore();
+  const models = { beforeRequest: async () => {}, afterRequest: async () => {} };
+  const own = 'follow-up:step:host-follow-up:follow-up:check';
+  // The follow-up's prompt was recorded, and its process died before the harness took it.
+  const drive = await openDrive({ writer: await store.open(spec.key), signal: new AbortController().signal });
+  await drive.submit({ id: own, kind: 'prompt', text: 'Summarize the run.' });
+  const { adapter: codex, provider: model } = adapter([]);
+  const a = await codex.open(spec, { store, writer: await store.open(spec.key), models, signal: new AbortController().signal, onEvent: () => {} });
+  assert.equal(a.state, 'open_turn', "setup: the follow-up's turn is open");
+  await a.settleOpenTurn({ opening: own });
+  await a.send('and now?');
+  assert.equal((await a.turnEnd()).status, 'completed');
+  await a.close();
+  const modelSaw = seenBy(model);
+  assert.deepEqual(modelSaw.map((text) => [/Summarize the run/.test(text), /and now\?/.test(text)]), [[false, true]], `the person's message alone: ${JSON.stringify(modelSaw)}`);
+});
