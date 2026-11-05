@@ -16,9 +16,11 @@ beforeEach(() => { vi.stubEnv("TZ", "UTC"); });
 afterEach(() => { vi.unstubAllEnvs(); });
 
 describe("a schedule's when, in words", () => {
-  it("names a cron line and its zone, one time in UTC, and an interval in the largest whole unit", () => {
+  it("names a cron line and its zone, one time in the viewer's own zone as every console time, and an interval in the largest whole unit", () => {
     expect(whenWords({ kind: "schedule", cron: "30 1 * * *", timezone: "America/Los_Angeles" })).toBe("Cron 30 1 * * * · America/Los_Angeles");
-    expect(whenWords({ kind: "schedule", at: "2026-11-05T09:30:00Z" })).toBe("Once, Nov 5, 9:30 AM UTC");
+    vi.stubEnv("TZ", "America/Los_Angeles");
+    expect(whenWords({ kind: "schedule", at: "2026-11-05T09:30:00Z" })).toBe("Once, Nov 5, 1:30 AM");
+    vi.stubEnv("TZ", "UTC");
     expect(whenWords({ kind: "schedule", every_s: 300, start_at: "2026-11-04T00:00:00Z" })).toBe("Every 5 minutes");
     expect([60, 90, 3600, 7200, 5400, 86400].map(span)).toEqual(["minute", "90 seconds", "hour", "2 hours", "90 minutes", "24 hours"]);
   });

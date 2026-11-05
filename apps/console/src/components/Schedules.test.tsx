@@ -209,6 +209,15 @@ describe("one schedule", () => {
     expect(rows[1].textContent).toContain("Missed 3 times: The server was down or its timer late.");
     expect(rows[2].textContent).toContain("Failed: No model.");
   });
+  // The console says every time in the viewer's own zone; only a one time's input names UTC (the instant it sends).
+  it("says its times in the viewer's own zone, with no UTC on them", async () => {
+    vi.stubEnv("TZ", "America/Los_Angeles");
+    const firings = { trg_1: [firing({ key: "f1", status: "started", run_id: "r1" })] };
+    const t = await open(server({ firings }).v2, { schedule: "trg_1" });
+    expect(t.text()).toContain("next Nov 5, 1:30 AM");
+    expect(t.host.querySelector("[data-firing]")?.textContent).toContain("Nov 4, 1:30 AM");
+    expect(t.text()).not.toContain("UTC");
+  });
   it("pauses and resumes by enabled alone", async () => {
     const { v2, calls } = server();
     const t = await open(v2, { schedule: "trg_1" });
