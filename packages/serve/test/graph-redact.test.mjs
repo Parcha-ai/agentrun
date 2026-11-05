@@ -145,3 +145,26 @@ test("a graph read while the run's store is busy and no whole view was kept: its
   assert.ok(graph.effects.length >= 1, JSON.stringify(graph.effects));
   noKey(JSON.stringify(graph), "the live-only graph");
 });
+
+test("a call's error and a decision's state, each long enough to be cut, with the held key across the cut: the graph shows no part of it", { timeout: 60_000 }, async (t) => {
+  const calls = join(await scratch(t), "decisions.jsonl");
+  withEnv(t, { AGENT_MODEL: "openai/gpt-6-sol", OPENAI_API_KEY: CUT_KEY, TYPESAFE_API_KEY: STAND_IN, AGENTRUN_SMOKE_DECISION_CALLS: calls }, [...NAMES, "PARALLEL_API_KEY"]);
+  const { api } = await serve(t, { fauxJev: FAUX_DECISIONS });
+  // A judge's state past 64 KB is kept cut (state_truncated); the key repeats, so a copy sits across that cut too.
+  const flow = {
+    ...judged, name: "graph-cut",
+    schemas: { ...judged.schemas, In: { type: "object", required: ["question"], properties: { question: { type: "string" } } } },
+    root: { node: "chain", steps: [
+      { node: "judge", label: "check", state: { text: "{question}" }, out: "Verdict", as: "verdict" },
+      { node: "call", label: "failed", via: "tool", tool: "llm", args: { prompt: "Fail the graph call at length." }, out: "Llm", as: "failed", deadline_s: 60 },
+    ] },
+  };
+  assert.equal((await api("POST", "/agents", flowAgent("graph-cut", flow, { tools: ["llm"] }))).status, 201);
+  const started = await api("POST", "/agents/graph-cut/runs", { input: { question: `${CUT_KEY} `.repeat(2000) } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  await follow(api, started.body.run_id, ["completed", "failed"], { deadlineMs: 50_000 });
+  const graph = (await api("GET", `/runs/${started.body.run_id}/graph`)).body;
+  assert.equal(graph.decisions[0]?.state_truncated, true, JSON.stringify(graph.decisions.map((d) => [d.state_truncated, typeof d.state])));
+  assert.ok(graph.effects.some((e) => e.status === "failed" && e.error), JSON.stringify(graph.effects.map((e) => [e.status, e.error?.length])));
+  noKey(JSON.stringify(graph), "the graph");
+});
