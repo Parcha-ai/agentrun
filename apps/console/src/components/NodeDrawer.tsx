@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { type Answer, type Decision, type Effect, type Evidence, itemCounts, itemLabel, itemOutcome, markOf, ms, optionName, type Question, type Rule, type RunGraph, type Selection, usd, verdictOf } from "@/lib/runGraph";
 import { cn } from "@/lib/utils";
+import { nodesWord } from "@/lib/wfGraph";
 import { at, nodeMeta } from "@/lib/workflowDoc";
 
 type FileUrl = (ref: string) => string;
@@ -412,7 +413,7 @@ function Definition({ workflow, path, kind }: { workflow: unknown; path: string;
   const n = at(workflow, path) as Record<string, unknown> | undefined;
   if (!n) return null;
   const own = Object.fromEntries(Object.entries(n).map(([k, v]) => [k,
-    (k === "steps" || (k === "branches" && kind === "parallel")) && Array.isArray(v) ? `… ${v.length} nodes` : k === "body" ? "… its body" : k === "branches" && kind === "route" && v && typeof v === "object" ? Object.fromEntries(Object.entries(v as Record<string, { criteria?: string }>).map(([b, x]) => [b, x?.criteria ?? "…"])) : v]));
+    (k === "steps" || (k === "branches" && kind === "parallel")) && Array.isArray(v) ? `… ${nodesWord(v.length)}` : k === "body" ? "… its body" : k === "branches" && kind === "route" && v && typeof v === "object" ? Object.fromEntries(Object.entries(v as Record<string, { criteria?: string }>).map(([b, x]) => [b, x?.criteria ?? "…"])) : v]));
   return (
     <details className="group border">
       <summary className="caps flex cursor-pointer list-none items-center gap-1.5 px-4 py-2.5 text-[10.5px] text-muted-foreground hover:text-foreground">
