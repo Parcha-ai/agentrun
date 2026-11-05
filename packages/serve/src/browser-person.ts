@@ -365,12 +365,19 @@ export function personHands(options: {
   return {
     /** The live view's take: the person's time held, unless an ask open on the same session holds it already (its answer
      *  ends the take); refused in the cap's words when there is no room. */
-    async take(tag: string): Promise<{ refused: string } | { end(why: HoldEnd): void }> {
+    async take(tag: string): Promise<{ refused: string } | { end(why: HoldEnd): void; started(): void; cancel(): void }> {
       const refused = await acquire(tag, TAKE_USER, "taking over the browser");
       if (refused) return refused;
-      void note(HOST_PHASE, { summary: TAKEN });
       let ended = false;
       return {
+        // The row is the hold's going live (a take while the agent's call runs goes live once it returns).
+        started: () => void note(HOST_PHASE, { summary: TAKEN }),
+        // No hold started after all: what was held for it goes, and no row was written for it.
+        cancel: () => {
+          if (ended) return;
+          ended = true;
+          release(tag, TAKE_USER);
+        },
         end: (why) => {
           if (ended) return;
           ended = true;

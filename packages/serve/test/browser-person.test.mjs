@@ -296,3 +296,22 @@ test("a process that takes up an earlier process's ask holds the person's time a
   assert.deepEqual(answerAsk(root, "done"), { outcome: "done", first: true });
   assert.equal(await after.person.handoff.outcome(first.interactionId), "done");
 });
+
+test("a take-over's row is written when its hold goes live, and a take whose hold never started is let go with no row", async (t) => {
+  const root = await scratch(t);
+  const { person, held } = hands(root);
+  t.after(() => person.close());
+  const take = await person.take("ar-run-18-1");
+  await sleep(5);
+  assert.deepEqual(held.notes, [], "no row while the hold is not live yet");
+  take.started();
+  await sleep(5);
+  assert.deepEqual(held.notes, ["You took over the browser"]);
+  take.end("given");
+  await sleep(5);
+  assert.deepEqual(held.notes, ["You took over the browser", "You handed the browser back"]);
+  const never = await person.take("ar-run-19-1");
+  never.cancel();
+  await sleep(5);
+  assert.deepEqual([held.notes.length, held.taken, held.dropped], [2, 2, 2], "cancelled: its hold dropped, no row");
+});

@@ -167,7 +167,7 @@ until one opens.
 
 `takeOver: { take(tag) }` makes the view drive only once the person takes the browser. The page shows **Take over** and **Hand back** in its own bar and sends `take`
 and `give`; outside a hold every input, navigation and dialog answer is dropped on the server (`held not_taken`). A `take` asks the host's `take(tag)` first, which may
-refuse in its own words (a spend cap with no room for the person's time; the viewer shows `take_refused` with them), or answers `{ end(why) }`; the session's gate then
+refuse in its own words (a spend cap with no room for the person's time; the viewer shows `take_refused` with them), or answers `{ end(why), started?(), cancel?() }` (`started` as the hold goes live, `cancel` instead of `end` when no hold starts after all: the session released, the viewer gone, or the browser held already, which the viewer is told as `take_refused`); the session's gate then
 holds the browser for the person (`drivingGates(tag).take()`) until their `give`, `holdIdleMs` with no input (15 minutes), `holdAwayMs` with no viewer connected
 (2 minutes), or the session's release, and `end` is called once with why (`given`, `answered`, `cap`, `idle`, `away`, `released`). A host gives the
 browser back at its spend cap with `drivingGates(tag).give("cap", words)`: the viewer's `hold` end carries the words as `message`. The viewer is told `hold` as it starts

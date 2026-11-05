@@ -38,11 +38,16 @@ export type LiveViewOptions = {
    *  and the host's `end` is called once when the hold ends, with why. Outside a hold every input, navigation and dialog answer is dropped here,
    *  before the browser (`held not_taken`), whatever the page does. A watching viewer keeps no session from its idle release, as a read-only one
    *  does; a held one is kept by its hold. Ignored with `readOnly`. */
-  takeOver?: { take(tag: string): Promise<{ refused: string } | { end(why: HoldEnd): void }> };
+  takeOver?: { take(tag: string): Promise<{ refused: string } | TakeAnswer> };
   /** How long a connection may stay silent before its hello, and how many may wait for one. */
   helloTimeoutMs?: number;
   maxPending?: number;
 };
+
+/** What the host answers a take that it allows: `end` once the hold ends (with why), `started` as it goes live (at once, or
+ *  once the agent's call under way returns), and `cancel` when no hold started after all (the session released, the viewer
+ *  gone, or the browser held already), instead of `end`. */
+export type TakeAnswer = { end(why: HoldEnd): void; started?(): void; cancel?(): void };
 
 export type LiveViewHost = {
   /** Serves the viewer page and its two static files; true when the request was this host's (mounted at `baseUrl`'s path), false when it was not. */
@@ -276,10 +281,21 @@ export function createLiveView(options: LiveViewOptions): LiveViewHost {
         if (entry.viewer) send(entry.viewer.conn, { type: "hold", held: false, reason: why, ...(message ? { message } : {}) });
       };
       // A session released, or a viewer gone, while the host answered: no hold starts, and the host lets go of what it took for one.
-      // The viewer of the moment is told it holds the browser once the hold goes live: at once, or once the agent's call
-      // under way returns.
-      const started = (): void => { if (entry.viewer) send(entry.viewer.conn, { type: "hold", held: true }); };
-      if (entry.released || entry.viewer !== viewer || !(options.gates ?? drivingGates)(entry.tag).take?.(ended, started)) { answer.end("released"); return; }
+      // The host, and the viewer of the moment, are told the hold is live: at once, or once the agent's call under way returns.
+      const started = (): void => {
+        try { answer.started?.(); } catch { /* the host's own bookkeeping cannot keep the hold */ }
+        if (entry.viewer) send(entry.viewer.conn, { type: "hold", held: true });
+      };
+      // No hold starts (the session released, the viewer gone, or the browser held already when the host answered): the host
+      // lets go of what it took for one, and the viewer still there is told its take was refused.
+      const cancel = (): void => {
+        try { (answer.cancel ?? (() => answer.end("released")))(); } catch { /* as above */ }
+      };
+      if (entry.released || entry.viewer !== viewer) return cancel();
+      if (!(options.gates ?? drivingGates)(entry.tag).take?.(ended, started)) {
+        cancel();
+        send(viewer.conn, { type: "take_refused", message: "The browser could not be handed to you: it is held already. Try again in a moment." });
+      }
     }, () => {
       entry.taking = false;
       if (entry.viewer === viewer) send(viewer.conn, { type: "take_refused", message: "The browser could not be handed to you. Try again." });

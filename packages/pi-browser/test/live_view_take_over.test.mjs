@@ -362,6 +362,52 @@ test("take-over viewer: input that waited behind a slow command while the browse
   assert.ok(await until(() => sent.length === 2));
 });
 
+test("take-over viewer: a take whose hold cannot start (the browser held already when the host answered) is refused to the viewer, and the host's take is cancelled, never ended", async (t) => {
+  const tag = "ar-run-to-16-1";
+  const gates = createDrivingGates();
+  let answer;
+  const calls = [];
+  const host = createLiveView({ hostOrigin: "'self'", stream: () => ({ input: async () => {}, nav: async () => {}, dialog: async () => {}, close() {} }), viewer: VIEWER, gates, takeOver: { take: () => new Promise((resolve) => { answer = resolve; }) } });
+  t.after(() => host.close());
+  const view = await host.open(tag, "ws://127.0.0.1:9/x");
+  const u = new URL(view.fullscreen);
+  const c = await connect(`ws://${u.host}${u.pathname}/ws`, { origin: u.origin });
+  c.ws.sendJson({ type: "hello", token: new URLSearchParams(u.hash.slice(1)).get("t") });
+  await c.ws.next();
+  c.ws.sendJson({ type: "take" });
+  await until(() => answer !== undefined);
+  assert.equal(gates(tag).take(), true, "held by someone else meanwhile");
+  answer({ end: (why) => calls.push(["end", why]), started: () => calls.push(["started"]), cancel: () => calls.push(["cancel"]) });
+  const refused = JSON.parse((await c.ws.until((m) => m.type === "text" && JSON.parse(m.data).type === "take_refused")).item?.data ?? "null");
+  assert.equal(refused?.type, "take_refused");
+  assert.match(refused.message, /could not be handed to you/);
+  assert.deepEqual(calls, [["cancel"]], "cancelled: no hold started, so none ended");
+  gates(tag).give();
+});
+
+test("take-over viewer: the host hears started when the hold goes live", async (t) => {
+  const tag = "ar-run-to-17-1";
+  const gates = createDrivingGates();
+  const calls = [];
+  const host = createLiveView({ hostOrigin: "'self'", stream: () => ({ input: async () => {}, nav: async () => {}, dialog: async () => {}, close() {} }), viewer: VIEWER, gates, takeOver: { take: async () => ({ end: (why) => calls.push(["end", why]), started: () => calls.push(["started"]) }) } });
+  t.after(() => host.close());
+  const view = await host.open(tag, "ws://127.0.0.1:9/x");
+  const u = new URL(view.fullscreen);
+  const c = await connect(`ws://${u.host}${u.pathname}/ws`, { origin: u.origin });
+  c.ws.sendJson({ type: "hello", token: new URLSearchParams(u.hash.slice(1)).get("t") });
+  await c.ws.next();
+  const call = gates(tag).model();
+  c.ws.sendJson({ type: "take" });
+  await wait(100);
+  assert.deepEqual(calls, [], "not live while the agent's call runs");
+  call.release();
+  await until(() => calls.length === 1);
+  assert.deepEqual(calls, [["started"]]);
+  c.ws.sendJson({ type: "give" });
+  await until(() => calls.length === 2);
+  assert.deepEqual(calls, [["started"], ["end", "given"]]);
+});
+
 test("take-over viewer: the session's release ends a hold, and the host is told", async (t) => {
   const tag = "ar-run-to-8-1";
   const v = await viewer(t, tag);
