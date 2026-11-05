@@ -1,29 +1,15 @@
 // AgentRun's own (not copied): how a process harness settles a turn its session left open.
-import { abortedOutcome, type Drive, type DriveContext, pendingSubmissions, SessionHalt, type SessionState } from "../kernel/index.js";
+import { abortedOutcome, type Drive, pendingSubmissions, SessionHalt } from "../kernel/index.js";
 import { NativeJournal } from "./journal.js";
 
 /** How a settle treats the open turn's prompts beyond those still pending. */
 export interface SettleOptions {
-  /** Placed prompts and follow-ups the harness never sent its CLI (no send mark): carried, as a pending one is. */
+  /** Placed prompts and follow-ups the harness's CLI never recorded (its own record, as the session keeps it): carried,
+   *  as a pending one is. */
   readonly unsent?: readonly string[];
   /** The submission of a host's own prompt (a follow-up's, `FollowUpTarget.settleOpenTurn`'s `opening`): withdrawn
    *  while pending, never carried, and the only one withdrawn. */
   readonly host?: string;
-}
-
-/** The kernel effect a harness writes for a prompt just before it hands it to its CLI, by the id the CLI knows it by
- *  (Codex's clientUserMessageId, Claude's message uuid). Durable before the send: a crash between the two reads
- *  "marked, maybe sent", so the prompt is never carried and never sent twice. A halted drive writes none (it rejects),
- *  and its harness sends nothing. */
-export async function markSent(ctx: Pick<DriveContext, "effect">, id: string): Promise<void> {
-  await ctx.effect(`${SENT_PREFIX}${id}`, { name: "sent", replay: "safe", input: { id } }, async () => true);
-}
-
-const SENT_PREFIX = "sent:";
-
-/** The ids `markSent` marked in `state`. */
-export function sentMarks(state: SessionState): Set<string> {
-  return new Set(state.effectOrder.filter((e) => e.name === "sent" && e.key.startsWith(SENT_PREFIX)).map((e) => e.key.slice(SENT_PREFIX.length)));
 }
 
 /**
@@ -32,15 +18,15 @@ export function sentMarks(state: SessionState): Set<string> {
  * landed before the harness took its prompt) is withdrawn first, so no later open finds it pending and nothing of it
  * runs on its own; a prompt or follow-up is withdrawn with `carry`, so its text stays in the conversation, carried into
  * the next one (the kernel's pendingSubmissions). A steer is not carried. So is a placed one its harness never sent
- * (`unsent`: the adapter reads its send marks), and a host's prompt (`host`) is dropped instead. It is the write behind
+ * (`unsent`: the adapter reads its CLI's own record), and a host's prompt (`host`) is dropped instead. It is the write behind
  * `AdapterSession.settleOpenTurn()` for a turn the person stopped, which is never resumed. The adapter checks that a
  * turn is open. The end is the kernel's for the session's own stop (`abortedOutcome` of its `SessionHalt`), the one
  * path an interrupted turn's end takes, though the turn never ran in this process.
  */
 export async function settleTurn(drive: Drive, options: SettleOptions = {}): Promise<void> {
   const state = drive.state();
-  // A placed prompt or follow-up its CLI was never sent (no send mark: the stop landed between its placement and its
-  // send) is carried too, first, as it came first. It stays placed, so nothing sends it on its own. A host's is not.
+  // A placed prompt or follow-up its CLI never recorded (the stop landed between its placement and the CLI's record of
+  // it) is carried too, first, as it came first. It stays placed, so nothing sends it on its own. A host's is not.
   for (const id of options.unsent ?? []) {
     const submission = state.submissions.find((s) => s.id === id);
     if (id === options.host || !state.placed.has(id) || (submission?.kind !== "prompt" && submission?.kind !== "followUp")) continue;

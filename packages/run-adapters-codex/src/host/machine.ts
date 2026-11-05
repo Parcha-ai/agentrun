@@ -17,7 +17,7 @@ import { randomBytes } from "node:crypto";
 import { lstatSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, normalize, sep } from "node:path";
 import { createInterface } from "node:readline";
-import { FileTail, markSent } from "@parcha/agentrun-kernel/process";
+import { FileTail } from "@parcha/agentrun-kernel/process";
 import type { AcquireMachine, CacheDir, CacheFile, KillSignal, MachineSpawn, MachineTail, SessionMachine, SessionProcess } from "./process.js";
 import { brandMachine } from "./process.js";
 import { parentWatched, startModelProxy, type ModelProxyHooks, type ModelProxyOptions, type ParentWatch } from "@parcha/agentrun-kernel/host";
@@ -183,35 +183,18 @@ function start(options: MachineSpawn, from: Readonly<Record<string, string | und
 }
 
 /**
- * A child's sends with each `turn/start` marked first (the kernel's send mark, by its clientUserMessageId): the settle of a
- * stopped turn carries a placed prompt with no mark (never sent) and never one with a mark. Every line goes to the child
- * unchanged and in order: a turn/start waits for its mark to commit, and the lines sent after it wait behind it. The
- * mark commits before the line is written, so a crash between the two reads "marked, maybe sent": no carry, and no
- * second send. Once the drive is stopped a turn/start is neither marked nor sent (no turn starts after a stop); every
- * other line still goes (the stop's own `turn/interrupt`).
+ * A child's sends with no `turn/start` once the drive is stopped: no turn starts after a stop. Whether a placed prompt
+ * reached Codex is its rollout's to say (the settle reads it as the session keeps it): Codex answers turn/start before it
+ * writes the user message, so a stop just after the send can kill it with the prompt unrecorded. Every other line goes
+ * unchanged, in order, at once (the stop's own `turn/interrupt` too).
  */
-export function withSendMarks<P extends Pick<SessionProcess, "send">>(proc: P, marks: { signal: AbortSignal; mark: (id: string) => Promise<void> }): P {
+export function withoutTurnsAfterStop<P extends Pick<SessionProcess, "send">>(proc: P, signal: AbortSignal): P {
   const send = proc.send.bind(proc);
-  let queue: Promise<void> | undefined;
-  let waiting = 0;
-  const write = (line: Parameters<P["send"]>[0]) => {
-    if (!waiting) return send(line);
-    waiting += 1;
-    queue = queue!.then(() => void send(line)).finally(() => void (waiting -= 1));
-    return true;
-  };
   return {
     ...proc,
     send(line: Parameters<P["send"]>[0]) {
-      const started = line as { method?: unknown; params?: { clientUserMessageId?: unknown } };
-      if (started?.method !== "turn/start") return write(line);
-      if (marks.signal.aborted) return true;
-      const id = typeof started.params?.clientUserMessageId === "string" ? started.params.clientUserMessageId : undefined;
-      if (id === undefined) return write(line);
-      waiting += 1;
-      const before = queue ?? Promise.resolve();
-      queue = before.then(() => marks.mark(id)).then(() => void send(line), () => undefined).finally(() => void (waiting -= 1));
-      return true;
+      if (signal.aborted && (line as { method?: unknown })?.method === "turn/start") return true;
+      return send(line);
     },
   } as P;
 }
@@ -299,7 +282,7 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
       notes: [],
       spawn: async (spawnOptions) => {
         if (closed) throw new Error("agentrun-harness-codex: the session machine is closed");
-        const proc = withSendMarks(start(spawnOptions, from, root, ceiling, options.confine, options.parentWatch), { signal: ctx.signal, mark: (id) => markSent(ctx, id) });
+        const proc = withoutTurnsAfterStop(start(spawnOptions, from, root, ceiling, options.confine, options.parentWatch), ctx.signal);
         children.add(proc);
         void proc.exited.then(() => children.delete(proc));
         return proc;
