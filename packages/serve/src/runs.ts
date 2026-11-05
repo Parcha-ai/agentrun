@@ -43,7 +43,7 @@ import { REFLECT_REQUEST, Turns } from "./turns.js";
 import { DECISION_KEYS, handover, hostSecrets, secret, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, type StoredKeys, withoutSecrets, withSecrets } from "./secrets.js";
 import { MIN_SECRET } from "./learn/secrets.js";
 import { keyRefusal, redacted, redactedAnswer, redactedLive, redactedOutput, runKeyOf, withoutLoopback } from "./key-refusal.js";
-import { type PartKind, servedPart } from "./graph-served.js";
+import { GRAPH_CACHE_BYTES, PartCache, type PartKind, servedPart } from "./graph-served.js";
 import { CONTENT_FILTER_WORDS, contentFiltered, MODERATED } from "./content-filter.js";
 import { BOX_KEYS } from "./boxes.js";
 import { type Place, remotePlace, storedPlace } from "./place.js";
@@ -185,8 +185,6 @@ type Served = { keys: string; input: unknown; out: unknown };
 /** GET /runs/{id}/graph's view (graph-view.ts, loaded when a graph is first read). */
 type GraphView = Awaited<ReturnType<typeof import("./graph-view.js")["runGraph"]>>;
 
-/** The most parts of a run's graph servedGraph keeps redacted; past it, it starts again. */
-const GRAPH_PARTS = 2048;
 
 /** A value's sha256, of its JSON. */
 const digestOf = (value: unknown): string => createHash("sha256").update(JSON.stringify(value) ?? "").digest("hex");
@@ -197,9 +195,6 @@ export type Run = {
   handed?: Set<string>;
   /** What a view last served of its answer and its workflow output (runs.ts servedOnce), with what it was made from. */
   served?: { answer?: Served; output?: Served };
-  /** The parts of its graph a read last redacted (runs.ts servedGraph), by their content's digest, for the held values
-   *  whose digest is `keys`. */
-  servedParts?: { keys: string; parts: Map<string, unknown> };
   agentId: string;
   kind: RevisionKind;
   revision: string;
@@ -632,8 +627,9 @@ export class Runs {
   /** What decides the secrets each revision's runs are handed (needsOf), by revision id: read once, from the revision the
    *  run is pinned to, never from a request. The keys themselves are read at each launch (keysFor). */
   private readonly needs = new Map<string, RunNeeds>();
-  /** Each workflow run's last graph read whole: what a poll that met a busy store answers, marked stale. */
-  private readonly graphs = new Map<string, GraphView>();
+  /** Every run's graph as served, part by part (servedGraph), and each workflow run's last graph read whole, which a
+   *  poll that met a busy store answers, marked stale: one LRU by bytes across runs (graph-served.ts PartCache). */
+  private readonly graphCache = new PartCache(GRAPH_CACHE_BYTES);
   private readonly adopting = new Map<string, Promise<Run>>();
   /** The hosts this server's next remote box asks for: the setting's, until the provider cannot keep a list here, then none. */
   private remoteAllow: readonly string[] | "none" | undefined;
@@ -966,14 +962,12 @@ export class Runs {
   private servedGraph<T extends { nodes: unknown; decisions: unknown[]; effects: unknown[] }>(run: Run, view: T): T {
     const values = this.refusedValues(run);
     const keys = digestOf([...values].sort());
-    if (run.servedParts?.keys !== keys) run.servedParts = { keys, parts: new Map() };
-    const parts = run.servedParts.parts;
     const once = (kind: PartKind, value: unknown): unknown => {
-      const at = `${kind}:${digestOf(value)}`;
-      if (parts.has(at)) return parts.get(at);
+      const at = `part:${keys}:${kind}:${digestOf(value)}`;
+      const kept = this.graphCache.get(at);
+      if (kept !== undefined) return kept;
       const out = servedPart(kind, value, values);
-      if (parts.size >= GRAPH_PARTS) parts.clear();
-      parts.set(at, out);
+      this.graphCache.set(at, out, Buffer.byteLength(JSON.stringify(out) ?? ""));
       return out;
     };
     return { ...view, nodes: once("nodes", view.nodes), decisions: view.decisions.map((value) => once("decision", value)), effects: view.effects.map((value) => once("effect", value)) };
@@ -2224,12 +2218,12 @@ export class Runs {
     // A poll never answers home_busy: a store still held answers the live view, or the last whole one, marked stale.
     try {
       const view = await runGraph(given);
-      this.graphs.set(run.id, view);
+      this.graphCache.set(`view:${run.id}`, view, Buffer.byteLength(JSON.stringify(view)));
       return this.servedGraph(run, { ...view, stale: false });
     } catch (error) {
       if (!storeBusy(error)) throw error;
       warn(run.id, "its store is busy; the graph answers its live view, stale");
-      const held = this.graphs.get(run.id);
+      const held = this.graphCache.get(`view:${run.id}`) as GraphView | undefined;
       if (held) return this.servedGraph(run, { ...held, run: given.run, stale: true });
       return this.servedGraph(run, { ...(await runGraph({ ...given, liveOnly: true })), stale: true });
     }

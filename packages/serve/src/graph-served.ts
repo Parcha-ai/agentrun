@@ -35,3 +35,44 @@ export function servedPart(kind: PartKind, value: unknown, values: readonly stri
   }
   return out;
 }
+
+/** What every run's graph keeps in serve's memory, in one cache: each part as served (servedPart), and each workflow
+ *  run's last whole view, which a busy store's read answers from. */
+export const GRAPH_CACHE_BYTES = 32 * 1024 * 1024;
+
+/** A least recently used cache bounded by bytes: an entry read or set is the most recent, and past `maxBytes` the least
+ *  recent go, one at a time, until it fits; never all at once. An entry bigger than the bound is not kept. */
+export class PartCache {
+  private readonly entries = new Map<string, { value: unknown; bytes: number }>();
+  bytes = 0;
+
+  constructor(readonly maxBytes: number) {}
+
+  get size(): number {
+    return this.entries.size;
+  }
+
+  get(key: string): unknown {
+    const entry = this.entries.get(key);
+    if (!entry) return undefined;
+    this.entries.delete(key);
+    this.entries.set(key, entry);
+    return entry.value;
+  }
+
+  set(key: string, value: unknown, bytes: number): void {
+    const old = this.entries.get(key);
+    if (old) {
+      this.entries.delete(key);
+      this.bytes -= old.bytes;
+    }
+    if (bytes > this.maxBytes) return;
+    this.entries.set(key, { value, bytes });
+    this.bytes += bytes;
+    for (const [oldest, entry] of this.entries) {
+      if (this.bytes <= this.maxBytes) break;
+      this.entries.delete(oldest);
+      this.bytes -= entry.bytes;
+    }
+  }
+}
