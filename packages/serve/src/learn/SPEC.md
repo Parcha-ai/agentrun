@@ -150,6 +150,11 @@ Over a cap is refused, never cut.
   it, percent or form encoded, in base64 or in hex. A skill's or a draft's folder name is read as its file's name is.
 - Every problem is `{ rule, path?, detail }`, printable as it is: its path and detail are cut of the host's values and
   of secret shapes, and a field over 4096 bytes prints whole as `[redacted]`, never scanned.
+- A problem is its item's alone: the note, skill or draft (both its files) it names is left out, the rest is checked
+  again and goes on to the grader, and the run's learning names what was left out (`problems`). The whole proposal is
+  refused when a problem names no item it proposed, when its rule refuses the whole (a count or a cap, `outside`,
+  `deleted`, `index_full`) or must never be stored (`secret_value`, `secret_shape`, `invisible_unicode`: the run's
+  answer is not trusted for any item), or when the rest is refused again.
 
 Whether a note holds one case's data is the grader's judgment, not the checker's.
 

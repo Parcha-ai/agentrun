@@ -11,10 +11,18 @@ import { homeOf, writeDurable } from "./files.js";
 import { activeOf, agentFolder, git, type Proposal, PROPOSAL, readBlobs, readSeed, type Turn, withAgentRepo } from "./learning.js";
 
 export type Proposed =
-  | { state: "proposed"; notes: number; skills: number; workflows: number }
+  | { state: "proposed"; notes: number; skills: number; workflows: number; left?: Problem[] }
   | { state: "dropped"; reason: "empty" }
   | { state: "dropped"; reason: "unparsed"; detail: string }
   | { state: "dropped"; reason: "checker"; problems: Problem[] };
+
+/** The rules that refuse a proposal whole, whatever item they name: its counts and caps, a path outside what a run may
+ *  write, a deletion, and anything that must never be stored (a secret, a character a reader does not see), which says
+ *  the run's answer is not to be trusted for any item. Every other problem is its item's alone. */
+const WHOLE: ReadonlySet<Problem["rule"]> = new Set(["too_many_files", "too_many_notes", "too_many_skills", "too_many_workflows", "outside", "deleted", "index_full", "secret_value", "secret_shape", "invisible_unicode"]);
+
+/** The item a changed file belongs to: a draft's two files are one item (its folder), every other file is itself. */
+const itemOf = (path: string) => (path.startsWith(`${WORKFLOWS_DIR}/`) ? path.split("/").slice(0, 2).join("/") : path);
 
 /** `text`'s first `max` UTF-16 units, never half a character. */
 const cut = (text: string, max: number) => (text.length <= max ? text : [...text].reduce((out, ch) => (out.length + ch.length > max ? out : out + ch), ""));
@@ -73,15 +81,31 @@ export const proposeRun = (input: { data: string; agentId: string; runDir: strin
   const dsl = files.some(({ file }) => file.endsWith("/workflow.json")) ? await import("@parcha/agentrun-dsl") : undefined;
   // A skill or a draft whose seed text has a status is a person's call (retired, or waiting for their OK): never changed.
   const kept = [...held.texts].filter(([file, text]) => (file.endsWith("/SKILL.md") || file.endsWith("/README.md")) && learnedStatus(text) !== "active").map(([file]) => file);
-  const checked = checkProposal({ base: { files: [...seed.files, ...held.files], active: activeOf(seed) }, changes, refuseValues: input.refuse, ...(kept.length ? { kept } : {}), ...(input.outcome === undefined ? {} : { outcome: input.outcome }), ...(input.tools ? { tools: input.tools } : {}), ...(dsl ? { dsl } : {}) });
-  if (checked.problems.length) return { state: "dropped", reason: "checker", problems: checked.problems };
-  if (!checked.notes.length && !files.length) return { state: "dropped", reason: "empty" };
+  const check = (some: Change[]) => checkProposal({ base: { files: [...seed.files, ...held.files], active: activeOf(seed) }, changes: some, refuseValues: input.refuse, ...(kept.length ? { kept } : {}), ...(input.outcome === undefined ? {} : { outcome: input.outcome }), ...(input.tools ? { tools: input.tools } : {}), ...(dsl ? { dsl } : {}) });
+  // A verdict per item from the checks too: the items a problem names are left out (a draft's two files together),
+  // and the rest is checked again; a problem that names no item, or one that refuses the whole (WHOLE), drops it all,
+  // as does a rest the checks still refuse.
+  let checked = check(changes);
+  let left: Problem[] = [];
+  let passing = files;
+  if (checked.problems.length) {
+    const named = new Set(changes.map(({ path }) => itemOf(path)));
+    if (checked.problems.some((problem) => WHOLE.has(problem.rule) || problem.path === undefined || !named.has(itemOf(problem.path)))) return { state: "dropped", reason: "checker", problems: checked.problems };
+    const out = new Set(checked.problems.map((problem) => itemOf(problem.path!)));
+    const rest = changes.filter(({ path }) => !out.has(itemOf(path)));
+    const again = rest.length ? check(rest) : undefined;
+    if (!again || again.problems.length) return { state: "dropped", reason: "checker", problems: checked.problems };
+    left = checked.problems;
+    checked = again;
+    passing = files.filter(({ file }) => !out.has(itemOf(file)));
+  }
+  if (!checked.notes.length && !passing.length) return { state: "dropped", reason: "empty" };
   // Each message cut of the host's secrets whole first, and only then shortened: a secret the cut fell inside would
   // leave a part of itself that no longer matches. The whole message is read, however long (a message is bounded by
   // the run's own request limits), so a long one is not lost to the grader as one "[redacted]".
   const asked = input.turn.asked.map((message) => cut(redactSecrets(message, input.refuse, Number.POSITIVE_INFINITY), GRADE_CAPS.askedMessage));
-  const proposal: Proposal = { seed: input.seed, notes: checked.notes.map(({ file, text }) => ({ file, text })), ...(files.length ? { files } : {}), asked };
+  const proposal: Proposal = { seed: input.seed, notes: checked.notes.map(({ file, text }) => ({ file, text })), ...(passing.length ? { files: passing } : {}), asked };
   await writeDurable(join(input.runDir, PROPOSAL), `${JSON.stringify(proposal)}\n`);
-  const count = (suffix: string) => files.filter(({ file }) => file.endsWith(suffix)).length;
-  return { state: "proposed", notes: proposal.notes.length, skills: count("/SKILL.md"), workflows: count("/workflow.json") };
+  const count = (suffix: string) => passing.filter(({ file }) => file.endsWith(suffix)).length;
+  return { state: "proposed", notes: proposal.notes.length, skills: count("/SKILL.md"), workflows: count("/workflow.json"), ...(left.length ? { left } : {}) };
 });

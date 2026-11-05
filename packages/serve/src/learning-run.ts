@@ -696,7 +696,8 @@ export class LearningRuns {
       // The secrets this server holds, wherever its launcher put them, the keys saved on it, what each launch handed the
       // run, and its own tokens. How the job ended, before its end-of-run turn: only a completed run keeps a skill.
       const proposed = await proposeRun({ data: this.options.agents.dir, agentId: run.agentId, runDir: run.dir, seed: pin.seed, turn: await readTurn(run.dir), refuse: this.refused(run), ...(run.meta.reflect ? { outcome: run.meta.reflect.outcome } : {}), tools: await this.draftTools(run) });
-      if (proposed.state === "proposed") this.setLearning(run, "proposed", null, said.proposed(proposed.notes, proposed.skills, proposed.workflows));
+      // What the checks left out goes on with it (`problems`), to be said with what it learned.
+      if (proposed.state === "proposed") this.setLearning(run, "proposed", null, said.proposed(proposed.notes, proposed.skills, proposed.workflows), proposed.left ? { problems: proposed.left } : {});
       else if (proposed.reason === "empty") this.setLearning(run, "dropped", "empty", said.empty);
       else if (proposed.reason === "unparsed") {
         warn(run.id, `its end-of-run turn's answer was not read: ${proposed.detail}`);
@@ -723,7 +724,9 @@ export class LearningRuns {
     const before = run.meta.learning;
     if (before?.state !== "proposed" || this.closing) return;
     const data = this.options.agents.dir;
-    let kept: Omit<Partial<Learning>, "state" | "reason" | "detail" | "at"> = before.verdict ? { verdict: before.verdict, graded: before.graded, cost_usd: before.cost_usd, tokens: before.tokens } : {};
+    // What the checks left out of the proposal (a verdict per item) stays with it to its end.
+    const checkedOut = before.problems?.length ? { problems: before.problems } : {};
+    let kept: Omit<Partial<Learning>, "state" | "reason" | "detail" | "at"> = before.verdict ? { ...checkedOut, verdict: before.verdict, graded: before.graded, cost_usd: before.cost_usd, tokens: before.tokens } : { ...checkedOut };
     // Its end saved, and with it its line in the ledger, which carries what the grade spent (onSaved).
     const end = (state: LearningState, reason: LearningReason | null, detail: string, more: typeof kept = {}) => {
       this.setLearning(run, state, reason, detail, { ...kept, ...more });
@@ -743,7 +746,7 @@ export class LearningRuns {
         const env = this.hostEnv();
         const gradeModel = gradeModelOf(env, this.options.gradeModel);
         const judged = await judgeProposal({ runId: run.id, agent: { instructions, harness, model, thinking }, main, proposed: proposal.notes, ...(proposal.files ? { files: proposal.files } : {}), ...(proposal.asked ? { asked: proposal.asked } : {}), ...(gradeModel ? { gradeModel } : {}), env, signal: this.stopping.signal, ...(this.options.gradeTimeoutMs ? { gradeTimeoutMs: this.options.gradeTimeoutMs } : {}) });
-        kept = { cost_usd: { grade: judged.cost.usd }, tokens: { grade: judged.cost.tokens } };
+        kept = { ...checkedOut, cost_usd: { grade: judged.cost.usd }, tokens: { grade: judged.cost.tokens } };
         if ("error" in judged) {
           warn(run.id, `its grader gave no verdict: ${judged.error.message}`);
           return await end("dropped", "grade_failed", said.stopped(STOPPED.noReview));
@@ -775,7 +778,7 @@ export class LearningRuns {
       const made = (suffix: string): LearnedFile[] => (merging.files ?? []).filter(({ file }) => file.endsWith(suffix)).map(({ file }) => ({ file, name: file.split("/")[1]!, ...(waiting.has(file) ? { pending: true as const } : {}) }));
       const skills = made("/SKILL.md");
       const workflows = made("/workflow.json");
-      await end("merged", null, redactSecrets(said.merged(learned, pending, [...skills, ...workflows], left), this.refused(run)), { merged: merge.merged, learned, ...(pending.length ? { pending } : {}), ...(skills.length ? { skills } : {}), ...(workflows.length ? { workflows } : {}) });
+      await end("merged", null, redactSecrets(said.merged(learned, pending, [...skills, ...workflows], left, before.problems ?? []), this.refused(run)), { merged: merge.merged, learned, ...(pending.length ? { pending } : {}), ...(skills.length ? { skills } : {}), ...(workflows.length ? { workflows } : {}) });
     } catch (error) {
       // A server closing: nothing was decided, and the next start grades the run.
       if (this.closing) return;
