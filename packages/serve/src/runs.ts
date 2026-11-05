@@ -75,6 +75,8 @@ const QUIET = /:run:(start|end)$/;
 const RETRY_CODES = ["OPENING", "PARKING", "RELEASED"];
 /** How often one server opens a run again whose process went before the run ended, before it fails the run. */
 const MAX_RELAUNCHES = 3;
+/** What a run's serve.json keeps of the sign-in pointer it was handed: its SHA-256, never the pointer. */
+const pointerHash = (ref: string): string => createHash("sha256").update(ref, "utf8").digest("hex");
 /** Why a run going when its server started was stopped: the browser sign-in it was handed can't be read here (the seal
  *  key changed or is missing, or the sign-ins file is damaged or can't be read). */
 export const UNREADABLE_SIGN_IN = "This server can't read the run's browser sign-in (its seal key changed or is missing, or the sign-in is damaged): the run was stopped, so nothing it says can show it.";
@@ -158,9 +160,11 @@ type RunMeta = {
   /** Set when a server found the run going with a browser sign-in it could not read (its seal key changed): the run was
    *  stopped, and its store is never read for rows, which could repeat the pointer uncut. */
   unshown?: true;
-  /** Set once a launch handed the run its agent's browser sign-in (a flag, never the pointer): only such a run's text
-   *  could repeat it, so only such a run is stopped and hidden when the sign-in can no longer be read. */
-  sign_in_handed?: true;
+  /** Set once a launch handed the run its agent's browser sign-in: the SHA-256 of the pointer it was handed (never the
+   *  pointer), or `true` when that is not known (a run from before, or one handed two pointers). Only such a run's text
+   *  could repeat it, so only such a run is stopped and hidden when the sign-in can no longer be read; and a hidden one
+   *  is shown again only when the sign-in that opens is the very one it was handed. */
+  sign_in_handed?: true | string;
   /** Where it runs, as its start resolved it (place.ts): its process reads it. Absent for a run an older server started,
    *  which ran on the runner. */
   place?: Place;
@@ -796,7 +800,7 @@ export class Runs {
       ...(isObject(stored?.launch_thinking) ? { launch_thinking: stored.launch_thinking as RunMeta["launch_thinking"] } : {}),
       ...(isObject(stored?.tool_plane) ? { tool_plane: stored.tool_plane as Plane } : {}),
       ...(stored?.unshown === true ? { unshown: true as const } : {}),
-      ...(stored?.sign_in_handed === true ? { sign_in_handed: true as const } : {}),
+      ...(stored?.sign_in_handed === true || (typeof stored?.sign_in_handed === "string" && /^[0-9a-f]{64}$/.test(stored.sign_in_handed)) ? { sign_in_handed: stored.sign_in_handed as true | string } : {}),
       ...(stored?.place ? { place: storedPlace(stored.place) } : {}),
       ...(isObject(stored?.learning) ? { learning: stored.learning as Learning } : {}),
       ...(isObject(stored?.reflect) ? { reflect: stored.reflect as Reflect } : {}),
@@ -825,8 +829,9 @@ export class Runs {
       run.meta.unshown = true;
       await this.saveMeta(run);
     }
-    // Hidden under a key that did not open its sign-in, and that sign-in opens again now: its rows are read, cut of it.
-    if (run.meta.unshown && signIn === "readable") {
+    // Hidden under a key that did not open its sign-in, and that very sign-in opens again now (not one made since in its
+    // place, which would not cut the pointer its rows hold): its rows are read, cut of it.
+    if (run.meta.unshown && typeof signIn === "object" && typeof run.meta.sign_in_handed === "string" && pointerHash(signIn.ref) === run.meta.sign_in_handed) {
       delete run.meta.unshown;
       await this.saveMeta(run);
     }
@@ -1641,12 +1646,16 @@ export class Runs {
     run.signIn = browser && signIns ? ((await signIns.forRun(run.agentId, run.id, browser).catch((error: Error) => void warn(run.id, `its browser starts signed out: ${error.message}`))) ?? undefined) : undefined;
     // Never shown in its errors, from now on: a server started since its launch has handed it nothing yet.
     if (run.signIn && run.signIn.ref.length >= MIN_SECRET) (run.handed ??= new Set()).add(run.signIn.ref);
-    // Kept, a flag alone: a later server that cannot read the sign-in knows this run's text could hold it. Not kept, the
-    // run is handed none (it starts signed out): a run whose text could hold the pointer is always one a server knows.
-    if (run.signIn && !run.meta.sign_in_handed) {
-      run.meta.sign_in_handed = true;
+    // Kept, as a hash alone (`true` once it was handed another before): a later server that cannot read the sign-in
+    // knows this run's text could hold it, and which. Not kept, the run is handed none (it starts signed out): a run
+    // whose text could hold the pointer is always one a server knows.
+    const before = run.meta.sign_in_handed;
+    const now = run.signIn && (before === undefined ? pointerHash(run.signIn.ref) : before === pointerHash(run.signIn.ref) ? before : true);
+    if (run.signIn && now !== before) {
+      run.meta.sign_in_handed = now as true | string;
       await this.saveMeta(run).catch((error: Error) => {
-        delete run.meta.sign_in_handed;
+        if (before === undefined) delete run.meta.sign_in_handed;
+        else run.meta.sign_in_handed = before;
         run.signIn = undefined;
         warn(run.id, `its browser starts signed out: that it was handed a sign-in could not be saved (${error.message})`);
       });
@@ -1656,12 +1665,12 @@ export class Runs {
   /** The pointer of the sign-in a run this server loads was handed, among the values its rows, errors and answers never
    *  show: read only, with no lease taken (pinSignIn takes one at its next launch). `unreadable` when its agent keeps
    *  one that does not open under this server's seal key. */
-  private async peekSignIn(run: Run): Promise<"unreadable" | "readable" | undefined> {
+  private async peekSignIn(run: Run): Promise<"unreadable" | { ref: string } | undefined> {
     const browser = run.meta.tool_plane?.browser;
     const peeked = browser ? await this.options.signIns?.peek(run.agentId, browser).catch(() => "unreadable" as const) : undefined;
     if (peeked === "unreadable" || peeked === undefined) return peeked;
     if (peeked.ref.length >= MIN_SECRET) (run.handed ??= new Set()).add(peeked.ref);
-    return "readable";
+    return peeked;
   }
 
   /** Lets go of the save lease the run holds on its agent's sign-in, if any: at once when its process let its sessions go

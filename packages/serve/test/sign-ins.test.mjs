@@ -786,3 +786,53 @@ test("a launch that can't save that it was handed the sign-in hands none: the ru
   await rm(blocked, { recursive: true, force: true });
   await follow(api, runId, ["completed"], { after, deadlineMs: 60_000 });
 });
+
+/** A run of agent `alpha` browsing signed in on a crashable server, its process then gone with the server after
+ *  answering with the pointer into its own store: what a restarted server under another seal key hides. */
+async function hiddenRun(t, dir, data, log) {
+  const first = await crashable(t, data);
+  assert.equal((await first.api("POST", "/agents", agent("alpha", { instructions: "Browse.", tools: ["browser"] }))).status, 201);
+  const gate = join(dir, "gate");
+  const runId = (await first.api("POST", "/agents/alpha/runs", { input: { content: `Browse the example page once ${gate} exists.` } })).body.run_id;
+  const opened = await until(async () => (await readFile(log, "utf8").catch(() => "")).trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)), (ops) => ops.some((op) => op.op === "profile"));
+  const { ref } = opened.find((op) => op.op === "sign-in");
+  first.child.kill("SIGKILL");
+  await new Promise((resolve) => first.child.once("exit", resolve));
+  const { holder } = JSON.parse(await readFile(join(data, "runs", runId, "run.json"), "utf8"));
+  await writeFile(`${gate}.echo`, `I kept ${ref} for you.`);
+  await writeFile(gate, "");
+  const store = join(data, "runs", runId, "store");
+  await until(async () => Buffer.concat(await Promise.all((await readdir(store)).map((name) => readFile(join(store, name)).catch(() => Buffer.alloc(0))))).includes(ref), (said) => said);
+  process.kill(holder.pid, "SIGKILL");
+  await until(async () => { try { process.kill(holder.pid, 0); return false; } catch { return true; } }, (gone) => gone);
+  return { runId, ref };
+}
+
+test("a hidden run stays hidden when its agent's sign-in opens again only because it was replaced: its rows hold the old pointer, which the new one does not cut", { timeout: 240_000 }, async (t) => {
+  const dir = await scratch(t);
+  const data = join(dir, "agents");
+  const log = join(dir, "browser.jsonl");
+  withEnv(t, { BROWSERBASE_API_KEY: BB_KEY, BROWSERBASE_PROJECT_ID: "proj-1", AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), FAUX_BROWSER_LOG: log }, KEYS);
+  const { runId, ref } = await hiddenRun(t, dir, data, log);
+  // Another seal key: the run is hidden, failed.
+  process.env.AGENTRUN_SEAL_KEY = randomBytes(32).toString("base64");
+  const second = await serve(t, { data, fauxBrowser: FAUX_BROWSER, fauxBrowserbase: FAUX_BROWSERBASE });
+  await follow(second.api, runId, ["failed"], { deadlineMs: 60_000 });
+  // The unreadable sign-in forgotten (as its owner would once its lease is past), and a new one made by a new run.
+  await rm(join(homeOf(data, "alpha"), "sign-ins", "sign-ins.json"));
+  const mark = (await readFile(log, "utf8")).trim().split("\n").length;
+  await follow(second.api, (await second.api("POST", "/agents/alpha/runs", { input: { content: "Browse the example page." } })).body.run_id, ["completed"]);
+  const fresh = (await readFile(log, "utf8")).trim().split("\n").slice(mark).map((line) => JSON.parse(line)).find((op) => op.op === "sign-in");
+  assert.notEqual(fresh.ref, ref, "a new sign-in");
+  await second.close();
+  // At the next start the agent's sign-in opens, but it is not the one the hidden run was handed: it stays hidden.
+  const third = await serve(t, { data, fauxBrowser: FAUX_BROWSER, fauxBrowserbase: FAUX_BROWSERBASE });
+  for (const shown of [JSON.stringify((await third.api("GET", `/runs/${runId}/timeline`)).body), JSON.stringify((await third.api("GET", `/runs/${runId}`)).body)]) {
+    assert.ok(!shown.includes(ref), shown);
+    assert.ok(!shown.includes("I kept"), shown);
+  }
+  const meta = JSON.parse(await readFile(join(data, "runs", runId, "serve.json"), "utf8"));
+  assert.equal(meta.unshown, true, "still hidden");
+  assert.match(meta.sign_in_handed, /^[0-9a-f]{64}$/, "which sign-in it was handed, as a hash: never the pointer");
+  assert.ok(!JSON.stringify(meta).includes(ref));
+});
