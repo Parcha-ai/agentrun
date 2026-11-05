@@ -222,11 +222,24 @@ export function recheckPlane(plane: Plane, env: NodeJS.ProcessEnv): Plane {
   return Object.fromEntries(Object.entries(plane).map(([name, value]) => [name, name === "browser" && isVendor(value) && !browserKeysOf(env)[value] ? noBrowserKey(value) : value === "parallel" && !keyed ? NO_PARALLEL_KEY : value])) as Plane;
 }
 
-/** The Plane of a run made before its plane was kept, resolved at a later launch (runs.ts): its browser stays
- *  Browserbase, the one vendor there was then, never today's pick, which could check its sessions at another vendor;
- *  unavailable where Browserbase's keys are gone. */
-export const keptFromBefore = (plane: Plane, env: NodeJS.ProcessEnv): Plane =>
-  plane.browser === undefined ? plane : { ...plane, browser: browserKeysOf(env).browserbase ? "browserbase" : noBrowserKey("browserbase") };
+/** The Plane kept for a run made before its plane was kept, resolved at a later launch (runs.ts): its browser stays
+ *  Browserbase, the one vendor there was then, never today's pick, which could check its sessions at another vendor. It
+ *  keeps the vendor, never a refusal: the plane each launch hands over is checked again (recheckPlane), so Browserbase's
+ *  keys missing make it unavailable for that launch alone, and restored keys make the next one run. */
+export const keptFromBefore = (plane: Plane): Plane => (plane.browser === undefined ? plane : { ...plane, browser: "browserbase" });
+
+/** A run's saved Plane as a launch reads it: a vendor's missing-key refusal an earlier server saved (noBrowserKey's exact
+ *  words, Browserbase's or Kernel's) is that vendor again, which the launch checks again as usual (recheckPlane), so
+ *  restored keys make it run. Every other saved value stays as it is: `auto` with no key at a run's first launch
+ *  (NO_BROWSER_KEY) and `chrome` stay frozen. The same Plane where nothing changes. */
+export function keptVendor(plane: Plane): Plane {
+  const vendor = (Object.keys(BROWSER_KEYS) as BrowserVendor[]).find((name) => plane.browser === noBrowserKey(name));
+  return vendor ? { ...plane, browser: vendor } : plane;
+}
+
+/** The key row (tool-keys.ts) of the browser's vendor on `resolution` with `picked` the provider in force: Kernel's where
+ *  Kernel is picked or resolved, else Browserbase's, so a page links a missing key to the row it is saved on. */
+export const browserKeyRow = (picked: string | undefined, resolution: string | undefined): "kernel" | "browserbase" => (picked === "kernel" || resolution === "kernel" ? "kernel" : "browserbase");
 
 /** The Plane the server handed this run's process; empty when it handed none. */
 export function planeOf(env: NodeJS.ProcessEnv): Plane {

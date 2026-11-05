@@ -18,6 +18,7 @@
       "ForkError",
       "HeldError",
       "LocalHostError",
+      "MESSAGE_ORIGIN_KIND",
       "PathOutsideWorkError",
       "PdaError",
       "PlaceError",

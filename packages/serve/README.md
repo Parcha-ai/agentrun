@@ -953,7 +953,7 @@ answers once capabilities, a save's checks and a run's checks see the change, in
 key, so a key leaves what each harness offers as it is, and the harnesses are not checked again. A run already
 running keeps what it was handed; the next run started, or a run's process started again, takes what is saved then.
 `BROWSERBASE_PROJECT_ID` is on the launcher's list for this, as every field a person may save is. Capabilities name each
-tool's key (`tools[].key`, a `GET /settings/tool-keys` id, `browserbase` for `browser`, which `kernel` unlocks too), so a page can link a tool's
+tool's key (`tools[].key`, a `GET /settings/tool-keys` id; for `browser` its vendor's, `kernel` where Kernel is picked or resolved, else `browserbase`), so a page can link a tool's
 missing names to where its key is saved. `agentrun-serve import` opens the saved keys in its data directory too and
 cuts each out of what it writes, as it cuts a key-shaped variable of its environment; one that does not open there is
 not known, so not cut, and the import says so.
@@ -1019,9 +1019,10 @@ method, tool and whether an `Authorization` header came, never its value.
 
 One URL hears of your runs without anyone watching the page. `PUT /v2/settings/webhook` with `{url}` sets it: an `http`
 or `https` address, with no user or password in it. Loopback and private-network addresses are allowed, so a receiver
-on your own machine or network works. Two kinds of message are POSTed to it: `run.needs_input` when a run comes to
+on your own machine or network works. Two kinds of message are POSTed to it about runs: `run.needs_input` when a run comes to
 need its person (`input_required`: an `ask_person` question, or a stopped turn) and `run.ended` when it ends
-(completed, failed or cancelled, once carried back).
+(completed, failed or cancelled, once carried back). A [schedule](#schedules) whose firing fails sends a third,
+`trigger.failed`; a server with no triggers never sends one.
 
 A run's end and its `run.ended` are one durable step. The server chooses the end's time once and gives it to the agent
 store, so the row's `ended_at` and the message's `webhook-id` name one time. `run.ended` is queued only once the agent
@@ -1083,7 +1084,8 @@ change repeats fires once, at its first pass; one it skips fires at the first ti
 reckoned from the last nominal one, so a timer that wakes late does not drift. `max_cost_usd` is required: every run a
 trigger starts is capped, and a workflow agent is refused, since a workflow run's spend is not capped here. Each run's
 input ends with a line naming the schedule and the time it fired for, in its zone, and the run's `trigger` names the
-trigger and the firing.
+trigger and the firing, in the run's view and in the runs lists (`GET /v2/runs`, `GET /v2/agents/{id}/runs`) alike;
+a run a caller started has `trigger: null`.
 
 A firing starts its run once. Its key comes from the trigger and its nominal time, it is recorded `due` in
 `DIR/triggers.json` (written whole and synced) before its run starts, and the run is started under that key, so a firing
@@ -1091,7 +1093,19 @@ a restart drives again finds its run. A firing's key stays bound to that run: wh
 run up, the firing reads `failed` ("The server stopped while setting up the run.") with that run's id, it never fires
 again, the next firing goes ahead, and `POST /v2/triggers/{id}/fire` is how a person tries it again. While the trigger's last run is active (working, or waiting on a person), a firing
 is `skipped`, with why; a full server (`429`) keeps it due and tries again. Times missed while the server was down are
-one `missed` firing with their count, and the schedule goes on from now. `PATCH /v2/triggers/{id}` changes it, and
+one `missed` firing with their count, and the schedule goes on from now; the latest of them still fires, once, when it is
+no older than the trigger's `catchup_window_s` (default an hour; 0, never), marked `catch_up`. Overlap is `skip` alone:
+a firing while the last run is active (working, or parked waiting on a person) is skipped with why, never queued,
+because a firing queued behind a parked run would wait as long as the person does. A firing whose run is refused is `failed`, and a webhook set on this server
+gets a `trigger.failed` message for it (`data: {trigger_id, name, firing_key, nominal_at, error, auto_paused}`, its
+`webhook-id` made from the firing's key, so a restart never sends it twice). Five failed firings in a row turn the
+trigger off (`disabled: {reason: "auto_paused"}`); a firing that starts its run resets the count, and so does turning
+it on again. Run now (below) works on an auto-paused trigger too, and counts toward the streak like any firing: one that
+starts its run resets it, one that fails adds to it. A trigger whose cron line or zone no longer reads here (after an
+upgrade of the cron library or of the time zone data) is turned off alone, at a start or when it comes due
+(`disabled: {reason: "source_unreadable", detail}`), and every other schedule goes on firing; turning it on again takes a
+new source. A trigger's firings are driven one at a time, in order, so a firing a crash left due settles to its run
+before the next one's overlap is checked. `PATCH /v2/triggers/{id}` changes it, and
 `{enabled: false}` pauses it: the time it was off is skipped, not caught up. `POST /v2/triggers/{id}/fire` runs it now,
 once per `Idempotency-Key` (required): the same key within `limits.idempotency_ttl_s` answers its firing, after the
 firing has left the history too, and later it is a new firing that a run the key started still answers. `GET /v2/triggers/{id}/firings` lists its last 200 firings.
