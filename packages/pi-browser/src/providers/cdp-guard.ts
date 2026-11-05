@@ -132,7 +132,7 @@ function textFrame(text: string): Buffer {
   return Buffer.concat([head, payload]);
 }
 
-const HEADERS_END = Buffer.from("\r\n\r\n");
+const HEADERS_END = Buffer.from([13, 10, 13, 10]); // the blank line that ends an HTTP head: CR LF CR LF
 
 /** What the guard knows of a target. */
 export type TargetInfo = { targetId: string; type: string; url: string };

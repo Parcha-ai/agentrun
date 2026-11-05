@@ -84,7 +84,7 @@ test("a guarded session: every client reaches the browser through its guard, Sta
   const { GUARD_REFUSAL } = await import("../dist/providers/cdp-guard.js");
   const server = http.createServer((req, res) => { res.setHeader("content-type", "text/html"); res.end("<title>Guarded Fixture</title><h1>hello</h1>"); });
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
-  t.after(() => server.close());
+  t.after(() => server.close(), { timeout: 30_000 });
   const root = await scratch(t, "cdp-guarded-");
   const told = [];
   const provider = cdpProvider({ chrome: { executablePath: CHROME, profileRoot: root, guard: true, args: (launch) => (told.push(launch), []) } });

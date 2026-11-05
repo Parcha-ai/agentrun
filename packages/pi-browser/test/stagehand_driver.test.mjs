@@ -134,7 +134,7 @@ test("a failed open tells the model no host, port or URL, a local browser's or a
   const warned = [];
   const listen = (warning) => { if (warning.code === "PI_BROWSER_ATTACH") warned.push(warning.message); };
   process.on("warning", listen);
-  t.after(() => process.off("warning", listen));
+  t.after(() => process.off("warning", listen), { timeout: 30_000 });
   // Both ends are closed loopback ports (nothing leaves the host); the raw URL is on `localhost`, the dial URL on
   // `127.0.0.1`, as a vendor's connect URL carries a signing query.
   const target = { sdkCdpUrl: "ws://localhost:9/s?signingKey=SECRETKEY", dial: { url: "ws://127.0.0.1:9/ws/s?signingKey=SECRETKEY" } };
