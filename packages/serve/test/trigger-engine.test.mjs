@@ -227,3 +227,47 @@ test("a message_run firing refused because its run is working is tried again eve
   await until(() => triggers.firings(id).firings[0].status === "sent", "sent once the run is idle");
   assert.equal(sent.length, 1);
 });
+
+const WORKING = () => new ApiError("rate_limited", "The run is working.", { retry_after_ms: 5_000, details: { reason: "working" } });
+const toRun9 = { kind: "message_run", run_id: "run-9", input: { content: "Hello." } };
+
+test("a trigger holds at most 20 firings due: an event past them is refused, retryable, before anything is written, and said; a run now past them is refused; a schedule's time past them is skipped", async (t) => {
+  const said = [];
+  const { data, clock, triggers } = await engine(t, {
+    message: async () => {
+      throw WORKING();
+    },
+    secrets: { mint: () => "unused", remove: () => {} },
+    say: (fields) => said.push(fields),
+  });
+  const hook = await triggers.create({ name: "inbox", source: { kind: "webhook" }, target: toRun9 });
+  for (let n = 1; n <= 20; n++) assert.equal(triggers.receive(hook.id, `msg_${n}`, `{"n":${n}}`).created, true, `event ${n}`);
+  await until(() => triggers.firings(hook.id).firings.every((f) => f.status === "due" && f.retry_at), "each refused by the working run");
+  const before = await readFile(join(data, "triggers.json"), "utf8");
+  assert.throws(() => triggers.receive(hook.id, "msg_21", "{\"n\":21}"), (error) => {
+    assert.ok(error instanceof ApiError, String(error));
+    assert.deepEqual([error.code, error.status, error.headers["retry-after"], error.extra.retry_after_ms], ["rate_limited", 429, "30", 30_000]);
+    assert.match(error.message, /20 firings are still due/);
+    return true;
+  });
+  assert.equal(await readFile(join(data, "triggers.json"), "utf8"), before, "nothing written for the refused event");
+  const kept = JSON.parse(before).triggers.find((x) => x.id === hook.id);
+  assert.deepEqual([kept.firings.length, kept.firings.filter((f) => f.status === "due").length], [20, 20]);
+  assert.deepEqual(said.filter((f) => f.condition === "trigger_firings_full"), [{ condition: "trigger_firings_full", trigger: hook.id, due: 20 }]);
+  assert.equal(triggers.receive(hook.id, "msg_3", "{}").created, false, "an event already in still answers its firing");
+  await assert.rejects(triggers.fire(hook.id, "now"), (error) => error instanceof ApiError && error.code === "rate_limited" && error.headers["retry-after"] === "30");
+
+  // A schedule's message_run firings have no overlap check (the run's own state picks how a message lands), so a run
+  // that stays busy would hold one more due firing every time: past 20, its time is skipped.
+  const poll = await triggers.create({ name: "poll", source: { kind: "schedule", every_s: 60 }, target: toRun9 });
+  for (let n = 1; n <= 21; n++) {
+    clock.to(triggers.get(poll.id).next_at);
+    await until(() => {
+      const { firings } = triggers.firings(poll.id);
+      return firings.length === n && firings.every((f) => f.status !== "due" || f.retry_at);
+    }, `time ${n}`);
+  }
+  const [last, ...rest] = triggers.firings(poll.id).firings;
+  assert.deepEqual([last.status, last.reason], ["skipped", "20 earlier firings are still waiting to reach the run."]);
+  assert.equal(rest.filter((f) => f.status === "due").length, 20);
+});
