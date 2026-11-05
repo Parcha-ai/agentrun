@@ -627,7 +627,12 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
     // context leaves, and on an API whose thinking takes a budget adds the budget to it.
     const transcript = context as unknown as Parameters<typeof simple.clampMaxTokensToContext>[1];
     const thinking = simpleCall && model.reasoning && options?.reasoning ? (options.reasoning as Parameters<typeof simple.thinkingBudgetForLevel>[0]) : undefined;
-    const budgeted = thinking !== undefined && BUDGET_APIS.has(model.api);
+    // Adaptive thinking (pi-ai's current Claude models on Anthropic's API) takes no budget: pi-ai sends the request's
+    // maxTokens as is, and the model thinks within them as it sees fit: at any level, none included, on a model with
+    // mid-conversation effort, else when given a level.
+    const compat = model.api === "anthropic-messages" && model.reasoning ? model.compat as { forceAdaptiveThinking?: boolean; supportsMidConvoEffort?: boolean } | undefined : undefined;
+    const adaptive = compat?.supportsMidConvoEffort === true || (compat?.forceAdaptiveThinking === true && thinking !== undefined);
+    const budgeted = thinking !== undefined && BUDGET_APIS.has(model.api) && !adaptive;
     const base = simple.clampMaxTokensToContext(model, transcript, options?.maxTokens ?? ceilingTokens(model));
     const asked = Math.min(ceiling, budgeted ? simple.clampMaxTokensToContext(model, transcript, simple.adjustMaxTokensForThinking(base, ceilingTokens(model), thinking, options?.thinkingBudgets).maxTokens) : base);
     const least = Math.min(leastOutput(model, thinking, (level) => simple.thinkingBudgetForLevel(level as never, options?.thinkingBudgets)), asked);
@@ -636,8 +641,10 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
     // The reasoning a stop leaves unseen: a model's reasoning streams as a summary or not at all (the Responses API; Claude
     // 4-class thinking), so a request that reasons counts its level's budget (the budget it was sent with, on a budget
     // API), or its whole limit when it gives no level and its API reasons by default; none on a budget API with thinking
-    // off, or on a model that does not reason. An estimate, as levels are not limits the provider keeps: within the hold.
+    // off, or on a model that does not reason. Adaptive thinking is bounded only by the limit, so it counts the limit
+    // less the answer's 1,024 tokens. An estimate, as levels are not limits the provider keeps: within the hold.
     const hiddenOf = (limit: number): number => {
+      if (adaptive) return Math.max(0, limit - ANSWER_TOKENS_LEAST);
       if (!model.reasoning || (thinking as string | undefined) === "off") return 0;
       if (thinking === undefined) return BUDGET_APIS.has(model.api) ? 0 : limit;
       const budget = simple.thinkingBudgetForLevel(thinking, options?.thinkingBudgets);
