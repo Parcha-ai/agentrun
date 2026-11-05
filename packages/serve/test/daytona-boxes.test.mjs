@@ -477,11 +477,12 @@ test("a run's box under another list whose files cannot all be copied back is ke
   process.env.AGENTRUN_BOX_ALLOW = "pypi.org";
   const second = await serve(t, { data, faux: PROBE });
   assert.equal((await second.api("POST", `/runs/${run.run_id}/messages`, { content: "Yes." })).status, 202);
-  const bashes = () => answers(data, run.run_id).filter((a) => a.tool === "bash");
-  await until(() => bashes().length >= 2, "the next turn's bash answer", 120_000);
-  const said = bashes().at(-1);
-  assert.equal(said.error, true, JSON.stringify(said));
-  assert.match(said.text, /another host list.*kept/);
+  // Read through the API while the run lives: its store is the server's to write.
+  const bashes = async () => ((await second.api("GET", `/runs/${run.run_id}/timeline`)).body.rows ?? []).filter((row) => row.kind === "tool_result" && row.tool_name === "bash");
+  await until(async () => (await bashes()).length >= 2, "the next turn's bash answer", 120_000);
+  const said = (await bashes()).at(-1);
+  assert.equal(said.tool_status, "failed", JSON.stringify(said));
+  assert.match(said.tool_result_preview, /another host list.*kept/);
   assert.deepEqual(creates(fake).map((body) => body.domainAllowList), ["pypi.org,github.com"], "no box was made in its place");
   assert.ok(!fake.requests.some((r) => r.method === "DELETE" && r.path.endsWith(`/sandbox/${made}`)), "the box was not destroyed");
   // Copies back work again: the run's end brings what only the box held.
