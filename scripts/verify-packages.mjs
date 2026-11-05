@@ -147,7 +147,7 @@ try {
     assert.equal(text, JSON.stringify(JSON.parse(text), null, 2) + '\n', `packages/${entry.name}/package.json is not canonical two-space JSON: a key appears twice, or the layout differs`);
   }
   receipt.checks.push('Every packages/*/package.json is canonical two-space JSON, so no key appears twice.');
-  const packageDirectories = ['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent', 'serve', 'pi-git-remote', 'pi-agent-learn', 'learn', 'decisions', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'harness', 'agentrun'];
+  const packageDirectories = ['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent', 'serve', 'pi-git-remote', 'pi-agent-learn', 'learn', 'decisions', 'client', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'harness', 'agentrun'];
   const tarballs = [];
   const attributed = [];
   for (const directory of packageDirectories) {
@@ -344,6 +344,7 @@ import * as gitRemoteAgent from '@parcha/pi-git-remote/coding-agent';
 import * as agentLearn from '@parcha/pi-agent-learn';
 import * as learnCheck from '@parcha/agentrun-learn';
 import * as decisions from '@parcha/agentrun-decisions';
+import * as client from '@parcha/agentrun-client';
 import { judgeFromProvider } from '@parcha/agentrun-dsl';
 import { registerDecisionProviderConformance } from '@parcha/agentrun-dsl/testing';
 import * as adapters from '@parcha/agentrun-kernel';
@@ -413,7 +414,8 @@ for (const name of ['demo','run','placeAt','localHost','codeOf','tapBox']) asser
 { const faux=adaptersTesting.fauxAdapter({script:()=>[{submit:{answer:'ok'}}]}); const runNode=adapters.createHarnessRunner(faux,{store:adaptersTesting.memorySessionStore()}); assert.deepEqual(await runNode({kind:'agent',label:'smoke',system:[],user:'{}',schema:{type:'object',required:['answer'],properties:{answer:{type:'string'}}}}),{answer:'ok'}); assert.equal(faux.requests,1); assert.equal(typeof adapters.HarnessRunError,'function'); assert.equal(adapters.SUBMIT_TOOL,'submit'); }
 { const drive=await adaptersKernel.openDrive({writer:await adaptersTesting.memorySessionStore().open('packed'),signal:new AbortController().signal}); assert.equal(await drive.effect('k',{name:'k',replay:'never'},async()=>'ok'),'ok'); await drive.submit({id:'p',kind:'prompt',text:'hi'}); await adaptersProcess.placeSubmissions(drive,drive.pending()); assert.deepEqual(drive.pending(),[]); assert.equal(typeof adaptersKernel.Restart,'function'); assert.equal(typeof adaptersProcess.NativeJournal,'function'); }
 { const fetch=async()=>new Response(JSON.stringify({mode:'fast',answers:{holds:{type:'noul',noul:0.9},pick:{type:'choice',choice:'a',probabilities:{a:0.75,b:0.25}}},citations:[{url:'https://example.org/a',excerpts:[]}],usage:{input_tokens:1,output_tokens:0},decision_id:'decisions_0'}),{status:200,headers:{'content-type':'application/json'}}); const result=await judgeFromProvider(decisions.parallelProvider({apiKey:'fake-test-key',fetch}))({label:'smoke',kind:'judge',state:{},questions:{holds:{type:'noul',instructions:'Q?'},pick:{type:'choice',instructions:'Which?',criteria:{a:null,b:null}}}}); assert.equal(result.answers.holds.noul,0.9); assert.equal(result.answers.pick.confidence,0.5); assert.deepEqual([result.cost_basis,result.evidence.length,result.confidence_source.pick],['estimate',1,'derived']); assert.equal(typeof registerDecisionProviderConformance,'function'); }
-console.log(JSON.stringify({core:true,jev:true,pi:true,archil:true,browser:true,vision:true,transport:true,agent:true,serve:true,git:true,learn:true,learnCheck:true,decisions:true,adapters:true,harness:true,network:'prohibited'}));
+{ const key='fake-test-key-0123456789'; const seen=[]; const fetch=async(url,init)=>{ seen.push([url,init.headers.authorization]); return new Response(JSON.stringify({error:{code:'bad_request',message:'echo '+key}}),{status:400,headers:{'content-type':'application/json'}}); }; const c=new client.AgentRun({baseUrl:'https://agentrun.example.com/v2',apiKey:key,fetch}); await assert.rejects(c.runs.get('..'),client.AgentRunUsage); assert.throws(()=>new client.AgentRun({baseUrl:'https://agentrun.example.com/v2',apiKey:'a\\nb'}),client.AgentRunAuthError); const refused=await c.agents.get('a b').catch((error)=>error); assert.ok(refused instanceof client.AgentRunRefused); assert.deepEqual([refused.status,refused.code,refused.error.message],[400,'bad_request','echo [hidden]']); assert.ok(!refused.message.includes(key)); assert.deepEqual(seen,[['https://agentrun.example.com/v2/agents/a%20b','Bearer '+key]]); }
+console.log(JSON.stringify({core:true,jev:true,pi:true,archil:true,browser:true,vision:true,transport:true,agent:true,serve:true,git:true,learn:true,learnCheck:true,decisions:true,client:true,adapters:true,harness:true,network:'prohibited'}));
 `);
   const smoke = JSON.parse((await offlineNode(['smoke.mjs'])).stdout);
   assert.deepEqual(smoke, runtimeSmokeChecks);
