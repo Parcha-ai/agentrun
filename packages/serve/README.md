@@ -950,15 +950,17 @@ browser session on it. Nothing else turns it on: `auto` never picks it, and no a
   address and class, never a path) are `browser_egress` lines in the run's `process.log`.
 - **No files of this machine.** The browser runs on this server's disk, so nothing it is driven by may open a file
   there. Every client of its DevTools socket (the driver, and the code a model runs in the browser through Stagehand's
-  extension) goes through pi-browser's guard (`cdp-guard.ts`), a relay in front of the socket that reads each command:
-  a navigation or a new tab to anything but `http`, `https` or `about:blank` (`file:`, `chrome:`, `view-source:`,
-  `data:`, `javascript:` and the rest), a file handed to a page (an upload by path, a drop), a download sent to a
-  directory, an extension loaded or the protocol handed to a page is refused, in words that name no path. No client may
-  drive an extension's page, which could move itself onto a file, and a page the guard sees on a file or a
-  browser-internal URL is closed. The extension's own APIs that would go around the guard (opening or moving a tab or a
-  window, the debugger API, its worker's clients) are taken away in its copy before any code runs there; a web page's
-  own move to a file (a link, a script, `window.open`) is Chrome's to refuse, and it does. The browser's own socket is
-  on a port nothing in the browser can reach.
+  extension) goes through pi-browser's guard (`cdp-guard.ts`), a relay in front of the socket that reads each command
+  and passes only the ones pi-browser and Stagehand send (an allowlist: nothing that tells of this machine, such as
+  the browser's command line, system information or processes, gets an answer). Of those it passes, a navigation or a
+  new tab to anything but `http`, `https` or `about:blank` (`file:`, `chrome:`, `view-source:`, `data:`, `javascript:`
+  and the rest), a file handed to a page (an upload by path, a drop), a download sent to a directory, an extension
+  loaded or the protocol handed to a page is refused, in words that name no path. No client may drive an extension's
+  page, which could move itself onto a file, and a page the guard sees on a file or a browser-internal URL is closed.
+  The extension's own APIs that would go around the guard (opening or moving a tab or a window, the debugger API, its
+  worker's clients, any offscreen page but Stagehand's heartbeat) are taken away in its copy before any code runs
+  there; a web page's own move to a file (a link, a script, `window.open`) is Chrome's to refuse, and it does. The
+  browser's own socket is on a port nothing in the browser can reach.
 - **What it can't do.** No saved sign-ins; no vendor proxies, verified browsing, geolocation or region, which a vendor's
   browser offers and this one has none of; and nothing on this machine or a private network, however the page or the
   model asks. Its downloads stay in a folder of the session's own under the run's directory, after its release too,
