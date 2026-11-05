@@ -7,7 +7,8 @@ import { elapsed } from "@/lib/runGraph";
 import { NO_MESSAGES, runState } from "@/lib/runState";
 import { cn } from "@/lib/utils";
 import { pausedWords } from "@/components/NeedsYou";
-import type { BudgetPending, PendingApproval, Run } from "@/lib/v2";
+import type { BudgetPending, PendingApproval, PendingBrowser, Run } from "@/lib/v2";
+import { BrowserAskCard } from "@/components/BrowserAsk";
 
 export type NeedsYouProps = {
   /** Runs waiting on a person's answer (`input_required`, with their `pending`: a question, or a tool call's approval). */
@@ -22,6 +23,10 @@ export type NeedsYouProps = {
   /** Answers a run's tool call that waits for the owner's approval (`pending.id`); resolves with the refusal to show, in
    *  words, or null once it went. Without it, an approval links to its run. */
   onApprove?: (runId: string, approvalId: string, decision: "allow" | "deny", note?: string) => Promise<string | null>;
+  /** Answers a run's ask for the person in its browser (`pending.kind` "browser"): done or cancelled; resolves with the
+   *  refusal to show, in words, or null once taken. Without it (a page that answers nothing), the ask links to its run's
+   *  browser alone. */
+  onHandBack?: (runId: string, outcome: "done" | "cancelled") => Promise<string | null>;
   /** Starts each run again with its own first message; resolves with the runs it started, and the refusal to show
    *  for one it couldn't (null when all started). */
   onRunAgain: (runs: readonly Run[]) => Promise<{ started: string[]; problem: string | null }>;
@@ -35,7 +40,7 @@ const runHref = (id: string) => `#/runs/${encodeURIComponent(id)}`;
 
 /** Mission Control's first section: what needs a person now (each question answered in place, each failure said once
  *  with a way to run it again) and the runs at work, each with its clock. Nothing at all when nothing waits or works. */
-export function NeedsYouStrip({ asking, failed, live, agentName, onAnswer, onApprove, onRunAgain, onStop, problem, now = Date.now }: NeedsYouProps) {
+export function NeedsYouStrip({ asking, failed, live, agentName, onAnswer, onApprove, onHandBack, onRunAgain, onStop, problem, now = Date.now }: NeedsYouProps) {
   const groups = failureGroups(failed);
   // The live runs' clocks move on their own, once a second.
   const [, tick] = useState(0);
@@ -72,6 +77,8 @@ export function NeedsYouStrip({ asking, failed, live, agentName, onAnswer, onApp
         <ul className="grid grid-cols-1 gap-3 xl:grid-cols-2">
           {asking.map((r) => r.pending?.kind === "approval"
             ? <Approval key={`${r.run_id}:${r.pending.id}`} run={r} pending={r.pending} agentName={agentName(r.agent_id)} at={at} onApprove={approve} />
+            : r.pending?.kind === "browser"
+            ? <BrowserAsked key={`${r.run_id}:${r.pending.asked_at}`} run={r} pending={r.pending} agentName={agentName(r.agent_id)} at={at} onHandBack={onHandBack} />
             : <Question key={`${r.run_id}:${r.pending?.kind === "question" ? r.pending.asked_at : r.pending?.kind === "budget" ? (r.pending.at ?? "") : ""}`} run={r} agentName={agentName(r.agent_id)} at={at} onAnswer={onAnswer} />)}
         </ul>
       )}
@@ -102,6 +109,19 @@ function Approval({ run, pending, agentName, at, onApprove }: { run: Run; pendin
       <ApprovalCard compact pending={pending}
         heading={<Head run={run} agentName={agentName} since={`asked ${ago(pending.requested_at, at)} ago`} />}
         onAnswer={(decision, note) => (onApprove ? onApprove(run.run_id, pending.id, decision, note) : Promise.resolve("Open the run to answer it."))} />
+    </li>
+  );
+}
+
+/** A run whose agent asks for the person in its browser: what to do, when it's done, when it expires, the way to its
+ *  browser (the run page, which opens on its Browser tab), and Done or Cancel where the server takes them. */
+function BrowserAsked({ run, pending, agentName, at, onHandBack }: { run: Run; pending: PendingBrowser; agentName: string; at: number; onHandBack: NeedsYouProps["onHandBack"] }) {
+  return (
+    <li data-run={run.run_id} className="min-w-0 border border-warning/50 bg-warning/5">
+      <BrowserAskCard compact pending={pending}
+        heading={<Head run={run} agentName={agentName} since={`asked ${ago(pending.asked_at, at)} ago`} />}
+        open={<a href={runHref(run.run_id)} className="text-[13px] underline underline-offset-2">Open its browser</a>}
+        onHandBack={onHandBack && ((outcome) => onHandBack(run.run_id, outcome))} />
     </li>
   );
 }

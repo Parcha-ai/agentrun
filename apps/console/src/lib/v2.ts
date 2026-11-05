@@ -49,6 +49,11 @@ export type PendingQuestion = Extract<NonNullable<Run["pending"]>, { kind: "ques
 export type PendingApproval = Extract<NonNullable<Run["pending"]>, { kind: "approval" }>;
 /** A run paused at its spend cap: what is left of its cap cannot buy its next request's least, which was not sent. */
 export type BudgetPending = Extract<NonNullable<Run["pending"]>, { kind: "budget" }>;
+/** The run's agent asks for the person in its browser (liveview/2): what to do there, how it will know it's done, and
+ *  when the ask expires. The run reads input_required/waiting; POST /v2/runs/{id}/browser/hand-back answers it. */
+export type PendingBrowser = Extract<NonNullable<Run["pending"]>, { kind: "browser" }>;
+/** POST /v2/runs/{id}/browser/hand-back's answer: the first answer, the one the agent gets. */
+export type HandBackAnswer = Answer<"handBackRunBrowser">;
 
 export type RunReview = NonNullable<Run["review"]>;
 

@@ -6,6 +6,7 @@ import { type RunActions, RunHeader } from "@/components/RunHeader";
 import { RunError } from "@/components/RunError";
 import { ArtifactViewer, RunFiles } from "@/components/RunFiles";
 import { RunResult } from "@/components/RunResult";
+import { BrowserAskCard } from "@/components/BrowserAsk";
 import { BrowserPanel, useRunBrowser } from "@/components/RunBrowser";
 import { RunChanges, useRunChanges } from "@/components/RunChanges";
 import { Timeline, Working } from "@/components/Timeline";
@@ -46,11 +47,21 @@ export type RunDetailProps = {
   readBrowser?: () => Promise<RunBrowser>;
   /** How often the browser is read again while the run is live, in ms (tests read it faster). */
   browserEvery?: number;
+  /** Answers the agent's ask for the person in its browser (POST /v2/runs/{id}/browser/hand-back): done or cancelled;
+   *  resolves with the refusal to show, in words, or null once taken. */
+  onHandBack?: (outcome: "done" | "cancelled") => Promise<string | null>;
 };
 type Tab = "graph" | "report" | "timeline" | "files" | "browser";
 
 /** The message box's words while a tool call waits on an approval: a message declines the call, and the agent reads it. */
 const DECLINES = { label: "Decline and say what to do instead", placeholder: "Tell the agent what to do instead...", does: "Sending it declines the waiting call; the agent reads your message." };
+/** The message box's words while the agent waits on the person in its browser: the server takes a message as one to a
+ *  working run (serve's runs.ts: steered into the turn, or after it where the harness doesn't steer), never as the ask's
+ *  answer, which Done or Cancel is. */
+const NOT_THE_ASK = {
+  steer: { label: "Steer the run", placeholder: "Steer the run...", does: "A message steers the run; it doesn't answer the ask. Do it in the browser, then Done or Cancel above." },
+  follow_up: { label: "Message the run", placeholder: "Message the run...", does: "A message goes to the run after its turn; it doesn't answer the ask. Do it in the browser, then Done or Cancel above." },
+};
 
 /** What the Report tab says while a run has no answer and has not ended: only a queued or working run is writing it. One
  *  that waits on a kind of thing this console doesn't know (its `pending.kind`, a newer server's; nothing else of it is
@@ -69,6 +80,7 @@ function beforeAnswer(run: Pick<Run, "status" | "state" | "pending">, view: RunV
     return { title: "Paused at its spend cap", note: `${words} Raise the cap above to continue.`, spin: false };
   }
   // A tool call waiting on the owner's approval: the card above answers it, and a message below declines it.
+  if (run.status === "input_required" && kind === "browser") return { title: "Waiting for you in the browser", note: "The run continues once you answer its ask above.", spin: false };
   if (run.status === "input_required" && kind === "approval") return { title: "Waiting for your approval", note: `The run continues once you answer the approval above${view.canMessage ? ", or send a message below to decline it" : ""}.`, spin: false };
   if (run.status === "input_required" && kind !== undefined && kind !== "question") return { title: "Waiting for you", note: "The run continues once you give it what it waits on.", spin: false };
   if (run.status === "input_required" && run.state === "waiting") return { title: "Waiting for your answer", note: view.messageMode === "answer" ? "The run continues when you reply below." : "The run continues once the question is answered.", spin: false };
@@ -78,18 +90,22 @@ function beforeAnswer(run: Pick<Run, "status" | "state" | "pending">, view: RunV
 }
 
 /** The run page: Report / Timeline / Files tabs over AgentRun Server's run, timeline and files. */
-export function RunDetail({ run, agentName, messages, harnessSteers, rows, files, readFile, openFile = null, actions, onMessage, onApprove, tab: initial, graphView, costText, readLearningDiff, readBrowser, browserEvery }: RunDetailProps) {
+export function RunDetail({ run, agentName, messages, harnessSteers, rows, files, readFile, openFile = null, actions, onMessage, onApprove, tab: initial, graphView, costText, readLearningDiff, readBrowser, browserEvery, onHandBack }: RunDetailProps) {
   // A run paused at its spend cap takes no message until its cap is raised (409 budget_reached): no composer for it.
   const budget = run.pending?.kind === "budget" ? run.pending : null;
+  // The agent waits on the person in its browser: a message is no answer to it, but one to a working run.
+  const browserAsk = run.status === "input_required" && run.pending?.kind === "browser" ? run.pending : null;
   const state = runState(run.status, run.state, run.kind, messages, harnessSteers, run.error, run.review);
-  const view = budget ? { ...state, canMessage: false, messageMode: null } : state;
-  const defaultTab: Tab = graphView ? "graph" : view.final && run.status === "completed" ? "report" : "timeline";
+  const askMode = browserAsk ? (harnessSteers && messages.steer ? "steer" as const : messages.follow_up ? "follow_up" as const : null) : null;
+  const view = budget ? { ...state, canMessage: false, messageMode: null } : browserAsk ? { ...state, canMessage: askMode !== null, messageMode: askMode } : state;
+  // A browser ask opens on the Browser tab, where it's done.
+  const defaultTab: Tab = browserAsk && readBrowser ? "browser" : graphView ? "graph" : view.final && run.status === "completed" ? "report" : "timeline";
   const [tab, setTab] = useState<Tab>(initial ?? defaultTab);
   const [open, setOpen] = useState<{ file: RunFile; text: string | null } | null>(openFile ? { file: openFile, text: null } : null);
   // A tool call waiting on the owner's approval takes the question's place: an earlier question, answered, may still be
   // the newest waiting row, and is no question now.
   const approval = approvalOf(run);
-  const waiting = approval ? null : pendingQuestion(run.status, run.state, rows);
+  const waiting = approval || browserAsk ? null : pendingQuestion(run.status, run.state, rows);
   // The approval's timeline row, which follows the call's result: its step points to the card above.
   const approvalRow = approval ? rows.findLast((r) => r.kind === APPROVAL_ROW && r.tool_use_id === approval.call_id) : undefined;
   // A refused answer, in words. The run is read again after it, and when another answer, a stop or a cancel came first
@@ -131,7 +147,7 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
   // A story or a deep link can open a file on first render.
   useEffect(() => { if (openFile && readFile) void show(openFile); }, [openFile]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const tabs: [Tab, string][] = [...(graphView ? [["graph", "Graph"] as [Tab, string]] : []), ["report", "Report"], ["timeline", "Timeline"], ["files", `Files ${files.length}`], ...(browser ? [["browser", browser.state === "live" ? "Watch live" : "Browser"] as [Tab, string]] : [])];
+  const tabs: [Tab, string][] = [...(graphView ? [["graph", "Graph"] as [Tab, string]] : []), ["report", "Report"], ["timeline", "Timeline"], ["files", `Files ${files.length}`], ...(browser || (browserAsk && readBrowser) ? [["browser", browser?.state === "live" ? "Watch live" : "Browser"] as [Tab, string]] : [])];
   return (
     <div className="flex h-full min-h-0 flex-col">
       <RunHeader run={run} agentName={agentName} actions={actions} costText={costText} />
@@ -156,7 +172,9 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
               <p className="mt-1 font-mono text-[12px] text-muted-foreground">{[run.review.node && `Stopped at ${run.review.node}`, run.review.kind].filter(Boolean).join(" · ")}. A person takes it from here.</p></section>
           )}
           {refused && refused.id !== approval?.id && <p className="border border-destructive/50 px-4 py-2.5 font-mono text-[12px] text-destructive-text" role="alert">Your answer wasn't taken: {refused.text}</p>}
-          {approval ? <ApprovalCard key={approval.id} pending={approval} onAnswer={(decision, note) => approve(approval.id, decision, note)} />
+          {browserAsk ? <BrowserAskCard key={browserAsk.asked_at} pending={browserAsk} onHandBack={onHandBack}
+              open={readBrowser && tab !== "browser" ? <button type="button" className="text-[13px] underline underline-offset-2" onClick={() => setTab("browser")}>Open the browser</button> : null} />
+            : approval ? <ApprovalCard key={approval.id} pending={approval} onAnswer={(decision, note) => approve(approval.id, decision, note)} />
             : view.needsYou && (budget ? <BudgetPaused pending={budget} /> : <NeedsYou waiting={waiting} />)}
           {/* With no served cap the banner names none to raise above; the run header's raise reads the run's own cap. */}
           {view.needsYou && budget && typeof budget.cap_usd === "number" && actions?.onRaiseCap && <RaiseCap key={`${run.run_id}:${budget.at}`} cap={budget.cap_usd} suggested={suggestedCap(budget)} paused onRaise={actions.onRaiseCap} />}
@@ -168,12 +186,12 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
           {tab === "timeline" && <Timeline rows={learningSteps(rows, run.learning)} live={view.live} asking={approvalRow?.id ?? (view.needsYou && !budget ? waiting?.id : undefined)} />}
           {(tab === "report" || tab === "timeline") && changes && <RunChanges got={changes.got} retry={changes.retry} />}
           {tab === "files" && <RunFiles files={files} onOpen={show} />}
-          {tab === "browser" && browser && <BrowserPanel runId={run.run_id} browser={browser} opens={browserOpens} followUp={view.canMessage && view.messageMode === "follow_up"} />}
+          {tab === "browser" && (browser || browserAsk) && <BrowserPanel runId={run.run_id} browser={browser ?? { state: "none" }} opens={browserOpens} followUp={view.canMessage && view.messageMode === "follow_up"} />}
         </div>
       </div>}
       {/* While a call waits on an approval, a message declines it, as its reason: the box says so. */}
       {view.canMessage && (
-        <div className="border-t px-5 py-4 md:px-8"><div className="mx-auto max-w-4xl"><Composer mode={view.messageMode!} onSend={onMessage} purpose={approval ? DECLINES : undefined} /></div></div>
+        <div className="border-t px-5 py-4 md:px-8"><div className="mx-auto max-w-4xl"><Composer mode={view.messageMode!} onSend={onMessage} purpose={approval ? DECLINES : browserAsk && askMode ? NOT_THE_ASK[askMode] : undefined} /></div></div>
       )}
       {open && <ArtifactViewer file={open.file} text={open.text} onClose={close} files={files} onOpen={show} />}
     </div>

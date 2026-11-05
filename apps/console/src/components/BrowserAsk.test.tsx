@@ -41,7 +41,8 @@ describe("the strip, a run waiting on the person in its browser", () => {
     expect(card.textContent).toContain("Sign in to the example site with your own account");
     expect(card.textContent).toContain("Done when: the page shows you are signed in");
     expect(card.textContent).toMatch(/Expires/);
-    expect(card.querySelector(`a[href="#/runs/${asking.run_id}"]`)?.textContent).toMatch(/browser/i);
+    // The run's title links there too (the card's heading); one link says it goes to the browser.
+    expect([...card.querySelectorAll(`a[href="#/runs/${asking.run_id}"]`)].some((a) => /browser/i.test(a.textContent ?? ""))).toBe(true);
     // No answer box: a browser ask isn't answered in words.
     expect(card.querySelector("textarea")).toBeNull();
   });
