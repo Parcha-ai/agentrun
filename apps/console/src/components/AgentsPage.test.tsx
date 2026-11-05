@@ -135,7 +135,7 @@ describe("AgentEditPage, a new agent from a starter", () => {
 });
 
 describe("AgentsPage, where an agent's card goes", () => {
-  it("opens the agent's page from its card, its Runs tab from its History icon, and the editor from its Edit icon", async () => {
+  it("opens the agent's page and runs, while Edit offers coding agents or the definition playground", async () => {
     const went: string[] = [];
     const v2 = { listAgents: async () => ({ agents: [agentAt("r1", "Answer.")], next_cursor: null }) };
     const host = document.body.appendChild(document.createElement("div"));
@@ -145,8 +145,10 @@ describe("AgentsPage, where an agent's card goes", () => {
     const click = (el: Element | null | undefined) => act(() => { (el as HTMLElement).click(); });
     click([...host.querySelectorAll("li button")].find((b) => b.textContent?.includes("Calc") && !b.getAttribute("aria-label")));
     click(host.querySelector('[aria-label="Edit Calc"]'));
+    expect(document.querySelector('[role="menu"]')?.textContent).toContain("Claude Code CLI");
+    expect(document.querySelector('[role="menu"] a')?.getAttribute("href")).toBe("#/playground?operation=edit-agent&agent=calc");
     click(host.querySelector('[aria-label="Runs of Calc"]'));
-    expect(went).toEqual(["#/agents/calc", "#/agents/calc/edit", "#/agents/calc/runs"]);
+    expect(went).toEqual(["#/agents/calc", "#/agents/calc/runs"]);
   });
 });
 

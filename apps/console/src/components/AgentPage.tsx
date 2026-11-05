@@ -1,19 +1,18 @@
+import { queryPlaygroundHref } from "@/lib/playgroundRoutes";
 import { workflowGraph } from "@dsl/graph";
-import { ArrowLeft, Bot, Pencil, Workflow } from "lucide-react";
+import { ArrowLeft, ArrowUpRight, Bot, RefreshCw, Search, Workflow } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { AgentVersions } from "@/components/AgentVersions";
 import { AnalyticsTab, FIRST_RANGE } from "@/components/AgentAnalytics";
-import { LatestRun } from "@/components/LatestRun";
 import type { UploadLimits } from "@/components/FilePicker";
 import { NotHere, ProblemCard } from "@/components/Problem";
-import { RunBar } from "@/components/RunBar";
 import { CodingAgentAction } from "@/components/CodingAgentAction";
-import { editAgentPrompt, runAgentPrompt } from "@/lib/codingAgentPrompts";
+import { editAgentPrompt, queryRunsPrompt, runAgentPrompt } from "@/lib/codingAgentPrompts";
 import { AgentSkeleton, ListSkeleton } from "@/components/Skeleton";
 import { StatusBadge } from "@/components/StatusBadge";
 import { LearningTab } from "@/components/Learning";
 import { LearningChips } from "@/components/LearningChips";
 import { Button } from "@/components/ui/button";
-import { Chip } from "@/components/ui/chip";
 import { GraphLegend, WorkflowGraph } from "@/components/WorkflowGraph";
 import type { Agent } from "@/lib/agentForm";
 import { type Client, ClientError } from "@/lib/client";
@@ -28,7 +27,7 @@ import { rangeFrom, type Stats } from "@/lib/mission";
 import type { Run } from "@/lib/v2";
 
 /** `stats`: the page's own read of the agent's stats over the Analytics tab's first range, which that tab starts from. */
-type TabProps = { agent: Agent; v2: Client; go: (hash: string) => void; stats?: Stats | null };
+type TabProps = { agent: Agent; v2: Client; go: (hash: string) => void; stats?: Stats | null; history?: RunHistory };
 /** What the server gives beside the agent: `analytics`, once its stats are read. */
 type Server = { analytics: boolean };
 
@@ -42,6 +41,7 @@ type LearningServer = { learning?: boolean };
  *  is one entry here. */
 const TABS: { id: string; label: string; shows: (a: Agent, server: Server & LearningServer) => boolean; Body: (p: TabProps & LearningTabProps) => JSX.Element }[] = [
   { id: "runs", label: "Runs", shows: () => true, Body: RunsTab },
+  { id: "versions", label: "Versions", shows: () => true, Body: AgentVersions },
   { id: "workflow", label: "Workflow", shows: (a) => a.kind === "workflow", Body: WorkflowTab },
   { id: "learning", label: "Learning", shows: (a, server) => a.kind === "agentic" && server.learning !== false, Body: (p) => <LearningTab agent={p.agent} v2={p.v2} focus={p.focus} server={p.learning} onAgent={p.onAgent} /> },
   { id: "analytics", label: "Analytics", shows: (_, server) => server.analytics, Body: AnalyticsTab },
@@ -51,11 +51,10 @@ const TABS: { id: string; label: string; shows: (a: Agent, server: Server & Lear
  *  agent whose id is "new" is given its Runs tab's address instead. */
 export const agentHash = (id: string, view?: string) => `#/agents/${encodeURIComponent(id)}${view ? `/${view}` : id === "new" ? "/runs" : ""}`;
 
-/** One agent's page (`#/agents/{id}`): its current revision's harness, model and thinking, a run bar (none for an archived
- *  agent, which takes no runs), and a tab per thing it has. `efforts` are the server's (capabilities `features.efforts`).
+/** One agent's page (`#/agents/{id}`): its current revision's harness, model and thinking, a compact overview and a tab per thing it has. `efforts` are the server's (capabilities `features.efforts`).
  *  `learning`: the server's learning switch, undefined until its capabilities are read and null when it has none;
  *  `notes`: the notes an address in the Learning tab points at. */
-export function AgentPage({ v2, agentId, defaultModel, modelSource, routePrefix, harnesses, efforts = [], go, tab, limits, learning, notes }: { v2: Client; agentId: string; defaultModel?: string; modelSource?: string; routePrefix?: string | null; harnesses?: HarnessInfo[]; efforts?: string[]; go: (hash: string) => void; tab?: string; limits?: UploadLimits; learning?: "on" | "off" | null; notes?: string[] }) {
+export function AgentPage({ v2, agentId, defaultModel, modelSource, routePrefix, harnesses, go, tab, learning, notes }: { v2: Client; agentId: string; defaultModel?: string; modelSource?: string; routePrefix?: string | null; harnesses?: HarnessInfo[]; efforts?: string[]; go: (hash: string) => void; tab?: string; limits?: UploadLimits; learning?: "on" | "off" | null; notes?: string[] }) {
   const [agent, setAgent] = useState<Agent | null>(null);
   // The agent's read failed: a 404 is an agent this server has no record of; anything else is said in words.
   const [error, setError] = useState<{ cause: unknown } | null>(null);
@@ -75,6 +74,14 @@ export function AgentPage({ v2, agentId, defaultModel, modelSource, routePrefix,
     ? <NotHere what="agent" id={agentId} list={{ href: "#/agents", label: "Open the agents list" }} />
     : <ProblemCard problem={problem(error.cause, "the agent")} onRetry={() => setTries((n) => n + 1)} />;
   if (!agent) return <AgentSkeleton />;
+  return <AgentDetail key={agent.agent_id} agent={agent} onAgent={setAgent} v2={v2} go={go} stats={stats} analytics={analytics} defaultModel={defaultModel} modelSource={modelSource} routePrefix={routePrefix} harnesses={harnesses} tab={tab} learning={learning} notes={notes} />;
+}
+
+function AgentDetail({ agent, onAgent, v2, go, stats, analytics, defaultModel, modelSource, routePrefix, harnesses, tab, learning, notes }: {
+  agent: Agent; onAgent: (agent: Agent) => void; v2: Client; go: (hash: string) => void;
+  stats: Stats | null | undefined; analytics: boolean | undefined; defaultModel?: string; modelSource?: string; routePrefix?: string | null; harnesses?: HarnessInfo[]; tab?: string; learning?: "on" | "off" | null; notes?: string[];
+}) {
+  const history = useRunHistory(agent, v2, onAgent);
   const d = agent.definition;
   const workflow = agent.kind === "workflow";
   const Icon = workflow ? Workflow : Bot;
@@ -90,10 +97,9 @@ export function AgentPage({ v2, agentId, defaultModel, modelSource, routePrefix,
   // A harness the server can't run: why, where its Run would fail (capabilities' harnesses[].reason).
   const off = workflow ? undefined : harnesses?.find((h) => h.id === (d.harness ?? "pi") && h.available === false);
   const offText = off ? `${off.id} doesn't run on this server${off.reason ? `: ${off.reason}` : "."}` : undefined;
-  // A known absent default blocks only execution that depends on it. An explicit model can still run, and older
-  // servers that do not report a harness default leave readiness to the run endpoint.
+  // Explain a known absent default without blocking observation or the handoff that can configure it.
+  // Explicit models and older servers leave readiness to the execution path.
   const needsModel = !workflow && !off && !d.model && !fallback && harnesses?.some((h) => h.id === (d.harness ?? "pi") && h.default_model === null);
-  const runBlocked = offText ?? (needsModel ? "Set up a model in Settings before running this agent." : undefined);
   const facts: [string, string, string?][] = [
     ...(workflow ? [] : [["Harness", d.harness ?? "pi"], ["Model", model.text, model.title], ["Thinking", d.thinking ?? "default"], ["Runs", placeLabel(placeOf(d.place))]] as [string, string, string?][]),
     ["Revision", `rev ${d.version} of ${agent.revisions}`],
@@ -104,113 +110,158 @@ export function AgentPage({ v2, agentId, defaultModel, modelSource, routePrefix,
   const at = tabs.find((t) => t.id === tab) ?? tabs[0];
   // An address on a tab the server may still give: wait for its answer rather than open another tab meanwhile.
   const waiting = tab === "analytics" && analytics === undefined;
+  const live = history.runs?.filter(isLiveRun) ?? [];
+  const liveCount = agent.runs?.live ?? (history.runs ? `${live.length}${history.cursor ? "+" : ""}` : "—");
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <header className="border-b px-5 py-4 md:px-8">
-        <button type="button" onClick={() => go(agent.archived_at ? "#/agents?archived=true" : "#/agents")} className="caps flex items-center gap-2 text-[11px] text-muted-foreground hover:text-foreground">
-          <ArrowLeft className="size-3.5" aria-hidden /> Agents
-        </button>
-        <div className="mt-3 flex flex-wrap items-center gap-3">
-          <Icon className="size-5 shrink-0 text-muted-foreground" aria-hidden />
-          <h1 className="min-w-0 truncate font-mono text-xl font-semibold">{d.name}</h1>
-          <Chip>{agent.kind}</Chip>
-          {agent.archived_at && <Chip tone="muted">Archived</Chip>}
-          <span className="flex-1" />
-          <CodingAgentAction label="Edit with your agent" prompt={editAgentPrompt(location.origin, agent.agent_id)} />
-          {!agent.archived_at && <CodingAgentAction label="Run with your agent" prompt={runAgentPrompt(location.origin, agent.agent_id)} playgroundHref={`#/playground?agent=${encodeURIComponent(agent.agent_id)}`} />}
-          <Button size="sm" onClick={() => go(agentHash(agent.agent_id, "edit"))}><Pencil aria-hidden /> Edit</Button>
+    <section className="flex h-full min-h-0 flex-col" aria-label="Agent detail">
+      <header className="flex min-h-12 shrink-0 flex-wrap items-center gap-2 border-b px-5 py-2 lg:flex-nowrap lg:py-0" aria-label="Agent toolbar">
+        <Button size="icon" variant="ghost" aria-label="Back to agents" onClick={() => go(agent.archived_at ? "#/agents?archived=true" : "#/agents")}><ArrowLeft aria-hidden /></Button>
+        <Icon className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+        <strong className="min-w-0 truncate text-[13px] font-semibold">{d.name}</strong>
+        <div className="ml-auto flex max-w-full flex-wrap items-center justify-end gap-2">
+          <CodingAgentAction label="Edit agent" prompt={editAgentPrompt(location.origin, agent.agent_id)} playgroundHref={`#/playground?operation=edit-agent&agent=${encodeURIComponent(agent.agent_id)}`} />
+          {!agent.archived_at && <CodingAgentAction label="Run agent" prompt={runAgentPrompt(location.origin, agent.agent_id)} playgroundHref={`#/playground?agent=${encodeURIComponent(agent.agent_id)}`} />}
+          <Button size="icon" aria-label="Refresh agent" onClick={history.refresh} disabled={history.reading}><RefreshCw className={cn(history.reading && "animate-spin")} aria-hidden /></Button>
         </div>
-        {d.description && <p className="mt-2 max-w-3xl text-[14px] text-muted-foreground">{d.description}</p>}
-        <dl className="mt-3 flex flex-wrap gap-x-6 gap-y-2" aria-label="Current revision">
-          {facts.map(([k, v, title]) => (
-            <div key={k} className="flex items-baseline gap-2"><dt className="caps text-[10px] text-muted-foreground">{k}</dt><dd className="font-mono text-[12px]" title={title}>{v}</dd></div>
-          ))}
-        </dl>
-        {offText && <p className="mt-3 font-mono text-[12px] text-warning-text" role="status" aria-label="Harness not available">{offText}</p>}
       </header>
-      {!agent.archived_at && needsModel && <p className="px-5 pt-4 text-[13px] text-muted-foreground md:px-8" role="status">Running this agent needs a configured model. <a href="#/settings/keys" className="text-primary underline-offset-4 hover:underline">Set up models in Settings</a></p>}
-      {!agent.archived_at && <RunBar agent={agent} efforts={efforts} v2={v2} go={go} blocked={runBlocked} limits={limits} />}
-      <div className="flex border-b px-5 md:px-8" role="tablist">
-        {tabs.map((t) => (
-          <button key={t.id} type="button" role="tab" aria-selected={at.id === t.id} onClick={() => go(agentHash(agent.agent_id, t.id))}
-            className={cn("caps -mb-px border-b-2 px-3 py-3 text-[12px]", at.id === t.id ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground")}>
-            {t.label}
-          </button>
-        ))}
-      </div>
-      <div role="tabpanel" aria-label={waiting ? undefined : at.label} className="min-h-0 flex-1 overflow-auto px-5 py-6 md:px-8">
-        {waiting ? <ListSkeleton label="Loading the tab" rows={4} /> : <at.Body agent={agent} v2={v2} go={go} stats={stats} focus={notes} learning={learning} onAgent={setAgent} />}
-      </div>
-    </div>
+      <main className="grid min-h-0 flex-1 grid-cols-1 items-start gap-7 overflow-auto p-5 lg:grid-cols-[minmax(260px,320px)_minmax(0,1fr)] lg:p-7">
+        <aside className="min-w-0 space-y-6" aria-label="Agent overview">
+          <div>
+            <h1 className="text-2xl font-semibold tracking-tight">{d.name}</h1>
+            {d.description && <p className="mt-2 text-[13px] leading-relaxed text-muted-foreground">{d.description}</p>}
+            <p className="mt-3 break-all font-mono text-[11px] text-muted-foreground">{agent.agent_id}</p>
+          </div>
+          <dl className="grid grid-cols-2 gap-3" aria-label="Current revision">
+            {([["Status", agent.archived_at ? "Archived" : "Active"], ["Live jobs", String(liveCount)], ...facts] as [string, string, string?][]).map(([k, v, title]) => (
+              <div key={k} className="min-w-0 rounded-xl border bg-card p-4"><dt className="mb-2 text-[11px] text-muted-foreground">{k}</dt><dd className="break-words text-[13px] font-medium" title={title}>{v}</dd></div>
+            ))}
+          </dl>
+          {offText && <p className="text-[13px] text-warning-text" role="status" aria-label="Harness not available">{offText}</p>}
+          {!agent.archived_at && needsModel && <p className="text-[13px] text-muted-foreground" role="status">Running this agent needs a configured model. <a href="#/settings/keys" className="text-primary underline-offset-4 hover:underline">Set up models in Settings</a></p>}
+          {history.metadataError && <ProblemCard problem={history.metadataError} onRetry={history.refresh} className="" />}
+          <section className="rounded-xl border bg-card p-4" aria-label="Agent configuration">
+            <h2 className="mb-4 text-[13px] font-semibold">Configuration</h2>
+            <dl className="space-y-3 text-[12px]">
+              <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Kind</dt><dd>{agent.kind}</dd></div>
+              <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Skills</dt><dd className="max-w-[75%] break-words text-right">{d.skills.join(", ") || "None configured"}</dd></div>
+              <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Tools</dt><dd className="max-w-[75%] break-words text-right">{d.tools.join(", ") || "None configured"}</dd></div>
+            </dl>
+            {d.instructions && <details className="mt-4 text-[12px]"><summary className="cursor-pointer">Instructions</summary><pre className="mt-3 whitespace-pre-wrap break-words font-sans leading-relaxed text-muted-foreground">{d.instructions}</pre></details>}
+          </section>
+          <section className="rounded-xl border bg-card p-4" aria-label="Live jobs">
+            <h2 className="mb-3 text-[13px] font-semibold">Live jobs</h2>
+            {live.length ? <ul className="space-y-3">{live.map((run) => <li key={run.run_id}><a href={`#/runs/${encodeURIComponent(run.run_id)}`} className="flex items-center gap-2 text-[12px] hover:text-primary"><StatusBadge run={run} /><span className="min-w-0 flex-1 truncate">{run.title}</span><ArrowUpRight className="size-3 shrink-0" aria-hidden /></a></li>)}</ul>
+              : <p className="text-[12px] leading-relaxed text-muted-foreground">{!history.runs ? "Loading live jobs…" : agent.runs?.live ? "Live jobs are outside the loaded history. Load more runs to find them." : history.error ? "Live jobs could not be refreshed." : "No live jobs."}</p>}
+          </section>
+        </aside>
+        <section className="min-w-0" aria-label="Agent workspace">
+          <div className="mb-5 flex gap-6 overflow-x-auto border-b" role="tablist" aria-label="Agent views">
+            {tabs.map((t) => <button key={t.id} type="button" role="tab" aria-selected={at.id === t.id} onClick={() => go(agentHash(agent.agent_id, t.id))}
+              className={cn("-mb-px shrink-0 border-b-2 py-3 text-[13px]", at.id === t.id ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground")}>{t.label}</button>)}
+          </div>
+          <div role="tabpanel" aria-label={waiting ? undefined : at.label}>
+            {waiting ? <ListSkeleton label="Loading the tab" rows={4} /> : <at.Body agent={agent} v2={v2} go={go} stats={stats} history={history} focus={notes} learning={learning} onAgent={onAgent} />}
+          </div>
+        </section>
+      </main>
+    </section>
   );
 }
 
-/** The agent's latest run, followed as it goes (LatestRun), over its runs, newest first: each row its status, title, its
- *  effort when it was given one, when, how long once ended, and its cost once known. A fresh read of the latest run
- *  replaces its row too, so the two never disagree. */
-function RunsTab({ agent, v2 }: TabProps) {
+const isLiveRun = (run: Run) => !run.imported_from && ["queued", "working", "paused", "input_required"].includes(run.status);
+type RunHistory = {
+  runs: Run[] | null; cursor: string | null; reading: boolean; more: boolean; error: Problem | null; metadataError: Problem | null;
+  refresh: () => void; loadMore: () => void;
+};
+
+/** Refresh metadata and every loaded page together after a handoff returns, without dropping older loaded runs. */
+function useRunHistory(agent: Agent, v2: Client, onAgent: (agent: Agent) => void): RunHistory {
   const [runs, setRuns] = useState<Run[] | null>(null);
   const [cursor, setCursor] = useState<string | null>(null);
+  const [reading, setReading] = useState(false);
   const [more, setMore] = useState(false);
   const [error, setError] = useState<Problem | null>(null);
+  const [metadataError, setMetadataError] = useState<Problem | null>(null);
   const asked = useRef(0);
-  const read = (after: string | null) => {
+  const pages = useRef(1);
+  const busy = useRef(false);
+  const read = async (after: string | null, metadata = false) => {
+    if (busy.current) return;
+    busy.current = true;
     const n = ++asked.current;
-    setError(null);
-    if (after) setMore(true);
-    // An archived agent's runs are archived with it: the server lists them only when asked for the archived ones.
-    v2.listAgentRuns(agent.agent_id, 50, after, !!agent.archived_at)
-      .then((r) => { if (n === asked.current) { setRuns((x) => (after ? appendRuns(x ?? [], r.runs) : r.runs)); setCursor(r.next_cursor); } })
-      .catch((e) => { if (n === asked.current) setError(problem(e, after ? "more runs" : "the runs")); })
-      .finally(() => { if (n === asked.current) setMore(false); });
+    setReading(true); setMore(!!after);
+    const metadataRead = metadata ? v2.getAgent(agent.agent_id).then((r) => { if (n === asked.current) { onAgent(r.agent); setMetadataError(null); } }, (e) => { if (n === asked.current) setMetadataError(problem(e, "the agent")); }) : Promise.resolve();
+    try {
+      let next = after;
+      let loaded: Run[] = [];
+      let count = 0;
+      do {
+        const page = await v2.listAgentRuns(agent.agent_id, 50, next, !!agent.archived_at);
+        loaded = appendRuns(loaded, page.runs); next = page.next_cursor; count++;
+      } while (!after && next && count < pages.current);
+      if (n === asked.current) {
+        if (after) pages.current++; else pages.current = count;
+        setRuns((current) => after ? appendRuns(current ?? [], loaded) : loaded); setCursor(next); setError(null);
+      }
+    } catch (e) { if (n === asked.current) setError(problem(e, after ? "more runs" : "the runs")); }
+    finally {
+      await metadataRead;
+      if (n === asked.current) { busy.current = false; setReading(false); setMore(false); }
+    }
   };
-  useEffect(() => { read(null); }, [v2, agent.agent_id]); // eslint-disable-line react-hooks/exhaustive-deps
-  if (error && !runs) return <ProblemCard problem={error} onRetry={() => read(null)} className="" />;
+  useEffect(() => {
+    busy.current = false; pages.current = 1; setRuns(null); setCursor(null); setError(null); setMetadataError(null);
+    void read(null);
+    const refreshVisible = () => { if (!document.hidden) void read(null, true); };
+    window.addEventListener("focus", refreshVisible);
+    document.addEventListener("visibilitychange", refreshVisible);
+    const timer = window.setInterval(refreshVisible, 10_000);
+    return () => { asked.current++; busy.current = false; window.clearInterval(timer); window.removeEventListener("focus", refreshVisible); document.removeEventListener("visibilitychange", refreshVisible); };
+  }, [v2, agent.agent_id, agent.archived_at]); // eslint-disable-line react-hooks/exhaustive-deps
+  return { runs, cursor, reading, more, error, metadataError, refresh: () => { void read(null, true); }, loadMore: () => { if (cursor) void read(cursor); } };
+}
+
+/** The same run links and statuses as the all-runs view, scoped to this agent. Full timelines live on each run page. */
+function RunsTab({ agent, history }: TabProps) {
+  const [query, setQuery] = useState("");
+  const { runs, cursor, more, error, refresh, loadMore } = history!;
+  if (error && !runs) return <ProblemCard problem={error} onRetry={refresh} className="" />;
   if (!runs) return <ListSkeleton label="Loading the runs" rows={5} />;
-  if (!runs.length) return (
-    <div className="border px-4 py-12 text-center">
-      <p className="font-mono text-[13px] text-muted-foreground">No runs of this agent yet.</p>
-      {!agent.archived_at && <p className="mt-2 text-[13px] text-muted-foreground">Start one above: its timeline shows here as the agent works.</p>}
+  const filtered = runs.filter((r) => `${r.title} ${r.run_id} ${r.status}`.toLowerCase().includes(query.toLowerCase()));
+  return <section className="min-h-[380px] overflow-hidden rounded-xl border" aria-label="Agent run history">
+    <div className="flex flex-wrap items-center gap-3 border-b p-3">
+      <label className="flex min-w-0 items-center gap-2 rounded-lg border px-3 py-2"><Search className="size-3.5 text-muted-foreground" aria-hidden /><input aria-label="Search this agent's runs" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search runs…" className="w-40 min-w-0 bg-transparent text-[12px] outline-none" /></label>
+      <span className="text-[12px] text-muted-foreground">{runs.length}{cursor ? "+" : ""} {runs.length === 1 && !cursor ? "run" : "runs"}</span>
+      <div className="ml-auto"><CodingAgentAction label="Query" prompt={queryRunsPrompt(location.origin, agent.agent_id)} playgroundHref={queryPlaygroundHref(agent.agent_id, { archived: !!agent.archived_at })} /></div>
     </div>
-  );
-  return (
-    <>
-      <LatestRun key={runs[0].run_id} v2={v2} run={runs[0]} onRun={(r) => setRuns((xs) => xs && xs.map((x) => (x.run_id === r.run_id ? r : x)))} />
-      <p className="mb-3 font-mono text-[12px] text-muted-foreground">{runs.length}{cursor ? "+" : ""} {runs.length === 1 && !cursor ? "run" : "runs"}</p>
-      <ul className="border" aria-label="Runs">
-        {runs.map((r) => (
-          <li key={r.run_id} className="border-b last:border-b-0">
-            <a href={`#/runs/${encodeURIComponent(r.run_id)}`} className="flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-3 hover:bg-accent">
-              <StatusBadge run={r} />
-              <span className="min-w-0 flex-1 truncate text-[14px]" title={r.title}>{r.title}</span>
-              <LearningChips run={r} />
-              {r.effort && <Chip>effort {r.effort}</Chip>}
-              <span className="font-mono text-[12px] text-muted-foreground">{when(r.created_at)}</span>
-              {r.ended_at && <span className="font-mono text-[12px] text-muted-foreground" title="How long it ran">{elapsed(Date.parse(r.ended_at) - Date.parse(r.created_at))}</span>}
-              {r.cost && (r.cost.usd !== null || soFar(r.cost)) && <span className="font-mono text-[12px] text-muted-foreground">{cost(r.cost)}</span>}
-            </a>
-          </li>
-        ))}
-      </ul>
-      {/* A failed Load more keeps the runs already read, and the button to try again. */}
-      {error && <ProblemCard problem={error} className="mt-4" />}
-      {cursor && <div className="mt-4 flex justify-center"><button type="button" onClick={() => read(cursor)} disabled={more} className="caps border px-4 py-2 text-[12px] hover:bg-accent disabled:opacity-45">{more ? "Loading" : "Load more"}</button></div>}
-    </>
-  );
+    {runs.length ? <div className="overflow-x-auto"><table className="w-full text-left text-[12px]" aria-label="Runs">
+      <thead className="border-b bg-card text-muted-foreground"><tr>{["Status", "Run", "Started", "Duration", "Cost"].map((label) => <th key={label} className="whitespace-nowrap px-4 py-3 font-medium">{label}</th>)}</tr></thead>
+      <tbody>{filtered.map((r) => <tr key={r.run_id} className="border-b last:border-b-0 hover:bg-accent/50">
+        <td className="whitespace-nowrap px-4 py-3"><StatusBadge run={r} /></td>
+        <td className="min-w-48 px-4 py-3"><a href={`#/runs/${encodeURIComponent(r.run_id)}`} className="flex items-center gap-2 font-medium hover:text-primary"><span className="line-clamp-2">{r.title}</span><ArrowUpRight className="size-3 shrink-0 text-muted-foreground" aria-hidden /></a><div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground"><LearningChips run={r} />{r.effort && <span>effort {r.effort}</span>}{r.imported_from && <span>Imported history · {r.imported_from.source}</span>}</div></td>
+        <td className="whitespace-nowrap px-4 py-3 text-muted-foreground">{when(r.created_at)}</td>
+        <td className="whitespace-nowrap px-4 py-3 text-muted-foreground">{r.ended_at ? <span title="How long it ran">{elapsed(Date.parse(r.ended_at) - Date.parse(r.created_at))}</span> : "—"}</td>
+        <td className="whitespace-nowrap px-4 py-3 text-muted-foreground">{r.cost && (r.cost.usd !== null || soFar(r.cost)) ? cost(r.cost) : "—"}</td>
+      </tr>)}</tbody>
+    </table>{!filtered.length && <p className="p-10 text-center text-[13px] text-muted-foreground">No loaded runs match your search.</p>}</div>
+      : <div className="px-4 py-12 text-center text-[13px] text-muted-foreground"><p>No runs of this agent yet.</p>{!agent.archived_at && <p className="mt-2">Choose Run agent to continue with your coding agent or the API playground.</p>}</div>}
+    {error && <ProblemCard problem={error} onRetry={refresh} className="m-4" />}
+    {cursor && <div className="flex justify-center p-4"><Button size="sm" onClick={loadMore} disabled={more}>{more ? "Loading" : "Load more"}</Button></div>}
+  </section>;
 }
 
 /** The current revision's workflow as its graph, read-only; editing it is the editor's Workflow step. */
-function WorkflowTab({ agent, go }: TabProps) {
+function WorkflowTab({ agent }: TabProps) {
   const doc = agent.definition.workflow;
   const graph = useMemo(() => workflowGraph(doc), [doc]);
   const marks = useMemo(() => ({ meta: metaOf(doc, graph) }), [doc, graph]);
   return (
-    <section className="border">
+    <section className="overflow-hidden rounded-xl border">
       <div className="flex flex-wrap items-center gap-3 border-b px-4 py-2">
         <span className="caps text-[11px] font-semibold">Graph</span>
         <span className="font-mono text-[11px] text-muted-foreground">{graph.nodes.length} nodes · rev {agent.definition.version}</span>
         <span className="flex-1" />
-        <Button size="sm" onClick={() => go(agentHash(agent.agent_id, "edit"))}><Pencil aria-hidden /> Edit the workflow</Button>
+        <CodingAgentAction label="Edit workflow" prompt={editAgentPrompt(location.origin, agent.agent_id)} playgroundHref={`#/playground?operation=edit-agent&agent=${encodeURIComponent(agent.agent_id)}`} />
       </div>
       <div className="min-h-[360px] overflow-auto bg-[radial-gradient(hsl(var(--border))_1px,transparent_1px)] [background-size:22px_22px] px-4 py-5">
         {graph.nodes.length ? <WorkflowGraph graph={graph} marks={marks} label="The workflow's graph" minScale={0.55} />

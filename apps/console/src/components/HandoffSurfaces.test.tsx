@@ -12,6 +12,18 @@ const settle = async () => { await act(async () => { await new Promise((r) => se
 const button = (label: string) => [...document.querySelectorAll("button")].find((b) => b.textContent?.trim() === label);
 
 describe("Coding-agent handoffs in the console", () => {
+  it("offers creation destinations directly on the agent list instead of opening the old builder", async () => {
+    const go = vi.fn();
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    await act(async () => { root!.render(createElement(AgentsPage, { v2: { listAgents: async () => ({ agents: [], next_cursor: null }) } as never, archived: false, go })); });
+    expect(button("Build an agent")).toBeDefined();
+    await act(async () => { button("Build an agent")!.click(); });
+    expect(document.querySelector('[role="menu"]')?.textContent).toContain("Codex CLI");
+    expect(document.querySelector('[role="menu"] a')?.getAttribute("href")).toBe("#/playground?operation=create-agent");
+    expect(go).not.toHaveBeenCalled();
+    expect(button("New agent")).toBeUndefined();
+  });
   it("offers Import agents on an empty agent list without making an execution request", async () => {
     const listAgents = vi.fn(async () => ({ agents: [], next_cursor: null }));
     const host = document.body.appendChild(document.createElement("div"));

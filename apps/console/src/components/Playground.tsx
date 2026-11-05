@@ -89,23 +89,21 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
   };
   const placeholder = kind === "agentic" ? "The run's first message, e.g. Summarize the standup: we ship Friday." : '{ "subject": "...", "body": "..." }';
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex flex-wrap items-center gap-3 border-b px-5 py-3 md:px-6">
         <label className="flex items-center gap-2 text-[12px]">
           <span className="caps text-muted-foreground">Agent</span>
-          <select value={agentId} onChange={(e) => { setAgentId(e.target.value); setRevision(""); onAgent?.(e.target.value); }} className="h-10 border bg-background px-3 font-mono text-[13px]">
+          <select aria-label="Agent" value={agentId} onChange={(e) => { setAgentId(e.target.value); setRevision(""); onAgent?.(e.target.value); }} className="h-10 max-w-full rounded-lg border bg-background px-3 text-sm">
             {agents.map((a) => <option key={a.agent_id} value={a.agent_id}>{a.definition.name}</option>)}
           </select>
         </label>
-        <span className="font-mono text-[12px]"><span className="text-primary">POST</span> <span className="text-muted-foreground">/v2/agents/{agentId || "{agent_id}"}/runs</span></span>
-        <span className="flex-1" />
-        <span className="caps text-[11px] text-muted-foreground">Live API</span>
+
       </div>
       <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-2">
         <section className="flex min-h-0 flex-col border-b lg:border-b-0 lg:border-r">
           <header className="flex items-center justify-between border-b px-5 py-3 md:px-6">
             <span className="text-[14px] font-semibold">Request</span>
-            <span className="flex gap-4 text-[12px]">{(["form", "json"] as const).map((v) => <button key={v} type="button" onClick={() => setView(v)} className={cn("border-b pb-1 capitalize", view === v ? "border-foreground" : "border-transparent text-muted-foreground")}>{v === "json" ? "JSON" : "Form"}</button>)}</span>
+            <span className="flex gap-4 text-[12px]">{(["form", "json"] as const).map((v) => <button key={v} type="button" onClick={() => setView(v)} className={cn("border-b pb-1 capitalize", view === v ? "border-primary" : "border-transparent text-muted-foreground")}>{v === "json" ? "JSON" : "Form"}</button>)}</span>
           </header>
           <div className="min-h-0 flex-1 space-y-6 overflow-auto px-5 py-6 md:px-6">
             <div><h2 className="text-xl font-semibold">Start a run</h2><p className="mt-1 text-[13px] text-muted-foreground">{agent ? `${agent.definition.name}: ${kind === "agentic" ? "an" : "a"} ${kind} agent.` : "Pick an agent."} The server answers 202 with the run; follow it on its page.</p></div>
@@ -138,7 +136,7 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
                   </select>
                 </Label>
                 <Label name="effort" note="How hard the model thinks. Empty uses the agent's own.">
-                  <div className="flex gap-2">{["", ...efforts].map((e) => <button key={e || "default"} type="button" onClick={() => setEffort(e)} className={cn("caps border px-3 py-2 text-[12px]", effort === e ? "border-foreground" : "text-muted-foreground")}>{e || "default"}</button>)}</div>
+                  <select aria-label="Effort" value={effort} onChange={(e) => setEffort(e.target.value)} className={field}>{["", ...efforts].map((e) => <option key={e || "default"} value={e}>{e || "Agent default"}</option>)}</select>
                 </Label>
                 {kind === "agentic" && (
                   <Label name="max_cost_usd" note="A spend cap in dollars; empty means none." error={!built.ok && built.field === "max_cost_usd" ? built.message : undefined}>
@@ -159,8 +157,8 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
         <section className="flex min-h-0 flex-col">
           <header className="flex items-center justify-between border-b px-5 py-3 md:px-6">
             <span className="flex gap-4 text-[13px]">
-              <button type="button" onClick={() => setPane("code")} className={cn("border-b pb-1", pane === "code" ? "border-foreground" : "border-transparent text-muted-foreground")}>Code</button>
-              <button type="button" onClick={() => setPane("response")} disabled={!result} className={cn("border-b pb-1 disabled:opacity-45", pane === "response" ? "border-foreground" : "border-transparent text-muted-foreground")}>Response{result && <span className={cn("ml-2 font-mono", result.status < 300 ? "text-success-text" : "text-destructive-text")}>{result.status}</span>}</button>
+              <button type="button" onClick={() => setPane("code")} className={cn("border-b pb-1", pane === "code" ? "border-primary" : "border-transparent text-muted-foreground")}>Code</button>
+              <button type="button" onClick={() => setPane("response")} disabled={!result} className={cn("border-b pb-1 disabled:opacity-45", pane === "response" ? "border-primary" : "border-transparent text-muted-foreground")}>Response{result && <span className={cn("ml-2 font-mono", result.status < 300 ? "text-success-text" : "text-destructive-text")}>{result.status}</span>}</button>
             </span>
             {pane === "code" && <Button size="icon" variant="outline" aria-label="Copy code" onClick={() => void navigator.clipboard?.writeText(code)}><Copy aria-hidden /></Button>}
           </header>
@@ -195,7 +193,7 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
   );
 }
 
-const field = "w-full border bg-background px-3 py-2.5 font-mono text-[13px] outline-none placeholder:text-muted-foreground focus:border-border-strong";
+const field = "w-full rounded-lg border bg-card px-3 py-2.5 font-mono text-[13px] outline-none placeholder:text-muted-foreground focus:border-border-strong";
 
 function Label({ name, required, note, error, children }: { name: string; required?: boolean; note?: string; error?: string; children: React.ReactNode }) {
   return (

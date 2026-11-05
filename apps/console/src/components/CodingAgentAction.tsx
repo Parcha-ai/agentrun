@@ -1,5 +1,5 @@
 import { Check, ChevronDown, Code, Copy, MousePointer2, X } from "lucide-react";
-import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Button } from "@/components/ui/button";
 import { codingAgentLabels, codingAgentLink, codingAgents, CODING_AGENT_EVENT, readCodingAgent, rememberCodingAgent, type CodingAgent } from "@/lib/codingAgentLinks";
@@ -33,11 +33,11 @@ function usePreferredAgent() {
   return { agent, choose };
 }
 
-export type CodingAgentActionProps = { label: string; prompt: string; playgroundHref?: string; disabled?: boolean };
+export type CodingAgentActionProps = { label: string; prompt: string; playgroundHref?: string; disabled?: boolean; compact?: boolean; compactIcon?: ReactNode };
 
 /** A remembered handoff destination. Selecting a destination only saves the preference; the main button opens or
  * copies the prompt. The menu lives above scroll containers and stays inside the viewport. */
-export function CodingAgentAction({ label, prompt, playgroundHref, disabled }: CodingAgentActionProps) {
+export function CodingAgentAction({ label, prompt, playgroundHref, disabled, compact = false, compactIcon }: CodingAgentActionProps) {
   const { agent, choose } = usePreferredAgent();
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -103,15 +103,17 @@ export function CodingAgentAction({ label, prompt, playgroundHref, disabled }: C
     items[next]?.focus();
   };
   const itemStyle = "flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-[13px] hover:bg-accent focus:bg-accent focus:outline-none";
+  const content = <>{compact && compactIcon ? compactIcon : <CodingAgentIcon agent={agent} />}{compact ? <span className="sr-only">{copied ? "Copied" : label}</span> : copied ? "Copied" : label}</>;
+  const actionTitle = compact ? `${label} · ${title}` : title;
   return <div ref={container} className="inline-flex shrink-0">
     {href && !disabled
-      ? <a href={href} title={title} className="caps inline-flex h-8 items-center justify-center gap-2 whitespace-nowrap border px-3 text-[12px] transition-colors hover:border-border-strong hover:bg-accent"><CodingAgentIcon agent={agent} />{label}</a>
-      : <Button size="sm" disabled={disabled} title={title} onClick={() => agent ? void copy() : setOpen(true)}><CodingAgentIcon agent={agent} />{copied ? "Copied" : label}</Button>}
-    <Button ref={trigger} size="icon" className="-ml-px" disabled={disabled} aria-label={`Choose coding agent for ${label}`} aria-haspopup="menu" aria-expanded={open} aria-controls={open ? id : undefined}
+      ? <a href={href} title={actionTitle} aria-label={compact ? label : undefined} className={`caps inline-flex h-8 items-center justify-center gap-2 whitespace-nowrap rounded-l-lg border text-[12px] transition-colors hover:border-border-strong hover:bg-accent ${compact ? "px-2" : "px-3"}`}>{content}</a>
+      : <Button size="sm" className={`rounded-r-none${compact ? " px-2" : ""}`} disabled={disabled} title={actionTitle} aria-label={compact ? label : undefined} onClick={() => agent ? void copy() : setOpen(true)}>{content}</Button>}
+    <Button ref={trigger} size="icon" className="rounded-l-none border-l-0" disabled={disabled} aria-label={`Choose coding agent for ${label}`} aria-haspopup="menu" aria-expanded={open} aria-controls={open ? id : undefined}
       onClick={() => setOpen((v) => !v)} onKeyDown={(event) => { if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); setOpen(true); } }}><ChevronDown aria-hidden /></Button>
     <span className="sr-only" role="status">{copied ? "Prompt copied" : ""}</span>
     {open && createPortal(<div ref={menu} id={id} role="menu" aria-label="Coding agent" onKeyDown={navigate}
-      className={`fixed z-50 overflow-y-auto rounded-lg border bg-background p-1 shadow-xl${positioned ? "" : " invisible"}`} style={position ?? { width: 240 }}>
+      className={`fixed z-50 overflow-y-auto rounded-xl border bg-card p-1 shadow-xl${positioned ? "" : " invisible"}`} style={position ?? { width: 240 }}>
       {codingAgents.map((value) => <button key={value} type="button" role="menuitemradio" aria-checked={agent === value} tabIndex={-1} className={itemStyle} onClick={() => { choose(value); close(); }}>
         <CodingAgentIcon agent={value} />{codingAgentLabels[value]}{agent === value && <Check className="ml-auto size-3.5" aria-hidden />}
       </button>)}

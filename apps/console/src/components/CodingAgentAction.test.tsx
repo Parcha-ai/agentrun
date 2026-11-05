@@ -107,4 +107,17 @@ describe("CodingAgentAction", () => {
     await click(button("Codex CLI"));
     expect(button("Query").title).toBe("Copy prompt for Codex CLI");
   });
+
+  it("keeps compact card actions named and functional", async () => {
+    const write = clipboard();
+    localStorage.setItem(CODING_AGENT_PREFERENCE, "claude-cli");
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(CodingAgentAction, { label: "Run agent", prompt, compact: true })));
+    const action = host.querySelector<HTMLButtonElement>('button[aria-label="Run agent"]')!;
+    expect(action.title).toBe("Run agent · Copy prompt for Claude Code CLI");
+    expect(action.querySelector(".sr-only")?.textContent).toBe("Run agent");
+    await click(action);
+    expect(write).toHaveBeenCalledWith(prompt);
+  });
 });

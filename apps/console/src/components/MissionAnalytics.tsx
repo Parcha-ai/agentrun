@@ -1,19 +1,20 @@
 import { cn } from "@/lib/utils";
+import { Activity, Cpu } from "lucide-react";
 import { type Analytics, type AnalyticsGroup, cachedShare, compact, coverage, duration, groupCost, type MissionView, outcomes, percent, RANGES, type StatsRange, successRate, trendDays } from "@/lib/mission";
 
 /** The range and agent picker over the analytics, one row above them. */
 export function AnalyticsFilter({ range, onRange, agent, agents, onAgent }: { range: StatsRange; onRange: (range: StatsRange) => void; agent: string | null; agents: MissionView["perAgent"]; onAgent?: (agent: string | null) => void }) {
   return (
     <div className="flex flex-wrap items-center gap-3">
-      <div className="flex" role="radiogroup" aria-label="Range">
+      <div className="flex gap-1 rounded-lg border p-1" role="radiogroup" aria-label="Range">
         {RANGES.map((r) => (
-          <label key={r.id} className={cn("caps -ml-px cursor-pointer border px-3 py-2 text-[12px] first:ml-0 has-[:focus-visible]:outline has-[:focus-visible]:outline-1 has-[:focus-visible]:outline-offset-2", range === r.id ? "relative border-foreground bg-foreground text-background" : "text-muted-foreground hover:bg-accent hover:text-foreground")}>
+          <label key={r.id} className={cn("cursor-pointer rounded-md px-3 py-1.5 text-[12px] has-[:focus-visible]:outline has-[:focus-visible]:outline-1 has-[:focus-visible]:outline-offset-2", range === r.id ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground")}>
             <input type="radio" name="mission-range" value={r.id} checked={range === r.id} onChange={() => onRange(r.id)} className="sr-only" />{r.label}
           </label>
         ))}
       </div>
       {onAgent && agents.length > 0 && (
-        <select aria-label="Agent" value={agent ?? ""} onChange={(e) => onAgent(e.target.value || null)} className="h-[38px] border bg-background px-3 font-mono text-[13px]">
+        <select aria-label="Agent" value={agent ?? ""} onChange={(e) => onAgent(e.target.value || null)} className="h-[38px] max-w-[220px] rounded-lg border bg-background px-3 text-[13px]">
           <option value="">All agents</option>
           {agents.map((a) => <option key={a.agentId} value={a.agentId}>{a.name}</option>)}
         </select>
@@ -42,15 +43,15 @@ export function MissionAnalytics({ a, basis, now = Date.now(), refreshing = fals
     <div className={cn("space-y-6 transition-opacity", refreshing && "opacity-60")} aria-busy={refreshing}>
       <ul className="grid grid-cols-2 gap-3 xl:grid-cols-4">
         {tiles.map((tile) => (
-          <li key={tile.label} className="border p-4">
+          <li key={tile.label} className="rounded-xl border bg-card p-5">
             <p className="caps text-[11px] text-muted-foreground">{tile.label}</p>
-            <p className="mt-2 font-mono text-xl font-semibold">{tile.value}</p>
-            {tile.notes.filter(Boolean).map((n) => <p key={n} className="mt-1 font-mono text-[11px] text-muted-foreground">{n}</p>)}
+            <p className="mt-3 font-mono text-[28px] leading-tight">{tile.value}</p>
+            {tile.notes.filter(Boolean).map((n) => <p key={n} className="mt-2 text-[12px] leading-relaxed text-muted-foreground">{n}</p>)}
           </li>
         ))}
       </ul>
       <Trend days={trendDays(a.by_day, a.filter.from, now)} />
-      <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
+      <div className="grid grid-cols-1 gap-5 xl:grid-cols-2">
         <HarnessTable rows={a.by_harness_effort} basis={basis} />
         <ToolsTable tools={a.tools} />
       </div>
@@ -59,8 +60,8 @@ export function MissionAnalytics({ a, basis, now = Date.now(), refreshing = fals
   );
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
-  return <section className="border"><h3 className="caps border-b px-4 py-3 text-[12px] font-semibold">{title}</h3>{children}</section>;
+function Section({ title, children }: { title: React.ReactNode; children: React.ReactNode }) {
+  return <section className="min-w-0 overflow-hidden rounded-xl border bg-card"><h3 className="caps flex min-h-[52px] items-center gap-2 border-b px-5 py-3 text-[12px] font-semibold">{title}</h3>{children}</section>;
 }
 const th = "px-4 py-2 text-left font-normal";
 const td = "px-4 py-2.5 align-top";
@@ -138,7 +139,12 @@ const short = (day: string) => day.slice(5);
  *  each bar its own hover and focus readout, and a table view of every value. */
 function Trend({ days }: { days: Analytics["by_day"] }) {
   const any = days.some((d) => d.runs > 0);
-  if (!any) return <Section title="Per day"><p className="px-4 py-6 text-center font-mono text-[13px] text-muted-foreground">No runs started in this range{days.length ? " in the last 30 days" : ""}.</p></Section>;
+  const runTitle = <><Activity className="size-4" aria-hidden />Run activity</>;
+  const tokenTitle = <><Cpu className="size-4" aria-hidden />Token usage</>;
+  if (!any) return <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
+    <Section title={runTitle}><p className="flex min-h-[220px] items-center justify-center px-5 py-6 text-center text-[13px] text-muted-foreground">No runs started in this range{days.length ? " in the last 30 days" : ""}.</p></Section>
+    <Section title={tokenTitle}><p className="flex min-h-[220px] items-center justify-center px-5 py-6 text-center text-[13px] text-muted-foreground">No token usage in this range.</p></Section>
+  </div>;
   const runsTop = niceTop(Math.max(...days.map((d) => d.runs)));
   const tokensTop = niceTop(Math.max(...days.map((d) => d.tokens)));
   const SEGMENTS = [
@@ -147,9 +153,10 @@ function Trend({ days }: { days: Analytics["by_day"] }) {
     { key: "other", label: "Other", className: "bg-border-strong", of: otherOf },
   ];
   return (
-    <Section title={`Per day, ${days[0]!.day} to ${days.at(-1)!.day} (UTC)`}>
-      <div className="grid grid-cols-1 gap-6 p-4 xl:grid-cols-2">
-        <figure>
+    <div className="space-y-3">
+      <p className="text-[12px] text-muted-foreground">{`Per day, ${days[0]!.day} to ${days.at(-1)!.day} (UTC)`}</p>
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
+        <Section title={runTitle}><figure className="p-5">
           <figcaption className="mb-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[12px]">
             <span className="font-semibold">Runs</span>
             {SEGMENTS.map((s) => <span key={s.key} className="inline-flex items-center gap-1.5 text-muted-foreground"><span className={cn("inline-block size-2.5 rounded-[2px]", s.className)} aria-hidden />{s.label}</span>)}
@@ -157,22 +164,22 @@ function Trend({ days }: { days: Analytics["by_day"] }) {
           <Bars days={days} top={runsTop} label="Runs per day"
             stack={(d) => SEGMENTS.map((s) => ({ className: s.className, value: s.of(d) }))}
             readout={(d) => [`${d.runs} ${d.runs === 1 ? "run" : "runs"}`, `${d.completed} completed · ${d.failed} failed · ${otherOf(d)} other`]} />
-        </figure>
-        <figure>
+        </figure></Section>
+        <Section title={tokenTitle}><figure className="p-5">
           <figcaption className="mb-2 text-[12px] font-semibold">Tokens</figcaption>
           <Bars days={days} top={tokensTop} label="Tokens per day" format={compact}
             stack={(d) => [{ className: "bg-primary", value: d.tokens }]}
             readout={(d) => [`${compact(d.tokens)} tokens`, coverage(d) ?? `${d.runs} ${d.runs === 1 ? "run" : "runs"}`]} />
-        </figure>
+        </figure></Section>
       </div>
-      <details className="border-t px-4 py-2">
+      <details className="rounded-lg border bg-card px-5 py-3">
         <summary className="caps cursor-pointer text-[11px] text-muted-foreground">Table</summary>
         <div className="overflow-x-auto"><table className="mt-2 w-full border-collapse font-mono text-[12px]">
           <thead><tr className="caps text-[11px] text-muted-foreground">{["Day", "Runs", "Completed", "Failed", "Other", "Tokens"].map((h) => <th key={h} className="py-1 pr-4 text-left font-normal">{h}</th>)}</tr></thead>
           <tbody>{days.map((d) => <tr key={d.day}><td className="py-0.5 pr-4">{d.day}</td><td className="pr-4">{d.runs}</td><td className="pr-4">{d.completed}</td><td className="pr-4">{d.failed}</td><td className="pr-4">{otherOf(d)}</td><td className="pr-4">{d.tokens.toLocaleString("en-US")}</td></tr>)}</tbody>
         </table></div>
       </details>
-    </Section>
+    </div>
   );
 }
 

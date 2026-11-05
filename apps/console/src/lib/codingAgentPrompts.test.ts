@@ -56,6 +56,16 @@ describe("coding-agent handoffs", () => {
     expect(prompt).toContain("Do not start a run");
   });
 
+  it("carries the user's build brief and preserves the supplied template definition", () => {
+    const definition = { version: 1 as const, name: "Page reader", instructions: "Read the page and cite it.", harness: "pi" as const, tools: ["web_fetch"], skills: [] as [] };
+    const prompt = buildAgentPrompt("http://localhost:7340", "Keep the summary under 200 words.", { definition });
+    expect(prompt).toContain("Keep the summary under 200 words.");
+    expect(prompt).toContain(JSON.stringify({ definition }, null, 2));
+    expect(prompt).toContain("Preserve the template's instructions, tools and skills");
+    expect(prompt).toContain("Ask only the missing questions");
+    expect(prompt).toContain("Do not start a run");
+  });
+
   it("edits the exact agent using a new revision and preserves unrelated configuration", () => {
     const prompt = editAgentPrompt("https://console.example.test", "support/a?b");
     expect(prompt).toContain("/v2/agents/support%2Fa%3Fb");

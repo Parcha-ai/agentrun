@@ -1,21 +1,13 @@
-import { Bot, History, LayoutDashboard, LogOut, Menu, Monitor, Moon, Settings, Sun, Terminal } from "lucide-react";
-import { type ReactNode, useState } from "react";
+import { Brain, ChevronDown, Code, Hammer, History, LayoutGrid, LogOut, Menu, Monitor, Moon, Settings, Sun } from "lucide-react";
+import { type ReactNode, useEffect, useState } from "react";
 import { ConnectionBanner } from "@/components/Connection";
 import { cn } from "@/lib/utils";
 import { applyTheme, currentTheme, saveTheme, type Theme, THEMES } from "@/lib/theme";
 
 export type Section = "mission" | "playground" | "agents" | "runs" | "settings";
 
-// v1's navigation only. Deployments, runners, swarms, teams and billing are not part of this console.
-const NAV: { id: Section; label: string; Icon: typeof Bot }[] = [
-  { id: "mission", label: "Mission Control", Icon: LayoutDashboard },
-  { id: "playground", label: "Playground", Icon: Terminal },
-  { id: "agents", label: "Agents", Icon: Bot },
-  { id: "runs", label: "Runs", Icon: History },
-  { id: "settings", label: "Settings", Icon: Settings },
-];
-
-const THEME_LABEL: Record<Theme, [string, typeof Bot]> = { system: ["System", Monitor], light: ["Light", Sun], dark: ["Dark", Moon] };
+const ROUTES: Record<Section, string> = { mission: "#/", playground: "#/playground", agents: "#/agents", runs: "#/runs", settings: "#/settings/keys" };
+const THEME_LABEL: Record<Theme, [string, typeof Brain]> = { system: ["System", Monitor], light: ["Light", Sun], dark: ["Dark", Moon] };
 
 /** System (the OS's), Light or Dark: a pick shows at once and is kept in this browser (lib/theme). */
 function ThemeSwitch() {
@@ -23,12 +15,12 @@ function ThemeSwitch() {
   const [theme, setTheme] = useState<Theme>(() => currentTheme());
   const pick = (t: Theme) => { saveTheme(t); applyTheme(t); setTheme(t); };
   return (
-    <div role="group" aria-label="Theme" className="flex border">
+    <div role="group" aria-label="Theme" className="flex gap-1 rounded-lg border p-1">
       {THEMES.map((t) => {
         const [label, Icon] = THEME_LABEL[t];
         return (
           <button key={t} type="button" aria-label={label} title={label} aria-pressed={theme === t} onClick={() => pick(t)}
-            className={cn("flex flex-1 items-center justify-center py-2 hover:bg-accent", theme === t && "bg-primary/[0.06] text-primary")}>
+            className={cn("flex flex-1 items-center justify-center rounded-md py-1.5 text-muted-foreground hover:bg-accent hover:text-foreground", theme === t && "bg-accent text-foreground")}>
             <Icon className="size-4" aria-hidden />
           </button>
         );
@@ -38,35 +30,57 @@ function ThemeSwitch() {
 }
 
 export function Wordmark() {
-  return <span className="whitespace-nowrap font-mono text-[22px] font-semibold" aria-label="AgentRun">agent<span className="text-primary">.run()</span></span>;
+  return <span className="inline-flex items-center whitespace-nowrap text-[17px] font-semibold [font-family:monospace]" aria-label="AgentRun">
+    <svg viewBox="0 0 64 64" className="mr-1 size-[17px] text-primary" aria-hidden><path d="M18 12L42 32L18 52" fill="none" stroke="currentColor" strokeWidth="8" strokeLinecap="square" strokeLinejoin="miter" /></svg>
+    agent<span className="text-primary">.run()</span>
+  </span>;
 }
 
-/** The AgentRun shell: a 220px sidebar with the wordmark, the nav (the active item orange with a 2px inset bar),
- *  and sign out at its foot; under 700px a top bar with a menu that opens the nav. Settings shows only when `settings`
- *  (the server has a settings page to open). Above every page, the one banner on the link to the server, while it is
- *  away and as it comes back. */
-export function Shell({ active, settings = false, onNavigate, onSignOut, children }: { active: Section; settings?: boolean; onNavigate?: (s: Section) => void; onSignOut?: () => void; children: ReactNode }) {
+export type ShellProps = { active: Section; settings?: boolean; building?: boolean; onBuild?: () => void; onNavigate?: (s: Section) => void; onSignOut?: () => void; children: ReactNode };
+
+/** The hosted console's workspace shell, with only destinations this server supports. The logo row aligns with
+ * the 48px page toolbar. Agent creation, management and history share the expandable Agents section. */
+export function Shell({ active, settings = false, building = false, onBuild, onNavigate, onSignOut, children }: ShellProps) {
   const [open, setOpen] = useState(false);
+  const [agentsExpanded, setAgentsExpanded] = useState(true);
+  const agentsActive = active === "agents" || active === "runs";
+  useEffect(() => { if (agentsActive || building) setAgentsExpanded(true); }, [active, building]);
+  const navigate = (section: Section) => { if (onNavigate) onNavigate(section); else location.hash = ROUTES[section]; setOpen(false); };
+  const build = () => { if (onBuild) onBuild(); else location.hash = "#/agents/new"; setOpen(false); };
+  const navStyle = (selected: boolean, child = false) => cn("flex w-full items-center gap-2 rounded-lg px-2.5 text-left text-[13px] leading-5 transition-colors hover:bg-foreground/5", child ? "min-h-8 py-1.5 pl-[34px]" : "min-h-9 py-2", selected && "bg-primary/[0.06] text-primary");
   return (
     <div className="flex h-dvh min-h-0 flex-col overflow-hidden bg-background text-foreground md:flex-row">
-      <header className="flex shrink-0 items-center justify-between border-b px-4 py-3 md:hidden">
-        <Wordmark />
-        <button type="button" className="border p-2" aria-label="Navigation" aria-expanded={open} onClick={() => setOpen((v) => !v)}><Menu className="size-[18px]" aria-hidden /></button>
+      <header className="flex h-12 shrink-0 items-center justify-between border-b px-4 md:hidden">
+        <button type="button" onClick={() => navigate("mission")} aria-label="AgentRun home"><Wordmark /></button>
+        <button type="button" className="rounded-lg border p-2" aria-label="Navigation" aria-expanded={open} onClick={() => setOpen((v) => !v)}><Menu className="size-[18px]" aria-hidden /></button>
       </header>
-      <aside className={cn("shrink-0 flex-col border-r bg-background px-3 pb-4 pt-6 md:flex md:h-dvh md:w-[220px]", open ? "flex max-h-[60dvh] overflow-y-auto border-b md:max-h-none" : "hidden")}>
-        <div className="hidden px-3 pb-[30px] md:block"><Wordmark /></div>
-        <nav aria-label="Navigation" className="flex flex-col gap-1">
-          {NAV.filter((n) => n.id !== "settings" || settings).map(({ id, label, Icon }) => (
-            <button key={id} type="button" onClick={() => { onNavigate?.(id); setOpen(false); }} aria-current={active === id ? "page" : undefined}
-              className={cn("flex items-center gap-2.5 p-3 text-left text-[13px] hover:bg-accent", active === id && "bg-primary/[0.06] text-primary shadow-[inset_2px_0_hsl(var(--primary))]")}>
-              <Icon className="size-4" aria-hidden /> {label}
-            </button>
-          ))}
+      <aside className={cn("shrink-0 flex-col border-r bg-background md:flex md:h-dvh md:w-[220px]", open ? "flex max-h-[60dvh] overflow-y-auto border-b md:max-h-none" : "hidden")}>
+        <div className="hidden h-12 shrink-0 items-center border-b px-4 md:flex">
+          <button type="button" onClick={() => navigate("mission")} aria-label="AgentRun home"><Wordmark /></button>
+        </div>
+        <nav aria-label="Navigation" className="flex min-h-0 flex-1 flex-col overflow-y-auto px-3 pt-3">
+          <div className="space-y-0.5">
+            <button type="button" className={navStyle(active === "mission")} aria-current={active === "mission" ? "page" : undefined} onClick={() => navigate("mission")}><LayoutGrid className="size-4 shrink-0" aria-hidden />Mission Control</button>
+            <button type="button" className={navStyle(active === "playground")} aria-current={active === "playground" ? "page" : undefined} onClick={() => navigate("playground")}><Code className="size-4 shrink-0" aria-hidden />API playground</button>
+            <div>
+              <button type="button" className={cn(navStyle(false), agentsActive && "text-primary")} aria-expanded={agentsExpanded} aria-controls="agent-navigation" onClick={() => setAgentsExpanded((value) => !value)}>
+                <Brain className="size-4 shrink-0" aria-hidden /><span className="flex-1">Agents</span><ChevronDown className={cn("size-3.5 transition-transform", !agentsExpanded && "-rotate-90")} aria-hidden />
+              </button>
+              <div id="agent-navigation" hidden={!agentsExpanded} className="space-y-0.5">
+                <button type="button" className={navStyle(building, true)} aria-current={building ? "page" : undefined} onClick={build}><Hammer className="size-3.5 shrink-0" aria-hidden />Build</button>
+                <button type="button" className={navStyle(active === "agents" && !building, true)} aria-current={active === "agents" && !building ? "page" : undefined} onClick={() => navigate("agents")}><Brain className="size-3.5 shrink-0" aria-hidden />Managed agents</button>
+                <button type="button" className={navStyle(active === "runs", true)} aria-current={active === "runs" ? "page" : undefined} onClick={() => navigate("runs")}><History className="size-3.5 shrink-0" aria-hidden />Runs</button>
+              </div>
+            </div>
+          </div>
+          {settings && <div data-sidebar-account className="mt-auto border-t pb-2 pt-3">
+            <button type="button" className={navStyle(active === "settings")} aria-current={active === "settings" ? "page" : undefined} onClick={() => navigate("settings")}><Settings className="size-4 shrink-0" aria-hidden />Settings</button>
+          </div>}
         </nav>
-        <div className="mt-4 md:mt-auto"><ThemeSwitch /></div>
-        <button type="button" onClick={onSignOut} className="caps mt-2 flex items-center gap-2.5 border px-3 py-2.5 text-[12px] hover:bg-accent">
-          <LogOut className="size-4" aria-hidden /> Sign out
-        </button>
+        <div className="shrink-0 space-y-2 px-3 pb-4 pt-3">
+          <ThemeSwitch />
+          <button type="button" onClick={onSignOut} className="caps flex min-h-9 w-full items-center gap-2.5 rounded-lg border px-3 py-2 text-[12px] hover:bg-accent"><LogOut className="size-4" aria-hidden />Sign out</button>
+        </div>
       </aside>
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <ConnectionBanner />

@@ -1,13 +1,12 @@
 import type { Config } from "tailwindcss";
 
-// The AgentRun look: shadcn's variables, an orange primary, two fonts, and no rounded corners anywhere.
+// The hosted AgentRun theme: shadcn's variables, orange accents and the same two fonts.
 const hsl = (name: string) => `hsl(var(--${name}) / <alpha-value>)`;
 
 export default {
   darkMode: ["class"],
   content: ["./index.html", "./src/**/*.{ts,tsx}"],
   theme: {
-    borderRadius: { none: "0", DEFAULT: "0" },
     extend: {
       fontFamily: {
         sans: ['"Schibsted Grotesk"', "sans-serif"],

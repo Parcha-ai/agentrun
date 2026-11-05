@@ -6,11 +6,13 @@
 @tailwind components;
 @tailwind utilities;
 
-/* The AgentRun look, the hosted AgentRun console's: shadcn's variables, light or dark as the OS is or as the person
-   picked (lib/theme.ts puts .dark or .light on <html>), an orange primary, a 1px border on everything, and no rounded
-   corners. Values are HSL triplets. */
+/* The hosted AgentRun console's theme: light or dark as the OS is or as the person picked, orange accents,
+   quiet borders, 8px controls and 12px cards. Values are HSL triplets. */
 @layer base {
   :root {
+    --ar-control-radius: 8px;
+    --ar-card-radius: 12px;
+    --ar-composer-radius: 14px;
     color-scheme: light;
     --background: 0 0% 100%;
     --foreground: 240 10% 3.9%;
@@ -62,12 +64,13 @@
     --run-active: 239 83.3% 71.8%;
     --run-error-surface: 0 33.3% 17.1%;
   }
-  * { @apply border-border; border-radius: 0 !important; }
+  * { @apply border-border; }
   html, body, #root { height: 100%; }
   /* Before the script puts the theme on <html>, a dark OS's page is dark already (.dark's background), never a white
      flash. */
   @media (prefers-color-scheme: dark) { html:not(.light):not(.dark) { --background: 240 6% 9%; color-scheme: dark; } }
   body { @apply bg-background font-sans text-foreground antialiased; }
+  input:not([type="checkbox"]):not([type="radio"]), select, textarea { border-radius: var(--ar-control-radius); }
   :focus-visible { outline: 1px solid hsl(var(--ring)); outline-offset: 1px; }
 }
 

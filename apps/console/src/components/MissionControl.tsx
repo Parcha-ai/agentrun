@@ -10,9 +10,20 @@ import { MissionSkeleton } from "@/components/Skeleton";
 import type { Problem } from "@/lib/problem";
 import { RANGES, type StatsRange } from "@/lib/mission";
 import { elapsed } from "@/lib/runGraph";
+import { Brain, History, RadioTower } from "lucide-react";
 
 /** The range and agent the page's analytics are asked for, and how to change them. */
 export type AnalyticsScope = { range: StatsRange; onRange: (range: StatsRange) => void; agent: string | null; onAgent?: (agent: string | null) => void; refreshing?: boolean };
+
+function MissionFrame({ actions, children }: { actions?: React.ReactNode; children: React.ReactNode }) {
+  return <div className="flex h-full min-h-0 flex-col">
+    <header className="flex min-h-12 shrink-0 flex-wrap items-center justify-between gap-2 border-b px-5 py-2 md:px-6">
+      <h1 className="flex items-center gap-2.5 font-mono text-[12px] font-semibold"><RadioTower className="size-4" aria-hidden />Mission Control</h1>
+      {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
+    </header>
+    <div className="min-h-0 flex-1 overflow-auto">{children}</div>
+  </div>;
+}
 
 /** Mission Control, the console's first page. First what needs a person (`needsYou`: the runs asking a question, the
  *  failures, the runs at work), then how many agents and runs this server has, how many are working, waiting on a person
@@ -20,8 +31,8 @@ export type AnalyticsScope = { range: StatsRange; onRange: (range: StatsRange) =
  *  per agent, and the latest runs with their agent, duration and cost, with the runs' tokens, time, success and tools
  *  over the range picked (MissionAnalytics). Before the owner's first run, `startHere` sits above the data; it never replaces it. */
 export function MissionControl({ view, error, onRetry, scope, needsYou, startHere, actions }: { view: MissionView | null; error?: Problem | null; onRetry?: () => void; scope?: AnalyticsScope; needsYou?: React.ReactNode; startHere?: React.ReactNode; actions?: React.ReactNode }) {
-  if (error) return <ProblemCard problem={error} onRetry={onRetry} />;
-  if (!view) return <MissionSkeleton />;
+  if (error) return <MissionFrame actions={actions}><ProblemCard problem={error} onRetry={onRetry} /></MissionFrame>;
+  if (!view) return <MissionFrame actions={actions}><MissionSkeleton /></MissionFrame>;
   const name = (id: string) => view.perAgent.find((a) => a.agentId === id)?.name ?? id;
   // Each count links to its list, filtered to it; the active runs have no one list of their own. The cost is said once,
   // in the range's analytics below, never again here.
@@ -36,35 +47,34 @@ export function MissionControl({ view, error, onRetry, scope, needsYou, startHer
     ["Failed", String(view.runs.failed), "#/runs?status=failed", view.runs.failed ? "text-destructive-text" : undefined, view.runs.needsReview ? `${view.runs.needsReview} ${view.runs.needsReview === 1 ? "needs" : "need"} review` : undefined],
   ];
   return (
-    <div className="h-full overflow-auto">
-      <div className="mx-auto max-w-[1600px] space-y-8 px-6 py-8">
-        <header className="flex flex-wrap items-center justify-between gap-4"><h1 className="text-2xl font-semibold">Mission Control</h1>{actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}</header>
+    <MissionFrame actions={actions}>
+      <div className="mx-auto w-full max-w-[1440px] space-y-8 px-5 pb-16 pt-8 md:px-8 md:pt-10">
         {startHere}
         {needsYou}
         <ul className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5">
           {tiles.map(([label, value, href, tone, note]) => {
-            const body = <><p className="caps text-[11px] text-muted-foreground">{label}</p><p className={cn("mt-2 font-mono text-xl font-semibold", tone)}>{value}</p>{note && <p className="mt-1 font-mono text-[11px] text-muted-foreground">{note}</p>}</>;
-            return <li key={label}>{href ? <a href={href} className="block h-full border p-4 hover:border-border-strong hover:bg-accent">{body}</a> : <div className="h-full border p-4">{body}</div>}</li>;
+            const body = <><p className="caps text-[11px] text-muted-foreground">{label}</p><p className={cn("mt-3 font-mono text-[32px] leading-none", tone)}>{value}</p>{note && <p className="mt-2 text-[11px] text-muted-foreground">{note}</p>}</>;
+            return <li key={label}>{href ? <a href={href} className="block h-full rounded-xl border bg-card p-5 transition-colors hover:border-border-strong hover:bg-accent">{body}</a> : <div className="h-full rounded-xl border bg-card p-5">{body}</div>}</li>;
           })}
         </ul>
         <section className="space-y-4" aria-label="Analytics">
-          <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
-            <h2 className="text-lg font-semibold">{scopeTitle(view)}</h2>
+          <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3">
+            <div><h2 className="text-[14px] font-semibold">Activity &amp; usage</h2><p className="mt-1 text-[12px] text-muted-foreground">{scopeTitle(view)}</p></div>
             {scope && <AnalyticsFilter range={scope.range} onRange={scope.onRange} agent={scope.agent} agents={view.perAgent} onAgent={scope.onAgent} />}
           </div>
           <MissionAnalytics a={view.analytics} basis={view.cost.basis} refreshing={scope?.refreshing} />
         </section>
-        <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
-          <section className="border">
-            <h2 className="caps border-b px-4 py-3 text-[12px] font-semibold">Runs per agent</h2>
+        <div className="grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
+          <section className="min-w-0 overflow-hidden rounded-xl border bg-card">
+            <h2 className="caps flex min-h-[52px] items-center gap-2 border-b px-5 py-3 text-[12px] font-semibold"><Brain className="size-4" aria-hidden />Runs per agent</h2>
             {view.perAgent.length ? (
               <ul>{view.perAgent.map((a) => (
                 <li key={a.agentId} className="border-b last:border-b-0"><a href={agentHash(a.agentId, "runs")} className="flex items-center justify-between gap-3 px-4 py-3 text-[14px] hover:bg-accent"><span className="min-w-0 truncate">{a.name}</span><span className="font-mono text-[13px] text-muted-foreground">{a.runs}</span></a></li>
               ))}</ul>
             ) : <p className="px-4 py-6 text-center font-mono text-[13px] text-muted-foreground">No agents yet.</p>}
           </section>
-          <section className="border">
-            <h2 className="caps border-b px-4 py-3 text-[12px] font-semibold">Recent runs</h2>
+          <section className="min-w-0 overflow-hidden rounded-xl border bg-card">
+            <h2 className="caps flex min-h-[52px] items-center gap-2 border-b px-5 py-3 text-[12px] font-semibold"><History className="size-4" aria-hidden />Recent runs</h2>
             {view.recent.length ? (
               <ul>{view.recent.map((r) => (
                 <li key={r.run_id} className="border-b last:border-b-0"><a href={`#/runs/${encodeURIComponent(r.run_id)}`} className="flex items-center gap-3 px-4 py-3 hover:bg-accent">
@@ -81,7 +91,7 @@ export function MissionControl({ view, error, onRetry, scope, needsYou, startHer
           </section>
         </div>
       </div>
-    </div>
+    </MissionFrame>
   );
 }
 

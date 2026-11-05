@@ -1,4 +1,5 @@
-import { Archive, ArrowUpRight } from "lucide-react";
+import { queryPlaygroundHref } from "@/lib/playgroundRoutes";
+import { Archive, ArrowUpRight, History } from "lucide-react";
 import { ProblemCard } from "@/components/Problem";
 import { ListSkeleton } from "@/components/Skeleton";
 import { StatusBadge } from "@/components/StatusBadge";
@@ -20,37 +21,39 @@ const STATUS_LABEL: Record<RunStatus, string> = { queued: "Queued", working: "Wo
 export function RunsList({ runs, agentName, onOpen, error, onRetry, onMore, loadingMore, filter = {}, onFilter, agentId }: { runs: Run[] | null; agentName: (id: string) => string; onOpen: (id: string) => void; error?: Problem | null; onRetry?: () => void; onMore?: () => void; loadingMore?: boolean; filter?: RunsFilter; onFilter?: (filter: RunsFilter) => void; agentId?: string }) {
   const archived = !!filter.archived;
   return (
-    <div className="p-5 md:p-8">
-      <div className="mb-5 flex flex-wrap items-center gap-3">
-        <h1 className="mr-auto font-mono text-2xl font-semibold">{archived ? "Archived runs" : "Runs"}</h1>
-        <CodingAgentAction label="Query" prompt={`${queryRunsPrompt(location.origin, agentId)}\nCurrent view: ${filter.status ? `status ${filter.status}` : "all statuses"}; ${archived ? "archived runs" : "non-archived runs"}.`} playgroundHref="#/playground" />
+    <div className="flex h-full min-h-0 flex-col">
+      <header className="flex min-h-12 shrink-0 flex-wrap items-center gap-2 border-b px-5 py-2 md:px-6">
+        <h1 className="caps mr-auto flex items-center gap-2.5 text-[12px] font-semibold"><History className="size-4" aria-hidden />{archived ? "Archived runs" : "Runs"}</h1>
         {onFilter && (
           <>
             <select aria-label="Runs in one state" value={filter.status ?? ""} onChange={(e) => onFilter({ ...filter, status: (e.target.value || undefined) as RunStatus | undefined })}
-              className="h-11 border bg-background px-3 font-mono text-[13px]">
+              className="h-8 rounded-lg border bg-background px-3 text-[12px]">
               <option value="">Any state</option>
               {RUN_STATUSES.map((s) => <option key={s} value={s}>{STATUS_LABEL[s]}</option>)}
             </select>
-            <Button size="lg" variant={archived ? "primary" : "outline"} aria-pressed={archived} onClick={() => onFilter({ ...filter, archived: !archived })}><Archive aria-hidden /> Archived</Button>
+            <Button size="sm" variant={archived ? "primary" : "outline"} aria-pressed={archived} onClick={() => onFilter({ ...filter, archived: !archived })}><Archive aria-hidden /> Archived</Button>
           </>
         )}
-      </div>
+        <CodingAgentAction label="Query" prompt={`${queryRunsPrompt(location.origin, agentId)}\nCurrent view: ${filter.status ? `status ${filter.status}` : "all statuses"}; ${archived ? "archived runs" : "non-archived runs"}.`} playgroundHref={queryPlaygroundHref(agentId, filter)} />
+      </header>
+      <div className="min-h-0 flex-1 overflow-auto">
       {error && !runs ? <ProblemCard problem={error} onRetry={onRetry} className="" />
         : !runs ? <ListSkeleton label="Loading the runs" />
-        : !runs.length ? <p className="border px-4 py-12 text-center font-mono text-[13px] text-muted-foreground">{filter.status ? "No run matches." : archived ? "No archived runs." : "No runs yet."}</p>
+        : !runs.length ? <p className="px-4 py-16 text-center text-[13px] text-muted-foreground">{filter.status ? "No run matches." : archived ? "No archived runs." : "No runs yet."}</p>
         : <RunsTable runs={runs} agentName={agentName} onOpen={onOpen} />}
       {runs && error && <ProblemCard problem={error} className="mt-4" />}
-      {runs && onMore && <div className="mt-4 flex justify-center"><button type="button" onClick={onMore} disabled={loadingMore} className="caps border px-4 py-2 text-[12px] hover:bg-accent disabled:opacity-45">{loadingMore ? "Loading" : "Load more"}</button></div>}
+      {runs && onMore && <div className="flex justify-center p-4"><Button type="button" size="sm" onClick={onMore} disabled={loadingMore}>{loadingMore ? "Loading" : "Load more"}</Button></div>}
+      </div>
     </div>
   );
 }
 
 function RunsTable({ runs, agentName, onOpen }: { runs: Run[]; agentName: (id: string) => string; onOpen: (id: string) => void }) {
   return (
-    <table className="w-full border-collapse border text-[13px]">
-      <thead className="hidden md:table-header-group">
+    <table className="w-full border-collapse text-[13px]">
+      <thead className="sticky top-0 z-10 hidden bg-background md:table-header-group">
         <tr className="caps text-[11px] text-muted-foreground">
-          {["Status", "Run", "Agent", "Kind", "Started", "Cost"].map((h) => <th key={h} className="border-b px-3 py-2 text-left font-normal">{h}</th>)}
+          {["Status", "Run", "Agent", "Kind", "Started", "Cost"].map((h) => <th key={h} className="border-b border-r px-4 py-3 text-left font-normal last:border-r-0">{h}</th>)}
         </tr>
       </thead>
       <tbody>
