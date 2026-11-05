@@ -96,16 +96,20 @@ export function savedPaths(tool: string, args: Obj, result: ToolResultView): str
 
 /** Tools that use the browser session; the first of them opens one. */
 export const BROWSER_OPENERS: ReadonlySet<string> = new Set(["snapshot", "run", "screenshot", "browser_read", "browser_downloads"]);
-/** The failure codes of a browser call that never got a session (pi-browser's BrowserFailure `code`): the provider
- *  refused the credential or the session, could not be reached, was rate limiting the start, or the call was cancelled. */
-const NO_SESSION = new Set(["auth", "browser_unavailable", "rate_limited", "aborted"]);
+/** The failure codes (pi-browser's BrowserFailure `code`) a browser call can only fail with inside a session: a read of
+ *  the fresh or replaced session's blank page (not_content), a page that moved under a snapshot, the page's own code
+ *  throwing, the session ended or replaced under it, a wall the page showed, an effect it may have had, a hand-over in
+ *  it. Every other code (refused before creation, auth, unreachable, rate limited, a timeout, a cancel, a provider error
+ *  read as command_failed) can come before any session exists, so it is no evidence of one. */
+const IN_SESSION = new Set(["not_content", "stale_snapshot", "code_error", "session_ended", "session_replaced", "blocked", "effect_unknown", "waiting_for_human"]);
 /** Whether a browser opener's result shows it got a session, apart from whether the call did its work: a call that
- *  returned did; one that failed did unless its failure says the browser never opened (NO_SESSION), or says nothing
- *  readable. A read of a blank page fails as not_content with its session open. */
+ *  returned did; one that failed did only when its failure can only happen inside a session (IN_SESSION) or carries the
+ *  receipt of a page the browser showed (`evidence`). A failure that says nothing readable shows none. */
 export const openedSession = (result: { text: string; isError: boolean }): boolean => {
   if (!result.isError) return true;
-  const code = str(obj(json(result.text))?.code);
-  return code !== undefined && !NO_SESSION.has(code);
+  const failure = obj(json(result.text));
+  const code = str(failure?.code);
+  return (code !== undefined && IN_SESSION.has(code)) || typeof failure?.evidence === "string";
 };
 
 const path = (args: Obj) => str(args.path) ?? str(args.file_path);
