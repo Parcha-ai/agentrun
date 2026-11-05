@@ -8,7 +8,7 @@
 // firings, and its key's day of dedupe, as a webhook event's does.
 import assert from "node:assert/strict";
 import { createHmac, randomBytes } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, rmdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -409,4 +409,119 @@ test("a Slack message's firing is kept for its key's day after it leaves the his
   assert.equal(again.created, false, "the same firing");
   await sleep(100);
   assert.equal(messages.length, 1, "sent once");
+});
+
+/** The Slack outbox a server keeps in `data` (its posts still to go, and what each run's thread was told). */
+const outboxOf = async (data) => JSON.parse(await readFile(join(data, "slack-outbox.json"), "utf8"));
+const helpDesk = (extra = {}) => ({ name: "help desk", source: { kind: "slack", channels: [LISTED], ...extra }, target: { kind: "start_run", agent_id: "helper", input: { content: "Say hello." }, max_cost_usd: 0.5 } });
+
+test("the Slack app's secrets are this server's own: a completed run's answer posted in its thread never shows the signing secret", { timeout: 180_000 }, async (t) => {
+  const { api, hook, slack } = await slackServer(t);
+  const signing = `not-a-secret-${randomBytes(16).toString("hex")}`;
+  assert.equal((await api("PUT", "/settings/slack", { signing_secret: signing, bot_token: SLACK_BOT_TOKEN })).status, 200);
+  await made(api, "helper");
+  const { body } = await api("POST", "/triggers", helpDesk({ post_answer: true }));
+  // The person pastes the secret; the agent's answer echoes its input.
+  assert.equal((await hook(mention("1767230000.000100", `keep ${signing} safe`), { secret: signing })).body.ok, "received");
+  const [started] = await firings(api, body.id, 1);
+  await follow(api, started.run_id, ["completed"]);
+  const done = await until(() => slack.posts.find((p) => p.body.text.startsWith("Done")), "the end posted");
+  assert.ok(done.body.text.length > `Done: <${PUBLIC}/#/runs/${started.run_id}|open the run>`.length, "the answer is posted");
+  assert.ok(!done.body.text.includes(signing), "no signing secret in the post");
+  assert.ok(!JSON.stringify((await api("GET", `/runs/${started.run_id}`)).body.result).includes(signing), "nor in the run's answer");
+});
+
+test("a bot token Slack refuses during a slow post never brings back settings deleted or saved again meanwhile", { timeout: 180_000 }, async (t) => {
+  const { api, hook, slack } = await slackServer(t);
+  assert.equal((await api("PUT", "/settings/slack", { signing_secret: SIGNING, bot_token: SLACK_BOT_TOKEN })).status, 200);
+  await made(api, "helper");
+  const { body } = await api("POST", "/triggers", helpDesk());
+  const slow = async (ts, n, meanwhile) => {
+    let release;
+    slack.answers.push({ hold: new Promise((resolve) => (release = resolve)), body: { ok: false, error: "token_revoked" } });
+    const before = slack.posts.length;
+    assert.equal((await hook(mention(ts, "say hello"))).body.ok, "received");
+    const [started] = await firings(api, body.id, n);
+    await follow(api, started.run_id, ["completed"]);
+    await until(() => slack.posts.length > before, "the post out, its answer held");
+    await meanwhile();
+    release();
+    await sleep(500);
+  };
+  // Deleted while the post waits: still deleted after Slack refuses the token, and the old signing secret opens nothing.
+  await slow("1767231000.000100", 1, async () => assert.equal((await api("DELETE", "/settings/slack")).status, 204));
+  assert.deepEqual((await api("GET", "/settings/slack")).body, { configured: false });
+  assert.equal((await hook(mention("1767231100.000100", "say hello"))).status, 401, "the deleted secret takes no request");
+  // Saved again while the post waits: the new settings stay on.
+  assert.equal((await api("PUT", "/settings/slack", { signing_secret: SIGNING, bot_token: SLACK_BOT_TOKEN })).status, 200);
+  await slow("1767231200.000100", 2, async () => assert.equal((await api("PUT", "/settings/slack", { signing_secret: "not-a-secret-new", bot_token: SLACK_BOT_TOKEN })).status, 200));
+  assert.equal((await api("GET", "/settings/slack")).body.disabled, null, "the new settings stay on");
+  assert.equal((await hook(mention("1767231300.000100", "say hello"), { secret: "not-a-secret-new" })).body.ok, "received");
+});
+
+test("a run a thread reply opened again, which ended again while its server went down before that end's notice was kept, has that end posted once by the next server", { timeout: 240_000 }, async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "slack-reopen-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const data = join(dir, "agents");
+  const first = await slackServer(t, { data });
+  assert.equal((await first.api("PUT", "/settings/slack", { signing_secret: SIGNING, bot_token: SLACK_BOT_TOKEN })).status, 200);
+  await made(first.api, "helper");
+  const { body } = await first.api("POST", "/triggers", helpDesk());
+  assert.equal((await first.hook(mention("1767232000.000100", "say hello"))).body.ok, "received");
+  const [started] = await firings(first.api, body.id, 1);
+  await follow(first.api, started.run_id, ["completed"]);
+  await until(() => first.slack.posts.length === 1, "the first end posted");
+  await until(async () => (await outboxOf(data)).posts.length === 0, "the first end's post kept as done");
+  const firstEnd = (await outboxOf(data)).told[started.run_id].ended;
+  assert.equal((await first.hook(reply("1767232060.000200", "1767232000.000100", "and once more"))).body.ok, "received");
+  await firings(first.api, body.id, 2);
+  await until(async () => (await outboxOf(data)).told[started.run_id].ended !== firstEnd, "the second end told");
+  await until(() => first.slack.posts.length === 2, "the second end posted");
+  await first.close();
+  // As the server would have left it had it gone down after the run's second end, before that end's notice was kept.
+  const outbox = await outboxOf(data);
+  await writeFile(join(data, "slack-outbox.json"), `${JSON.stringify({ ...outbox, posts: [], told: { ...outbox.told, [started.run_id]: { ...outbox.told[started.run_id], ended: firstEnd } } })}\n`);
+  await slackServer(t, { data }, first.slack);
+  await until(() => first.slack.posts.length === 3, "the second end posted by the next server");
+  await sleep(500);
+  assert.equal(first.slack.posts.length, 3, "once");
+  assert.equal(first.slack.posts[2].body.text, `Done: <${PUBLIC}/#/runs/${started.run_id}|open the run>`);
+});
+
+test("a post Slack took, whose removal from the outbox failed to write, is never posted again: the write is tried again until kept, and a stopping server writes what it holds", { timeout: 240_000 }, async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "slack-unsaved-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const data = join(dir, "agents");
+  const blocked = join(data, "slack-outbox.json.tmp");
+  const first = await slackServer(t, { data });
+  assert.equal((await first.api("PUT", "/settings/slack", { signing_secret: SIGNING, bot_token: SLACK_BOT_TOKEN })).status, 200);
+  await made(first.api, "helper");
+  const { body } = await first.api("POST", "/triggers", helpDesk());
+  /** A run whose end Slack takes while the outbox cannot be written (its temp file's path a directory). */
+  const taken = async (server, ts, n) => {
+    let release;
+    server.slack.answers.push({ hold: new Promise((resolve) => (release = resolve)) });
+    const before = server.slack.posts.length;
+    assert.equal((await server.hook(mention(ts, "say hello"))).body.ok, "received");
+    const [started] = await firings(server.api, body.id, n);
+    await follow(server.api, started.run_id, ["completed"]);
+    await until(() => server.slack.posts.length > before, "the post out");
+    await mkdir(blocked);
+    release();
+    await sleep(500);
+    assert.equal((await outboxOf(data)).posts.length, 1, "the post taken, still in the outbox on disk");
+  };
+  // The write comes back: the outbox is written again within its retry.
+  await taken(first, "1767233000.000100", 1);
+  await rmdir(blocked);
+  await until(async () => (await outboxOf(data)).posts.length === 0, "the outbox written again");
+  // The write comes back only as the server stops: it writes what it holds then.
+  await taken(first, "1767233100.000100", 2);
+  await rmdir(blocked);
+  await first.close();
+  assert.equal((await outboxOf(data)).posts.length, 0, "written as it stopped");
+  const posted = first.slack.posts.length;
+  await slackServer(t, { data }, first.slack);
+  await sleep(1_500);
+  assert.equal(first.slack.posts.length, posted, "nothing posted again");
 });
