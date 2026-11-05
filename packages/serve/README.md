@@ -334,8 +334,9 @@ go through `work/` by path.
     in a directory this server sees. The kernel is the evidence, not the runtime's name:
     - a Docker whose kernel differs from this server's (Docker Desktop on a Mac, OrbStack, Colima) sees a socket bound
       in from the host but cannot connect to it, so its box has no network;
-    - a Docker on this server's kernel passes whatever it calls itself; Docker Desktop with WSL2 shares the kernel
-      string and passes, and the proxy enforces the list there as anywhere;
+    - a Docker on this server's kernel passes whatever it calls itself, if its data directory is one this server sees:
+      Docker Desktop with WSL2 shares the kernel string, but keeps its data outside the distro, so it gets none unless
+      the distro has that directory (`/var/lib/docker`); where it passes, the proxy enforces the list as anywhere;
     - a server in a container given the host's docker socket shares the host's kernel but not its files (docker
       info's `DockerRootDir` is not there), so its box has no network rather than every tool call failing.
 
@@ -397,10 +398,11 @@ since nothing binds `work/` there):
   `CURL_CA_BUNDLE`, `SSL_CERT_FILE`).
 - A sandbox whose own read does not carry the list it was asked for is deleted. Daytona takes a domain list on its tier 3
   and 4 only: where it keeps none, or refuses it, the server makes the run's box again with its network blocked, never
-  open, and makes every later Daytona box that way until it starts again. The log says so once
-  (`event=box_network box=daytona network=none refused=<code>`), and capabilities show the box's `network` as `none`
-  with the reason. A box the server finds with no network is kept; one with a list when the setting is `none` is
-  destroyed and made again. A changed list applies to the boxes made after the start that reads it.
+  open, and makes every later Daytona box that way until it starts again. The log says so once, with Daytona's own
+  words (`event=box_network box=daytona network=none refused=<code> message="…"`), and capabilities show the box's
+  `network` as `none` with its `network_reason`. A box the server finds is kept when it has no network, or the list the
+  setting names now (the same hosts, in any order, as Daytona reads them back); any other (a wider or narrower list, a
+  list when the setting is `none`) is destroyed and made again, so a changed list holds for a run's box after a restart.
 - A sandbox Daytona does not report blocked, when blocked was asked, is deleted, and the tool call fails saying so. An
   organization on Daytona's tier 1 or 2 keeps its own network policy, which a sandbox cannot override, so a run there
   gets no Daytona box unless that policy blocks it.
@@ -781,6 +783,21 @@ doing) is kept in the run's own store, so a run opened again on its directory re
 page it reads is filed under the run's `work/evidence/`, each read in a file of its own (`0001-browser_read.md`, ...),
 reads at once included. There is no recording and no live view. When the run is let go (its work done, or a SIGTERM)
 the sessions it still holds are released at Browserbase.
+
+A session's time is the run's spend, as a paid tool's charge is: each browser call books what its session ran since the
+last charge, and the release books the rest, topped up to the provider's minimum. Each is a `Tool cost` line of its own
+on the run's timeline, part of its `cost.usd`, and `/usage`'s `browser_time` meter (dollars, and seconds once the run has
+ended). Prices are by provider (pi-browser's provider name):
+
+| Provider | List price | Minimum | Its own price |
+| --- | --- | --- | --- |
+| `browserbase` | $0.12 an hour | 60 s | `AGENTRUN_BROWSER_USD_PER_HOUR_BROWSERBASE` |
+| `kernel` (headless) | about $0.06 an hour, by the second | none | `AGENTRUN_BROWSER_USD_PER_HOUR_KERNEL` |
+| `cdp` (a local Chrome) | $0 | none | `AGENTRUN_BROWSER_USD_PER_HOUR_CDP` |
+
+A variable gives the provider's price in US dollars an hour (a contract rate; the minimum stays). A provider with no price,
+or a variable that is not a non-negative decimal, has no price: its time is booked as an unknown cost, and under a cap
+every browser call is refused. Under a cap the browser's time is held before it runs (see [Spend cap](#spend-cap)).
 
 `monid.discover`, `monid.inspect` and `monid.run` give an agent [monid](https://monid.ai)'s whole catalog of data
 endpoints on one key, `MONID_API_KEY`: it finds an endpoint in plain words, reads its input schemas and price, and runs
@@ -1367,7 +1384,9 @@ left out: 2 sessions still being written: they come in next time
      [sandbox](#sandbox), where it and the file tools run in the run's box. The run is `queued` until its first message shows; while the process runs, the
      timeline comes from its door's events through `@parcha/pi-durable-agent/timeline`. Once the run is idle and its
      newest row is the agent's answer, the server sends the process SIGTERM. A model error ends it `failed`
-     (`run_failed`), and a run its `max_cost_usd` stops ends `failed` (`spend_cap_reached`, [below](#spend-cap)). A
+     (`run_failed`). A run whose `max_cost_usd` cannot buy its next request is paused, `input_required` and `waiting`
+     with `pending.kind` `budget`; one its cap refuses for a reason no cap fixes ends `failed` (`spend_cap_reached`,
+     [below](#spend-cap)). A
      provider's content filter stopping the answer ends it `failed` with `moderated` on every harness, saying so in plain
      words ("The model provider stopped this answer (its content filter). Rephrase the request, or try another model.");
      the Timeline's error row keeps the harness's own words for the stop: pi-ai's on pi ("Response incomplete:
@@ -1634,7 +1653,7 @@ log shows `by: {user: true, via: "console"}` at the commit's time, never the not
 An agentic run may name `max_cost_usd` (a workflow run may not: `422`). The cap is checked in the run's own process
 before each model request, the agent's and a compaction's alike, on every harness: what the run has spent so far, plus
 the worst case of each request still in flight, plus this request's worst case must stay within it, or the request is
-not sent and the run ends `failed` with `spend_cap_reached`. A request's worst case is its input bound at the higher of
+not sent and the run pauses ([below](#a-run-paused-at-its-cap)). A request's worst case is its input bound at the higher of
 the model's input and cache-write prices (the provider may bill any of the input as a cache write), plus the output it is
 sent with at the output price, plus any fee its tokens do not show (below). Under a cap each request is limited to the
 output tokens what is left of the cap can buy, thinking included, never more than it asks for or than the model's
@@ -1652,7 +1671,28 @@ by side cannot pass the cap together. Spent so far is read from the run's store 
 survives a restart, plus each response since, and with them each charge a paid tool booked (`monid.run`, which is itself
 refused once the spend reaches the cap; see [monid](#tools)).
 
-Under a cap, whatever cannot be priced is refused, never passed as $0:
+The `browser` tool's session time is held the same way, before it runs, so no browser minute passes the cap. Its next
+stretch is the most a session can run before the run can check again: the provider's minimum (what its release may top
+it up to), pi-browser's idle window before it releases a session nobody calls (180 s), and 30 s for that release to be
+confirmed at the provider; at Browserbase's price, 270 s or $0.009. Before each browser call, the call is held at what its
+session ran since its last charge plus two stretches (one for the call's own time, one for a session it opens): spent, plus
+every hold, plus that must stay within the cap. Otherwise the call is not made: the model gets the cap's words
+(`spend_cap_reached: This browser call was not sent. It could cost up to $0.018 ...`), and the run's session is released.
+A session's first charge moves one stretch of its call's hold to the session, held until its release is booked, which
+covers its idle time, its top-up and its release; each call's charge comes out of the call's hold, which goes when the
+call returns. So what the run spent plus what it holds stays within the cap through a session's create, its calls, the
+idle time between them and its release. A session a create's lost answer left to a release after the create deadline is
+held for that deadline and a stretch until its release is billed. Across a restart of the run's process, every session
+custody still tracks (kept, unreached, still releasing) is held from the reopen, at a stretch beside what it ran since
+its last charge, and one kept is released an idle window later unless a call uses it. Three
+things can still pass the cap, each by what it ran over, booked and shown: a single browser call that runs longer than a
+stretch, a release that takes longer than 30 s to be confirmed, and the time a run's process was down while it held a
+session (spent before any process could hold it). A session whose release is never confirmed is billed in full
+(what it ran and its minimum) when the run gives up on it. When the run is let go, its sessions are released and their
+last charges booked before its process exits.
+
+Under a cap, whatever cannot be priced is refused, never passed as $0, and the run ends `failed` with
+`spend_cap_reached`, since no cap would send it:
 
 - A model serve has no price for (a gateway id pi-ai's catalog does not know, with no `AGENT_MODEL_PRICE`): its first
   request is refused before anything is sent, and the run ends `spend_cap_reached` at $0. With no cap its run's cost
@@ -1665,14 +1705,37 @@ Under a cap, whatever cannot be priced is refused, never passed as $0:
   after a cut, at the worst case the cap held, as pi does.
 
 A request you stop counts what it streamed plus up to 1,024 output tokens the provider may have produced after the last
-word we read; never more than it was held. That is its input bound and each byte it streamed (text, thinking and tool
-calls on pi; the response as it was sent on `claude-agent` and `codex`) as a token, plus 1,024 tokens of output
-(`STOP_ALLOWANCE_TOKENS`), at the model's price, and at most the worst case the cap held for it. The cut stream's own
-usage is never read: it is not what the provider billed (the Responses API reports none until the end, and Anthropic's
-output count comes at the end). The 1,024 tokens are a stated bound, as the native search allowance is: a provider that
-went on producing for longer after the stop could bill past what is counted. A request that ended on an error after its
-response began (an overload part way, a reset), or a summary that failed, still counts at its worst case, and so does a
-request cut by a crash (its process gone mid-request).
+word we read; never more than it was held. That is its input bound and each byte of content it streamed (its text,
+thinking and tool calls on pi; on `claude-agent`, `codex` and `opencode`, the text, reasoning and tool-argument deltas
+the response sent, never the provider's framing around them, which runs to about 12 bytes a character on the Responses
+API and 24 on the Messages API) as a token, plus 1,024 tokens of output (`STOP_ALLOWANCE_TOKENS`), at the model's price, and at most
+the worst case the cap held for it. The cut stream's own usage is never read: it is not what the provider billed (the
+Responses API reports none until the end, and Anthropic's output count comes at the end). The 1,024 tokens are a stated
+bound, as the native search allowance is: a provider that went on producing for longer after the stop could bill past
+what is counted. A request that ended on an error after its response began (an overload part way, a reset), or a summary
+that failed, still counts at its worst case, and so does a request cut by a crash (its process gone mid-request). A
+request stopped before the provider's first header counts its input and the 1,024 tokens, on every harness.
+
+Reasoning the provider never streams counts too. A model whose reasoning streams only as a summary (the Responses API's
+reasoning; Claude 4-class thinking, and redacted thinking) or not at all is billed for far more than the summary's
+bytes, so a stopped request that reasons also counts the part of its reasoning budget that did not stream: input +
+streamed + 1,024 + max(0, reasoning budget - reasoning streamed), never more than the hold. Reasoning streamed is its
+thinking's bytes on pi, and on `claude-agent`, `codex` and `opencode` the bytes of the reasoning events the response
+sent (a thinking delta, a reasoning summary delta); answer text never stands in for it. The budget is its effort's or thinking
+level's (minimal 1,024, low 2,048, medium 8,192, high 16,384; on Anthropic's API, the `budget_tokens` it was sent with).
+A Claude model whose thinking is adaptive (pi-ai sends every current one `thinking: {type: "adaptive"}`, no budget) thinks
+within its output limit as it sees fit, so on pi it counts that limit less 1,024 tokens, as `claude-agent` counts
+`max_tokens`, and is sent the limit it is held at. With no effort or level given, on an API whose model then reasons at
+its own default (OpenAI's), it counts its whole output limit, the conservative side; with thinking off on Anthropic's
+API, none, unless the model thinks adaptively at any level (pi-ai's models with mid-conversation effort). On
+`claude-agent`, every request that thinks counts its budget, since Claude 4-class models stream only a summary of their
+thinking; thinking that streamed is subtracted, so a stop after a budget's worth of visible thinking counts nothing on
+top. The figure is an estimate: an effort's budget is not a limit the provider keeps, so a request can reason past it.
+It is bounded by the request's hold, and its real usage replaces it when that comes.
+
+So on a model whose thinking is adaptive (every current Claude model, on pi and on `claude-agent`), a stopped request
+counts up to its hold: the provider is given no thinking budget, and what streamed says nothing of the thinking billed.
+Under a cap with little left beside that hold, the request after the stop can be refused.
 
 On pi the figure is written on the request's start mark (`agentrun.request_started`, its worst case) and on the end mark
 of one stopped (`agentrun.request_ended`, what it counts at), as `heldUsd`; on `claude-agent` and `codex` on the
@@ -1680,7 +1743,8 @@ request's `runner.request` record (its worst case) and, for one stopped, on its 
 the same: a capped run stopped and sent another message, or opened again after its process died, goes on while its cap
 allows. A cut request from a store written before serve kept the figure has none, and is a spend no one knows.
 
-A refusal says so in plain words, with the numbers, on the run's error and on its timeline row: "Not sent: this run's
+A refusal says so in plain words, with the numbers, on its timeline row and on the run's `pending` (or, for a refusal
+no cap fixes, its error): "Not sent: this run's
 cap of $0.01 can't cover one Claude Sonnet 5.5 request (at least $0.03). Raise the cap to at least $0.03 to run it.", and
 once a run has spent: "Not sent: the run has spent $0.45 of its $0.50 cap, and its next Claude Sonnet 5.5 request needs at
 least $0.03. Raise the cap to at least $0.48 to run it." The cap that would run it is what was spent, what requests still
@@ -1690,6 +1754,19 @@ retry reads only an error's text, and takes "out of budget" as final whatever di
 refused was never sent: the run's usage counts no request for it, and a run whose only request was refused says "no model
 request sent". A reply the limit cut short says so on the run's timeline: "The reply stopped at 1,500 tokens: all that
 the $0.15 left of the run's $0.50 cap could buy."
+
+### A run paused at its cap
+
+A refusal for room (what is left of the cap cannot buy the next request's least) pauses the run instead of ending it: the
+refused request was not sent, so the cap holds, and a higher cap would send it. The run is `input_required` and
+`waiting`, `error` null, with `pending: {kind: "budget", cap_usd, spent_usd, needs_usd, said, at}`: its cap, what the
+cap counted as taken (spent, and held for requests still answering) and the least the refused request needs (a cap above
+their sum sends it), the refusal's words above, and when it came. The figures come from the refusal's own start mark, so a
+server started again says them too. Its timeline shows the refusal's row, then a waiting row: "Paused at the run's $0.05 cap: Not sent: …". The
+webhook's `run.needs_input` says `pending.kind: "budget"`. Its process is let go while it waits (SIGTERM: it drains and
+releases the run), so a paused run holds no place; a server started again reads it paused from its store. A message to a
+paused run is `409 budget_reached`; a stop does nothing more, and a cancel ends it `cancelled`. Only a refusal for room
+pauses a run: one no cap fixes (above) ends it `failed`, as does a cost found past the cap after a response.
 
 A request carrying a native web search tool reads pages into its input that its body does not hold (the provider bills
 them as input): under a cap its input bound is its body's plus an allowance. Claude's own search, an explicit `native`

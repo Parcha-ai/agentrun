@@ -48,7 +48,7 @@ import { metersIn } from "./cap.js";
 import { blockersOf, CODE_NODES_ENV, issueOf, type RevisionShape } from "./runnable.js";
 import { hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from "./secrets.js";
 import { redactedOutput } from "./key-refusal.js";
-import { analyticsFilter, analyticsView, statsView } from "./stats.js";
+import { analyticsFilter, analyticsView, pendingOf, statsView } from "./stats.js";
 import { outcomes } from "./usage.js";
 import { keyOf, SEAL_KEY_ENV, sealKeyOf, TOOL_FIELDS, ToolKeys } from "./tool-keys.js";
 import { MCP_AUTH_TYPES, McpServers } from "./mcp-servers.js";
@@ -433,6 +433,7 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
   const models = { ...modelSource(env), ready: needs === null, needs };
   // Both limits apply: the cap on the count, and the memory each run reserves (host.ts).
   const memory = hostMemory();
+  const tools = toolsView(env, toolSettings, noBoxReason(boxes), refused).map((tool) => (keyOf(tool.name) ? { ...tool, key: keyOf(tool.name) } : tool));
   return {
     backend: "local",
     contract: CONTRACT,
@@ -452,7 +453,7 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
     /** Every tool a revision may name (the closed table in tools.ts): available here, or the variables it is missing; a
      *  web tool, what it resolves to on each harness under this server's tool settings; `key`, the tool key that unlocks
      *  it (tool-keys.ts), when one does. */
-    tools: toolsView(env, toolSettings, noBoxReason(boxes), refused).map((tool) => (keyOf(tool.name) ? { ...tool, key: keyOf(tool.name) } : tool)),
+    tools,
     /** How this server holds its secrets (secrets.ts, the launcher), and what that does not cover. */
     secrets: {
       names: [...SECRET_NAMES],
@@ -478,10 +479,11 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
       timeline: { long_poll: true, sse: true, live_rows: true, live_workflow_rows: false },
       files: { upload: true, read: true, range: false, during_run: true },
       quotes: false,
-      usage: { basis: "estimate", meters: ["tokens", "tools", "learning"] },
+      usage: { basis: "estimate", meters: ["tokens", "tools", "browser_time", "learning"] },
       efforts: [...EFFORTS],
       thinking: [...THINKING_LEVELS],
-      browser: "none",
+      /** The browser a run's `browser` tool drives: Browserbase's when the tool is available here (tools[]), else none. */
+      browser: tools.some((tool) => tool.name === "browser" && tool.available) ? "browserbase" : "none",
       /** A tool setting's `permission` (definition.tool_settings, /v2/settings/tools): false until the tool gate lands,
        *  and a save that names one is refused. */
       tool_permissions: false,
@@ -689,7 +691,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   // one here (an organization whose tier takes none): from then on each is made with no network, and capabilities say why.
   let daytonaNoList: string | undefined;
   const daytonaNetwork = (offer: BoxOffer): BoxOffer =>
-    !offer.available ? offer : boxAllow === "none" ? { ...offer, network: "none" } : daytonaNoList ? { ...offer, network: "none", reason: noListReason(daytonaNoList) } : { ...offer, network: "allowlist" };
+    !offer.available ? offer : boxAllow === "none" ? { ...offer, network: "none" } : daytonaNoList ? { ...offer, network: "none", network_reason: noListReason(daytonaNoList) } : { ...offer, network: "allowlist" };
   const offersNow = (): BoxOffer[] => boxes.offers().map((offer) => (fauxBox && offer.id === "docker" ? dockerNetwork({ id: "docker", available: true, reason: "a faux box (tests)" }) : offer.id === "docker" ? dockerNetwork(image ? withImage(offer, image.state()) : offer) : offer.id === "daytona" ? daytonaNetwork(offer) : offer));
   const imageLog = (state: ImageState, more: Record<string, number> = {}) => log?.(logLine("box_image", { image: image!.image, state: state.state, ...more, ...("reason" in state ? { reason: state.reason } : {}) }));
   let boxOffers: BoxOffer[] = offersNow();
@@ -713,9 +715,10 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   // its own through the relay below, which holds the key for it (box-relay.ts).
   const remoteBoxes = boxes.provider("daytona");
   // Daytona could not keep a run's box's domain list: said in the log and in capabilities, which recompose now.
-  const onNoBoxList = (code: string) => {
+  // Daytona's own words go to the log, so a refusal for another cause is not taken silently for a tier that takes no list.
+  const onNoBoxList = (code: string, message: string) => {
     daytonaNoList = code;
-    log?.(logLine("box_network", { box: "daytona", network: "none", refused: code }));
+    log?.(logLine("box_network", { box: "daytona", network: "none", refused: code, message }));
     boxOffers = offersNow();
     if (offers) recompose();
   };
@@ -1231,7 +1234,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
 
   // Each ended run's meters, from its store (metersIn): kept, as its store no longer changes, keyed by its end, so a run
   // opened again and ended again is read again. A store that cannot be read leaves it all tokens.
-  const endedMeters = new Map<string, { tools: number | null; tokens: number | null }>();
+  const endedMeters = new Map<string, ReturnType<typeof metersIn>>();
   const metersOf = (row: { id: string; endedAt?: string | null }) => {
     const key = `${row.id} ${row.endedAt}`;
     let meters = endedMeters.get(key);
@@ -1239,7 +1242,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       try {
         meters = metersIn(agents.store.runStorePath(row.id));
       } catch {
-        meters = { tools: 0, tokens: null };
+        meters = { tools: 0, tokens: null, browser: { usd: 0, seconds: 0 }, others: 0 };
       }
       endedMeters.set(key, meters);
     }
@@ -1257,6 +1260,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     if (!["meter", "agent", "key", "day", "region"].includes(group)) throw new ApiError("bad_request", "group_by is meter, agent, key, day or region");
     const lines = new Map<string, { usd: number; unpriced: number }>();
     const total = { usd: 0, unpriced: 0 };
+    // The browser_time line's seconds: its ended runs' (their stores keep each charge's), none once a live run is in it.
+    let browserSeconds: number | null = 0;
     // A cost that is unknown adds no dollars, so no sum turns unknown; it is counted as unpriced instead, so it never
     // passes as $0.
     const add = (key: string, usd: number | null) => {
@@ -1274,12 +1279,16 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       const live = row.state === "running" ? await runs.get(row.id) : null;
       const usd = live ? runs.cost(live).usd : (row.costUsd ?? null);
       const key = group === "agent" ? row.agent : group === "day" ? row.startedAt.slice(0, 10) : group === "meter" ? "tokens" : "local";
-      // By meter, what a run's paid tools charged (monid's) is `tools`, the rest `tokens`, both from the same records: a
-      // live run's rows (a call still marked is no charge), else its store as it ended (a call a crash cut makes `tools`
-      // unknown, never `tokens`). An unknown meter counts the run as unpriced on it.
-      const meters = group !== "meter" || usd === 0 ? undefined : live ? { tools: toolCostOf(live.rows), tokens: null } : metersOf(row);
+      // By meter, what a run's paid tools charged (monid's) is `tools`, its browser session time `browser_time`, the rest
+      // `tokens`, all from the same records: a live run's rows (a call still marked is no charge), else its store as it
+      // ended (a call a crash cut makes `tools` unknown, never `tokens`). An unknown meter counts the run as unpriced on it.
+      const meters = group !== "meter" || usd === 0 ? undefined : live ? { tools: toolCostOf(live.rows), tokens: null, browser: { usd: toolCostOf(live.rows, "browser"), seconds: null }, others: toolCostOf(live.rows.filter((r) => r.tool_name !== "browser")) } : metersOf(row);
       const tokens = meters && (usd !== null && meters.tools !== null ? usd - meters.tools : usd === null && meters.tools === null ? meters.tokens : null);
-      const parts: [string, number | null][] = !meters ? [[key, usd]] : [[key, tokens ?? null], ...(meters.tools !== 0 ? [["tools", meters.tools] as [string, number | null]] : [])];
+      // Each apart, an unknown one unknown (unpriced on its own line), never $0 nor the other's.
+      const browser = meters ? meters.browser.usd : 0;
+      const tools = meters?.others;
+      const parts: [string, number | null][] = !meters ? [[key, usd]] : [[key, tokens ?? null], ...(tools !== 0 ? [["tools", tools ?? null] as [string, number | null]] : []), ...(browser !== 0 ? [["browser_time", browser] as [string, number | null]] : [])];
+      if (meters && browser !== 0) browserSeconds = browserSeconds === null || meters.browser.seconds === null ? null : browserSeconds + meters.browser.seconds;
       // A run whose cost is unknown adds no dollars, so no sum turns unknown; it is counted as unpriced instead, so it
       // never passes as $0.
       for (const [name, part] of parts) {
@@ -1298,7 +1307,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     const round = (v: number) => Math.round(v * 1e6) / 1e6;
     return {
       from: new Date(from).toISOString(), to: new Date(to).toISOString(), currency: "USD", basis: "estimate", group_by: group, total_usd: round(total.usd), unpriced_runs: total.unpriced,
-      lines: [...lines].map(([key, line]) => ({ group: key, ...(group === "meter" ? { meter: key } : {}), usd: round(line.usd), unpriced_runs: line.unpriced })),
+      lines: [...lines].map(([key, line]) => ({ group: key, ...(group === "meter" ? { meter: key } : {}), ...(key === "browser_time" && group === "meter" && browserSeconds !== null ? { quantity: round(browserSeconds), unit: "second" } : {}), usd: round(line.usd), unpriced_runs: line.unpriced })),
       account: null,
     };
   }
@@ -1663,9 +1672,15 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         return send(res, 200, await usage(url));
       case "getStats": {
         const filter = analyticsFilter(url);
-        const [stats, analytics, rows] = await agents.request(() => [agents.store.stats(), agents.store.analytics(filter), agents.store.listRuns()] as const);
+        // A run this server holds as ended whose end the store does not have yet is pending: counted as it ended, its
+        // metrics left out until the store has them (stats.ts pendingOf).
+        const [stats, analytics, rows, pending] = await agents.request(() => {
+          const stats = agents.store.stats();
+          const pending = pendingOf(stats.running, runs);
+          return [stats, agents.store.analytics({ ...filter, pending }), agents.store.listRuns(), pending] as const;
+        });
         // How the runs that tried to learn fared: a held run's learning from memory, any other's end from the ledger.
-        return send(res, 200, { ...statsView(stats, runs), analytics: analyticsView(analytics, filter), learning: await runs.learning.counts(rows, filter) });
+        return send(res, 200, { ...statsView(stats, runs, pending), analytics: analyticsView(analytics, filter), learning: await runs.learning.counts(rows, filter) });
       }
       case "listToolKeys":
         // The offers the server holds, not capabilities': a model key's row names the harnesses its key would run too.

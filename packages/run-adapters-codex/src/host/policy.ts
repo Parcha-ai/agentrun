@@ -496,6 +496,45 @@ export function responsesOutputLeast(body: Record<string, unknown>): number {
   return ANSWER_TOKENS_LEAST + (effort === undefined ? 0 : REASONING_TOKENS_ALLOWED[effort] ?? 0);
 }
 
+/** The reasoning tokens a Responses request may bill that its stream never shows (only a summary of its reasoning
+ *  streams): its effort's budget; none at effort `none`; and with no effort the body says (the model then reasons at its
+ *  own default, or not at all), its output limit, `fallback` when the body names none: the conservative side. An
+ *  estimate, as the efforts' budgets are not limits the provider keeps: a stopped request counts the part of it that
+ *  did not stream (less `responsesReasoningBytes` of what it sent), never past its hold. */
+export function responsesReasoningHidden(body: Record<string, unknown>, fallback: number): number {
+  const effort = isPlain(body.reasoning) && typeof body.reasoning.effort === "string" ? body.reasoning.effort : undefined;
+  if (effort === "none") return 0;
+  const budget = effort === undefined ? undefined : REASONING_TOKENS_ALLOWED[effort];
+  return budget ?? responsesOutputAsked(body) ?? fallback;
+}
+
+/** The Responses stream's events whose deltas are reasoning: its summary, and its reasoning text where a model sends it. */
+const REASONING_DELTAS: ReadonlySet<string> = new Set(["response.reasoning_summary_text.delta", "response.reasoning_text.delta"]);
+
+/** The bytes of reasoning one Responses stream event carries: a reasoning delta's text, UTF-8; 0 for answer text, a
+ *  function call's arguments and every other event. */
+export function responsesReasoningBytes(event: string): number {
+  const data = event.split("\n").filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trimStart()).join("\n");
+  if (!data.startsWith("{")) return 0;
+  const parsed = JSON.parse(data) as { type?: unknown; delta?: unknown };
+  return typeof parsed.type === "string" && REASONING_DELTAS.has(parsed.type) && typeof parsed.delta === "string" ? Buffer.byteLength(parsed.delta, "utf8") : 0;
+}
+
+/** The Responses stream's events whose deltas are content: answer text, reasoning, and a tool call's input. */
+const CONTENT_DELTAS: ReadonlySet<string> = new Set([
+  "response.output_text.delta", "response.reasoning_summary_text.delta", "response.reasoning_text.delta",
+  "response.function_call_arguments.delta", "response.custom_tool_call_input.delta",
+]);
+
+/** The bytes of content one Responses stream event carries: a content delta's text, UTF-8, never the framing around it
+ *  (its sequence number, item id, indexes, logprobs, obfuscation); 0 for every other event. */
+export function responsesContentBytes(event: string): number {
+  const data = event.split("\n").filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trimStart()).join("\n");
+  if (!data.startsWith("{")) return 0;
+  const parsed = JSON.parse(data) as { type?: unknown; delta?: unknown };
+  return typeof parsed.type === "string" && CONTENT_DELTAS.has(parsed.type) && typeof parsed.delta === "string" ? Buffer.byteLength(parsed.delta, "utf8") : 0;
+}
+
 /** A Responses body with its output limited to `max` tokens, reasoning included: never raised, and never longer. */
 export function limitResponsesOutput(body: Record<string, unknown>, max: number): Record<string, unknown> {
   const asked = responsesOutputAsked(body);
@@ -555,6 +594,9 @@ export function codexPolicy(options: CodexPolicyOptions): ProviderPolicy {
     // stated bound: a body that offers web search has no input bound (undefined), so its input is unmeasured.
     outputAsked: responsesOutputAsked,
     outputLeast: responsesOutputLeast,
+    reasoningHidden: (body) => responsesReasoningHidden(body, maxOutputTokens),
+    reasoningBytesOf: responsesReasoningBytes,
+    contentBytesOf: responsesContentBytes,
     limitOutput: limitResponsesOutput,
     serverInputOverhead: search ? (body) => {
       if (Array.isArray(body.tools) && body.tools.some((tool) => isPlain(tool) && tool.type === "web_search")) return undefined;

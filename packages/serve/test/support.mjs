@@ -4,6 +4,8 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer, request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { processAlive } from "@parcha/agentrun-kernel/host";
 import { openStoreReader } from "@parcha/pi-durable-agent";
 import { startServe } from "../dist/index.js";
 
@@ -247,3 +249,21 @@ export function call(port, { method = "GET", path = "/", headers = {}, body } = 
 
 /** The Cookie header for the cookies an answer set. */
 export const cookieOf = (res) => (res.headers["set-cookie"] ?? []).map((line) => line.split(";")[0]).join("; ");
+
+/** Once the process that held run `runId` (its run.json's holder) has exited: only then is the run's store free to read.
+ *  A paused run's process marks the run released itself (sleeping) before it closes its store and exits, so run.json's
+ *  status is not that signal; the process gone is, as it is for the server (runs.ts, a run no longer live). */
+export async function letGo(data, runId, { deadlineMs = 20_000 } = {}) {
+  const file = join(data, "runs", runId, "run.json");
+  for (const end = Date.now() + deadlineMs; ; await new Promise((resolve) => setTimeout(resolve, 50))) {
+    let record = null;
+    try {
+      record = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : null;
+    } catch {
+      // Read while it was rewritten: read again.
+    }
+    const pid = record?.holder?.pid;
+    if (Number.isInteger(pid) && !processAlive(pid)) return;
+    assert.ok(Date.now() < end, `the run's process did not exit: ${JSON.stringify(record)}`);
+  }
+}
