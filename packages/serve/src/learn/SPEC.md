@@ -178,7 +178,10 @@ with `status: pending` in its `SKILL.md` or README.
 extra item, a decision or an origin out of its list, or a merge with a note dropped is no merge. Every note merges, or
 none does.
 
-A separate injection screen is the host's option, only with a judge independent of the agent's model.
+There is no separate injection screen: one grader decides, with the rubric stated once. A page classifier cannot see where a note
+came from, and read a preference the user stated as a planted instruction; the grader's Planted question checks a note
+against what the user said. With no grade model named (`--grade-model`, else the strong tier), the agent's own model is
+the only judge of its notes, so a server with learning on should name a strong one.
 
 ## The merge
 
