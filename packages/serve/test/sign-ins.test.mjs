@@ -379,3 +379,17 @@ test("a Kernel saving run whose session is refused in words that name its profil
   assert.ok(raw.includes("one session at a time may save to a profile"), "the refusal reached the model");
   assert.ok(!raw.includes(handed.ref), "with its pointer cut");
 });
+
+test("a vendor call that fails before an answer says only which vendor and the error's kind, never its URL, which holds the pointer: so DELETE's answer never carries it", async (t) => {
+  const pointer = "agentrun-0123456789abcdef01234567";
+  for (const [vendor, env] of [["kernel", { KERNEL_API_KEY: "k", KERNEL_BASE_URL: "kernel.example" }], ["browserbase", { BROWSERBASE_API_KEY: "b", BROWSERBASE_BASE_URL: "browserbase.example" }]]) {
+    const vendors = vendorsOver(() => env, async () => fetch);
+    await assert.rejects(vendors.remove(vendor, pointer), (error) => error.message === `${vendor} unreachable (TypeError)`);
+  }
+  const data = await scratch(t);
+  const store = new SignIns(data, randomBytes(32), { ...vendorsOver(() => ({ KERNEL_API_KEY: "k", KERNEL_BASE_URL: "kernel.example" }), async () => fetch), create: async () => pointer }, async () => false);
+  await store.forRun("alpha", "run-1", "kernel");
+  const answer = await store.forget("alpha", "default");
+  assert.deepEqual(answer.removed, [{ provider: "kernel", at_vendor: "not_deleted", message: "Not deleted at kernel: kernel unreachable (TypeError). This server no longer points to it." }]);
+  assert.ok(!JSON.stringify(answer).includes(pointer));
+});

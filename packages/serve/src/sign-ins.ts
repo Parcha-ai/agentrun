@@ -221,7 +221,11 @@ export function vendorsOver(env: () => NodeJS.ProcessEnv, fetchFor: (vendor: Ven
   const call = async (vendor: Vendor, method: "POST" | "DELETE", url: string, headers: Record<string, string>, body?: unknown): Promise<Response> => {
     const fetcher = await fetchFor(vendor);
     if (!fetcher) throw new Error(`this server has no ${vendor} to call`);
-    const res = await fetcher(url, { method, headers: { ...headers, ...(body ? { "content-type": "application/json" } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}), redirect: "manual", signal: AbortSignal.timeout(20_000) });
+    // Fetch's own words name the URL, which holds the pointer on a delete (a base URL with no scheme fails to parse with
+    // it): only the error's kind is said, never its message.
+    const res = await fetcher(url, { method, headers: { ...headers, ...(body ? { "content-type": "application/json" } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}), redirect: "manual", signal: AbortSignal.timeout(20_000) }).catch((error: unknown) => {
+      throw new Error(`${vendor} unreachable (${error instanceof Error ? error.name : "Error"})`);
+    });
     if (!res.ok && !(method === "DELETE" && res.status === 404)) throw new Error(`${vendor} answered ${res.status}`);
     return res;
   };
