@@ -27,7 +27,9 @@ const BOX_PATH = /(^|[\s'"=:])(\/run\/agentrun|\/tmp\/pi-transport)(?=[/'"\s]|$)
 
 /**
  * A Daytona that keeps sandboxes. Options: `key`, the only key it takes; `blocks` (default true), false for an
- * organization whose own network policy holds (it takes `networkBlockAll` and sets nothing); `hostileTar`, the bytes
+ * organization whose own network policy holds (it takes `networkBlockAll` and sets nothing); `lists` (default true),
+ * false for one that takes a `domainAllowList` and keeps none; `refusesLists`, the status it answers a create that names
+ * a `domainAllowList` with (a tier that refuses the field), also `state.refusesLists`; `hostileTar`, the bytes
  * every `tar -c` in a box prints instead of its archive (a box that lies on a pull); `failDeletes`, how many DELETEs it
  * answers 500 to first; `failListings`, which listings of a box's directory (the sync layer's `find`, counted from 1:
  * a seed's, then each pull's) it answers 500 to. `state.redirect` ({ from, status, location }): a toolbox call to path
@@ -37,12 +39,12 @@ const BOX_PATH = /(^|[\s'"=:])(\/run\/agentrun|\/tmp\/pi-transport)(?=[/'"\s]|$)
  * `idle(id)` is Daytona's idle stop, `pause(id)` a pause; `/start` starts a stopped or paused sandbox, and a toolbox call
  * to one that is not started is refused.
  */
-export async function daytonaSandboxes(t, { key, blocks = true, hostileTar, failDeletes = 0, failListings = [] } = {}) {
+export async function daytonaSandboxes(t, { key, blocks = true, lists = true, refusesLists, hostileTar, failDeletes = 0, failListings = [] } = {}) {
   const root = join(await scratch(t), "daytona");
   mkdirSync(root, { recursive: true });
   const sandboxes = new Map();
   const requests = [];
-  const state = { blocks, failDeletes, listings: 0, redirect: undefined, hostile: Boolean(hostileTar) };
+  const state = { blocks, lists, refusesLists, failDeletes, listings: 0, redirect: undefined, hostile: Boolean(hostileTar) };
   let base = "";
   let hostileBin;
   if (hostileTar) {
@@ -71,6 +73,7 @@ export async function daytonaSandboxes(t, { key, blocks = true, hostileTar, fail
     id: sandbox.id, state: sandbox.state, labels: sandbox.labels, cpu: 1, memory: 1, disk: 3, sandboxClass: "container",
     // A sandbox's own read carries its network settings; a create's answer and a listing do not.
     ...(single && sandbox.networkBlockAll !== undefined ? { networkBlockAll: sandbox.networkBlockAll } : {}),
+    ...(single && sandbox.domainAllowList !== undefined ? { domainAllowList: sandbox.domainAllowList } : {}),
   });
   const json = (res, status, value) => res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(value));
   const shell = (sandbox, command, timeoutS) =>
@@ -139,7 +142,8 @@ export async function daytonaSandboxes(t, { key, blocks = true, hostileTar, fail
     const sandbox = id === undefined ? undefined : sandboxes.get(id);
     if (id === undefined && method === "POST") {
       const spec = JSON.parse(body.toString("utf8"));
-      const made = { id: randomUUID(), state: "started", labels: spec.labels ?? {}, env: spec.env ?? {}, spec, autoDeleteInterval: spec.autoDeleteInterval ?? -1, autoStopInterval: spec.autoStopInterval ?? 15, ...(spec.networkBlockAll === true && state.blocks ? { networkBlockAll: true } : {}) };
+      if (typeof spec.domainAllowList === "string" && state.refusesLists) return json(res, state.refusesLists, { statusCode: state.refusesLists, message: "domainAllowList is not available for your organization's tier" });
+      const made = { id: randomUUID(), state: "started", labels: spec.labels ?? {}, env: spec.env ?? {}, spec, autoDeleteInterval: spec.autoDeleteInterval ?? -1, autoStopInterval: spec.autoStopInterval ?? 15, ...(spec.networkBlockAll === true && state.blocks ? { networkBlockAll: true } : {}), ...(typeof spec.domainAllowList === "string" && state.lists ? { domainAllowList: spec.domainAllowList } : {}) };
       mkdirSync(boxDir(made.id));
       sandboxes.set(made.id, made);
       return json(res, 200, info(made));
