@@ -1659,7 +1659,7 @@ export class Runs {
     // does (secrets.ts), so a saved Parallel key makes Parallel available, and a deleted one unavailable at the next launch.
     // A capability set to ask or deny since resolves again (a harness's own search cannot wait for a person).
     const settings = this.options.toolSettings?.() ?? {};
-    const fresh = run.tooling ? planeFor(served, run.tooling, settings, { capped: run.meta.max_cost_usd !== undefined }) : {};
+    const fresh = run.tooling ? planeFor(served, run.tooling, settings, { capped: run.meta.max_cost_usd !== undefined, run: true }) : {};
     const plane = run.meta.tool_plane ? recheckPlane(run.meta.tool_plane, served, { fresh, permission: (name) => permissionOf(name, settings as never, (run.tooling?.overrides ?? {}) as never) }) : fresh;
     if (!run.meta.tool_plane && Object.keys(plane).length) {
       run.meta.tool_plane = plane;
@@ -2062,7 +2062,7 @@ export class Runs {
     // Its tools' providers, resolved before the run exists (tool-plane.ts) and kept in the serve.json its start writes first,
     // so a launch after a crash reads them back, never the settings of that moment, and keeping them is no write of its own.
     const tooling = await toolingOf(revision);
-    const plane = tooling ? planeFor(withSecrets(process.env, "all", this.options.storedKeys), tooling, this.options.toolSettings?.() ?? {}, { capped: options.maxCostUsd !== undefined }) : {};
+    const plane = tooling ? planeFor(withSecrets(process.env, "all", this.options.storedKeys), tooling, this.options.toolSettings?.() ?? {}, { capped: options.maxCostUsd !== undefined, run: true }) : {};
     // A run that learns: its seed read before it is made (learning-run.ts).
     const pin = await this.learning.onStart(entry.agent.id, revision);
     const started = await this.options.agents.request(() => this.store.startRun({ agent: entry.agent.id, revision: revision.id, ...(options.origin ? { origin: options.origin } : {}) })).catch((error) => storeError(error, "revision"));
