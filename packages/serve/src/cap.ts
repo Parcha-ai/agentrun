@@ -35,6 +35,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { existsSync } from "node:fs";
 import { providerInputOverhead } from "@parcha/agentrun-kernel/host";
+import { bookRequest, type Ended, isConnectCode, isGatewayTimeout, rejectionCode } from "@parcha/agentrun-kernel";
 import { type EntryLike, REQUEST_CONTINUED, REQUEST_COST, REQUEST_COST_LATE, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED, timelineOf, TOOL_COST, TOOL_STARTED } from "@parcha/pi-durable-agent/timeline";
 import type { Api, AssistantMessage, AssistantMessageEventStream, Context, Model, Models, Usage } from "@earendil-works/pi-ai";
 
@@ -97,7 +98,55 @@ export type Stopped = (message: { content?: unknown }) => number;
 /** What a request stopped before its end counts at: its input and `streamed` tokens plus STOP_ALLOWANCE_TOKENS of output,
  *  at most the output it was sent with (`limit`), at `cost`'s price; never more than `worst`, what it was held at. */
 export const stoppedFigure = (cost: (output: number) => number, limit: number, worst: number, streamed: number): number =>
-  Math.min(worst, cost(Math.min(limit, streamed + STOP_ALLOWANCE_TOKENS)));
+  bookRequest({ end: "stopped", streamedTokens: streamed }, { hold: worst, stoppedPrice: stoppedPriceOf(cost, limit) }).usd!;
+/** What a stopped request counts at, having streamed `streamed` tokens: those and STOP_ALLOWANCE_TOKENS of output, at
+ *  most the output it was sent with (`limit`), at `cost`'s price; bookRequest keeps it within the hold. */
+export const stoppedPriceOf = (cost: (output: number) => number, limit: number) => (streamed: number): number => cost(Math.min(limit, streamed + STOP_ALLOWANCE_TOKENS));
+
+/** The option a request's attempts ride on to its marks (request-start.ts): each HTTP attempt pi-ai made for it, as the
+ *  fetch the cap gave it saw them. A symbol, so no provider ever sends it. */
+export const ATTEMPTS = Symbol.for("agentrun.serve.attempts");
+/** One attempt of a request: the status it was answered with, or the code its fetch was refused with. */
+export type Attempt = { status: number } | { code: string | undefined };
+/** The APIs whose requests the cap cannot watch through a fetch, so it gives them none: their transport goes another way
+ *  (Codex's WebSocket first, Bedrock's own client, Cloudflare's binding and Workers AI, the decision and System One
+ *  clients), or they refuse a custom fetch outright (pi-ai's Google adapters throw on one). A request on one that fails
+ *  before any event books its hold. */
+export const NO_RECORDER_APIS: ReadonlySet<string> = new Set([
+  "openai-codex-responses", "bedrock-converse-stream", "cloudflare-ai-binding", "cloudflare-workers-ai-system-one",
+  "google-generative-ai", "google-vertex", "openai-decisions", "typesafe-system-one",
+]);
+/** A fetch that does what `inner` does (globalThis.fetch by default) and records each attempt in `attempts`. */
+export function recordingFetch(attempts: Attempt[], inner?: typeof fetch): typeof fetch {
+  return (async (input, init) => {
+    try {
+      const response = await (inner ?? globalThis.fetch)(input, init);
+      attempts.push({ status: response.status });
+      return response;
+    } catch (error) {
+      attempts.push({ code: rejectionCode(error) });
+      throw error;
+    }
+  }) as typeof fetch;
+}
+/** How a pi request ended (booking.ts), from pi's message, whether its response began (an event came in), and its
+ *  attempts (undefined on an API the cap cannot watch). The worst over its attempts, in the order lost > answered >
+ *  nothing: an attempt is lost when its fetch was refused after it could have left (any code but a connect one), when a
+ *  gateway gave up on it (504, 524), or when it was answered 2xx and its request then ended on an error, or was tried
+ *  again. An answer after a lost attempt can have been billed twice: lost. No attempt seen on a watched API: it never
+ *  left. */
+export function piEnded(message: Pick<AssistantMessage, "stopReason" | "usage">, began: boolean, attempts: readonly Attempt[] | undefined): Ended {
+  const ok = (a: Attempt) => "status" in a && a.status >= 200 && a.status < 300;
+  const lost = (a: Attempt, last: boolean) => ("code" in a ? !isConnectCode(a.code) : isGatewayTimeout(a.status) || (ok(a) && !last));
+  const anyLost = attempts?.some((a, at) => lost(a, at === attempts.length - 1)) ?? false;
+  if (message.stopReason !== "error") return anyLost ? { end: "lost", label: "retried" } : { end: "answered", usd: typeof message.usage?.cost?.total === "number" ? message.usage.cost.total : null };
+  if (began) return { end: "lost", label: "error_after", began: true };
+  if (attempts === undefined) return { end: "lost", label: "error_before" };
+  const last = attempts.at(-1);
+  if (last && "status" in last && isGatewayTimeout(last.status)) return { end: "lost", label: "gateway_timeout" };
+  if (anyLost || (last !== undefined && ok(last))) return { end: "lost", label: "error_before" };
+  return { end: "nothing", label: last === undefined || "code" in last ? "never_left" : "status" };
+}
 /** How pi's error for a request whose start mark could not be written begins (request-start.ts builds it from this): the
  *  request never left, so the entry answers none, and spentIn leaves it out by this. */
 export const MARK_NOT_WRITTEN = "the model request was not sent: its mark could not be written";
@@ -565,7 +614,7 @@ export async function capBefore(cap: number | undefined, model: Model<Api> | und
     },
     worstOf: (request) => (typeof request.inputTokensMax === "number" && Number.isFinite(request.inputTokensMax) ? held(request) : undefined),
     stoppedOf: (request, streamed) => (typeof request.inputTokensMax === "number" && Number.isFinite(request.inputTokensMax) && Number.isFinite(streamed) && streamed >= 0
-      ? price(request.inputTokensMax, Math.min(request.outputTokensMax ?? output, streamed + STOP_ALLOWANCE_TOKENS)) : undefined),
+      ? stoppedPriceOf((tokens) => price(request.inputTokensMax!, tokens), request.outputTokensMax ?? output)(streamed) : undefined),
   };
 }
 
@@ -648,14 +697,15 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
    *  (markResponseBegan: its usage is what had streamed, not what the provider can have billed), or that failed with no
    *  answer, at `worst`, what the cap held for it; each as spentIn reads its end mark. Without a figure (a deferred
    *  response) it is unknown, as is a cost that is not a number, from then on. */
-  const count = (answer: Promise<AssistantMessage>, worst?: number, stopped?: Stopped) => {
+  const count = (answer: Promise<AssistantMessage>, worst?: number, stopped?: Stopped, attempts?: readonly Attempt[]) => {
     const add = (cost: unknown) => void (spent = spent !== null && typeof cost === "number" && Number.isFinite(cost) ? spent + cost : null);
+    // One rule (bookRequest), from how the request ended (piEnded) as its marks read it too.
     const at = (message: AssistantMessage) => message.stopReason === "aborted" ? (stopped ? stopped(message) : worst)
-      : message.stopReason === "error" && responseBegan.has(message) ? worst : message.usage?.cost?.total;
+      : bookRequest(piEnded(message, responseBegan.has(message), attempts), worst === undefined ? {} : { hold: worst }).usd;
     return answer.then((message) => add(at(message)), () => add(worst));
   };
   /** Sends a request judged to fit at `worst`, holding that until `answer` settles. */
-  const admit = (worst: number, stopped: Stopped, answer: () => Promise<AssistantMessage>): Promise<AssistantMessage> => {
+  const admit = (worst: number, stopped: Stopped, answer: () => Promise<AssistantMessage>, attempts?: readonly Attempt[]): Promise<AssistantMessage> => {
     held += worst;
     let answered: Promise<AssistantMessage>;
     try {
@@ -664,20 +714,28 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
       held -= worst;
       throw error;
     }
-    void count(answered, worst, stopped).finally(() => void (held -= worst));
+    void count(answered, worst, stopped, attempts).finally(() => void (held -= worst));
     return answered;
   };
   // A paid tool's check reads the spend with the requests in flight held at their worst case (and adds the paid holds
   // itself), and its charge joins it.
   useSpend({ cap, spent: () => (spent === null ? null : spent + held), add: (usd) => void (spent = spent !== null && typeof usd === "number" && Number.isFinite(usd) ? spent + usd : null) });
   /** `options` with the request's worst case, and its figure if it is stopped, for its marks. */
-  const carrying = <O>(options: O, { worst, stopped }: Judged): O => ({ ...options, [HELD_USD]: worst, [STOPPED_USD]: stopped }) as O;
+  /** `options` with the request's worst case, its figure if it is stopped, and its attempts' record, for its marks: on an
+   *  API the cap can watch, a fetch that records each attempt (`attempts`, undefined on one it cannot). */
+  const carrying = <O>(options: O, { worst, stopped }: Judged, attempts: Attempt[] | undefined): O => ({
+    ...options, [HELD_USD]: worst, [STOPPED_USD]: stopped,
+    // null on an API the cap cannot watch: its marks read a failure before any event as lost.
+    ...(attempts ? { [ATTEMPTS]: attempts, fetch: recordingFetch(attempts, (options as { fetch?: typeof fetch } | undefined)?.fetch) } : { [ATTEMPTS]: null }),
+  }) as O;
+  const attemptsFor = (model: Model<Api>): Attempt[] | undefined => (NO_RECORDER_APIS.has(model.api) ? undefined : []);
   const stream = (send: (model: Model<Api>, context: Context, options?: Options) => AssistantMessageEventStream, simpleCall: boolean) =>
     (model: Model<Api>, context: Context, options?: Options): AssistantMessageEventStream => {
       const judged = judge(model, context, options, simpleCall);
       if ("worst" in judged) {
         let events: AssistantMessageEventStream | undefined;
-        admit(judged.worst, judged.stopped, () => (events = send(model, context, carrying(judged.options ?? options, judged))).result());
+        const attempts = attemptsFor(model);
+        admit(judged.worst, judged.stopped, () => (events = send(model, context, carrying(judged.options ?? options, judged, attempts))).result(), attempts);
         return events!;
       }
       const refused = createAssistantMessageEventStream();
@@ -696,7 +754,9 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
   const complete = (send: (model: Model<Api>, context: Context, options?: Options) => Promise<AssistantMessage>, simpleCall: boolean) =>
     (model: Model<Api>, context: Context, options?: Options): Promise<AssistantMessage> => {
       const judged = judge(model, context, options, simpleCall);
-      return "worst" in judged ? admit(judged.worst, judged.stopped, () => send(model, context, carrying(judged.options ?? options, judged))) : Promise.resolve(refusal(model, judged.why));
+      if (!("worst" in judged)) return Promise.resolve(refusal(model, judged.why));
+      const attempts = attemptsFor(model);
+      return admit(judged.worst, judged.stopped, () => send(model, context, carrying(judged.options ?? options, judged, attempts)), attempts);
     };
   const guarded: Record<PropertyKey, unknown> = {
     stream: stream(models.stream.bind(models) as never, false),

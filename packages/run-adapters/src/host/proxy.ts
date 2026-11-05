@@ -17,6 +17,7 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingHttpHeaders, type IncomingMessage, type ServerResponse } from "node:http";
 import { CONTENT_FILTERED } from "../types.js";
+import { type Ended, isConnectCode, isGatewayTimeout, rejectionCode } from "../booking.js";
 
 /** A route a policy admits: its method, its exact path, and the request headers forwarded with it. */
 export interface ProxyRoute {
@@ -127,8 +128,9 @@ export interface ModelProxyHooks {
    *  `afterRequest`, since requests may be in flight together. A ticket's `outputTokensMax` limits the request's output
    *  (thinking included) to that many tokens, written into its body by the policy's `limitOutput` before it is sent. */
   beforeRequest(request: ProxyRequest): Promise<unknown>;
-  /** When a request's response has completed, with its usage and the ticket its `beforeRequest` returned. */
-  afterRequest(usage: ModelUsageReport, ticket?: unknown): Promise<void>;
+  /** When a request's response has completed, with its usage, the ticket its `beforeRequest` returned, and how it ended
+   *  (booking.ts), which the runner books it by: one rule for every path. */
+  afterRequest(usage: ModelUsageReport, ticket?: unknown, ended?: Ended): Promise<void>;
   /** When a paid request's response headers arrive, before its body: the ids they give it (`providerIdsOf`), so a
    *  request a crash cuts off after this point is known to have reached the provider, under those ids. */
   responded?(ids: Record<string, string>, ticket?: unknown): Promise<void>;
@@ -546,7 +548,9 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     /** The provider's answer, once it reached the client whole. */
     let answered: { ok: boolean } | undefined;
     /** That the provider's answer began, with its status: what a client that left before the end had of it. */
-    let began: { ok: boolean } | undefined;
+    let began: { ok: boolean; status: number } | undefined;
+    /** The code of the provider's fetch failing before any response (rejectionCode): a connect-phase one never left. */
+    let failedCode: string | undefined;
     let watchEnd: (() => void) | undefined;
     /** The ids its headers gave it. */
     let ids: Record<string, string> | undefined;
@@ -617,7 +621,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
           say(`model proxy (${policy.id}): responded threw; the request's ids are kept with its booking only`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
         }
       }
-      began = { ok: upstream.ok };
+      began = { ok: upstream.ok, status: upstream.status };
       res.writeHead(upstream.status, { "content-type": upstream.headers.get("content-type") ?? "application/json" });
       const decoder = new TextDecoder();
       let watcher: { chunk(text: string): void; failed?(): void; end?(): void } | undefined;
@@ -683,6 +687,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       // Only this proxy's abort ends a stop: an answer read on after its client left (its content-filter stop) that the
       // provider ends with an error is no stop.
       stoppedByClient = clientLeft && began?.ok === true && controller.signal.aborted;
+      if (!began) failedCode = rejectionCode(error);
       say(`model proxy (${policy.id}): the request did not complete`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
       if (!res.headersSent) refuse(res, 502, "the provider did not answer", req);
       else res.destroy();
@@ -704,14 +709,23 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     // A client may leave once it has read the response's usage (Codex does, at the completion event) while the provider
     // still holds the stream open: what was read of a successful answer is read for its usage as a whole one is. With none
     // in it, the cost is unknown, as for any answer cut short.
-    const seen = answered ?? (began?.ok ? began : undefined);
+    // An error answer cut part way is still an error answer: its status says it was not paid.
+    const seen = answered ?? began;
     if (!seen) {
       usage = { input: 0, output: 0, cacheRead: 0 };
+      // A request refused at connect never left: it costs nothing. Anything else may have reached the provider.
+      if (isConnectCode(failedCode)) {
+        usd = 0;
+        own = true;
+      }
     } else if (!seen.ok) {
-      // A provider's error answer was not a paid response: it costs nothing.
+      // A provider's error answer was not a paid response: it costs nothing. But a gateway's 504 or 524 says only that
+      // the gateway gave up: the provider was still at work, and bills it.
       usage = { input: 0, output: 0, cacheRead: 0 };
-      usd = 0;
-      own = true;
+      if (!isGatewayTimeout(began?.status ?? 0)) {
+        usd = 0;
+        own = true;
+      }
     } else {
       let unread = false;
       try {
@@ -741,7 +755,13 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     try {
       // A response its client stopped and whose cost is unknown says what streamed of it, for the host to count it by.
       const stopped = stoppedByClient && usd === null ? { stoppedAfterBytes: sentBytes } : {};
-      await hooks.afterRequest({ ...usage, usd, ...(own ? {} : { estimated: true }), ...(tableUsd === undefined ? {} : { tableUsd }), ...(ids ? { providerIds: ids } : {}), ...stopped }, ticket);
+      // How it ended, for the runner to book it by (booking.ts).
+      const ended: Ended = stoppedByClient && usd === null ? { end: "stopped", streamedTokens: sentBytes }
+        : !seen ? (isConnectCode(failedCode) ? { end: "nothing", label: "never_left" } : { end: "lost", label: "error_before" })
+        : !seen.ok ? (isGatewayTimeout(began?.status ?? 0) ? { end: "lost", label: "gateway_timeout" } : { end: "nothing", label: "status" })
+        : !answered && usd === null ? { end: "lost", label: "error_after", began: true }
+        : { end: "answered", usd, ...(filteredTold ? { label: "filtered" as const } : {}) };
+      await hooks.afterRequest({ ...usage, usd, ...(own ? {} : { estimated: true }), ...(tableUsd === undefined ? {} : { tableUsd }), ...(ids ? { providerIds: ids } : {}), ...stopped }, ticket, ended);
     } catch (error) {
       say(`model proxy (${policy.id}): afterRequest threw; the request was answered and not booked`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
     }

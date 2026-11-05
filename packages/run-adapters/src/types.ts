@@ -2,6 +2,7 @@
 // One interface serves both hosts: a DSL host's `runNode` (createHarnessRunner) and serve's runs. Nothing here
 // imports a host.
 import type { WorkflowDeps } from "@parcha/agentrun-dsl";
+import type { Ended } from "./booking.js";
 
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 
@@ -135,7 +136,9 @@ export interface ModelPort {
   beforeRequest(request: ModelRequest): Promise<ModelTicket | void>;
   /** Books a completed request. `ticket` is what its own `beforeRequest` returned: requests may be in flight together, so
    *  an answer is booked under the turn it was admitted as, not the latest one. */
-  afterRequest(usage: ModelUsage, ticket?: ModelTicket): Promise<void>;
+  /** `ended`: how the request ended, as the model proxy saw it (booking.ts), what it is booked by; absent (a host from
+   *  before it), booked as before, by `usd` and `stoppedAfterBytes`. */
+  afterRequest(usage: ModelUsage, ticket?: ModelTicket, ended?: Ended): Promise<void>;
   /** Records the ids a paid request's response gave it, as its headers arrive and before its answer is read. */
   responded?(ids: Record<string, string>, ticket?: ModelTicket): Promise<void>;
 }
