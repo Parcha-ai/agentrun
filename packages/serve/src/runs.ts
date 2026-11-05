@@ -169,8 +169,10 @@ type RunError = { code: string; message: string; retryable: boolean; details?: {
 export type RunReview = { kind: string | null; node: string | null; reason: string; at: string };
 /** A review as serve.json keeps it: `at` is not kept, as it is the run's saved end, which the store stamps. */
 type SavedReview = Omit<RunReview, "at">;
-/** `review` at the run's saved end `endedAt`, so review.at and ended_at are one time. */
-const reviewAt = (review: SavedReview | null, endedAt: string): RunReview | null => (review ? { kind: review.kind, node: review.node, reason: review.reason, at: endedAt } : null);
+/** `review` at the run's saved end `endedAt`, so review.at and ended_at are one time. Its reason is an escalate node's
+ *  summary, interpolated from the run's input: served as `shown` makes it, with no held value in it, the keys as they
+ *  are when it is read. */
+const reviewAt = (review: SavedReview | null, endedAt: string, shown: (text: string) => string): RunReview | null => (review ? { kind: review.kind, node: review.node, reason: shown(review.reason), at: endedAt } : null);
 
 /** A failed run's error from its row and serve.json: its own, else the row's summary. */
 const errorOfRow = (row: RunRow, meta: Partial<RunMeta> | null): RunError =>
@@ -2360,7 +2362,7 @@ export class Runs {
       // An answer is served with no held secret in it, whole (key-refusal.ts redactedAnswer); the stored one stays as written.
       result: status === "completed" ? { output: run.kind === "workflow" ? (this.servedOutput(run, run.meta.output ?? null)) : null, final_answer: this.servedAnswer(run, finalAnswer) } : kept ? { output: null, final_answer: this.servedAnswer(run, kept) } : null,
       error: status === "failed" ? (run.error ?? { code: "run_failed", message: "The run failed.", retryable: false }) : null,
-      review: endedAt === null ? null : reviewAt(run.meta.review ?? (row ? reviewOfRow(row, run.meta) : null), endedAt),
+      review: endedAt === null ? null : reviewAt(run.meta.review ?? (row ? reviewOfRow(row, run.meta) : null), endedAt, (text) => redactedAnswer(text, this.refusedValues(run))),
       pending: status === "input_required" && state === "waiting" ? (budgetPending(run) ?? pendingOf(run.rows)) : null,
       cost: this.cost(run),
       archived_at: stored?.archivedAt ?? null,
@@ -2397,7 +2399,8 @@ export class Runs {
       ...(typeof meta?.effort === "string" ? { effort: meta.effort } : {}),
       created_at: typeof meta?.created_at === "string" ? meta.created_at : row.startedAt, ended_at: row.endedAt ?? null,
       error: STATUS_OF[row.state as Ended] === "failed" ? errorOfRow(row, meta) : null,
-      review: reviewAt(reviewOfRow(row, meta), row.endedAt ?? new Date(0).toISOString()),
+      // A run this server does not hold: the values it holds itself (what a run it held was handed is among its keys).
+      review: reviewAt(reviewOfRow(row, meta), row.endedAt ?? new Date(0).toISOString(), (text) => redactedAnswer(text, [...hostSecrets(process.env, this.options.storedKeys), this.options.token, this.options.doorToken])),
       cost: { usd: row.costUsd ?? null, basis: "estimate", charge_state: null, cap_usd: typeof meta?.max_cost_usd === "number" ? meta.max_cost_usd : null, ...(row.costUsd == null ? (soFarOfMeta(meta) ?? {}) : {}) },
       archived_at: row.archivedAt ?? null,
       // A run read from its row alone has ended: it waits on nothing.
