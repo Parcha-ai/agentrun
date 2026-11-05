@@ -230,13 +230,19 @@ export interface Box {
 	 * Optional: a box that keeps a program alive natively (a fake box in a test). `launch`, `launchState` and `launchStop`
 	 * (`@parcha/pi-transport/launch`) use it when it is there, read on every call, and otherwise run the launcher in the box
 	 * with `exec`. A provider leaves it undefined.
+	 *
+	 * @deprecated Removed in 0.1.0-beta.31 with `@parcha/pi-transport/launch`. Run an agent in a box with `@parcha/agentrun-serve`, which uses `./hands` and `./sync`.
 	 */
 	readonly launcher?: BoxLauncher;
 	/** Where `facts().ports` reaches the box from outside. Only on boxes whose provider can expose a port. */
 	endpoint?(port: number, context: Context): Promise<Result<BoxEndpoint, BoxError>>;
 }
 
-/** The launcher's three calls, done natively by a box (`Box.launcher`), with the same answers as the launcher in a box. */
+/**
+ * The launcher's three calls, done natively by a box (`Box.launcher`), with the same answers as the launcher in a box.
+ *
+ * @deprecated Removed in 0.1.0-beta.31 with `@parcha/pi-transport/launch`. Run an agent in a box with `@parcha/agentrun-serve`, which uses `./hands` and `./sync`.
+ */
 export interface BoxLauncher {
 	launch(name: string, spec: LaunchSpec, context: Context): Promise<Result<LaunchState, LaunchError>>;
 	state(launch: Launch, context: Context): Promise<Result<LaunchState | undefined, LaunchError>>;

@@ -205,16 +205,20 @@ export function openCodeAdapter(options: OpenCodeAdapterOptions): AgentAdapter {
 
       let running: Promise<{ status: TurnStatus; error?: string }> | undefined;
       let closed = false;
+      // Whether this session's interrupt stopped the turn in flight (its end is not written: the turn stays open).
+      let interrupted = false;
       const run = () => {
         const before = turnsIn(drive).length;
         const current = drive;
         state = "idle";
+        interrupted = false;
         running = (async () => {
           let outcome: { status: TurnStatus; error?: string };
           try {
             await harness.drive(current);
             const ended = turnsIn(current).slice(before).at(-1)?.data as { status?: TurnStatus; error?: string } | undefined;
-            outcome = ended?.status ? { status: ended.status, ...(ended.error ? { error: ended.error } : {}) } : { status: "failed", error: "the turn ended with no outcome in the session's records" };
+            // A turn its interrupt stopped has no end in the records (it stays open): interrupted.
+            outcome = ended?.status ? { status: ended.status, ...(ended.error ? { error: ended.error } : {}) } : interrupted ? { status: "interrupted" } : { status: "failed", error: "the turn ended with no outcome in the session's records" };
           } catch (error) {
             // Stopped by the session or its host: interrupted. Halted by anything else: failed, naming why.
             outcome = current.signal.aborted
@@ -262,9 +266,10 @@ export function openCodeAdapter(options: OpenCodeAdapterOptions): AgentAdapter {
           return running;
         },
         async interrupt() {
-          // OpenCode ends the turn itself, and its end is in the log: the next message is a plain turn. If it does not
-          // within INTERRUPT_MS, the drive is halted, and the turn stays open: its host settles it, or the next process
-          // recovers it.
+          // OpenCode is asked to end the turn (it stops spending), and no end is written for it, as codex's interrupt
+          // writes none: the turn stays open, its host settles it (a person's stop), or the next process resumes it (the
+          // server's own stop, #1578). If OpenCode does not end it within INTERRUPT_MS, the drive is halted, the same.
+          interrupted = true;
           const stopped = control ? await control.interrupt(INTERRUPT_MS).catch(() => false) : false;
           if (!stopped) drive.halt?.(new SessionHalt("interrupted"));
           await running?.catch(() => {});
