@@ -20,8 +20,8 @@ type PageProps = { v2: Client; go: (hash: string) => void; agentName: (id: strin
 type FormProps = { v2: Client; go: (hash: string) => void; minEvery?: number };
 
 const hashOf = (id: string) => `#/schedules/${encodeURIComponent(id)}`;
-/** A time the server gave, in the console's own words for times (UTC). */
-const at = (iso: string) => `${when(iso)} UTC`;
+/** A time the server gave, as the console says every time: in the viewer's own zone. */
+const at = (iso: string) => when(iso);
 const TONE: Record<Firing["status"], Tone | "plain"> = { started: "success", skipped: "muted", missed: "warning", failed: "error", due: "active" };
 
 /** Schedules (serve's trigger/1): each starts an agent's capped runs with no one there. */

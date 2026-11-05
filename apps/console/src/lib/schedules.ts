@@ -27,7 +27,7 @@ export function span(seconds: number): string {
 /** When a schedule fires: its cron line and zone, its one time, or its interval. */
 export function whenWords(source: TriggerSource): string {
   if ("cron" in source) return `Cron ${source.cron} · ${source.timezone}`;
-  if ("at" in source) return `Once, ${when(source.at)} UTC`;
+  if ("at" in source) return `Once, ${when(source.at)}`;
   return `Every ${span(source.every_s)}`;
 }
 
