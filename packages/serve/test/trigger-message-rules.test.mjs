@@ -106,3 +106,33 @@ test("bad webhook headers are refused before the body is read: a body past 256 K
   const res = await fetch(`${baseUrl}/hooks/${id}`, { method: "POST", headers: { "webhook-id": "msg_x" }, body: "x".repeat((256 << 10) + 1) }).catch((error) => ({ status: `reset: ${error.message}` }));
   assert.equal(res.status, 401);
 });
+
+test("a run that comes to wait on a person between the firing's check and its door's admission is never answered: the door refuses, the firing is skipped, the question stands", { timeout: 120_000 }, async (t) => {
+  withEnv(t, SEAL);
+  const gate = join(await scratch(t), "gate");
+  let api;
+  // The seam before a message reaches the run's door: the run is let ask its question here, and the message goes on
+  // only once the run waits on it.
+  const beforeSubmit = async (runId, content) => {
+    if (!content.startsWith("A new event came in.")) return;
+    await writeFile(gate, "");
+    // Its turn has ended on the question once the timeline holds the wait (the run's own status reads working while this
+    // message is on its way).
+    const waits = async () => (await api("GET", `/runs/${runId}/timeline`)).body.rows.some((row) => row.kind === "waiting");
+    for (const end = Date.now() + 30_000; !(await waits()); await new Promise((resolve) => setTimeout(resolve, 50))) assert.ok(Date.now() < end, "the run asks");
+  };
+  const server = await serve(t, { beforeSubmit });
+  api = server.api;
+  await made(api, "asks", { tools: ["ask_person"] });
+  const run = (await api("POST", "/agents/asks/runs", { input: { content: `Pick a region once ${gate} exists.` }, max_cost_usd: 1 })).body;
+  await follow(api, run.run_id, ["working"]);
+  const { id, secret } = (await api("POST", "/triggers", messaging(run.run_id))).body;
+  assert.equal((await post(server.baseUrl, id, "eu", secret)).status, 202);
+  const [skipped] = await firings(api, id, 1);
+  assert.deepEqual([skipped.status, skipped.reason], ["skipped", "The run is waiting on a person."], JSON.stringify(skipped));
+  const read = (await api("GET", `/runs/${run.run_id}`)).body;
+  assert.deepEqual([read.status, read.state, read.pending?.kind], ["input_required", "waiting", "question"], "the question stands, unanswered");
+  const { rows } = await follow(api, run.run_id, ["input_required"]);
+  assert.equal(rows.filter((row) => row.kind === "user_message").length, 1, "no message reached it");
+  assert.equal((await api("POST", `/runs/${run.run_id}/cancel`)).status, 202);
+});

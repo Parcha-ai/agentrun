@@ -163,19 +163,28 @@ test("a payload past 16 KiB is cut at a character's start and says so; its closi
   await follow(api, fired.run_id, ["completed"]);
 });
 
-test("a message_run firing reaches a run that is working: its live process takes it through its door", { timeout: 120_000 }, async (t) => {
+test("a message_run firing to a run that is working waits for its turn to end, never queued behind it, then reaches it as a follow-up", { timeout: 120_000 }, async (t) => {
   withEnv(t, SEAL);
   const { api, baseUrl } = await serve(t);
   await made(api, "busy");
-  const run = (await api("POST", "/agents/busy/runs", { input: { content: "Take your time." }, max_cost_usd: 1 })).body;
+  const gate = join(await scratch(t), "gate");
+  const run = (await api("POST", "/agents/busy/runs", { input: { content: `Hold the answer until ${gate}.` }, max_cost_usd: 1 })).body;
   await follow(api, run.run_id, ["working"]);
   const { id, secret } = (await api("POST", "/triggers", { source: { kind: "webhook" }, target: { kind: "message_run", run_id: run.run_id, input: { content: "Also look at this." } } })).body;
-  const started = Date.now();
   assert.equal((await post(baseUrl, id, "{\"ticket\":9}", { secret })).status, 202);
+  // Refused at the run's door while its turn works (a message queued behind a turn would answer an ask it ends on).
+  let held;
+  for (const end = Date.now() + 30_000; !held; await new Promise((resolve) => setTimeout(resolve, 50))) {
+    const [firing] = (await api("GET", `/triggers/${id}/firings`)).body.firings;
+    if (firing?.status === "due" && firing.retry_at) held = firing;
+    assert.ok(Date.now() < end, JSON.stringify(firing));
+  }
+  assert.match(held.reason, /working/);
+  await writeFile(gate, "");
   const [sent] = await firings(api, id, 1);
   assert.deepEqual([sent.status, sent.run_id, sent.error], ["sent", run.run_id, null], JSON.stringify(sent));
-  assert.ok(Date.now() - started < 10_000, "sent at once, not after a wait on the run's store");
-  assert.equal((await api("POST", `/runs/${run.run_id}/cancel`)).status, 202);
+  const { rows } = await follow(api, run.run_id, ["completed"]);
+  assert.equal(rows.filter((row) => row.kind === "user_message").length, 2, "its message, once, after the turn it waited for");
 });
 
 test("an event's webhook-id, after 200 later events moved its firing out of the history, still answers that firing for a day: it never fires again", { timeout: 300_000 }, async (t) => {
