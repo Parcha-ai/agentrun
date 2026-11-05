@@ -3,7 +3,7 @@ import * as React from "react";
 import { cn } from "@/lib/utils";
 
 // shadcn's Button with the AgentRun skin: mono caps, a 1px border, square.
-const buttonVariants = cva(
+export const buttonVariants = cva(
   "caps inline-flex items-center justify-center gap-2 whitespace-nowrap border text-[12px] transition-colors disabled:cursor-not-allowed disabled:opacity-45 [&_svg]:size-3.5 [&_svg]:shrink-0",
   {
     variants: {
