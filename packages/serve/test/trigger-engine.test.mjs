@@ -1,11 +1,13 @@
 // The triggers' engine on its own (triggers.ts), with fake dependencies the test holds: a write that fails mid-firing
 // strands nothing, and edits that overlap keep each one's change.
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdirSync } from "node:fs";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
+import { Cron } from "croner";
 import { ApiError } from "../dist/errors.js";
 import { Triggers } from "../dist/triggers.js";
 import { fakeClock } from "./trigger-support.mjs";
@@ -17,9 +19,9 @@ function held() {
   return { promise, resolve, reject };
 }
 
-async function engine(t, deps) {
-  const data = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "triggers-"));
-  const clock = fakeClock("2026-06-01T00:00:00Z");
+async function engine(t, deps, { data, at = "2026-06-01T00:00:00Z" } = {}) {
+  data ??= await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "triggers-"));
+  const clock = fakeClock(at);
   const triggers = new Triggers(data, { targetIssues: async () => [], start: async () => ({ run_id: "run-1" }), statusOf: async () => null, runOf: async () => null, say: () => {}, clock, ...deps });
   t.after(async () => {
     triggers.close();
@@ -86,4 +88,67 @@ test("two edits at once, one a target whose check is slow and one a source, each
   assert.deepEqual(after.source, { kind: "schedule", cron: "0 9 * * *", timezone: "UTC" }, "the quick edit's source, kept");
   assert.equal(after.next_at, "2026-06-01T09:00:00.000Z", "the next time is the source's");
   assert.deepEqual(triggers.get(made.id), after);
+});
+
+// A failure's trigger.failed is queued, but the write that marks it so does not land: the outbox's own write fails
+// (unsaved), or the triggers file's does. Once writes work again it is marked while the server runs, so a restart
+// queues it no second time.
+for (const [what, told] of [["the triggers file's write of it fails", "queued"], ["the outbox's write fails", "unsaved"]]) {
+  test(`a failure queued while ${what} is marked notified once writes work again, and a restart queues it no second time`, { timeout: 60_000 }, async (t) => {
+    const calls = [];
+    let blocked;
+    const failing = { start: async () => Promise.reject(new ApiError("agent_not_runnable", "archived")) };
+    const first = await engine(t, {
+      ...failing,
+      notify: (failed, key) => {
+        calls.push(key);
+        if (calls.length > 1) return "queued";
+        if (told === "queued") mkdirSync(blocked);
+        return told;
+      },
+    });
+    blocked = join(first.data, "triggers.json.tmp");
+    const made = await first.triggers.create(body({ at: "2026-06-01T00:05:00Z" }));
+    first.clock.to("2026-06-01T00:05:00Z");
+    await until(() => calls.length === 1, "trigger.failed queued");
+    const onDisk = async () => JSON.parse(await readFile(join(first.data, "triggers.json"), "utf8")).triggers[0].firings[0];
+    assert.equal((await onDisk()).status, "failed");
+    assert.equal((await onDisk()).notified, undefined, "not marked yet");
+    await rm(blocked, { recursive: true, force: true });
+    first.clock.to("2026-06-01T00:05:05Z");
+    await until(async () => (await onDisk()).notified === true, "notified saved once writes work again");
+    assert.deepEqual(calls, [calls[0], calls[0]], "queued again under the same key, which the outbox holds once");
+    first.triggers.close();
+    const again = [];
+    const second = await engine(t, { ...failing, notify: (failed, key) => (again.push(key), "queued") }, { data: first.data, at: "2026-06-01T00:06:00Z" });
+    await sleep(100);
+    assert.deepEqual(again, [], "a restart queues none");
+    assert.equal(second.triggers.firings(made.id).firings[0].status, "failed");
+  });
+}
+
+test("an every-minute schedule down a year and a day, with a window that long, starts in a bounded number of steps: its latest time fires, and the rest are one missed row of 10000 or more", { timeout: 300_000 }, async (t) => {
+  const first = await engine(t, {});
+  const made = await first.triggers.create({ ...body({ cron: "* * * * *" }), catchup_window_s: 366 * 86_400 });
+  assert.equal(made.next_at, "2026-06-01T00:01:00.000Z");
+  first.triggers.close();
+  // Every time croner is asked for a run after another, while the next server starts.
+  const { nextRun } = Cron.prototype;
+  let steps = 0;
+  Cron.prototype.nextRun = function (...args) {
+    steps++;
+    return nextRun.apply(this, args);
+  };
+  t.after(() => void (Cron.prototype.nextRun = nextRun));
+  const starts = [];
+  const second = await engine(t, { start: async (target, input, origin) => (starts.push(origin.firing_key), { run_id: "run-1" }) }, { data: first.data, at: "2027-06-02T00:00:30Z" });
+  const started = steps;
+  Cron.prototype.nextRun = nextRun;
+  assert.ok(started <= 10_010, `the start took ${started} steps`);
+  await until(() => starts.length === 1, "the latest time's run");
+  const [fired, missed] = second.triggers.firings(made.id).firings;
+  assert.deepEqual([fired.nominal_at, fired.status, fired.key], ["2027-06-02T00:00:00Z", "started", starts[0]]);
+  assert.deepEqual([missed.status, missed.nominal_at, missed.count], ["missed", "2026-06-01T00:01:00Z", 10_000]);
+  assert.match(missed.reason, /10000 or more times from this one were not fired/);
+  assert.equal(second.triggers.get(made.id).next_at, "2027-06-02T00:01:00.000Z");
 });
