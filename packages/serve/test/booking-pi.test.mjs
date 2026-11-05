@@ -227,3 +227,29 @@ test("a request whose retry the run stops after a lost attempt books its hold in
   assert.equal(spentIn(storeOf(t, [...marks.slice(0, upTo), { kind: "pi.assistant", model: [first] }])), 0.01, "a later process reads the same hold, from its lost mark");
 });
 
+/** Models whose every request answers at once with no readable cost (its usage names no total). */
+const costless = () => {
+  const message = { role: "assistant", content: [{ type: "text", text: "42" }], api: "anthropic-messages", provider: "anthropic", model: MODEL.id, stopReason: "stop", timestamp: 0, usage: { input: 10, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 12, cost: {} } };
+  const send = () => {
+    const events = createAssistantMessageEventStream();
+    queueMicrotask(() => { events.push({ type: "done", reason: "stop", message }); events.end(message); });
+    return events;
+  };
+  return { stream: send, streamSimple: send, complete: (...a) => send(...a).result(), completeSimple: (...a) => send(...a).result() };
+};
+
+test("an answer with no readable cost books its hold in this process and in a later one: a restart reads the hold its marks keep, never an unknown spend that refuses every request after", async (t) => {
+  for (const call of ["streamSimple", "completeSimple"]) {
+    const marks = [];
+    const run = await capped(marks, costless());
+    const first = call === "streamSimple" ? await run.streamSimple(MODEL, context, {}).result() : await run.completeSimple(MODEL, context, {});
+    await settle();
+    const upTo = marks.length;
+    assert.equal(first.stopReason, "stop", `${call}: ${first.errorMessage}`);
+    const second = await run.streamSimple(MODEL, context, {}).result();
+    assert.match(second.errorMessage ?? "", /^spend_cap_reached/, `${call}: booked at its $0.001 hold in this process: no room for another`);
+    // pi writes an entry for a generation's answer; a summary's answer is its cost mark alone.
+    const stored = call === "streamSimple" ? [...marks.slice(0, upTo), { kind: "pi.assistant", model: [first] }, ...marks.slice(upTo)] : marks;
+    assert.equal(spentIn(storeOf(t, stored)), 0.001, `${call}: a later process reads the hold too: ${JSON.stringify(marks.map((m) => [m.kind, m.data]))}`);
+  }
+});
