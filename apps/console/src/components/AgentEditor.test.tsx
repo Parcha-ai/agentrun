@@ -179,12 +179,16 @@ describe("AgentEditor, a new decision agent", () => {
     expect(html).toContain("decision workflows");
   });
 
-  it("lays the picker out one column per choice on a wide screen: five with Decision and Workflow, three without", () => {
+  it("lays the picker out by a minimum card width, five choices with Decision and Workflow, three without: as many columns as fit", () => {
     const three = { ...caps, harnesses: [{ id: "pi", available: true }, { id: "claude-agent", available: true }, { id: "codex", available: true }] };
     const group = (html: string) => html.match(/<div class="([^"]*)" role="radiogroup" aria-label="Harness"/)?.[1] ?? "";
-    expect(group(renderToStaticMarkup(createElement(AgentEditor, { agent: null, caps: { ...three, decisionProvider: "jev" }, step: "settings" })))).toContain("sm:grid-cols-5");
+    const cards = (html: string) => (html.match(/name="harness"/g) ?? []).length;
+    const fit = "grid-cols-[repeat(auto-fill,minmax(min(100%,9rem),1fr))]";
+    const five = renderToStaticMarkup(createElement(AgentEditor, { agent: null, caps: { ...three, decisionProvider: "jev" }, step: "settings" }));
+    expect([group(five).split(" ").includes(fit), cards(five)]).toEqual([true, 5]);
     const agent = { agent_id: "old", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Old", instructions: "Answer.", harness: "pi", skills: [], tools: [] } };
-    expect(group(renderToStaticMarkup(createElement(AgentEditor, { agent: agent as never, caps: three, step: "settings" })))).toContain("sm:grid-cols-3");
+    const editing = renderToStaticMarkup(createElement(AgentEditor, { agent: agent as never, caps: three, step: "settings" }));
+    expect([group(editing).split(" ").includes(fit), cards(editing)]).toEqual([true, 3]);
   });
 
   it("offers no Decision and no Workflow when editing an agent", () => {
