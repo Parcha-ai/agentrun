@@ -57,8 +57,11 @@ function beforeAnswer(run: Pick<Run, "status" | "state" | "pending">, view: RunV
   const kind = (run.pending as { kind?: unknown } | null | undefined)?.kind;
   // Paused at its spend cap: what it spent of its cap, from the served figures (without them, said without them).
   if (run.status === "input_required" && run.pending?.kind === "budget") {
+    // Each figure only as served: a pause sent with its kind alone says so without an amount, as its banner does.
     const { cap_usd: cap, spent_usd: spent } = run.pending;
-    return { title: "Paused at its spend cap", note: `${typeof spent === "number" ? `It has spent ${capWords(spent)} of its ${capWords(cap)} cap.` : `Its ${capWords(cap)} cap is reached.`} Raise the cap above to continue.`, spin: false };
+    const capped = typeof cap === "number" && Number.isFinite(cap);
+    const words = capped && typeof spent === "number" ? `It has spent ${capWords(spent)} of its ${capWords(cap)} cap.` : capped ? `Its ${capWords(cap)} cap is reached.` : "Its spend cap is reached.";
+    return { title: "Paused at its spend cap", note: `${words} Raise the cap above to continue.`, spin: false };
   }
   // A tool call waiting on the owner's approval: the card above answers it, and a message below declines it.
   if (run.status === "input_required" && kind === "approval") return { title: "Waiting for your approval", note: `The run continues once you answer the approval above${view.canMessage ? ", or send a message below to decline it" : ""}.`, spin: false };
@@ -135,7 +138,8 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
           {refused && refused.id !== approval?.id && <p className="border border-destructive/50 px-4 py-2.5 font-mono text-[12px] text-destructive-text" role="alert">Your answer wasn't taken: {refused.text}</p>}
           {approval ? <ApprovalCard key={approval.id} pending={approval} onAnswer={(decision, note) => approve(approval.id, decision, note)} />
             : view.needsYou && (budget ? <BudgetPaused pending={budget} /> : <NeedsYou waiting={waiting} />)}
-          {view.needsYou && budget && actions?.onRaiseCap && <RaiseCap key={`${run.run_id}:${budget.at}`} cap={budget.cap_usd} suggested={suggestedCap(budget)} paused onRaise={actions.onRaiseCap} />}
+          {/* With no served cap the banner names none to raise above; the run header's raise reads the run's own cap. */}
+          {view.needsYou && budget && typeof budget.cap_usd === "number" && actions?.onRaiseCap && <RaiseCap key={`${run.run_id}:${budget.at}`} cap={budget.cap_usd} suggested={suggestedCap(budget)} paused onRaise={actions.onRaiseCap} />}
           {tab === "report" && <RunResult run={run} rows={rows} files={files} onOpen={show} />}
           {tab === "report" && !run.result && !view.final && <Working {...beforeAnswer(run, view)} />}
           {tab === "report" && view.final && !run.result?.final_answer && !run.result?.output && !rows.some((r) => r.kind === "final_answer") && run.status !== "failed" && run.status !== "cancelled" && !run.review && (
