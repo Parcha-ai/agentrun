@@ -26,8 +26,8 @@ test("browser time priced ($0.50) beside an unknown model cost: browser_time hol
   assert.equal(sum(lines), 0.6);
 });
 
-test("an ended run that saved more spent so far than its store holds ($0.004 of other conversations and receipts), its model cost known and a tool's unknown: the $0.004 on the unpriced tools line, the lines summing to it", () => {
+test("an ended run that saved more spent so far than its store holds ($0.004 of other conversations' requests and decision receipts), its model cost known and a tool's unknown: the $0.004 on tokens, tools its own $0.003 alone, the lines summing to it", () => {
   const lines = runLines({ usd: null, soFar: 0.017, key: "tokens", meters: { tools: null, tokens: 0.01, browser: { usd: 0 }, others: null, known: { tokens: 0.01, browser: 0, others: 0.003 } } });
-  assert.deepEqual(byLine(lines), { tokens: [0.01, false], tools: [0.007, true] });
+  assert.deepEqual(byLine(lines), { tokens: [0.014, false], tools: [0.003, true] });
   assert.equal(sum(lines), 0.017);
 });
