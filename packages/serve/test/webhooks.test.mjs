@@ -1056,9 +1056,10 @@ test("a fresh data directory has its since-time right after the first start, bef
 
 const ledgerOf = (dir) => JSON.parse(readFileSync(join(dir, "webhook-outbox.json"), "utf8")).notices;
 
-test("a notice and its record are one write: the outbox holds the end and the wait it queued of each run; the same moment again queues nothing, here or in the next server", { skip: process.env.CI && !process.env.AGENTRUN_RUN_QUARANTINED && "quarantined F37 (tl-triggers) until 2026-11-06T09:57Z, scripts/quarantine.json" }, async (t) => {
+test("a notice and its record are one write: the outbox holds the end and the wait it queued of each run; the same moment again queues nothing, here or in the next server", async (t) => {
   withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
-  const hook = await receiver(t);
+  // The first server's two are answered late, as on a loaded machine: received, but not yet answered to it.
+  const hook = await receiver(t, (n) => (n <= 2 ? sleep(500).then(() => 200) : 200));
   const dir = await scratch(t);
   const env = { AGENTRUN_SEAL_KEY: sealKey() };
   const first = new Webhooks(dir, env, () => undefined, []);
@@ -1071,7 +1072,10 @@ test("a notice and its record are one write: the outbox holds the end and the wa
   assert.deepEqual(Object.keys(ledgerOf(dir)), ["run_1"]);
   assert.deepEqual([ledgerOf(dir).run_1.ended, ledgerOf(dir).run_1.wait], [ended, "row_7"], "recorded in the write that queued them");
   assert.equal(first.emit("run.ended", run, ended), "queued", "the same end: already queued");
-  await until(() => hook.got.length === 2, "both sent");
+  // Closed once each try has its answer, not once the receiver has the request: a close cuts a try in flight, and the
+  // next server sends its message again (at least once, under the same webhook-id).
+  await until(() => first.attemptsView().attempts.length === 2, "both sent and answered");
+  assert.deepEqual(first.attemptsView().attempts.map((a) => a.status_code), [200, 200]);
   await first.close();
   // The next server reads the ledger: the same end and the same wait queue nothing, a new end of the run does.
   const next = new Webhooks(dir, env, () => undefined, []);
@@ -1080,11 +1084,11 @@ test("a notice and its record are one write: the outbox holds the end and the wa
   assert.equal(next.emit("run.needs_input", { ...run, status: "input_required", pending: { kind: "question" } }, "row_7"), "queued");
   const later = new Date(Date.now() + 1_000).toISOString();
   assert.equal(next.emit("run.ended", run, later), "queued");
-  await until(() => hook.got.length === 3, "the new end sent");
+  await until(() => hook.got.length >= 3, "the new end sent");
   await sleep(200);
   // The first two were queued together, and each message goes on its own tries: they land in either order.
-  const types = hook.got.map((r) => JSON.parse(r.body).type);
-  assert.deepEqual([types.slice(0, 2).sort(), types[2]], [["run.ended", "run.needs_input"], "run.ended"]);
+  const ids = hook.got.map((r) => r.headers["webhook-id"]);
+  assert.deepEqual([ids.slice(0, 2).sort(), ids.slice(2)], [[noticeId("run_1", "run.ended", ended), noticeId("run_1", "run.needs_input", "row_7")].sort(), [noticeId("run_1", "run.ended", later)]], "each moment sent once");
   assert.equal(ledgerOf(dir).run_1.ended, later);
 });
 

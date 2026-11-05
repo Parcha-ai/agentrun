@@ -1,0 +1,25 @@
+Patch: 016-fake-app-server-record-ms
+Reason: Codex answers turn/start before it writes the turn's user message to its rollout (the real app-server, codex 0.164.0: killed at the answer or 20 ms after, the rollout holds no user item; 100 ms after, it does), so a stop in that window must be reachable from a test; FAKE_CODEX_RECORD_MS writes the user message that many ms after the answer
+Upstream: ours
+Pins: an interrupt that lands after Codex answered turn/start and before its rollout holds the user message: the settle carries the prompt (the next Codex is resumed from a rollout without it), and the next message's turn has it first
+---
+diff --git a/packages/harness-codex/test/fake-app-server.mjs b/packages/harness-codex/test/fake-app-server.mjs
+--- a/packages/harness-codex/test/fake-app-server.mjs
++++ b/packages/harness-codex/test/fake-app-server.mjs
+@@ -64,6 +64,8 @@
+  *   in every echo (`[project config: …]`);
+  * - `FAKE_CODEX_START_MS` answers `initialize` that many ms late, as a slow
+  *   start does: the drive places no prompt before it;
++ * - `FAKE_CODEX_RECORD_MS` writes a turn's user message that many ms after
++ *   `turn/start` is answered, as Codex does (it answers first);
+  * - `FAKE_CODEX_LAG=1` writes a call's `function_call` line only after the
+  *   drive answered it (Codex's rollout writer is asynchronous);
+  * - `escalate <command>` asks for its approval with `additionalPermissions`;
+@@ -233,6 +235,7 @@
+ async function runTurn(turnId, clientId, text) {
+   ensureMeta();
+   write('event_msg', { type: 'task_started', turn_id: turnId });
++  if (process.env.FAKE_CODEX_RECORD_MS) await sleep(Number(process.env.FAKE_CODEX_RECORD_MS));
+   userMessage(turnId, clientId, text);
+   notify('turn/started', { threadId: thread.id, turn: { id: turnId, status: 'inProgress', items: [] } });
+   let last;

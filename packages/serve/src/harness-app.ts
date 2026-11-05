@@ -35,7 +35,7 @@ import type { DoorContext, DoorEvent, DoorHook, DurableRun } from "@parcha/pi-du
 import { type ConfineChild, confineOf } from "./adapters.js";
 import { hostTools, type ToolResults } from "./host-tools.js";
 import { endsTurn, type Park, type ParkedCall, type Resume, type RunGate } from "./tool-gate.js";
-import { CAP_REFUSED_FIELD, type CapGuard, capToolSpend, holdsInFlight, type RefusalFigures, sideSpend, useSpend } from "./cap.js";
+import { CAP_REFUSAL_CODE, CAP_REFUSED_FIELD, type CapGuard, capToolSpend, holdsInFlight, type RefusalFigures, type RunSpend, sideSpend, takePaidRefusal, useSpend } from "./cap.js";
 import { durableSessions } from "./sessions.js";
 import { handsParallel, planeOf } from "./tool-plane.js";
 import { parallelOf } from "./web-fetch.js";
@@ -160,12 +160,18 @@ export function adapterRun(
   let charged: number | null = 0;
   // Each admitted request's worst case until its cost is booked: the booking's spend counts it only then.
   const inFlight = holdsInFlight();
+  // The run's spend as a paid tool's check reads it (useSpend, set at the open): a paid call refused under it pauses the
+  // run at this run's next request (guard).
+  let spend: RunSpend | undefined;
   const plus = (a: number | null, b: number | null) => (a === null || b === null ? null : a + b);
   const guard = (request: Parameters<CapGuard["beforeRequest"]>[0]) => {
     const byCancel = cancelled();
     // What the run spent: the booking's, its paid tools' charges, and its own model requests' beside the harness's (a
     // learned workflow's: cap.ts sideSpend); theirs in flight are held with the paid calls' (paidHolds, capBefore).
-    const answer = byCancel ? { refuse: CANCELLED } : cap?.beforeRequest({ ...request, spentUsd: plus(plus(request.spentUsd, charged), sideSpend()) });
+    // A paid call the cap just refused for room (cap.ts takePaidRefusal): this request is refused in its words, so the
+    // turn ends there and the run waits on a raise, as at a model request's refusal. A refusal no cap fixes comes first.
+    const paid = byCancel || !cap || request.spentUsd === null ? undefined : takePaidRefusal(spend);
+    const answer = byCancel ? { refuse: CANCELLED } : paid ? { refuse: `${CAP_REFUSAL_CODE}${paid.words}`, spentUsd: paid.figures.spentUsd, needsUsd: paid.figures.needsUsd } : cap?.beforeRequest({ ...request, spentUsd: plus(plus(request.spentUsd, charged), sideSpend()) });
     if (answer && "refuse" in answer) {
       refused = answer.refuse;
       capRefused = !byCancel;
@@ -421,6 +427,9 @@ export function adapterRun(
         let failed: string | undefined;
         let status: TurnStatus = "failed";
         answer = carry;
+        // A turn of its own: a paid call's refusal a stop left pending (its turn stopped before its next request) is
+        // let go, so this turn's first request is judged as any other, never paused for a call the person moved on from.
+        if (spend) takePaidRefusal(spend);
         try {
           await start();
           const end = await session!.turnEnd();
@@ -631,13 +640,14 @@ export function adapterRun(
       // requests read the same total at once (`now`: capModels' `joined`), a request in flight held, never less.
       if (budgetUsd !== undefined) {
         const now = () => plus(plus(plus(booking.spentUsd(), charged), sideSpend()), inFlight.total());
-        useSpend({
+        spend = {
           cap: budgetUsd,
           spent: async () => (await bookings(BOOKING_WAIT_MS), plus(plus(booking.spentUsd(), charged), sideSpend())),
           held: () => inFlight.total(),
           add: (usd) => void (charged = plus(charged, usd)),
           now,
-        });
+        };
+        useSpend(spend);
       }
       // Each request the session booked and the root has no entry for: its cost, with no content.
       // Each request the session booked and the root does not have, or has at unknown cost only: written now, once.

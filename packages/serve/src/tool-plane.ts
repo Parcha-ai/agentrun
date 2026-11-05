@@ -28,7 +28,7 @@ import { writeDurableSync } from "./files.js";
 import { DEFAULT_HARNESS, HARNESSES, type HarnessId } from "./harness.js";
 import { savedIn } from "./secrets.js";
 import { hostModel, viaOpenRouter } from "./model.js";
-import { defaultPermission, isCatalogTool, isMcpTool, type Permission, PERMISSIONS, permissionFrom, permissionOf } from "./tool-gate.js";
+import { defaultPermission, isCatalogTool, isMcpTool, type Permission, PERMISSIONS, permissionFrom, permissionOf, SHELL_FAMILY } from "./tool-gate.js";
 
 /**
  * The capabilities a pack or a revision may grant, by name: the tools the kernel gives a run, bound from serve's closed
@@ -63,7 +63,7 @@ export const TABLE_TOOLS: readonly string[] = ["read", "write", "edit", "bash", 
  *  run's learned_workflow is one (tool-gate.ts runs an approved call of it on the run's own tools). */
 export const ASKABLE: readonly string[] = ["read", "write", "edit", "bash", "fetch_page", "web_fetch", "web_search", "learned_workflow"];
 /** The permissions `name` may be set to. */
-export const permissionsOf = (name: string): readonly Permission[] => (ASKABLE.includes(name) || isCatalogTool(name) ? PERMISSIONS : ["allow", "deny"]);
+export const permissionsOf = (name: string): readonly Permission[] => (Object.hasOwn(SHELL_FAMILY, name) && SHELL_FAMILY[name] !== name ? permissionsOf(SHELL_FAMILY[name]!) : ASKABLE.includes(name) || isCatalogTool(name) ? PERMISSIONS : ["allow", "deny"]);
 /** The run's own tools beyond the table, each its own settings key, allowed by default like a table tool: the learned
  *  workflow a run's pin names runs as `learned_workflow` (learned-workflow.ts LEARNED_WORKFLOW_TOOL). */
 export const SERVE_OWN_TOOLS: readonly string[] = ["learned_workflow"];

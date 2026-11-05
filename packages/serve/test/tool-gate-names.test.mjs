@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { BROWSER_TOOL_NAMES } from "@parcha/pi-browser";
 import { wireName } from "../dist/catalog.js";
+import { BACKGROUND_TOOLS } from "../dist/background.js";
 import { REPLAY } from "../dist/host-tools.js";
 import * as gate from "../dist/tool-gate.js";
 import { LEGACY_NAMES, SERVE_OWN_TOOLS, TABLE_TOOLS } from "../dist/tool-plane.js";
@@ -19,14 +20,16 @@ const { deniedText, noApproverText, RunGate, waitingText } = gate;
 const keyOf = (harness, name, servers) => (typeof gate.settingsKeyOf === "function" ? gate.settingsKeyOf(harness, name, servers) : undefined);
 const isKey = (key) => typeof key === "string" && (TABLE_TOOLS.includes(key) || SERVE_OWN_TOOLS.includes(key) || /^monid\.[a-z]+$/.test(key) || /^mcp:[a-z][a-z0-9-]*\/.+$/.test(key));
 const MONID = ["monid.discover", "monid.inspect", "monid.run"];
-/** A host tool's settings key: its own name, or for a legacy name the capability the tool plane folds it into. */
-const folded = (name) => LEGACY_NAMES[name] ?? name;
+/** A host tool's settings key: its own name, or for a legacy name the capability the tool plane folds it into; a
+ *  background tool (background.ts) is held to bash's. */
+const folded = (name) => LEGACY_NAMES[name] ?? (BACKGROUND_TOOLS.includes(name) ? "bash" : name);
 
 /** Every name a call reaches the gate by, on each harness, and the key it must map to. */
 const NAMES = {
   pi: [
     ...["read", "write", "edit", "bash", "ask_person", "web_fetch", "web_search"].map((name) => [name, name]),
     ["fetch_page", "web_fetch"],
+    ...BACKGROUND_TOOLS.map((name) => [name, "bash"]),
     ...MONID.map((name) => [wireName(name), name]),
     ...BROWSER_TOOL_NAMES.map((name) => [name, "browser"]),
     ["mcp__srv__echo", "mcp:srv/echo"],
