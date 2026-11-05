@@ -238,6 +238,8 @@ export function harnessModelKeys(harness: string, env: NodeJS.ProcessEnv, model?
 export const OPENROUTER_BASE = "https://openrouter.ai/api";
 /** Anthropic's own origin, where pi-ai's Anthropic provider sends (a gateway is not it). */
 export const ANTHROPIC_ORIGIN = "https://api.anthropic.com";
+/** OpenAI's own origin, where pi-ai's OpenAI provider sends. */
+export const OPENAI_ORIGIN = "https://api.openai.com";
 
 export { openRouterOnly };
 
@@ -261,7 +263,7 @@ export function codexProvider(env: NodeJS.ProcessEnv, model: ModelRef, harness: 
   if (model.provider !== "openai") throw new HarnessUnavailable(`${harness} runs OpenAI models; the run's model is ${named}.`);
   if (openRouterOnly(harness, env)) return { origin: OPENROUTER_BASE, credential: openRouterKey(env, harness, named), modelId: named };
   if (!env.OPENAI_API_KEY) throw new HarnessUnavailable(`${harness} needs OPENAI_API_KEY, OPENROUTER_API_KEY (OpenAI's models through OpenRouter), or a gateway in AGENT_MODEL_BASE_URL.`, undefined, ["OPENAI_API_KEY", "OPENROUTER_API_KEY"]);
-  return { origin: "https://api.openai.com", credential: () => env.OPENAI_API_KEY ?? "", modelId: model.modelId };
+  return { origin: OPENAI_ORIGIN, credential: () => env.OPENAI_API_KEY ?? "", modelId: model.modelId };
 }
 
 /** codex's model for `ref` (a revision's; none, the host's default for codex), or opencode's (`harness`), which takes
@@ -352,11 +354,11 @@ export function learnedRoute(harness: string, env: NodeJS.ProcessEnv, model: Mod
       const { origin, priceModel } = claudeProvider(env, model);
       return origin === OPENROUTER_BASE ? { provider: "openrouter", modelId: priceModel.id } : { ...model, modelId: claudeModelId(model) };
     }
-    if (harness === "codex") {
+    if (harness === "codex" || harness === "opencode") {
       // Through a gateway (AGENT_MODEL_BASE_URL), even one at OpenRouter's URL, the run's models hold the gateway's
-      // provider (runModels), not OpenRouter's: its model is the one prepared.
+      // provider (runModels), not OpenRouter's: its model is the one prepared. opencode takes codex's route.
       if (env.AGENT_MODEL_BASE_URL) return model;
-      const { origin, modelId } = codexProvider(env, model);
+      const { origin, modelId } = codexProvider(env, model, harness);
       return origin === OPENROUTER_BASE ? { provider: "openrouter", modelId } : model;
     }
   } catch {
@@ -368,20 +370,43 @@ export function learnedRoute(harness: string, env: NodeJS.ProcessEnv, model: Mod
 /** Why a run on `harness` is offered no learned workflow, or undefined when it is. A learned workflow's model requests go
  *  through the run's models (pi-ai's catalog, learnedRoute), whose Anthropic provider reaches api.anthropic.com alone:
  *  claude-agent through the operator's own gateway (ANTHROPIC_BASE_URL) would have them go around it, with its key. So
- *  that run gets none (fail closed), and its pin says why. codex's gateway is the run's models' own (runModels), and pi
- *  runs on them: neither is turned off. A run its harness refuses sends nothing, so it is not this one's to say. */
-export function learnedWorkflowsOff(harness: string | undefined, env: NodeJS.ProcessEnv, ref: string | undefined): string | undefined {
-  if (harness !== "claude-agent" || env[FAUX_ENV] || env[FAUX_HARNESS_ENV]) return undefined;
-  const choice = claudeModel(env, ref);
-  if ("why" in choice) return undefined;
+ *  that run gets none (fail closed), and its pin says why. codex and opencode (codex's route) the same, at any origin
+ *  learnedOriginOk does not name; their gateway is the run's models' own (runModels), and pi runs on them. A run its
+ *  harness refuses sends nothing, so it is not this one's to say. */
+export async function learnedWorkflowsOff(harness: string | undefined, env: NodeJS.ProcessEnv, ref: string | undefined): Promise<string | undefined> {
+  if (env[FAUX_ENV] || env[FAUX_HARNESS_ENV]) return undefined;
   let origin: string;
-  try {
-    origin = claudeProvider(env, choice.model).origin;
-  } catch {
-    return undefined;
-  }
-  if (origin === OPENROUTER_BASE || origin === ANTHROPIC_ORIGIN) return undefined;
-  return "claude-agent sends this run's model requests to the gateway at ANTHROPIC_BASE_URL, and a learned workflow's requests could not go through it";
+  if (harness === "claude-agent") {
+    const choice = claudeModel(env, ref);
+    if ("why" in choice) return undefined;
+    try {
+      origin = claudeProvider(env, choice.model).origin;
+    } catch {
+      return undefined;
+    }
+  } else if (harness === "codex" || harness === "opencode") {
+    const choice = await codexModel(env, ref, harness);
+    if ("why" in choice) return undefined;
+    try {
+      origin = codexProvider(env, choice.model as ModelRef, harness).origin;
+    } catch {
+      return undefined;
+    }
+  } else return undefined;
+  if (learnedOriginOk(harness, origin, env)) return undefined;
+  return harness === "claude-agent"
+    ? "claude-agent sends this run's model requests to the gateway at ANTHROPIC_BASE_URL, and a learned workflow's requests could not go through it"
+    : `${harness} sends this run's model requests to ${origin}, where a learned workflow's requests could not follow`;
+}
+
+/** Whether a learned workflow's requests reach `origin`, where `harness` sends the run's own (learnedWorkflowsOff): the
+ *  run's models hold Anthropic's, OpenAI's and OpenRouter's providers, and, for codex and opencode (runModels), the
+ *  gateway at AGENT_MODEL_BASE_URL. Any other origin is not one they can follow. */
+export function learnedOriginOk(harness: string, origin: string, env: NodeJS.ProcessEnv): boolean {
+  if (origin === OPENROUTER_BASE) return true;
+  if (harness === "claude-agent") return origin === ANTHROPIC_ORIGIN;
+  if (harness === "codex" || harness === "opencode") return origin === OPENAI_ORIGIN || Boolean(env.AGENT_MODEL_BASE_URL);
+  return true;
 }
 
 /** claude-agent's model: the revision's (or the server's default for claude-agent, hostModel) as `provider/model-id`.

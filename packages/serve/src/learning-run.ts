@@ -298,7 +298,7 @@ export class LearningRuns {
         try {
           const own = revision.kind === "agentic" ? Object.keys(revision.body.skills) : [];
           // Its harness's requests going where a learned workflow's could not follow: it is offered none (fail closed).
-          const workflowsOff = revision.kind === "agentic" ? learnedWorkflowsOff(revision.body.harness, this.hostEnv(), revision.body.model) : undefined;
+          const workflowsOff = revision.kind === "agentic" ? await learnedWorkflowsOff(revision.body.harness, this.hostEnv(), revision.body.model) : undefined;
           const pin = await pinSeed(started.dir, started.workspace, seeded.seed, { budget: this.options.learningBudget ?? LEARNING_BUDGET, read, shown: this.shown(), own, ...(workflowsOff ? { workflowsOff } : {}) });
           for (const path of seeded.seed.skipped) warn(started.runId, `its learning folder's ${path} was not read`);
           for (const name of pin.skills_left_out ?? []) warn(started.runId, `starts without the skill ${name} its agent learned: it is over what is left of the learned skills' budget, or holds a secret`);
