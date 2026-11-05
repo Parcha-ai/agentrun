@@ -442,10 +442,11 @@ export function holdsInFlight() {
   };
 }
 
-/** The run's spend as its process counts it, for a paid tool: what it has spent (`spent`, model requests in flight held
- *  at their worst case; null when unknown) and the charge a call adds (`add`). Set by the run's cap, on pi (capModels)
- *  and on another harness (harness-app.ts); none without a cap. A run is one process, so one is set per process. */
-export type RunSpend = { cap: number; spent(): number | null | Promise<number | null>; add(usd: number | null): void };
+/** The run's spend as its process counts it, for a paid tool: what it has spent (`spent`; null when unknown), what its
+ *  model requests in flight are held at, at their worst case (`held`, read once `spent` is in; absent: none apart from
+ *  `spent`), and the charge a call adds (`add`). Set by the run's cap, on pi (capModels) and on another harness
+ *  (harness-app.ts); none without a cap. A run is one process, so one is set per process. */
+export type RunSpend = { cap: number; spent(): number | null | Promise<number | null>; held?(): number; add(usd: number | null): void };
 let runSpend: RunSpend | undefined;
 let paying: Promise<unknown> = Promise.resolve();
 export const useSpend = (spend: RunSpend | undefined): void => void (runSpend = spend);
@@ -468,10 +469,11 @@ export async function paidCall<T>(name: string, call: () => Promise<T>, charge: 
   if (!spend) return { result: await call() };
   const turn = paying.then(async () => {
     const read = await spend.spent();
-    if (read === null) return { refused: `${SPEND_CAP_REACHED}: ${name} was not sent. What the run has spent is unknown, so its cap of $${spend.cap} cannot be kept: the run is out of budget.` };
-    const spent = read + paidHolds();
+    if (read === null) return { refused: `${SPEND_CAP_REACHED}: ${name} was not sent. What the run has spent is unknown, so its cap of ${money(spend.cap)} cannot be kept: the run is out of budget.` };
+    // What is held for requests and calls still answering, apart from what was spent, as a model request's refusal says it.
+    const holding = (spend.held?.() ?? 0) + paidHolds();
     // Written so that a figure that is not a number refuses.
-    if (!(spent + hold.usd <= spend.cap)) return { refused: `${SPEND_CAP_REACHED}: ${name} was not sent. It could cost up to $${hold.usd} (${hold.basis}), and with $${spent.toFixed(6)} spent the run would pass its cap of $${spend.cap}: the run is out of budget.` };
+    if (!(read + holding + hold.usd <= spend.cap)) return { refused: paidRefusal(spend.cap, read, holding, name, hold) };
     // Held from here; settled into the spend in the same step that lets the hold go, so no check between sees neither.
     const open = { usd: hold.usd };
     paidOpen.add(open);
@@ -517,13 +519,13 @@ export function piOverhead(model: Pick<Model<Api>, "api">, context: Context): nu
   return providerInputOverhead(model.api, { tools: (context.tools?.length ?? 0) > 0, toolChoice: "any", images: parts.filter((part) => part?.type === "image").length });
 }
 
-const unmeasured = (cap: number) => `${SPEND_CAP_REACHED}: the next model request was not sent. The size of a request's input is unknown, so the run's cap of $${cap} cannot be kept: the run is out of budget.`;
+const unmeasured = (cap: number) => `${SPEND_CAP_REACHED}: Not sent: the size of the next model request's input is unknown, so the run's cap of ${money(cap)} cannot be kept: the run is out of budget.`;
 
-const noPrice = (cap: number) => `${SPEND_CAP_REACHED}: the next model request was not sent. Its model has no price here, so the run's cap of $${cap} cannot be kept: the run is out of budget.`;
+const noPrice = (cap: number) => `${SPEND_CAP_REACHED}: Not sent: the next model request's model has no price here, so the run's cap of ${money(cap)} cannot be kept: the run is out of budget.`;
 
-const noCeiling = (cap: number) => `${SPEND_CAP_REACHED}: the next model request was not sent. Its model has no output ceiling here and its output is priced, so what a request may cost has no bound and the run's cap of $${cap} cannot be kept: the run is out of budget.`;
+const noCeiling = (cap: number) => `${SPEND_CAP_REACHED}: Not sent: the next model request's model has no output ceiling here and its output is priced, so what a request may cost has no bound and the run's cap of ${money(cap)} cannot be kept: the run is out of budget.`;
 
-const unknownSpend = (cap: number) => `${SPEND_CAP_REACHED}: the next model request was not sent. What the run has spent is unknown, so its cap of $${cap} cannot be kept: the run is out of budget.`;
+const unknownSpend = (cap: number) => `${SPEND_CAP_REACHED}: Not sent: what the run has spent is unknown, so its cap of ${money(cap)} cannot be kept: the run is out of budget.`;
 
 /** A request's worst case at `model`'s price: `input` tokens at the dearer of its input and cache-write prices, and
  *  `output` tokens at its output price. */
@@ -570,6 +572,17 @@ function capRefusal(cap: number, spent: number, held: number, name: string, leas
   if (spent === 0 && held === 0) return `${CAP_REFUSAL_CODE}Not sent: this run's cap of ${money(cap)} can't cover one ${name} request (at least ${need}). Raise the cap to at least ${raise} to run it.`;
   const owes = held > 0 ? `spent ${money(spent)} and holds ${money(held)} for requests still answering, of its ${money(cap)} cap` : `spent ${money(spent)} of its ${money(cap)} cap`;
   return `${CAP_REFUSAL_CODE}Not sent: the run has ${owes}, and its next ${name} request needs at least ${need}. Raise the cap to at least ${raise} to run it.`;
+}
+
+/** The cap's refusal of a paid call (paidCall) what is left of it cannot hold, in one sentence, as capRefusal says a model
+ *  request's: what the run spent (and holds for requests and calls still answering) of its cap, what the call could cost
+ *  and why, and the cap that would run it: spent, held and the call's figure, rounded up to the cent, and a cent above the
+ *  cap at the least, since a figure past the cap by less than a cent still needs more than the cap. Every amount by money,
+ *  the raise by leastMoney. */
+function paidRefusal(cap: number, spent: number, held: number, name: string, hold: { usd: number; basis: string }): string {
+  const holds = held > 0 ? ` and holds ${money(held)} for calls still answering` : "";
+  const raise = leastMoney(Math.max(spent + held + hold.usd, (Math.floor(cap * 100 + 1e-9) + 1) / 100));
+  return `${SPEND_CAP_REACHED}: Not sent: the run has spent ${money(spent)}${holds} of its ${money(cap)} cap, and ${name} could cost up to ${money(hold.usd)} (${hold.basis}). Raise the cap to at least ${raise} to run it.`;
 }
 
 /** The most output tokens from `least` to `asked` whose request costs no more than `left` (`cost`, its price at that
@@ -774,9 +787,9 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
     void count(answered, worst, stopped, attempts).finally(() => void (held -= worst));
     return answered;
   };
-  // A paid tool's check reads the spend with the requests in flight held at their worst case (and adds the paid holds
-  // itself), and its charge joins it.
-  useSpend({ cap, spent: () => (spent === null ? null : spent + held), add: (usd) => void (spent = spent !== null && typeof usd === "number" && Number.isFinite(usd) ? spent + usd : null) });
+  // A paid tool's check reads the spend, and the requests in flight held at their worst case apart from it (it adds the
+  // paid holds itself), and its charge joins the spend.
+  useSpend({ cap, spent: () => spent, held: () => held, add: (usd) => void (spent = spent !== null && typeof usd === "number" && Number.isFinite(usd) ? spent + usd : null) });
   /** `options` with the request's worst case, and its figure if it is stopped, for its marks. */
   /** `options` with the request's worst case, its figure if it is stopped, and its attempts' record, for its marks: on an
    *  API the cap can watch, a fetch that records each attempt (`attempts`, undefined on one it cannot). */

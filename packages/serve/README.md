@@ -760,7 +760,7 @@ read 2026-11-03), an estimate: a `fast` search $0.001 for up to 10 results and $
 $0.001 a URL; on a 4xx other than a 408 nothing (Parallel refused it), and on a 408, a 5xx, a timeout or a lost
 connection its price (Parallel may have billed it). Under a [spend cap](#spend-cap) each is a paid call: sent only when
 what the run has spent and holds, plus its price, fits the cap. Otherwise nothing reaches Parallel: a search answers the
-cap's refusal (`spend_cap_reached: Parallel's search was not sent. It could cost up to $0.001 …`) and a page is the
+cap's refusal (`spend_cap_reached: Not sent: the run has spent $0 of its $0.0009 cap, and Parallel's search could cost up to $0.001 …`) and a page is the
 guarded direct fetch, with `parallel` giving the same words. One sent holds its price until Parallel answers: a model
 request checked meanwhile, from any branch, tool round or harness, counts it beside what the run has spent, so the two
 never pass the cap together. A workflow's `call` node naming either tool is booked the same way, under the node's own
