@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { timelineOf } from "../dist/timeline/index.js";
-import { assistant, user } from "./timeline-support.mjs";
+import { assistant, call, result, user } from "./timeline-support.mjs";
 
 /** A held key, made at runtime: no credential-shaped literal for the source export. */
 const KEY = ["not-a-secret", "pasted-url-key", "0123456789ab"].join("-");
@@ -25,9 +25,8 @@ test("a held key in a pasted URL's query shows as [redacted] in the message row'
   assert.equal(own(rows)[0].text, "Try https://api.example/v1/items?k=[redacted]&x=1 now");
 });
 
-test("a model's text row still drops a URL's fragment and query values", () => {
-  const rows = timelineOf([user("Link?"), assistant([{ type: "text", text: `See ${CONSOLE} and https://api.example/v1?k=v` }])]);
-  const answer = rows.find((r) => r.kind === "final_answer");
-  assert.ok(answer, JSON.stringify(rows.map((r) => r.kind)));
-  assert.ok(!answer.summary.includes("#/runs/") && !answer.summary.includes("k=v"), answer.summary);
+test("a tool result's preview still drops a URL's fragment and query values", () => {
+  const rows = timelineOf([user("Link?"), assistant([call("b1", "bash", { command: "true" })]), result("b1", "bash", `See ${CONSOLE} and https://api.example/v1?k=v`)]);
+  const preview = rows.find((r) => r.kind === "tool_result")?.tool_result_preview ?? "";
+  assert.ok(preview && !preview.includes("#/runs/") && !preview.includes("k=v"), preview);
 });

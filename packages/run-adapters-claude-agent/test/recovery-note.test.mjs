@@ -211,3 +211,27 @@ test('the DRIVE resumes with the message sent during the outage as its user turn
   assert.ok(!next.users.some((u) => u.includes('[Recovery]')), 'no user message carries the note');
   assert.match(next.systems[0]?.sent ?? '', /\[Recovery\]/, 'the note is in the system prompt');
 });
+
+test('a crash after the follow-up that carries a stopped prompt was placed, before the CLI got it: the resuming user turn is the stopped prompt, its line, then the follow-up', async (t) => {
+  const { openDrive } = await import('@parcha/agentrun-kernel/kernel');
+  const { placeSubmissions, settleTurn } = await import('@parcha/agentrun-kernel/process');
+  const spec = { key: 'step:carry-crash', label: 'carry', system: [], tools: [], context: 'fresh' };
+  const store = memorySessionStore();
+  const models = { beforeRequest: async () => {}, afterRequest: async () => {} };
+  const dir = join(mkdtempSync(join(ROOT, 't-')), 'sessions');
+  // The first process: the prompt is stopped before it was placed (settled, withdrawn with its carry), the follow-up is
+  // placed, and the process dies before the CLI writes it to the transcript.
+  const drive = await openDrive({ writer: await store.open(spec.key), signal: new AbortController().signal });
+  await drive.submit({ id: 's1', kind: 'prompt', text: 'Write five files.' });
+  await settleTurn(drive);
+  await drive.submit({ id: 's2', kind: 'followUp', text: 'Go on.' });
+  await placeSubmissions(drive, drive.pending());
+
+  const next = await claude(t, { sessionsDir: dir });
+  const b = await next.adapter.open(spec, { store, writer: await store.open(spec.key), models, signal: new AbortController().signal, onEvent: () => {} });
+  assert.equal(b.state, 'open_turn', "setup: the follow-up's turn is open to the next process");
+  await b.recover();
+  assert.equal((await b.turnEnd()).status, 'completed');
+  await b.close();
+  assert.equal(next.users[0], 'Write five files.\n\n(The message above was stopped before any work on it began.)\n\nGo on.', `the resuming user turn: ${JSON.stringify(next.users)}`);
+});

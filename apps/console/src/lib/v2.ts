@@ -45,8 +45,9 @@ export type Run = {
   poll_after_ms?: number;
   /** A workflow run that escalated: it completed, and waits for a person to review it (`kind`, the node it stopped
    *  at, and why). Null or absent on every other run. */
-  review?: RunReview | null;  /** What a run waiting on a person waits for: its question and when it was asked. Null on every other run. */
-  pending?: { kind: "question"; question: string; asked_at: string } | null;
+  review?: RunReview | null;  /** What a run waiting on a person waits for: its question and when it was asked, or, paused at its spend
+   *  cap, the cap, the refusal's figures and words (a message to it is refused until its cap is raised). Null on every other run. */
+  pending?: { kind: "question"; question: string; asked_at: string } | BudgetPending | null;
   /** Imported history: where the run was run (`claude-code`, `codex` or `pi`) and its session there; else null. */
   imported_from?: { source: string; session: string } | null;
 };
@@ -125,3 +126,6 @@ export type WebhooksFeature = { routes: boolean; events: string[]; signing: stri
 
 /** A recorded response: what the server answered, exactly. */
 export type Recorded<T> = { request: { method: string; path: string }; status: number; headers?: Record<string, string>; body: T };
+
+/** A run paused at its spend cap: what is left of its cap cannot buy its next request's least, which was not sent. */
+export type BudgetPending = { kind: "budget"; cap_usd: number; spent_usd?: number; needs_usd?: number; said: string; at: string };

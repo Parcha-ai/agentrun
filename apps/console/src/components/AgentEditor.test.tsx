@@ -179,12 +179,16 @@ describe("AgentEditor, a new decision agent", () => {
     expect(html).toContain("decision workflows");
   });
 
-  it("lays the picker out one column per choice on a wide screen: five with Decision and Workflow, three without", () => {
+  it("lays the picker out by a minimum card width, five choices with Decision and Workflow, three without: as many columns as fit", () => {
     const three = { ...caps, harnesses: [{ id: "pi", available: true }, { id: "claude-agent", available: true }, { id: "codex", available: true }] };
     const group = (html: string) => html.match(/<div class="([^"]*)" role="radiogroup" aria-label="Harness"/)?.[1] ?? "";
-    expect(group(renderToStaticMarkup(createElement(AgentEditor, { agent: null, caps: { ...three, decisionProvider: "jev" }, step: "settings" })))).toContain("sm:grid-cols-5");
+    const cards = (html: string) => (html.match(/name="harness"/g) ?? []).length;
+    const fit = "grid-cols-[repeat(auto-fill,minmax(min(100%,9rem),1fr))]";
+    const five = renderToStaticMarkup(createElement(AgentEditor, { agent: null, caps: { ...three, decisionProvider: "jev" }, step: "settings" }));
+    expect([group(five).split(" ").includes(fit), cards(five)]).toEqual([true, 5]);
     const agent = { agent_id: "old", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Old", instructions: "Answer.", harness: "pi", skills: [], tools: [] } };
-    expect(group(renderToStaticMarkup(createElement(AgentEditor, { agent: agent as never, caps: three, step: "settings" })))).toContain("sm:grid-cols-3");
+    const editing = renderToStaticMarkup(createElement(AgentEditor, { agent: agent as never, caps: three, step: "settings" }));
+    expect([group(editing).split(" ").includes(fit), cards(editing)]).toEqual([true, 3]);
   });
 
   it("offers no Decision and no Workflow when editing an agent", () => {
@@ -245,5 +249,27 @@ describe("AgentEditor, a harness this server doesn't run", () => {
     const at = html.indexOf('value="pi"');
     const next = html.indexOf('value="claude-agent"');
     expect(html.slice(at, next)).not.toContain("<details");
+  });
+});
+
+// A phone on its side (844x390) leaves the step's pane about 300 px wide. The tool cards and the harness cards size their
+// columns by a minimum width, so a narrow pane gets fewer columns (one tool card a row; harness cards that wrap), never
+// cards squeezed until their text runs tall or overlaps.
+describe("AgentEditor, card grids in a narrow pane", () => {
+  const classOf = (html: string, marker: RegExp) => marker.exec(html)?.[1]?.split(" ") ?? [];
+  it("lays the tool cards out by a minimum column width, not two columns from sm up", () => {
+    const html = renderToStaticMarkup(createElement(AgentEditor, { agent: null, caps, step: "tools" }));
+    const cls = classOf(html, /<ul class="([^"]*)"/);
+    expect(cls).toContain("grid-cols-[repeat(auto-fill,minmax(min(100%,18rem),1fr))]");
+    expect(cls).not.toContain("sm:grid-cols-2");
+  });
+  it("lays the harness cards out by a minimum card width, and a card's name wraps rather than running into the next", () => {
+    const five = { ...caps, harnesses: [{ id: "pi", available: true }, { id: "claude-agent", available: true }, { id: "codex", available: false, reason: "codex needs OPENAI_API_KEY." }] };
+    const html = renderToStaticMarkup(createElement(AgentEditor, { agent: null, caps: { ...five, decisionProvider: "jev" }, step: "settings" }));
+    const cls = classOf(html, /<div class="([^"]*)" role="radiogroup" aria-label="Harness"/);
+    expect(cls).toContain("grid-cols-[repeat(auto-fill,minmax(min(100%,9rem),1fr))]");
+    expect(cls.some((c) => /^sm:grid-cols-\d$/.test(c))).toBe(false);
+    const name = /<span class="([^"]*)">Decision<\/span>/.exec(html)?.[1]?.split(" ") ?? [];
+    expect(name).toContain("break-words");
   });
 });
