@@ -12,7 +12,7 @@ import { once } from "node:events";
 import { existsSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { homedir } from "node:os";
-import type { NewRevision, Revision } from "@parcha/pi-durable-agent";
+import type { NewRevision, Revision, RunOrigin } from "@parcha/pi-durable-agent";
 import { agentView, Agents, etagOf, homeBusy, revisionView, storeBusy, type AgentEntry } from "./agents.js";
 import { WORKFLOW_ADAPTERS } from "./app.js";
 import { DECISION_ADAPTER, decisionsOf, FAUX_JEV_ENV, FAUX_OPENROUTER_ENV, FAUX_PARALLEL_ENV } from "./decisions.js";
@@ -243,6 +243,7 @@ async function tokenIn(file: string): Promise<{ token: string; made: boolean }> 
 }
 
 const digest = (text: string) => createHash("sha256").update(text).digest();
+const sha256Hex = (text: string) => createHash("sha256").update(text).digest("hex");
 const SESSION_S = SESSION_MS / 1000;
 
 /** A route: `name` is its operationId in the OpenAPI document (openapi.ts); `capability`, when this server turns it off;
@@ -874,8 +875,10 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     return run;
   }
 
-  /** Replays the first answer to a create with the same key and body; another body is a mismatch. */
-  async function idempotent(req: IncomingMessage, path: string, body: Json, work: () => Promise<{ status: number; body: unknown; headers?: Record<string, string> }>) {
+  const mismatch = () => new ApiError("idempotency_mismatch", "this Idempotency-Key was used with another body");
+  /** Replays the first answer to a create with the same key and body; another body is a mismatch. `work` gets the key's
+   *  origin (its slot and the body, hashed) for a create the agent store records with the run it starts. */
+  async function idempotent(req: IncomingMessage, path: string, body: Json, work: (origin?: RunOrigin) => Promise<{ status: number; body: unknown; headers?: Record<string, string> }>) {
     const key = req.headers["idempotency-key"];
     if (key === undefined) return work();
     if (typeof key !== "string" || key.length < 1 || key.length > 255) throw new ApiError("bad_request", "Idempotency-Key is 1 to 255 characters");
@@ -885,20 +888,21 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     for (const [k, v] of idempotency) if (now - v.at > IDEMPOTENCY_TTL_S * 1000) idempotency.delete(k);
     const known = idempotency.get(slot);
     if (known) {
-      if (known.fingerprint !== fingerprint) throw new ApiError("idempotency_mismatch", "this Idempotency-Key was used with another body");
+      if (known.fingerprint !== fingerprint) throw mismatch();
       if (!known.answer) throw new ApiError("idempotency_in_progress", "the first request with this Idempotency-Key is still in flight", { retry_after_ms: 500 });
       return { ...known.answer, headers: { ...known.answer.headers, "idempotent-replayed": "true" } };
     }
     idempotency.set(slot, { fingerprint, at: now });
     let answer: { status: number; body: unknown; headers?: Record<string, string> };
     try {
-      answer = await work();
+      answer = await work({ key: `idk_${sha256Hex(slot).slice(0, 32)}`, fingerprint: sha256Hex(fingerprint) });
     } catch (error) {
       idempotency.delete(slot);
       throw error;
     }
     // The work happened, so the key keeps its answer in memory even when the file write fails: a retry replays it
-    // instead of doing the work twice. Only a restart before the next good save loses it.
+    // instead of doing the work twice. Only a restart before the next good save loses it, and a run's create not even
+    // then: the store keeps its run under the key's origin.
     idempotency.set(slot, { fingerprint, at: now, answer: { status: answer.status, body: answer.body, headers: answer.headers ?? {} } });
     await keep().catch((error: Error) => void process.stderr.write(`agentrun-serve: idempotency save: ${error.message}\n`));
     return answer;
@@ -949,7 +953,14 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     const entry = await needAgent(agentId);
     if (entry.agent.archivedAt) throw new ApiError("agent_not_runnable", `The agent ${agentId} is archived: unarchive it to run it.`, { details: { archived_at: entry.agent.archivedAt } });
     const body = await bodyOf(req);
-    return idempotent(req, `/agents/${agentId}/runs`, body, async () => {
+    return idempotent(req, `/agents/${agentId}/runs`, body, async (origin) => {
+      // A run the store started under this key, though no answer was kept (its server went down first): that run, as it is now.
+      const first = origin && (await agents.request(() => agents.store.runOfOrigin(origin.key)));
+      if (first) {
+        if (first.existing?.fingerprint !== origin.fingerprint) throw mismatch();
+        const headers: Record<string, string> = { location: `/v2/runs/${first.runId}`, "idempotent-replayed": "true" };
+        return { status: 202, body: await runs.view(await needRun(first.runId)), headers };
+      }
       const issues = unknownFields(body, ["input", "revision", "file_ids", "effort", "max_cost_usd", "quote_id"]);
       if (!isObject(body.input)) issues.push({ field: "input", reason: body.input === undefined ? "missing" : "wrong_type", message: "input is an object" });
       if (body.revision !== undefined && (typeof body.revision !== "string" || !ID.test(body.revision))) issues.push({ field: "revision", reason: "wrong_type", message: "revision is a revision id of this agent" });
@@ -973,7 +984,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       // value redacted before a long one is cut (a cut key could no longer be found), and the run gets its input as given.
       const shown = redactedOutput(input, learningSecrets());
       const title = revision.kind === "workflow" ? workflowTitle(entry.agent.name || entry.agent.id, isObject(shown) ? shown : {}) : typeof input.content === "string" ? input.content : (Object.values(input).find((v): v is string => typeof v === "string") ?? JSON.stringify(input));
-      const run = await runs.create(entry, revision, version, { input, title, place, ...(typeof body.effort === "string" ? { effort: body.effort } : {}), ...(typeof body.max_cost_usd === "number" ? { maxCostUsd: body.max_cost_usd } : {}), ...(files.length ? { inputs: (work: string) => uploads.copyInto(work, files) } : {}) });
+      const run = await runs.create(entry, revision, version, { input, title, place, ...(origin ? { origin } : {}), ...(typeof body.effort === "string" ? { effort: body.effort } : {}), ...(typeof body.max_cost_usd === "number" ? { maxCostUsd: body.max_cost_usd } : {}), ...(files.length ? { inputs: (work: string) => uploads.copyInto(work, files) } : {}) });
       // Its view from the run itself: it is written, with its first message, so an answer read from the store, which a
       // busy store would turn into home_busy, would refuse a run that runs, and a retry would start a second one.
       return { status: 202, body: await runs.view(run, { stored: null }), headers: { location: `/v2/runs/${run.id}` } };
