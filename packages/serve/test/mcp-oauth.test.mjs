@@ -15,7 +15,7 @@ import { seal } from "@parcha/pi-durable-agent";
 import { McpServers } from "../dist/mcp-servers.js";
 import { systemNetwork } from "../dist/mcp-oauth.js";
 import { network as fakeNetwork } from "./fixtures/fake-network.mjs";
-import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
+import { agent, call, cookieOf, follow, scratch, serve, withEnv } from "./support.mjs";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { startFakeOAuth } from "./fixtures/fake-oauth-server.mjs";
 
@@ -515,4 +515,34 @@ test("pi: an OAuth server's calls pass the gate like any other: denied, nothing 
   assert.match((await api("GET", `/runs/${denied}`)).body.result?.final_answer ?? "", /denied|deny/i);
   assert.equal(calls(), 0, "nothing reached the OAuth server");
   assert.ok(as.log.some((entry) => entry.form.grant_type === "refresh_token"), "its launch still refreshed the token near expiry");
+});
+
+test("pi: an OAuth server's tool with no setting asks: the call parks, nothing reaches the server, and the owner's allow runs it once", { timeout: 180_000 }, async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() });
+  // With accounts on, so there is an owner who can answer the approval (with accounts off an ask is refused unasked).
+  const server = await serve(t, { faux: FAUX_MCP, accounts: true, openSetup: true });
+  const { api } = server;
+  const { mcp } = await fakes(t);
+  const origin = `http://127.0.0.1:${server.port}`;
+  const owner = await call(server.port, { method: "POST", path: "/v2/setup", headers: { "content-type": "application/json", origin }, body: { password: "the owner signs in with this phrase" } });
+  assert.equal(owner.status, 201, owner.text);
+  const started = await api("POST", "/settings/mcp-servers/docs/oauth/start", { url: mcp.url });
+  assert.equal(started.status, 200, JSON.stringify(started.body));
+  assert.equal((await approve(started)).headers.get("location"), "/#/settings/mcp?server=docs&sign_in=ok");
+  // A fresh agent and no tool settings at all: the gate's default, ask.
+  assert.equal((await api("POST", "/agents", agent("asker", { tools: ["mcp:docs/add"] }))).status, 201);
+  const made = await api("POST", "/agents/asker/runs", { input: { content: 'Call mcp__docs__add with {"a":2,"b":3}' } });
+  assert.equal(made.status, 202, JSON.stringify(made.body));
+  const runId = made.body.run_id;
+  await follow(api, runId, ["input_required"], { deadlineMs: 120_000 });
+  const pending = (await api("GET", `/runs/${runId}`)).body.pending;
+  assert.deepEqual([pending?.kind, pending?.tool], ["approval", "mcp:docs/add"], JSON.stringify(pending));
+  const calls = () => mcp.log.filter((entry) => entry.method === "tools/call").length;
+  assert.equal(calls(), 0, "nothing reached the OAuth server while it waits");
+  const allowed = await call(server.port, { method: "POST", path: `/v2/runs/${runId}/approvals/${pending.id}`, headers: { "content-type": "application/json", cookie: cookieOf(owner), origin }, body: { decision: "allow" } });
+  assert.equal(allowed.status, 204, allowed.text);
+  const { last, rows } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 120_000 });
+  const view = (await api("GET", `/runs/${runId}`)).body;
+  assert.equal(calls(), 1, `run exactly once, with the sealed token: ${JSON.stringify({ status: last.status, result: view.result, error: view.error, rows: rows.filter((row) => row.kind?.startsWith("tool")).map((row) => row.summary) })}`);
+  assert.match(view.result?.final_answer ?? "", /5/);
 });
