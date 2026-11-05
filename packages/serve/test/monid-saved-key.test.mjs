@@ -89,7 +89,7 @@ test("a saved monid key reaches only the runs that name monid, with no restart; 
   const ended = await follow(api, capped.body.run_id, ["completed", "failed"], { deadlineMs: 55_000 });
   const result = ended.rows.find((row) => row.kind === "tool_result" && row.tool_name === "monid_run");
   assert.equal(result?.tool_status, "failed", JSON.stringify(result));
-  assert.match(result.tool_result_preview, /spend_cap_reached: monid_run was not sent\. It could cost up to \$1 \(no monid_inspect in this run quoted its price, so it is held at the \$1 allowance; monid_inspect gives its quote\), and with \$0\.001000 spent the run would pass its cap of \$0\.001/);
+  assert.match(result.tool_result_preview, /spend_cap_reached: Not sent: the run has spent \$0(\.001)?( and holds \$0\.001 for calls still answering)? of its \$0\.001 cap, and monid_run could cost up to \$1 \(no monid_inspect in this run quoted its price, so it is held at the \$1 allowance; monid_inspect gives its quote\)\. Raise the cap to at least \$1\.01 to run it\./);
   assert.equal(sent().length, before, "monid saw no request");
   assert.deepEqual([...entries(data, capped.body.run_id, "agentrun.tool_started"), ...entries(data, capped.body.run_id, "agentrun.tool_cost")], [], "nothing marked or charged");
 

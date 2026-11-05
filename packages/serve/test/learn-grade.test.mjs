@@ -399,3 +399,26 @@ test("GET /v2/usage books each grade under the meter learning, by agent and by d
   assert.equal((await again.api("GET", "/usage?group_by=meter")).body.lines.find((entry) => entry.meter === "learning").usd, line.usd, "counted once");
   assert.equal(ledgerOf(data).length, 3, "the restart wrote no line again");
 });
+
+test("a note the checks refuse is left out and the rest of the proposal goes on: the good note is graded and merged, the bad one named with its problem; a secret in any note still drops every note", { timeout: 150_000 }, async (t) => {
+  withEnv(t, {}, ["AGENTRUN_TEST_FAUX_GRADE_HOLD", "AGENTRUN_TEST_FAUX_CALLS", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY"]);
+  const { api, data } = await serve(t, { learning: "on", faux: LEARN });
+  const GOOD = note("Check units", "Convert every amount to one unit before comparing");
+  const BAD = "---\nname: No description\ntype: project\n---\nA note with no description line.\n";
+  await made(api, learner("partly", { plan: [["check-units.md", GOOD], ["no-description.md", BAD]] }));
+  const runId = await started(api, "partly");
+  const { view, rows } = await ended(api, runId);
+  settled(view, rows, "merged");
+  assert.equal(view.learning.detail, "Learned: Check units. Not kept: it didn't pass the checks on notes (a note whose header is not in shape).");
+  const { learning } = await savedOf(data, runId);
+  assert.deepEqual(learning.problems.map((p) => [p.rule, p.path]), [["note", "no-description.md"]], "the left-out note, named");
+  assert.deepEqual(learning.verdict.items.map((item) => item.file), ["check-units.md"], "the grader judged only what passed");
+  const tree = git(repoOf(data, "partly"), ["ls-tree", "-r", "--name-only", "main"]).split("\n");
+  assert.ok(tree.includes("check-units.md") && !tree.includes("no-description.md"), tree.join(","));
+  // A secret in one note: the run's answer holds what must never be stored, so nothing of it is kept.
+  const shaped = ["s", "k-", "Zx9".repeat(10)].join("");
+  await made(api, learner("leaky", { plan: [["check-units.md", GOOD], ["sign-in.md", note("Sign in", "How to sign in", `Use ${shaped} to sign in.\n`)]] }));
+  const leaky = await ended(api, await started(api, "leaky"));
+  settled(leaky.view, leaky.rows, "dropped", "checker");
+  assert.deepEqual(mergesOf(repoOf(data, "leaky"), leaky.view.run_id), []);
+});

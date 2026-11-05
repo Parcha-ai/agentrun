@@ -4,6 +4,8 @@
 // without `bash`, so a run gets no shell on this machine; in a box, pi's four, each call made in the box. `bash` may be
 // named only by an agent whose place is a box (runnable.ts).
 import type { TSchema } from "@earendil-works/pi-ai";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { defineExtension, defineTool, type Extension, type Harness, type ToolRegistration, type Tx } from "@earendil-works/pi-durable";
 import type { AppContext } from "@parcha/pi-durable-disk";
@@ -24,11 +26,13 @@ import { fetchFor, runPages, WEB_FETCH_TOOL, webFetchTool } from "./web-fetch.js
 import { searchFor, WEB_SEARCH_TOOL, webSearchTool } from "./web-search.js";
 import { browserNeeds, capabilityOf, explainsView, isUnavailable, NO_PARALLEL_KEY, type Pickable, PICKABLE, planeOf, PROVIDERS, type Tooling, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
 import { PARALLEL_KEY_ENV } from "./decisions.js";
+import { handedSignIn } from "./secrets.js";
+import { SIGN_IN_KEY, SIGN_IN_SAVED } from "./sign-ins.js";
 
 export const ASK_TOOL = "ask_person";
 /** Under `--faux` only: a module whose default export gives the browser's `{ provider, driver }` for the run's
- *  environment and the vendor its plane names (`browserbase`, `kernel`), in place of that vendor's (the tests' fake
- *  backend). */
+ *  environment, the vendor its plane names (`browserbase`, `kernel`) and the saved sign-in it was handed for that
+ *  vendor (`{ provider, ref, save }`, or undefined), in place of that vendor's (the tests' fake backend). */
 export const FAUX_BROWSER_ENV = "AGENTRUN_SERVE_FAUX_BROWSER";
 
 /** What the result of `ask_person` says; the person's page shows the question as a waiting row. */
@@ -163,12 +167,45 @@ export const evidenceIn = (work: string) => {
   };
 };
 
+/** The Browserbase contexts a run's browser may open: its agent's saved sign-in's alone, by its profile name, never one
+ *  made here (nothing a run makes is kept for its agent). */
+export const keptContexts = (ref: string | undefined) => ({
+  clear: false,
+  resolve: async (key: string) => {
+    if (ref && key.endsWith(`|profile:${SIGN_IN_KEY}`)) return ref;
+    throw new Error("this run's browser has no saved sign-in to open");
+  },
+});
+
+/** Kernel's provider, opening the agent's saved profile (`ref`, its name at Kernel) where a session asks for the
+ *  profile `default`: the policy, the session's record and the model see only that name. */
+export const keptProfile = <P extends { create(spec: { profile?: { name: string; save: boolean } }, signal: AbortSignal): unknown }>(provider: P, ref: string): P => ({
+  ...provider,
+  create: (spec, signal) => provider.create(spec.profile?.name === SIGN_IN_KEY ? { ...spec, profile: { ...spec.profile, name: ref } } : spec, signal),
+});
+
+/** `provider`, its sessions' profile as this launch was handed it, whatever the policy a conversation was made with (a
+ *  follow-up's was made under an earlier launch, which may have had no sign-in, or another lease): with a sign-in, every
+ *  session opens on the profile `default`, saving only as `kept.save` says; without one, none asks for a profile. */
+export const asHanded = <P extends { create(spec: { profile?: { name: string; save: boolean } }, signal: AbortSignal): unknown }>(provider: P, kept: { save: boolean } | undefined): P => ({
+  ...provider,
+  create: (spec, signal) => provider.create(kept ? { ...spec, profile: { name: SIGN_IN_KEY, save: kept.save } } : spec.profile ? { ...spec, profile: undefined } : spec, signal),
+});
+
+/** Whether a session's change is one that saved to the run's sign-in, in a run that saves (every session of it runs on
+ *  the profile, asHanded, whatever its record names): let go by the run (its tool, its idle time, a relaunch, its close,
+ *  its end), never one the vendor had already lost or never made. */
+export const savedOnRelease = (row: { session: { resourceId: string | null; releaseReason: string | null } }, change: string): boolean =>
+  change === "released" && row.session.resourceId !== null && row.session.releaseReason !== null && !["lost", "create_failed"].includes(row.session.releaseReason);
+
 /** A hosted browser driven through Stagehand, on pi-browser's durable adapter: Browserbase or Kernel (headless), the one
  *  the run's plane names (tool-plane.ts: picked, else Browserbase where the server holds its keys, else Kernel), kept
  *  for the run's life; a plane that names none (a run kept from before the pick) is Browserbase. Its sessions' custody
  *  lives in the run's own store. No recording and no live view; a session the run still holds is released when the run
  *  is let go. Where the plane says unavailable (its vendor's key gone since), each call is refused, saying why.
- *  Its session time is the run's spend, held under its cap before it runs (browser-cost.ts). */
+ *  Its session time is the run's spend, held under its cap before it runs (browser-cost.ts). A run handed its agent's
+ *  saved sign-in for that vendor (sign-ins.ts, over its pipe) opens every session on it, as the profile `default`,
+ *  saving only where it holds the agent's save lease; one that saved says so in its run directory. */
 const browserTool: ToolEntry = {
   summary: "Drive a hosted browser, Browserbase's or Kernel's (picked in tool settings, else whichever's key the server holds): open pages, read and screenshot them, and act on them.",
   // Which vendor's keys it needs is the plane's to say (tool-plane.ts BROWSER_KEYS): neither alone is required.
@@ -186,18 +223,27 @@ const browserTool: ToolEntry = {
     ]);
     const vendor = planeOf(host.env).browser ?? "browserbase";
     const refused = isUnavailable(vendor) ? new BrowserFailureError(browserFailure("browser_unavailable", `The browser does not run here: ${whyUnavailable(vendor)}.`)) : undefined;
+    const handed = handedSignIn();
+    const kept = !refused && handed?.provider === vendor ? handed : undefined;
     const faux = host.env[FAUX_ENV] ? host.env[FAUX_BROWSER_ENV] : undefined;
     const parts = faux
-      ? ((await import(pathToFileURL(faux).href)) as { default: (env: NodeJS.ProcessEnv, vendor: string) => { provider: unknown; driver: unknown } }).default(host.env, vendor)
+      ? ((await import(pathToFileURL(faux).href)) as { default: (env: NodeJS.ProcessEnv, vendor: string, signIn?: typeof kept) => { provider: unknown; driver: unknown } }).default(host.env, vendor, kept)
       : {
-          provider: refused ? undefined : vendor === "kernel" ? (await import("@parcha/pi-browser/providers/kernel")).kernelProvider({ env: host.env, headless: true }) : (await import("@parcha/pi-browser/providers/browserbase")).browserbaseProvider({ env: host.env }),
+          provider: refused
+            ? undefined
+            : vendor === "kernel"
+              ? ((kernel) => (kept ? keptProfile(kernel, kept.ref) : kernel))((await import("@parcha/pi-browser/providers/kernel")).kernelProvider({ env: host.env, headless: true }))
+              : (await import("@parcha/pi-browser/providers/browserbase")).browserbaseProvider({ env: host.env, profiles: keptContexts(kept?.ref) }),
           driver: (await import("@parcha/pi-browser/driver/stagehand")).stagehandDriver(),
         };
+    // The save flag every session carries is this launch's (asHanded), never the one stored with its conversation.
+    const handedProvider = parts.provider ? asHanded(parts.provider as Parameters<typeof asHanded>[0], kept) : undefined;
     // The owner's live view (browser-live.ts): pi-browser's own viewer, read-only, on a loopback port of this process's,
-    // over every provider, on the same person/model registry as the toolset; framed by the console's own origin alone.
+    // over every provider (the handed one, the run's own), on the same person/model registry as the toolset; framed by
+    // the console's own origin alone.
     const gates = createDrivingGates();
     const view = createLiveView({ hostOrigin: "'self'", gates, readOnly: true });
-    const watched = parts.provider ? liveViewProvider(parts.provider as never, view) : undefined;
+    const watched = handedProvider ? liveViewProvider(handedProvider as never, view) : undefined;
     const provider = () => {
       if (refused) throw refused;
       return watched as never;
@@ -216,12 +262,25 @@ const browserTool: ToolEntry = {
     // (Browserbase's; Kernel's keeps none) has any: without one, uploads still read the run's work/, through `files`.
     const downloads = typeof (parts.provider as { downloads?: unknown } | undefined)?.downloads === "object";
     const files = downloads ? { workspace: () => host.where.work } : { files: workspaceFiles(host.where.work) };
-    const browser = createBrowserExtension({ provider, driver: parts.driver as never, evidence: evidenceIn(host.where.work) as never, ...files, gates, onSession: onSession as never, prices: { sessionUsdPerHour: price.usdPerHour, sessionMinimumS: price.minimumS }, onCharge: spend.onCharge });
+    // A session that saved to the sign-in, let go: its time, for the sign-in's verified_at when the run's lease ends.
+    const saved = kept?.save
+      ? (row: Parameters<typeof savedOnRelease>[0], change: string) => void (savedOnRelease(row, change) && writeFileSync(join(host.where.root, SIGN_IN_SAVED), new Date().toISOString(), { mode: 0o600 }))
+      : undefined;
+    // Both hosts of a session's changes: the live view's hand-over, and the sign-in's saved mark.
+    const onSessions = async (row: Parameters<typeof savedOnRelease>[0] & Parameters<typeof onSession>[0], change: string) => {
+      saved?.(row, change);
+      await onSession(row, change);
+    };
+    // The pointer is cut from everything the browser hands the model (its results, their details, its failures): a
+    // vendor's refusal can quote it, as pi-browser's one-saver rule names Kernel's profile.
+    const browser = createBrowserExtension({ provider, driver: parts.driver as never, evidence: evidenceIn(host.where.work) as never, ...files, gates, onSession: onSessions as never, redact: { values: () => (kept ? [kept.ref] : []) }, prices: { sessionUsdPerHour: price.usdPerHour, sessionMinimumS: price.minimumS }, onCharge: spend.onCharge });
     const tools = (browser.tools as unknown as ToolRegistration[]).map(spend.capped);
     const extension = { ...(browser.extension as unknown as Extension), tools } as Extension;
     host.install(extension);
     host.onConversation(async (tx, conversationId) => {
-      Object.assign(await tx.doc(browser.docs.Config, conversationId as never), { label: "run", run: host.where.ref.id, policy: DEFAULT_BROWSER_POLICY });
+      // The profile is the host's choice, never the model's: the agent's one sign-in, when the run was handed it.
+      const policy = kept ? { ...DEFAULT_BROWSER_POLICY, profile: { name: SIGN_IN_KEY, save: kept.save } } : DEFAULT_BROWSER_POLICY;
+      Object.assign(await tx.doc(browser.docs.Config, conversationId as never), { label: "run", run: host.where.ref.id, policy });
     });
     host.beforeResume(async (harness) => {
       // Its charges move what the process counts once each is committed, reconcile's own among them.
