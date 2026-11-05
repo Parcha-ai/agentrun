@@ -3,16 +3,20 @@
 // A run's browser opens a public page (a name the proxy's test network answers with a public address) that steers it,
 // by a redirect, a script or an embed, to this server's own port on loopback, a cloud's metadata addresses, private
 // ranges, loopback by name and over IPv6, and a name that resolves inward: each is refused by the egress proxy after its
-// lookup, as the run's process log shows, and nothing on this machine is reached. A browser context given its own proxy
-// setting over Chrome's DevTools socket (direct, around the proxy) reaches nothing either: Chrome resolves no name or
-// address itself but its proxy's and its own socket's.
+// lookup, as the run's process log shows, and nothing on this machine is reached; a WebRTC connection it opens against
+// STUN servers on loopback and a private address gathers no candidate and sends no packet; and each session's fresh
+// profile goes with its release. A browser context given its own proxy setting over Chrome's DevTools socket (direct,
+// around the proxy) reaches nothing either: Chrome resolves no name or address itself but its proxy's and its own
+// socket's. With AGENTRUN_TEST_UNSANDBOXABLE_CHROME naming a Chrome that cannot start its sandbox here, the start's check
+// refuses it.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
+import { createSocket } from "node:dgram";
 import { createServer } from "node:http";
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
-import { localChrome } from "../dist/local-chrome.js";
+import { CHROME_PROFILES, checkChrome, localChrome } from "../dist/local-chrome.js";
 import { STEER_HOST, REBIND_HOST } from "./fixtures/fake-steer-egress.mjs";
 import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
 
@@ -43,7 +47,8 @@ async function listen(t, handle) {
 }
 
 /** The steering page: `/redirect?to=URL` (a 302), `/script?to=URL` (a script that moves the page), `/embed?to=URL` (an
- *  image and a frame from it), and `/`, a page of its own. */
+ *  image and a frame from it), `/rtc?stun=HOST:PORT,...` (a WebRTC connection that gathers ICE candidates against those
+ *  STUN servers and writes what it gathered as the page's text a second on), and `/`, a page of its own. */
 const steer = (req, res) => {
   const url = new URL(req.url, "http://steer");
   const to = url.searchParams.get("to") ?? "";
@@ -51,6 +56,17 @@ const steer = (req, res) => {
   res.setHeader("content-type", "text/html");
   if (url.pathname === "/script") return res.end(`<title>moving</title><p>moving</p><script>location.replace(${JSON.stringify(to)})</script>`);
   if (url.pathname === "/embed") return res.end(`<title>embed</title><p>embedding</p><img src="${to}"><iframe src="${to}"></iframe>`);
+  if (url.pathname === "/rtc") {
+    const servers = (url.searchParams.get("stun") ?? "").split(",").map((at) => ({ urls: `stun:${at}` }));
+    return res.end(`<title>rtc</title><p>gathering</p><script>
+      const found = [];
+      const pc = new RTCPeerConnection({ iceServers: ${JSON.stringify(servers)} });
+      pc.createDataChannel("probe");
+      pc.onicecandidate = (event) => { if (event.candidate && event.candidate.candidate) found.push(event.candidate.type || "unknown"); };
+      pc.createOffer().then((offer) => pc.setLocalDescription(offer));
+      setTimeout(() => { document.body.textContent = "rtc " + JSON.stringify({ state: pc.iceGatheringState, candidates: found }); }, 1000);
+    </script>`);
+  }
   res.end("<title>Steer</title><p>A public page.</p>");
 };
 
@@ -73,6 +89,12 @@ test("a run's local Chrome, steered by a public page to this server's port, meta
   const page = await listen(t, steer);
   const secret = `/decoy-${randomBytes(8).toString("hex")}`;
   const decoy = await listen(t, (_req, res) => res.end("DECOY REACHED"));
+  // A STUN server on loopback: a WebRTC packet the page sends past the proxy would land here.
+  const stun = createSocket("udp4");
+  let datagrams = 0;
+  stun.on("message", () => datagrams++);
+  await new Promise((ok) => stun.bind(0, LOOPBACK, ok));
+  t.after(() => stun.close());
   withEnv(t, { STEER_PORT: String(page.port) }, ["STEER_PORT", "AGENTRUN_SERVE_BROWSER_CHROME"]);
   const { api, data, port } = await serve(t, { faux: STEER_MODEL, fauxEgress: STEER_EGRESS, browserChrome: CHROME });
 
@@ -99,6 +121,7 @@ test("a run's local Chrome, steered by a public page to this server's port, meta
     via("redirect", `http://[${METADATA_V6}]/latest/meta-data/`),
     via("redirect", `http://${REBIND_HOST}/`),
     via("embed", `http://${METADATA}/latest/api/token`),
+    `http://${STEER_HOST}/rtc?stun=${LOOPBACK}:${stun.address().port},${PRIVATE_10}:3478`,
   ];
   assert.equal((await api("POST", "/agents", agent("steered", { instructions: "Browse.", tools: ["browser"] }))).status, 201);
   const started = await api("POST", "/agents/steered/runs", { input: { content: `Steer the browser: ${JSON.stringify(urls)}` } });
@@ -137,7 +160,19 @@ test("a run's local Chrome, steered by a public page to this server's port, meta
   assert.doesNotMatch(answer, /DECOY REACHED|agentrun\.v2|"contract"/);
   assert.doesNotMatch(answer, /proxy-server|--host-resolver|egress\.sock/);
   const ports = [...answer.matchAll(/127\.0\.0\.1:(\d+)/g)].map((m) => Number(m[1]));
-  assert.deepEqual([...new Set(ports)].filter((p) => p !== port && p !== decoy.port), [], `only the steered ports: ${answer}`);
+  assert.deepEqual([...new Set(ports)].filter((p) => p !== port && p !== decoy.port && p !== stun.address().port), [], `only the steered ports: ${answer}`);
+  // WebRTC, which goes around an HTTP proxy over UDP: no candidate gathered, and no STUN packet sent to loopback.
+  assert.match(answer, /rtc \{\\?"state\\?":\\?"complete\\?",\\?"candidates\\?":\[\]\}/, "the page gathered no ICE candidate");
+  assert.equal(datagrams, 0, "no UDP reached the STUN server on loopback");
+  // Each session's profile, under the run's directory, goes with its release once the run lets it go; its downloads
+  // folder stays, as pi-browser keeps it for browser_downloads after a release.
+  const profiles = join(data, "runs", started.body.run_id, CHROME_PROFILES);
+  let left = [];
+  for (const until = Date.now() + 15_000; ; await new Promise((done) => setTimeout(done, 200))) {
+    left = (await readdir(profiles).catch(() => [])).filter((name) => !name.startsWith(".") && !name.endsWith(".downloads"));
+    if (left.length === 0 || Date.now() > until) break;
+  }
+  assert.deepEqual(left, [], "no session's profile is left");
 });
 
 test("a browser context given its own proxy setting over Chrome's DevTools socket, direct around the egress proxy, reaches nothing: Chrome resolves no address itself but its proxy's and its own socket's", { skip: SKIP, timeout: 120_000 }, async (t) => {
@@ -150,7 +185,11 @@ test("a browser context given its own proxy setting over Chrome's DevTools socke
   const provider = local.provider;
   assert.deepEqual([provider.name, provider.caps.profiles, provider.vault], ["cdp", false, undefined], "no saved sign-in, nothing for a vault");
   const ref = await provider.create({ tag: "direct", maxLifetimeS: 600, idleTimeoutS: 60, proxies: false, verified: false, captcha: false, viewport: { width: 800, height: 600 }, metadata: {} }, new AbortController().signal);
-  t.after(() => provider.release(ref));
+  let released = false;
+  t.after(() => (released ? undefined : provider.release(ref)));
+  // A fresh profile of the session's own, under the run's directory: nothing loaded into it.
+  const profiles = join(root, CHROME_PROFILES);
+  assert.deepEqual((await readdir(profiles)).filter((name) => !name.startsWith(".")).sort(), ["direct", "direct.downloads"]);
   const { sdkCdpUrl } = await provider.attach(ref);
   const socket = new WebSocket(sdkCdpUrl);
   await new Promise((ok, fail) => (socket.addEventListener("open", ok), socket.addEventListener("error", fail)));
@@ -184,4 +223,20 @@ test("a browser context given its own proxy setting over Chrome's DevTools socke
   assert.equal(await open(`http://${METADATA}/latest/meta-data/`, direct.browserContextId), "net::ERR_NAME_NOT_RESOLVED");
   assert.deepEqual(decoy.asked.filter((path) => path === secret), [], "the decoy on loopback was not reached");
   assert.ok(lines.some((line) => /host="127\.0\.0\.1" .*class=loopback/.test(line)), lines.join("\n"));
+  // Released: its Chrome is gone, and so is its profile.
+  socket.close();
+  await provider.release(ref);
+  released = true;
+  assert.equal(await provider.status(ref), "gone");
+  assert.deepEqual((await readdir(profiles)).filter((name) => !name.startsWith(".")), ["direct.downloads"], "the profile is removed; only its downloads folder stays, for browser_downloads");
+  assert.deepEqual(await readdir(join(profiles, "direct.downloads")), [], "and it holds nothing the session did not download");
+});
+
+test("a Chrome that cannot start its sandbox on this machine refuses the server's start, in words that never offer to turn it off", { skip: process.env.AGENTRUN_TEST_UNSANDBOXABLE_CHROME ? false : "needs AGENTRUN_TEST_UNSANDBOXABLE_CHROME, a Chrome that cannot start its sandbox here", timeout: 60_000 }, async () => {
+  const chrome = process.env.AGENTRUN_TEST_UNSANDBOXABLE_CHROME;
+  await assert.rejects(checkChrome(chrome), (error) => {
+    assert.match(error.message, /did not start here with its sandbox on \(No usable sandbox\), and the local Chrome never runs without Chrome's sandbox/);
+    assert.doesNotMatch(error.message, /no-sandbox|live dangerously/);
+    return true;
+  });
 });

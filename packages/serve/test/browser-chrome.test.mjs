@@ -1,10 +1,10 @@
 // The browser on a local Chrome, with no Chrome started (browser-chrome-egress.test.mjs drives a real one): the operator's
-// opt-in alone (`--browser-chrome PATH`, AGENTRUN_SERVE_BROWSER_CHROME), checked as an executable at the start, never
-// `auto`'s pick; a run kept on it is unavailable at a launch on a server not given one, never another browser; no saved
-// sign-in is made, leased or handed to it, and its provider refuses a profile and offers a vault nothing; Chrome's
-// arguments send every request through the egress proxy, with no bypass but its own DevTools socket; the proxy is the
-// kernel's, with no host list and a run browser's budgets; and its minutes are the run's spend at the operator's price,
-// held under a cap.
+// opt-in alone (`--browser-chrome PATH`, AGENTRUN_SERVE_BROWSER_CHROME), checked at the start as an executable that
+// starts with Chrome's sandbox on (never run without it), never `auto`'s pick; a run kept on it is unavailable at a
+// launch on a server not given one, never another browser; no saved sign-in is made, leased or handed to it, and its
+// provider refuses a profile and offers a vault nothing; Chrome's arguments send every request through the egress
+// proxy, with no bypass but its own DevTools socket, and WebRTC over no UDP; the proxy is the kernel's, with no host
+// list and a run browser's budgets; and its minutes are the run's spend at the operator's price, held under a cap.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import { BROWSER_MAX_CONNECTIONS, BROWSER_MAX_TUNNELS, browserEgress, egressDir, FAUX_EGRESS_ENV, MAX_TUNNELS } from "../dist/box-egress.js";
-import { CHROME_PROFILES, chromeFence, localChrome } from "../dist/local-chrome.js";
+import { CHROME_PROFILES, checkChrome, chromeFence, localChrome, NO_SANDBOX } from "../dist/local-chrome.js";
 import { FAUX_ENV } from "../dist/model.js";
 import { browserNeeds, LOCAL_CHROME_ENV, NO_BROWSER_KEY, NO_CHROME, planeFor, recheckPlane, relaunchPlane, resolveCapability } from "../dist/tool-plane.js";
 import { TOOLS } from "../dist/tools.js";
@@ -23,10 +23,11 @@ const FAUX_BROWSER = new URL("./fixtures/faux-browser.mjs", import.meta.url).pat
 const FAUX_BROWSERBASE = new URL("./fixtures/faux-browserbase-check.mjs", import.meta.url).pathname;
 const BROWSE_MANY = new URL("./fixtures/faux-browse-many.mjs", import.meta.url).pathname;
 const FAKE_EGRESS = new URL("./fixtures/fake-egress.mjs", import.meta.url).pathname;
-const KEYS = ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "KERNEL_API_KEY", "AGENTRUN_SEAL_KEY", "FAUX_BROWSER_LOG", "FAUX_BROWSER_PROVIDER", LOCAL_CHROME_ENV, "AGENTRUN_BROWSER_USD_PER_HOUR_CDP"];
+const KEYS = ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "KERNEL_API_KEY", "AGENTRUN_SEAL_KEY", "FAUX_BROWSER_LOG", "FAUX_BROWSER_PROVIDER", LOCAL_CHROME_ENV, "AGENTRUN_BROWSER_USD_PER_HOUR_CDP", "FAKE_CHROME_NO_SANDBOX"];
 const BB = { BROWSERBASE_API_KEY: "fake-test-key", BROWSERBASE_PROJECT_ID: "fake-project" };
-/** An executable file on every machine the tests run on, never started: the faux browser stands in for Chrome. */
-const EXECUTABLE = process.execPath;
+/** A stand-in Chrome (fixtures/fake-chrome.mjs): it passes the start's sandbox check, and the faux browser stands in for
+ *  it in runs. */
+const EXECUTABLE = new URL("./fixtures/fake-chrome.mjs", import.meta.url).pathname;
 const base = { harness: "pi", gateway: false, parallelKey: false };
 
 const opsOf = async (log) => (await readFile(log, "utf8").catch(() => "")).trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
@@ -75,6 +76,26 @@ test("the server refuses, before it serves, a --browser-chrome or AGENTRUN_SERVE
   const { api } = await serve(t, {});
   assert.equal((await api("PUT", "/settings/tools", { browser: { provider: "chrome" } })).status, 200);
   assert.equal((await api("GET", "/capabilities")).body.features.browser, "chrome", "the variable alone opts in");
+});
+
+test("the local Chrome's sandbox is never turned off: the start refuses a Chrome that cannot start it here, and as root, in words that never offer --no-sandbox; a session whose Chrome cannot start it later is refused saying so", async (t) => {
+  withEnv(t, {}, KEYS);
+  assert.equal(await checkChrome(EXECUTABLE), EXECUTABLE, "one that starts sandboxed is taken");
+  assert.equal(await checkChrome(undefined), undefined);
+  assert.equal(await checkChrome(""), undefined, "empty is none");
+  await assert.rejects(checkChrome(EXECUTABLE, { uid: 0 }), (error) => error.message === "the browser's Chrome cannot start its sandbox while AgentRun runs as root, and the local Chrome never runs without Chrome's sandbox: let it start here, or leave --browser-chrome (and AGENTRUN_SERVE_BROWSER_CHROME) out: run AgentRun as a user that is not root");
+  withEnv(t, { FAKE_CHROME_NO_SANDBOX: "1" }, KEYS);
+  await assert.rejects(checkChrome(EXECUTABLE), (error) => error.message === `the browser's Chrome ${EXECUTABLE} did not start here with its sandbox on (No usable sandbox), and the local Chrome never runs without Chrome's sandbox: let it start here, or leave --browser-chrome (and AGENTRUN_SERVE_BROWSER_CHROME) out: on Ubuntu 23.10 and later, give this Chrome an AppArmor profile that allows it user namespaces, or use a Chrome whose setuid sandbox helper is installed`);
+  await assert.rejects(serve(t, { browserChrome: EXECUTABLE }), (error) => /did not start here with its sandbox on/.test(error.message) && !/no-sandbox/.test(error.message), "the server does not start");
+  // Later, at a session: pi-browser's failure (which names PI_BROWSER_NO_SANDBOX) becomes the server's own words, and
+  // Chrome's go to the run's log.
+  const lines = [];
+  const local = await localChrome({ executablePath: EXECUTABLE, root: await scratch(t), runId: `sandbox-${randomBytes(4).toString("hex")}`, env: {}, log: (line) => lines.push(line) });
+  t.after(() => local.close());
+  const spec = { tag: "nosandbox", maxLifetimeS: 600, idleTimeoutS: 60, proxies: false, verified: false, captcha: false, viewport: { width: 800, height: 600 }, metadata: {} };
+  await assert.rejects(local.provider.create(spec, new AbortController().signal), (error) => error.failure?.code === "browser_unavailable" && error.message === NO_SANDBOX && !/no-sandbox|NO_SANDBOX/i.test(error.message.replace(NO_SANDBOX, "")));
+  assert.ok(!/--no-sandbox|PI_BROWSER_NO_SANDBOX/.test(NO_SANDBOX));
+  assert.ok(lines.some((line) => line.startsWith("chrome sandbox failed ")), lines.join("\n"));
 });
 
 test("capabilities on a server given a Chrome: chrome picked is available, takes no key and is features.browser; sign_ins is false even with a seal key, since a local Chrome keeps none; given none, it is unavailable by name", async (t) => {
@@ -151,8 +172,9 @@ test("the local Chrome's provider: pi-browser's cdp provider, which refuses a pr
     "--proxy-bypass-list=<-loopback>;127.0.0.1:42000", // key-gate: loopback-rule Chrome own DevTools socket, its one bypass
     "--host-resolver-rules=MAP 127.0.0.1:41000 127.0.0.1:41000, MAP 127.0.0.1:42000 127.0.0.1:42000, MAP * ~NOTFOUND", // key-gate: loopback-rule the two addresses Chrome resolves itself
     "--disable-quic",
-    "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+    "--webrtc-ip-handling-policy=disable_non_proxied_udp",
   ]);
+  assert.ok(!chromeFence("http://127.0.0.1:41000", 42000).some((arg) => /sandbox/.test(arg)), "nothing touches the sandbox");
 });
 
 test("the local Chrome's way out: the kernel's egress proxy with no host list, on a socket in a 0700 directory of its own, reached over a loopback relay; a run browser's budgets; loopback refused after its lookup; close removes it all", async (t) => {
