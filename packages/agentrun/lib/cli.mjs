@@ -58,11 +58,11 @@ const HELP = () => {
     "else api_key in the config file, else that server's own; it is never a flag and never printed. agentrun login",
     "--base-url URL checks a token read from stdin and writes the config file (0600); agentrun logout removes it.",
     "Output: the response's JSON on stdout, a file's bytes as they are; an error's on stderr. Exit codes: 0 ok, 1 the",
-    "server refused, 2 bad usage, 3 the server cannot be reached, 4 no token or the token was refused. runs wait and runs",
-    "start --wait print the run once it ends or waits on a person: 0 completed, 1 failed, cancelled or --timeout passed",
-    "(it goes on), 8 it waits on a person (a question, its spend cap, a stopped turn, a paused workflow). runs timeline",
-    "--follow prints the timeline's pages as they come, one JSON object per line, until the run ends: 0 completed, 1",
-    "failed or cancelled.",
+    "server refused, 2 bad usage (a bad base URL among it), 3 the server cannot be reached, 4 no token, the token was",
+    "refused, or the config file, the server's record or its token file was refused. runs wait and runs start --wait",
+    "print the run once it ends or waits on a person: 0 completed, 1 failed, cancelled or --timeout passed (it goes on),",
+    "8 it waits on a person (a question, its spend cap, a stopped turn, a paused workflow). runs timeline --follow prints",
+    "the timeline's pages as they come, one JSON object per line, until the run ends: 0 completed, 1 failed or cancelled.",
   ].join("\n");
 };
 
@@ -140,6 +140,14 @@ function baseOf(given, where) {
   return trim(given);
 }
 
+const isBase = (url) => {
+  try {
+    return baseOf(url, ""), true;
+  } catch {
+    return false;
+  }
+};
+
 /** Where the request goes and the token it carries. A token goes only with the address it came with: the local
  *  server's own token is never sent to another server. The local token is DIR/.token, whatever the record says. */
 function targetOf(values, env) {
@@ -151,8 +159,9 @@ function targetOf(values, env) {
   }
   const recordFile = join(data, ".server.json");
   const record = readJson(recordFile, privateFile(recordFile));
-  if (record !== undefined && (typeof record?.base_url !== "string" || !Number.isInteger(record.pid) || record.pid <= 0)) {
-    throw new Exit(4, `${recordFile} is not a server record (base_url a string, pid a positive whole number); refusing it.`);
+  // A record whose base_url baseOf refuses is refused as a malformed one is, exit 4: the file is wrong, not the usage.
+  if (record !== undefined && (typeof record?.base_url !== "string" || !isBase(record.base_url) || !Number.isInteger(record.pid) || record.pid <= 0)) {
+    throw new Exit(4, `${recordFile} is not a server record (base_url an http or https URL with no query, fragment, user or password, pid a positive whole number); refusing it.`);
   }
   const stale = record && `The server recorded in ${recordFile} (pid ${record.pid}) is not running; start it with \`npx @parcha/agentrun\` or set AGENTRUN_BASE_URL.`;
   const local = baseOf(record?.base_url ?? DEFAULT_BASE_URL, `base_url in ${recordFile}`);

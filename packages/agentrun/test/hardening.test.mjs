@@ -89,3 +89,18 @@ test("runs timeline --follow: a stream event that is not a JSON object is the se
     assert.equal(server.requests.length, 1, "not tried again");
   }
 });
+
+test("a server record whose base_url is not a base URL is refused as a malformed record is, exit 4; a bad --base-url is usage, exit 2", async (t) => {
+  const { dir, env } = scratch(t);
+  const data = join(dir, "data");
+  mkdirSync(data, { mode: 0o700 });
+  for (const base_url of ["ftp://127.0.0.1/v2", "http://127.0.0.1:9/v2#x", 7]) {
+    writeFileSync(join(data, ".server.json"), JSON.stringify({ base_url, pid: process.pid, token_file: join(data, ".token") }), { mode: 0o600 });
+    const refused = await cli(env, ["agents", "list", "--data", data]);
+    assert.equal(refused.code, 4, `${base_url}: ${refused.err}`);
+    assert.match(refused.err, /\.server\.json is not a server record/);
+  }
+  writeFileSync(join(data, ".server.json"), JSON.stringify({ base_url: "http://127.0.0.1:9/v2", pid: process.pid, token_file: join(data, ".token") }), { mode: 0o600 });
+  const usage = await cli(env, ["agents", "list", "--data", data, "--base-url", "ftp://127.0.0.1/v2"]);
+  assert.equal(usage.code, 2, usage.err);
+});

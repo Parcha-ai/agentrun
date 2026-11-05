@@ -104,9 +104,9 @@ A tool call waiting for approval (`pending.kind` `approval`) is answered by the 
 
 - 0: done; for `runs wait` and `runs start --wait`, the run completed.
 - 1: the server refused (its error JSON on stderr); for a wait, the run failed or was cancelled, or `--timeout` passed.
-- 2: bad usage, nothing sent.
+- 2: bad usage, nothing sent: a bad flag or argument, or a base URL that is not http or https or has a query, a fragment, a user or a password.
 - 3: the server cannot be reached.
-- 4: no token, the token was refused, or the config file is open to others.
+- 4: no token, the token was refused, or the config file, the local server's record or its token file was refused (open to others, or not what it should hold).
 - 8: the run waits on a person: a question, its spend cap, a stopped turn, or a paused workflow. stderr says what to run next.
 
 ## Commands
