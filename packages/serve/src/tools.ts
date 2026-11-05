@@ -257,7 +257,9 @@ const browserTool: ToolEntry = {
       : {};
     // The pointer is cut from everything the browser hands the model (its results, their details, its failures): a
     // vendor's refusal can quote it, as pi-browser's one-saver rule names Kernel's profile.
-    const browser = createBrowserExtension({ provider, driver: parts.driver as never, evidence: evidenceIn(host.where.work) as never, ...files, ...saved, redact: { values: () => (kept ? [kept.ref] : []) }, prices: { sessionUsdPerHour: price.usdPerHour, sessionMinimumS: price.minimumS }, onCharge: spend.onCharge });
+    // A run handed its agent's sign-in tells the model its browser keeps it (`run`'s description): one with none claims
+    // cookies across pages only.
+    const browser = createBrowserExtension({ provider, driver: parts.driver as never, evidence: evidenceIn(host.where.work) as never, ...files, ...saved, signIns: kept !== undefined, redact: { values: () => (kept ? [kept.ref] : []) }, prices: { sessionUsdPerHour: price.usdPerHour, sessionMinimumS: price.minimumS }, onCharge: spend.onCharge });
     const tools = (browser.tools as unknown as ToolRegistration[]).map(spend.capped);
     const extension = { ...(browser.extension as unknown as Extension), tools } as Extension;
     host.install(extension);
