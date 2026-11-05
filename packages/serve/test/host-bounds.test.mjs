@@ -101,27 +101,39 @@ test("every host tool's largest result is within the host's result bound, which 
   assert.ok(shell.text.length > hosts.MAX_BYTES - 100, "bash's tail at pi's limit");
   keep("bash", shell.text);
   // The background tools (background.ts): a page at BACKGROUND_PAGE_BYTES, of quotes and of three-byte text, and a list
-  // at BACKGROUND_LIST_MAX with every command at the 200 bytes a list reads of it (the logs and their state written
-  // here, as a box's runners leave them).
-  const [start, output, input, signalTool, list] = hosts.hostTools(run, background.BACKGROUND_TOOLS, ctx, new Map(), box.tools);
+  // at BACKGROUND_LIST_MAX with every command at the 200 bytes a list reads of it. Their trusted state is written where a
+  // box's runners leave it, in the box-only directory: here a TMPDIR of the test's own, which the tools' commands get.
+  const boxTmp = join(dir, "box-tmp");
+  const trusted = join(boxTmp, ".agentrun-background");
+  const boxed = new NodeExecutionEnv({ cwd: work });
+  const bgEnv = { cwd: work, exec: (command, options, context) => boxed.exec(command, { ...options, env: { ...(options?.env ?? {}), TMPDIR: boxTmp } }, context) };
+  const bgBox = codingSource({ mode: "sandbox", box: "docker" }, { env: async () => bgEnv });
+  const [start, output, input, signalTool, list] = hosts.hostTools(run, background.BACKGROUND_TOOLS, ctx, new Map(), bgBox.tools);
   const pageBytes = background.BACKGROUND_PAGE_BYTES;
+  const trust = async (i, files) => {
+    await mkdir(join(trusted, String(i)), { recursive: true });
+    for (const [name, text] of Object.entries(files)) await writeFile(join(trusted, String(i), name), text);
+  };
   for (const [i, text] of [[1, '"'.repeat(4 * pageBytes)], [2, wide.repeat(4 * pageBytes)]]) {
     await mkdir(join(work, "background", String(i)), { recursive: true });
     await writeFile(join(work, "background", String(i), "output.log"), text);
-    await writeFile(join(work, "background", String(i), "exit"), "0\n");
+    await trust(i, { exit: "0\n" });
   }
   const ended = 3 + 2 * background.BACKGROUND_LIST_MAX;
+  const longCommand = `"\\${wide.repeat(200)}`;
   for (let i = 3; i < ended; i++) {
     await mkdir(join(work, "background", String(i)), { recursive: true });
-    await writeFile(join(work, "background", String(i), "command"), `"\\${wide.repeat(200)}`);
-    await writeFile(join(work, "background", String(i), "exit"), "137\n");
-    await writeFile(join(work, "background", String(i), "started"), "2026-11-05T00:00:00Z\n");
+    await trust(i, { command: longCommand, exit: "137\n", started: "2026-11-05T00:00:00Z\n" });
   }
   const outputs = [await output.call({ id: "1" }, { callId: "o1", signal }), await output.call({ id: "2", offset: 1 }, { callId: "o2", signal })];
   assert.ok(outputs.every((answer) => !answer.isError && Buffer.byteLength(answer.text) > pageBytes - 10), `each page at its cap: ${outputs.map((answer) => answer.text.slice(0, 200)).join("; ")}`);
   keep("bash_output", ...outputs.map((answer) => answer.text));
   const listing = await list.call({}, { callId: "l", signal });
   assert.equal(listing.text.split("\n").length, 1 + background.BACKGROUND_LIST_MAX + 1, listing.text.slice(0, 300));
+  // Each row carries its command's first 200 bytes (as many whole three-byte characters as fit, cut for the line) and
+  // its start time: the largest list there is.
+  const rows = listing.text.split("\n").slice(1, 1 + background.BACKGROUND_LIST_MAX);
+  assert.ok(rows.every((row) => row.includes("started 2026-11-05T00:00:00Z") && row.includes(wide.repeat(20))), rows.slice(0, 2).join("\n"));
   keep("bash_list", listing.text);
   const started = await start.call({ command: `${'"'.repeat(1000)}; sleep 30` }, { callId: "s", signal });
   // The next free id: past every one in work/ and in the box-only directory (this machine's TMPDIR, here).

@@ -155,3 +155,17 @@ test("a process directory made in work/ with a forged pid and no exit is lost: n
   await until(() => liveBoxes(data).length === 0, "the box's destroy at the run's end");
   assert.equal(groupAlive(other), true, "nor the run's end");
 });
+
+test("a link to a directory planted at a display name is replaced, never moved into: the directory it names gets nothing", { timeout: 120_000 }, async (t) => {
+  const outside = await scratch(t);
+  const plan = [
+    { tool: "bash_background", args: { command: "sleep 30" } },
+    { tool: "bash", args: { command: `ln -s ${outside} background/1/ended; ln -s ${outside} background/1/exit` } },
+  ];
+  const { said, data, work } = await boxedRun(t, plan);
+  assert.deepEqual(said.map((a) => [a.tool, a.error]), plan.map((step) => [step.tool, false]), JSON.stringify(said));
+  await until(() => liveBoxes(data).length === 0, "the box's destroy at the run's end");
+  assert.deepEqual(readdirSync(outside), [], "nothing was moved into the directory the links name");
+  for (const name of ["ended", "exit"]) assert.equal(lstatSync(join(work, "background", "1", name)).isFile(), true, `${name} is a file of its own now`);
+  assert.deepEqual(readdirSync(join(work, "background", "1")).filter((name) => name.startsWith(".put.")), [], "no temporary file is left");
+});

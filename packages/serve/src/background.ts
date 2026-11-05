@@ -62,10 +62,13 @@ const SIGNAL_NAMES: Readonly<Record<number, string>> = { 1: "HUP", 2: "INT", 3: 
  */
 const RUNNER = [
   'L=$1; C=$2; cap=$3; echo $$ > "$C/runner"',
-  // A display copy in work/ (put): written in C, then moved over its name from inside the log's directory, entered with
-  // cd -P and checked to be work/background/<id> itself by its real path, so a link planted at the name, or at the
-  // directory, is never followed. A check that fails skips the copy; no call reads one back.
-  `put() { [ -n "$rw" ] || return 0; t=$(mktemp "$C/.put.XXXXXX" 2>/dev/null) || return 0; printf '%s\\n' "$2" > "$t"; ( cd -P "$L" 2>/dev/null && [ "$(pwd -P)" = "$rw/background/\${L##*/}" ] && mv -f "$t" "./$1" ) 2>/dev/null; rm -f "$t"; return 0; }`,
+  // A display copy in work/ (put): from inside the log's directory, entered with cd -P and checked to be
+  // work/background/<id> itself by its real path, written to a new file there (mktemp: an exclusive create, so never a
+  // planted link) and renamed over its name on that same filesystem, the name taken as a file even where a link to a
+  // directory stands there (mv -T; else that link is removed first), so a link planted at the name, or at the
+  // directory, is never followed. A check that fails skips the copy; the temporary file (hidden, a dot name) is removed
+  // on every path; no call reads a copy back.
+  `put() { [ -n "$rw" ] || return 0; ( cd -P "$L" 2>/dev/null && [ "$(pwd -P)" = "$rw/background/\${L##*/}" ] || exit 0; t=$(mktemp ./.put.XXXXXX) || exit 0; printf '%s\\n' "$2" > "$t" && { mv -fT "$t" "./$1" 2>/dev/null || { [ -L "./$1" ] && rm -f "./$1"; mv -f "$t" "./$1"; }; } || rm -f "$t" ) 2>/dev/null; return 0; }`,
   // The log is opened once, here, where start has just made it a regular file, then checked as opened: the file the
   // open reached must be work/background/<id>/output.log itself (by its real path, so through no link) and a regular
   // file, else nothing is kept. What later stands at its name is never written through.
@@ -105,9 +108,9 @@ const SCRIPT = [
   // 2: it is not to be read (a link, not a regular file, or a box with no /proc to check it by).
   'openlog() { exec 3<&-; f="$d/$1/output.log"; [ -e "$f" ] || [ -L "$f" ] || return 1; [ -f "$f" ] && [ ! -L "$f" ] && [ -n "$rw" ] || return 2; exec 3< "$f" 2>/dev/null || return 2; [ "$(readlink /proc/self/fd/3 2>/dev/null)" = "$rw/background/$1/output.log" ] && [ -f /proc/self/fd/3 ] || { exec 3<&-; return 2; }; }',
   'size() { if openlog "$1"; then echo $(($(wc -c < /proc/self/fd/3))); exec 3<&-; else echo 0; fi; }',
-  // A display copy in work/ (the runner's put, by id): written in c, then moved over its name from inside the log's
-  // directory, entered with cd -P and checked to be work/background/<id> by its real path; a failed check skips it.
-  `put() { [ -n "$rw" ] || return 0; t=$(mktemp "$c/.put.XXXXXX" 2>/dev/null) || return 0; if [ "$4" = n ]; then printf '%s\\n' "$3"; else printf '%s' "$3"; fi > "$t"; ( cd -P "$d/$1" 2>/dev/null && [ "$(pwd -P)" = "$rw/background/$1" ] && mv -f "$t" "./$2" ) 2>/dev/null; rm -f "$t"; return 0; }`,
+  // A display copy in work/ (the runner's put, by id): from inside work/background/<id>, entered with cd -P and checked
+  // by its real path, an exclusive new file there renamed over its name on the same filesystem; a failed check skips it.
+  `put() { [ -n "$rw" ] || return 0; ( cd -P "$d/$1" 2>/dev/null && [ "$(pwd -P)" = "$rw/background/$1" ] || exit 0; t=$(mktemp ./.put.XXXXXX) || exit 0; if [ "$4" = n ]; then printf '%s\\n' "$3"; else printf '%s' "$3"; fi > "$t" && { mv -fT "$t" "./$2" 2>/dev/null || { [ -L "./$2" ] && rm -f "./$2"; mv -f "$t" "./$2"; }; } || rm -f "$t" ) 2>/dev/null; return 0; }`,
   'known() { [ -d "$c/$1" ] || { [ ! -L "$d" ] && [ -d "$d/$1" ]; }; }',
   'case $op in',
   'start)',
