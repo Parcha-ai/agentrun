@@ -10,7 +10,7 @@ const T0 = Date.UTC(2026, 10, 5, 12, 0, 0);
 
 /** A run whose model calls browser_read `reads` times, each read taking `readS` seconds, with the host's `prices` and
  *  `options`; `setup` readies the fake backend first. */
-async function run(t, { prices, reads, readS, options = {}, setup = () => {}, lastTurn = () => {}, pump = false }) {
+async function run(t, { prices, reads, readS, options = {}, setup = () => {}, lastTurn = () => {}, pump = false, after = async () => {} }) {
   t.mock.timers.enable({ apis: ["Date"], now: T0 });
   const [{ BACKGROUND_CONTEXT: ctx }, { createModels }, faux, durable, { createBrowserExtension }, { fakeDriver }] = await Promise.all([
     import("@earendil-works/chord/context"), import("@earendil-works/pi-ai/models"), import("@earendil-works/pi-ai/providers/faux"),
@@ -51,6 +51,7 @@ async function run(t, { prices, reads, readS, options = {}, setup = () => {}, la
   // `pump`: the mock clock moves as real time does while the release task backs off.
   const pumping = pump ? setInterval(() => t.mock.timers.tick(5), 5) : undefined;
   await browser.drain(harness, ctx).finally(() => clearInterval(pumping));
+  await after({ browser, harness, backend, ctx });
   const [record] = (await harness.snapshot(browser.docs.Sessions, root.id, ctx)).sessions;
   const booked = (await harness.commit((tx) => tx.scanEntries({ conversationId: durable.ROOT_CONVERSATION_ID, order: "ascending" }, 200), ctx)).items.filter((entry) => entry.kind === "host.charge");
   return { charges, record, booked, backend };
@@ -111,4 +112,22 @@ test("a session found by its tag stays billed when its release stops it and then
   assert.deepEqual([backend.tally().creates, backend.liveCount()], [1, 0]);
   assert.deepEqual([record.state, record.spent.final], ["released", true]);
   assert.deepEqual(charges.map(({ seconds, usd, final }) => [seconds, usd, final]), [[60, 0.002, true]], "its minimum, once, at the release");
+});
+
+test("a lost session known only by its tag stays billed when a reopen's release stops it and then fails: the next reconcile releases and bills it", { timeout: 60_000 }, async (t) => {
+  const { RELEASE_ATTEMPTS } = await import("@parcha/pi-browser/durable");
+  const reports = [];
+  // The create's answer is lost and no lookup by its tag answers, through the create path and every release attempt: the
+  // session ends lost with no id, still running. A reopen's reconcile then finds it by its tag and stops it, and the
+  // provider's answer is lost; the next reconcile's lookup lists running sessions only.
+  const { charges, record, backend } = await run(t, { reads: 1, readS: 2, pump: true, options: { createDeadlineMs: 50 }, setup: (backend) => { backend.lose("create"); backend.fail("findByTag", 1 + RELEASE_ATTEMPTS); },
+    after: async ({ browser, harness, backend, ctx }) => {
+      backend.lose("release");
+      reports.push(await browser.reconcile(harness, () => true, ctx));
+      reports.push(await browser.reconcile(harness, () => true, ctx));
+    } });
+  assert.deepEqual(reports.map((report) => [report.unreachable.length, report.released.length]), [[1, 0], [0, 1]]);
+  assert.equal(backend.liveCount(), 0);
+  assert.deepEqual([record.state, record.spent.final], ["lost", true]);
+  assert.deepEqual(charges.map(({ seconds, usd, final }) => [seconds, usd, final]), [[60, 0.002, true]], "its minimum, once, when the reconcile released it");
 });

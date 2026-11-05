@@ -257,7 +257,22 @@ export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, 
       try {
         const provider = await providerOf(harness, cidOf(row), row.plane, context);
         if (row.state === "lost") {
-          const ids = await releasedIds(provider, row);
+          let seen: string[] = [];
+          const ids = await releasedIds(provider, row, undefined, (found) => void (seen = found)).catch(async (error: unknown) => {
+            // The stop may have landed before the provider's answer was lost, and its tag lookup lists running sessions
+            // only: a session known only by its tag keeps the id found on its row and record, for the next reconcile to
+            // release and bill.
+            const id = row.resourceId === null ? seen[0] : undefined;
+            if (id !== undefined) {
+              await commit(async (tx) => {
+                const rows = (await tx.doc(Inventory)).rows;
+                if (rows[row.tag]) rows[row.tag] = { ...rows[row.tag]!, resourceId: id };
+                const record = (await tx.doc(Sessions, cidOf(row))).sessions.find((r) => r.tag === row.tag);
+                if (record && record.resourceId === null) record.resourceId = id;
+              }).catch(() => undefined);
+            }
+            throw error;
+          });
           await (ids ? outcome("released", async (tx) => {
             delete (await tx.doc(Inventory)).rows[row.tag];
             const record = (await tx.doc(Sessions, cidOf(row))).sessions.find((r) => r.tag === row.tag);

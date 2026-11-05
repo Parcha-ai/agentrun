@@ -17,7 +17,7 @@ const KEYS = { BROWSERBASE_API_KEY: "fake-test-key", BROWSERBASE_PROJECT_ID: "fa
 /** A pi run in this process whose model calls browser_read `reads` times, thinking `thinkS` between calls, each read
  *  taking `readS`, on a `provider` browser at `price`, under `cap` (none: no cap). `seen()` runs at every moment the
  *  run can spend: inside each call, before each model turn and after the release. */
-async function run(t, { provider = "browserbase", price = BROWSERBASE, reads, readS = 3, thinkS = 20, cap, idleS = 180, end = "close", setup = () => {}, pump = false, options = {}, seen = () => {} }) {
+async function run(t, { provider = "browserbase", price = BROWSERBASE, reads, readS = 3, thinkS = 20, cap, idleS = 180, end = "close", setup = () => {}, pump = false, options = {}, lastTurn = () => {}, after = async () => {}, seen = () => {} }) {
   t.mock.timers.enable({ apis: ["Date"], now: T0 });
   const [{ BACKGROUND_CONTEXT: ctx }, { createModels }, faux, durable, { createBrowserExtension }, { FakeBackend, fakeDriver, fixturePage }] = await Promise.all([
     import("@earendil-works/chord/context"), import("@earendil-works/pi-ai/models"), import("@earendil-works/pi-ai/providers/faux"),
@@ -41,6 +41,7 @@ async function run(t, { provider = "browserbase", price = BROWSERBASE, reads, re
   model.setResponses(Array.from({ length: reads + 1 }, () => (context) => {
     const results = context.messages.filter((m) => m.role === "toolResult");
     if (results.length > 0) t.mock.timers.tick(thinkS * 1000);
+    if (results.length >= reads) lastTurn(backend);
     seen("turn", spent);
     const refused = results.some((m) => m.content.some((c) => c.type === "text" && c.text.includes("spend_cap_reached")));
     return results.length < reads && !refused ? faux.fauxAssistantMessage([faux.fauxToolCall("browser_read", {})], { stopReason: "toolUse" }) : faux.fauxAssistantMessage([faux.fauxText("done")], { stopReason: "stop" });
@@ -64,6 +65,7 @@ async function run(t, { provider = "browserbase", price = BROWSERBASE, reads, re
   // `pump`: the mock clock moves on 2 s (or `pump` ms) every 5 ms of real time, for the release task's backoffs to pass.
   const pumping = pump ? setInterval(() => t.mock.timers.tick(pump === true ? 2_000 : pump), 5) : undefined;
   await browser.drain(harness, ctx).finally(() => clearInterval(pumping));
+  await after({ browser, harness, backend, ctx });
   seen("released", spent);
   const [record] = await sessions();
   const entries = (await harness.commit((tx) => tx.scanEntries({ conversationId: durable.ROOT_CONVERSATION_ID, order: "ascending" }, 500), ctx)).items;
@@ -158,6 +160,27 @@ test("capped, a session found by its tag stays billed when its release retries: 
   const { record, booked } = await run(t, { reads: 1, cap, pump: 5, options: { createDeadlineMs: 50 }, setup: (backend) => { backend.lose("create"); backend.fail("findByTag", 1); backend.fail("status", CONFIRM_POLLS); } });
   assert.deepEqual([record.state, record.spent.final], ["released", true]);
   assert.deepEqual(booked.map((row) => [row.seconds, row.usd]), [[60, 0.002]], "one charge, its minimum at list price");
+  assert.equal(paidHolds(), 0, "its hold let go once billed");
+});
+
+test("capped, a session found by its tag whose release stops it and then fails is billed on the next attempt, and its hold let go", { timeout: 60_000 }, async (t) => {
+  const { record, booked } = await run(t, { reads: 1, cap: 0.1, pump: 5, options: { createDeadlineMs: 50 }, setup: (backend) => { backend.lose("create"); backend.fail("findByTag", 1); }, lastTurn: (backend) => backend.lose("release") });
+  assert.deepEqual([record.state, record.spent.final], ["released", true]);
+  assert.deepEqual(booked.map((row) => [row.seconds, row.usd]), [[60, 0.002]]);
+  assert.equal(paidHolds(), 0, "its hold let go once billed");
+});
+
+test("capped, a lost session known only by its tag, stopped by a reopen's release that then fails, is billed by the next reconcile, and its hold let go", { timeout: 60_000 }, async (t) => {
+  const { RELEASE_ATTEMPTS } = await import("@parcha/pi-browser/durable");
+  const { record, booked } = await run(t, { reads: 1, cap: 0.1, pump: 5, options: { createDeadlineMs: 50 }, setup: (backend) => { backend.lose("create"); backend.fail("findByTag", 1 + RELEASE_ATTEMPTS); },
+    after: async ({ browser, harness, backend, ctx }) => {
+      assert.ok(paidHolds() > 0, "the lost session is still held: it may be running");
+      backend.lose("release");
+      assert.equal((await browser.reconcile(harness, () => true, ctx)).unreachable.length, 1);
+      assert.equal((await browser.reconcile(harness, () => true, ctx)).released.length, 1);
+    } });
+  assert.deepEqual([record.state, record.spent.final], ["lost", true]);
+  assert.deepEqual(booked.map((row) => [row.seconds, row.usd]), [[60, 0.002]]);
   assert.equal(paidHolds(), 0, "its hold let go once billed");
 });
 
