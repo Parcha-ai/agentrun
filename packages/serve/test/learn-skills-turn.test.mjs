@@ -117,14 +117,16 @@ test("the prompt stays within its cap with every note, a skill and a draft at th
   assert.ok(prompt.length <= grading.GRADE_CAPS.prompt, `${prompt.length}`);
 });
 
-test("the verdict is read per item: a note's file, a skill's SKILL.md and a draft's workflow.json; one missing or dropped merges nothing", () => {
+test("the verdict is read per item: a note's file, a skill's SKILL.md and a draft's workflow.json; one dropped is left out and the rest merges, one missing merges nothing", () => {
   const gradedFiles = fn(grading, "gradedFiles");
   const items = gradedFiles([{ file: "a.md", text: note() }], LEARNED);
   assert.deepEqual(items, ["a.md", SKILL_PATH, DRAFT_PATH]);
   const answer = (decisions) => JSON.stringify({ merge: decisions.every((d) => d !== "drop"), reason: "r", items: items.map((file, i) => ({ file, decision: decisions[i], why: "w", ...(decisions[i] === "drop" ? { question: "Workflow case" } : decisions[i] === "pending" ? { question: "Risky" } : {}) })) });
   assert.equal(parseVerdict(answer(["keep", "keep", "keep"]), items).merge, true);
   const dropped = parseVerdict(answer(["keep", "keep", "drop"]), items);
-  assert.deepEqual([dropped.merge, dropped.items[2].question], [false, "Workflow case"]);
+  // A verdict per item: the dropped draft is left out (keptProposal) and the note and the skill merge.
+  assert.deepEqual([dropped.merge, dropped.items.map((item) => item.keep), dropped.items[2].question], [true, [true, true, false], "Workflow case"]);
+  assert.equal(parseVerdict(answer(["drop", "drop", "drop"]), items).merge, false, "nothing kept");
   assert.equal(parseVerdict(answer(["keep", "pending", "keep"]), items).items[1].pending, true);
   assert.equal(parseVerdict(JSON.stringify({ merge: true, reason: "r", items: [{ file: "a.md", decision: "keep", why: "w" }] }), items).merge, false, "an item missing");
   for (const list of [[README_PATH], ["skills/Bad/SKILL.md"]]) assert.throws(() => parseVerdict(answer(["keep"]), list), /note/);
