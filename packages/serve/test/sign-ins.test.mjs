@@ -12,6 +12,7 @@ import { test } from "node:test";
 import { homeOf } from "../dist/files.js";
 import { SIGN_IN_SAVED, SignIns, vendorOf, vendorsOver } from "../dist/sign-ins.js";
 import { keptContexts, keptProfile } from "../dist/tools.js";
+import { openapiDocument } from "../dist/openapi.js";
 import { calls as bbCalls, contexts, KEY as BB_KEY } from "./fixtures/faux-browserbase-check.mjs";
 import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
 
@@ -272,4 +273,23 @@ test("a run's save lease outlives its process until the run ends: a server that 
   await server.close();
   const view = await new SignIns(server.data, seal, {}, async () => true).view("alpha");
   assert.deepEqual(view.map((s) => [s.state, s.held_by]), [["held", started.body.run_id]]);
+});
+
+test("a pointer that does not open under this server's seal key reads unreadable, never ready: no run starts from it and none is made in its place until it is forgotten", async (t) => {
+  const data = await scratch(t);
+  const { store, made } = fakeStore(data);
+  await store.forRun("alpha", "run-1", "browserbase");
+  const vendors = { create: async () => assert.fail("made in its place"), remove: async () => assert.fail("no pointer to delete with") };
+  for (const key of [randomBytes(32), undefined]) {
+    const other = new SignIns(data, key, vendors, async () => true);
+    assert.deepEqual(await other.view("alpha"), [{ key: "default", provider: "browserbase", state: "unreadable", held_by: null, verified_at: null }], key ? "another seal key" : "none");
+  }
+  const rotated = new SignIns(data, randomBytes(32), vendors, async () => false);
+  await assert.rejects(rotated.forRun("alpha", "run-2", "browserbase"), /does not open under this server's seal key: forget it \(DELETE \/v2\/agents\/alpha\/sign-ins\/default\)/);
+  assert.equal(made.length, 1);
+  const forgot = await rotated.forget("alpha", "default");
+  assert.deepEqual(forgot.removed, [{ provider: "browserbase", at_vendor: "not_deleted", message: "Not deleted at browserbase: its pointer does not open under this server's seal key. This server no longer points to it." }]);
+  assert.deepEqual(await rotated.view("alpha"), []);
+  const state = openapiDocument(() => undefined).components.schemas.SignIn.properties.state;
+  assert.deepEqual([state.enum, state["x-agentrun-serve"]], [["ready", "held", "unreadable"], "signins/1"]);
 });

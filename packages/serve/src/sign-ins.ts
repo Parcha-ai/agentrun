@@ -30,8 +30,10 @@ export const SIGN_IN_SAVED = "sign-in-saved";
 export type Vendor = "browserbase" | "kernel";
 /** What a run's process is handed: the vendor, the pointer it opens (a context id, a profile name), and whether it saves. */
 export type HandedSignIn = { provider: Vendor; ref: string; save: boolean };
-/** A sign-in as GET /agents/{id} shows it (the contract's SignIn): never its ref. */
-export type SignInView = { key: string; provider: Vendor; state: "ready" | "held"; held_by: string | null; verified_at: string | null };
+/** A sign-in as GET /agents/{id} shows it (the contract's SignIn): never its ref. `unreadable` (this server's own state):
+ *  its pointer does not open under this server's seal key (none now, or another), so no run starts from it and none is
+ *  made in its place until it is forgotten (DELETE). */
+export type SignInView = { key: string; provider: Vendor; state: "ready" | "held" | "unreadable"; held_by: string | null; verified_at: string | null };
 /** The vendor's side: make an agent's object (its pointer), and delete one. */
 export type Vendors = { create(vendor: Vendor): Promise<string>; remove(vendor: Vendor, ref: string): Promise<void> };
 
@@ -91,10 +93,21 @@ export class SignIns {
     return entry.held_by !== null && (await this.holds(entry.held_by).catch(() => true));
   }
 
+  /** `entry`'s pointer, opened under this server's seal key; undefined when it does not open (none now, or another). */
+  private open(agentId: string, entry: Entry): string | undefined {
+    if (!this.key) return undefined;
+    try {
+      return unseal(this.key, Buffer.from(entry.ref, "base64"), aad(agentId, entry)).toString("utf8");
+    } catch {
+      return undefined;
+    }
+  }
+
   /** The agent's sign-ins, as the contract shows them: never a ref. */
   async view(agentId: string): Promise<SignInView[]> {
     const entries = await this.read(agentId).catch(() => []);
     return Promise.all(entries.map(async (entry) => {
+      if (this.open(agentId, entry) === undefined) return { key: entry.key, provider: entry.provider, state: "unreadable" as const, held_by: null, verified_at: entry.verified_at };
       const held = await this.held(entry);
       return { key: entry.key, provider: entry.provider, state: held ? "held" : "ready", held_by: held ? entry.held_by : null, verified_at: entry.verified_at };
     }));
@@ -110,9 +123,12 @@ export class SignIns {
     return this.locked(agentId, async () => {
       const entries = await this.read(agentId);
       let entry = entries.find((e) => e.key === SIGN_IN_KEY && e.provider === vendor);
-      let ref: string;
-      if (entry) ref = unseal(key, Buffer.from(entry.ref, "base64"), aad(agentId, entry)).toString("utf8");
-      else {
+      let ref: string | undefined;
+      if (entry) {
+        // Never replaced by itself: the vendor's object it points to would be left behind, holding the agent's cookies.
+        ref = this.open(agentId, entry);
+        if (ref === undefined) throw new Error(`its saved sign-in does not open under this server's seal key: forget it (DELETE /v2/agents/${agentId}/sign-ins/${SIGN_IN_KEY}) and its next run signs in afresh`);
+      } else {
         ref = await this.vendors.create(vendor);
         entry = { key: SIGN_IN_KEY, provider: vendor, ref: "", verified_at: null, held_by: null };
         entry.ref = seal(key, Buffer.from(ref, "utf8"), aad(agentId, entry)).toString("base64");
@@ -151,7 +167,7 @@ export class SignIns {
       for (const entry of named) if (await this.held(entry)) throw new ApiError("sign_in_held", `The sign-in ${signInKey} is held by the run ${entry.held_by}, which may still save to it: forget it once that run ends.`, { details: { held_by: entry.held_by } });
       const removed = [];
       for (const entry of named) {
-        const ref = this.key ? (() => { try { return unseal(this.key!, Buffer.from(entry.ref, "base64"), aad(agentId, entry)).toString("utf8"); } catch { return undefined; } })() : undefined;
+        const ref = this.open(agentId, entry);
         const gone = ref === undefined ? new Error("its pointer does not open under this server's seal key") : await this.vendors.remove(entry.provider, ref).then(() => undefined, (error: Error) => error);
         removed.push({ provider: entry.provider, at_vendor: gone ? "not_deleted" as const : "deleted" as const, ...(gone ? { message: `Not deleted at ${entry.provider}: ${gone.message}. This server no longer points to it.` } : {}) });
       }

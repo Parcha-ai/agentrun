@@ -1394,6 +1394,15 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
     browser["x-agentrun-serve"] = "browser/1";
     fields.push("Features.browser.kernel");
   }
+  // signins/1: a saved sign-in whose pointer does not open under this server's seal key (sign-ins.ts) reads `unreadable`,
+  // which the contract's SignIn.state (ready, held) lacks.
+  const signInState = ((schemas.SignIn as Json).properties as Record<string, Json>).state as Json & { enum?: string[] };
+  if (Array.isArray(signInState.enum) && !signInState.enum.includes("unreadable")) {
+    signInState.enum = [...signInState.enum, "unreadable"];
+    signInState.description = "`held` while a run holds its save lease, else `ready`. `unreadable` (this server's own): its pointer does not open under this server's seal key (none now, or another), so runs start signed out and none is made in its place until it is forgotten (DELETE /agents/{agent_id}/sign-ins/{key}).";
+    signInState["x-agentrun-serve"] = "signins/1";
+    fields.push("SignIn.state.unreadable");
+  }
   // A workflow run pauses here (POST /runs/{run_id}/pause): its status reads `paused` until it is resumed.
   const runStatus = schemas.RunStatus as Json & { enum?: string[] };
   if (Array.isArray(runStatus.enum) && !runStatus.enum.includes("paused")) {
