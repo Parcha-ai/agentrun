@@ -245,6 +245,8 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
       ...(price ? { price } : {}),
       ...(options.proxy.log ? { log: options.proxy.log } : {}),
       ...(options.proxy.fetch ? { fetch: options.proxy.fetch } : {}),
+      // The provider stopped the turn's answer on its content filter: no retry of it can pass, so the turn ends at once.
+      onFiltered: (message) => ctx.halt?.(new Error(message)),
     }, key);
     const lost = new AbortController();
     const children = new Set<SessionProcess>();
