@@ -25,6 +25,13 @@ import { ID, IDEMPOTENCY_TTL_S, isObject, type Json, unknownFields } from "./val
 export const TRIGGERS_FILE = "triggers.json";
 /** The firings each trigger keeps, newest last; a firing still due is never dropped. */
 export const HISTORY_KEPT = 200;
+/** The most firings a trigger holds due. A message_run firing to a working run stays due, tried every 5 s, until the
+ *  run takes it: one per idle point, so twenty is far past a sender's burst while the run works, and with up to 16 KiB of
+ *  payload each they add at most 320 KiB to the file every write rewrites. Past it a webhook event and a run now are
+ *  refused (429, retryable) before anything is written, and a schedule's time is skipped. */
+export const DUE_KEPT = 20;
+/** How long a refused event is told to wait (Retry-After). */
+const FULL_RETRY_S = 30;
 /** The shortest every_s, and so the most often a schedule fires: a cron line has no seconds field. */
 export const MIN_EVERY_S = 60;
 /** The longest every_s: a year and a day. */
@@ -55,6 +62,7 @@ const MAX_NAME = 200;
 /** The most firings each trigger keeps past its history for their key's day: a bound on the file (commit()). */
 const KEPT_FIRINGS = 1_000;
 const ENDED = new Set(["completed", "failed", "cancelled"]);
+const dueOf = (trigger: { firings: readonly { status: string }[] }) => trigger.firings.filter((f) => f.status === "due").length;
 const LOST_AT_SETUP = "The server stopped while setting up the run.";
 
 type Schedule = { kind: "schedule"; cron: string; timezone: string } | { kind: "schedule"; at: string } | { kind: "schedule"; every_s: number; start_at: string };
@@ -386,6 +394,7 @@ export class Triggers {
     const key = firingKey("webhook", id, webhookId);
     const known = this.known(trigger, key);
     if (known) return { created: false, firing: firingView(known) };
+    this.roomFor(trigger);
     const now = this.clock.now();
     const firing: Firing = { key, by: "webhook", nominal_at: second(now), status: "due", at: iso(now), payload: cut(payload) };
     this.commit(() => this.record(trigger, firing));
@@ -432,6 +441,7 @@ export class Triggers {
     const key = firingKey("manual", id, idempotencyKey);
     const known = this.known(trigger, key);
     if (known) return { created: false, firing: firingView(known) };
+    this.roomFor(trigger);
     const now = this.clock.now();
     const firing: Firing = { key, by: "manual", nominal_at: second(now), status: "due", at: iso(now) };
     this.commit(() => this.record(trigger, firing));
@@ -495,7 +505,9 @@ export class Triggers {
     // Capped, the times counted are all before the last: every one of them was missed, and more besides.
     const missed = capped || !fires ? count : count - 1;
     if (missed > 0) this.record(trigger, { key: firingKey("schedule", trigger.id, `missed\n${second(first)}`), by: "schedule", nominal_at: second(first), status: "missed", at: iso(now), count: missed, reason: `The server was down or its timer late: ${missed === 1 && !capped ? "this time was" : `${missed}${capped ? " or more" : ""} times from this one were`} not fired.` });
-    if (fires) this.record(trigger, { key: firingKey("schedule", trigger.id, second(last)), by: "schedule", nominal_at: second(last), status: "due", at: iso(now), ...(late > LATE_MS ? { catch_up: true } : {}) });
+    // A message_run firing has no overlap check, so a run that stays busy would hold one more due firing each time.
+    const full = dueOf(trigger) >= DUE_KEPT ? { status: "skipped" as const, reason: `${DUE_KEPT} earlier firings are still waiting to reach the run.` } : { status: "due" as const };
+    if (fires) this.record(trigger, { key: firingKey("schedule", trigger.id, second(last)), by: "schedule", nominal_at: second(last), ...full, at: iso(now), ...(late > LATE_MS ? { catch_up: true } : {}) });
     const next = nextAfter(source, last, cron);
     trigger.next_at = next === null ? null : iso(next);
     if (next === null) trigger.enabled = false;
@@ -655,6 +667,13 @@ export class Triggers {
     const kept = [...(trigger.kept_firings ?? []), ...gone.filter((f) => f.by === "manual" || f.by === "webhook")].filter((f) => this.inDay(f)).slice(-KEPT_FIRINGS);
     if (kept.length) trigger.kept_firings = kept;
     else delete trigger.kept_firings;
+  }
+
+  /** A new firing's room: refused (429, retryable, nothing written) while the trigger holds DUE_KEPT firings due. */
+  private roomFor(trigger: Trigger): void {
+    if (dueOf(trigger) < DUE_KEPT) return;
+    this.deps.say({ condition: "trigger_firings_full", trigger: trigger.id, due: DUE_KEPT });
+    throw new ApiError("rate_limited", `${DUE_KEPT} firings are still due for this trigger, waiting on its run; send it again later.`, { retry_after_ms: FULL_RETRY_S * 1000, details: { due: DUE_KEPT } }, { "retry-after": String(FULL_RETRY_S) });
   }
 
   /** The firing `key` names, in the history or kept for its key's day after it left. */

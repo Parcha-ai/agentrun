@@ -1087,7 +1087,9 @@ completed run again), under its own cap. The run must have a cap (`422` on `targ
 run that has none fails), and a firing never answers a run that waits on its person (a question, an approval, its
 cap): it is `skipped`, "The run is waiting on a person.", and the run still waits. The firing's key is the message's id in the run's store, which takes
 one message per id; a firing driven again after a restart first looks for it there, so it sends the message once and
-never opens a completed run again for one it already has.
+never opens a completed run again for one it already has. A firing to a run that is working waits for it (tried every
+5 s), and a trigger holds at most 20 firings due: past them a webhook event and a run now answer `429 rate_limited`
+with `Retry-After: 30`, recording nothing, and a schedule's time is `skipped`.
 
 ## What it serves
 
