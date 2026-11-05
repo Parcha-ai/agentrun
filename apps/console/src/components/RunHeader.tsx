@@ -2,7 +2,7 @@ import { Archive, ArchiveRestore, ArrowLeft, Ban, CircleDollarSign, Square } fro
 import { useState } from "react";
 import { agentHash } from "@/components/AgentPage";
 import { LearningChips } from "@/components/LearningChips";
-import { capWords, RaiseCap, suggestedCap } from "@/components/NeedsYou";
+import { capWords, leastCap, RaiseCap, suggestedCap } from "@/components/NeedsYou";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
@@ -99,7 +99,7 @@ export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run
       {raisable && raising && (
         <div className="mt-3 max-w-xl">
           {/* Keyed on the pause, as the banner's form is: a new pause (or the first, on a working run) brings its suggestion. */}
-          <RaiseCap key={budget ? `${run.run_id}:${budget.at}` : `${run.run_id}:working`} cap={cap!} suggested={suggestedCap(budget)} paused={!!budget} onRaise={actions.onRaiseCap!} />
+          <RaiseCap key={budget ? `${run.run_id}:${budget.at}` : `${run.run_id}:working`} cap={cap!} suggested={suggestedCap(budget)} least={leastCap(budget)} paused={!!budget} onRaise={actions.onRaiseCap!} />
         </div>
       )}
     </header>

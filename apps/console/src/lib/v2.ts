@@ -156,4 +156,7 @@ export type RaiseAnswer = { run_id: string; max_cost_usd: number; resumed: boole
 /** A run paused at its spend cap: what is left of its cap cannot buy its next request's least, which was not sent. */
 export type BudgetPending = { kind: "budget"; cap_usd: number; spent_usd?: number; needs_usd?: number; said: string; at: string;
   /** The server's suggested new cap, always strictly above `cap_usd` (a newer server's; absent from an older one). */
-  suggested_cap_usd?: number };
+  suggested_cap_usd?: number;
+  /** The least cap that sends the refused request: the "at least $X" the server's words (`said`) name, whole cents and
+   *  above `cap_usd` (a newer server's; absent from an older one). */
+  least_cap_usd?: number };
