@@ -1,6 +1,8 @@
 // The person's turns with a run's browser, in the run's process and in the server (browser-person.ts), without a run: the
 // ask's record and its answer, and the person's time held under the cap. The cap, the gates and the clock are fakes.
 import assert from "node:assert/strict";
+import { readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { test } from "node:test";
 import { answerAsk, openAsk, personHands } from "../dist/browser-person.js";
 import { scratch } from "./support.mjs";
@@ -134,4 +136,26 @@ test("after a re-hold the cap refused, a new take-over on that session is refuse
   held.refuse = null;
   assert.deepEqual(await person.take(tag), { refused: "spend_cap_reached: Not sent: the run has spent $0.04 of its $0.05 cap, and more of your time in the browser could cost up to $0.03." }, "Take over again: refused in the cap's words, never driven unheld");
   assert.equal(held.taken, 1, "nothing more was held");
+});
+
+test("a process that resumes polling an ask an earlier process made, without asking again, takes it up: it reads the owner's answer, or writes its expiry", async (t) => {
+  const root = await scratch(t);
+  const before = hands(root, { holdMs: 60_000 });
+  const first = await before.person.handoff.request(ask(7, "ar-run-7-1"));
+  await sleep(5);
+  const second = await before.person.handoff.request(ask(8, "ar-run-8-1"));
+  before.person.close();
+  // The next process: pi-browser's wait polls `outcome` by id, and never calls `request` for these again.
+  const after = hands(root, { holdMs: 60_000 });
+  t.after(() => after.person.close());
+  assert.equal(await after.person.handoff.outcome(second.interactionId), "pending");
+  assert.deepEqual(answerAsk(root, "done"), { outcome: "done", first: true });
+  assert.equal(await after.person.handoff.outcome(second.interactionId), "done", "the owner's answer reaches the resumed wait");
+  // The other ask, past its expiry when the next process takes it up: that process writes the expiry, and the wait hears it.
+  const file = join(root, "browser-ask", `${first.interactionId}.json`);
+  writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, "utf8")), expires_at: new Date(Date.now() - 1000).toISOString() }), { mode: 0o600 });
+  const later = hands(root, { holdMs: 60_000 });
+  t.after(() => later.person.close());
+  assert.equal(await later.person.handoff.outcome(first.interactionId), "expired");
+  assert.deepEqual(answerAsk(root, "done"), { outcome: "done", first: false }, "nothing left waiting");
 });

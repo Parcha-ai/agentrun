@@ -881,7 +881,9 @@ call. The owner takes over in the viewer, does it, and answers `POST /v2/runs/{i
 same answer again is `200`, a different one `409 handoff_answered` with the answer it has. Any answer hands the browser back
 to the agent. Unanswered for 15 minutes, the ask expires: the agent hears `expired`, and a later answer is `409` with
 `outcome: "expired"`. The ask's record is one 0600 file in the run's directory (`browser-ask/`, never `work/`): the
-instruction, the done-when condition and the ask's times, never the viewer's link or token; it goes with the run's process.
+instruction, the done-when condition and the ask's times, never the viewer's link or token. A run's process that dies
+while the ask waits is started again, as a working run's is, and the new process takes the wait up: it reads the owner's
+answer, or writes the expiry. The record goes when the run ends, or when its process lets its browser sessions go.
 
 ### Saved sign-ins
 

@@ -20,7 +20,7 @@ const FAUX_BROWSER = new URL("./fixtures/faux-browser.mjs", import.meta.url).pat
 const BROWSE_ASK = new URL("./fixtures/faux-browse-ask.mjs", import.meta.url).pathname;
 const BROWSE_WAIT = new URL("./fixtures/faux-browse-wait.mjs", import.meta.url).pathname;
 const BROWSE_HANDOFF = new URL("./fixtures/faux-browse-handoff.mjs", import.meta.url).pathname;
-const KEYS = ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "KERNEL_API_KEY", "FAUX_BROWSER_LOG", "FAUX_BROWSER_PERSON_MS", "AGENTRUN_SEAL_KEY"];
+const KEYS = ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "KERNEL_API_KEY", "FAUX_BROWSER_LOG", "FAUX_BROWSER_PERSON_MS", "AGENTRUN_SEAL_KEY", "FAUX_BROWSER_STATE"];
 const json = { "content-type": "application/json" };
 /** A test password, no real one. */
 const PASSWORD = ["not-a-secret", "owner"].join("-");
@@ -221,6 +221,33 @@ test("an ask nobody answers expires: the agent hears expired, the timeline says 
   assert.ok(summaries(await w.rows()).includes("The agent's hand-over expired before you answered it"));
   const late = await w.handBack("done");
   assert.deepEqual([late.status, late.json.error.code, late.json.error.details], [409, "handoff_answered", { outcome: "expired" }]);
+});
+
+/** Kills the run's process while its agent's ask is open (its session kept at the vendor), and waits for the run's next
+ *  process: the server opens the run again, since its turn is still open. */
+async function restartedMidAsk(w) {
+  const holderOf = () => JSON.parse(readFileSync(join(w.server.data, "runs", w.runId, "run.json"), "utf8")).holder?.pid;
+  const first = holderOf();
+  process.kill(first, "SIGKILL");
+  assert.ok(await until(() => { const pid = holderOf(); return pid !== undefined && pid !== first; }, 60_000), "the run's process was started again");
+  const view = await w.view();
+  assert.deepEqual([view.status, view.pending?.kind], ["input_required", "browser"], "and the run still waits on the person in its browser");
+}
+
+test("a restart while the ask is open: the new process takes up the wait, and the owner's hand-back reaches the agent", { timeout: 180_000 }, async (t) => {
+  const w = await watched(t, { faux: BROWSE_HANDOFF, env: { FAUX_BROWSER_STATE: join(await scratch(t), "vendor-sessions.json") } });
+  await restartedMidAsk(w);
+  const done = await w.handBack("done");
+  assert.deepEqual([done.status, done.json], [200, { outcome: "done" }]);
+  const answered = await until(async () => /Hand-off:/.test((await w.view()).pending?.question ?? "") && (await w.view()).pending.question, 30_000);
+  assert.match(answered || "", /"outcome":"done"/, "the agent's call returned done");
+});
+
+test("a restart while the ask is open and nobody answers: the new process expires it, and the agent hears expired", { timeout: 180_000 }, async (t) => {
+  const w = await watched(t, { faux: BROWSE_HANDOFF, env: { FAUX_BROWSER_STATE: join(await scratch(t), "vendor-sessions.json"), FAUX_BROWSER_PERSON_MS: "15000,60000" } });
+  await restartedMidAsk(w);
+  const answered = await until(async () => /Hand-off:/.test((await w.view()).pending?.question ?? "") && (await w.view()).pending.question, 60_000);
+  assert.match(answered || "", /"outcome":"expired"/, "the agent heard expired");
 });
 
 test("cap: the agent's ask holds the person's 15 minutes first; with no room no ask is made and the tool's result says why", { timeout: 180_000 }, async (t) => {

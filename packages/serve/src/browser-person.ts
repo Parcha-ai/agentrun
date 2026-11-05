@@ -14,7 +14,9 @@
 // The server reads the record: the run is input_required/waiting with `pending.kind` browser, and run.needs_input fires.
 // The owner answers POST /v2/runs/{id}/browser/hand-back, which writes `<id>.answer.json` once (the first answer wins);
 // unanswered by `expires_at`, the run's process writes `expired` the same way. pi-browser's wait reads it through
-// `outcome`; a poll here ends any take-over at once and drops the hold. The records go when the run's process does.
+// `outcome`; a poll here ends any take-over at once and drops the hold. The records outlive a process that dies (the
+// run is started again and its next process takes the wait up, `adopt`), and go when the run ends, or when its process
+// lets its sessions go.
 import { createHash, randomBytes } from "node:crypto";
 import { closeSync, constants, existsSync, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, type Stats, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -134,9 +136,15 @@ function asksIn(runDir: string): Array<{ ask: PendingAsk; answer?: Answer }> {
 /** The ask the run waits on: the newest unanswered one that has not expired, or undefined. Read where a run's status is
  *  read (runs.ts statusOf), so a run with no ask costs one existence check. */
 export function openAsk(runDir: string, now = Date.now()): PendingAsk | undefined {
+  const waiting = waitingAsk(runDir);
+  return waiting && Date.parse(waiting.expires_at) > now ? waiting : undefined;
+}
+
+/** The newest unanswered ask, expired or not: one a process must still take up (answer it, or write its expiry), as a
+ *  restarted run's process does. */
+export function waitingAsk(runDir: string): PendingAsk | undefined {
   try {
-    const newest = asksIn(runDir).find(({ answer }) => !answer);
-    return newest && Date.parse(newest.ask.expires_at) > now ? newest.ask : undefined;
+    return asksIn(runDir).find(({ answer }) => !answer)?.ask;
   } catch {
     return undefined;
   }
@@ -277,12 +285,27 @@ export function personHands(options: {
     for (const hold of ledger.holds) hold.drop();
   };
 
+  /** Ask `id` as its record on disk has it, taken up by this process: one an earlier process of the run made, whose wait
+   *  this process resumes (pi-browser polls `outcome` again, or reruns `request`). Its time is no longer held (that process
+   *  is gone, and its holds with it). Undefined when there is no such record. */
+  const adopt = (id: string): { tag: string; expiresAt: number; drop(): void } | undefined => {
+    const known = open.get(id);
+    if (known) return known;
+    const dir = askDir(options.root);
+    const kept = dir ? pendingOf(readOwn(dir, `${id}.json`), id) : undefined;
+    if (!kept) return undefined;
+    const ask = { tag: kept.tag, expiresAt: Date.parse(kept.expires_at), drop() {} };
+    open.set(id, ask);
+    watch();
+    return ask;
+  };
+
   /** Ask `id`'s answer, once there is one (the person's, or `expired` once it is due, written here): its hold dropped, any
-   *  take-over of its session ended, and its row written, once. */
+   *  take-over of its session ended, and its row written, once. An ask this process did not make is taken up first. */
   const settle = (id: string): AskOutcome | undefined => {
     const known = settled.get(id);
     if (known) return known;
-    const ask = open.get(id);
+    const ask = adopt(id);
     const dir = askDir(options.root);
     if (!ask || !dir) return undefined;
     const answered = answerOf(readOwn(dir, `${id}.answer.json`))?.outcome ?? (Date.now() >= ask.expiresAt ? answerOnce(dir, id, "expired") : undefined);
@@ -329,12 +352,7 @@ export function personHands(options: {
         const dir = askDir(options.root, true);
         if (!dir) return { refused: "the run's directory for a hand-over is not this server's alone" };
         // An ask an earlier process of this run made: waited on again, its time no longer held (that process is gone).
-        const kept = pendingOf(readOwn(dir, `${id}.json`), id);
-        if (kept) {
-          open.set(id, { tag: kept.tag, expiresAt: Date.parse(kept.expires_at), drop() {} });
-          watch();
-          return { interactionId: id };
-        }
+        if (adopt(id)) return { interactionId: id };
         if (!TAG.test(ask.sessionTag)) return { refused: "the session's tag is not one this server takes" };
         // A take-over of the same session holds the person's time already: the ask shares it.
         const user = `ask:${id}`;
