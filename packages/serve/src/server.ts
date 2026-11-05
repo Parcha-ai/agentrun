@@ -729,9 +729,10 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   let image: DockerImage | undefined;
   // What a Docker box's programs reach, resolved once here (run-box.ts boxNetworkOf): the setting's list, on a Docker
   // daemon of this Linux machine's own; else none, and why. A run's process gets the list or none (RUN_BOX_ALLOW_ENV).
-  // Under --faux, the mountinfo a test gives (fauxMountinfo, or FAUX_MOUNTINFO_ENV: a server under test in a container
-  // names its own /proc/self/mountinfo there); with none, a faux server is on a host.
-  const fauxMountinfo = options.faux ? (options.fauxMountinfo ?? env[FAUX_MOUNTINFO_ENV]) : undefined;
+  // Under --faux, the mountinfo a test gives (fauxMountinfo, or FAUX_MOUNTINFO_ENV in the process's own environment, which
+  // `env` leaves out: a server under test in a container names its own /proc/self/mountinfo there); with none, a faux
+  // server is on a host.
+  const fauxMountinfo = options.faux ? (options.fauxMountinfo ?? process.env[FAUX_MOUNTINFO_ENV]) : undefined;
   // Where Docker has this server's files (box-paths.ts): its own, on a host; its container's mount of the data directory,
   // for a server in a container given Docker's socket; or none, and docker is unavailable, saying why. Under --faux, a
   // host's unless the test gives a container's mountinfo.

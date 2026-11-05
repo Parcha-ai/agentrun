@@ -160,7 +160,9 @@ test("the server in a container that this Docker does not have, its data not on 
     const data = await dataDir(t);
     const mounts = given.bind ? [{ Type: "bind", Source: "/srv/agentrun", Destination: data, RW: true }] : [{ Type: "volume", Name: "v", Source: "/var/lib/docker/volumes/v/_data", Destination: data, RW: true }];
     const fake = await containerDocker(t, { mounts, volumes: { v: data }, ...given });
-    const { api } = await serve(t, { data, faux: PROBE, fauxEgress: FAKE_EGRESS, fauxMountinfo: fake.mountinfo });
+    // The bind case names its mountinfo as a server under test in a container does: in the process's environment.
+    if (given.bind) withEnv(t, { AGENTRUN_SERVE_FAUX_MOUNTINFO: fake.mountinfo });
+    const { api } = await serve(t, { data, faux: PROBE, fauxEgress: FAKE_EGRESS, ...(given.bind ? {} : { fauxMountinfo: fake.mountinfo }) });
     const offer = await docker(api);
     assert.equal(offer.available, false, JSON.stringify(offer));
     assert.equal(offer.state, "unavailable");
