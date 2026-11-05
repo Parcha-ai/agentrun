@@ -50,6 +50,16 @@ describe("AgentEditor, the agent's default spend cap per run", () => {
     expect(host.textContent).not.toContain(LABEL);
   });
 
+  it("a workflow agent's save sends no cap (the server refuses one above 0 on a workflow revision)", async () => {
+    const sent: Record<string, unknown>[] = [];
+    const flow = { agent_id: "wf", kind: "workflow" as const, revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Flow", workflow: { nodes: [] }, skills: [], tools: [] } };
+    const { host, save } = mount({ agent: flow, step: "workflow", onSave: async (fields: Record<string, unknown>) => { sent.push(fields); return null; } });
+    expect(host.querySelector("#agent-max-cost")).toBeNull();
+    await save();
+    expect(sent).toHaveLength(1);
+    expect([sent[0]!.max_cost_usd, sent[0]!.maxCostText]).toEqual([undefined, undefined]);
+  });
+
   it("an untouched save sends the cap back as it was; a new number replaces it; emptied, the save sends 0 to clear it", async () => {
     const sent: Record<string, unknown>[] = [];
     const { type, save } = mount({ agent: capped, onSave: async (fields: Record<string, unknown>) => { sent.push(fields); return null; } });
