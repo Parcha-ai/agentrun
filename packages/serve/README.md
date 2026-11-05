@@ -398,10 +398,11 @@ since nothing binds `work/` there):
   `CURL_CA_BUNDLE`, `SSL_CERT_FILE`).
 - A sandbox whose own read does not carry the list it was asked for is deleted. Daytona takes a domain list on its tier 3
   and 4 only: where it keeps none, or refuses it, the server makes the run's box again with its network blocked, never
-  open, and makes every later Daytona box that way until it starts again. The log says so once
-  (`event=box_network box=daytona network=none refused=<code>`), and capabilities show the box's `network` as `none`
-  with the reason. A box the server finds with no network is kept; one with a list when the setting is `none` is
-  destroyed and made again. A changed list applies to the boxes made after the start that reads it.
+  open, and makes every later Daytona box that way until it starts again. The log says so once, with Daytona's own
+  words (`event=box_network box=daytona network=none refused=<code> message="…"`), and capabilities show the box's
+  `network` as `none` with its `network_reason`. A box the server finds is kept when it has no network, or the list the
+  setting names now (the same hosts, in any order, as Daytona reads them back); any other (a wider or narrower list, a
+  list when the setting is `none`) is destroyed and made again, so a changed list holds for a run's box after a restart.
 - A sandbox Daytona does not report blocked, when blocked was asked, is deleted, and the tool call fails saying so. An
   organization on Daytona's tier 1 or 2 keeps its own network policy, which a sandbox cannot override, so a run there
   gets no Daytona box unless that policy blocks it.
