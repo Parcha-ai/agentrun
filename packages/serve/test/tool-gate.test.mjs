@@ -309,10 +309,20 @@ test("a deny refuses the call at once and the run goes on, on every harness; a w
   assert.deepEqual([saved.status, saved.body.warnings?.map((w) => w.message)], [201, ["This workflow's call node calls web_fetch, which is set to deny on this server."]]);
   const refused = await api("POST", "/agents/site/runs", { input: { website: PAGE } });
   assert.deepEqual([refused.status, refused.body.error.code, refused.body.error.details.denied], [409, "agent_not_runnable", ["web_fetch"]]);
+  // Ask too: a call node cannot wait for an approval, so it never runs unapproved (fails closed).
   assert.equal((await api("PUT", "/settings/tools", { web_fetch: { permission: "ask" } })).status, 200);
-  const started = await api("POST", "/agents/site/runs", { input: { website: PAGE } });
-  assert.equal(started.status, 202, "ask does not apply to a call node: the author's own step runs");
-  await follow(api, started.body.run_id, ["completed"], { deadlineMs: 30_000 });
+  const asked = await api("POST", "/agents/site/runs", { input: { website: PAGE } });
+  assert.deepEqual([asked.status, asked.body.error?.code, asked.body.error?.details?.asks], [409, "agent_not_runnable", ["web_fetch"]]);
+  assert.match(asked.body.error.message, new RegExp(quoted(ASKS("web_fetch"))));
+  // A catalog tool's call node at its default (ask) is refused the same: allowed for the agent, it is not.
+  const monidFlow = { ...flow, name: "monid-call", root: { node: "chain", steps: [{ node: "call", label: "Run monid", via: "tool", tool: "monid.run", args: { endpoint: "/x" }, out: "Page", as: "home", deadline_s: 60 }] } };
+  assert.equal((await api("POST", "/agents", { definition: { id: "monid-call", name: "monid-call", workflow: monidFlow, tools: ["monid.run"] } })).status, 201);
+  const byDefault = await api("POST", "/agents/monid-call/runs", { input: { website: PAGE } });
+  assert.deepEqual([byDefault.status, byDefault.body.error?.code, byDefault.body.error?.details?.asks], [409, "agent_not_runnable", ["monid.run"]], "a catalog tool's default, ask");
+  assert.equal((await api("PUT", "/settings/tools", { web_fetch: { permission: "allow" } })).status, 200);
+  const allowed = await api("POST", "/agents/site/runs", { input: { website: PAGE } });
+  assert.equal(allowed.status, 202, "allowed, the author's step runs");
+  await follow(api, allowed.body.run_id, ["completed"], { deadlineMs: 30_000 });
 });
 
 /** The first web_fetch result of run `runId`, once it has one. */
@@ -372,7 +382,7 @@ test("a workflow's call node calling fetch_page, web_fetch's legacy name, is hel
   assert.deepEqual([refused.status, refused.body.error?.code, refused.body.error?.details?.denied], [409, "agent_not_runnable", ["web_fetch"]]);
 });
 
-test("a workflow's call node reads its tool's permission as it runs: set to deny while the first of two call nodes runs, the second is refused in the gate's words and never dials", { timeout: 90_000 }, async (t) => {
+for (const switched of ["deny", "ask"]) test(`a workflow's call node reads its tool's permission as it runs: set to ${switched} while the first of two call nodes runs, the second is refused in the gate's words and never dials`, { timeout: 90_000 }, async (t) => {
   const dialled = await network(t);
   const hold = join(await scratch(t), "go");
   withEnv(t, { FAUX_WEB_HOLD: hold });
@@ -396,7 +406,7 @@ test("a workflow's call node reads its tool's permission as it runs: set to deny
     assert.ok(i < 600, "the first call node did not run");
     await sleep(100);
   }
-  assert.equal((await api("PUT", "/settings/tools", { web_fetch: { permission: "deny" } })).status, 200);
+  assert.equal((await api("PUT", "/settings/tools", { web_fetch: { permission: switched } })).status, 200);
   await writeFile(hold, "");
   await follow(api, started.body.run_id, ["failed", "completed"], { deadlineMs: 60_000 });
   const run = (await api("GET", `/runs/${started.body.run_id}`)).body;
@@ -404,10 +414,11 @@ test("a workflow's call node reads its tool's permission as it runs: set to deny
   assert.match(run.error?.message ?? "", /failed at Second read/, "at its second call node");
   const ended = (await readFile(join(server.data, "runs", started.body.run_id, "nodes.jsonl"), "utf8")).split("\n").filter(Boolean).map((line) => JSON.parse(line)).filter((line) => line.t === "effect.end");
   assert.deepEqual(ended.map((line) => [line.label, line.status]), [["First read", "done"], ["Second read", "failed"]]);
-  assert.equal(ended[1].error, deniedText("web_fetch"), "in the gate's words");
+  assert.equal(ended[1].error, switched === "deny" ? deniedText("web_fetch") : "This web_fetch call needs a person's approval, which a workflow's call node cannot wait for; it was not run.", "in the gate's words");
   assert.deepEqual((await dialled()).filter((dial) => dial.endsWith("notes.txt")), [], "and never dials");
 });
 
+const ASKS = (tool) => `This workflow's call node calls ${tool}, which is set to ask, and a workflow's call node can't wait for an approval: set it to allow for this agent.`;
 const NO_APPROVER = (tool) => `Permission denied: ${tool} needs the owner's approval, and this server has accounts off (AGENTRUN_ACCOUNTS=0), so no one can give it: set the tool to allow or deny in the agent's Tools.`;
 
 test("with accounts off no one can approve: an ask, a catalog tool's default or a setting, is refused with words saying so, never parked, and capabilities say an ask needs the password sign-in; with accounts on it parks", { timeout: 120_000 }, async (t) => {
