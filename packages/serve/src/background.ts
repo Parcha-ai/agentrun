@@ -14,7 +14,7 @@
 // the pid of the `sleep` that holds the fifo's write end open, so the command reads no end of input until `bash_input`
 // closes it. A process whose runner is gone without an `exit` (its box was replaced, or the runner was killed) is
 // `lost`. A child that leaves the command's group (its own setsid, a daemon) is not tracked: no call counts or signals
-// it, and only the box's end, its process limit or its 24-hour lifetime ends it.
+// it. Only the box's end or its 24-hour lifetime ends it; the box's process limit only bounds how many there can be.
 //
 // The run's end ends them (endBackground, from the server's settle, before the box is pulled and destroyed): TERM to
 // each running group, KILL after 3 s, and an `ended` file beside each log, which stays in the run's files.

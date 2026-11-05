@@ -122,7 +122,8 @@ test("a new agent on a server with docker can start a command in the background 
   assert.deepEqual([made.body.definition.place, made.body.definition.tools], [DOCKER, SHELL]);
   const plan = [
     { tool: "bash_background", args: { command: "echo from the background" } },
-    { tool: "bash", args: { command: "sleep 1" } },
+    // Until its runner has written its exit code, 20 s at most: no fixed wait a busy machine could outrun.
+    { tool: "bash", args: { command: "i=0; until [ -f background/1/exit ] || [ $i -ge 200 ]; do sleep 0.1; i=$((i+1)); done" } },
     { tool: "bash_output", args: { id: "1" } },
   ];
   const run = await probe(api, "backgrounded", plan);

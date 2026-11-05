@@ -414,8 +414,9 @@ runs that call. None of them is a setting of its own.
   output sent elsewhere) keeps it running, counted against the cap, signalled with it and ended at the run's end; its
   exit code is the shell's.
 - A child that leaves the process group (one that calls `setsid`, a daemon that detaches) is not tracked: it is not
-  counted against the cap, no `bash_signal` reaches it, and the run's end does not end it. Only the box's end, its
-  process limit (`AGENTRUN_BOX_PIDS`) and its 24-hour lifetime do.
+  counted against the cap, no `bash_signal` reaches it, and the run's end does not end it. Only the box's end (its
+  destroy at the run's end) or its 24-hour lifetime ends it; the box's process limit (`AGENTRUN_BOX_PIDS`) only bounds
+  how many processes there can be.
 - A process whose runner ended before it did (its box was replaced, or the runner was killed) reads as gone, its exit
   code not known.
 - At most 8 run at once in a run's box: a ninth start is refused, saying so, until one ends. Each log keeps the first
