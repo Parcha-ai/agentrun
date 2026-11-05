@@ -601,9 +601,9 @@ test('an open pull request checked on its test merge after a release landed pass
   assert.equal(folded.status, 0, folded.stderr);
   await commitAll(git, 'release');
   await testMerge(git, 'main', 'pr');
-  const check = spawnSync(process.execPath, [join(root, 'scripts/changes.mjs'), '--check', '--base', stale], { cwd: root, encoding: 'utf8' });
+  const check = spawnSync(process.execPath, [join(root, 'scripts/changes.mjs'), '--check', '--base', stale], { cwd: root, encoding: 'utf8', env: { ...process.env, GITHUB_REF: 'refs/pull/7/merge' } });
   assert.equal(check.status, 0, check.stderr);
-  assert.equal(await comparedBase(root, stale), (await git('rev-parse', 'main')).stdout.trim());
+  assert.equal(await comparedBase(root, stale, 'refs/pull/7/merge'), (await git('rev-parse', 'main')).stdout.trim());
 }));
 test('a release pull request checked on its test merge is still refused for a fragment that landed after its fold', () => repo(async (root, git) => {
   await withVersion(root, git);
@@ -619,7 +619,7 @@ test('a release pull request checked on its test merge is still refused for a fr
   await writeFile(join(root, 'changes/late.md'), fragment('repo', 'fix', 'Late.'));
   await commitAll(git, 'a pull request merged after the fold');
   await testMerge(git, 'main', 'release');
-  const check = spawnSync(process.execPath, [join(root, 'scripts/changes.mjs'), '--check', '--base', stale], { cwd: root, encoding: 'utf8' });
+  const check = spawnSync(process.execPath, [join(root, 'scripts/changes.mjs'), '--check', '--base', stale], { cwd: root, encoding: 'utf8', env: { ...process.env, GITHUB_REF: 'refs/pull/7/merge' } });
   assert.equal(check.status, 1);
   assert.match(check.stderr, /release commit carries unfolded fragments: late\.md; refold on current main/);
 }));
@@ -627,11 +627,30 @@ test('the base stays the one given for a commit that is not a merge, and for a m
   await withVersion(root, git);
   const base = (await git('rev-parse', 'HEAD')).stdout.trim();
   await git('branch', '-q', 'main');
-  assert.equal(await comparedBase(root, base), base);
+  assert.equal(await comparedBase(root, base, 'refs/pull/7/merge'), base);
   await git('checkout', '-q', '-b', 'pr', 'HEAD~1');
   await writeFile(join(root, 'changes/pr.md'), fragment('repo', 'fix', 'A fix.'));
   await commitAll(git, 'a pull request on an older main');
   // A restack: the pull request's old head first, main second.
   await git('merge', '-q', '--no-ff', '-m', 'restack', 'main');
-  assert.equal(await comparedBase(root, base), base);
+  assert.equal(await comparedBase(root, base, 'refs/pull/7/merge'), base);
 }));
+test("off GitHub's test merge the given base stands: a local branch that merged a sibling is still checked against main, and its own edit to an Unreleased section is refused", () => repo(async (root, git) => {
+  await withVersion(root, git);
+  await mkdir(join(root, 'scripts'));
+  await copyScript(root);
+  await commitAll(git, 'the script');
+  const main = (await git('rev-parse', 'HEAD')).stdout.trim();
+  await git('checkout', '-q', '-b', 'sibling');
+  await writeFile(join(root, 'changes/sibling.md'), fragment('repo', 'fix', 'A sibling.'));
+  await commitAll(git, 'a sibling branch');
+  await git('checkout', '-q', '-b', 'mine', main);
+  await writeFile(join(root, 'CHANGELOG.md'), rootLog.replace('- Existing root bullet.', '- Existing root bullet.\n- Edited by hand.'));
+  await commitAll(git, 'an edit to an Unreleased section');
+  await git('merge', '-q', '--no-ff', '-m', 'merge the sibling', 'sibling');
+  assert.equal(await comparedBase(root, main, ''), main);
+  const local = spawnSync(process.execPath, [join(root, 'scripts/changes.mjs'), '--check', '--base', main], { cwd: root, encoding: 'utf8', env: { ...process.env, GITHUB_REF: '' } });
+  assert.equal(local.status, 1);
+  assert.match(local.stderr, /An Unreleased section is edited in CHANGELOG\.md/);
+}));
+

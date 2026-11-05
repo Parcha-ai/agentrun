@@ -367,9 +367,12 @@ export async function staleOwnVersions(root, base) {
  * be older. After a release merges, the diff from that older SHA carries the release's bumps and fold, and every open pull
  * request read as a release with unfolded fragments (seven of the first ten runs after beta.29). So when HEAD is a merge whose
  * first parent holds `base`, that first parent is the base: the pull request's own change against the main it is tested on.
- * A commit that is not a merge, or a merge whose first parent does not hold `base` (a restack: the old head, then main), keeps it.
+ * Only on that checkout (`ref`, GITHUB_REF there, is refs/pull/<n>/merge): a branch that merged another one locally is
+ * checked against the base it was given, or its own edits would hide behind its first parent. A commit that is not a merge,
+ * or a merge whose first parent does not hold `base` (a restack: the old head, then main), keeps it too.
  */
-export async function comparedBase(root, base) {
+export async function comparedBase(root, base, ref = process.env.GITHUB_REF ?? '') {
+  if (!/^refs\/pull\/\d+\/merge$/.test(ref)) return base;
   const parents = (await git(root, ['rev-list', '--parents', '-n', '1', 'HEAD'])).trim().split(' ').slice(1);
   if (parents.length !== 2) return base;
   try { await git(root, ['merge-base', '--is-ancestor', base, parents[0]]); } catch { return base; }
