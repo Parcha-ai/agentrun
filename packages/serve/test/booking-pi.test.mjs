@@ -338,3 +338,21 @@ test("a summary request the run stops while pi-ai waits to retry a lost attempt 
   assert.deepEqual(marks.filter((m) => m.kind === REQUEST_ENDED).map((m) => m.data), [{ request: "compaction", heldUsd: 0.01 }], "its end mark keeps the hold");
   assert.equal(spentIn(storeOf(t, marks)), 0.01, "a later process reads the hold");
 });
+
+test("an attempt the SDK's own timeout cuts (its controller fires, the run's stop does not) is lost, as it left: a timeout then pi-ai's retry answered books the hold, in this process and in a later one", async (t) => {
+  const marks = [];
+  const run = await capped(marks);
+  let hung = 0;
+  // The provider never answers the first attempt; the SDK's own 100 ms timeout aborts the fetch it handed us.
+  const hang = async (_url, init) => {
+    hung += 1;
+    return new Promise((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(Object.assign(new Error("This operation was aborted"), { name: "AbortError" })), { once: true }));
+  };
+  const first = await run.streamSimple(MODEL, context, { ...options(scripted([hang, STEPS.ok])), timeoutMs: 100 }).result();
+  await settle();
+  const upTo = marks.length;
+  assert.deepEqual([first.stopReason, hung], ["stop", 1], `the retry answered: ${first.errorMessage}`);
+  const second = await run.streamSimple(MODEL, context, options(scripted([STEPS.ok]))).result();
+  assert.match(second.errorMessage ?? "", /^spend_cap_reached/, "booked at its $0.001 hold, the timed-out attempt left: no room for another");
+  assert.equal(spentIn(storeOf(t, [...marks.slice(0, upTo), { kind: "pi.assistant", model: [first] }])), 0.001, "a later process reads the hold too");
+});
