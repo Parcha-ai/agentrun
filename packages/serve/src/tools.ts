@@ -20,6 +20,7 @@ import { DOCUMENTS_ENV, PDF_PAGES_TOOL, pdfPages } from "./pdf-pages.js";
 import { monidTool } from "./monid.js";
 import { FAUX_ENV, workflowNodes } from "./model.js";
 import { bookedIn, booking, type Ledger } from "./paid-calls.js";
+import { browserPrice, browserSpend } from "./browser-cost.js";
 import { forModel } from "./result.js";
 import { fetchFor, runPages, WEB_FETCH_TOOL, webFetchTool } from "./web-fetch.js";
 import { searchFor, WEB_SEARCH_TOOL, webSearchTool } from "./web-search.js";
@@ -199,9 +200,10 @@ export const savedOnRelease = (row: { session: { resourceId: string | null; rele
  *  the run's plane names (tool-plane.ts: picked, else Browserbase where the server holds its keys, else Kernel), kept
  *  for the run's life; a plane that names none (a run kept from before the pick) is Browserbase. Its sessions' custody
  *  lives in the run's own store. No recording and no live view; a session the run still holds is released when the run
- *  is let go. Where the plane says unavailable (its vendor's key gone since), each call is refused, saying why. A run
- *  handed its agent's saved sign-in for that vendor (sign-ins.ts, over its pipe) opens every session on it, as the
- *  profile `default`, saving only where it holds the agent's save lease; one that saved says so in its run directory. */
+ *  is let go. Where the plane says unavailable (its vendor's key gone since), each call is refused, saying why.
+ *  Its session time is the run's spend, held under its cap before it runs (browser-cost.ts). A run handed its agent's
+ *  saved sign-in for that vendor (sign-ins.ts, over its pipe) opens every session on it, as the profile `default`,
+ *  saving only where it holds the agent's save lease; one that saved says so in its run directory. */
 const browserTool: ToolEntry = {
   summary: "Drive a hosted browser, Browserbase's or Kernel's (picked in tool settings, else whichever's key the server holds): open pages, read and screenshot them, and act on them.",
   // Which vendor's keys it needs is the plane's to say (tool-plane.ts BROWSER_KEYS): neither alone is required.
@@ -236,6 +238,10 @@ const browserTool: ToolEntry = {
       if (refused) throw refused;
       return handedProvider as never;
     };
+    // Its session time is the run's spend, at its provider's price, and held under the run's cap (browser-cost.ts).
+    const providerName = (parts.provider as { name?: string } | undefined)?.name ?? vendor;
+    const price = browserPrice(providerName, host.env);
+    const spend = browserSpend(providerName, price, DEFAULT_BROWSER_POLICY.idleReleaseS, (conversation, at) => browser.release(conversation as never, "close", at));
     // browser_downloads is listed only with a workspace to copy into, and only a provider that keeps a session's downloads
     // (Browserbase's; Kernel's keeps none) has any: without one, uploads still read the run's work/, through `files`.
     const downloads = typeof (parts.provider as { downloads?: unknown } | undefined)?.downloads === "object";
@@ -246,16 +252,25 @@ const browserTool: ToolEntry = {
       : {};
     // The pointer is cut from everything the browser hands the model (its results, their details, its failures): a
     // vendor's refusal can quote it, as pi-browser's one-saver rule names Kernel's profile.
-    const browser = createBrowserExtension({ provider, driver: parts.driver as never, evidence: evidenceIn(host.where.work) as never, ...files, ...saved, redact: { values: () => (kept ? [kept.ref] : []) } });
-    const extension = browser.extension as unknown as Extension;
+    const browser = createBrowserExtension({ provider, driver: parts.driver as never, evidence: evidenceIn(host.where.work) as never, ...files, ...saved, redact: { values: () => (kept ? [kept.ref] : []) }, prices: { sessionUsdPerHour: price.usdPerHour, sessionMinimumS: price.minimumS }, onCharge: spend.onCharge });
+    const tools = (browser.tools as unknown as ToolRegistration[]).map(spend.capped);
+    const extension = { ...(browser.extension as unknown as Extension), tools } as Extension;
     host.install(extension);
     host.onConversation(async (tx, conversationId) => {
       // The profile is the host's choice, never the model's: the agent's one sign-in, when the run was handed it.
       const policy = kept ? { ...DEFAULT_BROWSER_POLICY, profile: { name: SIGN_IN_KEY, save: kept.save } } : DEFAULT_BROWSER_POLICY;
       Object.assign(await tx.doc(browser.docs.Config, conversationId as never), { label: "run", run: host.where.ref.id, policy });
     });
-    // With its vendor's key gone there is no session to reconcile or release from here: each would only fail.
-    host.beforeResume(async (harness) => void (refused ? undefined : await browser.reconcile(harness as never, () => true, context)));
+    host.beforeResume(async (harness) => {
+      // Its charges move what the process counts once each is committed, reconcile's own among them.
+      spend.watch(harness, (browser.docs.Inventory as unknown as { definition: { kind: string } }).definition.kind);
+      // With its vendor's key gone there is no session to reconcile or release from here: each would only fail.
+      if (refused) return;
+      // Every session custody still tracks across a restart is held from here; one kept is released an idle window on
+      // unless a call uses it.
+      await browser.reconcile(harness as never, () => true, context);
+      await spend.reopened(harness, browser.docs, context);
+    });
     host.beforeRelease(async (harness) => {
       if (refused) return;
       const held = await harness.snapshot(browser.docs.Inventory as never, context) as { rows?: Record<string, { conversationId: number; state: string }> } | undefined;
@@ -265,7 +280,7 @@ const browserTool: ToolEntry = {
       }
       await browser.drain(harness as never, context);
     });
-    return { tools: browser.tools as unknown as readonly ToolRegistration[], extensions: [extension] };
+    return { tools, extensions: [extension] };
   },
 };
 

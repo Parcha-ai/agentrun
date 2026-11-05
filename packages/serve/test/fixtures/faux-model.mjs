@@ -142,6 +142,12 @@ export default function reply(context, faux) {
     process.getBuiltinModule("node:fs").writeFileSync(record[1], first);
     return faux.message("Recorded.");
   }
+  // Answers with a console link and the key in a file, in a URL's query (answer-urls.test.mjs).
+  const linked = /^Answer with the console link and the key in (\S+)$/.exec(first);
+  if (linked) {
+    const key = process.getBuiltinModule("node:fs").readFileSync(linked[1], "utf8").trim();
+    return faux.message(`Open http://127.0.0.1:7340/#/runs/01a1a961-3257-7131-a652-c6fb78880244?x=1 and see https://api.example/v1?k=${key}&y=2 for it.`); // key-gate: loopback-rule a console link an agent's answer gives, as text
+  }
   const quote = /^Quote the key in (\S+)$/.exec(first);
   if (quote) {
     const key = process.getBuiltinModule("node:fs").readFileSync(quote[1], "utf8").trim();
@@ -249,6 +255,11 @@ export default function reply(context, faux) {
   if (first.includes("Answer quoting the held key.")) return faux.message(`Here it is: ${CUT_KEY} and ${Buffer.from(CUT_KEY).toString("base64")}. The rest stays.`);
   // A long answer (about 50 KB) that quotes the held key near its end.
   if (first.includes("Answer at length quoting the held key.")) return faux.message(`${"word ".repeat(10_000)}near the end ${CUT_KEY} done.`);
+  // A workflow's llm call that answers with the held key, and one whose provider echoes it in its error (graph-redact.test.mjs).
+  if (first.includes("Answer the graph with the held key.")) return faux.message(`Graph: ${CUT_KEY} here, and ${["later", "held", "zyxwvutsrq"].join("-")} too.`);
+  if (first.includes("Fail the graph call echoing the held key.")) return faux.message("", { stopReason: "error", errorMessage: `500 {"message":"Key ${CUT_KEY} is not valid"}` });
+  // A provider error of about 4 KB that quotes the held key again and again, so one copy sits across any cut at 2000.
+  if (first.includes("Fail the graph call at length.")) return faux.message("", { stopReason: "error", errorMessage: `500 ${`${CUT_KEY} `.repeat(110)}` });
   // About 1 MB of "sk-" runs, a space every 8 K: each run is one long sk- shape that every third character starts again.
   if (first.includes("Answer with a megabyte of sk- runs.")) return faux.message(`${"sk-".repeat(2730)} `.repeat(128));
   // An answer quoting a value no key holds yet (final-answer-redact.test.mjs saves it as one after the run).

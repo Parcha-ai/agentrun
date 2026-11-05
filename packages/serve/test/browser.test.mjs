@@ -109,3 +109,16 @@ test("two parallel workflow nodes that browse each keep their evidence file", as
   assert.equal(files.length, 2, files.join(", "));
   for (const name of files) assert.match(await readFile(join(evidence, name), "utf8"), /The answer is forty-two\./, name);
 });
+
+test("capabilities say the same about the browser in features and in tools: browserbase when the tool is available, none when it is not", async (t) => {
+  for (const [values, want] of [[{ BROWSERBASE_PROJECT_ID: "fake-project" }, "none"], [{ BROWSERBASE_API_KEY: "fake-test-key", BROWSERBASE_PROJECT_ID: "fake-project" }, "browserbase"]]) {
+    await t.test(want, async (t) => {
+      withEnv(t, values);
+      const { baseUrl } = await serve(t);
+      const caps = (await client(baseUrl)("GET", "/capabilities")).body;
+      const listed = caps.tools.find((tool) => tool.name === "browser");
+      assert.equal(caps.features.browser, want, JSON.stringify({ features: caps.features.browser, tool: listed }));
+      assert.equal(caps.features.browser !== "none", listed.available);
+    });
+  }
+});

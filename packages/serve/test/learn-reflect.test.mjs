@@ -83,7 +83,7 @@ test("a turn that does not end in time is aborted: the run completes with its an
   assert.equal(reflectRows(rows).filter((row) => row.kind === "user_message").length, 1, "the turn was asked");
 });
 
-test("no_budget: a turn whose request the run's cap refuses, and a run whose cap stopped its job (no turn sent); an agent with no tool at all is asked the turn", { timeout: 120_000 }, async (t) => {
+test("no_budget: a turn whose request the run's cap refuses; a run whose cap stopped its job (no turn sent) pauses at its cap, its learning not yet ended; an agent with no tool at all is asked the turn", { timeout: 120_000 }, async (t) => {
   const { api, data } = await serve(t, { learning: "on", faux: OUTPUT_PRICED });
   // What the job's one request costs, from a run that does not learn.
   await made(api, agent("probe", { tools: ["write"], learning: false }));
@@ -99,11 +99,13 @@ test("no_budget: a turn whose request the run's cap refuses, and a run whose cap
   assert.equal(tight.view.cost.usd, spent, "only the job was paid for");
   assert.match(reflectRows(tight.rows).find((row) => row.kind === "error")?.text ?? "", /^spend_cap_reached \(out of budget\): Not sent: the run has spent \$[\d.]+ of its \$[\d.]+ cap, and its next faux-1 request needs at least \$[\d.]+\. Raise the cap to at least \$[\d.]+ to run it\.$/);
   await made(api, learner("broke"));
-  // Half a request's least: the job's first request is refused, so no turn is sent.
-  const broke = await ended(api, await started(api, "broke", "hi", { max_cost_usd: LEAST / 2 }), ["failed"]);
-  assert.equal(broke.view.error.code, "spend_cap_reached");
-  settled(broke.view, broke.rows, "dropped", "no_budget");
-  assert.equal(reflectRows(broke.rows).length, 0, "no turn");
+  // Half a request's least: the job's first request is refused, so no turn is sent. The run pauses at its cap and its
+  // learning waits with it: it ends with the run (a raise that lets it answer, or a cancel).
+  const brokeId = await started(api, "broke", "hi", { max_cost_usd: LEAST / 2 });
+  const { rows: brokeRows } = await follow(api, brokeId, ["input_required", "failed"], { deadlineMs: 90_000 });
+  const broke = (await api("GET", `/runs/${brokeId}`)).body;
+  assert.deepEqual([broke.status, broke.state, broke.error, broke.pending?.kind, broke.learning?.state], ["input_required", "waiting", null, "budget", "seeded"], JSON.stringify(broke));
+  assert.equal(reflectRows(brokeRows).length, 0, "no turn");
   await made(api, agent("mute", { learning: true }));
   const mute = await ended(api, await started(api, "mute", "hi"));
   settled(mute.view, mute.rows, "dropped", "empty");

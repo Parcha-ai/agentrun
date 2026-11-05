@@ -13,10 +13,11 @@ import { fileURLToPath } from "node:url";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { AgentHomeError, type Revision, type RevisionKind, type RunOrigin, type RunRow, type RunState, type StoredMetrics } from "@parcha/pi-durable-agent";
-import { registerLabel, registerTurnEnding, type RunMetrics, runMetricsWithDecisions, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
+import { registerLabel, registerTurnEnding, REQUEST_STARTED, type RunMetrics, runMetricsWithDecisions, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { HARNESS_LOG_EVENT, harnessModelKeys, thinkingFor } from "./adapters.js";
 import { DEFAULT_HARNESS, harnessOfBody, steersMidTurn } from "./harness.js";
 import type { RunNotice, WEBHOOK_EVENTS } from "./webhooks.js";
+import type { RunTrigger } from "./triggers.js";
 import { hostMemory, memoryFull, neverFits, runMibOf, runsMemoryMib } from "./host.js";
 import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from "./agents.js";
 import { FOLLOW_UP_OPEN_ENV, LAUNCH_LOST, readJson, RUN_CANCELLED, RUN_DOOR_TOKEN, RUN_LAUNCHING, RUN_META, runDoorToken, SETUP_LOST, writeWhole } from "./files.js";
@@ -30,7 +31,7 @@ import { withDecisions } from "./decision-rows.js";
 import { DECISION_KEY_FD_ENV, decisionKeysFor, providersNamed } from "./decisions.js";
 import { ApiError, unsupported } from "./errors.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
-import { CAP_ENV, CAP_REFUSAL_PREFIX, SPEND_CAP_REACHED } from "./cap.js";
+import { CAP_ENV, CAP_REFUSAL_PREFIX, CAP_REFUSED_FIELD, money, type RefusalFigures, roomRefusal, SPEND_CAP_REACHED } from "./cap.js";
 import { DEFAULT_MODEL_ENV, EFFORT_ENV, GATEWAY_KEY_ENV, hostModel, llmTiers, modelKeys, nodeTiers, PROVIDER_KEYS, thinkingOf, type Tier, withoutFaux, workflowNodes } from "./model.js";
 import { llmAnswers, pausedIn, readNodeLog, RUN_PAUSED } from "./pause.js";
 import { durationMs } from "./print.js";
@@ -44,6 +45,7 @@ import { DECISION_KEYS, handover, handoverSignIn, hostSecrets, secret, SECRET_NA
 import type { HandedSignIn, SignIns } from "./sign-ins.js";
 import { MIN_SECRET } from "./learn/secrets.js";
 import { keyRefusal, redacted, redactedAnswer, redactedLive, redactedOutput, runKeyOf, withoutLoopback } from "./key-refusal.js";
+import { GRAPH_CACHE_BYTES, PartCache, type PartKind, servedPart } from "./graph-served.js";
 import { CONTENT_FILTER_WORDS, contentFiltered, MODERATED } from "./content-filter.js";
 import { BOX_KEYS } from "./boxes.js";
 import { type Place, remotePlace, storedPlace } from "./place.js";
@@ -160,6 +162,8 @@ type RunMeta = {
   /** A run whose cost was unknown when it ended: the sum of its charges whose cost is known, and how many have none
    *  (costsofar/1), as its view said then, so a list row read from the store says it too. */
   cost_so_far?: SoFar;
+  /** The trigger that started it, and its firing's key (triggers.ts); absent for a run a caller started. */
+  trigger?: RunTrigger;
 };
 type RunError = { code: string; message: string; retryable: boolean; details?: { reason: string } };
 /** Why an escalated workflow run waits for a person: the escalation's kind, the escalate node's label, its summary,
@@ -182,6 +186,13 @@ const reviewOfRow = (row: Pick<RunRow, "state" | "summary">, meta: Partial<RunMe
 /** One run as this server holds it. */
 /** A run's answer or output as a view served it: `out`, redacted from `input` over the held values whose digest is `keys`. */
 type Served = { keys: string; input: unknown; out: unknown };
+
+/** GET /runs/{id}/graph's view (graph-view.ts, loaded when a graph is first read). */
+type GraphView = Awaited<ReturnType<typeof import("./graph-view.js")["runGraph"]>>;
+
+
+/** A value's sha256, of its JSON. */
+const digestOf = (value: unknown): string => createHash("sha256").update(JSON.stringify(value) ?? "").digest("hex");
 
 export type Run = {
   id: string;
@@ -286,6 +297,10 @@ export type Run = {
   pulling?: Promise<void>;
   /** It stood waiting for the person when last marked: a turn's end is the change into that. */
   waited?: boolean;
+  /** The pause at its cap (its mark) whose process was let go: once per pause. */
+  parked?: string;
+  /** Its newest refusal for room's figures, from that refusal's own start mark (cap.ts RefusalFigures). */
+  capRefusal?: RefusalFigures;
 };
 
 const ASKED = "Asked you: ";
@@ -329,6 +344,9 @@ function noteTurns(run: Run, entries: readonly unknown[], submissions: readonly 
   for (const value of entries) {
     if (!isObject(value) || typeof value.id !== "number") continue;
     run.lastEntry = Math.max(run.lastEntry ?? 0, value.id);
+    // A refusal for room's own start mark: what the cap counted as taken, and the least the request needed.
+    const data = value.kind === REQUEST_STARTED && isObject(value.data) && value.data[CAP_REFUSED_FIELD] === true ? value.data : undefined;
+    if (data && typeof data.spentUsd === "number" && typeof data.needsUsd === "number") run.capRefusal = { spentUsd: data.spentUsd, needsUsd: data.needsUsd };
     // The end-of-run turn's assistant messages, whole, by entry: what the turn answered, whose notes learning reads
     // (learning-run.ts). The ledger skips them; this is their only reader here.
     if (value.kind === "pi.assistant" && reflects(run.meta.reflect, value.id) && Array.isArray(value.model) && isObject(value.model[0])) {
@@ -347,11 +365,29 @@ const meaningful = (rows: readonly TimelineEvent[]) => rows.findLast((r) => show
 /** What a run waits on, as `pending` says it (one field for every kind; a tool call waiting on approval is another):
  *  the question a waiting run asked, read from its last meaningful row (withAsks' waiting row), the same row its
  *  status reads, never from a scan of its timeline. */
-type Pending = { kind: "question"; question: string; asked_at: string } | null;
+type Pending = { kind: "question"; question: string; asked_at: string } | { kind: "budget"; cap_usd: number; spent_usd?: number; needs_usd?: number; said: string; at: string } | null;
 const pendingOf = (rows: readonly TimelineEvent[]): Pending => {
   const last = meaningful(rows);
   return last?.kind === "waiting" ? { kind: "question", question: last.text ?? last.summary ?? "", asked_at: last.timestamp } : null;
 };
+/** A run paused at its cap waits on a raise: its cap, what the cap counted as taken and the least the refused request
+ *  needs (its refusal's mark; none from a store written before it kept them), the refusal's words, and when it came (its
+ *  error row's time). The figures are as the cap counts them, never rounded. */
+const budgetPending = (run: Run): Pending | undefined => {
+  const said = pausedAt(run);
+  const cap = run.meta.max_cost_usd;
+  if (said === undefined || cap === undefined) return undefined;
+  const figures = run.capRefusal ? { spent_usd: run.capRefusal.spentUsd, needs_usd: run.capRefusal.needsUsd } : {};
+  return { kind: "budget", cap_usd: cap, ...figures, said, at: meaningful(run.rows)?.timestamp ?? run.updatedAt };
+};
+/** The waiting row of a run paused at its cap, after the refusal's error row: "Paused at the run's $1 cap: Not sent: …". */
+function withPaused(rows: readonly TimelineEvent[], said: string, cap: number): TimelineEvent[] {
+  const at = rows.findLastIndex((row) => row.kind === "error");
+  if (at < 0) return [...rows];
+  const error = rows[at]!;
+  const paused: TimelineEvent = { ...error, id: `${error.id}:paused`, kind: "waiting", summary: `Paused at the run's ${money(cap)} cap: ${clip(said, 400)}`, text: clip(said, 2000), tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null };
+  return [...rows.slice(0, at + 1), paused, ...rows.slice(at + 1)];
+}
 /** An import's answer, the one row reading of an answer left: its records hold no turn's end (it ran elsewhere), so its
  *  last meaningful row is its answer when that row is one, a final answer's or a text row's. */
 const importAnswerOf = (rows: readonly TimelineEvent[]) => {
@@ -364,10 +400,11 @@ export const costOf = (rows: readonly TimelineEvent[]): number | null => {
   const usage = usageOf(rows);
   return usage ? (usage.usage?.usd ?? null) : 0;
 };
-/** What a run's paid tools charged, from the same rows its cost is read from: each charge's line carries it (`usage` on a
- *  `phase` row); null when one is unknown. A call still marked, in flight or cut, is no charge here. */
-export const toolCostOf = (rows: readonly TimelineEvent[]): number | null =>
-  rows.reduce<number | null>((sum, row) => (row.kind !== "phase" || !row.usage ? sum : sum === null || row.usage.usd === null ? null : sum + row.usage.usd), 0);
+/** What a run's paid tools charged (`tool`'s alone, when given), from the same rows its cost is read from: each charge's
+ *  line carries it (`usage` on a `phase` row); null when one is unknown. A call still marked, in flight or cut, is no
+ *  charge here. */
+export const toolCostOf = (rows: readonly TimelineEvent[], tool?: string): number | null =>
+  rows.reduce<number | null>((sum, row) => (row.kind !== "phase" || !row.usage || (tool !== undefined && row.tool_name !== tool) ? sum : sum === null || row.usage.usd === null ? null : sum + row.usage.usd), 0);
 /** A run's cost for its views: its usage row's, else what the store kept when it carried the run back (0 before any
  *  request). A usage row that says unknown, or says nothing, stays unknown: what the store kept dates from before a
  *  follow-up. */
@@ -429,6 +466,15 @@ export const stoppedAt = (meta: { stopped_at?: string; stopped_after?: number },
   return !rows.some((r) => r.kind === "user_message" && placeOf(r.id) > at);
 };
 const stopped = (run: Run) => stoppedAt(run.meta, run.rows);
+/** The words of the cap's refusal for room an agentic run stands paused at: its newest message's turn ended on it (cap.ts
+ *  roomRefusal: what is left of its cap cannot buy the next request's least, which a higher cap would send), and nothing
+ *  came since. The run then waits for its cap to be raised (input_required, `pending.kind` budget), never failed; a
+ *  refusal no cap fixes (an unknown spend, no price) still fails it (decide). Undefined for any other run. */
+const pausedAt = (run: Run): string | undefined => {
+  if (run.kind !== "agentic" || run.cancel || run.submitted > 0 || run.turns.open > 0 || stopped(run)) return undefined;
+  const end = run.turns.end();
+  return end?.status === "failed" ? roomRefusal(end.error) : undefined;
+};
 /** What a stop keeps of where the run stands: the person's last message, by its id, or the place before any. */
 export const stopMark = (rows: readonly TimelineEvent[]): { stopped_at: string } => ({ stopped_at: lastUserMessage(rows) ?? `${ROOT_CONVERSATION_ID}:0` });
 
@@ -466,6 +512,8 @@ export function statusOf(run: Run): { status: Status; state: State } {
   // Every message's turn is over and the newest one's ended interrupted, with no stop of the person's saying so (the
   // harness ended it on its own): the run waits for the person, as after a stop, never working for good.
   if (run.kind === "agentic" && run.submitted === 0 && run.turns.end()?.status === "interrupted") return { status: "input_required", state: "idle" };
+  // Paused at its cap: it waits for the cap to be raised.
+  if (pausedAt(run) !== undefined) return { status: "input_required", state: "waiting" };
   if (run.working) return { status: "working", state: "working" };
   if (meaningful(run.rows)?.kind === "waiting") return { status: "input_required", state: "waiting" };
   return { status: "working", state: "idle" };
@@ -474,14 +522,15 @@ export function statusOf(run: Run): { status: Status; state: State } {
 /** The waits between carry backs that found the store busy, and a hook called at each such refusal. */
 export type CarryBackRetry = { delaysMs?: readonly number[]; onBusy?: (runId: string, attempt: number) => void };
 /** How a run is asked to start: its input and title, its effort and cap, and what puts its files in its work/. `origin`:
- *  the store's key for what asked (an Idempotency-Key's): a key that already started a run gets that run. */
-export type StartOptions = { input: Json; title: string; place: Place; effort?: string; maxCostUsd?: number; inputs?: (work: string) => Promise<unknown>; origin?: RunOrigin };
+ *  the store's key for what asked (an Idempotency-Key's, a trigger's firing): a key that already started a run gets that
+ *  run. `trigger`: the trigger and firing that started it. */
+export type StartOptions = { input: Json; title: string; place: Place; effort?: string; maxCostUsd?: number; trigger?: RunTrigger; inputs?: (work: string) => Promise<unknown>; origin?: RunOrigin };
 
 /** `token` is the server's own: no run's process sees it. */
 /** `maxRuns`: the most runs with a live process at once; `settleRetryMs`: how often a carry back the store refused is
  *  tried again; `readyTimeoutMs`: how long a request to a run waits for its door (a run's first message, sent by its
  *  start, always waits READY_TIMEOUT_MS); `log` takes a run's start and end (print.ts). */
-export type RunsOptions = { /** What a run's Docker box reaches, as the server resolved it (run-box.ts boxNetworkOf): the list, or none. Absent, none. */ dockerAllow?: readonly string[] | "none"; agents: Agents; token: string; /** The server's saved tool keys, read by name for its runs alone (secrets.ts). */ storedKeys?: StoredKeys; documents?: string; doorTokenFile: string; doorToken: string; /** The test switches a run's process gets (server.ts fauxEnvOf): empty outside tests. */ fauxEnv?: NodeJS.ProcessEnv; runBoxes?: BoxProvider; /** The server's Daytona provider, with its key: remote boxes are made, seeded, pulled and destroyed with it, here alone (box-relay.ts). */ remoteBoxes?: BoxProvider; /** Daytona's API and the same key, for what the provider does not do: a kept box's idle stop, and its wake at a start (daytona-api.ts). */ remoteApi?: DaytonaApi; /** The hosts a remote box may reach (run-box.ts boxAllowOf); `none`, or absent, for none. */ boxAllow?: readonly string[] | "none"; /** Called once, with the provider's refusal's code, when it cannot keep that list here: from then on each remote box is made with no network. */ onNoBoxList?: (code: string) => void; toolSettings?: () => ToolSettingsMap; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; reflectTimeoutMs?: number; gradeTimeoutMs?: number; /** The grader's model (`--grade-model`), before AGENTRUN_SERVE_GRADE_MODEL and the strong tier (grade.ts gradeModelOf). */ gradeModel?: string; /** How much of what a run learned its instructions hold, in bytes (`--learning-budget`, learning.ts learnedOf). */ learningBudget?: number; log?: (event: string, fields: Record<string, string | number>) => void; notify?: RunNotify; learning?: LearningMode; /** Each agent's saved sign-ins (sign-ins.ts): absent, no run gets one. */ signIns?: SignIns };
+export type RunsOptions = { /** What a run's Docker box reaches, as the server resolved it (run-box.ts boxNetworkOf): the list, or none. Absent, none. */ dockerAllow?: readonly string[] | "none"; agents: Agents; token: string; /** The server's saved tool keys, read by name for its runs alone (secrets.ts). */ storedKeys?: StoredKeys; documents?: string; doorTokenFile: string; doorToken: string; /** The test switches a run's process gets (server.ts fauxEnvOf): empty outside tests. */ fauxEnv?: NodeJS.ProcessEnv; runBoxes?: BoxProvider; /** The server's Daytona provider, with its key: remote boxes are made, seeded, pulled and destroyed with it, here alone (box-relay.ts). */ remoteBoxes?: BoxProvider; /** Daytona's API and the same key, for what the provider does not do: a kept box's idle stop, and its wake at a start (daytona-api.ts). */ remoteApi?: DaytonaApi; /** The hosts a remote box may reach (run-box.ts boxAllowOf); `none`, or absent, for none. */ boxAllow?: readonly string[] | "none"; /** Called once, with the provider's refusal's code and words, when it cannot keep that list here: from then on each remote box is made with no network. */ onNoBoxList?: (code: string, message: string) => void; toolSettings?: () => ToolSettingsMap; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; reflectTimeoutMs?: number; gradeTimeoutMs?: number; /** The grader's model (`--grade-model`), before AGENTRUN_SERVE_GRADE_MODEL and the strong tier (grade.ts gradeModelOf). */ gradeModel?: string; /** How much of what a run learned its instructions hold, in bytes (`--learning-budget`, learning.ts learnedOf). */ learningBudget?: number; log?: (event: string, fields: Record<string, string | number>) => void; notify?: RunNotify; learning?: LearningMode; /** Each agent's saved sign-ins (sign-ins.ts): absent, no run gets one. */ signIns?: SignIns };
 /** Told of a run's moment each time it is seen (webhooks.ts' emit, which queues each one once): a wait it reached, and an
  *  end once the agent store has it. `marker` names the moment (the person's turn it waits at, the end's time), the same
  *  when another server sees it again. It says what came of it: `unsaved`, not in the outbox on disk yet. */
@@ -629,8 +678,9 @@ export class Runs {
   /** What decides the secrets each revision's runs are handed (needsOf), by revision id: read once, from the revision the
    *  run is pinned to, never from a request. The keys themselves are read at each launch (keysFor). */
   private readonly needs = new Map<string, RunNeeds>();
-  /** Each workflow run's last graph read whole: what a poll that met a busy store answers, marked stale. */
-  private readonly graphs = new Map<string, object>();
+  /** Every run's graph as served, part by part (servedGraph), and each workflow run's last graph read whole, which a
+   *  poll that met a busy store answers, marked stale: one LRU by bytes across runs (graph-served.ts PartCache). */
+  private readonly graphCache = new PartCache(GRAPH_CACHE_BYTES);
   private readonly adopting = new Map<string, Promise<Run>>();
   /** The hosts this server's next remote box asks for: the setting's, until the provider cannot keep a list here, then none. */
   private remoteAllow: readonly string[] | "none" | undefined;
@@ -729,6 +779,7 @@ export class Runs {
       ...(stored?.place ? { place: storedPlace(stored.place) } : {}),
       ...(isObject(stored?.learning) ? { learning: stored.learning as Learning } : {}),
       ...(isObject(stored?.reflect) ? { reflect: stored.reflect as Reflect } : {}),
+      ...(isObject(stored?.trigger) && typeof stored.trigger.id === "string" && typeof stored.trigger.firing_key === "string" ? { trigger: { id: stored.trigger.id, firing_key: stored.trigger.firing_key } } : {}),
     };
     // A seed copy a server went down during is taken back before anything holds the run: its relaunch, a settle, a
     // follow-up (learning-run.ts onLoad).
@@ -872,7 +923,10 @@ export class Runs {
     // The decisions' rows are the served view's only: the run's own rows, which its cost is read from, stay its model nodes'.
     const own = run.decisions === undefined ? run.rows : withDecisions(run.rows, run.decisions);
     // An error row reads as the run's error does (errorWords): a refused key in plain words, no loopback address.
-    const rows = own.map((row) => (row.kind === "error" ? this.servedError(run, row) : row));
+    const served = own.map((row) => (row.kind === "error" ? this.servedError(run, row) : row));
+    // A run paused at its cap says so after the refusal, as the row its status reads.
+    const said = pausedAt(run);
+    const rows = said === undefined || run.meta.max_cost_usd === undefined ? served : withPaused(served, said, run.meta.max_cost_usd);
     if (run.log.sync(withLearning(rows, run.meta.learning, this.learning.shown()), run.keep)) run.updatedAt = new Date().toISOString();
   }
 
@@ -900,6 +954,8 @@ export class Runs {
     if (end?.status === "answered") return { outcome: "completed" };
     if (end?.status !== "failed") return undefined;
     const message = end.error ?? "The run failed.";
+    // The cap's refusal for room pauses the run instead (pausedAt): a raise sends what was refused.
+    if (roomRefusal(message) !== undefined) return undefined;
     // The cap's refusal in the run's process (cap.ts); a provider error with this exact prefix would read as one too.
     // Its code is `spend_cap_reached: `, or with a note after it (`spend_cap_reached (out of budget): `, cap.ts); the message is
     // the words after it.
@@ -949,12 +1005,32 @@ export class Runs {
    *  saved or deleted changes the values' digest, and the next view redacts again. */
   private servedOnce(run: Run, slot: "answer" | "output", input: unknown, redact: (values: string[]) => unknown): unknown {
     const values = this.refusedValues(run);
-    const keys = createHash("sha256").update(JSON.stringify([...values].sort())).digest("hex");
+    const keys = digestOf([...values].sort());
     const last = run.served?.[slot];
     if (last && last.keys === keys && last.input === input) return last.out;
     const out = redact(values);
     run.served = { ...run.served, [slot]: { keys, input, out } };
     return out;
+  }
+
+  /** A workflow run's graph as serve serves it: its nodes, each decision and each call (its input, output and error) with
+   *  no held secret, by its answer's rule (redactedOutput), and only then cut: a map item's label at 200 characters, a
+   *  call's error at 2000, and a text stored cut (a decision's state past 64 KB, an error logged cut) less its last 6
+   *  times the longest held value plus 16 characters, where a value the stored cut split would sit. The view a busy
+   *  store's read keeps is the one graph-view.ts made, whole, so a key saved after it is still found. Each part is
+   *  served once per content and held value set: a console polls the graph while the run goes. */
+  private servedGraph<T extends { nodes: unknown; decisions: unknown[]; effects: unknown[] }>(run: Run, view: T): T {
+    const values = this.refusedValues(run);
+    const keys = digestOf([...values].sort());
+    const once = (kind: PartKind, value: unknown): unknown => {
+      const at = `part:${keys}:${kind}:${digestOf(value)}`;
+      const kept = this.graphCache.get(at);
+      if (kept !== undefined) return kept;
+      const out = servedPart(kind, value, values);
+      this.graphCache.set(at, out, Buffer.byteLength(JSON.stringify(out) ?? ""));
+      return out;
+    };
+    return { ...view, nodes: once("nodes", view.nodes), decisions: view.decisions.map((value) => once("decision", value)), effects: view.effects.map((value) => once("effect", value)) };
   }
 
   /** The timeline's redaction of `run`'s error rows and of what a tool's result shows (its summary and preview), applied
@@ -992,6 +1068,12 @@ export class Runs {
     this.mark(run);
     if (!this.live(run) || run.finishing || run.outcome) return;
     const end = this.decide(run);
+    // Paused at its cap, its process is let go: it waits without one, holding no place, until its cap is raised. Once
+    // per pause (its refusal's row): SIGTERM drains and releases it, and the settle that follows leaves it waiting.
+    if (!end && pausedAt(run) !== undefined && run.parked !== waitMark(run)) {
+      run.parked = waitMark(run);
+      this.terminate(run);
+    }
     if (!end) return;
     if (end.error) run.error = end.error;
     // A run that learns is not let go yet: its end-of-run turn is asked first, unless learning skips it (learning-run.ts).
@@ -1189,10 +1271,14 @@ export class Runs {
     // After any pull of this run's box, so a seed never meets a pull.
     run.boxing ??= (run.pulling ?? Promise.resolve())
       .then(() =>
-        ensureRemoteBox(boxes, run, boxContext(REMOTE_SYNC_MS), this.wakeOf(run.id), (this.remoteAllow ??= this.options.boxAllow ?? "none"), (code) => {
-          if (this.remoteAllow === "none") return;
-          this.remoteAllow = "none";
-          this.options.onNoBoxList?.(code);
+        ensureRemoteBox(boxes, run, boxContext(REMOTE_SYNC_MS), {
+          wake: this.wakeOf(run.id),
+          allow: (this.remoteAllow ??= this.options.boxAllow ?? "none"),
+          onNoList: (code, message) => {
+            if (this.remoteAllow === "none") return;
+            this.remoteAllow = "none";
+            this.options.onNoBoxList?.(code, message);
+          },
         }),
       )
       .finally(() => void (run.boxing = undefined));
@@ -1253,12 +1339,12 @@ export class Runs {
     run.waited = waiting;
     if (run.log.setState(`${status}/${state}/${run.settled}`)) run.updatedAt = new Date().toISOString();
     // What it waits on: an ask_person question (waiting), else a stopped turn, for the person's next message.
-    if (status === "input_required") this.notice(run, "run.needs_input", waitMark(run), { kind: state === "waiting" ? "question" : "stopped" });
+    if (status === "input_required") this.notice(run, "run.needs_input", waitMark(run), { kind: state !== "waiting" ? "stopped" : pausedAt(run) !== undefined ? "budget" : "question" });
   }
 
   /** Tells webhooks.ts (`notify`) of a moment of the run under `marker`: a wait it reached (mark), or an end the agent store
    *  has (settle, persistLater, reopen). What it already queued it queues no more. */
-  private notice(run: Run, event: "run.needs_input" | "run.ended", marker: string | undefined, pending?: { kind: "question" | "stopped" }): Emitted | undefined {
+  private notice(run: Run, event: "run.needs_input" | "run.ended", marker: string | undefined, pending?: { kind: "question" | "stopped" | "budget" }): Emitted | undefined {
     if (!this.options.notify || !marker) return undefined;
     try {
       return this.options.notify(event, { run_id: run.id, agent_id: run.agentId, status: statusOf(run).status, title: run.meta.title, ...(pending ? { pending } : {}) }, marker);
@@ -1974,6 +2060,7 @@ export class Runs {
       place: options.place,
       ...(options.effort ? { effort: options.effort } : {}),
       ...(options.maxCostUsd !== undefined ? { max_cost_usd: options.maxCostUsd } : {}),
+      ...(options.trigger ? { trigger: options.trigger } : {}),
       ...(Object.keys(plane).length ? { tool_plane: plane } : {}),
     };
     // The run's input is saved first, as the store has it running: a server that goes down from here on leaves a run the
@@ -2076,6 +2163,9 @@ export class Runs {
     const steers = this.steers(run);
     const { status, state } = statusOf(run);
     if (TERMINAL.has(status)) throw this.finished(run);
+    // Paused at its cap: a message would be refused for the same room, so the cap is raised first.
+    const paused = pausedAt(run);
+    if (paused !== undefined) throw new ApiError("budget_reached", `The run is paused at its ${money(run.meta.max_cost_usd ?? 0)} cap: raise the cap first. ${paused}`, { details: { cap_usd: run.meta.max_cost_usd ?? null } });
     // A harness that cannot take a message mid-turn (any but pi, harness.ts) queues it for the turn's end: a new turn of
     // the same run, which the contract calls follow_up, never a steer it does not do.
     const working = status === "queued" || (status === "working" && state === "working");
@@ -2259,14 +2349,14 @@ export class Runs {
     // A poll never answers home_busy: a store still held answers the live view, or the last whole one, marked stale.
     try {
       const view = await runGraph(given);
-      this.graphs.set(run.id, view);
-      return { ...view, stale: false };
+      this.graphCache.set(`view:${run.id}`, view, Buffer.byteLength(JSON.stringify(view)));
+      return this.servedGraph(run, { ...view, stale: false });
     } catch (error) {
       if (!storeBusy(error)) throw error;
       warn(run.id, "its store is busy; the graph answers its live view, stale");
-      const held = this.graphs.get(run.id);
-      if (held) return { ...held, run: given.run, stale: true };
-      return { ...(await runGraph({ ...given, liveOnly: true })), stale: true };
+      const held = this.graphCache.get(`view:${run.id}`) as GraphView | undefined;
+      if (held) return this.servedGraph(run, { ...held, run: given.run, stale: true });
+      return this.servedGraph(run, { ...(await runGraph({ ...given, liveOnly: true })), stale: true });
     }
   }
 
@@ -2352,10 +2442,11 @@ export class Runs {
       result: status === "completed" ? { output: run.kind === "workflow" ? (this.servedOutput(run, run.meta.output ?? null)) : null, final_answer: this.servedAnswer(run, finalAnswer) } : kept ? { output: null, final_answer: this.servedAnswer(run, kept) } : null,
       error: status === "failed" ? (run.error ?? { code: "run_failed", message: "The run failed.", retryable: false }) : null,
       review: endedAt === null ? null : reviewAt(run.meta.review ?? (row ? reviewOfRow(row, run.meta) : null), endedAt),
-      pending: status === "input_required" && state === "waiting" ? pendingOf(run.rows) : null,
+      pending: status === "input_required" && state === "waiting" ? (budgetPending(run) ?? pendingOf(run.rows)) : null,
       cost: this.cost(run),
       archived_at: stored?.archivedAt ?? null,
       imported_from: run.imported ?? null,
+      trigger: run.meta.trigger ?? null,
       // The notes it read once it settled: while it runs, or runs again for a follow-up, they are still being read.
       learning: this.learning.view(run.meta.learning, TERMINAL.has(status) && run.settled),
       poll_after_ms: TERMINAL.has(status) && run.settled ? 0 : 1000,

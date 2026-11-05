@@ -175,7 +175,7 @@ test("a follow-up continues the same OpenCode session, given back to a new proce
   assert.ok(p.seen[1].body.input.some((item) => item.role === "assistant" && item.content[0].text === "First."));
 });
 
-test("a stop ends the turn interrupted, OpenCode aborting it; the next message is a plain turn", async () => {
+test("a stop ends the turn interrupted, OpenCode aborting it; the host settles the open turn, and the next message is a plain turn", async () => {
   const started = Promise.withResolvers();
   const slow = { name: "slow", description: "Waits.", inputSchema: { type: "object", properties: {} }, replay: "safe", call: (_args, { signal }) => new Promise((resolve) => { started.resolve(); signal.addEventListener("abort", () => resolve({ text: "stopped", isError: true }), { once: true }); }) };
   const { adapter: a, provider: p } = adapter([{ call: "hands_slow" }, { text: "Again." }]);
@@ -185,11 +185,30 @@ test("a stop ends the turn interrupted, OpenCode aborting it; the next message i
   await started.promise;
   await s.session.interrupt();
   assert.deepEqual(await s.session.turnEnd(), { status: "interrupted" });
+  // The stopped turn is open (no end is written for it): the host settles it, as serve does after a person's stop.
+  assert.equal(s.session.state, "open_turn");
+  await s.session.settleOpenTurn();
   await s.session.send("go on");
   assert.deepEqual(await s.session.turnEnd(), { status: "completed" });
   await s.session.close();
   const last = p.seen.at(-1).body.input;
-  assert.ok(!JSON.stringify(last).includes("[Recovery]"), "no recovery note: the stopped turn's end is in the log");
+  assert.ok(!JSON.stringify(last).includes("[Recovery]"), "no recovery note: the settled turn's end is in the log");
+});
+
+test("an interrupt mid-turn leaves the turn open in the session (no end is written for it): the host settles it, or the next open resumes it, as codex's does", async () => {
+  const started = Promise.withResolvers();
+  const slow = { name: "slow", description: "Waits.", inputSchema: { type: "object", properties: {} }, replay: "safe", call: (_args, { signal }) => new Promise((resolve) => { started.resolve(); signal.addEventListener("abort", () => resolve({ text: "stopped", isError: true }), { once: true }); }) };
+  const { adapter: a } = adapter([{ call: "hands_slow" }, { text: "Again." }]);
+  const store = memorySessionStore();
+  const sp = spec([slow], { key: "s-interrupt-open" });
+  const s = await session(a, store, sp);
+  await s.session.send("wait");
+  await started.promise;
+  await s.session.interrupt();
+  const ended = await s.session.turnEnd();
+  const turns = transcriptOf(foldSession(sp.key, await store.read(sp.key))).filter((r) => r.data?.type === "turn").map((r) => r.data.status);
+  await s.session.close();
+  assert.deepEqual({ ended, state: s.session.state, turns }, { ended: { status: "interrupted" }, state: "open_turn", turns: [] }, "the interrupted turn is open, with no end in the session's records");
 });
 
 test("a process killed mid-turn, inside a never call: the next process takes the session back from the log, reports the call, never runs it again, and the turn completes", async () => {
@@ -326,6 +345,8 @@ test("a message OpenCode refuses ends the turn failed with OpenCode's own status
 /** What the model was asked in each request: the user messages' text, in order. */
 const userTexts = (p) => p.seen.flatMap((r) => r.body.input.filter((i) => i.role === "user").flatMap((i) => (Array.isArray(i.content) ? i.content.map((c) => c.text) : [String(i.content)])));
 const folded = async (store, key) => foldSession(key, await store.read(key));
+/** The follow-up "and now?" after a stopped "go", as it is placed and sent: the stopped prompt, its line, then its own. */
+const CARRIED = "go\n\n(The message above was stopped before any work on it began.)\n\nand now?";
 
 test("a turn its session interrupted (a stop OpenCode did not end) is open to the next process; settled, it ends interrupted, sends nothing and stays ended, and the next message is a turn of its own", { timeout: 60_000 }, async () => {
   const started = Promise.withResolvers();
@@ -358,7 +379,7 @@ test("a turn its session interrupted (a stop OpenCode did not end) is open to th
   await c.session.close();
 });
 
-test("an opencode turn stopped before its prompt was placed: settled, its prompt is withdrawn, a later open finds no open turn and writes no second end, and the next message runs alone", { timeout: 60_000 }, async () => {
+test("an opencode turn stopped before its prompt was placed: settled, its prompt stays in the conversation: a later open finds no open turn and writes no second end, and the next message's turn carries it", { timeout: 60_000 }, async () => {
   const store = memorySessionStore();
   const sp = spec([], { key: "s-stop-early" });
   const { adapter: first } = adapter([]);
@@ -393,12 +414,12 @@ test("an opencode turn stopped before its prompt was placed: settled, its prompt
   const placed = ended.submissions.filter((x) => ended.placed.has(x.id)).map((x) => x.text);
   assert.deepEqual(
     { pendingAfterSettle, laterOpen, ends, placed, modelSaw: [...userTexts(nextModel), ...userTexts(laterModel)] },
-    { pendingAfterSettle: [], laterOpen: "idle", ends: ["interrupted"], placed: ["and now?"], modelSaw: ["and now?"] },
-    "the stopped turn's prompt is withdrawn at its settle: no later open finds it open or ends it again, and the next message is the only one sent",
+    { pendingAfterSettle: [], laterOpen: "idle", ends: ["interrupted"], placed: [CARRIED], modelSaw: [CARRIED] },
+    "the stopped turn's prompt is withdrawn at its settle and carried: no later open finds it open or ends it again, and the next message's turn has it first",
   );
 });
 
-test("an opencode turn stopped before its prompt was placed, then a message in the same process: the session reads open_turn after the stop, its settle withdraws the prompt, and the message runs alone", { timeout: 60_000 }, async () => {
+test("an opencode turn stopped before its prompt was placed, then a message in the same process: the session reads open_turn after the stop, and the message's turn carries the stopped prompt", { timeout: 60_000 }, async () => {
   const store = memorySessionStore();
   const sp = spec([], { key: "s-stop-early-here" });
   const { adapter: a, provider: p } = adapter([{ text: "Now." }]);
@@ -421,8 +442,8 @@ test("an opencode turn stopped before its prompt was placed, then a message in t
   const placed = ended.submissions.filter((x) => ended.placed.has(x.id)).map((x) => x.text);
   assert.deepEqual(
     { afterStop, pending: pendingSubmissions(ended).map((x) => x.text), placed, modelSaw: userTexts(p) },
-    { afterStop: "open_turn", pending: [], placed: ["and now?"], modelSaw: ["and now?"] },
-    "the stopped prompt is never sent: the stop leaves the turn open to settle, and the next message is the only one sent",
+    { afterStop: "open_turn", pending: [], placed: [CARRIED], modelSaw: [CARRIED] },
+    "the stopped prompt never runs on its own: the stop leaves the turn open to settle, and the next message's turn carries it",
   );
 });
 
@@ -506,7 +527,7 @@ test("a drive whose MCP server cannot listen closes the model proxy it opened, a
   assert.deepEqual(servers.map((server) => server.listening), [false, false], "nothing the failed start opened is left listening");
 });
 
-test("an opencode turn whose stop lands while send() is still recording the prompt: the session reads open_turn after it, and the next message is sent alone", { timeout: 60_000 }, async () => {
+test("an opencode turn whose stop lands while send() is still recording the prompt: the session reads open_turn after it, and the next message's turn carries the stopped prompt", { timeout: 60_000 }, async () => {
   const store = memorySessionStore();
   const sp = spec([], { key: "s-abort-submit" });
   // The session's writer, with the prompt's submission held at its append until the test lets it go.
@@ -541,8 +562,8 @@ test("an opencode turn whose stop lands while send() is still recording the prom
   const placed = ended.submissions.filter((x) => ended.placed.has(x.id)).map((x) => x.text);
   assert.deepEqual(
     { afterStop, pending: pendingSubmissions(ended).map((x) => x.text), placed, modelSaw: userTexts(p) },
-    { afterStop: "open_turn", pending: [], placed: ["and now?"], modelSaw: ["and now?"] },
-    "a stop during the prompt's record leaves the turn open to settle, and the stopped prompt is never sent",
+    { afterStop: "open_turn", pending: [], placed: [CARRIED], modelSaw: [CARRIED] },
+    "a stop during the prompt's record leaves the turn open to settle, and the stopped prompt never runs on its own: the next message's turn carries it",
   );
 });
 

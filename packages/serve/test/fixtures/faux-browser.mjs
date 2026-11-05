@@ -3,10 +3,11 @@
 // line says whether the Browserbase variables reached it in the env the real provider gets (never their values), its
 // second which vendor the run's plane named (`browserbase`, `kernel`, or why it is unavailable) and whether Kernel's key
 // reached it. The page names the vendor too, so the run's answer says which browser it got. Kernel's provider keeps
-// no downloads, and neither does this one when the vendor is Kernel. A run handed its agent's saved sign-in (over its
-// pipe) gets a line naming it, and whether that ref is anywhere in its environment (process.env, the env the provider
-// gets with its hidden properties, and the environment the kernel shows); each session that asks for a profile logs
-// the profile's name and whether it saves. Profiles are kept, as Browserbase's and Kernel's are.
+// no downloads, and neither does this one when the vendor is Kernel. Its provider is named for the vendor, so the run
+// prices its session time as that vendor's, or $FAUX_BROWSER_PROVIDER's. A run handed its agent's saved sign-in (over
+// its pipe) gets a line naming it, and whether that ref is anywhere in its environment (process.env, the env the
+// provider gets with its hidden properties, and the environment the kernel shows); each session that asks for a
+// profile logs the profile's name and whether it saves. Profiles are kept, as Browserbase's and Kernel's are.
 import { appendFileSync, readFileSync } from "node:fs";
 import { BrowserFailureError, browserFailure } from "@parcha/pi-browser";
 import { FakeBackend, fakeDriver, fixturePage } from "@parcha/pi-browser/testing";
@@ -28,7 +29,7 @@ export default function browser(env = process.env, vendor = "browserbase", signI
     process.exit(3);
   }
   const start = "https://example.test/";
-  const backend = new FakeBackend({ start, caps: { profiles: true }, pages: { [start]: fixturePage(start, `The answer is forty-two. This browser is ${vendor}'s.`, "Example") }, ...(log ? { logFile: log } : {}) });
+  const backend = new FakeBackend({ name: process.env.FAUX_BROWSER_PROVIDER || vendor, start, caps: { profiles: true }, pages: { [start]: fixturePage(start, `The answer is forty-two. This browser is ${vendor}'s.`, "Example") }, ...(log ? { logFile: log } : {}) });
   const { downloads: _, ...withoutDownloads } = backend.provider;
   const provider = vendor === "kernel" ? withoutDownloads : backend.provider;
   const create = (spec, signal) => {
