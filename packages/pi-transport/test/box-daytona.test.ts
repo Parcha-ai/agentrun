@@ -51,6 +51,8 @@ class FakeDaytona {
 	honorsBlockAll = true;
 	/** false: an organization whose tier takes no domain list, which takes `domainAllowList` and keeps nothing. */
 	honorsDomainList = true;
+	/** How a read answers a kept domain list: Daytona's comma-separated string, a list of hosts, or a value that is neither. */
+	domainListAs: "string" | "array" | "number" = "string";
 	/** Each new sandbox stays out of the label listing for this many list calls, as Daytona's does for a moment. */
 	listPattern: boolean[] = [];
 	readonly #hidden = new Map<string, boolean[]>();
@@ -91,7 +93,16 @@ class FakeDaytona {
 			memory: 1,
 			sandboxClass: sandbox.sandboxClass,
 			...(single && sandbox.networkBlockAll !== undefined ? { networkBlockAll: sandbox.networkBlockAll } : {}),
-			...(single && sandbox.domainAllowList !== undefined ? { domainAllowList: sandbox.domainAllowList } : {}),
+			...(single && sandbox.domainAllowList !== undefined
+				? {
+						domainAllowList:
+							this.domainListAs === "array"
+								? sandbox.domainAllowList.split(",")
+								: this.domainListAs === "number"
+									? 7
+									: sandbox.domainAllowList,
+					}
+				: {}),
 		};
 	}
 
@@ -451,12 +462,41 @@ describe("daytona boxes", () => {
 				expect(body.domainAllowList).toBe(allow.join(","));
 				expect(body.networkBlockAll).toBeUndefined();
 				expect(box.facts().network).toBe("allowlist");
+				expect(box.facts().allow).toEqual(allow);
 				const attached = await provider().attach(box.id, context);
 				if (!attached.ok) throw attached.error;
 				expect(attached.value?.facts().network).toBe("allowlist");
+				expect(attached.value?.facts().allow).toEqual(allow);
 			},
 			{ network: { allow } },
 		);
+	});
+
+	it("takes a domain list Daytona reads back as a list of hosts, and the box knows its list", async () => {
+		fake.domainListAs = "array";
+		try {
+			await withBox(
+				async (box) => {
+					expect(box.facts().network).toBe("allowlist");
+					expect(box.facts().allow).toEqual(["pypi.org", "*.npmjs.org"]);
+				},
+				{ network: { allow: ["PyPI.org", "*.npmjs.org"] } },
+			);
+		} finally {
+			fake.domainListAs = "string";
+		}
+	});
+
+	it("abandons a sandbox whose domain list reads back as neither a string nor a list, deleting it, and never throws", async () => {
+		fake.domainListAs = "number";
+		try {
+			const created = await provider().create(spec({ network: { allow: ["pypi.org"] } }), context);
+			expect(created.ok ? "ok" : created.error.code).toBe("unsupported");
+			expect(created.ok ? "" : created.error.message).toContain("domainAllowList");
+			expect(fake.sandboxes.size).toBe(0);
+		} finally {
+			fake.domainListAs = "string";
+		}
 	});
 
 	it("refuses a domain list Daytona did not keep, deleting its sandbox, and a CIDR in the list before anything is made", async () => {

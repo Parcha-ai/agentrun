@@ -15,9 +15,15 @@ export type SubmissionKind = "prompt" | "steer" | "followUp" | "withdraw";
 export interface Submission {
   id: string;
   kind: SubmissionKind;
+  /** What the person sent. In the session's state (foldSession), a prompt or follow-up after `carry` withdraws holds
+   *  their words first (drive.ts `carrying`); the record keeps the person's own. */
   text?: string;
   /** For a withdraw: the submission it withdraws. */
   target?: string;
+  /** For a withdraw of a prompt or follow-up: its text stays in the conversation, carried into the next prompt or
+   *  follow-up, whose `text` in the session's state (foldSession) holds it first, pending or placed. A person's stop
+   *  withdraws this way (settleTurn): what they asked is kept, never run on its own. */
+  carry?: true;
   receivedAt: Date;
 }
 
