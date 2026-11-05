@@ -146,6 +146,12 @@ export default function reply(context, faux) {
       return faux.message([faux.thinking(`I hold ${key} now.`), faux.text(`${"Answering at length. ".repeat(100)}The key is ${key}. Done.`)]);
     });
   }
+  // Records the first message it was given, exactly as the model received it, then answers (user-row-redact.test.mjs).
+  const record = /Record what you got in (\S+) now\.$/.exec(first);
+  if (record) {
+    process.getBuiltinModule("node:fs").writeFileSync(record[1], first);
+    return faux.message("Recorded.");
+  }
   const quote = /^Quote the key in (\S+)$/.exec(first);
   if (quote) {
     const key = process.getBuiltinModule("node:fs").readFileSync(quote[1], "utf8").trim();
@@ -254,6 +260,10 @@ export default function reply(context, faux) {
   if (first.includes("Answer quoting the later key.")) return faux.message(`Later: ${["not-a-secret", "later-key-0123456789abcdef"].join("-")} ends here.`);
   // A provider error that is no 401 but echoes the key it was sent.
   if (first.includes("Fail echoing a held key")) return faux.message("", { stopReason: "error", errorMessage: '500 {"message":"Key not-a-secret-echoed-key-0123 is not valid"}' });
+  // A provider's content filter stopping the answer, in pi-ai's words for it on each API (its stop reason "error"): the
+  // Responses API's incomplete answer, Chat Completions' finish_reason, and the Messages API's refusal with no explanation.
+  const filtered = /Stop on the content filter \((responses|completions|anthropic)\)/.exec(first)?.[1];
+  if (filtered) return faux.message("", { stopReason: "error", errorMessage: { responses: "Response incomplete: content_filter", completions: "Provider finish_reason: content_filter", anthropic: "The model refused to complete the request" }[filtered] });
   // pi-ai's words for a provider that refused the key (401), as a model request on any tier would end.
   if (first.includes("Fail with a refused key")) return faux.message("", { stopReason: "error", errorMessage: '401: {"message":"User not found","code":401}' });
   // A final stop of the model's own with no text (turn-record.test.mjs): one empty text block (and an empty thinking

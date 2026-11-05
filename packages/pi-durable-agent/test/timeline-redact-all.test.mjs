@@ -147,3 +147,15 @@ for (const [how, kind, start, delta] of [["thinking", "thinking", "thinking_star
     assert.ok(reducer.rows().some((r) => /\[redacted\] now\./.test(r.text ?? "")), shown(reducer.rows()));
   });
 }
+
+test("a person's message that holds a held key: its row's summary and text hold no form of it, settled and live", () => {
+  const entries = [user(`Use ${KEY} for the call, or ${B64}.`), assistant([{ type: "text", text: "Done." }])];
+  const rows = timelineOf(entries, { redact });
+  const own = rows.filter((r) => r.kind === "user_message");
+  assert.equal(own.length, 1, JSON.stringify(rows.map((r) => r.kind)));
+  assert.deepEqual(leaks(own), [], shown(own));
+  assert.equal(own[0].text, "Use [redacted] for the call, or [redacted].");
+  const reducer = timelineReducer({ redact });
+  reducer.apply(entries.map((entry) => ({ type: "entry_appended", entry })));
+  assert.deepEqual(leaks(reducer.rows().filter((r) => r.kind === "user_message")), [], shown(reducer.rows()));
+});

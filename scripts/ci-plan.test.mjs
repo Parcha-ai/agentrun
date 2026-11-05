@@ -8,7 +8,7 @@ import { dirname, join } from 'node:path';
 import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { parse } from 'yaml';
-import { checkCover, commandsOf, modelSeconds, plan, pools, readConfig, readSuites, testShards, unitsOf } from './ci-plan.mjs';
+import { checkCover, commandsOf, modelSeconds, plan, pools, readConfig, readSuites, testShards, timingDrift, unitsOf } from './ci-plan.mjs';
 
 const scratch = mkdtempSync(join(tmpdir(), 'ci-plan-'));
 after(() => rmSync(scratch, { recursive: true, force: true }));
@@ -103,6 +103,15 @@ test('each suite is in one pool, and the pool without a list takes every other s
   assert.throws(() => pools(suites, { pools: { one: { suites: ['a'] }, two: { suites: ['a'] }, rest: {} } }), /the suite a is in the pools one and two/);
   assert.throws(() => pools(suites, { pools: { one: { suites: ['a'] } } }), /exactly one pool takes every suite no other pool names/);
   assert.throws(() => pools(suites, { pools: { one: { suites: ['gone'] }, rest: {} } }), /the pool one names gone, which is not a suite/);
+});
+
+test('a shard that runs a quarter and a minute over its model warns that ci-timings.json is stale, naming it; one within either does not', () => {
+  // any-2 on 11-04: modelled 275 s, its tests ran 398 s, from a timings file a day old.
+  assert.match(timingDrift('any-2', 275, 398), /^::warning title=ci-timings\.json is stale::any-2 ran 398 s, modelled 275 s: refresh scripts\/ci-timings\.json from CI's job logs \(node scripts\/ci-timings\.mjs <job log>\.\.\.\)/);
+  assert.equal(timingDrift('any-1', 275, 335), undefined, 'a minute over is noise on a hosted runner');
+  assert.equal(timingDrift('any-1', 20, 70), undefined, 'under a minute over, however many times its model');
+  assert.equal(timingDrift('any-1', 400, 470), undefined, 'over by a minute but under a quarter');
+  assert.equal(timingDrift('any-1', 275, 100), undefined, 'faster than its model (a Blacksmith runner in the queue)');
 });
 
 test('a cover that drops a unit, runs one twice or adds one is refused, naming it', () => {

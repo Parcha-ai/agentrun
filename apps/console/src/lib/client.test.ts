@@ -115,6 +115,21 @@ describe("agents", () => {
     }
   });
 
+  it("retires a learned skill's SKILL.md and a draft's README.md through the note's retire route, slashes percent-encoded, under If-Match", async () => {
+    const { fn, calls } = fakeFetch(() => new Response("---\nname: find-policies\nstatus: retired\n---\n", { status: 200, headers: { "content-type": "text/markdown", etag: '"skill-v2"' } }));
+    const v2 = createClient({ fetch: fn });
+    const done = await v2.retireNote("refunds", "skills/find-policies/SKILL.md", '"skill-v1"');
+    await v2.retireNote("refunds", "workflows/check-refunds/README.md", '"readme-v1"');
+    expect(calls.map((c) => `${c.init?.method} ${c.url}`)).toEqual([
+      "POST /v2/agents/refunds/learning/files/skills%2Ffind-policies%2FSKILL.md/retire",
+      "POST /v2/agents/refunds/learning/files/workflows%2Fcheck-refunds%2FREADME.md/retire",
+    ]);
+    expect(new Headers(calls[0].init?.headers).get("if-match")).toBe('"skill-v1"');
+    expect(new Headers(calls[1].init?.headers).get("if-match")).toBe('"readme-v1"');
+    expect(calls[0].init?.credentials).toBe("same-origin");
+    expect(done).toEqual({ note: "---\nname: find-policies\nstatus: retired\n---\n", etag: '"skill-v2"' });
+  });
+
   it("lists runs in one state, or the archived ones, with the server's list parameters", async () => {
     const { fn, calls } = fakeFetch(() => json(200, { runs: [], next_cursor: null }));
     const v2 = createClient({ fetch: fn });
