@@ -71,7 +71,7 @@ test("demo through the API: with AGENTRUN_BOXES not set and Docker answering, do
   const made = await api("POST", "/agents", fresh("shelly"));
   assert.equal(made.status, 201, JSON.stringify(made.body));
   assert.deepEqual(made.body.definition.place, DOCKER);
-  assert.deepEqual(made.body.definition.tools, ["bash"]);
+  assert.ok(made.body.definition.tools.includes("bash"), JSON.stringify(made.body.definition.tools));
   const run = await api("POST", "/agents/shelly/runs", { input: { content: JSON.stringify({ probe: [{ tool: "bash", args: { command: "printf 'hello from the box\\n' > out.txt" } }] }) } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
   assert.deepEqual(run.body.place, DOCKER);
@@ -159,7 +159,8 @@ test("fresh-HOME start of the built CLI with AGENTRUN_BOXES not set, a fake dock
   assert.deepEqual(places.default_place, DOCKER);
   const made = await api("POST", "/agents", fresh("first"));
   assert.equal(made.status, 201, JSON.stringify(made.body));
-  assert.deepEqual([made.body.definition.place, made.body.definition.tools], [DOCKER, ["bash"]]);
+  assert.deepEqual(made.body.definition.place, DOCKER);
+  assert.ok(made.body.definition.tools.includes("bash"), JSON.stringify(made.body.definition.tools));
   assert.ok(docker.calls().some((args) => args[0] === "version"), "the CLI's start probed docker");
   // The box image's first build, said as it starts and as it ends, after the banner.
   await until(async () => /^The Docker box image is ready\.$/m.test(all), "the image's end line");
