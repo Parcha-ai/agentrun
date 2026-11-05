@@ -124,10 +124,12 @@ test("every host tool's largest result is within the host's result bound, which 
   assert.equal(listing.text.split("\n").length, 1 + background.BACKGROUND_LIST_MAX + 1, listing.text.slice(0, 300));
   keep("bash_list", listing.text);
   const started = await start.call({ command: `${'"'.repeat(1000)}; sleep 30` }, { callId: "s", signal });
-  assert.match(started.text, new RegExp(`^Started background process ${ended} `));
+  // The next free id: past every one in work/ and in the box-only directory (this machine's TMPDIR, here).
+  const startedId = /^Started background process (\d+) /.exec(started.text)?.[1];
+  assert.ok(Number(startedId) >= ended, started.text);
   keep("bash_background", started.text);
   keep("bash_input", (await input.call({ id: "999999999", text: "x" }, { callId: "i", signal })).text, (await input.call({ id: "1", text: '"'.repeat(background.BACKGROUND_INPUT_BYTES + 1) }, { callId: "i2", signal })).text);
-  const killed = await signalTool.call({ id: String(ended), signal: "KILL" }, { callId: "k", signal });
+  const killed = await signalTool.call({ id: startedId, signal: "KILL" }, { callId: "k", signal });
   assert.match(killed.text, /ended by signal KILL/);
   keep("bash_signal", killed.text, (await signalTool.call({ id: "3", signal: "KILL" }, { callId: "k2", signal })).text);
 
