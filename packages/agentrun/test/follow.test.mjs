@@ -270,3 +270,22 @@ test("runs wait takes a run id as one whole path segment: an empty, . or .. one 
   assert.equal((await cli(["runs", "wait", "a/../b", "--base-url", base])).code, 1, "a slash is part of the id, encoded");
   assert.deepEqual(requests, ["/v2/runs/a%2F..%2Fb/timeline?after=0&wait_ms=0"]);
 });
+
+test("--timeout takes a fraction of a second: the wait goes on to its timeout, exit 1, never a request refused before it is sent", { timeout: 60_000 }, async (t) => {
+  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !DROPPED.includes(name)));
+  const cli = cliOf({ ...env, AGENTRUN_API_KEY: "fake-test-key" }, []);
+  // A run that keeps working: every page says nothing changed, and to ask again soon.
+  const server = createServer((req, res) => {
+    const timeline = new URL(req.url, "http://host").pathname.endsWith("/timeline");
+    const body = timeline ? { run_id: "r1", status: "working", state: "working", reset: false, rows: [], drop: [], next_after: 5, unchanged: true, has_more: false, final: false, poll_after_ms: 50 } : { run_id: "r1", status: "working" };
+    res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(body));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => (server.closeAllConnections(), server.close()));
+  const base = `http://127.0.0.1:${server.address().port}/v2`;
+  for (const seconds of ["1.0005", "0.5", "0.0001"]) {
+    const waited = await cli(["runs", "wait", "r1", "--timeout", seconds, "--base-url", base]);
+    assert.equal(waited.code, 1, `${seconds}: ${waited.err}`);
+    assert.match(waited.err, /^Run r1 is still working after [\d.]+ s; it goes on/, seconds);
+  }
+});
