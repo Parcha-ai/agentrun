@@ -1,11 +1,14 @@
 #!/usr/bin/env node
 // The CLI's command table, from the OpenAPI document the server serves: one entry per operation it offers, and the
-// agentrun-cli skill from the same table (scripts/clients/skill.mjs): its SKILL.md and references/commands.md.
-//   node scripts/generate-clients.mjs           write packages/agentrun/lib/commands.generated.mjs and the skill
+// agentrun-cli skill from the same table (scripts/clients/skill.mjs): its SKILL.md and references/commands.md. The
+// TypeScript client's operations (scripts/clients/typescript.mjs) come from the same projection, under the same hash.
+//   node scripts/generate-clients.mjs           write packages/agentrun/lib/commands.generated.mjs, the skill and
+//                                               packages/client/src/operations.generated.ts
 //   node scripts/generate-clients.mjs --check   fail when a committed file is not the document's, or the skill names a
 //                                               command or flag the CLI does not have
 // It reads the built server (packages/serve/dist), so it runs after the build. --out, --skill (the skill's folder),
-// --resources and --document (a document as JSON, in place of the built server's) name other files.
+// --client (the TypeScript client's file), --resources and --document (a document as JSON, in place of the built
+// server's) name other files.
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
@@ -15,12 +18,14 @@ import { FLAGS, WAIT } from '../packages/agentrun/lib/follow.mjs';
 import { SECRETS } from '../packages/agentrun/lib/login.mjs';
 import { SKILL_INSTALL } from '../packages/agentrun/lib/skill.mjs';
 import { allCommands, recipeProblems, referenceText, skillText } from './clients/skill.mjs';
+import { clientProblems, clientText } from './clients/typescript.mjs';
 import { isMain } from './is-main.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const OUTPUT = 'packages/agentrun/lib/commands.generated.mjs';
 const RESOURCES = 'scripts/clients/resources.json';
 const SKILL = 'packages/agentrun/skills/agentrun-cli';
+const CLIENT = 'packages/client/src/operations.generated.ts';
 // Words the launcher keeps for itself or for the server it starts, and the CLI's own commands of one word: no command
 // may begin with one.
 const RESERVED = ['api', 'help', 'import', 'reset-password', 'login', 'logout', 'skill'];
@@ -70,10 +75,37 @@ function flagType(shape) {
 }
 
 const firstLine = (text) => (text ?? '').split('\n')[0].trim();
+const JSON_TYPE = /^application\/(?:[\w.+-]+\+)?json$/;
+const COMPONENT = '#/components/schemas/';
 
-/** What the table is made of, and all of it: per operation, its route, names, parameters, request body (its types and
- *  top-level fields), success answers' types and whether the server turns it off. The header's hash is this projection's,
- *  so a change elsewhere in the document (a response schema's description) leaves the table as it is. */
+/** A schema as a type reads it: its structure only (type, enum, const, properties, required, items, additional
+ *  properties, oneOf, anyOf, allOf), no description or bound, so a change of wording changes no type. A component it
+ *  names is inlined, marked with its name, so the projection holds every type whole and a client can name it. */
+function typeOf(doc, schema) {
+  if (schema === true || schema === undefined || schema === null) return {};
+  if (schema === false) return { not: {} };
+  const name = typeof schema.$ref === 'string' && schema.$ref.startsWith(COMPONENT) ? schema.$ref.slice(COMPONENT.length) : undefined;
+  const s = deref(doc, schema) ?? {};
+  const out = name ? { name } : {};
+  for (const key of ['type', 'enum', 'const', 'required']) if (s[key] !== undefined) out[key] = s[key];
+  if (s.properties) out.properties = Object.fromEntries(Object.entries(s.properties).map(([key, value]) => [key, typeOf(doc, value)]));
+  if (s.additionalProperties !== undefined) out.additionalProperties = typeof s.additionalProperties === 'boolean' ? s.additionalProperties : typeOf(doc, s.additionalProperties);
+  if (s.items !== undefined) out.items = typeOf(doc, s.items);
+  for (const key of ['oneOf', 'anyOf', 'allOf']) if (Array.isArray(s[key])) out[key] = s[key].map((part) => typeOf(doc, part));
+  return out;
+}
+
+/** The type of an operation's JSON answers, one per success status that has one; null when none is JSON. */
+function answerOf(doc, op) {
+  const types = Object.entries(op.responses ?? {}).filter(([status]) => /^2/.test(status)).flatMap(([, response]) => Object.entries(deref(doc, response)?.content ?? {}).filter(([type]) => JSON_TYPE.test(type)).map(([, media]) => typeOf(doc, media.schema)));
+  const distinct = [...new Map(types.map((type) => [canonical(type), type])).values()];
+  return distinct.length === 0 ? null : distinct.length === 1 ? distinct[0] : { oneOf: distinct };
+}
+
+/** What the clients are made of, and all of it: per operation, its route, names, parameters, request body (its types,
+ *  top-level fields and its JSON schema's type), success answers' media types and JSON type, and whether the server turns
+ *  it off. Every generated file's header holds this projection's hash, so a change elsewhere in the document (a
+ *  description) leaves them as they are. */
 export function operationsOf(doc) {
   const found = [];
   for (const [path, item] of Object.entries(doc.paths ?? {})) {
@@ -93,8 +125,10 @@ export function operationsOf(doc) {
         body: body === undefined ? null : {
           required: body.required === true, types: Object.keys(body.content ?? {}),
           properties: Object.entries(schema?.properties ?? {}).map(([name, property]) => ({ name, ...shapeOf(doc, property), required: schema.required?.includes(name) ?? false, description: firstLine(deref(doc, property)?.description) })),
+          type: schema === undefined ? null : typeOf(doc, body.content['application/json'].schema),
         },
         answers: Object.entries(op.responses ?? {}).filter(([status]) => /^2/.test(status)).flatMap(([, response]) => Object.keys(deref(doc, response)?.content ?? {})),
+        answer: answerOf(doc, op),
       });
     }
   }
@@ -131,7 +165,7 @@ export function publicFieldProblems(doc, map) {
 }
 
 /** An operation's command: the map's name, else its tag and its operationId. */
-const commandOf = (op, map) => map.commands[op.operationId] ?? [op.tags[0] ?? 'api', kebab(op.operationId)];
+export const commandOf = (op, map) => map.commands[op.operationId] ?? [op.tags[0] ?? 'api', kebab(op.operationId)];
 
 /** What is wrong with the map against the operations: a name used twice, a name inside another, a reserved word, an
  *  entry (a name, a secret body, an omitted operation, a file path parameter) for an operation or a parameter the
@@ -215,11 +249,11 @@ export function tableText(ops, map) {
 }
 
 async function main() {
-  const { values } = parseArgs({ options: { check: { type: 'boolean' }, out: { type: 'string' }, skill: { type: 'string' }, resources: { type: 'string' }, document: { type: 'string' } } });
+  const { values } = parseArgs({ options: { check: { type: 'boolean' }, out: { type: 'string' }, skill: { type: 'string' }, client: { type: 'string' }, resources: { type: 'string' }, document: { type: 'string' } } });
   const map = { secretBody: [], omit: {}, multiSegment: {}, publicFields: {}, ...JSON.parse(await readFile(resolve(root, values.resources ?? RESOURCES), 'utf8')) };
   const doc = values.document ? JSON.parse(await readFile(resolve(values.document), 'utf8')) : await servedDocument();
   const ops = operationsOf(doc);
-  const problems = [...problemsOf(ops, map), ...publicFieldProblems(doc, map)];
+  const problems = [...problemsOf(ops, map), ...publicFieldProblems(doc, map), ...clientProblems(ops, map, commandOf)];
   if (problems.length) {
     console.error(`The command map does not fit the document:\n${problems.map((p) => `  ${p}`).join('\n')}`);
     process.exitCode = 1;
@@ -231,7 +265,7 @@ async function main() {
     process.exitCode = 1;
     return;
   }
-  const outputs = [[values.out ?? OUTPUT, tableText(ops, map)], ...Object.entries(skill.files).map(([file, text]) => [join(values.skill ?? SKILL, file), text])];
+  const outputs = [[values.out ?? OUTPUT, tableText(ops, map)], ...Object.entries(skill.files).map(([file, text]) => [join(values.skill ?? SKILL, file), text]), [values.client ?? CLIENT, clientText(ops, map, commandOf, hashOf(ops))]];
   if (values.check) {
     const stale = [];
     for (const [file, text] of outputs) if (await readFile(resolve(root, file), 'utf8').catch(() => '') !== text) stale.push(file);
@@ -240,7 +274,7 @@ async function main() {
       process.exitCode = 1;
       return;
     }
-    console.log('The CLI command table and its skill match the server\'s OpenAPI document');
+    console.log('The CLI command table, its skill and the TypeScript client\'s operations match the server\'s OpenAPI document');
   } else {
     for (const [file, text] of outputs) {
       await mkdir(dirname(resolve(root, file)), { recursive: true });
