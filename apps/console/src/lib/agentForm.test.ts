@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createBody, DECISION, decisionProvider, defaultTools, editBody, harnessOptions, reachesWeb, same, sandboxReason, saveError, toolOffers, toolsFor, WORKFLOW } from "./agentForm";
+import { capOf, createBody, DECISION, decisionProvider, defaultTools, editBody, harnessOptions, reachesWeb, same, sandboxReason, saveError, toolOffers, toolsFor, WORKFLOW } from "./agentForm";
 import { DECISION_STARTER } from "./decisionStarter";
 import { WORKFLOW_STARTER } from "./workflowStarter";
 import { ClientError } from "./client";
@@ -102,6 +102,16 @@ describe("the agent's default spend cap per run (definition.max_cost_usd)", () =
     expect(createBody({ ...f, max_cost_usd: 0.75 }).definition.max_cost_usd).toBe(0.75);
     expect(createBody(f).definition).not.toHaveProperty("max_cost_usd");
     expect(createBody({ ...f, harness: DECISION, decisionProvider: "jev", max_cost_usd: 0.75 }).definition).not.toHaveProperty("max_cost_usd");
+  });
+});
+
+describe("capOf, the default cap field's text", () => {
+  it("empty is none, a number (with or without a leading $) is that number, and a $ alone or text is refused", () => {
+    expect(capOf("")).toEqual({ ok: true, value: undefined });
+    expect(capOf("   ")).toEqual({ ok: true, value: undefined });
+    expect(capOf("$2.50")).toEqual({ ok: true, value: 2.5 });
+    expect(capOf(" 4 ")).toEqual({ ok: true, value: 4 });
+    for (const text of ["$", " $ ", "ten"]) expect(capOf(text).ok, text).toBe(false);
   });
 });
 

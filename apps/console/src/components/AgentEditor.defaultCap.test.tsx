@@ -80,6 +80,33 @@ describe("AgentEditor, the agent's default spend cap per run", () => {
     expect(sent[0]?.max_cost_usd).toBeUndefined();
   });
 
+  it("0 typed on an agent with no cap sends none (nothing to clear, so no new revision); 0 on a capped agent clears it", async () => {
+    const sent: Record<string, unknown>[] = [];
+    const bare = { ...capped, definition: { ...capped.definition, max_cost_usd: undefined } };
+    const onSave = async (fields: Record<string, unknown>) => { sent.push(fields); return null; };
+    const a = mount({ agent: bare, onSave });
+    a.type("0");
+    await a.save();
+    a.type("$0");
+    await a.save();
+    roots.splice(0).forEach((u) => u()); document.body.innerHTML = "";
+    const b = mount({ agent: capped, onSave });
+    b.type("0");
+    await b.save();
+    expect(sent.map((s) => ["max_cost_usd" in s, s.max_cost_usd])).toEqual([[false, undefined], [false, undefined], [true, 0]]);
+  });
+
+  it("a currency sign with no number is refused under the field, never read as empty: a saved cap is not cleared", async () => {
+    let calls = 0;
+    const { host, type, save } = mount({ agent: capped, onSave: async () => { calls++; return null; } });
+    for (const text of ["$", " $ "]) {
+      type(text);
+      await save();
+    }
+    expect(calls).toBe(0);
+    expect(host.querySelector("#agent-max-cost")!.closest("div")!.parentElement!.textContent).toMatch(/number of dollars/);
+  });
+
   it("a new agent's Create sends the cap typed", async () => {
     let sent: Record<string, unknown> | undefined;
     const { host, fill, type, button, save } = mount({ agent: null, step: "context", onSave: async (fields: Record<string, unknown>) => { sent = fields; return null; } });
