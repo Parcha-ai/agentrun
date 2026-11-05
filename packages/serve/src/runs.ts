@@ -161,6 +161,9 @@ type RunMeta = {
   /** A person's answer to each tool call that waited for approval (tool-gate.ts), by its id: the first one wins, and
    *  the run's process reads it here. A cancel marks one still waiting canceled. */
   approvals?: Record<string, ApprovalAnswer>;
+  /** A cancel that waits for the run's gate to cut the approved calls it overrode (Runs.cancel): their ids, kept so an
+   *  operator (and a test) reads that it did, never how long it took. Absent on a cancel that waits on nothing. */
+  cancel_waits_for?: string[];
 };
 /** A tool call that waited for a person's approval, as the run's store has it (tool-gate.ts): `resolved` once the run's
  *  process acted on the answer. */
@@ -2348,7 +2351,11 @@ export class Runs {
       await this.abortTurn(run);
       // An approved call in flight runs outside any turn: its process's gate cuts it once it reads the cancel (tool-gate.ts),
       // which ending the process at once would forestall. A short wait for that, never a refusal.
-      if (superseded) await this.untilResolved(run, 3_000);
+      if (superseded) {
+        run.meta.cancel_waits_for = [...(run.approvals?.values() ?? [])].filter((approval) => !approval.resolved).map((approval) => approval.id);
+        await this.saveMeta(run).catch((error: Error) => warn(run.id, `its cancel's wait is not saved: ${error.message}`));
+        await this.untilResolved(run, 3_000);
+      }
       this.terminate(run);
     } else await this.settle(run, null, false);
     return true;

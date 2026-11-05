@@ -446,12 +446,10 @@ test("a stop of a parked run withdraws the call: stopped, no pending approval, i
 
   const cancelRun = await fetching(first.api, "cancel-parked", "codex");
   const cancelId = (await parked(first.api, cancelRun)).view.pending.id;
-  // A cancel with no answered call in flight waits on nothing (runs.ts untilResolved runs only after it superseded one):
-  // it answers at its usual speed, well inside that wait's 3 s bound.
-  const asked = Date.now();
   assert.equal((await first.api("POST", `/runs/${cancelRun}/cancel`)).status, 202);
-  assert.ok(Date.now() - asked < 2_000, `a plain cancel answered in ${Date.now() - asked} ms`);
   await follow(first.api, cancelRun, ["cancelled"], { deadlineMs: 30_000 });
+  // A cancel with no answered call in flight waits on nothing: its serve.json says no such wait.
+  assert.equal(JSON.parse(await readFile(join(first.data, "runs", cancelRun, "serve.json"), "utf8")).cancel_waits_for, undefined, "a plain cancel waits on nothing");
   const cancelRow = (await first.api("GET", `/runs/${cancelRun}/timeline`)).body.rows.find((r) => r.kind === "tool_approval_requested");
   assert.match(cancelRow.summary, /^Withdrawn/);
   assert.deepEqual((await answer(cancelRun, cancelId, { decision: "deny" })).status, 409);
@@ -623,7 +621,11 @@ test("a stop or a cancel cuts an approved call in flight: the tool sees the abor
     // The approved call is in flight: monid's run started, and it runs until stopped.
     for (const until = Date.now() + 30_000; !(await calls()).slice(before).some((call) => call.path === "/v1/run"); await sleep(50)) assert.ok(Date.now() < until, `${end}: the approved call is in flight`);
     if (end === "stop") assert.equal((await api("POST", `/runs/${runId}/stop`, {})).body.stopped, true);
-    else assert.equal((await api("POST", `/runs/${runId}/cancel`)).status, 202);
+    else {
+      assert.equal((await api("POST", `/runs/${runId}/cancel`)).status, 202);
+      // The cancel overrode an answer the run's process was acting on, and waited for its gate to cut that call.
+      assert.deepEqual(JSON.parse(await readFile(join(server.data, "runs", runId, "serve.json"), "utf8")).cancel_waits_for, [view.pending.id], "the cancel says it waits for the approved call to be cut");
+    }
     for (const until = Date.now() + 15_000; !(await calls()).slice(before).some((call) => /^\/v1\/runs\/[^/]+\/stop$/.test(call.path)); await sleep(50)) assert.ok(Date.now() < until, `${end}: the tool saw the abort, and monid was asked to stop the run`);
     await sleep(2_000);
     const rows = (await api("GET", `/runs/${runId}/timeline`)).body.rows;
