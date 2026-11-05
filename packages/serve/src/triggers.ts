@@ -207,8 +207,9 @@ function sourceOf(value: unknown, now: number, issues: InputIssue[]): Schedule |
   if (!Number.isSafeInteger(value.every_s) || (value.every_s as number) < MIN_EVERY_S || (value.every_s as number) > MAX_EVERY_S) return bad("every_s", "invalid", `every_s is a whole number of seconds, ${MIN_EVERY_S} to ${MAX_EVERY_S}`), undefined;
   const given = value.start_at === undefined ? now : instantOf(value.start_at);
   if (given === undefined) return bad("start_at", "invalid", "start_at is an RFC 3339 date-time with its offset"), undefined;
-  // The grid's origin, to the second: the first firing is at it when it is ahead, else one step after it.
-  const start = value.start_at === undefined ? Math.ceil(now / 1000) * 1000 : Math.floor(given / 1000) * 1000;
+  // The grid's origin, to the second (down, so one made now first fires an interval from now): the first firing is at it
+  // when it is ahead, else one step after it.
+  const start = Math.floor(given / 1000) * 1000;
   return { kind: "schedule", every_s: value.every_s as number, start_at: second(start) };
 }
 
