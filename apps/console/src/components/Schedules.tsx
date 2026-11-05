@@ -25,12 +25,13 @@ const at = (iso: string) => when(iso);
 const TONE: Record<Firing["status"], Tone | "plain"> = { started: "success", sent: "success", skipped: "muted", missed: "warning", failed: "error", due: "active" };
 
 /** Schedules (serve's trigger/1): each starts an agent's capped runs with no one there. */
-/** `refreshMs`: how often an open schedule's page reads it again, so a firing shows as it happens (the list, twice that). */
-export function SchedulesPage({ v2, view, go, agentName, minEvery, refreshMs = 15_000 }: PageProps & { view: ScheduleView; minEvery?: number; refreshMs?: number }) {
-  if (view.schedule === undefined) return <ScheduleList v2={v2} go={go} agentName={agentName} every={refreshMs * 2} />;
+/** `refreshMs`: how often an open schedule's page reads it again, so a firing shows as it happens (the list, twice that).
+ *  `failuresToPause`: the failed firings in a row that turn a schedule off (capabilities' features.triggers.failures_to_pause). */
+export function SchedulesPage({ v2, view, go, agentName, minEvery, failuresToPause, refreshMs = 15_000 }: PageProps & { view: ScheduleView; minEvery?: number; failuresToPause?: number; refreshMs?: number }) {
+  if (view.schedule === undefined) return <ScheduleList v2={v2} go={go} agentName={agentName} every={refreshMs * 2} failuresToPause={failuresToPause} />;
   if (view.schedule === null) return <ScheduleForm v2={v2} go={go} minEvery={minEvery} />;
   if (view.edit) return <ScheduleEdit key={view.schedule} v2={v2} go={go} id={view.schedule} minEvery={minEvery} />;
-  return <ScheduleDetail key={view.schedule} v2={v2} go={go} agentName={agentName} id={view.schedule} every={refreshMs} />;
+  return <ScheduleDetail key={view.schedule} v2={v2} go={go} agentName={agentName} id={view.schedule} every={refreshMs} failuresToPause={failuresToPause} />;
 }
 
 /** `read` again every `every` ms while the tab shows, and once when it shows again; nothing while it is hidden (SWR's
@@ -56,7 +57,7 @@ function OffChip({ trigger }: { trigger: Trigger }) {
 /** How a schedule's last firing went, or that it has not fired. */
 const lastWords = (t: Trigger) => (t.last_firing ? `${firingWords(t.last_firing)} · ${at(t.last_firing.nominal_at)}` : "Not fired yet");
 
-function ScheduleList({ v2, go, agentName, every }: PageProps & { every: number }) {
+function ScheduleList({ v2, go, agentName, every, failuresToPause }: PageProps & { every: number; failuresToPause?: number }) {
   const [triggers, setTriggers] = useState<Trigger[] | null>(null);
   const [error, setError] = useState<Problem | null>(null);
   const [tries, setTries] = useState(0);
@@ -92,7 +93,7 @@ function ScheduleList({ v2, go, agentName, every }: PageProps & { every: number 
                     {!t.enabled && <OffChip trigger={t} />}
                   </div>
                   <p className="mt-1 break-words font-mono text-[12px] text-muted-foreground">{whenWords(t.source)} · {agentName(t.target.agent_id) || t.target.agent_id}</p>
-                  {disabledWords(t) && <p className="mt-1 break-words text-[12px] text-warning-text">{disabledWords(t)}</p>}
+                  {disabledWords(t, failuresToPause) && <p className="mt-1 break-words text-[12px] text-warning-text">{disabledWords(t, failuresToPause)}</p>}
                 </div>
                 <div className="min-w-0 font-mono text-[12px] text-muted-foreground md:text-right">
                   <p>{t.next_at ? `Next ${at(t.next_at)}` : "No next time"}</p>
@@ -125,7 +126,7 @@ function NotASchedule() {
   );
 }
 
-function ScheduleDetail({ v2, go, agentName, id, every }: PageProps & { id: string; every: number }) {
+function ScheduleDetail({ v2, go, agentName, id, every, failuresToPause }: PageProps & { id: string; every: number; failuresToPause?: number }) {
   const [trigger, setTrigger] = useState<Trigger | null>(null);
   const [firings, setFirings] = useState<Firing[]>([]);
   const [error, setError] = useState<Problem | null>(null);
@@ -211,9 +212,9 @@ function ScheduleDetail({ v2, go, agentName, id, every }: PageProps & { id: stri
           )}
         </div>
       </div>
-      {disabledWords(trigger) && (
+      {disabledWords(trigger, failuresToPause) && (
         <p role="status" data-disabled className="mt-4 border border-warning/50 bg-warning/10 px-3 py-2 text-[13px] text-warning-text">
-          {disabledWords(trigger)} {trigger.disabled?.reason === "source_unreadable" ? "Edit its when, then Resume." : "Resume turns it on again."}
+          {disabledWords(trigger, failuresToPause)} {trigger.disabled?.reason === "source_unreadable" ? "Edit its when, then Resume." : "Resume turns it on again."}
         </p>
       )}
       {said && <ProblemCard problem={said} className="mt-4" />}
@@ -230,7 +231,7 @@ function ScheduleDetail({ v2, go, agentName, id, every }: PageProps & { id: stri
             {firings.map((f) => (
               <li key={f.key} data-firing={f.key} className="flex flex-col gap-1 border-b px-4 py-2.5 text-[13px] last:border-b-0 sm:flex-row sm:items-start sm:gap-4">
                 <span className="flex shrink-0 items-center gap-2"><Chip tone={TONE[f.status]}>{FIRING_LABEL[f.status]}</Chip><span className="font-mono text-[12px] text-muted-foreground">{at(f.nominal_at)}</span></span>
-                <span className="min-w-0 flex-1 break-words">{f.status === "started" ? (f.by === "manual" ? "Run now" : `On schedule${f.catch_up ? ", caught up late" : ""}`) : `${firingWords(f)}${f.by === "manual" ? " · Run now" : ""}`}</span>
+                <span className="min-w-0 flex-1 break-words">{f.status === "started" ? (f.by === "manual" ? "Run now" : `On schedule${f.catch_up ? ", caught up late" : ""}`) : `${firingWords(f)}${f.catch_up ? " · caught up late" : ""}${f.by === "manual" ? " · Run now" : ""}`}</span>
                 {f.run_id && <a href={`#/runs/${encodeURIComponent(f.run_id)}`} className="shrink-0 font-mono text-[12px] underline-offset-2 hover:underline">Run {runLabel(f.run_id)}</a>}
               </li>
             ))}
