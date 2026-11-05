@@ -147,6 +147,14 @@ describe("the Tools step's MCP servers", () => {
     expect(now).toEqual(["read"]);
   });
 
+  it("disables, on claude-agent alone, a tool whose schema's root the Claude CLI drops it for", () => {
+    const server = { ...FAKE, tools: [...FAKE.tools, { name: "either", description: "One shape or another.", input_schema: { type: "object", anyOf: [{ required: ["a"] }, { required: ["b"] }] } }] };
+    const disabled = (harness: string) => /value="mcp:fake\/either"[^>]*disabled=""|disabled=""[^>]*value="mcp:fake\/either"/.test(renderToStaticMarkup(createElement(McpToolPicker, { servers: [server], tools: [], harness, onChange: () => {} })));
+    expect(disabled("claude-agent")).toBe(true);
+    expect(disabled("pi")).toBe(false);
+    expect(renderToStaticMarkup(createElement(McpToolPicker, { servers: [server], tools: [], harness: "claude-agent", onChange: () => {} }))).toContain("claude-agent drops a tool whose schema&#x27;s root has anyOf");
+  });
+
   it("takes a list whose file can't be read as a failed read: the grants can't be checked, never deleted", async () => {
     const fetch = (async (url: string) => {
       const path = String(url);
@@ -176,6 +184,22 @@ describe("the Tools step's MCP servers", () => {
 });
 
 describe("a call to an MCP server's tool on the timeline", () => {
+  it("reads a call set to ask as waiting on your approval, never failed, and an unpriced call as not metered", () => {
+    const at = "2026-11-05T10:00:00Z";
+    const rows = [
+      { id: "r1", seq: 1, kind: "tool_use", summary: "fake · add", text: null, timestamp: at, tool_name: "mcp__fake__add", tool_use_id: "c1", tool_status: "success", tool_result_preview: "Waiting for your approval" },
+      { id: "r2", seq: 2, kind: "tool_approval_requested", summary: "Waiting for your approval: mcp:fake/add", text: null, timestamp: at, tool_name: "mcp__fake__add", tool_use_id: "c1" },
+      { id: "r3", seq: 3, kind: "phase", summary: "Not metered: mcp__fake__add has no price set, so it is outside the run's cost", text: null, timestamp: at, tool_name: "mcp__fake__add", tool_use_id: "c1" },
+      { id: "r4", seq: 4, kind: "usage", summary: "Cost: $0.00 for 1 request; 1 tool call not metered", text: null, timestamp: at, tool_name: null, usage: { usd: 0, requests: 1, not_metered: 1 } },
+    ] as unknown as TimelineRow[];
+    const html = renderToStaticMarkup(createElement(Timeline, { rows, live: false }));
+    expect(html).toContain("fake · add");
+    expect(html).toContain("Your approval");
+    expect(html).not.toContain(">Error<");
+    expect(html).toContain("Not metered: mcp__fake__add has no price set");
+    expect(html).toContain("1 tool call not metered");
+  });
+
   it("is labelled <server> · <tool>", () => {
     const row = { id: "r1", seq: 1, kind: "tool_use", summary: "fake · add", text: null, timestamp: "2026-11-04T10:00:00Z", tool_name: "mcp__fake__add", tool_status: "success" } as TimelineRow;
     const html = renderToStaticMarkup(createElement(Timeline, { rows: [row], live: false }));

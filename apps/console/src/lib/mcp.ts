@@ -37,6 +37,15 @@ export function grantNameProblem(server: string, tool: string): string | undefin
   return /^[A-Za-z0-9_-]+$/.test(tool) ? `name too long to grant (${wire.length}/52)` : "its name has a character a tool name can't carry";
 }
 
+/** Why the save refuses a grant of `tool` on `harness`: its name (grantNameProblem), or, on claude-agent, a root
+ *  `anyOf`, `allOf` or `oneOf` in its input schema, which the Claude Agent CLI drops the tool for (runnable.ts). The
+ *  save's other schema checks are its own: a refusal of one is said at the field. */
+export function grantProblem(server: string, tool: McpTool, harness: string): string | undefined {
+  const schema = tool.input_schema;
+  const root = harness === "claude-agent" && schema && typeof schema === "object" ? ["anyOf", "allOf", "oneOf"].find((key) => key in schema) : undefined;
+  return grantNameProblem(server, tool.name) ?? (root ? `claude-agent drops a tool whose schema's root has ${root}` : undefined);
+}
+
 /** Each `mcp:` grant in `tools` that no saved server answers for: its server is gone, or no longer lists the tool. */
 export function staleGrants(tools: readonly string[], servers: readonly McpServer[]): { grant: string; why: string }[] {
   return tools.flatMap((grant) => {

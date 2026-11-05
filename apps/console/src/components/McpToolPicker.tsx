@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { cn } from "@/lib/utils";
-import { grantNameProblem, grantOf, type McpServer, mcpGrant, staleGrants } from "@/lib/mcp";
+import { grantOf, grantProblem, type McpServer, mcpGrant, staleGrants } from "@/lib/mcp";
 
 /** The Tools step's MCP servers: a group per saved server with a box per tool it lists, ticked when `tools` grants
  *  `mcp:<server>/<tool>`; then each grant that no saved server answers for (its server deleted, or the tool no longer
@@ -43,7 +43,7 @@ export function McpToolPicker({ servers, tools, harness, harnesses, onChange, on
       {servers.map((s) => (
         <section key={s.name} aria-label={`MCP server ${s.name}`}>
           <p className="caps mb-2 text-[11px] font-semibold text-muted-foreground">{s.name} · MCP server</p>
-          {grid(s.tools.map((t) => box(mcpGrant(s.name, t.name), t.name, [t.title, t.description].filter(Boolean).join(": ") || undefined, undefined, grantNameProblem(s.name, t.name))))}
+          {grid(s.tools.map((t) => box(mcpGrant(s.name, t.name), t.name, [t.title, t.description].filter(Boolean).join(": ") || undefined, undefined, grantProblem(s.name, t, harness))))}
         </section>
       ))}
       {stale.length > 0 && (
