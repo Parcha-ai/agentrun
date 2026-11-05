@@ -23,7 +23,7 @@ import type { Api, AssistantMessage, Context, Model, Models } from "@earendil-wo
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { REQUEST_COST, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED } from "@parcha/pi-durable-agent/timeline";
 import type { DurableRun } from "@parcha/pi-durable-disk";
-import { ATTEMPTS, type Attempt, attemptLost, CAP_REFUSED_FIELD, END_NOT_WRITTEN, CLAMP, HELD_FIELD, HELD_USD, MARK_NOT_WRITTEN, markResponseBegan, piEnded, type RefusalFigures, sideRequests, STOPPED_USD, type Stopped } from "./cap.js";
+import { anyAttemptLost, ATTEMPTS, type Attempt, attemptLost, CAP_REFUSED_FIELD, END_NOT_WRITTEN, CLAMP, HELD_FIELD, HELD_USD, MARK_NOT_WRITTEN, markResponseBegan, piEnded, type RefusalFigures, sideRequests, STOPPED_USD, type Stopped } from "./cap.js";
 import { RUN_CANCELLED } from "./files.js";
 import { isConnectCode, isGatewayTimeout } from "@parcha/agentrun-kernel";
 
@@ -123,8 +123,12 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
     }) as typeof fetch } as O;
   };
   /** What the run's cap counts a request stopped before its end at, given the answer it had streamed (its options'
-   *  STOPPED_USD), as an end mark's field; its worst case when the cap gave no such figure; none without a cap. */
+   *  STOPPED_USD), as an end mark's field; its worst case when the cap gave no such figure, or when an attempt before the
+   *  stop was lost (anyAttemptLost: it can have been billed, and the cap counts it at its hold in this process too); none
+   *  without a cap. The one figure every stop's end mark carries, a generation's and a summary's. */
   const stoppedOf = (options: unknown, message: AssistantMessage): Record<string, number> => {
+    const attempts = (options as Record<symbol, unknown> | undefined)?.[ATTEMPTS] as Attempt[] | null | undefined;
+    if (anyAttemptLost(attempts ?? undefined)) return heldOf(options);
     const stopped = (options as Record<symbol, unknown> | undefined)?.[STOPPED_USD] as Stopped | undefined;
     const figure = typeof stopped === "function" ? stopped(message) : undefined;
     return typeof figure === "number" && Number.isFinite(figure) ? { [HELD_FIELD]: figure } : heldOf(options);
