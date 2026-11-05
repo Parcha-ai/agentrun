@@ -182,3 +182,30 @@ test("pi: a paid call's refusal pauses only the turn's next request, the one aft
   const after = await capped.streamSimple(model, afterPerson).result();
   assert.deepEqual([after.stopReason, sent.length], ["stop", 1], JSON.stringify(after));
 });
+
+test("pi: a side request through the run's models (native web_search's own, one fresh message) between a refused paid call and the turn's next request is judged as any other, and leaves the refusal for that next request, which pauses", async (t) => {
+  const sent = [];
+  const send = () => {
+    const events = createAssistantMessageEventStream();
+    sent.push(events);
+    queueMicrotask(() => {
+      const message = { role: "assistant", content: [{ type: "text", text: "ok" }], api: "fake", provider: "fake", model: "m", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop", timestamp: Date.now() };
+      events.push({ type: "done", reason: "stop", message });
+      events.end(message);
+    });
+    return events;
+  };
+  const models = { stream: send, streamSimple: send, complete: (...a) => send(...a).result(), completeSimple: (...a) => send(...a).result(), streamDeferred: send, fetchDeferred: (...a) => send(...a).result() };
+  const model = { id: "m", name: "m", api: "fake", provider: "fake", baseUrl: "", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128_000, maxTokens: 1_000 };
+  t.after(() => useSpend(undefined));
+  const capped = await capModels(models, 0.5, 0);
+  // hosted-search.ts's request: one user message of its own, through the run's models (app.ts searchOn).
+  const search = { messages: [{ role: "user", content: [{ type: "text", text: "Search the web for: Ada\n\nAnswer briefly from what the search finds, and name each source by its URL." }], timestamp: 0 }] };
+  const afterResult = { messages: [{ role: "user", content: "go", timestamp: 0 }, { role: "toolResult", toolCallId: "c1", toolName: "monid_run", content: [{ type: "text", text: "Not sent" }], isError: true, timestamp: 1 }] };
+  assert.ok("refused" in (await paidCall("monid_run", async () => 0, () => 0, { usd: 1, basis: "the allowance" })));
+  const searched = await capped.completeSimple(model, search);
+  assert.deepEqual([searched.stopReason, sent.length], ["stop", 1], "the search's request is judged as any other and sent");
+  const next = await capped.streamSimple(model, afterResult).result();
+  assert.match(next.errorMessage ?? "", /^spend_cap_reached \(out of budget\): Not sent: the run has spent \$0 of its \$0\.50 cap, and monid_run could cost up to \$1 \(the allowance\)\./, JSON.stringify(next));
+  assert.equal(sent.length, 1, "the turn's next request not sent");
+});
