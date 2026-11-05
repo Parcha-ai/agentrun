@@ -31,8 +31,16 @@ import { isConnectCode, isGatewayTimeout } from "@parcha/agentrun-kernel";
 /** Whether the run in `root` (its directory) was cancelled: the mark serve's cancel writes there first. */
 export const cancelledIn = (root: string) => () => existsSync(join(root, RUN_CANCELLED));
 
-/** How long a request's result waits for its end mark to be written, so it lands before pi's entry for the request. */
-export const END_MARK_WAIT_MS = 1_000;
+/** How long a mark that carries a hold (a lost or failed request's end, an unreadable cost's) may take to reach the store
+ *  before the request fails loudly (END_NOT_WRITTEN): 15 s. A lost mark is waited for before the retry is sent, so a
+ *  commit queued behind a large entry on a slow disk (seconds) past 1 s let the retry leave, and its answer reach pi,
+ *  with no mark in the store: a crash then read the request at the answer's own usage. Such a mark is written only on a
+ *  path already lost or failed, so the wait costs latency there and nowhere else; 15 s holds such a commit with room to
+ *  spare, and still fails a store that has stopped within a turn's patience, never a turn held without bound. */
+export const END_MARK_WAIT_MS = 15_000;
+/** How long a stop's mark is waited for before pi has the stopped result: a stop's mark needs no fatal wait (without it
+ *  the request reads as cut, at its hold, never less), so a slow store costs a stop at most this. */
+const STOP_MARK_WAIT_MS = 1_000;
 
 /** `models` with each generation request marked before it leaves, once `open` hands over the run (its Harness). Once
  *  `cancelled` says the run was cancelled, no request is sent: each is refused here, before it is marked, or after its
@@ -242,7 +250,7 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
       // A stop's mark needs none of that: without it the request reads as cut, at its hold, which is never less.
       let unrecorded = lostRefused;
       if (ending && holding) unrecorded = await landed(ending);
-      else if (ending) await within(ending.catch(() => undefined), END_MARK_WAIT_MS);
+      else if (ending) await within(ending.catch(() => undefined), STOP_MARK_WAIT_MS);
       if (unrecorded !== undefined && result.stopReason !== "aborted") {
         result = failed(model, `${END_NOT_WRITTEN} (${reason(unrecorded)})`);
         failure = { type: "error", reason: "error", error: result };
