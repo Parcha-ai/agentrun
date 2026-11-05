@@ -6,6 +6,7 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { main as cli, NOUNS, words } from "./cli.mjs";
 
 export const SERVE_PACKAGE = "@parcha/agentrun-serve";
 /** This command's package at its version, handed to the server it starts (AGENTRUN_NPX_PACKAGE), so the server's hints
@@ -78,7 +79,9 @@ export function npmExecOf(env, from = process.ppid) {
   return undefined;
 }
 
-export const USAGE = "Usage: npx @parcha/agentrun [--port N] [--data DIR] [--no-open], or a server command: import, reset-password";
+export const USAGE = `Usage: npx @parcha/agentrun [--port N] [--data DIR] [--no-open]   start the server
+       npx @parcha/agentrun import|reset-password [--data DIR]   a server command
+       npx @parcha/agentrun <command> [args]   the server's API: agents, runs, triggers, ..., api (npx @parcha/agentrun help)`;
 
 /** The server's launcher, installed with this package (its dependency), or undefined. */
 export function installedServer(resolve = createRequire(import.meta.url).resolve) {
@@ -94,6 +97,7 @@ export function installedServer(resolve = createRequire(import.meta.url).resolve
 export const serverArgs = (argv) => (argv.includes("--no-open") ? argv.filter((arg) => arg !== "--no-open") : ["--open", ...argv]);
 
 export async function main(argv, env = process.env) {
+  if (NOUNS.has(words(argv)[0])) return cli(argv, env);
   if (argv.includes("--help") || argv.includes("-h")) return console.log(USAGE), 0;
   if (process.platform === "win32") return console.error("AgentRun's server runs on macOS and Linux; on Windows, use WSL or its container."), 1;
   const launcher = installedServer();

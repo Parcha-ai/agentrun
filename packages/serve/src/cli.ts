@@ -7,7 +7,9 @@ import { secret } from "./secrets.js";
 import "./quiet-sqlite-warning.js";
 import { parseArgs } from "node:util";
 import { spawn } from "node:child_process";
-import { defaultData } from "./files.js";
+import { chmodSync, rmSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { defaultData, SERVER_FILE } from "./files.js";
 import { canOpen } from "./host.js";
 import { resetPassword } from "./owner.js";
 import { banner } from "./print.js";
@@ -161,6 +163,9 @@ if (serve.setupUrl && !publicUrl) console.log(`Set your password: ${serve.setupU
 // The console's page, once the server listens: never its sign-in link, whose token would sit in the opener's arguments
 // and the browser's history.
 if (values.open && canOpen(process.env)) spawn(process.platform === "darwin" ? "open" : "xdg-open", [`${publicUrl ?? serve.url}/`], { stdio: "ignore", detached: true }).on("error", () => {}).unref();
-const stop = () => void serve.close().then(() => process.exit(0));
+const record = join(resolve(data), SERVER_FILE);
+writeFileSync(record, `${JSON.stringify({ base_url: serve.baseUrl, pid: process.pid, ...(serve.tokenFile ? { token_file: serve.tokenFile } : {}) })}\n`, { mode: 0o600 });
+chmodSync(record, 0o600);
+const stop = () => void serve.close().then(() => (rmSync(record, { force: true }), process.exit(0)));
 process.once("SIGINT", stop);
 process.once("SIGTERM", stop);

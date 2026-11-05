@@ -19,6 +19,9 @@ export const RUN_LAUNCHING = "launching";
 export const FOLLOW_UP_OPEN_ENV = "AGENTRUN_FOLLOW_UP_OPEN";
 /** The server's API token (`ar_local_...`), in the data directory, made at its first start when it is given none. */
 export const TOKEN_FILE = ".token";
+/** Where a running server is, for the launcher's CLI (`npx @parcha/agentrun agents list`), in the data directory: its
+ *  base URL, its pid and its token's file, never the token. Written once it listens, mode 0600; removed on a clean exit. */
+export const SERVER_FILE = ".server.json";
 /** The server-wide door token, in the data directory: the door of a run an older server started takes it. */
 export const DOOR_TOKEN_FILE = ".door-token";
 /** A run's own door token, in its directory, made at its first launch and handed to its process alone (its
