@@ -372,7 +372,7 @@ test("learning is this server's own addition, learning/1: the definition's switc
   const caps = (await api("GET", "/capabilities")).body;
   assert.equal(caps.features.learning, "on", "the server's switch is on by default");
   assert.deepEqual(caps.learning, { grade_model: null, pending: true, approve: false, approve_needs: "password" }, "each run graded on its own model: this server names none; a risky rule the user asked for waits; approving needs the owner's password session");
-  assert.deepEqual(caps.features.usage.meters, ["tokens", "tools", "learning"]);
+  assert.deepEqual(caps.features.usage.meters, ["tokens", "tools", "browser_time", "learning"]);
   assert.deepEqual(schemaProblems(doc, { $ref: "#/components/schemas/Capabilities" }, caps), []);
   // A run whose end-of-run turn gives no note, one whose folder cannot be made (a file where it goes), and one of an agent
   // that does not learn.
