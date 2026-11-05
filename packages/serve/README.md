@@ -1914,7 +1914,10 @@ It is bounded by the request's hold, and its real usage replaces it when that co
 
 So on a model whose thinking is adaptive (every current Claude model, on pi and on `claude-agent`), a stopped request
 counts up to its hold: the provider is given no thinking budget, and what streamed says nothing of the thinking billed.
-Under a cap with little left beside that hold, the request after the stop can be refused.
+That whole budget is the safe figure, kept on purpose: the stream reports the thinking billed only on its final
+`message_delta` (`usage.output_tokens_details.thinking_tokens`), which a stopped stream never receives, and the live
+`thinking_delta.estimated_tokens` is a display hint that can under-count. Under a cap with little left beside that hold,
+the request after the stop can be refused, and the run then pauses for a raise.
 
 On pi the figure is written on the request's start mark (`agentrun.request_started`, its worst case) and on the end mark
 of one stopped (`agentrun.request_ended`, what it counts at), as `heldUsd`; on `claude-agent` and `codex` on the
@@ -1953,6 +1956,15 @@ process that does not let go within the drain timeout (`--drain-timeout`, 30 s b
 follow-up goes (below). A message to a
 paused run is `409 budget_reached`; a stop does nothing more, and a cancel ends it `cancelled`. Only a refusal for room
 pauses a run: one no cap fixes (above) ends it `failed`, as does a cost found past the cap after a response.
+
+A paid tool call (monid's run, a search or a fetch through Parallel, browser time) that the cap refuses for room pauses
+the run the same way. The call is not sent, and its result says so in the cap's words. The model's next request is
+refused in those words, so the turn ends there and the model gets no turn to work around it. The run's `pending`
+holds what was taken (`spent_usd`), the call's hold as what it needs (`needs_usd`), and the raise it is offered. A
+raise sends the run on, and the model makes the call again if it still needs it: each call the model makes is one
+call, and nothing is retried for it. The refusal answers that turn's next request alone: a stop in between, then a
+message, starts a turn that is judged as any other. A paid call refused because what the run has spent is unknown
+still ends the run `failed`.
 
 `PATCH /runs/{run_id}` with `{max_cost_usd}` raises the cap, and only raises it: the new cap is above the run's current
 cap, its last raise included, by more than a float's tail (1e-9; `422` otherwise, and for a run with no cap or a workflow

@@ -2,15 +2,6 @@
   "about": "Flaky tests skipped on CI: each a flake id, its owner lane and an expiry at most 24 h on, at most 3 at once. scripts/quarantine.mjs --add writes an entry and prints the test's skip; --check (and scripts/quarantine.test.mjs, on every pull request) fails once one expires.",
   "tests": [
     {
-      "id": "F36",
-      "file": "packages/serve/test/opencode-real.test.mjs",
-      "name": "twenty follow-ups on the pinned OpenCode, every drive's process on the SAME port (as where 4096 is free: OpenCode takes it each time): every event stream opens at the first try",
-      "owner": "tl-jobs",
-      "since": "2026-11-05T02:47Z",
-      "expires": "2026-11-06T02:47Z",
-      "why": "Red twice on PRs that don't touch OpenCode, 11-05: merge-queue run 41950713827 (pi-1-2 1.2.0, 5) and #1611's run 41955893370 (pi-1-2 1.2.0, 1), at :182. tl-jobs (opencode-3) diagnoses test timing vs a real port-reuse race, then fixes it."
-    },
-    {
       "id": "F35",
       "file": "packages/serve/test/box-image.test.mjs",
       "name": "the default image is built on first use, once, from a private context directory holding the recipe alone, removed after; tagged with the recipe's hash and labelled with it; present with that hash, it is ready with no build",
