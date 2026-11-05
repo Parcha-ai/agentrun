@@ -23,7 +23,7 @@ import type { Api, AssistantMessage, Context, Model, Models } from "@earendil-wo
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { REQUEST_COST, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED } from "@parcha/pi-durable-agent/timeline";
 import type { DurableRun } from "@parcha/pi-durable-disk";
-import { ATTEMPTS, type Attempt, attemptLost, CAP_REFUSED_FIELD, END_NOT_WRITTEN, CLAMP, HELD_FIELD, HELD_USD, MARK_NOT_WRITTEN, markResponseBegan, piEnded, sideRequests, STOPPED_USD, type Stopped } from "./cap.js";
+import { ATTEMPTS, type Attempt, attemptLost, CAP_REFUSED_FIELD, END_NOT_WRITTEN, CLAMP, HELD_FIELD, HELD_USD, MARK_NOT_WRITTEN, markResponseBegan, piEnded, type RefusalFigures, sideRequests, STOPPED_USD, type Stopped } from "./cap.js";
 import { RUN_CANCELLED } from "./files.js";
 
 
@@ -36,7 +36,7 @@ export const END_MARK_WAIT_MS = 1_000;
 /** `models` with each generation request marked before it leaves, once `open` hands over the run (its Harness). Once
  *  `cancelled` says the run was cancelled, no request is sent: each is refused here, before it is marked, or after its
  *  mark when the cancel came while the mark waited, and then its start is withdrawn (an end mark, `unsent`). */
-export async function markRequests<M extends Models>(models: M, cancelled: () => boolean = () => false): Promise<{ models: M; open(run: DurableRun): void; refused(): Promise<void> }> {
+export async function markRequests<M extends Models>(models: M, cancelled: () => boolean = () => false): Promise<{ models: M; open(run: DurableRun): void; refused(figures?: RefusalFigures): Promise<void> }> {
   const { createAssistantMessageEventStream } = await import("@earendil-works/pi-ai");
   let open!: (run: DurableRun) => void;
   // A request a resumed turn sends before the app's open waits for it: the mark needs the run's store.
@@ -278,7 +278,8 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
       return typeof value === "function" ? value.bind(target) : value;
     },
   });
-  // The start mark of a generation request the cap refused (capModels), which never left: pi's error entry answers it.
-  const refused = () => mark(REQUEST_STARTED, { [CAP_REFUSED_FIELD]: true });
+  // The start mark of a generation request the cap refused (capModels), which never left: pi's error entry answers it. A
+  // refusal for room keeps its figures on it (what the cap counted as taken, and the least the request needed).
+  const refused = (figures?: RefusalFigures) => mark(REQUEST_STARTED, { [CAP_REFUSED_FIELD]: true, ...(figures ? { spentUsd: figures.spentUsd, needsUsd: figures.needsUsd } : {}) });
   return { models: proxy, open, refused };
 }

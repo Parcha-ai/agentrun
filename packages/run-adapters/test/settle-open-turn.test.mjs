@@ -67,3 +67,56 @@ test("a settled turn's end is the kernel's abortedOutcome of the session's own s
     assert.doesNotMatch(source, /status:\s*"interrupted"/, file);
   }
 });
+
+// A prompt the person stopped before the harness placed it is kept for the conversation: settleTurn's withdraw carries
+// its text, and the next prompt or follow-up the harness takes (`pending()`) has it first, then a line saying it was
+// stopped before any work on it began, then its own text. Carried once, in order; a steer never carries.
+const kernel = await import('@parcha/agentrun-kernel/kernel');
+const processKit = await import('@parcha/agentrun-kernel/process');
+const openOn = async (store) => kernel.openDrive({ writer: await store.open('run-carry'), signal: new AbortController().signal });
+const STOPPED_ONE = '(The message above was stopped before any work on it began.)';
+const STOPPED_MANY = '(The messages above were stopped before any work on them began.)';
+
+test("a prompt stopped before it was placed is carried into the next one: its text, the stopped line, then the follow-up's; once only", async () => {
+  const store = memorySessionStore();
+  const drive = await openOn(store);
+  await drive.submit({ id: 's1', kind: 'prompt', text: 'Write five files.' });
+  await processKit.settleTurn(drive);
+  assert.deepEqual(drive.pending(), [], 'nothing of the stopped turn is left to run on its own');
+  await drive.submit({ id: 's2', kind: 'followUp', text: 'Go on.' });
+  const [next] = drive.pending();
+  assert.equal(next?.text, `Write five files.\n\n${STOPPED_ONE}\n\nGo on.`);
+  await processKit.placeSubmissions(drive, [next]);
+  await drive.submit({ id: 's3', kind: 'followUp', text: 'And then?' });
+  assert.deepEqual(drive.pending().map((s) => s.text), ['And then?'], 'carried once: the message after it has its own text alone');
+  // A later process folds the same.
+  const again = await openOn(store);
+  assert.deepEqual(again.pending().map((s) => s.text), ['And then?']);
+});
+
+test('several stopped prompts are carried in order into the next one; a stopped steer is not carried', async () => {
+  const store = memorySessionStore();
+  const drive = await openOn(store);
+  await drive.submit({ id: 'a', kind: 'prompt', text: 'First.' });
+  await processKit.settleTurn(drive);
+  await drive.submit({ id: 'b', kind: 'followUp', text: 'Second.' });
+  await processKit.settleTurn(drive);
+  await drive.submit({ id: 'c', kind: 'steer', text: 'Faster.' });
+  await processKit.settleTurn(drive);
+  await drive.submit({ id: 'd', kind: 'followUp', text: 'Third.' });
+  assert.deepEqual(drive.pending().map((s) => s.text), [`First.\n\nSecond.\n\n${STOPPED_MANY}\n\nThird.`]);
+});
+
+test("a follow-up placed with a carry holds the carried text in the session's state, for every reader of a placed submission (a crash's recovery)", async () => {
+  const store = memorySessionStore();
+  const drive = await openOn(store);
+  await drive.submit({ id: 's1', kind: 'prompt', text: 'Write five files.' });
+  await processKit.settleTurn(drive);
+  await drive.submit({ id: 's2', kind: 'followUp', text: 'Go on.' });
+  await processKit.placeSubmissions(drive, drive.pending());
+  // The process dies before the harness's CLI records the follow-up: the next one reads it from the session's state.
+  const state = (await openOn(store)).state();
+  const placed = state.submissions.filter((s) => state.placed.has(s.id)).map((s) => s.text);
+  const note = processKit.recoveryNote(state, { prompts: true });
+  assert.deepEqual([placed, note?.text.includes(`> Write five files.`)], [[`Write five files.\n\n${STOPPED_ONE}\n\nGo on.`], true]);
+});

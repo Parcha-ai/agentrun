@@ -124,9 +124,15 @@ export interface ModelUsage {
    *  id such as LiteLLM's `x-litellm-call-id`): what joins this booking to the provider's own log. A cut request has
    *  them only if its response had begun. */
   providerIds?: Record<string, string>;
-  /** A response its client stopped part way, its cost unknown, with the bytes of it the client was sent (the model
-   *  proxy's `stoppedAfterBytes`): the host counts it by what streamed (`Admission.stoppedUsd`), never more than its hold. */
+  /** A response its client stopped part way, its cost unknown, with what of it the client was sent (the model proxy's
+   *  `stoppedAfterBytes`: its content's UTF-8 bytes where the policy reads it): the host counts it by what streamed
+   *  (`Admission.stoppedUsd`), never more than its hold. */
   stoppedAfterBytes?: number;
+  /** A stopped response's reasoning budget (the proxy's `stoppedHiddenTokens`): the part of it the reasoning it sent
+   *  did not cover, max(0, budget - `stoppedReasoningBytes`), counts beside `stoppedAfterBytes`, never past the hold. */
+  stoppedHiddenTokens?: number;
+  /** The bytes of reasoning a stopped response sent (the proxy's `stoppedReasoningBytes`). */
+  stoppedReasoningBytes?: number;
 }
 
 /** The session's model requests, through the runner: every paid request is announced before it is sent, and may be
