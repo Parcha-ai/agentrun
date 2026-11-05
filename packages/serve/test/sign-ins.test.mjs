@@ -1049,3 +1049,42 @@ test("a run's error that holds its browser sign-in's pointer is served cut, in i
   for (const body of [...listed, ...relisted]) assert.equal(body.runs.find((r) => r.run_id === runId).error.message, "The browser died holding [redacted].");
   for (const shown of [...listed, view, ...relisted]) assert.ok(!JSON.stringify(shown).includes(ref), JSON.stringify(shown));
 });
+
+test("a run still going whose serve.json the next server cannot read, of an agent that browses, is never taken up: it is stopped and ends failed, saying why, and nothing it says is served", { timeout: 180_000 }, async (t) => {
+  const dir = await scratch(t);
+  const data = join(dir, "agents");
+  const log = join(dir, "browser.jsonl");
+  withEnv(t, { BROWSERBASE_API_KEY: BB_KEY, BROWSERBASE_PROJECT_ID: "proj-1", AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), FAUX_BROWSER_LOG: log }, KEYS);
+  const first = await crashable(t, data);
+  assert.equal((await first.api("POST", "/agents", agent("alpha", { instructions: "Browse.", tools: ["browser"] }))).status, 201);
+  const gate = join(dir, "gate");
+  const runId = (await first.api("POST", "/agents/alpha/runs", { input: { content: `Browse the example page once ${gate} exists.` } })).body.run_id;
+  const opened = await until(async () => (await readFile(log, "utf8").catch(() => "")).trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)), (ops) => ops.some((op) => op.op === "profile"));
+  const { ref } = opened.find((op) => op.op === "sign-in");
+  first.child.kill("SIGKILL");
+  await new Promise((resolve) => first.child.once("exit", resolve));
+  const { holder } = JSON.parse(await readFile(join(data, "runs", runId, "run.json"), "utf8"));
+  t.after(() => { try { process.kill(holder.pid, "SIGKILL"); } catch {} });
+  // Its serve.json damaged: which plane it ran on, and whether it was handed the sign-in, are lost with it.
+  await writeFile(join(data, "runs", runId, "serve.json"), "{\"title\": \"Browse");
+  // Its gate open: its process answers with the pointer as soon as it may.
+  await writeFile(`${gate}.echo`, `I kept ${ref} for you.`);
+  await writeFile(gate, "");
+  const { api } = await serve(t, { data, fauxBrowser: FAUX_BROWSER, fauxBrowserbase: FAUX_BROWSERBASE });
+  const { last } = await follow(api, runId, ["failed", "completed"], { deadlineMs: 60_000 });
+  const unsaid = async (...more) => {
+    for (const shown of [...more, JSON.stringify((await api("GET", `/runs/${runId}/timeline`)).body), JSON.stringify((await api("GET", `/runs/${runId}`)).body), JSON.stringify((await api("GET", "/runs")).body)]) {
+      assert.ok(!shown.includes(ref), shown);
+      assert.ok(!shown.includes("I kept"), shown);
+    }
+  };
+  await unsaid(JSON.stringify(last));
+  // Stopped: nothing it could still say is served either.
+  await until(async () => { try { process.kill(holder.pid, 0); return false; } catch { return true; } }, (gone) => gone);
+  await unsaid();
+  const view = (await api("GET", `/runs/${runId}`)).body;
+  assert.deepEqual([view.status, view.error?.message], ["failed", "This server can't read the run's record (its serve.json is damaged or can't be read), so it can't tell whether the run was handed its agent's browser sign-in: the run was stopped, so nothing it says can show it."]);
+  // Its end wrote serve.json anew, hidden: a later server never reads its rows either.
+  const meta = await until(async () => JSON.parse(await readFile(join(data, "runs", runId, "serve.json"), "utf8").catch(() => "{}")), (kept) => kept.unshown === true);
+  assert.equal(meta.error.message, view.error.message);
+});

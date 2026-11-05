@@ -35,7 +35,7 @@ import { CAP_ENV, CAP_REFUSAL_PREFIX, CAP_REFUSED_FIELD, CAP_TOLERANCE, FIT_TOLE
 import { DEFAULT_MODEL_ENV, EFFORT_ENV, GATEWAY_KEY_ENV, hostModel, llmTiers, modelKeys, nodeTiers, PROVIDER_KEYS, thinkingOf, type Tier, withoutFaux, workflowNodes } from "./model.js";
 import { llmAnswers, pausedIn, readNodeLog, RUN_PAUSED } from "./pause.js";
 import { durationMs } from "./print.js";
-import { handsParallel, keptFromBefore, keptVendor, type Plane, planeFor, recheckPlane, relaunchPlane, TOOL_PLANE_ENV, type Tooling, type ToolSettingsMap } from "./tool-plane.js";
+import { capabilityOf, handsParallel, keptFromBefore, keptVendor, type Plane, planeFor, recheckPlane, relaunchPlane, TOOL_PLANE_ENV, type Tooling, type ToolSettingsMap } from "./tool-plane.js";
 import { APPROVAL_ENTRY, APPROVAL_ROW, NO_APPROVER_ENV, type PendingApproval, permissionOf, previewOf, RESUME_PREFIX, TURN_ORIGIN_FILE } from "./tool-gate.js";
 import { ChangeClock, type Page, RowLog } from "./rows.js";
 import { TOOL_KEYS } from "./tool-keys.js";
@@ -96,6 +96,9 @@ async function handedOnDisk(path: string): Promise<true | string | undefined> {
 /** Why a run going when its server started was stopped: the browser sign-in it was handed can't be read here (the seal
  *  key changed or is missing, or the sign-ins file is damaged or can't be read). */
 export const UNREADABLE_SIGN_IN = "This server can't read the run's browser sign-in (its seal key changed or is missing, or the sign-in is damaged): the run was stopped, so nothing it says can show it.";
+/** Why a run going when its server started was stopped: its serve.json is there but can't be read or parsed, and with it
+ *  went which browser it ran on and whether it was handed its agent's sign-in, so its text can't be cut of the pointer. */
+export const UNREADABLE_RUN_META = "This server can't read the run's record (its serve.json is damaged or can't be read), so it can't tell whether the run was handed its agent's browser sign-in: the run was stopped, so nothing it says can show it.";
 /** How often a run's end that the agent store refused is written again. */
 const SETTLE_RETRY_MS = 30_000;
 /** How a run ended in the store, as its status: the store's `stopped` is v2's `cancelled`, and an escalated workflow
@@ -960,6 +963,9 @@ export class Runs {
   private async load(row: RunRow): Promise<Run> {
     const dir = join(this.options.agents.dir, "runs", row.id);
     const stored = (await readJson(join(dir, RUN_META))) as Partial<RunMeta> | null;
+    // There, but not whole JSON of an object (a damaged disk, a hand's edit): what it kept is lost. Missing is no damage:
+    // a run whose server went down before it set the run up has none (notSetUp).
+    const damaged = stored === null ? existsSync(join(dir, RUN_META)) : !isObject(stored);
     const trigger = triggerOf(stored);
     const meta: RunMeta = {
       title: typeof stored?.title === "string" ? stored.title : "",
@@ -1001,6 +1007,15 @@ export class Runs {
     const record = await this.record(run);
     // An ended run is ended before its rows are read, so they never make it a wait: a last row that asks is no notice.
     if (row.state !== "running") run.outcome = STATUS_OF[row.state];
+    // A run still going whose serve.json is damaged: the plane it ran on (kept there alone) and whether it was handed its
+    // agent's sign-in (sign_in_handed) went with it, so the pointer is not read back and its text could hold it uncut.
+    // Hidden as one whose sign-in does not open is, below, when its revision grants the browser or can't be read; one whose
+    // revision has none never had a browser, so was never handed a sign-in. Nothing is written over the damaged file here:
+    // its end writes serve.json anew, hidden, and until then each server finds it damaged and hides it again.
+    if (row.state === "running" && damaged && !row.importedFrom && !run.meta.unshown && (!run.tooling || run.tooling.tools.some((name) => capabilityOf(name) === "browser"))) {
+      run.error = { code: "run_failed", message: UNREADABLE_RUN_META, retryable: false };
+      run.meta.unshown = true;
+    }
     // A run still going whose agent's browser sign-in does not open under this server's seal key: whatever it said, or
     // says, could repeat the pointer, which nothing here can cut. Its rows are never read, and it ends failed, saying
     // why: a live process is stopped (below), one already gone is never opened again.

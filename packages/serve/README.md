@@ -882,8 +882,11 @@ picks which one a run gets, never the model.
   launched signed out since the key changed) is taken up as any other. That a run was handed it is kept in its
   `serve.json`; a launch that can't save that hands it none, and the run browses signed out. A one-time limit of the
   upgrade to this: a run still going across that upgrade has no such mark, so if the upgraded server also can't read
-  its sign-in at that same start, it is taken up signed out and its text is not cut of the pointer. Its `held_by` still names a run that
-  holds its lease, as a held one does.
+  its sign-in at that same start, it is taken up signed out and its text is not cut of the pointer. A run still going
+  whose `serve.json` is there but can't be read or parsed (where its plane and that mark are kept) is hidden the same
+  way when its agent's revision grants the browser, or can't be read: nothing else says which browser it ran on, so
+  whether it was handed the sign-in is not known ("This server can't read the run's record (its serve.json is damaged
+  or can't be read), …"). Its `held_by` still names a run that holds its lease, as a held one does.
   Never the pointer. `DELETE /v2/agents/{id}/sign-ins/{key}` forgets one: the vendor's context or profile is deleted,
   then the pointer. A delete the vendor does not answer is said in the answer (`at_vendor: "not_deleted"`), and the
   pointer goes all the same. It is `409 sign_in_held` while a run holds the lease (`details.held_by`), and also while
