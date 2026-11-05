@@ -46,7 +46,7 @@ import { boxImageOf, clearImage, type DockerImage, dockerImage, type ImageState,
 import { startBoxRelay } from "./box-relay.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
 import { metersIn } from "./cap.js";
-import { blockersOf, CODE_NODES_ENV, issueOf, type RevisionShape } from "./runnable.js";
+import { type Blocker, blockersOf, CODE_NODES_ENV, issueOf, type RevisionShape } from "./runnable.js";
 import { hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from "./secrets.js";
 import { redactedOutput } from "./key-refusal.js";
 import { analyticsFilter, analyticsView, pendingOf, statsView } from "./stats.js";
@@ -1020,7 +1020,17 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
 
   /** A definition being saved: refused (422 by field) when it can never run here; else what this host still lacks. */
   async function saveable(revision: NewRevision): Promise<InputIssue[]> {
-    const blockers = await blockersOf(env, revision.kind === "agentic" ? revision : workflowShape(revision), settings.get(), { boxes: boxOffers, offers });
+    const shape = revision.kind === "agentic" ? revision : workflowShape(revision);
+    const blockers = await blockersOf(env, shape, settings.get(), { boxes: boxOffers, offers });
+    // An agent's default cap caps each run started without one of its own, and a web tool resolves by the cap: what a cap
+    // alone keeps from running under the definition's own picks, whatever this host's settings, would keep every such run
+    // from running, so the save is refused, not each run (claude-agent's or codex's own search, picked, under a cap).
+    if (revision.kind === "agentic" && (revision.maxCostUsd ?? 0) > 0) {
+      const key = (b: Blocker) => `${b.field}\n${b.message}`;
+      const plain = new Set((await blockersOf(env, shape, {}, { boxes: boxOffers, offers })).map(key));
+      const capped = await blockersOf(env, shape, {}, { capped: true, boxes: boxOffers, offers });
+      blockers.push(...capped.filter((b) => !plain.has(key(b))).map((b) => ({ ...b, reason: "not_an_option", fix: "Pick another provider for this tool in definition.tool_settings, or clear the agent's default cap (max_cost_usd: 0).", host: false })));
+    }
     const never = blockers.filter((b) => !b.host);
     if (never.length) throw invalid(never.map(issueOf));
     return blockers.map(issueOf);
