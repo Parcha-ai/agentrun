@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import * as failures from "../dist/index.js";
 import { createRedactor } from "../dist/index.js";
 import { STAGEHAND_INIT_IN_PROGRESS } from "../dist/driver/stagehand.js";
-import { classifyBrowserError, FAILURE_CODES, NAVIGATED_SNAPSHOT_ERROR, NO_HYDRATED_SNAPSHOT_ERROR, STALE_SNAPSHOT_ID_ERROR, transportFactOf } from "../dist/index.js";
+import { classifyBrowserError, FAILURE_CODES, isRefusal, NAVIGATED_SNAPSHOT_ERROR, NO_HYDRATED_SNAPSHOT_ERROR, STALE_SNAPSHOT_ID_ERROR, transportFactOf } from "../dist/index.js";
 
 const named = (name, message = "boom", extra = {}) => Object.assign(new Error(message), { name }, extra);
 const code = (error, effectful = false, facts) => classifyBrowserError(error, effectful, facts).code;
@@ -185,4 +185,11 @@ test("a value in the cause of a wrapped error is removed too, and redaction chan
   const failure = classifyBrowserError(wrapped, false, { redact: redactsToken });
   assert.doesNotMatch(JSON.stringify(failure), fragment);
   assert.equal(failure.code, classifyBrowserError(wrapped, false).code);
+});
+
+test("a refusal is exactly what classifies as auth: a 401 or 403 read from the error, its cause or its transport record", () => {
+  const status = (n) => Object.assign(new Error("x"), { status: n });
+  const errors = [status(401), status(403), status(429), status(500), status(404), new Error("x", { cause: status(403) }), Object.assign(new Error("x"), { statusCode: 401 }), Object.assign(new Error("x"), { cause: { statusCode: 403 } }), Object.assign(new Error("x"), { transport: { status: 401 } }), named("CDPConnectionClosedError"), null, undefined, 42];
+  assert.deepEqual(errors.map(isRefusal), errors.map((error) => code(error) === "auth"));
+  assert.deepEqual(errors.map(isRefusal), [true, true, false, false, false, true, true, true, true, false, false, false, false]);
 });

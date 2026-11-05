@@ -2,8 +2,25 @@ import { Copy, Download, FileText, Folder, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { bytes, markdown, when } from "@/lib/format";
+import { cn } from "@/lib/utils";
 import type { RunFile } from "@/lib/v2";
 import { viewKind } from "@/lib/viewing";
+
+type View = "rendered" | "raw";
+const VIEWS: { id: View; label: string }[] = [{ id: "rendered", label: "Rendered" }, { id: "raw", label: "Raw" }];
+
+/** Rendered (Markdown, sanitized) or Raw (the file's exact text): a segmented pick, as Mission Control's range is. */
+function ViewToggle({ view, onView }: { view: View; onView: (view: View) => void }) {
+  return (
+    <div className="flex" role="radiogroup" aria-label="View">
+      {VIEWS.map((v) => (
+        <label key={v.id} className={cn("caps -ml-px cursor-pointer border px-3 py-1.5 text-[11px] first:ml-0 has-[:focus-visible]:outline has-[:focus-visible]:outline-1 has-[:focus-visible]:outline-offset-2", view === v.id ? "relative border-foreground bg-foreground text-background" : "text-muted-foreground hover:bg-accent hover:text-foreground")}>
+          <input type="radio" name="file-view" value={v.id} checked={view === v.id} onChange={() => onView(v.id)} className="sr-only" />{v.label}
+        </label>
+      ))}
+    </div>
+  );
+}
 
 /** The run's FILES tab: what it wrote, in the server's path order, each opened in the viewer. */
 export function RunFiles({ files, onOpen }: { files: RunFile[]; onOpen: (file: RunFile) => void }) {
@@ -31,8 +48,9 @@ export function RunFiles({ files, onOpen }: { files: RunFile[]; onOpen: (file: R
   );
 }
 
-/** The file viewer: the file's name, Copy, Download and its characters. Text and Markdown render here (Markdown
- *  sanitized); anything else is offered as a download only. */
+/** The file viewer: the file's name, Copy, Download and its characters. Text and Markdown show here, Rendered (Markdown,
+ *  sanitized) or Raw (the exact text, each line its own, in monospace): a Markdown file opens Rendered, any other text
+ *  Raw, and the toggle switches either. Anything else is offered as a download only. */
 export function ArtifactViewer({ file, text, onClose }: { file: RunFile; text: string | null; onClose: () => void }) {
   const [copied, setCopied] = useState(false);
   const dialog = useRef<HTMLDialogElement>(null);
@@ -50,6 +68,7 @@ export function ArtifactViewer({ file, text, onClose }: { file: RunFile; text: s
   const pressedOutside = useRef(false);
   const releasedOutside = useRef(false);
   const kind = viewKind(file);
+  const [view, setView] = useState<View>(kind === "markdown" ? "rendered" : "raw");
   const download = () => {
     if (text === null) return;
     const url = URL.createObjectURL(new Blob([text], { type: file.content_type ?? "application/octet-stream" }));
@@ -63,18 +82,20 @@ export function ArtifactViewer({ file, text, onClose }: { file: RunFile; text: s
       onClick={(e) => { if (pressedOutside.current && releasedOutside.current && e.target === e.currentTarget) onClose(); pressedOutside.current = releasedOutside.current = false; }}
       className="m-0 h-full max-h-none w-full max-w-none border-0 bg-transparent p-0 text-foreground backdrop:bg-black/60 md:p-8">
       <div className="mx-auto flex h-full w-full max-w-5xl flex-col border bg-background">
-        <header className="flex items-center gap-3 border-b px-4 py-2.5">
+        {/* On a phone the toggle takes a row of its own under the rest, so Copy and Download stay on screen. */}
+        <header className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b px-4 py-2.5">
           <Button size="icon" variant="ghost" onClick={onClose} aria-label="Close"><X aria-hidden /></Button>
           <FileText className="size-4 text-muted-foreground" aria-hidden />
           <span className="min-w-0 flex-1 truncate font-mono text-[13px]">{file.path}</span>
+          {kind !== "download" && <div className="order-last basis-full sm:order-none sm:basis-auto"><ViewToggle view={view} onView={setView} /></div>}
           <Button size="sm" disabled={text === null} onClick={async () => { if (text !== null) { await navigator.clipboard?.writeText(text); setCopied(true); } }}><Copy aria-hidden /> {copied ? "Copied" : "Copy"}</Button>
           <Button size="sm" disabled={text === null} onClick={download}><Download aria-hidden /> Download</Button>
         </header>
         <div className="min-h-0 flex-1 overflow-auto px-6 py-8 md:px-16">
           {text === null ? <p className="font-mono text-[13px] text-muted-foreground">Loading the file...</p>
-            : kind === "markdown" ? <article className="report mx-auto max-w-3xl" dangerouslySetInnerHTML={{ __html: markdown(text) }} />
-            : kind === "text" ? <pre className="whitespace-pre-wrap break-words font-mono text-[12px] leading-[1.8]">{text}</pre>
-            : <p className="font-mono text-[13px] text-muted-foreground">This file type is not shown here. Download it to open it.</p>}
+            : kind === "download" ? <p className="font-mono text-[13px] text-muted-foreground">This file type is not shown here. Download it to open it.</p>
+            : view === "rendered" ? <article className="report mx-auto max-w-3xl" dangerouslySetInnerHTML={{ __html: markdown(text) }} />
+            : <pre className="whitespace-pre-wrap break-words font-mono text-[12px] leading-[1.8]">{text}</pre>}
         </div>
         <footer className="border-t px-4 py-2 font-mono text-[11px] text-muted-foreground">File · {text === null ? "..." : `${text.length.toLocaleString("en-US")} characters`} · {file.content_type ?? "unknown type"}</footer>
       </div>
