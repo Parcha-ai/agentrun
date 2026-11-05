@@ -38,6 +38,7 @@ import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { Context } from "@earendil-works/chord";
 import { type Cursor, defineExtension, type Extension, ROOT_CONVERSATION_ID, type ToolRegistration, type Tx, wrapTool } from "@earendil-works/pi-durable";
 import { type Drive, EffectFailure, INTERRUPTED_TEXT, openDrive } from "@parcha/agentrun-kernel/kernel";
+import { boundResult } from "@parcha/agentrun-kernel/process";
 import type { DurableRun } from "@parcha/pi-durable-disk";
 import { readJson, RUN_META } from "./files.js";
 import { LEARNED_DIR } from "./learning.js";
@@ -467,8 +468,10 @@ export class RunGate {
           await this.resolveSilently(held, after.decision);
           continue;
         }
-        // The arguments the message names are the server's redacted ones: the gate never writes a held value there.
-        await this.resume!(held.id, resumeText(held, answer.args_shown ?? "(not shown)", decision, result), (tx) => tx.appendEntry(ROOT_CONVERSATION_ID, { kind: APPROVAL_ENTRY, data: { phase: "resolved", id: held.id, decision } }));
+        // The arguments the message names are the server's redacted ones: the gate never writes a held value there. The
+        // result is cut as every host tool's is (boundResult, HOST_RESULT_MAX_CHARS, in its words): an executor's (an
+        // MCP call's) comes uncut, and its journal keeps it whole.
+        await this.resume!(held.id, resumeText(held, answer.args_shown ?? "(not shown)", decision, { ...result, text: boundResult(result.text).text }), (tx) => tx.appendEntry(ROOT_CONVERSATION_ID, { kind: APPROVAL_ENTRY, data: { phase: "resolved", id: held.id, decision } }));
         held.resolved = true;
       }
     } catch (error) {
