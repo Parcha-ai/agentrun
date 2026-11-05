@@ -113,8 +113,9 @@ export const stoppedPriceOf = (cost: (output: number) => number, limit: number) 
 /** The option a request's attempts ride on to its marks (request-start.ts): each HTTP attempt pi-ai made for it, as the
  *  fetch the cap gave it saw them. A symbol, so no provider ever sends it. */
 export const ATTEMPTS = Symbol.for("agentrun.serve.attempts");
-/** One attempt of a request: the status it was answered with, or the code its fetch was refused with. */
-export type Attempt = { status: number } | { code: string | undefined };
+/** One attempt of a request: the status it was answered with, or the code its fetch was refused with, `aborted` when the
+ *  request's own signal had fired by then (the run stopped it: no attempt lost to the provider). */
+export type Attempt = { status: number } | { code: string | undefined; aborted?: true };
 /** The APIs whose requests the cap cannot watch through a fetch, each with why: it gives them no recording fetch, and
  *  a request on one that fails before any event books its hold (piEnded). The one table both read. */
 export const UNWATCHED_APIS: Readonly<Record<string, string>> = {
@@ -136,7 +137,7 @@ export function recordingFetch(attempts: Attempt[], inner?: typeof fetch): typeo
       attempts.push({ status: response.status });
       return response;
     } catch (error) {
-      attempts.push({ code: rejectionCode(error) });
+      attempts.push({ code: rejectionCode(error), ...(init?.signal?.aborted ? { aborted: true as const } : {}) });
       throw error;
     }
   }) as typeof fetch;
@@ -151,9 +152,13 @@ const answeredOk = (a: Attempt) => "status" in a && a.status >= 200 && a.status 
 /** Whether one attempt was lost: refused after it could have left (any code but a connect one), a gateway's timeout, or
  *  an answer that was not the request's last attempt (pi-ai tried again after it). */
 export const attemptLost = (a: Attempt, last: boolean): boolean => ("code" in a ? !isConnectCode(a.code) : isGatewayTimeout(a.status) || (answeredOk(a) && !last));
+/** Whether any attempt of a request was lost (attemptLost), its last counted as the last; one the run's own stop cut is
+ *  none. A request lost so counts at its hold however it then ended: answered, failed or stopped. */
+export const anyAttemptLost = (attempts: readonly Attempt[] | undefined): boolean =>
+  attempts?.some((a, at) => !("aborted" in a && a.aborted) && attemptLost(a, at === attempts.length - 1)) ?? false;
 export function piEnded(message: Pick<AssistantMessage, "stopReason" | "usage" | "api">, began: boolean, attempts: readonly Attempt[] | undefined): Ended {
   const ok = answeredOk;
-  const anyLost = attempts?.some((a, at) => attemptLost(a, at === attempts.length - 1)) ?? false;
+  const anyLost = anyAttemptLost(attempts);
   if (message.stopReason !== "error") return anyLost ? { end: "lost", label: "retried" } : { end: "answered", usd: typeof message.usage?.cost?.total === "number" ? message.usage.cost.total : null };
   if (began) return { end: "lost", label: "error_after", began: true };
   // On an API the cap cannot watch (UNWATCHED_APIS), or with no record of its attempts, nothing says it never left.
@@ -794,14 +799,15 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
     errorMessage: why,
   });
   /** Adds what `answer` cost to what the run has spent once it settles. One stopped before its end counts at `stopped`
-   *  of what it streamed (stoppedFigure, at most `worst`); one that ended on an error after its response began
+   *  of what it streamed (stoppedFigure, at most `worst`), unless an attempt before the stop was lost: then at `worst`, as
+   *  its lost mark reads in a later process; one that ended on an error after its response began
    *  (markResponseBegan: its usage is what had streamed, not what the provider can have billed), or that failed with no
    *  answer, at `worst`, what the cap held for it; each as spentIn reads its end mark. Without a figure (a deferred
    *  response) it is unknown, as is a cost that is not a number, from then on. */
   const count = (answer: Promise<AssistantMessage>, worst?: number, stopped?: Stopped, attempts?: readonly Attempt[]) => {
     const add = (cost: unknown) => void (spent = spent !== null && typeof cost === "number" && Number.isFinite(cost) ? spent + cost : null);
     // One rule (bookRequest), from how the request ended (piEnded) as its marks read it too.
-    const at = (message: AssistantMessage) => message.stopReason === "aborted" ? (stopped ? stopped(message) : worst)
+    const at = (message: AssistantMessage) => message.stopReason === "aborted" ? (stopped && !anyAttemptLost(attempts) ? stopped(message) : worst)
       : bookRequest(piEnded(message, responseBegan.has(message), attempts), worst === undefined ? {} : { hold: worst }).usd;
     return answer.then((message) => add(at(message)), () => add(worst));
   };
