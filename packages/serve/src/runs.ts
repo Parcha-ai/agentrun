@@ -166,7 +166,8 @@ type RunMeta = {
  *  process acted on the answer. */
 type Approval = { id: string; tool: string; call_id: string; args_json: string; requested_at: string; price?: number | "not metered"; resolved?: true };
 /** `args_shown`: the call's arguments as the server shows them (shownArgs), which the gate's resume message names. */
-type ApprovalAnswer = { decision: "allow" | "deny" | "canceled" | "withdrawn"; note?: string; answered_at: string; args_shown?: string };
+/** `by`: "message", a deny a person's message gave while the call waited (Runs.message). */
+type ApprovalAnswer = { decision: "allow" | "deny" | "canceled" | "withdrawn"; note?: string; answered_at: string; args_shown?: string; by?: "message" };
 /** A call withdrawn with its run (a cancel, or a stop while it waited): never run, and an answer after is 409. */
 const withdrawn = (answer: ApprovalAnswer | undefined) => answer?.decision === "canceled" || answer?.decision === "withdrawn";
 type RunError = { code: string; message: string; retryable: boolean; details?: { reason: string } };
@@ -403,7 +404,8 @@ function withApprovals(rows: readonly TimelineEvent[], run: Pick<Run, "approvals
     if (!approval) return [row];
     const args = shownArgs(approval, redact);
     const said = run.meta.approvals?.[approval.id]?.decision;
-    const head = approval === waiting ? "Waiting for your approval" : said === "withdrawn" ? "Withdrawn when the run was stopped" : said === "canceled" ? "Withdrawn when the run was cancelled" : "Asked your approval";
+    const byMessage = run.meta.approvals?.[approval.id]?.by === "message";
+    const head = approval === waiting ? "Waiting for your approval" : byMessage ? "Declined by your message" : said === "withdrawn" ? "Withdrawn when the run was stopped" : said === "canceled" ? "Withdrawn when the run was cancelled" : "Asked your approval";
     const summary = `${head}: ${approval.tool} ${clip(args, 400)}`;
     return [row, { ...row, id: `${row.id}:approval`, kind: APPROVAL_ROW, summary, text: args, tool_name: approval.tool, tool_status: null, tool_input_preview: clip(args, 500), tool_result_preview: null, tool_result_size_bytes: null }];
   });
@@ -2083,6 +2085,13 @@ export class Runs {
     if (run.cancel) throw this.finished(run);
     // A person's message: no turn from here on is the server's own reflect turn (tool-gate.ts's carve-out).
     await rm(join(run.dir, TURN_ORIGIN_FILE), { force: true }).catch((error: Error) => warn(run.id, `its turn's origin is not removed: ${error.message}`));
+    // A message while a tool call waits for approval declines it, with the message as the reason (as Claude Code takes
+    // what is typed at its permission prompt): the gate's resume carries the refusal and their words in one turn, and
+    // nothing else is sent, so no second turn races the parked call.
+    if (run.kind === "agentic") {
+      const waiting = waitingApproval(run);
+      if (waiting) return this.declineBy(run, waiting, content);
+    }
     // Every wait first, then a last look for a stop in flight, again after any wait a stop came during: from that look
     // to the count below nothing awaits, so no stop can begin in between.
     do {
@@ -2206,6 +2215,17 @@ export class Runs {
     } finally {
       run.stopping = undefined;
     }
+  }
+
+  /** message()'s decline of the tool call that waits for approval: a deny with the message as its note, which the
+   *  run's gate acts on as any deny, resuming the session with the refusal and the person's words in one message. */
+  private async declineBy(run: Run, waiting: Approval, content: string): Promise<{ mode: "answer"; messageId: string }> {
+    run.meta.approvals = { ...run.meta.approvals, [waiting.id]: { decision: "deny", note: content.slice(0, 2000), answered_at: new Date().toISOString(), args_shown: shownArgs(waiting, this.redactor(run)), by: "message" } };
+    await this.saveMeta(run);
+    this.restate(run);
+    this.refresh(run);
+    if (!run.outcome && !run.finishing && !run.cancel) void this.ensureLive(run).catch((error: Error) => warn(run.id, `its declined approval waits for its process: ${error.message}`));
+    return { mode: "answer", messageId: `m${Date.now().toString(36)}${randomBytes(4).toString("hex")}` };
   }
 
   /** stop()'s withdrawal of the tool call that waits for approval: never run, and an answer after is 409. */
