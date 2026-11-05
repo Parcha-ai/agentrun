@@ -126,13 +126,14 @@ test("the contract's operations are as vendored; this server's own are added and
       assert.ok(isDeepStrictEqual(same, vendoredSame), "getTimeline is the contract's but for its limit");
       continue;
     }
-    if (op.operationId === "cancelRun") {
-      // What a cancel's 202 reads here: the contract's description, then this server's own reading of it.
+    if (op.operationId === "cancelRun" || op.operationId === "createRun") {
+      // What a cancel's 202 reads here, and how long a run create's key replays: the contract's description, then this
+      // server's own reading of it.
       assert.deepEqual(Object.keys(changes), ["description"]);
       assert.ok(op.description.startsWith(original.description.trimEnd()), "the contract's description comes first");
       const { description: _a, ...same } = rest;
       const { description: _b, ...vendoredSame } = original;
-      assert.ok(isDeepStrictEqual(same, vendoredSame), "cancelRun is the contract's but for its description");
+      assert.ok(isDeepStrictEqual(same, vendoredSame), `${op.operationId} is the contract's but for its description`);
       continue;
     }
     assert.deepEqual(Object.keys(changes).sort(), ["If-Match", "requestBody"]);
@@ -163,7 +164,7 @@ test("the contract's operations are as vendored; this server's own are added and
   const notes = [];
   const strip = (schema, at) => {
     for (const [field, property] of Object.entries(schema.properties ?? {})) {
-      for (const mark of ["x-agentrun-serve-unsupported", "x-agentrun-serve-details"]) {
+      for (const mark of ["x-agentrun-serve-unsupported", "x-agentrun-serve-details", "x-agentrun-serve-note"]) {
         if (property[mark] === undefined) continue;
         delete property[mark];
         notes.push(`${at}.${field}`);
@@ -197,6 +198,16 @@ test("the contract's operations are as vendored; this server's own are added and
     }
   };
   for (const [name, schema] of Object.entries(components.schemas)) {
+    // A contract condition this server widens (SignIn's held_by for its own `unreadable` state) is marked on the branch.
+    if (schema.else?.["x-agentrun-serve"] !== undefined) {
+      // Only the widening it is marked for: held_by may name a run when the state is `unreadable`, the vendored branch
+      // whole beneath it, and nothing else.
+      const { "x-agentrun-serve": mark, ...branch } = schema.else;
+      assert.equal(mark, "signins/1", `${name}.else names its addition`);
+      assert.deepEqual(branch, { if: { properties: { state: { const: "unreadable" } } }, then: { properties: { held_by: { oneOf: [{ $ref: "#/components/schemas/Id" }, { type: "null" }] } } }, else: VENDORED.components.schemas[name].else }, `${name}.else widens held_by for unreadable alone`);
+      marked.push(`${name}.else`);
+      schema.else = VENDORED.components.schemas[name].else;
+    }
     // A contract enum this server widens (RunStatus's `paused`) is marked on the schema, each value it adds listed.
     if (schema["x-agentrun-serve"] !== undefined && Array.isArray(schema.enum)) {
       const original = VENDORED.components.schemas[name].enum;
@@ -210,7 +221,7 @@ test("the contract's operations are as vendored; this server's own are added and
   for (const [name, scheme] of Object.entries(components.securitySchemes ?? {})) if (scheme["x-agentrun-serve"] !== undefined) delete components.securitySchemes[name];
   assert.ok(isDeepStrictEqual(components, VENDORED.components), "the contract's components are unchanged but for the marked properties");
   assert.deepEqual(marked.sort(), [...doc.info["x-agentrun-serve"].fields].sort(), "info lists the marked properties");
-  assert.deepEqual(notes.sort(), [...doc.info["x-agentrun-serve"].unsupported_fields, ...doc.info["x-agentrun-serve"].details].sort(), "info lists the contract properties it notes");
+  assert.deepEqual(notes.sort(), [...doc.info["x-agentrun-serve"].unsupported_fields, ...doc.info["x-agentrun-serve"].details, ...doc.info["x-agentrun-serve"].notes].sort(), "info lists the contract properties it notes");
 });
 
 test("the served definition takes exactly the fields this server takes: a contract field it refuses is marked with the reason its 422 gives, and a run it refuses has the details the document says", async (t) => {
@@ -220,7 +231,7 @@ test("the served definition takes exactly the fields this server takes: a contra
   const refused = Object.keys(fields).filter((field) => fields[field]["x-agentrun-serve-unsupported"]);
   assert.deepEqual(Object.keys(fields).filter((field) => !refused.includes(field)).sort(), [...DEFINITION_FIELDS].sort(), "every field validate.ts takes, and no other, unmarked");
   assert.deepEqual(doc.info["x-agentrun-serve"].unsupported_fields, refused.map((field) => `DefinitionInput.${field}`));
-  const values = { input_schema: { type: "object" }, output_schema: { type: "object" }, max_cost_usd: 1 };
+  const values = { input_schema: { type: "object" }, output_schema: { type: "object" } };
   for (const field of refused) {
     const answer = await api("POST", "/agents", agent(`with-${field.replaceAll("_", "-")}`, { [field]: values[field] ?? "x" }));
     assert.equal(answer.status, 422, field);
@@ -371,7 +382,7 @@ test("learning is this server's own addition, learning/1: the definition's switc
   const caps = (await api("GET", "/capabilities")).body;
   assert.equal(caps.features.learning, "on", "the server's switch is on by default");
   assert.deepEqual(caps.learning, { grade_model: null, pending: true, approve: false, approve_needs: "password" }, "each run graded on its own model: this server names none; a risky rule the user asked for waits; approving needs the owner's password session");
-  assert.deepEqual(caps.features.usage.meters, ["tokens", "tools", "learning"]);
+  assert.deepEqual(caps.features.usage.meters, ["tokens", "tools", "browser_time", "learning"]);
   assert.deepEqual(schemaProblems(doc, { $ref: "#/components/schemas/Capabilities" }, caps), []);
   // A run whose end-of-run turn gives no note, one whose folder cannot be made (a file where it goes), and one of an agent
   // that does not learn.
@@ -542,4 +553,14 @@ test("the served TimelineKind holds every kind pi-durable-agent's timeline decla
   const evidence = Array.from({ length: 100 }, (_, i) => ({ url: `https://example.org/filing/${i}?sig=${i}`, title: `Filing ${i}`, excerpts: [], scope: "call" }));
   const [row] = decisionRows([{ id: "d1", at: "2026-10-29T23:00:00.000Z", node: "sift_docs", kind: "sift", request: { index: 0, count: 1 }, status: "answered", answers, evidence, cost_usd: null }]);
   assert.deepEqual(schemaProblems(doc, { $ref: "#/components/schemas/TimelineRow" }, { ...row, seq: 0 }), []);
+});
+
+test("the not-metered counts are this server's own fields: TimelineUsage.not_metered and UsageLine.not_metered_calls, marked and listed; UsageLine.unpriced_runs is documented", async (t) => {
+  const { baseUrl } = await serve(t);
+  const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
+  for (const [schema, field] of [["TimelineUsage", "not_metered"], ["UsageLine", "not_metered_calls"]]) {
+    assert.deepEqual([doc.components.schemas[schema].properties[field]?.type, doc.components.schemas[schema].properties[field]?.["x-agentrun-serve"]], ["integer", "mcpservers/1"], `${schema}.${field}`);
+    assert.ok(doc.info["x-agentrun-serve"].fields.includes(`${schema}.${field}`), `info lists ${schema}.${field}`);
+  }
+  assert.equal(doc.components.schemas.UsageLine.properties.unpriced_runs?.type, "integer");
 });

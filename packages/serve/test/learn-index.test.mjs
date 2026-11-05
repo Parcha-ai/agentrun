@@ -10,17 +10,19 @@ import * as invisible from "../dist/learn/invisible.js";
 import * as notes from "../dist/learn/notes.js";
 import * as reflect from "../dist/learn/reflect.js";
 import * as secrets from "../dist/learn/secrets.js";
+import * as skills from "../dist/learn/skills.js";
 
 const VALUES = {
-  check: ["CAPS", "checkNote", "checkProposal", "mergeProblems", "printable", "supersededBy"],
-  grade: ["GRADE_CAPS", "GRADE_RUBRIC", "gradePrompt", "parseVerdict"],
+  check: ["CAPS", "checkNote", "checkProposal", "mergeProblems", "printable", "supersededBy", "unstorable"],
+  grade: ["GRADE_CAPS", "GRADE_RUBRIC", "gradedFiles", "gradedItems", "gradePrompt", "parseVerdict"],
   invisible: ["hiddenCharacter"],
-  reflect: ["ANSWER_MAX", "NOTE_BLOCK", "parseReflection", "reflectPrompt"],
+  reflect: ["ANSWER_MAX", "NOTE_BLOCK", "parseReflection", "reflectPrompt", "SKILL_BLOCK", "WORKFLOW_BLOCK"],
   notes: ["activeNotes", "approve", "buildIndex", "INDEX_BYTES", "INDEX_FILE", "INDEX_LINES", "indexLine", "loadedIndex", "mergedNote", "NOTE_FILE", "NOTE_ORIGINS", "NOTE_STATUSES", "NOTE_TYPES", "parseNoteFile", "retire", "supersede"],
   secrets: ["MIN_SECRET", "PRINT_MAX", "redactSecrets", "secretShapes", "valueMatcher"],
+  skills: ["draftFiles", "draftProblems", "frontKeys", "held", "isHeld", "LEARNED_KEYS", "LEARNED_MAX_TURNS", "learnedFront", "learnedName", "learnedPlace", "learnedStatus", "NO_TOOL_LIST", "readmeOf", "released", "retiredLearned", "servedSkill", "setsStatus", "SKILL_NAME", "SKILLS_DIR", "skillProblems", "WORKFLOW_NAME", "WORKFLOWS_DIR"],
 };
-const MODULES = { check, grade, invisible, reflect, notes, secrets };
-const TYPES = ["Base", "Change", "CheckInput", "GradeInput", "IndexEntry", "LearnedNote", "NoteOrigin", "NoteStatus", "NoteText", "NoteType", "Problem", "ProposalCheck", "ProposedNote", "Reflection", "Rule", "Verdict", "VerdictItem"];
+const MODULES = { check, grade, invisible, reflect, notes, secrets, skills };
+const TYPES = ["Base", "Change", "CheckInput", "DraftProblem", "DraftReader", "GradeInput", "IndexEntry", "LearnedBlock", "LearnedNote", "LearnedPlace", "NoteOrigin", "NoteStatus", "NoteText", "NoteType", "Problem", "ProposalCheck", "ProposedNote", "Reflection", "Rule", "Verdict", "VerdictItem"];
 
 test("the index exports every value of the learning modules, each the same binding as its module's, and nothing else", () => {
   assert.deepEqual(Object.keys(learn).sort(), Object.values(VALUES).flat().sort());

@@ -6,6 +6,7 @@
 // - `Learn once: <JSON>`: the same, less the files the run's `# Learned` names already, in the index or a note's heading
 //   (a later run of the agent adds none);
 // - `Answer: <JSON>`: the turn's whole answer, as given (a string), in place of the planned notes.
+// On pi, "Fail the job." has the job's turn fail (the model's error), and the end-of-run turn is answered all the same.
 // A user message "Remember for next time: <text>" is what a person asks the agent to keep: on pi the job turn writes it
 // to `.learning/notes.txt` first and says it saved it (what models do), and the end-of-run turn, which reads the whole
 // conversation, answers it as a note, `remembered.md`. A job turn whose instructions say `Scribble: <JSON>` ([file, text]
@@ -18,7 +19,8 @@
 // into `.learning/`, one write a request, then says "Written.": a follow-up that changes the run's copy.
 // The server's grader is answered here too, on the agent's own model, by what the instructions say: "Grade: drop." keeps
 // no note, "Grade: drop <file>." keeps every note but that one and merges none, "Grade: pending <file>." keeps that one
-// to wait for its owner's OK (decision pending, origin you) and the rest, "Grade: risky <file>." keeps that one as the
+// to wait for its owner's OK (decision pending, origin you) and the rest (a <file> is a note's, a skill's SKILL.md or a
+// draft's workflow.json), "Grade: risky <file>." keeps that one as the
 // run's own (decision keep, origin run) and names it Risky, and the rest, "Grade: you <file>." keeps that one as what
 // the user asked in their own words (decision keep, origin you), and the rest, "Grade: shop <file>." drops that one on
 // General with the user's origin (a weak grader's call on a shop's policy) and merges none, "Grade: sly." says merge and keeps
@@ -102,9 +104,9 @@ function verdictOf(rules, files, faux) {
   const long = rules.includes("Grade: drop at length.");
   const saying = /Grade: drop saying (\S+)\./.exec(rules)?.[1];
   const keep = !rules.includes("Grade: drop.") && !rules.includes("Grade: sly.") && !long && !saying;
-  const dropped = /Grade: drop (\S+\.md)\./.exec(rules)?.[1];
+  const dropped = /Grade: drop (\S+\.(?:md|json))\./.exec(rules)?.[1];
   // "Grade: pending <file>.": that note is a risky rule the user asked for, kept to wait for their OK.
-  const waits = /Grade: pending (\S+\.md)\./.exec(rules)?.[1];
+  const waits = /Grade: pending (\S+\.(?:md|json))\./.exec(rules)?.[1];
   // "Grade: risky <file>.": a risky rule the run worked out itself, which the grader keeps and names Risky.
   const risky = /Grade: risky (\S+\.md)\./.exec(rules)?.[1];
   // "Grade: you <file>.": a note that keeps what the user asked, kept active with the user's origin.
@@ -143,6 +145,7 @@ export default function reply(context, faux) {
     if (done < notes.length) return faux.message(faux.toolCall("write", { path: `.learning/${notes[done][0]}`, content: notes[done][1] }), { stopReason: "toolUse" });
     if (said) return faux.message("Got it: I saved that in .learning/notes.txt.");
   }
+  if (!asked && /Fail the job\./.test(system)) return faux.message("", { stopReason: "error", errorMessage: "the faux job failed on purpose" });
   const held = /Answer once (\S+) exists\./.exec(system)?.[1];
   if (!asked && held) {
     return (async () => {
@@ -157,6 +160,8 @@ export default function reply(context, faux) {
     const gate = /Reflect once (\S+) exists\./.exec(system)?.[1];
     while (gate && !(await access(gate).then(() => true, () => false))) await new Promise((resolve) => setTimeout(resolve, 20));
     if (/Reflect slowly\./.test(system)) return slow(faux, 60_000, "Too late.");
+    // "Reflect by writing first.": the end-of-run turn tries to write a note as a file first, then answers.
+    if (/Reflect by writing first\./.test(system) && done === 0) return faux.message(faux.toolCall("write", { path: ".learning/written.md", content: "A note as a file.\n" }), { stopReason: "toolUse" });
     return faux.message(reflection(system, users));
   })();
 }

@@ -308,7 +308,7 @@ test('every paid request forwarded is booked once: its usage when it says it; an
   }
 });
 
-test("a client that hangs up once it has read the usage the provider reported (the stream still open) is booked at that usage, and a hang-up before any usage at an unknown cost", async (t) => {
+test("a client that hangs up once it has read the usage the provider reported (the stream still open) is booked at that usage, and a hang-up before any usage at an unknown cost, with the bytes it was sent", async (t) => {
   // The provider sends its usage and then holds the stream open until the proxy aborts it; the client leaves at once.
   const holding = (text) => async (_url, init) => new Response(new ReadableStream({
     start(c) { c.enqueue(new TextEncoder().encode(text)); init.signal.addEventListener('abort', () => c.error(new Error('aborted')), { once: true }); },
@@ -329,10 +329,127 @@ test("a client that hangs up once it has read the usage the provider reported (t
   await settled(reported.hooks);
   assert.deepEqual(reported.hooks.after, [{ input: 11, output: 4, cacheRead: 0, usd: 0.001, estimated: true }], 'the usage the provider reported is booked');
 
-  const silent = await proxy(t, { fetch: holding('data: {"delta":"hi"}\n\n') });
+  // A piece outside ASCII: what it was sent is counted in bytes, never characters.
+  const piece = 'data: {"delta":"hé ✓ 思考"}\n\n';
+  const silent = await proxy(t, { fetch: holding(piece) });
   await hangUp(silent.p.url, 'without usage');
   await settled(silent.hooks);
-  assert.deepEqual(silent.hooks.after, [{ input: 0, output: 0, cacheRead: 0, usd: null, estimated: true }], 'no usage seen: an unknown cost');
+  // The client left part way: the booking also says what it was sent (the one piece's bytes), which a host counts it by.
+  assert.ok(Buffer.byteLength(piece) > piece.length);
+  assert.deepEqual(silent.hooks.after, [{ input: 0, output: 0, cacheRead: 0, usd: null, estimated: true, stoppedAfterBytes: Buffer.byteLength(piece) }], 'no usage seen: an unknown cost, with what streamed');
+});
+
+/** A client that sends `body` to the test route and leaves once `leave()` says so (or at its first byte when no `leave`). */
+const stopAt = (url, body, leave) => new Promise((resolve) => {
+  const { hostname, port } = new URL(url);
+  const req = request({ host: hostname, port, method: 'POST', path: '/v1/test', headers: { 'content-type': 'application/json', authorization: `Bearer ${KEY}` } }, (res) => {
+    res.once('data', () => { req.destroy(); resolve(); });
+    res.on('error', resolve);
+  });
+  req.on('error', () => resolve());
+  req.end(JSON.stringify(body));
+  if (leave) void leave.then(() => { req.destroy(); resolve(); });
+});
+const settledAfter = async (hooks) => { for (let i = 0; i < 300 && hooks.after.length === 0; i += 1) await new Promise((resolve) => setTimeout(resolve, 10)); };
+/** A provider that streams `text` and holds the stream open until the proxy aborts it. */
+const holdingStream = (text) => async (_url, init) => new Response(new ReadableStream({
+  start(c) { c.enqueue(new TextEncoder().encode(text)); init.signal.addEventListener('abort', () => c.error(new Error('aborted')), { once: true }); },
+}), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+
+test("a stopped request whose policy says its reasoning is hidden (only a summary streams) is booked with that reasoning's budget and the reasoning bytes it was sent (by the policy's reading of each event), beside all it was sent; one read whole, or with no hidden reasoning, says no such thing", async (t) => {
+  // The policy reads a body's hidden reasoning budget (as codex's reads its effort, and claude-agent's its thinking budget),
+  // and the reasoning in each event it streams (as codex's reads a summary delta, and claude-agent's a thinking delta).
+  const reasoning = {
+    ...policy,
+    reasoningHidden: (body) => (typeof body.hidden === 'number' ? body.hidden : 0),
+    reasoningBytesOf: (event) => { const data = JSON.parse(event.replace(/^data: /, '')); return typeof data.reasoning === 'string' ? Buffer.byteLength(data.reasoning) : 0; },
+  };
+  const thought = 'Weighing it: é ✓';
+  const summary = `data: ${JSON.stringify({ reasoning: thought })}\n\ndata: {"delta":"The answer is"}\n\n`;
+  const hidden = await proxy(t, { policy: reasoning, fetch: holdingStream(summary) });
+  await stopAt(hidden.p.url, { model: 'other', input: 'hi', hidden: 8_192 });
+  await settledAfter(hidden.hooks);
+  assert.deepEqual(hidden.hooks.after, [{ input: 0, output: 0, cacheRead: 0, usd: null, estimated: true, stoppedAfterBytes: Buffer.byteLength(summary), stoppedHiddenTokens: 8_192, stoppedReasoningBytes: Buffer.byteLength(thought) }], 'stopped: all it was sent, its hidden reasoning budget, and the reasoning it was sent');
+  // No hidden reasoning (the policy says 0): only what it was sent, as before.
+  const none = await proxy(t, { policy: reasoning, fetch: holdingStream(summary) });
+  await stopAt(none.p.url, { model: 'other', input: 'hi', hidden: 0 });
+  await settledAfter(none.hooks);
+  assert.deepEqual(none.hooks.after, [{ input: 0, output: 0, cacheRead: 0, usd: null, estimated: true, stoppedAfterBytes: Buffer.byteLength(summary) }]);
+  // Read whole: its usage, with no stop figures.
+  const whole = await proxy(t, { policy: reasoning });
+  const res = await fetch(`${whole.p.url}/v1/test?beta=true`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${KEY}` }, body: JSON.stringify({ model: 'other', input: 'hi', hidden: 8_192 }) });
+  await res.text();
+  await settledAfter(whole.hooks);
+  assert.equal(whole.hooks.after[0]?.stoppedHiddenTokens, undefined, 'read whole: no hidden budget');
+});
+
+test("a request its client stops before the provider's first header is booked as stopped with nothing streamed (its input and the allowance, as pi counts it), not at its whole hold; one the provider answered with an error status stays at its hold", async (t) => {
+  // The provider has not answered yet when the client leaves.
+  let asked;
+  const reached = new Promise((resolve) => (asked = resolve));
+  const silent = await proxy(t, { fetch: (_url, init) => new Promise((_resolve, reject) => { asked(); init.signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true }); }) });
+  await stopAt(silent.p.url, { model: 'other', input: 'hi' }, reached);
+  await settledAfter(silent.hooks);
+  assert.deepEqual(silent.hooks.after, [{ input: 0, output: 0, cacheRead: 0, usd: null, estimated: true, stoppedAfterBytes: 0 }], 'stopped before any header: stopped, with nothing streamed');
+  // An error status (an overload) began the answer; the client leaves part way: at its hold, as before.
+  const overloaded = await proxy(t, { fetch: async (_url, init) => new Response(new ReadableStream({
+    start(c) { c.enqueue(new TextEncoder().encode('{"error":{"type":"overloaded"')); init.signal.addEventListener('abort', () => c.error(new Error('aborted')), { once: true }); },
+  }), { status: 529, headers: { 'content-type': 'application/json' } }) });
+  await stopAt(overloaded.p.url, { model: 'other', input: 'hi' });
+  await settledAfter(overloaded.hooks);
+  assert.equal(overloaded.hooks.after.length, 1, 'booked once');
+  assert.equal(overloaded.hooks.after[0].stoppedAfterBytes, undefined, 'an error status: no stop figure, so its hold');
+});
+
+/** A provider that streams `pieces` (bytes) as separate chunks and holds the stream open until the proxy aborts it. */
+const holdingPieces = (pieces) => async (_url, init) => new Response(new ReadableStream({
+  start(c) { for (const piece of pieces) c.enqueue(piece); init.signal.addEventListener('abort', () => c.error(new Error('aborted')), { once: true }); },
+}), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+/** A client that sends `body` and leaves once `total` bytes of the answer have reached it. */
+const stopAfter = (url, body, total) => new Promise((resolve) => {
+  const { hostname, port } = new URL(url);
+  const req = request({ host: hostname, port, method: 'POST', path: '/v1/test', headers: { 'content-type': 'application/json', authorization: `Bearer ${KEY}` } }, (res) => {
+    let read = 0;
+    res.on('data', (chunk) => { read += chunk.length; if (read >= total) { req.destroy(); resolve(); } });
+    res.on('error', resolve);
+    res.on('close', resolve);
+  });
+  req.on('error', () => resolve());
+  req.end(JSON.stringify(body));
+});
+/** A policy that reads each event's reasoning and content as the real ones do: its data lines, joined, as JSON. */
+const crlfPolicy = {
+  ...policy,
+  reasoningHidden: () => 100,
+  reasoningBytesOf: (event) => { const data = JSON.parse(event.split('\n').filter((l) => l.startsWith('data:')).map((l) => l.slice(5).trimStart()).join('\n')); return Buffer.byteLength(data.reasoning ?? ''); },
+  contentBytesOf: (event) => { const data = JSON.parse(event.split('\n').filter((l) => l.startsWith('data:')).map((l) => l.slice(5).trimStart()).join('\n')); return Buffer.byteLength(data.reasoning ?? '') + Buffer.byteLength(data.text ?? ''); },
+};
+const [crlfThought, crlfText] = ['Weighing é ✓', 'The answer: 思考 done'];
+/** Two events, each line ended "\r\n" and each event by a blank line, as a CRLF provider frames them. */
+const CRLF_STREAM = Buffer.from(`event: reasoning\r\ndata: ${JSON.stringify({ reasoning: crlfThought })}\r\n\r\nevent: text\r\ndata: ${JSON.stringify({ text: crlfText })}\r\n\r\n`);
+/** What a stop after `pieces` books: the content and the reasoning it was sent. */
+async function crlfStop(t, pieces) {
+  const run = await proxy(t, { policy: crlfPolicy, fetch: holdingPieces(pieces) });
+  await stopAfter(run.p.url, { model: 'other', input: 'hi' }, CRLF_STREAM.length);
+  await settledAfter(run.hooks);
+  const [booked] = run.hooks.after;
+  return { content: booked?.stoppedAfterBytes, reasoning: booked?.stoppedReasoningBytes };
+}
+const CRLF_WANT = { content: Buffer.byteLength(crlfThought) + Buffer.byteLength(crlfText), reasoning: Buffer.byteLength(crlfThought) };
+
+test("a CRLF stream whose chunk ends between the two line ends of an event's blank line (\"\\r\\n\\r|\\n\") counts both events' content and reasoning, not 0", async (t) => {
+  const cut = CRLF_STREAM.indexOf('\r\n\r\n') + 3;
+  assert.equal(CRLF_STREAM.subarray(cut - 3, cut + 1).toString(), '\r\n\r\n', 'setup: the cut falls inside the first event\'s blank line');
+  assert.deepEqual(await crlfStop(t, [CRLF_STREAM.subarray(0, cut), CRLF_STREAM.subarray(cut)]), CRLF_WANT, 'both events read whole across the cut');
+});
+
+test("a CRLF stream counts the same content and reasoning wherever a chunk boundary falls: at every byte offset of a two-event stream", async (t) => {
+  const seen = [];
+  for (let cut = 1; cut < CRLF_STREAM.length; cut += 1) {
+    const got = await crlfStop(t, [CRLF_STREAM.subarray(0, cut), CRLF_STREAM.subarray(cut)]);
+    if (got.content !== CRLF_WANT.content || got.reasoning !== CRLF_WANT.reasoning) seen.push({ cut, ...got });
+  }
+  assert.deepEqual(seen, [], `every cut counts ${JSON.stringify(CRLF_WANT)}`);
 });
 
 test('close() while a request waits for the runner: it is not sent, and it is released, booked once at nothing', async (t) => {
@@ -847,7 +964,7 @@ test("a refused write of a response's ids: the stream completes, the proxy says 
   assert.equal((await send(p.url, { path: '/v1/test?beta=true', body: { model: 'x', input: 2 } })).status, 200);
   await until(async () => (await of(RUNNER_RECORDS.turn)).length === 2, 'both answers booked');
   const usage = { input: 7, output: 2, cacheRead: 0, cacheWrite: 0 };
-  assert.deepEqual(await of(RUNNER_RECORDS.turn), [{ turn: 1, usd: 0.001, usage, estimated: true, providerIds: carriedIds(1) }, { turn: 2, usd: 0.001, usage, estimated: true, providerIds: carriedIds(2) }], 'each booked once, with its tokens and its ids');
+  assert.deepEqual(await of(RUNNER_RECORDS.turn), [{ turn: 1, usd: 0.001, usage, estimated: true, providerIds: carriedIds(1), bookedUsd: 0.001, rule: 'answered' }, { turn: 2, usd: 0.001, usage, estimated: true, providerIds: carriedIds(2), bookedUsd: 0.001, rule: 'answered' }], 'each booked once, with its tokens, its ids, and the figure the booking rule gave it');
   assert.deepEqual((await of(RUNNER_RECORDS.response)).map((d) => d.turn), [2], "turn 1's ids are in its runner.turn only, never written twice");
 });
 
@@ -860,7 +977,7 @@ test("a refused write of a response's ids, then the stream cut with the process 
   await send(p.url, { path: '/v1/test?beta=true', body: { model: 'x', input: 'cut' } }).catch(() => {});
   await until(async () => (await of(RUNNER_RECORDS.turn)).length === 1, 'the cut request booked');
   await reopen();
-  assert.deepEqual(await of(RUNNER_RECORDS.turn), [{ turn: 1, usd: null, estimated: true, providerIds: carriedIds(1) }], 'once, unknown, with its ids; the next process books nothing more');
+  assert.deepEqual(await of(RUNNER_RECORDS.turn), [{ turn: 1, usd: null, estimated: true, providerIds: carriedIds(1), bookedUsd: null, rule: 'lost:error_after' }], 'once, unknown, with its ids and the booking rule (no hold here: unknown); the next process books nothing more');
 });
 
 test("a refused write of a response's ids is carried into the booking's next write: a process that dies before that request ends still leaves its ids for the cut (residual: one that writes nothing more of its own booking first loses them)", async (t) => {

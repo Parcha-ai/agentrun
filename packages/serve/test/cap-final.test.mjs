@@ -28,13 +28,13 @@ function records(data, runId, kind) {
   }
 }
 
-/** The run's end, its rows and how long it took from `from`. */
+/** The run's end, or its pause at its cap, its rows and how long it took from `from`. */
 async function ended(api, runId, from) {
-  const { rows } = await follow(api, runId, ["completed", "failed", "cancelled"], { deadlineMs: 60_000 });
+  const { rows } = await follow(api, runId, ["input_required", "completed", "failed", "cancelled"], { deadlineMs: 60_000 });
   return { run: (await api("GET", `/runs/${runId}`)).body, rows, ms: Date.now() - from };
 }
 
-test("pi: a refusal whose cap and model id hold retry digits is final: the request is never sent, nothing is tried again, and the run ends spend_cap_reached", async (t) => {
+test("pi: a refusal whose cap and model id hold retry digits is final: the request is never sent, nothing is tried again, and the run pauses at its cap", async (t) => {
   // $40 a million output tokens; the endpoint reports 10,625 of them, $0.425 (few enough that pi-ai still reads the
   // context as nearly empty). The first request's least, 1,024 tokens for the answer and the medium thinking level's 8,192
   // ($0.36864), fits $0.4295; after it $0.0045 is left, under the next one's least.
@@ -51,9 +51,9 @@ test("pi: a refusal whose cap and model id hold retry digits is final: the reque
   const from = Date.now();
   assert.equal((await api("POST", `/runs/${started.body.run_id}/messages`, { content: "And six times eight?" })).body.mode, "follow_up");
   const { run, rows, ms } = await ended(api, started.body.run_id, from);
-  assert.deepEqual([run.status, run.error?.code], ["failed", "spend_cap_reached"], JSON.stringify(run.error));
+  assert.deepEqual([run.status, run.state, run.error, run.pending?.kind], ["input_required", "waiting", null, "budget"], JSON.stringify(run));
   // To run it the cap would have to be $0.425 spent and the next request's least, $0.36864: $0.80 up to the cent.
-  assert.equal(run.error.message, "Not sent: the run has spent $0.425 of its $0.4295 cap, and its next cap-model-502 request needs at least $0.37. Raise the cap to at least $0.80 to run it.");
+  assert.equal(run.pending.said, "Not sent: the run has spent $0.425 of its $0.4295 cap, and its next cap-model-502 request needs at least $0.37. Raise the cap to at least $0.80 to run it.");
   const refusal = rows.find((r) => r.kind === "error");
   assert.ok(refusal?.text?.startsWith("spend_cap_reached (out of budget): Not sent: "), "its code keeps it final to pi-ai's retry");
   assert.equal(posts(), 1, "the refused request never reached the model, and was not tried again");
@@ -62,7 +62,7 @@ test("pi: a refusal whose cap and model id hold retry digits is final: the reque
 });
 
 for (const harness of ["claude-agent", "codex"]) {
-  test(`${harness}: a refusal whose words hold retry digits is final: one request sent, no second attempt, and the run ends spend_cap_reached`, { timeout: 90_000 }, async (t) => {
+  test(`${harness}: a refusal whose words hold retry digits is final: one request sent, no second attempt, and the run pauses at its cap`, { timeout: 90_000 }, async (t) => {
     // The first request costs $0.3502: $0.0793 is left of $0.4295, under the least of one more ($0.1024).
     const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS, faux: OUTPUT_PRICED });
     assert.equal((await api("POST", "/agents", agent(`digits-${harness}`, { harness, instructions: "Spend 0.3502 on the first request." }))).status, 201);
@@ -70,9 +70,9 @@ for (const harness of ["claude-agent", "codex"]) {
     const started = await api("POST", `/agents/digits-${harness}/runs`, { input: { content: "go" }, max_cost_usd: CAP });
     assert.equal(started.status, 202, JSON.stringify(started.body));
     const { run, rows, ms } = await ended(api, started.body.run_id, from);
-    assert.deepEqual([run.status, run.error?.code], ["failed", "spend_cap_reached"], JSON.stringify(run.error));
+    assert.deepEqual([run.status, run.state, run.error, run.pending?.kind], ["input_required", "waiting", null, "budget"], JSON.stringify(run));
     // To run it the cap would have to be $0.3502 spent and the next request's least, $0.1024: $0.46 up to the cent.
-    assert.match(run.error.message, /^Not sent: the run has spent \$0\.3502 of its \$0\.4295 cap, and its next \S+ request needs at least \$0\.11\. Raise the cap to at least \$0\.46 to run it\.$/);
+    assert.match(run.pending.said, /^Not sent: the run has spent \$0\.3502 of its \$0\.4295 cap, and its next \S+ request needs at least \$0\.11\. Raise the cap to at least \$0\.46 to run it\.$/);
     assert.equal(records(data, started.body.run_id, "faux.request").length, 1, "the second request was never sent");
     assert.equal(rows.filter((r) => r.kind === "error").length, 1, "one refusal");
     assert.ok(ms < 30_000, `no retry backoff: ${ms} ms`);

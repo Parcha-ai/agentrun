@@ -7,13 +7,14 @@ import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { AgentToolSettings } from "@/components/ToolSettings";
 import { WorkflowEditor } from "@/components/WorkflowEditor";
-import { type Agent, type AgentFields, DECISION, defaultTools, harnessOptions, isStarter, reachesWeb, same, sandboxReason, type SaveProblem, type ToolOffer, toolsFor, warningsFor } from "@/lib/agentForm";
+import { type Agent, type AgentFields, capOf, DECISION, defaultTools, harnessOptions, isStarter, reachesWeb, same, sandboxReason, type SaveProblem, type ToolOffer, toolsFor, warningsFor } from "@/lib/agentForm";
 import type { WorkflowCheck } from "@/lib/client";
 import { markdown, when } from "@/lib/format";
 import { harnessDefault, modelLabel, NO_DEFAULT } from "@/lib/models";
 import type { McpServer } from "@/lib/mcp";
+import { newAgentPlace } from "@/lib/place";
 import type { Places } from "@/lib/place";
-import type { ToolChoice } from "@/lib/toolSettings";
+import { callNodeTools, type ToolChoice, type ToolGate } from "@/lib/toolSettings";
 import { cn } from "@/lib/utils";
 
 /** A revision as GET /v2/agents/{id}/revisions lists it; `definition` is what it holds (a workflow revision's workflow). */
@@ -48,8 +49,14 @@ export type EditorProps = {
   mcpServers?: McpServer[] | null | "failed";
   /** Reads the MCP servers again, after a read that failed. */
   onRetryMcp?: () => void;
+  /** Each tool's permission on this server (approvals/1), from capabilities: an agent's own is set over it. */
+  permissionGates?: ToolGate[];
+  /** A tool whose permission the Tools step opens on, focused (a start refused for it links here). */
+  focusTool?: string;
 };
 type Step = "context" | "workflow" | "tools" | "settings" | "history";
+/** The workflow in the form's text, when it parses; else undefined (the saved one stands). */
+const parsedWorkflow = (text: string | undefined): unknown => { try { return text ? JSON.parse(text) : undefined; } catch { return undefined; } };
 
 /** A refused save's issues in the workflow: each 422 field under definition.workflow at its path, else the refusal's
  *  message for a workflow agent. */
@@ -70,22 +77,30 @@ const STEPS: { id: Step; label: string; note: string; Icon: typeof FileText }[] 
 /** The hosted console's agent builder, over AgentRun Server's agents: a numbered step rail, one step at a time, and a
  *  save that makes a new revision. A save made on a revision that is no longer current is refused (If-Match), and the
  *  editor says so instead of overwriting the other save. */
-export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent, onArchive, onReload, onBack, step: initialStep, problem: initialProblem = null, notice, draft, validate, providerChoices = [], mcpServers = null, onRetryMcp }: EditorProps) {
+export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent, onArchive, onReload, onBack, step: initialStep, problem: initialProblem = null, notice, draft, validate, providerChoices = [], permissionGates = [], focusTool, mcpServers = null, onRetryMcp }: EditorProps) {
   const creating = !agent;
   const d = agent?.definition;
   const [step, setStep] = useState<Step>(initialStep ?? (agent?.kind === "workflow" ? "workflow" : "context"));
-  // Tools are on by default: a new agent starts with every tool its harness runs here; an agent keeps its own.
-  const [f, setF] = useState<AgentFields>({ name: d?.name ?? "", description: d?.description ?? "", instructions: d?.instructions ?? "", harness: d?.harness ?? "pi", thinking: d?.thinking, model: d?.model, tools: creating ? defaultTools("pi", caps.tools) : d?.tools ?? [], ...(agent?.kind === "workflow" ? { workflowText: draft ?? JSON.stringify(d!.workflow, null, 2) } : {}) });
+  // Tools are on by default: a new agent starts with every tool its harness runs here; an agent keeps its own. A new
+  // agent starts on the place the server gives new agents (a sandbox where it has a box: bash ticked too); else none.
+  const startPlace = creating ? newAgentPlace(caps.places) : undefined;
+  const [f, setF] = useState<AgentFields>({ name: d?.name ?? "", description: d?.description ?? "", instructions: d?.instructions ?? "", harness: d?.harness ?? "pi", thinking: d?.thinking, model: d?.model, tools: creating ? defaultTools("pi", caps.tools, startPlace) : d?.tools ?? [], maxCostText: typeof d?.max_cost_usd === "number" && d.max_cost_usd > 0 ? String(d.max_cost_usd) : "", ...(startPlace ? { place: startPlace } : {}), ...(agent?.kind === "workflow" ? { workflowText: draft ?? JSON.stringify(d!.workflow, null, 2) } : {}) });
   // The form as it is now, for a save's answer to compare with what that save sent.
   const formNow = useRef(f);
   formNow.current = f;
   // On a new agent, picking another harness re-ticks that harness's tools, until a tool is changed by hand.
   const [toolsTouched, setToolsTouched] = useState(false);
   // The server's tools can arrive after the form opens (capabilities answer late): a new agent's untouched tools follow.
+  // So can its places: a new agent with no place yet takes the served default then; a place the person picked stays.
   const toolsKey = caps.tools.map((t) => `${t.name}:${t.available}:${(t.harnesses ?? []).join("+")}`).join(",");
+  const placeKey = JSON.stringify(newAgentPlace(caps.places) ?? null);
   useEffect(() => {
-    if (creating && !toolsTouched) setF((x) => ({ ...x, tools: defaultTools(x.harness ?? "pi", caps.tools) }));
-  }, [toolsKey]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (!creating) return;
+    setF((x) => {
+      const place = x.place ?? newAgentPlace(caps.places);
+      return { ...x, ...(place ? { place } : {}), ...(toolsTouched ? {} : { tools: defaultTools(x.harness ?? "pi", caps.tools, place) }) };
+    });
+  }, [toolsKey, placeKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const [note, setNote] = useState("");
   const [preview, setPreview] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -113,7 +128,18 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
     if (!onSave) return;
     setSaving(true);
     // A workflow agent's edit is sent as its parsed JSON; text that does not parse is not sent at all.
-    let fields: AgentFields = { ...f, workflowText: undefined };
+    let fields: AgentFields = { ...f, workflowText: undefined, maxCostText: undefined };
+    // The default cap, an agentic revision's only: the field's number. Emptied, an edit clears a saved cap with an explicit
+    // 0 (the server's "no default"; a field left out keeps the cap), and sends none when there is no cap to clear.
+    if (!workflow && !starting) {
+      const cap = capOf(f.maxCostText);
+      if (!cap.ok) { setSaving(false); setProblem({ kind: "invalid", message: cap.message, fields: { "definition.max_cost_usd": cap.message } }); return; }
+      // 0 (typed, or an emptied field) clears a saved cap; with no cap saved there is nothing to clear, and a 0 sent
+      // anyway would count as a change and make a revision the server refuses as unchanged.
+      const saved = typeof d?.max_cost_usd === "number" && d.max_cost_usd > 0;
+      const value = cap.value ?? 0;
+      if (value !== 0 || saved) fields = { ...fields, max_cost_usd: value };
+    }
     if (workflow) {
       try { fields = { ...fields, workflow: JSON.parse(f.workflowText ?? "") }; }
       catch (e) { setSaving(false); setProblem({ kind: "invalid", message: `The workflow is not JSON: ${(e as Error).message}`, fields: { "definition.workflow": `The workflow is not JSON: ${(e as Error).message}` } }); return; }
@@ -125,21 +151,26 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
     setSaving(false); setProblem(p); setSaved(!p && unchanged); if (!p) setNote("");
     if (!p && unchanged) setF(({ tool_settings: _saved, ...rest }) => rest);
   };
-  // The tools that reach the web which this agent's harness runs here, for the notice when it has none of them.
   // The model a definition that names none runs on, for this harness, as a person reads it: the gateway's routing prefix
   // off, the full id in a title.
   const fallback = harnessDefault(f.harness ?? "pi", caps.harnesses, caps.defaultModel);
   const modelDefault = fallback ? modelLabel(fallback, { source: caps.modelSource, default: caps.defaultModel, route_prefix: caps.routePrefix }) : undefined;
+  // The tools that reach the web which this agent's harness runs here, for the Tools step's hint when it has none of them.
   const webHere = toolsFor(f.harness ?? "pi", caps.tools).filter((t) => reachesWeb([t.name])).map((t) => t.name);
 
   return (
     <div className="flex h-full min-h-0 flex-col">
       <header className="flex flex-wrap items-center gap-3 border-b px-5 py-4 md:px-8">
         <Button size="icon" variant="ghost" aria-label="Back to agents" onClick={onBack}><ArrowLeft aria-hidden /></Button>
-        <h1 className="min-w-0 flex-1 truncate font-mono text-xl font-semibold">{creating ? "New agent" : d!.name}</h1>
-        {agent && <Chip>{agent.kind}</Chip>}
-        {agent && <span className="caps text-[11px] text-muted-foreground">{current ? `rev ${current.version} current · ` : ""}{agent.revisions} {agent.revisions === 1 ? "revision" : "revisions"}</span>}
-        {agent && onArchive && <Button size="sm" variant={agent.archived_at ? "primary" : "outline"} onClick={() => onArchive(!agent.archived_at)}><Archive aria-hidden /> {agent.archived_at ? "Unarchive" : "Archive"}</Button>}
+        <h1 className="min-w-0 flex-1 truncate font-mono text-xl font-semibold" title={creating ? undefined : d!.name}>{creating ? "New agent" : d!.name}</h1>
+        {/* The kind, revision count and Archive: a row of their own under the name on a phone, so the name keeps the width. */}
+        {agent && (
+          <div className="flex basis-full flex-wrap items-center gap-3 sm:basis-auto" role="group" aria-label="About this agent">
+            <Chip>{agent.kind}</Chip>
+            <span className="caps text-[11px] text-muted-foreground">{current ? `rev ${current.version} current · ` : ""}{agent.revisions} {agent.revisions === 1 ? "revision" : "revisions"}</span>
+            {onArchive && <Button size="sm" variant={agent.archived_at ? "primary" : "outline"} onClick={() => onArchive(!agent.archived_at)}><Archive aria-hidden /> {agent.archived_at ? "Unarchive" : "Archive"}</Button>}
+          </div>
+        )}
       </header>
       {problem?.kind === "conflict" && (
         <div className="flex flex-wrap items-center gap-3 border-b bg-card px-5 py-3 md:px-8" role="alert">
@@ -157,13 +188,10 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
           </ul>
         </div>
       )}
-      {!workflow && !starting && !reachesWeb(f.tools ?? []) && (
-        <p className="border-b bg-card px-5 py-2.5 font-mono text-[12px] text-muted-foreground md:px-8">This agent can't reach the web: {webHere.length ? `tick ${webHere.join(" or ")} in Tools.` : `${f.harness ?? "pi"} runs no web tool on this server.`}</p>
-      )}
       {problem?.kind === "invalid" && <p className="border-b bg-card px-5 py-3 font-mono text-[13px] text-destructive-text md:px-8" role="alert">The server refused the save: {problem.message}</p>}
       {problem?.kind === "other" && <p className="border-b bg-card px-5 py-3 font-mono text-[13px] text-destructive-text md:px-8" role="alert">{problem.message}</p>}
       <div className="flex min-h-0 flex-1 flex-col md:flex-row">
-        <ol className={cn("flex shrink-0 gap-1 overflow-x-auto border-b p-3 md:flex-col md:gap-0 md:border-b-0 md:border-r md:p-4", step === "workflow" ? "md:w-[76px]" : "md:w-[240px]")}>
+        <ol className={cn("relative flex shrink-0 gap-1 overflow-x-auto border-b p-3 md:flex-col md:gap-0 md:border-b-0 md:border-r md:p-4", step === "workflow" ? "md:w-[76px]" : "md:w-[240px]")}>
           {steps.map((s, i) => (
             <li key={s.id} className="shrink-0">
               <button type="button" aria-current={step === s.id ? "step" : undefined} onClick={() => goTo(s.id)}
@@ -175,7 +203,8 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                   <span className="caps flex items-center gap-1.5 text-[12px]"><s.Icon className="size-3.5" aria-hidden /> {s.label}</span>
                   <span className="mt-0.5 block text-[11px] text-muted-foreground">{s.note}</span>
                 </span>
-                <span className="caps text-[12px] md:hidden">{s.label}</span>
+                {/* Below md the rail is a row across the top: step numbers only, so it fits a phone; the step's name heads the step. */}
+                <span className="sr-only md:hidden">{s.label}</span>
               </button>
             </li>
           ))}
@@ -221,7 +250,8 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
           {step === "tools" && (
             <div className="max-w-3xl space-y-6">
               <Field label="Tools" note="On by default: the tools this agent's harness runs on this server. Untick one to take it away." error={fieldError("tools")} warning={fieldWarning("tools")}>
-                <ul className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                {/* Columns by a minimum width: as many as fit, one card a row in a narrow pane (a phone on its side). */}
+                <ul className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,18rem),1fr))] gap-2">
                   {caps.tools.filter((t) => workflow || !t.call_only || f.tools?.includes(t.name)).map((t) => {
                     // A call-only tool runs only in a workflow's call node, which needs it in its revision's tools: a
                     // workflow agent picks it like any other. An agentic agent is never offered one, and one it already
@@ -243,9 +273,15 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                   })}
                   {caps.mcp && !workflow && <li className="sm:col-span-2"><McpToolPicker servers={mcpServers} tools={f.tools ?? []} harness={f.harness ?? "pi"} harnesses={caps.mcpHarnesses} onRetry={onRetryMcp} onChange={(tools) => { setToolsTouched(true); set({ tools }); }} /></li>}
                 </ul>
+                {/* Quiet, here only: an agent can be given no web tool on purpose (one that works on files). */}
+                {!workflow && !reachesWeb(f.tools ?? []) && (
+                  <p className="mt-2 font-mono text-[12px] text-muted-foreground">This agent can't reach the web: {webHere.length ? `tick ${webHere.join(" or ")} in Tools.` : `${f.harness ?? "pi"} runs no web tool on this server.`}</p>
+                )}
               </Field>
-              {!workflow && (
-                <AgentToolSettings agent={agent} harness={f.harness ?? "pi"} model={f.model} tools={f.tools ?? []} choices={providerChoices}
+              {/* A workflow agent's tools have no provider here (a call node runs the tool as the server resolves it), but each
+                  one's permission is this agent's to set: a call node refused for a tool set to deny or ask is fixed here. */}
+              {(
+                <AgentToolSettings agent={agent} harness={f.harness ?? "pi"} model={f.model} tools={f.tools ?? []} choices={workflow ? [] : providerChoices} gates={permissionGates} focus={focusTool} callTools={workflow ? callNodeTools(parsedWorkflow(f.workflowText) ?? d?.workflow) : undefined}
                   value={f.tool_settings ?? d?.tool_settings ?? {}} issues={problem?.kind === "invalid" ? problem.fields : {}}
                   // Settings equal to the definition's are no change of the form's. While a save is under way the definition is
                   // about to be what it sent, so every change is kept: the save's answer drops it only if it equals what was sent.
@@ -262,13 +298,33 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
             <div className="max-w-3xl space-y-8">
               {!workflow && (
                 <Field label="Harness" note="What runtime runs this agent." error={fieldError("harness")} warning={fieldWarning("harness")}>
-                  <div className={cn("grid grid-cols-1 gap-3", COLUMNS[choices.length] ?? "sm:grid-cols-3")} role="radiogroup" aria-label="Harness">
-                    {choices.map((h) => (
-                      <label key={h.id} title={h.reason} className={cn("flex items-start gap-3 border px-4 py-3", f.harness === h.id ? "border-foreground" : "border-border", h.available ? "cursor-pointer" : "cursor-not-allowed opacity-60")}>
-                        <input type="radio" name="harness" value={h.id} checked={f.harness === h.id} disabled={!h.available && f.harness !== h.id} onChange={() => set({ harness: h.id, ...(creating && !toolsTouched ? { tools: defaultTools(h.id, caps.tools) } : {}) })} className="mt-1 accent-[hsl(var(--primary))]" />
-                        <span><span className="block font-mono text-[13px] font-semibold">{h.label}</span><span className="mt-0.5 block font-mono text-[11px] text-muted-foreground">{h.available ? h.id : h.reason}</span></span>
-                      </label>
-                    ))}
+                  {/* Cards by a minimum width: they wrap to more rows in a narrow pane (a phone on its side), never squeezed. */}
+                  <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,9rem),1fr))] gap-3" role="radiogroup" aria-label="Harness">
+                    {/* A harness this server runs is one label, a click anywhere on the card picks it. One it doesn't run says so
+                        briefly (the served `available: false`), and the server's whole reason, an install command in it, is one
+                        tap away in a details line beside the label (so opening it never picks the card), wrapping inside it. */}
+                    {choices.map((h) => {
+                      const row = (
+                        <>
+                          <input type="radio" name="harness" value={h.id} checked={f.harness === h.id} disabled={!h.available && f.harness !== h.id} onChange={() => set({ harness: h.id, ...(creating && !toolsTouched ? { tools: defaultTools(h.id, caps.tools, f.place) } : {}) })} className="mt-1 accent-[hsl(var(--primary))]" />
+                          <span className="min-w-0"><span className="block break-words font-mono text-[13px] font-semibold">{h.label}</span><span className="mt-0.5 block font-mono text-[11px] text-muted-foreground">{h.available ? h.id : "Not available here"}</span></span>
+                        </>
+                      );
+                      const edge = cn("min-w-0 border px-4 py-3", f.harness === h.id ? "border-foreground" : "border-border");
+                      return h.available ? (
+                        <label key={h.id} className={cn(edge, "flex cursor-pointer items-start gap-3")}>{row}</label>
+                      ) : (
+                        <div key={h.id} className={cn(edge, "opacity-60")}>
+                          <label className="flex cursor-not-allowed items-start gap-3">{row}</label>
+                          {h.reason && (
+                            <details className="mt-2 font-mono text-[11px] text-muted-foreground">
+                              <summary className="cursor-pointer select-none hover:text-foreground">Why, and what to do</summary>
+                              <p className="mt-1 break-words leading-[1.6]">{h.reason}</p>
+                            </details>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
                 </Field>
               )}
@@ -286,6 +342,11 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
               {!starting && (
                 <Field label="Model" id="agent-model" optional note={modelDefault ? <>Empty uses the server's default (<span title={modelDefault.title}>{modelDefault.text}</span>).</> : NO_DEFAULT} error={fieldError("model")} warning={fieldWarning("model")}>
                   <input id="agent-model" value={f.model ?? ""} onChange={(e) => set({ model: e.target.value || undefined })} placeholder="provider/model" className={input} />
+                </Field>
+              )}
+              {!workflow && !starting && (
+                <Field label="Default spend cap per run, $" id="agent-max-cost" optional note="A run started without a cap of its own, and a trigger with none, stops at this spend. Empty means none." error={fieldError("max_cost_usd")} warning={fieldWarning("max_cost_usd")}>
+                  <input id="agent-max-cost" inputMode="decimal" value={f.maxCostText ?? ""} onChange={(e) => set({ maxCostText: e.target.value })} placeholder="e.g., 2.50" className={input} />
                 </Field>
               )}
               {!workflow && !starting && caps.places && <PlaceSetting value={f.place} saved={d?.place} places={caps.places} tools={caps.tools} picked={f.tools ?? []} onChange={set} error={fieldError("place")} warning={fieldWarning("place")} />}
@@ -333,8 +394,6 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
   );
 }
 
-/** The harness picker's columns on a wide screen, one per choice: literal class names, so Tailwind keeps them. */
-const COLUMNS: Record<number, string> = { 1: "sm:grid-cols-1", 2: "sm:grid-cols-2", 3: "sm:grid-cols-3", 4: "sm:grid-cols-4", 5: "sm:grid-cols-5" };
 
 const input = "w-full border bg-background px-3 py-2.5 font-mono text-[13px] outline-none placeholder:text-muted-foreground focus:border-border-strong";
 

@@ -107,7 +107,7 @@ test("a paid tool call a crash cut is a charge with no price: the run reads its 
   const log = join(await scratch(t), "monid-calls.jsonl");
   withEnv(t, { MONID_API_KEY: MONID_KEY, AGENTRUN_TEST_FAUX_MONID_CALLS: log });
   const { api, data } = await serve(t, { faux: new URL("./fixtures/faux-priced.mjs", import.meta.url).pathname, fauxMonid: new URL("./fixtures/faux-monid.mjs", import.meta.url).pathname });
-  assert.equal((await api("POST", "/agents", agent("monid-cut", { tools: ["monid.run"] }))).status, 201);
+  assert.equal((await api("POST", "/agents", agent("monid-cut", { tools: ["monid.run"], tool_settings: { "monid.run": { permission: "allow" } } }))).status, 201);
   const { body } = await api("POST", "/agents/monid-cut/runs", { input: { content: "Run monid's /slow." } });
   await until("the monid call is sent", () => existsSync(log) && readFileSync(log, "utf8").includes('"path":"/v1/run"'));
   process.kill(JSON.parse(readFileSync(join(data, "runs", body.run_id, "run.json"), "utf8")).holder.pid, "SIGKILL");

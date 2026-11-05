@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { availableParallelism, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readFileSync, readdirSync } from 'node:fs';
@@ -52,13 +52,28 @@ before(async () => {
   }
   await recordPackages(baseline);
 });
+// npm pack, once per listed package: 18 packs, 13 times in this file, which took most of its 257 s on CI one after another. They
+// run side by side, at most one per CPU, and the receipt keeps the release map's order.
+const packOne = async (root, directory) => {
+  const [packed] = JSON.parse((await exec('npm', ['pack', '--ignore-scripts', '--json', '--pack-destination', join(root, '.release/packages')], { cwd: join(root, 'packages', directory) })).stdout);
+  const sha256 = createHash('sha256').update(await readFile(join(root, '.release/packages', packed.filename))).digest('hex');
+  return { name: packed.name, version: packed.version, filename: packed.filename, sha256 };
+};
 async function recordPackages(root) {
-  const packages = [];
-  for (const directory of listedPackages) {
-    const [packed] = JSON.parse((await exec('npm', ['pack', '--ignore-scripts', '--json', '--pack-destination', join(root, '.release/packages')], { cwd: join(root, 'packages', directory) })).stdout);
-    const sha256 = createHash('sha256').update(await readFile(join(root, '.release/packages', packed.filename))).digest('hex');
-    packages.push({ name: packed.name, version: packed.version, filename: packed.filename, sha256 });
-  }
+  const packages = new Array(listedPackages.length);
+  let next = 0;
+  let failed = false;
+  // After a failed pack no worker takes another, and every pack still running ends before the error goes on: the fixture's
+  // cleanup must not remove a directory a pack is still writing.
+  const worker = async () => {
+    while (!failed && next < listedPackages.length) {
+      const at = next++;
+      try { packages[at] = await packOne(root, listedPackages[at]); } catch (error) { failed = true; throw error; }
+    }
+  };
+  const settled = await Promise.allSettled(Array.from({ length: Math.min(availableParallelism(), listedPackages.length) }, worker));
+  const refused = settled.find((outcome) => outcome.status === 'rejected');
+  if (refused) throw refused.reason;
   await putJson(join(root, '.release/verification.json'), { status: 'passed', packages,
     runtimeSmoke: { core: true, jev: true, pi: true, archil: true, browser: true, vision: true, transport: true, agent: true, serve: true, git: true, learn: true, learnCheck: true, decisions: true, adapters: true, harness: true, network: 'prohibited' }, audit: { vulnerabilities: { high: 0, critical: 0 } } });
 }

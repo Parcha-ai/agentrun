@@ -7,6 +7,7 @@ export {
 	type BoxExecOptions,
 	type BoxFacts,
 	type BoxFile,
+	/** @deprecated Removed in 0.1.0-beta.31 with `@parcha/pi-transport/launch`. Run an agent in a box with `@parcha/agentrun-serve`, which uses `./hands` and `./sync`. */
 	type BoxLauncher,
 	type BoxNetwork,
 	type BoxPort,
@@ -38,19 +39,38 @@ export {
 	TransportConfigSchema,
 } from "./config.ts";
 export { type FactsReading, readFacts } from "./facts.ts";
-export { isPlacementRecord, PlacementsDoc, writePlacement } from "./place/log.ts";
 export {
+	/** @deprecated Removed in 0.1.0-beta.31 with the placer (`@parcha/pi-transport/place`). Run an agent in a box with `@parcha/agentrun-serve`, which uses `./hands` and `./sync`. */
+	isPlacementRecord,
+	/** @deprecated Removed in 0.1.0-beta.31 with the placer (`@parcha/pi-transport/place`). Run an agent in a box with `@parcha/agentrun-serve`, which uses `./hands` and `./sync`. */
+	PlacementsDoc,
+	/** @deprecated Removed in 0.1.0-beta.31 with the placer (`@parcha/pi-transport/place`). Run an agent in a box with `@parcha/agentrun-serve`, which uses `./hands` and `./sync`. */
+	writePlacement,
+} from "./place/log.ts";
+export {
+	/** @deprecated Removed in 0.1.0-beta.31 with the placer (`@parcha/pi-transport/place`). Run an agent in a box with `@parcha/agentrun-serve`, which uses `./hands` and `./sync`. */
 	type EnvironmentFacts,
+	/** @deprecated Removed in 0.1.0-beta.31 with the placer (`@parcha/pi-transport/place`). Run an agent in a box with `@parcha/agentrun-serve`, which uses `./hands` and `./sync`. */
 	environmentFacts,
+	/** @deprecated Removed in 0.1.0-beta.31 with the placer (`@parcha/pi-transport/place`). Run an agent in a box with `@parcha/agentrun-serve`, which uses `./hands` and `./sync`. */
 	type JevPlacerOptions,
+	/** @deprecated Removed in 0.1.0-beta.31 with the placer (`@parcha/pi-transport/place`). Run an agent in a box with `@parcha/agentrun-serve`, which uses `./hands` and `./sync`. */
 	jevClassifier,
+	/** @deprecated Removed in 0.1.0-beta.31 with the placer (`@parcha/pi-transport/place`). Run an agent in a box with `@parcha/agentrun-serve`, which uses `./hands` and `./sync`. */
 	jevPlacer,
+	/** @deprecated Removed in 0.1.0-beta.31 with the placer (`@parcha/pi-transport/place`). Run an agent in a box with `@parcha/agentrun-serve`, which uses `./hands` and `./sync`. */
 	type PlacementAsked,
+	/** @deprecated Removed in 0.1.0-beta.31 with the placer (`@parcha/pi-transport/place`). Run an agent in a box with `@parcha/agentrun-serve`, which uses `./hands` and `./sync`. */
 	PlacementError,
+	/** @deprecated Removed in 0.1.0-beta.31 with the placer (`@parcha/pi-transport/place`). Run an agent in a box with `@parcha/agentrun-serve`, which uses `./hands` and `./sync`. */
 	type PlacementErrorCode,
+	/** @deprecated Removed in 0.1.0-beta.31 with the placer (`@parcha/pi-transport/place`). Run an agent in a box with `@parcha/agentrun-serve`, which uses `./hands` and `./sync`. */
 	type PlacementPhase,
+	/** @deprecated Removed in 0.1.0-beta.31 with the placer (`@parcha/pi-transport/place`). Run an agent in a box with `@parcha/agentrun-serve`, which uses `./hands` and `./sync`. */
 	type PlacementQuery,
+	/** @deprecated Removed in 0.1.0-beta.31 with the placer (`@parcha/pi-transport/place`). Run an agent in a box with `@parcha/agentrun-serve`, which uses `./hands` and `./sync`. */
 	type PlacementRecord,
+	/** @deprecated Removed in 0.1.0-beta.31 with the placer (`@parcha/pi-transport/place`). Run an agent in a box with `@parcha/agentrun-serve`, which uses `./hands` and `./sync`. */
 	type Placer,
 } from "./place/placer.ts";
 export {

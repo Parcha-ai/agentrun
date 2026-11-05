@@ -1,5 +1,6 @@
 import { BROWSER_OPENERS, callFailed, endsTurn, failedWith, inputPreview, labelOf, outcomeOf, savedPaths, type LabelFn, type ToolResultView } from "./labels.js";
 import { cut, firstLine, firstSentence, json, obj, scrubUrls, str, utf8Bytes, type Obj } from "./util.js";
+import { originMatcher } from "./origin.js";
 
 export type TimelineKind =
   | "thinking" | "text_block" | "tool_use" | "tool_result" | "phase"
@@ -8,7 +9,9 @@ export type TimelineKind =
   /** A workflow decision: a judge's answers or a route's branch (serve's decision rows). */
   | "decision"
   /** Where a run's learning ended: proposed, merged or dropped (serve's learning row). */
-  | "learning";
+  | "learning"
+  /** A tool call that waited for a person's approval, after its result's row (serve's tool gate). */
+  | "tool_approval_requested";
 
 /** Grep's public `TimelineEvent` (its 13 fields) plus the open additions, all optional. */
 export type TimelineEvent = {
@@ -36,10 +39,13 @@ export type TimelineEvent = {
   session?: string;
   /** The file a "Saved" phase row is about. */
   path?: string;
+  /** `server` on the row of a message the server wrote into the run (origin.ts): a `phase` row, which counts, as a
+   *  person's `user_message` does, as the message its turn took (`isMessageRow`). */
+  origin?: "server";
   /** `so_far_usd` and `unpriced` (costsofar/1): while `usd` is null, the sum of every charge whose cost is known, and how
    *  many charges have no known cost (model requests cut, stopped, still pending or with no price, and paid tool calls
    *  charged an unknown amount or cut). Absent when `usd` is known. */
-  usage?: { usd: number | null; requests: number; so_far_usd?: number; unpriced?: number };
+  usage?: { usd: number | null; requests: number; so_far_usd?: number; unpriced?: number; not_metered?: number };
 };
 
 /** A pi conversation entry as stored: `pi.assistant`, `pi.tool-result`, a host's own kind. */
@@ -75,6 +81,10 @@ export const REQUEST_COST_LATE = "agentrun.request_cost_late";
  *  it, `usd` is the charge, or null when the call may have charged and did not say how much. It adds to the run's cost,
  *  which is then unknown on a null, and shows as a row of its own; it is no model request. */
 export const TOOL_COST = "agentrun.tool_cost";
+/** A tool call with no price, run outside the run's cost and its cap (an MCP tool its owner set no price for): `tool`,
+ *  `charged_by` and `call` name it. It shows as a row of its own, "not metered", and the usage row counts it
+ *  (`not_metered`); it is no charge and never makes the cost unknown. */
+export const TOOL_UNMETERED = "agentrun.tool_unmetered";
 /** A paid tool's call marked before it is sent (`call`, and `heldUsd`, the most it is held to charge): the TOOL_COST of
  *  the same `call` settles it. Unsettled, it is in flight while the run is; once the run is settled it was cut (a crash),
  *  and the cost is unknown, as for a cut model request: what it charged no one knows, and its held figure is the cap's
@@ -103,6 +113,10 @@ const abortedCall = (entry: EntryLike) => {
  *  (that process died holding the run) or `server_stop` (it drained as the server stopped), `generation` the new
  *  process's, `at` when it opened. A phase row of its own, at that time; no request. */
 export const RUN_RESUMED = "agentrun.run_resumed";
+/** The end of a turn on another harness (claude-agent, codex), written on a run's root by serve as the turn's last entry:
+ *  `{ key, status, ... }`. No row. The turn is over, so the next message is the person's next one, never a steer, even
+ *  when the turn's last entry was a tool's result (a stop that came after it, before the next model request). */
+export const TURN_END = "adapter.turn_end";
 
 export type TimelineOptions = {
   /** For entries and events that carry no conversation id. */
@@ -192,8 +206,9 @@ function createMeter() {
   // whether its answer's tokens were unknown: its late cost's usage then stands in for them).
   let known = 0;
   let unknown = 0;
-  // Paid tool calls whose charge is in the cost (TOOL_COST).
+  // Paid tool calls whose charge is in the cost (TOOL_COST), and calls with no price, run outside it (TOOL_UNMETERED).
   let charges = 0;
+  let notMetered = 0;
   // Paid tool calls marked and not yet settled, by call.
   const held = new Map<string, unknown>();
   const pending: boolean[] = [];
@@ -229,7 +244,7 @@ function createMeter() {
   };
   const models = new Map<string, number>();
 
-  function push(entry: EntryLike): "answer" | "continued" | "refusal" | "mark" | "charge" | undefined {
+  function push(entry: EntryLike): "answer" | "continued" | "refusal" | "mark" | "charge" | "unmetered" | undefined {
     const message = entry.model?.[0];
     const data = obj(entry.data);
     if (entry.kind === REQUEST_REFUSED) {
@@ -261,6 +276,9 @@ function createMeter() {
       charges += 1;
       addCost(data?.usd);
       return "charge";
+    } else if (entry.kind === TOOL_UNMETERED) {
+      notMetered += 1;
+      return "unmetered";
     } else if (entry.kind === REQUEST_COST_PENDING) {
       // The answer just before it was counted as a cost unknown: it is one still to come.
       if (unknown > 0) (unknown -= 1), pending.push(lastUnmetered);
@@ -309,7 +327,7 @@ function createMeter() {
    *  cost is unknown, `so_far_usd` is the sum of the charges whose cost is known and `unpriced` how many have none: each
    *  cost no one knows (an answer or summary with none, a stopped request's, a paid tool charge), each still pending, each
    *  request cut before any answer, and each paid tool call a settled run never settled. No ceiling is claimed. */
-  function usage(settled: boolean): { usd: number | null; requests: number; charges: number; so_far_usd?: number; unpriced?: number } | undefined {
+  function usage(settled: boolean): { usd: number | null; requests: number; charges: number; so_far_usd?: number; unpriced?: number; not_metered?: number } | undefined {
     // A request marked as it left with no entry for it, other than one still in flight: counted, at a cost no one knows.
     // One in flight alone makes no row yet, so the row appears where it did before requests were marked.
     // A settled run has nothing in flight: its last request with no entry, or its open compaction, was cut by the
@@ -318,11 +336,12 @@ function createMeter() {
     const cut = marked - open(inFlight) > answered || compacting - (settled ? 0 : sidesOpen) > compactions;
     // A paid tool call cut by a crash: its charge is unknown, so the cost is.
     const cutCalls = settled ? held.size : 0;
-    if (!requests && !compactions && !cut && !charges && !cutCalls) return refusedAny ? { usd: 0, requests: 0, charges: 0 } : undefined;
+    const unmetered = notMetered ? { not_metered: notMetered } : {};
+    if (!requests && !compactions && !cut && !charges && !cutCalls) return refusedAny || notMetered ? { usd: 0, requests: 0, charges: 0, ...unmetered } : undefined;
     const count = requests + Math.max(0, marked - answered) + Math.max(compactions, compacting);
     const usd = unknown > 0 || pending.length > 0 || cut || cutCalls > 0 ? null : Math.round(known * 1e6) / 1e6;
     const unpriced = unknown + pending.length + Math.max(0, marked - open(inFlight) - answered) + Math.max(0, compacting - (settled ? 0 : sidesOpen) - compactions) + cutCalls;
-    return { usd, requests: count, charges: charges + cutCalls, ...(usd === null && unpriced > 0 ? { so_far_usd: Math.round(known * 1e6) / 1e6, unpriced } : {}) };
+    return { usd, requests: count, charges: charges + cutCalls, ...(usd === null && unpriced > 0 ? { so_far_usd: Math.round(known * 1e6) / 1e6, unpriced } : {}), ...unmetered };
   }
 
   // A workflow's decision requests (Jev, Parallel), from its receipts: requests of their own, beside its entries'.
@@ -364,6 +383,8 @@ const textOf = (message: Obj | undefined, type = "text", field = "text") =>
   blocksOf(message).filter((block) => block.type === type).map((block) => str(block[field]) ?? "").join("\n").trim();
 /** Every string a row shows goes through here: a URL keeps its origin, path and query keys, then the text is cut. */
 const clean = (text: string, max: number) => cut(scrubUrls(text), max);
+/** The rows that show words as a person or the agent wrote them: cut, never scrubbed. */
+const WHOLE: ReadonlySet<TimelineKind> = new Set(["user_message", "text_block", "final_answer"]);
 /** An error's whole text as the host's `redact` makes it, before its first line becomes a summary or either is cut, so
  *  neither keeps part of what the whole text's redaction takes out. */
 const redactOf = (options: TimelineOptions) => (text: string): string => (options.redact ? options.redact(text) : text);
@@ -415,8 +436,8 @@ function createProjector(options: TimelineOptions) {
   // `conversation:id`: the call, when it comes, takes its result and is done.
   const early = new Map<string, { row: TimelineEvent; view: ToolResultView; shown: ToolResultView }>();
   const previous = new Map<number, string>();
-  // Whether every tool of the conversation's latest round ends the turn: then the turn is over, and what comes next is
-  // the person's next message, not a steer.
+  // Whether every tool of the conversation's latest round ends the turn, or a turn's end (TURN_END) came after it: then
+  // the turn is over, and what comes next is the person's next message, not a steer.
   const ended = new Map<number, boolean>();
   // Conversations whose turn an abort cut since their latest tool round (a stop, a cancel): an aborted tool, or a model
   // request that had left and was aborted. That turn is over too, so the next message comes in a new turn, never a steer.
@@ -437,6 +458,8 @@ function createProjector(options: TimelineOptions) {
   // its own, which its host never sees as a call); a person's message settles it. A later answer of the same turn, an
   // empty one too, takes its place, so the earlier one is a text_block then.
   const provisional = new Map<number, TimelineEvent>();
+  /** Which user entries the server wrote (origin.ts): each shows as the server's, never as the person's. */
+  const origins = originMatcher();
 
   function make(kind: TimelineKind, conv: number, id: string, fields: Partial<TimelineEvent> = {}): TimelineEvent {
     const timestamp = new Date(stamp).toISOString();
@@ -452,11 +475,15 @@ function createProjector(options: TimelineOptions) {
       if (row.summary !== null) row.summary = options.redact(row.summary);
       if (row.text !== null) row.text = options.redact(row.text);
     }
-    if (row.summary !== null) row.summary = clean(row.summary, caps.summary);
+    // A person's own message and the agent's own words (its text, its answer) show as written, their held keys redacted
+    // (readMessage): a URL in them keeps its fragment and query values. scrubUrls is for the URLs of what the model read
+    // (a tool's result, a page's title, a call's arguments) and for its thinking.
+    const whole = WHOLE.has(kind);
+    if (row.summary !== null) row.summary = whole ? cut(row.summary, caps.summary) : clean(row.summary, caps.summary);
     if (row.tool_input_preview !== null) row.tool_input_preview = clean(row.tool_input_preview, caps.preview);
     if (row.tool_result_preview !== null) row.tool_result_preview = clean(row.tool_result_preview, caps.preview);
-    if (row.text !== null) row.text = kind === "user_message" ? cut(row.text, caps.text) : clean(row.text, caps.text);
-    for (const key of ["round", "parent_tool_use_id", "session", "path", "usage"] as const) if (row[key] === undefined) delete row[key];
+    if (row.text !== null) row.text = whole ? cut(row.text, caps.text) : clean(row.text, caps.text);
+    for (const key of ["round", "parent_tool_use_id", "session", "path", "usage", "origin"] as const) if (row[key] === undefined) delete row[key];
     return row;
   }
 
@@ -526,6 +553,7 @@ function createProjector(options: TimelineOptions) {
     root ??= conv;
     current = conv;
     const message = entry.model?.[0];
+    const origin = origins({ ...entry, conversationId: conv });
     const at = message?.timestamp;
     if (typeof at === "number" && Math.abs(at) <= 8.64e15) stamp = at;
     const base = `${conv}:${entry.id ?? seq}`;
@@ -550,6 +578,11 @@ function createProjector(options: TimelineOptions) {
       // Its `usage` is the charge alone (no request): a host sums a run's paid tools from the same rows as its cost.
       const charge = typeof usd === "number" && Number.isFinite(usd) ? usd : null;
       add(make("phase", conv, base, { summary: `Tool cost: ${by} charged ${amount} for ${tool}`, tool_name: tool, tool_use_id: str(data?.call) ?? null, usage: { usd: charge, requests: 0 } }));
+    } else if (metered === "unmetered") {
+      // A call with no price: shown, never counted in the cost.
+      const data = obj(entry.data);
+      const tool = str(data?.tool) ?? "a tool";
+      add(make("phase", conv, base, { summary: `Not metered: ${tool} has no price set, so it is outside the run's cost`, tool_name: tool, tool_use_id: str(data?.call) ?? null }));
     } else if ((metered === "answer" || metered === "continued") && message) {
       const round = metered === "continued" && answers.has(conv) ? answers.get(conv) : entry.id;
       if (metered === "answer") answers.set(conv, entry.id);
@@ -673,10 +706,27 @@ function createProjector(options: TimelineOptions) {
       if (state === "waiting") add(make("waiting", conv, base, { summary: `Waiting for you: ${reason ? firstLine(reason) : "sign in on the live browser"}`, session }));
       else if (state === "done") add(make("user_message", conv, base, { summary: "You signed in", session }));
       else if (state === "declined") add(make("user_message", conv, base, { summary: "You declined to sign in", session }));
+    } else if (origin) {
+      // A message the server wrote (a raised cap's follow-up, an approval's resume): the model reads it as it reads any,
+      // and the row says it is the server's. Its whole text is redacted as a person's is (a resume's later lines hold the
+      // call's result, where a held key can be), then its first line is taken, scrubbed and cut as a phase's. No `path`:
+      // a phase row with one folds into the tool row before it.
+      const text = redactText(textOf(message));
+      // A person's message that declined the call: their words are the message the turn took, a row of theirs under a
+      // person's rules, with the entry's own id; the server's resume beside it is shown only (an id of its own, no
+      // origin). Any other: the server's row is that message, with the entry's id and `origin: "server"`.
+      if (origin.reason === "approval_declined") {
+        const said = redactText(origin.said.trim());
+        add(make("phase", conv, `${base}:server`, { summary: `AgentRun: ${firstLine(text)}`, text }));
+        add(make("user_message", conv, base, { summary: `You: ${firstLine(said)}`, text: said }));
+      } else add(make("phase", conv, base, { summary: `AgentRun: ${firstLine(text)}`, text, origin: "server" }));
+      provisional.delete(conv);
     } else if (message?.role === "user" && (entry.kind === "pi.user" || !entry.kind.startsWith("pi."))) {
       const author = str(obj(entry.data)?.author);
       const steer = previous.get(conv) === "pi.tool-result" && !ended.get(conv) && !cutTurns.has(conv);
-      const text = textOf(message);
+      // A person can paste a held key: their row shows it redacted, as the host's `redact` makes it. The entry, which the
+      // model reads, keeps what they typed.
+      const text = redactText(textOf(message));
       add(make("user_message", conv, base, { summary: `${author ?? "You"}${steer ? " (steer)" : ""}: ${firstLine(text)}`, text }));
       provisional.delete(conv);
     }
@@ -684,6 +734,7 @@ function createProjector(options: TimelineOptions) {
     // A model request an abort cut after the round: its end mark is written only for an aborted request (not a withdrawn
     // one, nor a compaction's). The turn it would have gone on with is over.
     else if (entry.kind === REQUEST_ENDED && !unsent(entry) && !isCompaction(entry)) cutTurns.add(conv);
+    else if (entry.kind === TURN_END) ended.set(conv, true);
     return out;
   }
 
@@ -737,14 +788,14 @@ function createProjector(options: TimelineOptions) {
   function usage(nothingInFlight = false): TimelineEvent | undefined {
     const counted = meter.usage(options.settled === true || nothingInFlight);
     if (!counted || root === undefined) return undefined;
-    const { usd, requests, charges, so_far_usd, unpriced } = counted;
-    const paid = charges ? ` and ${charges} paid tool call${charges === 1 ? "" : "s"}` : "";
+    const { usd, requests, charges, so_far_usd, unpriced, not_metered } = counted;
+    const paid = `${charges ? ` and ${charges} paid tool call${charges === 1 ? "" : "s"}` : ""}${not_metered ? `; ${not_metered} tool call${not_metered === 1 ? "" : "s"} not metered` : ""}`;
     const spent = usd !== null ? dollars(usd) : so_far_usd !== undefined && unpriced !== undefined ? `${dollars(so_far_usd)} known, ${unpriced} not priced,` : "unknown";
     return make("usage", root, `${root}:usage`, {
       // A run whose only request its cap refused sent none, and says so; otherwise what is known so far (costsofar/1).
       summary: requests === 0 && !charges ? "no model request sent" : `Cost so far: ${spent} over ${requests} model request${requests === 1 ? "" : "s"}${paid}`,
       // The contract's TimelineUsage and its costsofar/1 fields, while the cost is unknown: no other of the meter's reaches it.
-      usage: { usd, requests, ...(so_far_usd !== undefined && unpriced !== undefined ? { so_far_usd, unpriced } : {}) },
+      usage: { usd, requests, ...(so_far_usd !== undefined && unpriced !== undefined ? { so_far_usd, unpriced } : {}), ...(not_metered ? { not_metered } : {}) },
     });
   }
 
@@ -907,7 +958,9 @@ export function timelineReducer(options: TimelineOptions = {}) {
           const red = redactedWhy(raw);
           return options.redact && /\S$/.test(joined) ? red.replace(/\S+$/, "").trimEnd() : red;
         };
-        const text = scrubUrls(options.redactLive ? options.redactLive(raw) : fallback());
+        const shown = options.redactLive ? options.redactLive(raw) : fallback();
+        // The agent's text streams as it will settle, its URLs whole; its thinking is scrubbed, as when it settles.
+        const text = kind === "thinking" ? scrubUrls(shown) : shown;
         const summary = kind === "thinking" ? `Thinking: ${cut(firstSentence(text), thinkingCap)}` : firstLine(text);
         live(kind, `${conv()}:live:${kind}`, text ? summary : undefined, { text });
       }

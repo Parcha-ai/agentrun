@@ -243,3 +243,23 @@ test("or-11: claude-agent on the host's OpenRouter model sends Anthropic's nativ
   assert.ok(seen.length >= 1);
   for (const request of seen) assert.deepEqual(request, { url: "https://openrouter.ai/api/v1/messages?beta=true", model: "claude-haiku-5-5" });
 });
+
+test("opencode on OpenRouter's key alone has codex's default there, and codexModel and codexProvider give it OpenAI's model on OpenRouter's Responses API with the model's whole id", async () => {
+  const { hostModel, MODEL_KEYS } = await import("../dist/model.js");
+  assert.equal(hostModel(ONLY, "default", "opencode"), "openai/gpt-6-sol", "codex's default on OpenRouter");
+  assert.deepEqual(MODEL_KEYS.find((row) => row.id === "openrouter").harnesses, ["pi", "claude-agent", "codex", "opencode"]);
+  assert.equal(hostModel({ ...ONLY, OPENAI_API_KEY: OWN }, "default", "opencode"), "openai/gpt-6.1-sol", "OpenAI's own key wins");
+  assert.deepEqual(await adapters.codexModel(ONLY, undefined, "opencode"), { model: { provider: "openai", modelId: "gpt-6-sol" } });
+  assert.deepEqual(await adapters.codexModel(ONLY, "openrouter/openai/gpt-6-sol", "opencode"), { model: { provider: "openrouter", modelId: "openai/gpt-6-sol" } });
+  const p = adapters.codexProvider(ONLY, { provider: "openai", modelId: "gpt-6-sol" }, "opencode");
+  assert.deepEqual({ origin: p.origin, key: p.credential(), model: p.modelId }, { origin: "https://openrouter.ai/api", key: KEY, model: "openai/gpt-6-sol" });
+  assert.throws(() => adapters.codexProvider({}, { provider: "openai", modelId: "gpt-6-sol" }, "opencode"), refused(/^opencode needs OPENAI_API_KEY, OPENROUTER_API_KEY/));
+});
+
+test("a key refused on an opencode run that reaches OpenAI's model through OpenRouter is named as OpenRouter's, as codex's is", async () => {
+  const { runKeyOf } = await import("../dist/key-refusal.js");
+  assert.deepEqual(runKeyOf(ONLY, "opencode", "openai/gpt-6-sol"), runKeyOf(ONLY, "codex", "openai/gpt-6-sol"), "codex's key on the same route");
+  assert.deepEqual(runKeyOf(ONLY, "opencode", "openai/gpt-6-sol"), { who: "OpenRouter", field: "OPENROUTER_API_KEY", saved: true });
+  assert.deepEqual(runKeyOf(ONLY, "opencode"), { who: "OpenRouter", field: "OPENROUTER_API_KEY", saved: true }, "on its default there");
+  assert.deepEqual(runKeyOf({ OPENAI_API_KEY: OWN }, "opencode"), { who: "OpenAI", field: "OPENAI_API_KEY", saved: true });
+});

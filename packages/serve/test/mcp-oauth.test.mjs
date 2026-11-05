@@ -5,12 +5,17 @@
 // launch calls; one whose refresh is refused reads `expired`. The servers are fakes on loopback
 // (fixtures/fake-oauth-server.mjs, fixtures/fake-mcp-server.mjs).
 import assert from "node:assert/strict";
-import { randomBytes } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { createHash, createHmac, randomBytes } from "node:crypto";
+import dns from "node:dns/promises";
+import { readFileSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
+import { seal } from "@parcha/pi-durable-agent";
 import { McpServers } from "../dist/mcp-servers.js";
-import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
+import { systemNetwork } from "../dist/mcp-oauth.js";
+import { network as fakeNetwork } from "./fixtures/fake-network.mjs";
+import { agent, call, cookieOf, follow, scratch, serve, withEnv } from "./support.mjs";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { startFakeOAuth } from "./fixtures/fake-oauth-server.mjs";
 
@@ -28,12 +33,14 @@ async function fakes(t, options) {
   return { as, mcp };
 }
 
-/** What the owner's browser does with an authorization URL: open it (the fake approves at once) and follow the
- *  authorization server's redirect to this server's callback, with no token. Answers the callback's response. */
-async function approve(authorizationUrl) {
-  const asked = await fetch(authorizationUrl, { redirect: "manual" });
+/** What the owner's browser does with a start's answer: keep the cookie it set, open the authorization URL (the fake
+ *  approves at once) and follow the authorization server's redirect to this server's callback, with that cookie and no
+ *  token. Answers the callback's response. */
+async function approve(started, { cookie = true, jar } = {}) {
+  const asked = await fetch(started.body.authorization_url, { redirect: "manual" });
   assert.equal(asked.status, 302, await asked.text());
-  return fetch(asked.headers.get("location"), { redirect: "manual" });
+  const kept = jar ?? started.headers.get("set-cookie")?.split(";")[0];
+  return fetch(asked.headers.get("location"), { redirect: "manual", headers: cookie && kept ? { cookie: kept } : {} });
 }
 
 test("an OAuth server: preview says to sign in; start, approve and callback keep it with its tools, the token set sealed and never shown", async (t) => {
@@ -57,7 +64,12 @@ test("an OAuth server: preview says to sign in; start, approve and callback keep
   assert.equal(asked.searchParams.get("scope"), "read");
   assert.ok(as.log.some((entry) => entry.path === "/register"), "with no client named and no public https address, it registers (DCR)");
 
-  const back = await approve(asked);
+  const unbound = await approve(started, { cookie: false });
+  assert.equal(unbound.status, 403, "a callback from a browser that did not start the sign-in is refused");
+  assert.match((await unbound.json()).error.message, /started in another browser/);
+  assert.ok(!as.log.some((entry) => entry.path === "/token"), "and nothing was exchanged");
+  assert.match(started.headers.get("set-cookie"), /^agentrun-oauth-\d+-[0-9a-f]{16}=[^;]+; HttpOnly; SameSite=Lax; Path=\/v2\/settings\/mcp-servers\/oauth\/callback; Max-Age=600/);
+  const back = await approve(started);
   assert.equal(back.status, 302, await back.clone().text());
   assert.equal(back.headers.get("location"), "/#/settings/mcp?server=docs&sign_in=ok");
   assert.ok(as.log.some((entry) => entry.path === "/token" && entry.form.grant_type === "authorization_code"));
@@ -87,9 +99,9 @@ test("an OAuth server: preview says to sign in; start, approve and callback keep
   holdsNone(readFileSync(join(data, "mcp-servers.json"), "utf8"), as.issued, "mcp-servers.json");
 
   // The state is single-use: the same callback again is refused, and an unknown one too.
-  const again = await fetch(back.url, { redirect: "manual" });
-  assert.equal(again.status, 400);
-  assert.equal((await fetch(`${base}${CALLBACK}?code=x&state=never-given`, { redirect: "manual" })).status, 400);
+  const again = await fetch(back.url, { redirect: "manual", headers: { cookie: started.headers.get("set-cookie").split(";")[0] } });
+  assert.equal(again.status, 400, "the state is used once");
+  assert.equal((await fetch(`${base}${CALLBACK}?code=x&state=never-given`, { redirect: "manual", headers: { cookie: `agentrun-oauth-${new URL(base).port}-${createHash("sha256").update("never-given").digest("hex").slice(0, 16)}=never-given` } })).status, 400);
 });
 
 test("a sign-in's state expires: a callback after ten minutes is refused", async (t) => {
@@ -99,7 +111,7 @@ test("a sign-in's state expires: a callback after ten minutes is refused", async
   const started = await api("POST", "/settings/mcp-servers/late/oauth/start", { url: mcp.url });
   assert.equal(started.status, 200, JSON.stringify(started.body));
   t.mock.timers.enable({ apis: ["Date"], now: Date.now() + 11 * 60_000 });
-  const back = await approve(started.body.authorization_url);
+  const back = await approve(started);
   assert.equal(back.status, 400, await back.text());
   t.mock.timers.reset();
   assert.equal((await api("GET", "/settings/mcp-servers/late")).status, 404);
@@ -113,7 +125,7 @@ test("a pre-registered client: its id and secret are used, no registration is ma
   const started = await api("POST", "/settings/mcp-servers/crm/oauth/start", { url: mcp.url, client_id: "owner-app", client_secret: secret });
   assert.equal(started.status, 200, JSON.stringify(started.body));
   assert.equal(new URL(started.body.authorization_url).searchParams.get("client_id"), "owner-app");
-  assert.equal((await approve(started.body.authorization_url)).status, 302);
+  assert.equal((await approve(started)).status, 302);
   assert.ok(!as.log.some((entry) => entry.path === "/register"));
   const read = await api("GET", "/settings/mcp-servers/crm");
   assert.equal(read.body.credential, "sealed");
@@ -128,7 +140,7 @@ test("a pre-registered client: its id and secret are used, no registration is ma
   const again = await api("POST", "/settings/mcp-servers/crm/oauth/start", { url: mcp.url, scopes: ["read"] });
   assert.equal(again.status, 200, JSON.stringify(again.body));
   assert.equal(new URL(again.body.authorization_url).searchParams.get("client_id"), "owner-app");
-  assert.equal((await approve(again.body.authorization_url)).headers.get("location"), "/#/settings/mcp?server=crm&sign_in=ok", "the code exchange authenticated with the kept secret");
+  assert.equal((await approve(again)).headers.get("location"), "/#/settings/mcp?server=crm&sign_in=ok", "the code exchange authenticated with the kept secret");
   assert.ok(!as.log.some((entry) => entry.path === "/register"), "still no registration");
   const after = await api("GET", "/settings/mcp-servers/crm");
   assert.deepEqual([after.body.oauth.client, after.body.oauth.client_id, after.body.oauth.scopes], ["pre-registered", "owner-app", ["read"]]);
@@ -165,7 +177,7 @@ test("a run's launch refreshes a token near its expiry, once for launches at the
   const { api, data } = await serve(t);
   const { as, mcp } = await fakes(t, { expiresIn: 60 });
   const started = await api("POST", "/settings/mcp-servers/docs/oauth/start", { url: mcp.url });
-  assert.equal((await approve(started.body.authorization_url)).status, 302);
+  assert.equal((await approve(started)).status, 302);
   const first = (await api("GET", "/settings/mcp-servers/docs")).body;
   const [signedIn] = as.issued;
 
@@ -192,7 +204,7 @@ test("a run's launch refreshes a token near its expiry, once for launches at the
 
   // Signing in again makes it whole.
   const again = await api("POST", "/settings/mcp-servers/docs/oauth/start", { url: mcp.url });
-  assert.equal((await approve(again.body.authorization_url)).status, 302);
+  assert.equal((await approve(again)).status, 302);
   assert.equal((await api("GET", "/settings/mcp-servers/docs")).body.credential, "sealed");
 });
 
@@ -200,7 +212,7 @@ test("a sign-in the owner since forgot or replaced is not written back: a callba
   withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() });
   const { api } = await serve(t);
   const { mcp } = await fakes(t);
-  const start = async () => (await api("POST", "/settings/mcp-servers/docs/oauth/start", { url: mcp.url })).body.authorization_url;
+  const start = () => api("POST", "/settings/mcp-servers/docs/oauth/start", { url: mcp.url });
   assert.equal((await approve(await start())).status, 302);
   const older = await start();
   const newer = await start();
@@ -218,8 +230,10 @@ for (const name of ["docs", "constructor"]) test(`a run (server ${name}): its la
   const { api } = await serve(t, { faux: FAUX_MCP });
   const { as, mcp } = await fakes(t, { expiresIn: 60 });
   const started = await api("POST", `/settings/mcp-servers/${name}/oauth/start`, { url: mcp.url });
-  assert.equal((await approve(started.body.authorization_url)).status, 302);
+  assert.equal((await approve(started)).status, 302);
   assert.equal((await api("POST", "/agents", agent("adder", { tools: [`mcp:${name}/add`] }))).status, 201);
+  // Its calls allowed, so they run with no one asked (the gate's own cases are in mcp-gate-wired.test.mjs and below).
+  assert.equal((await api("PUT", "/settings/tools", { [`mcp:${name}/*`]: { permission: "allow" } })).status, 200);
   const run = async () => {
     const made = await api("POST", "/agents/adder/runs", { input: { content: `Call mcp__${name}__add with {"a":2,"b":3}` } });
     assert.equal(made.status, 202, JSON.stringify(made.body));
@@ -247,7 +261,7 @@ test("a token given with no expiry is taken to last an hour: a launch after that
   const { api, data } = await serve(t);
   const { as, mcp } = await fakes(t, { expiresIn: null });
   const started = await api("POST", "/settings/mcp-servers/docs/oauth/start", { url: mcp.url });
-  assert.equal((await approve(started.body.authorization_url)).status, 302);
+  assert.equal((await approve(started)).status, 302);
   assert.equal((await api("GET", "/settings/mcp-servers/docs")).body.oauth.expires_at, undefined);
   const store = new McpServers(data, { AGENTRUN_SEAL_KEY: key }, "test");
   const refreshes = () => as.log.filter((entry) => entry.form.grant_type === "refresh_token").length;
@@ -265,8 +279,9 @@ test("a stop never waits on a token refresh: with the authorization server hangi
   const { api } = await serve(t, { faux: FAUX_MCP });
   const { as, mcp } = await fakes(t, { expiresIn: 60 });
   const started = await api("POST", "/settings/mcp-servers/slow/oauth/start", { url: mcp.url });
-  assert.equal((await approve(started.body.authorization_url)).status, 302);
+  assert.equal((await approve(started)).status, 302);
   assert.equal((await api("POST", "/agents", agent("writer", { tools: ["mcp:slow/slow_write"] }))).status, 201);
+  assert.equal((await api("PUT", "/settings/tools", { "mcp:slow/*": { permission: "allow" } })).status, 200);
   const made = await api("POST", "/agents/writer/runs", { input: { content: 'Call mcp__slow__slow_write with {"line":"x","seconds":30}' } });
   assert.equal(made.status, 202, JSON.stringify(made.body));
   for (let i = 0; !mcp.log.some((entry) => entry.method === "tools/call" && entry.tool === "slow_write"); i++) {
@@ -289,7 +304,7 @@ test("a stop aborts a refresh waiting on its authorization server: it returns wi
   const { api, data } = await serve(t);
   const { as, mcp } = await fakes(t, { expiresIn: 60 });
   const started = await api("POST", "/settings/mcp-servers/docs/oauth/start", { url: mcp.url });
-  assert.equal((await approve(started.body.authorization_url)).status, 302);
+  assert.equal((await approve(started)).status, 302);
   const file = join(data, "mcp-servers.json");
   const before = readFileSync(file, "utf8");
 
@@ -314,4 +329,220 @@ test("a stop aborts a refresh waiting on its authorization server: it returns wi
   assert.equal(await next.headersForRun("docs"), undefined);
   const read = await api("GET", "/settings/mcp-servers/docs");
   assert.equal(read.body.credential, "expired");
+});
+
+/** The network a store reaches a public MCP server's authorization server on (mcp-servers.ts OAuthNetwork), with no
+ *  socket: the made-up https names resolve to `answers(host)` (default the public address fixtures/fake-network.mjs
+ *  gives), and a request is answered here: `metadata` is what the authorization server publishes. `dialled` records
+ *  each request's URL with the address it was dialled at; `looked` each name looked up. */
+async function publicNetwork(metadata = {}, answers) {
+  const publicAddress = (await fakeNetwork().lookup("public.example"))[0];
+  const dialled = [], looked = [];
+  const json = (body) => new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+  const network = {
+    lookup: async (host) => (looked.push(host), answers ? answers(host, publicAddress) : [publicAddress]),
+    fetch: async (url, init, address) => {
+      dialled.push([url, address]);
+      if (url === "https://mcp.example.test/.well-known/oauth-protected-resource/mcp") return json({ resource: "https://mcp.example.test/mcp", authorization_servers: ["https://as.example.test"] });
+      if (url === "https://as.example.test/.well-known/oauth-authorization-server") return json({ issuer: "https://as.example.test", authorization_endpoint: "https://as.example.test/authorize", token_endpoint: "https://as.example.test/token", registration_endpoint: "https://as.example.test/register", response_types_supported: ["code"], code_challenge_methods_supported: ["S256"], ...metadata });
+      if (url === "https://as.example.test/register") return json({ client_id: "public-client", redirect_uris: ["http://127.0.0.1/cb"] });
+      return new Response("not here", { status: 404 });
+    },
+  };
+  return { network, dialled, looked, publicAddress };
+}
+
+/** A store on a scratch directory reaching the network `net`, under seal key `key`. */
+async function storeOn(t, key, net, data) {
+  const store = new McpServers(data ?? (await scratch(t)), { AGENTRUN_SEAL_KEY: key }, "test", net.network);
+  store.attach("http://127.0.0.1:4321");
+  return store;
+}
+
+/** `DIR/mcp-servers.json` holding one OAuth server `pub` at the public made-up name, signed in a minute before its
+ *  access token expires, whose token endpoint is `tokenEndpoint`: as a sign-in saved it, sealed under `key`. */
+function savedPublic(data, key, tokenEndpoint) {
+  const set = { tokens: { access_token: "not-a-secret", refresh_token: "not-a-secret", token_type: "Bearer" }, obtained_at: new Date().toISOString(), expires_at: new Date(Date.now() + 60_000).toISOString(), client: { client_id: "public-client" }, kind: "dynamic", discovery: { authorizationServerUrl: "https://as.example.test", authorizationServerMetadata: { issuer: "https://as.example.test", authorization_endpoint: "https://as.example.test/authorize", token_endpoint: tokenEndpoint, response_types_supported: ["code"] } }, resource: "https://mcp.example.test/mcp" };
+  const sealKeyBytes = Buffer.from(key, "base64");
+  const check = createHmac("sha256", sealKeyBytes).update("agentrun-serve mcp-servers/1 key check").digest("base64url");
+  const now = new Date().toISOString();
+  writeFileSync(join(data, "mcp-servers.json"), JSON.stringify({ format: "mcp-servers/1", servers: { pub: { url: "https://mcp.example.test/mcp", auth: { type: "oauth", sealed: { oauth: seal(sealKeyBytes, Buffer.from(JSON.stringify(set)), "mcp:pub:oauth").toString("base64") }, check, oauth: { scopes: [], client: "dynamic" } }, protocol: "2026-07-28", server_info: null, tools: [], listed_at: now, updated_at: now } } }));
+}
+
+/** A loopback service an authorization server might steer this server to: it counts what reaches it. */
+async function target(t) {
+  const hits = [];
+  const http = createServer((req, res) => (hits.push(req.url), res.writeHead(200, { "content-type": "application/json" }).end("{}")));
+  await new Promise((resolve) => http.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => (http.close(resolve), http.closeAllConnections())));
+  return { url: `http://127.0.0.1:${http.address().port}/internal/admin?op=x`, hits };
+}
+
+test("a public MCP server's authorization server may not steer this server to a private address: sign-in and refresh refuse it, and the target hears nothing", async (t) => {
+  const key = sealKey();
+  const inside = await target(t);
+  for (const [metadata, words] of [
+    [{ token_endpoint: inside.url }, /the authorization server's token endpoint is a private address; refused/],
+    [{ registration_endpoint: inside.url }, /the authorization server's registration endpoint is a private address; refused/],
+    [
+      { token_endpoint: "https://[fd00::1]/token" }, // key-gate: denylist a private-range token endpoint the sign-in must refuse
+      /the authorization server's token endpoint is a private address; refused/,
+    ],
+    [{ authorization_endpoint: "http://as.example.test/authorize" }, /the authorization server's authorization endpoint is not https; refused/],
+  ]) {
+    const net = await publicNetwork(metadata);
+    const store = await storeOn(t, key, net);
+    await assert.rejects(store.oauthStart("pub", { url: "https://mcp.example.test/mcp" }), (error) => error.code === "upstream_failed" && words.test(error.message));
+    assert.ok(!net.dialled.some(([url]) => url.endsWith("/register")) || !metadata.registration_endpoint, "no registration sent");
+  }
+  assert.deepEqual(inside.hits, [], "the private target heard nothing");
+
+  // A token set that names a private token endpoint (as one saved before this rule would): its refresh sends nothing.
+  const net = await publicNetwork();
+  const data = await scratch(t);
+  savedPublic(data, key, inside.url);
+  const store = await storeOn(t, key, net, data);
+  assert.equal(store.get("pub").credential, "sealed", "the token set opens, so its refresh is tried");
+  await store.headersForRun("pub");
+  assert.deepEqual(inside.hits, [], "the refresh did not reach the private target");
+  assert.deepEqual(net.dialled, [], "nor anything else");
+});
+
+test("fail closed: an authorization server whose name does not resolve is refused with words, and nothing is sent to it", async (t) => {
+  const net = await publicNetwork({}, (host, address) => {
+    if (host === "as.example.test") throw Object.assign(new Error(`getaddrinfo ENOTFOUND ${host}`), { code: "ENOTFOUND" });
+    return [address];
+  });
+  const store = await storeOn(t, sealKey(), net);
+  await assert.rejects(store.oauthStart("pub", { url: "https://mcp.example.test/mcp" }), (error) => /couldn't resolve the authorization server's endpoint https:\/\/as\.example\.test\/\S*; refused/.test(error.message));
+  assert.ok(net.looked.includes("as.example.test"));
+  assert.ok(!net.dialled.some(([url]) => url.startsWith("https://as.example.test/")), "nothing sent to the name that did not resolve");
+});
+
+test("a request is dialled at the address checked, never at the name's next answer: a name that turns private after its check is never reached there", async (t) => {
+  // The authorization server's name answers public once, then the private address (fixtures/fake-network.mjs's evil
+  // name's): the check of each request looks it up once, and the request is dialled at that address, never resolved again.
+  const privateAddress = (await fakeNetwork().lookup("evil.example"))[0];
+  let asked = 0;
+  const net = await publicNetwork({}, (host, address) => (host === "as.example.test" && asked++ > 0 ? [privateAddress] : [address]));
+  const store = await storeOn(t, sealKey(), net);
+  await assert.rejects(store.oauthStart("pub", { url: "https://mcp.example.test/mcp" }), (error) => /the authorization server's (?:endpoint https:\/\/as\.example\.test\/\S*|address|registration endpoint|authorization endpoint|token endpoint) is a private address; refused/.test(error.message));
+  const toAs = net.dialled.filter(([url]) => url.startsWith("https://as.example.test/"));
+  assert.ok(toAs.length >= 1, "the first request, checked public, went out");
+  assert.ok(toAs.every(([, address]) => address === net.publicAddress), `each was dialled at the address its check saw: ${JSON.stringify(toAs)}`);
+  assert.ok(!net.dialled.some(([, address]) => address === privateAddress), "never at the private answer");
+});
+
+test("two tabs signing in at once each keep their own cookie, and both finish; a finished sign-in clears its cookie", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() });
+  const { api } = await serve(t);
+  const { mcp } = await fakes(t);
+  const one = await api("POST", "/settings/mcp-servers/one/oauth/start", { url: mcp.url });
+  const two = await api("POST", "/settings/mcp-servers/two/oauth/start", { url: mcp.url });
+  const cookies = [one, two].map((started) => started.headers.get("set-cookie").split(";")[0]);
+  assert.notEqual(cookies[0].split("=")[0], cookies[1].split("=")[0], "one cookie per sign-in");
+  const jar = cookies.join("; ");
+  const first = await approve(one, { jar });
+  assert.equal(first.headers.get("location"), "/#/settings/mcp?server=one&sign_in=ok");
+  assert.match(first.headers.get("set-cookie") ?? "", new RegExp(`^${cookies[0].split("=")[0]}=; .*Max-Age=0`), "its cookie is cleared");
+  assert.equal((await approve(two, { jar })).headers.get("location"), "/#/settings/mcp?server=two&sign_in=ok");
+  for (const name of ["one", "two"]) assert.equal((await api("GET", `/settings/mcp-servers/${name}`)).body.credential, "sealed");
+});
+
+test("a sign-in starts on the address the authorization server sends the browser back to: from localhost it answers where to open the console", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() });
+  const { api, url: base, token } = await serve(t);
+  const { mcp } = await fakes(t);
+  const port = new URL(base).port;
+  const viaLocalhost = await fetch(`http://localhost:${port}/v2/settings/mcp-servers/docs/oauth/start`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify({ url: mcp.url }) });
+  assert.equal(viaLocalhost.status, 409);
+  const said = (await viaLocalhost.json()).error;
+  assert.equal(said.code, "wrong_origin");
+  assert.equal(said.details.open, `${base}/#/settings/mcp`);
+  assert.match(said.message, new RegExp(`open the console at ${base.replace(/[.]/g, "[.]")}`));
+  assert.equal(viaLocalhost.headers.get("set-cookie"), null, "no cookie for an address the callback never reaches");
+  const viaLoopback = await api("POST", "/settings/mcp-servers/docs/oauth/start", { url: mcp.url });
+  assert.equal(viaLoopback.status, 200, JSON.stringify(viaLoopback.body));
+  assert.equal(new URL(viaLoopback.body.authorization_url).searchParams.get("redirect_uri"), `${base}${CALLBACK}`, "the redirect URI stays the one address, for a registered client too");
+});
+
+test("a resolver that never answers holds no refresh past the server's stop", async (t) => {
+  const key = sealKey();
+  const data = await scratch(t);
+  savedPublic(data, key, "https://as.example.test/token");
+  t.mock.method(dns, "lookup", () => new Promise(() => {}));
+  const store = new McpServers(data, { AGENTRUN_SEAL_KEY: key }, "test");
+  const before = readFileSync(join(data, "mcp-servers.json"), "utf8");
+  const launch = store.headersForRun("pub");
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  const at = Date.now();
+  await store.close(5_000);
+  await launch;
+  assert.ok(Date.now() - at < 1_000, `the stop waited ${Date.now() - at} ms on a stalled resolver`);
+  assert.equal(readFileSync(join(data, "mcp-servers.json"), "utf8"), before, "nothing written");
+});
+
+test("the default network dials the address it is given, whatever the name: a name no resolver knows reaches the checked address", async (t) => {
+  const heard = [];
+  const http = createServer((req, res) => (heard.push(req.headers.host), res.writeHead(200, { "content-type": "application/json" }).end('{"ok":true}')));
+  await new Promise((resolve) => http.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => (http.close(resolve), http.closeAllConnections())));
+  const { port } = http.address();
+  const res = await systemNetwork.fetch(`http://pinned.invalid:${port}/probe`, { method: "GET" }, "127.0.0.1");
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), { ok: true });
+  assert.deepEqual(heard, [`pinned.invalid:${port}`], "dialled at the address given, with the name as its Host");
+});
+
+test("pi: an OAuth server's calls pass the gate like any other: denied, nothing reaches it, and its token is still refreshed at launch", { timeout: 180_000 }, async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() });
+  const { api } = await serve(t, { faux: FAUX_MCP });
+  const { as, mcp } = await fakes(t, { expiresIn: 60 });
+  const started = await api("POST", "/settings/mcp-servers/docs/oauth/start", { url: mcp.url });
+  assert.equal((await approve(started)).status, 302);
+  assert.equal((await api("POST", "/agents", agent("adder", { tools: ["mcp:docs/add"] }))).status, 201);
+  const run = async () => {
+    const made = await api("POST", "/agents/adder/runs", { input: { content: 'Call mcp__docs__add with {"a":2,"b":3}' } });
+    assert.equal(made.status, 202, JSON.stringify(made.body));
+    return made.body.run_id;
+  };
+  const calls = () => mcp.log.filter((entry) => entry.method === "tools/call").length;
+
+  assert.equal((await api("PUT", "/settings/tools", { "mcp:docs/*": { permission: "deny" } })).status, 200);
+  const denied = await run();
+  const { last } = await follow(api, denied, ["completed", "failed", "input_required"], { deadlineMs: 120_000 });
+  assert.equal(last.status, "completed");
+  assert.match((await api("GET", `/runs/${denied}`)).body.result?.final_answer ?? "", /denied|deny/i);
+  assert.equal(calls(), 0, "nothing reached the OAuth server");
+  assert.ok(as.log.some((entry) => entry.form.grant_type === "refresh_token"), "its launch still refreshed the token near expiry");
+});
+
+test("pi: an OAuth server's tool with no setting asks: the call parks, nothing reaches the server, and the owner's allow runs it once", { timeout: 180_000 }, async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() });
+  // With accounts on, so there is an owner who can answer the approval (with accounts off an ask is refused unasked).
+  const server = await serve(t, { faux: FAUX_MCP, accounts: true, openSetup: true });
+  const { api } = server;
+  const { mcp } = await fakes(t);
+  const origin = `http://127.0.0.1:${server.port}`;
+  const owner = await call(server.port, { method: "POST", path: "/v2/setup", headers: { "content-type": "application/json", origin }, body: { password: "the owner signs in with this phrase" } });
+  assert.equal(owner.status, 201, owner.text);
+  const started = await api("POST", "/settings/mcp-servers/docs/oauth/start", { url: mcp.url });
+  assert.equal(started.status, 200, JSON.stringify(started.body));
+  assert.equal((await approve(started)).headers.get("location"), "/#/settings/mcp?server=docs&sign_in=ok");
+  // A fresh agent and no tool settings at all: the gate's default, ask.
+  assert.equal((await api("POST", "/agents", agent("asker", { tools: ["mcp:docs/add"] }))).status, 201);
+  const made = await api("POST", "/agents/asker/runs", { input: { content: 'Call mcp__docs__add with {"a":2,"b":3}' } });
+  assert.equal(made.status, 202, JSON.stringify(made.body));
+  const runId = made.body.run_id;
+  await follow(api, runId, ["input_required"], { deadlineMs: 120_000 });
+  const pending = (await api("GET", `/runs/${runId}`)).body.pending;
+  assert.deepEqual([pending?.kind, pending?.tool], ["approval", "mcp:docs/add"], JSON.stringify(pending));
+  const calls = () => mcp.log.filter((entry) => entry.method === "tools/call").length;
+  assert.equal(calls(), 0, "nothing reached the OAuth server while it waits");
+  const allowed = await call(server.port, { method: "POST", path: `/v2/runs/${runId}/approvals/${pending.id}`, headers: { "content-type": "application/json", cookie: cookieOf(owner), origin }, body: { decision: "allow" } });
+  assert.equal(allowed.status, 204, allowed.text);
+  const { last, rows } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 120_000 });
+  const view = (await api("GET", `/runs/${runId}`)).body;
+  assert.equal(calls(), 1, `run exactly once, with the sealed token: ${JSON.stringify({ status: last.status, result: view.result, error: view.error, rows: rows.filter((row) => row.kind?.startsWith("tool")).map((row) => row.summary) })}`);
+  assert.match(view.result?.final_answer ?? "", /5/);
 });

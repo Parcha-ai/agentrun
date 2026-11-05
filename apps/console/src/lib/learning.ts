@@ -32,7 +32,20 @@ export type RunLearning = {
   learned?: LearnedRef[];
   /** A newer server's: the notes the run kept that wait for the owner's OK. */
   pending?: NoteRef[];
+  /** A newer server's: the skill and the workflow the run kept, each `pending` while it waits for the owner's OK. */
+  skills?: LearnedFileRef[];
+  workflows?: LearnedFileRef[];
 } | null;
+/** A skill or a workflow a run kept: its file (a SKILL.md, a workflow.json), its name, and whether it waits. */
+export type LearnedFileRef = { file: string; name: string; pending?: true };
+/** A skill or a workflow the agent learned, as GET .../learning lists it (a newer server's): its name, its file (a
+ *  workflow's README, `readme`, is the file an approval or a retire names), what it is for, whether it waits for the
+ *  owner's OK or a person retired it (no later run is given it), the run that kept it, its size, and the version an
+ *  approval or a retire names (`etag`). */
+export type LearnedItem = { name: string; file: string; readme?: string; description: string; status: "active" | "pending" | "retired"; run: string | null; bytes: number; etag: string };
+/** The file that says whether a skill or a workflow is in use, which an approval and a retire name: a skill's SKILL.md, a
+ *  workflow's README.md (never its workflow.json). */
+export const statusFile = (item: Pick<LearnedItem, "file" | "readme">) => item.readme ?? item.file;
 
 /** `etag`: the note's version, the same value as the file read's ETag, so an edit or a retire is made on the version a
  *  card showed without reading it again (absent from an older server's). */
@@ -47,7 +60,7 @@ export type ImpactSide = { runs: number; median_duration_s: number; median_cost_
 /** The agent's runs before its first kept note against its runs that started from one; null until each side has two. */
 export type Impact = { before: ImpactSide; after: ImpactSide } | null;
 /** GET /v2/agents/{id}/learning. `main` is null until the agent first learns. */
-export type AgentLearning = { agent: string; main: string | null; index: string; notes: Page<LearningNote>; log: Page<LearningChange>; counts: LearningCounts; impact?: Impact };
+export type AgentLearning = { agent: string; main: string | null; index: string; notes: Page<LearningNote>; skills?: LearnedItem[]; workflows?: LearnedItem[]; log: Page<LearningChange>; counts: LearningCounts; impact?: Impact };
 /** A note as GET .../learning/files/{file} answers it, and as a write answers it: its whole text and its version, as
  *  getAgent gives an agent and its ETag. */
 export type NoteText = { note: string; etag: string | null };
@@ -96,7 +109,15 @@ export const usedBy = (l: RunLearning | undefined): NoteRef[] => refs(l?.used);
 export const learnedBy = (l: RunLearning | undefined): LearnedRef[] => (l?.state === "merged" ? refs<LearnedRef>(l.learned) : []);
 /** The notes a run kept that wait for the owner's OK; a run waiting with none named says so by its state alone. */
 export const pendingBy = (l: RunLearning | undefined): NoteRef[] => refs(l?.pending);
+/** The skills and the workflows a run kept, each in a list the server sent: empty from a server that does not say. */
+const fileRefs = (raw: unknown): LearnedFileRef[] => refs<LearnedFileRef>(raw);
+export const skillsBy = (l: RunLearning | undefined): LearnedFileRef[] => (l?.state === "merged" ? fileRefs(l.skills) : []);
+export const workflowsBy = (l: RunLearning | undefined): LearnedFileRef[] => (l?.state === "merged" ? fileRefs(l.workflows) : []);
 export const waitsForOk = (l: RunLearning | undefined) => pendingBy(l).length > 0 || l?.state === "pending";
+/** The skills and workflows an agent learned, as a list the server sent: whole items only, none from an older server. */
+export const learnedItems = (raw: unknown): LearnedItem[] => (Array.isArray(raw) ? raw.filter((x): x is LearnedItem => !!x && typeof x === "object" && typeof (x as LearnedItem).name === "string" && typeof (x as LearnedItem).file === "string" && typeof (x as LearnedItem).etag === "string") : []);
+/** "1 skill", "2 workflows". */
+export const counted = (n: number, one: "skill" | "workflow") => `${n} ${one}${n === 1 ? "" : "s"}`;
 
 /** Whether a note waits for the owner's OK before any run reads it. */
 export const isPending = (n: Pick<LearningNote, "status">) => n.status === "pending";

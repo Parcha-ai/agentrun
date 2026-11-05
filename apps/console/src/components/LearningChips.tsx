@@ -1,12 +1,13 @@
-import { BookOpen, Hourglass, Sparkles } from "lucide-react";
+import { BookOpen, Hourglass, Sparkles, Workflow, Wrench } from "lucide-react";
 import { Chip } from "@/components/ui/chip";
 import { Tip } from "@/components/ui/tip";
-import { goingWords, learnedBy, learningHash, type NoteRef, notes, pendingBy, REDACTED, underWay, usedBy, waitsForOk, waitWords } from "@/lib/learning";
+import { counted, goingWords, learnedBy, type LearnedFileRef, learningHash, type NoteRef, notes, pendingBy, REDACTED, skillsBy, underWay, usedBy, waitsForOk, waitWords, workflowsBy } from "@/lib/learning";
 import { cn } from "@/lib/utils";
 import type { Run } from "@/lib/v2";
 
 /** A run's learning at a glance: "Used 1 note" for the notes it read before it worked, "Learned 1 note" for the notes it
- *  kept, and "Looking back" while it decides what to keep. Nothing for a run that does not learn, read nothing and kept
+ *  kept, "Learned 1 skill" and "Learned 1 workflow" for the skill and the workflow it kept (one that waits for the
+ *  owner's OK says so instead), and "Looking back" while it decides what to keep. Nothing for a run that does not learn, read nothing and kept
  *  nothing. `link` (the run's own page): each chip opens its notes in the agent's Learning tab, and names them in a
  *  tooltip on hover and on focus. A chip inside a row that is itself a link stays text and names them in its title. The
  *  names are never only in a tooltip: the chip's label says them, and the link opens them. A name the server cut of a
@@ -17,12 +18,20 @@ export function LearningChips({ run, link = false, className }: { run: Pick<Run,
   const going = underWay(run.learning) && run.learning!.state !== "seeded";
   const waiting = pendingBy(run.learning);
   const waits = waitsForOk(run.learning);
-  if (!used.length && !learned.length && !going && !waits) return null;
+  const kept = [...skillsBy(run.learning), ...workflowsBy(run.learning)];
+  if (!used.length && !learned.length && !going && !waits && !kept.length) return null;
   return (
     <span className={cn("inline-flex flex-wrap items-center gap-2", className)} aria-label="Learning">
       {used.length > 0 && <NotesChip agentId={run.agent_id} refs={used} link={link} kind="used" />}
       {learned.length > 0 && <NotesChip agentId={run.agent_id} refs={learned} link={link} kind="learned" replaces={learned.reduce((n, l) => n + (l.supersedes?.length ?? 0), 0)} />}
       {waits && <NotesChip agentId={run.agent_id} refs={waiting} link={link} kind="pending" />}
+      {(["skill", "workflow"] as const).flatMap((kind) => {
+        const mine = (kind === "skill" ? skillsBy : workflowsBy)(run.learning);
+        return [false, true].map((pending) => {
+          const these = mine.filter((x) => (x.pending === true) === pending);
+          return these.length ? <SkillsChip key={`${kind}-${pending}`} agentId={run.agent_id} refs={these} link={link} kind={kind} pending={pending} /> : null;
+        });
+      })}
       {going && (
         <Chip tone="active">
           <span className="relative flex size-1.5" aria-hidden><span className="absolute inline-flex size-full animate-ping bg-run-active opacity-75" /><span className="relative inline-flex size-1.5 bg-run-active" /></span>
@@ -31,6 +40,21 @@ export function LearningChips({ run, link = false, className }: { run: Pick<Run,
       )}
     </span>
   );
+}
+
+/** One chip for the skills or the workflows a run kept, or kept to wait for the owner's OK: "Learned 1 skill", "1 skill
+ *  waits for your OK". `link`: it opens the agent's Learning tab, where they are listed. */
+function SkillsChip({ agentId, refs, link, kind, pending }: { agentId: string; refs: LearnedFileRef[]; link: boolean; kind: "skill" | "workflow"; pending: boolean }) {
+  const label = pending ? `${counted(refs.length, kind)} ${refs.length === 1 ? "waits" : "wait"} for your OK` : `Learned ${counted(refs.length, kind)}`;
+  const said = `${label}: ${refs.map((r) => r.name).join(", ")}`;
+  const Icon = pending ? Hourglass : kind === "skill" ? Wrench : Workflow;
+  const chip = (
+    <Chip tone={pending ? "warning" : undefined} className={cn(!pending && "border-primary/50 bg-primary/10 text-primary", link && "cursor-pointer")}>
+      <Icon className="size-3" aria-hidden />{label}
+    </Chip>
+  );
+  if (!link) return <span title={said} aria-label={said} className="inline-flex">{chip}</span>;
+  return <a href={learningHash(agentId)} title={said} aria-label={said} className="inline-flex">{chip}</a>;
 }
 
 /** One chip: the notes a run read (`used`), kept (`learned`), or kept for the owner's OK (`pending`, which links to the

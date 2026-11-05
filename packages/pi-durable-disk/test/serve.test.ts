@@ -10,7 +10,7 @@ import type { JsonValue } from "@earendil-works/chord";
 import type { EntryRecord } from "@earendil-works/pi-durable";
 import { recordWake } from "../src/park.ts";
 import type { DurableRun } from "../src/run.ts";
-import { readServeToken, requestRun, serveRun, ServeError, type RunServer } from "../src/serve.ts";
+import { MESSAGE_ORIGIN_KIND, readServeToken, requestRun, serveRun, ServeError, type RunServer } from "../src/serve.ts";
 import { InProcessHost, lifecycleApp, LocalDisk, newCounters, openOn, sleep, until, type Counters } from "./_lifecycle.ts";
 import { ctx } from "./_run-support.ts";
 
@@ -153,6 +153,37 @@ describe("the HTTP front", () => {
       await run.release();
       await server.close();
     } finally {
+      disk.remove();
+    }
+  });
+
+  it("a server message retried after an upgrade (its marker written under the old id) writes no second marker: one marker for one message, so a later person's message with the same text stays theirs", async () => {
+    const disk = new LocalDisk("serve-origin-retry");
+    let server: RunServer | undefined;
+    let run: DurableRun | undefined;
+    try {
+      ({ server, run } = await served(disk, newCounters()));
+      const text = "The cap was raised to $5; continue the task.";
+      const origin = { kind: "server", reason: "cap_raised" };
+      const root = await run!.harness.root(ctx);
+      // Before the upgrade: the marker under the message's id plus ":origin", then the message itself, answered.
+      await root.submit({ type: "write", requestId: "foo:origin", entry: { kind: MESSAGE_ORIGIN_KIND, data: { origin, text } } }, ctx);
+      await (await root.submit({ type: "input", requestId: "foo", content: text }, ctx)).wait(ctx);
+      // After it: the same server message again (a retry of the same request), through the door.
+      const retried = await call(server!, "POST", "/submit", { requestId: "foo", content: text, origin, wait: true });
+      assert.equal(retried.status, 200, JSON.stringify(retried.body));
+      // A person then sends the same words.
+      const person = await call(server!, "POST", "/submit", { requestId: "bar", content: text, wait: true });
+      assert.equal(person.status, 200, JSON.stringify(person.body));
+      const markers = (await root.entries({}, 500, undefined, ctx)).items.filter((entry) => entry.kind === MESSAGE_ORIGIN_KIND);
+      // The Timeline gives each marker to one message with its text (pi-durable-agent's messageOrigins): one marker is the
+      // server's message's alone, and the person's reads as theirs.
+      assert.equal(markers.length, 1, `one marker for the one server message: ${JSON.stringify(markers.map((m) => m.data))}`);
+      assert.equal((await userEntries(run!, text)).length, 2, "the server's message once, and the person's");
+    } finally {
+      // Released and closed whatever the assertions say, so a failure ends the file instead of holding it to its timeout.
+      await run?.release();
+      await server?.close();
       disk.remove();
     }
   });
