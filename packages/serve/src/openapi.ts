@@ -1360,6 +1360,14 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     revision: { type: ["string", "null"], description: "The current revision's id; null before the agent has one.", "x-agentrun-serve": "serve/1" },
     revisions: { type: "integer", minimum: 0, description: "How many revisions the agent has.", "x-agentrun-serve": "serve/1" },
     archived_at: { type: ["string", "null"], description: "When the agent was archived, while it is; else null.", "x-agentrun-serve": "serve/1" },
+    learning: {
+      type: "object", additionalProperties: false, required: ["pending"],
+      description: "For an agent that learns (its current revision `learning: true`, on a server whose learning is on): what waits on it. Absent for any other agent, and from an older server.",
+      properties: {
+        pending: { type: "integer", minimum: 0, description: "How many of its learned items wait for its owner's OK: notes, skills and workflow drafts held with `status: pending` on its learning folder's main (approve them on GET /agents/{agent_id}/learning)." },
+      },
+      "x-agentrun-serve": "serve/1",
+    },
   },
   Capabilities: {
     learning: {

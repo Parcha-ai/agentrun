@@ -282,6 +282,32 @@ async function pageRequest(home: string, repo: string, query: URLSearchParams, f
   return { limit, at: { sha: named[1]!, offset: Number(named[2]) } };
 }
 
+/** For tests: how many times a pending count was read from a folder (once per commit of its main). */
+export const pendingTestHooks = { reads: 0 };
+/** By agent: its folder's main commit and how many of its items wait for the owner's OK there. */
+const pendingBy = new Map<string, { sha: string; pending: number }>();
+
+/** How many of agent `agentId`'s learned items wait for its owner's OK on its folder's main: notes, skills and workflow
+ *  drafts held with `status: pending`, as the learning view reads them (notesAt, learnedAt). Read once per commit of
+ *  main (a list of agents asks for every agent): the commit is resolved each time, the folder only when it moved. A
+ *  folder never made has none waiting; one that cannot be read is undefined (the caller shows no count). */
+export async function pendingCount(data: string, agentId: string): Promise<number | undefined> {
+  try {
+    const { home, repo } = await placeOf(data, agentId);
+    const sha = await mainOf(home, repo);
+    if (!sha) return 0;
+    const known = pendingBy.get(agentId);
+    if (known?.sha === sha) return known.pending;
+    pendingTestHooks.reads += 1;
+    const [{ notes }, { skills, workflows }] = await Promise.all([notesAt(home, repo, sha), learnedAt(home, repo, sha)]);
+    const pending = notes.filter((note) => note.status === "pending").length + [...skills, ...workflows].filter((item) => item.status === "pending").length;
+    pendingBy.set(agentId, { sha, pending });
+    return pending;
+  } catch {
+    return undefined;
+  }
+}
+
 /** GET /agents/{id}/learning: main, its index, the first page of its notes and of its log, and how the agent's runs
  *  fared and what learning changed for them (`counts`, `impact`: learning-run.ts, from the runs' rows and the learning
  *  ledger); an agent with no folder (its learning never on) has an empty one. */

@@ -286,7 +286,7 @@ export function definitionOf(agent: Agent, revision: Revision, version: number):
 }
 
 /** `Agent` as the contract shows it, with its current revision and its saved sign-ins (sign-ins.ts view: never a ref). */
-export function agentView(entry: AgentEntry, signIns: readonly SignInView[] = []) {
+export function agentView(entry: AgentEntry, signIns: readonly SignInView[] = [], learning?: { pending: number }) {
   const { agent, revision } = entry;
   return {
     agent_id: agent.id,
@@ -301,6 +301,9 @@ export function agentView(entry: AgentEntry, signIns: readonly SignInView[] = []
     region: "local",
     home_etag: etagOf(entry),
     archived_at: agent.archivedAt ?? null,
+    // How many of its learned items wait for its owner's OK (learning-routes.ts pendingCount): only for an agent that
+    // learns on a server whose learning is on.
+    ...(learning ? { learning } : {}),
     created_at: agent.createdAt,
     updated_at: revision && revision.createdAt > agent.createdAt ? revision.createdAt : agent.createdAt,
   };
