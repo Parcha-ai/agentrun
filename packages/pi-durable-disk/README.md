@@ -261,6 +261,10 @@ A submit with `answers: false` and `asks` (tool names) may not answer a question
 refuses it with 409 `WAITING` when its last model message is the result of a tool in `asks`, and both pi and a hook admit
 it only as `whenBusy: "reject"`, so a busy run refuses it (409 `BUSY`) and it is never queued behind a turn that may end on
 such a tool.
+With `parks` (entry kinds), it is refused with 409 `WAITING` too, by pi and a hook alike, while a call waits in a park
+of one of those kinds: an entry saying `{phase: "requested", id}` with no `{phase: "resolved", id}` after it, read back
+to the turn's last user message (a hook's conversation has none: back to its start). A tool call waiting on its owner's
+approval parks so on every harness.
 
 With a hook, `POST /submit` (whose `whenBusy` defaults to `followUp`, as pi's) goes through, in this order: the bearer
 token (401); the lease (503 `OPENING`, `PARKING`, `RELEASED`), so nothing reaches the hook once the lease is lost; the
