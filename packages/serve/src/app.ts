@@ -261,7 +261,8 @@ export default async function app(where: AppContext): Promise<AppOptions> {
       return output;
     } catch (error) {
       const message = String((error as Error)?.message ?? error);
-      log({ t: "effect.end", ...at, status: "failed", error: message.slice(0, 2000), at: new Date().toISOString() });
+      // Whole up to 64 KB, so the server redacts it before it cuts it for the graph (graph-view.ts); a longer one is marked cut.
+      log({ t: "effect.end", ...at, status: "failed", error: message.slice(0, 65_536), ...(message.length > 65_536 ? { error_truncated: true } : {}), at: new Date().toISOString() });
       // An abort (a cancel, the node's deadline) stays a throw: the driver keeps its effect unknown. A tool that failed on
       // its own (an unreadable PDF, a model's refusal) answered: its failure is the effect's outcome, completed, and is
       // thrown past the driver as the call node's typed failure (`failing`), which a collecting map ends that item on.
