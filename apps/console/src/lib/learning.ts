@@ -39,9 +39,13 @@ export type RunLearning = {
 /** A skill or a workflow a run kept: its file (a SKILL.md, a workflow.json), its name, and whether it waits. */
 export type LearnedFileRef = { file: string; name: string; pending?: true };
 /** A skill or a workflow the agent learned, as GET .../learning lists it (a newer server's): its name, its file (a
- *  workflow's README, `readme`, is the file an approval names), what it is for, whether it waits for the owner's OK, the
- *  run that kept it, its size, and the version an approval names (`etag`). */
-export type LearnedItem = { name: string; file: string; readme?: string; description: string; status: "active" | "pending"; run: string | null; bytes: number; etag: string };
+ *  workflow's README, `readme`, is the file an approval or a retire names), what it is for, whether it waits for the
+ *  owner's OK or a person retired it (no later run is given it), the run that kept it, its size, and the version an
+ *  approval or a retire names (`etag`). */
+export type LearnedItem = { name: string; file: string; readme?: string; description: string; status: "active" | "pending" | "retired"; run: string | null; bytes: number; etag: string };
+/** The file that says whether a skill or a workflow is in use, which an approval and a retire name: a skill's SKILL.md, a
+ *  workflow's README.md (never its workflow.json). */
+export const statusFile = (item: Pick<LearnedItem, "file" | "readme">) => item.readme ?? item.file;
 
 /** `etag`: the note's version, the same value as the file read's ETag, so an edit or a retire is made on the version a
  *  card showed without reading it again (absent from an older server's). */
