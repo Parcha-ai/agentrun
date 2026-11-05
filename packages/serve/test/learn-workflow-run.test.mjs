@@ -55,13 +55,13 @@ function entries(data, runId, kinds) {
 
 /** Agent `id` on `harness`, learning, with `files` learned (`extra`: more of its definition); one run of ASK (`fields`:
  *  more of its start, a cap), ended: its id, rows and view. */
-async function ran(api, data, id, harness, files, tools = [], { extra = {}, fields = {}, deadlineMs = 60_000, ask = ASK } = {}) {
+async function ran(api, data, id, harness, files, tools = [], { extra = {}, fields = {}, deadlineMs = 60_000, ask = ASK, ends = ["completed", "failed"] } = {}) {
   assert.equal((await api("POST", "/agents", agent(id, { learning: true, harness, instructions: ask, tools, ...extra }))).status, 201);
   await folderWith(data, id, files);
   const started = await api("POST", `/agents/${id}/runs`, { input: { content: ask }, ...fields });
   assert.equal(started.status, 202, JSON.stringify(started.body));
   const runId = started.body.run_id;
-  const { rows } = await follow(api, runId, ["completed", "failed"], { deadlineMs });
+  const { rows } = await follow(api, runId, ends, { deadlineMs });
   return { runId, rows, view: (await api("GET", `/runs/${runId}`)).body };
 }
 /** The learned_workflow call's result row in `rows`. */
@@ -271,10 +271,13 @@ function harnessRequests(data, runId) {
 
 // The faux model priced on output alone, $100 a million tokens: a request's least (1,024 tokens) is $0.1024. The faux
 // harness books each of its requests at $0.001. Under the faux harness claude-agent and codex run one path.
-test("a capped codex run's learned workflow is held to what the harness left of the cap: its node's request is refused when the harness's spend leaves less than its least", { timeout: 120_000 }, async (t) => {
+test("a capped codex run's learned workflow is held to what the harness left of the cap: its node's request is refused when the harness's spend leaves less than its least, and the run pauses at the cap on the one total", { timeout: 120_000 }, async (t) => {
   const { api, data } = await serve(t, { learning: "on", fauxHarness: FAUX_HARNESS, faux: OUTPUT_PRICED });
   // $0.103 less the harness's $0.001 leaves $0.102: not the node's $0.1024, which the cap alone would hold.
-  const { runId, rows } = await ran(api, data, "capped-flow", "codex", flowFiles("answer", answerFlow()), [], { fields: { max_cost_usd: 0.103 } });
+  const { runId, rows, view } = await ran(api, data, "capped-flow", "codex", flowFiles("answer", answerFlow()), [], { fields: { max_cost_usd: 0.103 }, ends: ["completed", "failed", "input_required"] });
+  // A run that reaches its cap pauses until it is raised: on the run's one total (the harness's $0.001 and its own
+  // requests'), the node's least what it needs.
+  assert.deepEqual([view.status, view.state, view.error, view.pending?.kind, view.pending?.cap_usd, view.pending?.spent_usd, view.pending?.needs_usd], ["input_required", "waiting", null, "budget", 0.103, 0.001, 0.1024], JSON.stringify(view));
   const result = learnedResult(rows);
   assert.equal(result?.tool_status, "failed", JSON.stringify(result));
   assert.match(JSON.stringify(result), /model_error/, JSON.stringify(result));
