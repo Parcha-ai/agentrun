@@ -2,7 +2,9 @@
 // workspace): the server's Slack app set with PUT /v2/settings/slack, every request to /v2/hooks/slack checked by Slack's
 // v0 signature, a mention in a listed channel starting one run for its thread (Slack's retries and the same message
 // told twice deduped), a reply in the thread reaching that run, a bot's message ignored, and one line posted in the thread
-// when the run asks or ends, tried again until Slack takes it.
+// when the run asks or ends, tried again until Slack takes it. With the app's id saved, another app's events are ignored;
+// a bot token Slack refuses turns posting off until the settings are saved again; and a trigger forgets a thread untouched
+// for 30 days, keeping its 1,000 latest.
 import assert from "node:assert/strict";
 import { createHmac, randomBytes } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -13,7 +15,8 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { schemaProblems } from "./schema-support.mjs";
 import { follow, serve, withEnv } from "./support.mjs";
 import { fakeSlack, SLACK_BOT_ID, SLACK_BOT_TOKEN, SLACK_BOT_USER, SLACK_TEAM } from "./fixtures/fake-slack.mjs";
-import { firings, made } from "./trigger-support.mjs";
+import { Triggers } from "../dist/triggers.js";
+import { fakeClock, firings, made } from "./trigger-support.mjs";
 
 const SIGNING = "not-a-secret";
 const PUBLIC = "https://agentrun.example";
@@ -181,4 +184,88 @@ test("a restart keeps each thread's run and each line still to post: a reply aft
   assert.deepEqual([sent.status, sent.run_id], ["sent", started.run_id], "the thread's run, after the restart");
   await follow(second.api, started.run_id, ["completed"]);
   await until(() => first.slack.posts.length === 3, "the follow-up's end posted");
+});
+
+test("with the app's id saved, an event another app carries (or one naming no app) is ignored, and only this app's starts a run; an app_id that is not an app's is refused", { timeout: 120_000 }, async (t) => {
+  const { api, hook } = await slackServer(t);
+  const bad = await api("PUT", "/settings/slack", { signing_secret: SIGNING, bot_token: SLACK_BOT_TOKEN, app_id: "not-an-app" });
+  assert.deepEqual([bad.status, bad.body.error.fields.map((f) => [f.field, f.reason])], [422, [["app_id", "wrong_type"]]]);
+  const saved = await api("PUT", "/settings/slack", { signing_secret: SIGNING, bot_token: SLACK_BOT_TOKEN, app_id: "A0EXAMPLE1" });
+  assert.deepEqual([saved.status, saved.body.app_id], [200, "A0EXAMPLE1"]);
+  await made(api, "helper");
+  const { body } = await api("POST", "/triggers", { name: "help desk", source: { kind: "slack", channels: [LISTED] }, target: { kind: "start_run", agent_id: "helper", input: { content: "Say hello." }, max_cost_usd: 0.5 } });
+  const { api_app_id: _, ...unnamed } = mention("1767228000.000200", "hello from no app");
+  for (const other of [{ ...mention("1767228000.000100", "hello from another app"), api_app_id: "A0OTHERAPP1" }, unnamed]) assert.deepEqual(await hook(other), { status: 200, body: { ok: "ignored" } }, JSON.stringify(other.api_app_id));
+  assert.equal((await api("GET", `/triggers/${body.id}/firings`)).body.firings.length, 0, "nothing fired");
+  assert.deepEqual(await hook(mention("1767228000.000300", "hello from this app")), { status: 200, body: { ok: "received" } });
+  const [started] = await firings(api, body.id, 1);
+  assert.equal(started.status, "started");
+  await follow(api, started.run_id, ["completed"]);
+});
+
+test("a bot token Slack refuses (token_revoked) turns posting off: that post is not tried again, the settings say why, and no line is posted while it is off; saving the settings again turns it back on", { timeout: 180_000 }, async (t) => {
+  const { api, hook, slack } = await slackServer(t);
+  assert.equal((await api("PUT", "/settings/slack", { signing_secret: SIGNING, bot_token: SLACK_BOT_TOKEN })).status, 200);
+  await made(api, "helper");
+  const { body } = await api("POST", "/triggers", { name: "help desk", source: { kind: "slack", channels: [LISTED] }, target: { kind: "start_run", agent_id: "helper", input: { content: "Say hello." }, max_cost_usd: 0.5 } });
+  const ran = async (ts, n) => {
+    assert.equal((await hook(mention(ts, "say hello"))).body.ok, "received");
+    const [started] = await firings(api, body.id, n);
+    await follow(api, started.run_id, ["completed"]);
+    return started.run_id;
+  };
+  slack.answers.push({ body: { ok: false, error: "token_revoked" } });
+  const first = await ran("1767229000.000100", 1);
+  const off = await until(async () => (await api("GET", "/settings/slack")).body.disabled, "posting turned off");
+  assert.match(off.reason, /token_revoked/);
+  assert.equal((await api("GET", "/settings/slack")).body.configured, true, "the settings stay, turned off");
+  // Off: a mention still starts its run (its request is signed), and nothing is posted for it, then or later.
+  const second = await ran("1767229100.000100", 2);
+  await sleep(500);
+  assert.deepEqual(slack.posts.map((p) => p.body.text), [`Done: <${PUBLIC}/#/runs/${first}|open the run>`], "the refused post, once");
+  // Saved again: on, and the next run's end is posted.
+  const again = await api("PUT", "/settings/slack", { signing_secret: SIGNING, bot_token: SLACK_BOT_TOKEN });
+  assert.deepEqual([again.status, again.body.disabled], [200, null]);
+  const third = await ran("1767229200.000100", 3);
+  await until(() => slack.posts.length === 2, "the end posted once it is on");
+  assert.equal(slack.posts[1].body.text, `Done: <${PUBLIC}/#/runs/${third}|open the run>`);
+  assert.ok(!slack.posts.some((p) => p.body.text.includes(second)), "the run that ended while it was off is not posted");
+});
+
+test("a Slack trigger's thread untouched for 30 days is forgotten, so a reply in it reaches nothing (a mention there starts a new thread); a trigger keeps its 1,000 latest threads", { timeout: 300_000 }, async (t) => {
+  const data = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "slack-threads-"));
+  const clock = fakeClock("2026-06-01T00:00:00Z");
+  let runs = 0;
+  const triggers = new Triggers(data, { targetIssues: async () => [], start: async () => ({ run_id: `run-${++runs}` }), message: async () => {}, statusOf: async () => "running", runOf: async () => null, say: () => {}, clock });
+  t.after(async () => {
+    triggers.close();
+    await rm(data, { recursive: true, force: true });
+  });
+  triggers.start();
+  await triggers.create({ name: "help desk", source: { kind: "slack", channels: [LISTED] }, target: { kind: "start_run", agent_id: "a", input: { content: "Hello." }, max_cost_usd: 0.5 } });
+  const message = (ts, thread_ts, mention) => ({ team: SLACK_TEAM, channel: LISTED, ts, thread_ts, user: PERSON, text: "hello", event_id: `Ev${ts}`, mention });
+  const day = (n) => new Date(Date.parse("2026-06-01T00:00:00Z") + n * 86_400_000).toISOString();
+  const threadOf = (run) => triggers.slackThreadOf(run)?.thread_ts;
+  // Day 0 a thread (a), day 10 another (b).
+  assert.equal(triggers.receiveSlack(message("1780272000.000100", "1780272000.000100", true))?.created, true);
+  clock.to(day(10));
+  assert.equal(triggers.receiveSlack(message("1780272001.000100", "1780272001.000100", true))?.created, true);
+  await until(() => threadOf("run-1") && threadOf("run-2"), "both threads' runs");
+  // Day 35: (a) was last touched 35 days ago, (b) 25. A reply in (a) reaches nothing; one in (b) is its run's.
+  clock.to(day(35));
+  assert.equal(triggers.receiveSlack(message("1780272100.000100", "1780272000.000100", false)), undefined, "a reply in a thread untouched for 30 days");
+  assert.equal(triggers.receiveSlack(message("1780272101.000100", "1780272001.000100", false))?.created, true, "a reply in one touched 25 days ago");
+  assert.equal(threadOf("run-1"), undefined, "the old thread is gone");
+  // A mention in the forgotten thread starts a thread of its own there, with a new run.
+  clock.to(new Date(Date.parse(day(35)) + 500).toISOString());
+  assert.equal(triggers.receiveSlack(message("1780272102.000100", "1780272000.000100", true))?.created, true);
+  await until(() => threadOf("run-3") === "1780272000.000100", "the new thread's run");
+  // 1,000 newer threads, a second apart: the oldest, (b), goes, and the rest are kept.
+  for (let i = 0; i < 999; i++) {
+    clock.to(new Date(Date.parse(day(35)) + (i + 1) * 1000).toISOString());
+    assert.equal(triggers.receiveSlack(message(`${1780280000 + i}.000100`, `${1780280000 + i}.000100`, true))?.created, true);
+  }
+  assert.equal(triggers.receiveSlack(message("1780290000.000100", "1780272001.000100", false)), undefined, "the oldest of 1,001 threads is gone");
+  assert.equal(triggers.receiveSlack(message("1780290001.000100", "1780272000.000100", false))?.created, true, "the next oldest is kept");
+  assert.equal(triggers.receiveSlack(message("1780290002.000100", "1780280000.000100", false))?.created, true, "and the newer ones");
 });
