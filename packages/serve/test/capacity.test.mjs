@@ -304,7 +304,7 @@ test("a disk health cannot measure fails its check (503 cannot_check), never rea
 });
 
 test("compose and render.yaml check /v2/health", async () => {
-  const compose = await readFile(new URL("../docker/compose.yaml", import.meta.url), "utf8");
+  const compose = await readFile(new URL("../../../compose.yaml", import.meta.url), "utf8");
   assert.match(compose, /^ {4}healthcheck:\n {6}test: .*\/v2\/health/m, "the service's healthcheck reads /v2/health");
   const render = await readFile(new URL("../../../render.yaml", import.meta.url), "utf8");
   assert.match(render, /healthCheckPath: \/v2\/health/);

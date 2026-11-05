@@ -42,7 +42,8 @@ import { type CarryBackRetry, knownToolCostOf, type Run, Runs, STATUSES, type St
 import { runLines } from "./usage-lines.js";
 import { BOX_QUARANTINE, type BoxHost, Quarantine } from "./box/sweep.js";
 import { type BoxOffer, boxesLog, boxRegistry, daytonaApi, enabledBoxes, VM_NO_LIST, VM_PROVIDER } from "./boxes.js";
-import { type DockerNetwork, FAUX_EGRESS_ENV, sweepEgressDirs } from "./box-egress.js";
+import { type DockerNetwork, FAUX_EGRESS_ENV, MAX_EGRESS_PARENT, sweepEgressDirs } from "./box-egress.js";
+import { type DockerPaths, dockerPathsOf, egressParentOf, FAUX_MOUNTINFO_ENV } from "./box-paths.js";
 import { boxImageOf, clearImage, type DockerImage, dockerImage, type ImageState, withImage } from "./box-image.js";
 import { startBoxRelay } from "./box-relay.js";
 import { vmRelay, type VmSdk } from "./box-relay-vm.js";
@@ -180,6 +181,9 @@ export type ServeOptions = {
   /** Under `faux`: a module whose default export gives a box's egress proxy its `lookup` and `dial` (box-egress.ts), the
    *  tests' fake network. */
   fauxEgress?: string;
+  /** Under `faux`: a file read as this server's /proc/self/mountinfo (box-paths.ts), a container's in a test; absent (and
+   *  no FAUX_MOUNTINFO_ENV), a faux server is on a host. */
+  fauxMountinfo?: string;
   /** Extra `Host` names to accept besides the loopback ones. */
   allowHosts?: string[];
   /** The console's built files, answered at / (default dist/console beside the server, which this package's build copies
@@ -725,11 +729,22 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   let image: DockerImage | undefined;
   // What a Docker box's programs reach, resolved once here (run-box.ts boxNetworkOf): the setting's list, on a Docker
   // daemon of this Linux machine's own; else none, and why. A run's process gets the list or none (RUN_BOX_ALLOW_ENV).
-  const boxNetwork: DockerNetwork = fauxBox ? { allow: "none", reason: "a faux box (tests)" } : boxes.provider("docker") ? await boxNetworkOf(env) : { allow: "none", reason: "no Docker box on this server" };
-  // The proxy directories runs that are gone left in /tmp (box-egress.ts): a live run's, any server's, stays.
-  if (!fauxBox && boxes.provider("docker")) await sweepEgressDirs().catch(() => 0);
+  // Under --faux, the mountinfo a test gives (fauxMountinfo, or FAUX_MOUNTINFO_ENV: a server under test in a container
+  // names its own /proc/self/mountinfo there); with none, a faux server is on a host.
+  const fauxMountinfo = options.faux ? (options.fauxMountinfo ?? env[FAUX_MOUNTINFO_ENV]) : undefined;
+  // Where Docker has this server's files (box-paths.ts): its own, on a host; its container's mount of the data directory,
+  // for a server in a container given Docker's socket; or none, and docker is unavailable, saying why. Under --faux, a
+  // host's unless the test gives a container's mountinfo.
+  const dockerPaths: DockerPaths = fauxBox || !boxes.provider("docker") ? { here: true } : options.faux ? (fauxMountinfo ? await dockerPathsOf(env, data, { mountinfo: await readFile(fauxMountinfo, "utf8"), inContainer: true }) : { here: true }) : await dockerPathsOf(env, data);
+  const boxPaths = "paths" in dockerPaths ? dockerPaths.paths : undefined;
+  const egressParent = boxPaths ? egressParentOf(data) : undefined;
+  if ("reason" in dockerPaths) log?.(logLine("box_paths", { reason: dockerPaths.reason }));
+  const boxNetwork: DockerNetwork = fauxBox ? { allow: "none", reason: "a faux box (tests)" } : !boxes.provider("docker") ? { allow: "none", reason: "no Docker box on this server" } : "reason" in dockerPaths ? { allow: "none", reason: dockerPaths.reason } : egressParent && egressParent.length > MAX_EGRESS_PARENT ? { allow: "none", reason: `the data directory's path is too long for a box's network socket (${egressParent} is over ${MAX_EGRESS_PARENT} bytes): give the server a shorter --data` } : await boxNetworkOf(env, boxPaths ? { mapped: true } : {});
+  // The proxy directories runs that are gone left in /tmp, or, in a container, on the data directory's mount
+  // (box-egress.ts): a live run's, any server's, stays.
+  if (!fauxBox && boxes.provider("docker")) await sweepEgressDirs(undefined, undefined, egressParent).catch(() => 0);
   const dockerNetwork = (offer: BoxOffer): BoxOffer =>
-    !offer.available ? offer : boxNetwork.allow === "none" ? { ...offer, network: "none", network_reason: boxNetwork.reason } : { ...offer, network: "allowlist" };
+    !offer.available ? offer : "reason" in dockerPaths ? { id: offer.id, available: false, state: "unavailable", reason: dockerPaths.reason } : boxNetwork.allow === "none" ? { ...offer, network: "none", network_reason: boxNetwork.reason } : { ...offer, network: "allowlist" };
   // A Daytona box reaches the hosts AGENTRUN_BOX_ALLOW names, through Daytona's domain list, until Daytona cannot keep
   // one here (an organization whose tier takes none): from then on each is made with no network, and capabilities say why.
   let daytonaNoList: string | undefined;
@@ -796,7 +811,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   if (swept > 0) log?.(logLine("uploads_swept", { removed: swept }));
   const documents = options.documents ?? process.env[DOCUMENTS_ENV];
   if (documents !== undefined && !(await stat(documents).then((info) => info.isDirectory(), () => false))) throw new Error(`the documents directory ${documents} is not a directory`);
-  const runs = new Runs({ dockerAllow: boxNetwork.allow, agents, token, storedKeys, doorTokenFile, doorToken, learning, learningBudget, ...(documents ? { documents: resolve(documents) } : {}), fauxEnv: fauxEnvOf(options), toolSettings: () => settings.get(), ...(runBoxes ? { runBoxes } : {}), ...(remoteBoxes ? { remoteBoxes } : {}), ...(vmBoxes && vmRelayHalf ? { vmBoxes, vmLimits, vmRelay: vmRelayHalf } : {}), ...(remoteBoxes && daytonaApi(env) ? { remoteApi: daytonaApi(env)! } : {}), ...(remoteBoxes ? { boxAllow, onNoBoxList } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(options.reflectTimeoutMs ? { reflectTimeoutMs: options.reflectTimeoutMs } : {}), ...(options.gradeTimeoutMs ? { gradeTimeoutMs: options.gradeTimeoutMs } : {}), ...(options.gradeModel ? { gradeModel: options.gradeModel } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}), notify: (event, run, marker) => webhooks.emit(event, run, marker), ownSecrets: () => triggerSecrets?.values() ?? [], signIns, approvers: options.accounts === true });
+  const runs = new Runs({ dockerAllow: boxNetwork.allow, ...(boxPaths ? { dockerPaths: boxPaths } : {}), agents, token, storedKeys, doorTokenFile, doorToken, learning, learningBudget, ...(documents ? { documents: resolve(documents) } : {}), fauxEnv: fauxEnvOf(options), toolSettings: () => settings.get(), ...(runBoxes ? { runBoxes } : {}), ...(remoteBoxes ? { remoteBoxes } : {}), ...(vmBoxes && vmRelayHalf ? { vmBoxes, vmLimits, vmRelay: vmRelayHalf } : {}), ...(remoteBoxes && daytonaApi(env) ? { remoteApi: daytonaApi(env)! } : {}), ...(remoteBoxes ? { boxAllow, onNoBoxList } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(options.reflectTimeoutMs ? { reflectTimeoutMs: options.reflectTimeoutMs } : {}), ...(options.gradeTimeoutMs ? { gradeTimeoutMs: options.gradeTimeoutMs } : {}), ...(options.gradeModel ? { gradeModel: options.gradeModel } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}), notify: (event, run, marker) => webhooks.emit(event, run, marker), ownSecrets: () => triggerSecrets?.values() ?? [], signIns, approvers: options.accounts === true });
   const daytona = daytonaApi(env);
   const relay = (remoteBoxes && daytona) || vmRelayHalf ? await startBoxRelay({ root: data, tokenOf: (id) => runs.relayToken(id), ...(remoteBoxes && daytona ? daytona : {}), ...(vmRelayHalf ? { vm: vmRelayHalf } : {}), serves: (id) => runs.servesBox(id), ensure: (id) => runs.ensureBox(id) }) : undefined;
   if (relay) stops.push(() => relay.close());

@@ -64,7 +64,7 @@ test("the image drains within Docker's 10 s grace, and Compose gives the stop mo
   const drain = /"--drain-timeout", "(\d+)s"/.exec(dockerfile);
   assert.ok(drain, "the image's CMD names its drain");
   assert.ok(Number(drain[1]) < 10, `the image drains ${drain[1]} s`);
-  const compose = await readFile(new URL("compose.yaml", DOCKER), "utf8");
+  const compose = await readFile(new URL("compose.yaml", ROOT), "utf8");
   const grace = /stop_grace_period: (\d+)s/.exec(compose);
   assert.ok(grace && Number(grace[1]) > Number(drain[1]), "compose's stop_grace_period is above the drain");
   const render = await readFile(new URL("render.yaml", ROOT), "utf8");

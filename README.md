@@ -31,20 +31,23 @@ Save it in the console (Settings → Tool keys → Model keys), which takes effe
 
 ## Run it on a server
 
-1. **Free**: run the public image, `ghcr.io/parcha-ai/agentrun-server`, with `docker run` on your own machine or server, with your own model key. An OpenRouter key with a credit limit caps what your agents can spend.
+1. **Free**: run the public image, `ghcr.io/parcha-ai/agentrun-server`, with `docker compose` on your own Linux machine
+   or server (Docker Engine 26 or later), with your own model key. An OpenRouter key with a credit limit caps what your
+   agents can spend.
 
    ```sh
-   docker run -d --name agentrun -p 127.0.0.1:7340:7340 -v agentrun:/data \
-     -e OPENROUTER_API_KEY \
-     ghcr.io/parcha-ai/agentrun-server:beta
-   docker logs agentrun | grep Open
+   curl -fsSLO https://raw.githubusercontent.com/Parcha-ai/agentrun/main/compose.yaml
+   export OPENROUTER_API_KEY=...
+   DOCKER_GID=$(stat -c %g /var/run/docker.sock) docker compose up -d
+   docker compose logs agentrun | grep Open
    ```
 
-   With the key in your environment, `-e OPENROUTER_API_KEY` passes it on and it never sits on the command line. A credit
-   limit on the key caps what your agents can spend. Open the link it prints; the volume `agentrun` keeps every agent and
-   run. For a provider's own key, pass `-e ANTHROPIC_API_KEY` or `-e OPENAI_API_KEY` instead; any
-   OpenAI Responses gateway works through `AGENT_MODEL_BASE_URL` and `AGENT_MODEL_API_KEY`, with its model named in
-   `AGENT_MODEL`.
+   Open the link it prints; the named volume `agentrun-data` keeps every agent and run. Each run's `bash` runs in a
+   Docker container of its own beside the server, with no network but the package registries and GitHub, and only that
+   run's files. `compose.yaml` gives the server this host's Docker socket, and the Docker socket is root on this host:
+   whatever can reach it, the server included, can do anything on this machine. For a provider's own key, export
+   `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` instead; any OpenAI Responses gateway works through `AGENT_MODEL_BASE_URL`
+   and `AGENT_MODEL_API_KEY`, with its model named in `AGENT_MODEL`.
 
 2. **About $7 a month**: deploy it to Render in one click: a Starter instance with a 1 GB disk, always on, with a URL. A Starter's 512 MB runs 3 pi agents or 2 Codex runs at once; a start that doesn't fit is refused with a retry-after until a run ends. A 2 GB instance holds 10 Codex runs. The image leaves Claude Code out for now, so run Claude Code agents with `npx @parcha/agentrun`. Render's free instance works for a try, but it has no disk, so it loses every run when it sleeps or restarts.
 

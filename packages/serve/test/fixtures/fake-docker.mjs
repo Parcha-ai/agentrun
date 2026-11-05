@@ -14,7 +14,8 @@
 // file's text, and the mark goes. Each `run` is noted in `made.jsonl`, `pulledInRun` when Docker had no image then, as
 // Docker would pull it there, inside the call; for the server's own image (`agentrun-box:*`), which no registry has, that
 // pull fails, and `run` with it, in Docker's words.
-// `info` answers as a daemon on this Linux machine (its kernel), or as `docker-info` says.
+// `info` answers as a daemon on this Linux machine (its kernel), or as `docker-info` says. A `--mount type=volume` with a
+// `volume-subpath` is the directory `volumes.json` names for the volume, and that subpath below it.
 // An `exec` of the box's network relay (socat) is noted, never run here (`no-socat`, `no-setsid` or `relay-dead` in the
 // state directory: an image without one, or a relay that never listened).
 import { spawn } from "node:child_process";
@@ -77,6 +78,8 @@ const held = (mark, failMark, then) => {
 
 switch (args[0]) {
   case "version":
+    // The probe's `{{.Server.Version}}`; `{{.Server.APIVersion}}` as Docker Engine 27 gives it, or as `docker-api` there says.
+    if (args.some((arg) => arg.includes("APIVersion"))) done(existsSync(join(state, "docker-api")) ? readFileSync(join(state, "docker-api"), "utf8") : "1.47\n");
     done("27.0.0-fake\n");
     break;
   case "info": {
@@ -137,7 +140,14 @@ switch (args[0]) {
       } else if (args[i] === "--env") container.env.push(args[++i]);
       else if (args[i] === "--mount") {
         const fields = Object.fromEntries(value.split(",").map((part) => [part.split("=")[0], part.slice(part.indexOf("=") + 1)]));
-        container.mounts.push({ source: fields.source, target: fields.target });
+        // A named volume is the directory `volumes.json` in the state directory gives its name, and its subpath below it;
+        // one it does not name fails the run, as Docker's subpath that does not exist would.
+        if (fields.type === "volume") {
+          const volumes = existsSync(join(state, "volumes.json")) ? JSON.parse(readFileSync(join(state, "volumes.json"), "utf8")) : {};
+          const at = volumes[fields.source] && join(volumes[fields.source], fields["volume-subpath"] ?? "");
+          if (!at || !existsSync(at)) fail(`docker: Error response from daemon: cannot access path ${fields["volume-subpath"] ?? ""} of volume ${fields.source}`, 125);
+          container.mounts.push({ source: at, target: fields.target, volume: fields.source });
+        } else container.mounts.push({ source: fields.source, target: fields.target });
         i++;
       } else if (args[i] === "--workdir") container.workdir = args[++i];
       else if (args[i] === "--network") container.HostConfig.NetworkMode = args[++i];
@@ -151,7 +161,7 @@ switch (args[0]) {
     const image = args[args.indexOf("--entrypoint") + 2];
     note("made.jsonl", { id: container.Id, image, pulledInRun: !hasImage(image) });
     if (!hasImage(image) && image.startsWith("agentrun-box:")) fail(`Unable to find image '${image}' locally\ndocker: Error response from daemon: pull access denied for agentrun-box, repository does not exist or may require 'docker login': denied: requested access to the resource is denied.\nSee 'docker run --help'.`, 125);
-    container.Mounts = container.mounts.map((mount) => ({ Type: "bind", Source: mount.source, Destination: mount.target, RW: true }));
+    container.Mounts = container.mounts.map((mount) => (mount.volume ? { Type: "volume", Name: mount.volume, Source: mount.source, Destination: mount.target, RW: true } : { Type: "bind", Source: mount.source, Destination: mount.target, RW: true }));
     save(container);
     if (existsSync(join(state, "fail-run"))) fail("docker: Error response from daemon: the fake's start failed.", 125);
     done(`${container.Id}\n`);
@@ -167,8 +177,9 @@ switch (args[0]) {
   case "inspect": {
     const container = read(args.at(-1));
     if (!container) fail(`Error: No such object: ${args.at(-1)}`);
-    // `--format {{json .}}` gives the object; without it Docker answers a list.
-    done(`${JSON.stringify(args.includes("--format") ? container : [container])}\n`);
+    // `--format {{json .}}` gives the object, `{{json .Mounts}}` its mounts; without it Docker answers a list.
+    const format = args[args.indexOf("--format") + 1];
+    done(`${JSON.stringify(format === "{{json .Mounts}}" ? container.Mounts ?? [] : args.includes("--format") ? container : [container])}\n`);
     break;
   }
   case "rm": {
