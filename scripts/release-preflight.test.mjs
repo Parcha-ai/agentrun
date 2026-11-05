@@ -62,8 +62,18 @@ const packOne = async (root, directory) => {
 async function recordPackages(root) {
   const packages = new Array(listedPackages.length);
   let next = 0;
-  const worker = async () => { while (next < listedPackages.length) { const at = next++; packages[at] = await packOne(root, listedPackages[at]); } };
-  await Promise.all(Array.from({ length: Math.min(availableParallelism(), listedPackages.length) }, worker));
+  let failed = false;
+  // After a failed pack no worker takes another, and every pack still running ends before the error goes on: the fixture's
+  // cleanup must not remove a directory a pack is still writing.
+  const worker = async () => {
+    while (!failed && next < listedPackages.length) {
+      const at = next++;
+      try { packages[at] = await packOne(root, listedPackages[at]); } catch (error) { failed = true; throw error; }
+    }
+  };
+  const settled = await Promise.allSettled(Array.from({ length: Math.min(availableParallelism(), listedPackages.length) }, worker));
+  const refused = settled.find((outcome) => outcome.status === 'rejected');
+  if (refused) throw refused.reason;
   await putJson(join(root, '.release/verification.json'), { status: 'passed', packages,
     runtimeSmoke: { core: true, jev: true, pi: true, archil: true, browser: true, vision: true, transport: true, agent: true, serve: true, git: true, learn: true, learnCheck: true, decisions: true, adapters: true, harness: true, network: 'prohibited' }, audit: { vulnerabilities: { high: 0, critical: 0 } } });
 }
