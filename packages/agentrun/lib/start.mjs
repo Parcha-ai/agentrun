@@ -117,7 +117,9 @@ export async function main(argv, env = process.env) {
     else if (argv[i].startsWith("--data=")) dir = argv[i].slice("--data=".length);
     else rest.push(argv[i]);
   }
-  const data = ["--data", dir ?? join(homedir(), ".agentrun")];
+  const dataDir = dir ?? join(homedir(), ".agentrun");
+  // A name that starts with a dash keeps the equals form: the server's parser reads "--data -x" as a missing value.
+  const data = dataDir.startsWith("-") ? [`--data=${dataDir}`] : ["--data", dataDir];
   if (rest[0] && !rest[0].startsWith("-")) {
     return new Promise((resolve) => spawn(launcher, [rest[0], ...data, ...rest.slice(1)], { stdio: "inherit", env: childEnv }).on("exit", (code) => resolve(code ?? 1)));
   }
@@ -150,6 +152,6 @@ export async function main(argv, env = process.env) {
   console.log(`AgentRun is running at ${url}`);
   // For the person at the terminal (stderr, so stdout stays the one line a script reads): how to stop it, and where its
   // data is kept, which the next start opens again.
-  console.error(`Press Ctrl-C to stop it. Its data is in ${data[1]}.`);
+  console.error(`Press Ctrl-C to stop it. Its data is in ${dataDir}.`);
   return exited;
 }

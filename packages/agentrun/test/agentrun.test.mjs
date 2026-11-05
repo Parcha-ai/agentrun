@@ -177,6 +177,11 @@ test("the command passes its arguments through to the server, with its store (~/
   const twice = await throughStub(t, ["--no-open", "--data", "/srv/first", "--data=/srv/second"]);
   assert.deepEqual(twice.args, ["--data", "/srv/second"], twice.err);
   assert.match(twice.err, /^Press Ctrl-C to stop it\. Its data is in \/srv\/second\.$/m, twice.err);
+  // A directory whose name starts with a dash keeps the equals form: the server's parser reads "--data -store" as a
+  // missing value.
+  const dash = await throughStub(t, ["--no-open", "--data=-store"]);
+  assert.deepEqual(dash.args, ["--data=-store"], dash.err);
+  assert.match(dash.err, /^Press Ctrl-C to stop it\. Its data is in -store\.$/m, dash.err);
   const sub = await throughStub(t, ["--data", "/srv/agents", "import", "--dry-run"]);
   assert.deepEqual(sub.args, ["import", "--data", "/srv/agents", "--dry-run"], "a subcommand first, on the same data directory");
   const own = await throughStub(t, ["import", "--dry-run"]);
