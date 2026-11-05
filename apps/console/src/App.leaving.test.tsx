@@ -12,6 +12,7 @@ const LEAVE = "You have unsaved changes. Leave and discard them?";
 
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 const definition = { version: 1, name: "Calc", instructions: "Answer.", harness: "pi", skills: [], tools: [] };
+const RUN = { run_id: "r1", agent_id: "calc", agent_version: 1, revision: "r1", kind: "agentic", status: "completed", state: "idle", title: "What is two and two?", created_at: "2026-10-30T06:00:00Z", ended_at: "2026-10-30T06:00:03Z", result: { final_answer: "4" }, error: null, cost: null, archived_at: null };
 let calc: { agent_id: string; kind: string; revision: string; revisions: number; archived_at: null; definition: typeof definition };
 let asked: string[];
 let answer: boolean;
@@ -32,6 +33,9 @@ beforeEach(() => {
       return json(201, { agent_id: "made", kind: "agentic", revision: "m1", revisions: 1, archived_at: null, definition: body.definition });
     }
     if (path === "/v2/agents") return json(200, { agents: [calc], next_cursor: null });
+    if (path === "/v2/runs/r1") return json(200, RUN);
+    if (path === "/v2/runs/r1/files") return json(200, { run_id: "r1", files: [], complete: true, truncated: false });
+    if (path === "/v2/runs/r1/timeline") return json(200, { run_id: "r1", status: "completed", state: "idle", rows: [], drop: [], reset: true, unchanged: false, final: true, has_more: false, next_after: 1 });
     if (path === "/v2/agents/calc/definition" && method === "PUT") {
       const body = JSON.parse(String(init!.body)) as { definition: Partial<typeof definition> };
       calc = { ...calc, revision: "r2", revisions: 2, definition: { ...calc.definition, ...body.definition } };
@@ -159,5 +163,24 @@ describe("App, leaving the agent editor with nothing unsaved", () => {
     await page.click(page.button(/^Create$/));
     await page.wait(() => location.hash === "#/agents/made", "on the new agent's page");
     expect(confirms).toEqual([]);
+  });
+});
+
+// A move the guard cancels never happened: it is no page in the console's history (lib/back numbers only the moves that
+// land), so a later back arrow goes to the page before, never to the page the person said no to.
+describe("App, a cancelled move and the run page's back arrow", () => {
+  it("goes back to the editor the run was opened from, not to the page the cancel kept you from", async () => {
+    const page = await editing();
+    await page.type(page.instructions(), "Answer, then check the sum.");
+    await page.click(page.sidebar("Agents"));
+    expect(confirms).toEqual([LEAVE]);
+    await page.wait(() => location.hash === "#/agents/calc/edit", "still the editor");
+    await page.type(page.instructions(), "Answer.");
+    await act(async () => { location.hash = "#/runs/r1"; });
+    const arrow = () => page.host.querySelector<HTMLButtonElement>('nav[aria-label="Breadcrumb"] button[aria-label="Back"]');
+    await page.wait(() => !!arrow(), "the run's page");
+    await page.click(arrow());
+    await page.wait(() => location.hash === "#/agents/calc/edit", "back on the editor");
+    expect(confirms).toEqual([LEAVE]);
   });
 });
