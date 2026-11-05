@@ -43,6 +43,7 @@ import { REFLECT_REQUEST, Turns } from "./turns.js";
 import { DECISION_KEYS, handover, hostSecrets, secret, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, type StoredKeys, withoutSecrets, withSecrets } from "./secrets.js";
 import { MIN_SECRET } from "./learn/secrets.js";
 import { keyRefusal, redacted, redactedAnswer, redactedLive, redactedOutput, runKeyOf, withoutLoopback } from "./key-refusal.js";
+import { type PartKind, servedPart } from "./graph-served.js";
 import { CONTENT_FILTER_WORDS, contentFiltered, MODERATED } from "./content-filter.js";
 import { BOX_KEYS } from "./boxes.js";
 import { type Place, remotePlace, storedPlace } from "./place.js";
@@ -183,12 +184,6 @@ type Served = { keys: string; input: unknown; out: unknown };
 
 /** GET /runs/{id}/graph's view (graph-view.ts, loaded when a graph is first read). */
 type GraphView = Awaited<ReturnType<typeof import("./graph-view.js")["runGraph"]>>;
-
-/** The most of a map item's label and of a call's error the graph shows (runs.ts servedGraph). */
-const LABEL_SHOWN = 200;
-const ERROR_SHOWN = 2000;
-
-const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
 /** The most parts of a run's graph servedGraph keeps redacted; past it, it starts again. */
 const GRAPH_PARTS = 2048;
@@ -973,29 +968,15 @@ export class Runs {
     const keys = digestOf([...values].sort());
     if (run.servedParts?.keys !== keys) run.servedParts = { keys, parts: new Map() };
     const parts = run.servedParts.parts;
-    const hold = 6 * values.reduce((most, value) => Math.max(most, value.length), 0) + 16;
-    const heldBack = (text: string) => `${text.slice(0, Math.max(0, text.length - hold))}…`;
-    const once = (kind: string, value: unknown, serve: (shown: unknown) => unknown): unknown => {
+    const once = (kind: PartKind, value: unknown): unknown => {
       const at = `${kind}:${digestOf(value)}`;
       if (parts.has(at)) return parts.get(at);
-      const out = serve(redactedOutput(value, values));
+      const out = servedPart(kind, value, values);
       if (parts.size >= GRAPH_PARTS) parts.clear();
       parts.set(at, out);
       return out;
     };
-    const nodes = (shown: unknown) => (isRecord(shown) ? Object.fromEntries(Object.entries(shown).map(([path, node]) => [path, isRecord(node) && Array.isArray(node.items) ? { ...node, items: node.items.map((item) => (isRecord(item) && typeof item.label === "string" ? { ...item, label: item.label.slice(0, LABEL_SHOWN) } : item)) } : node])) : shown);
-    const decision = (shown: unknown) => (isRecord(shown) && shown.state_truncated === true && typeof shown.state === "string" ? { ...shown, state: heldBack(shown.state) } : shown);
-    const effect = (raw: Record<string, unknown>) => (shown: unknown) => {
-      if (!isRecord(shown)) return shown;
-      const { error_cut: _, ...rest } = shown;
-      return typeof rest.error === "string" ? { ...rest, error: (raw.error_cut === true ? heldBack(rest.error) : rest.error).slice(0, ERROR_SHOWN) } : rest;
-    };
-    return {
-      ...view,
-      nodes: once("nodes", view.nodes, nodes),
-      decisions: view.decisions.map((value) => once("decision", value, decision)),
-      effects: view.effects.map((value) => once("effect", value, effect(isRecord(value) ? value : {}))),
-    };
+    return { ...view, nodes: once("nodes", view.nodes), decisions: view.decisions.map((value) => once("decision", value)), effects: view.effects.map((value) => once("effect", value)) };
   }
 
   /** The timeline's redaction of `run`'s error rows and of what a tool's result shows (its summary and preview), applied
