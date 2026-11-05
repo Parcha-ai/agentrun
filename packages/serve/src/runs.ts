@@ -48,6 +48,7 @@ import { CONTENT_FILTER_WORDS, contentFiltered, MODERATED } from "./content-filt
 import { BOX_KEYS } from "./boxes.js";
 import { type Place, remotePlace, storedPlace } from "./place.js";
 import { destroyRunBoxes, ensureRemoteBox, PullIncomplete, pullRemoteBox, sweepRunBoxes } from "./run-box.js";
+import { removeEgressDir, RUN_BOX_ALLOW_ENV } from "./box-egress.js";
 import type { BoxProvider } from "@parcha/pi-transport";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { Emitted } from "./webhooks.js";
@@ -479,7 +480,7 @@ export type StartOptions = { input: Json; title: string; place: Place; effort?: 
 /** `maxRuns`: the most runs with a live process at once; `settleRetryMs`: how often a carry back the store refused is
  *  tried again; `readyTimeoutMs`: how long a request to a run waits for its door (a run's first message, sent by its
  *  start, always waits READY_TIMEOUT_MS); `log` takes a run's start and end (print.ts). */
-export type RunsOptions = { agents: Agents; token: string; /** The server's saved tool keys, read by name for its runs alone (secrets.ts). */ storedKeys?: StoredKeys; documents?: string; doorTokenFile: string; doorToken: string; /** The test switches a run's process gets (server.ts fauxEnvOf): empty outside tests. */ fauxEnv?: NodeJS.ProcessEnv; runBoxes?: BoxProvider; /** The server's Daytona provider, with its key: remote boxes are made, seeded, pulled and destroyed with it, here alone (box-relay.ts). */ remoteBoxes?: BoxProvider; /** Daytona's API and the same key, for what the provider does not do: a kept box's idle stop, and its wake at a start (daytona-api.ts). */ remoteApi?: DaytonaApi; /** The hosts a remote box may reach (run-box.ts boxAllowOf); `none`, or absent, for none. */ boxAllow?: readonly string[] | "none"; /** Called once, with the provider's refusal's code, when it cannot keep that list here: from then on each remote box is made with no network. */ onNoBoxList?: (code: string) => void; toolSettings?: () => ToolSettingsMap; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; reflectTimeoutMs?: number; gradeTimeoutMs?: number; /** The grader's model (`--grade-model`), before AGENTRUN_SERVE_GRADE_MODEL and the strong tier (grade.ts gradeModelOf). */ gradeModel?: string; /** How much of what a run learned its instructions hold, in bytes (`--learning-budget`, learning.ts learnedOf). */ learningBudget?: number; log?: (event: string, fields: Record<string, string | number>) => void; notify?: RunNotify; learning?: LearningMode };
+export type RunsOptions = { /** What a run's Docker box reaches, as the server resolved it (run-box.ts boxNetworkOf): the list, or none. Absent, none. */ dockerAllow?: readonly string[] | "none"; agents: Agents; token: string; /** The server's saved tool keys, read by name for its runs alone (secrets.ts). */ storedKeys?: StoredKeys; documents?: string; doorTokenFile: string; doorToken: string; /** The test switches a run's process gets (server.ts fauxEnvOf): empty outside tests. */ fauxEnv?: NodeJS.ProcessEnv; runBoxes?: BoxProvider; /** The server's Daytona provider, with its key: remote boxes are made, seeded, pulled and destroyed with it, here alone (box-relay.ts). */ remoteBoxes?: BoxProvider; /** Daytona's API and the same key, for what the provider does not do: a kept box's idle stop, and its wake at a start (daytona-api.ts). */ remoteApi?: DaytonaApi; /** The hosts a remote box may reach (run-box.ts boxAllowOf); `none`, or absent, for none. */ boxAllow?: readonly string[] | "none"; /** Called once, with the provider's refusal's code, when it cannot keep that list here: from then on each remote box is made with no network. */ onNoBoxList?: (code: string) => void; toolSettings?: () => ToolSettingsMap; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; reflectTimeoutMs?: number; gradeTimeoutMs?: number; /** The grader's model (`--grade-model`), before AGENTRUN_SERVE_GRADE_MODEL and the strong tier (grade.ts gradeModelOf). */ gradeModel?: string; /** How much of what a run learned its instructions hold, in bytes (`--learning-budget`, learning.ts learnedOf). */ learningBudget?: number; log?: (event: string, fields: Record<string, string | number>) => void; notify?: RunNotify; learning?: LearningMode };
 /** Told of a run's moment each time it is seen (webhooks.ts' emit, which queues each one once): a wait it reached, and an
  *  end once the agent store has it. `marker` names the moment (the person's turn it waits at, the end's time), the same
  *  when another server sees it again. It says what came of it: `unsaved`, not in the outbox on disk yet. */
@@ -1116,6 +1117,8 @@ export class Runs {
     }
     try {
       await destroyRunBoxes(boxes, run.id, boxContext());
+      // The box's egress proxy directory (box-egress.ts), its socket the run's process left: nothing binds it now.
+      await removeEgressDir(run.id).catch(() => undefined);
     } catch (error) {
       warn(run.id, `its box was not destroyed (${(error as Error).message}); the next start sweeps it`);
     }
@@ -1480,6 +1483,8 @@ export class Runs {
     }
     const env: NodeJS.ProcessEnv = {
       ...childEnv(process.env, this.options.token),
+      // The run's box's network, as the server resolved it: never the setting itself, which the run's process ignores.
+      [RUN_BOX_ALLOW_ENV]: this.options.dockerAllow === undefined || this.options.dockerAllow === "none" ? "none" : this.options.dockerAllow.join(","),
       [SECRETS_FD_ENV]: "3",
       [SECRETS_LEN_ENV]: String(secrets.length),
       ...this.fauxEnv(),
