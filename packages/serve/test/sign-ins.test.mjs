@@ -674,3 +674,37 @@ test("a run still going whose browser sign-in the next server cannot read (its s
   }
   assert.deepEqual((await api("GET", "/agents/alpha")).body.sign_ins.map((s) => s.state), ["unreadable"]);
 });
+
+test("a run whose process went with its server, and whose browser sign-in the next server cannot read, is not opened again: it ends failed, saying why, and nothing it said is served", { timeout: 180_000 }, async (t) => {
+  const dir = await scratch(t);
+  const data = join(dir, "agents");
+  const log = join(dir, "browser.jsonl");
+  withEnv(t, { BROWSERBASE_API_KEY: BB_KEY, BROWSERBASE_PROJECT_ID: "proj-1", AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), FAUX_BROWSER_LOG: log }, KEYS);
+  const first = await crashable(t, data);
+  assert.equal((await first.api("POST", "/agents", agent("alpha", { instructions: "Browse.", tools: ["browser"] }))).status, 201);
+  const gate = join(dir, "gate");
+  const runId = (await first.api("POST", "/agents/alpha/runs", { input: { content: `Browse the example page once ${gate} exists.` } })).body.run_id;
+  const opened = await until(async () => (await readFile(log, "utf8").catch(() => "")).trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)), (ops) => ops.some((op) => op.op === "profile"));
+  const { ref } = opened.find((op) => op.op === "sign-in");
+  // The server goes; the run's process answers with the pointer into its own store, then goes too.
+  first.child.kill("SIGKILL");
+  await new Promise((resolve) => first.child.once("exit", resolve));
+  const { holder } = JSON.parse(await readFile(join(data, "runs", runId, "run.json"), "utf8"));
+  await writeFile(`${gate}.echo`, `I kept ${ref} for you.`);
+  await writeFile(gate, "");
+  const store = join(data, "runs", runId, "store");
+  await until(async () => Buffer.concat(await Promise.all((await readdir(store)).map((name) => readFile(join(store, name)).catch(() => Buffer.alloc(0))))).includes(ref), (said) => said);
+  process.kill(holder.pid, "SIGKILL");
+  await until(async () => { try { process.kill(holder.pid, 0); return false; } catch { return true; } }, (gone) => gone);
+  // The next server holds another seal key: the agent's sign-in no longer opens.
+  process.env.AGENTRUN_SEAL_KEY = randomBytes(32).toString("base64");
+  const { api } = await serve(t, { data, fauxBrowser: FAUX_BROWSER, fauxBrowserbase: FAUX_BROWSERBASE });
+  const { last } = await follow(api, runId, ["failed"], { deadlineMs: 60_000 });
+  const view = (await api("GET", `/runs/${runId}`)).body;
+  assert.equal(view.error.message, "This server's seal key changed, so the run's browser sign-in can't be read: the run was stopped, so nothing it says can show it.");
+  for (const shown of [JSON.stringify(last), JSON.stringify((await api("GET", `/runs/${runId}/timeline`)).body), JSON.stringify(view), JSON.stringify((await api("GET", "/runs")).body)]) {
+    assert.ok(!shown.includes(ref), shown);
+    assert.ok(!shown.includes("I kept"), shown);
+  }
+  assert.equal((await readFile(log, "utf8")).trim().split("\n").map((line) => JSON.parse(line)).filter((op) => op.op === "vendor").length, 1, "never opened again");
+});

@@ -811,6 +811,14 @@ export class Runs {
     const record = await this.record(run);
     // An ended run is ended before its rows are read, so they never make it a wait: a last row that asks is no notice.
     if (row.state !== "running") run.outcome = STATUS_OF[row.state];
+    // A run still going whose agent's browser sign-in does not open under this server's seal key: whatever it said, or
+    // says, could repeat the pointer, which nothing here can cut. Its rows are never read, and it ends failed, saying
+    // why: a live process is stopped (below), one already gone is never opened again.
+    if (row.state === "running" && signIn === "unreadable" && !run.meta.unshown) {
+      run.error = { code: "run_failed", message: UNREADABLE_SIGN_IN, retryable: false };
+      run.meta.unshown = true;
+      await this.saveMeta(run);
+    }
     // Only a store no live instance holds is opened: released, or left by an instance whose lease lapsed.
     if ((row.state !== "running" || !this.doorOf(record)) && !run.meta.unshown) await this.storeWhenFree(run);
     if (row.state !== "running") {
@@ -830,12 +838,15 @@ export class Runs {
         run.finishing = "cancelled";
       }
       const adopted = record && this.doorOf(record) ? record : null;
-      if (adopted && signIn === "unreadable") {
-        // Its process may repeat a pointer this server cannot read, so cannot cut: it is never followed, its store never
-        // read for rows; it is stopped (SIGTERM, as a cancel's), and the run ends failed, saying why, once it has gone.
-        run.error = { code: "run_failed", message: UNREADABLE_SIGN_IN, retryable: false };
-        run.meta.unshown = true;
-        await this.saveMeta(run);
+      if (run.meta.unshown && !adopted) {
+        // Its process gone: never opened again. The start's recovery settles it, failed (settleOnce reads `finishing`).
+        run.error ??= { code: "run_failed", message: UNREADABLE_SIGN_IN, retryable: false };
+        run.finishing = "failed";
+        run.endedAt = new Date().toISOString();
+      } else if (adopted && run.meta.unshown) {
+        // Its process may repeat a pointer this server cannot read, so cannot cut: it is never followed; it is stopped
+        // (SIGTERM, as a cancel's), and the run ends failed, saying why, once it has gone.
+        run.error ??= { code: "run_failed", message: UNREADABLE_SIGN_IN, retryable: false };
         this.adoptProcess(run, adopted, false);
         // Its turn aborted first, so the drain SIGTERM starts does not wait for it; one that outlives its drain is killed.
         this.finish(run, "failed", true);
