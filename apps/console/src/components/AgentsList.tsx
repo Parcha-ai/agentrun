@@ -4,10 +4,11 @@ import { ListSkeleton } from "@/components/Skeleton";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import type { Agent } from "@/lib/agentForm";
+import { waitingOf, waitingWords } from "@/lib/learning";
 import { cn } from "@/lib/utils";
 import { workflowShape } from "@/lib/workflowDoc";
 
-export type AgentsListActions = { onOpen?: (id: string) => void; onEdit?: (id: string) => void; onNew?: () => void; onRuns?: (id: string) => void; onArchive?: (id: string, archive: boolean) => void };
+export type AgentsListActions = { onOpen?: (id: string) => void; onEdit?: (id: string) => void; onNew?: () => void; onRuns?: (id: string) => void; onLearning?: (id: string) => void; onArchive?: (id: string, archive: boolean) => void };
 
 /** The hosted console's agent grid: a search box, the count, and a card per agent (name, kind, harness, what it does,
  *  its revision and runs, and its actions). Archived agents are their own view. */
@@ -48,6 +49,8 @@ export function AgentsList({ agents, archived = false, onArchivedChange, actions
 function AgentCard({ agent: a, actions }: { agent: Agent; actions: AgentsListActions }) {
   const Icon = a.kind === "workflow" ? Workflow : Bot;
   const archived = !!a.archived_at;
+  // Its learned items that wait for its owner's OK (the list's own read: each agent's `learning.pending`); nothing at 0.
+  const waiting = waitingOf(a);
   return (
     <li className={cn("flex flex-col border p-4", archived && "opacity-70")}>
       <button type="button" className="flex min-w-0 items-start gap-2.5 text-left" onClick={() => actions.onOpen?.(a.agent_id)}>
@@ -65,6 +68,10 @@ function AgentCard({ agent: a, actions }: { agent: Agent; actions: AgentsListAct
       <div className="mt-auto flex items-center gap-2 pt-4">
         <span className="caps border px-1.5 py-0.5 text-[10px] text-muted-foreground">{a.revisions} {a.revisions === 1 ? "revision" : "revisions"}</span>
         {a.runs && <span className="caps border px-1.5 py-0.5 text-[10px] text-muted-foreground">{a.runs.count} {a.runs.count === 1 ? "run" : "runs"}{a.runs.live ? ` · ${a.runs.live} live` : ""}</span>}
+        {waiting > 0 && (
+          <button type="button" aria-label={waitingWords(waiting)} onClick={() => actions.onLearning?.(a.agent_id)}
+            className="caps border border-warning/50 bg-warning/10 px-1.5 py-0.5 text-[10px] text-warning-text hover:bg-warning/20">Learning · {waiting}</button>
+        )}
         <span className="flex-1" />
         <Button size="icon" variant="outline" aria-label={`Edit ${a.definition.name}`} onClick={() => actions.onEdit?.(a.agent_id)}><Pencil aria-hidden /></Button>
         <Button size="icon" variant="outline" aria-label={`Runs of ${a.definition.name}`} onClick={() => actions.onRuns?.(a.agent_id)}><History aria-hidden /></Button>

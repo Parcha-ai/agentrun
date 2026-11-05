@@ -29,6 +29,7 @@ export function AgentsPage({ v2, archived, go }: { v2: Client; archived: boolean
         onEdit: (id) => go(agentHash(id, "edit")),
         onNew: () => go("#/agents/new"),
         onRuns: (id) => go(agentHash(id, "runs")),
+        onLearning: (id) => go(agentHash(id, "learning")),
         onArchive: async (id, archive) => { try { await (archive ? v2.archiveAgent(id) : v2.unarchiveAgent(id)); load(); } catch (e) { setError(problemOf(e).message); } },
       }} />
   );

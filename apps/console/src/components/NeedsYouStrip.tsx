@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { ApprovalCard } from "@/components/ApprovalCard";
 import { Button } from "@/components/ui/button";
 import { cost, soFar } from "@/lib/format";
+import { waitingWords } from "@/lib/learning";
 import { ago, choicesOf, failureGroups } from "@/lib/needs";
 import { elapsed } from "@/lib/runGraph";
 import { NO_MESSAGES, runState } from "@/lib/runState";
@@ -16,6 +17,9 @@ export type NeedsYouProps = {
   failed: readonly Run[];
   /** Runs at work now. */
   live: readonly Run[];
+  /** The active agents whose learned items wait for the owner's OK (GET /v2/agents, each one's `learning.pending` above
+   *  0), each with how many: approved on its Learning tab. */
+  learning?: readonly { agent_id: string; name: string; pending: number }[];
   agentName: (id: string) => string;
   /** Sends an answer to the run; resolves with the refusal to show, or null once it went. */
   onAnswer: (runId: string, text: string) => Promise<string | null>;
@@ -35,7 +39,7 @@ const runHref = (id: string) => `#/runs/${encodeURIComponent(id)}`;
 
 /** Mission Control's first section: what needs a person now (each question answered in place, each failure said once
  *  with a way to run it again) and the runs at work, each with its clock. Nothing at all when nothing waits or works. */
-export function NeedsYouStrip({ asking, failed, live, agentName, onAnswer, onApprove, onRunAgain, onStop, problem, now = Date.now }: NeedsYouProps) {
+export function NeedsYouStrip({ asking, failed, live, learning = [], agentName, onAnswer, onApprove, onRunAgain, onStop, problem, now = Date.now }: NeedsYouProps) {
   const groups = failureGroups(failed);
   // The live runs' clocks move on their own, once a second.
   const [, tick] = useState(0);
@@ -54,7 +58,9 @@ export function NeedsYouStrip({ asking, failed, live, agentName, onAnswer, onApp
     return said;
   });
   const failures = groups.reduce((n, g) => n + g.runs.length, 0);
-  const needs = asking.length + failures;
+  const waiting = learning.filter((a) => a.pending > 0);
+  const learned = waiting.reduce((n, a) => n + a.pending, 0);
+  const needs = asking.length + failures + learned;
   if (!needs && !live.length && !problem && !refused.length) return null;
   const at = now();
   return (
@@ -82,6 +88,19 @@ export function NeedsYouStrip({ asking, failed, live, agentName, onAnswer, onApp
             <a href="#/runs?status=failed" className="normal-case tracking-normal hover:text-foreground">All failed runs →</a>
           </p>
           <ul>{groups.map((g) => <Failure key={g.message} message={g.message} runs={g.runs} agentName={agentName} at={at} onRunAgain={onRunAgain} />)}</ul>
+        </div>
+      )}
+      {waiting.length > 0 && (
+        <div className="border">
+          <p className="caps border-b px-4 py-2.5 text-[11px] text-muted-foreground">Learned, waiting for your OK · {learned}</p>
+          <ul>{waiting.map((a) => (
+            <li key={a.agent_id} className="flex min-w-0 items-center gap-3 border-b px-4 py-3 last:border-b-0">
+              <span className="size-2 shrink-0 rounded-full bg-warning" aria-hidden />
+              <span className="shrink-0 font-mono text-[12px]">{a.name}</span>
+              <span className="min-w-0 flex-1 truncate text-[13px] text-muted-foreground">{waitingWords(a.pending)}</span>
+              <a href={`#/agents/${encodeURIComponent(a.agent_id)}/learning`} className="caps shrink-0 text-[11px] text-muted-foreground hover:text-foreground">Review →</a>
+            </li>
+          ))}</ul>
         </div>
       )}
       {live.length > 0 && (

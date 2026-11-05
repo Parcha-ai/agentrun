@@ -2,4 +2,4 @@
 packages: repo
 kind: fix
 ---
-Console: an agent page's Learning tab carries a count when learned items wait for the owner's OK (a risky note, a held skill or workflow draft), in the warning tone, so the wait is seen without opening the tab or finding the run that kept it. The page counts them with one read of what the agent learned (the pending notes' total too, only when its notes run past the first page), and again as the tab reads, so an approve clears the count at once.
+Console: learned items that wait for the owner's OK (a risky note, a held skill or workflow draft) are counted where they're seen without finding the run that kept them: on the agent page's Learning tab, on the agent's card in the Agents list (which opens that tab), and in Mission Control's Needs you, one entry per agent linked to its Learning tab. Each count is the agent's own `learning.pending`, in the warning tone; nothing shows when the server leaves it out or it is 0. An approve on the tab reads the agent again, so its count clears at once.
