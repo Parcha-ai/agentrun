@@ -420,10 +420,11 @@ const browserAsk = (run: Run): PendingAsk | undefined => (run.dir ? askShown(run
 /** Whether the run's agent waits on an ask a process must still take up: unanswered, expired or not. */
 const askWaits = (run: Run): boolean => run.dir !== undefined && askShown(run.dir, run.rows, "waiting") !== undefined;
 /** A run whose agent asked for the person in its browser waits on their hand-back: what it asked them to do, when it is
- *  done, and when the ask expires. Never the session's tag or the live view's link. */
-const browserPending = (run: Run): Pending | undefined => {
+ *  done, and when the ask expires. Never the session's tag or the live view's link. The two texts are the model's, so
+ *  redacted with the run's redactor (`redact`), as a tool call's arguments are: a held value it echoes never shows. */
+const browserPending = (run: Run, redact: (text: string) => string): Pending | undefined => {
   const ask = browserAsk(run);
-  return ask && { kind: "browser", instruction: ask.instruction, completion_condition: ask.completion_condition, asked_at: ask.asked_at, expires_at: ask.expires_at };
+  return ask && { kind: "browser", instruction: redact(ask.instruction), completion_condition: redact(ask.completion_condition), asked_at: ask.asked_at, expires_at: ask.expires_at };
 };
 /** Notes the tool calls that wait for approval in `entries` (the run's stored entries), and those whose answer its process
  *  acted on. */
@@ -2994,7 +2995,7 @@ export class Runs {
       result: status === "completed" ? { output: run.kind === "workflow" ? (this.servedOutput(run, run.meta.output ?? null)) : null, final_answer: this.servedAnswer(run, finalAnswer) } : kept ? { output: null, final_answer: this.servedAnswer(run, kept) } : null,
       error: status === "failed" ? (run.error ?? { code: "run_failed", message: "The run failed.", retryable: false }) : null,
       review: endedAt === null ? null : reviewAt(run.meta.review ?? (row ? reviewOfRow(row, run.meta) : null), endedAt),
-      pending: status === "input_required" && state === "waiting" ? (approvalOf(run, this.redactor(run)) ?? budgetPending(run, this.spentNow(run)) ?? browserPending(run) ?? pendingOf(run.rows)) : null,
+      pending: status === "input_required" && state === "waiting" ? (approvalOf(run, this.redactor(run)) ?? budgetPending(run, this.spentNow(run)) ?? browserPending(run, this.redactor(run)) ?? pendingOf(run.rows)) : null,
       cost: this.cost(run),
       archived_at: stored?.archivedAt ?? null,
       imported_from: run.imported ?? null,

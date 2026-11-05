@@ -20,7 +20,7 @@ const FAUX_BROWSER = new URL("./fixtures/faux-browser.mjs", import.meta.url).pat
 const BROWSE_ASK = new URL("./fixtures/faux-browse-ask.mjs", import.meta.url).pathname;
 const BROWSE_WAIT = new URL("./fixtures/faux-browse-wait.mjs", import.meta.url).pathname;
 const BROWSE_HANDOFF = new URL("./fixtures/faux-browse-handoff.mjs", import.meta.url).pathname;
-const KEYS = ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "KERNEL_API_KEY", "FAUX_BROWSER_LOG", "FAUX_BROWSER_PERSON_MS", "AGENTRUN_SEAL_KEY", "FAUX_BROWSER_STATE"];
+const KEYS = ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "KERNEL_API_KEY", "FAUX_BROWSER_LOG", "FAUX_BROWSER_PERSON_MS", "AGENTRUN_SEAL_KEY", "FAUX_BROWSER_STATE", "FAUX_HELD_API_KEY", "FAUX_ECHO_VALUE"];
 const json = { "content-type": "application/json" };
 /** A test password, no real one. */
 const PASSWORD = ["not-a-secret", "owner"].join("-");
@@ -258,6 +258,24 @@ test("a restart while the ask is open and nobody answers: the new process expire
   await restartedMidAsk(w);
   const answered = await until(async () => /Hand-off:/.test((await w.view()).pending?.question ?? "") && (await w.view()).pending.question, 60_000);
   assert.match(answered || "", /"outcome":"expired"/, "the agent heard expired");
+});
+
+test("an ask whose words echo a value the server holds as a key shows it cut, never in the clear: in the run's pending, the run list, its waiting row and the run.needs_input message", { timeout: 180_000 }, async (t) => {
+  const held = `held-${randomBytes(16).toString("hex")}`;
+  const got = [];
+  const receiver = createServer((req, res) => { const chunks = []; req.on("data", (c) => chunks.push(c)); req.on("end", () => { got.push(Buffer.concat(chunks).toString("utf8")); res.writeHead(200).end(); }); });
+  await new Promise((resolve) => receiver.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => (receiver.close(resolve), receiver.closeAllConnections())));
+  const w = await watched(t, { faux: BROWSE_HANDOFF, env: { FAUX_HELD_API_KEY: held, FAUX_ECHO_VALUE: held, AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, hook: { url: `http://127.0.0.1:${receiver.address().port}/hook` } });
+  const view = await w.view();
+  assert.equal(view.pending?.kind, "browser");
+  assert.ok(!view.pending.instruction.includes(held) && view.pending.instruction.includes(ASK.instruction), `pending.instruction: ${view.pending.instruction}`);
+  assert.ok(!view.pending.completion_condition.includes(held), `pending.completion_condition: ${view.pending.completion_condition}`);
+  const waiting = (await w.rows()).findLast((row) => row.kind === "waiting");
+  assert.ok(waiting?.summary.startsWith(`Waiting for you: ${ASK.instruction} using `), waiting?.summary);
+  for (const path of [`/runs/${w.runId}`, `/runs/${w.runId}/timeline`, "/runs", "/agents/drive/runs"]) assert.ok(!JSON.stringify((await w.server.api("GET", path)).body).includes(held), `${path} holds no held value`);
+  assert.ok(await until(() => got.some((body) => body.includes("run.needs_input"))), "run.needs_input sent");
+  assert.ok(!got.some((body) => body.includes(held)), "the message holds no held value");
 });
 
 test("cap: the agent's ask holds the person's 15 minutes first; with no room no ask is made and the tool's result says why", { timeout: 180_000 }, async (t) => {
