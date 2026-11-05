@@ -37,9 +37,8 @@ const OUTBOX_RETRY_MS = 5_000;
 /** How far back an end's run.ended is still queued: past the outbox's own retries (RETRY_MS, about a day), a notice
  *  would not be sent any more. */
 const END_NOTICE_WINDOW_MS = 24 * 3_600_000;
-/** In the data directory: when a server that keeps the ledger first started. An end before it was an older server's,
- *  which kept no ledger, so it is never queued again. */
-export const END_NOTICES_SINCE = "end-notices-since";
+/** The outbox file's version: a file of another one is not read. */
+const OUTBOX_VERSION = 3;
 /** How many attempts the log keeps, and with them the messages they tried, for a redelivery. */
 export const ATTEMPTS_KEPT = 50;
 const FORMAT = "webhook/1";
@@ -102,8 +101,6 @@ export class Webhooks {
   private attempts: Attempt[];
   /** The ledger, by run: written with the messages, in the same write. */
   private notices: Record<string, Noticed>;
-  /** When this data directory's ledger began (END_NOTICES_SINCE). */
-  private readonly since: number;
   /** The runs told of since this server started: their ledger entries are this server's news, which a start's catch-up
    *  never drops. */
   private readonly told = new Set<string>();
@@ -128,8 +125,6 @@ export class Webhooks {
     this.file = join(data, WEBHOOK_FILE);
     this.outbox = join(data, OUTBOX_FILE);
     this.key = sealKeyOf(env[SEAL_KEY_ENV]);
-    // Read, or written at this first start, before anything ends here: a run that ends later is after it.
-    this.since = this.noticesSince(join(data, END_NOTICES_SINCE));
     ({ messages: this.messages, attempts: this.attempts, notices: this.notices } = this.readOutbox());
     // A restart goes on with the messages an earlier server left pending, each at its next try's time; a test send is
     // tried once, so one left in flight failed.
@@ -182,8 +177,8 @@ export class Webhooks {
 
   /** A run's moment, told by runs.ts each time it sees it (a wait reached, an end the agent store has): queued once, when
    *  a webhook is set and on, and kept in the ledger in the same write. `marker` makes its webhook-id: the same moment,
-   *  seen again after a restart, has the same id, which is a receiver's idempotency key. An end before the ledger began,
-   *  before the webhook was set, or past the outbox's day counts as sent. */
+   *  seen again after a restart, has the same id, which is a receiver's idempotency key. An end before the webhook was
+   *  set, or past the outbox's day, counts as sent. */
   emit(type: (typeof RUN_EVENTS)[number], run: RunNotice, marker: string): Emitted {
     if (this.closed) return "closed";
     this.told.add(run.run_id);
@@ -201,7 +196,7 @@ export class Webhooks {
     // A new wait replaces the last; one after an end is a continued run's, past that end, which the store no longer holds.
     this.notices[run.run_id] = ends ? { ...seen, ended: marker } : { wait: marker };
     this.prune(config);
-    // One an earlier server queued before it kept a ledger: recorded now, and still sent once.
+    // Already in the outbox under this id: recorded, and not queued again.
     if (this.messages.some((m) => m.id === id)) this.writeOutbox();
     else {
       const data = { run_id: run.run_id, agent_id: run.agent_id, status: run.status, title: run.title, url: `${this.base}/#/runs/${encodeURIComponent(run.run_id)}`, ...(run.pending ? { pending: run.pending } : {}) };
@@ -284,11 +279,12 @@ export class Webhooks {
     this.held = undefined;
   }
 
-  /** The outbox as the last server left it; an older server's (v2) has no ledger. */
+  /** The outbox as the last server left it. A file of another version is not read, and the log says which it was. */
   private readOutbox(): { messages: Message[]; attempts: Attempt[]; notices: Record<string, Noticed> } {
     try {
       const doc = JSON.parse(readFileSync(this.outbox, "utf8")) as unknown;
-      if (!isObject(doc) || (doc.v !== 2 && doc.v !== 3) || !Array.isArray(doc.messages) || !Array.isArray(doc.attempts)) return { messages: [], attempts: [], notices: {} };
+      if (isObject(doc) && doc.v !== OUTBOX_VERSION) this.say({ condition: "outbox_not_read", file: this.outbox, version: String(doc.v), reason: `not this server's version (${OUTBOX_VERSION})` });
+      if (!isObject(doc) || doc.v !== OUTBOX_VERSION || !Array.isArray(doc.messages) || !Array.isArray(doc.attempts)) return { messages: [], attempts: [], notices: {} };
       const notices = isObject(doc.notices) ? (Object.fromEntries(Object.entries(doc.notices).filter(([, n]) => isObject(n))) as Record<string, Noticed>) : {};
       return { messages: doc.messages.filter((m) => isObject(m) && typeof m.id === "string" && typeof m.body === "string") as Message[], attempts: doc.attempts.filter(isObject) as Attempt[], notices };
     } catch {
@@ -296,12 +292,12 @@ export class Webhooks {
     }
   }
 
-  /** Whether an end's run.ended is still to be queued: at or after the ledger began, the webhook was set, and the
-   *  outbox's day began (a marker that names no time is not judged by one). The catch-up and the ledger's pruning read the
-   *  same line, so the ledger never forgets an end a start would look for. */
+  /** Whether an end's run.ended is still to be queued: at or after the webhook was set and the outbox's day began (a
+   *  marker that names no time is not judged by one). The catch-up and the ledger's pruning read the same line, so the
+   *  ledger never forgets an end a start would look for. */
   private due(endedAt: string, config: Config): boolean {
     const at = Date.parse(endedAt);
-    return !Number.isFinite(at) || at >= Math.max(this.since, Date.parse(config.updated_at), Date.now() - END_NOTICE_WINDOW_MS);
+    return !Number.isFinite(at) || at >= Math.max(Date.parse(config.updated_at), Date.now() - END_NOTICE_WINDOW_MS);
   }
 
   /** The ledger without what no start looks for: a run whose end is no longer due goes, with the wait it ended past. A
@@ -309,23 +305,6 @@ export class Webhooks {
    *  is never asked again. */
   private prune(config: Config): void {
     for (const [id, noticed] of Object.entries(this.notices)) if (noticed.ended && !this.due(noticed.ended, config)) delete this.notices[id];
-  }
-
-  /** When this data directory's ledger began: read, or written now, once and durably, at the first start of a server
-   *  that keeps one. One that cannot be written is taken as now, and said, so a start never sends an older server's ends
-   *  again. */
-  private noticesSince(file: string): number {
-    try {
-      const at = Date.parse(readFileSync(file, "utf8").trim());
-      if (Number.isFinite(at)) return at;
-    } catch {}
-    const now = Date.now();
-    try {
-      writeDurableSync(file, `${new Date(now).toISOString()}\n`);
-    } catch (error) {
-      this.say({ condition: "notices_since_unwritable", file, error: (error as NodeJS.ErrnoException).code ?? "unknown" });
-    }
-    return now;
   }
 
   private writeOutbox(): void {
@@ -345,7 +324,7 @@ export class Webhooks {
     const tried = new Set(this.attempts.map((a) => a.webhook_id));
     this.messages = this.messages.filter((m) => m.status === "pending" || tried.has(m.id) || this.sending.has(m.id));
     try {
-      writeDurableSync(this.outbox, `${JSON.stringify({ v: 3, messages: this.messages, attempts: this.attempts, notices: this.notices })}\n`);
+      writeDurableSync(this.outbox, `${JSON.stringify({ v: OUTBOX_VERSION, messages: this.messages, attempts: this.attempts, notices: this.notices })}\n`);
       this.unsaved = false;
       return true;
     } catch (error) {

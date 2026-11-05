@@ -756,31 +756,6 @@ test("a receiver that reads a run back on its run.ended reads it ended, in the r
   assert.deepEqual(read, [["completed", true, "completed"]]);
 });
 
-test("an end whose run.ended an older outbox holds with no ledger (as a server before the ledger leaves it) is recorded by the next start, and not sent again", async (t) => {
-  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
-  const hook = await receiver(t);
-  const data = join(await scratch(t), "agents");
-  const first = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
-  let stopped = false;
-  t.after(() => stopped || first.close());
-  const api = client(first.baseUrl, first.token);
-  assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
-  const run = await startRun(api, "requeued", "Answer.");
-  await follow(api, run.run_id, ["completed"]);
-  await until(() => ofType(hook.got, "run.ended").length === 1 && endNotice(data, run.run_id)?.queued, "sent and recorded");
-  await first.close();
-  stopped = true;
-  // The outbox as a server before the ledger leaves it: the message, and no record of what it queued.
-  const outbox = join(data, "webhook-outbox.json");
-  const { messages, attempts } = JSON.parse(readFileSync(outbox, "utf8"));
-  writeFileSync(outbox, `${JSON.stringify({ v: 2, messages, attempts })}\n`);
-  const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
-  t.after(() => next.close());
-  await until(() => endNotice(data, run.run_id)?.queued, "recorded by the next start");
-  await sleep(500);
-  assert.equal(ofType(hook.got, "run.ended").length, 1, "the outbox already held that id: not sent again");
-});
-
 test("a run.ended whose outbox write failed is not recorded as queued, so after a kill the next server queues and sends it", async (t) => {
   withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
   const hook = await receiver(t);
@@ -880,62 +855,6 @@ test("a run is continued only once its end's run.ended is in the outbox: refused
   assert.equal(endNotice(data, run.run_id)?.queued, true);
 });
 
-/** A data directory as an older server leaves the runs it ended and announced: an outbox with no ledger (its messages
- *  pruned too); `since` the time the newer server first started. */
-function asAnOlderServerLeftIt(data, since) {
-  writeFileSync(join(data, "webhook-outbox.json"), `${JSON.stringify({ v: 2, messages: [], attempts: [] })}\n`);
-  if (since !== undefined) writeFileSync(join(data, "end-notices-since"), `${since}\n`);
-}
-
-test("an end from before this kind of server first started (no record of its notice, as an older server leaves it) is never sent again", async (t) => {
-  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
-  const hook = await receiver(t);
-  const data = join(await scratch(t), "agents");
-  const first = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
-  let stopped = false;
-  t.after(() => stopped || first.close());
-  const api = client(first.baseUrl, first.token);
-  assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
-  const run = await startRun(api, "older", "Answer.");
-  await follow(api, run.run_id, ["completed"]);
-  await until(() => ofType(hook.got, "run.ended").length === 1, "its run.ended, sent then");
-  await first.close();
-  stopped = true;
-  // The run ended a moment before the newer server first started.
-  asAnOlderServerLeftIt(data, new Date(Date.parse(endedIn(data, run.run_id)) + 1_000).toISOString());
-  const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
-  t.after(() => next.close());
-  await sleep(1_500);
-  assert.equal(ofType(hook.got, "run.ended").length, 1, "not sent again");
-});
-
-test("a server that cannot write when it first started takes now, says so, and sends no earlier end again", async (t) => {
-  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
-  const hook = await receiver(t);
-  const data = join(await scratch(t), "agents");
-  const first = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
-  let stopped = false;
-  t.after(() => stopped || first.close());
-  const api = client(first.baseUrl, first.token);
-  assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
-  const run = await startRun(api, "unwritable", "Answer.");
-  await follow(api, run.run_id, ["completed"]);
-  await until(() => ofType(hook.got, "run.ended").length === 1, "its run.ended, sent then");
-  await first.close();
-  stopped = true;
-  asAnOlderServerLeftIt(data);
-  // Where the time is kept, a directory: neither read nor written.
-  rmSync(join(data, "end-notices-since"), { force: true });
-  mkdirSync(join(data, "end-notices-since"));
-  const lines = [];
-  const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", log: (line) => lines.push(line) });
-  t.after(() => next.close());
-  assert.equal((await client(next.baseUrl, next.token)("GET", "/health")).status, 200, "it started");
-  assert.ok(lines.some((line) => line.includes("condition=notices_since_unwritable")), "and said so");
-  await sleep(1_500);
-  assert.equal(ofType(hook.got, "run.ended").length, 1, "nothing ended before it is sent again");
-});
-
 // ---- a wait's run.needs_input is a notice until the webhook's ledger says the outbox holds it, so a server that adopts the
 // run queues a wait no server queued, under its one webhook-id.
 
@@ -1006,52 +925,6 @@ test("a run.needs_input whose outbox write failed is not recorded, so after a ki
   assert.equal(ids.size, 1, "one wait, one webhook-id");
 });
 
-test("a run that ended before record-keeping began is continued at once, its old end never sent again, and its next end arrives under its own id", async (t) => {
-  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
-  const hook = await receiver(t);
-  const data = join(await scratch(t), "agents");
-  const first = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
-  let stopped = false;
-  t.after(() => stopped || first.close());
-  let api = client(first.baseUrl, first.token);
-  assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
-  const run = await startRun(api, "older-continued", "Answer.");
-  await follow(api, run.run_id, ["completed"]);
-  await until(() => ofType(hook.got, "run.ended").length === 1, "its run.ended, sent then");
-  await first.close();
-  stopped = true;
-  const before = endedIn(data, run.run_id);
-  const since = Date.parse(before) + 1_000;
-  asAnOlderServerLeftIt(data, new Date(since).toISOString());
-  // The next end must come after the since-time, as one after record-keeping began does: on a fast machine the restart
-  // and the continued turn take less than the second between them, and an end before the since-time is never sent.
-  while (Date.now() <= since) await sleep(50);
-  const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
-  t.after(() => next.close());
-  api = client(next.baseUrl, next.token);
-  const continued = await api("POST", `/runs/${run.run_id}/messages`, { content: "And now?" });
-  assert.equal(continued.status, 202, JSON.stringify(continued.body));
-  await follow(api, run.run_id, ["completed"]);
-  await until(() => ofType(hook.got, "run.ended").length === 2, "its next end");
-  await sleep(500);
-  const after = endedIn(data, run.run_id);
-  assert.notEqual(after, before);
-  assert.deepEqual(ofType(hook.got, "run.ended").map((r) => r.headers["webhook-id"]), [noticeId(run.run_id, "run.ended", before), noticeId(run.run_id, "run.ended", after)], "the old end once, then the new one under its own id");
-});
-
-test("a fresh data directory has its since-time right after the first start, before any run, and at or before the first run's end", async (t) => {
-  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
-  const { api, data } = await serve(t);
-  const file = join(data, "end-notices-since");
-  assert.ok(existsSync(file), "written at the start");
-  const since = readFileSync(file, "utf8").trim();
-  assert.ok(Number.isFinite(Date.parse(since)), since);
-  const run = await startRun(api, "first", "Answer.");
-  await follow(api, run.run_id, ["completed"]);
-  assert.ok(Date.parse(since) <= Date.parse(endedIn(data, run.run_id)), `${since} is at or before the first run's end`);
-  assert.equal(readFileSync(file, "utf8").trim(), since, "and never written again");
-});
-
 // ---- the notice ledger: what the outbox has queued of each run, in the outbox's own write.
 
 const ledgerOf = (dir) => JSON.parse(readFileSync(join(dir, "webhook-outbox.json"), "utf8")).notices;
@@ -1092,7 +965,7 @@ test("a notice and its record are one write: the outbox holds the end and the wa
   assert.equal(ledgerOf(dir).run_1.ended, later);
 });
 
-test("a start's catch-up queues each end the store holds and the ledger does not, once; an end before the since-time or the webhook's own setting is never sent", async (t) => {
+test("a start's catch-up queues each end the store holds and the ledger does not, once; an end before the webhook's own setting is never sent", async (t) => {
   withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
   const hook = await receiver(t);
   const dir = await scratch(t);
@@ -1169,8 +1042,7 @@ test("the ledger keeps an end exactly as long as a start's catch-up looks for it
   const day = 24 * 3_600_000;
   const inside = new Date(Date.now() - day + 60_000).toISOString();
   const past = new Date(Date.now() - day - 60_000).toISOString();
-  // Record-keeping began, and the webhook was set, two days ago; the ledger holds both ends from an earlier server.
-  writeFileSync(join(dir, "end-notices-since"), `${new Date(Date.now() - 2 * day).toISOString()}\n`);
+  // The webhook was set two days ago; the ledger holds both ends from an earlier server.
   const setup = new Webhooks(dir, env, () => undefined, []);
   setup.save({ url: hook.url });
   await setup.close();
@@ -1198,7 +1070,6 @@ test("an end just inside the catch-up's day, its ledger entry at the pruning edg
   // Both ends 2 min inside the day: one this server queued, one whose server was killed before the outbox had it.
   const sent = new Date(Date.now() - day + 120_000).toISOString();
   const lost = new Date(Date.now() - day + 120_000).toISOString();
-  writeFileSync(join(dir, "end-notices-since"), `${new Date(Date.now() - 2 * day).toISOString()}\n`);
   const first = new Webhooks(dir, env, () => undefined, []);
   first.save({ url: hook.url });
   const config = JSON.parse(readFileSync(join(dir, "webhook.json"), "utf8"));
@@ -1285,7 +1156,6 @@ test("a run still waiting on the same question a day later, its message gone fro
   const dir = await scratch(t);
   const env = { AGENTRUN_SEAL_KEY: sealKey() };
   const day = 24 * 3_600_000;
-  writeFileSync(join(dir, "end-notices-since"), `${new Date(Date.now() - 3 * day).toISOString()}\n`);
   const setup = new Webhooks(dir, env, () => undefined, []);
   setup.save({ url: hook.url });
   await setup.close();
@@ -1345,7 +1215,6 @@ test("a start drops the ledger's waits of runs the store holds as ended or no lo
   const dir = await scratch(t);
   const env = { AGENTRUN_SEAL_KEY: sealKey() };
   const day = 24 * 3_600_000;
-  writeFileSync(join(dir, "end-notices-since"), `${new Date(Date.now() - 3 * day).toISOString()}\n`);
   const setup = new Webhooks(dir, env, () => undefined, []);
   setup.save({ url: hook.url });
   await setup.close();
