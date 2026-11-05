@@ -100,11 +100,15 @@ test("a save that grants a tool the server does not have is refused, naming the 
   for (const tool of ["add", "slow_write", "delete_thing", "paid"]) assert.ok(said.includes(tool), `the refusal names ${tool}: ${said}`);
   const unknown = await api("POST", "/agents", agent("ghost", { tools: ["mcp:ghost/add"] }));
   assert.equal(unknown.status, 422, JSON.stringify(unknown.body));
-  // A server saved as hands, the name the harnesses keep for their own tools, is never granted.
-  await addFake(t, api, "hands");
+  // hands, the name the harnesses keep for their own tools, is no server's name: it is refused at the save, so it is
+  // never granted either.
+  const fake = await startFakeMcp({ token: TOKEN });
+  t.after(() => fake.close());
+  const named = await api("PUT", "/settings/mcp-servers/hands", { url: fake.url, auth: { type: "bearer", token: TOKEN } });
+  assert.equal(named.status, 422, JSON.stringify(named.body));
+  assert.match(JSON.stringify(named.body), /reserved for AgentRun's own tools/);
   const reserved = await api("POST", "/agents", agent("own", { harness: "claude-agent", tools: ["mcp:hands/add"] }));
   assert.equal(reserved.status, 422, JSON.stringify(reserved.body));
-  assert.match(JSON.stringify(reserved.body), /keep for their own tools/);
 });
 
 test("a save that checks a deeply nested tool schema leaves the server answering: /health meanwhile, and a readable refusal past the bounds", { timeout: 90_000 }, async (t) => {
