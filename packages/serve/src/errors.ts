@@ -34,7 +34,7 @@ export const ERROR_STATUS = {
   // version it read, a remote MCP server that asks for a credential, does not speak MCP, or fails, a saved-servers file
   // that does not read, which is never written over (mcp-servers.ts), a message to a run paused at its cap, which
   // takes one once its cap is raised, a saved sign-in forgotten while a run holds its save lease (sign-ins.ts), and a
-  // Slack channel another Slack trigger lists (triggers.ts).
+  // Slack channel another Slack trigger lists, and a GitHub repo another GitHub trigger lists (triggers.ts).
   key_set_by_server: 409,
   budget_reached: 409,
   no_sealing_key: 409,
@@ -45,6 +45,7 @@ export const ERROR_STATUS = {
   upstream_failed: 424,
   store_unreadable: 409,
   channel_taken: 409,
+  repo_taken: 409,
   sign_in_held: 409,
 } as const;
 

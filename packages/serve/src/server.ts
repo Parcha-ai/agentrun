@@ -56,8 +56,9 @@ import { SIGN_INS_DIR, SignIns, vendorsOver } from "./sign-ins.js";
 import { MCP_AUTH_TYPES, McpServers } from "./mcp-servers.js";
 import { type RunNotice, WEBHOOK_EVENTS, Webhooks } from "./webhooks.js";
 import { NO_SLACK_SECRET, Slack, SLACK_TOLERANCE_S, slackMessageOf, slackRefusal } from "./slack.js";
+import { GITHUB_EVENTS, GitHub, gitHubEventOf, gitHubHeadersRefusal, gitHubRefusal, NO_GITHUB_SECRET } from "./github.js";
 import { HOOK_TOLERANCE_S, hookHeadersRefusal, hookRefusal, TriggerSecrets } from "./trigger-secrets.js";
-import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, OVERLAP, PAYLOAD_KEPT_BYTES, type RunTrigger, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
+import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, OVERLAP, PAYLOAD_KEPT_BYTES, type RunTrigger, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers, type Where } from "./triggers.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, ID, IDEMPOTENCY_TTL_S, inputIssues, isObject, type Json, stable, unknownFields } from "./validate.js";
 import { agentTools, browserKeyRow, settingsIssues, ToolSettings, type ToolSettingsMap, withDefaults } from "./tool-plane.js";
 import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, Uploads, UPLOADS_DIR } from "./uploads.js";
@@ -230,10 +231,12 @@ export type ServeOptions = {
   /** A test's seam: the triggers' clock and timer (triggers.ts), in place of Date.now and setTimeout. */
   triggerClock?: TriggerClock;
   /** The waits before each try again of a webhook delivery (default 5 s, 5 min, 30 min, 2 h, 5 h and 10 h: webhooks.ts RETRY_MS);
-   *  a Slack post's too (slack.ts). */
+   *  a Slack post's and a GitHub comment's too (slack.ts, github.ts). */
   webhookRetryMs?: readonly number[];
   /** A test's seam: Slack's Web API, in place of https://slack.com/api (slack.ts). */
   slackApiUrl?: string;
+  /** A test's seam: GitHub's REST API, in place of https://api.github.com (github.ts). */
+  githubApiUrl?: string;
   /** The box runs' harnesses run in (4a's Box: its reap; on a shared server its run cgroups): the boxes runs leave are
    *  swept at start and let go at archive. The quarantine of boxes a reap could not empty is kept in the data directory. */
   box?: BoxHost;
@@ -364,10 +367,14 @@ export const ROUTES: readonly Route[] = [
   // Answered before the bearer check: the request's signature is its credential.
   // Answered before the bearer check, as receiveHook is, and before it: `slack` is never a trigger's id (trg_...).
   { method: "POST", pattern: /^\/hooks\/slack$/, name: "receiveSlackEvent" },
+  { method: "POST", pattern: /^\/hooks\/github$/, name: "receiveGitHubEvent" },
   { method: "POST", pattern: /^\/hooks\/([^/]+)$/, name: "receiveHook" },
   { method: "GET", pattern: /^\/settings\/slack$/, name: "getSlack" },
   { method: "PUT", pattern: /^\/settings\/slack$/, name: "saveSlack" },
   { method: "DELETE", pattern: /^\/settings\/slack$/, name: "deleteSlack" },
+  { method: "GET", pattern: /^\/settings\/github$/, name: "getGitHub" },
+  { method: "PUT", pattern: /^\/settings\/github$/, name: "saveGitHub" },
+  { method: "DELETE", pattern: /^\/settings\/github$/, name: "deleteGitHub" },
   // Answered before routing (mcp.ts), with the token only: listed here for the document.
   { method: "POST", pattern: /^\/mcp$/, name: "callMcp" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning$/, name: "getAgentLearning" },
@@ -540,7 +547,7 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
        *  ends (webhooks.ts); its secret kept sealed under the same seal key, so with none no webhook is set. */
       webhooks: { routes: true, events: [...WEBHOOK_EVENTS], signing: "standard-webhooks/v1", at_rest: sealKeyOf(env[SEAL_KEY_ENV]) ? "sealed" : "unavailable" },
       /** /triggers: what starts an agent's capped runs with no caller (triggers.ts). */
-      triggers: { routes: true, sources: [...SOURCE_KINDS], targets: [...TARGET_KINDS], overlap: [...OVERLAP], min_every_s: MIN_EVERY_S, history_kept: HISTORY_KEPT, catchup_window_s: CATCHUP_WINDOW_S, failures_to_pause: FAILURES_TO_PAUSE, webhook: { signing: "standard-webhooks/v1", tolerance_s: HOOK_TOLERANCE_S, max_body_bytes: HOOK_MAX_BODY, payload_kept_bytes: PAYLOAD_KEPT_BYTES, at_rest: sealKeyOf(env[SEAL_KEY_ENV]) ? "sealed" : "unavailable" }, slack: { signing: "slack-v0", tolerance_s: SLACK_TOLERANCE_S, events: ["app_mention", "message"], at_rest: sealKeyOf(env[SEAL_KEY_ENV]) ? "sealed" : "unavailable" } },
+      triggers: { routes: true, sources: [...SOURCE_KINDS], targets: [...TARGET_KINDS], overlap: [...OVERLAP], min_every_s: MIN_EVERY_S, history_kept: HISTORY_KEPT, catchup_window_s: CATCHUP_WINDOW_S, failures_to_pause: FAILURES_TO_PAUSE, webhook: { signing: "standard-webhooks/v1", tolerance_s: HOOK_TOLERANCE_S, max_body_bytes: HOOK_MAX_BODY, payload_kept_bytes: PAYLOAD_KEPT_BYTES, at_rest: sealKeyOf(env[SEAL_KEY_ENV]) ? "sealed" : "unavailable" }, slack: { signing: "slack-v0", tolerance_s: SLACK_TOLERANCE_S, events: ["app_mention", "message"], at_rest: sealKeyOf(env[SEAL_KEY_ENV]) ? "sealed" : "unavailable" }, github: { signing: "x-hub-signature-256", events: [...GITHUB_EVENTS], max_body_bytes: MAX_BODY, at_rest: sealKeyOf(env[SEAL_KEY_ENV]) ? "sealed" : "unavailable" } },
     },
     regions: [{ id: "local", jurisdiction: null, state: "live" }],
     /** This server's own: where its OpenAPI document is, beside this one. */
@@ -646,9 +653,11 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const authFailed = (route: string, reason: string) => log?.(logLine("auth_failed", { route, reason }));
   /** The host's secrets as a run's notes are checked against (learning-run.ts), and the keys a person saved on this
    *  server (storedKeys, below), read at each call: a person's note, and every learning text read. */
-  const learningSecrets = () => [...hostSecrets(process.env, storedKeys), token, doorToken, ...(triggerSecrets?.values() ?? []), ...(slack?.values() ?? [])];
+  const learningSecrets = () => [...hostSecrets(process.env, storedKeys), token, doorToken, ...(triggerSecrets?.values() ?? []), ...(slack?.values() ?? []), ...(github?.values() ?? [])];
   // The server's Slack app (slack.ts), made below once the environment is read; its secrets shown nowhere either.
   let slack: Slack | undefined;
+  // The server's GitHub settings (github.ts), made below once the environment is read; its secrets shown nowhere either.
+  let github: GitHub | undefined;
   // Each webhook trigger's secret, made below once the environment is read; shown nowhere, as the server's own are not.
   let triggerSecrets: TriggerSecrets | undefined;
   const base = { ...withoutFaux(process.env), [DATA_ENV]: data, ...(options.allowCodeNodes ? { [CODE_NODES_ENV]: "1" } : {}), ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}), ...(options.fauxHarness ? { [FAUX_HARNESS_ENV]: resolve(options.fauxHarness) } : {}) };
@@ -779,22 +788,28 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   stops.push(() => webhooks.close());
   slack = new Slack(data, env, (fields) => (log ? log(logLine("slack", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("slack", fields)}\n`)), options.slackApiUrl, options.webhookRetryMs);
   stops.push(async () => slack!.close());
-  // A run a Slack trigger started is told its thread too: its thread looked up once the triggers are read (below).
-  let slackThreadOf: (runId: string) => { channel: string; thread_ts: string; post_answer: boolean } | undefined = () => undefined;
-  const tellSlack = (event: "run.needs_input" | "run.ended", run: RunNotice, marker: string) => {
-    const thread = slackThreadOf(run.run_id);
-    if (!thread) return;
+  github = new GitHub(data, env, (fields) => (log ? log(logLine("github", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("github", fields)}\n`)), options.githubApiUrl, options.webhookRetryMs);
+  stops.push(async () => github!.close());
+  // A run a trigger started in a conversation (a Slack thread, a GitHub issue or pull request) is told there too: its
+  // conversation looked up once the triggers are read (below).
+  let conversationOf: (runId: string) => { where: Where; post_answer: boolean } | undefined = () => undefined;
+  const tellConversation = (event: "run.needs_input" | "run.ended", run: RunNotice, marker: string) => {
+    const found = conversationOf(run.run_id);
+    if (!found) return;
+    const { where } = found;
     // Read from the run's view only where the line needs it: the answer, for a trigger that posts it (its source's
     // post_answer, as the trigger is now); the tool an approval waits on, which the notice does not carry.
-    const answered = event === "run.ended" && run.status === "completed" && thread.post_answer;
+    const answered = event === "run.ended" && run.status === "completed" && found.post_answer;
     const approval = event === "run.needs_input" && run.pending?.kind === "approval";
     void (answered || approval ? runs.get(run.run_id).then((held) => (held ? runs.view(held) : null)).catch(() => null) : Promise.resolve(null))
       .then((view) => {
         const tool = approval ? (view?.pending as { tool?: unknown } | null | undefined)?.tool : undefined;
         const told = typeof tool === "string" ? ({ ...run, pending: { kind: "approval", tool } } as RunNotice) : run;
-        slack!.emit(event, told, marker, { channel: thread.channel, thread_ts: thread.thread_ts }, answered ? (view?.result?.final_answer ?? null) : null);
+        const answer = answered ? (view?.result?.final_answer ?? null) : null;
+        if (where.kind === "slack") slack!.emit(event, told, marker, { channel: where.channel, thread_ts: where.thread_ts }, answer);
+        else github!.emit(event, told, marker, { repo: where.repo, number: where.number }, answer);
       })
-      .catch((error: Error) => void process.stderr.write(`agentrun-serve: slack: ${error.message}\n`));
+      .catch((error: Error) => void process.stderr.write(`agentrun-serve: ${where.kind}: ${error.message}\n`));
   };
   const uploads = new Uploads(join(data, UPLOADS_DIR));
   // Under the data directory's lock and before this server answers anything, so no PUT of its own is in flight: an upload
@@ -803,7 +818,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   if (swept > 0) log?.(logLine("uploads_swept", { removed: swept }));
   const documents = options.documents ?? process.env[DOCUMENTS_ENV];
   if (documents !== undefined && !(await stat(documents).then((info) => info.isDirectory(), () => false))) throw new Error(`the documents directory ${documents} is not a directory`);
-  const runs = new Runs({ dockerAllow: boxNetwork.allow, agents, token, storedKeys, doorTokenFile, doorToken, learning, learningBudget, ...(documents ? { documents: resolve(documents) } : {}), fauxEnv: fauxEnvOf(options), toolSettings: () => settings.get(), ...(runBoxes ? { runBoxes } : {}), ...(remoteBoxes ? { remoteBoxes } : {}), ...(remoteBoxes && daytonaApi(env) ? { remoteApi: daytonaApi(env)! } : {}), ...(remoteBoxes ? { boxAllow, onNoBoxList } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(options.reflectTimeoutMs ? { reflectTimeoutMs: options.reflectTimeoutMs } : {}), ...(options.gradeTimeoutMs ? { gradeTimeoutMs: options.gradeTimeoutMs } : {}), ...(options.gradeModel ? { gradeModel: options.gradeModel } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}), notify: (event, run, marker) => (tellSlack(event, run, marker), webhooks.emit(event, run, marker)), ownSecrets: () => [...(triggerSecrets?.values() ?? []), ...(slack?.values() ?? [])], signIns, approvers: options.accounts === true });
+  const runs = new Runs({ dockerAllow: boxNetwork.allow, agents, token, storedKeys, doorTokenFile, doorToken, learning, learningBudget, ...(documents ? { documents: resolve(documents) } : {}), fauxEnv: fauxEnvOf(options), toolSettings: () => settings.get(), ...(runBoxes ? { runBoxes } : {}), ...(remoteBoxes ? { remoteBoxes } : {}), ...(remoteBoxes && daytonaApi(env) ? { remoteApi: daytonaApi(env)! } : {}), ...(remoteBoxes ? { boxAllow, onNoBoxList } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(options.reflectTimeoutMs ? { reflectTimeoutMs: options.reflectTimeoutMs } : {}), ...(options.gradeTimeoutMs ? { gradeTimeoutMs: options.gradeTimeoutMs } : {}), ...(options.gradeModel ? { gradeModel: options.gradeModel } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}), notify: (event, run, marker) => (tellConversation(event, run, marker), webhooks.emit(event, run, marker)), ownSecrets: () => [...(triggerSecrets?.values() ?? []), ...(slack?.values() ?? []), ...(github?.values() ?? [])], signIns, approvers: options.accounts === true });
   const daytona = daytonaApi(env);
   const relay = remoteBoxes && daytona ? await startBoxRelay({ root: data, tokenOf: (id) => runs.relayToken(id), ...daytona, serves: (id) => runs.servesBox(id), ensure: (id) => runs.ensureBox(id) }) : undefined;
   if (relay) stops.push(() => relay.close());
@@ -867,7 +882,12 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       for (const id of triggers.slackRuns()) {
         const row = byId.get(id);
         if (!row || row.state === "running" || !row.endedAt || slack!.toldEnd(id, row.endedAt)) continue;
-        tellSlack("run.ended", { run_id: id, agent_id: row.agent, status: await runs.statusOfRow(row), title: "" }, row.endedAt);
+        tellConversation("run.ended", { run_id: id, agent_id: row.agent, status: await runs.statusOfRow(row), title: "" }, row.endedAt);
+      }
+      for (const id of triggers.conversationRuns("github")) {
+        const row = byId.get(id);
+        if (!row || row.state === "running" || !row.endedAt || github!.toldEnd(id, row.endedAt)) continue;
+        tellConversation("run.ended", { run_id: id, agent_id: row.agent, status: await runs.statusOfRow(row), title: "" }, row.endedAt);
       }
     })
     .catch((error: Error) => void process.stderr.write(`agentrun-serve: the webhook's catch-up: ${error.message}\n`));
@@ -903,7 +923,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       // A store held past its retries is a busy store: the firing stays due and is tried again, never failed.
       if (await runs.tookMessage(run, key).catch((error: unknown) => { throw storeBusy(error) ? homeBusy() : error; })) return;
       // Never an uncapped turn, nor an answer to a person's question, an approval or a budget pause: a run that waits on
-      // its person is told nothing by a trigger. A person's reply in the run's Slack thread (`person`) is that person:
+      // its person is told nothing by a trigger. A person's reply in the run's Slack thread, or a mention on its GitHub issue (`person`), is that person:
       // it answers the run's question, and a run paused at its cap waits for its cap to be raised.
       if (run.meta.max_cost_usd === undefined) throw new ApiError("not_continuable", NO_CAP);
       const { status, state } = statusOf(run);
@@ -932,7 +952,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     },
   });
   stops.push(async () => triggers.close());
-  slackThreadOf = (runId) => triggers.slackThreadOf(runId);
+  conversationOf = (runId) => triggers.conversationOf(runId);
   triggers.start();
 
   // Setup's import of this machine's sessions: offered by a server on this machine only (no public address, listening
@@ -1078,6 +1098,37 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     const message = slackMessageOf(envelope, own);
     if ("ignored" in message) return send(res, 200, { ok: "ignored" });
     const received = triggers.receiveSlack(message);
+    return send(res, 200, { ok: received ? (received.created ? "received" : "replayed") : "ignored" });
+  }
+
+  /** POST /v2/hooks/github: a delivery of the server's GitHub webhook, checked by its X-Hub-Signature-256 on the raw
+   *  body before anything else (github.ts); headers that can never pass are refused before the body is read. No GitHub
+   *  set, or a check that fails: one answer, checked in the same time. Then a ping is answered, and an event a GitHub
+   *  trigger acts on is recorded, in one write, and answered at once, inside GitHub's 10 s; its run starts after.
+   *  Everything else verified is answered 200 and ignored. GitHub sends a delivery again only when someone redelivers
+   *  it: the same delivery, or the same comment under another, is the same firing. A write that fails is 503, and a
+   *  trigger holding 20 firings due 429: GitHub does not try either again, so it is redelivered by hand. */
+  async function gitHubHook(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const refuse = (reason: string) => {
+      authFailed("/v2/hooks/github", reason);
+      return new ApiError("unauthenticated", "this route needs a request signed by the server's GitHub webhook secret");
+    };
+    const early = gitHubHeadersRefusal(req.headers);
+    if (early) throw refuse(early);
+    const body = await bytesOf(req);
+    const own = github!.checker();
+    const refusal = gitHubRefusal(own?.webhook_secret ?? NO_GITHUB_SECRET, req.headers, body);
+    if (!own || refusal) throw refuse(own ? refusal! : "no_github");
+    let delivery: unknown;
+    try {
+      delivery = JSON.parse(body.toString("utf8"));
+    } catch {}
+    const event = String(req.headers["x-github-event"]);
+    if (!isObject(delivery)) return send(res, 200, { ok: "ignored" });
+    if (event === "ping") return send(res, 200, { ok: "pong" });
+    const said = gitHubEventOf(event, delivery, String(req.headers["x-github-delivery"]), own);
+    if ("ignored" in said) return send(res, 200, { ok: "ignored" });
+    const received = triggers.receiveGitHub(said);
     return send(res, 200, { ok: received ? (received.created ? "received" : "replayed") : "ignored" });
   }
 
@@ -1590,6 +1641,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     // The one route with no token: a webhook trigger's request, checked by its signature before anything else is read.
     if (found.name === "receiveHook") return hook(req, res, path);
     if (found.name === "receiveSlackEvent") return slackHook(req, res);
+    if (found.name === "receiveGitHubEvent") return gitHubHook(req, res);
     if (found.name === "getHealth") {
       const health = await healthOf(data, minFreeBytes);
       return send(res, health.status === "ok" ? 200 : 503, health);
@@ -1992,6 +2044,14 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       case "deleteSlack":
         slack!.remove();
         return void res.writeHead(204, { "cache-control": "no-store" }).end();
+      case "getGitHub":
+        return send(res, 200, github!.view());
+      // Never through `idempotent`: its record keeps the body, and this body is the secrets.
+      case "saveGitHub":
+        return send(res, 200, github!.save(await bodyOf(req)));
+      case "deleteGitHub":
+        github!.remove();
+        return void res.writeHead(204, { "cache-control": "no-store" }).end();
       case "getWebhook":
         return send(res, 200, webhooks.view());
       case "saveWebhook": {
@@ -2125,6 +2185,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   webhooks.attach(options.publicUrl ?? url);
   // A line in Slack links its run only at an address a person there can open: the public one, when the server has one.
   slack!.attach(options.publicUrl);
+  github!.attach(options.publicUrl);
   const setupUrl = owner && !owner.hasPassword() ? owner.setupLink() : undefined;
   /** The server's stop: once (`close` keeps its promise). */
   let stopped: Promise<void> | undefined;
@@ -2157,8 +2218,10 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     // Before the lock goes: the image's last record lands first (box-image.ts), never after the next server's start.
     await image?.close();
     await webhooks.close();
-    // And the Slack posts: one still to try stays in the outbox, for the next server, never tried by this one too.
+    // And the Slack posts and GitHub comments: one still to try stays in its outbox, for the next server, never tried by
+    // this one too.
     slack!.close();
+    github!.close();
     await new Promise((done) => (server.close(done), server.closeAllConnections()));
     agents.close();
     // The record stays: the next server rewrites it as it starts, and a stopped one whose time has passed is no stop.

@@ -16,8 +16,9 @@ import { TOOL_KEYS, UNREADABLE } from "./tool-keys.js";
 import { MCP_AUTH_TYPES, MCP_SERVER_NAME } from "./mcp-servers.js";
 import { ATTEMPTS_KEPT, MESSAGE_TYPES, WEBHOOK_EVENTS } from "./webhooks.js";
 import { HOOK_TOLERANCE_S } from "./trigger-secrets.js";
-import { CATCHUP_WINDOW_S, DUE_KEPT, FAILURES_TO_PAUSE, FIRING_STATUSES, PAYLOAD_KEPT_BYTES, HISTORY_KEPT, MAX_EVERY_S, MIN_EVERY_S, OVERLAP, SLACK_CHANNELS_MAX, SOURCE_KINDS, TARGET_KINDS } from "./triggers.js";
+import { CATCHUP_WINDOW_S, DUE_KEPT, FAILURES_TO_PAUSE, FIRING_STATUSES, PAYLOAD_KEPT_BYTES, HISTORY_KEPT, MAX_EVERY_S, MIN_EVERY_S, OVERLAP, SLACK_CHANNELS_MAX, GITHUB_REPOS_MAX, SOURCE_KINDS, TARGET_KINDS } from "./triggers.js";
 import { ANSWER_POSTED_CHARS, SLACK_TOLERANCE_S } from "./slack.js";
+import { ASSOCIATIONS, GITHUB_EVENTS, MIN_SECRET_CHARS } from "./github.js";
 import { DEFINITION_FIELDS, NOT_KEPT } from "./validate.js";
 import { APPROVAL_ROW, ARGS_PREVIEW_BYTES, PERMISSIONS } from "./tool-gate.js";
 import { LEGACY_NAMES, permissionsOf, type Pickable, PICKABLE, PROVIDERS, TABLE_TOOLS } from "./tool-plane.js";
@@ -490,8 +491,20 @@ const TRIGGER_SOURCE = {
     closedWith({ kind: { const: "schedule" }, every_s: { type: "integer", minimum: MIN_EVERY_S, maximum: MAX_EVERY_S, description: "Every this many seconds, on the grid from start_at." } }, { start_at: { ...DATE_TIME, description: "The grid's origin, to the second: the first firing is at it when it is ahead, else at the first point of the grid after now. Default the time the trigger was made." } }),
     closed({ kind: { const: "webhook" } }),
     closedWith({ kind: { const: "slack" }, channels: { type: "array", minItems: 1, maxItems: SLACK_CHANNELS_MAX, uniqueItems: true, items: { type: "string", pattern: "^[CG][A-Z0-9]{2,20}$" }, description: "The Slack channels (their ids) where a mention of the server's Slack app starts a run: each its own thread's, and a reply in the thread is a message to it. A channel is one trigger's: one another Slack trigger lists is 409 \`channel_taken\`. The target is \`start_run\`." } }, { post_answer: { type: "boolean", default: false, description: `Whether a completed run's line in its thread carries its final answer: redacted, cut to ${ANSWER_POSTED_CHARS} characters and escaped, so it mentions no one in Slack. Default false: each line is the run's status and, on a server with a public address, a link to it. Read when the run ends, as the trigger is then.` } }),
+    closedWith({ kind: { const: "github" }, repos: { type: "array", minItems: 1, maxItems: GITHUB_REPOS_MAX, uniqueItems: true, items: { type: "string", pattern: "^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}/[A-Za-z0-9._-]{1,100}$" }, description: `The GitHub repos (owner/name) where a mention of the server's handle on an issue or pull request, by an owner, a member (any member of the organisation, one who can only read the repo too) or a collaborator, or an issue assigned to the configured login, starts a run: one run an issue or pull request, and a later mention there is a message to it. A repo is one trigger's: one another GitHub trigger lists (any case) is 409 \`repo_taken\`. The target is \`start_run\`.` } }, { post_answer: { type: "boolean", default: false, description: "Whether a completed run's comment carries its final answer. Default false: each comment is the run's status and, on a server with a public address, a link to it." } }),
   ],
-  description: `When it fires: a cron line in a zone, one time, every N seconds (${MIN_EVERY_S} or more), a signed request to /hooks/{trigger_id} (\`webhook\`), or a mention of the server's Slack app (\`slack\`, PUT /settings/slack). Each next time is reckoned from the last nominal one, never from when the timer woke. Times missed while the server was down, or more than a minute late, are one \`missed\` firing with their count, and the schedule goes on from now.`,
+  description: `When it fires: a cron line in a zone, one time, every N seconds (${MIN_EVERY_S} or more), a signed request to /hooks/{trigger_id} (\`webhook\`), a mention of the server's Slack app (\`slack\`, PUT /settings/slack), or a mention of its GitHub handle (\`github\`, PUT /settings/github). Each next time is reckoned from the last nominal one, never from when the timer woke. Times missed while the server was down, or more than a minute late, are one \`missed\` firing with their count, and the schedule goes on from now.`,
+};
+/** GET /settings/github, and what PUT answers. */
+const GITHUB_VIEW = {
+  oneOf: [
+    closed({ configured: { const: false } }),
+    closed({
+      configured: { const: true }, handle: { type: "string" }, assignee_login: { type: ["string", "null"] },
+      links: { type: "boolean", description: "Whether a comment links its run: only with a public address (AGENTRUN_PUBLIC_URL), which a person on GitHub can open." },
+      at_rest: { enum: ["sealed", "unreadable"] }, disabled: { oneOf: [closed({ at: DATE_TIME, reason: { type: "string" } }), { type: "null" }] }, updated_at: DATE_TIME,
+    }),
+  ],
 };
 /** GET /settings/slack, and what PUT answers. */
 const SLACK_VIEW = {
@@ -526,7 +539,7 @@ const TRIGGER_TARGET = {
 const TRIGGER_FIRING = closedWith(
   {
     key: { type: "string", pattern: "^fir_[0-9a-f]{32}$", description: "The firing's key: from the trigger and its nominal time, or from the trigger and the Idempotency-Key of a run now. Its run is started under it, once." },
-    by: { enum: ["schedule", "manual", "webhook", "slack"], description: "`webhook`: a signed request to /hooks/{trigger_id}, its key from the trigger and the request's `webhook-id`. `slack`: a Slack message (a mention, or a reply in a thread the trigger started), its key from the trigger and the message's team, channel and ts, so Slack's retries and the same message told twice are one firing." },
+    by: { enum: ["schedule", "manual", "webhook", "slack", "github"], description: "`webhook`: a signed request to /hooks/{trigger_id}, its key from the trigger and the request's `webhook-id`. `slack`: a Slack message (a mention, or a reply in a thread the trigger started), its key from the trigger and the message's team, channel and ts, so Slack's retries and the same message told twice are one firing. `github`: a GitHub comment that mentions the handle, or an assignment, its key from the trigger and the comment's id (an assignment's delivery), so a redelivery and the same comment through two webhooks are one firing." },
     nominal_at: { ...DATE_TIME, description: "The time it fires for, to the second; a run now's is when it was asked." },
     status: { enum: [...FIRING_STATUSES], description: `\`due\`: recorded, its run not started yet (a full server keeps it due, with \`retry_at\`). \`started\`: its run is \`run_id\`. \`sent\`: a message_run firing's message reached \`run_id\`. \`skipped\`: the trigger's last run was still active (working, or waiting on a person), or an earlier firing was still due; \`reason\` says which. \`failed\`: the run was refused, with \`error\`; a trigger.failed webhook message says so. \`missed\`: times not fired while the server was down or its timer late (older than the catch-up window, or before the one that caught up), \`count\` of them from \`nominal_at\` on.` },
     at: { ...DATE_TIME, description: "When it was recorded." },
@@ -1169,6 +1182,35 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       "x-agentrun-serve": "slack/1",
     },
   },
+  "/hooks/github": {
+    post: {
+      operationId: "receiveGitHubEvent", tags: ["local"], summary: "A delivery of the server's GitHub webhook: a request signed by its secret, no token",
+      description: `The GitHub webhook's payload URL (\`https://<public address>/v2/hooks/github\`, content type \`application/json\`, the events ${GITHUB_EVENTS.map((e) => `\`${e}\``).join(", ")}), with no token: the request is checked by \`X-Hub-Signature-256\` (\`sha256=\` and the hex HMAC-SHA256 of the raw body under the webhook secret set by PUT /settings/github), and \`X-GitHub-Event\` and \`X-GitHub-Delivery\` each once, before anything else is read; one that fails, or a server with no GitHub set, is 401 with no detail. GitHub signs no time: a delivery sent again is deduped by what it is. A \`ping\` is answered \`pong\`. A comment made (\`issue_comment\` on an issue or a pull request, \`pull_request_review_comment\`) that mentions the handle, by ${ASSOCIATIONS.join(", ")} who is the delivery's sender, in a repo a GitHub trigger lists, starts a run for its issue or pull request (one run each), or is a message to that run; an issue \`assigned\` to the configured login starts one too. Each is recorded in one write and answered at once, inside GitHub's 10 s, its run started after. A bot's event (this server's own comments included), an edit, anyone else, and anything else are answered 200 and ignored. The same delivery, or the same comment under another delivery, is one firing for the key's day. A write that fails is 503, and a trigger holding ${DUE_KEPT} firings due is 429 \`rate_limited\`: GitHub tries neither again on its own, so such a delivery is redelivered from the webhook's Recent Deliveries. The event text reaches the run marked untrusted; the body is at most 1 MiB (413).`,
+      security: [],
+      requestBody: { required: true, content: { "application/json": { schema: { type: "object" } } } },
+      responses: { "200": json(closed({ ok: { enum: ["received", "replayed", "ignored", "pong"] } }), "What came of the delivery."), ...errors(401, 413, 429, 503) },
+      "x-agentrun-serve": "github/1",
+    },
+  },
+  "/settings/github": {
+    get: {
+      operationId: "getGitHub", tags: ["local"], summary: "The server's GitHub settings, if set; never its secrets",
+      responses: { "200": json(GITHUB_VIEW, "The settings, or \`configured: false\`."), ...errors(401, 429, 500) },
+      "x-agentrun-serve": "github/1",
+    },
+    put: {
+      operationId: "saveGitHub", tags: ["local"], summary: "Set the server's GitHub webhook secret, the token that comments, and its handle",
+      description: `One set a server. \`handle\` is the login a mention names (a GitHub App's slug, or \`name[bot]\`); \`assignee_login\`, when given, is the login an issue is assigned to, to start a run. \`token\` is any one that can comment on the repos' issues and pull requests (a GitHub App installation's lasts an hour, and is put again before it ends); it is not tried here, and one GitHub refuses turns posting off at its first comment until the settings are set again. Both secrets are kept sealed under the seal key the server was handed (409 \`no_sealing_key\` with none), and never shown again. 422 for a missing field, a webhook secret under ${MIN_SECRET_CHARS} characters, or a login GitHub would not take.`,
+      requestBody: { required: true, content: { "application/json": { schema: closedWith({ webhook_secret: { type: "string", minLength: MIN_SECRET_CHARS, maxLength: 256 }, token: { type: "string", minLength: 1, maxLength: 4096 }, handle: { type: "string" } }, { assignee_login: { type: "string" } }) } } },
+      responses: { "200": json(GITHUB_VIEW, "Set."), ...errors(400, 401, 409, 415, 422, 429, 500) },
+      "x-agentrun-serve": "github/1",
+    },
+    delete: {
+      operationId: "deleteGitHub", tags: ["local"], summary: "Remove the server's GitHub settings: its deliveries are refused, and nothing more is posted",
+      responses: { "204": { description: "Removed." }, ...errors(401, 429, 500) },
+      "x-agentrun-serve": "github/1",
+    },
+  },
   "/hooks/{trigger_id}": {
     post: {
       operationId: "receiveHook", tags: ["local"], summary: "Fire a webhook trigger: a request signed by its secret, no token",
@@ -1542,7 +1584,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       "x-agentrun-serve": "webhook/1",
     },
     triggers: {
-      ...closed({ routes: { type: "boolean" }, sources: { type: "array", items: { enum: [...SOURCE_KINDS] } }, targets: { type: "array", items: { enum: [...TARGET_KINDS] } }, overlap: { type: "array", items: { enum: [...OVERLAP] } }, min_every_s: { type: "integer" }, history_kept: { type: "integer" }, catchup_window_s: { type: "integer" }, failures_to_pause: { type: "integer" }, webhook: closed({ signing: { const: "standard-webhooks/v1" }, tolerance_s: { type: "integer" }, max_body_bytes: { type: "integer" }, payload_kept_bytes: { type: "integer" }, at_rest: { enum: ["sealed", "unavailable"] } }), slack: closed({ signing: { const: "slack-v0" }, tolerance_s: { type: "integer" }, events: { type: "array", items: { enum: ["app_mention", "message"] } }, at_rest: { enum: ["sealed", "unavailable"] } }) }),
+      ...closed({ routes: { type: "boolean" }, sources: { type: "array", items: { enum: [...SOURCE_KINDS] } }, targets: { type: "array", items: { enum: [...TARGET_KINDS] } }, overlap: { type: "array", items: { enum: [...OVERLAP] } }, min_every_s: { type: "integer" }, history_kept: { type: "integer" }, catchup_window_s: { type: "integer" }, failures_to_pause: { type: "integer" }, webhook: closed({ signing: { const: "standard-webhooks/v1" }, tolerance_s: { type: "integer" }, max_body_bytes: { type: "integer" }, payload_kept_bytes: { type: "integer" }, at_rest: { enum: ["sealed", "unavailable"] } }), slack: closed({ signing: { const: "slack-v0" }, tolerance_s: { type: "integer" }, events: { type: "array", items: { enum: ["app_mention", "message"] } }, at_rest: { enum: ["sealed", "unavailable"] } }), github: closed({ signing: { const: "x-hub-signature-256" }, events: { type: "array", items: { enum: [...GITHUB_EVENTS] } }, max_body_bytes: { type: "integer" }, at_rest: { enum: ["sealed", "unavailable"] } }) }),
       description: "/triggers: schedules that start an agent's capped runs: the source and target kinds this server takes, what a firing does while the last run is active, the shortest interval, how many firings each trigger keeps, the default catch-up window, and how many failed firings in a row turn a trigger off.",
       ...TRIGGER_MARK,
     },
@@ -1751,8 +1793,8 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   const own = Object.keys(ERROR_STATUS).filter((code) => Array.isArray(errorCode.enum) && !errorCode.enum.includes(code));
   if (own.length) {
     errorCode.enum = [...errorCode.enum!, ...own];
-    // The newest addition that widened it: a client that validates against mcpservers/1 refuses budget_reached.
-    errorCode["x-agentrun-serve"] = "slack/1";
+    // The newest addition that widened it (repo_taken): a client that validates against mcpservers/1 refuses budget_reached.
+    errorCode["x-agentrun-serve"] = "github/1";
     fields.push(...own.map((code) => `ErrorCode.${code}`));
   }
   const details = ((schemas.ErrorBody as Json).properties as Record<string, Json>).details!;
