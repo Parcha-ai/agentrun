@@ -247,13 +247,23 @@ export function personHands(options: {
     for (;;) {
       const known = ledgers.get(tag);
       if (known) {
-        const refused = await known.ready.catch(() => ({ refused: "the person's time could not be held" }));
-        if (refused) return refused;
-        // Let go while this one waited: held again from the start.
-        if (ledgers.get(tag) !== known) continue;
-        // The cap refused to hold more of the person's time here: a new take-over would drive unheld, so it is refused in
-        // the cap's words. An ask may still share what is held (it expires within it).
-        if (known.refused && user === TAKE_USER) return { refused: known.refused };
+        // The first hold refused (or failed): the ledger is gone, and this one asks the cap for itself, in its own words.
+        const first = await known.ready.catch(() => ({ refused: "the person's time could not be held" }));
+        if (first || ledgers.get(tag) !== known) continue;
+        // The cap refused to hold more of the person's time here: whoever comes now (a take-over, a new ask) needs more of
+        // it, so asks the cap itself, in its own words; with room again, it holds the next stretch and the holding goes on.
+        if (known.refused) {
+          const hold = await options.personTime(what, holdMs / 1000).catch(() => ({ refused: "the person's time could not be held" }));
+          if ("refused" in hold) return { refused: hold.refused };
+          if (ledgers.get(tag) !== known) {
+            hold.drop();
+            continue;
+          }
+          known.holds.push(hold);
+          known.refused = undefined;
+          if (known.timer !== undefined) timers.clear(known.timer);
+          again(tag, known);
+        }
         known.users.add(user);
         return undefined;
       }

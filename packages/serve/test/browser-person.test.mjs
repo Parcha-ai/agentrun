@@ -134,9 +134,14 @@ test("after a re-hold the cap refused, a new take-over on that session is refuse
   for (let minute = 0; minute < 16; minute += 1) { gates(tag).input(); await clock.tick(60_000); }
   assert.deepEqual(ends, ["cap"], "the re-hold was refused: the take-over ended cap");
   assert.equal(await person.handoff.outcome(asked.interactionId), "pending", "the ask goes on");
-  held.refuse = null;
-  assert.deepEqual(await person.take(tag), { refused: "spend_cap_reached: Not sent: the run has spent $0.04 of its $0.05 cap, and more of your time in the browser could cost up to $0.03." }, "Take over again: refused in the cap's words, never driven unheld");
+  assert.deepEqual(await person.take(tag), { refused: held.refuse }, "Take over again with no room: refused in the cap's words, never driven unheld");
   assert.equal(held.taken, 1, "nothing more was held");
+  // With room again, Take over holds the next stretch itself.
+  held.refuse = null;
+  const again = await person.take(tag);
+  assert.ok("end" in again);
+  assert.equal(held.taken, 2, "held, not driven unheld");
+  again.end("given");
 });
 
 test("a process that resumes polling an ask an earlier process made, without asking again, takes it up: it reads the owner's answer, or writes its expiry", async (t) => {
@@ -231,4 +236,39 @@ test("take-over time counts: what the person used stays held until a charge book
   assert.deepEqual(taken.slice(0, 2), ["held", "held"]);
   assert.match(taken[2] ?? "", /^spend_cap_reached: Not sent: the run has spent \$0 and holds \$0\.04 for calls still answering of its \$0\.05 cap, and taking over the browser could cost up to \$0\.03 /, "the third is refused: the 20 minutes used are held");
   assert.ok(Math.abs(paidHolds() - base - 0.04) < 1e-9, `held: ${paidHolds() - base}`);
+});
+
+test("while the cap refuses more of the person's time on a session, a new ask there is refused too, in its own words; and one that waited on a refused first hold is refused in its own words, not the take's", async (t) => {
+  const { createDrivingGates } = await import("@parcha/pi-browser/live-view");
+  const root = await scratch(t);
+  const clock = fakeClock();
+  const holdMs = 15 * 60_000;
+  const gates = createDrivingGates({ timers: clock.timers, holdIdleMs: holdMs });
+  let refuse = false;
+  let taken = 0;
+  const person = personHands({ root, gates, timers: clock.timers, now: clock.now, holdMs, pollMs: 60_000, note: async () => {}, personTime: async (what) => (refuse ? { refused: `no room for ${what}` } : (taken += 1, { drop() {} })) });
+  t.after(() => person.close());
+  const tag = "ar-run-13-1";
+  gates(tag).setPresent(true);
+  await person.handoff.request(ask(13, tag));
+  const take = await person.take(tag);
+  gates(tag).take((why) => take.end(why));
+  refuse = true;
+  for (let minute = 0; minute < 16; minute += 1) { gates(tag).input(); await clock.tick(60_000); }
+  assert.equal(gates(tag).held(), false, "the re-hold was refused: the take-over ended");
+  assert.deepEqual(await person.handoff.request(ask(14, tag)), { refused: "no room for handing the browser to you" }, "a new ask there is refused, in its own words");
+
+  // A take and an ask on a fresh session at once: the first hold is refused, and the ask that waited on it asks for itself.
+  let release;
+  const slow = new Promise((resolve) => { release = resolve; });
+  const asked = [];
+  const racing = personHands({ root, gates, timers: clock.timers, now: clock.now, holdMs, pollMs: 60_000, note: async () => {}, personTime: async (what) => { asked.push(what); if (what === "taking over the browser") await slow; return { refused: `no room for ${what}` }; } });
+  t.after(() => racing.close());
+  const other = "ar-run-14-1";
+  const taking = racing.take(other);
+  const asking = racing.handoff.request(ask(15, other));
+  release();
+  assert.deepEqual(await taking, { refused: "no room for taking over the browser" });
+  assert.deepEqual(await asking, { refused: "no room for handing the browser to you" }, "the ask's own words");
+  assert.deepEqual(asked, ["taking over the browser", "handing the browser to you"]);
 });
