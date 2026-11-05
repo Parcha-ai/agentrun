@@ -467,9 +467,8 @@ const TRIGGER_TARGET = closedWith(
     kind: { const: "start_run" },
     agent_id: { type: "string", description: "The agent whose run each firing starts: an agent, not a workflow, since a workflow run's spend is not capped here." },
     input: { type: "object", description: "The run's input, as POST /agents/{agent_id}/runs takes it: `{content}`. Each run's content ends with a line naming the schedule and the time it fired for, in its zone." },
-    max_cost_usd: { type: "number", exclusiveMinimum: 0, description: "Each run's spend cap, required: every run a trigger starts is capped." },
   },
-  { effort: { $ref: "#/components/schemas/Effort" } },
+  { effort: { $ref: "#/components/schemas/Effort" }, max_cost_usd: { type: "number", exclusiveMinimum: 0, description: "Each run's spend cap. Absent, the agent's default (its definition's `max_cost_usd`) as it stands when the firing starts; one of the two is required, so every run a trigger starts is capped: a target with neither is 422, and a firing that finds neither (the agent's default removed since) fails." } },
 );
 const TRIGGER_FIRING = closedWith(
   {
@@ -813,6 +812,23 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       responses: { "200": json(VALIDATED, "The workflow's issues and warnings; ok when it has no issue."), ...errors(400, 401, 415, 422, 429, 500) },
     },
   },
+  "/runs/{run_id}": {
+    patch: {
+      operationId: "raiseRunCap", tags: ["runs"], summary: "Raise a run's spend cap",
+      description: "Raises `max_cost_usd` of an agentic run that named one; only a raise: the new cap is above the run's current cap, its last raise included (422 otherwise, and for a run with no cap or a workflow run); the same raise sent again (a retry) changes nothing and answers as the first did. The run's serve.json keeps it before anything else, so its next process and a server started again run under it. A run paused at its cap (`pending.kind` budget) goes on: the answer comes at once (`resumed` true, its `message_id`), and once its process has been let go the server sends it one follow-up turn under that id, \"The cap was raised to $X; continue the task.\", which runs under the new cap; it is sent once, by a server started again if this one stopped before it went. A second raise before it goes answers the same `message_id`; one that cannot be sent is tried again, then the run ends failed, saying why. Caps within 1e-9 are the same cap. A run working keeps the cap its process was opened with until its next process (`note` says so). 409 not_continuable for an ended run.",
+      parameters: [ref("parameters/RunId")],
+      requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["max_cost_usd"], properties: { max_cost_usd: { type: "number", exclusiveMinimum: 0, description: "The new cap, above the run's current cap." } } } } } },
+      responses: {
+        "200": json({ type: "object", additionalProperties: false, required: ["run_id", "max_cost_usd", "resumed", "status", "state"], properties: {
+          run_id: { type: "string" }, max_cost_usd: { type: "number" }, resumed: { type: "boolean", description: "A run paused at its cap goes on: its follow-up turn is sent once its process has been let go." },
+          message_id: { type: "string", description: "That follow-up's id, when `resumed`." }, note: { type: "string", description: "Said when the run's live process keeps its old cap until its next process." },
+          status: ref("schemas/RunStatus"), state: ref("schemas/RunState"),
+        } }, "The run, its cap raised."),
+        ...errors(401, 404, 409, 422, 429, 500),
+      },
+      "x-agentrun-serve": "cappause/1",
+    },
+  },
   "/runs/{run_id}/pause": {
     post: {
       operationId: "pauseRun", tags: ["runs"], summary: "Pause a workflow run",
@@ -1013,7 +1029,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     post: {
       operationId: "createTrigger", tags: ["local"], summary: "Make a trigger: a schedule that starts a run of an agent, capped",
-      description: `Each firing starts one run of \`target.agent_id\` with \`target.input\` and its \`max_cost_usd\`, as POST /agents/{agent_id}/runs would, and the run's \`trigger\` names it. A firing starts its run once, across retries and restarts. While the trigger's last run is active (working, or waiting on a person: a question, an approval, its cap), a firing is skipped. The last ${HISTORY_KEPT} firings are kept. 422 for a source other than a schedule, a target with no max_cost_usd, or an agent that is a workflow or does not take the input.`,
+      description: `Each firing starts one run of \`target.agent_id\` with \`target.input\` and its \`max_cost_usd\` (else the agent's default), as POST /agents/{agent_id}/runs would, and the run's \`trigger\` names it. A firing starts its run once, across retries and restarts. While the trigger's last run is active (working, or waiting on a person: a question, an approval, its cap), a firing is skipped. The last ${HISTORY_KEPT} firings are kept. 422 for a source other than a schedule, a target with no max_cost_usd whose agent has no default one, or an agent that is a workflow or does not take the input.`,
       parameters: [ref("parameters/IdempotencyKey")],
       requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["source", "target"], properties: TRIGGER_WRITE } } } },
       responses: { "201": json(TRIGGER, "Made."), ...errors(400, 401, 409, 415, 422, 429, 500) },
@@ -1134,8 +1150,9 @@ const PENDING: Json = {
       properties: {
         kind: { const: "budget" },
         cap_usd: { type: "number", exclusiveMinimum: 0, description: "The run's cap (`max_cost_usd`)." },
-        spent_usd: { type: "number", minimum: 0, description: "What the cap counted as taken when it refused: spent, and held for requests still answering. Absent for a refusal written before the figures were kept." },
+        spent_usd: { type: "number", minimum: 0, description: "What the cap counted as taken when it refused: spent, and held for requests still answering; once the paused process is gone, the store's spend when that is lower (those requests settled). Absent for a refusal written before the figures were kept." },
         needs_usd: { type: "number", minimum: 0, description: "The least the refused request needs. A cap above `spent_usd` + `needs_usd` sends it. Absent with `spent_usd`." },
+        suggested_cap_usd: { type: "number", exclusiveMinimum: 0, description: "The raise this run is offered: `spent_usd` + 10 × `needs_usd`, rounded up to a whole dollar, and always above `cap_usd`, so `PATCH /runs/{run_id}` with it as `max_cost_usd` is a raise that resumes the run. Absent with `spent_usd`." },
         said: { type: "string", description: "The cap's refusal, in its words: what was spent, what the refused request needs at the least, and the cap that would run it. At most 2000 characters." },
         at: { type: "string", format: "date-time", description: "When the request was refused." },
       },
@@ -1479,6 +1496,9 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
     definition.properties[field] = { ...definition.properties[field], "x-agentrun-serve-unsupported": { reason: NOT_KEPT[field] ?? `The definition keeps no field ${field}.` } };
     refused.push(`DefinitionInput.${field}`);
   }
+  // A contract field this server takes with a meaning of its own, said on it.
+  definition.properties.max_cost_usd = { ...definition.properties.max_cost_usd, "x-agentrun-serve-note": "The agent's default cap of each run started without a max_cost_usd of its own (a run's own wins), kept with its revision: above 0 sets it, 0 clears it (no default), and an edit that leaves the field out keeps the agent's, so leaving a field out never removes a spend limit. An agentic definition only: on a workflow's, above 0 is 422 not_allowed, as a workflow run is not capped here." };
+  const noted = ["DefinitionInput.max_cost_usd"];
   // PUT .../definition takes the contract's body (the definition itself) or this server's own, POST /agents' body with a
   // note: exactly one, as only this server's holds `definition` and both are closed. If-Match is the contract's
   // precondition for its body; this server's own body may leave it out.
@@ -1611,12 +1631,13 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
     }
   }
   doc.info["x-agentrun-serve"] = {
-    description: "Served by @parcha/agentrun-serve: the contract as vendored, unchanged, with this server's marks. Operations and schema properties marked x-agentrun-serve are this server's own, outside the contract (fields lists the properties, each marked with the addition that made it); operations marked x-agentrun-serve-unsupported answer 501 unsupported_here here; operations marked x-agentrun-serve-changed take more than the contract gives, each change named (changed lists them); a contract property marked x-agentrun-serve-unsupported is one this server refuses (unsupported_fields, with why); x-agentrun-serve-details gives what a code's details hold here (details lists where). servers is this server, relative to this document; the contract's own are in contract_servers.",
+    description: "Served by @parcha/agentrun-serve: the contract as vendored, unchanged, with this server's marks. Operations and schema properties marked x-agentrun-serve are this server's own, outside the contract (fields lists the properties, each marked with the addition that made it); operations marked x-agentrun-serve-unsupported answer 501 unsupported_here here; operations marked x-agentrun-serve-changed take more than the contract gives, each change named (changed lists them); a contract property marked x-agentrun-serve-unsupported is one this server refuses (unsupported_fields, with why); x-agentrun-serve-details gives what a code's details hold here (details lists where); x-agentrun-serve-note says what a contract property means here (notes lists them). servers is this server, relative to this document; the contract's own are in contract_servers.",
     extensions,
     changed,
     fields,
     unsupported_fields: refused,
     details: ["ErrorBody.details"],
+    notes: noted,
     unsupported,
     contract_servers: doc.servers,
   };
