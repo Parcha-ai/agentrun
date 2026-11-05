@@ -364,6 +364,33 @@ test("a run now's key retried after its firing left the history answers that fir
   assert.equal((await api("POST", `/runs/${c.body.run_id}/cancel`)).status, 202);
 });
 
+test("the runs lists name the trigger that started a run, while it works, once it ended, and after a restart reads it from its row; a run a caller started names none", { timeout: 180_000 }, async (t) => {
+  const data = join(await scratch(t), "agents");
+  const clock = fakeClock("2026-06-01T00:00:00Z");
+  const first = await serve(t, { data, triggerClock: clock });
+  await made(first.api, "listed");
+  const { body } = await first.api("POST", "/triggers", { ...schedule("listed", { at: "2026-06-01T00:05:00Z" }), target: { kind: "start_run", agent_id: "listed", input: { content: "Take your time." }, max_cost_usd: 0.5 } });
+  const byHand = (await first.api("POST", "/agents/listed/runs", { input: { content: "Answer soon." } })).body.run_id;
+  clock.to("2026-06-01T00:05:00Z");
+  const [fired] = await firings(first.api, body.id, 1);
+  const named = { id: body.id, firing_key: fired.key };
+  /** Each list's run's trigger, by run id: the server's whole list and the agent's. */
+  const listed = async (api) => {
+    const lists = await Promise.all(["/runs", "/agents/listed/runs"].map(async (path) => (await api("GET", path)).body.runs));
+    return lists.map((runs) => Object.fromEntries(runs.map((r) => [r.run_id, r.trigger])));
+  };
+  for (const list of await listed(first.api)) assert.deepEqual(list, { [fired.run_id]: named, [byHand]: null }, "while it works");
+  assert.equal((await first.api("POST", `/runs/${fired.run_id}/cancel`)).status, 202);
+  await follow(first.api, fired.run_id, ["cancelled"]);
+  await follow(first.api, byHand, ["completed"]);
+  for (const list of await listed(first.api)) assert.deepEqual(list, { [fired.run_id]: named, [byHand]: null }, "once it ended");
+  await first.close();
+  const second = await serve(t, { data, triggerClock: clock });
+  for (const list of await listed(second.api)) assert.deepEqual(list, { [fired.run_id]: named, [byHand]: null }, "read from its row and its serve.json");
+  const doc = (await second.api("GET", "/openapi.json")).body;
+  for (const run of (await second.api("GET", "/runs")).body.runs) assert.deepEqual(schemaProblems(doc, { $ref: "#/components/schemas/RunSummary" }, run), [], run.run_id);
+});
+
 test("a date that is no date, and an interval past a year, are 422 on their field, never a 500", { timeout: 60_000 }, async (t) => {
   const { api } = await serve(t, { triggerClock: fakeClock("2026-06-01T00:00:00Z") });
   await made(api, "dates");
