@@ -416,8 +416,10 @@ for (const [daytona, options, code, words] of [
     // Available, so `reason` (which says why a box is unavailable) is absent; `network_reason` says why it has no network.
     assert.equal(offer.reason, undefined);
     assert.match(offer.network_reason, new RegExp(`domain list \\(${code}\\).*tier 3 and 4.*AGENTRUN_BOX_ALLOW=none`));
-    // The list stays the server's one setting; the log says why Daytona refused, in its words.
-    assert.equal((await api("GET", "/capabilities")).body.places.allow.length, 6);
+    // places.allow is the server's configured list, still the six; the box's own network and network_reason say it does
+    // not apply to Daytona now. The log says why Daytona refused, in its words.
+    assert.deepEqual((await api("GET", "/capabilities")).body.places.allow, [...DEFAULT_BOX_ALLOW]);
+    assert.deepEqual(Object.keys(offer).sort(), ["available", "id", "network", "network_reason", "state"]);
     const said = lines.filter((line) => line.includes("event=box_network"));
     assert.equal(said.length, 1, said.join("\n"));
     assert.match(said[0], new RegExp(`refused=${code}`));
