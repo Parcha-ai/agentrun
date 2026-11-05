@@ -125,8 +125,8 @@ test("pick the browser through the API: a Kernel key saved and checked, Kernel p
   // Two agents: one on the server's pick, one that picks Browserbase for itself.
   assert.equal((await api("POST", "/agents", agent("kern", { instructions: "Browse.", tools: ["browser"] }))).status, 201);
   assert.equal((await api("POST", "/agents", agent("bb", { instructions: "Browse.", tools: ["browser"], tool_settings: { browser: { provider: "browserbase" } } }))).status, 201);
-  assert.deepEqual((await api("GET", "/agents/kern")).body.tools, [{ name: "browser", provider: "kernel", provider_from: "server", default_provider: "kernel", resolved: "kernel" }]);
-  assert.deepEqual((await api("GET", "/agents/bb")).body.tools, [{ name: "browser", provider: "browserbase", provider_from: "agent", default_provider: "kernel", resolved: "browserbase" }]);
+  assert.deepEqual((await api("GET", "/agents/kern")).body.tools, [{ name: "browser", provider: "kernel", provider_from: "server", default_provider: "kernel", permission: "allow", permission_from: "default", default_permission: "allow", permissions: ["allow", "deny"], resolved: "kernel" }]);
+  assert.deepEqual((await api("GET", "/agents/bb")).body.tools, [{ name: "browser", provider: "browserbase", provider_from: "agent", default_provider: "kernel", permission: "allow", permission_from: "default", default_permission: "allow", permissions: ["allow", "deny"], resolved: "browserbase" }]);
 
   const browse = async (id) => {
     const before = (await readFile(log, "utf8").catch(() => "")).trim().split("\n").filter(Boolean).length;
