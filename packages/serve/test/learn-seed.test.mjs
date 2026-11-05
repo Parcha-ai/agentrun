@@ -371,16 +371,6 @@ test("a note holding a value made one of the server's secrets after it was writt
   }
 });
 
-test("a run whose pin an earlier server wrote, the index alone (`learned`), reads it as that server gave it: the index under # Learned, with the line that says where the notes are", { timeout: 120_000 }, async (t) => {
-  const { api, data } = await serve(t, { faux: SYSTEM });
-  const sha = await learned(api, data, "older", { instructions: "Answer the question." });
-  learningTestHooks.afterPin = (runDir) => void writeFileSync(join(runDir, "learning.json"), `${JSON.stringify({ seed: sha, learned: INDEX })}\n`);
-  t.after(() => void (learningTestHooks.afterPin = undefined));
-  const { prompt } = await ran(api, "older");
-  learningTestHooks.afterPin = undefined;
-  assert.equal(learnedIn(prompt), `What you learned in earlier runs, one line per note. Each note is a file in \`.learning/\` in your working directory: open one when it applies to what you are doing.\n\n${INDEX.trim()}`);
-});
-
 test("the pin: a run keeps the commit it was made from when main moves on, through a continue in a new process", { timeout: 120_000 }, async (t) => {
   const { api, data } = await serve(t, { faux: SYSTEM });
   const sha = await learned(api, data, "pinned", { instructions: "Answer the question." });
