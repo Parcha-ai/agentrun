@@ -253,3 +253,28 @@ test("firings a restart finds due past their retry wait, queued behind a slow lo
   await until(() => second.triggers.firings(made.id).firings.every((f) => f.status !== "due"), "every firing settled");
   assert.deepEqual(lookups.sort(), [1, 2, 3].map((n) => `fir_${String(n).repeat(32)}`), "each looked up once");
 });
+
+test("a firing whose drive throws and stays due is driven again after the write retry's wait, never at once over and over", async (t) => {
+  const first = await engine(t, {});
+  const made = await first.triggers.create(body({ every_s: 600 }));
+  first.triggers.close();
+  // A firing a restart finds due, its retry time passed; its lookup throws, as no answer it was built for.
+  const file = join(first.data, "triggers.json");
+  const kept = JSON.parse(await readFile(file, "utf8"));
+  kept.triggers[0].firings.push({ key: `fir_${"7".repeat(32)}`, by: "manual", nominal_at: "2026-06-01T00:00:00Z", status: "due", at: "2026-06-01T00:00:00.000Z", attempts: 1, retry_at: "2026-06-01T00:00:05.000Z" });
+  await writeFile(file, JSON.stringify(kept));
+  const lookups = [];
+  const said = [];
+  const second = await engine(t, { runOf: (key) => { lookups.push(key); throw new Error("not a store this lookup knows"); }, say: (fields) => said.push(fields) }, { data: first.data, at: "2026-06-01T00:01:00Z" });
+  for (let i = 0; i < 20; i++) {
+    second.clock.to("2026-06-01T00:01:04.900Z");
+    await sleep(1);
+  }
+  assert.equal(lookups.length, 1, "not driven again before the wait");
+  assert.equal(said.filter((s) => s.condition === "trigger_firing_failed").length, 1);
+  second.clock.to("2026-06-01T00:01:05.000Z");
+  await until(() => lookups.length === 2, "driven again after the wait");
+  await sleep(10);
+  assert.equal(lookups.length, 2);
+  assert.equal(second.triggers.firings(made.id).firings[0].status, "due", "still due, for the next try");
+});
