@@ -351,19 +351,30 @@ const meaningful = (rows: readonly TimelineEvent[]) => rows.findLast((r) => show
 /** What a run waits on, as `pending` says it (one field for every kind; a tool call waiting on approval is another):
  *  the question a waiting run asked, read from its last meaningful row (withAsks' waiting row), the same row its
  *  status reads, never from a scan of its timeline. */
-type Pending = { kind: "question"; question: string; asked_at: string } | { kind: "budget"; cap_usd: number; spent_usd?: number; needs_usd?: number; said: string; at: string } | null;
+type Pending = { kind: "question"; question: string; asked_at: string } | { kind: "budget"; cap_usd: number; spent_usd?: number; needs_usd?: number; suggested_cap_usd?: number; said: string; at: string } | null;
 const pendingOf = (rows: readonly TimelineEvent[]): Pending => {
   const last = meaningful(rows);
   return last?.kind === "waiting" ? { kind: "question", question: last.text ?? last.summary ?? "", asked_at: last.timestamp } : null;
 };
+/** How many of the refused request's least a run paused at its cap is offered on top of what was taken (suggestedCap). */
+export const SUGGESTED_RAISE_FACTOR = 10;
+/** The raise a run paused at its cap is offered: what the cap counted as taken plus SUGGESTED_RAISE_FACTOR times the
+ *  refused request's least, rounded up to a whole dollar, and always above the cap (the next dollar above it, if not),
+ *  so a PATCH with it is a raise. */
+export const suggestedCap = (cap: number, spentUsd: number, needsUsd: number): number => {
+  // A hair under, so a sum a float puts just past a whole dollar (3.0000000000000004) stays that dollar.
+  const up = Math.ceil(spentUsd + SUGGESTED_RAISE_FACTOR * needsUsd - 1e-9);
+  return up > cap ? up : Math.floor(cap) + 1;
+};
 /** A run paused at its cap waits on a raise: its cap, what the cap counted as taken and the least the refused request
- *  needs (its refusal's mark; none from a store written before it kept them), the refusal's words, and when it came (its
- *  error row's time). The figures are as the cap counts them, never rounded. */
+ *  needs (its refusal's mark; none from a store written before it kept them), the raise it is offered (suggestedCap),
+ *  the refusal's words, and when it came (its error row's time). The figures are as the cap counts them, never rounded. */
 const budgetPending = (run: Run): Pending | undefined => {
   const said = pausedAt(run);
   const cap = run.meta.max_cost_usd;
   if (said === undefined || cap === undefined) return undefined;
-  const figures = run.capRefusal ? { spent_usd: run.capRefusal.spentUsd, needs_usd: run.capRefusal.needsUsd } : {};
+  const r = run.capRefusal;
+  const figures = r ? { spent_usd: r.spentUsd, needs_usd: r.needsUsd, suggested_cap_usd: suggestedCap(cap, r.spentUsd, r.needsUsd) } : {};
   return { kind: "budget", cap_usd: cap, ...figures, said, at: meaningful(run.rows)?.timestamp ?? run.updatedAt };
 };
 /** The waiting row of a run paused at its cap, after the refusal's error row: "Paused at the run's $1 cap: Not sent: …". */
