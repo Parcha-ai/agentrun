@@ -145,3 +145,45 @@ test("opencode, a guard: a person's stop while the first request is in flight st
   for (let i = 0; ; i++) { const now = (await after()).holder?.pid; if (now === undefined || gone(now)) break; assert.ok(i < 600, "the run's process lets go"); await sleep(100); }
   assert.deepEqual(sessionTurnEnds(data, run.body.run_id), ["interrupted", "completed"], `the stopped turn's end, then the follow-up's: ${JSON.stringify(seen)}`);
 });
+
+// A guard of the halt path (it passes on main, and must stay so): an answer the provider's content filter stops is a
+// halt, not an interrupt. On OpenCode the run ends failed, moderated, after the ONE request, and nothing turns it into an
+// open turn that a later open resumes and asks again.
+test("opencode, a guard: an answer the provider's content filter stops ends the run moderated after one request, and nothing resumes it", { timeout: 180_000 }, async (t) => {
+  const seen = [];
+  const server = createServer(async (req, res) => {
+    if (!req.url?.startsWith("/v1/")) return void res.writeHead(404).end();
+    for await (const _ of req);
+    seen.push(req.url);
+    const end = { type: "response.incomplete", response: { status: "incomplete", incomplete_details: { reason: "content_filter" }, usage: { input_tokens: 40, output_tokens: 0 } } };
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    res.end(`event: ${end.type}\ndata: ${JSON.stringify(end)}\n\ndata: [DONE]\n\n`);
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const dir = await scratch(t);
+  const standIn = join(dir, "opencode-stand-in.mjs");
+  await copyFile(STAND_INS.opencode.file, standIn);
+  const saved = { ...process.env };
+  t.after(() => {
+    for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
+    Object.assign(process.env, saved);
+  });
+  Object.assign(process.env, { ...STAND_INS.opencode.env(standIn), AGENT_MODEL_BASE_URL: `http://127.0.0.1:${server.address().port}`, AGENT_MODEL: "gpt-test", AGENT_MODEL_API_KEY: GATEWAY_KEY, AGENT_MODEL_PRICE: "1,2,0.5" });
+  const { api, data } = await serve(t, { faux: undefined });
+  assert.equal((await api("POST", "/agents", agent("filtered", { harness: "opencode" }))).status, 201);
+  const run = await api("POST", "/agents/filtered/runs", { input: { content: "Say what you did." } });
+  const { last } = await follow(api, run.body.run_id, ["completed", "failed", "input_required"], { deadlineMs: 120_000 });
+  const view = (await api("GET", `/runs/${run.body.run_id}`)).body;
+  // Nothing goes on after the end: the run's process lets go, and no later request reaches the provider.
+  for (let i = 0; ; i++) { const now = JSON.parse(await readFile(join(data, "runs", run.body.run_id, "run.json"), "utf8")).holder?.pid; if (now === undefined || gone(now)) break; assert.ok(i < 600, "the run's process lets go"); await sleep(100); }
+  await sleep(2_000);
+  const after = (await api("GET", `/runs/${run.body.run_id}`)).body;
+  const outcome = { status: last.status, code: view.error?.code, requests: seen.length, later: after.status, ends: sessionTurnEnds(data, run.body.run_id) };
+  t.diagnostic(JSON.stringify(outcome));
+  assert.deepEqual(
+    { status: outcome.status, code: outcome.code, requests: outcome.requests, later: outcome.later },
+    { status: "failed", code: "moderated", requests: 1, later: "failed" },
+    `moderated after one request, and it stays ended: ${JSON.stringify(outcome)}`,
+  );
+});
