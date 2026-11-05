@@ -137,9 +137,12 @@ async function throughStub(t, args, env = {}) {
   writeFileSync(join(serve, "launcher", "agentrun-serve"), `#!${process.execPath}
 require("node:fs").writeFileSync(${JSON.stringify(served)}, JSON.stringify({ args: process.argv.slice(2), npx: process.env.AGENTRUN_NPX_PACKAGE, model: process.env.AGENT_MODEL ?? null }));
 if (process.argv[2] === "import") process.exit(0);
+// STUB_FAIL: print why and exit before any "Open " line; STUB_OPEN: the URL its "Open " line names; STUB_SIGTERM=die: no
+// handler, so a SIGTERM ends it by the signal, as a real server's can.
+if (process.env.STUB_FAIL) { console.log("listen EADDRINUSE: 127.0.0.1:7340 is in use (stub)"); process.exit(1); }
 console.log("agentrun-serve on http://127.0.0.1:7399/v2 (stub)");
-console.log("Open http://127.0.0.1:7399/");
-process.on("SIGTERM", () => process.exit(0));
+console.log("Open " + (process.env.STUB_OPEN || "http://127.0.0.1:7399/"));
+if (process.env.STUB_SIGTERM !== "die") process.on("SIGTERM", () => process.exit(0));
 setInterval(() => {}, 1000);
 `);
   chmodSync(join(serve, "launcher", "agentrun-serve"), 0o755);
@@ -159,6 +162,17 @@ setInterval(() => {}, 1000);
   await closed;
   return { home, out, err, code, ...(existsSync(served) ? JSON.parse(readFileSync(served, "utf8")) : {}) };
 }
+
+test("with AGENTRUN_PUBLIC_URL it starts and names that address; a stop it forwards ends it with 0; a server that can't start is shown with its own last lines", { timeout: 60_000 }, async (t) => {
+  const pub = await throughStub(t, ["--no-open"], { AGENTRUN_PUBLIC_URL: "https://agentrun.example.com", STUB_OPEN: "https://agentrun.example.com/" });
+  assert.equal(pub.out, "AgentRun is running at https://agentrun.example.com/\n", pub.err);
+  const died = await throughStub(t, ["--no-open"], { STUB_SIGTERM: "die" });
+  assert.equal(died.code, 0, `a SIGTERM this command passed on is a clean stop: ${died.err}`);
+  const failed = await throughStub(t, ["--no-open"], { STUB_FAIL: "1" });
+  assert.equal(failed.code, 1, failed.err);
+  assert.match(failed.err, /^AgentRun did not start\. The server's last lines:$/m, failed.err);
+  assert.match(failed.err, /listen EADDRINUSE: 127\.0\.0\.1:7340 is in use \(stub\)/, failed.err);
+});
 
 test("the command passes its arguments through to the server, with its store (~/.agentrun unless --data names one) and --open unless --no-open; it picks no port or model of its own", { timeout: 60_000 }, async (t) => {
   const plain = await throughStub(t, [], { ANTHROPIC_API_KEY: "sk-test" });
@@ -218,6 +232,11 @@ test("the address to open is the URL on the server's first \"Open \" line, howev
 
 test("an Open line's URL is its first word, an http(s) URL on the server's loopback address; nothing else is", () => {
   assert.equal(openLineUrl("Open http://127.0.0.1:7340/"), "http://127.0.0.1:7340/");
+  // With AGENTRUN_PUBLIC_URL the server's "Open " line names that address: it's taken when it is that origin, and only then.
+  assert.equal(openLineUrl("Open https://agentrun.example.com/", "https://agentrun.example.com"), "https://agentrun.example.com/");
+  assert.equal(openLineUrl("Open https://agentrun.example.com/pair?code=x", "https://agentrun.example.com/"), "https://agentrun.example.com/pair?code=x");
+  assert.equal(openLineUrl("Open https://agentrun.example.com/"), undefined, "no public URL given");
+  assert.equal(openLineUrl("Open https://elsewhere.example.com/", "https://agentrun.example.com"), undefined, "another origin");
   assert.equal(openLineUrl("Open http://127.0.0.1:7340/pair?code=a.b-c (signs this browser in, once)"), "http://127.0.0.1:7340/pair?code=a.b-c");
   for (const line of ["Open https://agents.example.com/", "Open ftp://127.0.0.1/", "Open javascript:alert(1)", "Open ", "Opening http://127.0.0.1:7340/", "open http://127.0.0.1:7340/", " Open http://127.0.0.1:7340/"]) {
     assert.equal(openLineUrl(line), undefined, line);
