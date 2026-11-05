@@ -30,7 +30,7 @@ test("the prompt asks for one skill and one workflow draft only when the work re
   assert.match(prompt, /a job this agent will be asked to do again, you may also keep one skill and one\nworkflow draft/);
   assert.ok(prompt.includes("````skill find-policies\n---\nname: find-policies\ndescription: "), "a skill's block, four backticks");
   assert.ok(prompt.includes("````workflow find-policies\n---\ndescription: "), "a draft's block: its description, then the JSON");
-  assert.match(prompt, /never a code node or a shell or\nexecutor call\. Its model nodes name no tool\. Its call nodes may run only these tools: web_fetch, read\./);
+  assert.match(prompt, /It uses model and tool-call nodes only: no judge, pick or sift node, no code node, no shell or\nexecutor call\. Its model nodes name no tool\. Its call nodes may run only these tools: web_fetch, read\./);
   assert.match(prompt, new RegExp(`At most ${CAPS.file} bytes\\.`));
   assert.match(prompt, /To change a skill you were given, give it again whole\nunder its name\./);
   // Steps the person asks to have followed again are a skill, kept in their own words and format, and never a note too.
