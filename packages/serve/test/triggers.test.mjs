@@ -185,7 +185,7 @@ test("a trigger that would start an uncapped run, a workflow's run, or fire on a
   await refused(schedule("missing", { every_s: 600 }), "target.agent_id", "not_found");
   assert.deepEqual((await api("GET", "/triggers")).body.triggers, [], "nothing kept");
   assert.equal((await api("DELETE", "/triggers/trg_none")).status, 404);
-  assert.deepEqual((await api("GET", "/capabilities")).body.features.triggers, { routes: true, sources: ["schedule"], targets: ["start_run"], overlap: ["skip"], min_every_s: 60, history_kept: 200 });
+  assert.deepEqual((await api("GET", "/capabilities")).body.features.triggers, { routes: true, sources: ["schedule"], targets: ["start_run"], overlap: ["skip"], min_every_s: 60, history_kept: 200, catchup_window_s: 3600, failures_to_pause: 5 });
 });
 
 test("a firing left due by a server that went down mid-start is driven again at the next start and finds its run: one run, not two", { timeout: 180_000 }, async (t) => {
@@ -241,6 +241,7 @@ test(`a firing whose run the server lost while setting it up (${left}) is failed
   const [lost] = await firings(second.api, body.id, 1);
   assert.deepEqual([lost.key, lost.status, lost.run_id, lost.reason], [key, "failed", runId, "The server stopped while setting up the run."], "its key stays bound to its run");
   assert.equal(lost.error.code, "run_failed");
+  assert.equal((await second.api("GET", `/triggers/${body.id}`)).body.failures_in_a_row, 1, "a failure of the trigger's, counted toward its pause");
   await follow(second.api, runId, ["failed"]);
   clock.to("2026-06-01T00:20:00Z");
   const [next, again] = await firings(second.api, body.id, 2);
@@ -248,15 +249,16 @@ test(`a firing whose run the server lost while setting it up (${left}) is failed
   assert.notEqual(next.run_id, runId);
   assert.deepEqual([again.status, again.run_id], ["failed", runId], "never fired again");
   assert.equal((await second.api("GET", "/agents/lost/runs")).body.runs.length, 2);
+  assert.equal((await second.api("GET", `/triggers/${body.id}`)).body.failures_in_a_row, 0);
   await follow(second.api, next.run_id, ["completed"]);
 });
 
-test("times missed while the server was down are one missed firing with their count, and the schedule goes on from now", { timeout: 120_000 }, async (t) => {
+test("with no catch-up window, times missed while the server was down are one missed firing with their count, none fires, and the schedule goes on from now", { timeout: 120_000 }, async (t) => {
   const dir = await scratch(t);
   const data = join(dir, "agents");
   const first = await serve(t, { data, triggerClock: fakeClock("2026-06-01T00:00:00Z") });
   await made(first.api, "down");
-  const { body } = await first.api("POST", "/triggers", schedule("down", { every_s: 600, start_at: "2026-06-01T00:10:00Z" }));
+  const { body } = await first.api("POST", "/triggers", schedule("down", { every_s: 600, start_at: "2026-06-01T00:10:00Z" }, { catchup_window_s: 0 }));
   await first.close();
   const second = await serve(t, { data, triggerClock: fakeClock("2026-06-01T00:58:20Z") });
   const [missed] = await firings(second.api, body.id, 1);
