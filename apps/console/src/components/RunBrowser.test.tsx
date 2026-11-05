@@ -53,6 +53,7 @@ function nowhereBut(frame: HTMLIFrameElement | null, ...secrets: string[]) {
   }
 }
 
+const MESSAGES = { steer: false, answer: true, follow_up: true, steer_workflow_runs: false };
 describe("the run page reads the browser only from a server that serves it", () => {
   const base = { run_id: RUN, agent_id: "browsing", agent_version: 1, revision: "rv1", kind: "agentic", status: "working", state: "working", title: "Look", created_at: "2026-11-05T09:00:00Z", ended_at: null, result: null, error: null, cost: null, archived_at: null } as Run;
   async function live(caps: unknown) {
@@ -71,12 +72,12 @@ describe("the run page reads the browser only from a server that serves it", () 
     return { host, reads };
   }
   it("with features.browser_live, it reads the run's browser and offers the tab", async () => {
-    const p = await live({ features: { browser_live: { read_only: true } } });
+    const p = await live({ harnesses: [{ id: "pi", available: true }], features: { messages: MESSAGES, browser_live: { read_only: true } } });
     expect(p.reads[0]).toBe(RUN);
     expect([...p.host.querySelectorAll('[role="tab"]')].some((b) => /^Browser/.test(b.textContent ?? ""))).toBe(true);
   });
   it("without it (an older server), it never asks", async () => {
-    const p = await live({ features: {} });
+    const p = await live({ harnesses: [{ id: "pi", available: true }], features: { messages: MESSAGES } });
     expect(p.reads).toEqual([]);
   });
 });

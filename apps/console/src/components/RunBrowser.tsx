@@ -57,7 +57,10 @@ export function BrowserPanel({ browser }: { browser: RunBrowser }) {
       </header>
       {/* What the agent waits on in the browser ("Waiting for you: …") goes here. */}
       {browser.state === "live"
-        ? <iframe key={session.current.n} src={browser.viewer} title="The run's browser" referrerPolicy="no-referrer" className="block aspect-[16/10] w-full bg-background" />
+        // The viewer's page (pi-browser live-view/viewer.ts) needs its own scripts, and its own origin: its WebSocket goes
+        // to this server, which checks the session cookie and the Origin, and it clears the fragment from its own history.
+        // Nothing else: no forms, no popups, no navigating the console.
+        ? <iframe key={session.current.n} src={browser.viewer} title="The run's browser" referrerPolicy="no-referrer" sandbox="allow-scripts allow-same-origin" className="block aspect-[16/10] w-full bg-background" />
         : <p className="px-4 py-12 text-center font-mono text-[13px] text-muted-foreground">Waiting for the browser. The agent's page shows here once it opens one.</p>}
     </section>
   );
