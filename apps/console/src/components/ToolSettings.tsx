@@ -1,4 +1,4 @@
-import { Fragment, type ReactNode } from "react";
+import { Fragment, type ReactNode, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { capabilityOf, HARNESS_ORDER, issuesFor, providerHelp, providerLabel, resolution, type ToolChoice, type ToolGate, withPermission, withProvider } from "@/lib/toolSettings";
 import { cn } from "@/lib/utils";
@@ -121,7 +121,7 @@ export const PerHarness = ({ choice }: { choice: ToolChoice }) => <>{HARNESS_ORD
 /** The agent editor's tool settings: per capability with a provider choice that this agent grants, or that the server's
  *  pick leaves unavailable (the agent's own pick may be what makes it run, before it is granted), its provider, the
  *  server's pick its default, and what it resolves to on the agent's harness and model. Nothing at all when none has one. */
-export function AgentToolSettings({ agent, harness, model, tools, choices, gates = [], value, issues, onChange }: {
+export function AgentToolSettings({ agent, harness, model, tools, choices, gates = [], focus, value, issues, onChange }: {
   agent: Agent | null;
   /** The harness, model and tools in the form, saved or not (no model: the server's default). */
   harness: string;
@@ -130,6 +130,8 @@ export function AgentToolSettings({ agent, harness, model, tools, choices, gates
   choices: readonly ToolChoice[];
   /** Each tool's permission on this server (capabilities'): the default of a granted tool's here. */
   gates?: readonly ToolGate[];
+  /** A tool to focus the permission of as this opens (a legacy name at its settings key's row). */
+  focus?: string;
   /** The settings in the form: the agent's own, or the person's change of them. */
   value: ToolSettings;
   /** A refused save's issues, by field (saveError's). */
@@ -152,11 +154,20 @@ export function AgentToolSettings({ agent, harness, model, tools, choices, gates
     return [{ name, permission: x.permission ?? x.default_permission, default_permission: x.default_permission, permissions: x.permissions, ...(accountsOff && x.permissions.includes("ask") ? { ask_needs: "password" as const } : {}) }];
   });
   const rows = toolRows(offered, permitted, [...gates.map((g) => g.name), ...choices.map((c) => c.name)]);
+  const section = useRef<HTMLElement>(null);
+  // Once, as it opens: the tool asked for, at its settings key's row (fetch_page is web_fetch's).
+  useEffect(() => {
+    if (!focus) return;
+    const label = `${capabilityOf(focus)} permission`;
+    const select = [...(section.current?.querySelectorAll("select") ?? [])].find((s) => s.getAttribute("aria-label") === label);
+    select?.scrollIntoView?.({ block: "center" });
+    select?.focus();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   if (!rows.length) return null;
   const saved = (agent?.definition.tool_settings ?? {}) as ToolSettings;
   const { byTool, rest } = issuesFor(issues, "definition.tool_settings", rows.map((t) => t.name));
   return (
-    <section aria-label="Tool settings">
+    <section aria-label="Tool settings" ref={section}>
       <div className="mb-2"><span className="caps text-[12px] font-semibold">Tool settings</span></div>
       <p className="-mt-1 mb-2 text-[12px] text-muted-foreground">Each of these tools takes this server's setting (its default here) unless it is changed here. A tool on ask makes the run wait for your approval at each call.</p>
       <ToolTable label="This agent's tool settings" rows={rows} settings={value} fallbackOf={(t) => t.provider} issues={byTool} onEdit={(edit) => onChange(edit(value))}

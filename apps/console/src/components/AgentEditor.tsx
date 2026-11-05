@@ -44,6 +44,8 @@ export type EditorProps = {
   providerChoices?: ToolChoice[];
   /** Each tool's permission on this server (approvals/1), from capabilities: an agent's own is set over it. */
   permissionGates?: ToolGate[];
+  /** A tool whose permission the Tools step opens on, focused (a start refused for it links here). */
+  focusTool?: string;
 };
 type Step = "context" | "workflow" | "tools" | "settings" | "history";
 
@@ -66,7 +68,7 @@ const STEPS: { id: Step; label: string; note: string; Icon: typeof FileText }[] 
 /** The hosted console's agent builder, over AgentRun Server's agents: a numbered step rail, one step at a time, and a
  *  save that makes a new revision. A save made on a revision that is no longer current is refused (If-Match), and the
  *  editor says so instead of overwriting the other save. */
-export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent, onArchive, onReload, onBack, step: initialStep, problem: initialProblem = null, notice, draft, validate, providerChoices = [], permissionGates = [] }: EditorProps) {
+export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent, onArchive, onReload, onBack, step: initialStep, problem: initialProblem = null, notice, draft, validate, providerChoices = [], permissionGates = [], focusTool }: EditorProps) {
   const creating = !agent;
   const d = agent?.definition;
   const [step, setStep] = useState<Step>(initialStep ?? (agent?.kind === "workflow" ? "workflow" : "context"));
@@ -247,8 +249,10 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                   <p className="mt-2 font-mono text-[12px] text-muted-foreground">This agent can't reach the web: {webHere.length ? `tick ${webHere.join(" or ")} in Tools.` : `${f.harness ?? "pi"} runs no web tool on this server.`}</p>
                 )}
               </Field>
-              {!workflow && (
-                <AgentToolSettings agent={agent} harness={f.harness ?? "pi"} model={f.model} tools={f.tools ?? []} choices={providerChoices} gates={permissionGates}
+              {/* A workflow agent's tools have no provider here (a call node runs the tool as the server resolves it), but each
+                  one's permission is this agent's to set: a call node refused for a tool set to deny or ask is fixed here. */}
+              {(
+                <AgentToolSettings agent={agent} harness={f.harness ?? "pi"} model={f.model} tools={f.tools ?? []} choices={workflow ? [] : providerChoices} gates={permissionGates} focus={focusTool}
                   value={f.tool_settings ?? d?.tool_settings ?? {}} issues={problem?.kind === "invalid" ? problem.fields : {}}
                   // Settings equal to the definition's are no change of the form's. While a save is under way the definition is
                   // about to be what it sent, so every change is kept: the save's answer drops it only if it equals what was sent.

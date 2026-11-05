@@ -14,6 +14,14 @@ const LEGACY_NAMES: Readonly<Record<string, string>> = { fetch_page: "web_fetch"
 /** The capability a granted tool name is: its legacy target, else itself. */
 export const capabilityOf = (name: string): string => LEGACY_NAMES[name] ?? name;
 
+/** The tools a 409 `agent_not_runnable` names as stopping a workflow's call nodes (approvals/1): `denied`, set to
+ *  deny; `asks`, set to ask, which a call node can't wait for. Each is an array of settings keys, present only when not
+ *  empty; a legacy name is held to its capability's key (fetch_page: web_fetch's), as the server holds it. */
+export function toolBlockers(details: Record<string, unknown> | null | undefined): { denied: string[]; asks: string[] } {
+  const names = (v: unknown) => (Array.isArray(v) && v.every((x) => typeof x === "string") ? [...new Set((v as string[]).map(capabilityOf))] : []);
+  return { denied: names(details?.denied), asks: names(details?.asks) };
+}
+
 /** The capabilities that have a provider choice, in the server's order: `capabilities.tools` entries that carry one. */
 export function toolChoices(raw: unknown): ToolChoice[] {
   return (Array.isArray(raw) ? raw : []).flatMap((t): ToolChoice[] => {
