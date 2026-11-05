@@ -164,7 +164,7 @@ test("restoring a note that supersedes another marks that one superseded, as app
 
 test("restoring a workflow draft checks its workflow.json too: one holding the server's own secret stays retired, and nothing is committed", { timeout: 150_000 }, async (t) => {
   const README = "---\nname: price-report\ndescription: Sums the three shop prices; use for the morning report\nstatus: retired\n---\n";
-  const { repo, cookie, origin, restore, server } = await keeper(t, {});
+  const { repo, cookie, origin, restore, server } = await keeper(t, { "answer-in-tables.md": TABLES });
   const draft = (secret) => JSON.stringify({ v: 2, name: "price-report", schemas: { In: { type: "object" }, Out: { type: "object" } }, input: { schemaId: "In" }, output: { schemaId: "Out", path: "out" }, root: { node: "extract", label: "sum", instructions: `Sum the prices; sign in with ${secret}.`, out: "Out", as: "out" } });
   mkdirSync(join(repo, "workflows", "price-report"), { recursive: true });
   writeFileSync(join(repo, "workflows", "price-report", "workflow.json"), draft(server.token));

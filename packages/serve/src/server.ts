@@ -1578,7 +1578,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     // as every route is.
     // Restoring a retired one puts it back in every later run, as an approval does: the same owner's session alone.
     if (found.name === "restoreLearningFile" && !byOwnerSession(req) && req.headers.authorization !== undefined) {
-      authFailed(`/v2${path}`, "approve_without_session");
+      authFailed(`/v2${path}`, "restore_without_session");
       throw new ApiError("forbidden", owner ? "Restoring a retired note takes the owner's password sign-in in the console, never a token." : "Restoring a retired note takes the owner's password sign-in, and this server has no accounts (AGENTRUN_ACCOUNTS=0).");
     }
     if (found.name === "approveLearningFile" && !byOwnerSession(req) && req.headers.authorization !== undefined) {
