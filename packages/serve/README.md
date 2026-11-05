@@ -1615,14 +1615,17 @@ releases the run), so a paused run holds no place; a server started again reads 
 paused run is `409 budget_reached`; a stop does nothing more, and a cancel ends it `cancelled`. Only a refusal for room
 pauses a run: one no cap fixes (above) ends it `failed`, as does a cost found past the cap after a response.
 
-`PATCH /runs/{run_id}` with `{max_cost_usd}` raises the cap, and only raises it: the new cap is above the run's own
-(`422` otherwise, and for a run with no cap or a workflow run; `409 not_continuable` for an ended run). The run's
-serve.json keeps it, with each raise in `cap_raised`, so its next process opens under it, as does a server started again.
-A run paused at its cap goes on: once its process has been let go, the server sends it one follow-up turn, "The cap was
-raised to $2; continue the task.", which runs under the new cap; the answer is `{run_id, max_cost_usd, resumed: true,
-message_id, status, state}`. A working run's live process keeps the cap it was opened with until its next one, and the
-answer's `note` says so. Should the follow-up not go (no place for its process), the run waits for a message instead,
-`input_required` and `idle`, and takes one under the new cap.
+`PATCH /runs/{run_id}` with `{max_cost_usd}` raises the cap, and only raises it: the new cap is above the run's current
+cap, its last raise included (`422` otherwise, and for a run with no cap or a workflow run; `409 not_continuable` for an
+ended run). The same raise sent again (a retry) changes nothing and answers as the first did. The run's serve.json keeps
+the raise before anything else, with each raise in `cap_raised`, so its next process opens under it, as does a server
+started again. A run paused at its cap goes on: the answer is `{run_id, max_cost_usd, resumed: true, message_id, status,
+state}` at once, and once its process has been let go the server sends it one follow-up turn, "The cap was raised to $2;
+continue the task.", under that `message_id`, which runs under the new cap. It is sent once: a server stopped before it
+went sends it when it starts again. The follow-up shows in the run's timeline as a message (`user_message`). A working
+run's live process keeps the cap it was opened with until its next one, and the answer's `note` says so. Should the
+follow-up not go (no place for its process), the run waits for a message instead, `input_required` and `idle`, and
+takes one under the new cap.
 
 A request carrying a native web search tool reads pages into its input that its body does not hold (the provider bills
 them as input): under a cap its input bound is its body's plus an allowance. Claude's own search, an explicit `native`
