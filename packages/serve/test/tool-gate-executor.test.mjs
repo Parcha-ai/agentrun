@@ -10,6 +10,8 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { createRegistry, Harness, MemoryStorage, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
+import { HOST_RESULT_MAX_CHARS } from "@parcha/agentrun-kernel";
+import { boundResult } from "@parcha/agentrun-kernel/process";
 import { APPROVAL_ENTRY, RunGate } from "../dist/tool-gate.js";
 import { scratch } from "./support.mjs";
 
@@ -185,4 +187,19 @@ test("a stop of the run while an approved MCP call is in flight aborts the execu
   await until(() => aborted && !run.gate.waiting());
   await sleep(300);
   assert.deepEqual([aborted, run.resumed.length], [true, 0], "the executor saw the abort, and nothing resumed");
+});
+
+test("an approved MCP call's oversized answer reaches the model cut as a host tool's is: within HOST_RESULT_MAX_CHARS, its last line saying it was cut", async (t) => {
+  const whole = "x".repeat(5 * HOST_RESULT_MAX_CHARS);
+  const executor = fakeExecutor({ text: whole, isError: false });
+  const run = await runOn(t, { executor: executor.run });
+  assert.equal((await run.gate.enter(TOOL, ARGS, "c1", run.park)).parked, true);
+  await answer(run.where, await approvalId(run.harness), "allow");
+  run.start();
+  await until(() => run.resumed.length === 1);
+  const content = run.resumed[0].content;
+  const result = content.slice(content.indexOf("Its result:\n") + "Its result:\n".length);
+  assert.ok(result.length <= HOST_RESULT_MAX_CHARS, `the result the model reads is ${result.length} characters`);
+  assert.equal(result, boundResult(whole).text, "cut by the host's one bound, in its words");
+  assert.match(result, new RegExp(`\\n\\[cut at \\d+ of ${whole.length} characters\\]$`));
 });
