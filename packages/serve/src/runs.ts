@@ -2195,11 +2195,11 @@ export class Runs {
     // rows first, so the mark it saves (the person's last message) covers the message the turn answers; then it stops
     // the turn as it stops any working run.
     if (run.kind !== "workflow") await this.caughtUp(run);
-    // A run parked on a tool call's approval has no turn to abort: the stop withdraws the call (never run, an answer
-    // after is 409), and the run is stopped as a stop leaves one.
-    if (run.kind === "agentic" && !run.cancel && !run.outcome && !run.finishing && waitingApproval(run)) return this.withdraw(run);
+    // A tool call that waits for approval is withdrawn by the stop (never run, an answer after is 409); then a turn that
+    // runs meanwhile is stopped as any working run's is, and with none the run is stopped as a stop leaves one.
+    const withdrawn = run.kind === "agentic" && !run.cancel && !run.outcome && !run.finishing && waitingApproval(run) ? await this.withdraw(run) : false;
     const { status, state } = statusOf(run);
-    if (run.kind === "workflow" || !this.live(run) || !(status === "working" && state === "working") || run.submitted > 0) return false;
+    if (run.kind === "workflow" || !this.live(run) || !(status === "working" && state === "working") || run.submitted > 0) return withdrawn ? this.stopIdle(run) : false;
     run.stopping = true;
     try {
       return await this.stopTurn(run);
@@ -2208,15 +2208,21 @@ export class Runs {
     }
   }
 
-  /** stop() of a run parked on an approval: the call withdrawn, and the stop's mark saved, as a stop saves it. */
+  /** stop()'s withdrawal of the tool call that waits for approval: never run, and an answer after is 409. */
   private async withdraw(run: Run): Promise<boolean> {
     const waiting = waitingApproval(run)!;
     run.meta.approvals = { ...run.meta.approvals, [waiting.id]: { decision: "withdrawn", answered_at: new Date().toISOString() } };
+    await this.saveMeta(run);
+    this.restate(run);
+    return true;
+  }
+
+  /** stop() of a run with no turn to abort (parked on an approval it withdrew): the stop's mark, as a stop saves it. */
+  private async stopIdle(run: Run): Promise<boolean> {
     delete run.meta.stopped_at;
     delete run.meta.stopped_after;
     Object.assign(run.meta, stopMark(run.rows));
     await this.saveMeta(run);
-    this.restate(run);
     this.refresh(run);
     return true;
   }
