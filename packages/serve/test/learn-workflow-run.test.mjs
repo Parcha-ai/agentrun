@@ -13,7 +13,7 @@ import * as learning from "../dist/learning.js";
 import { LEARNED_WORKFLOW_TOOL, learnedWorkflowDescription } from "../dist/learned-workflow.js";
 import { REPLAY } from "../dist/host-tools.js";
 import { git } from "./learn-support.mjs";
-import { agent, answerFlow, follow, scratch, serve, withEnv } from "./support.mjs";
+import { agent, answerFlow, call, cookieOf, follow, scratch, serve, withEnv } from "./support.mjs";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const ASK = "Use the learned workflow answer on What is six times seven.";
@@ -363,4 +363,42 @@ test("a run whose harness would send a learned workflow's requests around the op
   const { pin } = await pinned(t, "gated", files, [], { workflowsOff: why });
   assert.deepEqual([pin.workflows, pin.workflows_left_out, pin.workflows_off], [undefined, ["answer", "other"], why], JSON.stringify(pin));
   assert.deepEqual(await learning.pinnedWorkflows(join(await scratch(t), "none"), pin), []);
+});
+
+test("learned_workflow is a tool the gate holds like any: its settings key is learned_workflow, it defaults to allow, and an agent may set it to ask or deny", async () => {
+  const { settingsKeyOf, defaultPermission } = await import("../dist/tool-gate.js");
+  const { settingsIssues, SERVE_OWN_TOOLS } = await import("../dist/tool-plane.js");
+  assert.ok(SERVE_OWN_TOOLS.includes(LEARNED_WORKFLOW_TOOL), "the plane's own tools name it");
+  for (const harness of ["pi", "claude-agent", "codex", "opencode"]) assert.equal(settingsKeyOf(harness, LEARNED_WORKFLOW_TOOL), LEARNED_WORKFLOW_TOOL, harness);
+  assert.equal(settingsKeyOf("claude-agent", `mcp__hands__${LEARNED_WORKFLOW_TOOL}`), LEARNED_WORKFLOW_TOOL, "claude-agent's host tool name");
+  assert.equal(defaultPermission(LEARNED_WORKFLOW_TOOL), "allow");
+  for (const permission of ["allow", "ask", "deny"]) assert.deepEqual(settingsIssues({ [LEARNED_WORKFLOW_TOOL]: { permission } }), [], permission);
+});
+
+test("on pi, learned_workflow set to deny for the agent is refused by the gate in its words: no node runs", { timeout: 120_000 }, async (t) => {
+  const { api, data } = await serve(t, { learning: "on" });
+  const { runId, rows } = await ran(api, data, "denied-flow", "pi", flowFiles("answer", answerFlow()), [], { extra: { tool_settings: { [LEARNED_WORKFLOW_TOOL]: { permission: "deny" } } } });
+  const result = learnedResult(rows);
+  assert.equal(result?.tool_status, "failed", JSON.stringify(result));
+  assert.match(JSON.stringify(result), /Permission denied: learned_workflow is set to deny on this server/, JSON.stringify(result));
+  assert.deepEqual(entries(data, runId, ["agentrun.request_started"]).filter((entry) => entry.request === LEARNED_WORKFLOW_TOOL), [], "no node ran");
+});
+
+test("on codex, learned_workflow set to ask parks the run; the owner's allow runs it once and the run resumes with its output", { timeout: 180_000 }, async (t) => {
+  const server = await serve(t, { learning: "on", fauxHarness: FAUX_HARNESS, accounts: true, openSetup: true });
+  const { api, data } = server;
+  const origin = `http://127.0.0.1:${server.port}`;
+  const setup = await call(server.port, { method: "POST", path: "/v2/setup", headers: { "content-type": "application/json", origin }, body: { password: "the owner signs in with this phrase" } });
+  assert.equal(setup.status, 201, setup.text);
+  const cookie = cookieOf(setup);
+  const { runId } = await ran(api, data, "asked-flow", "codex", flowFiles("answer", answerFlow()), [], { extra: { tool_settings: { [LEARNED_WORKFLOW_TOOL]: { permission: "ask" } } }, ends: ["input_required", "completed", "failed"] });
+  const view = (await api("GET", `/runs/${runId}`)).body;
+  assert.deepEqual([view.status, view.pending?.kind, view.pending?.tool], ["input_required", "approval", LEARNED_WORKFLOW_TOOL], JSON.stringify(view));
+  assert.deepEqual(entries(data, runId, ["agentrun.request_started"]).filter((entry) => entry.request === LEARNED_WORKFLOW_TOOL), [], "nothing ran while it waits");
+  const answered = await call(server.port, { method: "POST", path: `/v2/runs/${runId}/approvals/${view.pending.id}`, headers: { "content-type": "application/json", cookie, origin }, body: { decision: "allow" } });
+  assert.equal(answered.status, 204, answered.text);
+  const { rows } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 90_000 });
+  assert.equal((await api("GET", `/runs/${runId}`)).body.status, "completed");
+  assert.match(rows.filter((row) => row.kind === "user_message").at(-1)?.text ?? "", /They allowed it, and it ran\. Its result:\n\{\\?"answer\\?":42\}/);
+  assert.equal(entries(data, runId, ["agentrun.request_started"]).filter((entry) => entry.request === LEARNED_WORKFLOW_TOOL).length, 1, "its one node ran once");
 });
