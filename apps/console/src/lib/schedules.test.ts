@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ClientError } from "./client";
-import { bodyOf, type Draft, draftOf, emptyDraft, firingWords, instantOf, issuesOf, patchOf, span, wallOf, whenWords } from "./schedules";
+import { bodyOf, type Draft, draftOf, emptyDraft, firingWords, instantOf, issuesOf, patchOf, span, utcWhen, wallOf, whenWords } from "./schedules";
 import type { Firing, Trigger } from "./v2";
 
 const draft = (over: Partial<Draft>): Draft => ({ ...emptyDraft(), agentId: "triage", content: "Triage last night's issues.", maxCost: "2", ...over });
@@ -45,6 +45,22 @@ describe("a time typed in the browser", () => {
     vi.stubEnv("TZ", "UTC");
     expect(instantOf("2026-11-05T09:30")).toBe("2026-11-05T09:30:00Z");
     expect(instantOf("")).toBeNull();
+  });
+});
+
+describe("a new schedule's zone", () => {
+  // As n8n's and Windmill's schedule forms do: the zone a cron line runs in starts as the browser's, and is sent.
+  it("starts as the browser's own, and is sent as typed", () => {
+    vi.stubEnv("TZ", "America/Los_Angeles");
+    expect(emptyDraft().timezone).toBe("America/Los_Angeles");
+    expect(bodyOf({ ...emptyDraft("triage"), cron: "30 1 * * *", content: "Go.", maxCost: "1" }).body?.source).toEqual({ kind: "schedule", cron: "30 1 * * *", timezone: "America/Los_Angeles" });
+  });
+});
+
+describe("the instant a one time becomes", () => {
+  it("is said in UTC whatever the browser's zone", () => {
+    vi.stubEnv("TZ", "America/Los_Angeles");
+    expect(utcWhen("2026-11-05T09:30:00Z")).toBe("Nov 5, 9:30 AM UTC");
   });
 });
 
