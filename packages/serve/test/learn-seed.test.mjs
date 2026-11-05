@@ -188,7 +188,7 @@ for (const harness of ["pi", "claude-agent", "codex"]) {
     const skills = join(data, "runs", runId, "work", ".agents", "skills");
     assert.deepEqual(existsSync(skills) ? readdirSync(skills) : [], [], "no learned skill is written");
     const { whole, short } = await learningOf(api, id, runId);
-    assert.deepEqual([whole.state, whole.reason, short], ["dropped", "empty", { state: "dropped", reason: "empty", detail: whole.detail }], "seeded, and its end-of-run turn gave no note");
+    assert.deepEqual([whole.state, whole.reason, short], ["dropped", "empty", { state: "dropped", reason: "empty", detail: whole.detail, given: GIVEN }], "seeded, and its end-of-run turn gave no note");
   });
 }
 
