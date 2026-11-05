@@ -784,6 +784,21 @@ page it reads is filed under the run's `work/evidence/`, each read in a file of 
 reads at once included. There is no recording and no live view. When the run is let go (its work done, or a SIGTERM)
 the sessions it still holds are released at Browserbase.
 
+A session's time is the run's spend, as a paid tool's charge is: each browser call books what its session ran since the
+last charge, and the release books the rest, topped up to the provider's minimum. Each is a `Tool cost` line of its own
+on the run's timeline, part of its `cost.usd`, and `/usage`'s `browser_time` meter (dollars, and seconds once the run has
+ended). Prices are by provider (pi-browser's provider name):
+
+| Provider | List price | Minimum | Its own price |
+| --- | --- | --- | --- |
+| `browserbase` | $0.12 an hour | 60 s | `AGENTRUN_BROWSER_USD_PER_HOUR_BROWSERBASE` |
+| `kernel` (headless) | about $0.06 an hour, by the second | none | `AGENTRUN_BROWSER_USD_PER_HOUR_KERNEL` |
+| `cdp` (a local Chrome) | $0 | none | `AGENTRUN_BROWSER_USD_PER_HOUR_CDP` |
+
+A variable gives the provider's price in US dollars an hour (a contract rate; the minimum stays). A provider with no price,
+or a variable that is not a non-negative decimal, has no price: its time is booked as an unknown cost, and under a cap
+every browser call is refused. Under a cap the browser's time is held before it runs (see [Spend cap](#spend-cap)).
+
 `monid.discover`, `monid.inspect` and `monid.run` give an agent [monid](https://monid.ai)'s whole catalog of data
 endpoints on one key, `MONID_API_KEY`: it finds an endpoint in plain words, reads its input schemas and price, and runs
 it. Each run is paid per call from the monid workspace's wallet, and is sent once, never retried. An async provider's
@@ -1654,6 +1669,26 @@ the proxy measures each request's body. A request in flight holds its worst case
 by side cannot pass the cap together. Spent so far is read from the run's store each time its process starts, so it
 survives a restart, plus each response since, and with them each charge a paid tool booked (`monid.run`, which is itself
 refused once the spend reaches the cap; see [monid](#tools)).
+
+The `browser` tool's session time is held the same way, before it runs, so no browser minute passes the cap. Its next
+stretch is the most a session can run before the run can check again: the provider's minimum (what its release may top
+it up to), pi-browser's idle window before it releases a session nobody calls (180 s), and 30 s for that release to be
+confirmed at the provider; at Browserbase's price, 270 s or $0.009. Before each browser call, the call is held at what its
+session ran since its last charge plus two stretches (one for the call's own time, one for a session it opens): spent, plus
+every hold, plus that must stay within the cap. Otherwise the call is not made: the model gets the cap's words
+(`spend_cap_reached: This browser call was not sent. It could cost up to $0.018 ...`), and the run's session is released.
+A session's first charge moves one stretch of its call's hold to the session, held until its release is booked, which
+covers its idle time, its top-up and its release; each call's charge comes out of the call's hold, which goes when the
+call returns. So what the run spent plus what it holds stays within the cap through a session's create, its calls, the
+idle time between them and its release. A session a create's lost answer left to a release after the create deadline is
+held for that deadline and a stretch until its release is billed. Across a restart of the run's process, every session
+custody still tracks (kept, unreached, still releasing) is held from the reopen, at a stretch beside what it ran since
+its last charge, and one kept is released an idle window later unless a call uses it. Three
+things can still pass the cap, each by what it ran over, booked and shown: a single browser call that runs longer than a
+stretch, a release that takes longer than 30 s to be confirmed, and the time a run's process was down while it held a
+session (spent before any process could hold it). A session whose release is never confirmed is billed in full
+(what it ran and its minimum) when the run gives up on it. When the run is let go, its sessions are released and their
+last charges booked before its process exits.
 
 Under a cap, whatever cannot be priced is refused, never passed as $0, and the run ends `failed` with
 `spend_cap_reached`, since no cap would send it:

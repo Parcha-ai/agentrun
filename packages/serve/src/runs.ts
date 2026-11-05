@@ -387,10 +387,11 @@ export const costOf = (rows: readonly TimelineEvent[]): number | null => {
   const usage = usageOf(rows);
   return usage ? (usage.usage?.usd ?? null) : 0;
 };
-/** What a run's paid tools charged, from the same rows its cost is read from: each charge's line carries it (`usage` on a
- *  `phase` row); null when one is unknown. A call still marked, in flight or cut, is no charge here. */
-export const toolCostOf = (rows: readonly TimelineEvent[]): number | null =>
-  rows.reduce<number | null>((sum, row) => (row.kind !== "phase" || !row.usage ? sum : sum === null || row.usage.usd === null ? null : sum + row.usage.usd), 0);
+/** What a run's paid tools charged (`tool`'s alone, when given), from the same rows its cost is read from: each charge's
+ *  line carries it (`usage` on a `phase` row); null when one is unknown. A call still marked, in flight or cut, is no
+ *  charge here. */
+export const toolCostOf = (rows: readonly TimelineEvent[], tool?: string): number | null =>
+  rows.reduce<number | null>((sum, row) => (row.kind !== "phase" || !row.usage || (tool !== undefined && row.tool_name !== tool) ? sum : sum === null || row.usage.usd === null ? null : sum + row.usage.usd), 0);
 /** A run's cost for its views: its usage row's, else what the store kept when it carried the run back (0 before any
  *  request). A usage row that says unknown, or says nothing, stays unknown: what the store kept dates from before a
  *  follow-up. */

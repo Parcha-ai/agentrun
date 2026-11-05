@@ -479,7 +479,7 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
       timeline: { long_poll: true, sse: true, live_rows: true, live_workflow_rows: false },
       files: { upload: true, read: true, range: false, during_run: true },
       quotes: false,
-      usage: { basis: "estimate", meters: ["tokens", "tools", "learning"] },
+      usage: { basis: "estimate", meters: ["tokens", "tools", "browser_time", "learning"] },
       efforts: [...EFFORTS],
       thinking: [...THINKING_LEVELS],
       /** The browser a run's `browser` tool drives: Browserbase's when the tool is available here (tools[]), else none. */
@@ -1234,7 +1234,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
 
   // Each ended run's meters, from its store (metersIn): kept, as its store no longer changes, keyed by its end, so a run
   // opened again and ended again is read again. A store that cannot be read leaves it all tokens.
-  const endedMeters = new Map<string, { tools: number | null; tokens: number | null }>();
+  const endedMeters = new Map<string, ReturnType<typeof metersIn>>();
   const metersOf = (row: { id: string; endedAt?: string | null }) => {
     const key = `${row.id} ${row.endedAt}`;
     let meters = endedMeters.get(key);
@@ -1242,7 +1242,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       try {
         meters = metersIn(agents.store.runStorePath(row.id));
       } catch {
-        meters = { tools: 0, tokens: null };
+        meters = { tools: 0, tokens: null, browser: { usd: 0, seconds: 0 }, others: 0 };
       }
       endedMeters.set(key, meters);
     }
@@ -1260,6 +1260,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     if (!["meter", "agent", "key", "day", "region"].includes(group)) throw new ApiError("bad_request", "group_by is meter, agent, key, day or region");
     const lines = new Map<string, { usd: number; unpriced: number }>();
     const total = { usd: 0, unpriced: 0 };
+    // The browser_time line's seconds: its ended runs' (their stores keep each charge's), none once a live run is in it.
+    let browserSeconds: number | null = 0;
     // A cost that is unknown adds no dollars, so no sum turns unknown; it is counted as unpriced instead, so it never
     // passes as $0.
     const add = (key: string, usd: number | null) => {
@@ -1277,12 +1279,16 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       const live = row.state === "running" ? await runs.get(row.id) : null;
       const usd = live ? runs.cost(live).usd : (row.costUsd ?? null);
       const key = group === "agent" ? row.agent : group === "day" ? row.startedAt.slice(0, 10) : group === "meter" ? "tokens" : "local";
-      // By meter, what a run's paid tools charged (monid's) is `tools`, the rest `tokens`, both from the same records: a
-      // live run's rows (a call still marked is no charge), else its store as it ended (a call a crash cut makes `tools`
-      // unknown, never `tokens`). An unknown meter counts the run as unpriced on it.
-      const meters = group !== "meter" || usd === 0 ? undefined : live ? { tools: toolCostOf(live.rows), tokens: null } : metersOf(row);
+      // By meter, what a run's paid tools charged (monid's) is `tools`, its browser session time `browser_time`, the rest
+      // `tokens`, all from the same records: a live run's rows (a call still marked is no charge), else its store as it
+      // ended (a call a crash cut makes `tools` unknown, never `tokens`). An unknown meter counts the run as unpriced on it.
+      const meters = group !== "meter" || usd === 0 ? undefined : live ? { tools: toolCostOf(live.rows), tokens: null, browser: { usd: toolCostOf(live.rows, "browser"), seconds: null }, others: toolCostOf(live.rows.filter((r) => r.tool_name !== "browser")) } : metersOf(row);
       const tokens = meters && (usd !== null && meters.tools !== null ? usd - meters.tools : usd === null && meters.tools === null ? meters.tokens : null);
-      const parts: [string, number | null][] = !meters ? [[key, usd]] : [[key, tokens ?? null], ...(meters.tools !== 0 ? [["tools", meters.tools] as [string, number | null]] : [])];
+      // Each apart, an unknown one unknown (unpriced on its own line), never $0 nor the other's.
+      const browser = meters ? meters.browser.usd : 0;
+      const tools = meters?.others;
+      const parts: [string, number | null][] = !meters ? [[key, usd]] : [[key, tokens ?? null], ...(tools !== 0 ? [["tools", tools ?? null] as [string, number | null]] : []), ...(browser !== 0 ? [["browser_time", browser] as [string, number | null]] : [])];
+      if (meters && browser !== 0) browserSeconds = browserSeconds === null || meters.browser.seconds === null ? null : browserSeconds + meters.browser.seconds;
       // A run whose cost is unknown adds no dollars, so no sum turns unknown; it is counted as unpriced instead, so it
       // never passes as $0.
       for (const [name, part] of parts) {
@@ -1301,7 +1307,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     const round = (v: number) => Math.round(v * 1e6) / 1e6;
     return {
       from: new Date(from).toISOString(), to: new Date(to).toISOString(), currency: "USD", basis: "estimate", group_by: group, total_usd: round(total.usd), unpriced_runs: total.unpriced,
-      lines: [...lines].map(([key, line]) => ({ group: key, ...(group === "meter" ? { meter: key } : {}), usd: round(line.usd), unpriced_runs: line.unpriced })),
+      lines: [...lines].map(([key, line]) => ({ group: key, ...(group === "meter" ? { meter: key } : {}), ...(key === "browser_time" && group === "meter" && browserSeconds !== null ? { quantity: round(browserSeconds), unit: "second" } : {}), usd: round(line.usd), unpriced_runs: line.unpriced })),
       account: null,
     };
   }
