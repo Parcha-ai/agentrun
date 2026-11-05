@@ -927,7 +927,9 @@ browser session on it. Nothing else turns it on: `auto` never picks it, and no a
   directory that its release removes (nothing is loaded into it: no cookies, no storage, no saved profile), with its
   DevTools socket on a loopback port picked for it and open to Stagehand's extension in it alone. Its release stops
   that Chrome by its exact pid. It never attaches to a Chrome that is already running (a shared one on port 9222
-  included), and no port or endpoint is taken from a setting.
+  included), and no port or endpoint is taken from a setting. A run whose process dies while its Chrome is open (a
+  crash) releases that Chrome when it opens again: it reaches nothing once its relay is gone, so it is stopped, its
+  profile removed, and the next browser call opens a fresh one, told the last session ended.
 - **No saved sign-ins.** A local Chrome keeps none: its cookies would sit on this server's disk. No sign-in is made,
   leased or handed to a run on it, a session that asks for a profile is refused by name, and capabilities say
   `sign_ins: false` while the server's browser is the local Chrome. Saved sign-ins are Browserbase's and Kernel's.
