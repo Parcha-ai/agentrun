@@ -47,7 +47,7 @@ import type { TurnOrigin } from "./learning-run.js";
 import { forModel } from "./result.js";
 import { durableSessions } from "./sessions.js";
 import { SHELL_TOOLS } from "./background.js";
-import { LEGACY_NAMES, readToolSettings, TABLE_TOOLS } from "./tool-plane.js";
+import { LEGACY_NAMES, readToolSettings, SERVE_OWN_TOOLS, TABLE_TOOLS } from "./tool-plane.js";
 
 /** What the gate does with a tool's calls. */
 export const PERMISSIONS = ["allow", "ask", "deny"] as const;
@@ -102,7 +102,7 @@ export function settingsKeyOf(harness: string, name: string, mcpServers: readonl
   // and a tool that runs a command in the box (bash_background and the rest) to bash's: before the table's own names.
   if (Object.hasOwn(LEGACY_NAMES, name)) return LEGACY_NAMES[name];
   if (Object.hasOwn(SHELL_FAMILY, name)) return SHELL_FAMILY[name];
-  if (TABLE_TOOLS.includes(name) || isCatalogTool(name)) return name;
+  if (TABLE_TOOLS.includes(name) || SERVE_OWN_TOOLS.includes(name) || isCatalogTool(name)) return name;
   const native = NATIVE_TOOLS[harness]?.[name];
   if (native) return native;
   const mcp = /^mcp__([a-z][a-z0-9-]*)__(.+)$/.exec(name);
@@ -172,7 +172,9 @@ export type EnterOptions = {
  *  (`isError: true`), or the waiting text with `parked: true`, after which the caller ends the turn. */
 export type Entered = undefined | (ToolAnswer & { parked?: true });
 
-/** Runs an APPROVED parked call of a tool family the gate does not own (the MCP gateway's), exactly once. */
+/** Runs an APPROVED parked call of a tool family the gate does not own (the MCP gateway's), exactly once. It owns the
+ *  call's deadline: the gate puts no wall-clock bound on it (only a stop or a cancel cuts it, through `signal`), so an
+ *  executor bounds its own work and answers a timeout as an error result (`isError: true`), never by waiting on. */
 export type Executor = (tool: string, args: unknown, callId: string, signal: AbortSignal) => Promise<ToolAnswer>;
 
 /** The gate of one run, in the run's process. */
@@ -285,6 +287,8 @@ export class RunGate {
   private durable?: DurableRun;
   private context?: Context;
   private coding?: readonly ToolRegistration[];
+  /** The run's own tools beyond the table (its learned_workflow), on which an approved call of one runs. */
+  private extra: readonly ToolRegistration[] = [];
   private resume?: Resume;
   private drive?: Promise<Drive>;
   private timer?: NodeJS.Timeout;
@@ -393,11 +397,13 @@ export class RunGate {
   }
 
   /** Reads the requests the run's store holds, as the run's process opens, before its turns go on. `coding`: the run's
-   *  coding source (coding-tools.ts), on which an approved coding call runs, as the run's own would. */
-  async load(durable: DurableRun, context: Context, coding?: readonly ToolRegistration[]): Promise<void> {
+   *  coding source (coding-tools.ts), on which an approved coding call runs, as the run's own would; `extra`, the run's
+ *  own tools beyond the table (its learned_workflow), on which an approved call of one runs. */
+  async load(durable: DurableRun, context: Context, coding?: readonly ToolRegistration[], extra: readonly ToolRegistration[] = []): Promise<void> {
     this.durable = durable;
     this.context = context;
     this.coding = coding;
+    this.extra = extra;
     const root = await durable.harness.conversation(ROOT_CONVERSATION_ID, context);
     for (let cursor: Cursor | undefined; root; ) {
       const page = await root.entries({ order: "ascending" }, 500, cursor, context);
@@ -559,7 +565,8 @@ export class RunGate {
   private readonly executors = new Map<string, Executor>();
 
   /** Registers how an approved call of tools named `prefix…` runs (the MCP gateway's, "mcp:"): one per prefix and run.
-   *  The gate runs it exactly once on its journaled path, as it runs a kernel host tool. */
+   *  The gate runs it exactly once on its journaled path, as it runs a kernel host tool, with no deadline of its own: the
+   *  executor bounds the call (Executor). */
   executor(prefix: string, run: Executor): void {
     this.executors.set(prefix, run);
   }
@@ -577,7 +584,7 @@ export class RunGate {
     // Imported here, not at the top: host-tools reaches the web tools, which reach tool-plane, which reads this module's
     // permission rule, and a cycle of top-level imports leaves one of them uninitialized for whichever loads first.
     const { hostTools } = await import("./host-tools.js");
-    const [tool] = hostTools(this.durable!, [held.tool], this.context!, new Map(), this.coding);
+    const [tool] = hostTools(this.durable!, [held.tool], this.context!, new Map(), this.coding, undefined, this.extra);
     if (!tool) return { refused: `The approved ${held.tool} call is not one the kernel runs outside the model's turn.` };
     return { replay: tool.replay, call: (signal) => tool.call(held.args, { callId: held.call_id, signal }) as Promise<ToolAnswer> };
   }

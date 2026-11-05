@@ -30,8 +30,10 @@ import type { Park, RunGate } from "./tool-gate.js";
 
 export { workspaceRelative } from "./workspace-paths.js";
 
-/** Each tool a harness other than pi runs here, by catalog name, and whether a call a crash cut off may run again. */
-export const REPLAY: Record<string, "safe" | "never"> = { read: "safe", write: "never", edit: "never", bash: "never", [FETCH_PAGE_TOOL]: "safe", [WEB_FETCH_TOOL]: "safe", [WEB_SEARCH_TOOL]: "safe", "monid.discover": "safe", "monid.inspect": "safe", "monid.run": "never", bash_background: "never", bash_output: "safe", bash_input: "never", bash_signal: "never", bash_list: "safe" };
+/** Each tool a harness other than pi runs here, by catalog name, and whether a call a crash cut off may run again.
+ *  `learned_workflow` (learned-workflow.ts LEARNED_WORKFLOW_TOOL, named here as a string so the modules do not import
+ *  each other) is never run again. */
+export const REPLAY: Record<string, "safe" | "never"> = { read: "safe", write: "never", edit: "never", bash: "never", [FETCH_PAGE_TOOL]: "safe", [WEB_FETCH_TOOL]: "safe", [WEB_SEARCH_TOOL]: "safe", "monid.discover": "safe", "monid.inspect": "safe", "monid.run": "never", bash_background: "never", bash_output: "safe", bash_input: "never", bash_signal: "never", bash_list: "safe", learned_workflow: "never" };
 
 /** pi's limits on a tool's output (its DEFAULT_MAX_BYTES and DEFAULT_MAX_LINES), unless the tool names its own: read's
  *  head and bash's tail are held to them (the host-bounds test reads pi's own words for them). */
@@ -106,8 +108,9 @@ const textOf = (content: unknown): string =>
 
 /** The host tools `names` names, on the run's coding source `coding`. `gated`: the run's tool gate, which every call
  *  passes, and the park it takes (harness-app.ts), told of a call it parked, whose turn the harness ends; none (the
- *  gate's own run of an approved call), each call runs as asked. */
-export function hostTools(run: DurableRun, names: readonly string[], context: Context, results: ToolResults, coding: readonly ToolRegistration[] = CodingTools.tools ?? [], gated?: { gate: RunGate; park: Park }): HostTool[] {
+ *  gate's own run of an approved call), each call runs as asked. `extra`: the run's own tools beyond the table (its
+ *  learned_workflow, learned-workflow.ts), which the gate passes like the rest. */
+export function hostTools(run: DurableRun, names: readonly string[], context: Context, results: ToolResults, coding: readonly ToolRegistration[] = CodingTools.tools ?? [], gated?: { gate: RunGate; park: Park }, extra: readonly ToolRegistration[] = []): HostTool[] {
   // The coding source gives the coding tools and nothing else: the network tools are this machine's own, below.
   const stray = coding.map((tool) => tool.name).filter((name) => !BOXED_TOOLS.includes(name));
   if (stray.length) throw new Error(`the coding source holds ${stray.join(", ")}, which is no coding tool`);
@@ -117,7 +120,8 @@ export function hostTools(run: DurableRun, names: readonly string[], context: Co
   // never in its environment, and its long answers go in the run's work/, the claim's as pi's (`where.work`), read at
   // the call. They are outside the coding source, which holds the coding tools only.
   const monid = names.some((name) => name.startsWith("monid.")) ? monidTools(withSecrets(process.env), () => run.claim.work) : [];
-  const tools = new Map([...coding, ...web, ...monid].map((tool) => [tool.name, tool as ToolRegistration] as const));
+  // `extra`: the run's own tools beyond the table, its learned_workflow (learned-workflow.ts) when its pin names one.
+  const tools = new Map([...coding, ...web, ...monid, ...extra].map((tool) => [tool.name, tool as ToolRegistration] as const));
   return names.flatMap((name) => {
     // The registrations are keyed by their wire names: the same name for every tool here but monid's.
     const tool = tools.get(wireName(name));

@@ -88,7 +88,7 @@ describe("Settings → Tools saves the whole map, read then changed in one place
     const cells = (withGates: boolean) => {
       const html = renderToStaticMarkup(createElement(ToolTable, { label: "t", rows: toolRows(toolChoices([SEARCH, FETCH]), withGates ? toolGates(RAW) : []), settings: { web_search: { provider: "parallel" } }, fallbackOf: (t) => t.default_provider, resolvesOf: () => "r", issues: {}, onEdit: () => {} }));
       const doc = new DOMParser().parseFromString(html, "text/html");
-      return ["web_search", "web_fetch"].map((n) => doc.querySelector(`tr[data-tool="${n}"] td:nth-child(2)`)!.outerHTML);
+      return ["web_search", "web_fetch"].map((n) => doc.querySelector(`tr[data-tool="${n}"] select[aria-label="${n} provider"]`)!.closest("td")!.outerHTML);
     };
     expect(cells(true)).toEqual(cells(false));
     expect(cells(false)[0]).toContain("aria-label=\"web_search provider\"");
