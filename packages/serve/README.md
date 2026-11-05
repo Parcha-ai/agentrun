@@ -1226,6 +1226,25 @@ does not deliver again on its own: a delivery answered `503` (a write that faile
 due) is lost until it is redelivered from the webhook's Recent Deliveries. The agent gets the trigger's input, then the
 issue's or pull request's title and the comment (a review comment's file and line; an assignment's issue body), cut at
 16 KiB, inside `<trigger-payload source="github" user="..." repo="owner/name" number="12" untrusted>...</trigger-payload>`.
+
+Each issue or pull request is one run, whatever another one's run is doing. A later comment there that mentions the
+handle, by the same kind of person, is a message to that run: a steer, a follow-up that opens a completed run again,
+or the answer to the run's question. A comment there that mentions no one reaches nothing: an issue's other comments
+are its people's talk. A trigger keeps an issue's run for 30 days after its last mention, and its 1,000 most recent.
+
+When the run comes to need its person, and when it ends, one comment is posted on its issue or pull request (a review
+comment's run comments on the pull request's conversation): "Waiting for your answer: reply here mentioning
+`@handle`", "Waiting for your approval of `<tool>`: approve in the console" (a tool call waiting on its owner's OK,
+which no comment approves), "Stopped: mention `@handle` here to go on", "Paused at its spend cap", "Done", "Failed" or
+"Cancelled", each with a link to the run when the server has a public address (`AGENTRUN_PUBLIC_URL`). The handle is
+shown in code, so the comment mentions no one. A trigger whose source sets `post_answer: true` (default false) has a
+completed run's comment carry its final answer, redacted, cut to 3,000 characters, inside a `<details>` block, and
+defused: a word joiner (U+2060) after each `@` and each `#` before a number, and inside `GH-12`, so it mentions no one
+and puts no reference on another issue. An issue's URL is left as a link. No comment closes an issue: GitHub closes
+one only from a pull request's body or a commit's message. Comments wait in `DIR/github-outbox.json` and are tried
+again on the webhook's schedule until GitHub takes one (`201`), waiting as long as GitHub's rate limit says
+(`Retry-After`, or until `x-ratelimit-reset`); a comment whose answer never came is tried again, so it can show twice.
+A token GitHub refuses (`401`) turns posting off until the settings are saved again.
 An import cuts the GitHub secrets out of what it keeps, and no learning text shows them.
 
 ## What it serves
