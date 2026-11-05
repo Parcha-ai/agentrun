@@ -5,7 +5,7 @@
 // own fit check.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { capBefore, paidCall, raiseTo, useSpend } from "../dist/cap.js";
+import { capBefore, leastMoney, paidCall, raiseTo, useSpend } from "../dist/cap.js";
 
 // Output at $100 a million: 3,072 tokens, a request's least, are $0.3072.
 const model = { id: "gpt-6-luna", name: "gpt-6-luna", api: "openai-responses", provider: "p", maxTokens: 64000, contextWindow: 400000, cost: { input: 0, output: 100, cacheRead: 0, cacheWrite: 0 } };
@@ -15,6 +15,13 @@ test("a total a hair past a whole cent names the cent above it: raiseTo(0.30, 0.
   assert.equal(raiseTo(0.3, 0.31 + 5e-12), "$0.32");
   // A float's own tail past a cent is that cent: 0.0028 + 0.3072 is 0.31000000000000005.
   assert.equal(raiseTo(0.3, 0.0028 + 3072 * (100 / 1e6)), "$0.31");
+});
+
+test("a request's least, as its refusal says it, rounds up to the cent within the same tail: a hair past a cent is the cent above it, a float's own tail its plain cent", () => {
+  assert.equal(leastMoney(0.31 + 5e-12), "$0.32");
+  // 0.1 + 0.2 is 0.30000000000000004; 3,072 tokens at $100 a million is 0.30720000000000003.
+  assert.equal(leastMoney(0.1 + 0.2), "$0.30");
+  assert.equal(leastMoney(3072 * (100 / 1e6)), "$0.31");
 });
 
 test("the raise a model request's refusal names admits that request", async () => {
