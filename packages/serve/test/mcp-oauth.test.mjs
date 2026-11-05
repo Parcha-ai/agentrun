@@ -232,6 +232,8 @@ for (const name of ["docs", "constructor"]) test(`a run (server ${name}): its la
   const started = await api("POST", `/settings/mcp-servers/${name}/oauth/start`, { url: mcp.url });
   assert.equal((await approve(started)).status, 302);
   assert.equal((await api("POST", "/agents", agent("adder", { tools: [`mcp:${name}/add`] }))).status, 201);
+  // Its calls allowed, so they run with no one asked (the gate's own cases are in mcp-gate-wired.test.mjs and below).
+  assert.equal((await api("PUT", "/settings/tools", { [`mcp:${name}/*`]: { permission: "allow" } })).status, 200);
   const run = async () => {
     const made = await api("POST", "/agents/adder/runs", { input: { content: `Call mcp__${name}__add with {"a":2,"b":3}` } });
     assert.equal(made.status, 202, JSON.stringify(made.body));
@@ -279,6 +281,7 @@ test("a stop never waits on a token refresh: with the authorization server hangi
   const started = await api("POST", "/settings/mcp-servers/slow/oauth/start", { url: mcp.url });
   assert.equal((await approve(started)).status, 302);
   assert.equal((await api("POST", "/agents", agent("writer", { tools: ["mcp:slow/slow_write"] }))).status, 201);
+  assert.equal((await api("PUT", "/settings/tools", { "mcp:slow/*": { permission: "allow" } })).status, 200);
   const made = await api("POST", "/agents/writer/runs", { input: { content: 'Call mcp__slow__slow_write with {"line":"x","seconds":30}' } });
   assert.equal(made.status, 202, JSON.stringify(made.body));
   for (let i = 0; !mcp.log.some((entry) => entry.method === "tools/call" && entry.tool === "slow_write"); i++) {
@@ -489,4 +492,34 @@ test("the default network dials the address it is given, whatever the name: a na
   assert.equal(res.status, 200);
   assert.deepEqual(await res.json(), { ok: true });
   assert.deepEqual(heard, [`pinned.invalid:${port}`], "dialled at the address given, with the name as its Host");
+});
+
+test("pi: an OAuth server's calls pass the gate like any other: denied, nothing reaches it; with no setting, the call asks and parks; its token is still refreshed at launch", { timeout: 180_000 }, async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() });
+  const { api } = await serve(t, { faux: FAUX_MCP });
+  const { as, mcp } = await fakes(t, { expiresIn: 60 });
+  const started = await api("POST", "/settings/mcp-servers/docs/oauth/start", { url: mcp.url });
+  assert.equal((await approve(started)).status, 302);
+  assert.equal((await api("POST", "/agents", agent("adder", { tools: ["mcp:docs/add"] }))).status, 201);
+  const run = async () => {
+    const made = await api("POST", "/agents/adder/runs", { input: { content: 'Call mcp__docs__add with {"a":2,"b":3}' } });
+    assert.equal(made.status, 202, JSON.stringify(made.body));
+    return made.body.run_id;
+  };
+  const calls = () => mcp.log.filter((entry) => entry.method === "tools/call").length;
+
+  assert.equal((await api("PUT", "/settings/tools", { "mcp:docs/*": { permission: "deny" } })).status, 200);
+  const denied = await run();
+  const { last } = await follow(api, denied, ["completed", "failed", "input_required"], { deadlineMs: 120_000 });
+  assert.equal(last.status, "completed");
+  assert.match((await api("GET", `/runs/${denied}`)).body.result?.final_answer ?? "", /denied|deny/i);
+  assert.equal(calls(), 0, "nothing reached the OAuth server");
+  assert.ok(as.log.some((entry) => entry.form.grant_type === "refresh_token"), "its launch still refreshed the token near expiry");
+
+  assert.equal((await api("PUT", "/settings/tools", {})).status, 200);
+  const asked = await run();
+  await follow(api, asked, ["input_required"], { deadlineMs: 120_000 });
+  const pending = (await api("GET", `/runs/${asked}`)).body.pending;
+  assert.deepEqual([pending?.kind, pending?.tool], ["approval", "mcp:docs/add"], JSON.stringify(pending));
+  assert.equal(calls(), 0, "nothing sent while it waits");
 });
