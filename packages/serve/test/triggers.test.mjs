@@ -319,6 +319,51 @@ test("a run parked on a person keeps every later firing skipped, after its firin
   assert.equal((await api("POST", `/runs/${first.body.run_id}/cancel`)).status, 202);
 });
 
+test("a run now's key retried after its firing left the history answers that firing for the key's day and moves no last run back; past the day it is a new firing, and still never starts its run twice", { timeout: 300_000 }, async (t) => {
+  const clock = fakeClock("2026-06-01T00:00:00Z");
+  const { api } = await serve(t, { triggerClock: clock });
+  await made(api, "keys", { tools: ["ask_person"] });
+  const { body } = await api("POST", "/triggers", schedule("keys", { cron: "0 9 * * *" }, { enabled: false }));
+  const fire = (key) => api("POST", `/triggers/${body.id}/fire`, undefined, { "idempotency-key": key });
+  const runs = async () => (await api("GET", "/agents/keys/runs")).body.runs.length;
+  const lastRun = async () => (await api("GET", `/triggers/${body.id}`)).body.last_run_id;
+  // Run A completes; run B, of a later firing, waits on a person; 200 skipped firings push A's and B's out of the history.
+  const a = (await fire("first")).body;
+  assert.equal(a.status, "started", JSON.stringify(a));
+  await follow(api, a.run_id, ["completed"]);
+  assert.equal((await api("PATCH", `/triggers/${body.id}`, { target: { kind: "start_run", agent_id: "keys", input: { content: "Pick a region." }, max_cost_usd: 0.5 } })).status, 200);
+  const b = (await fire("parked")).body;
+  assert.equal(b.status, "started", JSON.stringify(b));
+  await follow(api, b.run_id, ["input_required"]);
+  for (let n = 1; n <= 200; n++) assert.equal((await fire(`again-${n}`)).body.status, "skipped", `firing ${n}`);
+  const history = (await api("GET", `/triggers/${body.id}/firings`)).body.firings;
+  assert.ok(!history.some((f) => f.run_id === a.run_id), "A's firing left the history");
+  // A's key again, within its day: its firing as it was, and B stays the last run, so the next firing is still skipped.
+  const replayed = await fire("first");
+  assert.equal(await lastRun(), b.run_id, "the last run is still B");
+  assert.deepEqual([replayed.status, replayed.headers.get("idempotent-replayed"), replayed.body], [200, "true", a]);
+  const next = (await fire("next")).body;
+  assert.deepEqual([next.status, next.reason], ["skipped", `The last run, ${b.run_id}, is waiting for a person.`]);
+  assert.equal(await runs(), 2);
+  // A skipped key whose firing left the history, retried within its day once nothing is active: still skipped, no run.
+  assert.equal((await api("POST", `/runs/${b.run_id}/cancel`)).status, 202);
+  await follow(api, b.run_id, ["cancelled"]);
+  assert.ok(!(await api("GET", `/triggers/${body.id}/firings`)).body.firings.some((f) => f.key === keyOf("manual", body.id, "again-1")), "again-1 left the history");
+  const skipped = await fire("again-1");
+  assert.deepEqual([skipped.status, skipped.body.status, skipped.body.run_id], [200, "skipped", null]);
+  assert.equal(await runs(), 2, "no run for a skipped key");
+  // Past the key's day each is a new firing: again-1 starts run C, and first finds A again (its run's key in the store),
+  // which neither starts a run nor takes the place of C.
+  clock.to("2026-06-02T00:00:01Z");
+  const c = await fire("again-1");
+  assert.deepEqual([c.status, c.body.status], [202, "started"], JSON.stringify(c.body));
+  const late = await fire("first");
+  assert.deepEqual([late.status, late.body.status, late.body.run_id], [202, "started", a.run_id]);
+  assert.equal(await lastRun(), c.body.run_id, "C stays the last run");
+  assert.equal(await runs(), 3);
+  assert.equal((await api("POST", `/runs/${c.body.run_id}/cancel`)).status, 202);
+});
+
 test("a date that is no date, and an interval past a year, are 422 on their field, never a 500", { timeout: 60_000 }, async (t) => {
   const { api } = await serve(t, { triggerClock: fakeClock("2026-06-01T00:00:00Z") });
   await made(api, "dates");

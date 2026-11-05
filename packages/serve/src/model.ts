@@ -41,17 +41,18 @@ export const MODEL_NODES = ["agent", "decide", "extract", "report"] as const;
 /** The model providers whose key a person may save here (tool-keys.ts' `model` rows), in the order a default is taken
  *  from, each with the model a run gets on its key when neither its revision nor the host names one: the provider's
  *  capable everyday model, not its dearest (Claude Sonnet 5.5 and GPT-6.1 Sol, each $2 in and $10 out per million
- *  tokens). `harnesses`: those that run on the key, pi on any model of it and the harness that is the provider's own;
- *  OpenRouter's runs all three. `models`: a harness's own default on the key where it is not `model`. On OpenRouter:
+ *  tokens). `harnesses`: those that run on the key, pi on any model of it and the harnesses that talk to that
+ *  provider's own API (OpenAI's: codex and opencode); OpenRouter's runs them all. `models`: a harness's own default on the
+ *  key where it is not `model`. On OpenRouter:
  *  pi's is GPT-6 Sol on pi-ai's openrouter provider (/chat/completions, the key as a bearer token, as OpenRouter's docs
  *  name it; its Anthropic models go to /v1/messages with the key in x-api-key, which the docs do not), claude-agent's
- *  Claude Sonnet 5.5 and codex's GPT-6 Sol, each through OpenRouter's own endpoint for the harness (adapters.ts), the ids
+ *  Claude Sonnet 5.5 and codex's and opencode's GPT-6 Sol, each through OpenRouter's own endpoint for the harness (adapters.ts), the ids
  *  a live run took through OpenRouter on 2026-10-29. The row order is the order a default is taken in: a direct
  *  provider's key wins over OpenRouter's. */
 export const MODEL_KEYS = [
   { id: "anthropic", label: "Anthropic", field: "ANTHROPIC_API_KEY", model: "anthropic/claude-sonnet-5-5", harnesses: [DEFAULT_HARNESS, "claude-agent"] },
-  { id: "openai", label: "OpenAI", field: "OPENAI_API_KEY", model: "openai/gpt-6.1-sol", harnesses: [DEFAULT_HARNESS, "codex"] },
-  { id: "openrouter", label: "OpenRouter", field: "OPENROUTER_API_KEY", model: "openrouter/openai/gpt-6-sol", harnesses: [DEFAULT_HARNESS, "claude-agent", "codex"], models: { "claude-agent": "anthropic/claude-sonnet-5.5", codex: "openai/gpt-6-sol" } },
+  { id: "openai", label: "OpenAI", field: "OPENAI_API_KEY", model: "openai/gpt-6.1-sol", harnesses: [DEFAULT_HARNESS, "codex", "opencode"] },
+  { id: "openrouter", label: "OpenRouter", field: "OPENROUTER_API_KEY", model: "openrouter/openai/gpt-6-sol", harnesses: [DEFAULT_HARNESS, "claude-agent", "codex", "opencode"], models: { "claude-agent": "anthropic/claude-sonnet-5.5", codex: "openai/gpt-6-sol", opencode: "openai/gpt-6-sol" } },
 ] as const;
 
 /** `row`'s default for `harness`: its own (`models`), else the row's. */
@@ -60,11 +61,11 @@ const rowModel = (row: (typeof MODEL_KEYS)[number], harness: string): string => 
 /**
  * Whether `harness` reaches its vendor's models here only through OpenRouter: OPENROUTER_API_KEY is set and none of the
  * harness's own settings is. Those win, as on a host with no OpenRouter key: the endpoint the host names
- * (ANTHROPIC_BASE_URL for claude-agent, which needs ANTHROPIC_API_KEY; serve's gateway AGENT_MODEL_BASE_URL for codex,
- * with AGENT_MODEL_API_KEY or none), then the vendor's own key (ANTHROPIC_API_KEY, OPENAI_API_KEY), then OpenRouter. An
+ * (ANTHROPIC_BASE_URL for claude-agent, which needs ANTHROPIC_API_KEY; serve's gateway AGENT_MODEL_BASE_URL for codex
+ * and opencode, which take the same route, with AGENT_MODEL_API_KEY or none), then the vendor's own key (ANTHROPIC_API_KEY, OPENAI_API_KEY), then OpenRouter. An
  * endpoint the host names never gets the OpenRouter key.
  */
-export function openRouterOnly(harness: "claude-agent" | "codex", env: NodeJS.ProcessEnv): boolean {
+export function openRouterOnly(harness: "claude-agent" | "codex" | "opencode", env: NodeJS.ProcessEnv): boolean {
   if (!env.OPENROUTER_API_KEY) return false;
   return harness === "claude-agent" ? !env.ANTHROPIC_BASE_URL && !env.ANTHROPIC_API_KEY : !env.AGENT_MODEL_BASE_URL && !env.OPENAI_API_KEY;
 }
@@ -90,16 +91,16 @@ export const ADD_A_KEY = `add a model key in Settings → Model keys, or set ${[
 const onOpenRouter = (id: string, vendor: string): boolean => new RegExp(`^openrouter/${vendor}/[^/]+$`).test(id);
 
 /** Whether `harness` runs the model `id`: pi any; claude-agent an Anthropic model (`anthropic/...`, or Anthropic's on
- *  OpenRouter, `openrouter/anthropic/...`), as it talks to an Anthropic Messages endpoint only; codex, behind a gateway
+ *  OpenRouter, `openrouter/anthropic/...`), as it talks to an Anthropic Messages endpoint only; codex and opencode, behind a gateway
  *  (AGENT_MODEL_BASE_URL), any id, which is the gateway's own string and names no provider here (team/model included),
- *  as codex takes that gateway for its OpenAI-compatible endpoint; without one, an OpenAI model (`openai/...`, or OpenAI's
+ *  as each takes that gateway for its OpenAI-compatible endpoint; without one, an OpenAI model (`openai/...`, or OpenAI's
  *  on OpenRouter). On the faux harness every harness runs the run's model. */
 export function harnessRuns(env: NodeJS.ProcessEnv, id: string, harness: string): boolean {
   if (harness === DEFAULT_HARNESS || env[FAUX_HARNESS_ENV]) return true;
   const slash = id.indexOf("/");
   const provider = slash > 0 ? id.slice(0, slash) : undefined;
   if (harness === "claude-agent") return provider === "anthropic" || onOpenRouter(id, "anthropic");
-  if (harness === "codex") return Boolean(env.AGENT_MODEL_BASE_URL) || provider === "openai" || onOpenRouter(id, "openai");
+  if (harness === "codex" || harness === "opencode") return Boolean(env.AGENT_MODEL_BASE_URL) || provider === "openai" || onOpenRouter(id, "openai");
   return true;
 }
 

@@ -74,13 +74,13 @@ test("a key saved by name is kept sealed: GET says which fields are set and from
   assert.deepEqual(fieldsOf(listed.body), { PARALLEL_API_KEY: STORED, MONID_API_KEY: UNSET, BROWSERBASE_API_KEY: STORED, BROWSERBASE_PROJECT_ID: STORED, TYPESAFE_API_KEY: UNSET, ANTHROPIC_API_KEY: UNSET, OPENAI_API_KEY: UNSET, OPENROUTER_API_KEY: UNSET });
   // A model key's harnesses: pi and its provider's own, every one installed and with room here, none saved yet.
   assert.deepEqual(listed.body.keys.map((k) => [k.id, k.kind, k.unlocks, k.harnesses]), [
-    ["parallel", "tool", ["web_fetch", "web_search", "decisions.parallel"], ["pi", "claude-agent", "codex"]],
-    ["monid", "tool", ["monid.discover", "monid.inspect", "monid.run"], ["pi", "claude-agent", "codex"]],
+    ["parallel", "tool", ["web_fetch", "web_search", "decisions.parallel"], ["pi", "claude-agent", "codex", "opencode"]],
+    ["monid", "tool", ["monid.discover", "monid.inspect", "monid.run"], ["pi", "claude-agent", "codex", "opencode"]],
     ["browserbase", "tool", ["browser"], ["pi"]],
     ["typesafe", "tool", ["decisions.jev"], []],
     ["anthropic", "model", [], ["pi", "claude-agent"]],
-    ["openai", "model", [], ["pi", "codex"]],
-    ["openrouter", "model", [], ["pi", "claude-agent", "codex"]],
+    ["openai", "model", [], ["pi", "codex", "opencode"]],
+    ["openrouter", "model", [], ["pi", "claude-agent", "codex", "opencode"]],
   ], "only what this server binds: web_fetch and web_search on every harness; the monid tools on every harness, as capabilities run them");
   assert.equal(listed.body.reenter, null);
   await meetsDocument(api, listed.body);
@@ -139,20 +139,21 @@ test("each key unlocks only what capabilities bind, a tool or a decision provide
   assert.deepEqual(rowUnlocks(model("openrouter"), later, [], [{ id: "pi", available: true }, { id: "claude-agent", available: false }, { id: "codex", available: false }]).harnesses, ["pi"], "unavailable for another reason (not installed): left out");
 });
 
-test("before any model key is saved, a model key's row names every harness the key runs that this server could run: OpenRouter's all three, Anthropic's pi and claude-agent; one not installed, one that does not fit and one the key alone does not fix are left out", { timeout: 180_000 }, async (t) => {
+test("before any model key is saved, a model key's row names every harness the key runs that this server could run: OpenRouter's all four, Anthropic's pi and claude-agent; one not installed, one that does not fit and one the key alone does not fix are left out", { timeout: 180_000 }, async (t) => {
   const standIn = await codexStandIn(t);
   // A path where nothing is installed.
   const nothing = join(await scratch(t), "nothing");
   const cases = [
     ["claude-agent installed, codex stood in", ROOMY_MIB, { AGENTRUN_SERVE_CODEX_STANDIN: standIn }, OWN],
-    ["claude-agent not installed", ROOMY_MIB, { AGENTRUN_SERVE_CODEX_STANDIN: standIn, AGENTRUN_CLAUDE_AGENT_EXECUTABLE: nothing }, { anthropic: ["pi"], openai: ["pi", "codex"], openrouter: ["pi", "codex"] }],
-    ["codex not installed", ROOMY_MIB, { CODEX_BIN: nothing }, { anthropic: ["pi", "claude-agent"], openai: ["pi"], openrouter: ["pi", "claude-agent"] }],
-    // 384 MiB holds the server's 128 and one codex run (192), never a claude-agent run (288): no key would run it.
+    ["claude-agent not installed", ROOMY_MIB, { AGENTRUN_SERVE_CODEX_STANDIN: standIn, AGENTRUN_CLAUDE_AGENT_EXECUTABLE: nothing }, { anthropic: ["pi"], openai: ["pi", "codex", "opencode"], openrouter: ["pi", "codex", "opencode"] }],
+    ["codex not installed", ROOMY_MIB, { CODEX_BIN: nothing }, { anthropic: ["pi", "claude-agent"], openai: ["pi", "opencode"], openrouter: ["pi", "claude-agent", "opencode"] }],
+    // 384 MiB holds the server's 128 and one codex run (192), never a claude-agent run (288) or an opencode run (704): no
+    // key would run them.
     ["a host too small for a claude-agent run", 384, { AGENTRUN_SERVE_CODEX_STANDIN: standIn }, { anthropic: ["pi"], openai: ["pi", "codex"], openrouter: ["pi", "codex"] }],
     // An endpoint the host names for claude-agent takes Anthropic's key alone, never OpenRouter's.
-    ["claude-agent on the host's endpoint", ROOMY_MIB, { AGENTRUN_SERVE_CODEX_STANDIN: standIn, ANTHROPIC_BASE_URL: "https://gateway.invalid" }, { anthropic: ["pi", "claude-agent"], openai: ["pi", "codex"], openrouter: ["pi", "codex"] }],
+    ["claude-agent on the host's endpoint", ROOMY_MIB, { AGENTRUN_SERVE_CODEX_STANDIN: standIn, ANTHROPIC_BASE_URL: "https://gateway.invalid" }, { anthropic: ["pi", "claude-agent"], openai: ["pi", "codex", "opencode"], openrouter: ["pi", "codex", "opencode"] }],
     // An endpoint claude-agent refuses (plain http to another machine): its key alone would not run it.
-    ["claude-agent on an endpoint it refuses", ROOMY_MIB, { AGENTRUN_SERVE_CODEX_STANDIN: standIn, ANTHROPIC_BASE_URL: "http://gateway.example" }, { anthropic: ["pi"], openai: ["pi", "codex"], openrouter: ["pi", "codex"] }],
+    ["claude-agent on an endpoint it refuses", ROOMY_MIB, { AGENTRUN_SERVE_CODEX_STANDIN: standIn, ANTHROPIC_BASE_URL: "http://gateway.example" }, { anthropic: ["pi"], openai: ["pi", "codex", "opencode"], openrouter: ["pi", "codex", "opencode"] }],
   ];
   for (const [label, mib, vars, rows] of cases) {
     await t.test(label, async (st) => {
