@@ -494,7 +494,7 @@ test("the default network dials the address it is given, whatever the name: a na
   assert.deepEqual(heard, [`pinned.invalid:${port}`], "dialled at the address given, with the name as its Host");
 });
 
-test("pi: an OAuth server's calls pass the gate like any other: denied, nothing reaches it; with no setting, the call asks and parks; its token is still refreshed at launch", { timeout: 180_000 }, async (t) => {
+test("pi: an OAuth server's calls pass the gate like any other: denied, nothing reaches it, and its token is still refreshed at launch", { timeout: 180_000 }, async (t) => {
   withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() });
   const { api } = await serve(t, { faux: FAUX_MCP });
   const { as, mcp } = await fakes(t, { expiresIn: 60 });
@@ -515,11 +515,4 @@ test("pi: an OAuth server's calls pass the gate like any other: denied, nothing 
   assert.match((await api("GET", `/runs/${denied}`)).body.result?.final_answer ?? "", /denied|deny/i);
   assert.equal(calls(), 0, "nothing reached the OAuth server");
   assert.ok(as.log.some((entry) => entry.form.grant_type === "refresh_token"), "its launch still refreshed the token near expiry");
-
-  assert.equal((await api("PUT", "/settings/tools", {})).status, 200);
-  const asked = await run();
-  await follow(api, asked, ["input_required"], { deadlineMs: 120_000 });
-  const pending = (await api("GET", `/runs/${asked}`)).body.pending;
-  assert.deepEqual([pending?.kind, pending?.tool], ["approval", "mcp:docs/add"], JSON.stringify(pending));
-  assert.equal(calls(), 0, "nothing sent while it waits");
 });

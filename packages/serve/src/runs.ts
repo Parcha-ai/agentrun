@@ -22,7 +22,7 @@ import type { RunTrigger } from "./triggers.js";
 import { hostMemory, memoryFull, neverFits, runMibOf, runsMemoryMib } from "./host.js";
 import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from "./agents.js";
 import { FOLLOW_UP_OPEN_ENV, LAUNCH_LOST, readJson, RUN_CANCELLED, RUN_DOOR_TOKEN, RUN_LAUNCHING, RUN_META, runDoorToken, SETUP_LOST, writeDurableSync, writeWhole } from "./files.js";
-import { MCP_PIN, mcpCredentialsOf, type McpPin, mcpPinOf, type McpServerSource } from "./mcp-gateway.js";
+import { MCP_PIN, mcpCredentialsOf, mcpNameOf, type McpPin, mcpPinOf, type McpServerSource } from "./mcp-gateway.js";
 import { type DaytonaApi, KEPT_AUTOSTOP_MINUTES, keepWhenIdle, wakeBoxes } from "./daytona-api.js";
 import { type Learning, LEARNING_LABEL, type LearningMode, type LearningReason, type LearningState, shortOf } from "./learning.js";
 import { labelled, LearningRuns, type Reflect, reflecting, reflects, type TurnOrigin, withLearning } from "./learning-run.js";
@@ -1847,9 +1847,18 @@ export class Runs {
    *  slow to answer never holds an abort. */
   private async mcpFresh(run: Run): Promise<boolean> {
     const source = this.options.mcpServers;
-    const pin = source?.refresh ? this.mcpPin(run, this.needs.get(run.revision)?.tools) : undefined;
-    if (!pin) return false;
-    await Promise.all(Object.keys(pin).map((name) => source!.refresh!(name)));
+    if (!source?.refresh) return false;
+    // The servers its pin names, or, before its first launch makes the pin (which may refuse the launch in words, there
+    // alone), the ones its granted tools name: read only, never pinned here.
+    const file = join(run.dir, MCP_PIN);
+    let names: string[] = [];
+    try {
+      names = existsSync(file) ? Object.keys(JSON.parse(readFileSync(file, "utf8")) as McpPin) : [...new Set((this.needs.get(run.revision)?.tools ?? []).flatMap((tool) => mcpNameOf(tool)?.server ?? []))];
+    } catch {
+      return false;
+    }
+    if (!names.length) return false;
+    await Promise.all(names.map((name) => source.refresh!(name)));
     return true;
   }
 
