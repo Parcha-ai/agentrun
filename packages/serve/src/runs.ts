@@ -1277,20 +1277,35 @@ export class Runs {
     return review && { ...review, reason: this.shown(run, review.reason) };
   }
 
+  /** The pointers a run was handed, read back to cut them (sign-ins.ts peek and forgotten), by its serve.json's
+   *  `sign_in_handed`: none for a run with no mark (it was never handed one); the live or forgotten pointer whose SHA-256
+   *  it is; every one, live and forgotten, for `true` (handed several). `unreadable` when what it was handed can't be read
+   *  back here: no vendor browser kept beside the mark, the sign-ins file can't be read, the pointer (or, for `true`,
+   *  any of them) does not open under this server's seal key, or its hash matches none kept (a forgotten one dropped
+   *  past MAX_FORGOTTEN). */
+  private async handedPointers(agentId: string, browser: string | undefined, handed: true | string | undefined): Promise<{ refs: string[] } | "unreadable"> {
+    const signIns = this.options.signIns;
+    if (handed === undefined || !signIns) return { refs: [] };
+    if (!browser) return "unreadable";
+    const live = await signIns.peek(agentId, browser).catch(() => "unreadable" as const);
+    const gone = await signIns.forgotten(agentId, browser).catch(() => "unreadable" as const);
+    if (live === "unreadable" && handed === true) return "unreadable";
+    if (gone === "unreadable" || (handed === true && gone.unreadable)) return "unreadable";
+    const all = [...(typeof live === "object" ? [live.ref] : []), ...gone.refs];
+    if (handed === true) return { refs: all };
+    const match = all.find((ref) => pointerHash(ref) === handed);
+    return match === undefined ? "unreadable" : { refs: [match] };
+  }
+
   /** shown() for a run this server holds no Run for (an ended one a list reads from its row and serve.json alone): cut of
-   *  this server's secrets and tokens and of its agent's browser sign-in's pointer, read back as a load does
-   *  (peekSignIn). `withheld` when that pointer can't be read back to cut it, as a load would hide the run: its agent's
-   *  sign-in does not open here (or its sign-ins file can't be read), and its serve.json says it ran with a browser or
-   *  was handed a sign-in (one handed a sign-in with no browser kept beside it is withheld too: which one is not known). */
+   *  this server's secrets and tokens and of what the run was handed of its agent's sign-in (handedPointers); `withheld`
+   *  when that can't be read back here, as a load would hide the run. */
   private async rowShown(agentId: string, meta: Partial<RunMeta> | null): Promise<((text: string) => string) | "withheld"> {
     const browser = isObject(meta?.tool_plane) && typeof meta.tool_plane.browser === "string" ? meta.tool_plane.browser : undefined;
-    const peeked = browser ? await this.options.signIns?.peek(agentId, browser).catch(() => "unreadable" as const) : undefined;
-    if (peeked === "unreadable" || (meta?.sign_in_handed !== undefined && !browser)) return "withheld";
-    const handed = meta?.sign_in_handed;
-    const gone = browser ? await this.options.signIns?.forgotten(agentId, browser).catch(() => "unreadable" as const) : undefined;
-    const forgotten = typeof gone === "object" ? gone.refs.filter((ref) => typeof handed !== "string" || pointerHash(ref) === handed) : [];
-    const pointer = [...(typeof peeked === "object" ? [peeked.ref] : []), ...forgotten].filter((ref) => ref.length >= MIN_SECRET);
-    const values = [...hostSecrets(process.env, this.options.storedKeys), ...pointer, this.options.token, this.options.doorToken];
+    const handed = meta?.sign_in_handed === true || (typeof meta?.sign_in_handed === "string" && /^[0-9a-f]{64}$/.test(meta.sign_in_handed)) ? meta.sign_in_handed : undefined;
+    const pointers = await this.handedPointers(agentId, browser, handed);
+    if (pointers === "unreadable") return "withheld";
+    const values = [...hostSecrets(process.env, this.options.storedKeys), ...pointers.refs.filter((ref) => ref.length >= MIN_SECRET), this.options.token, this.options.doorToken];
     return (text) => withoutLoopback(redacted(text, values));
   }
 
@@ -1968,12 +1983,10 @@ export class Runs {
   private async peekSignIn(run: Run): Promise<"unreadable" | { ref: string } | undefined> {
     const browser = run.meta.tool_plane?.browser;
     const peeked = browser ? await this.options.signIns?.peek(run.agentId, browser).catch(() => "unreadable" as const) : undefined;
-    // Its agent's forgotten pointers too (sign-ins.ts Forgotten): the one it was handed, by its hash, or every one when
-    // which is not known (handed two, or a run from before the hash was kept). A sign-in forgotten after the run ended,
-    // or replaced since, is still cut from what it said.
-    const handed = run.meta.sign_in_handed;
-    const gone = browser ? await this.options.signIns?.forgotten(run.agentId, browser).catch(() => "unreadable" as const) : undefined;
-    if (typeof gone === "object") for (const ref of gone.refs) if (ref.length >= MIN_SECRET && (typeof handed !== "string" || pointerHash(ref) === handed)) (run.handed ??= new Set()).add(ref);
+    // What it was handed, forgotten since or not (sign-ins.ts Forgotten): a sign-in forgotten after the run ended, or
+    // replaced since, is still cut from what it said. A run with no mark was never handed one.
+    const pointers = await this.handedPointers(run.agentId, browser, run.meta.sign_in_handed);
+    if (typeof pointers === "object") for (const ref of pointers.refs) if (ref.length >= MIN_SECRET) (run.handed ??= new Set()).add(ref);
     if (peeked === "unreadable" || peeked === undefined) return peeked;
     if (peeked.ref.length >= MIN_SECRET) (run.handed ??= new Set()).add(peeked.ref);
     return peeked;

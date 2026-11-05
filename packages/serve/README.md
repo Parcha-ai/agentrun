@@ -887,9 +887,10 @@ picks which one a run gets, never the model.
   way when its agent's revision grants the browser, or can't be read: nothing else says which browser it ran on, so
   whether it was handed the sign-in is not known ("This server can't read the run's record (its serve.json is damaged
   or can't be read), …"). A run list's row for an ended run the server has not read (from its row and `serve.json`
-  alone) serves its error and review cut of the pointer the same way, and withholds them, saying why, while the
-  agent's sign-in does not open and the run ran with a browser or was handed a sign-in. Its `held_by` still names a run
-  that holds its lease, as a held one does.
+  alone) serves its error and review cut of the pointer the same way, and withholds them, saying why, when the run
+  was handed a sign-in (the mark in its `serve.json`) that can't be read back here: it does not open under this
+  server's seal key, or it was forgotten and has since dropped out of the newest 32 kept. A run with no mark was never
+  handed one. Its `held_by` still names a run that holds its lease, as a held one does.
   Never the pointer. `DELETE /v2/agents/{id}/sign-ins/{key}` forgets one: the vendor's context or profile is deleted,
   then the pointer. A delete the vendor does not answer is said in the answer (`at_vendor: "not_deleted"`), and the
   pointer goes all the same. It is `409 sign_in_held` while a run holds the lease (`details.held_by`), and also while

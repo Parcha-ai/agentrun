@@ -1232,3 +1232,21 @@ test("an agent keeps its newest 32 forgotten pointers, sealed under their own bi
   assert.deepEqual(await rotated.forgotten("alpha", "browserbase"), { refs: [], unreadable: true });
   assert.deepEqual((await new SignIns(data, key, {}, async () => false).forgotten("alpha", "browserbase")).refs.length, MAX_FORGOTTEN);
 });
+
+test("a list row of an ended run that was never handed a sign-in (no mark in its serve.json) serves its error as any run's, though its agent's sign-in does not open here", { timeout: 240_000 }, async (t) => {
+  const dir = await scratch(t);
+  withEnv(t, { BROWSERBASE_API_KEY: BB_KEY, BROWSERBASE_PROJECT_ID: "proj-1", AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), FAUX_BROWSER_LOG: join(dir, "browser.jsonl"), FAUX_BROWSER_DIE_WITH_REF: "1" }, KEYS);
+  const first = await serve(t, { fauxBrowser: FAUX_BROWSER, fauxBrowserbase: FAUX_BROWSERBASE });
+  assert.equal((await first.api("POST", "/agents", agent("alpha", { instructions: "Browse.", tools: ["browser"] }))).status, 201);
+  const runId = (await first.api("POST", "/agents/alpha/runs", { input: { content: "Browse the example page." } })).body.run_id;
+  await follow(first.api, runId, ["failed"], { deadlineMs: 60_000 });
+  await first.close();
+  // As a run that browsed signed out keeps it: its plane, and no mark that it was handed a sign-in.
+  const metaFile = join(first.data, "runs", runId, "serve.json");
+  const { sign_in_handed: _, ...meta } = JSON.parse(await readFile(metaFile, "utf8"));
+  assert.ok(meta.tool_plane.browser);
+  await writeFile(metaFile, `${JSON.stringify({ ...meta, error: { code: "run_failed", message: "The browser died." } })}\n`);
+  process.env.AGENTRUN_SEAL_KEY = randomBytes(32).toString("base64");
+  const { api } = await serve(t, { data: first.data, fauxBrowser: FAUX_BROWSER, fauxBrowserbase: FAUX_BROWSERBASE });
+  for (const path of ["/runs", "/agents/alpha/runs"]) assert.equal((await api("GET", path)).body.runs.find((r) => r.run_id === runId).error.message, "The browser died.", path);
+});
