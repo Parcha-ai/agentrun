@@ -36,7 +36,8 @@ import { openapiDocument, servedOpenapi, UNSUPPORTED } from "./openapi.js";
 import { boxesLine, NEW_AGENT_TOOLS, newAgentPlace, noBoxReason, type Place, placesOf, resolvePlace } from "./place.js";
 import { BOX_ALLOW_ENV, boxAllowOf, boxLimitsOf, boxNetworkOf, FAUX_BOX_ENV, fauxBoxes } from "./run-box.js";
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
-import { answerPage, byOwnerSession, isJson, ownerCookie, ownOrigin, signedIn } from "./page.js";
+import { answerPage, byOwnerSession, isJson, ownerCookie, ownOrigin, sendHostRefused, signedIn } from "./page.js";
+import { HOST_FIX, hostName, loopbackNames } from "./host-check.js";
 import { durationMs, logLine } from "./print.js";
 import { type CarryBackRetry, knownToolCostOf, type Run, Runs, STATUSES, type Status, statusOf, toolCostOf, WAITS_ON_A_PERSON } from "./runs.js";
 import { runLines } from "./usage-lines.js";
@@ -181,7 +182,7 @@ export type ServeOptions = {
   /** Under `faux`: a module whose default export gives a box's egress proxy its `lookup` and `dial` (box-egress.ts), the
    *  tests' fake network. */
   fauxEgress?: string;
-  /** Extra `Host` names to accept besides the loopback ones. */
+  /** Extra `Host` names to accept besides the loopback ones, on any port (host-check.ts). */
   allowHosts?: string[];
   /** The console's built files, answered at / (default dist/console beside the server, which this package's build copies
    *  from apps/console/dist). */
@@ -2066,8 +2067,12 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     } catch {
       return fail(new ApiError("bad_request", "the request target is not a URL"));
     }
-    // On loopback, a Host that is not a loopback name is a page that rebound a name of its own to this address.
-    if (names && !names.has(String(req.headers.host ?? "").toLowerCase())) return fail(new ApiError("forbidden", "unexpected Host header"));
+    // On loopback, a Host that is not one of its names (host-check.ts) is a page that rebound a name of its own to this
+    // address. A browser is shown a page that says which names work; a script, the same in the error.
+    if (names && !names.has(hostName(req.headers.host) ?? "")) {
+      if (/\btext\/html\b/i.test(String(req.headers.accept ?? ""))) return sendHostRefused(req, res);
+      return fail(new ApiError("forbidden", `unexpected Host header: ${HOST_FIX}`));
+    }
     // Routed on the path as sent: a parsed URL folds `..` and `%2E%2E` segments away, and a file path must see them.
     const raw = (req.url ?? "/").split("?")[0]!;
     // Before the page: its cookie must not stand in for the token on the owner's own routes, nor on the MCP endpoint.
@@ -2106,7 +2111,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   if (offersImport && existsSync(importAsked)) void importAtSetup();
   else if (offersImport && options.countSessions && owner && !owner.hasPassword()) countSessions();
   const address = server.address() as AddressInfo;
-  if (isLoopback(host)) names = new Set(["localhost", "127.0.0.1", "[::1]", host, ...(options.allowHosts ?? [])].map((h) => `${h.toLowerCase()}:${address.port}`));
+  if (isLoopback(host)) names = loopbackNames(host, options.allowHosts, options.publicUrl);
   // An address of every interface is reached on this machine at its loopback one.
   const shown = host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host;
   const url = `http://${shown.includes(":") ? `[${shown}]` : shown}:${address.port}`;
