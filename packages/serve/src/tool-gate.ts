@@ -351,8 +351,15 @@ export class RunGate {
     if (other) return { text: `This ${tool} call was not run: the ${other.tool} call ${other.call_id} already waits for a person's approval. Call it again once that one is answered.`, isError: true };
     if (!this.requests.has(id)) {
       const request: ApprovalRequest = { id, tool, call_id: callId, args: args ?? null, args_preview: argsPreview(args), requested_at: new Date().toISOString(), ...(options.price !== undefined ? { price: options.price } : {}) };
-      await park.commit((tx) => (tx as Tx).appendEntry(ROOT_CONVERSATION_ID, { kind: APPROVAL_ENTRY, data: { phase: "requested", ...request } as never }));
+      // Held before the commit's await, in the tick of the look above: pi runs a turn's calls in parallel, and an ask
+      // entered meanwhile finds this one and is refused. A commit that fails lets it go.
       this.requests.set(id, request);
+      try {
+        await park.commit((tx) => (tx as Tx).appendEntry(ROOT_CONVERSATION_ID, { kind: APPROVAL_ENTRY, data: { phase: "requested", ...request } as never }));
+      } catch (error) {
+        this.requests.delete(id);
+        throw error;
+      }
     }
     park.parked?.(callId);
     this.watch();
