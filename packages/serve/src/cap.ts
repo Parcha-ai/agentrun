@@ -634,7 +634,8 @@ function capRefusal(cap: number, spent: number, held: number, name: string, leas
  *  the raise by leastMoney. */
 function paidRefusal(cap: number, spent: number, held: number, name: string, hold: { usd: number; basis: string }): string {
   const holds = held > 0 ? ` and holds ${money(held)} for calls still answering` : "";
-  const raise = leastMoney(Math.max(spent + held + hold.usd, (Math.floor(cap * 100 + 1e-9) + 1) / 100));
+  // The model refusal's rule (raiseTo): a cent at least, and above the cap, never the cap itself.
+  const raise = raiseTo(cap, spent + held + hold.usd);
   return `${SPEND_CAP_REACHED}: Not sent: the run has spent ${money(spent)}${holds} of its ${money(cap)} cap, and ${name} could cost up to ${money(hold.usd)} (${hold.basis}). Raise the cap to at least ${raise} to run it.`;
 }
 
