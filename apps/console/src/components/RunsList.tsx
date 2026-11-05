@@ -1,5 +1,6 @@
 import { Archive, ArrowUpRight } from "lucide-react";
 import { ProblemCard } from "@/components/Problem";
+import { ScheduleChip } from "@/components/ScheduleChip";
 import { ListSkeleton } from "@/components/Skeleton";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
@@ -59,6 +60,7 @@ function RunsTable({ runs, agentName, onOpen }: { runs: Run[]; agentName: (id: s
                 <span className="line-clamp-2">{r.title}</span><ArrowUpRight className="mt-0.5 size-3 shrink-0 text-muted-foreground" aria-hidden />
               </button>
               {r.status === "completed" && r.review && <span className="mt-1 block text-[12px] text-warning-text">{r.review.reason}</span>}
+              {r.trigger && <span className="mt-1 flex"><ScheduleChip run={r} /></span>}
               <span className="mt-1 block font-mono text-[11px] text-muted-foreground md:hidden">{agentName(r.agent_id)} · {when(r.created_at)}</span>
             </td>
             <td className="hidden px-3 py-2.5 align-top md:table-cell">{agentName(r.agent_id)}</td>
