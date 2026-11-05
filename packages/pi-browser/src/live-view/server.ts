@@ -259,7 +259,8 @@ export function createLiveView(options: LiveViewOptions): LiveViewHost {
     const gate = viewer.gate;
     if (what === "give") { gate.give("given"); return; }
     if (gate.held()) { send(viewer.conn, { type: "hold", held: true }); return; }
-    if (entry.taking) return;
+    // One take at a time is asked of the host: a second one meanwhile is told so.
+    if (entry.taking) { send(viewer.conn, { type: "held", reason: "taking" }); return; }
     entry.taking = true;
     void takeOver!.take(entry.tag).then((answer) => {
       entry.taking = false;

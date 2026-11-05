@@ -238,6 +238,26 @@ test("take-over viewer: the host gives the browser back at the run's cap: the vi
   assert.deepEqual(v.ends, ["cap"]);
 });
 
+test("take-over viewer: a take sent while one is being asked of the host is answered held taking, and the host is asked once", async (t) => {
+  const tag = "ar-run-to-11-1";
+  let answer;
+  const asked = [];
+  const host = createLiveView({ hostOrigin: "'self'", stream: () => ({ input: async () => {}, nav: async () => {}, dialog: async () => {}, close() {} }), viewer: VIEWER, gates: createDrivingGates(), takeOver: { take: (at) => { asked.push(at); return new Promise((resolve) => { answer = resolve; }); } } });
+  t.after(() => host.close());
+  const view = await host.open(tag, "ws://127.0.0.1:9/x");
+  const u = new URL(view.fullscreen);
+  const c = await connect(`ws://${u.host}${u.pathname}/ws`, { origin: u.origin });
+  c.ws.sendJson({ type: "hello", token: new URLSearchParams(u.hash.slice(1)).get("t") });
+  await c.ws.next();
+  c.ws.sendJson({ type: "take" });
+  await until(() => asked.length === 1);
+  c.ws.sendJson({ type: "take" });
+  assert.deepEqual(JSON.parse((await c.ws.next()).data), { type: "held", reason: "taking" });
+  answer({ end() {} });
+  assert.deepEqual(JSON.parse((await c.ws.until((m) => m.type === "text" && JSON.parse(m.data).type === "hold")).item.data), { type: "hold", held: true });
+  assert.deepEqual(asked, [tag], "asked once");
+});
+
 test("take-over viewer: the session's release ends a hold, and the host is told", async (t) => {
   const tag = "ar-run-to-8-1";
   const v = await viewer(t, tag);

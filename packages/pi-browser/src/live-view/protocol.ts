@@ -54,7 +54,7 @@ export type ServerMessage =
   | { type: "dialog"; kind: "alert" | "confirm" | "prompt" | "beforeunload"; message: string; defaultPrompt?: string }
   | { type: "dialog_closed" }
   /** One input or nav message was not delivered, and why. */
-  | { type: "held"; reason: "agent_acting" | "no_page" | "bad_message" | "busy" | "read_only" | "not_taken" }
+  | { type: "held"; reason: "agent_acting" | "no_page" | "bad_message" | "busy" | "read_only" | "not_taken" | "taking" }
   | { type: "refused"; reason: RefusalReason }
   | { type: "ended"; reason: "released" | "browser_closed" };
 
