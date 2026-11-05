@@ -1,86 +1,59 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="720" height="670" viewBox="0 0 720 670" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="444" viewBox="0 0 880 444" role="img" aria-labelledby="title desc">
 <title id="title">Where your agent lives</title>
-<desc id="desc">Every agent has a disk you own: agent.sqlite, a learning repo, and one folder per run holding run.sqlite and work. The runner, a Docker box and a remote sandbox each see the run's folder; the control plane reads the databases from the disk.</desc>
-<defs>
-<marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="userSpaceOnUse">
-<path d="M0 0 L8 4 L0 8 z" fill="#374151"/>
-</marker>
-<marker id="arrow-accent" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="userSpaceOnUse">
-<path d="M0 0 L8 4 L0 8 z" fill="#6d28d9"/>
-</marker>
-</defs>
-<rect x="0.75" y="0.75" width="718.5" height="668.5" fill="#ffffff" stroke="#d1d5db" stroke-width="1.5"/>
-<g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" fill="#111827">
-<text x="24" y="38" font-size="20" font-weight="700">Where your agent lives</text>
-<text x="696" y="38" font-size="12" font-weight="700" fill="#6d28d9" text-anchor="end" letter-spacing="1">THE DESIGN</text>
+<desc id="desc">The control plane reads one disk you own. On it: store.sqlite with the agents and runs, a runs folder per run with run.sqlite and work, and a home per agent with its learning repo and sign-ins. A run mounts its own folder.</desc>
+<g font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" text-anchor="middle">
 
-<rect x="24" y="60" width="340" height="406" fill="#f8fafc" stroke="#374151" stroke-width="1.5"/>
-<text x="40" y="84" font-size="12" font-weight="700" fill="#4b5563" letter-spacing="1">YOUR STORAGE</text>
-<text x="40" y="106" font-size="14" font-weight="700">disks/&lt;agent&gt;/</text>
-<text x="40" y="124" font-size="12" fill="#4b5563">one disk per agent</text>
+<rect x="20" y="16" width="840" height="52" fill="#6d28d9" stroke="#6d28d9" stroke-width="2"/>
+<text x="440" y="48" font-size="17" font-weight="700" fill="#ffffff">Control plane</text>
 
-<rect x="44" y="138" width="300" height="50" fill="#ffffff" stroke="#374151" stroke-width="1.5"/>
-<text x="60" y="159" font-size="13" font-weight="700">agent.sqlite</text>
-<text x="60" y="177" font-size="12" fill="#4b5563">the agent, its revisions, its runs</text>
+<rect x="20" y="104" width="840" height="236" fill="#f5f3ff" stroke="#6d28d9" stroke-width="2"/>
+<text x="40" y="132" font-size="15" font-weight="700" fill="#4c1d95" text-anchor="start">Your disk</text>
 
-<rect x="44" y="200" width="300" height="50" fill="#ffffff" stroke="#374151" stroke-width="1.5"/>
-<text x="60" y="221" font-size="13" font-weight="700">learning/</text>
-<text x="60" y="239" font-size="12" fill="#4b5563">git: notes, skills, workflows, each graded</text>
+<g fill="#ffffff" stroke="#6d28d9" stroke-width="1.5">
+<rect x="44" y="152" width="256" height="168"/>
+<rect x="312" y="152" width="256" height="168"/>
+<rect x="580" y="152" width="256" height="168"/>
+</g>
+<g fill="#f5f3ff" stroke="#6d28d9" stroke-width="1.25">
+<rect x="64" y="204" width="216" height="44"/>
+<rect x="64" y="260" width="216" height="44"/>
+<rect x="332" y="204" width="216" height="44"/>
+<rect x="332" y="260" width="216" height="44"/>
+<rect x="600" y="204" width="216" height="44"/>
+<rect x="600" y="260" width="216" height="44"/>
+</g>
 
-<rect x="44" y="262" width="300" height="188" fill="#ffffff" stroke="#374151" stroke-width="1.5"/>
-<text x="60" y="284" font-size="13" font-weight="700">runs/&lt;run&gt;/</text>
-<text x="60" y="302" font-size="12" fill="#4b5563">one per run; a run sees only this</text>
+<g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="16" font-weight="700" fill="#111827">
+<text x="172" y="186">store.sqlite</text>
+<text x="440" y="186">runs/&lt;id&gt;/</text>
+<text x="708" y="186">homes/&lt;agent&gt;/</text>
+</g>
+<g font-size="15" fill="#111827">
+<text x="172" y="231">agents</text>
+<text x="172" y="287">runs</text>
+</g>
+<g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" fill="#111827">
+<text x="440" y="231">run.sqlite</text>
+<text x="440" y="287">work/</text>
+<text x="708" y="231">learning/</text>
+<text x="708" y="287">sign-ins/</text>
+</g>
 
-<rect x="64" y="316" width="260" height="50" fill="#f5f3ff" stroke="#6d28d9" stroke-width="2"/>
-<text x="80" y="337" font-size="13" font-weight="700">run.sqlite</text>
-<text x="80" y="355" font-size="12" fill="#4b5563">the journal: every step, every cost</text>
+<g stroke="#6d28d9" stroke-width="2.5">
+<line x1="172" y1="68" x2="172" y2="142"/>
+<line x1="440" y1="68" x2="440" y2="142"/>
+<line x1="708" y1="68" x2="708" y2="142"/>
+<line x1="440" y1="330" x2="440" y2="380"/>
+</g>
+<g fill="#6d28d9">
+<polygon points="165,140 179,140 172,150"/>
+<polygon points="433,140 447,140 440,150"/>
+<polygon points="701,140 715,140 708,150"/>
+<polygon points="433,332 447,332 440,322"/>
+</g>
 
-<rect x="64" y="380" width="260" height="50" fill="#ffffff" stroke="#374151" stroke-width="1.5"/>
-<text x="80" y="401" font-size="13" font-weight="700">work/</text>
-<text x="80" y="419" font-size="12" fill="#4b5563">what the run reads and writes</text>
+<rect x="312" y="380" width="256" height="48" fill="#6d28d9" stroke="#6d28d9" stroke-width="2"/>
+<text x="440" y="410" font-size="17" font-weight="700" fill="#ffffff">Run</text>
 
-<rect x="396" y="60" width="300" height="88" fill="#ffffff" stroke="#374151" stroke-width="1.5"/>
-<text x="412" y="84" font-size="14" font-weight="700">Runner, on the server</text>
-<text x="412" y="104" font-size="12" fill="#4b5563">File tools confined to the run's folder.</text>
-<text x="412" y="122" font-size="12" fill="#4b5563">No shell on the server.</text>
-<text x="680" y="140" font-size="11" fill="#4b5563" text-anchor="end">today</text>
-<line x1="396" y1="104" x2="366" y2="104" stroke="#374151" stroke-width="1.5"/>
-<line x1="366" y1="104" x2="366" y2="340" stroke="#374151" stroke-width="1.5"/>
-
-<rect x="396" y="166" width="300" height="88" fill="#ffffff" stroke="#374151" stroke-width="1.5"/>
-<text x="412" y="190" font-size="14" font-weight="700">Docker box, same machine</text>
-<text x="412" y="210" font-size="12" fill="#4b5563">Binds the run's folder at /workspace.</text>
-<text x="412" y="228" font-size="12" fill="#4b5563">The same files, live. No copy.</text>
-<text x="680" y="246" font-size="11" fill="#4b5563" text-anchor="end">today: binds work/</text>
-<line x1="396" y1="210" x2="366" y2="210" stroke="#374151" stroke-width="1.5"/>
-
-<rect x="396" y="272" width="300" height="88" fill="#ffffff" stroke="#374151" stroke-width="1.5" stroke-dasharray="6 4"/>
-<text x="412" y="296" font-size="14" font-weight="700">Remote sandbox, another machine</text>
-<text x="412" y="316" font-size="12" fill="#4b5563">Mounts the same folder over Archil, network</text>
-<text x="412" y="334" font-size="12" fill="#4b5563">storage you own. Same layout. No copying.</text>
-<text x="680" y="352" font-size="11" fill="#4b5563" text-anchor="end">planned · today: a copy in and out</text>
-<line x1="396" y1="316" x2="366" y2="316" stroke="#374151" stroke-width="1.5"/>
-<line x1="366" y1="340" x2="350" y2="340" stroke="#374151" stroke-width="1.5" marker-end="url(#arrow)"/>
-
-<rect x="396" y="378" width="300" height="88" fill="#f5f3ff" stroke="#6d28d9" stroke-width="2" stroke-dasharray="6 4"/>
-<text x="412" y="402" font-size="14" font-weight="700">The control plane</text>
-<text x="412" y="422" font-size="12" fill="#4b5563">Reads both databases from the disk.</text>
-<text x="412" y="440" font-size="12" fill="#4b5563">No stream between control and data plane.</text>
-<text x="680" y="458" font-size="11" fill="#6d28d9" text-anchor="end">planned</text>
-<line x1="396" y1="422" x2="380" y2="422" stroke="#6d28d9" stroke-width="1.5"/>
-<line x1="380" y1="422" x2="380" y2="341" stroke="#6d28d9" stroke-width="1.5"/>
-<line x1="380" y1="341" x2="352" y2="341" stroke="#6d28d9" stroke-width="1.5" marker-end="url(#arrow-accent)"/>
-
-<text x="24" y="500" font-size="14" font-weight="700">One machine: a folder on it. Remote sandboxes: an Archil disk you own.</text>
-<text x="24" y="520" font-size="14" font-weight="700">Same layout. No copying.</text>
-<text x="24" y="542" font-size="12" fill="#4b5563">Kill the process: the journal is on the disk, the next process opens it and carries on.</text>
-<text x="24" y="574" font-size="12" font-weight="700">Today, on main</text>
-<text x="24" y="592" font-size="12" fill="#4b5563">One data directory on the server's machine: store.sqlite for every agent, runs/&lt;id&gt;/ with</text>
-<text x="24" y="608" font-size="12" fill="#4b5563">each run's journal and its work/, and homes/&lt;agent&gt;/learning/. A Docker box binds work/;</text>
-<text x="24" y="624" font-size="12" fill="#4b5563">a Daytona or Modal box gets a copy in and back.</text>
-<line x1="24" y1="650" x2="56" y2="650" stroke="#374151" stroke-width="1.5"/>
-<text x="64" y="654" font-size="12" fill="#4b5563">ships today</text>
-<line x1="150" y1="650" x2="182" y2="650" stroke="#374151" stroke-width="1.5" stroke-dasharray="6 4"/>
-<text x="190" y="654" font-size="12" fill="#4b5563">planned</text>
 </g>
 </svg>
