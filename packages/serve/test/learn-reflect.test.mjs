@@ -185,6 +185,19 @@ test("an end-of-run turn's origin written after a person's follow-up came does n
   assert.ok(!existsSync(join(copyOf(data, runId), "extra.md")), "and is not written");
 });
 
+test("the end-of-run turn's write under .learning/ is refused, in words that keep its notes to its answer; the note in its answer still merges, and no file it tried to write is kept", { timeout: 150_000 }, async (t) => {
+  const { api, data } = await serve(t, { learning: "on", faux: LEARN });
+  await made(api, learner("writer", { plan: PLAN, tools: ["write"], instructions: "Answer the question.\nReflect by writing first." }));
+  const runId = await started(api, "writer");
+  const { view, rows } = await ended(api, runId);
+  settled(view, rows, "merged");
+  const refused = rows.find((row) => row.kind === "tool_result" && row.tool_name === "write");
+  assert.equal(refused?.tool_result_preview, "A note is kept only from your answer: write it in a ```note block, not to a file.", "the write is refused in those words");
+  assert.ok(!existsSync(join(copyOf(data, runId), "written.md")), "and nothing is written");
+  const repo = repoOf(data, "writer");
+  assert.equal(`${git(repo, ["show", "main:check-units.md"])}\n`, onMain(PLAN[0][1]), "the answer's note merged");
+});
+
 test("what the user asks the agent to remember during the task survives: the job writes it to .learning/notes.txt and says it saved it, and the end-of-run turn, which reads the whole conversation, answers it as a note that merges; a file the job scribbled in .learning/ is never read", { timeout: 120_000 }, async (t) => {
   const { api, data } = await serve(t, { learning: "on", faux: LEARN });
   await made(api, learner("keeper", { tools: ["write"], instructions: `Answer the question.\nScribble: ${JSON.stringify([["draft.md", note("Draft", "A note the job wrote mid-task")]])}` }));

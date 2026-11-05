@@ -100,6 +100,9 @@ export type TimelineRow = {
   tool_input_preview?: string | null;
   tool_result_preview?: string | null;
   agent_label?: string | null;
+  /** `server` on the row of a message the server wrote into the run (an approval's resume, a raised cap's follow-up): a
+   *  `phase` row whose summary is "AgentRun: <its first line>". It is the message the turn took, never the person's. */
+  origin?: "server";
 };
 
 export type TimelinePage = {
@@ -148,5 +151,12 @@ export type WebhooksFeature = { routes: boolean; events: string[]; signing: stri
 /** A recorded response: what the server answered, exactly. */
 export type Recorded<T> = { request: { method: string; path: string }; status: number; headers?: Record<string, string>; body: T };
 
+/** PATCH /v2/runs/{id} {max_cost_usd}'s answer: the cap now. `resumed`: a run paused at its cap goes on (its follow-up
+ *  turn, `message_id`, is sent once its process has been let go). `note`: a working run's live process keeps its old cap
+ *  until its next one. */
+export type RaiseAnswer = { run_id: string; max_cost_usd: number; resumed: boolean; message_id?: string; status: RunStatus; state: RunState; note?: string };
+
 /** A run paused at its spend cap: what is left of its cap cannot buy its next request's least, which was not sent. */
-export type BudgetPending = { kind: "budget"; cap_usd: number; spent_usd?: number; needs_usd?: number; said: string; at: string };
+export type BudgetPending = { kind: "budget"; cap_usd: number; spent_usd?: number; needs_usd?: number; said: string; at: string;
+  /** The server's suggested new cap, always strictly above `cap_usd` (a newer server's; absent from an older one). */
+  suggested_cap_usd?: number };
