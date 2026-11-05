@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
-import { readdir, readFile, rm } from "node:fs/promises";
+import { readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -300,6 +300,31 @@ test("claude-agent: a run killed mid-call resumes with the call reported interru
   const resumed = anthropic.messages().filter((request) => request.tools.includes("mcp__fake__slow_write")).slice(1);
   assert.ok(resumed.some((request) => /interrupted[\s\S]*none was run again[\s\S]*mcp__fake__slow_write/.test(JSON.stringify(request.body.system ?? ""))), "the recovery note names the interrupted call");
   assert.equal(calls(fake, "slow_write").length, 1, "the call was never sent again");
+});
+
+test("pi: a saved credential that can't be opened refuses the call before anything is sent, in words; a server that takes no credential is unaffected", { timeout: 90_000 }, async (t) => {
+  const { api, data } = await serve(t, { faux: FAUX_MCP });
+  const fake = await addFake(t, api);
+  const open = await startFakeMcp({});
+  t.after(() => open.close());
+  assert.equal((await api("PUT", "/settings/mcp-servers/open", { url: open.url, auth: { type: "none" } })).status, 200);
+  // The sealed bearer damaged at rest, as one sealed under another seal key reads.
+  const file = join(data, "mcp-servers.json");
+  const doc = JSON.parse(await readFile(file, "utf8"));
+  doc.servers.fake.auth.sealed.authorization = Buffer.from("not what was sealed").toString("base64");
+  await writeFile(file, JSON.stringify(doc));
+  assert.equal((await api("POST", "/agents", agent("unopened", { tools: ["mcp:fake/add", "mcp:open/add"], tool_settings: { ...ALLOW_FAKE, "mcp:open/*": { permission: "allow" } } }))).status, 201);
+  const before = fake.log.length;
+  const runId = await runOf(api, "unopened", 'Call mcp__fake__add with {"a":2,"b":3}');
+  const { last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 60_000 });
+  assert.equal(last.status, "completed");
+  assert.equal((await api("GET", `/runs/${runId}`)).body.result?.final_answer, "The tool said: The MCP server fake's credential can't be opened on this server (sealed under another seal key, or damaged); update it in Settings → MCP servers.");
+  assert.deepEqual(fake.log.slice(before), [], "nothing reached the server");
+  assert.equal((await api("POST", `/runs/${runId}/messages`, { content: 'Call mcp__open__add with {"a":2,"b":3}' })).status, 202);
+  await sleep(500);
+  await follow(api, runId, ["completed", "failed"], { deadlineMs: 60_000 });
+  assert.equal((await api("GET", `/runs/${runId}`)).body.result?.final_answer, "The tool said: 5");
+  assert.deepEqual(calls(open).map((entry) => [entry.tool, entry.authorization]), [["add", false]]);
 });
 
 /** serve's gateway on loopback: each Responses request answered with the text it carries, and its usage. */
