@@ -133,8 +133,12 @@ type RunMeta = {
   input?: Json;
   effort?: string;
   max_cost_usd?: number;
-  /** Each raise of its cap (PATCH /runs/{id}): from what, to what, and when. */
-  cap_raised?: { from: number; to: number; at: string; mark?: string; message_id?: string; resumed?: boolean }[];
+  /** Each raise of its cap (PATCH /runs/{id}): from what, to what, when, and the pause it answers (pauseOf), if any. */
+  cap_raised?: { from: number; to: number; at: string; pause?: string }[];
+  /** The one follow-up that sends a run paused at its cap on once its cap is raised (resumeRaised): for which pause, by
+   *  what id, whether it went, how many tries failed and why, and which process was being let go when it was asked for
+   *  (its pid and start ticks): it goes once that process is gone, here or after a restart. */
+  cap_continue?: { pause: string; message_id: string; sent: boolean; tries: number; error?: string; paused?: string };
   error?: { code: string; message: string; details?: { reason: string } };
   /** A workflow run's output, once it completed. */
   output?: unknown;
@@ -283,10 +287,12 @@ export type Run = {
   parked?: string;
   /** A raise of its cap being taken (raiseCap): the next one waits for it, so two at once resume it once. */
   raising?: Promise<unknown>;
-  /** Its raise's follow-up is being sent (resumeRaised), or could not be sent: never sent twice, nor in a loop. */
-  resuming?: "sending" | "failed";
+  /** Its raise's follow-up is being sent (resumeRaised), or waits to be tried again (its time): never two at once. */
+  resuming?: "sending" | number;
   /** Its newest refusal for room's figures, from that refusal's own start mark (cap.ts RefusalFigures). */
   capRefusal?: RefusalFigures;
+  /** That refusal's own start mark (its entry): the pause a raise answers is keyed to it (pauseOf). */
+  capMark?: number;
   /** What it has spent paused at that refusal (its row), its process gone: the store's spend (spentNow), read once. */
   capSpent?: { mark: string; usd: number | null };
 };
@@ -334,7 +340,8 @@ function noteTurns(run: Run, entries: readonly unknown[], submissions: readonly 
     run.lastEntry = Math.max(run.lastEntry ?? 0, value.id);
     // A refusal for room's own start mark: what the cap counted as taken, and the least the request needed.
     const data = value.kind === REQUEST_STARTED && isObject(value.data) && value.data[CAP_REFUSED_FIELD] === true ? value.data : undefined;
-    if (data && typeof data.spentUsd === "number" && typeof data.needsUsd === "number") run.capRefusal = { spentUsd: data.spentUsd, needsUsd: data.needsUsd };
+    if (data) run.capMark = value.id;
+    if (data) run.capRefusal = typeof data.spentUsd === "number" && typeof data.needsUsd === "number" ? { spentUsd: data.spentUsd, needsUsd: data.needsUsd } : undefined;
     // The end-of-run turn's assistant messages, whole, by entry: what the turn answered, whose notes learning reads
     // (learning-run.ts). The ledger skips them; this is their only reader here.
     if (value.kind === "pi.assistant" && reflects(run.meta.reflect, value.id) && Array.isArray(value.model) && isObject(value.model[0])) {
@@ -358,6 +365,13 @@ const pendingOf = (rows: readonly TimelineEvent[]): Pending => {
   const last = meaningful(rows);
   return last?.kind === "waiting" ? { kind: "question", question: last.text ?? last.summary ?? "", asked_at: last.timestamp } : null;
 };
+/** A dollar figure to a millionth, as the timeline's cost.usd is. */
+const micro = (usd: number): number => Math.round(usd * 1e6) / 1e6;
+/** How near two caps are the same cap: a raise must be above the run's by more, and a retry may differ by less. */
+export const CAP_TOLERANCE = 1e-9;
+/** How many tries a raised run's follow-up gets, and the waits between them, before the run fails with why. */
+const CONTINUE_TRIES = 3;
+const CONTINUE_RETRY_MS = [1_000, 3_000];
 /** How many of the refused request's least a run paused at its cap is offered on top of what was taken (suggestedCap). */
 export const SUGGESTED_RAISE_FACTOR = 10;
 /** The raise a run paused at its cap is offered: what the cap counted as taken plus SUGGESTED_RAISE_FACTOR times the
@@ -379,7 +393,8 @@ const budgetPending = (run: Run, spentNow?: number): Pending | undefined => {
   if (said === undefined || cap === undefined) return undefined;
   const r = run.capRefusal;
   const spent = r && spentNow !== undefined ? Math.min(r.spentUsd, spentNow) : r?.spentUsd;
-  const figures = r && spent !== undefined ? { spent_usd: spent, needs_usd: r.needsUsd, suggested_cap_usd: suggestedCap(cap, spent, r.needsUsd) } : {};
+  // Shown as cost.usd is (to a millionth of a dollar), the suggestion from the figures as the cap counts them.
+  const figures = r && spent !== undefined ? { spent_usd: micro(spent), needs_usd: micro(r.needsUsd), suggested_cap_usd: suggestedCap(cap, spent, r.needsUsd) } : {};
   return { kind: "budget", cap_usd: cap, ...figures, said, at: meaningful(run.rows)?.timestamp ?? run.updatedAt };
 };
 /** The waiting row of a run paused at its cap, after the refusal's error row: "Paused at the run's $1 cap: Not sent: …". */
@@ -476,12 +491,36 @@ const refusedAt = (run: Run): string | undefined => {
   const end = run.turns.end();
   return end?.status === "failed" ? roomRefusal(end.error) : undefined;
 };
-/** Its cap was raised since the refusal it stands at (the raise names that refusal's row): it waits for a message then,
- *  not for a raise (input_required, idle), when the raise's own follow-up did not go. */
-const raisedSince = (run: Run): boolean => {
-  const mark = meaningful(run.rows)?.id;
-  return mark !== undefined && run.meta.cap_raised?.some((raise) => raise.mark === mark) === true;
+/** The pause a run stands at, by its refusal's own start mark (its entry), so no row shown after it moves it; a store
+ *  with no such mark keys it to the refusal's row. Undefined when it stands at no refusal for room. */
+const pauseOf = (run: Run): string | undefined => {
+  if (refusedAt(run) === undefined) return undefined;
+  if (run.capMark !== undefined) return `mark:${run.capMark}`;
+  const row = meaningful(run.rows)?.id;
+  return row === undefined ? undefined : `row:${row}`;
 };
+/** Its cap was raised since the refusal it stands at (a raise names that pause): it waits for its follow-up then, not
+ *  for a raise (input_required, idle). */
+const raisedSince = (run: Run): boolean => {
+  const pause = pauseOf(run);
+  return pause !== undefined && run.meta.cap_raised?.some((raise) => raise.pause === pause) === true;
+};
+/** The follow-up a raise of the pause it stands at asked for and that has not gone yet: one per pause. */
+const continuationOf = (run: Run): NonNullable<RunMeta["cap_continue"]> | undefined => {
+  const pause = pauseOf(run);
+  const next = run.meta.cap_continue;
+  return pause !== undefined && next?.pause === pause && !next.sent ? next : undefined;
+};
+/** A process by its pid and start ticks (Linux /proc; the pid alone elsewhere): a pid used again is another process. */
+function processIdentity(pid: number | undefined): string | undefined {
+  if (pid === undefined) return undefined;
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    return `${pid}:${stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19]}`;
+  } catch {
+    return String(pid);
+  }
+}
 const pausedAt = (run: Run): string | undefined => (raisedSince(run) ? undefined : refusedAt(run));
 /** What a stop keeps of where the run stands: the person's last message, by its id, or the place before any. */
 export const stopMark = (rows: readonly TimelineEvent[]): { stopped_at: string } => ({ stopped_at: lastUserMessage(rows) ?? `${ROOT_CONVERSATION_ID}:0` });
@@ -772,8 +811,9 @@ export class Runs {
       ...(isObject(stored?.input) ? { input: stored.input } : {}),
       ...(typeof stored?.effort === "string" ? { effort: stored.effort } : {}),
       ...(typeof stored?.max_cost_usd === "number" ? { max_cost_usd: stored.max_cost_usd } : {}),
-      // Each raise of its cap, so a raise whose follow-up a stopped server never sent is sent by the next (resumeRaised).
+      // Each raise of its cap, and the follow-up a stopped server never sent, which the next sends (resumeRaised).
       ...(Array.isArray(stored?.cap_raised) ? { cap_raised: stored.cap_raised as NonNullable<RunMeta["cap_raised"]> } : {}),
+      ...(isObject(stored?.cap_continue) ? { cap_continue: stored.cap_continue as unknown as NonNullable<RunMeta["cap_continue"]> } : {}),
       ...(stored?.error ? { error: stored.error } : {}),
       ...(stored && "output" in stored ? { output: stored.output } : {}),
       ...(isObject(stored?.review) ? { review: stored.review as SavedReview } : {}),
@@ -1059,16 +1099,25 @@ export class Runs {
     return run.capSpent.usd ?? undefined;
   }
 
+  /** The run's live process, by its pid and start ticks (processIdentity). */
+  private liveIdentity(run: Run): string | undefined {
+    return processIdentity(run.child?.pid ?? run.orphan);
+  }
+
   private refresh(run: Run): void {
     this.mark(run);
-    // A run whose cap was raised at its pause goes on once its paused process is gone (resumeRaised).
-    const raise = run.meta.cap_raised?.at(-1);
-    if (raise?.resumed === false && raise.message_id && !run.resuming && !this.closing && !this.live(run) && refusedAt(run) !== undefined && raisedSince(run)) void this.resumeRaised(run, raise);
+    // A run whose cap was raised at its pause goes on once the process paused there is gone (resumeRaised): with no
+    // process, or one another launch started (a server stopped between that launch and its message: the door takes the
+    // message once, by its id). Never while one waits to be tried again.
+    const next = continuationOf(run);
+    const letting = next !== undefined && next.paused !== undefined && this.live(run) && this.liveIdentity(run) === next.paused;
+    if (next && run.resuming === undefined && !this.closing && !run.cancel && !run.finishing && !run.outcome && !letting) void this.resumeRaised(run, next);
     if (!this.live(run) || run.finishing || run.outcome) return;
     const end = this.decide(run);
     // Paused at its cap, its process is let go: it waits without one, holding no place, until its cap is raised. Once
-    // per pause (its refusal's row): SIGTERM drains and releases it, and the settle that follows leaves it waiting.
-    if (!end && pausedAt(run) !== undefined && run.parked !== waitMark(run)) {
+    // per pause (its refusal's row): SIGTERM drains and releases it, and the settle that follows leaves it waiting. A
+    // raised one's paused process is let go too (a server started again finds it so).
+    if (!end && (pausedAt(run) !== undefined || letting) && run.parked !== waitMark(run)) {
       run.parked = waitMark(run);
       this.terminate(run);
     }
@@ -1739,6 +1788,10 @@ export class Runs {
     else if (run.launching && gone) {
       run.error = { code: "run_failed", message: "The server went down while it started the run's process, which never came up; it is not started again, since starting it may be what took the server down.", retryable: false, details: { reason: LAUNCH_LOST } };
       ended = { outcome: "failed" };
+    } else if (exited && !released && code !== null && code !== 0 && (run.resuming !== undefined || continuationOf(run) !== undefined)) {
+      // A raised run's paused process held nothing (its turn had ended at the refusal): its exit without a release, at
+      // its drain's end, say, loses nothing, and the raise's follow-up goes (resumeRaised), never a failed run.
+      return this.refresh(run);
     } else if (exited && !released && code !== null && code !== 0) {
       run.error = { code: "run_failed", message: `The run's process exited (${code}) without releasing the run: ${await lastLogLine(run)}`, retryable: false };
       ended = { outcome: "failed" };
@@ -2084,12 +2137,13 @@ export class Runs {
   }
 
   /** One message to an agentic run, its mode chosen by the run's state (the contract's table). */
-  /** Raises the cap of an agentic run that names one, to `cap`: above its own, or the same as its newest raise (a retry,
-   *  which changes nothing). serve.json keeps it before anything else, so the run's next process opens under it (CAP_ENV),
-   *  as does a server started again. A run paused at its cap goes on: its raise names the refusal it answers and the id of
-   *  its follow-up, "The cap was raised to $X; continue the task.", which refresh sends once the paused process is gone
-   *  (resumeRaised), here or after a restart, under that id. A run working keeps the cap its process was opened with until
-   *  its next process. Raises of one run are taken one at a time. */
+  /** Raises the cap of an agentic run that names one, to `cap`: above its own (by more than CAP_TOLERANCE), or the same as
+   *  its newest raise (a retry, which changes nothing). serve.json keeps it before any answer, and a raise it could not keep
+   *  is undone, so the run's next process opens under it (CAP_ENV), as does a server started again. A run paused at its
+   *  cap goes on: the raise names the pause it answers, and the pause gets one follow-up, "The cap was raised to $X;
+   *  continue the task." under an id fixed now, which refresh sends once the paused process is gone (resumeRaised), here
+   *  or after a restart; a second raise before it goes raises what it says. A run working keeps the cap its process was
+   *  opened with until its next process. Raises of one run are taken one at a time. */
   async raiseCap(run: Run, cap: number): Promise<{ resumed: boolean; messageId?: string; note?: string }> {
     const before = run.raising ?? Promise.resolve();
     const taking = before.catch(() => undefined).then(() => this.takeRaise(run, cap));
@@ -2099,47 +2153,97 @@ export class Runs {
 
   private async takeRaise(run: Run, cap: number): Promise<{ resumed: boolean; messageId?: string; note?: string }> {
     if (run.imported) throw this.importedRefusal(run);
-    if (run.cancel || TERMINAL.has(statusOf(run).status)) throw this.finished(run);
+    if (run.cancel || run.finishing || TERMINAL.has(statusOf(run).status)) throw this.finished(run);
     const from = run.meta.max_cost_usd;
     if (from === undefined) throw invalid([{ field: "max_cost_usd", reason: "not_allowed", message: "This run has no cap to raise: a cap is named when a run starts." }]);
     const last = run.meta.cap_raised?.at(-1);
+    const pause = pauseOf(run);
+    const next = continuationOf(run);
     // The same raise again (a retry): what the first one did stands.
-    if (cap === from && last?.to === cap) return { resumed: last.message_id !== undefined, ...(last.message_id ? { messageId: last.message_id } : {}) };
-    if (!(cap > from)) throw invalid([{ field: "max_cost_usd", reason: "invalid", message: `A cap is only raised: name more than the run's ${money(from)}.` }]);
-    const paused = pausedAt(run) !== undefined;
-    const mark = paused ? meaningful(run.rows)?.id : undefined;
-    // A paused run's follow-up, by an id fixed now: sent once its paused process is gone, the same id after a restart.
-    const messageId = paused ? `cap-${(run.meta.cap_raised?.length ?? 0) + 1}-${randomBytes(4).toString("hex")}` : undefined;
+    if (Math.abs(cap - from) <= CAP_TOLERANCE && last && Math.abs(last.to - cap) <= CAP_TOLERANCE) {
+      const answered = last.pause !== undefined && run.meta.cap_continue?.pause === last.pause ? run.meta.cap_continue : undefined;
+      return answered ? { resumed: true, messageId: answered.message_id } : { resumed: false };
+    }
+    if (!(cap > from + CAP_TOLERANCE)) throw invalid([{ field: "max_cost_usd", reason: "invalid", message: `A cap is only raised: name more than the run's ${money(from)}.` }]);
+    const kept = { max: from, raised: run.meta.cap_raised, next: run.meta.cap_continue, fields: run.meta.cap_continue && { ...run.meta.cap_continue } };
     run.meta.max_cost_usd = cap;
-    (run.meta.cap_raised ??= []).push({ from, to: cap, at: new Date().toISOString(), ...(mark ? { mark } : {}), ...(messageId ? { message_id: messageId, resumed: false } : {}) });
-    await this.saveMeta(run);
-    // A paused run's process is still letting go, or gone: refresh sends the follow-up once it is gone.
+    run.meta.cap_raised = [...(run.meta.cap_raised ?? []), { from, to: cap, at: new Date().toISOString(), ...(pause ? { pause } : {}) }];
+    if (pause !== undefined && next === undefined) {
+      // The pause's one follow-up, by an id fixed now, and the process being let go then, which it waits out.
+      const paused = this.live(run) ? this.liveIdentity(run) : undefined;
+      run.meta.cap_continue = { pause, message_id: `cap-${run.meta.cap_raised.length}-${randomBytes(4).toString("hex")}`, sent: false, tries: 0, ...(paused ? { paused } : {}) };
+    } else if (next) {
+      // A raise of a pause whose follow-up has not gone: that one follow-up goes, under this cap, with its tries anew.
+      next.tries = 0;
+      delete next.error;
+    }
+    try {
+      await this.saveMeta(run);
+    } catch (error) {
+      // Not kept, not taken: as before it, so a retry raises it again.
+      run.meta.max_cost_usd = kept.max;
+      if (kept.raised) run.meta.cap_raised = kept.raised;
+      else delete run.meta.cap_raised;
+      if (kept.next) run.meta.cap_continue = Object.assign(kept.next, kept.fields);
+      else delete run.meta.cap_continue;
+      throw error;
+    }
+    if (next && typeof run.resuming === "number") run.resuming = undefined;
     this.refresh(run);
-    if (!paused) return { resumed: false, ...(this.live(run) ? { note: `The run's process keeps the ${money(from)} cap it was opened with; the ${money(cap)} cap holds from its next process.` } : {}) };
-    return { resumed: true, messageId };
+    const answered = pause !== undefined ? run.meta.cap_continue : undefined;
+    if (!answered) return { resumed: false, ...(this.live(run) ? { note: `The run's process keeps the ${money(from)} cap it was opened with; the ${money(cap)} cap holds from its next process.` } : {}) };
+    return { resumed: true, messageId: answered.message_id };
   }
 
-  /** Sends a raised run its follow-up, once: as a follow-up to a run whose process has gone (message()), so the process it
-   *  starts resumes nothing and opens under the new cap. Marked sent in serve.json; one that cannot be sent leaves the run
-   *  waiting for a message (input_required, idle), never tried in a loop. */
-  private async resumeRaised(run: Run, raise: { to: number; message_id?: string; resumed?: boolean }): Promise<void> {
+  /** Sends a raised run its pause's follow-up, under its id (the door takes one id once), at the run's cap now: as a
+   *  follow-up to a run whose process has gone (message()), so the process it starts resumes nothing and opens under the
+   *  new cap, or to the process another launch started. Marked sent in serve.json. One that cannot be sent is tried
+   *  again (CONTINUE_RETRY_MS), and after CONTINUE_TRIES the run fails, saying why: never a pause stuck in silence. */
+  private async resumeRaised(run: Run, next: NonNullable<RunMeta["cap_continue"]>): Promise<void> {
     run.resuming = "sending";
-    run.followUpOpen = true;
+    if (!this.live(run)) run.followUpOpen = true;
     run.submitted++;
     this.refresh(run);
+    const cap = run.meta.max_cost_usd ?? 0;
     try {
-      await this.submit(run, `The cap was raised to ${money(raise.to)}; continue the task.`, "followUp", raise.message_id!);
-      raise.resumed = true;
-      await this.saveMeta(run);
+      await this.submit(run, `The cap was raised to ${money(cap)}; continue the task.`, "followUp", next.message_id);
+      next.sent = true;
       run.resuming = undefined;
+      await this.saveMeta(run).catch((error: Error) => warn(run.id, `its raised cap's follow-up went, but is not marked sent: ${error.message}`));
     } catch (error) {
       run.submitted = Math.max(0, run.submitted - 1);
-      run.resuming = "failed";
-      warn(run.id, `its raised cap's follow-up was not sent (${(error as Error).message}); it waits for a message`);
+      next.tries += 1;
+      next.error = (error as Error).message;
+      await this.saveMeta(run).catch(() => undefined);
+      if (next.tries >= CONTINUE_TRIES) {
+        run.resuming = undefined;
+        warn(run.id, `its raised cap's follow-up was not sent in ${next.tries} tries (${next.error}); the run fails`);
+        return this.failRaised(run, cap, next.error);
+      }
+      const wait = CONTINUE_RETRY_MS[next.tries - 1] ?? CONTINUE_RETRY_MS.at(-1)!;
+      warn(run.id, `its raised cap's follow-up was not sent (${next.error}); tried again in ${wait / 1000} s`);
+      const at = Date.now() + wait;
+      run.resuming = at;
+      setTimeout(() => {
+        if (run.resuming !== at) return;
+        run.resuming = undefined;
+        this.refresh(run);
+      }, wait).unref();
       this.refresh(run);
     } finally {
       run.followUpOpen = undefined;
     }
+  }
+
+  /** Ends a raised run whose follow-up could not be sent: failed, in words a person can act on. */
+  private async failRaised(run: Run, cap: number, why: string | undefined): Promise<void> {
+    if (run.outcome || run.finishing || run.cancel) return;
+    run.error = { code: "run_failed", message: `The run's cap was raised to ${money(cap)}, but the run could not be sent on (${why ?? "no answer"}). Start it again to go on.`, retryable: false };
+    run.finishing = "failed";
+    run.endedAt = new Date().toISOString();
+    this.mark(run);
+    if (this.live(run)) this.terminate(run);
+    else await this.settle(run, null, false);
   }
 
   async message(run: Run, content: string): Promise<{ mode: "steer" | "answer" | "follow_up"; messageId: string }> {
