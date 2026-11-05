@@ -75,6 +75,24 @@ test("bash: ask parks only the calls that start or feed a process, each under it
   assert.equal((await onPi(t, { bash: { permission: "allow" } }, "bash_background", { overrides: { bash: { permission: "ask" } } })).text, waitingText("bash_background"));
 });
 
+test("fail closed stays closed: with no settings ever read, the watchers ask as every tool does, parked, never run", async (t) => {
+  const [root, work, data] = [await scratch(t), await scratch(t), await scratch(t)];
+  // Cut off mid-write and never read whole: the gate has no settings, so its ask is its own, not bash's.
+  await writeFile(join(data, "tool-settings.json"), '{"bash":{"permission":"as');
+  const gate = new RunGate({ root, work, data, runId: "r1", harness: "pi" });
+  for (const name of ["bash", ...BACKGROUND_TOOLS]) assert.equal(gate.policy(name), "ask", name);
+  for (const name of WATCHERS) {
+    const runGate = new RunGate({ root, work, data, runId: "r1", harness: "pi" });
+    let ran = 0;
+    const registration = { name, description: name, parameters: {}, execute: async () => (ran++, { content: [{ type: "text", text: "ran" }] }) };
+    const wrapped = runGate.extension([registration]).wraps.find((wrap) => wrap.tool === name).wrap(registration);
+    const kept = [];
+    const api = { callId: `c-${name}`, commit: async (change) => change({ appendEntry: async (_conversation, entry) => void kept.push(entry) }) };
+    const result = await wrapped.execute({ id: "1" }, api, {});
+    assert.deepEqual([(result.content ?? []).map((block) => block.text ?? "").join(""), ran, kept.map((entry) => entry.data?.tool)], [waitingText(name), 0, [name]], name);
+  }
+});
+
 test("no setting of a watcher's own lifts bash's deny or ask: a run's gate reads bash's key for each, under claude-agent's mcp__hands__ names too", async (t) => {
   const [root, work, data] = [await scratch(t), await scratch(t), await scratch(t)];
   await writeFile(join(data, "tool-settings.json"), JSON.stringify({ bash: { permission: "deny" }, bash_output: { permission: "allow" } }));
