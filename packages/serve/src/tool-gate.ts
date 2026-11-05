@@ -38,6 +38,7 @@ import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { Context } from "@earendil-works/chord";
 import { type Cursor, defineExtension, type Extension, ROOT_CONVERSATION_ID, type ToolRegistration, type Tx, wrapTool } from "@earendil-works/pi-durable";
 import { type Drive, EffectFailure, INTERRUPTED_TEXT, openDrive } from "@parcha/agentrun-kernel/kernel";
+import { boundResult } from "@parcha/agentrun-kernel/process";
 import type { DurableRun } from "@parcha/pi-durable-disk";
 import { readJson, RUN_META } from "./files.js";
 import { LEARNED_DIR } from "./learning.js";
@@ -504,8 +505,10 @@ export class RunGate {
           await this.resolveSilently(held, after.decision);
           continue;
         }
-        // The arguments the message names are the server's redacted ones: the gate never writes a held value there.
-        await this.resume!(held.id, resumeText(held, answer.args_shown ?? "(not shown)", decision, result), (tx) => tx.appendEntry(ROOT_CONVERSATION_ID, { kind: APPROVAL_ENTRY, data: { phase: "resolved", id: held.id, decision } }));
+        // The arguments the message names are the server's redacted ones: the gate never writes a held value there. The
+        // result is cut as every host tool's is (boundResult, HOST_RESULT_MAX_CHARS, in its words): an executor's (an
+        // MCP call's) comes uncut, and its journal keeps it whole.
+        await this.resume!(held.id, resumeText(held, answer.args_shown ?? "(not shown)", decision, { ...result, text: boundResult(result.text).text }), (tx) => tx.appendEntry(ROOT_CONVERSATION_ID, { kind: APPROVAL_ENTRY, data: { phase: "resolved", id: held.id, decision } }));
         held.resolved = true;
       }
     } catch (error) {
@@ -537,11 +540,8 @@ export class RunGate {
    *  the run's own `approvals:` session, on the run's coding source: its intent is durable before it runs, its outcome
    *  after; a replay-safe call a crash cut off runs again, any other is answered interrupted and never runs again. */
   private async run(held: ApprovalRequest): Promise<ToolAnswer> {
-    // Imported here, not at the top: host-tools reaches the web tools, which reach tool-plane, which reads this module's
-    // permission rule, and a cycle of top-level imports leaves one of them uninitialized for whichever loads first.
-    const { hostTools } = await import("./host-tools.js");
-    const [tool] = hostTools(this.durable!, [held.tool], this.context!, new Map(), this.coding);
-    if (!tool) return { text: `The approved ${held.tool} call is not one the kernel runs outside the model's turn.`, isError: true };
+    const runner = await this.runnerOf(held);
+    if ("refused" in runner) return { text: runner.refused, isError: true };
     this.drive ??= durableSessions(this.durable!.harness, this.context!)
       .open(`approvals:${this.where.runId}`)
       .then((writer) => openDrive({ writer, signal: this.stop.signal }))
@@ -554,9 +554,9 @@ export class RunGate {
       const cut = new AbortController();
       this.inFlight = { id: held.id, cut };
       try {
-        return await (await this.drive).effect(`approval:${held.id}`, { name: held.tool, replay: tool.replay, input: held.args }, async ({ signal }) => {
+        return await (await this.drive).effect(`approval:${held.id}`, { name: held.tool, replay: runner.replay, input: held.args }, async ({ signal }) => {
           try {
-            const answer = await tool.call(held.args, { callId: held.call_id, signal: AbortSignal.any([signal, cut.signal]) });
+            const answer = await runner.call(AbortSignal.any([signal, cut.signal]));
             // A host tool answers its own abort as an error result: still the stop's cut.
             if (cut.signal.aborted) throw new Error(INTERRUPTED_TEXT);
             return { text: answer.text, isError: answer.isError === true };
@@ -574,6 +574,32 @@ export class RunGate {
       if (error instanceof EffectFailure) return { text: error.message, isError: true };
       throw error;
     }
+  }
+
+  private readonly executors = new Map<string, Executor>();
+
+  /** Registers how an approved call of tools named `prefix…` runs (the MCP gateway's, "mcp:"): one per prefix and run.
+   *  The gate runs it exactly once on its journaled path, as it runs a kernel host tool. */
+  executor(prefix: string, run: Executor): void {
+    this.executors.set(prefix, run);
+  }
+
+  /** What runs an approved call: the executor its tool's prefix names, which may have effects anywhere, so a call a
+   *  crash cut off is never run again; else the kernel's host tool of the name, as replay-safe as that tool is. Neither:
+   *  refused, in words, and never run. */
+  private async runnerOf(held: ApprovalRequest): Promise<{ replay: "safe" | "never"; call(signal: AbortSignal): Promise<ToolAnswer> } | { refused: string }> {
+    const prefix = [...this.executors.keys()].find((given) => held.tool.startsWith(given));
+    if (prefix) {
+      const executor = this.executors.get(prefix)!;
+      return { replay: "never", call: (signal) => executor(held.tool, held.args, held.call_id, signal) };
+    }
+    if (isMcpTool(held.tool)) return { refused: `The approved ${held.tool} call was not run: nothing in this run runs mcp: calls.` };
+    // Imported here, not at the top: host-tools reaches the web tools, which reach tool-plane, which reads this module's
+    // permission rule, and a cycle of top-level imports leaves one of them uninitialized for whichever loads first.
+    const { hostTools } = await import("./host-tools.js");
+    const [tool] = hostTools(this.durable!, [held.tool], this.context!, new Map(), this.coding);
+    if (!tool) return { refused: `The approved ${held.tool} call is not one the kernel runs outside the model's turn.` };
+    return { replay: tool.replay, call: (signal) => tool.call(held.args, { callId: held.call_id, signal }) as Promise<ToolAnswer> };
   }
 }
 
