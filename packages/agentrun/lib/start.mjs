@@ -15,19 +15,30 @@ export const OWN_SPEC = `@parcha/agentrun@${JSON.parse(readFileSync(new URL("../
 export const HOST = "127.0.0.1"; // key-gate: loopback-rule the server this starts listens on this machine only
 
 /** The URL an "Open " line names: its first word after "Open ", when that is an http(s) URL on `HOST`, where the server
- *  this command starts listens; any text after it (what the link does) is not part of it. Undefined for any other line. */
-export function openLineUrl(line) {
+ *  this command starts listens, or at `publicUrl`'s origin, the address the server names instead when it was started with
+ *  AGENTRUN_PUBLIC_URL; any text after it (what the link does) is not part of it. Undefined for any other line. */
+export function openLineUrl(line, publicUrl) {
   const word = /^Open (\S+)/.exec(line)?.[1];
   if (word === undefined || !URL.canParse(word)) return undefined;
   const url = new URL(word);
-  return (url.protocol === "http:" || url.protocol === "https:") && url.hostname === HOST ? word : undefined;
+  if (url.protocol !== "http:" && url.protocol !== "https:") return undefined;
+  if (url.hostname === HOST) return word;
+  return publicUrl !== undefined && URL.canParse(publicUrl) && url.origin === new URL(publicUrl).origin ? word : undefined;
 }
+
+/** How many of the server's last output lines a start that fails shows. */
+export const TAIL_LINES = 20;
 
 /** The address a person opens first, as the server says it: the URL of the first "Open " line of its output that names
  *  one (openLineUrl). That line is the server's interface for it (the plain address today, a single-use sign-in link
  *  once the server prints one), so this command never builds the address itself. Resolves undefined when the output ends
- *  without one; the rest of the output is read and dropped, so the server never blocks on a full pipe. */
-export function openUrl(stdout) {
+ *  without one; the rest of the output is read and dropped, so the server never blocks on a full pipe. Until then, the
+ *  last TAIL_LINES lines before it are kept in `seen`: what a start that fails shows. */
+export function openUrl(stdout, publicUrl, seen = []) {
+  const keep = (line) => {
+    seen.push(line);
+    if (seen.length > TAIL_LINES) seen.shift();
+  };
   return new Promise((resolve) => {
     let pending = "";
     let found;
@@ -38,11 +49,15 @@ export function openUrl(stdout) {
       for (let end = pending.indexOf("\n"); end >= 0 && found === undefined; end = pending.indexOf("\n")) {
         const line = pending.slice(0, end).replace(/\r$/, "");
         pending = pending.slice(end + 1);
-        const url = openLineUrl(line);
+        const url = openLineUrl(line, publicUrl);
         if (url !== undefined) resolve((found = url));
+        else keep(line);
       }
     });
-    stdout.on("end", () => resolve(found));
+    stdout.on("end", () => {
+      if (found === undefined && pending !== "") keep(pending);
+      resolve(found);
+    });
   });
 }
 
@@ -108,38 +123,61 @@ export async function main(argv, env = process.env) {
   // The data directory is ~/.agentrun unless --data names one, handed to the server and its subcommands (import,
   // reset-password) as --data (the server's own default is another directory). The server's hints name it too, so each
   // opens this same store.
-  const at = argv.indexOf("--data");
-  const data = ["--data", at >= 0 ? argv[at + 1] : join(homedir(), ".agentrun")];
-  const rest = at >= 0 ? [...argv.slice(0, at), ...argv.slice(at + 2)] : argv;
+  // `--data <dir>` and `--data=<dir>` are the same option, and the last one wins, as the server reads them; the server is
+  // handed exactly one, so this command, its hint and the server agree on the directory.
+  let dir;
+  const rest = [];
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === "--data" && i + 1 < argv.length) dir = argv[++i];
+    else if (argv[i].startsWith("--data=")) dir = argv[i].slice("--data=".length);
+    else rest.push(argv[i]);
+  }
+  const dataDir = dir ?? join(homedir(), ".agentrun");
+  // A name that starts with a dash keeps the equals form: the server's parser reads "--data -x" as a missing value.
+  const data = dataDir.startsWith("-") ? [`--data=${dataDir}`] : ["--data", dataDir];
   if (rest[0] && !rest[0].startsWith("-")) {
     return new Promise((resolve) => spawn(launcher, [rest[0], ...data, ...rest.slice(1)], { stdio: "inherit", env: childEnv }).on("exit", (code) => resolve(code ?? 1)));
   }
   // The server's banner and request lines stay out of this terminal: one line here says where to go, the URL of the
   // server's own "Open " line. What it prints on stderr (why it did not start) comes through as it is.
   const child = spawn(launcher, serverArgs([...data, ...rest]), { stdio: ["ignore", "pipe", "inherit"], env: childEnv });
-  const exited = new Promise((resolve) => child.on("exit", (code) => resolve(code ?? 1)));
-  for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => child.kill(signal));
+  // A stop this command passes on (Ctrl-C, a process manager's SIGTERM, npm gone) is a clean end, 0, even when the signal
+  // itself ends the server; a server ended by a signal nobody here sent is not.
+  let stopping = false;
+  const stop = (signal) => {
+    stopping = true;
+    child.kill(signal);
+  };
+  const exited = new Promise((resolve) => child.on("exit", (code) => resolve(code ?? (stopping ? 0 : 1))));
+  for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => stop(signal));
   // A SIGHUP to this command alone (not the terminal's, which reaches the server too) asks the server to stop as a SIGTERM
   // does.
-  process.on("SIGHUP", () => child.kill("SIGTERM"));
+  process.on("SIGHUP", () => stop("SIGTERM"));
   // When that npm goes, the server stops, as on a SIGTERM, and this ends.
   if (npm !== undefined) {
     const watch = setInterval(() => {
       if (!npmGone()) return;
       clearInterval(watch);
-      child.kill("SIGTERM");
+      stop("SIGTERM");
     }, 1000);
     watch.unref();
     child.on("exit", () => clearInterval(watch));
   }
   let timer;
-  const url = await Promise.race([openUrl(child.stdout), new Promise((resolve) => { timer = setTimeout(resolve, 60_000); })]);
+  const seen = [];
+  const url = await Promise.race([openUrl(child.stdout, env.AGENTRUN_PUBLIC_URL, seen), new Promise((resolve) => { timer = setTimeout(resolve, 60_000); })]);
   clearTimeout(timer);
   if (url === undefined) {
     child.kill("SIGTERM");
-    console.error("AgentRun did not start; the server's lines above say why.");
+    // Its stdout is kept out of this terminal, so its last lines are shown here: with its stderr above, they say why.
+    console.error(seen.length > 0 ? `AgentRun did not start. The server's last lines:\n${seen.map((line) => `  ${line}`).join("\n")}` : "AgentRun did not start, and the server printed nothing.");
     return (await exited) || 1;
   }
   console.log(`AgentRun is running at ${url}`);
+  // For the person at the terminal (stderr, so stdout stays the one line a script reads): how to stop it, and where its
+  // data is kept, which the next start opens again.
+  console.error(`Press Ctrl-C to stop it. Its data is in ${dataDir}.`);
+  // And where the API's bearer token is: the server prints it on a line this terminal doesn't show.
+  console.error(env.AGENTRUN_TOKEN ? "The API token is the AGENTRUN_TOKEN this command was started with." : `The API token is in ${join(dataDir, ".token")}.`);
   return exited;
 }
