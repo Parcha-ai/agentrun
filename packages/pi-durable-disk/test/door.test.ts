@@ -255,6 +255,27 @@ describe("the door hook: admission", () => {
 });
 
 describe("the door hook: outcomes", () => {
+  it("an input that may not answer is refused (409 WAITING) while a call waits in a park the caller names (an entry `{phase: \"requested\", id}` with no `resolved` after it), the hook not called; once resolved, it goes in", async () => {
+    await closing(async (serve) => {
+      const { hook, calls } = scripted();
+      const s = await serve(hook);
+      const PARK = "agentrun.tool_approval";
+      const guarded = (id: string, parks?: string[]) => call(s.server, "POST", "/submit", { requestId: id, content: "news", answers: false, asks: ["ask_person"], ...(parks ? { parks } : {}) });
+      const root = (await s.run.harness.root(ctx)).id;
+      const park = (data: Record<string, unknown>) => s.run.harness.commit((tx) => tx.appendEntry(root, { kind: PARK, data: data as never }), ctx);
+      await park({ phase: "requested", id: "ap_1", tool: "web_fetch", call_id: "call_1" });
+      const waiting = await guarded("event-1", [PARK]);
+      assert.deepEqual([waiting.status, waiting.body.error], [409, "WAITING"], JSON.stringify(waiting.body));
+      assert.equal(calls.submit.length, 0, "the hook is not called");
+      assert.deepEqual((await doorEntries(s.run)).length, 0, "nothing admitted");
+      assert.deepEqual((await guarded("event-2")).status, 200, "a caller that names no park is not refused by one");
+      await park({ phase: "resolved", id: "ap_1", decision: "allow" });
+      assert.deepEqual((await guarded("event-1", [PARK])).status, 200, "resolved: it goes in");
+      assert.deepEqual(calls.submit.map((c) => c.requestId), ["event-2", "event-1"]);
+      for (const parks of [["a", 1], "x"]) assert.equal((await call(s.server, "POST", "/submit", { requestId: "bad", content: "x", answers: false, parks })).status, 400, JSON.stringify(parks));
+    }, new LocalDisk("door-parked"));
+  });
+
   it("FAILED (the hook threw before taking it) is 500 and terminal for its requestId: each retry answers its record", async () => {
     const disk = new LocalDisk("door-states");
     try {
