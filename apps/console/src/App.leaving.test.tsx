@@ -17,10 +17,13 @@ let calc: { agent_id: string; kind: string; revision: string; revisions: number;
 let asked: string[];
 let answer: boolean;
 let confirms: string[];
+// A Create the test holds open: POST /v2/agents answers only once `release` is called.
+let hold: Promise<void> | null;
+let release: () => void;
 
 beforeEach(() => {
   calc = { agent_id: "calc", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { ...definition } };
-  asked = []; confirms = []; answer = false;
+  asked = []; confirms = []; answer = false; hold = null;
   vi.stubGlobal("confirm", (message: string) => { confirms.push(message); return answer; });
   vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
     const path = new URL(url, "http://serve.test").pathname;
@@ -30,6 +33,7 @@ beforeEach(() => {
     if (path === "/v2/capabilities") return json(200, { harnesses: [{ id: "pi", available: true }], tools: [], thinking: ["low"], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } });
     if (path === "/v2/agents" && method === "POST") {
       const body = JSON.parse(String(init!.body)) as { definition: typeof definition };
+      if (hold) await hold;
       return json(201, { agent_id: "made", kind: "agentic", revision: "m1", revisions: 1, archived_at: null, definition: body.definition });
     }
     if (path === "/v2/agents") return json(200, { agents: [calc], next_cursor: null });
@@ -182,5 +186,93 @@ describe("App, a cancelled move and the run page's back arrow", () => {
     await page.click(arrow());
     await page.wait(() => location.hash === "#/agents/calc/edit", "back on the editor");
     expect(confirms).toEqual([LEAVE]);
+  });
+});
+
+// Cancel on the browser's own Back or Forward undoes the move: the browser goes back to the editor's entry, every other
+// entry as it was (none rewritten), and the back arrow's count of where the console is stays right.
+describe("App, Back or Forward cancelled with unsaved changes", () => {
+  const traverse = async (page: Awaited<ReturnType<typeof open>>, step: () => void) => { await act(async () => { step(); }); await page.settle(); await page.settle(); };
+
+  it("Back, then Cancel: the editor stays and the list's entry is still there, Back and Forward reach both", async () => {
+    const page = await open("#/agents");
+    await page.wait(() => !!page.sidebar("Agents"), "the console is open");
+    await act(async () => { location.hash = "#/agents/calc/edit"; });
+    await page.wait(() => !!page.instructions(), "the editor is open");
+    const entries = history.length;
+    await page.type(page.instructions(), "Answer, then check the sum.");
+    await traverse(page, () => history.back());
+    expect(confirms).toEqual([LEAVE]);
+    await page.wait(() => location.hash === "#/agents/calc/edit", "back on the editor");
+    expect(page.instructions()?.value).toBe("Answer, then check the sum.");
+    expect(history.length).toBe(entries);
+    // The list's entry is where it was: Back (now leaving) reaches it, Forward the editor again.
+    answer = true;
+    await traverse(page, () => history.back());
+    await page.wait(() => location.hash === "#/agents", "Back reaches the list");
+    await traverse(page, () => history.forward());
+    await page.wait(() => location.hash === "#/agents/calc/edit", "Forward reaches the editor");
+  });
+
+  it("Forward, then Cancel: the editor stays and the next entry is still there", async () => {
+    const page = await editing();
+    await act(async () => { location.hash = "#/runs"; });
+    await page.wait(() => !page.instructions(), "on the runs list");
+    await traverse(page, () => history.back());
+    await page.wait(() => !!page.instructions(), "the editor again");
+    await page.type(page.instructions(), "Answer, then check the sum.");
+    await traverse(page, () => history.forward());
+    expect(confirms).toEqual([LEAVE]);
+    await page.wait(() => location.hash === "#/agents/calc/edit", "still the editor");
+    expect(page.instructions()?.value).toBe("Answer, then check the sum.");
+    answer = true;
+    await traverse(page, () => history.forward());
+    await page.wait(() => location.hash === "#/runs", "Forward reaches the runs list");
+  });
+
+  it("after a cancelled Back, the run page's back arrow knows where the console is", async () => {
+    const page = await open("#/agents");
+    await page.wait(() => !!page.sidebar("Agents"), "the console is open");
+    await act(async () => { location.hash = "#/agents/calc/edit"; });
+    await page.wait(() => !!page.instructions(), "the editor is open");
+    await page.type(page.instructions(), "Answer, then check the sum.");
+    await traverse(page, () => history.back());
+    await page.wait(() => location.hash === "#/agents/calc/edit", "Cancel kept the editor");
+    await page.type(page.instructions(), "Answer.");
+    await act(async () => { location.hash = "#/runs/r1"; });
+    const arrow = () => page.host.querySelector<HTMLButtonElement>('nav[aria-label="Breadcrumb"] button[aria-label="Back"]');
+    await page.wait(() => !!arrow(), "the run's page");
+    await page.click(arrow());
+    await page.wait(() => location.hash === "#/agents/calc/edit", "the arrow goes back to the editor");
+    await page.click(page.button(/^Back to agents$/));
+    await page.wait(() => location.hash === "#/agents", "and on to the list");
+  });
+});
+
+// A Create that answers after its editor is gone neither opens the new agent's page nor lifts another editor's guard.
+describe("App, a Create that lands after its editor is gone", () => {
+  it("leaves the next editor's unsaved changes guarded, and moves nowhere", async () => {
+    hold = new Promise<void>((r) => { release = r; });
+    const page = await open("#/agents/new");
+    await page.wait(() => !!page.instructions(), "the new agent's editor");
+    await page.type(page.host.querySelector("#agent-name"), "Made");
+    await page.type(page.instructions(), "Answer.");
+    await act(async () => { page.button(/^Create$/)!.click(); });
+    await page.wait(() => asked.includes("POST /v2/agents"), "the Create is under way");
+    answer = true;
+    await page.click(page.sidebar("Agents"));
+    await page.wait(() => location.hash === "#/agents", "left the new agent's editor");
+    await act(async () => { location.hash = "#/agents/calc/edit"; });
+    await page.wait(() => !!page.instructions(), "another agent's editor");
+    await page.type(page.instructions(), "Answer, then check the sum.");
+    await act(async () => { release(); });
+    await page.settle(); await page.settle();
+    expect(location.hash).toBe("#/agents/calc/edit");
+    answer = false;
+    const before = confirms.length;
+    await page.click(page.sidebar("Runs"));
+    expect(confirms.length).toBe(before + 1);
+    await page.wait(() => location.hash === "#/agents/calc/edit", "still the editor");
+    expect(page.instructions()?.value).toBe("Answer, then check the sum.");
   });
 });
