@@ -228,7 +228,7 @@ test("SKILL.md: its front matter, its size, and each recipe block run in order a
 });
 
 /** A server on loopback that answers each request with `answer.status` and a body quoting `answer.secret` (raw in a
- *  text body, or JSON-escaped and URL-encoded in a JSON error), as a careless or hostile server could. It answers only
+ *  text body, or JSON-escaped and URL-encoded in a JSON error), as a server that echoes what it was sent does. It answers only
  *  under its own random path prefix (part of `base`), recording each such request's method and path past it; any other
  *  request, a stray one from another test on this machine, gets a bare 404 and is not recorded. */
 async function echoServer(t) {

@@ -20,12 +20,14 @@ async function readSecret(io, fail, what, how) {
   return Buffer.concat(chunks).toString("utf8").replace(/\r?\n$/, "");
 }
 
-/** The forms a server could quote a secret in: as it is, JSON-escaped and URL-encoded. */
+/** The forms a server that echoes what it was sent quotes a secret in: as it is, JSON-escaped and URL-encoded. */
 const formsOf = (secret) => [...new Set([secret, JSON.stringify(secret).slice(1, -1), encodeURIComponent(secret)])].sort((a, b) => b.length - a.length);
 
-/** What cuts every copy of each secret, in any of its forms and at any length: `text(string)` from a text, and
+/** A second line against a server that echoes what it was sent (the first: a refusal's body is never printed): what
+ *  cuts each secret's copies in those three forms, at any length. `text(string)` cuts them from a text, and
  *  `value(json)` from a JSON value's strings and keys only, so the value printed again is still JSON, its structure and
- *  every other value as they were. Two keys the cut makes one are kept apart. */
+ *  every other value as they were. Two keys the cut makes one are kept apart. It is no guard against a server that
+ *  means to hand a secret back, which can encode it any other way: a secret goes only to a server it is meant for. */
 function scrubberOf(secrets) {
   const forms = [...new Set(secrets.filter(Boolean).flatMap(formsOf))].sort((a, b) => b.length - a.length);
   const text = (string) => forms.reduce((at, form) => at.split(form).join("[hidden]"), string);
