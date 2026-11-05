@@ -74,7 +74,7 @@ export function Shell({ active, settings = false, schedules = false, banners, bu
               </div>
             </div>
             {schedules && <button type="button" className={navStyle(active === "schedules")} aria-current={active === "schedules" ? "page" : undefined} onClick={() => navigate("schedules")}><CalendarClock className="size-4 shrink-0" aria-hidden />Schedules</button>}
-            <button type="button" className={navStyle(active === "dojo")} aria-current={active === "dojo" ? "page" : undefined} onClick={() => navigate("dojo")}><DojoIcon size={16} className="shrink-0" />Agent Dojo</button>
+            <button type="button" className={navStyle(active === "dojo")} aria-current={active === "dojo" ? "page" : undefined} onClick={() => navigate("dojo")}><DojoIcon size={16} className="shrink-0" />Learning Dojo</button>
           </div>
           {settings && <div data-sidebar-account className="mt-auto border-t pb-2 pt-3">
             <button type="button" className={navStyle(active === "settings")} aria-current={active === "settings" ? "page" : undefined} onClick={() => navigate("settings")}><Settings className="size-4 shrink-0" aria-hidden />Settings</button>

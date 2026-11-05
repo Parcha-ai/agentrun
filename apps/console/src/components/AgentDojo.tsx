@@ -92,7 +92,7 @@ export function AgentDojo({ v2, server }: { v2: Client; server?: "on" | "off" | 
       };
       await Promise.all(Array.from({ length: Math.min(WORKERS, candidates.length) }, worker));
       if (current()) setUpdated(new Date().toISOString());
-    } catch (e) { if (current()) setError(problem(e, "Agent Dojo")); }
+    } catch (e) { if (current()) setError(problem(e, "Learning Dojo")); }
     finally { if (current()) { reading.current = false; setLoading(false); } }
   }, [v2, server]);
   useEffect(() => {
@@ -116,8 +116,8 @@ export function AgentDojo({ v2, server }: { v2: Client; server?: "on" | "off" | 
     .sort((a, b) => b.change.at.localeCompare(a.change.at)).slice(0, 8);
   return <section className="flex min-h-full flex-col">
     <header className="flex min-h-12 shrink-0 items-center gap-2 border-b px-5">
-      <DojoIcon className="shrink-0" /><h1 className="caps text-[13px] font-semibold">Agent Dojo</h1>
-      <Button className="ml-auto" size="icon" aria-label="Refresh Agent Dojo" disabled={loading || !server} onClick={() => void read()}><RefreshCw className="size-4" aria-hidden /></Button>
+      <DojoIcon className="shrink-0" /><h1 className="caps text-[13px] font-semibold">Learning Dojo</h1>
+      <Button className="ml-auto" size="icon" aria-label="Refresh Learning Dojo" disabled={loading || !server} onClick={() => void read()}><RefreshCw className="size-4" aria-hidden /></Button>
     </header>
     <div className="mx-auto w-full max-w-[1440px] space-y-7 p-5 md:p-8">
       <div><h2 className="text-xl font-semibold">What your agents learn</h2><p className="mt-2 max-w-3xl text-sm leading-relaxed text-muted-foreground">Review the notes, skills and workflow drafts your current agents keep for later runs. Open an agent to enable learning, inspect its changes or review pending items.</p><p className="mt-2 max-w-3xl text-xs leading-relaxed text-muted-foreground">Imported sessions are history, not learning runs. Learning comes from agentic runs started through this server; notes you add yourself are included too.</p></div>
@@ -126,7 +126,7 @@ export function AgentDojo({ v2, server }: { v2: Client; server?: "on" | "off" | 
         : <>
           {server === "off" && <p role="status" className="rounded-xl border border-warning/40 bg-warning/5 p-4 text-sm text-warning-text">This server has learning turned off. Saved learning remains available; new runs will learn only after the server's learning setting is on.</p>}
           {error && <><ProblemCard problem={error} onRetry={() => void read()} className="rounded-xl" />{rows && <p className="text-xs text-warning-text">Showing the last read. Refresh to update these counts.</p>}</>}
-          {!rows && !error ? <ListSkeleton label="Loading Agent Dojo" rows={4} /> : rows && <>
+          {!rows && !error ? <ListSkeleton label="Loading Learning Dojo" rows={4} /> : rows && <>
             <dl className="grid grid-cols-2 gap-3 xl:grid-cols-5">{measures.map(({ label, of }) => <div key={label} aria-label={label} className="rounded-xl border bg-card p-4"><dt className="caps text-[10px] text-muted-foreground">{label}</dt><dd className="mt-3 font-mono text-3xl">{total(eligible, of)}</dd></div>)}</dl>
             <p className="text-xs leading-relaxed text-muted-foreground">{loaded} of {eligible.length} agent histories read. Counts show active items; pending notes, skills and drafts are counted under review. + means a minimum from incomplete data; — means not reported.{updated && !loading ? ` Updated ${when(updated)}.` : loading ? " Loading learning…" : ""}</p>
             {!rows.length ? <div className="rounded-xl border px-6 py-10 text-center"><h3 className="font-semibold">No agents yet</h3><p className="mt-2 text-sm text-muted-foreground">Create an agent, then open its Learning tab to let its runs build on what they learn.</p><a className="mt-4 inline-block text-sm text-primary underline underline-offset-4" href="#/agents/new">Build an agent</a><span className="mx-3 text-muted-foreground">·</span><a className="text-sm text-primary underline underline-offset-4" href="#/agents">Import existing agents</a></div>

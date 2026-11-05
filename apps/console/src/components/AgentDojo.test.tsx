@@ -23,10 +23,10 @@ async function mount(answer: (call: Call) => Response | Promise<Response>, serve
   return { calls, v2 };
 }
 const metric = (name: string) => host.querySelector(`[aria-label="${name}"]`)?.textContent;
-const refresh = () => host.querySelector<HTMLButtonElement>('button[aria-label="Refresh Agent Dojo"]')!;
+const refresh = () => host.querySelector<HTMLButtonElement>('button[aria-label="Refresh Learning Dojo"]')!;
 afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.innerHTML = ""; vi.useRealTimers(); vi.restoreAllMocks(); });
 
-describe("Agent Dojo", () => {
+describe("Learning Dojo", () => {
   it("reads all agent and note pages, aggregates actual learning, and links changes to their runs", async () => {
     const alpha = view("alpha", { notes: { items: [note("first.md"), note("old.md", "retired")], total: 3, next_cursor: "notes-two" },
       skills: [{ name: "Review", file: "skills/review/SKILL.md", description: "Review", status: "active", run: "run-one", bytes: 1, etag: "one" }],

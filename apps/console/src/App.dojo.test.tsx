@@ -8,7 +8,7 @@ let root: Root | undefined;
 afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.innerHTML = ""; vi.unstubAllGlobals(); location.hash = ""; });
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
-describe("App Agent Dojo", () => {
+describe("App Learning Dojo", () => {
   it("opens actual learning without a provider key and keeps the learning link on the same agent", async () => {
     const calls: string[] = [];
     vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
@@ -25,8 +25,8 @@ describe("App Agent Dojo", () => {
     const host = document.body.appendChild(document.createElement("div")); root = createRoot(host);
     act(() => root!.render(createElement(App)));
     for (let i = 0; i < 40 && !host.textContent?.includes("3 runs kept learning"); i++) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 10)); });
-    expect(host.querySelector("h1")?.textContent).toBe("Agent Dojo");
-    expect(host.querySelector('nav [aria-current="page"]')?.textContent?.trim()).toBe("Agent Dojo");
+    expect(host.querySelector("h1")?.textContent).toBe("Learning Dojo");
+    expect(host.querySelector('nav [aria-current="page"]')?.textContent?.trim()).toBe("Learning Dojo");
     expect(host.textContent).toContain("3 runs kept learning");
     expect(host.querySelector('a[href="#/agents/support%20agent/learning"]')).not.toBeNull();
     expect(host.textContent).not.toMatch(/Add a model key|Generate key|Demo/);

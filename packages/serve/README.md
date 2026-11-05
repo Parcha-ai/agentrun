@@ -1518,7 +1518,7 @@ server's own origin, under a CSP that allows that origin only:
   with archived ones behind **Archived**. Build, edit and run actions share the remembered coding-agent dropdown,
   including **API playground**. Choosing a template prepares its full definition without creating or running it.
   Each agent opens an overview beside its runs, versions and supported workflow, learning and analytics tabs.
-- **Agent Dojo** (`#/dojo`): learning across connected agents, read from this server. It shows retained notes,
+- **Learning Dojo** (`#/dojo`): learning across connected agents, read from this server. It shows retained notes,
   learned skills and workflow drafts, pending reviews, and recent changes with their source runs. Open an agent's
   Learning tab to inspect its knowledge, enable learning, or review a pending change. Counts say when a read is
   incomplete; missing results are not shown as zero.
@@ -1675,7 +1675,7 @@ producing new learning requires an agentic run through this server with learning
 Importing Claude Code, Codex or pi session history does not replay learning or connect a live learning stream. A
 run made directly in an external harness needs that harness to persist compatible learning results through a host
 integration before the console can display them. The separate `pi-agent-learn` SDK's curation and workflow-trial
-reports are not served by these routes. Agent Dojo shows this server's actual reflection results, not inferred
+reports are not served by these routes. Learning Dojo shows this server's actual reflection results, not inferred
 training scores from imported conversations. Before/after cost and duration are observations, not an accuracy
 evaluation.
 

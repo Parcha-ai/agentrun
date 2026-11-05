@@ -11,7 +11,7 @@ import type { Run, TimelinePage } from "@/lib/v2";
 
 // Mission Control is the first page: the bare address and the old start page's both open it, so no link dead-ends.
 describe("route", () => {
-  it("opens Agent Dojo without changing per-agent learning links", () => {
+  it("opens Learning Dojo without changing per-agent learning links", () => {
     expect(route("#/dojo")).toEqual({ section: "dojo" });
     expect(route("#/agents/researcher/learning")).toEqual({ section: "agents", agent: "researcher", tab: "learning" });
   });
