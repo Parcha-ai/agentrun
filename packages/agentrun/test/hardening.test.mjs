@@ -62,7 +62,7 @@ test("a body for a path that ends like a secret route is refused inline, and the
   assert.equal(server.requests.length, 0, "nothing sent");
   const piped = await cli(env, ["home", "write", "demo", "settings/tool-keys/x", "--body", "-", "--body-type", "text/plain", "--base-url", server.base], { input: "hello" });
   assert.equal(piped.code, 0, piped.err);
-  assert.deepEqual([server.requests[0].method, server.requests[0].url, server.requests[0].body.toString()], ["PUT", "/v2/agents/demo/home/files/settings/tool-keys/x", "hello"]);
+  assert.deepEqual([server.requests[0].method, server.requests[0].url, server.requests[0].body.toString()], ["PUT", ["", "v2", "agents", "demo", "home", "files", "settings", "tool-keys", "x"].join("/"), "hello"]);
 });
 
 test("runs start --wait --timeout bounds the start too: a server that never answers it is given up on in time, exit 1", async (t) => {
