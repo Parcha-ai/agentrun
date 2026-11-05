@@ -45,6 +45,8 @@ const LATE_MS = 60_000;
 const MISSED_COUNTED = 10_000;
 /** The waits before a firing a full server refused (429), or whose last run could not be read, is tried again. */
 const RETRY_MS = [5_000, 15_000, 60_000, 300_000];
+/** How soon a message refused because its run is working is tried again: not a failure, so no backoff. */
+const WORKING_RETRY_MS = 5_000;
 /** How soon a write that failed under the timer is tried again. */
 const WRITE_RETRY_MS = 5_000;
 /** Node fires a longer timeout at once: a far next time is reached in steps of at most this. */
@@ -584,6 +586,11 @@ export class Triggers {
   }
 
   private retry(triggerId: string, key: string, error: Error): void {
+    // A run that is working refused a message that may not answer it: no failed try, and looked at again soon, so the
+    // message lands within WORKING_RETRY_MS of the turn's end.
+    if (error instanceof ApiError && (error.extra.details as { reason?: string } | undefined)?.reason === "working") {
+      return this.settle(triggerId, key, { status: "due", retry_at: iso(this.clock.now() + WORKING_RETRY_MS), reason: error.message });
+    }
     const attempts = (this.find(triggerId, key)?.firing.attempts ?? 0) + 1;
     const wait = Math.max(RETRY_MS[Math.min(attempts, RETRY_MS.length) - 1]!, error instanceof ApiError ? (error.extra.retry_after_ms ?? 0) : 0);
     this.settle(triggerId, key, { status: "due", attempts, retry_at: iso(this.clock.now() + wait), reason: error.message });
