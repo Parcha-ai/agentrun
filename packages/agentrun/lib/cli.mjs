@@ -330,12 +330,15 @@ async function api(argv, env, io) {
   const verb = method.toUpperCase();
   const secret = secretAt(verb, `http://host/v2${path}`);
   if (secret) refuseInline(`${verb} ${secret.path}`, values.body);
-  const headers = {};
+  // No prototype, so a header named __proto__ is a key of its own, not the object's prototype set.
+  const headers = Object.create(null);
   for (const line of values.header ?? []) {
     const at = line.indexOf(":");
     const name = line.slice(0, at).trim();
     if (at <= 0 || !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(name)) throw usageError("--header takes 'NAME: VALUE'.");
     if (["authorization", "cookie"].includes(name.toLowerCase())) throw usageError(`--header cannot set ${name}: the token is never a flag.`);
+    // Node's fetch keeps its headers in a plain object and drops this one unsent: refused, so it is never lost unsaid.
+    if (name === "__proto__") throw usageError("--header cannot send a header named __proto__: Node's fetch drops it.");
     checkHeader(name, line.slice(at + 1).trim());
     headers[name.toLowerCase()] = line.slice(at + 1).trim();
   }
