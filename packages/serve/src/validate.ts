@@ -80,10 +80,11 @@ export function definitionIssues(definition: unknown, { at = "definition", creat
   if (d.tools !== undefined) names(d.tools, `${at}.tools`, out);
   // The agent's own tool settings, over the server's (tool-plane.ts); an edit that leaves them out keeps none.
   if (d.tool_settings !== undefined) out.push(...settingsIssues(d.tool_settings, `${at}.tool_settings`));
-  // The agent's default cap of each run started without one of its own; an edit that leaves it out keeps none.
+  // The agent's default cap of each run started without one of its own: above 0 sets it, 0 clears it (no default), and
+  // an edit that leaves it out keeps the agent's (agents.ts), so leaving a field out never removes a spend limit.
   if (d.max_cost_usd !== undefined) {
-    if (d.workflow !== undefined) out.push(issue(`${at}.max_cost_usd`, "not_allowed", "A workflow run's spend is not capped here, so a workflow revision keeps no max_cost_usd.", `Remove ${at}.max_cost_usd.`));
-    else if (!(typeof d.max_cost_usd === "number" && Number.isFinite(d.max_cost_usd) && d.max_cost_usd > 0)) out.push(issue(`${at}.max_cost_usd`, "wrong_type", `${at}.max_cost_usd is a number above 0, in US dollars`));
+    if (!(typeof d.max_cost_usd === "number" && Number.isFinite(d.max_cost_usd) && d.max_cost_usd >= 0)) out.push(issue(`${at}.max_cost_usd`, "wrong_type", `${at}.max_cost_usd is a number of at least 0, in US dollars: above 0 sets the agent's default cap, 0 clears it`));
+    else if (d.workflow !== undefined && d.max_cost_usd > 0) out.push(issue(`${at}.max_cost_usd`, "not_allowed", "A workflow run's spend is not capped here, so a workflow revision keeps no max_cost_usd.", `Remove ${at}.max_cost_usd.`));
   }
   return out;
 }

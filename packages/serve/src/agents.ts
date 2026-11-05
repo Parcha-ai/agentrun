@@ -108,7 +108,7 @@ export class Agents {
     // The learning switch is kept whenever a definition sets it, false included; a definition that leaves it out keeps
     // none, and its revision id is the one it had before the switch.
     const learning = typeof definition.learning === "boolean" ? { learning: definition.learning } : {};
-    return { kind: "agentic", instructions: definition.instructions as string, ...(typeof definition.model === "string" ? { model: definition.model } : {}), ...(typeof definition.thinking === "string" ? { thinking: definition.thinking } : {}), ...common, ...learning, ...(typeof definition.max_cost_usd === "number" ? { maxCostUsd: definition.max_cost_usd } : {}) };
+    return { kind: "agentic", instructions: definition.instructions as string, ...(typeof definition.model === "string" ? { model: definition.model } : {}), ...(typeof definition.thinking === "string" ? { thinking: definition.thinking } : {}), ...common, ...learning, ...(typeof definition.max_cost_usd === "number" && definition.max_cost_usd > 0 ? { maxCostUsd: definition.max_cost_usd } : {}) };
   }
 
   /** `definition.version`, when given, is the number of the revision the request leaves current. */
@@ -176,12 +176,14 @@ export class Agents {
         const texts = await this.request(() => this.texts(held.map(([, sha]) => sha)));
         files = Object.fromEntries(held.map(([path, sha]) => [path, texts.get(sha) ?? ""]));
       }
-      // An edit that names no harness, place or learning switch keeps the agent's, as it keeps its skill files: absent
-      // here is unchanged, not the default.
+      // An edit that names no harness, place, learning switch or default cap keeps the agent's, as it keeps its skill
+      // files: absent here is unchanged, not the default.
       const harness = entry.revision?.body.harness;
       const place = entry.revision?.body.place;
       const learning = entry.revision?.kind === "agentic" && !isObject(definition.workflow) ? entry.revision.body.learning : undefined;
-      const revision = this.revisionOf({ ...definition, ...(definition.harness === undefined && harness ? { harness } : {}), ...(definition.place === undefined && place ? { place } : {}), ...(definition.learning === undefined && learning !== undefined ? { learning } : {}) }, files, note);
+      // And its default cap: leaving it out never removes a spend limit; only 0 clears it.
+      const cap = entry.revision?.kind === "agentic" && !isObject(definition.workflow) ? entry.revision.body.maxCostUsd : undefined;
+      const revision = this.revisionOf({ ...definition, ...(definition.harness === undefined && harness ? { harness } : {}), ...(definition.place === undefined && place ? { place } : {}), ...(definition.learning === undefined && learning !== undefined ? { learning } : {}), ...(definition.max_cost_usd === undefined && cap !== undefined ? { max_cost_usd: cap } : {}) }, files, note);
       await this.checked(revision);
       await check?.(revision);
       const base = entry.revision?.id ?? null;

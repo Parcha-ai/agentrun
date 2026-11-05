@@ -126,7 +126,7 @@ export const TOOLS: Tool[] = [
   },
   {
     name: "agents_revise", title: "Revise an agent", annotations: WRITE,
-    description: "Makes the agent's next revision from its current definition with these fields changed, and any other field in definition (GET /v2/agents/{agent_id}, then PUT /v2/agents/{agent_id}/definition on that revision): fields you leave out stay; null clears model or thinking. Its next run runs the new revision. A revision saved in between is refused (precondition_failed), never overwritten. Its name and description stay as it was created.",
+    description: "Makes the agent's next revision from its current definition with these fields changed, and any other field in definition (GET /v2/agents/{agent_id}, then PUT /v2/agents/{agent_id}/definition on that revision): fields you leave out stay; null clears model or thinking. definition.max_cost_usd sets the agent's default spend cap of each run started without one; 0 clears it (null is refused), and a revise that leaves it out keeps it. Its next run runs the new revision. A revision saved in between is refused (precondition_failed), never overwritten. Its name and description stay as it was created.",
     inputSchema: { type: "object", required: ["agent_id"], properties: { agent_id: AGENT_ID, ...DEFINITION, note: { type: "string", description: "Optional: what this revision changes." } } },
     run: async (args, context) => {
       const agent = text(args, "agent_id");
