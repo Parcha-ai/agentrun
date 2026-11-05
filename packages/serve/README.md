@@ -86,9 +86,11 @@ AGENTRUN_BOXES=docker node packages/serve/dist/cli.js
 ```
 
 Its log says `event=boxes available=docker`, and its banner's last line `Boxes: docker is ready, so sandbox agents run
-their tools there.` The first start builds [the box's image](#the-boxs-image) (python 3.12, git, curl, node and rg,
+their tools there. docker boxes reach only pypi.org, files.pythonhosted.org, registry.npmjs.org, registry.yarnpkg.com,
+github.com, and codeload.github.com.` (on Linux; elsewhere it says why the box has no
+network: [Sandbox](#sandbox)). The first start builds [the box's image](#the-boxs-image) (python 3.12, git, curl, node, npm and rg,
 about 300 MB, a minute or two, the build alone on the network): its banner then says `Boxes: docker is preparing
-(building the box image (python, git, curl, node, rg)).`, and the log `event=box_image ... state=preparing`, then
+(building the box image (python, git, curl, node, npm, rg)).`, and the log `event=box_image ... state=preparing`, then
 `state=ready` with how long it took; a later start finds it built. A run that needs its box sooner waits for it, with a
 row on its timeline saying so. In a second shell, export the two `AGENTRUN_` lines it printed (a later start prints
 where the key is: `export AGENTRUN_API_KEY=$(cat ~/.local/share/agentrun/agents/.token)`). Then make a sandbox agent,
@@ -114,8 +116,9 @@ JS
 AGENTRUN_BOXES=docker node packages/serve/dist/cli.js --faux box.mjs
 ```
 
-The box has python 3.12, git, curl, node and rg, and no network: [the box's image](#the-boxs-image) says how to give it
-more. The rest is under [Sandbox](#sandbox).
+The box has python 3.12, git, curl, node, npm and rg. On Linux it reaches Python's and npm's package registries and
+GitHub, and nothing else: `pip install` and `npm install` work in it. [The box's image](#the-boxs-image) says how to give
+it more. The rest is under [Sandbox](#sandbox).
 
 ## Logs
 
@@ -214,14 +217,16 @@ container's limit when it has one (cgroup), else the machine's, less the server'
 | pi | 128 MiB | up to 106 MB |
 | codex | 192 MiB | up to 143 MB |
 | claude-agent | 288 MiB | up to 215 MB |
+| opencode | 704 MiB | up to 524 MB |
 
 The measure is a short task (write a file, read it back, answer) on a real server in a container of its own; the table
 in `src/harness.ts` says how it was taken. So a 512 MB instance holds 3 pi runs, 2 codex runs or 1 claude-agent run at
-once (or 1 codex and 1 pi), 1 GB holds 7, 4 or 3, and 8 GB 63, 42 or 28. A start that does not fit in what is left is
+once (or 1 codex and 1 pi), 1 GB holds 7, 4 or 3, and 8 GB 63, 42 or 28; an opencode run, OpenCode's own process with
+it, needs a 1 GB instance for one and 2 GB for two. A start that does not fit in what is left is
 `429 rate_limited` with `retry-after`, its message naming the harness and the memory, and nothing starts: there is no
 queue, so the client tries again once a run ends. A harness whose one run needs more than all the memory for runs (claude-agent
-on a host under 416 MB) is unavailable: capabilities say why in its `harnesses` entry, and its runs are `409
-agent_not_runnable` with that reason. pi always has one place, however small the host.
+on a host under 416 MB, opencode under 832 MB) is unavailable: capabilities say why in its `harnesses` entry, and
+its runs are `409 agent_not_runnable` with that reason. pi always has one place, however small the host.
 
 `--max-runs N` or `AGENTRUN_MAX_RUNS` caps the count as well (by default, as many as pi runs fit), and both limits
 apply. Capabilities report pi's count in `limits.max_concurrent_runs`, and each harness's own in its `harnesses` entry
@@ -248,8 +253,9 @@ of a process that is gone is not trusted.
 ## Sandbox
 
 A sandbox agent's `bash` runs in a box, a machine apart from this server: today a Docker container made for each run,
-which binds the run's `work/` and nothing else, or a Daytona sandbox, which gets a copy of it; either has no network and
-no key. Its `read`, `write` and `edit` work on that same `work/`: on this server, where the box binds it and this server
+which binds the run's `work/` and nothing else, or a Daytona sandbox, which gets a copy of it. Neither holds a key. A
+Docker box on Linux reaches the package registries and GitHub through a proxy, and nothing else; a Daytona box reaches
+them through Daytona's domain list. Its `read`, `write` and `edit` work on that same `work/`: on this server, where the box binds it and this server
 holds directory handles (Docker on Linux), else in the box. The agent's loop, its log, its model calls and every key stay
 on the server. An agent says so in its [place](#place); the server says which [boxes](#boxes) it has; [a run in a Docker
 box](#a-run-in-a-docker-box) is what the container gets, and [a run in a Daytona box](#a-run-in-a-daytona-box) what a
@@ -307,7 +313,44 @@ go through `work/` by path.
   one); any other (another path of this machine, `..` out of it, `~`) is refused as outside the workspace, and their
   errors name the box's paths, never this machine's. A mount source that is, or passes through, a link below the data directory is
   refused: the tool call fails, and no container is made. The data directory is resolved to its real path once, at start.
-- It has no network (`--network none`); no setting opens it. Docker still binds its copies of this machine's
+- It has no network of Docker's (`--network none`). On Linux, with a Docker daemon of this machine's own, it reaches a
+  list of hosts alone, on ports 80 and 443, through the run's egress proxy. The list, by default: `pypi.org`,
+  `files.pythonhosted.org`, `registry.npmjs.org`, `registry.yarnpkg.com`, `github.com` and `codeload.github.com`.
+  `AGENTRUN_BOX_ALLOW` replaces it with a comma list of host names, such as
+  `pypi.org,files.pythonhosted.org,registry.npmjs.org,registry.yarnpkg.com,github.com,codeload.github.com,deb.debian.org`
+  to add one (`*.example.com` names the hosts below `example.com`); `AGENTRUN_BOX_ALLOW=none` is the box offline, as it
+  was: no proxy, no network at all. `*`, an address or a CIDR refuses the start.
+  - How: the run's process starts the proxy with the list on a Unix socket in a directory of its own under
+    `/tmp/agentrun-egress-<uid>/`, bound into the box read-only at `/run/agentrun/egress/`. A `socat` in the box relays
+    `127.0.0.1:3128` to it, and `HTTP_PROXY` and `HTTPS_PROXY` (and their lowercase twins) name that port, with
+    `NO_PROXY` for loopback. pip, npm, git and curl read them. A program that skips them has no route out.
+  - A host off the list, an address and any other port are refused before any lookup, in words: `403 example.com is
+    not on this box's network list: use web_fetch for web pages, or ask the operator to add it to AGENTRUN_BOX_ALLOW`.
+    So is a listed name whose address is private, this machine's or a cloud's metadata. The proxy holds no key and adds
+    none. Its decisions are in the run's process log (`box_egress`: host, port, address, class).
+  - Only a Docker daemon on this same Linux machine can reach the proxy's socket. The server checks it once, at start,
+    and fails closed: the box has the list only when this machine is Linux, the docker CLI's endpoint is a local unix
+    socket, and `docker info` answers within 5 s with Linux containers on this machine's own kernel, keeping its data
+    in a directory this server sees. The kernel is the evidence, not the runtime's name:
+    - a Docker whose kernel differs from this server's (Docker Desktop on a Mac, OrbStack, Colima) sees a socket bound
+      in from the host but cannot connect to it, so its box has no network;
+    - a Docker on this server's kernel passes whatever it calls itself, if its data directory is one this server sees:
+      Docker Desktop with WSL2 shares the kernel string, but keeps its data outside the distro, so it gets none unless
+      the distro has that directory (`/var/lib/docker`); where it passes, the proxy enforces the list as anywhere;
+    - a server in a container given the host's docker socket shares the host's kernel but not its files (docker
+      info's `DockerRootDir` is not there), so its box has no network rather than every tool call failing.
+
+    Capabilities and the banner say why, naming what was found: `docker boxes have no network: this Docker (OrbStack)
+    runs in a VM (its kernel is "6.15.11-orbstack-…", this machine's "6.1.0-…") that can't reach this server's egress
+    proxy yet`. At each start the server removes the proxy directories of runs that are gone (a socket that refuses a
+    connect, over a minute old); a live run's, of any server of this user's, stays.
+  - Capabilities give the list as `places.allow`, and each box's `network`: `allowlist` or `none`, with
+    `network_reason` when an available box has none. An image with no `socat` gets no network, and the run's timeline
+    says so once.
+  - What it allows, and what it does not: a box reaches no cloud metadata address, nothing of this machine or its
+    network, and no resolver, so no name leaves this machine but a listed one. It can send what its run has to a listed
+    host with the agent's own credentials (an `npm publish`, a `git push`), as `web_fetch` can send to any public host.
+  Docker still binds its copies of this machine's
   `/etc/resolv.conf`, `/etc/hostname` and `/etc/hosts` into it, read-only, so a box's command can read this machine's
   resolver settings (its nameservers and search domains), with no network to use them. Its environment is
   `LANG=C.UTF-8` and `HOME=/tmp` and the image's own: never this server's, so no key or token is in it. It runs as this
@@ -391,19 +434,21 @@ since nothing binds `work/` there):
 ### The box's image
 
 A Docker box starts from this server's own image by default: `agentrun-box`, python 3.12 (`python:3.12-slim`, pinned by
-its digest) with git, curl, node (Debian's `nodejs`, no npm), rg (`ripgrep`) and their certificates, about 300 MB. Its
+its digest) with git, curl, node and npm (Debian's `nodejs` and `npm`), rg (`ripgrep`), `socat` (the relay to the box's
+network proxy, when it has one) and their certificates, about 360 MB. Its
 recipe is `BOX_RECIPE` in `src/box-image.ts`, its base `BOX_BASE` there. The server builds it on first use
 (`docker build`, at most 10 minutes, its context a private directory under `TMPDIR` holding the recipe alone as its
 `Dockerfile`, removed after), tags it with the recipe's hash (`agentrun-box:<12 hex>`) and labels it with the whole hash
 (`agentrun.box-image`), and builds again only when the recipe changes: a start that finds the image with this recipe's
 hash uses it. To move the base, read the tag's index digest again from Docker Hub (the comment beside `BOX_BASE` says
 how) and put it there: the recipe's hash changes, and so does the image's tag, so the next start builds it. The build
-reaches the network, for the base image and apt; a box made from it never does (`--network none`). A build that fails
+reaches the network, for the base image and apt; a box made from it never does through Docker's (`--network none`). A build that fails
 leaves the box unavailable with the reason ([Boxes](#boxes)). Images of older recipes stay until you remove them:
 `docker image ls --filter label=agentrun.box-image` lists them all, and `docker image rm agentrun-box:<12 hex>` removes
 one.
 
-A box has no network, so a run cannot install anything; the image has to bring it. For other tools, name another image
+A box reaches its package registries (on Linux), so `pip install` and `npm install` work in it, but not `apt-get`: the
+box runs as this server's user, with no root. For other tools, name another image
 in `AGENTRUN_DOCKER_IMAGE`: the server then pulls it when Docker has none (at most 10 minutes) and builds nothing.
 This image, its build and the wait for it are the Docker box's alone: a Daytona box is made by the server from
 Daytona's own image, and a Daytona run never waits on this one.
@@ -448,9 +493,9 @@ provider's answer.
   Then the server asks Docker for [the box's image](#the-boxs-image) (`docker image inspect`). When Docker has it (the
   default with this recipe's hash), the box is `ready`. When not, the server builds the default, or pulls the image
   `AGENTRUN_DOCKER_IMAGE` names, once, in the background, for at most 10 minutes. Meanwhile the box is available and
-  `preparing` (`building the box image (python, git, curl, node, rg)`, or `pulling <image>`), and a sandbox run whose
+  `preparing` (`building the box image (python, git, curl, node, npm, rg)`, or `pulling <image>`), and a sandbox run whose
   first box comes then waits for the image, with one row on its timeline (`Preparing the box image: building it (python,
-  git, curl, node, rg)…`), instead of a first tool call that pulls it silently. A build or pull that fails is tried once
+  git, curl, node, npm, rg)…`), instead of a first tool call that pulls it silently. A build or pull that fails is tried once
   more, 5 seconds later, the box `preparing` meanwhile with what failed (`trying once more: the build of the box image
   could not reach the network (…)`). One that fails again, or takes longer, makes the box unavailable with the reason
   (the build could not reach the network, pull its base or install a package, ran out of disk; the registry refused the
@@ -600,7 +645,8 @@ On another harness, every host tool's result reaches the model within the host's
 (`HOST_RESULT_MAX_CHARS`, `@parcha/agentrun-kernel`): the kernel's tool bridge cuts a longer one, its start with a line
 saying where it was cut, and flags the call `truncated`. Each CLI adapter tells its CLI to pass a result that long to
 the model whole: the Claude Agent CLI would otherwise save a result past 50,000 characters to a file and tell the model
-to read it, which a run's confinement refuses, and Codex keeps only the ends of a result past 10,000 tokens. A
+to read it, which a run's confinement refuses, Codex keeps only the ends of a result past 10,000 tokens, and OpenCode
+would cut one past 2,000 lines or 51,200 bytes and save the rest to a file the session has no tool to read. A
 `web_search` answer past 100,000 characters leaves out its least relevant results, `omitted` counting them.
 
 ### Search and fetch
@@ -777,7 +823,8 @@ A tool's key comes from one of two places. The server's own environment, through
 `typesafe` `TYPESAFE_API_KEY`, which unlocks Jev's decisions, `decisions.jev`), and `DELETE` forgets it. A model
 provider's key is saved the same way (`anthropic`, `openai` and `openrouter`, each `kind: "model"`, the others
 `"tool"`): every run gets it, as every run gets the launcher's model keys, and with no `AGENT_MODEL` it gives the
-default model ([models](#models)); its `harnesses` are pi and the provider's own harness (OpenRouter's, all three), of
+default model ([models](#models)); its `harnesses` are pi and the harnesses that talk to that provider's API (OpenAI's:
+codex and opencode; OpenRouter's, all four), of
 those this server runs or would run once the key is set, so a row names them before it is saved: one left out is one
 this server cannot run for another reason (not installed, not the pinned build, more than this host's memory). `GET
 /v2/settings/tool-keys` lists each key, what it unlocks and the harnesses that run that, and each field's `set` and
@@ -794,13 +841,20 @@ is `422 input_invalid`, its field's reason `refused_by_provider`, in plain words
 before stays as it was. Otherwise it is kept, and `GET` gives its row a `check`: `{state: "accepted", at}`, or
 `{state: "not_checked", reason, at}` when the provider would not answer the check (403: a key scoped away from that
 call may still work for its tools), did not answer in 5 s, could not be reached, answered a redirect (never followed,
-so the key goes nowhere else) or something else, or has no call that costs nothing. `check` is null when the key is
-not stored here (the server's own is not checked here); a key saved before this server checked keys reads
-`not_checked`, and is checked when saved again. A save of Browserbase's project id alone sends no key, and leaves its
+so the key goes nowhere else) or something else, or has no call that costs nothing. A tool's key the server is
+started with is checked once as it starts, with the same call, in the background (the start never waits on it): its
+row's `check` is `accepted`, `not_checked`, or `{state: "refused", reason, at}` (`Browserbase refused
+BROWSERBASE_API_KEY (401: Unauthorized) when this server started: set the right one where AgentRun starts, then
+restart it`), and a tool that needs a refused key reads unavailable in capabilities with the same words. `check` is
+null when the key is not set, or is the server's and its check has not answered yet; a key saved before this server
+checked keys reads `not_checked`, and is checked when saved again. A model key the server is started with is not
+checked here: a run on a refused one fails at its first request, saying so. A save of Browserbase's project id alone sends no key, and leaves its
 check as it was. A save whose check is still waiting when the server begins to close keeps nothing (`503
 unavailable`, while its connection lasts): the check stops waiting, and the server's lock, released at close, may be
 another server's by then. Under `--faux` a key is checked only against the fake its runs are given (`fauxMonid`,
-`fauxParallel`, `fauxJev`); with none it is `not_checked`, and nothing reaches the network.
+`fauxParallel`, `fauxJev`); with none it is `not_checked`, and nothing reaches the network. A key the server starts
+with is checked under `--faux` only against a check's own fake (`fauxBrowserbase`, `fauxMonidCheck`), so the fakes the runs use see the
+runs' calls alone; with none, its `check` stays null.
 
 A saved key is kept only as ciphertext: AES-256-GCM in `DIR/tool-keys.json` (0600), each value bound to its field's
 name, under the seal key `AGENTRUN_SEAL_KEY`, which only the server opens it with. A run's process never gets the seal
@@ -1083,7 +1137,7 @@ codex mcp add agentrun --url "$AGENTRUN_BASE_URL/mcp" --bearer-token-env-var AGE
 ## Harnesses
 
 A definition names the harness that runs it: `pi` (the default, and what a definition that names none gets),
-`claude-agent` or `codex`; any other is `422 input_invalid` on `definition.harness`. Every answer names it. An edit
+`claude-agent`, `codex` or `opencode`; any other is `422 input_invalid` on `definition.harness`. Every answer names it. An edit
 (`PUT /agents/{id}/definition`) that names no harness keeps the agent's, as it keeps its skill files; name `pi` to move it
 back.
 `GET /v2/capabilities` lists each in `harnesses`, with `available` and, when not, the `reason`, and `default_model`: the
@@ -1092,8 +1146,11 @@ it runs none (the harness does not run here, or no default model here runs on it
 model). A definition naming a
 harness this server does not run yet saves with a warning on `definition.harness`, and a run of it is
 `409 agent_not_runnable` with `details.harness`; it never runs on pi instead. This server runs pi always, and
-`claude-agent` and `codex` when each adapter's package, pins and provider endpoint check out; the harness's `reason`
-says what is missing. The packages and pins are checked once, at the start (`event=harness_offers why=start`): a harness
+`claude-agent`, `codex` and `opencode` when each adapter's package, pins and provider endpoint check out; the harness's
+`reason` says what is missing. `opencode` needs `opencode-ai@1.19.5` installed beside the server (an exact optional peer of
+it), and its model goes where codex's does: the gateway at `AGENT_MODEL_BASE_URL`, or
+OpenAI with `OPENAI_API_KEY`, on the Responses API. The packages and pins are checked once, at the start
+(`event=harness_offers why=start`): a harness
 installed after it, or put back on its pinned build, stays unavailable until AgentRun restarts, and its reason ends
 saying so, `once it is installed, restart AgentRun to pick it up` or `once the pinned build is installed, restart
 AgentRun`. Run from npx, a reason whose install line is the npx line that starts the server with what is missing needs
@@ -1101,13 +1158,13 @@ no such clause: running that line is the restart. A reason a setting fixes (a mo
 
 `claude-agent` sends its requests to `ANTHROPIC_BASE_URL` (else Anthropic) with `ANTHROPIC_API_KEY` and Anthropic's own
 model id, and prices the run by it: a revision's `anthropic/<model-id>`, its dots as dashes, so OpenRouter's dotted name
-(`anthropic/claude-sonnet-5.5`) and Anthropic's own (`claude-sonnet-5-5`) are one model. `codex` sends its requests to
-serve's gateway (`AGENT_MODEL_BASE_URL`), else OpenAI with `OPENAI_API_KEY`. A harness with none of its own settings, where
+(`anthropic/claude-sonnet-5.5`) and Anthropic's own (`claude-sonnet-5-5`) are one model. `codex` and `opencode` send their requests
+to serve's gateway (`AGENT_MODEL_BASE_URL`), else OpenAI with `OPENAI_API_KEY`. A harness with none of its own settings, where
 `OPENROUTER_API_KEY` is set, runs through OpenRouter (`https://openrouter.ai/api`, the key as a bearer token):
 claude-agent on its Messages endpoint, with Anthropic's own id on the wire (OpenRouter takes it: its Claude Code guide
-says its "Anthropic Skin … handles model mapping") and the run priced by OpenRouter's catalog entry; codex on its Responses API, with the model's whole id (`openai/gpt-6-sol`). On that key alone the defaults are
+says its "Anthropic Skin … handles model mapping") and the run priced by OpenRouter's catalog entry; codex and opencode on its Responses API, with the model's whole id (`openai/gpt-6-sol`). On that key alone the defaults are
 `openrouter/openai/gpt-6-sol` for pi (pi-ai's OpenRouter provider, on the bearer route), `anthropic/claude-sonnet-5.5` for
-claude-agent and `openai/gpt-6-sol` for codex; a direct provider's key gives the default for its harnesses where it is
+claude-agent and `openai/gpt-6-sol` for codex and opencode; a direct provider's key gives the default for its harnesses where it is
 set. A model named `openrouter/<vendor>/<model>` (pi's name for it) goes through OpenRouter on every harness. An endpoint
 the host names never gets OpenRouter's key: `ANTHROPIC_BASE_URL` without `ANTHROPIC_API_KEY` is refused. A model with more
 than one segment after its provider (`anthropic/anthropic/claude-sonnet-5.5`) is refused, naming the form to use. A provider
@@ -1119,7 +1176,7 @@ harness, with the provider's first sentence only.
 tool and reads its other files with `read_skill_file`, and the system prompt holds the instructions alone. A skill the
 adapter does not take (a name that is not lowercase letters, digits and dashes, a `SKILL.md` without front matter giving
 its `name` and a `description`, a file path that is not plain or is deeper than five segments) stays inlined in the
-system prompt, as every skill is on `pi` and `codex`; so do all of them when together they hold more than 1 MiB.
+system prompt, as every skill is on `pi`, `codex` and `opencode`; so do all of them when together they hold more than 1 MiB.
 
 `definition.harness` and `capabilities.harnesses` are this server's, outside the `agentrun.v2/0` contract:
 `GET /v2/openapi.json` marks each `x-agentrun-serve: "harness/1"`, beside the other properties it adds (`model/1`,
@@ -1284,7 +1341,9 @@ left out: 2 sessions still being written: they come in next time
      [below](#spend-cap)). A
      provider's content filter stopping the answer ends it `failed` with `moderated` on every harness, saying so in plain
      words ("The model provider stopped this answer (its content filter). Rephrase the request, or try another model.");
-     the provider's own words stay on the Timeline's error row. On claude-agent and codex the session's model proxy reads
+     the Timeline's error row keeps the harness's own words for the stop: pi-ai's on pi ("Response incomplete:
+     content_filter", say), the kernel's on claude-agent and codex ("content_filter: the model provider stopped this
+     answer"), never the provider's own. On claude-agent and codex the session's model proxy reads
      the provider's stop and ends the turn at once, so the CLI never asks for the refused answer again.
      A stop sent while the run still reads `queued` (a message sent to it not yet in its timeline) waits, up to a
      request's deadline, for that message to show, then stops the turn as it stops any working run.
@@ -1310,8 +1369,11 @@ left out: 2 sessions still being written: they come in next time
    agentic run waiting for an answer waits without one, until a message). A carry back that finds the store held by
    another writer is tried again with backoff, and at the next start.
 
-An `Idempotency-Key` answer is kept in `DATA/.idempotency.json` for `limits.idempotency_ttl_s` (a day), written before
-the answer is sent, so a retry after a restart gets the first answer.
+An `Idempotency-Key` answer is kept in `DATA/.idempotency.json` for `limits.idempotency_ttl_s` (a day), saved once the
+work is done and before the answer is sent, so a retry after a restart gets the first answer; a server that goes down
+between the work and the save loses it, and a save that fails still answers. A run create's key is also kept with its
+run in the agent store, written with the run itself, so a retry after any restart, or after that day, gets that run (as
+it is now, marked `Idempotent-Replayed: true`), and another body under the key is still `409 idempotency_mismatch`.
 
 A completed agentic run's `result` is `{output: null, final_answer}`; a completed workflow run's is
 `{output: <the workflow's output>, final_answer: null}`.
@@ -1548,14 +1610,14 @@ the model's input and cache-write prices (the provider may bill any of the input
 sent with at the output price, plus any fee its tokens do not show (below). Under a cap each request is limited to the
 output tokens what is left of the cap can buy, thinking included, never more than it asks for or than the model's
 ceiling (its max output tokens, else its context window, clamped to what the window leaves): on pi through the request's
-own options (its max tokens, and on Anthropic's API its thinking budget), on claude-agent and codex written into its body
+own options (its max tokens, and on Anthropic's API its thinking budget), on claude-agent, codex and opencode written into its body
 by the model proxy (`max_tokens` and `thinking.budget_tokens`, or `max_output_tokens`). The limit is what it is held at,
 so the cap stays exact. A request is refused only when what is left cannot buy its least: 1,024
 tokens for its answer (what it asks for, when that is fewer), and when it thinks, the provider's least thinking budget
 where thinking takes one (Anthropic's, 1,024, the budget squeezed to it at the least) or else its thinking level's
 budget, since its reasoning then shares the limit (minimal 1,024, low 2,048, medium 8,192, high 16,384). The input bound is one token per UTF-8 byte of what is sent (a byte-level tokenizer never makes
 a token of less than one byte, and an image's base64 is far more bytes than its tokens), plus what the provider adds
-server-side (a tool-use prompt, each image), from the same table the model proxy of claude-agent and codex uses; there
+server-side (a tool-use prompt, each image), from the same table the model proxy of claude-agent, codex and opencode uses; there
 the proxy measures each request's body. A request in flight holds its worst case until it answers, so requests sent side
 by side cannot pass the cap together. Spent so far is read from the run's store each time its process starts, so it
 survives a restart, plus each response since, and with them each charge a paid tool booked (`monid.run`, which is itself
