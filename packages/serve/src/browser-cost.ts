@@ -38,6 +38,10 @@ export const BROWSER_PRICE_ENV = "AGENTRUN_BROWSER_USD_PER_HOUR_";
 /** What a release may take to be confirmed at the provider once it is asked (pi-browser's confirm polls back off 0.5 to 4 s). */
 export const RELEASE_ALLOWANCE_S = 30;
 
+/** How long pi-browser leaves a create whose answer was lost before it releases it by its tag (its create deadline; serve
+ *  keeps the default). */
+export const CREATE_DEADLINE_S = 60;
+
 export const priceEnvOf = (provider: string) => `${BROWSER_PRICE_ENV}${provider.toUpperCase().replace(/[^A-Z0-9]/g, "_")}`;
 
 /** `provider`'s session price: the operator's (a non-negative decimal), else the list's; `usdPerHour` null when neither
@@ -53,6 +57,8 @@ type Hold = ReturnType<typeof keepHold>;
 /** A browser charge as its TOOL_COST holds it. */
 type Booked = { tool: "browser"; charged_by: string; call: string | null; usd: number | null; seconds: number; tag: string; conversation: number; at: string; final: boolean };
 type Open = { cid: number; reserve: Hold; at: number; call: string | null };
+/** A row of pi-browser's open-session inventory. */
+type Row = { tag: string; conversationId: number; state: string; resourceId: string | null };
 
 /** One run's browser bookings, for its one provider at `price` with pi-browser's idle window `idleS`. `release` lets go of
  *  a conversation's session (pi-browser's release, "close"). */
@@ -115,12 +121,31 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
     }
   }
 
-  /** Applies each browser charge `harness` commits, once the commit is in. */
-  function watch(harness: Pick<Session, "subscribeCommits">): void {
+  /** The open-session inventory as committed: a session it no longer holds lets go of its reserve (released, billed or
+   *  not); one whose create's answer was lost, left to a release after the create deadline (releasing, no id), is held
+   *  for that deadline and a stretch, out of its call's hold (two stretches, never less), until its release is billed or
+   *  ends it. */
+  function tracked(rows: Readonly<Record<string, Row>>): void {
+    for (const [tag, open] of sessions) if (!Object.hasOwn(rows, tag)) (open.reserve.drop(), sessions.delete(tag));
+    for (const row of Object.values(rows)) {
+      if (rate === 0 || row.state !== "releasing" || row.resourceId !== null || sessions.has(row.tag)) continue;
+      const usd = usdOf(CREATE_DEADLINE_S + stretchS);
+      take([...calls.values()].find((c) => c.cid === row.conversationId)?.hold, usd);
+      sessions.set(row.tag, { cid: row.conversationId, reserve: keepHold(usd), at: Date.now(), call: null });
+    }
+  }
+
+  /** Applies each browser charge `harness` commits, and each change of pi-browser's inventory (the document of kind
+   *  `inventory`), once the commit is in: the charges first, so a release billed and ended in one commit is billed from
+   *  its reserve before it goes. */
+  function watch(harness: Pick<Session, "subscribeCommits">, inventory = "browser.inventory"): void {
     harness.subscribeCommits((publication) => {
       for (const change of publication.changes) {
         const data = change.type === "entry" && change.value.kind === TOOL_COST ? (change.value.data as Partial<Booked> | undefined) : undefined;
         if (data?.tool === "browser" && typeof data.tag === "string") booked(data as Booked);
+      }
+      for (const change of publication.changes) {
+        if (change.type === "document" && change.record.kind === inventory && change.value) tracked(((change.value as { rows?: Record<string, Row> }).rows) ?? {});
       }
     });
   }

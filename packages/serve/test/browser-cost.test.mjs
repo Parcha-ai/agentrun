@@ -17,7 +17,7 @@ const KEYS = { BROWSERBASE_API_KEY: "fake-test-key", BROWSERBASE_PROJECT_ID: "fa
 /** A pi run in this process whose model calls browser_read `reads` times, thinking `thinkS` between calls, each read
  *  taking `readS`, on a `provider` browser at `price`, under `cap` (none: no cap). `seen()` runs at every moment the
  *  run can spend: inside each call, before each model turn and after the release. */
-async function run(t, { provider = "browserbase", price = BROWSERBASE, reads, readS = 3, thinkS = 20, cap, idleS = 180, end = "close", setup = () => {}, pump = false, seen = () => {} }) {
+async function run(t, { provider = "browserbase", price = BROWSERBASE, reads, readS = 3, thinkS = 20, cap, idleS = 180, end = "close", setup = () => {}, pump = false, options = {}, seen = () => {} }) {
   t.mock.timers.enable({ apis: ["Date"], now: T0 });
   const [{ BACKGROUND_CONTEXT: ctx }, { createModels }, faux, durable, { createBrowserExtension }, { FakeBackend, fakeDriver, fixturePage }] = await Promise.all([
     import("@earendil-works/chord/context"), import("@earendil-works/pi-ai/models"), import("@earendil-works/pi-ai/providers/faux"),
@@ -31,7 +31,7 @@ async function run(t, { provider = "browserbase", price = BROWSERBASE, reads, re
   const releases = [];
   // A refusal's release, waited for here so its charge is billed at the moment of the refusal.
   const spend = browserSpend(provider, price, idleS, async (conversation, context) => { releases.push(conversation.id); await browser.release(conversation, "close", context); await browser.drain(harness, context); });
-  const browser = createBrowserExtension({
+  const browser = createBrowserExtension({ ...options,
     provider: () => backend.provider, driver: fakeDriver(backend), evidence: { file: async () => null },
     prices: { sessionUsdPerHour: price.usdPerHour, sessionMinimumS: price.minimumS }, onCharge: spend.onCharge,
     tools: { browser_read: async (_args, port) => { const s = await port.session(); await s.driver.page(); t.mock.timers.tick(readS * 1000); seen("call", spent); return { content: [{ type: "text", text: "read" }] }; } },
@@ -132,6 +132,21 @@ test("capped, a session whose release the provider never confirms ends lost: bil
   assert.ok(booked[0].seconds === 3 && booked[1].seconds >= 57, "the call's 3 s, then what it ran until custody gave up, at least the rest of its minute");
   assert.deepEqual([record.spent.final, total(booked)], [true, record.spent.usd]);
   assert.equal(paidHolds(), 0, "no stretch is left held for a session custody no longer tracks as open");
+});
+
+test("capped, a create whose answer is lost and whose session no lookup finds yet: its delayed release is held until it is billed", async (t) => {
+  const cap = 0.1;
+  const moments = [];
+  const { record, booked } = await run(t, { reads: 1, cap, options: { createDeadlineMs: 50 }, setup: (backend) => { backend.lose("create"); backend.fail("findByTag", 1); }, seen: (at, spent) => moments.push([at, spent, paidHolds()]) });
+  // The call failed with the session left to a release after the create deadline: the next turn still holds it, the
+  // deadline and a stretch at Browserbase's price.
+  const [, spentThen, heldThen] = moments.filter(([at]) => at === "turn")[1];
+  assert.equal(spentThen, 0, "nothing billed yet");
+  assert.ok(Math.abs(heldThen - (60 + 270) * 0.12 / 3600) < 1e-9, `held for its delayed release: ${heldThen}`);
+  for (const [at, spent, held] of moments) assert.ok(spent + held <= cap, `${at}: ${spent + held}`);
+  assert.deepEqual([record.state, record.spent.final], ["released", true]);
+  assert.deepEqual(booked.map((row) => row.seconds), [60], "found by its tag and billed its minimum");
+  assert.equal(paidHolds(), 0, "let go once billed");
 });
 
 test("a charge joins the run's spend and moves its holds only once the commit that books it is in: one that fails leaves neither", async (t) => {
