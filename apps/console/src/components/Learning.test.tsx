@@ -499,6 +499,13 @@ describe("notes that wait for the owner's OK", () => {
     expect(t.calls.some((c) => c.startsWith("read"))).toBe(false);
     expect(t.calls.filter((c) => c === "learning refunds")).toHaveLength(2);
   });
+  it("says when an approve changed what waits (onChanged), never for the tab's first read", async () => {
+    let changed = 0;
+    const t = await open(agent(true), { learning: async () => waitingView(), caps: APPROVES }, { onChanged: () => { changed += 1; } } as never);
+    expect(changed).toBe(0);
+    await t.click(/^Approve Trust/);
+    expect(changed).toBe(1);
+  });
   it("one changed since its card was read says so, and is not approved", async () => {
     const t = await open(agent(true), { learning: async () => waitingView(), caps: APPROVES, approve: async () => { throw new ClientError(412, "precondition_failed", "changed"); } });
     await t.click(/^Approve Trust/);
