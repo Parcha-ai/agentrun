@@ -10,7 +10,7 @@ import { runLabel, when } from "@/lib/format";
 import { uuid } from "@/lib/idempotency";
 import { type Problem, problem } from "@/lib/problem";
 import type { Tone } from "@/lib/runState";
-import { atLeast, bodyOf, type Draft, draftOf, emptyDraft, FIRING_LABEL, firingWords, instantOf, issuesOf, patchOf, whenWords } from "@/lib/schedules";
+import { atLeast, bodyOf, utcWhen, type Draft, draftOf, emptyDraft, FIRING_LABEL, firingWords, instantOf, issuesOf, patchOf, whenWords } from "@/lib/schedules";
 import type { Firing, Trigger } from "@/lib/v2";
 
 /** Which schedules page: the list (no `schedule`), a new one (`schedule` null), one schedule, or its editor (`edit`). */
@@ -252,7 +252,7 @@ function ScheduleForm({ v2, go, trigger, minEvery }: FormProps & { trigger?: Tri
           </div>
           <div className="mt-3 grid grid-cols-1 gap-4 sm:grid-cols-2">
             {draft.kind === "cron" && <Field label="Cron line" field="source.cron" issue={issues["source.cron"]} hint="Minute, hour, day of month, month, day of week."><input name="cron" className={INPUT} value={draft.cron} onChange={(e) => set("cron")(e.target.value)} placeholder="30 1 * * *" /></Field>}
-            {draft.kind === "at" && <Field label="At, your time" field="source.at" issue={issues["source.at"]} hint={atInstant ? `= ${at(atInstant)}` : undefined}><input name="at" type="datetime-local" step={1} className={INPUT} value={draft.at} onChange={(e) => set("at")(e.target.value)} /></Field>}
+            {draft.kind === "at" && <Field label="At, your time" field="source.at" issue={issues["source.at"]} hint={atInstant ? `= ${utcWhen(atInstant)}` : undefined}><input name="at" type="datetime-local" step={1} className={INPUT} value={draft.at} onChange={(e) => set("at")(e.target.value)} /></Field>}
             {draft.kind === "every" && (
               <Field label="Every" field="source.every_s" issue={issues["source.every_s"]} hint={minEvery ? atLeast(minEvery) : undefined}>
                 <span className="flex gap-2">
@@ -268,7 +268,7 @@ function ScheduleForm({ v2, go, trigger, minEvery }: FormProps & { trigger?: Tri
                 <input name="timezone" list="schedule-zones" className={INPUT} value={draft.timezone} onChange={(e) => set("timezone")(e.target.value)} />
               </Field>
             )}
-            {draft.kind === "every" && <Field label="Starting, your time (optional)" field="source.start_at" issue={issues["source.start_at"]} hint={draft.startAt && instantOf(draft.startAt) ? `= ${at(instantOf(draft.startAt)!)}` : undefined}><input name="startAt" type="datetime-local" step={1} className={INPUT} value={draft.startAt} onChange={(e) => set("startAt")(e.target.value)} /></Field>}
+            {draft.kind === "every" && <Field label="Starting, your time (optional)" field="source.start_at" issue={issues["source.start_at"]} hint={draft.startAt && instantOf(draft.startAt) ? `= ${utcWhen(instantOf(draft.startAt)!)}` : undefined}><input name="startAt" type="datetime-local" step={1} className={INPUT} value={draft.startAt} onChange={(e) => set("startAt")(e.target.value)} /></Field>}
           </div>
           {ZONES.length > 0 && <datalist id="schedule-zones">{ZONES.map((z) => <option key={z} value={z} />)}</datalist>}
           {restarts && <p className="mt-3 text-[12px] text-warning-text" role="note">Changing when restarts the schedule from now.</p>}

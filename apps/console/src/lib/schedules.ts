@@ -11,7 +11,10 @@ export type EveryUnit = "seconds" | "minutes" | "hours";
  *  cron line's alone; `every` is a count of `everyUnit`. */
 export type Draft = { name: string; kind: WhenKind; cron: string; timezone: string; at: string; every: string; everyUnit: EveryUnit; startAt: string; agentId: string; content: string; maxCost: string; enabled: boolean };
 
-export const emptyDraft = (agentId = ""): Draft => ({ name: "", kind: "cron", cron: "", timezone: "UTC", at: "", every: "", everyUnit: "minutes", startAt: "", agentId, content: "", maxCost: "", enabled: true });
+/** The browser's own zone: where a new cron line starts (as n8n's and Windmill's schedule forms start theirs). */
+export const browserZone = (): string => Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+
+export const emptyDraft = (agentId = ""): Draft => ({ name: "", kind: "cron", cron: "", timezone: browserZone(), at: "", every: "", everyUnit: "minutes", startAt: "", agentId, content: "", maxCost: "", enabled: true });
 
 const UNIT_S: Record<EveryUnit, number> = { seconds: 1, minutes: 60, hours: 3600 };
 
@@ -61,6 +64,10 @@ export function wallOf(iso: string): string {
   return `${t.getFullYear()}-${pad(t.getMonth() + 1)}-${pad(t.getDate())}T${pad(t.getHours())}:${pad(t.getMinutes())}${t.getSeconds() ? `:${pad(t.getSeconds())}` : ""}`;
 }
 
+/** An instant in UTC, named so: what a one time typed in the browser is sent as. */
+export const utcWhen = (iso: string) =>
+  `${new Date(iso).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZone: "UTC" })} UTC`;
+
 /** "At least a minute.", "At least 2 minutes.": the shortest interval the server takes. */
 export function atLeast(seconds: number): string {
   const w = span(seconds);
@@ -77,7 +84,7 @@ export function bodyOf(d: Draft): { body?: TriggerInput; issues?: Record<string,
   let source: TriggerInput["source"];
   if (d.kind === "cron") {
     if (!d.cron.trim()) issues["source.cron"] = "A cron line is needed.";
-    source = { kind: "schedule", cron: d.cron.trim(), timezone: d.timezone.trim() || "UTC" };
+    source = { kind: "schedule", cron: d.cron.trim(), timezone: d.timezone.trim() || browserZone() };
   } else if (d.kind === "at") {
     const at = instantOf(d.at);
     if (at === null) issues["source.at"] = "A time is needed.";
@@ -108,7 +115,7 @@ export function bodyOf(d: Draft): { body?: TriggerInput; issues?: Record<string,
 /** A schedule as the form holds it, to edit: a one time and an interval's start in this browser's zone. */
 export function draftOf(t: Trigger): Draft {
   const s = t.source;
-  const zone = "cron" in s ? s.timezone : "UTC";
+  const zone = "cron" in s ? s.timezone : browserZone();
   const base = { ...emptyDraft(t.target.agent_id), name: t.name, timezone: zone, content: typeof t.target.input.content === "string" ? t.target.input.content : "", maxCost: String(t.target.max_cost_usd), enabled: t.enabled };
   if ("cron" in s) return { ...base, kind: "cron", cron: s.cron };
   if ("at" in s) return { ...base, kind: "at", at: wallOf(s.at) };
