@@ -53,7 +53,7 @@ import { keyOf, SEAL_KEY_ENV, sealKeyOf, TOOL_FIELDS, ToolKeys } from "./tool-ke
 import { MCP_AUTH_TYPES, McpServers } from "./mcp-servers.js";
 import { WEBHOOK_EVENTS, Webhooks } from "./webhooks.js";
 import { HISTORY_KEPT, MIN_EVERY_S, OVERLAP, type RunTrigger, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
-import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, ID, inputIssues, isObject, type Json, stable, unknownFields } from "./validate.js";
+import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, ID, IDEMPOTENCY_TTL_S, inputIssues, isObject, type Json, stable, unknownFields } from "./validate.js";
 import { agentTools, settingsIssues, ToolSettings, type ToolSettingsMap, withDefaults } from "./tool-plane.js";
 import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, Uploads, UPLOADS_DIR } from "./uploads.js";
 import { INLINE_TYPES, openWorkFile, removeWorkFile, typeOf, WALK_DEPTH, walkWork, WorkRefused, writesHeld, writeWorkFile } from "./workspace.js";
@@ -71,7 +71,6 @@ const MAX_BODY = 1 << 20;
 const MAX_MESSAGE = 20_000;
 const MAX_WAIT_MS = 25_000;
 const PAGE_ROWS = 500;
-const IDEMPOTENCY_TTL_S = 86_400;
 const FILE_LIST_CAP = 2_000;
 /** What a stopping server's record allows past its runs' kill bound, the cap a start waits under: the runs' carry backs,
  *  retried while the agent store is held (about 15.5 s), their boxes' cleanup (up to a minute), and the deliveries', the

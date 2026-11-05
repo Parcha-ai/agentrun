@@ -964,7 +964,8 @@ again, the next firing goes ahead, and `POST /v2/triggers/{id}/fire` is how a pe
 is `skipped`, with why; a full server (`429`) keeps it due and tries again. Times missed while the server was down are
 one `missed` firing with their count, and the schedule goes on from now. `PATCH /v2/triggers/{id}` changes it, and
 `{enabled: false}` pauses it: the time it was off is skipped, not caught up. `POST /v2/triggers/{id}/fire` runs it now,
-once per `Idempotency-Key` (required). `GET /v2/triggers/{id}/firings` lists its last 200 firings.
+once per `Idempotency-Key` (required): the same key within `limits.idempotency_ttl_s` answers its firing, after the
+firing has left the history too, and later it is a new firing that a run the key started still answers. `GET /v2/triggers/{id}/firings` lists its last 200 firings.
 
 ## What it serves
 
