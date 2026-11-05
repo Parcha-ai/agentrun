@@ -171,7 +171,7 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent }: Learning
           </ul>
           {later.error !== undefined && <ProblemCard problem={problem(later.error, "more notes")} onRetry={more} className="" />}
           {later.cursor && <div className="flex justify-center"><Button size="sm" onClick={more}>Load more notes</Button></div>}
-          {earlier.length > 0 && <Earlier notes={earlier} all={all} from={from} focus={focus} />}
+          {earlier.length > 0 && <Earlier notes={earlier} all={all} from={from} focus={focus} runs={byRun} />}
         </section>
         {(["skill", "workflow"] as const).map((kind) => {
           const items = kind === "skill" ? skills : workflows;
@@ -191,7 +191,7 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent }: Learning
                   {inUse.map((x) => <li key={x.file}><LearnedCard item={x} kind={kind} v2={v2} agentId={agent.agent_id} readOnly={readOnly} runs={byRun} approves={approves} onChanged={read} /></li>)}
                 </ul>
               )}
-              {gone.length > 0 && <EarlierLearned kind={kind} items={gone} from={from} />}
+              {gone.length > 0 && <EarlierLearned kind={kind} items={gone} from={from} v2={v2} agentId={agent.agent_id} runs={byRun} />}
             </section>
           );
         })}
@@ -410,12 +410,8 @@ function NoteCard({ note, v2, agentId, readOnly, focused, from, runs, usedIn, us
       {said && <div className="px-5 pt-3">{said}</div>}
       {body.trim() && <Body text={body} />}
       {(from?.run || from?.edited || (usedIn ?? 0) > 0) && <footer className="flex flex-wrap items-center gap-x-5 gap-y-1.5 border-t px-5 py-2.5 font-mono text-[11px] text-muted-foreground">
-        {from?.run ? (
-          <span className="flex min-w-0 items-center gap-1.5"><span className="flex shrink-0 items-center gap-1.5 whitespace-nowrap" title={`Kept because: ${from.run.reason}`}><Sparkles className="size-3 shrink-0 text-primary" aria-hidden />Learned in</span>
-            <a href={`#/runs/${encodeURIComponent(from.run.id)}`} className="min-w-0 truncate text-foreground/80 underline-offset-2 hover:text-foreground hover:underline" title={runTitle(runs, from.run.id)}>{shortTitle(runTitle(runs, from.run.id))}</a>
-            <span className="shrink-0">· {when(from.run.at)}</span>
-          </span>
-        ) : from?.edited ? <span className="flex items-center gap-1.5"><User className="size-3" aria-hidden />Written by you · {when(from.edited)}</span> : null}
+        {from?.run ? <LearnedIn run={from.run.id} runs={runs} at={from.run.at} reason={from.run.reason} />
+          : from?.edited ? <span className="flex items-center gap-1.5"><User className="size-3" aria-hidden />Written by you · {when(from.edited)}</span> : null}
         {from?.run && from.edited && <span className="flex items-center gap-1.5"><User className="size-3" aria-hidden />Edited by you · {when(from.edited)}</span>}
         {usedIn !== undefined && usedIn > 0 && <span className="flex items-center gap-1.5"><BookOpen className="size-3" aria-hidden />Used in {usedOf ? `${usedIn} of the latest ${usedOf} runs` : runsWord(usedIn)}</span>}
       </footer>}
@@ -504,13 +500,21 @@ function LearnedCard({ item, kind, v2, agentId, readOnly, runs, approves, onChan
         : kind === "skill" ? <Body text={bodyOf(text)} />
         : <pre className="mx-5 mt-3 max-h-80 overflow-auto border bg-background p-3 font-mono text-[12px]">{text}</pre>)}
       <footer className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-1.5 border-t px-5 py-2.5 font-mono text-[11px] text-muted-foreground">
-        {item.run && <span className="flex min-w-0 items-center gap-1.5"><span className="flex shrink-0 items-center gap-1.5 whitespace-nowrap"><Sparkles className="size-3 shrink-0 text-primary" aria-hidden />Learned in</span>
-          <a href={`#/runs/${encodeURIComponent(item.run)}`} className="min-w-0 truncate text-foreground/80 underline-offset-2 hover:text-foreground hover:underline" title={runTitle(runs, item.run)}>{shortTitle(runTitle(runs, item.run))}</a>
-        </span>}
+        {item.run && <LearnedIn run={item.run} runs={runs} />}
         <span>{item.bytes < 1024 ? `${item.bytes} B` : `${(item.bytes / 1024).toFixed(1)} KB`}</span>
       </footer>
       {retiring && <RetireConfirm name={item.name} kind={kind} retire={async () => { await v2.retireNote(agentId, statusFile(item), version); return null; }} onDone={async (ok) => { if (ok) await onChanged(); setRetiring(false); }} />}
     </article>
+  );
+}
+
+/** "Learned in" the run that kept it, linked by its title, and when (`at`), with why it was kept as the hover (`reason`). */
+function LearnedIn({ run, runs, at, reason }: { run: string; runs: Map<string, Run>; at?: string; reason?: string }) {
+  return (
+    <span className="flex min-w-0 items-center gap-1.5"><span className="flex shrink-0 items-center gap-1.5 whitespace-nowrap" title={reason ? `Kept because: ${reason}` : undefined}><Sparkles className="size-3 shrink-0 text-primary" aria-hidden />Learned in</span>
+      <a href={`#/runs/${encodeURIComponent(run)}`} className="min-w-0 truncate text-foreground/80 underline-offset-2 hover:text-foreground hover:underline" title={runTitle(runs, run)}>{shortTitle(runTitle(runs, run))}</a>
+      {at && <span className="shrink-0">· {when(at)}</span>}
+    </span>
   );
 }
 
@@ -691,8 +695,11 @@ function NoteEditor({ title, v2, agentId, file, seen, taken: names = [], onDone 
 }
 
 /** The notes no longer in use: replaced by a newer one, or retired. Closed until asked; one a link points at opens it. */
-function Earlier({ notes: list, all, from, focus }: { notes: LearningNote[]; all: LearningNote[]; from: ReturnType<typeof provenance>; focus: string[] }) {
+function Earlier({ notes: list, all, from, focus, runs }: { notes: LearningNote[]; all: LearningNote[]; from: ReturnType<typeof provenance>; focus: string[]; runs: Map<string, Run> }) {
   const [open, setOpen] = useState(list.some((x) => focus.includes(x.file)));
+  // The retired notes opened to their text: read-only, as no later run reads them.
+  const [shown, setShown] = useState<Set<string>>(new Set());
+  const toggle = (file: string) => setShown((s) => { const n = new Set(s); if (n.has(file)) n.delete(file); else n.add(file); return n; });
   // A note a link points at that arrives with a later page opens the list too.
   const pointed = list.some((x) => focus.includes(x.file));
   useEffect(() => { if (pointed) setOpen(true); }, [pointed]);
@@ -705,17 +712,30 @@ function Earlier({ notes: list, all, from, focus }: { notes: LearningNote[]; all
   };
   return (
     <Folded title="Earlier notes" count={`${list.length} no longer read`} open={open} onToggle={() => setOpen((o) => !o)}>
-      {list.map((x) => (
-        <li key={x.file} id={`note-${x.file}`} className={cn("border-b px-4 py-3 last:border-b-0", focus.includes(x.file) && "bg-primary/5")}>
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-[14px] text-muted-foreground line-through decoration-muted-foreground/40">{x.name}</span>
-            <Chip tone="muted">{x.status === "retired" ? "Retired" : "Replaced"}</Chip>
-          </div>
-          <p className="mt-1 font-mono text-[11px] text-muted-foreground">
-            {x.status === "superseded" && x.superseded_by ? <>Replaced by <button type="button" onClick={() => toNote(x.superseded_by!)} className="text-foreground/80 underline-offset-2 hover:text-foreground hover:underline">{nameOf(x.superseded_by)}</button></> : x.status === "retired" ? `Retired${from.get(x.file)?.edited ? ` by you · ${when(from.get(x.file)!.edited!)}` : ""}` : null}
-          </p>
-        </li>
-      ))}
+      {list.map((x) => {
+        const retired = x.status === "retired";
+        const opened = retired && shown.has(x.file);
+        const run = from.get(x.file)?.run;
+        return (
+          <li key={x.file} id={`note-${x.file}`} className={cn("border-b px-4 py-3 last:border-b-0", focus.includes(x.file) && "bg-primary/5")}>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-[14px] text-muted-foreground line-through decoration-muted-foreground/40">{x.name}</span>
+              <Chip tone="muted">{retired ? "Retired" : "Replaced"}</Chip>
+              {retired && <ShowButton open={opened} label={`the note ${x.name}`} onClick={() => toggle(x.file)} />}
+            </div>
+            <p className="mt-1 font-mono text-[11px] text-muted-foreground">
+              {x.status === "superseded" && x.superseded_by ? <>Replaced by <button type="button" onClick={() => toNote(x.superseded_by!)} className="text-foreground/80 underline-offset-2 hover:text-foreground hover:underline">{nameOf(x.superseded_by)}</button></> : retired ? `Retired${from.get(x.file)?.edited ? ` by you · ${when(from.get(x.file)!.edited!)}` : ""}` : null}
+            </p>
+            {opened && (
+              <div className="-mx-4 mt-2 border-t pt-1">
+                <p className="mt-2 px-5 text-[13px] text-muted-foreground">{x.description}</p>
+                {bodyOf(x.text).trim() && <Body text={bodyOf(x.text)} />}
+                {run && <p className="mt-3 flex px-5 font-mono text-[11px] text-muted-foreground"><LearnedIn run={run.id} runs={runs} at={run.at} reason={run.reason} /></p>}
+              </div>
+            )}
+          </li>
+        );
+      })}
     </Folded>
   );
 }
@@ -736,8 +756,11 @@ function Folded({ title, count, open, onToggle, children }: { title: string; cou
 
 /** The skills or the workflows a person retired, as retired notes are shown: closed until asked, each by its name, and
  *  who retired it and when once the changes read say. No Approve and no Retire: no later run is given it. */
-function EarlierLearned({ kind, items, from }: { kind: "skill" | "workflow"; items: LearnedItem[]; from: ReturnType<typeof provenance> }) {
+function EarlierLearned({ kind, items, from, v2, agentId, runs }: { kind: "skill" | "workflow"; items: LearnedItem[]; from: ReturnType<typeof provenance>; v2: Client; agentId: string; runs: Map<string, Run> }) {
   const [open, setOpen] = useState(false);
+  // The ones opened to their text, read from the file when opened (a skill's SKILL.md, a workflow's workflow.json).
+  const [shown, setShown] = useState<Set<string>>(new Set());
+  const toggle = (file: string) => setShown((s) => { const n = new Set(s); if (n.has(file)) n.delete(file); else n.add(file); return n; });
   return (
     <Folded title={kind === "skill" ? "Earlier skills" : "Earlier workflows"} count={`${items.length} no longer given`} open={open} onToggle={() => setOpen((o) => !o)}>
       {items.map((x) => {
@@ -747,14 +770,41 @@ function EarlierLearned({ kind, items, from }: { kind: "skill" | "workflow"; ite
             <div className="flex flex-wrap items-center gap-2">
               <span className="font-mono text-[13px] text-muted-foreground line-through decoration-muted-foreground/40">{x.name}</span>
               <Chip tone="muted">Retired</Chip>
+              <ShowButton open={shown.has(x.file)} label={`the ${kind} ${x.name}`} onClick={() => toggle(x.file)} />
             </div>
             {x.description && <p className="mt-1 text-[12px] text-muted-foreground">{x.description}</p>}
             <p className="mt-1 font-mono text-[11px] text-muted-foreground">{`Retired${edited ? ` by you · ${when(edited)}` : ""}`}</p>
+            {shown.has(x.file) && (
+              <div className="-mx-4 mt-2 border-t pt-1">
+                <FileText v2={v2} agentId={agentId} file={x.file} kind={kind} label={`the ${kind} ${x.name}`} />
+                {x.run && <p className="mt-3 flex px-5 font-mono text-[11px] text-muted-foreground"><LearnedIn run={x.run} runs={runs} /></p>}
+              </div>
+            )}
           </li>
         );
       })}
     </Folded>
   );
+}
+
+/** Show or Hide, for a thing opened to its text in place: `label` names it for a screen reader ("the note …"). */
+function ShowButton({ open, label, onClick }: { open: boolean; label: string; onClick: () => void }) {
+  return <Button size="sm" variant="ghost" className="ml-auto" onClick={onClick} aria-expanded={open} aria-label={`${open ? "Hide" : "Show"} ${label}`}><ChevronDown className={cn("transition-transform", open && "rotate-180")} aria-hidden />{open ? "Hide" : "Show"}</Button>;
+}
+
+/** A learned file's text, read when shown (GET …/learning/files/{file}, retired ones too): a skill's as its body, a
+ *  workflow's JSON as it is. */
+function FileText({ v2, agentId, file, kind, label }: { v2: Client; agentId: string; file: string; kind: "skill" | "workflow"; label: string }) {
+  const [text, setText] = useState<string | null>(null);
+  const [error, setError] = useState<unknown>(null);
+  const load = async () => {
+    setError(null); setText(null);
+    try { setText((await v2.readNote(agentId, file)).note); } catch (e) { setError(e ?? new Error("unknown")); }
+  };
+  useEffect(() => { void load(); }, [file]); // eslint-disable-line react-hooks/exhaustive-deps
+  if (error !== null) return <div className="px-5 pt-3"><ProblemCard problem={problem(error, label)} onRetry={() => void load()} className="" /></div>;
+  if (text === null) return <div className="px-5 pt-3" role="status" aria-label={`Loading ${label}`}><div aria-hidden className="h-16 bg-muted motion-safe:animate-pulse" /></div>;
+  return kind === "skill" ? <Body text={bodyOf(text)} /> : <pre className="mx-5 mt-3 max-h-80 overflow-auto border bg-background p-3 font-mono text-[12px]">{text}</pre>;
 }
 
 /** A reason under the panel's own title says it once: "Not kept: too specific" reads "Too specific". */
