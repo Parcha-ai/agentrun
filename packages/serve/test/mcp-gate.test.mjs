@@ -274,17 +274,17 @@ test("claude-agent: a priced call through the CLI's own MCP client is held and b
 
 /** A server for `harness` with the owner signed in and the fake saved: pi on the faux model, claude-agent on the pinned
  *  Agent SDK and CLI against a scripted Messages endpoint that calls add, then answers with the gate's resume. */
-async function parkingServer(t, harness) {
+async function parkingServer(t, harness, { tool = "add", input = { a: 2, b: 3 } } = {}) {
   if (harness === "pi") {
     const server = await serve(t);
-    return { server, answer: await owner(server), fake: await addFake(t, server.api), extra: {}, content: ADD };
+    return { server, answer: await owner(server), fake: await addFake(t, server.api), extra: {}, content: `Call mcp__fake__${tool} with ${JSON.stringify(input)}` };
   }
   const anthropic = await fakeAnthropic({
     reply: (request) => {
       const at = request.text.lastIndexOf("[tool approval]");
       if (at >= 0) return { text: `Resumed: ${request.text.slice(at).split("\n")[1] ?? ""}` };
       if (Object.keys(request.results).length) return { text: `The tool said: ${Object.values(request.results)[0]}` };
-      return request.tools.includes("mcp__fake__add") ? { tool: { name: "mcp__fake__add", input: { a: 2, b: 3 } } } : { text: "Noted." };
+      return request.tools.includes(`mcp__fake__${tool}`) ? { tool: { name: `mcp__fake__${tool}`, input } } : { text: "Noted." };
     },
   });
   t.after(() => anthropic.close());
@@ -296,7 +296,7 @@ async function parkingServer(t, harness) {
   delete process.env.AGENT_MODEL_BASE_URL;
   Object.assign(process.env, { ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}`, ANTHROPIC_BASE_URL: anthropic.url, AGENT_MODEL: "anthropic/claude-haiku-4-5" });
   const server = await serve(t, { faux: undefined });
-  return { server, answer: await owner(server), fake: await addFake(t, server.api), extra: { harness: "claude-agent", model: "anthropic/claude-haiku-4-5" }, content: "Add 2 and 3 with the add tool." };
+  return { server, answer: await owner(server), fake: await addFake(t, server.api), extra: { harness: "claude-agent", model: "anthropic/claude-haiku-4-5" }, content: `Use the ${tool} tool.` };
 }
 const PARK_HARNESSES = ["pi", ...(existsSync("/usr/bin/setpriv") ? ["claude-agent"] : [])];
 
@@ -332,5 +332,41 @@ test("a stop while an MCP call is parked withdraws it: no pending approval, the 
     assert.equal(await answer(runId, pending.id, { decision: "allow" }), 409, `${harness}: a later allow`);
     await new Promise((resolve) => setTimeout(resolve, 2_000));
     assert.equal(calls(fake).length, 0, `${harness}: the server saw nothing`);
+  }
+});
+
+test("a stop while an approved MCP call runs cuts it at the server: the fake sees its request closed and never finishes the work, nothing resumes, the row reads Withdrawn, and a later allow is 409; on pi and claude-agent", { timeout: 300_000 }, async (t) => {
+  for (const harness of PARK_HARNESSES) {
+    const { server, answer, fake, extra, content } = await parkingServer(t, harness, { tool: "slow_write", input: { line: "never", seconds: 20 } });
+    // The work the slow tool does, told apart from a call cut before it: done only when its wait ran out.
+    fake.tools.slow_write = { ...fake.tools.slow_write, run: async ({ line, seconds }, extra) => {
+      await new Promise((done) => {
+        const timer = setTimeout(done, seconds * 1000);
+        extra?.signal?.addEventListener("abort", () => (clearTimeout(timer), done()));
+      });
+      fake.log.push({ method: extra?.signal?.aborted ? "abandoned" : "finished", tool: "slow_write" });
+      return { content: [{ type: "text", text: `wrote ${line}` }] };
+    } };
+    const { api } = server;
+    const runId = await started(api, `cut-${harness}`, ["mcp:fake/slow_write"], content, { extra });
+    const pending = await parked(api, runId);
+    assert.equal(await answer(runId, pending.id, { decision: "allow" }), 204);
+    for (let i = 0; calls(fake, "slow_write").length === 0; i++) {
+      assert.ok(i < 600, `${harness}: the approved call reaches the server`);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    const stop = await api("POST", `/runs/${runId}/stop`, {});
+    assert.deepEqual([stop.status, stop.body.stopped], [200, true], JSON.stringify(stop.body));
+    for (let i = 0; !fake.log.some((entry) => entry.method === "closed" && entry.tool === "slow_write"); i++) {
+      assert.ok(i < 100, `${harness}: the server sees the call's request closed: ${JSON.stringify(fake.log.map((entry) => entry.method))}`);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    const { rows } = await follow(api, runId, ["input_required", "completed", "failed"]);
+    assert.match(rows.find((row) => row.kind === "tool_approval_requested")?.summary ?? "", /^Withdrawn/, harness);
+    assert.ok(!rows.some((row) => row.kind === "user_message" && (row.text ?? "").includes("[tool approval]")), `${harness}: nothing resumed`);
+    assert.ok(!rows.some((row) => `${row.text ?? ""} ${row.tool_result_preview ?? ""}`.includes("wrote never")), `${harness}: no result of the work reached the run`);
+    assert.equal(await answer(runId, pending.id, { decision: "allow" }), 409, `${harness}: a later allow`);
+    assert.equal(calls(fake, "slow_write").length, 1, `${harness}: sent once`);
+    assert.ok(!fake.log.some((entry) => entry.method === "finished"), `${harness}: the work never finished while the run waited`);
   }
 });
