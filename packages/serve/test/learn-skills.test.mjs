@@ -211,3 +211,8 @@ test("a learned skill's description that wraps onto an indented line is served w
   assert.equal(served.split("\n")[2], "description: Find refund policies and shipping policies");
   assert.equal(servedSkill(served), served);
 });
+
+test("a skill whose plain name is followed by an indented comment keeps its name: the comment is no part of it", () => {
+  const served = servedSkill("---\nname: find-policies\n  # a helper\ndescription: Find refund policies\n---\nDo the job.\n");
+  assert.equal(served.split("\n")[1], "name: find-policies");
+});

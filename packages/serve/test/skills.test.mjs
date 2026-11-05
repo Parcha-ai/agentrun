@@ -186,3 +186,10 @@ test("on demand: a skill's description is read whole as YAML folds it: a plain o
   assert.match(listed, /- below: Answer a question about a store's returns \(/, listed);
   assert.match(listed, /- folded: Folded words on two lines \(/, listed);
 });
+
+test("on demand: an indented comment after a plain name or description is no part of it", async (t) => {
+  const files = { "cite/SKILL.md": "---\nname: cite\n  # Citation helper\ndescription: Cite each source\n  # a note to self\n  by its title\n---\nThe body.\n" };
+  const { work } = await workWith(t, files);
+  const listed = await promptOf("Answer.", Object.keys(files), work, { onDemand: true });
+  assert.match(listed, /- cite: Cite each source by its title \(\.agents\/skills\/cite\/SKILL\.md\)/, listed);
+});
