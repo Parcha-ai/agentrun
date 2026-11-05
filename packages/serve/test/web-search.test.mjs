@@ -267,7 +267,10 @@ test("a capped pi run's search through Parallel that its cap cannot hold is refu
   assert.equal((await api("POST", "/agents", { definition: { id: "capped", name: "capped", instructions: "Search.", tools: ["web_search"], tool_settings: { web_search: { provider: "parallel" } } } })).status, 201);
   const started = await api("POST", "/agents/capped/runs", { input: { content: "Search the web for widgets delaware" }, max_cost_usd: 0.0009 });
   assert.equal(started.status, 202, JSON.stringify(started.body));
-  const { rows } = await follow(api, started.body.run_id, ["completed"]);
+  // Refused for room, the run pauses at its cap (paid-pause.test.mjs), the search's figures its pending ones.
+  const { rows } = await follow(api, started.body.run_id, ["input_required", "completed"]);
+  const paused = (await api("GET", `/runs/${started.body.run_id}`)).body;
+  assert.deepEqual([paused.status, paused.state, paused.pending?.kind, paused.pending?.needs_usd], ["input_required", "waiting", "budget", 0.001], JSON.stringify(paused));
   const result = rows.find((row) => row.kind === "tool_result" && row.tool_name === "web_search");
   assert.deepEqual([result.tool_status, result.tool_result_preview], ["failed", JSON.stringify({ error: capRefusal("Parallel's search", "$0.001", "Parallel's list price for a fast search", "$0", "$0.0009", "$0.01") })]);
   assert.deepEqual(await seen(), [], "no request reached Parallel");
