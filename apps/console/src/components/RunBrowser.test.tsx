@@ -138,6 +138,37 @@ describe("the run page's Browser tab", () => {
     nowhereBut(p.frame(), VIEWER);
   });
 
+  it("on an ended run, none reads that the browser closed, never that it waits; nothing more is read", async () => {
+    let reads = 0;
+    const done = { ...working, status: "completed", state: "idle", ended_at: "2026-11-05T09:12:00Z" } as Run;
+    const p = await page(async () => { reads++; return { state: "none" }; }, done, "browser");
+    await settle(150);
+    const text = p.host.querySelector('section[aria-label="Browser"]')?.textContent ?? "";
+    expect(text).toContain("The browser closed when the run ended.");
+    expect(text).not.toContain("Waiting for the browser");
+    expect(reads).toBe(1);
+  });
+
+  it("a follow-up's line shows only where the run takes one: a completed run does, a cancelled one does not", async () => {
+    const completed = { ...working, status: "completed", state: "idle", ended_at: "2026-11-05T09:12:00Z" } as Run;
+    const p = await page(async () => ({ state: "none" }), completed, "browser");
+    expect(p.host.textContent).toContain("A follow-up opens a new one if the agent needs it.");
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    const cancelled = { ...working, status: "cancelled", state: "idle", ended_at: "2026-11-05T09:12:00Z" } as Run;
+    const q = await page(async () => ({ state: "none" }), cancelled, "browser");
+    expect(q.host.textContent).toContain("The browser closed when the run ended.");
+    expect(q.host.textContent).not.toContain("A follow-up opens");
+  });
+
+  it("while the run waits on its question with its session held, it still reads and still waits for the browser", async () => {
+    let reads = 0;
+    const asking = { ...working, status: "input_required", state: "waiting" } as Run;
+    const p = await page(async () => { reads++; return { state: "none" }; }, asking, "browser");
+    await settle(150);
+    expect(p.host.textContent).toContain("Waiting for the browser");
+    expect(reads).toBeGreaterThan(1);
+  });
+
   it("leaves room for taking over: an actions area and a line for what the agent waits on, both empty for now", async () => {
     const p = await page(async () => ({ state: "live", viewer: VIEWER }), working, "browser");
     const panel = p.host.querySelector('section[aria-label="Browser"]') as HTMLElement;
