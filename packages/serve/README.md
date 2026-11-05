@@ -410,7 +410,8 @@ where `bash`'s setting came from:
   itself), each under its own name, so an approval runs that call. `bash_output`, `bash_list` and `bash_signal` run
   unasked: they reach only the processes this run started, by its own ids (another run's id, or one never started, is
   answered "there is no background process"), so watching an approved process costs no approval per page. They run so
-  on a server with accounts off too, where an ask is refused.
+  on a server with accounts off too, where an ask is refused. Only an `ask` set as written lets them: where `bash` asks
+  because its setting is a value not offered, or because the settings file never read, they ask too.
 - `bash: allow` runs all five.
 
 - `bash_background {command}` starts the command from `work/`, in a fresh shell (`bash`, else `sh`) under a session of

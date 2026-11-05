@@ -7,3 +7,4 @@ kind: feature
 - `bash: deny` still refuses all five, and `bash: allow` runs them. None is a settings key of its own, so no setting of one lifts `bash`'s.
 - `capabilities.tools` and `GET /v2/agents/{id}`'s `tools` show the split: under `bash: ask`, the three watchers read `allow`, with `permission_from` where `bash`'s setting came from.
 - On a server with accounts off, the three watchers run under `bash: ask`, where an asked call is refused.
+- Only an `ask` set as written lets them run unasked. Where `bash` asks as a stand-in (its setting is a value not offered, or the settings file never read), they ask too. An agent's own setting that is no permission at all now reads `ask` in `capabilities` and its tools, as it already did at the gate, never the value as written.

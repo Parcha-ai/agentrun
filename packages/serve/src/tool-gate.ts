@@ -122,25 +122,36 @@ export function settingsKeyOf(harness: string, name: string, mcpServers: readonl
 
 /** A layer of tool settings (the server's, PUT /v2/settings/tools, or an agent's own, definition.tool_settings) as the
  *  gate reads it: a permission by settings key. */
-export type PermissionSettings = Readonly<Record<string, { permission?: Permission } | undefined>>;
+export type PermissionSettings = Readonly<Record<string, { permission?: Permission; /** Not as written: a value not offered, read as its fail-closed stand-in (tool-plane.ts readToolSettings). Never shown. */ fallback?: true } | undefined>>;
 
 /** `name`'s permission in force and the layer it came from, most specific first: the agent's exact key, the agent's
  *  server wildcard, the server's exact key, the server's server wildcard, then the default. Rules over a call's
  *  arguments are not in V1. */
 export function permissionFrom(name: string, server: PermissionSettings, agent: PermissionSettings = {}): { permission: Permission; from: "agent" | "server" | "default" } {
   // A shell tool's permission is bash's (SHELL_FAMILY), from bash's layer, wherever it is read: the gate, capabilities, an
-  // agent's tools. Under ask, a watcher (SHELL_WATCHERS) runs unasked. No key of its own is read, so none lifts bash's deny.
+  // agent's tools. A watcher (SHELL_WATCHERS) runs unasked only under an ask set as written in a layer: an ask that stands
+  // in for anything else (a value not offered, nothing set) stays an ask. No key of its own is read, so none lifts bash's.
   if (Object.hasOwn(SHELL_FAMILY, name) && SHELL_FAMILY[name] !== name) {
-    const bash = permissionFrom(SHELL_FAMILY[name]!, server, agent);
-    return { ...bash, permission: shellPermission(name, bash.permission) };
+    const bash = settingFrom(SHELL_FAMILY[name]!, server, agent);
+    return { permission: bash.written ? shellPermission(name, bash.permission) : bash.permission, from: bash.from };
   }
+  const { permission, from } = settingFrom(name, server, agent);
+  return { permission, from };
+}
+
+/** permissionFrom's own read, and whether the permission is `written`: a valid one set in a layer as it reads there, not
+ *  a stand-in. A value that is no permission at all reads ask, never the value. */
+function settingFrom(name: string, server: PermissionSettings, agent: PermissionSettings): { permission: Permission; from: "agent" | "server" | "default"; written: boolean } {
   for (const [from, layer] of [["agent", agent], ["server", server]] as const) {
     for (const key of permissionKeys(name)) {
-      const set = layer[key]?.permission;
-      if (set) return { permission: set, from };
+      const setting = layer[key];
+      const set = setting?.permission;
+      if (!set) continue;
+      if (!(PERMISSIONS as readonly string[]).includes(set)) return { permission: "ask", from, written: false };
+      return { permission: set, from, written: setting.fallback !== true };
     }
   }
-  return { permission: defaultPermission(name), from: "default" };
+  return { permission: defaultPermission(name), from: "default", written: false };
 }
 
 /** `name`'s permission in force (permissionFrom): the one rule every path reads, the gate's, the tool plane's and a
@@ -334,10 +345,9 @@ export class RunGate {
     // No settings ever read: every tool asks, the shell watchers too (fail closed: an ask nothing read is never lifted),
     // or keeps the revision's own deny.
     if (server === undefined) return permissionOf(key, {}, this.overrides) === "deny" ? "deny" : "ask";
-    const permission = permissionOf(key, server, this.overrides);
-    // A shell tool is read by bash's key; a watcher's ask is allow (shellPermission), under every harness's name for it.
-    const shell = shellToolOf(tool);
-    return shell ? shellPermission(shell, permission) : permission;
+    // A shell tool under every harness's name for it is read as its own name, by bash's key (permissionFrom): a watcher's
+    // ask is allow only where bash's ask is set as written.
+    return permissionOf(shellToolOf(tool) ?? key, server, this.overrides);
   };
 
   private lastGood?: PermissionSettings;

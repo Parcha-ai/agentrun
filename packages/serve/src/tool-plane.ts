@@ -67,7 +67,7 @@ export const permissionsOf = (name: string): readonly Permission[] => (Object.ha
  *  wildcard (`mcp:<server>/*`), which sets each of its tools. */
 const isSettingsKey = (name: string): boolean => isToolSettingsKey(name) && ((TABLE_TOOLS.includes(name) && !Object.hasOwn(LEGACY_NAMES, name)) || isCatalogTool(name) || /^mcp:[^/]+\/\*$/.test(name));
 /** One tool's settings: its provider (a capability that has a choice) and its permission. */
-export type ToolSetting = { provider?: string; permission?: Permission };
+export type ToolSetting = { provider?: string; permission?: Permission; /** Read as a stand-in for a value not offered (readToolSettings); never shown or written. */ fallback?: true };
 /** The tools' settings, the server's (`/v2/settings/tools`) and an agent's own (`definition.tool_settings`), one shape:
  *  by settings key. */
 export type ToolSettingsMap = Partial<Record<string, ToolSetting>>;
@@ -335,7 +335,8 @@ export function settingsIssues(value: unknown, at = ""): InputIssue[] {
 
 /** `map` with each capability's provider, its default where none is picked; a permission where one is set. */
 export const withDefaults = (map: ToolSettingsMap): ToolSettingsMap & Record<Pickable, { provider: string; permission?: Permission }> => ({
-  ...map,
+  // As served: what is in force, never the internal mark of a stand-in.
+  ...Object.fromEntries(Object.entries(map).map(([name, setting]) => [name, setting && { ...(setting.provider ? { provider: setting.provider } : {}), ...(setting.permission ? { permission: setting.permission } : {}) }])),
   ...(Object.fromEntries(PICKABLE.map((name) => [name, { provider: map[name]?.provider ?? PROVIDERS[name][0], ...(map[name]?.permission ? { permission: map[name]!.permission } : {}) }])) as Record<Pickable, { provider: string; permission?: Permission }>),
 });
 
@@ -372,7 +373,12 @@ export function readToolSettings(dir: string): { settings: ToolSettingsMap; prob
     if (typeof setting.provider === "string" && !settingsIssues({ [name]: { provider: setting.provider } }).length) kept.provider = setting.provider;
     if (setting.permission !== undefined) {
       const offered = permissionsOf(isMcpTool(name) ? name : name.replace(/\/\*$/, "/_"));
-      kept.permission = offered.includes(setting.permission as Permission) ? (setting.permission as Permission) : offered.includes("ask") ? "ask" : "deny";
+      if (offered.includes(setting.permission as Permission)) kept.permission = setting.permission as Permission;
+      else {
+        // Its fail-closed stand-in, marked so: an ask nobody set lets nothing run unasked (tool-gate.ts SHELL_WATCHERS).
+        kept.permission = offered.includes("ask") ? "ask" : "deny";
+        kept.fallback = true;
+      }
     }
     if (Object.keys(kept).length) settings[name] = kept;
   }
