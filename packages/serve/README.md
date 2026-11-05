@@ -863,7 +863,8 @@ the viewer has been gone 2 minutes, or 15 minutes pass with no input from them. 
 input; the agent's browser calls wait inside the tool (they do not fail), then go on with the page's old element ids
 dropped, and the model is told in plain words that the person had the browser and the page may have changed. A call that
 was under way at the take acts no more: each change of hands moves the session's epoch, and an act from before it is
-refused. The run stays `working`; its timeline says "You took over the browser" and how it came back ("You handed the
+refused, each action of a run checked on its own; the act already in the browser (a run's code is one batch there) ends
+first, and only then does the owner's input reach the browser. The run stays `working`; its timeline says "You took over the browser" and how it came back ("You handed the
 browser back", or that it went back to the agent after the idle or away window). The owner's time counts: Take over holds
 the next 15 minutes of session time at the provider's price under the run's cap first, and with no room it is refused in
 the cap's words, shown in the viewer. A take-over that input keeps alive is held again every 15 minutes, and with no room

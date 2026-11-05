@@ -17,14 +17,34 @@ export const personTookFailure = (acted: boolean) => browserFailure("refused",
  *  person took the browser, or a hold ended, since). A refusal is a FenceRefusal, so an action none of whose acts got through is known not sent. */
 function epochFenced<D extends BrowserDriver>(driver: D, gate: DrivingGate, epoch: number): D {
   let acted = false;
+  const moved = () => epochOf(gate) !== epoch;
   return new Proxy(driver, {
     get(target, key) {
       const value = Reflect.get(target, key);
       if (typeof value !== "function") return value;
+      // A run of several actions is one batch inside the browser, out of reach once it is sent: it is sent one action at
+      // a time, each checked here first, so none after the person took over reaches the page. Their answers are summed
+      // as the batch's would be: how many completed, and the page's address after the last.
+      const actions = key === "run" ? (arguments_: unknown[]) => (arguments_[0] as { actions?: unknown } | undefined)?.actions : () => undefined;
       return (...args: unknown[]) => {
-        if (epochOf(gate) !== epoch) return Promise.reject(new FenceRefusal(personTookFailure(acted)));
-        acted = true;
-        return value.apply(target, args);
+        if (moved()) return Promise.reject(new FenceRefusal(personTookFailure(acted)));
+        const list = actions(args);
+        if (!Array.isArray(list) || list.length < 2) {
+          acted = true;
+          return value.apply(target, args);
+        }
+        return (async () => {
+          let completed = 0;
+          let url: unknown;
+          for (const action of list) {
+            if (moved()) throw new FenceRefusal(personTookFailure(acted));
+            acted = true;
+            const answer = (await value.call(target, { actions: [action] })) as { completed?: unknown; url?: unknown } | undefined;
+            completed += typeof answer?.completed === "number" ? answer.completed : 1;
+            url = answer?.url;
+          }
+          return { completed, url };
+        })();
       };
     },
   });

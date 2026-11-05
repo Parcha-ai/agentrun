@@ -146,6 +146,61 @@ test("an agent action from before the browser changed hands is refused: a call u
   gates(tag).give();
 });
 
+test("a run of several actions: once the person takes over during one, the next never reaches the page", async () => {
+  const gates = createDrivingGates();
+  const tag = "ar-run-to-12-1";
+  const acts = [];
+  let afterFirst;
+  const firstDone = new Promise((resolve) => { afterFirst = resolve; });
+  let taken;
+  const takeHappened = new Promise((resolve) => { taken = resolve; });
+  // One driver call runs every action it is given, in order, as Stagehand's batch does inside the browser.
+  const driver = {
+    run: async (input) => {
+      for (const action of input.actions) {
+        acts.push(action.id);
+        if (action.id === "a1") { afterFirst(); await takeHappened; }
+      }
+      return { completed: input.actions.length, url: "https://example.test/" };
+    },
+    close: async () => {},
+  };
+  const port = { session: async () => ({ tag, driver, notice: null }), relaunch: async () => ({ tag, driver }), release: async () => ({ released: true, sessionId: null }) };
+  const tool = drivingGuard(async (_a, p) => {
+    const s = await p.session();
+    try { return { content: [{ type: "text", text: JSON.stringify(await s.driver.run({ actions: [{ op: "click", id: "a1" }, { op: "click", id: "a2" }] })) }] }; }
+    catch (error) { return { content: [{ type: "text", text: JSON.stringify({ name: error.constructor.name, ...error.failure }) }], isError: true }; }
+  }, gates);
+  const running = tool({}, port, {});
+  await firstDone;
+  assert.equal(gates(tag).take(), true, "the person takes over during the first action");
+  taken();
+  const out = await running;
+  assert.equal(out.isError, true);
+  const failure = JSON.parse(out.content[0].text);
+  assert.deepEqual([failure.name, failure.code, failure.effect], ["FenceRefusal", "refused", "possibly_effected"]);
+  assert.deepEqual(acts, ["a1"], "the second action never reached the page");
+  gates(tag).give();
+});
+
+test("a take while the agent's call runs goes live once that call returns: until then the person's input is held, and no other call starts", async () => {
+  const gates = createDrivingGates();
+  const tag = "ar-run-to-13-1";
+  const gate = gates(tag);
+  const call = gate.model();
+  let started = 0;
+  assert.equal(gate.take(undefined, () => { started += 1; }), true);
+  assert.equal(gate.held(), true, "held: no other model call starts");
+  assert.equal(gate.model(), "person_driving");
+  assert.equal(gate.input(), "agent_acting", "the person's input waits for the agent's call to return");
+  assert.equal(started, 0);
+  call.release();
+  assert.equal(started, 1, "the hold goes live as the call returns");
+  assert.equal(gate.input(), "driving");
+  assert.equal(gate.state(), "person");
+  gate.give();
+});
+
 /** A take-over viewer on a fake stream, and what the host was asked. */
 async function viewer(t, tag, { refuse, gates = createDrivingGates() } = {}) {
   const made = [];
@@ -256,6 +311,22 @@ test("take-over viewer: a take sent while one is being asked of the host is answ
   answer({ end() {} });
   assert.deepEqual(JSON.parse((await c.ws.until((m) => m.type === "text" && JSON.parse(m.data).type === "hold")).item.data), { type: "hold", held: true });
   assert.deepEqual(asked, [tag], "asked once");
+});
+
+test("take-over viewer: a take while the agent acts is told it holds the browser only once the agent's call returns; input meanwhile is held agent_acting", async (t) => {
+  const tag = "ar-run-to-14-1";
+  const v = await viewer(t, tag);
+  const call = v.gates(tag).model();
+  v.ws.sendJson({ type: "take" });
+  await until(() => v.asked.length === 1);
+  await wait(50);
+  v.ws.sendJson({ type: "text", text: "too soon" });
+  assert.deepEqual(await v.nextOf(v.ws, "held"), { type: "held", reason: "agent_acting" });
+  assert.deepEqual(v.made[0].inputs, []);
+  call.release();
+  assert.deepEqual(await v.nextOf(v.ws, "hold"), { type: "hold", held: true });
+  v.ws.sendJson({ type: "text", text: "now" });
+  assert.ok(await until(() => v.made[0].inputs.length === 1));
 });
 
 test("take-over viewer: the session's release ends a hold, and the host is told", async (t) => {

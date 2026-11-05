@@ -37,12 +37,16 @@ export type DrivingGate = {
    *  `awayMs` with no viewer present (`setPresent`), or the session's end. While held the person's input is the only input, every model call
    *  waits (`untilFree`), and the epoch moves, so a driver a model call took before the take acts no more. `onEnd` is called once, when the hold
    *  ends, with why (and the host's words, when it gave them). False when the browser is already held (nothing changes). */
-  take?(onEnd?: (why: HoldEnd, message?: string) => void): boolean;
+  take?(onEnd?: (why: HoldEnd, message?: string) => void, onStart?: () => void): boolean;
   /** Ends the hold (`given`: the person handed back; `answered`: the agent's ask was answered; `cap`: the host's spend cap has no room for more of
    *  the person's time, `message` its words). False when nothing was held. */
   give?(why?: "given" | "answered" | "cap", message?: string): boolean;
-  /** True while a person holds the browser. */
+  /** True from a take until the hold ends: no model call starts meanwhile. A take while a model call runs is held at once
+   *  (the epoch moves, so that call acts no more after its current act) but goes live, the person's input taken and
+   *  `onStart` called, only once the call returns: the person never drives while the agent's act is still under way. */
   held?(): boolean;
+  /** True while the person's hold is live: their input is taken. */
+  holding?(): boolean;
   /** Moves at each change of hands (a take, a hold's end): a model call checks it before each act on the browser. */
   epoch?(): number;
   /** The take-over viewer is connected (true) or gone (false): while held with no viewer, the hold ends after the away window. */
@@ -86,7 +90,7 @@ class Gate implements DrivingGate {
   /** A person has driven and the model has not been told yet; kept (and the gate with it) until a call has been told. */
   private drove_ = false;
   /** The person's hold, while there is one: its end's listener, its idle timer and, while no viewer is present, its away timer. */
-  private hold: { onEnd?: (why: HoldEnd, message?: string) => void; idle: unknown; away: unknown } | null = null;
+  private hold: { onEnd?: (why: HoldEnd, message?: string) => void; onStart?: () => void; pending: boolean; idle: unknown; away: unknown } | null = null;
   private epoch_ = 0;
   private present_ = false;
   /** Model calls waiting for the hold to end. */
@@ -94,12 +98,14 @@ class Gate implements DrivingGate {
   private readonly listeners = new Set<(state: DriveState) => void>();
   constructor(private readonly timers: Timers, private readonly idleMs: number, private readonly forget: (gate: Gate) => void, private readonly holdIdleMs = 15 * 60_000, private readonly holdAwayMs = 2 * 60_000) {}
 
-  state(): DriveState { return this.hold ? "person" : this.model_ > 0 ? "agent" : this.person ? "person" : "idle"; }
+  state(): DriveState { return this.hold && !this.hold.pending ? "person" : this.model_ > 0 ? "agent" : this.person || this.hold ? "person" : "idle"; }
 
   /** Viewer input: discarded (never queued) while the model acts, so a keystroke is not replayed into a page the model has since moved. While the
    *  person holds the browser it is always theirs: a model call that was in flight at the take acts no more (the epoch moved). */
   input(): "driving" | "agent_acting" {
     if (this.hold) {
+      // Taken while the agent's call ran: the person drives once it returns.
+      if (this.hold.pending) return "agent_acting";
       this.timers.clear(this.hold.idle);
       this.hold.idle = this.timers.set(() => this.endHold("idle"), this.holdIdleMs);
       this.drove_ = true;
@@ -122,7 +128,16 @@ class Gate implements DrivingGate {
     this.model_ += 1;
     if (before !== "agent") this.announce("agent");
     let released = false;
-    return { drove, release: () => { if (released) return; released = true; this.model_ -= 1; if (this.model_ === 0) { this.announce(this.state()); this.settle(); } } };
+    return { drove, release: () => {
+      if (released) return;
+      released = true;
+      this.model_ -= 1;
+      if (this.model_ > 0) return;
+      // A take that waited for this call goes live now.
+      if (this.hold?.pending) return this.startHold();
+      this.announce(this.state());
+      this.settle();
+    } };
   }
 
   told(): void { this.drove_ = false; this.settle(); }
@@ -133,15 +148,28 @@ class Gate implements DrivingGate {
 
   onChange(listener: (state: DriveState) => void): () => void { this.listeners.add(listener); return () => { this.listeners.delete(listener); this.settle(); }; }
 
-  take(onEnd?: (why: HoldEnd, message?: string) => void): boolean {
+  take(onEnd?: (why: HoldEnd, message?: string) => void, onStart?: () => void): boolean {
     if (this.hold) return false;
     this.epoch_ += 1;
     this.drove_ = true;
-    this.hold = { onEnd, idle: this.timers.set(() => this.endHold("idle"), this.holdIdleMs), away: undefined };
+    this.hold = { onEnd, onStart, pending: this.model_ > 0, idle: this.timers.set(() => this.endHold("idle"), this.holdIdleMs), away: undefined };
     if (!this.present_) this.hold.away = this.timers.set(() => this.endHold("away"), this.holdAwayMs);
-    this.announce("person");
+    if (!this.hold.pending) this.startHold();
     return true;
   }
+
+  /** The hold goes live: the person's input is taken from here, and its idle window starts now. */
+  private startHold(): void {
+    const hold = this.hold;
+    if (!hold) return;
+    hold.pending = false;
+    this.timers.clear(hold.idle);
+    hold.idle = this.timers.set(() => this.endHold("idle"), this.holdIdleMs);
+    this.announce("person");
+    try { hold.onStart?.(); } catch { /* a host's listener that throws cannot keep the person from the browser */ }
+  }
+
+  holding(): boolean { return this.hold !== null && !this.hold.pending; }
 
   give(why: "given" | "answered" | "cap" = "given", message?: string): boolean {
     if (!this.hold) return false;
@@ -287,6 +315,8 @@ export function rearmWhenLeft(gate: DrivingGate, alive: () => boolean, rearm: ()
   return () => clearInterval(poll);
 }
 
+/** Whether `gate`'s person hold is live (their input taken): false for a gate without holds. */
+export const isHolding = (gate: DrivingGate): boolean => typeof gate.holding === "function" ? gate.holding() : isHeld(gate);
 /** Whether `gate` is held for a person now: false for a gate without holds (a registry that predates them). */
 export const isHeld = (gate: DrivingGate): boolean => typeof gate.held === "function" && gate.held();
 /** `gate`'s epoch: 0, unmoving, for a gate without holds. */

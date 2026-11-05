@@ -174,7 +174,10 @@ browser back at its spend cap with `drivingGates(tag).give("cap", words)`: the v
 and ends; `ready` carries `takeOver: true` and whether it holds now, so a viewer that reconnects within the away window still holds it. While held, every model call
 waits inside its tool (it does not fail; an abort ends the wait with nothing done), then goes on with its old element ids dropped and told plainly that the person had
 the browser and the page may have changed. Each change of hands moves the gate's epoch (`drivingGates(tag).epoch()`), and a driver a call took before it is refused at
-its next act (a `FenceRefusal`), so an agent action from before the person took over never reaches the page. A host gives the browser back itself with
+its next act (a `FenceRefusal`), so an agent action from before the person took over never reaches the page: a `run` of
+several actions is sent one action at a time and each is checked. An act already sent (a `run`'s code is one batch inside
+the browser, out of reach once sent) ends first: a take while a model call runs is held at once, no call starts, and the
+hold goes live (`holding()`, the viewer's `hold`, the person's input taken) once that call returns. A host gives the browser back itself with
 `drivingGates(tag).give("answered")` (an agent's handoff that was answered). A watching take-over viewer keeps no session from its idle release; a held one is kept by
 its hold. `viewerAssets` (from `@parcha/pi-browser/live-view`) are the viewer's page, script and style, for a host that serves the page from its own origin and
 passes only the WebSocket to the live view.

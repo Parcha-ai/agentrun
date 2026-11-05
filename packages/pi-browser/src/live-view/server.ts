@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import type { Duplex } from "node:stream";
-import { drivingGates, isHeld } from "../core/driving.js";
+import { drivingGates, isHeld, isHolding } from "../core/driving.js";
 import type { LiveView } from "../core/host.js";
 import { CLOSE_CODES, encodeFrame, LIMITS, parseClientMessage, type ClientMessage, type DrivingGate, type DrivingGates, type HoldEnd, type ServerMessage, type Stream, type StreamFactory, type ViewerAssets } from "./protocol.js";
 import { openStream } from "./stream.js";
@@ -192,7 +192,7 @@ export function createLiveView(options: LiveViewOptions): LiveViewHost {
     // only watches, so it keeps nothing open; a take-over viewer keeps it only by its hold, and its presence keeps the hold from its away window.
     if (takeOver) viewer.gate.setPresent?.(true);
     else if (!options.readOnly) viewer.gate.setViewing(true);
-    send(conn, { type: "ready", drive: viewer.gate.state(), ...(options.readOnly ? { readOnly: true as const } : takeOver ? { takeOver: true as const, held: isHeld(viewer.gate) } : {}) });
+    send(conn, { type: "ready", drive: viewer.gate.state(), ...(options.readOnly ? { readOnly: true as const } : takeOver ? { takeOver: true as const, held: isHolding(viewer.gate) } : {}) });
   };
 
   const onViewerMessage = (entry: Entry, viewer: Viewer, data: string | Buffer, binary: boolean): void => {
@@ -258,7 +258,9 @@ export function createLiveView(options: LiveViewOptions): LiveViewHost {
   const hands = (entry: Entry, viewer: Viewer, what: "take" | "give"): void => {
     const gate = viewer.gate;
     if (what === "give") { gate.give?.("given"); return; }
-    if (isHeld(gate)) { send(viewer.conn, { type: "hold", held: true }); return; }
+    if (isHolding(gate)) { send(viewer.conn, { type: "hold", held: true }); return; }
+    // Taken already, waiting for the agent's call to return.
+    if (isHeld(gate)) { send(viewer.conn, { type: "held", reason: "taking" }); return; }
     // One take at a time is asked of the host: a second one meanwhile is told so.
     if (entry.taking) { send(viewer.conn, { type: "held", reason: "taking" }); return; }
     entry.taking = true;
@@ -270,8 +272,10 @@ export function createLiveView(options: LiveViewOptions): LiveViewHost {
         if (entry.viewer) send(entry.viewer.conn, { type: "hold", held: false, reason: why, ...(message ? { message } : {}) });
       };
       // A session released, or a viewer gone, while the host answered: no hold starts, and the host lets go of what it took for one.
-      if (entry.released || entry.viewer !== viewer || !(options.gates ?? drivingGates)(entry.tag).take?.(ended)) { answer.end("released"); return; }
-      send(viewer.conn, { type: "hold", held: true });
+      // The viewer of the moment is told it holds the browser once the hold goes live: at once, or once the agent's call
+      // under way returns.
+      const started = (): void => { if (entry.viewer) send(entry.viewer.conn, { type: "hold", held: true }); };
+      if (entry.released || entry.viewer !== viewer || !(options.gates ?? drivingGates)(entry.tag).take?.(ended, started)) { answer.end("released"); return; }
     }, () => {
       entry.taking = false;
       if (entry.viewer === viewer) send(viewer.conn, { type: "take_refused", message: "The browser could not be handed to you. Try again." });
