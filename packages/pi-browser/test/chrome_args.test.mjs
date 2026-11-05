@@ -70,3 +70,10 @@ test("an extension directory given to chromeArgs names the one allowed Origin; n
   assert.deepEqual(origins(given), [`--remote-allow-origins=${extensionOrigin(dir)}`]);
   assert.notEqual(extensionOrigin(dir), extensionOrigin());
 });
+
+test("a debugging port given to chromeArgs is the one the DevTools socket opens on; none given is 0, a port Chrome picks", () => {
+  const base = { userDataDir: "/tmp/profile", viewport: { width: 800, height: 600 }, headless: true, sandbox: true };
+  const port = (args) => args.filter((arg) => arg.startsWith("--remote-debugging-port="));
+  assert.deepEqual(port(chromeArgs(base)), ["--remote-debugging-port=0"]);
+  assert.deepEqual(port(chromeArgs({ ...base, debuggingPort: 45123 })), ["--remote-debugging-port=45123"]);
+});

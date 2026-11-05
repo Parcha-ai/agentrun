@@ -1,4 +1,5 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
+import { type AddressInfo, createServer } from "node:net";
 import { closeSync, createReadStream, createWriteStream, readFileSync } from "node:fs";
 import { lstat, mkdir, mkdtemp, open, readdir, readFile, readlink, rm, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -21,7 +22,11 @@ export type CdpOptions =
     ownBrowser?: boolean }
   /** Start Chrome under `profileRoot/<tag>` on a loopback port Chrome picks; release kills that process by exact pid. */
   | { chrome: {
-    executablePath: string; profileRoot: string; headless?: boolean; args?: string[];
+    executablePath: string; profileRoot: string; headless?: boolean;
+    /** More arguments for each Chrome. A function is given the loopback port that session's DevTools socket will open on, picked
+     *  free for it before it starts (else Chrome picks one): for a host whose arguments must name it, such as a proxy fence that
+     *  lets Chrome reach its own socket and nothing else on loopback. */
+    args?: string[] | ((launch: { debuggingPort: number }) => string[]);
     /** Chrome's own sandbox, on unless `false`; absent, `PI_BROWSER_NO_SANDBOX=1` turns it off. Turn it off only where
      *  Chrome cannot start its sandbox (root, a container, confined user namespaces), never because a run is in CI. */
     sandbox?: boolean;
@@ -89,6 +94,16 @@ async function ownDebugger(profile: string): Promise<{ port: number; path: strin
 }
 /** Bounded: a Chrome that takes the connection and never answers must not hold a start past its deadline. */
 const answeringPath = async (port: number): Promise<string | null> => debuggerUrl(`http://127.0.0.1:${port}`, AbortSignal.timeout(2_000)).then((url) => new URL(url).pathname, () => null);
+/** Chrome writes `DevToolsActivePort` only for a port it picks. On a port it was given, the browser answering there is the
+ *  one this provider started only when it reports that process's pid (another may hold the port); then its file is written
+ *  here as Chrome would, so the lease reads the same either way (attach, a restarted host). */
+async function givenDebugger(profile: string, port: number, pid: number): Promise<{ port: number; path: string } | null> {
+  if ((await browserPid(port)) !== pid) return null;
+  const at = await answeringPath(port);
+  if (!at) return null;
+  await writeFile(path.join(profile, "DevToolsActivePort"), `${port}\n${at}`);
+  return { port, path: at };
+}
 /** A port that takes the probe and does not answer within this may still be a live browser's. */
 const PROBE_MS = 2_000;
 /** A release that does not own the lease's browser left its profile: the port the profile names took the probe and did
@@ -267,6 +282,17 @@ export async function killTree(pid: number, io: { kill?: (pid: number, signal: "
   try { kill(pid, "SIGKILL"); } catch { /* already gone */ }
 }
 
+/** Where a local Chrome's DevTools socket listens (chromeArgs' --remote-debugging-address). */
+const DEVTOOLS_HOST = "127.0.0.1"; // key-gate: loopback-rule the address a local Chrome DevTools socket opens on
+/** A loopback port free now: bound by this process and let go at once. */
+export async function freeLoopbackPort(): Promise<number> {
+  const server = createServer();
+  await new Promise<void>((ok, fail) => server.once("error", fail).listen(0, DEVTOOLS_HOST, () => ok()));
+  const { port } = server.address() as AddressInfo;
+  await new Promise<void>((ok) => server.close(() => ok()));
+  return port;
+}
+
 /** `internals` is for tests: the removal a release uses. */
 export function cdpProvider(options: CdpOptions, internals: { remove?: RemoveDir } = {}): BrowserProvider {
   const remove: RemoveDir = internals.remove ?? ((dir, opts) => rm(dir, opts));
@@ -358,11 +384,15 @@ export function cdpProvider(options: CdpOptions, internals: { remove?: RemoveDir
             throw left ? new ProfileNotRemovedError(left.dirs, left.error, error) : error;
           }
         }
+        // A port taken by something else between this pick and Chrome's start leaves Chrome without its socket: the wait below
+        // finds no DevToolsActivePort and the start fails, never attaching to what holds the port.
+        const debuggingPort = typeof args === "function" ? await freeLoopbackPort() : undefined;
+        const more = typeof args === "function" ? args({ debuggingPort: debuggingPort! }) : args;
         const stderrFd = openChromeStderr(tmp);
         let child: ChildProcess;
         try {
           child = spawn(executablePath, [
-            ...chromeArgs({ userDataDir: dir, viewport: spec.viewport, headless, sandbox, ...(copy ? { extensionDir: copy } : {}) }), ...args, "about:blank",
+            ...chromeArgs({ userDataDir: dir, viewport: spec.viewport, headless, sandbox, ...(copy ? { extensionDir: copy } : {}), ...(debuggingPort !== undefined ? { debuggingPort } : {}) }), ...more, "about:blank",
           ], { stdio: ["ignore", "ignore", stderrFd ?? "ignore"], detached: true, ...(tmp ? { env: { ...process.env, TMPDIR: tmp } } : {}) });
         } catch (error) {
           // A spawn that throws (an argument with a null byte) starts no child, so nothing else will remove what this start made.
@@ -400,7 +430,7 @@ export function cdpProvider(options: CdpOptions, internals: { remove?: RemoveDir
         try {
           for (const deadline = Date.now() + READY_MS; ; await sleep(100)) {
             if (failed) throw failed;
-            const own = await ownDebugger(dir);
+            const own = debuggingPort === undefined ? await ownDebugger(dir) : await givenDebugger(dir, debuggingPort, child.pid);
             if (own && (await answeringPath(own.port)) === own.path) {
               const pid = child.pid;
               noteWriter(spec.tag, () => isOurs({ pid, port: own.port }));

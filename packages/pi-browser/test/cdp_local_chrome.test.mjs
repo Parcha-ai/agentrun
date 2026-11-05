@@ -55,6 +55,30 @@ test("a local Chrome is created, driven through Stagehand's extension over the p
   }
 });
 
+test("args given as a function: each session's Chrome opens its DevTools socket on the free loopback port the function is told, its arguments may name it, and its lease and attach find that browser", { skip: NO_CHROME, timeout: 90_000 }, async (t) => {
+  const root = await scratch(t, "cdp-given-port-");
+  const told = [];
+  const provider = cdpProvider({ chrome: { executablePath: CHROME, profileRoot: root, args: ({ debuggingPort }) => (told.push(debuggingPort), [`--window-name=given-${debuggingPort}`]) } });
+  const signal = new AbortController().signal;
+  const refs = [];
+  try {
+    for (const tag of ["cdp-given-1", "cdp-given-2"]) refs.push(await provider.create(spec(tag), signal));
+    assert.equal(told.length, 2, "told once per session");
+    assert.notEqual(told[0], told[1], "a port of its own for each");
+    for (const [i, ref] of refs.entries()) {
+      assert.equal(Number(/^local:\d+:(\d+):/.exec(ref.id)[1]), told[i], "the lease names the port it was given");
+      assert.match(commandLine(pidOf(ref)), new RegExp(`--remote-debugging-port=${told[i]}\\b.*--window-name=given-${told[i]}`));
+      const target = await provider.attach(ref);
+      assert.match(target.sdkCdpUrl, new RegExp(`^ws://127\\.0\\.0\\.1:${told[i]}/devtools/browser/`));
+      assert.equal(await provider.status(ref), "running");
+    }
+  } finally {
+    for (const ref of refs) await provider.release(ref);
+    await rm(root, { recursive: true, force: true });
+  }
+  for (const ref of refs) assert.equal(alive(pidOf(ref)), false, "each Chrome is gone");
+});
+
 test("an endpoint provider attaches to a browser the host runs and release leaves it running; a pid it did not start is never signalled", { skip: NO_CHROME, timeout: 60_000 }, async (t) => {
   const root = await scratch(t, "cdp-provider-");
   const owner = cdpProvider({ chrome: { executablePath: CHROME, profileRoot: root } });
