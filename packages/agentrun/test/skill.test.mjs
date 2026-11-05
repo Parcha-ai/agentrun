@@ -96,13 +96,16 @@ test("SKILL.md: its front matter, its size, and each recipe block run in order a
     const done = spawnSync("sh", ["-e", "-c", block.code], { cwd: work, env: server.env, encoding: "utf8", timeout: 60_000 });
     seen.push(done.stdout, done.stderr);
     assert.equal(done.status, block.exit, `${block.title}:\n${block.code}\n${done.stdout}\n${done.stderr}`);
-    ran.push({ ...block, out: done.stdout, run: existsSync(join(work, "run.json")) ? JSON.parse(readFileSync(join(work, "run.json"), "utf8")) : undefined });
+    ran.push({ ...block, out: done.stdout, err: done.stderr, run: existsSync(join(work, "run.json")) ? JSON.parse(readFileSync(join(work, "run.json"), "utf8")) : undefined });
   }
   const of = (n) => ran.filter((block) => block.title.startsWith(`${n}.`));
   assert.match(of(4)[0].out, /^# Europe$/m, "recipe 4 read what the run that asked wrote: its person's answer");
   const [stopped, raised] = of(5);
   assert.ok(raised, "recipe 5 raises a cap: the table has the command");
   assert.deepEqual([stopped.run.status, stopped.run.pending?.kind, stopped.run.cost.cap_usd], ["input_required", "budget", 0.05], "it stopped at its cap");
+  // Its hint names the command that raises the cap, with the cap the server suggests.
+  assert.ok(typeof stopped.run.pending.suggested_cap_usd === "number", JSON.stringify(stopped.run.pending));
+  assert.equal(stopped.err, `Run ${stopped.run.run_id} stopped at its spend cap: raise it with \`agentrun runs raise-cap ${stopped.run.run_id} --max-cost-usd ${stopped.run.pending.suggested_cap_usd}\`, then \`agentrun runs wait ${stopped.run.run_id}\`.\n`);
   assert.deepEqual([raised.run.run_id, raised.run.status, raised.run.pending, raised.run.cost.cap_usd], [stopped.run.run_id, "completed", null, 1], "raised, the same run went on and completed under the new cap");
   const read = spawnSync("sh", ["-c", `agentrun runs read-file ${raised.run.run_id} moon.md`], { cwd: work, env: server.env, encoding: "utf8" });
   assert.equal(read.status, 0, read.stderr);

@@ -103,7 +103,7 @@ function settle(client, run, id) {
   const go = `then \`agentrun runs wait ${id}\``;
   const why = run.status === "paused" ? `is paused: resume it with \`agentrun runs resume ${id}\``
     : run.pending?.kind === "question" ? `asked a question: answer it with \`agentrun runs message ${id} --content TEXT\``
-    : run.pending?.kind === "budget" ? `stopped at its spend cap: raise the cap`
+    : run.pending?.kind === "budget" ? `stopped at its spend cap: raise it with \`agentrun runs raise-cap ${id} --max-cost-usd ${Number.isFinite(run.pending.suggested_cap_usd) ? run.pending.suggested_cap_usd : "N"}\``
     : run.pending?.kind ? `waits on a person (${run.pending.kind})`
     : `was stopped by a person: send it a message with \`agentrun runs message ${id} --content TEXT\``;
   client.io.stderr.write(`Run ${id} ${why}, ${go}.\n`);
