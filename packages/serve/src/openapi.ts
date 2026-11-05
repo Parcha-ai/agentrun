@@ -10,7 +10,7 @@ import { LAUNCH_LOST, SETUP_LOST } from "./files.js";
 import { HARNESSES } from "./harness.js";
 import { LEARNING_LABEL, LEARNING_MODES, LEARNING_REASONS, LEARNING_STATES } from "./learning.js";
 import { MODEL_SOURCES, THINKING_LEVELS } from "./model.js";
-import { BOX_IDS, BOX_STATES } from "./boxes.js";
+import { BOX_IDS, BOX_NETWORKS, BOX_STATES } from "./boxes.js";
 import { PLACE_MODES } from "./place.js";
 import { TOOL_KEYS, UNREADABLE } from "./tool-keys.js";
 import { MCP_AUTH_TYPES, MCP_SERVER_NAME } from "./mcp-servers.js";
@@ -323,7 +323,7 @@ const LEARNING_REASON = {
     "`no_write_tool`, `tool_denied`: older runs only, from before the end-of-run turn answered with its notes (an agent with no `write` tool, or one a tool gate denied it); no run gets them now.",
     "`cancelled`: a person cancelled the run. `crashed`: the run's process went. `reflect_timeout`, `reflect_failed`: the end-of-run turn did not end in time, or ended on an error.",
     "`empty`: the turn's answer gave no note. `unparsed`: it gave notes out of format (no ```note block, one not closed or named twice), and none was kept. `propose_failed`: what it answered could not be checked. `checker`: the checks refused it, at its end or at the merge, and nothing was written to git.",
-    "`screen`, `screen_down`: the injection screen (only with an independent judge) refused a new note, or could not judge one. `grader`: the grader's verdict was not to keep them. `grade_failed`: the grader gave no verdict, or the grade or the merge failed.",
+    "`screen`, `screen_down`: no longer produced (the injection screen is gone; the grader's Planted question decides); older runs may still hold them. `grader`: the grader's verdict was not to keep them. `grade_failed`: the grader gave no verdict, or the grade or the merge failed.",
   ].join(" "),
 };
 // ---- learning/1: what a person sees and controls of an agent's learning (learning-routes.ts) ---------------------------
@@ -1237,13 +1237,13 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       "x-agentrun-serve": "learning/1",
     },
     places: {
-      type: "object", additionalProperties: false, required: ["modes", "default", "boxes"],
+      type: "object", additionalProperties: false, required: ["modes", "default", "boxes", "allow"],
       properties: {
         modes: { type: "array", items: { enum: [...PLACE_MODES] } },
         default: { enum: [...PLACE_MODES], description: "The mode a revision that names no place runs in here." },
-        boxes: { type: "array", items: { type: "object", additionalProperties: false, required: ["id", "available", "state"], properties: { id: { enum: [...BOX_IDS] }, available: { type: "boolean" }, state: { enum: [...BOX_STATES], description: "`ready`; `preparing`, available while the server builds (or pulls) the Docker box's image at its start (a sandbox run's first box waits for it, with a timeline row); `unavailable`, with the `reason`." }, reason: { type: "string" } } } },
+        boxes: { type: "array", items: { type: "object", additionalProperties: false, required: ["id", "available", "state"], properties: { id: { enum: [...BOX_IDS] }, available: { type: "boolean" }, state: { enum: [...BOX_STATES], description: "`ready`; `preparing`, available while the server builds (or pulls) the Docker box's image at its start (a sandbox run's first box waits for it, with a timeline row); `unavailable`, with the `reason`." }, reason: { type: "string" }, network: { enum: [...BOX_NETWORKS], description: "What an available Daytona box reaches: `allowlist`, the hosts in `allow` (Daytona's domain list, whose proxy re-signs TLS with Daytona's CA), or `none`. `none` with a `reason` when Daytona could not keep a list here (a tier that takes none); without one when AGENTRUN_BOX_ALLOW is `none`.", "x-agentrun-serve": "place/2" } } } },
       },
-      description: "The places a revision may name, this host's default, and each box: whether this server has it, its state (ready, preparing or unavailable), and when not, why.",
+      description: "The places a revision may name, this host's default, each box (whether this server has it, its state: ready, preparing or unavailable, and when not, why) and the hosts a box may reach.",
       "x-agentrun-serve": "place/1",
     },
     harnesses: {
@@ -1301,6 +1301,9 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
   },
   // decisions/2: the providers took on parallel (and, here, openrouter). A client that validates against decisions/1 refuses it, so the
   // widening is a mark of its own.
+  "Capabilities/places": {
+    allow: { type: "array", items: { type: "string" }, description: "The hosts a box whose `network` is `allowlist` may reach: AGENTRUN_BOX_ALLOW's, else the package registries and GitHub; empty when it is `none`.", "x-agentrun-serve": "place/2" },
+  },
   "Capabilities/workflows": {
     decisions: {
       type: "object", additionalProperties: false, required: ["providers"],
@@ -1477,6 +1480,11 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   cancel.description = `${String(cancel.description).trimEnd()}\nHere an agentic run reads \`cancelled\` from the 202 on, \`final\` once it has stopped: a run's first terminal status is its last, so nothing its cut turn writes later (an answer, a cost over its cap) moves it. A workflow run reads \`cancelled\` once its workflow has stopped.\n`;
   cancel["x-agentrun-serve-changed"] = { description: "turnend/1" };
   changed.push("POST /runs/{run_id}/cancel");
+  // A run create's key is kept with its run in the agent store (its origin), so it replays that run past the key's day.
+  const createRun = (doc.paths["/agents/{agent_id}/runs"] as Json).post as Json;
+  createRun.description = `${String(createRun.description).trimEnd()}\nHere a create's \`Idempotency-Key\` is also kept with the run it started, written in the agent store with the run itself: the same key and body replays that run, as it reads now, for as long as the run exists (after any restart, and past \`limits.idempotency_ttl_s\`, which bounds the other creates' keys); another body under the key is \`409 idempotency_mismatch\`.\n`;
+  createRun["x-agentrun-serve-changed"] = { description: "runorigin/1" };
+  changed.push("POST /agents/{agent_id}/runs");
   // models/2: capabilities' `models.source` takes on the values this server answers with that the contract's enum (managed,
   // chatgpt, env, faux) lacks, `gateway` and `providers`. A client that validates against the contract's enum refuses them,
   // so the widening is a mark of its own, each value listed, as RunStatus's `paused` is.
