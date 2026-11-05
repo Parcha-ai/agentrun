@@ -32,7 +32,7 @@ export function BudgetPaused({ pending }: { pending: BudgetPending }) {
  *  console computes none, and with none served (an older server) the raise starts empty. */
 export const suggestedCap = (pending: Pick<BudgetPending, "suggested_cap_usd"> | null | undefined): number | null =>
   typeof pending?.suggested_cap_usd === "number" && Number.isFinite(pending.suggested_cap_usd) ? pending.suggested_cap_usd : null;
-/** The least cap that sends the refused request (`pending.least_cap_usd`), as served; none from an older server. */
+/** The least cap that sends the refused request (`pending.least_cap_usd`), as served; none for a pause that names no least. */
 export const leastCap = (pending: Pick<BudgetPending, "least_cap_usd"> | null | undefined): number | null =>
   typeof pending?.least_cap_usd === "number" && Number.isFinite(pending.least_cap_usd) ? pending.least_cap_usd : null;
 

@@ -8,8 +8,8 @@ import type { RaiseAnswer, Run } from "@/lib/v2";
 
 // A run paused at its cap names two figures that read as a contradiction side by side: the least cap that sends the
 // refused request (`least_cap_usd`, the "at least $X" in the server's words) and the raise it is offered
-// (`suggested_cap_usd`, prefilled). Each raise form says them apart, labelled, both as served; with no least served (an
-// older server) only the suggestion is named.
+// (`suggested_cap_usd`, prefilled). Each raise form says them apart, labelled, both as served; on a pause that names no
+// least, only the suggestion is named.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 const roots: (() => void)[] = [];
 afterEach(() => { roots.splice(0).forEach((u) => u()); document.body.innerHTML = ""; });
@@ -59,7 +59,7 @@ describe("a raise form names the least to continue and the suggestion apart", ()
     expect(input(form).value).toBe("4");
   });
 
-  it("with no least served (an older server), each names the suggestion only", async () => {
+  it("a pause that names no least: each names the suggestion only", async () => {
     const run = paused(pending({ least_cap_usd: undefined }));
     expect(figures(banner(run))).toEqual([["suggested", "Suggested: $4"]]);
     roots.splice(0).forEach((u) => u()); document.body.innerHTML = "";

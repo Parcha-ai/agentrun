@@ -158,5 +158,5 @@ export type BudgetPending = { kind: "budget"; cap_usd: number; spent_usd?: numbe
   /** The server's suggested new cap, always strictly above `cap_usd` (a newer server's; absent from an older one). */
   suggested_cap_usd?: number;
   /** The least cap that sends the refused request: the "at least $X" the server's words (`said`) name, whole cents and
-   *  above `cap_usd` (a newer server's; absent from an older one). */
+   *  above `cap_usd`; absent on a pause that names no least. */
   least_cap_usd?: number };
