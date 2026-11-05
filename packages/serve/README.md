@@ -1052,7 +1052,12 @@ because a firing queued behind a parked run would wait as long as the person doe
 gets a `trigger.failed` message for it (`data: {trigger_id, name, firing_key, nominal_at, error, auto_paused}`, its
 `webhook-id` made from the firing's key, so a restart never sends it twice). Five failed firings in a row turn the
 trigger off (`disabled: {reason: "auto_paused"}`); a firing that starts its run resets the count, and so does turning
-it on again. `PATCH /v2/triggers/{id}` changes it, and
+it on again. Run now (below) works on an auto-paused trigger too, and counts toward the streak like any firing: one that
+starts its run resets it, one that fails adds to it. A trigger whose cron line or zone no longer reads here (after an
+upgrade of the cron library or of the time zone data) is turned off alone, at a start or when it comes due
+(`disabled: {reason: "source_unreadable", detail}`), and every other schedule goes on firing; turning it on again takes a
+new source. A trigger's firings are driven one at a time, in order, so a firing a crash left due settles to its run
+before the next one's overlap is checked. `PATCH /v2/triggers/{id}` changes it, and
 `{enabled: false}` pauses it: the time it was off is skipped, not caught up. `POST /v2/triggers/{id}/fire` runs it now,
 once per `Idempotency-Key` (required): the same key within `limits.idempotency_ttl_s` answers its firing, after the
 firing has left the history too, and later it is a new firing that a run the key started still answers. `GET /v2/triggers/{id}/firings` lists its last 200 firings.

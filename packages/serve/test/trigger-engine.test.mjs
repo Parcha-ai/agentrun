@@ -2,7 +2,7 @@
 // strands nothing, and edits that overlap keep each one's change.
 import assert from "node:assert/strict";
 import { mkdirSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -160,4 +160,160 @@ test("an interval with no start_at, made part way through a second, first fires 
     const trigger = await triggers.create(body({ every_s: 3600 }));
     assert.deepEqual([trigger.source.start_at, trigger.next_at], [made.replace(/\.\d{3}Z$/, "Z"), next], made);
   }
+});
+
+test("a trigger whose cron line or zone no longer reads is turned off with why, at start and when due, and every other schedule goes on firing; nothing is retried for it", async (t) => {
+  const first = await engine(t, {});
+  const good = await first.triggers.create(body({ cron: "*/5 * * * *" }));
+  const zoned = await first.triggers.create(body({ cron: "*/5 * * * *", timezone: "Europe/Madrid" }));
+  const later = await first.triggers.create(body({ cron: "0 9 * * *" }));
+  first.triggers.close();
+  // What a croner or an ICU that no longer reads them leaves: a zone and a cron line the file holds but nothing takes.
+  const file = join(first.data, "triggers.json");
+  const kept = JSON.parse(await readFile(file, "utf8"));
+  kept.triggers.find((x) => x.id === zoned.id).source.timezone = "Mars/Olympus_Mons";
+  kept.triggers.find((x) => x.id === later.id).source.cron = "61 * * * *";
+  await writeFile(file, JSON.stringify(kept));
+  const said = [];
+  const starts = [];
+  const second = await engine(t, { say: (fields) => said.push(fields), start: async (target, input, origin) => (starts.push(origin.id), { run_id: `run-${starts.length}` }) }, { data: first.data, at: "2026-06-01T00:05:00Z" });
+  await until(() => starts.length === 1, "the good schedule's run");
+  assert.deepEqual(starts, [good.id]);
+  for (const id of [zoned.id, later.id]) {
+    const off = second.triggers.get(id);
+    assert.deepEqual([off.enabled, off.next_at, off.disabled?.reason], [false, null, "source_unreadable"], id);
+    assert.equal(typeof off.disabled.detail, "string");
+  }
+  assert.deepEqual(said.filter((s) => s.condition === "triggers_unwritable"), [], "no write was to blame");
+  assert.deepEqual(said.filter((s) => s.condition === "trigger_source_unreadable").map((s) => s.trigger).sort(), [zoned.id, later.id].sort());
+  assert.equal(second.clock.timer?.at, Date.parse("2026-06-01T00:10:00Z"), "armed for the good one's next time alone");
+  const onDisk = JSON.parse(await readFile(file, "utf8")).triggers.find((x) => x.id === zoned.id);
+  assert.equal(onDisk.disabled.reason, "source_unreadable", "written down");
+  // On again with no new source is refused by field; with one it goes on.
+  await assert.rejects(second.triggers.update(zoned.id, { enabled: true }), (error) => error.code === "input_invalid");
+  const fixed = await second.triggers.update(zoned.id, { enabled: true, source: { kind: "schedule", cron: "*/5 * * * *", timezone: "Europe/Madrid" } });
+  assert.deepEqual([fixed.enabled, fixed.disabled, fixed.next_at], [true, null, "2026-06-01T00:10:00.000Z"]);
+});
+
+test("failures a server before trigger.failed recorded are taken as told at the first start that sends it, so none is sent late; a later one is sent", async (t) => {
+  const first = await engine(t, {});
+  const old = await first.triggers.create(body({ every_s: 600 }));
+  const recent = await first.triggers.create(body({ every_s: 600 }));
+  first.triggers.close();
+  const file = join(first.data, "triggers.json");
+  const kept = JSON.parse(await readFile(file, "utf8"));
+  const failedAt = (n) => ({ key: `fir_${String(n).repeat(32)}`, by: "schedule", nominal_at: "2026-05-31T23:50:00Z", status: "failed", at: "2026-05-31T23:50:00.000Z", error: { code: "agent_not_runnable", message: "archived" } });
+  // An earlier server's trigger: no failures_in_a_row, and a failure it never told of.
+  const before = kept.triggers.find((x) => x.id === old.id);
+  delete before.failures_in_a_row;
+  delete before.disabled;
+  delete before.catchup_window_s;
+  before.firings.push(failedAt(1));
+  // This server's: a failure whose notice had not been queued yet.
+  kept.triggers.find((x) => x.id === recent.id).firings.push(failedAt(2));
+  await writeFile(file, JSON.stringify(kept));
+  const told = [];
+  await engine(t, { notify: (failed, key) => (told.push(failed.trigger_id), "queued") }, { data: first.data });
+  assert.deepEqual(told, [recent.id]);
+});
+
+test("a firing's input is checked as its run is given it: the trigger's input with the line saying what fired it", async (t) => {
+  const checked = [];
+  const { triggers } = await engine(t, { targetIssues: async (target) => (checked.push(target.input), []) });
+  const made = await triggers.create(body({ every_s: 600 }));
+  await triggers.update(made.id, { target: { kind: "start_run", agent_id: "a", input: { content: "Again." }, max_cost_usd: 0.5 } });
+  assert.equal(checked.length, 2);
+  for (const [input, content] of [[checked[0], "Hello."], [checked[1], "Again."]]) assert.match(input.content, new RegExp(`^${content}\\n\\n\\(Started by hand from the schedule "nightly" at .+\\.\\)$`));
+});
+
+test("firings a restart finds due past their retry wait, queued behind a slow lookup, are each driven once: the timer asks for none of them again meanwhile", async (t) => {
+  const first = await engine(t, {});
+  const made = await first.triggers.create(body({ every_s: 600 }));
+  first.triggers.close();
+  // A server that went down while three firings waited out a full server's 429: each due, its retry time passed.
+  const file = join(first.data, "triggers.json");
+  const kept = JSON.parse(await readFile(file, "utf8"));
+  kept.triggers[0].firings.push(...[1, 2, 3].map((n) => ({ key: `fir_${String(n).repeat(32)}`, by: "manual", nominal_at: "2026-06-01T00:00:00Z", status: "due", at: "2026-06-01T00:00:00.000Z", attempts: 1, retry_at: "2026-06-01T00:00:05.000Z" })));
+  await writeFile(file, JSON.stringify(kept));
+  const lookups = [];
+  const held = { resolve: undefined };
+  const slow = new Promise((resolve) => (held.resolve = resolve));
+  const second = await engine(t, { runOf: async (key) => (lookups.push(key), lookups.length === 1 ? slow : null) }, { data: first.data, at: "2026-06-01T00:01:00Z" });
+  // Every timer the engine arms that is due at once, while the first lookup is held and the clock is asked again and again.
+  let atOnce = 0;
+  const { arm } = second.clock;
+  second.clock.arm = (fire, ms) => (ms <= 0 && atOnce++, arm(fire, ms));
+  for (let i = 0; i < 20; i++) {
+    second.clock.to("2026-06-01T00:01:00Z");
+    await sleep(1);
+  }
+  assert.equal(lookups.length, 1, "the others wait their turn");
+  assert.ok(atOnce <= 1, `the timer asked again ${atOnce} times`);
+  held.resolve(null);
+  await until(() => second.triggers.firings(made.id).firings.every((f) => f.status !== "due"), "every firing settled");
+  assert.deepEqual(lookups.sort(), [1, 2, 3].map((n) => `fir_${String(n).repeat(32)}`), "each looked up once");
+});
+
+test("a firing whose drive throws and stays due is driven again after the write retry's wait, never at once over and over", async (t) => {
+  const first = await engine(t, {});
+  const made = await first.triggers.create(body({ every_s: 600 }));
+  first.triggers.close();
+  // A firing a restart finds due, its retry time passed; its lookup throws, as no answer it was built for.
+  const file = join(first.data, "triggers.json");
+  const kept = JSON.parse(await readFile(file, "utf8"));
+  kept.triggers[0].firings.push({ key: `fir_${"7".repeat(32)}`, by: "manual", nominal_at: "2026-06-01T00:00:00Z", status: "due", at: "2026-06-01T00:00:00.000Z", attempts: 1, retry_at: "2026-06-01T00:00:05.000Z" });
+  await writeFile(file, JSON.stringify(kept));
+  const lookups = [];
+  const said = [];
+  const second = await engine(t, { runOf: (key) => { lookups.push(key); throw new Error("not a store this lookup knows"); }, say: (fields) => said.push(fields) }, { data: first.data, at: "2026-06-01T00:01:00Z" });
+  for (let i = 0; i < 20; i++) {
+    second.clock.to("2026-06-01T00:01:04.900Z");
+    await sleep(1);
+  }
+  assert.equal(lookups.length, 1, "not driven again before the wait");
+  assert.equal(said.filter((s) => s.condition === "trigger_firing_failed").length, 1);
+  second.clock.to("2026-06-01T00:01:05.000Z");
+  await until(() => lookups.length === 2, "driven again after the wait");
+  await sleep(10);
+  assert.equal(lookups.length, 2);
+  assert.equal(second.triggers.firings(made.id).firings[0].status, "due", "still due, for the next try");
+});
+
+test("a failure whose trigger.failed is not in the outbox yet stays in the history past 200 later firings, and leaves it once it is", async (t) => {
+  let saved = false;
+  const told = [];
+  let starts = 0;
+  const { clock, triggers } = await engine(t, {
+    start: async () => (++starts === 1 ? Promise.reject(new ApiError("agent_not_runnable", "archived")) : { run_id: `run-${starts}` }),
+    notify: (failed, key) => (told.push(key), saved ? "queued" : "unsaved"),
+  });
+  const made = await triggers.create(body({ every_s: 600 }));
+  const failed = await triggers.fire(made.id, "first");
+  assert.equal(failed.firing.status, "failed");
+  for (let n = 1; n <= 205; n++) await triggers.fire(made.id, `next-${n}`);
+  const kept = () => triggers.firings(made.id).firings.find((f) => f.key === failed.firing.key);
+  assert.ok(kept(), "kept while its message is not in the outbox");
+  // The outbox's write works again: its message is queued, it is marked, and the next firing lets it go.
+  saved = true;
+  clock.to("2026-06-01T00:00:05Z");
+  await until(() => told.length >= 2 && told.at(-1) === failed.firing.key, "queued again");
+  await triggers.fire(made.id, "last");
+  assert.equal(kept(), undefined, "trimmed once told");
+});
+
+test("a restart queues the failures it finds unsent before its first tick records anything, so a trim never takes one first", async (t) => {
+  const first = await engine(t, {});
+  const made = await first.triggers.create(body({ every_s: 600 }));
+  first.triggers.close();
+  // A full history whose oldest is a failure never queued, and a time due at the restart that records one more.
+  const file = join(first.data, "triggers.json");
+  const kept = JSON.parse(await readFile(file, "utf8"));
+  const trigger = kept.triggers[0];
+  const firing = (n, status) => ({ key: `fir_${n.toString(16).padStart(32, "0")}`, by: "manual", nominal_at: "2026-06-01T00:00:00Z", status, at: "2026-06-01T00:00:00.000Z", ...(status === "failed" ? { error: { code: "agent_not_runnable", message: "archived" } } : { run_id: `run-${n}` }) });
+  trigger.firings = [firing(1, "failed"), ...Array.from({ length: 199 }, (_, i) => firing(i + 2, "started"))];
+  await writeFile(file, JSON.stringify(kept));
+  const told = [];
+  const second = await engine(t, { notify: (failed, key) => (told.push(key), "queued") }, { data: first.data, at: "2026-06-01T00:10:00Z" });
+  assert.deepEqual(told, [firing(1, "failed").key], "the unsent failure was queued");
+  await until(() => second.triggers.firings(made.id).firings.length >= 200 && second.triggers.firings(made.id).firings.every((f) => f.status !== "due"), "the restart's firing settled");
 });
