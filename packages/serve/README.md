@@ -859,7 +859,10 @@ was under way at the take acts no more: each change of hands moves the session's
 refused. The run stays `working`; its timeline says "You took over the browser" and how it came back ("You handed the
 browser back", or that it went back to the agent after the idle or away window). The owner's time counts: Take over holds
 the next 15 minutes of session time at the provider's price under the run's cap first, and with no room it is refused in
-the cap's words, shown in the viewer. The hold goes when the browser comes back; the time is booked as session time is.
+the cap's words, shown in the viewer. A take-over that input keeps alive is held again every 15 minutes, and with no room
+the browser goes back to the agent at the cap ("The browser went back to the agent at the run's spend cap", in the viewer
+and on the timeline, with the cap's words). A take-over and an ask on the same session share one hold. The holds go when
+the browser comes back; the time is booked as session time is.
 
 **The agent asks.** The agent may ask the owner to do something in its browser (`browser_request_handoff`: an instruction
 and how it will know it is done, such as signing in). Its person's time is held the same way first; with no room no ask is
@@ -1986,9 +1989,9 @@ carries no cost at all, as from a provider that does not price the model. The te
   installed, served under `script-src 'self'`, never anything a run's port answers. A run's port only ever carries the
   viewer's WebSocket, which is data, so whatever answers on a run's port never runs script on the console's origin.
 - The owner's time in a run's browser counts toward its cap and is held before it starts: a take-over, and an agent's ask,
-  each hold 15 minutes of session time at the provider's price, refused in the cap's words without room. A take-over kept
-  past 15 minutes by steady input runs past its hold; that time is booked at the session's next charge, as a browser call
-  that runs past its stretch is.
+  hold 15 minutes of session time at the provider's price (once per session, shared by a take-over and an ask on it),
+  refused in the cap's words without room. A take-over that steady input keeps alive past 15 minutes is held again every
+  15 minutes; with no room the browser goes back to the agent, in the cap's words.
 - It binds 127.0.0.1 by default, and there refuses a request whose `Host` is not a loopback name (DNS rebinding). On
   another address (`--listen`, the container's `0.0.0.0`) it serves every `Host` name, and the token is its only lock.
   It sends no CORS headers, so a page on another origin cannot read an answer.

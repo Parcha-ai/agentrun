@@ -169,7 +169,8 @@ until one opens.
 and `give`; outside a hold every input, navigation and dialog answer is dropped on the server (`held not_taken`). A `take` asks the host's `take(tag)` first, which may
 refuse in its own words (a spend cap with no room for the person's time; the viewer shows `take_refused` with them), or answers `{ end(why) }`; the session's gate then
 holds the browser for the person (`drivingGates(tag).take()`) until their `give`, `holdIdleMs` with no input (15 minutes), `holdAwayMs` with no viewer connected
-(2 minutes), or the session's release, and `end` is called once with why (`given`, `answered`, `idle`, `away`, `released`). The viewer is told `hold` as it starts
+(2 minutes), or the session's release, and `end` is called once with why (`given`, `answered`, `cap`, `idle`, `away`, `released`). A host gives the
+browser back at its spend cap with `drivingGates(tag).give("cap", words)`: the viewer's `hold` end carries the words as `message`. The viewer is told `hold` as it starts
 and ends; `ready` carries `takeOver: true` and whether it holds now, so a viewer that reconnects within the away window still holds it. While held, every model call
 waits inside its tool (it does not fail; an abort ends the wait with nothing done), then goes on with its old element ids dropped and told plainly that the person had
 the browser and the page may have changed. Each change of hands moves the gate's epoch (`drivingGates(tag).epoch()`), and a driver a call took before it is refused at

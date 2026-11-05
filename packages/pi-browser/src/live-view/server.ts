@@ -264,9 +264,9 @@ export function createLiveView(options: LiveViewOptions): LiveViewHost {
     void takeOver!.take(entry.tag).then((answer) => {
       entry.taking = false;
       if ("refused" in answer) { if (entry.viewer === viewer) send(viewer.conn, { type: "take_refused", message: answer.refused }); return; }
-      const ended = (why: HoldEnd): void => {
+      const ended = (why: HoldEnd, message?: string): void => {
         try { answer.end(why); } catch { /* the host's own bookkeeping cannot keep the hold */ }
-        if (entry.viewer) send(entry.viewer.conn, { type: "hold", held: false, reason: why });
+        if (entry.viewer) send(entry.viewer.conn, { type: "hold", held: false, reason: why, ...(message ? { message } : {}) });
       };
       // A session released, or a viewer gone, while the host answered: no hold starts, and the host lets go of what it took for one.
       if (entry.released || entry.viewer !== viewer || !(options.gates ?? drivingGates)(entry.tag).take(ended)) { answer.end("released"); return; }

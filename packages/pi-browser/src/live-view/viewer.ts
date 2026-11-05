@@ -197,7 +197,7 @@ const js = `"use strict";
   $("dialog-dismiss").addEventListener("click", function () { answer(false); });
 
   var HELD = { agent_acting: "The agent is acting, so that input was held. Try again in a moment.", no_page: "There is no page to drive yet.", bad_message: "That input was not understood.", read_only: "This view is view-only: your input is not sent.", not_taken: NOT_TAKEN };
-  var HOLD_ENDED = { given: "You handed the browser back to the agent.", answered: "The agent's request was answered, so the browser went back to the agent.", idle: "The browser went back to the agent: no input came from you for a while.", away: "The browser went back to the agent while this view was closed.", released: "The browser's session ended." };
+  var HOLD_ENDED = { given: "You handed the browser back to the agent.", answered: "The agent's request was answered, so the browser went back to the agent.", idle: "The browser went back to the agent: no input came from you for a while.", away: "The browser went back to the agent while this view was closed.", released: "The browser's session ended.", cap: "The browser went back to the agent: the run's spend cap has no room for more of your time." };
   var REFUSED = { unauthorized: "This link's token was not accepted.", viewer_in_use: "Another viewer already has this session.", released: "This session has been released.", bad_message: "The host did not understand this viewer." };
   ws.onmessage = function (event) {
     if (typeof event.data !== "string") {
@@ -209,7 +209,7 @@ const js = `"use strict";
     var m;
     try { m = JSON.parse(event.data); } catch (e) { return; }
     if (m.type === "ready") { ready = true; readOnly = m.readOnly === true; takeOver = !readOnly && m.takeOver === true; holding = takeOver && m.held === true; if (readOnly) viewOnly(); showHands(); setDrive(m.drive); say(""); focusScreen(); expectPicture(); }
-    else if (m.type === "hold") { holding = m.held === true; showHands(); setDrive(holding ? "person" : "idle"); say(holding ? "" : (HOLD_ENDED[m.reason] || "The browser went back to the agent.")); if (holding) focusScreen(); }
+    else if (m.type === "hold") { holding = m.held === true; showHands(); setDrive(holding ? "person" : "idle"); say(holding ? "" : (typeof m.message === "string" && m.message ? (HOLD_ENDED[m.reason] || "The browser went back to the agent.") + " " + m.message : (HOLD_ENDED[m.reason] || "The browser went back to the agent."))); if (holding) focusScreen(); }
     else if (m.type === "take_refused") say(typeof m.message === "string" && m.message ? m.message : "The browser could not be handed to you.");
     else if (m.type === "no_page") { noPage = true; stillEl.hidden = true; clearTimeout(stillTimer); say(NO_PAGE); }
     // "No page yet" stays until a page or a frame comes: who drives meanwhile changes nothing on a browser with no page.

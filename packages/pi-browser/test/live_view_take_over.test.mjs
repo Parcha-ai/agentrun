@@ -227,6 +227,17 @@ test("take-over viewer: the hold outlives a reconnect, and ends 2 minutes after 
   assert.equal(later.first.held, false);
 });
 
+test("take-over viewer: the host gives the browser back at the run's cap: the viewer is told why, in the cap's words, and the host's end hears cap", async (t) => {
+  const tag = "ar-run-to-10-1";
+  const v = await viewer(t, tag);
+  v.ws.sendJson({ type: "take" });
+  assert.deepEqual(await v.nextOf(v.ws, "hold"), { type: "hold", held: true });
+  const words = "spend_cap_reached: Not sent: the run has spent $0.04 of its $0.05 cap.";
+  assert.equal(v.gates(tag).give("cap", words), true);
+  assert.deepEqual(await v.nextOf(v.ws, "hold"), { type: "hold", held: false, reason: "cap", message: words });
+  assert.deepEqual(v.ends, ["cap"]);
+});
+
 test("take-over viewer: the session's release ends a hold, and the host is told", async (t) => {
   const tag = "ar-run-to-8-1";
   const v = await viewer(t, tag);

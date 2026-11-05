@@ -41,9 +41,9 @@ export type ServerMessage =
   /** Sent once, after a valid hello. `readOnly`: the viewer watches and never drives (LiveViewOptions.readOnly); `takeOver`: it drives only while
    *  it holds the browser (LiveViewOptions.takeOver), and `held` says whether it does now; neither: it may drive. */
   | { type: "ready"; drive: DriveState; readOnly?: true; takeOver?: true; held?: boolean }
-  /** A take-over viewer's hold began (`held: true`), or ended (`held: false`, and why). */
+  /** A take-over viewer's hold began (`held: true`), or ended (`held: false`, why, and the host's words when it gave them: a spend cap's). */
   | { type: "hold"; held: true }
-  | { type: "hold"; held: false; reason: HoldEnd }
+  | { type: "hold"; held: false; reason: HoldEnd; message?: string }
   /** A `take` the host refused, in its words (a spend cap with no room for the person's time). Nothing changed. */
   | { type: "take_refused"; message: string }
   | { type: "status"; drive: DriveState }

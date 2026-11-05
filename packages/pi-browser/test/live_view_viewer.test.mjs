@@ -603,5 +603,9 @@ test("a take-over viewer: Take over and Hand back in its own bar send take and g
   web.send({ type: "hold", held: true });
   web.send({ type: "hold", held: false, reason: "away" });
   assert.ok(await until(async () => /went back to the agent while this view was closed/.test((await state()).notice)), "an away end says so");
+  web.send({ type: "hold", held: true });
+  web.send({ type: "hold", held: false, reason: "cap", message: "spend_cap_reached: Not sent: the run has spent $0.04 of its $0.05 cap." });
+  assert.ok(await until(async () => /spend cap has no room for more of your time\. spend_cap_reached: Not sent: the run has spent \$0\.04/.test((await state()).notice)), "a cap end says so, in the cap's words");
+  assert.equal((await state()).hands, "Take over");
   assert.deepEqual(web.received.filter((m) => !["hello", "take", "give", "key", "mouse"].includes(m.type)), [], "nothing else was sent");
 });

@@ -6,9 +6,10 @@ import { browserFailure, type BrowserFailure } from "./failures.js";
  *  has since moved). */
 export type DriveState = "idle" | "person" | "agent";
 
-/** Why a person's hold ended: they handed the browser back (`given`), the agent's ask was answered (`answered`), no input came for the hold's idle
- *  window (`idle`), the viewer was gone for its away window (`away`), or the session was released (`released`). */
-export type HoldEnd = "given" | "answered" | "idle" | "away" | "released";
+/** Why a person's hold ended: they handed the browser back (`given`), the agent's ask was answered (`answered`), the host's spend cap had no room
+ *  for more of their time (`cap`), no input came for the hold's idle window (`idle`), the viewer was gone for its away window (`away`), or the
+ *  session was released (`released`). */
+export type HoldEnd = "given" | "answered" | "cap" | "idle" | "away" | "released";
 
 /** The person/model mutex for one browser (core/driving.ts, keyed by the session's lease tag). Person input and a model's browser call never
  *  interleave: while a call is in flight the viewer's input is discarded with a notice, and while a person drives a model call is refused. */
@@ -31,10 +32,11 @@ export type DrivingGate = {
   /** The person takes the browser (the live view's Take over): a sticky hold that lasts until `give`, `idleMs` of the hold with no input, or
    *  `awayMs` with no viewer present (`setPresent`), or the session's end. While held the person's input is the only input, every model call
    *  waits (`untilFree`), and the epoch moves, so a driver a model call took before the take acts no more. `onEnd` is called once, when the hold
-   *  ends, with why. False when the browser is already held (nothing changes). */
-  take(onEnd?: (why: HoldEnd) => void): boolean;
-  /** Ends the hold (`given`: the person handed back; `answered`: the agent's ask was answered). False when nothing was held. */
-  give(why?: "given" | "answered"): boolean;
+   *  ends, with why (and the host's words, when it gave them). False when the browser is already held (nothing changes). */
+  take(onEnd?: (why: HoldEnd, message?: string) => void): boolean;
+  /** Ends the hold (`given`: the person handed back; `answered`: the agent's ask was answered; `cap`: the host's spend cap has no room for more of
+   *  the person's time, `message` its words). False when nothing was held. */
+  give(why?: "given" | "answered" | "cap", message?: string): boolean;
   /** True while a person holds the browser. */
   held(): boolean;
   /** Moves at each change of hands (a take, a hold's end): a model call checks it before each act on the browser. */
@@ -80,7 +82,7 @@ class Gate implements DrivingGate {
   /** A person has driven and the model has not been told yet; kept (and the gate with it) until a call has been told. */
   private drove_ = false;
   /** The person's hold, while there is one: its end's listener, its idle timer and, while no viewer is present, its away timer. */
-  private hold: { onEnd?: (why: HoldEnd) => void; idle: unknown; away: unknown } | null = null;
+  private hold: { onEnd?: (why: HoldEnd, message?: string) => void; idle: unknown; away: unknown } | null = null;
   private epoch_ = 0;
   private present_ = false;
   /** Model calls waiting for the hold to end. */
@@ -127,7 +129,7 @@ class Gate implements DrivingGate {
 
   onChange(listener: (state: DriveState) => void): () => void { this.listeners.add(listener); return () => { this.listeners.delete(listener); this.settle(); }; }
 
-  take(onEnd?: (why: HoldEnd) => void): boolean {
+  take(onEnd?: (why: HoldEnd, message?: string) => void): boolean {
     if (this.hold) return false;
     this.epoch_ += 1;
     this.drove_ = true;
@@ -137,9 +139,9 @@ class Gate implements DrivingGate {
     return true;
   }
 
-  give(why: "given" | "answered" = "given"): boolean {
+  give(why: "given" | "answered" | "cap" = "given", message?: string): boolean {
     if (!this.hold) return false;
-    this.endHold(why);
+    this.endHold(why, message);
     return true;
   }
 
@@ -180,7 +182,7 @@ class Gate implements DrivingGate {
   }
 
   /** The hold ends: the epoch moves, the person's driving window with it (they let go), the waiting model calls go on, and its listener is told why. */
-  private endHold(why: HoldEnd): void {
+  private endHold(why: HoldEnd, message?: string): void {
     const hold = this.hold;
     if (!hold) return;
     this.hold = null;
@@ -194,7 +196,7 @@ class Gate implements DrivingGate {
     this.waiters.clear();
     for (const wake of waiting) wake();
     this.announce(this.state());
-    try { hold.onEnd?.(why); } catch { /* a host's listener that throws cannot keep the hold */ }
+    try { hold.onEnd?.(why, message); } catch { /* a host's listener that throws cannot keep the hold */ }
     this.settle();
   }
 

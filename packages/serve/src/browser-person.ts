@@ -172,11 +172,12 @@ export function dropAsks(runDir: string): void {
 }
 
 /** Why a take-over ended, as pi-browser's gate says it. */
-type HoldEnd = "given" | "answered" | "idle" | "away" | "released";
+type HoldEnd = "given" | "answered" | "cap" | "idle" | "away" | "released";
 /** The rows a person's turns leave, beside the waiting row an ask writes. */
 const TAKEN = "You took over the browser";
 const GIVEN_BACK = "You handed the browser back";
-const TAKE_ENDED: Record<Exclude<HoldEnd, "answered">, string> = {
+const CAPPED = "The browser went back to the agent at the run's spend cap";
+const TAKE_ENDED: Record<Exclude<HoldEnd, "answered" | "cap">, string> = {
   given: GIVEN_BACK,
   idle: "The browser went back to the agent: no input came from you for a while",
   away: "The browser went back to the agent: the live view was closed",
@@ -194,13 +195,16 @@ type Note = (kind: string, data: Record<string, string>) => Promise<void>;
  *  under the cap (browser-cost.ts); `note` commits a root entry, which reaches the run's timeline. */
 export function personHands(options: {
   root: string;
-  gates: (tag: string) => { give(why: "answered"): boolean };
+  gates: (tag: string) => { give(why: "answered" | "cap", message?: string): boolean };
   personTime(what: string, seconds: number): Promise<{ refused: string } | { drop(): void }>;
   note: Note;
   holdMs?: number;
   pollMs?: number;
+  /** For tests: the timer functions the person's time is held again by. */
+  timers?: { set(run: () => void, ms: number): unknown; clear(handle: unknown): void };
 }) {
   const holdMs = options.holdMs ?? PERSON_HOLD_MS;
+  const timers = options.timers ?? { set: (run: () => void, ms: number) => setTimeout(run, ms).unref(), clear: (handle: unknown) => clearTimeout(handle as NodeJS.Timeout) };
   const open = new Map<string, { tag: string; expiresAt: number; drop(): void }>();
   const settled = new Map<string, AskOutcome>();
   let poll: NodeJS.Timeout | undefined;
@@ -208,8 +212,9 @@ export function personHands(options: {
 
   /** The person's time on each session, held once under the cap for everyone who needs it there (a take-over, an ask), and
    *  dropped when the last of them is over: a take then an ask, or an ask then a take, holds it once. `ready` settles when
-   *  the first hold is taken, or refused. */
-  type Ledger = { holds: Array<{ drop(): void }>; users: Set<string>; ready: Promise<{ refused: string } | undefined> };
+   *  the first hold is taken, or refused. While anyone needs it, it is held again each holdMs (a take-over kept alive by
+   *  input has no end of its own): with no room, a take-over gives the browser back (`cap`, in the cap's words). */
+  type Ledger = { holds: Array<{ drop(): void }>; users: Set<string>; ready: Promise<{ refused: string } | undefined>; timer?: unknown; refused?: string };
   const ledgers = new Map<string, Ledger>();
   /** `user`'s share of session `tag`'s person time: held now when nobody holds it (`what` names it in the cap's words). */
   const acquire = async (tag: string, user: string, what: string): Promise<{ refused: string } | undefined> => {
@@ -226,7 +231,11 @@ export function personHands(options: {
       const ledger: Ledger = { holds: [], users: new Set([user]), ready: Promise.resolve(undefined) };
       ledger.ready = options.personTime(what, holdMs / 1000).then(
         (hold) => {
-          if (!("refused" in hold)) return void ledger.holds.push(hold);
+          if (!("refused" in hold)) {
+            ledger.holds.push(hold);
+            again(tag, ledger);
+            return undefined;
+          }
           if (ledgers.get(tag) === ledger) ledgers.delete(tag);
           return { refused: hold.refused };
         },
@@ -239,11 +248,29 @@ export function personHands(options: {
       return ledger.ready;
     }
   };
+  /** Holds session `tag`'s person time again holdMs from now, and so on while anyone needs it. The holds add up: the time
+   *  already spent is booked at the session's next charge, so until then each stretch stays held. */
+  const again = (tag: string, ledger: Ledger): void => {
+    ledger.timer = timers.set(() => void (async () => {
+      if (ledgers.get(tag) !== ledger) return;
+      const hold = await options.personTime("more of your time in the browser", holdMs / 1000).catch(() => ({ refused: "the person's time could not be held" }));
+      if (ledgers.get(tag) !== ledger) return void ("refused" in hold || hold.drop());
+      if (!("refused" in hold)) {
+        ledger.holds.push(hold);
+        again(tag, ledger);
+        return;
+      }
+      // No room: a take-over ends here. An ask needs no more (it expires within the time already held for it).
+      ledger.refused = hold.refused;
+      if (ledger.users.has(TAKE_USER)) options.gates(tag).give("cap", hold.refused);
+    })(), holdMs);
+  };
   /** `user` is done with session `tag`: the last one out drops what was held. */
   const release = (tag: string, user: string): void => {
     const ledger = ledgers.get(tag);
     if (!ledger || !ledger.users.delete(user) || ledger.users.size) return;
     ledgers.delete(tag);
+    if (ledger.timer !== undefined) timers.clear(ledger.timer);
     for (const hold of ledger.holds) hold.drop();
   };
 
@@ -282,9 +309,11 @@ export function personHands(options: {
         end: (why) => {
           if (ended) return;
           ended = true;
+          const words = ledgers.get(tag)?.refused;
           release(tag, TAKE_USER);
           // An answered ask writes its own row.
-          if (why !== "answered") void note(HOST_PHASE, { summary: TAKE_ENDED[why] });
+          if (why === "cap") void note(HOST_PHASE, { summary: `${CAPPED}${words ? `: ${words}` : ""}` });
+          else if (why !== "answered") void note(HOST_PHASE, { summary: TAKE_ENDED[why] });
         },
       };
     },
@@ -333,7 +362,10 @@ export function personHands(options: {
       poll = undefined;
       for (const ask of open.values()) ask.drop();
       open.clear();
-      for (const ledger of ledgers.values()) for (const hold of ledger.holds) hold.drop();
+      for (const ledger of ledgers.values()) {
+        if (ledger.timer !== undefined) timers.clear(ledger.timer);
+        for (const hold of ledger.holds) hold.drop();
+      }
       ledgers.clear();
     },
   };
