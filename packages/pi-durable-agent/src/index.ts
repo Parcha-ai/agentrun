@@ -16,5 +16,5 @@ export {
 } from "./vault.js";
 export {
   type Agent, type AgenticBody, type AgentRow, type ArchiveKind, type AgentStore, type AgentStoreReader, type NewRevision, openStore, openStoreReader, type Revision, type RevisionKind, type RevisionPlace, type RevisionRow, type RunOrigin, type RunRow,
-  type ImportedFrom, type ImportedRun, type ImportSource, type RunState, type StartedRun, STORE_FILE, type StoredMetrics, type StoreStats, type StoreAnalytics, type AnalyticsGroup, type AnalyticsFilter, type PendingEnd, type WorkflowBody,
+  type ImportedFrom, isToolSettingsKey, type ImportedRun, type ImportSource, type RunState, type StartedRun, STORE_FILE, type StoredMetrics, type StoreStats, type StoreAnalytics, type AnalyticsGroup, type AnalyticsFilter, type PendingEnd, type WorkflowBody,
 } from "./agent-store.js";
