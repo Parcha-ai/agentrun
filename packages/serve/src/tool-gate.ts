@@ -274,8 +274,8 @@ export function resumeText(request: Pick<ApprovalRequest, "tool" | "call_id">, s
 
 /** The gate of the run `runId` at `where` (its directory, under the data directory's runs/), on its pinned revision:
  *  an agentic run's parks an asked call; a workflow's model node cannot. */
-export function runGate(where: { root: string; work: string }, runId: string, revision: { kind: string; body: { toolSettings?: unknown; harness?: string } }): RunGate {
-  return new RunGate({ root: where.root, work: where.work, data: resolve(where.root, "..", ".."), runId, harness: revision.body.harness ?? "pi" }, (revision.body.toolSettings ?? {}) as PermissionSettings, revision.kind === "agentic", process.env[NO_APPROVER_ENV] !== "1");
+export function runGate(where: { root: string; work: string; learningAt?: () => Promise<boolean> }, runId: string, revision: { kind: string; body: { toolSettings?: unknown; harness?: string } }): RunGate {
+  return new RunGate({ root: where.root, work: where.work, data: resolve(where.root, "..", ".."), runId, harness: revision.body.harness ?? "pi", ...(where.learningAt ? { learningAt: where.learningAt } : {}) }, (revision.body.toolSettings ?? {}) as PermissionSettings, revision.kind === "agentic", process.env[NO_APPROVER_ENV] !== "1");
 }
 
 /** The gate in a run's process, park mode: its policy, the turn's origin, the calls that wait, and the answers acted on. */
@@ -293,7 +293,7 @@ export class RunGate {
   /** `where.data`: the server's data directory, its tool settings beside the store; `overrides`: the pinned revision's
    *  own; `parks`: whether an asked call parks the run (an agentic run's), which a workflow's model node cannot;
    *  `approvers`: whether anyone can answer an ask here (the owner's password session: accounts on). */
-  constructor(private readonly where: { root: string; work: string; data: string; runId: string; harness?: string; mcpServers?: readonly string[] }, private readonly overrides: PermissionSettings = {}, private readonly parks = true, private readonly approvers = true) {}
+  constructor(private readonly where: { root: string; work: string; data: string; runId: string; harness?: string; mcpServers?: readonly string[]; /** Whether the file tools write this machine's work/, where the carve-out's path is checked; absent, they do. */ learningAt?: () => Promise<boolean> }, private readonly overrides: PermissionSettings = {}, private readonly parks = true, private readonly approvers = true) {}
 
   /** A tool's permission now (permissionOf): the revision's own over the server's setting, read at each call, so a change
    *  reaches a live run at its next call. */
@@ -338,7 +338,11 @@ export class RunGate {
     // Held to its settings key (settingsKeyOf), the name its request, a refusal and the approved call give.
     const tool = settingsKeyOf(this.where.harness ?? "pi", name, this.where.mcpServers) ?? name;
     const permission = this.policy(name);
-    const turnOrigin = permission === "ask" ? this.turnOrigin() : undefined;
+    // The reflect turn's carve-out holds only where the path checked here is the file the tool writes (learningAt): a
+    // remote box's .learning/ is not this machine's, and a link made in it is never seen here. Read before the look for
+    // a call that waits below, which stays in one tick with its hold.
+    const origin = permission === "ask" ? this.turnOrigin() : undefined;
+    const turnOrigin = origin && (await (this.where.learningAt?.() ?? Promise.resolve(true))) ? origin : undefined;
     const verdict = gateToolCall({ tool, args }, { ...(turnOrigin ? { turnOrigin } : {}), work: this.where.work, policy: () => permission });
     if (verdict === "allow") return undefined;
     if (verdict === "deny") return { text: deniedText(tool), isError: true };
