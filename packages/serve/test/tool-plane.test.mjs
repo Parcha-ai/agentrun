@@ -184,14 +184,17 @@ test("a pi agent that names no model and picks native search runs on a server wh
   assert.equal(run.status, 202, JSON.stringify(run.body));
 });
 
-test("settings are checked before anything is kept: an unknown tool, a provider for a tool with no choice or not offered for it, and a permission not offered (tool-gate.test.mjs has the rest); the gate's names of the table are the table's", () => {
+test("settings are checked before anything is kept: an unknown tool, a provider for a tool with no choice or not offered for it, and a permission not offered (tool-gate.test.mjs has the rest); the gate's names of the table are the table's", async () => {
   assert.deepEqual(settingsIssues({ web_search: { provider: "exa-keyless" }, web_fetch: {} }), []);
   assert.deepEqual(settingsIssues({ ask_person: { provider: "native" } }).map((i) => [i.field, i.reason]), [["ask_person.provider", "not_allowed"]]);
   assert.deepEqual(settingsIssues({ fetch_pages: {} }).map((i) => [i.field, i.reason]), [["fetch_pages", "not_allowed"]]);
   assert.deepEqual(settingsIssues({ web_fetch: { provider: "native" } }).map((i) => [i.field, i.reason, i.message]), [["web_fetch.provider", "not_an_option", "web_fetch.provider is one of kernel, parallel"]]);
   assert.deepEqual(settingsIssues({ web_search: { permission: "deny" } }, "definition.tool_settings"), []);
   assert.deepEqual(settingsIssues({ web_search: { permission: "never" } }, "definition.tool_settings").map((i) => [i.field, i.reason, i.message]), [["definition.tool_settings.web_search.permission", "not_an_option", "definition.tool_settings.web_search.permission is one of allow, ask, deny"]]);
-  assert.deepEqual([...TABLE_TOOLS].sort(), [...Object.keys(TOOLS).filter((name) => !name.startsWith("monid.")), ...Object.keys(LEGACY_NAMES)].sort(), "tool-plane's names of the table are tools.ts's, and its legacy names");
+  // The background tools follow bash's setting (tool-gate.ts SHELL_FAMILY): none is a name of the table's settings.
+  const { SHELL_FAMILY } = await import("../dist/tool-gate.js");
+  const heldToAnother = (name) => Object.hasOwn(SHELL_FAMILY, name) && SHELL_FAMILY[name] !== name;
+  assert.deepEqual([...TABLE_TOOLS].sort(), [...Object.keys(TOOLS).filter((name) => !name.startsWith("monid.") && !heldToAnother(name)), ...Object.keys(LEGACY_NAMES)].sort(), "tool-plane's names of the table are tools.ts's, but those held to bash's setting, and its legacy names");
   assert.deepEqual(settingsIssues({ web_search: "parallel" }).map((i) => i.reason), ["wrong_type"]);
   assert.deepEqual(settingsIssues([]).map((i) => [i.field, i.reason]), [["body", "wrong_type"]]);
 });

@@ -18,7 +18,7 @@ import { type Extension, ROOT_CONVERSATION_ID, type ToolRegistration } from "@ea
 import { FileError } from "@earendil-works/pi-durable/env";
 import { HOST_PHASE } from "@parcha/pi-durable-agent/timeline";
 import { ArchilCodingTools } from "@parcha/pi-durable-disk";
-import { BACKGROUND_TOOLS, backgroundTools } from "./background.js";
+import { BACKGROUND_TOOLS, backgroundTools, SHELL_TOOLS } from "./background.js";
 import { boundFiles } from "./bound-files.js";
 import { BOX_WORK, type Place } from "./place.js";
 import { asGivenRefusals, refuseOutsideWorkspace } from "./workspace-paths.js";
@@ -35,7 +35,7 @@ export const CodingTools: Extension = { ...pis, tools: asGivenRefusals((pis.tool
 /** pi's tools a box runs, by name. */
 const PI_BOXED: readonly string[] = ["read", "write", "edit", "bash"];
 /** The tools that run a command in the box, never on this machine: bash, and the background tools (background.ts). */
-export const SHELL_TOOLS: readonly string[] = ["bash", ...BACKGROUND_TOOLS];
+export { SHELL_TOOLS };
 /** The tools a box runs, by name: pi's four and the background tools. */
 export const BOXED_TOOLS: readonly string[] = [...PI_BOXED, ...BACKGROUND_TOOLS];
 

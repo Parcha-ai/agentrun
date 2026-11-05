@@ -39,6 +39,9 @@ export const BACKGROUND_DIR = "background";
 export const BACKGROUND_SIGNALS = ["TERM", "INT", "KILL"] as const;
 /** The tools, by name. */
 export const BACKGROUND_TOOLS = ["bash_background", "bash_output", "bash_input", "bash_signal", "bash_list"] as const;
+/** The tools that run a command in the box, never on this server: bash, and the background tools. The tool gate holds
+ *  each to bash's setting (tool-gate.ts SHELL_FAMILY). */
+export const SHELL_TOOLS: readonly string[] = ["bash", ...BACKGROUND_TOOLS];
 
 const MIB = BACKGROUND_LOG_BYTES / (1024 * 1024);
 /** Each signal's number, for an exit code past 128. */
