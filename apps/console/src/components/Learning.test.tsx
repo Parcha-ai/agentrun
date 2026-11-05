@@ -50,7 +50,7 @@ let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 const settle = async () => { for (let i = 0; i < 8; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
 
-type Fake = { learning?: () => Promise<AgentLearning>; runs?: Run[]; read?: (file: string) => Promise<{ note: string; etag: string | null }>; write?: (file: string, text: string, on: unknown) => Promise<unknown>; retire?: (file: string, etag: string) => Promise<unknown>; approve?: (file: string, etag: string) => Promise<unknown>; caps?: unknown; notes?: (cursor: string) => Promise<{ items: LearningNote[]; total: number; next_cursor: string | null }>; log?: (cursor: string) => Promise<AgentLearning["log"]>; runsNext?: string | null; update?: (body: unknown, etag: string | null) => Promise<{ agent: Agent; etag: string }> };
+type Fake = { learning?: () => Promise<AgentLearning>; runs?: Run[]; read?: (file: string) => Promise<{ note: string; etag: string | null }>; write?: (file: string, text: string, on: unknown) => Promise<unknown>; retire?: (file: string, etag: string) => Promise<unknown>; approve?: (file: string, etag: string) => Promise<unknown>; restore?: (file: string, etag: string) => Promise<unknown>; caps?: unknown; notes?: (cursor: string) => Promise<{ items: LearningNote[]; total: number; next_cursor: string | null }>; log?: (cursor: string) => Promise<AgentLearning["log"]>; runsNext?: string | null; update?: (body: unknown, etag: string | null) => Promise<{ agent: Agent; etag: string }> };
 async function open(a: Agent, fake: Fake = {}, props: Partial<LearningProps> = {}) {
   const calls: string[] = [];
   const agents: Agent[] = [];
@@ -61,6 +61,7 @@ async function open(a: Agent, fake: Fake = {}, props: Partial<LearningProps> = {
     writeNote: async (_id: string, file: string, text: string, on: unknown) => { calls.push(`write ${file} ${JSON.stringify(on)}`); return (fake.write ?? (async () => ({ text, etag: '"v2"' })))(file, text, on); },
     retireNote: async (_id: string, file: string, etag: string) => { calls.push(`retire ${file} ${etag}`); return (fake.retire ?? (async () => ({ text: "", etag: '"v3"' })))(file, etag); },
     approveNote: async (_id: string, file: string, etag: string) => { calls.push(`approve ${file} ${etag}`); return (fake.approve ?? (async () => ({ note: "", etag: '"v4"' })))(file, etag); },
+    restoreNote: async (_id: string, file: string, etag: string) => { calls.push(`restore ${file} ${etag}`); return (fake.restore ?? (async () => ({ note: "", etag: '"v5"' })))(file, etag); },
     getAgent: async () => { calls.push("agent"); return { agent: a, etag: '"rv1"' }; },
     updateDefinition: async (_id: string, body: unknown, etag: string | null) => { calls.push(`put ${JSON.stringify(body)} ${etag}`); return (fake.update ?? (async () => ({ agent: { ...a, revision: "rv2", revisions: 2, definition: { ...a.definition, ...(body as { definition: object }).definition } }, etag: '"rv2"' })))(body, etag); },
     learningNotes: async (_id: string, cursor: string) => { calls.push(`notes after ${cursor}`); return (fake.notes ?? (async () => ({ items: [], total: 0, next_cursor: null })))(cursor); },
@@ -973,5 +974,117 @@ describe("the Learning tab's retired notes and skills, opened", () => {
     expect(earlier.textContent).toContain("Retired");
     expect(t.button(/^Retire find-policies$/)).toBeUndefined();
     expect(t.button(/^Approve find-policies$/)).toBeUndefined();
+  });
+});
+
+// What a card says of its newest change, as the server names it (last_change): approved, restored, retired, edited or
+// created by you, each with when; learned, by the run that kept it. An older server names none: the line the learning
+// log gives, as before. A retired one says who retired it and when (retired), else the log's line.
+describe("the Learning tab's words for the newest change", () => {
+  const AT = "2026-11-05T19:30:00Z";
+  it("says Approved by you or Restored by you when the server names it, never Edited", async () => {
+    const v = view();
+    v.notes.items = v.notes.items.map((x) => (x.file === MINE ? { ...x, last_change: { kind: "approved" as const, by: "person" as const, at: AT } } : x.file === FIRST ? { ...x, last_change: { kind: "restored" as const, by: "person" as const, at: AT } } : x));
+    const t = await open(agent(true), { learning: async () => v });
+    expect(t.card("Keep it to three lines")!.textContent).toMatch(/Approved by you · \S/);
+    expect(t.card("Keep it to three lines")!.textContent).not.toContain("Edited by you");
+    expect(t.card("Try /policies/refund-policy first")!.textContent).toMatch(/Restored by you · \S/);
+    // The run that learned it is still named.
+    expect(t.card("Try /policies/refund-policy first")!.querySelector('a[href="#/runs/run-b"]')).not.toBeNull();
+  });
+  it("names who retired one from the served retired field: you, or a run", async () => {
+    const v = view();
+    v.notes.items = [note(FIRST, "Try /policies/refund-policy first"), note(MINE, "Keep it to three lines", { status: "retired", retired: { at: AT, by: "person" } }), note(OLD, "Shopify refund policy path", { status: "retired", retired: { at: AT, by: "run" } })];
+    const t = await open(agent(true), { learning: async () => v });
+    await t.click(/^Earlier notes/);
+    const earlier = t.host.querySelector('section[aria-label="Earlier notes"]')!.textContent ?? "";
+    expect(earlier).toMatch(/Retired by you · \S/);
+    expect(earlier).toMatch(/Retired by a run · \S/);
+  });
+});
+
+// A retired note, skill or draft can be restored: after a confirm, on the version its card shows (If-Match), then the tab
+// reads it again. A refusal says why in plain words, and it stays retired.
+describe("restoring a retired note, skill or draft", () => {
+  const retiredView = () => {
+    const v = view();
+    v.notes.items = [note(FIRST, "Try /policies/refund-policy first", { etag: '"v-first"' }), note(MINE, "Keep it to three lines", { status: "retired", etag: '"v-mine"' })];
+    return v;
+  };
+  const restoreOf = async (t: Awaited<ReturnType<typeof open>>) => {
+    await t.click(/^Earlier notes/);
+    await t.click(/^Restore Keep it to three lines$/);
+  };
+
+  it("asks first, then restores on the version the card shows, and reads the tab again", async () => {
+    let reads = 0;
+    const t = await open(agent(true), { learning: async () => { reads++; return retiredView(); } });
+    await restoreOf(t);
+    const ask = t.host.querySelector('[role="alertdialog"]');
+    expect(ask?.textContent).toContain("It becomes active again for the next run.");
+    expect(t.calls.some((c) => c.startsWith("restore "))).toBe(false);
+    const before = reads;
+    await t.click(/^Yes, restore$/);
+    expect(t.calls).toContain(`restore ${MINE} "v-mine"`);
+    expect(reads).toBeGreaterThan(before);
+  });
+
+  it("a version changed since says so and reads the tab again", async () => {
+    let reads = 0;
+    const t = await open(agent(true), { learning: async () => { reads++; return retiredView(); }, restore: async () => { throw new ClientError(412, "precondition_failed", "changed"); } });
+    await restoreOf(t);
+    const before = reads;
+    await t.click(/^Yes, restore$/);
+    expect(t.text()).toContain("It changed since you opened it.");
+    expect(reads).toBeGreaterThan(before);
+  });
+
+  it("a refusal by the checks shows the server's words, and it stays retired", async () => {
+    const refusal = Object.assign(new ClientError(400, "bad_request", "The note does not pass the checks: secret_shape."), { problems: [{ rule: "secret_shape", path: MINE, detail: "It holds something shaped like a key (sk-…)." }] });
+    const t = await open(agent(true), { learning: async () => retiredView(), restore: async () => { throw refusal; } });
+    await restoreOf(t);
+    await t.click(/^Yes, restore$/);
+    expect(t.text()).toContain("It holds something shaped like a key (sk-…).");
+    expect(t.host.querySelector('section[aria-label="Earlier notes"]')!.textContent).toContain("Keep it to three lines");
+  });
+
+  it("a token, not the owner's sign-in, is told restoring takes the password sign-in", async () => {
+    const t = await open(agent(true), { learning: async () => retiredView(), restore: async () => { throw new ClientError(403, "forbidden", "Restoring a retired note takes the owner's password sign-in in the console, never a token."); } });
+    await restoreOf(t);
+    await t.click(/^Yes, restore$/);
+    expect(t.text()).toContain("Restoring takes your password sign-in in the console.");
+  });
+
+  it("one no longer retired (restored elsewhere) reads the tab again", async () => {
+    let reads = 0;
+    const t = await open(agent(true), { learning: async () => { reads++; return retiredView(); }, restore: async () => { throw new ClientError(400, "bad_request", "The note is not retired: it is active."); } });
+    await restoreOf(t);
+    const before = reads;
+    await t.click(/^Yes, restore$/);
+    expect(reads).toBeGreaterThan(before);
+  });
+
+  it("a skill is restored by its SKILL.md and a draft by its README, on the listed versions", async () => {
+    const SKILL_FILE = "skills/find-policies/SKILL.md";
+    const README_FILE = "workflows/check-refunds/README.md";
+    const v = view({
+      skills: [{ name: "find-policies", file: SKILL_FILE, description: "Find a store's policies", status: "retired", run: "run-b", bytes: 92, etag: '"skill-v1"' }],
+      workflows: [{ name: "check-refunds", file: "workflows/check-refunds/workflow.json", readme: README_FILE, description: "Checks a store's refund window", status: "retired", run: "run-a", bytes: 640, etag: '"readme-v1"' }],
+    } as Partial<AgentLearning>);
+    const t = await open(agent(true), { learning: async () => v });
+    await t.click(/^Earlier skills/);
+    await t.click(/^Restore find-policies$/);
+    await t.click(/^Yes, restore$/);
+    expect(t.calls).toContain(`restore ${SKILL_FILE} "skill-v1"`);
+    await t.click(/^Earlier workflows/);
+    await t.click(/^Restore check-refunds$/);
+    await t.click(/^Yes, restore$/);
+    expect(t.calls).toContain(`restore ${README_FILE} "readme-v1"`);
+  });
+
+  it("an archived agent's retired notes have no Restore", async () => {
+    const t = await open({ ...agent(true), archived_at: "2026-11-05T00:00:00Z" }, { learning: async () => retiredView() });
+    await t.click(/^Earlier notes/);
+    expect(t.button(/^Restore Keep it to three lines$/)).toBeUndefined();
   });
 });
