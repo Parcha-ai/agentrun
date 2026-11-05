@@ -521,3 +521,19 @@ test("a person's message while an approval waits declines the call, with the mes
   await sleep(2_000);
   assert.deepEqual(await dialled(), [], "neither call ran");
 });
+
+test("a long message that declines a waiting call reaches the model whole: all 5000 of its characters, as its reason", { timeout: 120_000 }, async (t) => {
+  await network(t);
+  const server = await serve(t, GATE);
+  const { api } = server;
+  assert.equal((await api("PUT", "/settings/tools", { web_fetch: { permission: "ask" } })).status, 200);
+  const runId = await fetching(api, "declined-long", "pi");
+  await parked(api, runId);
+  const [head, tail] = ["start of the reason ", " end of the reason"];
+  const long = `${head}${"x".repeat(5000 - head.length - tail.length)}${tail}`;
+  assert.equal(long.length, 5000);
+  assert.equal((await api("POST", `/runs/${runId}/messages`, { content: long })).status, 202);
+  // pi's faux model answers with the whole of what it was told: the refusal, and the reason in it, all of it.
+  const { answer: final } = await resumed(api, runId);
+  assert.ok(final.endsWith(`Reason: ${long}`), `the model got ${final.length} characters, ending ${JSON.stringify(final.slice(-40))}`);
+});
