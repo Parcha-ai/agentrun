@@ -146,6 +146,8 @@ setInterval(() => {}, 1000);
   const { home, env: base } = bare(t);
   const child = spawn(process.execPath, [join(dir, "pkg", "bin", "agentrun.mjs"), ...args], { env: { ...base, ...env }, stdio: ["ignore", "pipe", "pipe"] });
   const exited = new Promise((resolve) => child.on("exit", resolve));
+  // Both pipes drained: stderr comes on a pipe of its own, so it is read only once the child has closed them.
+  const closed = new Promise((resolve) => child.on("close", resolve));
   t.after(() => stopChild(child, exited));
   let out = "";
   let err = "";
@@ -153,7 +155,9 @@ setInterval(() => {}, 1000);
   child.stderr.on("data", (chunk) => (err += chunk));
   for (let i = 0; !out.includes("\n") && child.exitCode === null && i < 300; i++) await new Promise((resolve) => setTimeout(resolve, 100));
   child.kill("SIGTERM");
-  return { home, out, err, code: await exited, ...(existsSync(served) ? JSON.parse(readFileSync(served, "utf8")) : {}) };
+  const code = await exited;
+  await closed;
+  return { home, out, err, code, ...(existsSync(served) ? JSON.parse(readFileSync(served, "utf8")) : {}) };
 }
 
 test("the command passes its arguments through to the server, with its store (~/.agentrun unless --data names one) and --open unless --no-open; it picks no port or model of its own", { timeout: 60_000 }, async (t) => {
@@ -165,6 +169,14 @@ test("the command passes its arguments through to the server, with its store (~/
   assert.equal(plain.code, 0, plain.err);
   const given = await throughStub(t, ["--no-open", "--port", "7400", "--data", "/srv/agents"]);
   assert.deepEqual(given.args, ["--data", "/srv/agents", "--port", "7400"], given.err);
+  // --data=<dir> is the same option, and the last --data wins, as the server reads them: the server gets one --data, and
+  // the hint names the directory it uses.
+  const equals = await throughStub(t, ["--no-open", "--data=/srv/agents"]);
+  assert.deepEqual(equals.args, ["--data", "/srv/agents"], equals.err);
+  assert.match(equals.err, /^Press Ctrl-C to stop it\. Its data is in \/srv\/agents\.$/m, equals.err);
+  const twice = await throughStub(t, ["--no-open", "--data", "/srv/first", "--data=/srv/second"]);
+  assert.deepEqual(twice.args, ["--data", "/srv/second"], twice.err);
+  assert.match(twice.err, /^Press Ctrl-C to stop it\. Its data is in \/srv\/second\.$/m, twice.err);
   const sub = await throughStub(t, ["--data", "/srv/agents", "import", "--dry-run"]);
   assert.deepEqual(sub.args, ["import", "--data", "/srv/agents", "--dry-run"], "a subcommand first, on the same data directory");
   const own = await throughStub(t, ["import", "--dry-run"]);

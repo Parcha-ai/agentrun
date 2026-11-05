@@ -108,9 +108,16 @@ export async function main(argv, env = process.env) {
   // The data directory is ~/.agentrun unless --data names one, handed to the server and its subcommands (import,
   // reset-password) as --data (the server's own default is another directory). The server's hints name it too, so each
   // opens this same store.
-  const at = argv.indexOf("--data");
-  const data = ["--data", at >= 0 ? argv[at + 1] : join(homedir(), ".agentrun")];
-  const rest = at >= 0 ? [...argv.slice(0, at), ...argv.slice(at + 2)] : argv;
+  // `--data <dir>` and `--data=<dir>` are the same option, and the last one wins, as the server reads them; the server is
+  // handed exactly one, so this command, its hint and the server agree on the directory.
+  let dir;
+  const rest = [];
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === "--data" && i + 1 < argv.length) dir = argv[++i];
+    else if (argv[i].startsWith("--data=")) dir = argv[i].slice("--data=".length);
+    else rest.push(argv[i]);
+  }
+  const data = ["--data", dir ?? join(homedir(), ".agentrun")];
   if (rest[0] && !rest[0].startsWith("-")) {
     return new Promise((resolve) => spawn(launcher, [rest[0], ...data, ...rest.slice(1)], { stdio: "inherit", env: childEnv }).on("exit", (code) => resolve(code ?? 1)));
   }
