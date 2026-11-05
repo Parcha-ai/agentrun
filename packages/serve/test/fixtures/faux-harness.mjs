@@ -21,6 +21,13 @@ const cutBookedSignalled = (signal, usd) => new Proxy({ cutBooked: true, usd }, 
  *  once the turn reaches it: the faux adapter asks whether an action is a hang first, after the request before it has
  *  been booked and has shown its text. */
 const hangSignalled = (signal) => new Proxy({ hang: true }, { has(target, key) { if (key === "hang") writeFileSync(signal, ""); return key in target; } });
+/** A hang the first time the faux adapter asks (writing `signal` then, as hangSignalled does), and `then` from the next:
+ *  the adapter reads the script once per open, and a hang keeps its place, so a turn stopped there and a next turn in the
+ *  same process come back to it. */
+const hangOnceSignalled = (signal, then) => {
+  let held = false;
+  return new Proxy(then, { has(target, key) { if (key !== "hang") return key in target; if (held) return false; held = true; writeFileSync(signal, ""); return true; } });
+};
 
 export function script(spec) {
   const text = spec.system.join("\n");
@@ -75,6 +82,10 @@ export function script(spec) {
   const boxed = /^Box calls: (\[.*\])$/m.exec(text)?.[1];
   const work = `${process.env.AGENTRUN_TEST_DATA}/runs/${spec.key.slice("run:".length)}/work`;
   if (boxed) return [...JSON.parse(boxed.replaceAll("{work}", work)).map((step) => ({ ...step, usd: 0.001 })), { say: "Done in the box.", usd: 0.001 }];
+  // monid's run called, then the turn holds with no request open (writing the signal) until it is stopped; the next
+  // turn's request answers. A hold keeps its place in the script, so it holds once, and that place is the answer after.
+  const holdSignal = /Run monid's \/person\/enrich, then hold the turn \(signal (\S+)\)\./.exec(text)?.[1];
+  if (holdSignal) return [{ call: "monid_run", args: { provider: "faux", endpoint: "/person/enrich", input: { name: "Ada" } }, usd: 0.001 }, hangOnceSignalled(holdSignal, { say: "Ran.", usd: 0.001 })];
   // monid's run called, then called again (once a raised cap's follow-up opens the next turn), then the answer.
   if (/Run monid's \/person\/enrich, called again after a raise\./.test(text)) {
     const call = { call: "monid_run", args: { provider: "faux", endpoint: "/person/enrich", input: { name: "Ada" } }, usd: 0.001 };
