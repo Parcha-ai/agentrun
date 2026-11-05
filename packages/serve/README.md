@@ -411,6 +411,11 @@ input as it goes. Each call is one short command in the run's box, on the same p
   exit code is the shell's.
 - At most 8 run at once in a run's box: a ninth start is refused, saying so, until one ends. Each log keeps the first
   16 MiB of the output; later output is dropped while the process runs on, and `bash_output` says so.
+- `bash_background {command, tty: true}` runs the command on a terminal instead: `script -qfec` (util-linux) in the box
+  gives it a pty, so a program that needs one works (a prompt, a REPL, a progress display). Paging, input and signals are
+  the same calls: the log holds what the terminal shows (input echoed, lines ending in `\r\n`), `bash_input` types into
+  the terminal, and `bash_signal` reaches the terminal's processes (`INT` is Ctrl-C). A box with no `script` refuses
+  `tty: true`, saying so, and starts nothing. `bash_list` marks such a process `(tty)`.
 - `bash_output {id, offset?, max_bytes?}` reads the log from a byte offset (0 when absent), at most 48 KiB a call (the
   default), never splitting a character (a page too small for the character it starts at is refused, saying so): whether the process still runs, its exit code once it ended, the log's size,
   and the offset to read from next. Once it says the process ended, the log is whole.
@@ -646,7 +651,7 @@ agent_not_runnable`, with `details.unbound` and `details.missing`).
 | `write` | Write a file in the run's `work/` | nothing | yes, no |
 | `edit` | Edit a file in the run's `work/` | nothing | yes, no |
 | `bash` | Run a shell command in the run's box, from its `work/`: pi's `{command, timeout?}`, 300 s when the call names no timeout | an agentic definition whose place is a sandbox ([Sandbox](#sandbox)) | no, no |
-| `bash_background` | Start a shell command in the background in the run's box, from its `work/`, and answer its id at once: `{command}` in. Its stdout and stderr go to `work/background/<id>/output.log`, the first 16 MiB; at most 8 run at once ([background processes](#background-processes)) | an agentic definition whose place is a sandbox | no, no |
+| `bash_background` | Start a shell command in the background in the run's box, from its `work/`, and answer its id at once: `{command, tty?}` in, `tty: true` for a terminal. Its stdout and stderr go to `work/background/<id>/output.log`, the first 16 MiB; at most 8 run at once ([background processes](#background-processes)) | an agentic definition whose place is a sandbox | no, no |
 | `bash_output` | Read a background process's output from a byte offset: `{id, offset?, max_bytes?}` in (at most 48 KiB a call), its state, exit code, the log's size and the next offset out | an agentic definition whose place is a sandbox | no, no |
 | `bash_input` | Write to a running background process's stdin: `{id, text, close?}` (at most 64 KiB a call) | an agentic definition whose place is a sandbox | no, no |
 | `bash_signal` | Send a background process's group `TERM`, `INT` or `KILL`: `{id, signal}` | an agentic definition whose place is a sandbox | no, no |

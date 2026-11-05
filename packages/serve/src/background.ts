@@ -49,7 +49,8 @@ const SIGNAL_NAMES: Readonly<Record<number, string>> = { 1: "HUP", 2: "INT", 3: 
 
 /**
  * The runner, started under its own session by a start: `$1` the log's directory, `$2` the box-only directory, `$3` the
- * log's cap, `$4` work/, `$5` the command. It holds the fifo's write end open (a `sleep`), runs the command under a
+ * log's cap, `$4` work/, `$5` the command, `$6` 1 to run it on a terminal: `script -qfec`, which gives it a pty, copies
+ * what the fifo brings to the pty and what the pty shows to the log, and exits with the command's code. It holds the fifo's write end open (a `sleep`), runs the command under a
  * session of its own (so a signal to the command's group never reaches the runner) with the fifo as stdin, and keeps
  * the first `$3` bytes of its output, written to the log as they come (head, unbuffered by stdbuf where the box has it;
  * else the last few KiB may wait in head's buffer until the process ends). Once the output's last writer is gone, it
@@ -60,7 +61,7 @@ const RUNNER = [
   // The first $cap bytes, written as they come: head holds its output in a buffer unless stdbuf unbuffers it.
   'if stdbuf -o0 true 2>/dev/null; then keep() { stdbuf -o0 head -c "$cap" >> "$L/output.log"; }; else keep() { head -c "$cap" >> "$L/output.log"; }; fi',
   'sleep 2147483647 > "$C/in" & h=$!; echo "$h" > "$C/hold"',
-  `{ setsid -w sh -c 'echo $$ > "$1/.pid" && mv -f "$1/.pid" "$1/pid"; cd "$2" || exit 126; if command -v bash >/dev/null 2>&1; then exec bash -c "$3"; fi; exec sh -c "$3"' agentrun-background "$L" "$4" "$5" < "$C/in" 2>&1; echo $? > "$C/code"; } | { keep; [ "$(($(wc -c < "$L/output.log")))" -ge "$cap" ] && : > "$L/capped"; cat > /dev/null; }`,
+  `{ setsid -w sh -c 'echo $$ > "$1/.pid" && mv -f "$1/.pid" "$1/pid"; cd "$2" || exit 126; b=$(command -v bash 2>/dev/null) || b=; if [ "$4" = 1 ]; then SHELL=\${b:-/bin/sh}; export SHELL; exec script -qfec "$3" /dev/null; fi; [ -n "$b" ] && exec bash -c "$3"; exec sh -c "$3"' agentrun-background "$L" "$4" "$5" "$6" < "$C/in" 2>&1; echo $? > "$C/code"; } | { keep; [ "$(($(wc -c < "$L/output.log")))" -ge "$cap" ] && : > "$L/capped"; cat > /dev/null; }`,
   // A child the command left running (a server started with &, its output sent elsewhere) keeps the process going: the
   // group is waited for, so it stays running, signalled, counted and ended at the run's end until no live process of
   // the group is left.
@@ -80,8 +81,15 @@ const SCRIPT = [
   'ids() { for p in "$d"/*; do i=${p##*/}; case $i in ""|*[!0-9]*) continue;; esac; [ -d "$p" ] && echo "$i"; done; }',
   'running() { for i in $(ids); do [ -f "$d/$i/exit" ] && continue; [ "$(state "$i")" = running ] && echo "$i"; done; }',
   'size() { echo $(($(wc -c < "$d/$1/output.log" 2>/dev/null || echo 0))); }',
+  // A tty process's command runs in the pty's own session, below script: its group is its own pid, script's child.
+  `kids() { cat /proc/[0-9]*/stat 2>/dev/null | awk -v g="$1" '{ p = $1; sub(/^[0-9]+ \\(.*\\) /, ""); if ($2 == g) print p }'; }`,
+  // Signal $2 to process $1's group; on a tty process, to its terminal's processes instead, as Ctrl-C reaches a
+  // terminal's program (script would turn INT into TERM, and a script signalled itself exits 0): script then exits with
+  // the code its command ended with. Before script has its command, script itself.
+  'hit() { g=$(cat "$d/$1/pid" 2>/dev/null); [ -n "$g" ] || return 1; k=; [ -f "$d/$1/tty" ] && k=$(kids "$g"); if [ -n "$k" ]; then for p in $k; do kill -"$2" -"$p" 2>/dev/null; done; else kill -"$2" -"$g" 2>/dev/null; fi; }',
   'case $op in',
   'start)',
+  '  if [ "$5" = 1 ] && ! command -v script >/dev/null 2>&1; then echo noscript; exit 0; fi',
   '  mkdir -p "$d" "$c" || exit 1',
   '  k=0; until mkdir "$c/.lock" 2>/dev/null; do k=$((k+1)); if [ $k -ge 100 ]; then rmdir "$c/.lock" 2>/dev/null; k=0; fi; sleep 0.05; done',
   '  trap \'rmdir "$c/.lock" 2>/dev/null\' EXIT',
@@ -89,8 +97,8 @@ const SCRIPT = [
   '  i=1; while [ -e "$d/$i" ]; do i=$((i+1)); done',
   '  mkdir "$d/$i" && rm -rf "$c/$i" && mkdir "$c/$i" || exit 1',
   '  printf \'%s\' "$1" > "$d/$i/command"; date -u +%Y-%m-%dT%H:%M:%SZ > "$d/$i/started"; : > "$d/$i/output.log"',
-  '  mkfifo "$c/$i/in" || exit 1',
-  '  setsid -f nohup sh -c "$4" agentrun-background "$d/$i" "$c/$i" "$3" "$w" "$1" </dev/null >/dev/null 2>"$c/$i/err" || exit 1',
+  '  mkfifo "$c/$i/in" || exit 1; [ "$5" = 1 ] && : > "$d/$i/tty"',
+  '  setsid -f nohup sh -c "$4" agentrun-background "$d/$i" "$c/$i" "$3" "$w" "$1" "$5" </dev/null >/dev/null 2>"$c/$i/err" || exit 1',
   '  k=0; while [ ! -s "$d/$i/pid" ] && [ ! -f "$d/$i/exit" ] && [ $k -lt 200 ]; do sleep 0.05; k=$((k+1)); done',
   '  [ -s "$d/$i/pid" ] || [ -f "$d/$i/exit" ] || { cat "$c/$i/err" >&2; echo "process $i did not start" >&2; exit 1; }',
   '  echo "started $i $(cat "$d/$i/pid" 2>/dev/null)";;',
@@ -110,8 +118,7 @@ const SCRIPT = [
   'signal)',
   '  [ -d "$d/$1" ] || { echo none; exit 0; }',
   '  st=$(state "$1"); [ "$st" = running ] || { echo "was $st"; exit 0; }',
-  '  g=$(cat "$d/$1/pid" 2>/dev/null); [ -n "$g" ] || { echo "was $st"; exit 0; }',
-  '  kill -"$2" -"$g" 2>/dev/null',
+  '  hit "$1" "$2" || { echo "was $st"; exit 0; }',
   '  k=0; while [ ! -f "$d/$1/exit" ] && [ $k -lt 40 ]; do sleep 0.05; k=$((k+1)); done',
   '  echo "state $(state "$1")";;',
   'list)',
@@ -119,11 +126,11 @@ const SCRIPT = [
   // however many ended before.
   '  t=0; o=0; picked=""; for i in $(ids | sort -rn); do t=$((t+1)); if [ -f "$d/$i/exit" ] || [ "$(state "$i")" != running ]; then [ $o -lt "$1" ] || continue; o=$((o+1)); fi; picked="$picked $i"; done',
   '  echo "total $t"',
-  `  for i in $picked; do printf '%s\\t%s\\t%s\\t%s\\t%s\\t' "$i" "$(state "$i")" "$(size "$i")" "$(cat "$d/$i/started" 2>/dev/null)" "$([ -f "$d/$i/ended" ] && echo ended)"; head -c 200 "$d/$i/command" 2>/dev/null | base64 | tr -d '\\n'; echo; done;;`,
+  `  for i in $picked; do printf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t' "$i" "$(state "$i")" "$(size "$i")" "$(cat "$d/$i/started" 2>/dev/null)" "$([ -f "$d/$i/ended" ] && echo ended)" "$([ -f "$d/$i/tty" ] && echo tty)"; head -c 200 "$d/$i/command" 2>/dev/null | base64 | tr -d '\\n'; echo; done;;`,
   'end)',
-  '  n=0; for i in $(running); do : > "$d/$i/ended"; g=$(cat "$d/$i/pid" 2>/dev/null); [ -n "$g" ] && kill -TERM -"$g" 2>/dev/null; n=$((n+1)); done',
+  '  n=0; for i in $(running); do : > "$d/$i/ended"; hit "$i" TERM; n=$((n+1)); done',
   '  k=0; while [ $k -lt 60 ] && [ -n "$(running)" ]; do sleep 0.05; k=$((k+1)); done',
-  '  for i in $(running); do g=$(cat "$d/$i/pid" 2>/dev/null); [ -n "$g" ] && kill -KILL -"$g" 2>/dev/null; done',
+  '  for i in $(running); do hit "$i" KILL; done',
   '  k=0; while [ $k -lt 40 ] && [ -n "$(running)" ]; do sleep 0.05; k=$((k+1)); done',
   '  for i in $(running); do r=$(cat "$c/$i/runner" 2>/dev/null); [ -n "$r" ] && kill -KILL -"$r" 2>/dev/null; done',
   '  echo "ended $n";;',
@@ -202,19 +209,24 @@ const schema = (properties: Record<string, unknown>, required: string[]) => ({ t
 
 const bashBackground = defineTool({
   name: "bash_background",
-  description: `Start a shell command in the background in the run's box, from its work/, and answer at once with its id. Each call is a fresh shell (bash, else sh). The command runs until it and every child it left in its process group (a server started with &) have exited, bash_signal ends it, or the run ends, which ends it. Its stdout and stderr go together to work/background/<id>/output.log, which the run's files keep: the first ${MIB} MiB of them, later output dropped while it runs on. Its stdin is a pipe that bash_input writes. At most ${BACKGROUND_MAX} run at once in a run's box. Read its output with bash_output, list them with bash_list.`,
-  parameters: schema({ command: { type: "string", minLength: 1, description: "The command, as you would give bash." } }, ["command"]),
+  description: `Start a shell command in the background in the run's box, from its work/, and answer at once with its id. Each call is a fresh shell (bash, else sh). The command runs until it and every child it left in its process group (a server started with &) have exited, bash_signal ends it, or the run ends, which ends it. Its stdout and stderr go together to work/background/<id>/output.log, which the run's files keep: the first ${MIB} MiB of them, later output dropped while it runs on. Its stdin is a pipe that bash_input writes; tty: true gives it a terminal instead. At most ${BACKGROUND_MAX} run at once in a run's box. Read its output with bash_output, list them with bash_list.`,
+  parameters: schema({
+    command: { type: "string", minLength: 1, description: "The command, as you would give bash." },
+    tty: { type: "boolean", description: "Run it on a terminal (a pty, through script in the box), for a program that needs one: a prompt, a REPL, a progress display. Its log then holds what the terminal shows (your input echoed, lines ending in \\r\\n); bash_input types into the terminal, and bash_signal INT is Ctrl-C." },
+  }, ["command"]),
   execute: async (args, api, context) => {
     const command = String((args as { command?: unknown }).command ?? "");
+    const tty = (args as { tty?: unknown }).tty === true;
     if (!command.trim()) throw new Error("command is the shell command to start");
-    const said = (await inBox(api.env, "start", [command, String(BACKGROUND_MAX), String(BACKGROUND_LOG_BYTES), RUNNER], context)).trim();
+    const said = (await inBox(api.env, "start", [command, String(BACKGROUND_MAX), String(BACKGROUND_LOG_BYTES), RUNNER, tty ? "1" : "0"], context)).trim();
+    if (said === "noscript") throw new Error("this box has no `script` program (util-linux), so tty: true cannot run here: start the command without tty");
     const full = /^full (\d+)/.exec(said);
     if (full) throw new Error(`${full[1]} background processes already run in this run's box, the most at once (${BACKGROUND_MAX}): end one with bash_signal (bash_list shows them), or wait for one to exit, then start this again.`);
     const started = /^started (\d+) ?(\d*)/.exec(said);
     if (!started) throw new Error(`the run's box did not start the process: ${said.slice(0, 300) || "it said nothing"}`);
     const [, id, group] = started;
     const log = `${BACKGROUND_DIR}/${id}/output.log`;
-    return forModel(`Started background process ${id}${group ? ` (process group ${group})` : ""}. Its output goes to ${log} in work/: read it with bash_output {"id": "${id}"}, write its stdin with bash_input, end it with bash_signal.`, { details: { id, log, ...(group ? { pid: Number(group) } : {}) } });
+    return forModel(`Started background process ${id}${group ? ` (process group ${group})` : ""}${tty ? " on a terminal" : ""}. Its output goes to ${log} in work/: read it with bash_output {"id": "${id}"}, write its stdin with bash_input, end it with bash_signal.`, { details: { id, log, ...(group ? { pid: Number(group) } : {}), ...(tty ? { tty } : {}) } });
   },
 });
 
@@ -312,13 +324,13 @@ const bashList = defineTool({
     const [first = "", ...rows] = said.split("\n");
     const total = Number(/^total (\d+)$/.exec(first)?.[1] ?? 0);
     const all = rows.filter(Boolean).map((line) => {
-      const [id = "", state = "", size = "0", started = "", ended = "", command = ""] = line.split("\t");
-      return { id, ...stateOf(state), size: Number(size) || 0, ...(started ? { started } : {}), ...(ended ? { ended_at_run_end: true } : {}), command: new TextDecoder().decode(decode(command)) };
+      const [id = "", state = "", size = "0", started = "", ended = "", tty = "", command = ""] = line.split("\t");
+      return { id, ...stateOf(state), size: Number(size) || 0, ...(started ? { started } : {}), ...(ended ? { ended_at_run_end: true } : {}), ...(tty ? { tty: true } : {}), command: new TextDecoder().decode(decode(command)) };
     }).sort((a, b) => Number(b.id) - Number(a.id));
     const shown = [...all.filter((p) => p.state === "running"), ...all.filter((p) => p.state !== "running")].slice(0, BACKGROUND_LIST_MAX);
     if (!shown.length) return forModel("No background processes in this run's box: bash_background starts one.", { details: { processes: [] } });
     const running = all.filter((p) => p.state === "running").length;
-    const lines = shown.map((p) => `${p.id}: ${stateWords(p, p.ended_at_run_end === true)}; ${p.size.toLocaleString("en-US")} bytes of output; started ${p.started ?? "at an unknown time"}; ${JSON.stringify(p.command.replace(/\s+/g, " ").slice(0, 120))}`);
+    const lines = shown.map((p) => `${p.id}: ${stateWords(p, p.ended_at_run_end === true)}; ${p.size.toLocaleString("en-US")} bytes of output; started ${p.started ?? "at an unknown time"}; ${JSON.stringify(p.command.replace(/\s+/g, " ").slice(0, 120))}${p.tty ? " (tty)" : ""}`);
     const left = total - shown.length;
     return forModel(`${running} of at most ${BACKGROUND_MAX} running.\n${lines.join("\n")}${left > 0 ? `\n(and ${left} older ones that ended)` : ""}`, { details: { running, processes: shown } });
   },
