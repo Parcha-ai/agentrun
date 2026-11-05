@@ -26,10 +26,15 @@ const json = (status: number, body: unknown) => new Response(JSON.stringify(body
 const refuse = (fields: { field: string; reason: string; message: string }[]) => json(422, { error: { code: "input_invalid", message: fields[0].message, retryable: false, fields } });
 
 /** A server with `triggers` and their `firings`: a create or an edit answers `write` when given, else takes it; a run
- *  now answers once `release` is called (so a second click lands while the first is out). */
+ *  now answers once `release` is called (so a second click lands while the first is out). While `hold.on`, a read of a
+ *  schedule or its firings answers as things stood when it was asked, but only once `releaseHeld` is called: a late,
+ *  stale background read. */
 function server({ triggers = [NIGHTLY], firings = {} as Record<string, Firing[]>, write }: { triggers?: Trigger[]; firings?: Record<string, Firing[]>; write?: (call: Call) => Response | undefined } = {}) {
   const calls: Call[] = [];
   let release: () => void = () => {};
+  const hold = { on: false };
+  const held: (() => void)[] = [];
+  const later = async (answer: Response) => { await new Promise<void>((r) => held.push(r)); return answer; };
   const fetch = (async (url: string, init?: RequestInit) => {
     const call = { method: init?.method ?? "GET", path: new URL(String(url), "http://serve.test").pathname, body: init?.body ? JSON.parse(String(init.body)) : undefined, key: new Headers(init?.headers).get("idempotency-key") };
     calls.push(call);
@@ -53,9 +58,9 @@ function server({ triggers = [NIGHTLY], firings = {} as Record<string, Firing[]>
         return json(200, t);
       }
       if (call.method === "DELETE") { triggers.splice(triggers.indexOf(t), 1); return new Response(null, { status: 204 }); }
-      return json(200, t);
+      return hold.on ? later(json(200, t)) : json(200, t);
     }
-    if (m?.[2] === "/firings") return json(200, { firings: firings[decodeURIComponent(m[1])] ?? [] });
+    if (m?.[2] === "/firings") { const answer = json(200, { firings: firings[decodeURIComponent(m[1])] ?? [] }); return hold.on ? later(answer) : answer; }
     if (m?.[2] === "/fire") {
       await new Promise<void>((r) => { release = r; });
       const made = firing({ key: `fir_${call.key}`, by: "manual", run_id: "01a1a88f-5f5c-7ce4-a912-fb765b62e88b" });
@@ -64,7 +69,7 @@ function server({ triggers = [NIGHTLY], firings = {} as Record<string, Firing[]>
     }
     return json(404, { error: { code: "not_found", message: call.path, retryable: false } });
   }) as typeof globalThis.fetch;
-  return { v2: createClient({ fetch }), calls, release: () => release() };
+  return { v2: createClient({ fetch }), calls, release: () => release(), hold, releaseHeld: () => held.splice(0).forEach((r) => r()) };
 }
 
 let root: ReturnType<typeof createRoot> | undefined;
@@ -296,6 +301,42 @@ describe("one schedule", () => {
     await t.click(/^Resume$/);
     expect(calls.filter((c) => c.method === "PATCH").map((c) => c.body)).toEqual([{ enabled: false }, { enabled: true }]);
   });
+  // A background read asked before an action, answered after it, says how things stood before: it is dropped.
+  it("keeps a Pause when a read asked before it answers after it", async () => {
+    const s = server();
+    const t = await open(s.v2, { schedule: "trg_1" }, undefined, 30);
+    const reads = () => s.calls.filter((c) => c.method === "GET" && c.path === "/v2/triggers/trg_1").length;
+    const before = reads();
+    s.hold.on = true;
+    for (let i = 0; i < 20 && reads() === before; i++) await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    expect(reads()).toBe(before + 1);
+    s.hold.on = false;
+    await t.click(/^Pause$/);
+    expect(t.button(/^Resume$/)).toBeTruthy();
+    // The stale read answers; reads after it are held, so no later read can put the page right by itself.
+    await act(async () => { s.releaseHeld(); s.hold.on = true; });
+    await t.settle();
+    expect(t.button(/^Resume$/)).toBeTruthy();
+    expect(t.host.querySelector("h1")?.textContent).toContain("Paused");
+  });
+  it("keeps Run now's firing when a read asked before it answers after it", async () => {
+    const s = server();
+    const t = await open(s.v2, { schedule: "trg_1" }, undefined, 30);
+    const reads = () => s.calls.filter((c) => c.method === "GET" && c.path === "/v2/triggers/trg_1/firings").length;
+    const before = reads();
+    s.hold.on = true;
+    for (let i = 0; i < 20 && reads() === before; i++) await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    s.hold.on = false;
+    await act(async () => { t.button(/^Run now$/)!.click(); });
+    await act(async () => s.release());
+    await t.settle();
+    expect(t.host.querySelector("[data-firing]")?.textContent).toContain("Run now");
+    // The stale read answers; reads after it are held, so no later read can put the page right by itself.
+    await act(async () => { s.releaseHeld(); s.hold.on = true; });
+    await t.settle();
+    expect(t.host.querySelector("[data-firing]")?.textContent).toContain("Run now");
+    expect(t.host.querySelector('[data-firing] a[href^="#/runs/"]')).not.toBeNull();
+  });
   it("runs now once per click: a second click while the first is out sends nothing, the next click a new key", async () => {
     const s = server();
     const t = await open(s.v2, { schedule: "trg_1" });
@@ -335,6 +376,18 @@ describe("editing a schedule", () => {
     expect(t.text()).not.toContain("Changing when restarts the schedule from now.");
     await t.click(/^Save changes$/);
     expect(calls.filter((c) => c.method === "PATCH").map((c) => c.body)).toEqual([{ name: "nightly" }]);
+  });
+  // The hint under a time says the instant the save sends: for a time left alone in a clock change's repeated hour, the
+  // instant it was read with, not the first pass its wall time reads as.
+  it("says under a time left alone the instant the save keeps", async () => {
+    vi.stubEnv("TZ", "America/Los_Angeles");
+    const once: Trigger = { ...NIGHTLY, source: { kind: "schedule", at: "2027-11-07T09:30:00Z" } };
+    const t = await open(server({ triggers: [once] }).v2, { schedule: "trg_1", edit: true });
+    expect(t.text()).toContain("= Nov 7, 9:30 AM UTC");
+    act(() => root?.unmount());
+    const every: Trigger = { ...NIGHTLY, source: { kind: "schedule", every_s: 300, start_at: "2027-11-07T09:30:00Z" } };
+    const u = await open(server({ triggers: [every] }).v2, { schedule: "trg_1", edit: true });
+    expect(u.text()).toContain("= Nov 7, 9:30 AM UTC");
   });
   it("says a changed when restarts the schedule from now", async () => {
     const t = await open(server().v2, { schedule: "trg_1", edit: true });
