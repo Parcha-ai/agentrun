@@ -134,7 +134,7 @@ same ground with no key.
 | | Names on main |
 | --- | --- |
 | Serves | `POST /v2/agents/{id}/runs` (`input`, `revision`, `effort`, `max_cost_usd`), `GET /v2/runs`, `GET /v2/runs/{id}`, `GET /v2/runs/{id}/timeline` (pages or SSE), `POST /v2/runs/{id}/{messages,stop,cancel,pause,resume}`, `GET /v2/runs/{id}/graph`, `GET /v2/usage`, and `harnesses[]` in `GET /v2/capabilities` |
-| Run fields others read | `status`, `state`, `result.final_answer`, `error.code` (`spend_cap_reached`, `run_failed`, `escalated`), `cost.usd` (`null` when unknown) |
+| Run fields others read | `status`, `state`, `result.final_answer`, `error.code` (`spend_cap_reached`, `moderated`, `run_failed`, `escalated`), `cost.usd` (`null` when unknown) |
 | Journal | In the run's store, from `@parcha/pi-durable-agent/timeline`: `REQUEST_STARTED` (`heldUsd`, `capRefused`), `REQUEST_ENDED` (`heldUsd`, `unsent`), `REQUEST_COST`, `REQUEST_REFUSED`, `REQUEST_COST_PENDING`, `REQUEST_COST_LATE`, `REQUEST_CONTINUED`. Read through `timelineOf` and `runMetricsOf` |
 | Run directory | `DIR/runs/<id>/`: `run.json` (`status`, `holder.pid`, `generation`), `serve.json`, `store/run.sqlite`, `work/`, `process.log` |
 | Adapters it calls | `adapterFor(harness, env, needs: AdapterNeeds)` gives an `AgentAdapter` (`check`, `open`) for a `SessionSpec`, driven by `createHarnessRunner`. There the cap is the runner's `beforeRequest`, asked by `startModelProxy` under a `ProviderPolicy`; on pi it wraps the models (`capModels`) |
@@ -260,9 +260,8 @@ the run's files go to. It gives back:
   `mounts` (Docker, as bind mounts); every other provider refuses a spec with any as `unsupported`.
 - `@parcha/pi-transport/sync`: the safe extractor (`extractTar`, `openExtractor`, `removeEntries`) and the sync layer
   (`seedDir`/`pullDir`, `seedAgentHome`/`pullAgentHome`, `HOST_OWNED_HOME`), each answering with a receipt.
-- `@parcha/pi-transport/home`: the checkpoint vault (`CheckpointVault`, `localVault`, `pullCheckpoint`), which keeps a
-  box's tree as data and never unpacks it on the host; and `checkpointStore`/`verifyStore` with `UntrustedStoreOptions`,
-  which read a box-made SQLite store through `withUntrustedStore` (internal to the package).
+- Not in the seam: `@parcha/pi-transport/home` (its checkpoint vault and store checks included), `./launch` and
+  `./place`. Serve imports none of them; they are deprecated and removed in 0.1.0-beta.31.
 - Internal to pi-transport: `bwrapArgs`, `bwrapFiles` and `probeBwrap` (`src/box/bwrap-args.ts`).
 - `@parcha/pi-transport/testing`: `registerBoxConformance`, and fake providers for each box (`fakeBoxes` and the
   provider-shaped fakes).
@@ -309,8 +308,7 @@ npm ci --ignore-scripts
 
 # pi-transport: vitest on source, no build
 npm test -w @parcha/pi-transport -- box- fake-boxes   # every box on fakes, Docker's argv without a daemon, bwrap
-npm test -w @parcha/pi-transport -- sync-extract sync-run-files home-vault     # hostile archives and boxes
-npm test -w @parcha/pi-transport -- home-untrusted-store                       # once on Node 22, once on Node 24
+npm test -w @parcha/pi-transport -- sync-extract sync-run-files               # hostile archives and boxes
 
 # serve: node:test over dist, on the faux model
 npm run build

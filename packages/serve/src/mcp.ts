@@ -69,7 +69,7 @@ const AGENT_ID = { type: "string", description: "The agent's id." };
 const RUN_ID = { type: "string", description: "The run's id." };
 const DEFINITION = {
   instructions: { type: "string", description: "What the agent does and how: its system prompt." },
-  harness: { type: "string", enum: ["pi", "claude-agent", "codex"], description: "What runs it (default pi). whoami says which this server runs." },
+  harness: { type: "string", enum: ["pi", "claude-agent", "codex", "opencode"], description: "What runs it (default pi). whoami says which this server runs." },
   model: { type: ["string", "null"], description: "provider/model-id. Absent, this server's default (whoami names it)." },
   thinking: { type: ["string", "null"], description: "How hard the model thinks: one of whoami's thinking levels. Absent, the model's own." },
   tools: { type: "array", items: { type: "string" }, description: "The tools it may use, by name (whoami lists them); [] for none. It writes files only with a tool like write." },
@@ -160,7 +160,7 @@ export const TOOLS: Tool[] = [
   },
   {
     name: "runs_get", title: "Get a run", annotations: READ,
-    description: "A run's status and outcome (GET /v2/runs/{run_id}), and console_url (added here), the run's page. pending is what it waits on, by kind: {kind: \"question\", question} while its status is input_required, else null. status is queued, working, input_required, completed, failed, cancelled or paused. A completed run's answer is result.final_answer (agentic) or result.output (workflow); a failed run's reason is error; cost.usd is null while unknown, never $0.",
+    description: "A run's status and outcome (GET /v2/runs/{run_id}), and console_url (added here), the run's page. pending is what it waits on while its status is input_required, by kind: {kind: \"question\", question} for a question it asked, {kind: \"budget\", cap_usd, spent_usd, needs_usd, said, at} for a run paused at its spend cap (it waits for its cap to be raised; said is why), else null. status is queued, working, input_required, completed, failed, cancelled or paused. A completed run's answer is result.final_answer (agentic) or result.output (workflow); a failed run's reason is error; cost.usd is null while unknown, never $0.",
     inputSchema: { type: "object", required: ["run_id"], properties: { run_id: RUN_ID } },
     run: async (args, context) => {
       const run = text(args, "run_id");
@@ -204,7 +204,7 @@ export const TOOLS: Tool[] = [
   },
   {
     name: "runs_respond", title: "Answer a run", annotations: { ...WRITE, openWorldHint: true },
-    description: "Sends an agentic run a message (POST /v2/runs/{run_id}/messages): the answer to the question it asked (its status is input_required; runs_get's pending holds the question), or a follow-up once it completed or was stopped: a fresh turn with its history (a stopped turn is not replayed). mode in the answer says which. A cancelled run takes none: 409 not_continuable, start a new run. Then poll runs_get again.",
+    description: "Sends an agentic run a message (POST /v2/runs/{run_id}/messages): the answer to the question it asked (its status is input_required; runs_get's pending holds the question), or a follow-up once it completed or was stopped: a fresh turn with its history (a stopped turn is not replayed). mode in the answer says which. A cancelled run takes none: 409 not_continuable, start a new run. A run paused at its spend cap (pending kind budget) takes no message: 409 budget_reached; it waits for its cap to be raised, so tell the person (console_url), never answer it. Then poll runs_get again.",
     inputSchema: { type: "object", required: ["run_id", "content"], properties: { run_id: RUN_ID, content: { type: "string", description: "The answer, or the message." } } },
     run: routed((args) => ({ method: "POST", path: `/runs/${id(text(args, "run_id"))}/messages`, body: without(args, ["run_id"]) })),
   },
@@ -217,7 +217,7 @@ export const TOOLS: Tool[] = [
 ];
 
 const INSTRUCTIONS =
-  "Tools over this AgentRun server's agents and runs. Call whoami first. To run an agent: agents_list (or agents_create, after asking the person), then runs_start, then runs_get every few seconds until its status is completed, failed or cancelled. input_required means it asked a question (runs_get's pending, kind question): answer it with runs_respond, or leave it for the person in the console (console_url). Read its steps with runs_events and what it wrote with runs_files.";
+  "Tools over this AgentRun server's agents and runs. Call whoami first. To run an agent: agents_list (or agents_create, after asking the person), then runs_start, then runs_get every few seconds until its status is completed, failed or cancelled. input_required means it asked a question (runs_get's pending, kind question): answer it with runs_respond, or leave it for the person in the console (console_url). With pending kind budget the run is paused at its spend cap and waits for its cap to be raised: do not answer it (runs_respond is refused 409 budget_reached); tell the person, with its console_url. Read its steps with runs_events and what it wrote with runs_files.";
 
 /** A route's answer, captured: its status, headers and bytes up to `limit`. A route that writes past it is cut off
  *  there (`tooBig`): a file stream stops. */

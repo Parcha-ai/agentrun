@@ -16,8 +16,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
-import { excluder } from "../src/home/workspace.ts";
 import { type ExtractOptions, extractTar, openExtractor, removeEntries, type Skip } from "../src/sync/index.ts";
+import { excluder } from "../src/sync/transfer.ts";
 import { archive, chunked, END, longName, member, pax, tree } from "./sync-support.ts";
 
 process.umask(0o022);

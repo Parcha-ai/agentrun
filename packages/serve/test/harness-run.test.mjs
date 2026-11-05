@@ -33,7 +33,7 @@ async function started(api, id, instructions, harness = "claude-agent", tools = 
 
 test("with a faux harness every harness runs; a claude-agent run answers, takes follow-ups after its end and completes again, each request counted once", { timeout: 120_000 }, async (t) => {
   const { api } = await serve(t, { fauxHarness: FAUX_HARNESS });
-  assert.deepEqual((await api("GET", "/capabilities")).body.harnesses.map((h) => [h.id, h.available]), [["pi", true], ["claude-agent", true], ["codex", true]]);
+  assert.deepEqual((await api("GET", "/capabilities")).body.harnesses.map((h) => [h.id, h.available]), [["pi", true], ["claude-agent", true], ["codex", true], ["opencode", true]]);
   const runId = await started(api, "chat", "Answer the question.");
   const first = await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
   assert.equal(await answer(api, runId), "Answer 1.");
@@ -347,7 +347,7 @@ for (const harness of ["claude-agent", "codex"]) {
 test("capabilities say which harnesses run each tool: the file tools, bash (in a box), the web tools and monid's three on every harness, the rest on pi", async (t) => {
   const { api } = await serve(t, { fauxHarness: FAUX_HARNESS });
   const tools = Object.fromEntries((await api("GET", "/capabilities")).body.tools.map((tool) => [tool.name, tool.harnesses]));
-  const every = ["pi", "claude-agent", "codex"];
+  const every = ["pi", "claude-agent", "codex", "opencode"];
   const hosted = ["read", "write", "edit", "bash", "web_fetch", "web_search", "monid.discover", "monid.inspect", "monid.run"];
   for (const name of hosted) assert.deepEqual(tools[name], every, name);
   for (const [name, harnesses] of Object.entries(tools)) if (!hosted.includes(name)) assert.deepEqual(harnesses, ["pi"], name);

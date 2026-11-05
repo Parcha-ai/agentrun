@@ -149,7 +149,8 @@ test("capabilities and an agent's tools show each tool's permission, its default
   assert.deepEqual([put.body["monid.run"], put.body.web_fetch.permission, put.body.read, put.body["mcp:srv/*"], put.body["mcp:srv/echo"]], [{ permission: "allow" }, "ask", { permission: "deny" }, { permission: "deny" }, { permission: "allow" }]);
   const after = byName((await api("GET", "/capabilities")).body.tools);
   assert.deepEqual([after["monid.run"].permission, after["monid.run"].default_permission, after.web_fetch.permission, after.web_fetch.default_permission, after.read.permission], ["allow", "ask", "ask", "allow", "deny"]);
-  assert.deepEqual(after.web_search.resolves, { pi: "native", "claude-agent": "exa-keyless", codex: after.web_search.resolves.codex }, "web_search allowed: as before");
+  // Every harness the server has (main's opencode among them), each as before: pi's native, claude-agent's keyless Exa.
+  assert.deepEqual(after.web_search.resolves, { ...after.web_search.resolves, pi: "native", "claude-agent": "exa-keyless" }, "web_search allowed: as before");
 
   const made = await api("POST", "/agents", agent("set", { tools: ["read", "web_fetch"], tool_settings: { read: { permission: "allow" }, web_fetch: { permission: "deny" }, "mcp:srv/*": { permission: "ask" } } }));
   assert.equal(made.status, 201, JSON.stringify(made.body));
@@ -167,7 +168,9 @@ test("capabilities and an agent's tools show each tool's permission, its default
     assert.deepEqual([refused.status, refused.body.error.fields.map((f) => [f.field, f.reason])], [422, fields], JSON.stringify(body));
   }
   assert.equal((await api("PUT", "/settings/tools", { web_search: { permission: "deny" } })).status, 200);
-  assert.deepEqual(byName((await api("GET", "/capabilities")).body.tools).web_search.resolves, { pi: "unavailable: denied", "claude-agent": "unavailable: denied", codex: "unavailable: denied" }, "no provider is asked");
+  const denied = byName((await api("GET", "/capabilities")).body.tools).web_search.resolves;
+  assert.ok(["pi", "claude-agent", "codex"].every((harness) => harness in denied), "every harness is shown");
+  assert.deepEqual(denied, Object.fromEntries(Object.keys(denied).map((harness) => [harness, "unavailable: denied"])), "no provider is asked, on any harness");
 });
 
 test("web_fetch set to ask on pi, claude-agent and codex at once: each run parks with its pending approval; answered more than a minute later by the owner's session, allow runs the call once and resumes with one message naming it, deny with a note resumes with the refusal; a token is 403; a second, conflicting answer is 409", { timeout: 240_000 }, async (t) => {

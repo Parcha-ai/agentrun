@@ -6,7 +6,7 @@
 import { readFileSync } from "node:fs";
 import { NOTE_ORIGINS, NOTE_STATUSES, NOTE_TYPES } from "./learn/index.js";
 import { ERROR_STATUS } from "./errors.js";
-import { LAUNCH_LOST } from "./files.js";
+import { LAUNCH_LOST, SETUP_LOST } from "./files.js";
 import { HARNESSES } from "./harness.js";
 import { LEARNING_LABEL, LEARNING_MODES, LEARNING_REASONS, LEARNING_STATES } from "./learning.js";
 import { MODEL_SOURCES, THINKING_LEVELS } from "./model.js";
@@ -179,7 +179,8 @@ const TOOL_KEYS_VIEW = closed({
       },
       check: {
         oneOf: [
-          closed({ state: { const: "accepted" }, at: { type: "string", format: "date-time", description: "When it was saved and checked." } }),
+          closed({ state: { const: "accepted" }, at: { type: "string", format: "date-time", description: "When it was saved and checked; the server's own key, when the server started and checked it." } }),
+          closed({ state: { const: "refused" }, reason: { type: "string", description: "The server's own key only (a saved one the provider refuses is never kept): who refused which key, in the provider's first sentence (never any of the key), and what to do. The tools that need it read unavailable in capabilities, with the same words." }, at: { type: "string", format: "date-time", description: "When the server started and checked it." } }),
           {
             type: "object", additionalProperties: false, required: ["state", "reason"],
             properties: {
@@ -190,7 +191,7 @@ const TOOL_KEYS_VIEW = closed({
           },
           { type: "null" },
         ],
-        description: "Whether the key (its first field) was checked against its provider when it was saved here, with one call that costs nothing: `accepted`, or `not_checked` and why; a key the provider refuses is never saved (PUT's 422). Null when the key is not stored here: not set, or set by the server, whose own key is not checked here.",
+        description: "Whether the key (its first field) was checked against its provider, with one call that costs nothing: a key stored here when it was saved (`accepted`, or `not_checked` and why; a key the provider refuses is never saved, PUT's 422), a tool's key the server is started with once as it starts (`accepted`, `not_checked`, or `refused`). Null when the key is not set, or is the server's and its check has not answered yet.",
       },
     }),
   },
@@ -933,7 +934,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     put: {
       operationId: "saveWebhook", tags: ["local"], summary: "Set the webhook's URL",
-      description: `Messages follow the Standard Webhooks spec (standardwebhooks.com), so a receiver verifies them with any of its libraries. Each is POSTed to \`url\` as JSON \`{type, timestamp, data}\`: \`run.needs_input\` when a run comes to need its person (status input_required; \`data.pending.kind\` \`question\` for an ask_person question, \`approval\` for a tool call that waits for a person's approval, \`stopped\` for a stopped turn) and \`run.ended\` when it ends (completed, failed or cancelled), with \`data: {run_id, agent_id, status, title, url}\`, \`url\` the run on the page; never a tool's arguments, an output or an input, which the API reads. Headers: \`webhook-id\` (the same on every try, the receiver's idempotency key), \`webhook-timestamp\` (Unix seconds) and \`webhook-signature: v1,<base64 HMAC-SHA256 of "{id}.{timestamp}.{body}">\` under the secret's 32 bytes; a receiver refuses a timestamp more than 5 minutes from its clock. A try not answered 2xx in 15 s (no redirect followed) is tried again after about 5 s, 5 min, 30 min, 2 h, 5 h and 10 h, with jitter, then logged as failed; pending messages go on after a restart. A 410 turns the webhook off until it is set again. The first PUT makes the secret and answers 201 with it, once; a later PUT keeps it, turns the webhook on again and answers 200. 422 for a URL that is not http or https, holds a user or password, or is over 2048 characters; 409 no_sealing_key when the server was handed no seal key to keep the secret under.`,
+      description: `Messages follow the Standard Webhooks spec (standardwebhooks.com), so a receiver verifies them with any of its libraries. Each is POSTed to \`url\` as JSON \`{type, timestamp, data}\`: \`run.needs_input\` when a run comes to need its person (status input_required; \`data.pending.kind\` \`question\` for an ask_person question, \`approval\` for a tool call that waits for a person's approval, \`stopped\` for a stopped turn, \`budget\` for a run paused at its spend cap) and \`run.ended\` when it ends (completed, failed or cancelled), with \`data: {run_id, agent_id, status, title, url}\`, \`url\` the run on the page; never a tool's arguments, an output or an input, which the API reads. Headers: \`webhook-id\` (the same on every try, the receiver's idempotency key), \`webhook-timestamp\` (Unix seconds) and \`webhook-signature: v1,<base64 HMAC-SHA256 of "{id}.{timestamp}.{body}">\` under the secret's 32 bytes; a receiver refuses a timestamp more than 5 minutes from its clock. A try not answered 2xx in 15 s (no redirect followed) is tried again after about 5 s, 5 min, 30 min, 2 h, 5 h and 10 h, with jitter, then logged as failed; pending messages go on after a restart. A 410 turns the webhook off until it is set again. The first PUT makes the secret and answers 201 with it, once; a later PUT keeps it, turns the webhook on again and answers 200. 422 for a URL that is not http or https, holds a user or password, or is over 2048 characters; 409 no_sealing_key when the server was handed no seal key to keep the secret under.`,
       requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["url"], properties: { url: { type: "string", format: "uri", maxLength: 2048 } } } } } },
       responses: {
         "201": json(closed({ ...WEBHOOK_SET_FIELDS, secret: WEBHOOK_SECRET }), "Set, with its secret, shown this once."),
@@ -1047,6 +1048,19 @@ const PENDING: Json = {
       description: "A tool call set to ask waits for the owner's approval (status input_required, state waiting): POST /runs/{run_id}/approvals/{id} answers it.",
       "x-agentrun-serve": "approvals/1",
     },
+    {
+      type: "object", additionalProperties: false, required: ["kind", "cap_usd", "said", "at"],
+      properties: {
+        kind: { const: "budget" },
+        cap_usd: { type: "number", exclusiveMinimum: 0, description: "The run's cap (`max_cost_usd`)." },
+        spent_usd: { type: "number", minimum: 0, description: "What the cap counted as taken when it refused: spent, and held for requests still answering. Absent for a refusal written before the figures were kept." },
+        needs_usd: { type: "number", minimum: 0, description: "The least the refused request needs. A cap above `spent_usd` + `needs_usd` sends it. Absent with `spent_usd`." },
+        said: { type: "string", description: "The cap's refusal, in its words: what was spent, what the refused request needs at the least, and the cap that would run it. At most 2000 characters." },
+        at: { type: "string", format: "date-time", description: "When the request was refused." },
+      },
+      description: "A run paused at its spend cap (status input_required, state waiting): what is left of the cap cannot buy its next request's least, which was not sent. A message is 409 budget_reached until the cap is raised. Only a refusal for room pauses a run; one no cap fixes (an unknown spend, a model with no price or no output ceiling, an input not measured) still ends it failed, spend_cap_reached.",
+      "x-agentrun-serve": "cappause/1",
+    },
     { type: "null" },
   ],
   description: "What the run waits on, told apart by kind; null when it waits on nothing. A run read from its stored row alone has ended, so null.",
@@ -1114,8 +1128,8 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
   RunError: {
     details: {
       type: "object", additionalProperties: false, required: ["reason"],
-      properties: { reason: { enum: [LAUNCH_LOST] } },
-      description: `Why the run failed, when its code alone does not say: \`${LAUNCH_LOST}\`, the server went down while it started the run's process, which never came up, so the next start failed the run rather than start it again.`,
+      properties: { reason: { enum: [LAUNCH_LOST, SETUP_LOST] } },
+      description: `Why the run failed, when its code alone does not say: \`${LAUNCH_LOST}\`, the server went down while it started the run's process, which never came up, so the next start failed the run rather than start it again; \`${SETUP_LOST}\`, the server went down after the run was made and before it was set up, so it never started.`,
       "x-agentrun-serve": "launch/1",
     },
   },
@@ -1174,7 +1188,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       properties: {
         modes: { type: "array", items: { enum: [...PLACE_MODES] } },
         default: { enum: [...PLACE_MODES], description: "The mode a revision that names no place runs in here." },
-        boxes: { type: "array", items: { type: "object", additionalProperties: false, required: ["id", "available", "state"], properties: { id: { enum: [...BOX_IDS] }, available: { type: "boolean" }, state: { enum: [...BOX_STATES], description: "`ready`; `preparing`, available while the server builds (or pulls) the Docker box's image at its start (a sandbox run's first box waits for it, with a timeline row); `unavailable`, with the `reason`." }, reason: { type: "string" }, network: { enum: [...BOX_NETWORKS], description: "What an available Daytona box reaches: `allowlist`, the hosts in `allow` (Daytona's domain list, whose proxy re-signs TLS with Daytona's CA), or `none`. `none` with a `reason` when Daytona could not keep a list here (a tier that takes none); without one when AGENTRUN_BOX_ALLOW is `none`.", "x-agentrun-serve": "place/2" } } } },
+        boxes: { type: "array", items: { type: "object", additionalProperties: false, required: ["id", "available", "state"], properties: { id: { enum: [...BOX_IDS] }, available: { type: "boolean" }, state: { enum: [...BOX_STATES], description: "`ready`; `preparing`, available while the server builds (or pulls) the Docker box's image at its start (a sandbox run's first box waits for it, with a timeline row); `unavailable`, with the `reason`." }, reason: { type: "string" }, network: { enum: [...BOX_NETWORKS], description: "What an available box reaches: `allowlist`, the hosts in `allow`, and nothing else (a Docker box through its egress proxy, on Linux with a daemon of that machine's own; a program that skips the proxy has no route; a Daytona box through Daytona's domain list, whose proxy re-signs TLS with Daytona's CA), or `none`. A Docker box's `none` comes with `network_reason`; a Daytona box's with a `reason` when Daytona could not keep a list here (a tier that takes none); neither has one when AGENTRUN_BOX_ALLOW is `none`.", "x-agentrun-serve": "place/2" }, network_reason: { type: "string", description: "Why an available box has no network for a cause of its own, naming what the server found: a Docker in a VM, a daemon on another machine, docker info that did not answer.", "x-agentrun-serve": "place/2" } } } },
       },
       description: "The places a revision may name, this host's default, each box (whether this server has it, its state: ready, preparing or unavailable, and when not, why) and the hosts a box may reach.",
       "x-agentrun-serve": "place/1",
@@ -1413,6 +1427,11 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   cancel.description = `${String(cancel.description).trimEnd()}\nHere an agentic run reads \`cancelled\` from the 202 on, \`final\` once it has stopped: a run's first terminal status is its last, so nothing its cut turn writes later (an answer, a cost over its cap) moves it. A workflow run reads \`cancelled\` once its workflow has stopped.\n`;
   cancel["x-agentrun-serve-changed"] = { description: "turnend/1" };
   changed.push("POST /runs/{run_id}/cancel");
+  // A run create's key is kept with its run in the agent store (its origin), so it replays that run past the key's day.
+  const createRun = (doc.paths["/agents/{agent_id}/runs"] as Json).post as Json;
+  createRun.description = `${String(createRun.description).trimEnd()}\nHere a create's \`Idempotency-Key\` is also kept with the run it started, written in the agent store with the run itself: the same key and body replays that run, as it reads now, for as long as the run exists (after any restart, and past \`limits.idempotency_ttl_s\`, which bounds the other creates' keys); another body under the key is \`409 idempotency_mismatch\`.\n`;
+  createRun["x-agentrun-serve-changed"] = { description: "runorigin/1" };
+  changed.push("POST /agents/{agent_id}/runs");
   // models/2: capabilities' `models.source` takes on the values this server answers with that the contract's enum (managed,
   // chatgpt, env, faux) lacks, `gateway` and `providers`. A client that validates against the contract's enum refuses them,
   // so the widening is a mark of its own, each value listed, as RunStatus's `paused` is.
@@ -1458,8 +1477,8 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   const own = Object.keys(ERROR_STATUS).filter((code) => Array.isArray(errorCode.enum) && !errorCode.enum.includes(code));
   if (own.length) {
     errorCode.enum = [...errorCode.enum!, ...own];
-    // The newest addition that widened it: a client that validates against learning/1 refuses auth_required.
-    errorCode["x-agentrun-serve"] = "mcpservers/1";
+    // The newest addition that widened it: a client that validates against mcpservers/1 refuses budget_reached.
+    errorCode["x-agentrun-serve"] = "cappause/1";
     fields.push(...own.map((code) => `ErrorCode.${code}`));
   }
   const details = ((schemas.ErrorBody as Json).properties as Record<string, Json>).details!;
