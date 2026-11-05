@@ -32,7 +32,7 @@ export function readQuarantine(root = defaultRoot) {
   return JSON.parse(readFileSync(path, 'utf8'));
 }
 
-/** The test files git knows that carry a quarantine marker, by id: Map(id -> [file]). */
+/** The test files git knows that carry a quarantine marker, by id, with how many times each carries it: Map(id -> Map(file -> n)). */
 function markedFiles(root) {
   const found = new Map();
   let files = [];
@@ -40,7 +40,10 @@ function markedFiles(root) {
   for (const file of new Set(files)) {
     let text;
     try { text = readFileSync(join(root, file), 'utf8'); } catch { continue; }
-    for (const [, id] of text.matchAll(MARKED)) { if (!found.has(id)) found.set(id, []); if (!found.get(id).includes(file)) found.get(id).push(file); }
+    for (const [, id] of text.matchAll(MARKED)) {
+      if (!found.has(id)) found.set(id, new Map());
+      found.get(id).set(file, (found.get(id).get(file) ?? 0) + 1);
+    }
   }
   return found;
 }
@@ -61,11 +64,20 @@ export function checkQuarantine(root = defaultRoot, now = new Date()) {
     const since = Date.parse(entry.since); const expires = Date.parse(entry.expires);
     if (Number.isNaN(since) || Number.isNaN(expires)) { problems.push(`${name}: since and expires are ISO times`); continue; }
     if (expires - since > HOURS * 3_600_000) problems.push(`${name}: expires ${entry.expires}, more than ${HOURS} h after ${entry.since}`);
+    // A future start would stretch the skip, which is live on CI from the commit that adds it (a minute's clock skew allowed).
+    if (since > now.getTime() + 60_000) problems.push(`${name}: since ${entry.since} is later than now; an entry starts when it is added`);
     if (now.getTime() >= expires) problems.push(`${name} (${entry.owner}) expired at ${entry.expires}: fix ${entry.file} ("${entry.name}") and remove its entry; it has been skipped on CI since ${entry.since}`);
     if (entry.file && !existsSync(join(root, entry.file))) problems.push(`${name}: ${entry.file} does not exist`);
-    else if (entry.file && !(marked.get(entry.id) ?? []).includes(entry.file)) problems.push(`${name}: ${entry.file} carries no "${marker(entry.id)}(" skip`);
+    else if (entry.file) {
+      // Exactly one test per id, in the entry's own file: a copied skip would escape the limit.
+      const files = marked.get(entry.id) ?? new Map();
+      const times = files.get(entry.file) ?? 0;
+      if (times === 0) problems.push(`${name}: ${entry.file} carries no "${marker(entry.id)}(" skip`);
+      else if (times > 1) problems.push(`${name}: ${entry.file} carries its skip ${times} times; one test per id`);
+      for (const other of files.keys()) if (other !== entry.file) problems.push(`${name}: ${other} also skips as "${marker(entry.id)}(", but ${entry.id} is ${entry.file}'s`);
+    }
   }
-  for (const [id, files] of marked) if (!seen.has(id)) problems.push(`${files.join(', ')} skips as "${marker(id)}(" but scripts/quarantine.json does not list ${id}`);
+  for (const [id, files] of marked) if (!seen.has(id)) problems.push(`${[...files.keys()].join(', ')} skips as "${marker(id)}(" but scripts/quarantine.json does not list ${id}`);
   return problems;
 }
 

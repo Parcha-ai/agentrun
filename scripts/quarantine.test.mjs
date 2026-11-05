@@ -67,6 +67,20 @@ test('an entry and a skip name each other: a skip with no entry fails, an entry 
   assert.doesNotMatch(problems, /does not list F8/);
 });
 
+test('a skip copied onto a second test, in its file or another, is refused: each id skips exactly one test, in its own file', () => {
+  const entry = { id: 'F5', file: 'a/x.test.mjs', name: 'flaky', owner: 'tl-x', since: '2026-11-05T01:00Z', expires: '2026-11-06T01:00Z', why: 'twice' };
+  const twice = repo({ 'a/x.test.mjs': flaky('F5') + flaky('F5'), 'scripts/quarantine.json': JSON.stringify({ tests: [entry] }) });
+  assert.match(checkQuarantine(twice, at('2026-11-05T02:00:00Z')).join('\n'), /F5: a\/x\.test\.mjs carries its skip 2 times; one test per id/);
+  const elsewhere = repo({ 'a/x.test.mjs': flaky('F5'), 'a/z.test.mjs': flaky('F5'), 'scripts/quarantine.json': JSON.stringify({ tests: [entry] }) });
+  assert.match(checkQuarantine(elsewhere, at('2026-11-05T02:00:00Z')).join('\n'), /F5: a\/z\.test\.mjs also skips as "quarantined F5 \(", but F5 is a\/x\.test\.mjs's/);
+});
+
+test('an entry that starts later than now is refused: a future since would stretch the 24 h', () => {
+  const entry = { id: 'F6', file: 'a/x.test.mjs', name: 'flaky', owner: 'tl-x', since: '2026-11-07T00:00Z', expires: '2026-11-08T00:00Z', why: 'twice' };
+  const root = repo({ 'a/x.test.mjs': flaky('F6'), 'scripts/quarantine.json': JSON.stringify({ tests: [entry] }) });
+  assert.match(checkQuarantine(root, at('2026-11-05T02:00:00Z')).join('\n'), /F6: since 2026-11-07T00:00Z is later than now; an entry starts when it is added/);
+});
+
 test("this repository's quarantine holds now: an expired entry fails every pull request until its test is fixed", () => {
   const root = join(dirname(fileURLToPath(import.meta.url)), '..');
   assert.deepEqual(checkQuarantine(root, new Date()), []);
