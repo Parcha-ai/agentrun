@@ -23,7 +23,7 @@ export function runKeyOf(env: NodeJS.ProcessEnv, harness: string = DEFAULT_HARNE
   const gateway: RunKey = { who: "The gateway at AGENT_MODEL_BASE_URL", field: "AGENT_MODEL_API_KEY", saved: false };
   if (harness === "claude-agent") return row(provider === "openrouter" || openRouterOnly("claude-agent", env) ? "openrouter" : "anthropic");
   if (env.AGENT_MODEL_BASE_URL) return gateway;
-  if (harness === "codex") return row(provider === "openrouter" || openRouterOnly("codex", env) ? "openrouter" : "openai");
+  if (harness === "codex" || harness === "opencode") return row(provider === "openrouter" || openRouterOnly(harness, env) ? "openrouter" : "openai");
   return provider === undefined ? undefined : row(provider);
 }
 
@@ -117,7 +117,12 @@ export function redactedOutput(value: unknown, secrets: readonly string[]): unkn
   if (typeof value === "string") return redactedAnswer(value, secrets);
   // A held value can be all digits (a gateway's key), and a record can quote it as a number: one whose digits hold a held
   // value, by the same rule as a string's, is withheld as "[redacted]". A boolean's text is shorter than any held value.
-  if (typeof value === "number" || typeof value === "bigint") return redactedAnswer(String(value), secrets) === String(value) ? value : "[redacted]";
+  // A number can also EQUAL a held value whose text differs from its own (a leading zero, 1e21, a long key read lossy).
+  if (typeof value === "number" || typeof value === "bigint") {
+    const text = String(value);
+    const held = redactedAnswer(text, secrets) !== text || secrets.some((secret) => secret.trim() !== "" && Number(secret) === Number(value));
+    return held ? "[redacted]" : value;
+  }
   if (Array.isArray(value)) return value.map((item) => redactedOutput(item, secrets));
   if (value && typeof value === "object") {
     const entries = Object.entries(value).map(([key, item]) => [redactedAnswer(key, secrets), redactedOutput(item, secrets)] as const);

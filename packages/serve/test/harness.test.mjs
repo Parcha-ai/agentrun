@@ -29,9 +29,9 @@ test("a definition that names no harness reads as pi, and naming pi stores nothi
   assert.ok(storedBodies(data).every((body) => !("harness" in body)), "the default is never stored");
 });
 
-test("a harness that is not pi, claude-agent or codex is a 422 on the field, and nothing is saved", async (t) => {
+test("a harness the server does not know is a 422 on the field, and nothing is saved", async (t) => {
   const { api } = await serve(t);
-  for (const harness of ["opencode", "Pi", "", 3]) {
+  for (const harness of ["no-such-harness", "Pi", "", 3]) {
     const made = await api("POST", "/agents", agent(`bad-${String(harness).length}`, { harness }));
     assert.equal(made.status, 422, JSON.stringify(made.body));
     assert.ok(made.body.error.fields.some((i) => i.field === "definition.harness" && i.reason === "not_an_option"), JSON.stringify(made.body));
@@ -57,10 +57,10 @@ test("a harness this server does not run saves with a warning on the field, and 
   assert.equal((await api("GET", "/runs")).body.runs.length, 0, "no run started");
 });
 
-test("capabilities lists each harness: pi runs here; claude-agent and codex say why not", async (t) => {
+test("capabilities lists each harness: pi runs here; claude-agent, codex and opencode say why not", async (t) => {
   const { api } = await serve(t);
   const { body } = await api("GET", "/capabilities");
-  assert.deepEqual(body.harnesses.map((h) => [h.id, h.available, h.steer]), [["pi", true, true], ["claude-agent", false, false], ["codex", false, false]], "only pi takes a message mid-turn");
+  assert.deepEqual(body.harnesses.map((h) => [h.id, h.available, h.steer]), [["pi", true, true], ["claude-agent", false, false], ["codex", false, false], ["opencode", false, false]], "only pi takes a message mid-turn");
   for (const h of body.harnesses.filter((h) => !h.available)) assert.match(h.reason, new RegExp(h.id));
 });
 

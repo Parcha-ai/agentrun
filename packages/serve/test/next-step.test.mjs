@@ -120,7 +120,7 @@ test("a box this server does not enable names the setting that enables it: in ca
   assert.deepEqual(tools.filter((tool) => tool.reason?.startsWith("no box")).map((tool) => tool.name), ["bash"], "only a sandbox-only tool is unavailable for want of a box");
   // The web tools keep how they resolve, and why, on a server with no box.
   const web = tools.filter((tool) => tool.resolves);
-  assert.deepEqual(web.map((tool) => [tool.name, tool.available, Object.keys(tool.why ?? {}).sort()]), [["web_fetch", true, ["claude-agent", "codex", "pi"]], ["web_search", true, ["claude-agent", "codex", "pi"]], ["browser", false, ["claude-agent", "codex", "pi"]]], JSON.stringify(web));
+  assert.deepEqual(web.map((tool) => [tool.name, tool.available, Object.keys(tool.why ?? {}).sort()]), [["web_fetch", true, ["claude-agent", "codex", "opencode", "pi"]], ["web_search", true, ["claude-agent", "codex", "opencode", "pi"]], ["browser", false, ["claude-agent", "codex", "opencode", "pi"]]], JSON.stringify(web));
   assert.ok(web.every((tool) => Object.values(tool.why).every((why) => typeof why === "string" && why.length > 0)), "each harness's why is words");
 
   const made = await api("POST", "/agents", agent("docked", { place: { mode: "sandbox", box: "docker" } }));
@@ -162,7 +162,7 @@ test("the banner says in words which boxes are ready: none with nothing enabled,
   const none = await serve(t);
   assert.equal(none.boxesLine, `Boxes: none is ready, so sandbox agents do not run here. docker: ${ENABLE_DOCKER}. daytona: ${ENABLE_DAYTONA}.`);
   const faux = await serve(t, { faux: new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname, fauxBox: new URL("./fixtures/faux-box.mjs", import.meta.url).pathname });
-  assert.equal(faux.boxesLine, "Boxes: docker is ready, so sandbox agents run their tools there.");
+  assert.equal(faux.boxesLine, "Boxes: docker is ready, so sandbox agents run their tools there. docker boxes have no network: a faux box (tests).");
   const bash = (await faux.api("GET", "/capabilities")).body.tools.find((tool) => tool.name === "bash");
   assert.deepEqual([bash.available, bash.reason], [true, undefined], "a box can run it");
 });

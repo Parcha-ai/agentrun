@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { closeSync, constants, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, symlinkSync } from "node:fs";
+import { closeSync, constants, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
 import { rm } from "node:fs/promises";
@@ -661,8 +661,12 @@ test("under its launcher, with every secret set, a pi run is handed exactly its 
   for (const value of [foo, password, ...Object.values(more)]) onlyTheServerHolds(root, value);
 });
 
-/** Every file under `dir` (a run's directory: its store, process.log, harness/), and which holds any of `values`. */
-function filesHolding(dir, ...values) {
+/** Every file under `dir` (a run's directory: its store, process.log, harness/), and which holds any of `values`. The run is
+ *  live while this reads it, so a file can go between its listing and its read: the run's launch mark (`launching`, empty)
+ *  is removed once its process serves (F31, a queue ejection on 11-04). A file gone by its read holds nothing; any other read
+ *  error still fails. `read` is the file reader, for the test below. */
+function filesHolding(dir, ...values) { return filesHoldingWith(readFileSync, dir, ...values); }
+function filesHoldingWith(read, dir, ...values) {
   const files = [];
   const walk = (at) => {
     for (const entry of readdirSync(at, { withFileTypes: true })) {
@@ -672,8 +676,22 @@ function filesHolding(dir, ...values) {
     }
   };
   walk(dir);
-  return { files, holding: files.filter((path) => values.some((value) => readFileSync(path).includes(value))) };
+  const contents = (path) => { try { return read(path); } catch (error) { if (error.code === "ENOENT") return null; throw error; } };
+  return { files, holding: files.filter((path) => { const text = contents(path); return text !== null && values.some((value) => text.includes(value)); }) };
 }
+
+test("a run's file that goes between its listing and its read (its launch mark) holds nothing; a file that holds a key is still found, and another read error still fails", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "files-holding-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  mkdirSync(join(dir, "harness"));
+  for (const [name, text] of [["launching", ""], ["process.log", "started"], ["harness/config.toml", "key = nak-canary"]]) writeFileSync(join(dir, name), text);
+  const gone = (path) => { if (path.endsWith("/launching")) throw Object.assign(new Error(`ENOENT: no such file or directory, open '${path}'`), { code: "ENOENT" }); return readFileSync(path); };
+  const { files, holding } = filesHoldingWith(gone, dir, "nak-canary");
+  assert.equal(files.length, 3);
+  assert.deepEqual(holding, [join(dir, "harness/config.toml")]);
+  const denied = (path) => { throw Object.assign(new Error(`EACCES: permission denied, open '${path}'`), { code: "EACCES" }); };
+  assert.throws(() => filesHoldingWith(denied, dir, "nak-canary"), /EACCES/);
+});
 
 test("on codex, with every secret set and its turn held inside Codex's own process (a child of the run's), no process's environment holds a secret, Codex's included, which every command it starts inherits; key-shaped names no list names (FOO_API_KEY, FOO_PASSWORD) are in none under the server; and no file of the run's holds a key, its store, its log and Codex's own files included", { timeout: 120_000, skip: !CONFINED && "no setpriv" }, async (t) => {
   const { canary, secrets } = canaries();

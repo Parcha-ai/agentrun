@@ -1,14 +1,17 @@
 import DOMPurify from "dompurify";
 import { marked } from "marked";
+import type { MouseEvent } from "react";
 import type { Cost } from "./v2";
 
 /** A run's short label, the one every place that shows one uses: the id's last 8 characters. Run ids are UUIDv7s, whose
  *  leading digits are the start time (the same for runs started within about a minute); the tail is random. */
 export const runLabel = (id: string) => id.slice(-8);
 
-export const clock =(iso: string) => new Date(iso).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", timeZone: "UTC" });
+/** The console's times, every one it shows, in the viewer's own zone (the browser's): no `timeZone` is set. `clock`, the
+ *  time of day (a Timeline step); `when`, the day and the time (everything else). */
+export const clock = (iso: string) => new Date(iso).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
 export const when = (iso: string) =>
-  new Date(iso).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZone: "UTC" });
+  new Date(iso).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 
 export function bytes(n: number): string {
   if (n < 1024) return `${n} B`;
@@ -55,5 +58,49 @@ export function cost(c: Cost | null | undefined): string {
   return `${dollars(c.usd)}${est(c)}`;
 }
 
-/** Markdown from a run, as safe HTML: parsed by marked, then sanitized (no scripts, no handlers, no foreign frames). */
-export const markdown = (text: string) => DOMPurify.sanitize(marked.parse(text, { async: false }) as string);
+/** The run files a run's Markdown may link to: their paths as GET /v2/runs/{id}/files lists them, and `from`, the folder
+ *  of the file the Markdown is in ("" for the run's answer), which its relative links are read from. */
+export type LinkedFiles = { paths: readonly string[]; from?: string };
+
+/** The run file a relative link names, resolved from `from` as a browser would (./, ../, %20; no query or fragment), or
+ *  null when it names none (a link no URL parser takes included). A path from the root (/x) is the server's, never a run
+ *  file. The folder is a path, not a URL: each of its names is encoded, so a #, ? or % in one is a character of it. */
+function runFile(href: string, files: LinkedFiles): string | null {
+  if (href.startsWith("/") || href.startsWith("#")) return null;
+  const from = files.from ? `${files.from.replace(/\/*$/, "").split("/").map(encodeURIComponent).join("/")}/` : "";
+  try {
+    const path = decodeURIComponent(new URL(href, `file:///${from}`).pathname.slice(1));
+    return files.paths.includes(path) ? path : null;
+  } catch { return null; }
+}
+
+/** Markdown from a run, as safe HTML: parsed by marked, then sanitized (no scripts, no handlers, no foreign frames).
+ *  A link with no scheme (a relative path, a path from the root, a fragment, //host) would be read against the console's
+ *  own address and take its tab away (a fragment changes its route), so it is never a link here: one that names a run
+ *  file in `files` becomes a button carrying `data-run-file` (the page opens the file on its click), any other reads as
+ *  its text. A link to a page (http:, https:, ftp:) opens in a new tab, with no opener and no referrer; one that hands off
+ *  to another app (mailto:, tel:) is as marked and the sanitizer leave it. */
+export function markdown(text: string, files?: LinkedFiles): string {
+  const body = DOMPurify.sanitize(marked.parse(text, { async: false }) as string, { RETURN_DOM: true }) as HTMLElement;
+  for (const a of [...body.querySelectorAll("a[href]")]) {
+    const href = a.getAttribute("href")!.trim();
+    if (/^(https?|ftps?):/i.test(href)) { a.setAttribute("target", "_blank"); a.setAttribute("rel", "noopener noreferrer"); continue; }
+    if (/^[a-z][a-z\d+.-]*:/i.test(href)) continue;
+    const path = files && runFile(href, files);
+    if (path) {
+      const open = a.ownerDocument.createElement("button");
+      open.type = "button";
+      open.title = `Open ${path}`;
+      open.dataset.runFile = path;
+      open.append(...a.childNodes);
+      a.replaceWith(open);
+    } else a.replaceWith(...a.childNodes);
+  }
+  return body.innerHTML;
+}
+
+/** A click handler for rendered Markdown: a click on a run file's button (`data-run-file`, from `markdown`) opens it. */
+export const openLinkedFile = (onOpen: (path: string) => void) => (e: MouseEvent<HTMLElement>) => {
+  const path = (e.target as Element).closest?.("[data-run-file]")?.getAttribute("data-run-file");
+  if (path) { e.preventDefault(); onOpen(path); }
+};
