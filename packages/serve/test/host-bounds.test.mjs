@@ -26,6 +26,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { codingSource, CodingTools } from "../dist/coding-tools.js";
 import * as pages from "../dist/fetch-page.js";
+import * as background from "../dist/background.js";
 import * as hosts from "../dist/host-tools.js";
 import { CLIP, monidText } from "../dist/monid.js";
 import * as web from "../dist/web-fetch.js";
@@ -99,6 +100,36 @@ test("every host tool's largest result is within the host's result bound, which 
   const shell = await bash.call({ command: `head -c ${8 * hosts.MAX_BYTES} /dev/zero | tr '\\0' '"'; echo; exit 3` }, { callId: "b", signal });
   assert.ok(shell.text.length > hosts.MAX_BYTES - 100, "bash's tail at pi's limit");
   keep("bash", shell.text);
+  // The background tools (background.ts): a page at BACKGROUND_PAGE_BYTES, of quotes and of three-byte text, and a list
+  // at BACKGROUND_LIST_MAX with every command at the 200 bytes a list reads of it (the logs and their state written
+  // here, as a box's runners leave them).
+  const [start, output, input, signalTool, list] = hosts.hostTools(run, background.BACKGROUND_TOOLS, ctx, new Map(), box.tools);
+  const pageBytes = background.BACKGROUND_PAGE_BYTES;
+  for (const [i, text] of [[1, '"'.repeat(4 * pageBytes)], [2, wide.repeat(4 * pageBytes)]]) {
+    await mkdir(join(work, "background", String(i)), { recursive: true });
+    await writeFile(join(work, "background", String(i), "output.log"), text);
+    await writeFile(join(work, "background", String(i), "exit"), "0\n");
+  }
+  const ended = 3 + 2 * background.BACKGROUND_LIST_MAX;
+  for (let i = 3; i < ended; i++) {
+    await mkdir(join(work, "background", String(i)), { recursive: true });
+    await writeFile(join(work, "background", String(i), "command"), `"\\${wide.repeat(200)}`);
+    await writeFile(join(work, "background", String(i), "exit"), "137\n");
+    await writeFile(join(work, "background", String(i), "started"), "2026-11-05T00:00:00Z\n");
+  }
+  const outputs = [await output.call({ id: "1" }, { callId: "o1", signal }), await output.call({ id: "2", offset: 1 }, { callId: "o2", signal })];
+  assert.ok(outputs.every((answer) => !answer.isError && Buffer.byteLength(answer.text) > pageBytes - 10), `each page at its cap: ${outputs.map((answer) => answer.text.slice(0, 200)).join("; ")}`);
+  keep("bash_output", ...outputs.map((answer) => answer.text));
+  const listing = await list.call({}, { callId: "l", signal });
+  assert.equal(listing.text.split("\n").length, 1 + background.BACKGROUND_LIST_MAX + 1, listing.text.slice(0, 300));
+  keep("bash_list", listing.text);
+  const started = await start.call({ command: `${'"'.repeat(1000)}; sleep 30` }, { callId: "s", signal });
+  assert.match(started.text, new RegExp(`^Started background process ${ended} `));
+  keep("bash_background", started.text);
+  keep("bash_input", (await input.call({ id: "999999999", text: "x" }, { callId: "i", signal })).text, (await input.call({ id: "1", text: '"'.repeat(background.BACKGROUND_INPUT_BYTES + 1) }, { callId: "i2", signal })).text);
+  const killed = await signalTool.call({ id: String(ended), signal: "KILL" }, { callId: "k", signal });
+  assert.match(killed.text, /ended by signal KILL/);
+  keep("bash_signal", killed.text, (await signalTool.call({ id: "3", signal: "KILL" }, { callId: "k2", signal })).text);
 
   // In characters (the bound, and the Claude Agent CLI's checks) and as Codex counts it: four bytes of UTF-8 a token.
   const largest = Object.fromEntries(Object.entries(results).map(([tool, texts]) => [tool, Math.max(...texts.map((text) => text.length))]));

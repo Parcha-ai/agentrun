@@ -73,11 +73,26 @@ describe("RunDetail's Report tab before an answer", () => {
     expect(shown).not.toContain("reply below");
   });
 
-  it("a run that waits on something this console doesn't know yet says it waits for you, never for an answer below or that it stopped", () => {
-    // A kind of `pending` a newer server may send (here "budget"): only its kind is read, nothing else of it.
+  it("a budget pause the server sends without its figures (kind only) shows the pause without an amount, and its page still opens", () => {
     for (const [name, state] of [["run.input_required.waiting.1", "waiting"], ["run.input_required.idle.1", "idle"]] as const) {
       const f = runFixture(name);
       const run = { ...f.run, state, pending: { kind: "budget" } } as unknown as Run;
+      const shown = report(run, f.page.rows);
+      expect(shown, name).toContain("Paused at its spend cap");
+      expect(shown, name).toContain("Its spend cap is reached. Raise the cap above to continue.");
+      expect(shown, name).not.toMatch(/undefined|NaN/);
+      // With a way to raise, the page still opens: no figure to name, so the banner offers no raise of its own.
+      const withRaise = renderToStaticMarkup(createElement(RunDetail, { run, agentName: "invoice-checker", messages: messageFeatures, harnessSteers: true, rows: f.page.rows, files: [], actions: { onRaiseCap: async () => { throw new Error("no raise"); } }, onMessage: () => {}, tab: "report" }));
+      expect(withRaise, name).not.toMatch(/undefined|NaN/);
+    }
+  });
+
+  it("a run that waits on something this console doesn't know yet says it waits for you, never for an answer below or that it stopped", () => {
+    // A kind of `pending` a newer server may send (one this console knows neither as a question, an approval nor a
+    // budget pause): only its kind is read, nothing else of it.
+    for (const [name, state] of [["run.input_required.waiting.1", "waiting"], ["run.input_required.idle.1", "idle"]] as const) {
+      const f = runFixture(name);
+      const run = { ...f.run, state, pending: { kind: "a_future_kind" } } as unknown as Run;
       const shown = report(run, f.page.rows);
       expect(shown, name).not.toContain(WRITING);
       expect(shown, name).toContain("Waiting for you");
@@ -86,6 +101,20 @@ describe("RunDetail's Report tab before an answer", () => {
       expect(shown, name).not.toContain("reply below");
       expect(shown, name).not.toContain("Stopped before it wrote an answer.");
     }
+  });
+
+  it("a run paused at its spend cap says so, with what it spent of its cap from the served figures, and points at the raise above", () => {
+    const f = runFixture("run.input_required.waiting.1");
+    const said = "Not sent: the run has spent $0.04 of its $0.05 cap.";
+    const paused = { ...f.run, pending: { kind: "budget", cap_usd: 0.05, spent_usd: 0.04, needs_usd: 0.1024, said, at: "2026-11-04T20:08:05.127Z" } } as Run;
+    const shown = report(paused, f.page.rows);
+    expect(shown).not.toContain(WRITING);
+    expect(shown).not.toContain("Waiting for you ");
+    expect(shown).toContain("Paused at its spend cap");
+    expect(shown).toContain("It has spent $0.04 of its $0.05 cap. Raise the cap above to continue.");
+    // A server that sends the cap without the figures: said without them, never a figure it lacks.
+    const bare = report({ ...paused, pending: { kind: "budget", cap_usd: 0.05, said, at: "2026-11-04T20:08:05.127Z" } } as Run, f.page.rows);
+    expect(bare).toContain("Its $0.05 cap is reached. Raise the cap above to continue.");
   });
 
   it("a question the server names as one (pending.kind question) reads as a question", () => {

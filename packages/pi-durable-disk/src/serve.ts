@@ -24,7 +24,7 @@ import { CONTROL_TIMEOUT_MS, ensureRunning, LEASE_EXPIRY_MS, readRunStatus, with
 
 /** 503 codes the client answers by asking the supervisor again and retrying. */
 export const RETRY_CODES = ["OPENING", "PARKING", "RELEASED"] as const;
-export type ServeCode = (typeof RETRY_CODES)[number] | "BAD_REQUEST" | "UNAUTHORIZED" | "NOT_FOUND" | "BUSY" | "FAILED" | "UNKNOWN";
+export type ServeCode = (typeof RETRY_CODES)[number] | "BAD_REQUEST" | "UNAUTHORIZED" | "NOT_FOUND" | "BUSY" | "WAITING" | "FAILED" | "UNKNOWN";
 
 const MAX_BODY = 1 << 20;
 const REQUEST_ID = /^[\x21-\x7e]{1,200}$/;
@@ -178,6 +178,21 @@ const optionalId = (value: unknown, name: string): number | undefined => {
   return value as number;
 };
 
+/** Whether `conversation`'s last model message is the result of a tool in `asks`: its turn ended on that tool, waiting
+ *  for a person's answer. Entries with no model message (the host's own records) are passed over. */
+async function waitsOnPerson(conversation: Conversation, asks: readonly string[], context: Context): Promise<boolean> {
+  if (!asks.length) return false;
+  for (let cursor: Parameters<Conversation["entries"]>[2] = undefined; ; ) {
+    const page = await conversation.entries({}, 50, cursor, context);
+    for (const item of page.items) {
+      const last = (item.model as readonly { role?: string; toolName?: string }[] | undefined)?.at(-1);
+      if (last) return last.role === "toolResult" && asks.includes(String(last.toolName));
+    }
+    if (page.next === undefined) return false;
+    cursor = page.next;
+  }
+}
+
 /** The text of an answer entry (an assistant message's text blocks). */
 async function answerOf(conversation: Conversation, entry: EntryId, context: Context): Promise<{ entry: EntryId; text: string }> {
   const page = await conversation.entries({ minEntryId: entry, maxEntryId: entry }, 1, undefined, context);
@@ -266,8 +281,17 @@ export async function serveRun(options: ServeOptions = {}): Promise<RunServer> {
     return conversation;
   };
 
+  /** `answers: false`: the input may not answer a question the conversation waits on. It is refused (409 WAITING) when
+   *  the conversation's last model message is the result of a tool in `asks` (one that ends a turn to wait on a person,
+   *  ask_person), and refused when busy (409 BUSY), never queued behind a turn that may end on such a tool. A door hook
+   *  (another harness) has no such tool: it takes only the busy refusal. */
   async function submit(body: Record<string, unknown>, context: Context): Promise<{ status: number; body: unknown }> {
-    const { requestId, content, whenBusy, wait, origin } = body;
+    const { requestId, content, whenBusy, wait, origin, answers, asks } = body;
+    if (answers !== undefined && answers !== false) throw new HttpError(400, "BAD_REQUEST", "answers is false, or absent");
+    if (asks !== undefined && !(Array.isArray(asks) && asks.every((name) => typeof name === "string"))) throw new HttpError(400, "BAD_REQUEST", "asks is a list of tool names");
+    const guarded = answers === false;
+    // A guarded input could be refused after its origin's entry is queued (a busy run): the server's messages carry none.
+    if (guarded && origin !== undefined) throw new HttpError(400, "BAD_REQUEST", "an input with answers false takes no origin");
     if (typeof requestId !== "string" || !REQUEST_ID.test(requestId)) throw new HttpError(400, "BAD_REQUEST", "requestId must be 1 to 200 printable ASCII characters");
     if (typeof content !== "string" && !Array.isArray(content)) throw new HttpError(400, "BAD_REQUEST", "content must be a string or an array of content blocks");
     if (whenBusy !== undefined && whenBusy !== "steer" && whenBusy !== "followUp" && whenBusy !== "reject") throw new HttpError(400, "BAD_REQUEST", "whenBusy is steer, followUp or reject");
@@ -276,10 +300,13 @@ export async function serveRun(options: ServeOptions = {}): Promise<RunServer> {
     if (door) {
       if (body.conversationId !== undefined) throw new HttpError(400, "BAD_REQUEST", "a door hook takes its input in the root conversation: no conversationId");
       const root = await conversationOf(undefined, context);
-      const input = { requestId, content: content as UserInput, whenBusy: whenBusy ?? "followUp", ...(origin ? { origin: origin as JsonObject } : {}) } as const;
+      const input = { requestId, content: content as UserInput, whenBusy: guarded ? "reject" : (whenBusy ?? "followUp"), ...(origin ? { origin: origin as JsonObject } : {}) } as const;
       return doorAnswer(requestId, await door.submit(root.id, input, context));
     }
     const conversation = await conversationOf(optionalId(body.conversationId, "conversationId"), context);
+    // Read, then admitted with nothing between but pi's own commit: a busy conversation is refused by that commit, so the
+    // only way to come to wait between them is a whole turn run in that gap.
+    if (guarded && (await waitsOnPerson(conversation, (asks as string[] | undefined) ?? [], context))) throw new HttpError(409, "WAITING", "the conversation waits on a person: this input may not answer it");
     // A message the server wrote: pi writes its user entry with no data, so its origin goes first as an entry of its own,
     // queued with it, which the Timeline matches to it by its text (MESSAGE_ORIGIN_KIND).
     // A retry of a message whose input is already in (a plain retry, or one first sent before an upgrade, whose marker went
@@ -287,7 +314,7 @@ export async function serveRun(options: ServeOptions = {}): Promise<RunServer> {
     // would be left open for a later message with the same text, a person's.
     const known = origin ? await conversation.commit((tx) => tx.submissionByRequest(conversation.id, requestId), context) : undefined;
     if (origin && known === undefined) await conversation.submit({ type: "write", requestId: originMarkId(requestId), entry: { kind: MESSAGE_ORIGIN_KIND, data: { origin: origin as JsonObject, text: textOfInput(content as UserInput) } } }, context);
-    const submission = await conversation.submit({ type: "input", requestId, content: content as UserInput, ...(whenBusy === undefined ? {} : { whenBusy }) }, context);
+    const submission = await conversation.submit({ type: "input", requestId, content: content as UserInput, ...(guarded ? { whenBusy: "reject" as const } : whenBusy === undefined ? {} : { whenBusy }) }, context);
     let record: SubmissionRecord = await submission.status(context);
     if (wait === true) record = await submission.wait(context);
     const answer = record.type === "input" && record.status === "done" ? await answerOf(conversation, record.answer, context) : undefined;
