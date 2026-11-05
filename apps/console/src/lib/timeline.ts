@@ -62,9 +62,12 @@ export function steps(rows: readonly TimelineRow[]): Step[] {
     } else if (result) {
       const ok = result.tool_status !== "failed";
       const parts = [r.tool_input_preview, result.tool_result_preview].filter(Boolean);
+      // A result with no status (`tool_status: null`) is a call that has not run yet: one parked for the owner's
+      // approval (a finished result is "success" or "failed"). The time to that row is no run of the tool's: no duration.
+      const ran = result.tool_status !== null;
       step = {
         row: { ...result, id: r.id, seq: r.seq, timestamp: r.timestamp, summary: ok ? result.summary.replace(/:\s*ok$/i, "") : result.summary },
-        ms: Math.max(0, Date.parse(result.timestamp) - Date.parse(r.timestamp)),
+        ...(ran ? { ms: Math.max(0, Date.parse(result.timestamp) - Date.parse(r.timestamp)) } : {}),
         detail: parts.length === 2 ? `${parts[0]}\n\n→ ${parts[1]}` : parts[0] ?? null,
       };
     } else step = { row: r };
