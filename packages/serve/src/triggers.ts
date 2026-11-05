@@ -23,8 +23,12 @@ import { EFFORTS } from "./model.js";
 import { ID, IDEMPOTENCY_TTL_S, isObject, type Json, unknownFields } from "./validate.js";
 
 export const TRIGGERS_FILE = "triggers.json";
-/** The firings each trigger keeps, newest last; a firing still due is never dropped. */
+/** The firings each trigger keeps, newest last; a firing still due is never dropped, nor a failure whose trigger.failed is
+ *  not queued yet (up to UNTOLD_KEPT). */
 export const HISTORY_KEPT = 200;
+/** The most failures a trigger keeps past its history while their trigger.failed waits for the outbox. A schedule turns
+ *  itself off after FAILURES_TO_PAUSE in a row, but runs that start between failures, and run now, can add more. */
+const UNTOLD_KEPT = 50;
 /** The shortest every_s, and so the most often a schedule fires: a cron line has no seconds field. */
 export const MIN_EVERY_S = 60;
 /** The longest every_s: a year and a day. */
@@ -307,9 +311,10 @@ export class Triggers {
    *  trigger.failed queued that is not yet. */
   start(): void {
     this.offUnreadable(this.triggers.filter((t) => t.enabled && sourceProblem(t.source)), this.clock.now());
-    this.tick();
-    // A trigger.failed an earlier server wrote the firing of but never queued.
+    // A trigger.failed an earlier server wrote the firing of but never queued: queued before the first tick records
+    // anything, so no trim reaches it first.
     for (const t of this.unreadable ? [] : this.triggers) for (const f of t.firings) if (unmarked(f)) this.notifyFailed(t.id, f.key);
+    this.tick();
     this.arm();
   }
 
@@ -615,7 +620,11 @@ export class Triggers {
     if (trigger.firings.some((f) => f.key === firing.key)) return;
     trigger.firings.push(firing);
     let over = trigger.firings.length - HISTORY_KEPT;
-    const gone = over > 0 ? trigger.firings.filter((f) => f.status !== "due" && over-- > 0) : [];
+    // Kept past the history: a firing still due, and a failure whose trigger.failed is not queued yet (the outbox's write,
+    // or this file's, keeps failing), the newest UNTOLD_KEPT of them; an older one's notice is dropped, and said.
+    const untold = new Set(trigger.firings.filter(unmarked).slice(-UNTOLD_KEPT));
+    const gone = over > 0 ? trigger.firings.filter((f) => f.status !== "due" && !untold.has(f) && over-- > 0) : [];
+    for (const f of gone) if (unmarked(f)) this.deps.say({ condition: "trigger_notice_dropped", trigger: trigger.id, firing: f.key });
     trigger.firings = trigger.firings.filter((f) => !gone.includes(f));
     const kept = [...(trigger.run_now_kept ?? []), ...gone.filter((f) => f.by === "manual")].filter((f) => this.inDay(f));
     if (kept.length) trigger.run_now_kept = kept;
