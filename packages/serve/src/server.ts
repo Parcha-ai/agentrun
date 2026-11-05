@@ -1868,6 +1868,15 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     await proxyLiveHttp(req, res, handover, rest);
   }
 
+  /** The origin of the address people open (`publicUrl`, AGENTRUN_PUBLIC_URL), lowercased; none, undefined. */
+  const publicOrigin = (() => {
+    try {
+      return options.publicUrl ? new URL(options.publicUrl).origin.toLowerCase() : undefined;
+    } catch {
+      return undefined;
+    }
+  })();
+
   let names: Set<string> | undefined;
   const server = createServer((req, res) => {
     const requestId = `req_${randomBytes(8).toString("hex")}`;
@@ -1915,9 +1924,11 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     const deny = (status: string) => void socket.end(`HTTP/1.1 ${status}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
     if (!viewing || !ID.test(viewing[1]!) || !/^\/v\/[A-Za-z0-9_-]{22}\/ws$/.test(viewing[2]!)) return deny("404 Not Found");
     if (names && !names.has(String(req.headers.host ?? "").toLowerCase())) return deny("403 Forbidden");
-    // A browser always sends its page's origin on a WebSocket, which no other page's script can forge: this server's own,
-    // and the owner signed in, or nothing.
-    if (String(req.headers.origin ?? "").toLowerCase() !== ownOrigin(req)) return (authFailed(raw, "live_view_origin"), deny("403 Forbidden"));
+    // A browser always sends its page's origin on a WebSocket, which no other page's script can forge: this server's own
+    // (as this request reaches it, or its public address, which a TLS proxy that rewrites Host or drops
+    // X-Forwarded-Proto leaves as the only one the owner's page has), and the owner signed in, or nothing.
+    const sent = String(req.headers.origin ?? "").toLowerCase();
+    if (sent === "" || (sent !== ownOrigin(req) && sent !== publicOrigin)) return (authFailed(raw, "live_view_origin"), deny("403 Forbidden"));
     if (!owner || !signedIn(req, owner)) return (authFailed(raw, "live_view_without_session"), deny("401 Unauthorized"));
     void (async () => {
       const run = await runs.get(viewing[1]!);

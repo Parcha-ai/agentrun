@@ -201,3 +201,15 @@ test("a run's process that dies without letting its sessions go takes its hand-o
   assert.equal((await call(w.server.port, { path: `/v2/runs/${w.runId}/browser/live/v/${handed.id}`, headers: { cookie: w.cookie } })).status, 404, "nothing proxied");
   assert.equal((await liveWs(w, `/v2/runs/${w.runId}/browser/live/v/${handed.id}/ws`)).status, 404);
 });
+
+test("behind a TLS proxy that rewrites Host or drops X-Forwarded-Proto, the owner's WebSocket from the server's public address is taken; another origin still is not", { timeout: 120_000 }, async (t) => {
+  const w = await watched(t, { publicUrl: "https://agent.example.com" });
+  const handed = JSON.parse(readFileSync(w.file, "utf8"));
+  const wsPath = `/v2/runs/${w.runId}/browser/live/v/${handed.id}/ws`;
+  assert.equal((await liveWs(w, wsPath, { origin: "https://evil.example.com" })).status, 403);
+  const owned = await liveWs(w, wsPath, { origin: "https://agent.example.com" });
+  assert.equal(owned.status, 101, "the public address's origin");
+  owned.ws.sendJson({ type: "hello", token: handed.token });
+  assert.equal(JSON.parse((await owned.ws.next(5_000)).data).type, "ready");
+  owned.ws.destroy();
+});

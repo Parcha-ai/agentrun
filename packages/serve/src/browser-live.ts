@@ -111,6 +111,8 @@ export function proxyLiveHttp(req: IncomingMessage, res: ServerResponse, handove
       answer.once("error", () => (res.destroy(), resolve()));
     });
     upstream.on("timeout", () => upstream.destroy());
+    // A client that leaves mid-answer takes the request to the run with it.
+    res.once("close", () => { if (!res.writableFinished) upstream.destroy(); });
     upstream.on("error", () => {
       if (!res.headersSent) res.writeHead(502, { "content-type": "text/plain", "content-security-policy": LIVE_CSP, "cache-control": "no-store" });
       res.end("the run's browser view did not answer\n");

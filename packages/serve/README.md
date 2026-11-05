@@ -821,7 +821,8 @@ has no `browser` tool, or its browser resolves unavailable here (the tool plane'
 server`, `kernel picked, no KERNEL_API_KEY`). It takes the owner's password session in the console: a token, which a run's process, an MCP client or a
 script may hold, is `403`. The viewer's page and its WebSocket are under `/v2/runs/{id}/browser/live/`, proxied to that run's
 port alone: the page is framed by this server's own origin alone (`frame-ancestors 'self'`, the console's `'none'` everywhere
-else), and the WebSocket is taken only from this server's own origin with the owner's session. One viewer at a time: a second is
+else), and the WebSocket is taken only from this server's own origin (as the request reaches it, or the public address,
+`AGENTRUN_PUBLIC_URL`, for a TLS proxy that rewrites `Host`) with the owner's session. One viewer at a time: a second is
 refused (`viewer_in_use`). The viewer drops input before the browser (`held read_only`); a browser with no page yet (Kernel's
 headless one starts with none) shows "No page yet" until one opens. The token dies with the session: the answer says `none`
 and the old link opens nothing. The token is in no record, timeline row, run view, run file, home, log or the model's context.
