@@ -247,3 +247,25 @@ describe("AgentEditor, a harness this server doesn't run", () => {
     expect(html.slice(at, next)).not.toContain("<details");
   });
 });
+
+// A phone on its side (844x390) leaves the step's pane about 300 px wide. The tool cards and the harness cards size their
+// columns by a minimum width, so a narrow pane gets fewer columns (one tool card a row; harness cards that wrap), never
+// cards squeezed until their text runs tall or overlaps.
+describe("AgentEditor, card grids in a narrow pane", () => {
+  const classOf = (html: string, marker: RegExp) => marker.exec(html)?.[1]?.split(" ") ?? [];
+  it("lays the tool cards out by a minimum column width, not two columns from sm up", () => {
+    const html = renderToStaticMarkup(createElement(AgentEditor, { agent: null, caps, step: "tools" }));
+    const cls = classOf(html, /<ul class="([^"]*)"/);
+    expect(cls).toContain("grid-cols-[repeat(auto-fill,minmax(min(100%,18rem),1fr))]");
+    expect(cls).not.toContain("sm:grid-cols-2");
+  });
+  it("lays the harness cards out by a minimum card width, and a card's name wraps rather than running into the next", () => {
+    const five = { ...caps, harnesses: [{ id: "pi", available: true }, { id: "claude-agent", available: true }, { id: "codex", available: false, reason: "codex needs OPENAI_API_KEY." }] };
+    const html = renderToStaticMarkup(createElement(AgentEditor, { agent: null, caps: { ...five, decisionProvider: "jev" }, step: "settings" }));
+    const cls = classOf(html, /<div class="([^"]*)" role="radiogroup" aria-label="Harness"/);
+    expect(cls).toContain("grid-cols-[repeat(auto-fill,minmax(min(100%,9rem),1fr))]");
+    expect(cls.some((c) => /^sm:grid-cols-\d$/.test(c))).toBe(false);
+    const name = /<span class="([^"]*)">Decision<\/span>/.exec(html)?.[1]?.split(" ") ?? [];
+    expect(name).toContain("break-words");
+  });
+});
