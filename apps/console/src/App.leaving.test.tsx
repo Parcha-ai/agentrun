@@ -1,0 +1,163 @@
+import { act, createElement } from "react";
+import { createRoot } from "react-dom/client";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { App } from "./App";
+
+// The agent editor holds unsaved changes: leaving it in the console (the sidebar, its back arrow, any address) asks first,
+// and Cancel stays with the edit kept; a tab close or reload gets the browser's own question. Nothing changed, or all of it
+// saved, nothing asks; the editor's own steps never do.
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+let root: ReturnType<typeof createRoot> | undefined;
+const LEAVE = "You have unsaved changes. Leave and discard them?";
+
+const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+const definition = { version: 1, name: "Calc", instructions: "Answer.", harness: "pi", skills: [], tools: [] };
+let calc: { agent_id: string; kind: string; revision: string; revisions: number; archived_at: null; definition: typeof definition };
+let asked: string[];
+let answer: boolean;
+let confirms: string[];
+
+beforeEach(() => {
+  calc = { agent_id: "calc", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { ...definition } };
+  asked = []; confirms = []; answer = false;
+  vi.stubGlobal("confirm", (message: string) => { confirms.push(message); return answer; });
+  vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
+    const path = new URL(url, "http://serve.test").pathname;
+    const method = init?.method ?? "GET";
+    asked.push(`${method} ${path}`);
+    if (path === "/v2/auth/session") return json(200, { password_set: true, signed_in: true });
+    if (path === "/v2/capabilities") return json(200, { harnesses: [{ id: "pi", available: true }], tools: [], thinking: ["low"], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } });
+    if (path === "/v2/agents" && method === "POST") {
+      const body = JSON.parse(String(init!.body)) as { definition: typeof definition };
+      return json(201, { agent_id: "made", kind: "agentic", revision: "m1", revisions: 1, archived_at: null, definition: body.definition });
+    }
+    if (path === "/v2/agents") return json(200, { agents: [calc], next_cursor: null });
+    if (path === "/v2/agents/calc/definition" && method === "PUT") {
+      const body = JSON.parse(String(init!.body)) as { definition: Partial<typeof definition> };
+      calc = { ...calc, revision: "r2", revisions: 2, definition: { ...calc.definition, ...body.definition } };
+      return new Response(JSON.stringify(calc), { status: 200, headers: { "content-type": "application/json", etag: '"r2"' } });
+    }
+    if (path === "/v2/agents/calc") return new Response(JSON.stringify(calc), { status: 200, headers: { "content-type": "application/json", etag: `"${calc.revision}"` } });
+    if (path.endsWith("/runs") || path.endsWith("/revisions")) return json(200, { runs: [], revisions: [], next_cursor: null });
+    return json(404, { error: { code: "not_found", message: path, retryable: false } });
+  });
+});
+afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.innerHTML = ""; vi.unstubAllGlobals(); location.hash = ""; });
+
+async function open(hash: string) {
+  location.hash = hash;
+  await new Promise((r) => setTimeout(r, 20));
+  const host = document.body.appendChild(document.createElement("div"));
+  root = createRoot(host);
+  act(() => root!.render(createElement(App)));
+  const wait = async (ok: () => boolean, what: string) => {
+    const end = Date.now() + 4000;
+    while (!ok() && Date.now() < end) await act(async () => { await new Promise((r) => setTimeout(r, 25)); });
+    expect(ok(), what).toBe(true);
+  };
+  // A moment for an address change, and the console's answer to it, to land.
+  const settle = async () => { for (let i = 0; i < 8; i++) await act(async () => { await new Promise((r) => setTimeout(r, 10)); }); };
+  const button = (label: RegExp) => [...host.querySelectorAll("button")].find((b) => label.test((b.getAttribute("aria-label") ?? b.textContent ?? "").trim()));
+  const click = async (el: Element | null | undefined) => { await act(async () => { (el as HTMLElement).click(); }); await settle(); };
+  const type = async (el: Element | null, value: string) => {
+    await act(async () => {
+      const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      Object.getOwnPropertyDescriptor(proto, "value")!.set!.call(el, value);
+      el!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  };
+  const sidebar = (label: string) => [...host.querySelectorAll('nav[aria-label="Navigation"] button')].find((b) => b.textContent?.trim() === label);
+  const instructions = () => host.querySelector<HTMLTextAreaElement>("#agent-instructions");
+  // Whether a tab close or reload is asked about: the page's beforeunload handler cancels the event.
+  const unloadAsks = () => { const e = new Event("beforeunload", { cancelable: true }); window.dispatchEvent(e); return e.defaultPrevented; };
+  return { host, wait, settle, button, click, type, sidebar, instructions, unloadAsks };
+}
+
+async function editing() {
+  const page = await open("#/agents/calc/edit");
+  await page.wait(() => !!page.instructions(), "the editor is open");
+  return page;
+}
+
+describe("App, leaving the agent editor with unsaved changes", () => {
+  it("asks when a sidebar link would leave it; Cancel stays, the address and the edit kept", async () => {
+    const page = await editing();
+    await page.type(page.instructions(), "Answer, then check the sum.");
+    await page.click(page.sidebar("Agents"));
+    expect(confirms).toEqual([LEAVE]);
+    await page.wait(() => location.hash === "#/agents/calc/edit", "the address is the editor's again");
+    expect(page.instructions()?.value).toBe("Answer, then check the sum.");
+    expect(page.button(/^Save revision$/)).toBeTruthy();
+  });
+
+  it("Leave goes, and the edit is dropped", async () => {
+    const page = await editing();
+    await page.type(page.instructions(), "Answer, then check the sum.");
+    answer = true;
+    await page.click(page.sidebar("Agents"));
+    expect(confirms).toEqual([LEAVE]);
+    await page.wait(() => !page.instructions(), "the editor is gone");
+    expect(location.hash).toBe("#/agents");
+  });
+
+  it("asks for the editor's own back arrow, and for an address typed or linked", async () => {
+    const page = await editing();
+    await page.type(page.instructions(), "Answer, then check the sum.");
+    await page.click(page.button(/^Back to agents$/));
+    expect(confirms).toEqual([LEAVE]);
+    await page.wait(() => location.hash === "#/agents/calc/edit", "still the editor");
+    await act(async () => { location.hash = "#/runs"; });
+    await page.settle();
+    expect(confirms).toEqual([LEAVE, LEAVE]);
+    await page.wait(() => location.hash === "#/agents/calc/edit", "still the editor");
+    expect(page.instructions()?.value).toBe("Answer, then check the sum.");
+  });
+
+  it("never asks for the editor's own steps", async () => {
+    const page = await editing();
+    await page.type(page.instructions(), "Answer, then check the sum.");
+    await page.click(page.button(/Settings/));
+    await page.click(page.button(/Context/));
+    expect(confirms).toEqual([]);
+    expect(page.instructions()?.value).toBe("Answer, then check the sum.");
+  });
+
+  it("asks the browser before a tab close or reload only while there are unsaved changes", async () => {
+    const page = await editing();
+    expect(page.unloadAsks()).toBe(false);
+    await page.type(page.instructions(), "Answer, then check the sum.");
+    expect(page.unloadAsks()).toBe(true);
+    await page.type(page.instructions(), "Answer.");
+    expect(page.unloadAsks()).toBe(false);
+  });
+});
+
+describe("App, leaving the agent editor with nothing unsaved", () => {
+  it("leaves without asking when nothing changed", async () => {
+    const page = await editing();
+    await page.click(page.sidebar("Agents"));
+    await page.wait(() => location.hash === "#/agents", "on the agents list");
+    expect(confirms).toEqual([]);
+  });
+
+  it("leaves without asking right after a save", async () => {
+    const page = await editing();
+    await page.type(page.instructions(), "Answer, then check the sum.");
+    await page.click(page.button(/^Save revision$/));
+    await page.wait(() => asked.includes("PUT /v2/agents/calc/definition") && !!page.host.textContent?.includes("Saved"), "saved");
+    expect(page.unloadAsks()).toBe(false);
+    await page.click(page.sidebar("Agents"));
+    await page.wait(() => location.hash === "#/agents", "on the agents list");
+    expect(confirms).toEqual([]);
+  });
+
+  it("a new agent's Create opens its page without asking", async () => {
+    const page = await open("#/agents/new");
+    await page.wait(() => !!page.instructions(), "the new agent's editor");
+    await page.type(page.host.querySelector("#agent-name"), "Made");
+    await page.type(page.instructions(), "Answer.");
+    await page.click(page.button(/^Create$/));
+    await page.wait(() => location.hash === "#/agents/made", "on the new agent's page");
+    expect(confirms).toEqual([]);
+  });
+});
