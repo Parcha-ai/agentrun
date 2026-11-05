@@ -20,6 +20,7 @@ import { RUN_STATUSES, RunsList } from "@/components/RunsList";
 import { type Section, Shell } from "@/components/Shell";
 import { SignIn } from "@/components/SignIn";
 import { type AuthMode, authMode, signInProblem, takeSetupCode } from "@/lib/auth";
+import { mayLeave } from "@/lib/leaving";
 import { allPages, type Capabilities, ClientError, createClient, type ImportOffer, type ImportState, problemOf, type RunsFilter } from "@/lib/client";
 import { createConnection } from "@/lib/connection";
 import { appendRuns, keeper, keepersByRun, sendOnce, uuid } from "@/lib/idempotency";
@@ -211,7 +212,16 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
     })();
     return () => { live = false; };
   }, [v2]);
-  useEffect(() => { const on = () => setWhere(route()); window.addEventListener("hashchange", on); return () => window.removeEventListener("hashchange", on); }, []);
+  // Every move between pages is an address change, so the one guard on unsaved changes (lib/leaving) is here: a page that
+  // holds some asks first, and Cancel puts its address back (the entry the move made now reads it again) and stays.
+  useEffect(() => {
+    const on = (e: HashChangeEvent) => {
+      if (!mayLeave()) { e.stopImmediatePropagation(); history.replaceState(history.state, "", e.oldURL); return; }
+      setWhere(route());
+    };
+    window.addEventListener("hashchange", on);
+    return () => window.removeEventListener("hashchange", on);
+  }, []);
   // The capabilities, read at the start and again after a settings save: only the newest read lands, so an answer to an
   // earlier read (two saves in a row) never puts back what an earlier save left.
   const capsAsked = useRef(0);
@@ -397,6 +407,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   }, [v2, modelsReady]);
   return (
     <Shell active={where.section} settings={settingsOffered.length > 0} onNavigate={nav} onSignOut={() => {
+      if (!mayLeave()) return;
       // The card comes back only once the server ended the session: a sign-out that did not reach it says so instead.
       v2.signOut().then(onSignedOut, (e) => setSignOutError(e instanceof ClientError ? e.message : "The sign-out did not reach the server. Try again."));
     }}>

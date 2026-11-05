@@ -4,6 +4,7 @@ import { agentHash } from "@/components/AgentPage";
 import { AgentsList } from "@/components/AgentsList";
 import { type Agent, createBody, editBody, saveError } from "@/lib/agentForm";
 import { allPages, type Client, ClientError } from "@/lib/client";
+import { leaveSaved } from "@/lib/leaving";
 import type { ToolChoice } from "@/lib/toolSettings";
 
 const problemOf = (e: unknown) => (e instanceof ClientError ? saveError(e) : { kind: "other" as const, message: e instanceof Error ? e.message : String(e) });
@@ -87,6 +88,7 @@ export function AgentEditPage({ v2, caps, choices = [], agentId, go }: { v2: Cli
           if (!agent) {
             const made = await v2.createAgent(createBody({ name: fields.name ?? "", description: fields.description ?? "", instructions: fields.instructions ?? "", harness: fields.harness ?? "pi", tools: fields.tools ?? [], tool_settings: fields.tool_settings, thinking: fields.thinking, model: fields.model, place: fields.place, learning: fields.learning, decisionProvider: caps.decisionProvider }));
             // A new agent lands on its own page; a workflow agent (Decision, Workflow) on its Workflow tab.
+            leaveSaved();
             go(agentHash(made.agent_id, made.kind === "workflow" ? "workflow" : undefined));
             return null;
           }

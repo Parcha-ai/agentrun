@@ -12,6 +12,7 @@ import { markdown, when } from "@/lib/format";
 import { harnessDefault, modelLabel, NO_DEFAULT } from "@/lib/models";
 import type { Places } from "@/lib/place";
 import type { ToolChoice } from "@/lib/toolSettings";
+import { useLeaveGuard } from "@/lib/leaving";
 import { cn } from "@/lib/utils";
 
 /** A revision as GET /v2/agents/{id}/revisions lists it; `definition` is what it holds (a workflow revision's workflow). */
@@ -73,12 +74,17 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
   // The form as it is now, for a save's answer to compare with what that save sent.
   const formNow = useRef(f);
   formNow.current = f;
+  // The form as saved: as it opened, or as its last save left it. A form unlike it holds unsaved changes, and leaving the
+  // page asks first (lib/leaving). The revision note is not one: a note alone saves nothing.
+  const [base, setBase] = useState<AgentFields>(f);
+  useLeaveGuard(!same(f, base));
   // On a new agent, picking another harness re-ticks that harness's tools, until a tool is changed by hand.
   const [toolsTouched, setToolsTouched] = useState(false);
   // The server's tools can arrive after the form opens (capabilities answer late): a new agent's untouched tools follow.
   const toolsKey = caps.tools.map((t) => `${t.name}:${t.available}:${(t.harnesses ?? []).join("+")}`).join(",");
   useEffect(() => {
-    if (creating && !toolsTouched) setF((x) => ({ ...x, tools: defaultTools(x.harness ?? "pi", caps.tools) }));
+    // The defaults are no edit: the saved form takes them too.
+    if (creating && !toolsTouched) { setF((x) => ({ ...x, tools: defaultTools(x.harness ?? "pi", caps.tools) })); setBase((x) => ({ ...x, tools: defaultTools(x.harness ?? "pi", caps.tools) })); }
   }, [toolsKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const [note, setNote] = useState("");
   const [preview, setPreview] = useState(false);
@@ -112,12 +118,15 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
       try { fields = { ...fields, workflow: JSON.parse(f.workflowText ?? "") }; }
       catch (e) { setSaving(false); setProblem({ kind: "invalid", message: `The workflow is not JSON: ${(e as Error).message}`, fields: { "definition.workflow": `The workflow is not JSON: ${(e as Error).message}` } }); return; }
     }
+    const sent = f;
     const p = await onSave(fields, note);
     // A provider picked or reset while the save was under way is not in it: the form keeps that change, unsaved. Saved
     // and unchanged since, the tool settings are the agent's own: the form shows them as the definition has them.
     const unchanged = same(formNow.current.tool_settings ?? {}, fields.tool_settings ?? {});
     setSaving(false); setProblem(p); setSaved(!p && unchanged); if (!p) setNote("");
     if (!p && unchanged) setF(({ tool_settings: _saved, ...rest }) => rest);
+    // Saved: the form as sent is the saved one (its tool settings now the definition's, when unchanged since).
+    if (!p) setBase(unchanged ? (({ tool_settings: _saved, ...rest }) => rest)(sent) : sent);
   };
   // The model a definition that names none runs on, for this harness, as a person reads it: the gateway's routing prefix
   // off, the full id in a title.
