@@ -41,7 +41,9 @@ export const WAIT = {
 
 /** An error for `client.unreachable` that names what happened by its code alone. */
 const failure = (code) => Object.assign(new Error(code), { cause: { code } });
-const pause = (ms) => new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
+/** A count of milliseconds as timers take it: a whole number, at least 1 (AbortSignal.timeout throws on a fraction). */
+const wholeMs = (ms) => Math.max(1, Math.ceil(ms));
+const pause = (ms) => new Promise((resolve) => setTimeout(resolve, wholeMs(ms)));
 /** The wait before try `tries + 1`: the client's own delay, doubling up to its cap, and never under the server's `retry`
  *  (`floor`), which may be above that cap. */
 export const backoff = (tries, floor = 0) => Math.max(floor, Math.min(MAX_BACKOFF_MS, BACKOFF_MS * 2 ** (tries - 1)));
@@ -60,7 +62,7 @@ async function getJson(client, path, reached, deadline) {
     let bytes;
     try {
       // A long poll answers within its wait_ms: one silent well past it is a connection gone.
-      response = await client.fetch(path, { signal: AbortSignal.timeout(Math.min(MAX_WAIT_MS + IDLE_MS, left)) });
+      response = await client.fetch(path, { signal: AbortSignal.timeout(wholeMs(Math.min(MAX_WAIT_MS + IDLE_MS, left))) });
       bytes = Buffer.from(await response.arrayBuffer());
       reached.yes = true;
     } catch (error) {
@@ -103,7 +105,7 @@ function settle(client, run, id) {
  *  prints the run as it is (read once more, briefly; else as last read, if it was) and exits 1, the run going on. */
 export async function waitRun(client, runId, timeoutMs) {
   const id = encodeURIComponent(runId);
-  const deadline = timeoutMs === undefined ? Infinity : Date.now() + timeoutMs;
+  const deadline = timeoutMs === undefined ? Infinity : Date.now() + wholeMs(timeoutMs);
   const reached = { yes: false };
   let after = 0;
   let last;
@@ -112,7 +114,7 @@ export async function waitRun(client, runId, timeoutMs) {
     if (run.code !== undefined) return run.code;
     const seen = run.value ?? last;
     if (seen !== undefined) client.print(seen);
-    client.io.stderr.write(`Run ${runId} is still ${seen?.status ?? "going"} after ${timeoutMs / 1000} s; it goes on: wait again with \`agentrun runs wait ${runId}\`.\n`);
+    client.io.stderr.write(`Run ${runId} is still ${seen?.status ?? "going"} after ${wholeMs(timeoutMs) / 1000} s; it goes on: wait again with \`agentrun runs wait ${runId}\`.\n`);
     return 1;
   };
   for (let first = true; ; first = false) {
