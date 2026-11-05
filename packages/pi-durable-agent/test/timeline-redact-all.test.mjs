@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { timelineOf, timelineReducer } from "../dist/timeline/index.js";
-import { assistant, call, inConv, result, user } from "./timeline-support.mjs";
+import { assistant, call, custom, inConv, result, user } from "./timeline-support.mjs";
 
 /** A held key, made at runtime: no credential-shaped literal for the source export. */
 const KEY = ["not-a-secret", "held-model-key", "0123456789ab"].join("-");
@@ -158,4 +158,16 @@ test("a person's message that holds a held key: its row's summary and text hold 
   const reducer = timelineReducer({ redact });
   reducer.apply(entries.map((entry) => ({ type: "entry_appended", entry })));
   assert.deepEqual(leaks(reducer.rows().filter((r) => r.kind === "user_message")), [], shown(reducer.rows()));
+});
+
+test("a context reset and a summarized context quoting a held key: their phase rows' text holds no form of it", () => {
+  const entries = [
+    user("Go on."),
+    custom("pi.reset", undefined, { model: [{ role: "user", content: `Start again with ${KEY}.` }] }),
+    custom("pi.compaction", undefined, { model: [{ role: "user", content: `Summary: we used ${B64} and ${KEY}.` }] }),
+  ];
+  const rows = timelineOf(entries, { redact });
+  const phases = rows.filter((r) => r.kind === "phase");
+  assert.deepEqual(phases.map((r) => r.summary), ["Context reset", "Summarized older context"]);
+  assert.deepEqual(leaks(phases), [], shown(phases));
 });
