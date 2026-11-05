@@ -267,8 +267,9 @@ export class Triggers {
   /** Why triggers.json does not read: nothing fires and nothing is written over it until it does. */
   private readonly unreadable?: string;
   private timer?: { clear(): void };
-  /** The firings being driven, by key: a firing is driven once at a time. */
-  private readonly driving = new Set<string>();
+  /** The firings in their turn, queued or being driven, by key, with that turn: a firing is asked for once at a time,
+   *  and the timer arms for none of them until its turn ends. */
+  private readonly driving = new Map<string, Promise<void>>();
   /** Due firings whose last write failed, by key, and when to drive them again: on disk they may hold no retry time. */
   private readonly rewrite = new Map<string, number>();
   /** Each trigger's firings, driven one after another in the order asked: a firing's overlap check reads what the one
@@ -434,9 +435,17 @@ export class Triggers {
 
   /** `key`'s firing driven after every firing of its trigger asked before it. */
   private inTurn(triggerId: string, key: string): Promise<void> {
+    const known = this.driving.get(key);
+    if (known) return known;
     const turn = (this.turns.get(triggerId) ?? Promise.resolve()).then(() => this.drive(triggerId, key));
     this.turns.set(triggerId, turn);
-    void turn.finally(() => void (this.turns.get(triggerId) === turn && this.turns.delete(triggerId)));
+    this.driving.set(key, turn);
+    void turn.finally(() => {
+      this.driving.delete(key);
+      if (this.turns.get(triggerId) === turn) this.turns.delete(triggerId);
+      // A firing still due after its turn (a retry) is armed for again.
+      this.arm();
+    });
     return turn;
   }
 
@@ -493,8 +502,6 @@ export class Triggers {
    *  server (429), or a last run that could not be read, keeps it due and tries again later. Nothing it holds across a wait is an object: the trigger may be edited or
    *  deleted meanwhile, so each step finds it again by id and key. */
   private async drive(triggerId: string, key: string): Promise<void> {
-    if (this.driving.has(key)) return;
-    this.driving.add(key);
     try {
       const found = this.find(triggerId, key);
       if (!found || found.firing.status !== "due") return;
@@ -526,9 +533,6 @@ export class Triggers {
       this.started(triggerId, key, started.run_id);
     } catch (error) {
       this.deps.say({ condition: "trigger_firing_failed", trigger: triggerId, firing: key, error: (error as Error).message });
-    } finally {
-      this.driving.delete(key);
-      this.arm();
     }
   }
 
