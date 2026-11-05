@@ -680,7 +680,11 @@ export class LearningRuns {
    *  the run has ended. Never rejects: `proposed` or `dropped`, `propose_failed` for a fault. A server that goes
    *  meanwhile leaves it `reflecting` in serve.json, and the next start checks it again. */
   private proposeOnce(run: Run): Promise<void> {
-    if (!awaitsPropose(run.meta)) return Promise.resolve();
+    // A run hidden while this server can't read the browser sign-in it was handed (meta.unshown, runs.ts load): the pointer
+    // is not among the values refused, so a note that holds it would pass, be graded and reach every later run. Its
+    // learning is left as it is, unsaved (an ended run's hidden mark is this server's alone), for a server that reads the
+    // sign-in to check it.
+    if (!awaitsPropose(run.meta) || run.meta.unshown) return Promise.resolve();
     return once(this.proposing, run.id, () => this.propose(run));
   }
 
@@ -722,7 +726,9 @@ export class LearningRuns {
    *  never asks the grader again; what it spent is in the ledger with the run's end. A server that closes mid-grade leaves the
    *  learning `proposed`, and its next start grades it. */
   private gradeOnce(run: Run): Promise<void> {
-    if (run.meta.learning?.state !== "proposed") return Promise.resolve();
+    // Not while the run is hidden (proposeOnce): its verdict's words are cut and its merge's message said over the values
+    // refused, which lack the pointer here.
+    if (run.meta.learning?.state !== "proposed" || run.meta.unshown) return Promise.resolve();
     return once(this.grading, run.id, () => withAgentGrade(this.options.agents.dir, run.agentId, () => this.grade(run)));
   }
 
