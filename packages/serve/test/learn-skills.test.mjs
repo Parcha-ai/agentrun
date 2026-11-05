@@ -314,3 +314,14 @@ test("the tools a learned draft may name are the granted ones the gate allows: o
   assert.deepEqual(tools.learnedDraftTools(granted, permission), { tools: tools.learnedWorkflowTools(granted).filter((name) => name !== "web_fetch" && name !== "web_search"), gated: { web_fetch: "ask", web_search: "deny" } });
   assert.deepEqual(tools.learnedDraftTools(granted, () => "allow"), { tools: tools.learnedWorkflowTools(granted), gated: {} });
 });
+
+test("a composed workflow node whose child names no output path is refused at learn time too, never after its nodes ran", () => {
+  const child = JSON.parse(callDraft("web_fetch"));
+  delete child.output.path;
+  const doc = JSON.parse(composedDraft("web_fetch"));
+  doc.root.workflow = child;
+  const result = check(draft(JSON.stringify(doc)));
+  assert.deepEqual(result.problems.map((p) => p.rule), ["workflow"], JSON.stringify(result.problems));
+  assert.match(result.problems[0].detail, /the workflow node at \/root: its output names no path/, result.problems[0].detail);
+  assert.ok(check(draft(composedDraft("web_fetch"))).ok, "a child that names its path passes");
+});

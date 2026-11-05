@@ -457,3 +457,13 @@ test("each call node of a learned workflow asks the run's gate as it runs, a com
     }
   }
 });
+
+test("a learned workflow's input line reads a reference in the schema's own definitions first, as the DSL does, whatever a sibling schema of the same name says", () => {
+  const withDefs = (sibling) => ({ name: "refs", description: DESCRIPTION, workflow: JSON.stringify({
+    v: 2, name: "refs",
+    schemas: { In: { type: "object", definitions: { Name: { type: "string" } }, properties: { who: { $ref: "#/definitions/Name" } }, required: ["who"] }, ...(sibling ? { Name: { type: "number" } } : {}), Out: { type: "object", properties: { a: { type: "string" } } } },
+    input: { schemaId: "In" }, output: { schemaId: "Out", path: "out" },
+    root: { node: "extract", label: "n", instructions: "Answer.", out: "Out", as: "out" },
+  }) });
+  for (const sibling of [false, true]) assert.match(learning.workflowLine(withDefs(sibling)), /input: \{who\* string\}/, `sibling ${sibling}`);
+});
