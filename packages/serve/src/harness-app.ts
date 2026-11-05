@@ -35,7 +35,7 @@ import type { DoorContext, DoorEvent, DoorHook, DurableRun } from "@parcha/pi-du
 import { type ConfineChild, confineOf } from "./adapters.js";
 import { hostTools, type ToolResults } from "./host-tools.js";
 import { endsTurn, type Park, type ParkedCall, type Resume, type RunGate } from "./tool-gate.js";
-import { CAP_REFUSAL_CODE, CAP_REFUSED_FIELD, type CapGuard, capToolSpend, holdsInFlight, type RefusalFigures, type RunSpend, takePaidRefusal, useSpend } from "./cap.js";
+import { CAP_REFUSAL_CODE, CAP_REFUSED_FIELD, type CapGuard, capToolSpend, holdsInFlight, type RefusalFigures, type RunSpend, sideSpend, takePaidRefusal, useSpend } from "./cap.js";
 import { durableSessions } from "./sessions.js";
 import { handsParallel, planeOf } from "./tool-plane.js";
 import { parallelOf } from "./web-fetch.js";
@@ -139,6 +139,7 @@ export function adapterRun(
   coding?: readonly ToolRegistration[],
   stopRecord?: StopRecord,
   gate?: RunGate,
+  extra: readonly ToolRegistration[] = [],
 ): AdapterRun {
   const plane = planeOf(process.env);
   // The web tools' Parallel key, when one resolves to Parallel, read as the run's app loads, before its process starts
@@ -165,10 +166,12 @@ export function adapterRun(
   const plus = (a: number | null, b: number | null) => (a === null || b === null ? null : a + b);
   const guard = (request: Parameters<CapGuard["beforeRequest"]>[0]) => {
     const byCancel = cancelled();
+    // What the run spent: the booking's, its paid tools' charges, and its own model requests' beside the harness's (a
+    // learned workflow's: cap.ts sideSpend); theirs in flight are held with the paid calls' (paidHolds, capBefore).
     // A paid call the cap just refused for room (cap.ts takePaidRefusal): this request is refused in its words, so the
     // turn ends there and the run waits on a raise, as at a model request's refusal. A refusal no cap fixes comes first.
     const paid = byCancel || !cap || request.spentUsd === null ? undefined : takePaidRefusal(spend);
-    const answer = byCancel ? { refuse: CANCELLED } : paid ? { refuse: `${CAP_REFUSAL_CODE}${paid.words}`, spentUsd: paid.figures.spentUsd, needsUsd: paid.figures.needsUsd } : cap?.beforeRequest({ ...request, spentUsd: plus(request.spentUsd, charged) });
+    const answer = byCancel ? { refuse: CANCELLED } : paid ? { refuse: `${CAP_REFUSAL_CODE}${paid.words}`, spentUsd: paid.figures.spentUsd, needsUsd: paid.figures.needsUsd } : cap?.beforeRequest({ ...request, spentUsd: plus(plus(request.spentUsd, charged), sideSpend()) });
     if (answer && "refuse" in answer) {
       refused = answer.refuse;
       capRefused = !byCancel;
@@ -633,13 +636,16 @@ export function adapterRun(
       await booking.bookCut();
       // A paid tool's check before it spends: the session's requests, each booked once the proxy has answered (waited
       // for, as at a turn's end), one still in flight at the worst case the cap held for it (as pi's spend counts it),
-      // with the run's charges; its charge joins them.
+      // with the run's charges and its own model requests' (sideSpend); its charge joins them. The run's own model
+      // requests read the same total at once (`now`: capModels' `joined`), a request in flight held, never less.
       if (budgetUsd !== undefined) {
+        const now = () => plus(plus(plus(booking.spentUsd(), charged), sideSpend()), inFlight.total());
         spend = {
           cap: budgetUsd,
-          spent: async () => (await bookings(BOOKING_WAIT_MS), plus(booking.spentUsd(), charged)),
+          spent: async () => (await bookings(BOOKING_WAIT_MS), plus(plus(booking.spentUsd(), charged), sideSpend())),
           held: () => inFlight.total(),
           add: (usd) => void (charged = plus(charged, usd)),
+          now,
         };
         useSpend(spend);
       }
@@ -648,11 +654,11 @@ export function adapterRun(
       for (const [request, usage] of inSession(await writer.read()).booked) if (!written.has(request) || (unpriced.has(request) && !priced.has(request))) costed.push({ request, usage });
       await flush();
       // The calls that wait for a person's approval, read before any turn goes on.
-      await gate?.load(durable, context, coding);
+      await gate?.load(durable, context, coding, extra);
       // The park every gated call of the run's takes, built once: the host tools' here, and the MCP gateway's, which takes
       // the same object beside them (`{ gate, park }`). A call parked by its id or by its tool and arguments ends its turn.
       const park: Park = { commit: (change) => commit(change as never) as never, parked: (callId) => void (parked = { callId }), parkedBy: (match) => void (parked = match), turn: () => taking };
-      session = await adapter.open({ ...spec, tools: hostTools(durable, tools, context, results, coding, gate ? { gate, park } : undefined) }, { writer, models: booking.models, signal: stop.signal, onEvent, ...(dir ? { dir } : {}), ...(cwd ? { cwd } : {}) });
+      session = await adapter.open({ ...spec, tools: hostTools(durable, tools, context, results, coding, gate ? { gate, park } : undefined, extra) }, { writer, models: booking.models, signal: stop.signal, onEvent, ...(dir ? { dir } : {}), ...(cwd ? { cwd } : {}) });
       // A turn the person stopped is still open in the session (an interrupt writes no end there), and it is not resumed.
       // The run's stop record names the person's newest message when they stopped: with no message on the root newer than
       // it, the open turn is the stopped one. The session settles it, ended interrupted, and the next message is a turn of
