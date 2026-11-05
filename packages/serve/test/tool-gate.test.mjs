@@ -470,9 +470,14 @@ test("a stop while an approval waits and a later turn runs withdraws the call an
   for (const end of ["stop", "cancel"]) {
     const runId = await fetching(api, `turn-${end}`, "pi");
     const approval = (await parked(api, runId)).view.pending.id;
-    // A turn while the call waits: one that streams for 8 s unless it is stopped.
+    // The message declines the waiting call, and the gate's resume is the one turn that follows: it streams for 8 s
+    // unless it is stopped. The stop or the cancel lands while that turn runs (its message is on the timeline).
     assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "Slowly, please." })).status, 202);
-    await follow(api, runId, ["working"], { deadlineMs: 30_000 });
+    for (const end = Date.now() + 30_000; ; await sleep(100)) {
+      const rows = (await api("GET", `/runs/${runId}/timeline`)).body.rows;
+      if (rows.some((row) => row.kind === "user_message" && (row.text ?? "").startsWith("[tool approval] "))) break;
+      assert.ok(Date.now() < end, "the gate's resume turn started");
+    }
     if (end === "stop") {
       const stop = await api("POST", `/runs/${runId}/stop`, {});
       assert.equal(stop.body.stopped, true, JSON.stringify(stop.body));
