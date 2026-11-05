@@ -38,7 +38,7 @@ export const READING_TOOLS: readonly string[] = ["read", "bash"];
 export const readsFiles = (tools: readonly string[]): boolean => tools.some((tool) => READING_TOOLS.includes(tool));
 
 /** The line before the skills a run reads on demand. */
-export const ON_DEMAND = "Your skills follow: each one's name, what it is for and its file. When one fits the step you are on, read its SKILL.md first and follow it.";
+export const ON_DEMAND = "Your skills follow: each one's name, what it is for and its file. When one fits the step you are on, read its SKILL.md whole before you act, and follow it; the files it names are in its folder.";
 /** The most of a skill's description its line carries. */
 const DESCRIPTION_MAX = 1024;
 
