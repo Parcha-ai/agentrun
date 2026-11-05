@@ -353,6 +353,10 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   useEffect(() => {
     if (where.section !== "mission") return;
     let live = true;
+    // The failed runs the last read listed: one it did not (a run that failed since) reads the page's counts again, so the
+    // failed total under the Failed tile and list ("See all N") never falls behind them. GET /stats is no cheap read (the
+    // store's counts and analytics, and every run's row), so it is read again only then, never on every poll.
+    let failedSeen: Set<string> | null = null;
     // Up to 100 runs of each status, newest first; each read lands apart, and one that fails keeps its section's last answer.
     const upTo = (status: RunStatus) => allPages((cursor) => v2.listRuns(50, cursor, { status }), (p) => p.runs, 2);
     const read = () => Promise.allSettled([upTo("input_required"), upTo("failed"), upTo("working")])
@@ -361,7 +365,12 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
         const day = Date.now() - FAILED_WINDOW_MS;
         setNeedsProblem(mergeNeeds(null, reads).problem);
         if (reads[0]?.status === "fulfilled") setAskingRead(true);
-        if (reads[1]?.status === "fulfilled") setFailedRead(true);
+        if (reads[1]?.status === "fulfilled") {
+          setFailedRead(true);
+          const ids = reads[1].value.map((r) => r.run_id);
+          if (failedSeen && ids.some((id) => !failedSeen!.has(id))) setMissionTry((n) => n + 1);
+          failedSeen = new Set(ids);
+        }
         if (reads[2]?.status === "fulfilled") setLiveRead(true);
         setNeeds((prev) => {
           const { needs: next } = mergeNeeds(prev, reads);
