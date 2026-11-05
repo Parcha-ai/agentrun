@@ -18,7 +18,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, normalize } from "node:path";
 import type { DriveContext, HostTool, SessionState } from "@parcha/agentrun-kernel/kernel";
-import { NativeJournal, placeSubmissions, recoveryNote, toolBridge, transcriptOf, type TranscriptEntry } from "@parcha/agentrun-kernel/process";
+import { journalRecords, NativeJournal, placeSubmissions, recoveryNote, toolBridge, transcriptOf, type TranscriptEntry } from "@parcha/agentrun-kernel/process";
 import { startModelProxy, type ModelProxyHooks, type ModelProxyOptions, type ParentWatch } from "@parcha/agentrun-kernel/host";
 import { openCodeConfig } from "./config.js";
 import { startMcpServer } from "./host/mcp.js";
@@ -29,6 +29,11 @@ import { startOpenCodeServer, type ConfineChild, type OpenCodeServer } from "./h
 export const SYNC_STREAM = "opencode.sync";
 /** The journal stream that holds the message id each submission was sent under. */
 export const PROMPT_STREAM = "opencode.prompt";
+
+/** The submissions a drive of the session marked as sent to OpenCode (PROMPT_STREAM, written just before each send). */
+export function sentSubmissions(state: SessionState): Set<string> {
+  return new Set(journalRecords<{ submission?: unknown }>(state, PROMPT_STREAM).map((r) => r.data?.submission).filter((s): s is string => typeof s === "string"));
+}
 /** The session's private directories, under its own directory. */
 export const PRIVATE_DIRS = ["home", "config", "data", "cache", "state", "tmp"] as const;
 /** OpenCode's agent for the session: its prompt is the session's instructions, and its only tools are the host's. */
@@ -523,7 +528,10 @@ export function openCodeHarness(options: OpenCodeHarnessOptions, control?: (driv
 
       const runTurn = async (text: string, submission: string): Promise<Outcome> => {
         const id = messageId(submission);
-        // The id it is sent under, in the log first: a recovery knows whether OpenCode recorded it.
+        // A stop that landed after the prompt was placed: it is never sent, and no mark says it was (the settle carries it).
+        if (signal.aborted) throw signal.reason;
+        // The id it is sent under, in the log first: a recovery knows whether OpenCode recorded it, and a settle that it was
+        // sent (its send mark, sentSubmissions): a crash between the two reads "marked, maybe sent", never sent twice.
         journal.append(PROMPT_STREAM, { submission, messageID: id });
         await journal.flush();
         const ended = new Promise<Outcome>((resolve) => {

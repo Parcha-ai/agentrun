@@ -21,7 +21,12 @@ harness adapter the way they run on Pi, durable in AgentRun's own store.
   still hold open (one the person stopped), interrupted, and runs nothing, so the turn is never resumed. A prompt it
   stopped before the harness placed it stays in the conversation: the next prompt or follow-up carries its text first,
   with a line saying it was stopped before any work on it began. The carry is in that message's text in the session's
-  state, so a crash's recovery of it, placed but never recorded by the CLI, sends the stopped words too.
+  state, so a crash's recovery of it, placed but never recorded by the CLI, sends the stopped words too. So does a
+  prompt the harness placed and its CLI never took (the stop came between the two), carried by `settleTurn`'s `unsent`.
+  Codex and OpenCode mark a prompt just before they hand it over (`markSent`, a kernel effect; `sentMarks` reads them),
+  and a marked one is never carried: a crash between the mark and the send loses it rather than sending it twice.
+  claude-agent reads its CLI's own transcript as the session keeps it, the history a resumed CLI is given: the SDK
+  writes a message to the CLI at once, and a stop can kill the CLI before it reads it. A follow-up's own prompt, named to the settle (`opening`), is withdrawn and never carried.
 - `SessionStore` is the run's store for sessions. A session is written only through a writer, and `open(key)` takes the
   session: every writer opened earlier for that key is fenced from then on, and its appends are refused
   (`SessionFenced`) with nothing written. The runner opens one writer per attempt and hands it to the adapter, so a

@@ -15,12 +15,12 @@ import { HOST_RESULT_MAX_CHARS, READ_SKILL_FILE, readSkillFileTool, skillProblem
 import type { AdapterEvent, AdapterSession, AgentAdapter, HostTool, SessionIO, SessionSpec, TurnStatus } from "@parcha/agentrun-kernel";
 import { abortedOutcome, openDrive, SessionHalt, type Drive, type HostTool as KernelTool } from "@parcha/agentrun-kernel/kernel";
 import { pendingSubmissions } from "@parcha/agentrun-kernel/kernel";
-import { recoveryNote, settleTurn, transcriptOf } from "@parcha/agentrun-kernel/process";
+import { recoveryNote, sentMarks, settleTurn, transcriptOf } from "@parcha/agentrun-kernel/process";
 import { CODEX_VERSION } from "./binary.js";
 import { codexSchemaProblems, describedDescription } from "./schema.js";
 import { withCheckedBinary } from "./host/sandbox.js";
 import { verifyCodex } from "./verify.js";
-import { codexHarness, type CodexHarnessOptions } from "./harness.js";
+import { codexHarness, type CodexHarnessOptions, owedSubmissions } from "./harness.js";
 import { type ConfineChild, localMachine, type MachineSeed, sessionDir } from "./host/machine.js";
 import { serialWriter, type ModelProxyOptions } from "@parcha/agentrun-kernel/host";
 
@@ -276,12 +276,16 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
           await ready();
           void run();
         },
-        async settleOpenTurn() {
+        async settleOpenTurn(options = {}) {
           if (state !== "open_turn") throw new Error("agentrun-harness-codex: there is no turn to settle");
           await ready();
           // The turn's end in the session's own transcript, as a turn that ends writes it: the next open finds no open turn,
-          // and the next turn carries no recovery of this one. Nothing is sent.
-          await settleTurn(drive);
+          // and the next turn carries no recovery of this one. Nothing is sent. A prompt the turn placed and Codex was never
+          // sent (no send mark: the stop came between the two) is carried into the next message, as an unplaced one is
+          // (owedSubmissions reads the marks as Codex's own record of the client ids it took); a follow-up's own is not.
+          const folded = drive.state();
+          const unsent = owedSubmissions(folded, recoveryNote(folded)?.turn.placed ?? [], sentMarks(folded)).map((s) => s.id);
+          await settleTurn(drive, { unsent, ...(options.opening === undefined ? {} : { host: options.opening }) });
           state = "idle";
         },
         async turnEnd() {

@@ -193,8 +193,9 @@ export interface AdapterSession {
   /** Record the open turn as ended, interrupted, and send nothing: the turn is not to be resumed (a person stopped it, and
    *  an interrupt writes no end in the session). Only when `state` is `open_turn`; the session is `idle` after, here and
    *  when a later process opens it, and the next `send` is a turn of its own. A follow-up closes a cut turn the same way
-   *  (kernel/follow-up.ts, FollowUpTarget.settleOpenTurn). */
-  settleOpenTurn(): Promise<void>;
+   *  (kernel/follow-up.ts, FollowUpTarget.settleOpenTurn), naming its own prompt (`opening`): that one is withdrawn and
+   *  never carried, and the rest is left as it is. */
+  settleOpenTurn(options?: { opening?: string }): Promise<void>;
   /** Resolves when the turn in flight ends. */
   turnEnd(): Promise<{ status: TurnStatus; error?: string }>;
   /** Stop the turn in flight; calls it left open end interrupted. With `drainMs`, a pause: no new turn is sent, and the
