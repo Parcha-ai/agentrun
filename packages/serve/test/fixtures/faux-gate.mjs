@@ -5,9 +5,18 @@
 const textOf = (message) => (typeof message?.content === "string" ? message.content : (message?.content ?? []).map((c) => (c.type === "text" ? c.text : "")).join(""));
 const urlOf = (text) => /Fetch (\S+) once\./.exec(text)?.[1];
 
+/** Answers `text` after `ms`, or as an aborted reply as soon as the turn is stopped. */
+const slow = (faux, ms, text) =>
+  new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(faux.message(text)), ms);
+    faux.signal?.addEventListener("abort", () => (clearTimeout(timer), resolve(faux.message("", { stopReason: "aborted" }))), { once: true });
+  });
+
 export default function reply(context, faux) {
   const url = urlOf(textOf(context.messages.find((m) => m.role === "user")));
   if (!url) return faux.message("Nothing to do.");
+  // "Slowly, please." as the last message: a turn that streams for 8 s, unless it is stopped.
+  if (textOf(context.messages.at(-1)).endsWith("Slowly, please.")) return slow(faux, 8_000, "Done slowly.");
   if (!context.messages.some((m) => m.role === "toolResult")) return faux.message(faux.toolCall("web_fetch", { url }), { stopReason: "toolUse" });
   return faux.message(`Saw: ${textOf(context.messages.at(-1))}`);
 }

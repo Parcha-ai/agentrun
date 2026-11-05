@@ -460,3 +460,38 @@ test("a stop of a parked run withdraws the call: stopped, no pending approval, i
   await sleep(3_000);
   assert.deepEqual(await dialled(), [], "neither call ever ran");
 });
+
+test("a stop while an approval waits and a later turn runs withdraws the call and aborts the turn: stopped, idle, nothing pending, the turn cut, and a later answer is 409 and never runs the call; a cancel too", { timeout: 150_000 }, async (t) => {
+  const dialled = await network(t);
+  const server = await serve(t, GATE);
+  const answer = await owner(server);
+  const { api } = server;
+  assert.equal((await api("PUT", "/settings/tools", { web_fetch: { permission: "ask" } })).status, 200);
+  for (const end of ["stop", "cancel"]) {
+    const runId = await fetching(api, `turn-${end}`, "pi");
+    const approval = (await parked(api, runId)).view.pending.id;
+    // A turn while the call waits: one that streams for 8 s unless it is stopped.
+    assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "Slowly, please." })).status, 202);
+    await follow(api, runId, ["working"], { deadlineMs: 30_000 });
+    if (end === "stop") {
+      const stop = await api("POST", `/runs/${runId}/stop`, {});
+      assert.equal(stop.body.stopped, true, JSON.stringify(stop.body));
+      await follow(api, runId, ["input_required"], { deadlineMs: 30_000 });
+      const view = (await api("GET", `/runs/${runId}`)).body;
+      assert.deepEqual([view.status, view.state, view.pending], ["input_required", "idle", null], "stopped: idle, nothing pending");
+      // Past the turn's 8 s: a turn the stop did not cut would have answered by now.
+      await sleep(10_000);
+      const after = (await api("GET", `/runs/${runId}/timeline`)).body.rows;
+      assert.ok(!after.some((row) => (row.text ?? "").includes("Done slowly.")), `the turn was cut, never answered: ${JSON.stringify(after.map((row) => [row.kind, (row.text ?? "").slice(0, 40)]))}`);
+    } else {
+      assert.equal((await api("POST", `/runs/${runId}/cancel`)).status, 202);
+      await follow(api, runId, ["cancelled"], { deadlineMs: 30_000 });
+      await sleep(10_000);
+      const after = (await api("GET", `/runs/${runId}/timeline`)).body.rows;
+      assert.ok(!after.some((row) => (row.text ?? "").includes("Done slowly.")), "the turn was cut");
+    }
+    assert.equal((await answer(runId, approval, { decision: "allow" })).status, 409, `${end}: a later allow`);
+  }
+  await sleep(2_000);
+  assert.deepEqual(await dialled(), [], "the call never ran");
+});
