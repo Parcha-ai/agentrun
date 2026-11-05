@@ -86,20 +86,36 @@ export type EnvironmentConfig = {
 	/** `session`: one box for the whole session. `conversation`: one box for each conversation. */
 	readonly scope: "session" | "conversation";
 	readonly capabilities: readonly string[];
-	/** One line, the author's: what the environment is for. What the placer shows Jev for it. */
+	/**
+	 * One line, the author's: what the environment is for. What the placer shows Jev for it.
+	 *
+	 * @deprecated Removed in 0.1.0-beta.31 with the placer (`@parcha/pi-transport/place`). From then on a config that
+	 * sets `purpose` fails to parse.
+	 */
 	readonly purpose?: string;
 };
 
 /** A checked `transport` block: every reference names a declared environment. */
 export type TransportConfig = {
 	readonly environments: Readonly<Record<string, EnvironmentConfig>>;
-	/** Where the session lives: an environment id or `auto`. `undefined` leaves it with the host. */
+	/**
+	 * Where the session lives: an environment id or `auto`. `undefined` leaves it with the host.
+	 *
+	 * @deprecated Removed in 0.1.0-beta.31 with `@parcha/pi-transport/home`. From then on a config that sets `home` fails
+	 * to parse. Run an agent in a box with `@parcha/agentrun-serve`, which uses `./hands` and `./sync`.
+	 */
 	readonly home?: string;
 	/**
 	 * Where tools run: `default` and each role name an environment id or `auto`. `undefined` leaves tools with the
 	 * host's own environment.
 	 */
 	readonly hands?: { readonly default: string; readonly roles: Readonly<Record<string, string>> };
+	/**
+	 * How the placer moves the session: Jev's classifier, when to ask it, where to rest, and how sure it must be.
+	 *
+	 * @deprecated Removed in 0.1.0-beta.31 with the placer (`@parcha/pi-transport/place`). From then on a config that sets
+	 * `auto` fails to parse.
+	 */
 	readonly auto?: {
 		readonly classifier: { readonly provider: string; readonly modelId: string };
 		readonly ask: "message" | "turn";
