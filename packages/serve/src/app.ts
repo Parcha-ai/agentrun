@@ -22,7 +22,7 @@ import { codingSource } from "./coding-tools.js";
 import { cancelledIn, markRequests } from "./request-start.js";
 import { decisionProvidersOf } from "./decisions.js";
 import { FOLLOW_UP_OPEN_ENV, readJson, RUN_META } from "./files.js";
-import { adapterFor, claudeModel, claudePriceModel, claudeSkillCheck, codexModel, type ConfineChild, openRouterOnly, thinkingFor } from "./adapters.js";
+import { adapterFor, claudeModel, claudePriceModel, claudeSkillCheck, codexModel, type ConfineChild, learnedRoute, openRouterOnly, thinkingFor } from "./adapters.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV } from "./harness.js";
 import { adapterRun } from "./harness-app.js";
 import { pinnedWorkflows, readPin, withLearned } from "./learning.js";
@@ -148,7 +148,13 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   // call node that names it; its call nodes on the agent's tools its run's plane resolves (the plane its harness and
   // its tools read).
   const flows = revision.kind === "agentic" ? await pinnedWorkflows(where.root, await readPin(where.root)) : [];
-  const learnedModel = (tier: unknown) => byTier.get((tier as Tier | undefined) ?? "default") ?? byTier.get("default");
+  // On claude-agent and codex, on the route the harness's own requests take (learnedRoute): on OpenRouter alone,
+  // OpenRouter's name for the run's model, whose key the run holds, never the vendor's provider.
+  const learnedHarness = revision.kind === "agentic" ? revision.body.harness : undefined;
+  const learnedModel = (tier: unknown) => {
+    const ref = byTier.get((tier as Tier | undefined) ?? "default") ?? byTier.get("default");
+    return ref && learnedHarness && learnedHarness !== DEFAULT_HARNESS ? learnedRoute(learnedHarness, env, ref) : ref;
+  };
   const learnedTool = flows.length && revision.kind === "agentic"
     ? learnedWorkflowTool({ workflows: flows, granted: revision.body.tools, plane: planeOf(process.env), env, work: where.work, models: models as never, modelOf: learnedModel, complete: completer(models as never, learnedModel, thinkingLevel) })
     : undefined;

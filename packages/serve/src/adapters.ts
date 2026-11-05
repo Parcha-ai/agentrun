@@ -329,6 +329,28 @@ export function claudePriceModel(env: NodeJS.ProcessEnv, model: ModelRef): Model
   }
 }
 
+/** The model a learned workflow's requests on `harness` name in the run's models (pi-ai's catalog, app.ts): the route
+ *  the harness's own requests take (claudeProvider, codexProvider). Through OpenRouter, OpenRouter's name for the run's
+ *  model, whose key the run holds and whose entry prices it; the vendor's provider would need the vendor's key, which a
+ *  run on OpenRouter alone does not have. Otherwise the run's model as it is (Anthropic's own id for claude-agent); under
+ *  a faux harness, or where the harness refuses the run (before any request), `model` itself. */
+export function learnedRoute(harness: string, env: NodeJS.ProcessEnv, model: ModelRef): ModelRef {
+  if (env[FAUX_ENV] || env[FAUX_HARNESS_ENV]) return model;
+  try {
+    if (harness === "claude-agent") {
+      const { origin, priceModel } = claudeProvider(env, model);
+      return origin === OPENROUTER_BASE ? { provider: "openrouter", modelId: priceModel.id } : { ...model, modelId: claudeModelId(model) };
+    }
+    if (harness === "codex") {
+      const { origin, modelId } = codexProvider(env, model);
+      return origin === OPENROUTER_BASE ? { provider: "openrouter", modelId } : model;
+    }
+  } catch {
+    // The harness refuses this run before any request: nothing is sent on this model.
+  }
+  return model;
+}
+
 /** claude-agent's model: the revision's (or the server's default for claude-agent, hostModel) as `provider/model-id`.
  *  Never the gateway's model, which serves the other harnesses. An Anthropic model (`anthropic/<id>`) is Anthropic's
  *  own id, dots as dashes, except where claude-agent reaches Anthropic only through OpenRouter (openRouterOnly), where it

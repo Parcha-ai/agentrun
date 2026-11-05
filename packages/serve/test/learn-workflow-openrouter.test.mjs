@@ -40,17 +40,19 @@ test("on OPENROUTER_API_KEY alone, a claude-agent or codex run's learned workflo
   const claude = adapters.claudeModel(env, "anthropic/claude-sonnet-5.5");
   const codex = await adapters.codexModel(env, "openai/gpt-6-sol");
   const cases = [
-    ["claude-agent", claude.model, { provider: "openrouter", modelId: "anthropic/claude-sonnet-5.5" }, "/api/v1/messages"],
-    ["codex", codex.model, { provider: "openrouter", modelId: "openai/gpt-6-sol" }, "/api/v1/chat/completions"],
+    // OpenRouter's Messages endpoint takes its key as pi-ai's OpenRouter entry for Claude sends it (as a pi run on the same
+    // model does); its Chat Completions endpoint as a bearer token.
+    ["claude-agent", claude.model, { provider: "openrouter", modelId: "anthropic/claude-sonnet-5.5" }, "/api/v1/messages", (h) => h["x-api-key"]],
+    ["codex", codex.model, { provider: "openrouter", modelId: "openai/gpt-6-sol" }, "/api/v1/chat/completions", (h) => h.authorization?.replace(/^Bearer /, "")],
   ];
-  for (const [harness, model, routed, path] of cases) {
+  for (const [harness, model, routed, path, keyOf] of cases) {
     const ref = adapters.learnedRoute(harness, env, model);
     assert.deepEqual(ref, routed, harness);
     assert.ok(models.getModel(ref.provider, ref.modelId)?.cost, `${harness}: the catalog lists and prices ${ref.provider}/${ref.modelId}`);
     const answer = await completer(models, () => ref, "off")({ prompt: "Say the answer." }, new AbortController().signal);
     assert.match(JSON.stringify(answer), /the answer/, `${harness}: answered`);
     const sent = gw.requests.at(-1);
-    assert.deepEqual([sent.method, sent.path, sent.headers.authorization, sent.body?.model], ["POST", path, `Bearer ${KEY}`, routed.modelId], harness);
+    assert.deepEqual([sent.method, sent.path, keyOf(sent.headers), sent.body?.model], ["POST", path, KEY, routed.modelId], harness);
   }
   assert.deepEqual(refused, [], "nothing went anywhere but OpenRouter and loopback");
 });
