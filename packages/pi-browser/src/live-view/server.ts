@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import type { Duplex } from "node:stream";
-import { drivingGates, isHeld, isHolding } from "../core/driving.js";
+import { drivingGates, epochOf, isHeld, isHolding } from "../core/driving.js";
 import type { LiveView } from "../core/host.js";
 import { CLOSE_CODES, encodeFrame, LIMITS, parseClientMessage, type ClientMessage, type DrivingGate, type DrivingGates, type HoldEnd, type ServerMessage, type Stream, type StreamFactory, type ViewerAssets } from "./protocol.js";
 import { openStream } from "./stream.js";
@@ -79,7 +79,8 @@ const MAX_BAD_MESSAGES = 20;
 const BAD_WINDOW_MS = 10_000;
 
 /** A message waiting its turn behind the browser command that is running: `message` is replaced while it waits when a later message of the same kind supersedes it. */
-type Queued = { message: Exclude<ClientMessage, { type: "hello" | "take" | "give" }>; started: boolean };
+/** `epoch`: the driving gate's when the message arrived; one delivered after the browser changed hands is dropped. */
+type Queued = { message: Exclude<ClientMessage, { type: "hello" | "take" | "give" }>; started: boolean; epoch: number };
 type Viewer = { conn: WsConn; stream: Stream; gate: DrivingGate; unsubscribe: () => void; chain: Promise<void>; bad: number[]; queued: number; tail: Queued | null };
 type Entry = { tag: string; id: string; token: string; cdpUrl: string; view: LiveView | null; released: boolean; viewer: Viewer | null; pending: Set<WsConn>; taking?: boolean };
 
@@ -215,7 +216,9 @@ export function createLiveView(options: LiveViewOptions): LiveViewHost {
     // Mouse moves and scrolls arrive once per animation frame, so a slow browser command is always followed by a run of them. A run is combined into its last waiting
     // message (the latest position; the scroll summed) instead of queued one by one: nothing grows, order against presses and keys is kept (only the LAST waiting
     // message is ever merged into), and ordinary dragging is never counted as abuse.
-    const waiting = viewer.tail;
+    // A message is merged only into one that arrived while the same hands held the browser.
+    const epoch = epochOf(viewer.gate);
+    const waiting = viewer.tail && viewer.tail.epoch === epoch ? viewer.tail : null;
     if (waiting && !waiting.started && message.type === "mouse" && message.action === "move" && waiting.message.type === "mouse" && waiting.message.action === "move") { waiting.message = message; return; }
     // Scrolls are summed only when they were made at the same point with the same modifiers: two scrolls over different controls (or one with Control held, a zoom) are two.
     if (waiting && !waiting.started && message.type === "wheel" && waiting.message.type === "wheel" && waiting.message.x === message.x && waiting.message.y === message.y && (waiting.message.modifiers ?? 0) === (message.modifiers ?? 0)) {
@@ -229,7 +232,7 @@ export function createLiveView(options: LiveViewOptions): LiveViewHost {
       excess("busy");
       return;
     }
-    const item: Queued = { message, started: false };
+    const item: Queued = { message, started: false, epoch };
     viewer.tail = item;
     viewer.queued += 1;
     viewer.chain = viewer.chain.then(async () => {
@@ -237,8 +240,9 @@ export function createLiveView(options: LiveViewOptions): LiveViewHost {
       if (viewer.tail === item) viewer.tail = null;
       const message = item.message;
       if (entry.viewer !== viewer) { viewer.queued -= 1; return; }
-      // The hold may have ended while the message waited (handed back, idle, the agent's ask answered): it is not delivered.
-      if (takeOver && !isHeld(viewer.gate)) { send(viewer.conn, { type: "held", reason: "not_taken" }); viewer.queued -= 1; return; }
+      // The hold may have ended while the message waited (handed back, idle, the agent's ask answered), or the browser changed
+      // hands and came back (a new hold, a page the message was not made for): it is not delivered.
+      if (takeOver && (!isHolding(viewer.gate) || epochOf(viewer.gate) !== item.epoch)) { send(viewer.conn, { type: "held", reason: "not_taken" }); viewer.queued -= 1; return; }
       // Messages wait their turn behind a slow command, so the gate is asked again at delivery: the model may have taken the browser since the message arrived.
       if (viewer.gate.input() === "agent_acting") { send(viewer.conn, { type: "held", reason: "agent_acting" }); viewer.queued -= 1; return; }
       // The person's turn must not lapse while their own command runs (a navigation can take seconds, the window is 3 s): it is renewed until the command returns.

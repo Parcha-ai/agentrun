@@ -329,6 +329,39 @@ test("take-over viewer: a take while the agent acts is told it holds the browser
   assert.ok(await until(() => v.made[0].inputs.length === 1));
 });
 
+test("take-over viewer: input that waited behind a slow command while the browser changed hands (handed back, taken again) is dropped, never sent", async (t) => {
+  const tag = "ar-run-to-15-1";
+  const gates = createDrivingGates();
+  const sent = [];
+  let unblock;
+  const blocked = new Promise((resolve) => { unblock = resolve; });
+  const stream = () => ({ input: async (m) => { sent.push(m.text); if (m.text === "slow") await blocked; }, nav: async () => {}, dialog: async () => {}, close() {} });
+  const host = createLiveView({ hostOrigin: "'self'", stream, viewer: VIEWER, gates, takeOver: { take: async () => ({ end() {} }) } });
+  t.after(() => host.close());
+  const view = await host.open(tag, "ws://127.0.0.1:9/x");
+  const u = new URL(view.fullscreen);
+  const c = await connect(`ws://${u.host}${u.pathname}/ws`, { origin: u.origin });
+  c.ws.sendJson({ type: "hello", token: new URLSearchParams(u.hash.slice(1)).get("t") });
+  await c.ws.next();
+  const nextOf = async (type) => JSON.parse((await c.ws.until((m) => m.type === "text" && JSON.parse(m.data).type === type)).item?.data ?? "null");
+  c.ws.sendJson({ type: "take" });
+  assert.deepEqual(await nextOf("hold"), { type: "hold", held: true });
+  c.ws.sendJson({ type: "text", text: "slow" });
+  await until(() => sent.length === 1);
+  c.ws.sendJson({ type: "text", text: "typed into the old page" });
+  await wait(50);
+  c.ws.sendJson({ type: "give" });
+  assert.deepEqual(await nextOf("hold"), { type: "hold", held: false, reason: "given" });
+  c.ws.sendJson({ type: "take" });
+  assert.deepEqual(await nextOf("hold"), { type: "hold", held: true });
+  unblock();
+  assert.deepEqual(await nextOf("held"), { type: "held", reason: "not_taken" }, "the waiting input is dropped, and the viewer told");
+  await wait(50);
+  assert.deepEqual(sent, ["slow"], "it never reached the browser");
+  c.ws.sendJson({ type: "text", text: "new" });
+  assert.ok(await until(() => sent.length === 2));
+});
+
 test("take-over viewer: the session's release ends a hold, and the host is told", async (t) => {
   const tag = "ar-run-to-8-1";
   const v = await viewer(t, tag);
