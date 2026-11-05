@@ -20,8 +20,8 @@ const TOOL_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
 /** The end-of-run turn's message. `dir` is the run's copy of the folder relative to the run's workspace (`.learning`),
  *  where the agent can read its notes: the prompt never names a path of the host's, which a box would not see. `active`
- *  is how many notes are active in it, so how many lines the index has left. `tools`, the tools a workflow draft may
- *  name (tools.ts learnedWorkflowTools): none when not given. */
+ *  is how many notes are active in it, so how many lines the index has left. `tools`, the tools a workflow draft's
+ *  call nodes may run (tools.ts learnedWorkflowTools): none when not given. Its model nodes name none. */
 export function reflectPrompt(options: { dir: string; active: number; tools?: readonly string[] }): string {
   const { dir, active, tools = [] } = options;
   if (typeof dir !== "string" || dir === "" || dir.startsWith("/") || UNSEEN.test(dir)) throw new Error("the directory must be a path relative to the run's workspace, with no control or unseen characters");
@@ -74,6 +74,8 @@ export function reflectPrompt(options: { dir: string; active: number; tools?: re
     "workflow draft for that job. Most runs keep neither. Neither holds this case's data: each is about the job, not the one case.",
     "Steps the person asks you to follow every time a task comes back are a skill, not a note: keep them as the skill, in",
     "their words and with the exact output format they gave, and do not repeat them in a note.",
+    "A job that runs end to end as model and tool-call steps, from a defined input to a defined output, is a workflow draft,",
+    "and so is one the person asks you to keep as a workflow; its steps may also be a skill.",
     "",
     `A skill is how to do the job, step by step, as a SKILL.md: front matter with its \`name\` (lowercase letters, digits`,
     "and single dashes) and a `description` of when to use it, then the steps. Open its block with four backticks, so a",
@@ -89,18 +91,64 @@ export function reflectPrompt(options: { dir: string; active: number; tools?: re
     "````",
     "",
     "A workflow draft does the job as one workflow DSL document: front matter with one line that says what it does and",
-    "when to use it, then the JSON. It uses model, judge and tool-call nodes, and never a code node or a shell or",
-    `executor call. ${tools.length ? `Its nodes may name only these tools: ${tools.join(", ")}.` : "Its nodes name no tool."} At most ${CAPS.file} bytes of JSON.`,
+    "when to use it, then the JSON. It uses model and tool-call nodes only: no judge, pick or sift node, no code node, no shell or",
+    `executor call. Its model nodes name no tool. ${tools.length ? `Its call nodes may run only these tools: ${tools.join(", ")}.` : "It has no call node on a tool."} At most ${CAPS.file} bytes of JSON.`,
     "To change a draft you were given, give it again whole under its name.",
+    "Its schemas are declared once under `schemas`, and `input` and `output` name one each by `schemaId`, never a schema",
+    "written in place.",
     "",
     `\`\`\`\`${WORKFLOW_BLOCK} find-policies`,
     "---",
     "description: Finds a store's refund policy from its public pages; use when a case asks for it",
     "---",
-    '{"v": 2, "name": "find-policies", "schemas": {...}, "input": {...}, "output": {...}, "root": {...}}',
+    JSON.stringify(exampleDraft(tools.includes("web_fetch"))),
     "````",
   ].join("\n");
 }
+
+/** The prompt's example workflow draft, whole: its schemas declared once, its input and output naming them by `schemaId`,
+ *  and a chain the learned runner runs (a `web_fetch` call when the agent has it, then a model node; else two model
+ *  nodes), so an agent copies a draft the DSL and the checker pass (a test validates this text). */
+const exampleDraft = (fetches: boolean) =>
+  fetches
+    ? {
+        v: 2,
+        name: "find-policies",
+        schemas: {
+          Store: { type: "object", properties: { url: { type: "string" } }, required: ["url"] },
+          Page: { type: "object", properties: { text: { type: "string" } } },
+          Policies: { type: "object", properties: { refund: { type: "string" } }, required: ["refund"] },
+        },
+        input: { schemaId: "Store" },
+        output: { schemaId: "Policies", path: "policies" },
+        root: {
+          node: "chain",
+          steps: [
+            { node: "call", label: "fetch", via: "tool", tool: "web_fetch", args: { url: "{url}" }, out: "Page", as: "page", deadline_s: 30 },
+            { node: "extract", label: "read", instructions: "Say the store's refund policy, from the page.", out: "Policies", as: "policies" },
+          ],
+        },
+      }
+    : {
+        // With no tool to fetch with, the job's input is the page's text itself: every step reads what it is given,
+        // never a guess.
+        v: 2,
+        name: "find-policies",
+        schemas: {
+          Page: { type: "object", properties: { text: { type: "string" } }, required: ["text"] },
+          Lines: { type: "object", properties: { lines: { type: "string" } }, required: ["lines"] },
+          Policies: { type: "object", properties: { refund: { type: "string" } }, required: ["refund"] },
+        },
+        input: { schemaId: "Page" },
+        output: { schemaId: "Policies", path: "policies" },
+        root: {
+          node: "chain",
+          steps: [
+            { node: "extract", label: "quote", instructions: "Copy the lines of the page's text that are about refunds.", out: "Lines", as: "lines" },
+            { node: "extract", label: "read", instructions: "Say the store's refund policy, from those lines.", out: "Policies", as: "policies" },
+          ],
+        },
+      };
 
 /** A skill's or a workflow draft's block: the name its block gives, and its text whole. */
 export type LearnedBlock = { readonly name: string; readonly text: string };

@@ -14,7 +14,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { schemaProblems } from "./schema-support.mjs";
-import { follow, serve, withEnv } from "./support.mjs";
+import { follow, scratch, serve, withEnv } from "./support.mjs";
 import { fakeSlack, SLACK_BOT_ID, SLACK_BOT_TOKEN, SLACK_BOT_USER, SLACK_TEAM } from "./fixtures/fake-slack.mjs";
 import { ANSWER_POSTED_CHARS, slackLine } from "../dist/slack.js";
 import { ApiError } from "../dist/errors.js";
@@ -557,4 +557,22 @@ test("a Slack trigger a server before conversations kept (its threads, and each 
   const kept = JSON.parse(await readFile(join(data, "triggers.json"), "utf8")).triggers[0];
   assert.equal(kept.threads, undefined, "written back as conversations");
   assert.ok(kept.conversations[`slack:${thread}`]);
+});
+
+test("a run a Slack mention started that parks on a tool call's approval has its thread told to approve it in the console, naming the tool: no reply in the thread approves it", { timeout: 180_000 }, async (t) => {
+  const fixture = (name) => new URL(`./fixtures/${name}`, import.meta.url).pathname;
+  withEnv(t, { FAUX_WEB_LOG: join(await scratch(t), "dialled.txt") });
+  const { api, hook, slack } = await slackServer(t, { faux: fixture("faux-gate.mjs"), fauxWeb: fixture("faux-gate-web.mjs"), accounts: true, openSetup: true });
+  assert.equal((await api("PUT", "/settings/slack", { signing_secret: SIGNING, bot_token: SLACK_BOT_TOKEN })).status, 200);
+  assert.equal((await api("PUT", "/settings/tools", { web_fetch: { permission: "ask" } })).status, 200);
+  await made(api, "fetcher", { instructions: "Fetch http://public.example/ once.", tools: ["web_fetch"] });
+  const { body } = await api("POST", "/triggers", { name: "fetches", source: { kind: "slack", channels: [LISTED] }, target: { kind: "start_run", agent_id: "fetcher", input: { content: "Fetch http://public.example/ once." }, max_cost_usd: 0.5 } });
+  assert.equal((await hook(mention("1767234000.000100", "fetch it"))).body.ok, "received");
+  const [started] = await firings(api, body.id, 1);
+  await follow(api, started.run_id, ["input_required"], { deadlineMs: 55_000 });
+  const view = (await api("GET", `/runs/${started.run_id}`)).body;
+  assert.deepEqual([view.pending?.kind, view.pending?.tool], ["approval", "web_fetch"]);
+  const waiting = await until(() => slack.posts.find((p) => p.body.text.startsWith("Waiting")), "the waiting line posted");
+  assert.equal(waiting.body.text, `Waiting for your approval of web_fetch: approve in the console <${PUBLIC}/#/runs/${started.run_id}|open the run>`);
+  assert.equal(waiting.body.thread_ts, "1767234000.000100");
 });

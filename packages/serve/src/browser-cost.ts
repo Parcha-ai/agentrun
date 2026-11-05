@@ -164,7 +164,7 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
         // Up to the millionth of a dollar, so the cap's words name a figure never below the hold.
         const usd = Math.ceil(Math.round((usdOf(ranS) + 2 * stretch) * 1e12) / 1e6) / 1e6;
         const basis = `${provider}'s session time at $${rate} an hour: the ${Math.round(ranS)} s its session ran since its last charge, and twice the next stretch of ${stretchS} s (its ${price.minimumS} s minimum, the ${idleS} s idle window and ${RELEASE_ALLOWANCE_S} s for its release)`;
-        const paid = await paidCall("This browser call", async () => keepHold(usd), () => undefined, { usd, basis });
+        const paid = await paidCall("this browser call", async () => keepHold(usd), () => undefined, { usd, basis });
         if ("refused" in paid) return refuse(paid.refused, api, context);
         const hold = paid.result;
         calls.set(api.callId, { cid: api.conversationId, hold });

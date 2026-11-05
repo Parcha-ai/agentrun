@@ -86,7 +86,9 @@ type Schedule = { kind: "schedule"; cron: string; timezone: string } | { kind: "
 /** A Slack source's `post_answer`: a completed run's line in its thread carries its final answer (default false: its
  *  status and link only). */
 type Source = Schedule | { kind: "webhook" } | { kind: "slack"; channels: string[]; post_answer: boolean } | { kind: "github"; repos: string[]; post_answer: boolean };
-export type Target = { kind: "start_run"; agent_id: string; input: Json; max_cost_usd: number; effort?: string } | { kind: "message_run"; run_id: string; input: Json };
+/** `max_cost_usd`: each run's cap; absent, the agent's default as it stands when the firing starts (one of the two is
+ *  required: server.ts targetIssues and start). */
+export type Target = { kind: "start_run"; agent_id: string; input: Json; max_cost_usd?: number; effort?: string } | { kind: "message_run"; run_id: string; input: Json };
 type FiringStatus = (typeof FIRING_STATUSES)[number];
 type Firing = {
   key: string;
@@ -316,7 +318,7 @@ function sourceOf(value: unknown, now: number, issues: InputIssue[]): Source | u
 
 function targetOf(value: unknown, issues: InputIssue[]): Target | undefined {
   const bad = (field: string, reason: string, message: string) => void issues.push({ field: `target${field ? `.${field}` : ""}`, reason, message });
-  if (!isObject(value)) return bad("", value === undefined ? "missing" : "wrong_type", "target is an object: {kind: \"start_run\", agent_id, input, max_cost_usd, effort?} or {kind: \"message_run\", run_id, input}"), undefined;
+  if (!isObject(value)) return bad("", value === undefined ? "missing" : "wrong_type", "target is an object: {kind: \"start_run\", agent_id, input, max_cost_usd?, effort?} or {kind: \"message_run\", run_id, input}"), undefined;
   const before = issues.length;
   if (value.kind === "message_run") {
     issues.push(...unknownFields(value, ["kind", "run_id", "input"]).map((i) => ({ ...i, field: `target.${i.field}` })));
@@ -328,11 +330,10 @@ function targetOf(value: unknown, issues: InputIssue[]): Target | undefined {
   issues.push(...unknownFields(value, ["kind", "agent_id", "input", "max_cost_usd", "effort"]).map((i) => ({ ...i, field: `target.${i.field}` })));
   if (typeof value.agent_id !== "string" || !ID.test(value.agent_id)) bad("agent_id", value.agent_id === undefined ? "missing" : "wrong_type", "agent_id is an agent's id");
   if (!isObject(value.input)) bad("input", value.input === undefined ? "missing" : "wrong_type", "input is the run's input, as POST /agents/{agent_id}/runs takes it: {content}");
-  if (value.max_cost_usd === undefined) bad("max_cost_usd", "missing", "max_cost_usd is required: every run a trigger starts is capped");
-  else if (!(typeof value.max_cost_usd === "number" && value.max_cost_usd > 0 && Number.isFinite(value.max_cost_usd))) bad("max_cost_usd", "wrong_type", "max_cost_usd is a number above 0");
+  if (value.max_cost_usd !== undefined && !(typeof value.max_cost_usd === "number" && value.max_cost_usd > 0 && Number.isFinite(value.max_cost_usd))) bad("max_cost_usd", "wrong_type", "max_cost_usd is a number above 0");
   if (value.effort !== undefined && !(EFFORTS as readonly unknown[]).includes(value.effort)) bad("effort", "not_an_option", `effort is one of ${EFFORTS.join(", ")}`);
   if (issues.length > before) return undefined;
-  return { kind: "start_run", agent_id: value.agent_id as string, input: value.input as Json, max_cost_usd: value.max_cost_usd as number, ...(typeof value.effort === "string" ? { effort: value.effort } : {}) };
+  return { kind: "start_run", agent_id: value.agent_id as string, input: value.input as Json, ...(typeof value.max_cost_usd === "number" ? { max_cost_usd: value.max_cost_usd } : {}), ...(typeof value.effort === "string" ? { effort: value.effort } : {}) };
 }
 
 /** `catchup_window_s`, as given (absent: undefined). */
@@ -351,7 +352,7 @@ function wellFormed(t: unknown): t is Trigger {
   if (!isObject(source) || !(source.kind === "webhook" || source.kind === "schedule" || source.kind === "slack" || source.kind === "github")) return false;
   if (!(t.conversations === undefined || isObject(t.conversations))) return false;
   const timed = source.kind === "webhook" || (source.kind === "slack" && Array.isArray(source.channels) && source.channels.every((c) => typeof c === "string")) || (source.kind === "github" && Array.isArray(source.repos) && source.repos.every((r) => typeof r === "string")) || (typeof source.cron === "string" ? typeof source.timezone === "string" : source.at !== undefined ? instantOf(source.at) !== undefined : Number.isSafeInteger(source.every_s) && instantOf(source.start_at) !== undefined);
-  const aimed = isObject(target) && isObject(target.input) && (target.kind === "message_run" ? typeof target.run_id === "string" : target.kind === "start_run" && typeof target.agent_id === "string" && typeof target.max_cost_usd === "number");
+  const aimed = isObject(target) && isObject(target.input) && (target.kind === "message_run" ? typeof target.run_id === "string" : target.kind === "start_run" && typeof target.agent_id === "string" && (target.max_cost_usd === undefined || typeof target.max_cost_usd === "number"));
   if (!timed || !aimed) return false;
   const firing = (f: unknown) => isObject(f) && typeof f.key === "string" && (FIRING_STATUSES as readonly unknown[]).includes(f.status) && (f.by === "schedule" || f.by === "manual" || f.by === "webhook" || f.by === "slack" || f.by === "github") && instantOf(f.nominal_at) !== undefined && typeof f.at === "string";
   const list = (value: unknown) => value === undefined || (Array.isArray(value) && value.every(firing));

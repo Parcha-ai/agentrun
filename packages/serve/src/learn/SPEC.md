@@ -43,7 +43,7 @@ letter or digit, then `.md`, and never `MEMORY.md`.
 | --- | --- | --- |
 | `name` | yes | a short title |
 | `description` | yes | one line that says when the note applies; it is the note's index line |
-| `type` | yes | `user`, `feedback`, `project` or `reference`, Claude Code's four |
+| `type` | no | `user`, `feedback`, `project` or `reference`, Claude Code's four; absent, `project` (the merge adds no line: the host's lines stay within the cap's 28 bytes) |
 | `supersedes` | no | the notes it replaces, `[old.md, other.md]` or one bare file name |
 | `status` | no, host only | `superseded`, `retired` or `pending` (a risky rule, waiting for its owner's OK); absent, the note is active |
 | `superseded_by` | no, host only | the note that replaced it, on a superseded note |
@@ -150,6 +150,14 @@ Over a cap is refused, never cut.
   it, percent or form encoded, in base64 or in hex. A skill's or a draft's folder name is read as its file's name is.
 - Every problem is `{ rule, path?, detail }`, printable as it is: its path and detail are cut of the host's values and
   of secret shapes, and a field over 4096 bytes prints whole as `[redacted]`, never scanned.
+- A problem is its item's alone: the note, skill or draft (both its files) it names is left out, the rest is checked
+  again and goes on to the grader, and the run's learning names what was left out (`problems`). The whole proposal is
+  refused when a problem names no item it proposed, when its rule refuses the whole (`too_many_files`, `too_many_notes`,
+  `too_many_skills`, `too_many_workflows`, `outside`, `deleted`, `index_full`, `encoding`) or must never be stored
+  (`secret_value`, `secret_shape`, `invisible_unicode`: the run's answer is not trusted for any item), or when the rest
+  is refused again, with both passes' problems. Before any item is kept, every name and text
+  the run gave is read whole for what must never be stored (`unstorable`), an edit or a file over its cap included,
+  which the checks refuse before they read its text.
 
 Whether a note holds one case's data is the grader's judgment, not the checker's.
 
@@ -174,8 +182,11 @@ note the grader keeps and names `Risky` is pending too. Every other note is kept
 risky rule is never silently dropped and never served on its own; it waits. A risky skill or draft waits the same way,
 with `status: pending` in its `SKILL.md` or README.
 `parseVerdict` reads one verdict with one item per new note and fails closed: an answer it cannot read, a missing or
-extra item, a decision or an origin out of its list, or a merge with a note dropped is no merge. Every note merges, or
-none does.
+extra item, or a decision or an origin out of its list is no merge. Each item stands on its own: the notes, skill and
+draft it keeps or holds merge, and the ones it drops are left out (`keptProposal`), whatever the grader's top-level
+`merge` says. Nothing merges when it keeps nothing, when any item's question names Planted however worded, kept, held
+or dropped (the run read something hostile, so nothing it proposed is kept), when it drops an item with no question
+(it says not why), or when it keeps every item and still says no merge.
 
 There is no separate injection screen: one grader decides, with the rubric stated once. A page classifier cannot see where a note
 came from, and read a preference the user stated as a planted instruction; the grader's Planted question checks a note

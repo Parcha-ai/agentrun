@@ -18,6 +18,8 @@ const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pat
 /** The faux model priced on output only: a request's worst case is about $1.64 whatever its input. */
 const OUTPUT_PRICED = new URL("./fixtures/faux-output-priced.mjs", import.meta.url).pathname;
 const NAMES = ["monid.discover", "monid.inspect", "monid.run"];
+/** monid's tools allowed: a catalog tool asks by default (tool-gate.ts), and these runs are about monid, not the gate. */
+const ALLOWED = Object.fromEntries(NAMES.map((name) => [name, { permission: "allow" }]));
 const sleeps = [];
 /** The client on the fake, its waits recorded and skipped. */
 const monid = (extra = {}) => monidClient({ key: KEY, fetch: fakeMonid, sleep: async (ms) => void sleeps.push(ms), ...extra });
@@ -84,7 +86,7 @@ test("under a cap, a paid call is refused before it is sent unless the spend plu
   useSpend({ cap: 2, spent: () => spent, add: (usd) => void (added.push(usd), (spent += usd)) });
   t.after(() => useSpend(undefined));
   const refused = await paidCall("monid_run", call, chargeOf, quoted(0.7));
-  assert.match(refused.refused, /^spend_cap_reached: monid_run was not sent\. It could cost up to \$0\.7 \(the price monid_inspect quoted\), and with \$1\.500000 spent the run would pass its cap of \$2: the run is out of budget\.$/);
+  assert.match(refused.refused, /^spend_cap_reached: Not sent: the run has spent \$1\.50 of its \$2 cap, and monid_run could cost up to \$0\.70 \(the price monid_inspect quoted\)\. Raise the cap to at least \$2\.20 to run it\.$/);
   assert.equal(sent, 0, "refused, not sent");
   assert.deepEqual([(await paidCall("monid_run", call, chargeOf, quoted(0.4))).result?.status, sent, added], ["COMPLETED", 1, [0.2]], "0.4 fits: it runs");
   // Two at once: the first is checked (1.5 + 0.4), sent and charged (1.7) before the second is checked (1.7 + 0.4 > 2).
@@ -133,7 +135,7 @@ const entriesOf = (data, runId, kind) => {
 test("a run whose monid call times out (TIMED_OUT, no cost said) books its charge unknown, and the cap counts the call at its hold: its next model request goes while the cap allows, the run's cost reads unknown, and a restarted process reads the hold too", { timeout: 90_000 }, async (t) => {
   withEnv(t, { MONID_API_KEY: KEY });
   const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS, fauxMonid: FAUX_MONID });
-  assert.equal((await api("POST", "/agents", agent("late", { harness: "claude-agent", instructions: "Run monid's /late on Ada.", tools: ["monid.run"] }))).status, 201);
+  assert.equal((await api("POST", "/agents", agent("late", { harness: "claude-agent", instructions: "Run monid's /late on Ada.", tools: ["monid.run"], tool_settings: ALLOWED }))).status, 201);
   // No inspect quoted the endpoint: the call is held at the $1 allowance, which a $5 cap holds beside the requests.
   const run = await api("POST", "/agents/late/runs", { input: { content: "hi" }, max_cost_usd: 5 });
   assert.equal(run.status, 202, JSON.stringify(run.body));
@@ -152,7 +154,7 @@ test("a run whose monid call times out (TIMED_OUT, no cost said) books its charg
   useSpend({ cap: 5, spent: () => capToolSpend(root), add: () => {} });
   assert.ok("result" in (await paidCall("monid_run", async () => ({}), chargeOf, { usd: 0.003, basis: "quoted" })), "a paid call that fits goes");
   useSpend({ cap: 1.002, spent: () => capToolSpend(root), add: () => {} });
-  assert.match((await paidCall("monid_run", async () => ({}), chargeOf, { usd: 0.003, basis: "quoted" })).refused ?? "", /with \$1\.000000 spent the run would pass its cap of \$1\.002/, "one that does not is refused for room");
+  assert.match((await paidCall("monid_run", async () => ({}), chargeOf, { usd: 0.003, basis: "quoted" })).refused ?? "", /^spend_cap_reached: Not sent: the run has spent \$1 of its \$1\.002 cap, and monid_run could cost up to \$0\.003 \(quoted\)\. Raise the cap to at least \$1\.01 to run it\.$/, "one that does not is refused for room");
   const guard = await capBefore(5, { id: "faux", api: "faux", provider: "faux", maxTokens: 10, contextWindow: 100, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } });
   assert.deepEqual(guard.beforeRequest({ spentUsd: capToolSpend(root), inFlight: [], inputTokensMax: 1 }), { outputTokensMax: 10 }, "and a model request that fits goes, at its whole output (#1539's clamp leaves it whole)");
 });
@@ -161,7 +163,7 @@ test("a capped pi run stopped while its monid call is under way: monid is asked 
   const log = join(await scratch(t), "monid-calls.jsonl");
   withEnv(t, { MONID_API_KEY: KEY, AGENTRUN_TEST_FAUX_MONID_CALLS: log });
   const { api, data } = await serve(t, { faux: OUTPUT_PRICED, fauxMonid: FAUX_MONID });
-  assert.equal((await api("POST", "/agents", agent("halted", { tools: ["monid.run"] }))).status, 201);
+  assert.equal((await api("POST", "/agents", agent("halted", { tools: ["monid.run"], tool_settings: ALLOWED }))).status, 201);
   // No inspect quoted /slow: the call is held at the $1 allowance, which a $5 cap holds beside the next request's $1.64.
   const run = await api("POST", "/agents/halted/runs", { input: { content: "Run monid's /slow." }, max_cost_usd: 5 });
   assert.equal(run.status, 202, JSON.stringify(run.body));
@@ -191,7 +193,7 @@ test("/usage by meter during a monid run in flight: tokens are the run's model c
   const log = join(await scratch(t), "monid-calls.jsonl");
   withEnv(t, { MONID_API_KEY: KEY, AGENTRUN_TEST_FAUX_MONID_CALLS: log });
   const { api } = await serve(t, { faux: new URL("./fixtures/faux-priced.mjs", import.meta.url).pathname, fauxMonid: FAUX_MONID });
-  assert.equal((await api("POST", "/agents", agent("slow", { tools: ["monid.run"] }))).status, 201);
+  assert.equal((await api("POST", "/agents", agent("slow", { tools: ["monid.run"], tool_settings: ALLOWED }))).status, 201);
   const run = await api("POST", "/agents/slow/runs", { input: { content: "Run monid's /slow." } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
   const id = run.body.run_id;
@@ -281,7 +283,7 @@ test("a revision naming the three saves with a warning on a keyless server and i
   assert.deepEqual(saved.body.warnings.map((w) => [w.field, w.reason]), NAMES.map((_, i) => [`definition.tools[${i}]`, "not_set_up_here"]));
   const run = await api("POST", "/agents/finder/runs", { input: { content: "hi" } });
   assert.deepEqual([run.status, run.body.error.code, run.body.error.details.missing], [409, "agent_not_runnable", Object.fromEntries(NAMES.map((name) => [name, ["MONID_API_KEY"]]))]);
-  const claude = agent("finder-claude", { harness: "claude-agent", instructions: "Run monid's /person/enrich on Ada.", tools: ["read", "monid.run"] });
+  const claude = agent("finder-claude", { harness: "claude-agent", instructions: "Run monid's /person/enrich on Ada.", tools: ["read", "monid.run"], tool_settings: ALLOWED });
   const keyless = await api("POST", "/agents", claude);
   assert.equal(keyless.status, 201, JSON.stringify(keyless.body));
   assert.deepEqual(keyless.body.warnings.map((w) => [w.field, w.message]), [["definition.tools[1]", "This server's environment does not set what the tool needs: the tool monid.run needs MONID_API_KEY."]], "the key, never that it runs on pi only");
@@ -301,7 +303,7 @@ test("a pi run's model finds, reads and runs a monid endpoint through monid_disc
   const log = join(await scratch(t), "monid-calls.jsonl");
   withEnv(t, { MONID_API_KEY: KEY, AGENTRUN_TEST_FAUX_MONID_CALLS: log });
   const { api, data } = await serve(t, { fauxMonid: FAUX_MONID });
-  const saved = await api("POST", "/agents", agent("enricher", { tools: NAMES }));
+  const saved = await api("POST", "/agents", agent("enricher", { tools: NAMES, tool_settings: ALLOWED }));
   assert.deepEqual([saved.status, saved.body.warnings], [201, []]);
   const started = await api("POST", "/agents/enricher/runs", { input: { content: "Enrich with monid: Ada at Example." } });
   assert.equal(started.status, 202, JSON.stringify(started.body));
@@ -328,7 +330,7 @@ test("a pi run cancelled while its monid.run is under way still settles the call
   const log = join(await scratch(t), "monid-calls.jsonl");
   withEnv(t, { MONID_API_KEY: KEY, AGENTRUN_TEST_FAUX_MONID_CALLS: log });
   const { api, data } = await serve(t, { fauxMonid: FAUX_MONID });
-  assert.equal((await api("POST", "/agents", agent("stopped-monid", { tools: ["monid.run"] }))).status, 201);
+  assert.equal((await api("POST", "/agents", agent("stopped-monid", { tools: ["monid.run"], tool_settings: ALLOWED }))).status, 201);
   const run = await api("POST", "/agents/stopped-monid/runs", { input: { content: "Run monid's /slow." } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
   const id = run.body.run_id;
