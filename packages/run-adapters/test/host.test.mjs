@@ -964,7 +964,7 @@ test("a refused write of a response's ids: the stream completes, the proxy says 
   assert.equal((await send(p.url, { path: '/v1/test?beta=true', body: { model: 'x', input: 2 } })).status, 200);
   await until(async () => (await of(RUNNER_RECORDS.turn)).length === 2, 'both answers booked');
   const usage = { input: 7, output: 2, cacheRead: 0, cacheWrite: 0 };
-  assert.deepEqual(await of(RUNNER_RECORDS.turn), [{ turn: 1, usd: 0.001, usage, estimated: true, providerIds: carriedIds(1) }, { turn: 2, usd: 0.001, usage, estimated: true, providerIds: carriedIds(2) }], 'each booked once, with its tokens and its ids');
+  assert.deepEqual(await of(RUNNER_RECORDS.turn), [{ turn: 1, usd: 0.001, usage, estimated: true, providerIds: carriedIds(1), bookedUsd: 0.001, rule: 'answered' }, { turn: 2, usd: 0.001, usage, estimated: true, providerIds: carriedIds(2), bookedUsd: 0.001, rule: 'answered' }], 'each booked once, with its tokens, its ids, and the figure the booking rule gave it');
   assert.deepEqual((await of(RUNNER_RECORDS.response)).map((d) => d.turn), [2], "turn 1's ids are in its runner.turn only, never written twice");
 });
 
@@ -977,7 +977,7 @@ test("a refused write of a response's ids, then the stream cut with the process 
   await send(p.url, { path: '/v1/test?beta=true', body: { model: 'x', input: 'cut' } }).catch(() => {});
   await until(async () => (await of(RUNNER_RECORDS.turn)).length === 1, 'the cut request booked');
   await reopen();
-  assert.deepEqual(await of(RUNNER_RECORDS.turn), [{ turn: 1, usd: null, estimated: true, providerIds: carriedIds(1) }], 'once, unknown, with its ids; the next process books nothing more');
+  assert.deepEqual(await of(RUNNER_RECORDS.turn), [{ turn: 1, usd: null, estimated: true, providerIds: carriedIds(1), bookedUsd: null, rule: 'lost:error_after' }], 'once, unknown, with its ids and the booking rule (no hold here: unknown); the next process books nothing more');
 });
 
 test("a refused write of a response's ids is carried into the booking's next write: a process that dies before that request ends still leaves its ids for the cut (residual: one that writes nothing more of its own booking first loses them)", async (t) => {

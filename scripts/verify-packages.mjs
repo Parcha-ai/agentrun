@@ -50,8 +50,8 @@ async function run(command, args, cwd = root, allowFailure = false, commandEnv =
 }
 const json = async path => JSON.parse(await readFile(path, 'utf8'));
 const forbid = [
-  // A /home/ or /Users/ right after a path parameter's `}` is an API route template (/agents/{agent_id}/home/files/{path}).
-  ['machine-specific path', /(?:(?<!\})\/(?:home|Users)\/[^/\s"']+\/|[A-Za-z]:\\Users\\[^\\\s"']+\\)/],
+  // A /home/ or /Users/ right after a route parameter (`{name}`, not `${...}`) is an API route template (/agents/{agent_id}/home/files/{path}).
+  ['machine-specific path', /(?:(?<!(?<!\$)\{[A-Za-z0-9_]+\})\/(?:home|Users)\/[^/\s"']+\/|[A-Za-z]:\\Users\\[^\\\s"']+\\)/],
   ['private service endpoint', /https?:\/\/(?:localhost\b|127\.\d+\.\d+\.\d+\b|10\.\d+\.\d+\.\d+\b|192\.168\.\d+\.\d+\b|172\.(?:1[6-9]|2\d|3[01])\.\d+\.\d+\b|169\.254\.\d+\.\d+\b|[a-z0-9.-]+\.(?:internal|local|localhost)\b)/i],
   ['embedded credential value', /\b(?:api[_-]?key|access[_-]?token|client[_-]?secret|password)\s*[:=]\s*["'][A-Za-z0-9_./+=-]{24,}["']/i],
   ['private key', /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/],

@@ -1,7 +1,7 @@
 // `runs start --wait`, `runs wait` and `runs timeline --follow`: wait for a run and follow it live. Hand-written on top of
 // the generated table (cli.mjs), from the timeline route's two forms: the long-polled JSON page and the event stream.
 // `client` is cli.mjs's: `fetch(path, init)` with the token, `refused(response, bytes)` (the error on stderr, its exit
-// code), `unreachable(error)` (exit 3) and `print(value)`.
+// code), `unreachable(error)` (exit 3, naming only the error's cause code, never its message) and `print(value)`.
 
 const TERMINAL = new Set(["completed", "failed", "cancelled"]);
 // What moves only once a person acts: input_required (a question, the spend cap, a stopped turn), and a workflow run's
@@ -39,6 +39,8 @@ export const WAIT = {
   help: [["--timeout SECONDS", "stop waiting after this long, exit 1 (the run goes on)"]],
 };
 
+/** An error for `client.unreachable` that names what happened by its code alone. */
+const failure = (code) => Object.assign(new Error(code), { cause: { code } });
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
 const backoff = (tries, floor = 0) => Math.min(MAX_BACKOFF_MS, Math.max(floor, BACKOFF_MS * 2 ** (tries - 1)));
 
@@ -64,7 +66,12 @@ async function getJson(client, path, reached) {
       continue;
     }
     if (!response.ok) return { code: client.refused(response, bytes) };
-    return { value: JSON.parse(bytes.toString("utf8")) };
+    try {
+      return { value: JSON.parse(bytes.toString("utf8")) };
+    } catch {
+      client.io.stderr.write(`The server's answer to GET ${path.split("?")[0]} is not JSON.\n`);
+      return { code: 1 };
+    }
   }
 }
 
@@ -140,7 +147,8 @@ async function* events(body, heard) {
         const value = colon < 0 ? "" : line.slice(colon + 1).replace(/^ /, "");
         if (field === "event") event.event = value;
         else if (field === "data") event.data.push(value);
-        else if (field === "id" && !value.includes("\0")) id = value;
+        // The route's ids are change numbers; anything else is never sent back as a header.
+      else if (field === "id" && /^\d+$/.test(value)) id = value;
         else if (field === "retry" && /^\d+$/.test(value)) event.retry = Number(value);
       }
     }
@@ -153,10 +161,12 @@ async function* events(body, heard) {
  *  no change comes twice; tries that get no event back off (the server's `retry` the least wait) and give up after a few
  *  in a row, exit 3. It ends with the server's `end` with `reason: terminal`, which comes right after the first page with
  *  `final: true`: exit 0 when the run completed, 1 when it failed or was cancelled. A run that waits on a person keeps
- *  the stream open, as the server does. `path` is the route with its query (`after` is where it starts). */
-export async function followTimeline(client, path) {
+ *  the stream open, as the server does. `path` is the route with its query (`after` is where it starts), and `headers`
+ *  the command's (its `--last-event-id` wins over `after`, as the route says). */
+export async function followTimeline(client, path, headers = {}) {
+  const { "Last-Event-ID": from, ...rest } = headers;
   let reached = false;
-  let last;
+  let last = from;
   let retryMs = 0;
   let status;
   for (let tries = 0; ; ) {
@@ -165,12 +175,12 @@ export async function followTimeline(client, path) {
     let cause;
     const silent = new AbortController();
     let timer;
-    const heard = () => (clearTimeout(timer), (timer = setTimeout(() => silent.abort(new Error("the stream went silent")), IDLE_MS)));
+    const heard = () => (clearTimeout(timer), (timer = setTimeout(() => silent.abort(failure("stream_silent")), IDLE_MS)));
     heard();
     try {
-      const response = await client.fetch(path, { headers: { accept: "text/event-stream", ...(last !== undefined ? { "last-event-id": last } : {}) }, signal: silent.signal });
+      const response = await client.fetch(path, { headers: { ...rest, accept: "text/event-stream", ...(last !== undefined ? { "last-event-id": last } : {}) }, signal: silent.signal });
       reached = true;
-      if (RETRIABLE.has(response.status)) throw new Error(`${response.status} ${response.statusText}`);
+      if (RETRIABLE.has(response.status)) throw failure(`http_${response.status}`);
       if (!response.ok) return client.refused(response, Buffer.from(await response.arrayBuffer()));
       if (!/^text\/event-stream\b/.test(response.headers.get("content-type") ?? "")) {
         client.io.stderr.write(`The server answered ${response.headers.get("content-type") ?? "with no content type"}, not an event stream.\n`);
@@ -204,7 +214,7 @@ export async function followTimeline(client, path) {
     }
     // The stream ended with no `end`, or broke: the connection dropped.
     tries = progress ? 1 : tries + 1;
-    if (tries > RETRIES) throw client.unreachable(cause ?? new Error("the stream kept closing"));
+    if (tries > RETRIES) throw client.unreachable(cause ?? failure("stream_closed"));
     await pause(backoff(tries, retryMs));
   }
 }

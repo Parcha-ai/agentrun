@@ -10,6 +10,7 @@ import { type Agent, type AgentFields, DECISION, defaultTools, harnessOptions, i
 import type { WorkflowCheck } from "@/lib/client";
 import { markdown, when } from "@/lib/format";
 import { harnessDefault, modelLabel, NO_DEFAULT } from "@/lib/models";
+import { newAgentPlace } from "@/lib/place";
 import type { Places } from "@/lib/place";
 import type { ToolChoice } from "@/lib/toolSettings";
 import { cn } from "@/lib/utils";
@@ -68,18 +69,26 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
   const creating = !agent;
   const d = agent?.definition;
   const [step, setStep] = useState<Step>(initialStep ?? (agent?.kind === "workflow" ? "workflow" : "context"));
-  // Tools are on by default: a new agent starts with every tool its harness runs here; an agent keeps its own.
-  const [f, setF] = useState<AgentFields>({ name: d?.name ?? "", description: d?.description ?? "", instructions: d?.instructions ?? "", harness: d?.harness ?? "pi", thinking: d?.thinking, model: d?.model, tools: creating ? defaultTools("pi", caps.tools) : d?.tools ?? [], ...(agent?.kind === "workflow" ? { workflowText: draft ?? JSON.stringify(d!.workflow, null, 2) } : {}) });
+  // Tools are on by default: a new agent starts with every tool its harness runs here; an agent keeps its own. A new
+  // agent starts on the place the server gives new agents (a sandbox where it has a box: bash ticked too); else none.
+  const startPlace = creating ? newAgentPlace(caps.places) : undefined;
+  const [f, setF] = useState<AgentFields>({ name: d?.name ?? "", description: d?.description ?? "", instructions: d?.instructions ?? "", harness: d?.harness ?? "pi", thinking: d?.thinking, model: d?.model, tools: creating ? defaultTools("pi", caps.tools, startPlace) : d?.tools ?? [], ...(startPlace ? { place: startPlace } : {}), ...(agent?.kind === "workflow" ? { workflowText: draft ?? JSON.stringify(d!.workflow, null, 2) } : {}) });
   // The form as it is now, for a save's answer to compare with what that save sent.
   const formNow = useRef(f);
   formNow.current = f;
   // On a new agent, picking another harness re-ticks that harness's tools, until a tool is changed by hand.
   const [toolsTouched, setToolsTouched] = useState(false);
   // The server's tools can arrive after the form opens (capabilities answer late): a new agent's untouched tools follow.
+  // So can its places: a new agent with no place yet takes the served default then; a place the person picked stays.
   const toolsKey = caps.tools.map((t) => `${t.name}:${t.available}:${(t.harnesses ?? []).join("+")}`).join(",");
+  const placeKey = JSON.stringify(newAgentPlace(caps.places) ?? null);
   useEffect(() => {
-    if (creating && !toolsTouched) setF((x) => ({ ...x, tools: defaultTools(x.harness ?? "pi", caps.tools) }));
-  }, [toolsKey]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (!creating) return;
+    setF((x) => {
+      const place = x.place ?? newAgentPlace(caps.places);
+      return { ...x, ...(place ? { place } : {}), ...(toolsTouched ? {} : { tools: defaultTools(x.harness ?? "pi", caps.tools, place) }) };
+    });
+  }, [toolsKey, placeKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const [note, setNote] = useState("");
   const [preview, setPreview] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -271,7 +280,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                     {choices.map((h) => {
                       const row = (
                         <>
-                          <input type="radio" name="harness" value={h.id} checked={f.harness === h.id} disabled={!h.available && f.harness !== h.id} onChange={() => set({ harness: h.id, ...(creating && !toolsTouched ? { tools: defaultTools(h.id, caps.tools) } : {}) })} className="mt-1 accent-[hsl(var(--primary))]" />
+                          <input type="radio" name="harness" value={h.id} checked={f.harness === h.id} disabled={!h.available && f.harness !== h.id} onChange={() => set({ harness: h.id, ...(creating && !toolsTouched ? { tools: defaultTools(h.id, caps.tools, f.place) } : {}) })} className="mt-1 accent-[hsl(var(--primary))]" />
                           <span className="min-w-0"><span className="block break-words font-mono text-[13px] font-semibold">{h.label}</span><span className="mt-0.5 block font-mono text-[11px] text-muted-foreground">{h.available ? h.id : "Not available here"}</span></span>
                         </>
                       );

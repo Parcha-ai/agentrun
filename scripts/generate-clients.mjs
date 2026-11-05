@@ -16,7 +16,9 @@ const RESOURCES = 'scripts/clients/resources.json';
 // Words the launcher keeps for itself or for the server it starts: no command may begin with one.
 const RESERVED = ['api', 'help', 'import', 'reset-password'];
 const SCALAR = ['string', 'number', 'integer', 'boolean'];
-const GLOBAL_FLAGS = ['base-url', 'data', 'body', 'help'];
+const GLOBAL_FLAGS = ['base-url', 'data', 'body', 'body-type', 'help'];
+// Headers the CLI sets itself.
+const OWN_HEADERS = ['authorization', 'content-type', 'accept'];
 const METHODS = ['get', 'put', 'post', 'patch', 'delete'];
 
 /** The document as the built server serves it, its turned-off operations marked as the server marks them. */
@@ -34,7 +36,7 @@ export const canonical = (value) => Array.isArray(value) ? `[${value.map(canonic
 
 const kebab = (name) => name.replace(/([a-z0-9])([A-Z])/g, '$1-$2').replace(/_/g, '-').toLowerCase();
 // The CLI's flag for a field, as cli.mjs names it.
-const flagOf = (name) => name.replace(/_/g, '-');
+const flagOf = (name) => name.replace(/_/g, '-').toLowerCase();
 
 function deref(doc, node) {
   for (let depth = 0; node && typeof node.$ref === 'string' && depth < 20; depth++) {
@@ -68,12 +70,12 @@ function operations(doc, map) {
 }
 
 /** What is wrong with the map against the document: a name used twice, a name inside another, a reserved word, an
- *  entry for an operation the document no longer has. */
+ *  entry (a name, a secret body, an omitted operation) for an operation the document no longer has. */
 export function problemsOf(doc, map) {
   const all = operations(doc, map);
   const ids = new Set(all.map(({ op }) => op.operationId));
   const problems = [];
-  for (const id of [...Object.keys(map.commands), ...map.secretBody]) {
+  for (const id of [...Object.keys(map.commands), ...map.secretBody, ...Object.keys(map.omit)]) {
     if (!ids.has(id)) problems.push(`${RESOURCES} names ${id}, which the document has no operation for`);
   }
   const byName = new Map();
@@ -93,7 +95,7 @@ export function problemsOf(doc, map) {
 export function commandsOf(doc, map) {
   const entries = [];
   for (const { path, method, item, op, command } of operations(doc, map)) {
-    if (op['x-agentrun-serve-unsupported']) continue;
+    if (op['x-agentrun-serve-unsupported'] || map.omit[op.operationId] !== undefined) continue;
     const params = new Map();
     for (const raw of [...(item.parameters ?? []), ...(op.parameters ?? [])]) {
       const param = deref(doc, raw);
@@ -102,9 +104,12 @@ export function commandsOf(doc, map) {
     const query = [...params.values()].filter((p) => p.in === 'query')
       .map((p) => ({ name: p.name, ...(flagType(doc, p.schema) ?? { type: 'string' }), required: p.required === true, description: firstLine(p.description) }));
     const taken = new Set([...GLOBAL_FLAGS, ...query.map((q) => flagOf(q.name))]);
+    const headers = [...params.values()].filter((p) => p.in === 'header' && !OWN_HEADERS.includes(p.name.toLowerCase()) && !taken.has(flagOf(p.name)))
+      .map((p) => ({ name: p.name, ...(flagType(doc, p.schema) ?? { type: 'string' }), required: p.required === true, description: firstLine(p.description) }));
+    for (const h of headers) taken.add(flagOf(h.name));
     const body = deref(doc, op.requestBody);
-    const types = Object.keys(body?.content ?? {});
-    const bodyType = types.includes('application/json') ? 'application/json' : types[0];
+    const bodyTypes = Object.keys(body?.content ?? {});
+    const answers = Object.entries(op.responses ?? {}).filter(([status]) => /^2/.test(status)).flatMap(([, response]) => Object.keys(deref(doc, response)?.content ?? {}));
     const schema = deref(doc, body?.content?.['application/json']?.schema);
     const secretBody = map.secretBody.includes(op.operationId);
     const bodyFlags = secretBody ? [] : Object.entries(schema?.properties ?? {}).flatMap(([name, property]) => {
@@ -114,8 +119,10 @@ export function commandsOf(doc, map) {
     entries.push({
       command, operationId: op.operationId, method: method.toUpperCase(), path,
       pathParams: [...path.matchAll(/\{([^}]+)\}/g)].map((match) => match[1]),
-      query, bodyFlags, hasBody: body !== undefined, bodyRequired: body?.required === true,
-      ...(bodyType ? { bodyType } : {}), secretBody, summary: op.summary ?? firstLine(op.description),
+      query, headers, bodyFlags, hasBody: body !== undefined, bodyRequired: body?.required === true, bodyTypes, secretBody,
+      // A download: its answer is the file's bytes, written as received.
+      raw: answers.length > 0 && !answers.includes('application/json'),
+      summary: op.summary ?? firstLine(op.description),
     });
   }
   return entries.sort((a, b) => a.command.join(' ').localeCompare(b.command.join(' ')));
@@ -134,7 +141,7 @@ export function tableText(doc, map) {
 async function main() {
   const { values } = parseArgs({ options: { check: { type: 'boolean' }, out: { type: 'string' }, resources: { type: 'string' } } });
   const output = resolve(root, values.out ?? OUTPUT);
-  const map = { secretBody: [], ...JSON.parse(await readFile(resolve(root, values.resources ?? RESOURCES), 'utf8')) };
+  const map = { secretBody: [], omit: {}, ...JSON.parse(await readFile(resolve(root, values.resources ?? RESOURCES), 'utf8')) };
   const doc = await servedDocument();
   const problems = problemsOf(doc, map);
   if (problems.length) {

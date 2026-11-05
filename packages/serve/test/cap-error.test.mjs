@@ -128,8 +128,10 @@ test("in this process, a request refused before any event (a 429) counts at its 
   assert.equal((await retry.result()).stopReason, "stop");
 });
 
-test("a request's result waits at most a second on its end mark: a store whose write of that mark never settles does not hold the turn, for an error and for an abort", async () => {
-  for (const end of [message(0.00001, "error", "overloaded_error"), { ...message(0, "aborted"), errorMessage: undefined }]) {
+test("a request's result waits on its end mark at most its bound: a store whose write of that mark never settles holds an error or an answer whose mark carries a hold for END_MARK_WAIT_MS (shortened here), then fails it loudly; a stop for its own second", async () => {
+  // An error after its response began, and an answer whose cost cannot be read: their marks carry a hold. A stop: its own.
+  const unpriced = { ...message(0), usage: { ...message(0).usage, cost: {} } };
+  for (const [end, want] of [[message(0.00001, "error", "overloaded_error"), "error"], [unpriced, "error"], [{ ...message(0, "aborted"), errorMessage: undefined }, "aborted"]]) {
     const { models, sent } = streaming();
     // The store takes the start mark, and never answers the write of the end mark.
     const run = { harness: { commit: async (change) => {
@@ -137,14 +139,16 @@ test("a request's result waits at most a second on its end mark: a store whose w
       await change({ appendEntry: async (_conversation, entry) => void entries.push(entry) });
       if (entries.some((entry) => entry.kind === REQUEST_ENDED)) await new Promise(() => {});
     } } };
-    const marked = await markRequests(models);
+    // The bound for a mark that carries a hold, shortened from its 15 s so the test does not wait it out.
+    const marked = await markRequests(models, undefined, { holdMarkWaitMs: 300 });
     const capped = await capModels(marked.models, 0.0015, 0);
     marked.open(run);
     const request = capped.streamSimple(outputOnly, context);
     await until(() => sent.length === 1);
     sent[0].end(end);
     const answer = await settled(request.result(), 2_500);
-    assert.equal(answer?.stopReason, end.stopReason, `the ${end.stopReason} reached pi while its end mark was still being written`);
+    assert.equal(answer?.stopReason, want, `the ${end.stopReason} reached pi within its bound while its end mark was still being written`);
+    if (want === "error") assert.match(answer.errorMessage ?? "", /^the model request's end could not be recorded \(the store had not taken it in 300 ms\)/, "it failed loudly, its end unrecorded");
   }
 });
 
