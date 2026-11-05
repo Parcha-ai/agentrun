@@ -16,7 +16,7 @@ import { lstat, mkdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { seal, unseal } from "@parcha/pi-durable-agent";
 import { ApiError } from "./errors.js";
-import { homeOf, writeDurable } from "./files.js";
+import { homeOf, serialBy, writeDurable } from "./files.js";
 
 export const SIGN_INS_DIR = "sign-ins";
 const FILE = "sign-ins.json";
@@ -51,7 +51,7 @@ export function vendorOf(resolution: string): Vendor | undefined {
 const aad = (agentId: string, entry: Pick<Entry, "key" | "provider">) => `${FORMAT}|${agentId}|${entry.key}|${entry.provider}`;
 
 export class SignIns {
-  /** One read-modify-write at a time per agent. */
+  /** One read-modify-write at a time per agent; an agent's queue goes once it is empty. */
   private readonly chains = new Map<string, Promise<unknown>>();
 
   /** `holds(run)`: whether that run has not ended, so a lease it names still holds. */
@@ -84,9 +84,7 @@ export class SignIns {
   }
 
   private locked<T>(agentId: string, work: () => Promise<T>): Promise<T> {
-    const next = (this.chains.get(agentId) ?? Promise.resolve()).catch(() => undefined).then(work);
-    this.chains.set(agentId, next);
-    return next;
+    return serialBy(this.chains, agentId, work);
   }
 
   /** Whether `entry`'s lease still holds: it names a run, and that run has not ended. */

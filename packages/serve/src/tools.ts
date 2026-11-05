@@ -183,6 +183,11 @@ export const keptProfile = <P extends { create(spec: { profile?: { name: string;
   create: (spec, signal) => provider.create(spec.profile?.name === SIGN_IN_KEY ? { ...spec, profile: { ...spec.profile, name: ref } } : spec, signal),
 });
 
+/** Whether a session's change is one that saved to the run's sign-in: a session that ran on the profile, let go by the
+ *  run (its tool, its idle time, a relaunch, its close, its end), never one the vendor had already lost or never made. */
+export const savedOnRelease = (row: { session: { resourceId: string | null; releaseReason: string | null; settings: { profile: string | null } } }, change: string): boolean =>
+  change === "released" && row.session.resourceId !== null && row.session.settings.profile !== null && row.session.releaseReason !== null && !["lost", "create_failed"].includes(row.session.releaseReason);
+
 /** A hosted browser driven through Stagehand, on pi-browser's durable adapter: Browserbase or Kernel (headless), the one
  *  the run's plane names (tool-plane.ts: picked, else Browserbase where the server holds its keys, else Kernel), kept
  *  for the run's life; a plane that names none (a run kept from before the pick) is Browserbase. Its sessions' custody
@@ -228,7 +233,7 @@ const browserTool: ToolEntry = {
     const files = downloads ? { workspace: () => host.where.work } : { files: workspaceFiles(host.where.work) };
     // A session that saved to the sign-in, let go: its time, for the sign-in's verified_at when the run's lease ends.
     const saved = kept?.save
-      ? { onSession: (row: { session: { resourceId: string | null; settings: { profile: string | null } } }, change: string) => void (change === "released" && row.session.resourceId && row.session.settings.profile && writeFileSync(join(host.where.root, SIGN_IN_SAVED), new Date().toISOString(), { mode: 0o600 })) }
+      ? { onSession: (row: Parameters<typeof savedOnRelease>[0], change: string) => void (savedOnRelease(row, change) && writeFileSync(join(host.where.root, SIGN_IN_SAVED), new Date().toISOString(), { mode: 0o600 })) }
       : {};
     const browser = createBrowserExtension({ provider, driver: parts.driver as never, evidence: evidenceIn(host.where.work) as never, ...files, ...saved });
     const extension = browser.extension as unknown as Extension;

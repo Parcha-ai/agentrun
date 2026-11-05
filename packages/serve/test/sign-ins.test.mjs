@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { homeOf } from "../dist/files.js";
 import { SIGN_IN_SAVED, SignIns, vendorOf, vendorsOver } from "../dist/sign-ins.js";
-import { keptContexts, keptProfile } from "../dist/tools.js";
+import { keptContexts, keptProfile, savedOnRelease } from "../dist/tools.js";
 import { openapiDocument } from "../dist/openapi.js";
 import { calls as bbCalls, contexts, KEY as BB_KEY } from "./fixtures/faux-browserbase-check.mjs";
 import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
@@ -321,4 +321,18 @@ test("a run whose process dies naming its sign-in's pointer in its log fails wit
   const view = (await api("GET", `/runs/${started.body.run_id}`)).body;
   assert.match(view.error.message, /the browser died holding \[redacted\]/);
   for (const shown of [JSON.stringify(view), JSON.stringify((await api("GET", "/runs")).body), await readFile(join(data, "runs", started.body.run_id, "serve.json"), "utf8")]) assert.ok(!shown.includes(ref), shown);
+});
+
+test("verified_at counts only a session that saved: one let go by the run on the profile, never one the vendor had lost or never made; and an agent's queue goes once it is empty", async (t) => {
+  const row = (releaseReason, { profile = "default", resourceId = "sess-1" } = {}) => ({ session: { resourceId, releaseReason, settings: { profile } } });
+  for (const reason of ["tool", "idle", "relaunch", "close", "ended"]) assert.equal(savedOnRelease(row(reason), "released"), true, reason);
+  for (const reason of ["lost", "create_failed", null]) assert.equal(savedOnRelease(row(reason), "released"), false, String(reason));
+  assert.equal(savedOnRelease(row("close", { profile: null }), "released"), false, "no profile");
+  assert.equal(savedOnRelease(row("close", { resourceId: null }), "released"), false, "never made");
+  assert.equal(savedOnRelease(row("close"), "updated"), false, "not let go");
+  const { store } = fakeStore(await scratch(t));
+  await store.forRun("alpha", "run-1", "browserbase");
+  await store.view("alpha");
+  await new Promise((go) => setImmediate(go));
+  assert.equal(store.chains.size, 0);
 });

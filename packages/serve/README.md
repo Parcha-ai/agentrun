@@ -817,7 +817,9 @@ picks which one a run gets, never the model.
   another holds it starts signed in and saves nothing. The lease ends when its run ends (completed, failed or
   cancelled) or lets go cleanly to wait for its person. A run whose process went, or a server restart, keeps it with
   the run for its relaunch, since a session it opened before may still write back at the vendor. One that names a run
-  that ended while the server was down counts as let go.
+  that ended while the server was down counts as let go. A V1 limit: the lease goes to the first run of the agent to
+  start with the browser in its tools, whether or not it opens a browser, and stays with it until it ends, so a long
+  run that never browses keeps the others of that agent from saving meanwhile.
 - **What you see.** `GET /v2/agents/{id}` lists `sign_ins`: `{key: "default", provider, state, held_by, verified_at}`,
   `held` with the run's id while a run holds the lease, else `ready`; `verified_at` is when a saving session last ended.
   `unreadable` (this server's own state, marked `signins/1` in the served contract) is a pointer that does not open
@@ -825,7 +827,8 @@ picks which one a run gets, never the model.
   you forget it, since the vendor's object it points to would be left behind.
   Never the pointer. `DELETE /v2/agents/{id}/sign-ins/{key}` forgets one: the vendor's context or profile is deleted,
   then the pointer. A delete the vendor does not answer is said in the answer (`at_vendor: "not_deleted"`), and the
-  pointer goes all the same. It is `409 sign_in_held` while a run holds the lease. Archiving an agent keeps its
+  pointer goes all the same. It is `409 sign_in_held` while a run holds the lease. A run of the agent that is still
+  going without the lease keeps the pointer it was handed: once the vendor's object is gone, its later sessions fail. Archiving an agent keeps its
   sign-ins; this server has no route that deletes an agent.
 
 `monid.discover`, `monid.inspect` and `monid.run` give an agent [monid](https://monid.ai)'s whole catalog of data
