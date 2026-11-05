@@ -121,6 +121,16 @@ describe("an edit's body", () => {
     const every = trigger({ source: { kind: "schedule", every_s: 300, start_at: "2026-11-05T09:00:00Z" } });
     expect(patchOf(every, bodyOf(draftOf(every)).body!)).toEqual({});
   });
+  // The second 1:30 of a fall-back day in Los Angeles (09:30Z) reads as the wall time 01:30, which as typed is the first
+  // 1:30 (08:30Z): an edit that leaves the time alone keeps the instant it read, and moves no firing.
+  it("keeps a time in a clock change's repeated hour when it is left alone, and reads a changed one as typed", () => {
+    vi.stubEnv("TZ", "America/Los_Angeles");
+    const once = trigger({ source: { kind: "schedule", at: "2027-11-07T09:30:00Z" } });
+    expect(patchOf(once, bodyOf({ ...draftOf(once), name: "nightly" }).body!)).toEqual({ name: "nightly" });
+    const every = trigger({ source: { kind: "schedule", every_s: 300, start_at: "2027-11-07T09:30:00Z" } });
+    expect(patchOf(every, bodyOf({ ...draftOf(every), name: "nightly" }).body!)).toEqual({ name: "nightly" });
+    expect(bodyOf({ ...draftOf(once), at: "2027-11-07T02:30" }).body?.source).toEqual({ kind: "schedule", at: "2027-11-07T10:30:00Z" });
+  });
 });
 
 describe("a 422, by field", () => {

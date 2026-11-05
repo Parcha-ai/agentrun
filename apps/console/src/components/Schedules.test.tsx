@@ -72,12 +72,12 @@ let root: ReturnType<typeof createRoot> | undefined;
 beforeEach(() => { vi.stubEnv("TZ", "UTC"); });
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; vi.unstubAllEnvs(); });
 
-async function open(v2: ReturnType<typeof createClient>, view: ScheduleView, minEvery?: number) {
+async function open(v2: ReturnType<typeof createClient>, view: ScheduleView, minEvery?: number, refreshMs?: number) {
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
   const went: string[] = [];
   const agentName = (id: string) => (id === "triage" ? "Triage" : id);
-  act(() => root!.render(createElement(SchedulesPage, { v2, view, go: (h: string) => void went.push(h), agentName, minEvery })));
+  act(() => root!.render(createElement(SchedulesPage, { v2, view, go: (h: string) => void went.push(h), agentName, minEvery, ...(refreshMs ? { refreshMs } : {}) })));
   const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
   await settle();
   const button = (label: RegExp) => [...host.querySelectorAll("button")].find((b) => label.test((b.textContent ?? "").trim()));
@@ -110,6 +110,15 @@ describe("the schedules list", () => {
     expect(rows[1].textContent).toContain("Not fired yet");
     await t.click(/^New schedule$/);
     expect(t.went).toEqual(["#/schedules/new"]);
+  });
+  // A schedule fires while its page is open: the page reads again on its own, so a new firing shows with no reload.
+  it("reads the schedules again while it is open", async () => {
+    const triggers = [NIGHTLY];
+    const t = await open(server({ triggers }).v2, {}, undefined, 30);
+    expect(t.host.querySelectorAll("[data-schedule]")).toHaveLength(1);
+    triggers.push({ ...NIGHTLY, id: "trg_2", name: "every five" });
+    for (let i = 0; i < 20 && t.host.querySelectorAll("[data-schedule]").length < 2; i++) await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    expect(t.host.querySelectorAll("[data-schedule]")).toHaveLength(2);
   });
   it("says there are none yet, with the way to make one", async () => {
     const t = await open(server({ triggers: [] }).v2, {});
@@ -217,6 +226,15 @@ describe("one schedule", () => {
     expect(t.text()).toContain("next Nov 5, 1:30 AM");
     expect(t.host.querySelector("[data-firing]")?.textContent).toContain("Nov 4, 1:30 AM");
     expect(t.text()).not.toContain("UTC");
+  });
+  it("reads its firings again while it is open, so a timed firing and its run show with no reload", async () => {
+    const firings: Record<string, Firing[]> = {};
+    const t = await open(server({ firings }).v2, { schedule: "trg_1" }, undefined, 30);
+    expect(t.host.querySelectorAll("[data-firing]")).toHaveLength(0);
+    firings.trg_1 = [firing({ key: "f9", status: "started", run_id: "01a1a88f-5f5c-7ce4-a912-fb765b62e88b" })];
+    for (let i = 0; i < 20 && !t.host.querySelector("[data-firing]"); i++) await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    expect(t.host.querySelector("[data-firing]")?.textContent).toContain("On schedule");
+    expect(t.host.querySelector('[data-firing] a[href="#/runs/01a1a88f-5f5c-7ce4-a912-fb765b62e88b"]')).not.toBeNull();
   });
   it("pauses and resumes by enabled alone", async () => {
     const { v2, calls } = server();
