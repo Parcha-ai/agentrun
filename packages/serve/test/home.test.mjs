@@ -344,6 +344,6 @@ test("GET and PUT /agents/{id}/home stay the contract's 501, the new routes take
   assert.deepEqual(refused(await files({ ...server, token: "wrong-token" })), [401, "unauthenticated"]);
 
   const caps = (await server.api("GET", "/capabilities")).body;
-  assert.deepEqual(caps.home, { disk: "local", host_owned: ["learning"], max_file_bytes: caps.limits.max_body_bytes, writes: process.platform === "linux" });
+  assert.deepEqual(caps.home, { disk: "local", host_owned: ["learning", "sign-ins"], max_file_bytes: caps.limits.max_body_bytes, writes: process.platform === "linux" });
   assert.deepEqual(caps.features.home, { export: false, import: false, check: false }, "the contract's packed home is still off");
 });

@@ -178,7 +178,7 @@ test("a workflow with code, pdf_pages and llm calls runs on serve; its graph sho
 /** The smoke's faux decision providers: each call waits AGENTRUN_SMOKE_DECISION_MS and is filed in AGENTRUN_SMOKE_DECISION_CALLS. */
 const FAUX_DECISIONS = new URL("../scripts/dwf-smoke/faux-decisions.mjs", import.meta.url).pathname;
 
-test("a run's graph reads while it goes and while it is paused mid-map at maxConcurrency 4, within a second, never busy", async (t) => {
+test("a run's graph reads while it goes and while it is paused mid-map at maxConcurrency 4, live and never waiting on a busy store", async (t) => {
   const dir = await scratch(t);
   const docs = join(dir, "docs");
   await mkdir(docs);
@@ -212,13 +212,17 @@ test("a run's graph reads while it goes and while it is paused mid-map at maxCon
   };
   assert.equal((await api("POST", "/agents", flowAgent("judged", flow, { tools: ["pdf_pages"] }))).status, 201);
   const id = (await api("POST", "/agents/judged/runs", { input: { documents: names.map((n) => `${n}.pdf`) } })).body.run_id;
+  const READ_BOUND_MS = 10_000;
   /** One read of the graph, timed; never asked again. */
   const read = async () => {
     const started = Date.now();
     const answer = await api("GET", `/runs/${id}/graph`);
     assert.equal(answer.status, 200, JSON.stringify(answer.body));
     assert.equal(answer.body.stale, false, "read live, not from a cache");
-    assert.ok(Date.now() - started < 1000, `the graph answered in ${Date.now() - started} ms`);
+    // A read that waited on the paused run's store would wait until the resume, which comes only after these reads; one that
+    // met a busy store answers at once, marked stale (asserted above). So the bound only has to clear a slow runner: CI's
+    // slowest read was 2.6 s (F30, a merge-queue run on 11-05), against 1 s before.
+    assert.ok(Date.now() - started < READ_BOUND_MS, `the graph answered in ${Date.now() - started} ms`);
     return answer.body;
   };
   // While it goes: the map's items are working once the calls are in flight.
@@ -234,7 +238,7 @@ test("a run's graph reads while it goes and while it is paused mid-map at maxCon
   graph = await read();
   assert.equal(graph.run.status, "paused");
   // The judges in flight finish: every request sent has its receipt, and no call is working. Nothing new starts; every
-  // read answers within a second.
+  // read answers live.
   const sent = async () => (await readFile(join(dir, "calls.jsonl"), "utf8").catch(() => "")).split("\n").filter(Boolean).length;
   let settled;
   for (const end = Date.now() + 60_000; ; ) {

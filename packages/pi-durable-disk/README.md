@@ -257,19 +257,31 @@ interface DoorHook {
 type DoorContext = { run: DurableRun; signal: AbortSignal; emit(event: { type: "run_start" } | { type: "run_end" }): void; adopt(pid: number): void };
 ```
 
+A submit with `answers: false` and `asks` (tool names) may not answer a question the conversation waits on: pi's root
+refuses it with 409 `WAITING` when its last model message is the result of a tool in `asks`, and both pi and a hook admit
+it only as `whenBusy: "reject"`, so a busy run refuses it (409 `BUSY`) and it is never queued behind a turn that may end on
+such a tool.
+
 With a hook, `POST /submit` (whose `whenBusy` defaults to `followUp`, as pi's) goes through, in this order: the bearer
 token (401); the lease (503 `OPENING`, `PARKING`, `RELEASED`), so nothing reaches the hook once the lease is lost; the
 admission, one `door.input` entry in the root conversation holding the requestId, the content and its status, written
 through the run's fenced commit (a lease lost before it lands fails it, and the hook is not called); then `hook.submit`,
 once per requestId, bounded at `doorTimeouts.submitMs` (30 s). Each status change is a `door.status` entry on the same
 requestId, and the last one is the record's status. A requestId already admitted answers its status and never calls the
-hook again, in this process or the next: the record is in the store, and a lookup is one indexed read.
+hook again, in this process or the next: the record is in the store, and a lookup is one indexed read per entry.
+
+A busy refusal is not an outcome. A `whenBusy: "reject"` input is refused (409 `BUSY`) with nothing written while the
+hook is busy, or a call in this instance is about to make it so. One the hook refuses as busy after its admission is
+written `REJECTED_BUSY`, and the same requestId, sent again, is admitted again (a new `door.input` on its record) and
+reaches the hook. `doorKey(requestId, n)` names the record's entries in turn, and `doorTook(requestId, statusAt)` reads
+whether the door took a request, or may have: its last status, unless that is `REJECTED_BUSY`. A host reads it in the
+store when the run has no live door.
 
 | Status | Means | A submit of that requestId answers |
 |---|---|---|
 | `ADMITTED` | only: the hook is running in this instance, on a record this instance admitted | 202 `{ status: "ADMITTED" }` |
 | `ACCEPTED` | the hook took the input | 200 `{ status: "ACCEPTED" }`; never submitted again |
-| `REJECTED_BUSY` | the hook refused it as busy | 409 `BUSY`, `status: "REJECTED_BUSY"`; terminal: send a new requestId |
+| `REJECTED_BUSY` | the hook refused it as busy | 409 `BUSY`, `status: "REJECTED_BUSY"`; sent again, it is admitted again |
 | `FAILED` | `hook.submit` threw, before taking the input | 500 `FAILED`, `status: "FAILED"` |
 | `UNKNOWN` | the bound passed: the door aborted `ctx.signal`, called `hook.abort` (bounded at `doorTimeouts.abortMs`, 5 s) and stopped waiting; or the record was admitted by an earlier instance, or before the lease was lost, and no call here carries it | 504 `UNKNOWN`, `status: "UNKNOWN"`; never submitted again |
 
