@@ -393,7 +393,8 @@ export const SUGGESTED_RAISE_FACTOR = 10;
 export const suggestedCap = (cap: number, spentUsd: number, needsUsd: number): number => {
   // A hair under, so a sum a float puts just past a whole dollar (3.0000000000000004) stays that dollar.
   const up = Math.ceil(spentUsd + SUGGESTED_RAISE_FACTOR * needsUsd - 1e-9);
-  return up > cap ? up : Math.floor(cap) + 1;
+  // Above the cap as a raise must be (by more than CAP_TOLERANCE, takeRaise), so a PATCH with it is always taken.
+  return up > cap + CAP_TOLERANCE ? up : Math.floor(cap + CAP_TOLERANCE) + 1;
 };
 /** A run paused at its cap waits on a raise: its cap, what the cap counted as taken and the least the refused request
  *  needs (its refusal's mark; none from a store written before it kept them), the raise it is offered (suggestedCap),
@@ -906,11 +907,15 @@ export class Runs {
 
   /** Writes the run's serve.json as it is when its turn comes; then tells learning what it now holds (the ledger's line
    *  once the run's learning ended). */
-  private saveMeta(run: Run): Promise<void> {
+  /** Writes the run's serve.json, after any write already under way: `meta`, a copy its caller publishes to run.meta
+   *  only once this resolves (a raise, takeRaise), else run.meta, each as it stands when the write starts. */
+  private saveMeta(run: Run, meta?: () => RunMeta): Promise<void> {
     run.saving = (run.saving ?? Promise.resolve()).catch(() => undefined).then(async () => {
-      const { learning } = run.meta;
-      await this.beforeMetaSave?.(run.id, run.meta);
-      await writeWhole(join(run.dir, RUN_META), `${JSON.stringify(run.meta)}\n`);
+      // A copy is built as its write starts, from run.meta as it stands then.
+      const written = meta ? meta() : run.meta;
+      const { learning } = written;
+      await this.beforeMetaSave?.(run.id, written);
+      await writeWhole(join(run.dir, RUN_META), `${JSON.stringify(written)}\n`);
       await this.learning.onSaved(run, learning);
     });
     return run.saving;
@@ -2232,29 +2237,28 @@ export class Runs {
       return answered ? { resumed: true, messageId: answered.message_id } : { resumed: false };
     }
     if (!(cap > from + CAP_TOLERANCE)) throw invalid([{ field: "max_cost_usd", reason: "invalid", message: `A cap is only raised: name more than the run's ${money(from)}.` }]);
-    const kept = { max: from, raised: run.meta.cap_raised, next: run.meta.cap_continue, fields: run.meta.cap_continue && { ...run.meta.cap_continue } };
-    run.meta.max_cost_usd = cap;
-    run.meta.cap_raised = [...(run.meta.cap_raised ?? []), { from, to: cap, at: new Date().toISOString(), ...(pause ? { pause } : {}) }];
+    // Built on a copy and written first: nothing reads the raise (its cap, the pause it answers, its follow-up) before
+    // serve.json keeps it, so until then a message is still 409 budget_reached, the run reads its old cap and no
+    // follow-up goes; a raise the write fails leaves the run as it was, and a retry raises it again.
+    const raised = [...(run.meta.cap_raised ?? []), { from, to: cap, at: new Date().toISOString(), ...(pause ? { pause } : {}) }];
+    let follow = run.meta.cap_continue;
     if (pause !== undefined && next === undefined) {
       // The pause's one follow-up, by an id fixed now, and the process being let go then, which it waits out.
       const paused = this.live(run) ? this.liveIdentity(run) : undefined;
-      run.meta.cap_continue = { pause, message_id: `cap-${run.meta.cap_raised.length}-${randomBytes(4).toString("hex")}`, sent: false, tries: 0, ...(paused ? { paused } : {}) };
+      follow = { pause, message_id: `cap-${raised.length}-${randomBytes(4).toString("hex")}`, sent: false, tries: 0, ...(paused ? { paused } : {}) };
     } else if (next) {
       // A raise of a pause whose follow-up has not gone: that one follow-up goes, under this cap, with its tries anew.
+      const { error: _, ...rest } = next;
+      follow = { ...rest, tries: 0 };
+    }
+    await this.saveMeta(run, () => ({ ...run.meta, max_cost_usd: cap, cap_raised: raised, ...(follow ? { cap_continue: follow } : {}) }));
+    run.meta.max_cost_usd = cap;
+    run.meta.cap_raised = raised;
+    if (next && follow) {
+      // The same follow-up object resumeRaised may hold, renewed in place.
       next.tries = 0;
       delete next.error;
-    }
-    try {
-      await this.saveMeta(run);
-    } catch (error) {
-      // Not kept, not taken: as before it, so a retry raises it again.
-      run.meta.max_cost_usd = kept.max;
-      if (kept.raised) run.meta.cap_raised = kept.raised;
-      else delete run.meta.cap_raised;
-      if (kept.next) run.meta.cap_continue = Object.assign(kept.next, kept.fields);
-      else delete run.meta.cap_continue;
-      throw error;
-    }
+    } else if (follow) run.meta.cap_continue = follow;
     if (next && typeof run.resuming === "number") run.resuming = undefined;
     this.refresh(run);
     const answered = pause !== undefined ? run.meta.cap_continue : undefined;
@@ -2275,14 +2279,19 @@ export class Runs {
     try {
       // The server's line, shown as the server's (MessageOrigin), never as the person's: the model reads the same text.
       await this.submit(run, `The cap was raised to ${money(cap)}; continue the task.`, "followUp", next.message_id, undefined, { kind: "server", reason: "cap_raised" });
-      next.sent = true;
+      // Marked sent once serve.json says so. Should that write fail, it went all the same (the door holds it), and its
+      // run no longer stands at the pause, so nothing sends it again.
+      await this.saveMeta(run, () => ({ ...run.meta, cap_continue: { ...next, sent: true } })).then(
+        () => void (next.sent = true),
+        (error: Error) => warn(run.id, `its raised cap's follow-up went, but is not marked sent: ${error.message}`),
+      );
       run.resuming = undefined;
-      await this.saveMeta(run).catch((error: Error) => warn(run.id, `its raised cap's follow-up went, but is not marked sent: ${error.message}`));
     } catch (error) {
       run.submitted = Math.max(0, run.submitted - 1);
-      next.tries += 1;
-      next.error = (error as Error).message;
-      await this.saveMeta(run).catch(() => undefined);
+      // The try counts here whether or not serve.json can say so, so its tries stay bounded.
+      const tried = { tries: next.tries + 1, error: (error as Error).message };
+      await this.saveMeta(run, () => ({ ...run.meta, cap_continue: { ...next, ...tried } })).catch(() => undefined);
+      Object.assign(next, tried);
       if (next.tries >= CONTINUE_TRIES) {
         run.resuming = undefined;
         warn(run.id, `its raised cap's follow-up was not sent in ${next.tries} tries (${next.error}); the run fails`);

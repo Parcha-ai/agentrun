@@ -516,7 +516,7 @@ export const leastMoney = (usd: number): string => `$${(Math.ceil(usd * 100 - 1e
  *  the cap itself, so a raise to it is one PATCH /runs/{id} takes. */
 export const raiseTo = (cap: number, total: number): string => {
   const cents = Math.ceil(total * 100 - 1e-9);
-  return `$${((cents / 100 > cap + CAP_TOLERANCE ? cents : Math.floor(cap * 100 + 1e-9) + 1) / 100).toFixed(2)}`;
+  return `$${((cents / 100 > cap + CAP_TOLERANCE ? cents : Math.floor((cap + CAP_TOLERANCE) * 100) + 1) / 100).toFixed(2)}`;
 };
 
 
