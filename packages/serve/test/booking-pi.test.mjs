@@ -48,10 +48,10 @@ const scripted = (steps) => {
 
 /** A capped, marked pi run on real pi-ai (Anthropic's API), its marks into `marks`. `store(entry)`, when given, runs before
  *  each mark is kept: a store that is slow (it waits) or refuses (it throws) for that entry. */
-async function capped(marks, models, store) {
+async function capped(marks, models, store, cap = CAP) {
   const pi = models ?? (() => { const m = createModels(); m.setProvider(anthropicProvider()); return m; })();
   const marked = await markRequests(pi);
-  const out = await capModels(marked.models, CAP, 0);
+  const out = await capModels(marked.models, cap, 0);
   marked.open({ harness: { commit: async (change) => change({ appendEntry: async (_conversation, entry) => { await store?.(entry); marks.push(entry); } }) } });
   return out;
 }
@@ -202,3 +202,28 @@ test("a later process pairs a lost mark with its own request's answer, never an 
   // The first at its own $0.0008, the second at its hold, the side request at its $0.0002: never the hold in the first's place.
   assert.equal(Math.round(spentIn(file) * 1e9) / 1e9, 0.002, "the first's cost, the second's hold and the side request's cost");
 });
+
+test("a request whose retry the run stops after a lost attempt books its hold in this process, as its lost mark does in a later one: the stop never releases what the lost attempt can have cost", async (t) => {
+  // A ceiling of 10,000 tokens at $1 a million: held at $0.01, stopped after a few bytes at about $0.001, under a $0.015 cap.
+  const big = { ...MODEL, id: "claude-big", maxTokens: 10_000 };
+  const marks = [];
+  const run = await capped(marks, undefined, undefined, 0.015);
+  const stop = new AbortController();
+  // The retry's answer begins, then the run stops it.
+  const begun = async (_url, init) => {
+    setTimeout(() => stop.abort(), 50);
+    return new Response(new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode(frame(EVENTS.slice(0, 3)))); init?.signal?.addEventListener("abort", () => c.error(Object.assign(new Error("aborted"), { name: "AbortError" })), { once: true }); } }), { status: 200, headers: { "content-type": "text/event-stream" } });
+  };
+  const first = await run.streamSimple(big, context, { ...options(scripted([STEPS.refused("ECONNRESET"), begun])), signal: stop.signal }).result();
+  await settle();
+  const upTo = marks.length;
+  assert.equal(first.stopReason, "aborted", first.errorMessage);
+  await run.streamSimple(big, context, options(scripted([STEPS.ok]))).result();
+  // The next request is limited to what is left of the cap: $0.005 once the first is booked at its $0.01 hold, never the
+  // $0.014 a booking at what streamed would leave (which limits nothing).
+  const next = marks.slice(upTo).find((m) => m.kind === REQUEST_STARTED)?.data?.clamp;
+  assert.equal(next?.leftUsd, 0.005, `booked at its $0.01 hold in this process: ${JSON.stringify(next)}`);
+  // The store as the first request left it, before the next began: its lost mark's hold, read again.
+  assert.equal(spentIn(storeOf(t, [...marks.slice(0, upTo), { kind: "pi.assistant", model: [first] }])), 0.01, "a later process reads the same hold, from its lost mark");
+});
+
