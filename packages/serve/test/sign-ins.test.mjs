@@ -23,7 +23,7 @@ import { note } from "./fixtures/faux-learn.mjs";
 const FAUX_BROWSER = new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname;
 const FAUX_BROWSERBASE = new URL("./fixtures/faux-browserbase-check.mjs", import.meta.url).pathname;
 const FAUX_KERNEL = new URL("./fixtures/faux-kernel-check.mjs", import.meta.url).pathname;
-const KEYS = ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "BROWSERBASE_BASE_URL", "BROWSERBASE_CONNECT_BASE_URL", "KERNEL_API_KEY", "AGENTRUN_SEAL_KEY", "FAUX_BROWSER_LOG", "FAUX_BROWSER_DIE_WITH_REF", "FAUX_BROWSER_REFUSE_WITH_REF"];
+const KEYS = ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "BROWSERBASE_BASE_URL", "BROWSERBASE_CONNECT_BASE_URL", "KERNEL_API_KEY", "AGENTRUN_SEAL_KEY", "FAUX_BROWSER_LOG", "FAUX_BROWSER_DIE_WITH_REF", "FAUX_BROWSER_REFUSE_WITH_REF", "AGENTRUN_TEST_FAUX_BROWSERBASE_CONTEXTS_DOWN"];
 
 /** A store over `data` with fake vendors: each made object named in turn, each removal recorded (or refused). */
 function fakeStore(data, { key = randomBytes(32), running = new Set(), refuseRemove = false, now } = {}) {
@@ -369,11 +369,11 @@ test("a run whose process dies naming its sign-in's pointer in its log fails wit
   for (const shown of [JSON.stringify(view), JSON.stringify((await api("GET", "/runs")).body), await readFile(join(data, "runs", started.body.run_id, "serve.json"), "utf8")]) assert.ok(!shown.includes(ref), shown);
 });
 
-test("verified_at counts only a session that saved: one let go by the run on the profile, never one the vendor had lost or never made; and an agent's queue goes once it is empty", async (t) => {
+test("verified_at counts only a session that saved: one let go by the run, never one the vendor had lost or never made; and an agent's queue goes once it is empty", async (t) => {
   const row = (releaseReason, { profile = "default", resourceId = "sess-1" } = {}) => ({ session: { resourceId, releaseReason, settings: { profile } } });
   for (const reason of ["tool", "idle", "relaunch", "close", "ended"]) assert.equal(savedOnRelease(row(reason), "released"), true, reason);
   for (const reason of ["lost", "create_failed", null]) assert.equal(savedOnRelease(row(reason), "released"), false, String(reason));
-  assert.equal(savedOnRelease(row("close", { profile: null }), "released"), false, "no profile");
+  assert.equal(savedOnRelease(row("close", { profile: null }), "released"), true, "its record names no profile, yet it ran on the run's (asHanded)");
   assert.equal(savedOnRelease(row("close", { resourceId: null }), "released"), false, "never made");
   assert.equal(savedOnRelease(row("close"), "updated"), false, "not let go");
   const { store } = fakeStore(await scratch(t));
@@ -582,4 +582,28 @@ test("a run's end-of-run learning never keeps its browser sign-in's pointer: a n
   assert.ok(!notes.includes(ref), notes);
   assert.ok(!objects(repoOf(data, "alpha")).includes(ref), "nothing of it in the agent's learning, in any commit");
   for (const shown of [JSON.stringify(view), JSON.stringify((await api("GET", `/runs/${runId}/learning`)).body), await readFile(join(data, "runs", runId, "serve.json"), "utf8")]) assert.ok(!shown.includes(ref), shown);
+});
+
+test("a follow-up handed a sign-in starts signed in and saves, though its run's first launch had none and its conversation was made with no profile", { timeout: 180_000 }, async (t) => {
+  const dir = await scratch(t);
+  const log = join(dir, "browser.jsonl");
+  withEnv(t, { BROWSERBASE_API_KEY: BB_KEY, BROWSERBASE_PROJECT_ID: "proj-1", AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), FAUX_BROWSER_LOG: log, AGENTRUN_TEST_FAUX_BROWSERBASE_CONTEXTS_DOWN: "1" }, KEYS);
+  const { api } = await serve(t, { fauxBrowser: FAUX_BROWSER, fauxBrowserbase: FAUX_BROWSERBASE });
+  assert.equal((await api("POST", "/agents", agent("alpha", { instructions: "Browse.", tools: ["browser"] }))).status, 201);
+  const lines = async () => (await readFile(log, "utf8").catch(() => "")).trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
+  // Browserbase makes no context: the first launch is handed none, and browses signed out.
+  const runId = (await api("POST", "/agents/alpha/runs", { input: { content: "Browse the example page." } })).body.run_id;
+  const { after } = await follow(api, runId, ["completed"]);
+  assert.deepEqual((await lines()).filter((op) => op.op === "sign-in" || op.op === "profile"), [], "signed out");
+  assert.deepEqual((await api("GET", "/agents/alpha")).body.sign_ins, []);
+  // Browserbase is back: the follow-up's launch is handed the agent's new sign-in, and its session opens on it, saving.
+  delete process.env.AGENTRUN_TEST_FAUX_BROWSERBASE_CONTEXTS_DOWN;
+  const mark = (await lines()).length;
+  assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "Browse the example page again." })).status, 202);
+  await follow(api, runId, ["completed"], { after });
+  const followUp = (await lines()).slice(mark);
+  assert.deepEqual(followUp.filter((op) => op.op === "sign-in").map((op) => op.save), [true]);
+  assert.deepEqual(followUp.filter((op) => op.op === "profile").map((op) => [op.name, op.save]), [["default", true]], "its session opens on the saved sign-in");
+  const ready = await until(async () => (await api("GET", "/agents/alpha")).body.sign_ins, (list) => list[0]?.state === "ready");
+  assert.ok(Date.parse(ready[0].verified_at) > 0, "and what it saved counts");
 });
