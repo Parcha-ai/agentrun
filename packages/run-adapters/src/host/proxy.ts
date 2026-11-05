@@ -141,10 +141,17 @@ function eventCounter<K extends string>(readers: Record<K, ((event: string) => n
   const keys = (Object.keys(readers) as K[]).filter((key) => readers[key] !== undefined);
   const sums = Object.fromEntries(keys.map((key) => [key, 0])) as Record<K, number>;
   let pending = "";
+  /** A "\r" the last piece ended on: the first half of a "\r\n" the next piece ends. */
+  let cr = "";
   return {
     push(text) {
       if (!keys.length) return;
-      pending += text.replace(/\r\n/g, "\n");
+      // A line end split between pieces ("\r" here, "\n" in the next) is joined before "\r\n" becomes "\n", or the two
+      // events around a split blank line would read as one, which no policy can parse.
+      let piece = cr + text;
+      cr = piece.endsWith("\r") ? "\r" : "";
+      if (cr) piece = piece.slice(0, -1);
+      pending += piece.replace(/\r\n/g, "\n");
       for (let at = pending.indexOf("\n\n"); at >= 0; at = pending.indexOf("\n\n")) {
         const event = pending.slice(0, at);
         pending = pending.slice(at + 2);
