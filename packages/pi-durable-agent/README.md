@@ -504,7 +504,7 @@ with it. The agents are rows in `store.sqlite`, not one home each; the beta.24 h
 turns a home into an agent.
 
 ```
-my-agents/store.sqlite       agents, revisions, skills, runs, archive_changes, run_imports, run_metrics, run_tool_metrics
+my-agents/store.sqlite       agents, revisions, skills, runs, archive_changes, run_imports, run_metrics, run_tool_metrics, run_origins
 my-agents/runs/<run id>/     each run's own store and work directory
 ```
 
@@ -525,6 +525,7 @@ CREATE TABLE run_metrics (run_id TEXT PRIMARY KEY REFERENCES runs(id), input INT
                         active_ms INTEGER, effort TEXT, model TEXT, models_json TEXT NOT NULL, cost_usd_est REAL, cost_basis TEXT, at TEXT NOT NULL);
 CREATE TABLE run_tool_metrics (run_id TEXT NOT NULL REFERENCES run_metrics(run_id), tool TEXT NOT NULL, calls INTEGER NOT NULL,
                         errors INTEGER NOT NULL, PRIMARY KEY (run_id, tool));
+CREATE TABLE run_origins (key TEXT PRIMARY KEY, run_id TEXT NOT NULL UNIQUE REFERENCES runs(id), fingerprint TEXT, at TEXT NOT NULL);
 ```
 
 ```js
@@ -558,6 +559,13 @@ have no known cost (running, or ended without one), and the ids of the running r
 number but `archivedAgents` and `archivedRuns`. Each number is an SQL aggregate over `store.sqlite` through its indexes
 (`runs_by_agent`, `runs_by_state`); nothing under `runs/` is opened. `runs_by_state` came, like `archive_changes`,
 without a new store version.
+
+A caller that may ask for the same run twice (a retry after a crash, a firing driven again) names its origin:
+`store.startRun({ agent, origin: { key, fingerprint? } })` writes the `run_origins` row in the transaction that writes the run's,
+and the same key never starts a second run. Asked again, or by two starts at once, it returns the run the key started, with
+`existing: { fingerprint? }` (the fingerprint recorded with it, for the caller to tell a retry from another request under the
+key), and writes nothing; a start that lost the race removes the directory it seeded. `store.runOfOrigin(key)` reads it without
+starting anything. An origin is written once, and, like `archive_changes`, the table came without a new store version.
 
 A session another harness ran on this machine comes in as a run that has already ended:
 `store.importRun({ agent, revision, state, startedAt, endedAt, costUsd?, summary?, source, session })` writes its `runs` row at the
@@ -699,7 +707,7 @@ The types the package exports:
   `CapturedState`, `VaultCookie` and `VaultEntry`.
 - **Runs.** `RunPaths`, `RunStart`, `RunSeed` (plain data, so a host can carry it to the run's side), `CarryBack`,
   `ProfileStore` and `ProfileTarget` (the host's Harness, or any Session on the run store).
-- **Store.** `Agent`, `AgentRow`, `Revision`, `RevisionRow`, `RevisionKind`, `AgenticBody`, `WorkflowBody`, `RevisionPlace` (a body's optional `{mode, box?}`, ids its host knows), `NewRevision`, `StartedRun`, `RunRow`, `RunState`, `ArchiveKind` (`"agent" | "run"`), `StoreStats` (what `stats` answers), `StoreAnalytics` with `AnalyticsGroup` and `AnalyticsFilter` (what `analytics` answers and takes), `StoredMetrics` (a run's metrics as `carryBack`, `importRun` and `runMetrics` carry them), and for an imported run `ImportedRun`, `ImportedFrom` and `ImportSource` (`"claude-code" | "codex" | "pi"`).
+- **Store.** `Agent`, `AgentRow`, `Revision`, `RevisionRow`, `RevisionKind`, `AgenticBody`, `WorkflowBody`, `RevisionPlace` (a body's optional `{mode, box?}`, ids its host knows), `NewRevision`, `StartedRun`, `RunOrigin` (`store.startRun`'s `{ key, fingerprint? }`), `RunRow`, `RunState`, `ArchiveKind` (`"agent" | "run"`), `StoreStats` (what `stats` answers), `StoreAnalytics` with `AnalyticsGroup` and `AnalyticsFilter` (what `analytics` answers and takes), `StoredMetrics` (a run's metrics as `carryBack`, `importRun` and `runMetrics` carry them), and for an imported run `ImportedRun`, `ImportedFrom` and `ImportSource` (`"claude-code" | "codex" | "pi"`).
 - **Packs.** `PackOptions`, `Skipped`, `HomeManifest` (the manifest's fields, in [Moving a home](#moving-a-home)),
   `ImportOptions`, `ImportReport`, and `HomeCheck` (`{ name, status, message, detail? }`, `status` being `ok`, `warn`
   or `fail`). `ImportStep` and `ImportOptions.inject` belong to this package's tests and are not part of its contract.
@@ -733,6 +741,7 @@ No dependency, no Node built-in, and no thrown error of its own: a page, a viewe
 | `runMetricsWithDecisions(records, decisions)` | `runMetricsOf`, with a workflow run's decision receipts (`DecisionLike`) beside its entries: each a request by `provider/model`, its `usage` (`input_tokens`, `output_tokens`) in the token sums, and one with none, or cancelled, in `unmetered`. serve passes a workflow run's receipts at its end; `runMetricsOf` keeps one parameter, so `.map(runMetricsOf)` stays safe |
 | `CAPS` | The caps a row's `summary`, `preview`, `text` and `thinking` are cut to: 500, 500, 2000 and 100 |
 | `RUN_RESUMED` | The entry kind a host writes on the root as a run's process opens to go on with a run its last process left unfinished (`data`: `after`, `crash` or `server_stop`; `generation`; `at`): a `phase` row of its own at `at`, "Resumed after a crash" or "Resumed after the server stopped", and no request. A reader from before it ignores it, as it does any kind it does not know |
+| `TURN_END` | The entry kind a host writes on the root as a turn on another harness (claude-agent, codex) ends (`data`: `key`, `status`, ...). No row. A message after it is the person's next message, never a `(steer)`, even when the turn's last entry was a tool's result: a stop that came after the result and before the next model request |
 | `scrubUrls(text)` | `text` with each http(s) URL in it kept to its origin, its path and its query keys: query values, the fragment and credentials are dropped, as on every row. A host that adds rows of its own cleans their strings with it |
 | `cut(text, max)` | `text` cut to `max` characters, the last three `...` when it was longer: how a row's strings are cut to `CAPS` |
 | `METRIC_NAMES` | How `runMetricsOf` keeps tool and model names: `max` 256 characters, the `kept` 100 busiest of each, and the names it sums the rest and a nameless tool under: `otherTools` (`…other tools`), `otherModels` (`…other models`), `unnamedTool` (`…unnamed tool`) |

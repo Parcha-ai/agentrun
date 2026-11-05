@@ -2,7 +2,8 @@
 // low, medium and high, one run on the real adapter against the loopback test gateway (fixtures/faux-gateway.mjs), and
 // the level read back from the request body the gateway recorded. pi through serve's gateway (Responses:
 // `reasoning.effort`), codex on its pinned binary through its proxy (Responses: `reasoning.effort`), claude-agent on its
-// pinned CLI (Messages: `output_config.effort`, with `thinking.type` "adaptive"). Dummy keys, loopback only.
+// pinned CLI (Messages: `output_config.effort`, with `thinking.type` "adaptive"), opencode on its pinned binary through
+// its proxy (Responses: `reasoning.effort`). Dummy keys, loopback only.
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { test } from "node:test";
@@ -63,4 +64,13 @@ test("claude-agent, on its pinned CLI: a run's effort low, medium or high reache
   const runs = await byLevel(api, gw, "claude-effort", 120_000);
   assertLevels(runs, (body) => body?.output_config?.effort ?? null, "output_config.effort");
   for (const level of LEVELS) assert.deepEqual([...new Set(runs[level].bodies.map((body) => body?.thinking?.type ?? null))], ["adaptive"], `${level}: thinking.type`);
+});
+
+test("opencode, on its pinned binary: a run's effort low, medium or high reaches its Responses request as reasoning.effort, each level its own", { timeout: 300_000, skip: noSetpriv }, async (t) => {
+  const gw = await startFauxGateway();
+  t.after(() => gw.close());
+  withEnv(t, { AGENT_MODEL_BASE_URL: gw.url, AGENT_MODEL_API_KEY: KEY("gateway"), AGENT_MODEL: "openai/gpt-6-sol" }, NAMES);
+  const { api } = await serve(t, { faux: undefined });
+  assert.equal((await api("POST", "/agents", agent("opencode-effort", { harness: "opencode" }))).status, 201);
+  assertLevels(await byLevel(api, gw, "opencode-effort", 90_000), (body) => body?.reasoning?.effort ?? null, "reasoning.effort");
 });

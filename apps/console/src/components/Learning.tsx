@@ -199,7 +199,7 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent }: Learning
         <aside className="min-w-0 space-y-6" aria-label="About learning">
           <Panel title="Learning">{switchRow(false)}</Panel>
           <NotKept runs={runs} />
-          <NextRun index={view.index} />
+          <NextRun index={view.index} skills={skills.filter((s) => s.status === "active").map((s) => s.name)} off={!on || server === "off"} />
         </aside>
       </div>
     </div>
@@ -786,23 +786,29 @@ function NotKept({ runs }: { runs: Run[] }) {
   );
 }
 
-/** The index the next run reads first, one line a note in use (so its lines are counted as notes): built by the server
- *  from the notes, so read-only. */
-function NextRun({ index }: { index: string }) {
+/** What the next run reads: the index first, one line a note in use (so its lines are counted as notes), built by the
+ *  server from the notes, and the agent's active skills by name (one that waits for its owner's OK is given to no run;
+ *  the server may still leave an active one out of a run, over its budget, so they are the agent's, not a promise).
+ *  `off`: learning is off, for the agent or on this server, and the next run gets neither. Read-only. */
+function NextRun({ index, skills, off }: { index: string; skills: string[]; off: boolean }) {
   const [open, setOpen] = useState(false);
-  const lines = index.split("\n").filter((l) => l.trim()).length;
+  const lines = off ? 0 : index.split("\n").filter((l) => l.trim()).length;
+  const active = off ? [] : skills;
+  const given = active.length ? `${active.length} ${active.length === 1 ? "skill" : "skills"}` : "";
   return (
     <section className="border" aria-label="What the next run reads">
       <button type="button" aria-expanded={open} onClick={() => setOpen((o) => !o)} className="flex w-full items-center gap-2 px-4 py-3 text-left hover:bg-accent">
         <ChevronDown className={cn("size-3.5 text-muted-foreground transition-transform", !open && "-rotate-90")} aria-hidden />
         <span className="caps text-[12px] font-semibold">What the next run reads</span>
-        <span className="ml-auto font-mono text-[11px] text-muted-foreground">{lines ? notes(lines) : "nothing"}</span>
+        <span className="ml-auto font-mono text-[11px] text-muted-foreground">{[lines ? notes(lines) : "", given].filter(Boolean).join(" · ") || "nothing"}</span>
       </button>
       {open && (
         <div className="border-t">
-          {lines ? <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words px-4 py-3 font-mono text-[11.5px] leading-[1.7]">{index.trim()}</pre>
-            : <p className="px-4 py-3 text-[13px] text-muted-foreground">Nothing yet: no note is in use.</p>}
-          <p className="border-t px-4 py-2 text-[11px] text-muted-foreground">Read-only: it's made from the notes in use, one line each.</p>
+          {off ? <p className="px-4 py-3 text-[13px] text-muted-foreground">Learning is off: the next run gets no notes or skills.</p>
+            : lines ? <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words px-4 py-3 font-mono text-[11.5px] leading-[1.7]">{index.trim()}</pre>
+            : <p className="px-4 py-3 text-[13px] text-muted-foreground">{active.length ? "No note is in use." : "Nothing yet: no note is in use."}</p>}
+          {active.length > 0 && <p className="break-words border-t px-4 py-3 font-mono text-[11.5px] leading-[1.7]">Active skills: {active.join(", ")}</p>}
+          <p className="border-t px-4 py-2 text-[11px] text-muted-foreground">Read-only: the notes in use, one line each, and the agent's active skills.</p>
         </div>
       )}
     </section>
