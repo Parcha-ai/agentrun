@@ -639,6 +639,40 @@ test("an answer or a stop that lands while a declining message is on its way sta
   }
 });
 
+test("a declining message is held to the call it read: when that call is answered and another parks while the message is on its way, the message declines nothing, and the new call still waits for its own answer", { timeout: 150_000 }, async (t) => {
+  const server = await serve(t, GATE);
+  const { api } = server;
+  const answer = await owner(server);
+  t.after(() => (runsTestHooks.personsTurn = undefined));
+  const file = join(await scratch(t), "go");
+  const ask = `Fetch ${PAGE} again once ${file} exists.`;
+  assert.equal((await api("POST", "/agents", agent("pinned", { harness: "pi", instructions: ask, tools: ["web_fetch"], tool_settings: { web_fetch: { permission: "ask" } } }))).status, 201);
+  const runId = (await api("POST", "/agents/pinned/runs", { input: { content: ask } })).body.run_id;
+  const first = (await parked(api, runId)).view.pending.id;
+  let release, reached;
+  const held = new Promise((resolve) => (release = resolve));
+  const at = new Promise((resolve) => (reached = resolve));
+  runsTestHooks.personsTurn = () => (reached(), held);
+  const sent = api("POST", `/runs/${runId}/messages`, { content: "Never mind." });
+  await at;
+  // The call the message read is allowed and runs; the model then makes its next call, which parks.
+  assert.equal((await answer(runId, first, { decision: "allow" })).status, 204);
+  await writeFile(file, "");
+  let second;
+  for (let i = 0; !(second && second !== first); i++) {
+    assert.ok(i < 600, "the next call did not park");
+    second = (await api("GET", `/runs/${runId}`)).body.pending?.id;
+    await sleep(100);
+  }
+  runsTestHooks.personsTurn = undefined;
+  release();
+  assert.ok([200, 202].includes((await sent).status), "the message is taken");
+  await follow(api, runId, ["input_required"], { deadlineMs: 55_000 });
+  const kept = JSON.parse(await readFile(join(server.data, "runs", runId, "serve.json"), "utf8")).approvals;
+  assert.deepEqual([kept[first]?.decision, kept[second]], ["allow", undefined], "the call it read keeps its allow, and the new one is not declined");
+  assert.equal((await api("GET", `/runs/${runId}`)).body.pending?.id, second, "the new call still waits for its own answer");
+});
+
 test("a long message that declines a waiting call reaches the model whole: all 5000 of its characters, as its reason", { timeout: 120_000 }, async (t) => {
   await network(t);
   const server = await serve(t, GATE);
