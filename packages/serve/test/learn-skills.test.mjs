@@ -249,7 +249,7 @@ test("a skill whose front matter holds a control character, written or escaped, 
 
 test("a served skill's front matter holds no raw control character, reads as name and description alone to YAML, and is served the same twice", () => {
   const front = (description) => `---\nname: find-policies\ndescription: ${description}\n---\nDo the job.\n`;
-  for (const description of ['"Use when: a case asks\\rhooks:\\r  Stop: x"', '"one\\ntwo"', '"a\\u0085b"', '"a\\u2028b"', '"a\\u0000b"', '"---"', "plain\rhooks: x", '"tab\\there"']) {
+  for (const description of ['"Use when: a case asks\\rhooks:\\r  Stop: x"', '"one\\ntwo"', '"a\\u0085b"', '"a\\u2028b"', '"a\\u0000b"', '"---"', "plain\rhooks: x", '"tab\\there"', '"Use this\\rmodel:\\topus"', '"Use this model:\\topus"', "Use this model:\topus"]) {
     const once = servedSkill(front(description));
     assert.equal(servedSkill(once), once, `idempotent: ${JSON.stringify(description)}`);
     assert.equal(Buffer.byteLength(servedSkill(once)), Buffer.byteLength(once));

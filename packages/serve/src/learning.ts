@@ -33,7 +33,7 @@ import { constants, existsSync } from "node:fs";
 import { lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, posix, relative } from "node:path";
 import { SKILL_BYTES } from "@parcha/agentrun-kernel";
-import { hiddenCharacter, INDEX_FILE, type LearnedNote, loadedIndex, NOTE_FILE, parseNoteFile, type Problem, redactSecrets, secretShapes, servedSkill, SKILLS_DIR, valueMatcher, type Verdict } from "./learn/index.js";
+import { hiddenCharacter, INDEX_FILE, type LearnedNote, loadedIndex, NOTE_FILE, parseNoteFile, type Problem, redactSecrets, secretShapes, servedHidden, servedSkill, SKILLS_DIR, valueMatcher, type Verdict } from "./learn/index.js";
 import { homeOf, serialBy, writeDurable } from "./files.js";
 import { DETAIL_MAX, LIST_DETAIL, short, wordsOf } from "./learning-words.js";
 import { isObject } from "./validate.js";
@@ -517,7 +517,7 @@ export async function readSkills(cwd: string, repo: string, sha: string): Promis
     const served = { ...texts, "SKILL.md": servedSkill(texts["SKILL.md"]!) };
     // Its escapes decoded as served: one that makes a character a reader does not see leaves the skill out (the checker
     // refuses it at learn time; this holds for what was on main before).
-    if (hiddenCharacter(served["SKILL.md"])) {
+    if (servedHidden(texts["SKILL.md"]!) || hiddenCharacter(served["SKILL.md"])) {
       skipped.push(`${SKILLS_DIR}/${name} (holds a hidden character)`);
       continue;
     }
