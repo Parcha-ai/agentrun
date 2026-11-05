@@ -309,7 +309,7 @@ export type Run = {
   /** That refusal's own start mark (its entry): the pause a raise answers is keyed to it (pauseOf). */
   capMark?: number;
   /** What it has spent paused at that refusal (its row), its process gone: the store's spend (spentNow), read once. */
-  capSpent?: { mark: string; usd: number | null };
+  capSpent?: { mark: string; usd: number | null; at?: number };
 };
 
 const ASKED = "Asked you: ";
@@ -1140,14 +1140,15 @@ export class Runs {
   private spentNow(run: Run): number | undefined {
     const mark = meaningful(run.rows)?.id;
     if (mark === undefined || !run.capRefusal || this.live(run) || pausedAt(run) === undefined) return undefined;
-    if (run.capSpent?.mark !== mark) {
+    // One read per pause, and a failed read again after a while, never kept until a restart.
+    if (run.capSpent?.mark !== mark || (run.capSpent.usd === null && Date.now() - (run.capSpent.at ?? 0) > 30_000)) {
       let usd: number | null = null;
       try {
         usd = spentIn(this.storeFile(run));
       } catch (error) {
         warn(run.id, `its store's spend was not read (${(error as Error).message}); its refusal's figure stands`);
       }
-      run.capSpent = { mark, usd };
+      run.capSpent = { mark, usd, at: Date.now() };
     }
     return run.capSpent.usd ?? undefined;
   }
@@ -1871,7 +1872,10 @@ export class Runs {
     if (!ended) {
       // Work left and no process: opened again. A run that waits for the person waits without one, until a message.
       const stalled = run.kind === "workflow" || statusOf(run).status !== "input_required";
-      if (!gone || !stalled || this.closing) return this.refresh(run);
+      // A raised run's follow-up, under way or still to go, opens the run's next process itself (resumeRaised): its
+      // paused process going is no process lost, and no relaunch is counted for it.
+      const continuing = run.resuming !== undefined || continuationOf(run) !== undefined || run.child !== undefined;
+      if (!gone || !stalled || this.closing || continuing) return this.refresh(run);
       // Opened again without a place, as a run already going, unless its harness never fits this host (a restart on a
       // smaller one): that run fails with why.
       const never = neverFits(run.harness, this.memory);
@@ -2233,7 +2237,8 @@ export class Runs {
     const next = continuationOf(run);
     // The same raise again (a retry): what the first one did stands.
     if (Math.abs(cap - from) <= CAP_TOLERANCE && last && Math.abs(last.to - cap) <= CAP_TOLERANCE) {
-      const answered = last.pause !== undefined && run.meta.cap_continue?.pause === last.pause ? run.meta.cap_continue : undefined;
+      // Resumed, as the first answer said, unless the run has since paused anew at another refusal: no raise of that one.
+      const answered = last.pause !== undefined && run.meta.cap_continue?.pause === last.pause && (pause === undefined || pause === last.pause) ? run.meta.cap_continue : undefined;
       return answered ? { resumed: true, messageId: answered.message_id } : { resumed: false };
     }
     if (!(cap > from + CAP_TOLERANCE)) throw invalid([{ field: "max_cost_usd", reason: "invalid", message: `A cap is only raised: name more than the run's ${money(from)}.` }]);
@@ -2340,6 +2345,10 @@ export class Runs {
       // before it lays the run's notes again (learning-run.ts onReopen), and a message read meanwhile would launch the run
       // before they are back.
       if (run.reopening) await run.reopening.catch(() => undefined);
+      // A raised run whose follow-up has not gone yet (its paused process still letting go, or the follow-up being sent)
+      // takes a message once it has: after it, as the next turn, never into the process being let go.
+      const following = () => continuationOf(run) !== undefined || run.resuming === "sending";
+      if (following()) await this.waitWhile(following, 100, "The run's raised cap's follow-up is still being sent");
       if (run.kind === "agentic" && statusOf(run).status === "completed") await (run.reopening ??= this.reopen(run).finally(() => (run.reopening = undefined)));
     } while (run.stopping);
     const steers = this.steers(run);
