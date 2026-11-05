@@ -201,6 +201,15 @@ export default function reply(context, faux) {
   if (query) return results === 0 ? faux.message(faux.toolCall("web_search", { query, n: 3 }), { stopReason: "toolUse" }) : faux.message("Searched.");
   // A follow-up that browses once more: a snapshot, then what it saw.
   if (browse && users.length > 1 && last === "Browse the example page again.") return answered ? faux.message(`Seen again: ${textOf(context.messages.at(-1))}`) : faux.message(faux.toolCall("snapshot", {}), { stopReason: "toolUse" });
+  // "Browse the example page, then ask me once <file> exists.": a snapshot, then, once the test has made that file, an
+  // ask_person whose question is `<file>.echo`'s text (a model that repeats what it was given); answered, it says it again.
+  const browseAsk = /^Browse the example page, then ask me once (\S+) exists\.$/.exec(first)?.[1];
+  if (browse && browseAsk) {
+    const echo = async () => (await import("node:fs/promises")).readFile(`${browseAsk}.echo`, "utf8").catch(() => "Which one?");
+    if (results === 0) return faux.message(faux.toolCall("snapshot", {}), { stopReason: "toolUse" });
+    if (users.length === 1 && results === 1) return untilExists(browseAsk).then(async () => faux.message(faux.toolCall("ask_person", { question: await echo() }), { stopReason: "toolUse" }));
+    return echo().then((text) => faux.message(`Noted: ${text}`));
+  }
   // "Browse the example page once <file> exists." answers, its browser still open, only once the test has made that file.
   const browseGate = /^Browse the example page once (\S+) exists\.$/.exec(first)?.[1];
   // With `<file>.echo` there too, it answers that file's text instead (a model that repeats what it was given).

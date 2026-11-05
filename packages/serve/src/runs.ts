@@ -43,7 +43,7 @@ import { isObject, type Json } from "./validate.js";
 import { firstMessage } from "./run-manifest.js";
 import { REFLECT_REQUEST, Turns } from "./turns.js";
 import { DECISION_KEYS, handover, handoverSignIn, hostSecrets, secret, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, type StoredKeys, withoutSecrets, withSecrets } from "./secrets.js";
-import type { HandedSignIn, SignIns } from "./sign-ins.js";
+import { type HandedSignIn, pointerHash, type SignIns } from "./sign-ins.js";
 import { MIN_SECRET } from "./learn/secrets.js";
 import { keyRefusal, redacted, redactedAnswer, redactedLive, redactedOutput, runKeyOf, withoutLoopback } from "./key-refusal.js";
 import { GRAPH_CACHE_BYTES, PartCache, type PartKind, servedPart } from "./graph-served.js";
@@ -76,8 +76,23 @@ const QUIET = /:run:(start|end)$/;
 const RETRY_CODES = ["OPENING", "PARKING", "RELEASED"];
 /** How often one server opens a run again whose process went before the run ended, before it fails the run. */
 const MAX_RELAUNCHES = 3;
-/** What a run's serve.json keeps of the sign-in pointer it was handed: its SHA-256, never the pointer. */
-const pointerHash = (ref: string): string => createHash("sha256").update(ref, "utf8").digest("hex");
+/** What a run's serve.json at `path` says it was handed of its agent's sign-in (`sign_in_handed`), read from disk for a
+ *  run this server does not hold: undefined for none, or no serve.json (a run never set up, never launched); `true` for
+ *  one that is there but can't be read or parsed, which may hold any. */
+async function handedOnDisk(path: string): Promise<true | string | undefined> {
+  const text = await readFile(path, "utf8").catch((error: NodeJS.ErrnoException) => (error.code === "ENOENT" ? undefined : null));
+  if (text === undefined) return undefined;
+  let stored: unknown;
+  try {
+    stored = text === null ? null : JSON.parse(text);
+  } catch {
+    stored = null;
+  }
+  if (!isObject(stored)) return true;
+  const handed = stored.sign_in_handed;
+  return handed === true || (typeof handed === "string" && /^[0-9a-f]{64}$/.test(handed)) ? handed : handed === undefined ? undefined : true;
+}
+
 /** Why a run going when its server started was stopped: the browser sign-in it was handed can't be read here (the seal
  *  key changed or is missing, or the sign-ins file is damaged or can't be read). */
 export const UNREADABLE_SIGN_IN = "This server can't read the run's browser sign-in (its seal key changed or is missing, or the sign-in is damaged): the run was stopped, so nothing it says can show it.";
@@ -1864,23 +1879,42 @@ export class Runs {
     // Its browser as this launch will find it (launch: a vendor whose key is gone since is unavailable, and gets none).
     const browser = run.meta.tool_plane && recheckPlane(run.meta.tool_plane, withSecrets(process.env, "all", this.options.storedKeys)).browser;
     const signIns = this.options.signIns;
-    run.signIn = browser && signIns ? ((await signIns.forRun(run.agentId, run.id, browser).catch((error: Error) => void warn(run.id, `its browser starts signed out: ${error.message}`))) ?? undefined) : undefined;
+    run.signIn = browser && signIns ? ((await signIns.forRun(run.agentId, run.id, browser, (handed) => this.keepHanded(run, handed)).catch((error: Error) => void warn(run.id, `its browser starts signed out: ${error.message}`))) ?? undefined) : undefined;
+  }
+
+  /** That `run` is handed `signIn`, kept before it is (forRun's keep, under its agent's sign-ins lock, so no forget comes
+   *  between): false when that can't be saved, and the run is handed none. */
+  private async keepHanded(run: Run, signIn: HandedSignIn): Promise<boolean> {
     // Never shown in its errors, from now on: a server started since its launch has handed it nothing yet.
-    if (run.signIn && run.signIn.ref.length >= MIN_SECRET) (run.handed ??= new Set()).add(run.signIn.ref);
+    if (signIn.ref.length >= MIN_SECRET) (run.handed ??= new Set()).add(signIn.ref);
     // Kept, as a hash alone (`true` once it was handed another before): a later server that cannot read the sign-in
-    // knows this run's text could hold it, and which. Not kept, the run is handed none (it starts signed out): a run
-    // whose text could hold the pointer is always one a server knows.
+    // knows this run's text could hold it, and which; and forget waits for the run (handedTo). Not kept, the run is
+    // handed none (it starts signed out): a run whose text could hold the pointer is always one a server knows.
     const before = run.meta.sign_in_handed;
-    const now = run.signIn && (before === undefined ? pointerHash(run.signIn.ref) : before === pointerHash(run.signIn.ref) ? before : true);
-    if (run.signIn && now !== before) {
-      run.meta.sign_in_handed = now as true | string;
-      await this.saveMeta(run).catch((error: Error) => {
-        if (before === undefined) delete run.meta.sign_in_handed;
-        else run.meta.sign_in_handed = before;
-        run.signIn = undefined;
-        warn(run.id, `its browser starts signed out: that it was handed a sign-in could not be saved (${error.message})`);
-      });
+    const now = before === undefined ? pointerHash(signIn.ref) : before === pointerHash(signIn.ref) ? before : true;
+    if (now === before) return true;
+    run.meta.sign_in_handed = now;
+    return this.saveMeta(run).then(() => true, (error: Error) => {
+      if (before === undefined) delete run.meta.sign_in_handed;
+      else run.meta.sign_in_handed = before;
+      warn(run.id, `its browser starts signed out: that it was handed a sign-in could not be saved (${error.message})`);
+      return false;
+    });
+  }
+
+  /** The run of `agentId` still going (its row running) that was handed the sign-in whose pointer hashes to `hash`, or
+   *  any sign-in when `hash` is undefined (a pointer that does not open here): forget waits for it (sign-ins.ts). From the
+   *  run this server holds, else its serve.json: a run still going need not be held yet (a recovery under way, or one it
+   *  could not recover). One handed two pointers (`true`), or whose serve.json is there but can't be read, counts: what
+   *  it was handed is not known. */
+  async handedTo(agentId: string, hash: string | undefined): Promise<string | undefined> {
+    for (const row of await this.options.agents.request(() => this.store.listRuns({ agent: agentId }))) {
+      if (row.state !== "running") continue;
+      const held = this.runs.get(row.id);
+      const handed = held ? held.meta.sign_in_handed : await handedOnDisk(join(this.options.agents.dir, "runs", row.id, RUN_META));
+      if (handed !== undefined && (handed === true || hash === undefined || handed === hash)) return row.id;
     }
+    return undefined;
   }
 
   /** The pointer of the sign-in a run this server loads was handed, among the values its rows, errors and answers never
