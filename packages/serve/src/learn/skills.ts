@@ -1,7 +1,7 @@
 // What a run may propose beside its notes: one skill, `skills/<name>/SKILL.md`, and workflow drafts,
 // `workflows/<name>/workflow.json` with its `README.md`. Their places in the learning folder and the shape each file must
 // have. check.ts checks them; nothing here reads a file, runs a draft or calls a model.
-import type { inspectWorkflow, validateWorkflow, Workflow } from "@parcha/agentrun-dsl";
+import type { assertWorkflowCapabilities, desugarWorkflow, inspectWorkflow, validateWorkflow, Workflow } from "@parcha/agentrun-dsl";
 
 /** Where a skill and a workflow draft live in the folder. */
 export const SKILLS_DIR = "skills";
@@ -165,7 +165,7 @@ export const NO_TOOL_LIST = "no tool list was given, so a draft that names a too
 export type DraftProblem = { readonly rule: "workflow" | "no_tool_list" | "executable_node"; readonly detail: string };
 /** What a draft is read with: the workflow DSL's own validation and inspection. The caller loads the DSL (`await
  *  import("@parcha/agentrun-dsl")`), which the server only ever loads when it needs it, and hands it here. */
-export type DraftReader = { readonly validateWorkflow: typeof validateWorkflow; readonly inspectWorkflow: typeof inspectWorkflow };
+export type DraftReader = { readonly validateWorkflow: typeof validateWorkflow; readonly inspectWorkflow: typeof inspectWorkflow; readonly desugarWorkflow: typeof desugarWorkflow; readonly assertWorkflowCapabilities: typeof assertWorkflowCapabilities };
 
 /** The value at a JSON Pointer (RFC 6901) in `doc`. */
 const at = (doc: unknown, pointer: string): unknown =>
@@ -193,6 +193,24 @@ const toolingNodes = (dsl: DraftReader, doc: unknown): DraftProblem[] =>
     return Array.isArray(tools) && tools.length ? [{ rule: "workflow" as const, detail: `the model node at ${node.path} names a tool (${tools.map(String).join(", ").slice(0, 200)}): ${MODEL_NODE_TOOLS}` }] : [];
   });
 
+/** What a learned workflow is refused with when a node needs more than its runner gives the DSL (learned-workflow.ts:
+ *  runNode and runEffect alone): a judge, pick or sift node, a route by question, a verify or an ask needs a decision
+ *  provider (runJudge) a run is not given. Refused at learn time and before a call runs any node, never after. */
+export const LEARNED_NODES = "a learned workflow runs model and tool-call nodes";
+
+/** The node the learned runner cannot run, as the DSL's own check says it (assertWorkflowCapabilities, which runWorkflow
+ *  makes before any node runs) with the runner's deps: none when it can run every one. */
+const unrunnableNodes = (dsl: DraftReader, doc: unknown): DraftProblem[] => {
+  const workflow = dsl.desugarWorkflow(doc as Workflow);
+  const runner = { runNode: async () => ({}), runEffect: async () => ({}) };
+  try {
+    dsl.assertWorkflowCapabilities(workflow.root, runner as never, workflow);
+    return [];
+  } catch (error) {
+    return [{ rule: "workflow", detail: `${(error as Error).message.slice(0, 200)}: ${LEARNED_NODES}` }];
+  }
+};
+
 const issuesOf = (dsl: DraftReader, doc: unknown, tools?: readonly string[]) => {
   const valid = dsl.validateWorkflow(doc as Workflow, { executeCode: false, ...(tools ? { tools } : {}) });
   return valid.ok ? [] : valid.issues;
@@ -201,7 +219,8 @@ const issuesOf = (dsl: DraftReader, doc: unknown, tools?: readonly string[]) => 
 /** Why `workflows/<name>/workflow.json` is not a draft the host can run; empty when it is. The DSL's own
  *  `validateWorkflow` judges it, with `executeCode: false` so no code it holds is run (a code node is syntax-checked),
  *  and with `tools`, so a node that names a tool outside them is its error: a harness's own tool (Bash, exec_command,
- *  apply_patch) is never on the list. A model node that names any tool is refused (MODEL_NODE_TOOLS). With no list it
+ *  apply_patch) is never on the list. A model node that names any tool is refused (MODEL_NODE_TOOLS), and a node the
+ *  learned runner cannot run (LEARNED_NODES: a judge's). With no list it
  *  fails closed: a draft the DSL refuses only once given an empty list names a tool. */
 export function draftProblems(dsl: DraftReader, text: string, tools?: readonly string[]): DraftProblem[] {
   let doc: unknown;
@@ -214,7 +233,7 @@ export function draftProblems(dsl: DraftReader, text: string, tools?: readonly s
   if (issues.length) return issues.slice(0, 5).map((issue) => ({ rule: "workflow", detail: `the workflow DSL refuses it: ${issue.code} at ${issue.path || "/"}: ${issue.message.slice(0, 200)}` }));
   let out: DraftProblem[];
   try {
-    out = [...toolingNodes(dsl, doc), ...executableNodes(dsl, doc)];
+    out = [...toolingNodes(dsl, doc), ...executableNodes(dsl, doc), ...unrunnableNodes(dsl, doc)];
   } catch (error) {
     // The inspection reads the whole document, as validation need not: what it cannot read is refused, never passed.
     return [{ rule: "workflow", detail: `the workflow DSL cannot inspect it: ${(error as Error).message.slice(0, 200)}` }];

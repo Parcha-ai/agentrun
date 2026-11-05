@@ -89,7 +89,7 @@ export function reflectPrompt(options: { dir: string; active: number; tools?: re
     "````",
     "",
     "A workflow draft does the job as one workflow DSL document: front matter with one line that says what it does and",
-    "when to use it, then the JSON. It uses model, judge and tool-call nodes, and never a code node or a shell or",
+    "when to use it, then the JSON. It uses model and tool-call nodes only: no judge, pick or sift node, no code node, no shell or",
     `executor call. Its model nodes name no tool. ${tools.length ? `Its call nodes may run only these tools: ${tools.join(", ")}.` : "It has no call node on a tool."} At most ${CAPS.file} bytes of JSON.`,
     "To change a draft you were given, give it again whole under its name.",
     "",

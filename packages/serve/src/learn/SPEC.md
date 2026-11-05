@@ -68,7 +68,9 @@ from the one-line description the draft's block gives (`draftFiles`): front matt
 `validateWorkflow` judges the draft, with no code run (`executeCode: false`) and the agent's tools as the list a node may
 name: the tools its definition grants that a workflow's call node runs on this server, so a harness's own tool
 (`Bash`, `exec_command`, `apply_patch`) is never on it. A model node that names any tool is refused: a learned
-workflow's model node runs without tools. With no list, a draft that names any tool is refused. A draft
+workflow's model node runs without tools. So is a node the learned runner cannot run: a learned workflow runs model
+and tool-call nodes, and a judge, pick or sift node (or a route by question, a verify, an ask) needs a decision provider a
+run is not given. With no list, a draft that names any tool is refused. A draft
 holds no node that runs code: no `code` node, and no call `via: "shell"` or `via: "executor"`.
 
 ## The index
