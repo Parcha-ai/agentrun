@@ -16,7 +16,7 @@ import { AgentHomeError, type Revision, type RevisionKind, type RunOrigin, type 
 import { isMessageRow, type MessageOrigin, registerLabel, registerTurnEnding, REQUEST_STARTED, type RunMetrics, runMetricsWithDecisions, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { HARNESS_LOG_EVENT, harnessModelKeys, thinkingFor } from "./adapters.js";
 import { DEFAULT_HARNESS, harnessOfBody, steersMidTurn } from "./harness.js";
-import type { RunNotice, WEBHOOK_EVENTS } from "./webhooks.js";
+import type { RUN_EVENTS, RunNotice } from "./webhooks.js";
 import type { RunTrigger } from "./triggers.js";
 import { hostMemory, memoryFull, neverFits, runMibOf, runsMemoryMib } from "./host.js";
 import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from "./agents.js";
@@ -598,6 +598,12 @@ export function statusOf(run: Run): { status: Status; state: State } {
   return { status: "working", state: "idle" };
 }
 
+/** The trigger a serve.json says started its run, as read back: `{id, firing_key}`, or null. */
+function triggerOf(meta: Partial<RunMeta> | null): RunTrigger | null {
+  const trigger = meta?.trigger as unknown;
+  return isObject(trigger) && typeof trigger.id === "string" && typeof trigger.firing_key === "string" ? { id: trigger.id, firing_key: trigger.firing_key } : null;
+}
+
 /** The waits between carry backs that found the store busy, and a hook called at each such refusal. */
 export type CarryBackRetry = { delaysMs?: readonly number[]; onBusy?: (runId: string, attempt: number) => void };
 /** How a run is asked to start: its input and title, its effort and cap, and what puts its files in its work/. `origin`:
@@ -613,7 +619,7 @@ export type RunsOptions = { /** What a run's Docker box reaches, as the server r
 /** Told of a run's moment each time it is seen (webhooks.ts' emit, which queues each one once): a wait it reached, and an
  *  end once the agent store has it. `marker` names the moment (the person's turn it waits at, the end's time), the same
  *  when another server sees it again. It says what came of it: `unsaved`, not in the outbox on disk yet. */
-export type RunNotify = (event: (typeof WEBHOOK_EVENTS)[number], run: RunNotice & { status: Status }, marker: string) => Emitted;
+export type RunNotify = (event: (typeof RUN_EVENTS)[number], run: RunNotice & { status: Status }, marker: string) => Emitted;
 
 /** The server's own secrets, which a run's process never gets: the API token, by name or by value, the seal key
  *  the tool keys are kept under (tool-keys.ts), and the boxes' keys (boxes.ts), which only the server's box providers use. */
@@ -847,6 +853,7 @@ export class Runs {
   private async load(row: RunRow): Promise<Run> {
     const dir = join(this.options.agents.dir, "runs", row.id);
     const stored = (await readJson(join(dir, RUN_META))) as Partial<RunMeta> | null;
+    const trigger = triggerOf(stored);
     const meta: RunMeta = {
       title: typeof stored?.title === "string" ? stored.title : "",
       created_at: typeof stored?.created_at === "string" ? stored.created_at : row.startedAt,
@@ -864,7 +871,7 @@ export class Runs {
       ...(isObject(stored?.learning) ? { learning: stored.learning as Learning } : {}),
       ...(isObject(stored?.reflect) ? { reflect: stored.reflect as Reflect } : {}),
       ...(isObject(stored?.approvals) ? { approvals: stored.approvals as Record<string, ApprovalAnswer> } : {}),
-      ...(isObject(stored?.trigger) && typeof stored.trigger.id === "string" && typeof stored.trigger.firing_key === "string" ? { trigger: { id: stored.trigger.id, firing_key: stored.trigger.firing_key } } : {}),
+      ...(trigger ? { trigger } : {}),
     };
     // A turn's origin a server before this one set is not known to be the turn running now: it goes.
     await rm(join(dir, TURN_ORIGIN_FILE), { force: true }).catch(() => undefined);
@@ -1017,7 +1024,8 @@ export class Runs {
    *  only, never the run's own rows, which its cost and its answer are read from. */
   private show(run: Run): void {
     // The decisions' rows are the served view's only: the run's own rows, which its cost is read from, stay its model nodes'.
-    const own = run.decisions === undefined ? run.rows : withDecisions(run.rows, run.decisions);
+    // Their summary and text are redacted whole, then cut (decision-rows.ts): a provider's error can quote a held key.
+    const own = run.decisions === undefined ? run.rows : withDecisions(run.rows, run.decisions, this.decisionShown(run));
     // An error row reads as the run's error does (errorWords): a refused key in plain words, no loopback address.
     const served = own.map((row) => (row.kind === "error" ? this.servedError(run, row) : row));
     // A run paused at its cap says so after the refusal, as the row its status reads.
@@ -1134,6 +1142,13 @@ export class Runs {
   /** The timeline's redaction of `run`'s error rows and of what a tool's result shows (its summary and preview), applied
    *  before a row is cut (timelineOf's `redact`), so a cut never leaves the head of a key. Every such cut is within
    *  redacted()'s SHOWN, so its window holds. */
+  /** How a run's decision rows show a text (decision-rows.ts Shown): the run's redactor, and as many characters held back
+   *  from a text stored cut as a held value takes in its widest form. */
+  private decisionShown(run: Run): { redact: (text: string) => string; hold: number } {
+    const values = this.refusedValues(run);
+    return { redact: (text) => redacted(text, values), hold: 6 * values.reduce((most, value) => Math.max(most, value.length), 0) + 16 };
+  }
+
   private redactor(run: Run): (text: string) => string {
     return (text) => redacted(text, this.refusedValues(run));
   }
@@ -2640,8 +2655,8 @@ export class Runs {
   }
 
   async summary(run: Run) {
-    const { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, effort, created_at, ended_at, error, review, pending, cost, archived_at, imported_from, learning } = await this.view(run);
-    return { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, ...(effort ? { effort } : {}), created_at, ended_at, error, review, pending, cost, archived_at, imported_from, learning: learning && shortOf(learning) };
+    const { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, effort, created_at, ended_at, error, review, pending, cost, archived_at, imported_from, trigger, learning } = await this.view(run);
+    return { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, ...(effort ? { effort } : {}), created_at, ended_at, error, review, pending, cost, archived_at, imported_from, trigger, learning: learning && shortOf(learning) };
   }
 
   /** A run's status for a list: an ended run's from its row, a running one's from the run itself. */
@@ -2669,16 +2684,20 @@ export class Runs {
       // A run read from its row alone has ended: it waits on nothing.
       pending: null,
       imported_from: row.importedFrom ?? null,
+      trigger: triggerOf(meta),
       // Its row says it ended: what serve.json holds of its learning is as it settled.
       learning: this.learning.short(isObject(meta?.learning) ? (meta.learning as Learning) : null, true),
     };
   }
 
-  /** A key was saved on this server or deleted from it: each held run's learning row shown again, cut of the keys as
-   *  they are now (learning-run.ts shown), as its view and its lists already are from the next read on. */
+  /** A key was saved on this server or deleted from it: each held run's learning row and decision rows shown again, cut
+   *  of the keys as they are now (learning-run.ts shown, decision-rows.ts), as its view and its lists already are from
+   *  the next read on. */
   keysChanged(): void {
     this.learning.keysChanged();
-    for (const run of this.runs.values()) if (run.meta.learning) this.show(run);
+    // A run's learning row and its decision rows are shown again with the keys as they are now (show): a key saved after
+    // a workflow ended is redacted from its decisions on the next read, learning or not.
+    for (const run of this.runs.values()) if (run.meta.learning || run.decisions) this.show(run);
   }
 
   /** A held run's learning, in short (learning-run.ts heldLearning). */
