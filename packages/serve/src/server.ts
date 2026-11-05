@@ -2045,6 +2045,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     // Before the lock goes: the image's last record lands first (box-image.ts), never after the next server's start.
     await image?.close();
     await webhooks.close();
+    // And the Slack posts: one still to try stays in the outbox, for the next server, never tried by this one too.
+    slack!.close();
     await new Promise((done) => (server.close(done), server.closeAllConnections()));
     agents.close();
     // The record stays: the next server rewrites it as it starts, and a stopped one whose time has passed is no stop.
