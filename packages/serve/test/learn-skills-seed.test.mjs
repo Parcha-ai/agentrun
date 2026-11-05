@@ -289,3 +289,15 @@ test("a learned skill with escapes in its quoted description is laid as it was c
   assert.equal(one.bytes, Buffer.byteLength(servedSkill(one.files["SKILL.md"])));
   assert.match(one.files["SKILL.md"], /^description: "Use when: a case says \\"refund\\""$/m);
 });
+
+test("a learned skill on main whose quoted description decodes to a hidden character is left out of what a run is given, and named as skipped", async (t) => {
+  const repo = await scratch(t);
+  git(repo, ["init", "-q", "-b", "main"]);
+  mkdirSync(join(repo, "skills", "flipped"), { recursive: true });
+  writeFileSync(join(repo, "skills", "flipped", "SKILL.md"), '---\nname: flipped\ndescription: "Use when: \\u202E a case flips"\n---\nDo the job.\n');
+  git(repo, ["add", "-A"]);
+  git(repo, ["commit", "-q", "-m", "a skill"]);
+  const { skills, skipped } = await learning.readSkills(repo, repo, git(repo, ["rev-parse", "main"]).trim());
+  assert.deepEqual(skills, []);
+  assert.deepEqual(skipped, ["skills/flipped (holds a hidden character)"]);
+});

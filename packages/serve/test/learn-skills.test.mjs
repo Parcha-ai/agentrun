@@ -215,3 +215,14 @@ test("a skill's quoted description is read as the text it quotes, so serving a s
     assert.equal(JSON.parse(once.split("\n")[2].slice("description: ".length)), text, `the description is the text it quotes: ${raw}`);
   }
 });
+
+test("a skill's quoted description is checked as it is served, its escapes decoded: an escaped hidden character, secret shape or host's secret is refused", () => {
+  // Each escape is plain ASCII in the file; decoded, as servedSkill writes it, it is what the checker refuses written directly.
+  assert.deepEqual(rules(check([added(SKILL_PATH, skill({ description: '"Use when: \\u202E a case flips"' }))])), ["invisible_unicode"]);
+  const shaped = ["\\u0073", "k-", "Zx9".repeat(10)].join("");
+  assert.deepEqual(rules(check([added(SKILL_PATH, skill({ description: `"Use ${shaped} to sign in"` }))])), ["secret_shape"]);
+  const escaped = `\\u${VALUE.charCodeAt(0).toString(16).padStart(4, "0")}${VALUE.slice(1)}`;
+  const result = check([added(SKILL_PATH, skill({ description: `"The password is ${escaped}"` }))], { refuseValues: [VALUE] });
+  assert.deepEqual(rules(result), ["secret_value"]);
+  assert.ok(!JSON.stringify(result).includes(VALUE));
+});
