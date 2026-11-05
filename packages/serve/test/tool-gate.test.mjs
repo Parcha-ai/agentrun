@@ -542,3 +542,62 @@ test("a long message that declines a waiting call reaches the model whole: all 5
   const { answer: final } = await resumed(api, runId);
   assert.ok(final.endsWith(`Reason: ${long}`), `the model got ${final.length} characters, ending ${JSON.stringify(final.slice(-40))}`);
 });
+
+test("a stop or a cancel that lands after an answer, before the run's process acts on it, wins: nothing runs, nothing resumes, the row says withdrawn, and the record keeps the answer it superseded", { timeout: 240_000 }, async (t) => {
+  const dialled = await network(t);
+  const first = await serve(t, GATE);
+  await owner(first);
+  assert.equal((await first.api("PUT", "/settings/tools", { web_fetch: { permission: "ask" } })).status, 200);
+  const cases = [["allow-stop", "pi"], ["decline-stop", "pi"], ["allow-cancel", "codex"]];
+  const runs = {};
+  for (const [name, harness] of cases) {
+    const runId = await fetching(first.api, `race-${name}`, harness);
+    runs[name] = { runId, approval: (await parked(first.api, runId)).view.pending.id };
+  }
+  // A restart leaves each parked run with no process: an answer starts one, which takes far longer than the next request.
+  await first.close();
+  const again = await serve(t, { ...GATE, data: first.data, openSetup: false });
+  const answer = await ownerAgain(again);
+  const { api } = again;
+  const timeline = async (runId) => (await api("GET", `/runs/${runId}/timeline`)).body.rows;
+  const meta = async (runId) => JSON.parse(await readFile(join(first.data, "runs", runId, "serve.json"), "utf8"));
+
+  // (a) allow, then stop at once.
+  const a = runs["allow-stop"];
+  assert.equal((await answer(a.runId, a.approval, { decision: "allow" })).status, 204);
+  const stopA = await api("POST", `/runs/${a.runId}/stop`, {});
+  assert.equal(stopA.body.stopped, true, JSON.stringify(stopA.body));
+  // (b) a message that declines the call, then stop at once.
+  const b = runs["decline-stop"];
+  assert.equal((await api("POST", `/runs/${b.runId}/messages`, { content: "never mind, skip it" })).status, 202);
+  const stopB = await api("POST", `/runs/${b.runId}/stop`, {});
+  assert.equal(stopB.body.stopped, true, JSON.stringify(stopB.body));
+  // (c) allow, then cancel at once.
+  const c = runs["allow-cancel"];
+  assert.equal((await answer(c.runId, c.approval, { decision: "allow" })).status, 204);
+  assert.equal((await api("POST", `/runs/${c.runId}/cancel`)).status, 202);
+  await follow(api, c.runId, ["cancelled"], { deadlineMs: 30_000 });
+
+  // Long enough for each run's process to come up and act, had the answer stood.
+  await sleep(8_000);
+  for (const [name, { runId, approval }] of Object.entries(runs)) {
+    const rows = await timeline(runId);
+    assert.equal(rows.filter((row) => row.kind === "user_message").length, 1, `${name}: no resume turn`);
+    assert.match(rows.find((row) => row.kind === "tool_approval_requested").summary, /^Withdrawn when the run was (stopped|cancelled)/, name);
+    const kept = (await meta(runId)).approvals[approval];
+    assert.equal(kept.decision, name.endsWith("cancel") ? "canceled" : "withdrawn", name);
+    assert.equal(kept.superseded?.decision, name.startsWith("allow") ? "allow" : "deny", `${name}: the record keeps the answer it superseded`);
+    if (name === "decline-stop") {
+      // Nothing a person typed vanishes: the row says their words were not sent, and the record keeps them whole.
+      const row = rows.find((r) => r.kind === "tool_approval_requested");
+      assert.match(row.text, /Not sent: the run was stopped\. Your message: never mind, skip it/, "the row says the message was not sent");
+      assert.equal(kept.superseded.note, "never mind, skip it", "the record keeps the message whole");
+    }
+    assert.equal((await answer(runId, approval, { decision: "allow" })).status, 409, `${name}: a later answer`);
+  }
+  for (const name of ["allow-stop", "decline-stop"]) {
+    const view = (await api("GET", `/runs/${runs[name].runId}`)).body;
+    assert.deepEqual([view.status, view.state, view.pending], ["input_required", "idle", null], `${name}: stopped`);
+  }
+  assert.deepEqual(await dialled(), [], "no call ran");
+});
