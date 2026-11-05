@@ -370,7 +370,13 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
       }
       for (const server of spec.mcp?.servers ?? []) {
         if (server.name === MCP_SERVER) problems.push(`the MCP server name ${MCP_SERVER} is the adapter's own`);
-        for (const tool of server.tools) if (!TOOL_NAME.test(`mcp__${server.name}__${tool.name}`)) problems.push(`the MCP tool mcp__${server.name}__${tool.name.slice(0, 64)} is not a name the Claude Agent CLI takes (letters, digits, _ and -, at most 64)`);
+        for (const tool of server.tools) {
+          const name = `mcp__${server.name}__${tool.name}`;
+          if (!TOOL_NAME.test(name)) problems.push(`the MCP tool ${name.slice(0, 80)} is not a name the Claude Agent CLI takes (letters, digits, _ and -, at most 64)`);
+          // A remote tool's schema meets the same checks as the host's: the CLI would drop it without a word.
+          const common = toolSchemaProblems(name, tool.inputSchema);
+          problems.push(...common, ...(common.length ? [] : claudeSchemaProblems(name, tool.inputSchema)));
+        }
       }
       return problems;
     },
