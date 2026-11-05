@@ -92,7 +92,8 @@ describe("Timeline, the run told as steps", () => {
     expect(h()).not.toContain("Phase");
   });
   it("shows the answer's first line as text, never its markdown", () => {
-    expect(h()).toContain(">Invoice INV-2291<");
+    // The recorded answer has more than its first line: the row says so.
+    expect(h()).toContain(">Invoice INV-2291…<");
     expect(h()).not.toContain("## Invoice");
   });
   it("says a failure repeated in a row once, with how many times", () => {

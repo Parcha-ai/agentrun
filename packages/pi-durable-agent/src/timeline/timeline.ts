@@ -107,6 +107,10 @@ const abortedCall = (entry: EntryLike) => {
  *  (that process died holding the run) or `server_stop` (it drained as the server stopped), `generation` the new
  *  process's, `at` when it opened. A phase row of its own, at that time; no request. */
 export const RUN_RESUMED = "agentrun.run_resumed";
+/** The end of a turn on another harness (claude-agent, codex), written on a run's root by serve as the turn's last entry:
+ *  `{ key, status, ... }`. No row. The turn is over, so the next message is the person's next one, never a steer, even
+ *  when the turn's last entry was a tool's result (a stop that came after it, before the next model request). */
+export const TURN_END = "adapter.turn_end";
 
 export type TimelineOptions = {
   /** For entries and events that carry no conversation id. */
@@ -368,6 +372,8 @@ const textOf = (message: Obj | undefined, type = "text", field = "text") =>
   blocksOf(message).filter((block) => block.type === type).map((block) => str(block[field]) ?? "").join("\n").trim();
 /** Every string a row shows goes through here: a URL keeps its origin, path and query keys, then the text is cut. */
 const clean = (text: string, max: number) => cut(scrubUrls(text), max);
+/** The rows that show words as a person or the agent wrote them: cut, never scrubbed. */
+const WHOLE: ReadonlySet<TimelineKind> = new Set(["user_message", "text_block", "final_answer"]);
 /** An error's whole text as the host's `redact` makes it, before its first line becomes a summary or either is cut, so
  *  neither keeps part of what the whole text's redaction takes out. */
 const redactOf = (options: TimelineOptions) => (text: string): string => (options.redact ? options.redact(text) : text);
@@ -419,8 +425,8 @@ function createProjector(options: TimelineOptions) {
   // `conversation:id`: the call, when it comes, takes its result and is done.
   const early = new Map<string, { row: TimelineEvent; view: ToolResultView; shown: ToolResultView }>();
   const previous = new Map<number, string>();
-  // Whether every tool of the conversation's latest round ends the turn: then the turn is over, and what comes next is
-  // the person's next message, not a steer.
+  // Whether every tool of the conversation's latest round ends the turn, or a turn's end (TURN_END) came after it: then
+  // the turn is over, and what comes next is the person's next message, not a steer.
   const ended = new Map<number, boolean>();
   // Conversations whose turn an abort cut since their latest tool round (a stop, a cancel): an aborted tool, or a model
   // request that had left and was aborted. That turn is over too, so the next message comes in a new turn, never a steer.
@@ -458,12 +464,14 @@ function createProjector(options: TimelineOptions) {
       if (row.summary !== null) row.summary = options.redact(row.summary);
       if (row.text !== null) row.text = options.redact(row.text);
     }
-    // A person's own message shows as they typed it, its held keys redacted (readMessage): a URL in it keeps its fragment
-    // and query values, which scrubUrls drops from the URLs a model saw. Every other row's summary is scrubbed.
-    if (row.summary !== null) row.summary = kind === "user_message" ? cut(row.summary, caps.summary) : clean(row.summary, caps.summary);
+    // A person's own message and the agent's own words (its text, its answer) show as written, their held keys redacted
+    // (readMessage): a URL in them keeps its fragment and query values. scrubUrls is for the URLs of what the model read
+    // (a tool's result, a page's title, a call's arguments) and for its thinking.
+    const whole = WHOLE.has(kind);
+    if (row.summary !== null) row.summary = whole ? cut(row.summary, caps.summary) : clean(row.summary, caps.summary);
     if (row.tool_input_preview !== null) row.tool_input_preview = clean(row.tool_input_preview, caps.preview);
     if (row.tool_result_preview !== null) row.tool_result_preview = clean(row.tool_result_preview, caps.preview);
-    if (row.text !== null) row.text = kind === "user_message" ? cut(row.text, caps.text) : clean(row.text, caps.text);
+    if (row.text !== null) row.text = whole ? cut(row.text, caps.text) : clean(row.text, caps.text);
     for (const key of ["round", "parent_tool_use_id", "session", "path", "usage", "origin"] as const) if (row[key] === undefined) delete row[key];
     return row;
   }
@@ -710,6 +718,7 @@ function createProjector(options: TimelineOptions) {
     // A model request an abort cut after the round: its end mark is written only for an aborted request (not a withdrawn
     // one, nor a compaction's). The turn it would have gone on with is over.
     else if (entry.kind === REQUEST_ENDED && !unsent(entry) && !isCompaction(entry)) cutTurns.add(conv);
+    else if (entry.kind === TURN_END) ended.set(conv, true);
     return out;
   }
 
@@ -933,7 +942,9 @@ export function timelineReducer(options: TimelineOptions = {}) {
           const red = redactedWhy(raw);
           return options.redact && /\S$/.test(joined) ? red.replace(/\S+$/, "").trimEnd() : red;
         };
-        const text = scrubUrls(options.redactLive ? options.redactLive(raw) : fallback());
+        const shown = options.redactLive ? options.redactLive(raw) : fallback();
+        // The agent's text streams as it will settle, its URLs whole; its thinking is scrubbed, as when it settles.
+        const text = kind === "thinking" ? scrubUrls(shown) : shown;
         const summary = kind === "thinking" ? `Thinking: ${cut(firstSentence(text), thinkingCap)}` : firstLine(text);
         live(kind, `${conv()}:live:${kind}`, text ? summary : undefined, { text });
       }
