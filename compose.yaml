@@ -27,7 +27,7 @@ services:
     group_add:
       - "${DOCKER_GID:?set DOCKER_GID to the group of /var/run/docker.sock, which stat -c %g /var/run/docker.sock prints}"
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:7340/v2/health').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"] # key-gate: loopback-rule the servers own loopback, its health check
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:7340/v2/health').then((r) => { if (!r.ok) throw new Error(String(r.status)) })"] # key-gate: loopback-rule the servers own loopback, its health check
       interval: 30s
       timeout: 5s
       retries: 3
