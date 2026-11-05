@@ -152,9 +152,10 @@ Over a cap is refused, never cut.
   of secret shapes, and a field over 4096 bytes prints whole as `[redacted]`, never scanned.
 - A problem is its item's alone: the note, skill or draft (both its files) it names is left out, the rest is checked
   again and goes on to the grader, and the run's learning names what was left out (`problems`). The whole proposal is
-  refused when a problem names no item it proposed, when its rule refuses the whole (a count or a cap, `outside`,
-  `deleted`, `index_full`) or must never be stored (`secret_value`, `secret_shape`, `invisible_unicode`: the run's
-  answer is not trusted for any item), or when the rest is refused again. Before any item is kept, every name and text
+  refused when a problem names no item it proposed, when its rule refuses the whole (`too_many_files`, `too_many_notes`,
+  `too_many_skills`, `too_many_workflows`, `outside`, `deleted`, `index_full`, `encoding`) or must never be stored
+  (`secret_value`, `secret_shape`, `invisible_unicode`: the run's answer is not trusted for any item), or when the rest
+  is refused again, with both passes' problems. Before any item is kept, every name and text
   the run gave is read whole for what must never be stored (`unstorable`), an edit or a file over its cap included,
   which the checks refuse before they read its text.
 
@@ -183,8 +184,9 @@ with `status: pending` in its `SKILL.md` or README.
 `parseVerdict` reads one verdict with one item per new note and fails closed: an answer it cannot read, a missing or
 extra item, or a decision or an origin out of its list is no merge. Each item stands on its own: the notes, skill and
 draft it keeps or holds merge, and the ones it drops are left out (`keptProposal`), whatever the grader's top-level
-`merge` says. Nothing merges when it keeps nothing, when it drops any item as Planted (the run read something
-hostile, so nothing it proposed is kept), or when it keeps every item and still says no merge.
+`merge` says. Nothing merges when it keeps nothing, when any item's question names Planted however worded, kept, held
+or dropped (the run read something hostile, so nothing it proposed is kept), when it drops an item with no question
+(it says not why), or when it keeps every item and still says no merge.
 
 There is no separate injection screen: one grader decides, with the rubric stated once. A page classifier cannot see where a note
 came from, and read a preference the user stated as a planted instruction; the grader's Planted question checks a note

@@ -284,7 +284,8 @@ test("a missing item, an item named twice, one for a file not proposed, or a mer
     assert.deepEqual(dropped([...FILES.map((f) => item(f)), item(file)]), { merge: false, reason: "the grader's verdict names a file it was not asked to judge", items: [] }, file);
   }
   for (const file of FILES) {
-    const items = FILES.map((f) => item(f, f !== file));
+    // Each drop names its question: a drop with none merges nothing (the Planted test below).
+    const items = FILES.map((f) => item(f, f !== file, f === file ? { question: "General" } : {}));
     assert.deepEqual(dropped(items), { merge: true, reason: "Each note is general, new and consistent with the active ones.", items: items.map(read) }, file);
   }
   const none = FILES.map((f) => item(f, false));

@@ -17,9 +17,10 @@ export type Proposed =
   | { state: "dropped"; reason: "checker"; problems: Problem[] };
 
 /** The rules that refuse a proposal whole, whatever item they name: its counts and caps, a path outside what a run may
- *  write, a deletion, and anything that must never be stored (a secret, a character a reader does not see), which says
- *  the run's answer is not to be trusted for any item. Every other problem is its item's alone. */
-const WHOLE: ReadonlySet<Problem["rule"]> = new Set(["too_many_files", "too_many_notes", "too_many_skills", "too_many_workflows", "outside", "deleted", "index_full", "secret_value", "secret_shape", "invisible_unicode"]);
+ *  write, a deletion, the folder's index full, anything that must never be stored (a secret, a character a reader does
+ *  not see), which says the run's answer is not to be trusted for any item, and text that is not UTF-8, which cannot be
+ *  read for one. Every other problem is its item's alone; unstorable reads every item's text whole first. */
+const WHOLE: ReadonlySet<Problem["rule"]> = new Set(["too_many_files", "too_many_notes", "too_many_skills", "too_many_workflows", "outside", "deleted", "index_full", "secret_value", "secret_shape", "invisible_unicode", "encoding"]);
 
 /** The item a changed file belongs to: a draft's two files are one item (its folder), every other file is itself. */
 const itemOf = (path: string) => (path.startsWith(`${WORKFLOWS_DIR}/`) ? path.split("/").slice(0, 2).join("/") : path);
@@ -98,7 +99,8 @@ export const proposeRun = (input: { data: string; agentId: string; runDir: strin
     const out = new Set(checked.problems.map((problem) => itemOf(problem.path!)));
     const rest = changes.filter(({ path }) => !out.has(itemOf(path)));
     const again = rest.length ? check(rest) : undefined;
-    if (!again || again.problems.length) return { state: "dropped", reason: "checker", problems: checked.problems };
+    // A rest the checks refuse again: its own problems are what keeps it out, said with the first pass's.
+    if (!again || again.problems.length) return { state: "dropped", reason: "checker", problems: [...checked.problems, ...(again?.problems ?? [])] };
     left = checked.problems;
     checked = again;
     passing = files.filter(({ file }) => !out.has(itemOf(file)));
