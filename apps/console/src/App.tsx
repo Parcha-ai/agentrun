@@ -171,16 +171,14 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   const [signOutError, setSignOutError] = useState<string | null>(null);
   const [where, setWhere] = useState(() => route());
   const [caps, setCaps] = useState<Capabilities | null>(null);
-  // The schedules' names, for the chip on a run a schedule started: read where the server has schedules, again on each
-  // page change (a schedule made or renamed shows by its name on its runs).
-  const scheduling = caps?.features?.triggers?.routes === true;
+  // The schedules' names, for the chip on a run a schedule started: read again on each page change (a schedule made or
+  // renamed shows by its name on its runs).
   const [scheduleNames, setScheduleNames] = useState<ReadonlyMap<string, string>>(new Map());
   useEffect(() => {
-    if (!scheduling) return;
     let live = true;
     v2.listTriggers().then((r) => { if (live) setScheduleNames(new Map(r.triggers.map((t) => [t.id, t.name]))); }, () => {});
     return () => { live = false; };
-  }, [v2, scheduling, where.section, where.schedule]);
+  }, [v2, where.section, where.schedule]);
   // Mission Control: the store's counts (GET /v2/stats) and the latest runs, read each time the page opens.
   const [mission, setMission] = useState<MissionView | null>(null);
   const [missionError, setMissionError] = useState<Problem | null>(null);
@@ -437,7 +435,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   }, [v2, modelsReady]);
   return (
     <ScheduleNames.Provider value={scheduleNames}>
-    <Shell active={where.section} settings={settingsOffered.length > 0} schedules={scheduling} onNavigate={nav} onSignOut={() => {
+    <Shell active={where.section} settings={settingsOffered.length > 0} onNavigate={nav} onSignOut={() => {
       // The card comes back only once the server ended the session: a sign-out that did not reach it says so instead.
       v2.signOut().then(onSignedOut, (e) => setSignOutError(e instanceof ClientError ? e.message : "The sign-out did not reach the server. Try again."));
     }} banners={<>

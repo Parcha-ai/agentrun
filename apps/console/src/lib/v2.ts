@@ -61,8 +61,8 @@ export type Run = {
   pending?: PendingQuestion | PendingApproval | BudgetPending | null;
   /** Imported history: where the run was run (`claude-code`, `codex` or `pi`) and its session there; else null. */
   imported_from?: { source: string; session: string } | null;
-  /** The schedule that started it and its firing (serve's trigger/1); null for a run a caller started, absent from an
-   *  older server. The schedule may have been deleted since. */
+  /** The schedule that started it and its firing (serve's trigger/1); null for a run a caller started. The schedule may
+   *  have been deleted since. Optional here only so test fixtures of other runs need not name it. */
   trigger?: { id: string; firing_key: string } | null;
 };
 
