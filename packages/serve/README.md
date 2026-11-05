@@ -334,8 +334,9 @@ go through `work/` by path.
     in a directory this server sees. The kernel is the evidence, not the runtime's name:
     - a Docker whose kernel differs from this server's (Docker Desktop on a Mac, OrbStack, Colima) sees a socket bound
       in from the host but cannot connect to it, so its box has no network;
-    - a Docker on this server's kernel passes whatever it calls itself; Docker Desktop with WSL2 shares the kernel
-      string and passes, and the proxy enforces the list there as anywhere;
+    - a Docker on this server's kernel passes whatever it calls itself, if its data directory is one this server sees:
+      Docker Desktop with WSL2 shares the kernel string, but keeps its data outside the distro, so it gets none unless
+      the distro has that directory (`/var/lib/docker`); where it passes, the proxy enforces the list as anywhere;
     - a server in a container given the host's docker socket shares the host's kernel but not its files (docker
       info's `DockerRootDir` is not there), so its box has no network rather than every tool call failing.
 

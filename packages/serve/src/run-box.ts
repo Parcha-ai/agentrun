@@ -33,8 +33,9 @@ export const RUN_LABEL = "agentrun.run";
 /** And, on a box made with a network list, this one: the list's hash (netLabelOf). A box with none carries no such label,
  *  so its `docker run` is as it was. */
 export const NET_LABEL = "agentrun.net";
-/** The network label's value for a list. */
-export const netLabelOf = (allow: readonly string[]): string => createHash("sha256").update(allow.join(",")).digest("hex").slice(0, 16);
+/** The network label's value for a list: the same hosts give the same label, in whatever order and case the setting
+ *  names them, each once. */
+export const netLabelOf = (allow: readonly string[]): string => createHash("sha256").update([...new Set(allow.map((host) => host.toLowerCase()))].sort().join(",")).digest("hex").slice(0, 16);
 /** And this one, the same on every run's box, which the start's sweep lists them by. */
 export const KIND_LABEL = "agentrun.box";
 /** The whole environment of a box's programs: a constant, never this process's. */
