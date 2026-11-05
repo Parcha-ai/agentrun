@@ -13,7 +13,7 @@ import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
 import { test } from "node:test";
 import { BACKGROUND_TOOLS } from "../dist/background.js";
-import { RunGate, settingsKeyOf, waitingText } from "../dist/tool-gate.js";
+import { permissionFrom, RunGate, settingsKeyOf, waitingText } from "../dist/tool-gate.js";
 import { settingsIssues } from "../dist/tool-plane.js";
 import { agent, call, cookieOf, follow, scratch, serve } from "./support.mjs";
 
@@ -93,6 +93,53 @@ test("fail closed stays closed: with no settings ever read, the watchers ask as 
   }
 });
 
+/** What watcher `name`'s call does at a run's gate on `data` with agent `overrides`: its answer, whether it ran, its requests. */
+async function watcherAt(t, data, name, overrides = {}) {
+  const [root, work] = [await scratch(t), await scratch(t)];
+  const runGate = new RunGate({ root, work, data, runId: "r1", harness: "pi" }, overrides);
+  let ran = 0;
+  const registration = { name, description: name, parameters: {}, execute: async () => (ran++, { content: [{ type: "text", text: "ran" }] }) };
+  const wrapped = runGate.extension([registration]).wraps.find((wrap) => wrap.tool === name).wrap(registration);
+  const kept = [];
+  const api = { callId: `c-${name}`, commit: async (change) => change({ appendEntry: async (_conversation, entry) => void kept.push(entry) }) };
+  const result = await wrapped.execute({ id: "1" }, api, {});
+  return { text: (result.content ?? []).map((block) => block.text ?? "").join(""), ran, tools: kept.map((entry) => entry.data?.tool), policy: runGate.policy(name) };
+}
+
+test("only a valid ask set in a settings layer lets the watchers run unasked: bash set to a value not offered reads ask for bash and the watchers alike, from the server's file or the agent's own", async (t) => {
+  const data = await scratch(t);
+  await writeFile(join(data, "tool-settings.json"), JSON.stringify({ bash: { permission: "maybe" } }));
+  for (const name of ["bash_output", "bash_signal"]) {
+    const at = await watcherAt(t, data, name);
+    assert.deepEqual([at.policy, at.text, at.ran, at.tools], ["ask", waitingText(name), 0, [name]], `server ${name}`);
+  }
+  const none = await scratch(t);
+  for (const name of ["bash_output", "bash_signal"]) {
+    const at = await watcherAt(t, none, name, { bash: { permission: "maybe" } });
+    assert.deepEqual([at.policy, at.text, at.ran, at.tools], ["ask", waitingText(name), 0, [name]], `agent ${name}`);
+  }
+  // What capabilities and an agent's tools read: ask, never allow and never the value as written.
+  for (const name of ["bash", ...BACKGROUND_TOOLS]) {
+    assert.deepEqual(permissionFrom(name, {}, { bash: { permission: "maybe" } }), { permission: "ask", from: "agent" }, `agent ${name}`);
+  }
+  // A valid ask set in a layer still lets them run.
+  assert.deepEqual(permissionFrom("bash_output", { bash: { permission: "ask" } }), { permission: "allow", from: "server" });
+});
+
+test("capabilities agree: a server file with bash set to a value not offered shows ask for bash and every background tool", async (t) => {
+  const dir = await scratch(t);
+  const data = join(dir, "agents");
+  const { mkdir } = await import("node:fs/promises");
+  await mkdir(data, { recursive: true });
+  await writeFile(join(data, "tool-settings.json"), JSON.stringify({ bash: { permission: "maybe" } }));
+  const { api } = await serve(t, { data });
+  const caps = Object.fromEntries((await api("GET", "/capabilities")).body.tools.map((tool) => [tool.name, tool]));
+  for (const name of ["bash", ...BACKGROUND_TOOLS]) assert.equal(caps[name].permission, "ask", `capabilities ${name}`);
+  // The settings as served say what is in force, with nothing internal in them.
+  const served = (await api("GET", "/settings/tools")).body;
+  assert.deepEqual(served.bash, { permission: "ask" });
+});
+
 test("no setting of a watcher's own lifts bash's deny or ask: a run's gate reads bash's key for each, under claude-agent's mcp__hands__ names too", async (t) => {
   const [root, work, data] = [await scratch(t), await scratch(t), await scratch(t)];
   await writeFile(join(data, "tool-settings.json"), JSON.stringify({ bash: { permission: "deny" }, bash_output: { permission: "allow" } }));
@@ -129,6 +176,8 @@ const FAUX_BOX = new URL("./fixtures/faux-box.mjs", import.meta.url).pathname;
 const SANDBOX = { mode: "sandbox", box: "docker" };
 const SHELL = ["bash", ...BACKGROUND_TOOLS];
 const json = { "content-type": "application/json" };
+/** A test password, not a real one. */
+const pw = (name) => `not-a-secret-${name}`;
 
 /** Each tool call of run `runId` and its answer, in order, from its store. */
 function answers(data, runId) {
@@ -163,7 +212,7 @@ test("bash: ask, end to end: bash_background parks and the owner allows it; its 
   const server = await serve(t, { faux: PROBE, fauxBox: FAUX_BOX, accounts: true, openSetup: true });
   const { api } = server;
   const origin = `http://127.0.0.1:${server.port}`;
-  const setup = await call(server.port, { method: "POST", path: "/v2/setup", headers: { ...json, origin }, body: { password: "the owner signs in with this phrase" } });
+  const setup = await call(server.port, { method: "POST", path: "/v2/setup", headers: { ...json, origin }, body: { password: pw("owner") } });
   assert.equal(setup.status, 201, setup.text);
   const cookie = cookieOf(setup);
   const approve = async (runId, approvalId) => (await call(server.port, { method: "POST", path: `/v2/runs/${runId}/approvals/${approvalId}`, headers: { ...json, cookie, origin }, body: { decision: "allow" } })).status;
