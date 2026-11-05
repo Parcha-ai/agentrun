@@ -11,12 +11,13 @@ test("the learning reasons are this server's own: no older server's no_write_too
   assert.equal(learning.LEGACY_LEARNING_REASONS, undefined, "no list of older reasons is kept");
 });
 
-test("a pin with only an older server's index-only `learned` field gives the run no # Learned section", async (t) => {
+test("a pin with only an older server's index-only `learned` field gives the run none of it", async (t) => {
   const runDir = mkdtempSync(join(tmpdir(), "nocompat-"));
   t.after(() => rmSync(runDir, { recursive: true, force: true }));
   mkdirSync(join(runDir, "work"), { recursive: true });
   writeFileSync(join(runDir, learning.LEARNING_PIN ?? "learning.json"), JSON.stringify({ seed: "a".repeat(40), learned: "- check-units.md: Check units" }));
   const { instructions } = await learning.withLearned(runDir, join(runDir, "work"), "Answer.");
-  assert.ok(!instructions.includes("# Learned"), instructions);
+  // The heading and its one line that the run learns stay; the older pin's index text is not given.
   assert.ok(!instructions.includes("check-units"), instructions);
+  assert.ok(!instructions.includes("What you learned in earlier runs"), instructions);
 });

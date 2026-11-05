@@ -70,11 +70,7 @@ export function learningBudgetOf(env: NodeJS.ProcessEnv, given?: number): number
  *  checks and is kept in the run's directory (propose.ts), `merged` once it is on main (grade.ts), or `dropped` with a
  *  reason from the closed list. A learning fault never refuses a run: it starts with nothing learned, `seed_failed`. */
 export const LEARNING_STATES = ["seeded", "reflecting", "proposed", "merged", "dropped"] as const;
-export const LEARNING_REASONS = ["seed_failed", "no_budget", "unknown_cost", "no_write_tool", "tool_denied", "cancelled", "crashed", "reflect_timeout", "reflect_failed", "empty", "unparsed", "propose_failed", "checker", "screen", "screen_down", "grader", "grade_failed"] as const;
-/** The reasons only an older server gave (an agent with no write tool, or a tool gate denying it, from before the
- *  end-of-run turn answered with its notes): still read, from a run's serve.json and the ledger, and counted; never
- *  given now. */
-export const LEGACY_LEARNING_REASONS: readonly LearningReason[] = ["no_write_tool", "tool_denied"];
+export const LEARNING_REASONS = ["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_timeout", "reflect_failed", "empty", "unparsed", "propose_failed", "checker", "grader", "grade_failed"] as const;
 export type LearningState = (typeof LEARNING_STATES)[number];
 export type LearningReason = (typeof LEARNING_REASONS)[number];
 /** Tokens by the platform's names, as a run's metrics and /v2/stats count them: `input` is the input neither read from
@@ -196,7 +192,7 @@ export const LEARNED_DIR = ".learning";
 export const LEARNING_TURN = "learning-turn.json";
 export type Turn = { answer: string; asked: string[] };
 /** What a run's pin holds: the commit of main it was seeded from, and what it reads under `# Learned` (learnedOf), when
- *  it learned anything. `learned`, the index alone, is a pin an earlier server wrote, read as that server gave it.
+ *  it learned anything.
  *  `skills`: the files of the learned skills laid in its work, by their paths under `.agents/skills/`, as a revision
  *  names its own; `skills_left_out`: the learned skills it does not get, over their budget or holding a secret.
  *  `workflows`: the names of the learned workflows the run may run (its `learned_workflow` tool), each written whole in
@@ -204,7 +200,7 @@ export type Turn = { answer: string; asked: string[] };
  *  not get, their lines over what is left of the tool's description budget (LEARNED_WORKFLOWS_BUDGET), or holding a
  *  secret, or every one when `workflows_off` says why the run is offered none (its harness's requests go where a learned
  *  workflow's could not follow: learnedWorkflowsOff). */
-export type Pin = { seed: string; section?: string; given?: NoteUsed[]; learned?: string; skills?: string[]; skills_left_out?: string[]; workflows?: string[]; workflows_left_out?: string[]; workflows_off?: string };
+export type Pin = { seed: string; section?: string; given?: NoteUsed[]; skills?: string[]; skills_left_out?: string[]; workflows?: string[]; workflows_left_out?: string[]; workflows_off?: string };
 /** What a run is seeded from: main's commit, its index and its active notes by file, and the name of every entry at its
  *  top. `skipped` names what was there and not read. `recent`, when seedOf read it: the active notes' files, the one
  *  changed last on main first. `skills`, when seedOf read them: the skills the agent wrote, the one changed last on main
@@ -821,8 +817,6 @@ const WHOLE_INTRO = `What you learned in earlier runs: each note whole, newest f
 const SOME_INTRO = `What you learned in earlier runs: the index, one line per note, then the newest notes whole. ${KEPT}`;
 const INDEX_INTRO = `What you learned in earlier runs, one line per note. ${KEPT}`;
 const READ_LINE = `The notes not given whole here are files in \`${LEARNED_DIR}/\` in your working directory: open one with the read tool when it applies.`;
-/** How a pin an earlier server wrote, the index alone, was read: its intro then. */
-const EARLIER_INTRO = `What you learned in earlier runs, one line per note. Each note is a file in \`${LEARNED_DIR}/\` in your working directory: open one when it applies to what you are doing.`;
 const oneLine = (text: string) => text.replace(/\s+/g, " ").trim();
 
 /** A note as a run reads it whole: its name and file, its description, then its body, each cut of the host's secrets. */
@@ -1028,7 +1022,7 @@ export async function readPin(runDir: string): Promise<Pin | undefined> {
   const pin = JSON.parse(text) as unknown;
   const names = (value: unknown, shape: (entry: string) => boolean) => value === undefined || (Array.isArray(value) && value.every((entry) => typeof entry === "string" && shape(entry)));
   const skillFile = (entry: string) => SKILL_NAME.test(entry.split("/")[0]!) && SKILL_FILE_PATH.test(entry.slice(entry.indexOf("/") + 1)) && entry.includes("/");
-  if (!isObject(pin) || typeof pin.seed !== "string" || (pin.section !== undefined && typeof pin.section !== "string") || (pin.learned !== undefined && typeof pin.learned !== "string") || (pin.given !== undefined && !(Array.isArray(pin.given) && pin.given.every((entry: unknown) => isObject(entry) && typeof entry.file === "string" && typeof entry.name === "string"))) || !names(pin.skills, skillFile) || !names(pin.skills_left_out, () => true) || !names(pin.workflows, (entry) => WORKFLOW_NAME.test(entry)) || !names(pin.workflows_left_out, (entry) => WORKFLOW_NAME.test(entry)) || (pin.workflows_off !== undefined && typeof pin.workflows_off !== "string")) throw new Error(`the run's ${LEARNING_PIN} is not a learning pin`);
+  if (!isObject(pin) || typeof pin.seed !== "string" || (pin.section !== undefined && typeof pin.section !== "string") || (pin.given !== undefined && !(Array.isArray(pin.given) && pin.given.every((entry: unknown) => isObject(entry) && typeof entry.file === "string" && typeof entry.name === "string"))) || !names(pin.skills, skillFile) || !names(pin.skills_left_out, () => true) || !names(pin.workflows, (entry) => WORKFLOW_NAME.test(entry)) || !names(pin.workflows_left_out, (entry) => WORKFLOW_NAME.test(entry)) || (pin.workflows_off !== undefined && typeof pin.workflows_off !== "string")) throw new Error(`the run's ${LEARNING_PIN} is not a learning pin`);
   return pin as Pin;
 }
 
@@ -1049,7 +1043,7 @@ const NOTHING_YET = "Nothing learned yet.";
  *  (app.ts): pi's system prompt, claude-agent's and codex's instructions, and the skills each gets. */
 export async function withLearned(runDir: string, work: string, instructions: string, own: readonly string[] = []): Promise<{ instructions: string; skills: string[] }> {
   const pin = await readPin(runDir);
-  const section = pin?.section ?? (pin?.learned?.trim() ? `${EARLIER_INTRO}\n\n${pin.learned.trim()}` : undefined);
+  const section = pin?.section;
   const owned = new Set(namesIn(own));
   const learned = (pin?.skills ?? []).filter((path) => !owned.has(path.split("/")[0]!));
   const whole = new Set<string>();
