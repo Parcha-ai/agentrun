@@ -45,7 +45,7 @@ const STOP_MARK_WAIT_MS = 1_000;
 /** `models` with each generation request marked before it leaves, once `open` hands over the run (its Harness). Once
  *  `cancelled` says the run was cancelled, no request is sent: each is refused here, before it is marked, or after its
  *  mark when the cancel came while the mark waited, and then its start is withdrawn (an end mark, `unsent`). */
-export async function markRequests<M extends Models>(models: M, cancelled: () => boolean = () => false): Promise<{ models: M; open(run: DurableRun): void; refused(figures?: RefusalFigures): Promise<void> }> {
+export async function markRequests<M extends Models>(models: M, cancelled: () => boolean = () => false, { holdMarkWaitMs = END_MARK_WAIT_MS }: { holdMarkWaitMs?: number } = {}): Promise<{ models: M; open(run: DurableRun): void; refused(figures?: RefusalFigures): Promise<void> }> {
   const { createAssistantMessageEventStream } = await import("@earendil-works/pi-ai");
   let open!: (run: DurableRun) => void;
   // A request a resumed turn sends before the app's open waits for it: the mark needs the run's store.
@@ -61,10 +61,10 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
     errorMessage: why,
   });
   const reason = (error: unknown) => String((error as Error)?.message ?? error).slice(0, 200);
-  /** Whether `work` (a mark's write) is in the store within END_MARK_WAIT_MS: undefined when it is, else why not (its
-   *  refusal, or the wait run out). */
+  /** Whether `work` (a mark's write) is in the store within `holdMarkWaitMs` (END_MARK_WAIT_MS, a test's own when it
+   *  gives one): undefined when it is, else why not (its refusal, or the wait run out). */
   const landed = (work: Promise<unknown>): Promise<unknown> => new Promise((resolve) => {
-    const timer = setTimeout(() => resolve(new Error(`the store had not taken it in ${END_MARK_WAIT_MS} ms`)), END_MARK_WAIT_MS);
+    const timer = setTimeout(() => resolve(new Error(`the store had not taken it in ${holdMarkWaitMs} ms`)), holdMarkWaitMs);
     work.then(() => (clearTimeout(timer), resolve(undefined)), (error: unknown) => (clearTimeout(timer), resolve(error ?? new Error("refused"))));
   });
   /** Until `work` settles, or `ms` pass. */
