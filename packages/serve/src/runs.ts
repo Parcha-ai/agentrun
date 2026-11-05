@@ -12,7 +12,7 @@ import type { Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { processAlive } from "@parcha/agentrun-kernel/host";
-import { doorKey } from "@parcha/pi-durable-disk";
+import { doorTook } from "@parcha/pi-durable-disk";
 import { AgentHomeError, type Revision, type RevisionKind, type RunOrigin, type RunRow, type RunState, type StoredMetrics } from "@parcha/pi-durable-agent";
 import { isMessageRow, type MessageOrigin, registerLabel, registerTurnEnding, REQUEST_STARTED, type RunMetrics, runMetricsWithDecisions, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { HARNESS_LOG_EVENT, harnessModelKeys, thinkingFor } from "./adapters.js";
@@ -2123,7 +2123,8 @@ export class Runs {
    *  down before it wrote so. Read before sending it again, so a completed run is not opened again for a message it
    *  already has. Only for a run with no live process: a live one holds its store, and takes the message through its
    *  door, which takes one per id anyway. The store keeps the id as JSON text, as pi submits it, or as a harness's door
-   *  records its admission (doorKey). A store held past the retries throws as busy. */
+   *  keeps its journal (doorKey), where a busy refusal is not a message taken (doorTook). A store held past the retries
+   *  throws as busy. */
   async tookMessage(run: Run, requestId: string): Promise<boolean> {
     if (this.live(run)) return false;
     const file = this.storeFile(run);
@@ -2132,7 +2133,9 @@ export class Runs {
     return whenFree(async () => {
       const db = new DatabaseSync(file, { readOnly: true });
       try {
-        return db.prepare("SELECT 1 FROM submissions WHERE request_id IN (?, ?) LIMIT 1").get(JSON.stringify(requestId), JSON.stringify(doorKey(requestId))) !== undefined;
+        if (db.prepare("SELECT 1 FROM submissions WHERE request_id = ? LIMIT 1").get(JSON.stringify(requestId)) !== undefined) return true;
+        const status = db.prepare("SELECT json_extract(e.record, '$.data.status') AS status FROM submissions s JOIN entries e ON e.id = json_extract(s.record, '$.entry') WHERE s.request_id = ? LIMIT 1");
+        return await doorTook(requestId, (key) => (status.get(JSON.stringify(key)) as { status?: string } | undefined)?.status ?? undefined);
       } catch (error) {
         // A store that keeps no submissions has taken none.
         if (/no such table/.test((error as Error).message)) return false;
