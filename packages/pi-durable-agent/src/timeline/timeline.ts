@@ -364,6 +364,8 @@ const textOf = (message: Obj | undefined, type = "text", field = "text") =>
   blocksOf(message).filter((block) => block.type === type).map((block) => str(block[field]) ?? "").join("\n").trim();
 /** Every string a row shows goes through here: a URL keeps its origin, path and query keys, then the text is cut. */
 const clean = (text: string, max: number) => cut(scrubUrls(text), max);
+/** The rows that show words as a person or the agent wrote them: cut, never scrubbed. */
+const WHOLE: ReadonlySet<TimelineKind> = new Set(["user_message", "text_block", "final_answer"]);
 /** An error's whole text as the host's `redact` makes it, before its first line becomes a summary or either is cut, so
  *  neither keeps part of what the whole text's redaction takes out. */
 const redactOf = (options: TimelineOptions) => (text: string): string => (options.redact ? options.redact(text) : text);
@@ -452,12 +454,14 @@ function createProjector(options: TimelineOptions) {
       if (row.summary !== null) row.summary = options.redact(row.summary);
       if (row.text !== null) row.text = options.redact(row.text);
     }
-    // A person's own message shows as they typed it, its held keys redacted (readMessage): a URL in it keeps its fragment
-    // and query values, which scrubUrls drops from the URLs a model saw. Every other row's summary is scrubbed.
-    if (row.summary !== null) row.summary = kind === "user_message" ? cut(row.summary, caps.summary) : clean(row.summary, caps.summary);
+    // A person's own message and the agent's own words (its text, its answer) show as written, their held keys redacted
+    // (readMessage): a URL in them keeps its fragment and query values. scrubUrls is for the URLs of what the model read
+    // (a tool's result, a page's title, a call's arguments) and for its thinking.
+    const whole = WHOLE.has(kind);
+    if (row.summary !== null) row.summary = whole ? cut(row.summary, caps.summary) : clean(row.summary, caps.summary);
     if (row.tool_input_preview !== null) row.tool_input_preview = clean(row.tool_input_preview, caps.preview);
     if (row.tool_result_preview !== null) row.tool_result_preview = clean(row.tool_result_preview, caps.preview);
-    if (row.text !== null) row.text = kind === "user_message" ? cut(row.text, caps.text) : clean(row.text, caps.text);
+    if (row.text !== null) row.text = whole ? cut(row.text, caps.text) : clean(row.text, caps.text);
     for (const key of ["round", "parent_tool_use_id", "session", "path", "usage"] as const) if (row[key] === undefined) delete row[key];
     return row;
   }
@@ -911,7 +915,9 @@ export function timelineReducer(options: TimelineOptions = {}) {
           const red = redactedWhy(raw);
           return options.redact && /\S$/.test(joined) ? red.replace(/\S+$/, "").trimEnd() : red;
         };
-        const text = scrubUrls(options.redactLive ? options.redactLive(raw) : fallback());
+        const shown = options.redactLive ? options.redactLive(raw) : fallback();
+        // The agent's text streams as it will settle, its URLs whole; its thinking is scrubbed, as when it settles.
+        const text = kind === "thinking" ? scrubUrls(shown) : shown;
         const summary = kind === "thinking" ? `Thinking: ${cut(firstSentence(text), thinkingCap)}` : firstLine(text);
         live(kind, `${conv()}:live:${kind}`, text ? summary : undefined, { text });
       }
