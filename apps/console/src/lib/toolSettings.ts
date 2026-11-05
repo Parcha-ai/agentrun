@@ -14,6 +14,21 @@ const LEGACY_NAMES: Readonly<Record<string, string>> = { fetch_page: "web_fetch"
 /** The capability a granted tool name is: its legacy target, else itself. */
 export const capabilityOf = (name: string): string => LEGACY_NAMES[name] ?? name;
 
+/** The tools a workflow's call nodes call (`node: "call"` with a `tool`, wherever it sits), each at its settings key
+ *  (fetch_page: web_fetch's), once, sorted. A call node runs only the server's built-in call tools, never a catalog one. */
+export function callNodeTools(workflow: unknown): string[] {
+  const found = new Set<string>();
+  const walk = (v: unknown): void => {
+    if (Array.isArray(v)) { v.forEach(walk); return; }
+    if (!v || typeof v !== "object") return;
+    const o = v as Record<string, unknown>;
+    if (o.node === "call" && typeof o.tool === "string") found.add(capabilityOf(o.tool));
+    Object.values(o).forEach(walk);
+  };
+  walk(workflow);
+  return [...found].sort();
+}
+
 /** The tools a 409 `agent_not_runnable` names as stopping a workflow's call nodes (approvals/1): `denied`, set to
  *  deny; `asks`, set to ask, which a call node can't wait for. Each is an array of settings keys, present only when not
  *  empty; a legacy name is held to its capability's key (fetch_page: web_fetch's), as the server holds it. */

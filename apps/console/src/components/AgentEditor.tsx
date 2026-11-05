@@ -11,7 +11,7 @@ import type { WorkflowCheck } from "@/lib/client";
 import { markdown, when } from "@/lib/format";
 import { harnessDefault, modelLabel, NO_DEFAULT } from "@/lib/models";
 import type { Places } from "@/lib/place";
-import type { ToolChoice, ToolGate } from "@/lib/toolSettings";
+import { callNodeTools, type ToolChoice, type ToolGate } from "@/lib/toolSettings";
 import { cn } from "@/lib/utils";
 
 /** A revision as GET /v2/agents/{id}/revisions lists it; `definition` is what it holds (a workflow revision's workflow). */
@@ -48,6 +48,8 @@ export type EditorProps = {
   focusTool?: string;
 };
 type Step = "context" | "workflow" | "tools" | "settings" | "history";
+/** The workflow in the form's text, when it parses; else undefined (the saved one stands). */
+const parsedWorkflow = (text: string | undefined): unknown => { try { return text ? JSON.parse(text) : undefined; } catch { return undefined; } };
 
 /** A refused save's issues in the workflow: each 422 field under definition.workflow at its path, else the refusal's
  *  message for a workflow agent. */
@@ -252,7 +254,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
               {/* A workflow agent's tools have no provider here (a call node runs the tool as the server resolves it), but each
                   one's permission is this agent's to set: a call node refused for a tool set to deny or ask is fixed here. */}
               {(
-                <AgentToolSettings agent={agent} harness={f.harness ?? "pi"} model={f.model} tools={f.tools ?? []} choices={workflow ? [] : providerChoices} gates={permissionGates} focus={focusTool}
+                <AgentToolSettings agent={agent} harness={f.harness ?? "pi"} model={f.model} tools={f.tools ?? []} choices={workflow ? [] : providerChoices} gates={permissionGates} focus={focusTool} callTools={workflow ? callNodeTools(parsedWorkflow(f.workflowText) ?? d?.workflow) : undefined}
                   value={f.tool_settings ?? d?.tool_settings ?? {}} issues={problem?.kind === "invalid" ? problem.fields : {}}
                   // Settings equal to the definition's are no change of the form's. While a save is under way the definition is
                   // about to be what it sent, so every change is kept: the save's answer drops it only if it equals what was sent.

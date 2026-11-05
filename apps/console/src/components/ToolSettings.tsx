@@ -121,7 +121,7 @@ export const PerHarness = ({ choice }: { choice: ToolChoice }) => <>{HARNESS_ORD
 /** The agent editor's tool settings: per capability with a provider choice that this agent grants, or that the server's
  *  pick leaves unavailable (the agent's own pick may be what makes it run, before it is granted), its provider, the
  *  server's pick its default, and what it resolves to on the agent's harness and model. Nothing at all when none has one. */
-export function AgentToolSettings({ agent, harness, model, tools, choices, gates = [], focus, value, issues, onChange }: {
+export function AgentToolSettings({ agent, harness, model, tools, choices, gates = [], focus, callTools, value, issues, onChange }: {
   agent: Agent | null;
   /** The harness, model and tools in the form, saved or not (no model: the server's default). */
   harness: string;
@@ -132,6 +132,9 @@ export function AgentToolSettings({ agent, harness, model, tools, choices, gates
   gates?: readonly ToolGate[];
   /** A tool to focus the permission of as this opens (a legacy name at its settings key's row). */
   focus?: string;
+  /** A workflow agent's: the tools its call nodes call (callNodeTools). Its rows are those alone, each with a permission as
+   *  this server lists it; no catalog tool, which no call node runs. */
+  callTools?: readonly string[];
   /** The settings in the form: the agent's own, or the person's change of them. */
   value: ToolSettings;
   /** A refused save's issues, by field (saveError's). */
@@ -146,7 +149,7 @@ export function AgentToolSettings({ agent, harness, model, tools, choices, gates
   const accountsOff = gates.some((g) => g.ask_needs === "password");
   const read = (name: string) => agent?.tools?.find((x) => x.name === name);
   // A grant under a legacy name (fetch_page) is held to its capability's permission (web_fetch's): that row is its.
-  const permitted = [...new Set(tools.map(capabilityOf))].flatMap((name): ToolGate[] => {
+  const permitted = callTools ? callTools.flatMap((name) => gates.filter((g) => g.name === name)) : [...new Set(tools.map(capabilityOf))].flatMap((name): ToolGate[] => {
     const listed = gates.find((g) => g.name === name);
     if (listed) return [listed];
     const x = read(name);
