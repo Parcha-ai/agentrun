@@ -351,10 +351,10 @@ export function learnedRoute(harness: string, env: NodeJS.ProcessEnv, model: Mod
   if (env[FAUX_ENV] || env[FAUX_HARNESS_ENV]) return model;
   try {
     if (harness === "claude-agent") {
-      const { origin, priceModel } = claudeProvider(env, model);
-      // OpenRouter's own route only: a gateway named by ANTHROPIC_BASE_URL, even at OpenRouter's URL, is the operator's,
-      // with its key in ANTHROPIC_API_KEY (learnedWorkflowsOff withholds learned workflows there).
-      return origin === OPENROUTER_BASE && !env.ANTHROPIC_BASE_URL ? { provider: "openrouter", modelId: priceModel.id } : { ...model, modelId: claudeModelId(model) };
+      const { origin, auth, priceModel } = claudeProvider(env, model);
+      // OpenRouter's own route only (its key, as a bearer token): a gateway named by ANTHROPIC_BASE_URL, even at
+      // OpenRouter's URL, takes Anthropic's key (x-api-key), and learnedWorkflowsOff withholds learned workflows there.
+      return origin === OPENROUTER_BASE && auth === "bearer" ? { provider: "openrouter", modelId: priceModel.id } : { ...model, modelId: claudeModelId(model) };
     }
     if (harness === "codex" || harness === "opencode") {
       // Through a gateway (AGENT_MODEL_BASE_URL), even one at OpenRouter's URL, the run's models hold the gateway's
@@ -381,14 +381,17 @@ export async function learnedWorkflowsOff(harness: string | undefined, env: Node
   if (harness === "claude-agent") {
     const choice = claudeModel(env, ref);
     if ("why" in choice) return undefined;
-    // The operator's gateway (ANTHROPIC_BASE_URL), at any URL, OpenRouter's too: its key is in ANTHROPIC_API_KEY, which a
-    // learned node's provider never reads, so its requests could not follow it.
-    if (env.ANTHROPIC_BASE_URL) return "claude-agent sends this run's model requests to the gateway at ANTHROPIC_BASE_URL, and a learned workflow's requests could not go through it";
+    let chosen: ClaudeProvider;
     try {
-      origin = claudeProvider(env, choice.model).origin;
+      chosen = claudeProvider(env, choice.model);
     } catch {
       return undefined;
     }
+    // On the route the run chose: the operator's gateway (ANTHROPIC_BASE_URL with Anthropic's key, x-api-key), at any
+    // URL, OpenRouter's too, is one a learned node's provider could not follow. OpenRouter's own route (its key, bearer)
+    // never goes there, whatever ANTHROPIC_BASE_URL says.
+    if (chosen.auth === "x-api-key" && env.ANTHROPIC_BASE_URL) return "claude-agent sends this run's model requests to the gateway at ANTHROPIC_BASE_URL, and a learned workflow's requests could not go through it";
+    origin = chosen.origin;
   } else if (harness === "codex" || harness === "opencode") {
     const choice = await codexModel(env, ref, harness);
     if ("why" in choice) return undefined;
