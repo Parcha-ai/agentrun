@@ -218,7 +218,8 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
           {step === "tools" && (
             <div className="max-w-3xl space-y-6">
               <Field label="Tools" note="On by default: the tools this agent's harness runs on this server. Untick one to take it away." error={fieldError("tools")} warning={fieldWarning("tools")}>
-                <ul className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                {/* Columns by a minimum width: as many as fit, one card a row in a narrow pane (a phone on its side). */}
+                <ul className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,18rem),1fr))] gap-2">
                   {caps.tools.filter((t) => workflow || !t.call_only || f.tools?.includes(t.name)).map((t) => {
                     // A call-only tool runs only in a workflow's call node, which needs it in its revision's tools: a
                     // workflow agent picks it like any other. An agentic agent is never offered one, and one it already
@@ -262,7 +263,8 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
             <div className="max-w-3xl space-y-8">
               {!workflow && (
                 <Field label="Harness" note="What runtime runs this agent." error={fieldError("harness")} warning={fieldWarning("harness")}>
-                  <div className={cn("grid grid-cols-1 gap-3", COLUMNS[choices.length] ?? "sm:grid-cols-3")} role="radiogroup" aria-label="Harness">
+                  {/* Cards by a minimum width: they wrap to more rows in a narrow pane (a phone on its side), never squeezed. */}
+                  <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,9rem),1fr))] gap-3" role="radiogroup" aria-label="Harness">
                     {/* A harness this server runs is one label, a click anywhere on the card picks it. One it doesn't run says so
                         briefly (the served `available: false`), and the server's whole reason, an install command in it, is one
                         tap away in a details line beside the label (so opening it never picks the card), wrapping inside it. */}
@@ -270,7 +272,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                       const row = (
                         <>
                           <input type="radio" name="harness" value={h.id} checked={f.harness === h.id} disabled={!h.available && f.harness !== h.id} onChange={() => set({ harness: h.id, ...(creating && !toolsTouched ? { tools: defaultTools(h.id, caps.tools) } : {}) })} className="mt-1 accent-[hsl(var(--primary))]" />
-                          <span className="min-w-0"><span className="block font-mono text-[13px] font-semibold">{h.label}</span><span className="mt-0.5 block font-mono text-[11px] text-muted-foreground">{h.available ? h.id : "Not available here"}</span></span>
+                          <span className="min-w-0"><span className="block break-words font-mono text-[13px] font-semibold">{h.label}</span><span className="mt-0.5 block font-mono text-[11px] text-muted-foreground">{h.available ? h.id : "Not available here"}</span></span>
                         </>
                       );
                       const edge = cn("min-w-0 border px-4 py-3", f.harness === h.id ? "border-foreground" : "border-border");
@@ -352,8 +354,6 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
   );
 }
 
-/** The harness picker's columns on a wide screen, one per choice: literal class names, so Tailwind keeps them. */
-const COLUMNS: Record<number, string> = { 1: "sm:grid-cols-1", 2: "sm:grid-cols-2", 3: "sm:grid-cols-3", 4: "sm:grid-cols-4", 5: "sm:grid-cols-5" };
 
 const input = "w-full border bg-background px-3 py-2.5 font-mono text-[13px] outline-none placeholder:text-muted-foreground focus:border-border-strong";
 
