@@ -34,7 +34,7 @@ import { gated, liveView, nodeLog, readLiveView } from "./pause.js";
 import { remotePlace, storedPlace } from "./place.js";
 import { runBox, runBoxProvider } from "./run-box.js";
 import { ASK_TOOL, type ToolBinding, type ToolHost, toolOf, workflowTools } from "./tools.js";
-import { promptOf, systemOf } from "./skills.js";
+import { promptOf, readsFiles, systemOf } from "./skills.js";
 import { EnvironmentLine, environmentLine } from "./environment.js";
 import { effortGuidance } from "./effort-guidance.js";
 import { isObject } from "./validate.js";
@@ -144,9 +144,10 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   if (revision.kind === "agentic" && revision.body.harness && revision.body.harness !== DEFAULT_HARNESS) {
     const harness = revision.body.harness;
     // claude-agent loads the skills its adapter takes itself (its Skill tool), and its prompt keeps only the ones it would
-    // refuse; codex's prompt, and a faux harness's, keep every skill (skills.ts).
+    // refuse; codex's prompt, and a faux harness's, name each skill and its file when the run reads its files (it reads
+    // the SKILL.md when it fits), else keep every skill whole (skills.ts).
     const check = harness === "claude-agent" && !env[FAUX_HARNESS_ENV] ? await claudeSkillCheck() : undefined;
-    const { system: instructions, native } = await systemOf(learned.instructions, learned.skills, where.work, check);
+    const { system: instructions, native } = await systemOf(learned.instructions, learned.skills, where.work, check, { onDemand: readsFiles(revision.body.tools) });
     // The session's system prompt starts with the line, made as this process opens it: a run resumed on a later day is
     // opened with that day.
     const spec = { key: `run:${run.id}`, label: run.agent, system: [environmentLine(), instructions, guidance].filter((text): text is string => Boolean(text)), context: "fresh" as const, thinking: thinkingFor(harness, thinkingLevel) };
@@ -204,7 +205,8 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   if (revision.kind === "agentic") {
     const tools = (await Promise.all(revision.body.tools.map((name) => bind(name)))).flatMap((binding) => binding.tools);
     registry.install(toolGate.extension(tools));
-    const instructions = [await promptOf(learned.instructions, learned.skills, where.work), guidance].filter(Boolean).join("\n\n");
+    // Each skill named with its file when the run reads its files (it reads the SKILL.md when it fits), else whole.
+    const instructions = [await promptOf(learned.instructions, learned.skills, where.work, { onDemand: readsFiles(revision.body.tools) }), guidance].filter(Boolean).join("\n\n");
     // The calls that wait for a person's approval are read as the run opens, and their answers acted on from then.
     const onOpen = async (durable: DurableRun) => {
       settleIn(rootRecordOf(durable.harness));

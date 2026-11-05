@@ -1321,7 +1321,10 @@ harness, with the provider's first sentence only.
 tool and reads its other files with `read_skill_file`, and the system prompt holds the instructions alone. A skill the
 adapter does not take (a name that is not lowercase letters, digits and dashes, a `SKILL.md` without front matter giving
 its `name` and a `description`, a file path that is not plain or is deeper than five segments) stays inlined in the
-system prompt, as every skill is on `pi`, `codex` and `opencode`; so do all of them when together they hold more than 1 MiB.
+system prompt; so do all of them when together they hold more than 1 MiB. On `pi`, `codex` and `opencode`, a run with the
+`read` or `bash` tool is told each skill's name, what it is for (its `description`) and its `SKILL.md`'s path under
+`.agents/skills/`, and reads the file when the skill fits the step it is on; a run with neither gets every `SKILL.md`
+inlined in its system prompt.
 
 `definition.harness` and `capabilities.harnesses` are this server's, outside the `agentrun.v2/0` contract:
 `GET /v2/openapi.json` marks each `x-agentrun-serve: "harness/1"`, beside the other properties it adds (`model/1`,
