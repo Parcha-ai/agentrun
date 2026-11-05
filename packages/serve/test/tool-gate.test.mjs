@@ -300,6 +300,44 @@ test("a deny refuses the call at once and the run goes on, on every harness; a w
   await follow(api, started.body.run_id, ["completed"], { deadlineMs: 30_000 });
 });
 
+/** The first web_fetch result of run `runId`, once it has one. */
+async function firstFetch(api, runId) {
+  for (let i = 0; ; i++) {
+    const row = ((await api("GET", `/runs/${runId}/timeline`)).body.rows ?? []).find((r) => r.kind === "tool_result" && r.tool_name === "web_fetch" && r.tool_status !== null);
+    if (row) return row;
+    assert.ok(i < 600, "the run made no first call");
+    await sleep(100);
+  }
+}
+
+test("a deny lifted mid-run is lifted at the next call: a run launched with web_fetch denied runs its next call once the setting reads allow, and parks it once it reads ask, which an allow runs once", { timeout: 150_000 }, async (t) => {
+  const dialled = await network(t);
+  const server = await serve(t, GATE);
+  const { api } = server;
+  const answer = await owner(server);
+  const go = await scratch(t);
+  for (const [lifted, url] of [["allow", PAGE], ["ask", `${PAGE}notes.txt`]]) {
+    assert.equal((await api("PUT", "/settings/tools", { web_fetch: { permission: "deny" } })).status, 200);
+    const file = join(go, lifted);
+    const ask = `Fetch ${url} again once ${file} exists.`;
+    assert.equal((await api("POST", "/agents", agent(`lifted-${lifted}`, { harness: "pi", instructions: ask, tools: ["web_fetch"] }))).status, 201);
+    const runId = (await api("POST", `/agents/lifted-${lifted}/runs`, { input: { content: ask } })).body.run_id;
+    const first = await firstFetch(api, runId);
+    assert.deepEqual([first.tool_status, first.tool_result_preview], ["failed", deniedText("web_fetch")], `${lifted}: launched denied`);
+    assert.equal((await api("PUT", "/settings/tools", { web_fetch: { permission: lifted } })).status, 200);
+    await writeFile(file, "");
+    if (lifted === "ask") {
+      const { view } = await parked(api, runId);
+      assert.deepEqual([view.pending?.kind, view.pending?.tool], ["approval", "web_fetch"], "ask: the next call parks");
+      assert.equal((await answer(runId, view.pending.id, { decision: "allow" })).status, 204);
+    }
+    const { rows } = await resumed(api, runId);
+    const results = rows.filter((row) => row.kind === "tool_result" && row.tool_name === "web_fetch");
+    assert.ok(!results.slice(1).some((row) => row.tool_status === "failed"), `${lifted}: the next call ran, ${JSON.stringify(results.map((row) => [row.tool_status, row.tool_result_preview]))}`);
+    assert.deepEqual((await dialled()).filter((dial) => dial === url), [url], `${lifted}: dialled once`);
+  }
+});
+
 const NO_APPROVER = (tool) => `Permission denied: ${tool} needs the owner's approval, and this server has accounts off (AGENTRUN_ACCOUNTS=0), so no one can give it: set the tool to allow or deny in the agent's Tools.`;
 
 test("with accounts off no one can approve: an ask, a catalog tool's default or a setting, is refused with words saying so, never parked, and capabilities say an ask needs the password sign-in; with accounts on it parks", { timeout: 120_000 }, async (t) => {
