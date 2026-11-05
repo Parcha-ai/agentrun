@@ -46,13 +46,14 @@ const toEnd = (m: RegExpExecArray) => m.index + m[0].length;
  *  - GitHub: the same for github_pat_. A ghp_ run's class has no "_", and a github_pat_ can start in its last characters
  *    and run past it, so it reads on from the next character.
  *  - JWT: a match that starts in the first part reads on through the same second and third parts, so it ends where this
- *    one does; one that starts in the second part can run past it, into a fourth. It reads on from the second part. */
+ *    one does; one that starts in the second part can run past it, into a fourth. It reads on from the second part.
+ *  - whsec_: not here. Its run's class has no "_", so a run takes the next secret's "whsec" and stops at its "_": that
+ *    secret starts inside this match and runs past it, and is found only by reading on from the next character. */
 const RESUME = new Map<RegExp, (m: RegExpExecArray) => number>([
   [SK_KEY, toEnd],
   [SLACK_TOKEN, toEnd],
   [GITHUB_TOKEN, (m) => (m[0].startsWith("github_pat_") ? toEnd(m) : m.index + 1)],
   [JWT, (m) => m.index + m[0].indexOf(".") + 1],
-  [WEBHOOK_SECRET, toEnd],
 ]);
 
 function places(text: string, form: string): Span[] {
