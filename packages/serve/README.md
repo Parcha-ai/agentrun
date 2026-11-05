@@ -1116,8 +1116,9 @@ that time (an older server's) or before the webhook was set is never sent. A run
 ```
 
 A message is thin: ids, the status, the title and a link to the run on the page; never a tool's arguments, an output
-or an input, which the API reads (`GET /v2/runs/{id}`). `pending.kind` is `question` (an `ask_person`), `stopped`,
-`budget` (a run paused at its cap) or `browser` (the agent asked for the owner in its browser).
+or an input, which the API reads (`GET /v2/runs/{id}`). `pending.kind` is `question` (an `ask_person`),
+`approval` (a tool call that waits for a person's approval), `stopped`, `budget` (a run paused at its cap) or `browser`
+(the agent asked for the owner in its browser).
 
 Messages are signed by the [Standard Webhooks](https://www.standardwebhooks.com) spec, so a receiver verifies them
 with any of its libraries: `webhook-id` (the same on every try of a message, so it is the receiver's idempotency key),
