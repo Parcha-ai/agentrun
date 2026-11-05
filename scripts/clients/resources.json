@@ -11,7 +11,8 @@
     "deleteHomeFile": "path"
   },
   "omit": {
-    "approveLearningFile": "It takes the owner's password session in the console; the server refuses every token on it."
+    "approveLearningFile": "It takes the owner's password session in the console; the server refuses every token on it.",
+    "answerApproval": "Only the owner's password session answers a tool call's approval, on the console's own origin; the server refuses every token on it."
   },
   "commands": {
     "getCapabilities": ["server", "capabilities"],

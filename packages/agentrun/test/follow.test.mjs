@@ -3,6 +3,7 @@
 // timeline, and a connection cut mid-stream resumed with Last-Event-ID. The token is in no output.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, request } from "node:http";
 import { createServer as createNetServer } from "node:net";
@@ -77,7 +78,7 @@ async function cuttingProxy(t, upstream) {
   let reconnected;
   const resumed = new Promise((resolve) => (reconnected = resolve));
   let phase = "first";
-  const server = createServer(async (req, res) => {
+  const base = await loopback(t, async (req, res) => {
     const record = { lastEventId: req.headers["last-event-id"] };
     seen.push(record);
     if (phase === "cut") {
@@ -105,9 +106,22 @@ async function cuttingProxy(t, upstream) {
     });
     req.pipe(up);
   });
+  return { base, seen, cut, resumed, release };
+}
+
+/** A loopback HTTP server that serves `handle(req, res)` under its own random path prefix: `base` holds it, and `req.url`
+ *  comes without it. Anything else, such as another test's late retry to a port this one now holds, is a 404 that
+ *  `handle` never sees. */
+async function loopback(t, handle) {
+  const prefix = `/${randomBytes(8).toString("hex")}`;
+  const server = createServer((req, res) => {
+    if (!req.url.startsWith(`${prefix}/`)) return void res.writeHead(404).end();
+    req.url = req.url.slice(prefix.length);
+    return handle(req, res);
+  });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => (server.closeAllConnections(), server.close()));
-  return { base: `http://127.0.0.1:${server.address().port}/v2`, seen, cut, resumed, release };
+  return `http://127.0.0.1:${server.address().port}${prefix}/v2`;
 }
 
 /** The rows the pages leave, applied in order: upserted by id, the drops removed, a reset dropping all first. */
@@ -222,7 +236,7 @@ test("runs start --wait, runs wait and runs timeline --follow: exit by how the r
  *  answering; `/runs/RUN` too unless `run` is given. */
 async function stalling(t, run) {
   const held = [];
-  const server = createServer((req, res) => {
+  return loopback(t, (req, res) => {
     const url = new URL(req.url, "http://host");
     if (url.pathname.endsWith("/timeline") && url.searchParams.get("after") === "0") {
       return void res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ run_id: "r1", status: "working", state: "working", reset: true, rows: [], drop: [], next_after: 5, unchanged: false, has_more: false, final: false, poll_after_ms: 0 }));
@@ -230,9 +244,6 @@ async function stalling(t, run) {
     if (run && url.pathname.endsWith("/runs/r1")) return void res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(run));
     held.push(res);
   });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  t.after(() => (server.closeAllConnections(), server.close()));
-  return `http://127.0.0.1:${server.address().port}/v2`;
 }
 
 test("--timeout bounds every request: a server that answers one page and then stalls ends the wait on time, exit 1", { timeout: 60_000 }, async (t) => {
@@ -261,10 +272,7 @@ test("runs wait takes a run id as one whole path segment: an empty, . or .. one 
   const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !DROPPED.includes(name)));
   const cli = cliOf({ ...env, AGENTRUN_API_KEY: "fake-test-key" }, []);
   const requests = [];
-  const server = createServer((req, res) => (requests.push(req.url), res.writeHead(404, { "content-type": "application/json" }).end('{"error":{"code":"not_found"}}')));
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  t.after(() => (server.closeAllConnections(), server.close()));
-  const base = `http://127.0.0.1:${server.address().port}/v2`;
+  const base = await loopback(t, (req, res) => (requests.push(req.url), res.writeHead(404, { "content-type": "application/json" }).end('{"error":{"code":"not_found"}}')));
   for (const id of ["", ".", ".."]) assert.equal((await cli(["runs", "wait", id, "--base-url", base])).code, 2, JSON.stringify(id));
   assert.deepEqual(requests, [], "nothing was sent");
   assert.equal((await cli(["runs", "wait", "a/../b", "--base-url", base])).code, 1, "a slash is part of the id, encoded");
@@ -275,14 +283,11 @@ test("--timeout takes a fraction of a second: the wait goes on to its timeout, e
   const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !DROPPED.includes(name)));
   const cli = cliOf({ ...env, AGENTRUN_API_KEY: "fake-test-key" }, []);
   // A run that keeps working: every page says nothing changed, and to ask again soon.
-  const server = createServer((req, res) => {
+  const base = await loopback(t, (req, res) => {
     const timeline = new URL(req.url, "http://host").pathname.endsWith("/timeline");
     const body = timeline ? { run_id: "r1", status: "working", state: "working", reset: false, rows: [], drop: [], next_after: 5, unchanged: true, has_more: false, final: false, poll_after_ms: 50 } : { run_id: "r1", status: "working" };
     res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(body));
   });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  t.after(() => (server.closeAllConnections(), server.close()));
-  const base = `http://127.0.0.1:${server.address().port}/v2`;
   for (const seconds of ["1.0005", "0.5", "0.0001"]) {
     const waited = await cli(["runs", "wait", "r1", "--timeout", seconds, "--base-url", base]);
     assert.equal(waited.code, 1, `${seconds}: ${waited.err}`);

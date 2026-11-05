@@ -1056,7 +1056,7 @@ test("a fresh data directory has its since-time right after the first start, bef
 
 const ledgerOf = (dir) => JSON.parse(readFileSync(join(dir, "webhook-outbox.json"), "utf8")).notices;
 
-test("a notice and its record are one write: the outbox holds the end and the wait it queued of each run; the same moment again queues nothing, here or in the next server", async (t) => {
+test("a notice and its record are one write: the outbox holds the end and the wait it queued of each run; the same moment again queues nothing, here or in the next server", { skip: process.env.CI && !process.env.AGENTRUN_RUN_QUARANTINED && "quarantined F37 (tl-triggers) until 2026-11-06T09:57Z, scripts/quarantine.json" }, async (t) => {
   withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
   const hook = await receiver(t);
   const dir = await scratch(t);

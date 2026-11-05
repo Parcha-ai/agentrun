@@ -63,7 +63,7 @@ test("with only model keys: native search on pi, claude-agent and codex, and the
   assert.deepEqual(await resolves(api), { web_search: AUTO_KEYED, web_fetch: each("kernel") }, "native search on pi and codex, Parallel on claude-agent (Claude's own search an explicit pick), the kernel's fetch");
   assert.deepEqual((await api("PUT", "/settings/tools", { web_search: { provider: "native" } })).status, 200);
   assert.deepEqual(await resolves(api), { web_search: NATIVE, web_fetch: each("kernel") }, "native picked: each harness's own, Claude's among them; Parallel's key held but not used");
-  assert.equal((await api("GET", "/capabilities")).body.features.tool_permissions, false);
+  assert.equal((await api("GET", "/capabilities")).body.features.tool_permissions, true);
 
   // pi on Anthropic: its search is one request to the provider with exactly the hosted tool, booked with its fee.
   const pi = await research(api, "pi-anthropic", {});

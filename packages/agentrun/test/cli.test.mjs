@@ -3,6 +3,7 @@
 // happened, and never prints the token.
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
 import { createServer } from "node:net";
@@ -51,10 +52,15 @@ async function serve(t, dir, env) {
   return { child, exited, data, token: readFileSync(join(data, ".token"), "utf8").trim() };
 }
 
-/** A loopback HTTP server that records every request and answers with `answer(request)`: [status, type, bytes]. */
+/** A loopback HTTP server that records every request under its own random path prefix (part of `base`; a request's `url`
+ *  is recorded without it) and answers with `answer(request)`: [status, type, bytes]. Anything else, such as another
+ *  test's late retry to a port this one now holds, is a 404, neither answered nor recorded. */
 async function listener(t, answer = () => [200, "application/json", "{}"]) {
   const requests = [];
+  const prefix = `/${randomBytes(8).toString("hex")}`;
   const server = createHttpServer((req, res) => {
+    if (!req.url.startsWith(`${prefix}/`)) return void res.writeHead(404).end();
+    req.url = req.url.slice(prefix.length);
     const chunks = [];
     req.on("data", (chunk) => chunks.push(chunk));
     req.on("end", () => {
@@ -66,7 +72,7 @@ async function listener(t, answer = () => [200, "application/json", "{}"]) {
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise((resolve) => (server.closeAllConnections(), server.close(resolve))));
-  return { base: `http://127.0.0.1:${server.address().port}/v2`, requests };
+  return { base: `http://127.0.0.1:${server.address().port}${prefix}/v2`, requests };
 }
 
 /** The CLI in a child process, without blocking this one (a listener here answers it); killed after `timeout` ms, its
