@@ -97,6 +97,10 @@ export type TimelinePage = {
 };
 
 export type RunFile = { path: string; size_bytes: number; modified_at: string; content_type: string | null };
+/** GET /v2/runs/{id}/browser (owner session only, no-store): `off`, the run has no browser or it resolves unavailable;
+ *  `none`, it has one with no session open (yet, or any more); `live`, a session is open, watched through `viewer`, a
+ *  same-origin path whose token is in its fragment (never sent to a server). */
+export type RunBrowser = { state: "off"; reason?: string } | { state: "none" } | { state: "live"; viewer: string };
 export type RunFiles = { run_id: string; files: RunFile[]; complete: boolean; truncated: boolean };
 
 /** Tool keys (GET /v2/settings/tool-keys, a serve extension): each key a person may save, what it unlocks and the
