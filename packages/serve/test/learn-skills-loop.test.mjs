@@ -233,3 +233,21 @@ test("a skill left out unread for its size that hides a secret's shape refuses t
   assert.equal(grades(), 0, "nothing graded");
   assert.deepEqual(mergesOf(repoOf(data, "hider"), view.run_id), []);
 });
+
+test("a draft whose call node calls a tool the agent sets to ask is left out by the checks in #1601's words; the run's other learning stands", { timeout: 120_000 }, async (t) => {
+  const { api, data } = await server(t);
+  const json = JSON.stringify({
+    v: 2,
+    name: "find-policies",
+    schemas: { Store: { type: "object", properties: { url: { type: "string" } }, required: ["url"] }, Page: { type: "object" } },
+    input: { schemaId: "Store" },
+    output: { schemaId: "Page", path: "page" },
+    root: { node: "call", label: "fetch", via: "tool", tool: "web_fetch", args: { url: "{url}" }, out: "Page", as: "page", deadline_s: 30 },
+  });
+  await made(api, answering("asking", answer({ json }), [], { tools: ["web_fetch"], tool_settings: { web_fetch: { permission: "ask" } } }));
+  const asked = await ended(api, await started(api, "asking"));
+  const saved = await savedOf(data, asked.view.run_id);
+  assert.match((saved.learning.problems ?? []).map((problem) => problem.detail).join("\n"), /This workflow's call node calls web_fetch, which is set to ask, and a workflow's call node can't wait for an approval: set it to allow for this agent/, JSON.stringify(saved.learning));
+  const onMain = git(repoOf(data, "asking"), ["ls-tree", "-r", "--name-only", "main"]);
+  assert.ok(!onMain.includes("workflows/"), `no draft merged: ${onMain}`);
+});

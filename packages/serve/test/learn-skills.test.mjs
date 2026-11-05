@@ -263,3 +263,46 @@ test("a skill whose plain name is followed by an indented comment keeps its name
   const served = servedSkill("---\nname: find-policies\n  # a helper\ndescription: Find refund policies\n---\nDo the job.\n");
   assert.equal(served.split("\n")[1], "name: find-policies");
 });
+
+// A call node's tool set to ask or deny (tool-gate.ts): the run would park or refuse it, so a learned draft never names
+// one. The checker is given the tools the gate does not allow, with what each is set to, and says so in #1601's words.
+const callDraft = (tool) => JSON.stringify({
+  v: 2,
+  name: "find-policies",
+  schemas: { Store: { type: "object", properties: { url: { type: "string" } }, required: ["url"] }, Page: { type: "object" } },
+  input: { schemaId: "Store" },
+  output: { schemaId: "Page", path: "page" },
+  root: { node: "call", label: "fetch", via: "tool", tool, args: { url: "{url}" }, out: "Page", as: "page", deadline_s: 30 },
+}, null, 2);
+/** The same call node inside a composed workflow node. */
+const composedDraft = (tool) => JSON.stringify({
+  v: 2,
+  name: "find-policies",
+  schemas: { Store: { type: "object", properties: { url: { type: "string" } }, required: ["url"] }, Page: { type: "object" } },
+  input: { schemaId: "Store" },
+  output: { schemaId: "Page", path: "got" },
+  root: { node: "workflow", label: "sub", workflow: JSON.parse(callDraft(tool)), input: { url: "{url}" }, out: "Page", as: "got" },
+}, null, 2);
+const ASK_WORDS = "This workflow's call node calls web_fetch, which is set to ask, and a workflow's call node can't wait for an approval: set it to allow for this agent";
+const DENY_WORDS = "This workflow's call node calls web_fetch, which is set to deny on this server.";
+const quote = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+test("a draft whose call node calls a tool set to ask or deny is refused as workflow at learn time, in #1601's words, inside a composed workflow node too; one set to allow passes", () => {
+  for (const [permission, words] of [["ask", ASK_WORDS], ["deny", DENY_WORDS]]) {
+    for (const [text, at] of [[callDraft("web_fetch"), "/root"], [composedDraft("web_fetch"), "/root/workflow/root"]]) {
+      const result = check(draft(text), { gated: { web_fetch: permission } });
+      assert.deepEqual(result.problems.map((p) => [p.rule, p.path]), [["workflow", DRAFT_PATH]], `${permission} ${at} ${JSON.stringify(result.problems)}`);
+      assert.match(result.problems[0].detail, new RegExp(`${quote(words)} \\(the call node at ${quote(at)}\\)`), result.problems[0].detail);
+    }
+  }
+  assert.ok(check(draft(callDraft("web_fetch"))).ok, "allowed, it passes");
+  assert.ok(check(draft(composedDraft("web_fetch"))).ok, "allowed, the composed one passes");
+});
+
+test("the tools a learned draft may name are the granted ones the gate allows: one set to ask or deny is left out, and named with its setting", () => {
+  assert.equal(typeof tools.learnedDraftTools, "function");
+  const granted = ["read", "web_fetch", "web_search"];
+  const permission = (name) => (name === "web_fetch" ? "ask" : name === "web_search" ? "deny" : "allow");
+  assert.deepEqual(tools.learnedDraftTools(granted, permission), { tools: tools.learnedWorkflowTools(granted).filter((name) => name !== "web_fetch" && name !== "web_search"), gated: { web_fetch: "ask", web_search: "deny" } });
+  assert.deepEqual(tools.learnedDraftTools(granted, () => "allow"), { tools: tools.learnedWorkflowTools(granted), gated: {} });
+});

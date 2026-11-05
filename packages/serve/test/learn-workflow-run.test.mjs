@@ -403,3 +403,36 @@ test("on codex, learned_workflow set to ask parks the run; the owner's allow run
   assert.match(resume, /This answers your learned_workflow call .*They allowed it, and it ran\. Its result:\n\{\\?"answer\\?":42\}/s, resume);
   assert.equal(entries(data, runId, ["agentrun.request_started"]).filter((entry) => entry.request === LEARNED_WORKFLOW_TOOL).length, 1, "its one node ran once");
 });
+
+/** A learned workflow of one call node on `tool`, or that node inside a composed workflow node (`nested`). */
+const callFlow = (tool, nested = false) => {
+  const inner = { v: 2, name: "fetch-one", schemas: { In: { type: "object", properties: { url: { type: "string" } }, required: ["url"] }, Page: { type: "object" } }, input: { schemaId: "In" }, output: { schemaId: "Page", path: "page" }, root: { node: "call", label: "fetch", via: "tool", tool, args: { url: "{url}" }, out: "Page", as: "page", deadline_s: 30 } };
+  return nested ? { ...inner, output: { schemaId: "Page", path: "got" }, root: { node: "workflow", label: "sub", workflow: inner, input: { url: "{url}" }, out: "Page", as: "got" } } : inner;
+};
+
+test("a learned workflow whose call node's tool was set to deny after it was learned is refused before any node runs, in #1601's words", { timeout: 120_000 }, async (t) => {
+  const { api, data } = await serve(t, { learning: "on" });
+  const { runId, rows } = await ran(api, data, "denied-call", "pi", flowFiles("answer", callFlow("web_fetch")), ["web_fetch"], { extra: { tool_settings: { web_fetch: { permission: "deny" } } } });
+  const result = learnedResult(rows);
+  assert.equal(result?.tool_status, "failed", JSON.stringify(result));
+  assert.match(JSON.stringify(result), /The learned workflow answer was not run: This workflow's call node calls web_fetch, which is set to deny on this server\./, JSON.stringify(result));
+  assert.deepEqual(entries(data, runId, ["agentrun.request_started"]).filter((entry) => entry.request === LEARNED_WORKFLOW_TOOL), [], "no node ran");
+});
+
+test("each call node of a learned workflow asks the run's gate as it runs, a composed workflow's inner call node too: a tool set to deny since the call began is refused in the gate's words, ask in the call node's, and never run", async () => {
+  const { runLearned } = await import("../dist/learned-workflow.js");
+  const { deniedText } = await import("../dist/tool-gate.js");
+  for (const nested of [false, true]) {
+    for (const [later, words] of [["deny", deniedText("web_fetch")], ["ask", "This web_fetch call needs a person's approval, which a workflow's call node cannot wait for; it was not run."]]) {
+      // Allowed when the call begins (its check before any node runs), `later` from then on: as a person's change mid-run.
+      let asked = 0;
+      const policy = (tool) => (tool === "web_fetch" && asked++ === 0 ? "allow" : tool === "web_fetch" ? later : "allow");
+      const flow = { name: "answer", description: "Fetches a page", workflow: JSON.stringify(callFlow("web_fetch", nested)) };
+      const run = { workflows: [flow], granted: ["web_fetch"], env: {}, work: "/nonexistent", models: { getModel: () => undefined, getModels: () => [] }, modelOf: () => undefined, policy };
+      const out = await runLearned(run, flow, { url: "http://192.0.2.1/" });
+      assert.equal(out.isError, true, JSON.stringify(out));
+      assert.ok(out.text.includes(words), `${nested ? "nested" : "flat"} ${later}: ${out.text}`);
+      assert.ok(asked >= 2, `${nested ? "nested" : "flat"} ${later}: the gate was asked at the call too (${asked})`);
+    }
+  }
+});
