@@ -1,5 +1,5 @@
 import { Archive, ArchiveRestore, Bot, History, Pencil, Plus, Search, Workflow } from "lucide-react";
-import { useState } from "react";
+import { type ReactNode, useState } from "react";
 import { ListSkeleton } from "@/components/Skeleton";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
@@ -11,7 +11,7 @@ export type AgentsListActions = { onOpen?: (id: string) => void; onEdit?: (id: s
 
 /** The hosted console's agent grid: a search box, the count, and a card per agent (name, kind, harness, what it does,
  *  its revision and runs, and its actions). Archived agents are their own view. */
-export function AgentsList({ agents, archived = false, onArchivedChange, actions = {}, error }: { agents: Agent[] | null; archived?: boolean; onArchivedChange?: (archived: boolean) => void; actions?: AgentsListActions; error?: string | null }) {
+export function AgentsList({ agents, archived = false, onArchivedChange, actions = {}, error, handoff }: { agents: Agent[] | null; archived?: boolean; onArchivedChange?: (archived: boolean) => void; actions?: AgentsListActions; error?: string | null; handoff?: ReactNode }) {
   const [q, setQ] = useState("");
   const shown = (agents ?? []).filter((a) => `${a.definition.name} ${a.definition.description ?? ""}`.toLowerCase().includes(q.toLowerCase()));
   return (
@@ -22,6 +22,7 @@ export function AgentsList({ agents, archived = false, onArchivedChange, actions
           <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search agents by name or description..." aria-label="Search agents"
             className="min-w-0 flex-1 bg-transparent font-mono text-[13px] outline-none placeholder:text-muted-foreground" />
         </label>
+        {handoff}
         <Button size="lg" variant={archived ? "primary" : "outline"} aria-pressed={archived} onClick={() => onArchivedChange?.(!archived)}><Archive aria-hidden /> Archived</Button>
         {!archived && <Button size="lg" variant="primary" onClick={actions.onNew}><Plus aria-hidden /> New agent</Button>}
       </div>

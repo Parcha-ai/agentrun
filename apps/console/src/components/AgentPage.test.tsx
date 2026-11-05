@@ -90,6 +90,26 @@ async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = nul
 }
 
 describe("AgentPage", () => {
+  it("keeps a key-free agent page readable but directs a missing default model to setup before running", async () => {
+    const page = await open(agentFixture("invoice-checker"), { runs: [], harnesses: [{ id: "pi", available: true, default_model: null }] });
+    await page.set(page.input(), "Check this invoice.");
+    expect(page.button(/^Run$/)?.disabled).toBe(true);
+    expect(page.host.querySelector('a[href="#/settings/keys"]')?.textContent).toContain("Set up models");
+    expect(page.tabs()).toContain("Runs");
+    expect(page.button(/^Edit$/)?.disabled).toBe(false);
+    await page.click(/^Run$/);
+    expect(page.starts).toEqual([]);
+  });
+
+  it("does not block an explicit agent model just because its harness has no default", async () => {
+    const base = agentFixture("invoice-checker");
+    const agent = { ...base, definition: { ...base.definition, model: "anthropic/configured-model" } };
+    const page = await open(agent, { runs: [], harnesses: [{ id: "pi", available: true, default_model: null }] });
+    await page.set(page.input(), "Check this invoice.");
+    expect(page.button(/^Run$/)?.disabled).toBe(false);
+    expect(page.host.querySelector('a[href="#/settings/keys"]')).toBeNull();
+  });
+
   it("shows a run's cost so far and how many charges have no price, and an unknown cost with nothing known not at all", async () => {
     const runs = runsOf("invoice-checker");
     const unknown = { usd: null, basis: "estimate", charge_state: null, cap_usd: null };

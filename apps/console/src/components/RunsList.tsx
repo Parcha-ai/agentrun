@@ -7,6 +7,8 @@ import type { RunsFilter } from "@/lib/client";
 import { cost, when } from "@/lib/format";
 import type { Problem } from "@/lib/problem";
 import type { Run, RunStatus } from "@/lib/v2";
+import { CodingAgentAction } from "@/components/CodingAgentAction";
+import { queryRunsPrompt } from "@/lib/codingAgentPrompts";
 
 /** The statuses GET /v2/runs filters by, in the order a run moves through them. */
 export const RUN_STATUSES: readonly RunStatus[] = ["queued", "working", "paused", "input_required", "completed", "failed", "cancelled"];
@@ -15,12 +17,13 @@ const STATUS_LABEL: Record<RunStatus, string> = { queued: "Queued", working: "Wo
 /** Every run on the server, newest first, as the hosted console's history table, with the status column it leaves out
  *  at desktop width. A row opens its run. With `onFilter`, a state filter and the archived runs, as the address keeps them.
  *  A read that failed says so in words, with Try again (`onRetry`); a failed Load more keeps the rows above it. */
-export function RunsList({ runs, agentName, onOpen, error, onRetry, onMore, loadingMore, filter = {}, onFilter }: { runs: Run[] | null; agentName: (id: string) => string; onOpen: (id: string) => void; error?: Problem | null; onRetry?: () => void; onMore?: () => void; loadingMore?: boolean; filter?: RunsFilter; onFilter?: (filter: RunsFilter) => void }) {
+export function RunsList({ runs, agentName, onOpen, error, onRetry, onMore, loadingMore, filter = {}, onFilter, agentId }: { runs: Run[] | null; agentName: (id: string) => string; onOpen: (id: string) => void; error?: Problem | null; onRetry?: () => void; onMore?: () => void; loadingMore?: boolean; filter?: RunsFilter; onFilter?: (filter: RunsFilter) => void; agentId?: string }) {
   const archived = !!filter.archived;
   return (
     <div className="p-5 md:p-8">
       <div className="mb-5 flex flex-wrap items-center gap-3">
         <h1 className="mr-auto font-mono text-2xl font-semibold">{archived ? "Archived runs" : "Runs"}</h1>
+        <CodingAgentAction label="Query" prompt={`${queryRunsPrompt(location.origin, agentId)}\nCurrent view: ${filter.status ? `status ${filter.status}` : "all statuses"}; ${archived ? "archived runs" : "non-archived runs"}.`} playgroundHref="#/playground" />
         {onFilter && (
           <>
             <select aria-label="Runs in one state" value={filter.status ?? ""} onChange={(e) => onFilter({ ...filter, status: (e.target.value || undefined) as RunStatus | undefined })}

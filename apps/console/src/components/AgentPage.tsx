@@ -6,6 +6,8 @@ import { LatestRun } from "@/components/LatestRun";
 import type { UploadLimits } from "@/components/FilePicker";
 import { NotHere, ProblemCard } from "@/components/Problem";
 import { RunBar } from "@/components/RunBar";
+import { CodingAgentAction } from "@/components/CodingAgentAction";
+import { editAgentPrompt, runAgentPrompt } from "@/lib/codingAgentPrompts";
 import { AgentSkeleton, ListSkeleton } from "@/components/Skeleton";
 import { StatusBadge } from "@/components/StatusBadge";
 import { LearningTab } from "@/components/Learning";
@@ -88,6 +90,10 @@ export function AgentPage({ v2, agentId, defaultModel, modelSource, routePrefix,
   // A harness the server can't run: why, where its Run would fail (capabilities' harnesses[].reason).
   const off = workflow ? undefined : harnesses?.find((h) => h.id === (d.harness ?? "pi") && h.available === false);
   const offText = off ? `${off.id} doesn't run on this server${off.reason ? `: ${off.reason}` : "."}` : undefined;
+  // A known absent default blocks only execution that depends on it. An explicit model can still run, and older
+  // servers that do not report a harness default leave readiness to the run endpoint.
+  const needsModel = !workflow && !off && !d.model && !fallback && harnesses?.some((h) => h.id === (d.harness ?? "pi") && h.default_model === null);
+  const runBlocked = offText ?? (needsModel ? "Set up a model in Settings before running this agent." : undefined);
   const facts: [string, string, string?][] = [
     ...(workflow ? [] : [["Harness", d.harness ?? "pi"], ["Model", model.text, model.title], ["Thinking", d.thinking ?? "default"], ["Runs", placeLabel(placeOf(d.place))]] as [string, string, string?][]),
     ["Revision", `rev ${d.version} of ${agent.revisions}`],
@@ -110,6 +116,8 @@ export function AgentPage({ v2, agentId, defaultModel, modelSource, routePrefix,
           <Chip>{agent.kind}</Chip>
           {agent.archived_at && <Chip tone="muted">Archived</Chip>}
           <span className="flex-1" />
+          <CodingAgentAction label="Edit with your agent" prompt={editAgentPrompt(location.origin, agent.agent_id)} />
+          {!agent.archived_at && <CodingAgentAction label="Run with your agent" prompt={runAgentPrompt(location.origin, agent.agent_id)} playgroundHref={`#/playground?agent=${encodeURIComponent(agent.agent_id)}`} />}
           <Button size="sm" onClick={() => go(agentHash(agent.agent_id, "edit"))}><Pencil aria-hidden /> Edit</Button>
         </div>
         {d.description && <p className="mt-2 max-w-3xl text-[14px] text-muted-foreground">{d.description}</p>}
@@ -120,7 +128,8 @@ export function AgentPage({ v2, agentId, defaultModel, modelSource, routePrefix,
         </dl>
         {offText && <p className="mt-3 font-mono text-[12px] text-warning-text" role="status" aria-label="Harness not available">{offText}</p>}
       </header>
-      {!agent.archived_at && <RunBar agent={agent} efforts={efforts} v2={v2} go={go} blocked={offText} limits={limits} />}
+      {!agent.archived_at && needsModel && <p className="px-5 pt-4 text-[13px] text-muted-foreground md:px-8" role="status">Running this agent needs a configured model. <a href="#/settings/keys" className="text-primary underline-offset-4 hover:underline">Set up models in Settings</a></p>}
+      {!agent.archived_at && <RunBar agent={agent} efforts={efforts} v2={v2} go={go} blocked={runBlocked} limits={limits} />}
       <div className="flex border-b px-5 md:px-8" role="tablist">
         {tabs.map((t) => (
           <button key={t.id} type="button" role="tab" aria-selected={at.id === t.id} onClick={() => go(agentHash(agent.agent_id, t.id))}

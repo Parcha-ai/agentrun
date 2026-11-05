@@ -11,80 +11,77 @@ const tools = toolOffers([{ name: "write", available: true, harnesses: ["pi"] },
 const base: StartHereProps = { harnesses, tools, onTry: async () => null };
 const html = (p: Partial<StartHereProps> = {}) => renderToStaticMarkup(createElement(StartHere, { ...base, ...p }));
 let root: ReturnType<typeof createRoot> | undefined;
-afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
+afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.innerHTML = ""; localStorage.clear(); });
+const mount = (p: Partial<StartHereProps> = {}) => {
+  const host = document.body.appendChild(document.createElement("div"));
+  root = createRoot(host);
+  act(() => root!.render(createElement(StartHere, { ...base, ...p })));
+  return host;
+};
+const button = (host: HTMLElement, text: string) => [...host.querySelectorAll("button")].find((b) => b.textContent?.trim() === text)!;
+const expand = (host: HTMLElement) => act(() => button(host, "Run an agent here").click());
 
-// Mission Control before the owner's first run: one click makes a template agent, runs it, and opens its run.
 describe("StartHere", () => {
-  it("offers the three templates, each with what it shows and Try it", () => {
-    const h = html();
-    for (const name of ["Hello, AgentRun", "Summarize a web page", "Plan a task"]) expect(h).toContain(name);
-    expect(h.match(/>Try it</g)).toHaveLength(3);
-    expect(h).toContain('href="#/agents/new"');
-    expect(h).toContain("Create your own");
+  it("starts with history import, without model setup or expanded execution controls", () => {
+    const h = html({ harnesses: [{ id: "pi", available: true, default_model: null }] });
+    expect(h).toContain("No model key needed");
+    expect(h).toContain("Import agents");
+    expect(h).toContain('aria-expanded="false"');
+    expect(h).not.toContain("Try it");
+    expect(h).not.toContain("Set up models");
   });
-  it("tries the template clicked, and says it's starting until the run opens", async () => {
+  it("offers runnable templates after choosing to run here, and starts only the one selected", async () => {
     const tried: string[] = [];
-    let open!: () => void;
-    const host = document.body.appendChild(document.createElement("div"));
-    root = createRoot(host);
-    act(() => root!.render(createElement(StartHere, { ...base, onTry: (t) => { tried.push(t.id); return new Promise((r) => { open = () => r(null); }); } })));
-    await act(async () => { host.querySelectorAll<HTMLButtonElement>("button")[1]!.click(); });
+    let finish!: () => void;
+    const host = mount({ onTry: (t) => { tried.push(t.id); return new Promise((r) => { finish = () => r(null); }); } });
+    expand(host);
+    for (const name of ["Hello, AgentRun", "Summarize a web page", "Plan a task"]) expect(host.textContent).toContain(name);
+    const tries = [...host.querySelectorAll("button")].filter((b) => b.textContent === "Try it");
+    expect(tries).toHaveLength(3);
+    await act(async () => tries[1]!.click());
     expect(tried).toEqual(["web"]);
     expect(host.textContent).toContain("Starting…");
-    expect([...host.querySelectorAll("button")].every((b) => b.disabled)).toBe(true);
-    await act(async () => { open(); });
+    expect(tries.every((b) => b.disabled)).toBe(true);
+    await act(async () => finish());
+    expect(tries.every((b) => !b.disabled)).toBe(true);
   });
-  it("says why a try failed, and lets it be tried again", async () => {
-    const host = document.body.appendChild(document.createElement("div"));
-    root = createRoot(host);
-    act(() => root!.render(createElement(StartHere, { ...base, onTry: async () => "agent_not_runnable: pi is not set up here" })));
-    await act(async () => { host.querySelector<HTMLButtonElement>("button")!.click(); });
-    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
-    expect(host.textContent).toContain("agent_not_runnable: pi is not set up here");
-    expect(host.querySelector<HTMLButtonElement>("button")!.disabled).toBe(false);
+  it("says why a try failed and lets it be tried again", async () => {
+    const host = mount({ onTry: async () => "agent_not_runnable: pi is not set up here" });
+    expand(host);
+    await act(async () => button(host, "Try it").click());
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain("agent_not_runnable");
+    expect(button(host, "Try it").disabled).toBe(false);
   });
-  it("offers a template only when its tools run here, and says why one doesn't", () => {
-    const h = html({ tools: toolOffers([{ name: "write", available: true, harnesses: ["pi"] }, { name: "web_fetch", available: false, missing: ["NETWORK"], harnesses: ["pi"] }]) });
-    expect(h.match(/>Try it</g)).toHaveLength(2);
-    expect(h).toContain("web_fetch can&#x27;t run on this server yet");
+  it("offers a template only when its tools run here", () => {
+    const host = mount({ tools: toolOffers([{ name: "write", available: true, harnesses: ["pi"] }, { name: "web_fetch", available: false, missing: ["NETWORK"], harnesses: ["pi"] }]) });
+    expand(host);
+    expect([...host.querySelectorAll("button")].filter((b) => b.textContent === "Try it")).toHaveLength(2);
+    expect(host.textContent).toContain("web_fetch can't run on this server yet");
   });
-  it("puts the model step first when no harness has a model to run, and no template", () => {
-    const h = html({ harnesses: [{ id: "pi", available: true, default_model: null }] });
-    expect(h).toContain("Add a model key");
-    // The server's own setup: a provider's key or a gateway where it runs (Settings holds tool keys, not models).
-    expect(h).toContain("ANTHROPIC_API_KEY");
-    expect(h).toContain("AGENT_MODEL_BASE_URL");
-    // A key alone names no model: the default model is AGENT_MODEL, for a provider's key and for a gateway alike.
-    expect(h.match(/AGENT_MODEL</g)).toHaveLength(2);
-    expect(h).not.toContain('href="#/settings/keys"');
-    expect(h).not.toContain(">Try it<");
-    expect(h).toContain("Then reload this page, and the templates here run in one click.");
+  it("takes execution setup to Settings only when the server can keep keys", () => {
+    const host = mount({ harnesses: [], keySettings: true });
+    expect(host.querySelector('a[href="#/settings/keys"]')).toBeNull();
+    expand(host);
+    expect(host.querySelector('a[href="#/settings/keys"]')?.textContent).toBe("Set up models in Settings");
+    expect(host.textContent).not.toContain("Try it");
   });
-  // QA: the step read "in its environment,AGENT_MODEL=provider/model-id": JSX drops a line break between text and the
-  // element after it, so the words ran together. The text as a person reads it has its spaces.
-  it("keeps the spaces in the step's setup text", () => {
-    const d = document.createElement("div");
-    d.innerHTML = html({ harnesses: [{ id: "pi", available: true, default_model: null }] });
-    expect(d.textContent).toContain("Start agentrun-serve with the model to run in its environment, AGENT_MODEL=provider/model-id, and that provider's key (ANTHROPIC_API_KEY, OPENAI_API_KEY or OPENROUTER_API_KEY). Or name a gateway: AGENT_MODEL_BASE_URL and AGENT_MODEL_API_KEY, with the gateway's model in AGENT_MODEL. Then reload this page");
-    expect(d.textContent).not.toMatch(/[,:][A-Za-z(]/);
+  it("explains server setup when Settings cannot save a model key", () => {
+    const host = mount({ harnesses: [], keySettings: false });
+    expand(host);
+    expect(host.textContent).toContain("Configure a model where this server runs");
+    expect(host.querySelector('a[href="#/settings/keys"]')).toBeNull();
   });
-  // QA: with the key card on screen above it (the server keeps keys), the step told the person to restart the server
-  // with AGENT_MODEL and reload. The card saves a key with no restart, so the step points at it instead.
-  it("points at the key card above when the server keeps keys, with no env advice and no reload", () => {
-    const h = html({ harnesses: [{ id: "pi", available: true, default_model: null }], keyCard: true });
-    expect(h).toContain("Add a model key");
-    expect(h).toContain("Add a model key in the card above, and the templates here run in one click.");
-    for (const gone of ["AGENT_MODEL", "ANTHROPIC_API_KEY", "agentrun-serve", "reload"]) expect(h).not.toContain(gone);
-    expect(h).not.toContain(">Try it<");
+  it("names imported history and supports an import action without asking for a key", () => {
+    const h = html({ imported: 6, importAction: createElement("button", null, "Import agents") });
+    expect(h).toContain("6 imported sessions");
+    expect(h).toContain('href="#/runs"');
+    expect(h).toContain(">Import agents<");
   });
-  it("leaves the templates alone when a harness has a model, key card or not", () => {
-    const h = html({ keyCard: true });
-    expect(h.match(/>Try it</g)).toHaveLength(3);
-    expect(h).not.toContain("card above");
-  });
-  it("names the imported history when there is some, with a way to browse it", () => {
-    expect(html({ imported: 6 })).toContain("6 imported sessions");
-    expect(html({ imported: 6 })).toContain('href="#/runs"');
-    expect(html()).not.toContain("imported");
+  it("remembers dismissing the introduction across visits", () => {
+    const host = mount();
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Dismiss introduction"]')!.click());
+    expect(host.textContent).toBe("");
+    act(() => root!.unmount()); root = undefined;
+    expect(mount().textContent).toBe("");
   });
 });

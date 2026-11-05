@@ -2,6 +2,8 @@ import { ArrowRight, Copy, Play } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { FilePicker, type UploadLimits, useAttachments } from "@/components/FilePicker";
 import { Button } from "@/components/ui/button";
+import { CodingAgentAction } from "@/components/CodingAgentAction";
+import { playgroundPrompt } from "@/lib/codingAgentPrompts";
 import type { Agent } from "@/lib/agentForm";
 import { ClientError } from "@/lib/client";
 import { curlFor, exampleInput, keeper, type StartBody, startBody, submitStart } from "@/lib/runStart";
@@ -146,9 +148,12 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
               </>
             )}
           </div>
-          <footer className="flex items-center justify-between gap-3 border-t px-5 py-3 md:px-6">
+          <footer className="flex flex-wrap items-center justify-between gap-3 border-t px-5 py-3 md:px-6">
             <span className="text-[12px] text-muted-foreground">Sends a real request to this server.</span>
+            <div className="ml-auto flex flex-wrap items-center gap-2">
+            <CodingAgentAction label="Use your agent" prompt={playgroundPrompt(origin, agentId, body)} disabled={!built.ok || !agentId || attachments.busy} />
             <Button variant="primary" size="lg" onClick={send} disabled={!built.ok || !onSend || sending || !agentId || attachments.busy} title={attachments.busy ? "Waiting for the files to be sent" : undefined}><Play aria-hidden /> {sending ? "Sending" : "Send request"}</Button>
+            </div>
           </footer>
         </section>
         <section className="flex min-h-0 flex-col">

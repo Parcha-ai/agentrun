@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { RefreshCw } from "lucide-react";
 import type { EditorCaps } from "@/components/AgentEditor";
 import { AgentPage } from "@/components/AgentPage";
 import { AgentEditPage, AgentsPage } from "@/components/AgentsPage";
@@ -6,11 +7,12 @@ import { KeysPage } from "@/components/KeysPage";
 import { ConnectionProvider, Unreached, useLink, useResumed } from "@/components/Connection";
 import { Settings, type SettingsPage } from "@/components/Settings";
 import { ToolsPage } from "@/components/ToolsPage";
-import { ModelKeyCard } from "@/components/ModelKeyCard";
 import { NoModelBanner } from "@/components/NoModelBanner";
 import { WebhookPage } from "@/components/WebhookPage";
 import { LiveRun } from "@/components/LiveRun";
 import { MissionControl } from "@/components/MissionControl";
+import { CodingAgentAction } from "@/components/CodingAgentAction";
+import { importAgentsPrompt, queryRunsPrompt } from "@/lib/codingAgentPrompts";
 import { NeedsYouStrip } from "@/components/NeedsYouStrip";
 import { StartHere } from "@/components/StartHere";
 import { missionFrom, type MissionView, rangeFrom, type StatsRange } from "@/lib/mission";
@@ -30,12 +32,12 @@ import { type Template, templateHarness, tryTemplate } from "@/lib/templates";
 import { toolChoices } from "@/lib/toolSettings";
 import type { Run, RunStatus } from "@/lib/v2";
 
-/** How often the console reads the capabilities again while no model is ready (NoModelBanner, ModelKeyCard). */
+/** How often the console reads capabilities again while no model is ready for execution. */
 const MODEL_CHECK_MS = 10_000;
 
 /** `agent`: an agent's page (at `tab`), or with `edit` its editor; null is a new agent's editor. `runsOf`, `status` and
  *  `archived` (for runs): the runs list's filters. `settings`: a settings page. */
-type Where = { section: Section; run?: string; agent?: string | null; edit?: boolean; tab?: string; notes?: string[]; runsOf?: string; archived?: boolean; status?: RunStatus; settings?: SettingsPage };
+type Where = { section: Section; playgroundAgent?: string; run?: string; agent?: string | null; edit?: boolean; tab?: string; notes?: string[]; runsOf?: string; archived?: boolean; status?: RunStatus; settings?: SettingsPage };
 /** The page an address opens. Exported for its test. */
 export function route(h: string = location.hash): Where {
   let m = h.match(/^#\/runs\/([^/?]+)$/);
@@ -47,7 +49,10 @@ export function route(h: string = location.hash): Where {
   m = h.match(/^#\/agents\/([^/?]+)(?:\/([a-z]+))?$/);
   if (m) return { section: "agents", agent: decodeURIComponent(m[1]), ...(m[2] === "edit" ? { edit: true } : m[2] ? { tab: m[2] } : {}) };
   if (h.startsWith("#/agents")) return { section: "agents", archived: /[?&]archived=true\b/.test(h) };
-  if (h.startsWith("#/playground")) return { section: "playground" };
+  if (h.startsWith("#/playground")) {
+    const agent = new URLSearchParams(h.split("?")[1] ?? "").get("agent");
+    return { section: "playground", ...(agent ? { playgroundAgent: agent } : {}) };
+  }
   // Settings, a page per address: #/settings/keys (and #/settings), #/settings/tools and #/settings/webhook; a later one is one
   // more name here.
   m = h.match(/^#\/settings(?:\/(keys|tools|webhook))?$/);
@@ -252,12 +257,6 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   // names were read (made here, then tried in the Playground) is named from the Playground's own list, read on opening it.
   const agentName = (id: string) => names[id] ?? agents?.find((a) => a.agent_id === id)?.definition.name ?? (namesRead ? id : "");
   const c = caps as unknown as { harnesses: EditorCaps["harnesses"]; tools?: unknown; features?: { thinking?: string[] }; models?: { default?: string; source?: string; route_prefix?: string | null } } | null;
-  // Whether a key saved in the first screen's card (ModelKeyCard) gives this server its model, so the start-here step can
-  // point at the card: no model ready for want of a key, no AGENT_MODEL named (its provider's key may not be among the
-  // card's), no gateway (a provider's key names no gateway model), and keys kept sealed (with no seal key every save is
-  // refused). Anything else keeps the step's own setup text.
-  const keyCardSavesModel = caps?.models?.ready === false && caps.models.needs !== "model" && !caps.models.default && caps.models.source !== "gateway"
-    && !!caps.features?.tool_keys?.routes && caps.features.tool_keys.at_rest === "sealed";
   // The server lists its tools as objects (name, available, missing).
   const editorCaps: EditorCaps = { harnesses: c?.harnesses ?? [], tools: toolOffers(c?.tools), thinking: c?.features?.thinking ?? [], defaultModel: c?.models?.default };
   // The capabilities with a choice of provider (providers/1): Settings → Tools, and an agent's tool settings.
@@ -285,6 +284,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   useEffect(() => {
     if (where.section !== "playground") return;
     setStartError(null);
+    setAgents(null);
     // Only the newest read lands: an earlier one answering late (the list before an import ended) never replaces it.
     const n = ++agentsAsked.current;
     allPages((cursor) => v2.listAgents({ cursor }), (p) => p.agents)
@@ -293,10 +293,15 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
         setAgents(a);
         // Keep the pick only while it is an active agent: one archived since is not offered, so not picked either.
         const active = a.filter((x) => !x.archived_at);
-        setPick((p) => (p && active.some((x) => x.agent_id === p) ? p : active[0]?.agent_id ?? null));
+        if (where.playgroundAgent && !active.some((x) => x.agent_id === where.playgroundAgent)) {
+          setPick(null);
+          setStartError("The selected agent is unavailable or archived. Choose another agent from Agents.");
+          return;
+        }
+        setPick((p) => where.playgroundAgent ?? (p && active.some((x) => x.agent_id === p) ? p : active[0]?.agent_id ?? null));
       })
       .catch((e) => { if (n === agentsAsked.current) { const p = problem(e, "the agents"); setStartError(`${p.why} ${p.next}${p.said ? ` (${p.said})` : ""}`); } });
-  }, [v2, where.section, retry, refreshed]);
+  }, [v2, where.section, where.playgroundAgent, retry, refreshed]);
   useEffect(() => {
     if (where.section !== "mission") return;
     let live = true;
@@ -306,8 +311,8 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
       .then(([s, r]) => {
         if (!live) return;
         setMission(missionFrom(s, r.runs));
-        // Whether anything of the owner's has run, decided by a read of every agent; once it has, it stays so. The range
-        // and agent filters show only once it has, so a filter never brings the start-here panel back.
+        // Whether anything of the owner's has run; once it has, it stays so. This controls only the optional
+        // introduction; imported history and analytics are always visible.
         if (!statsAgent) setOwnRun((held) => held || hasOwnRun(r.runs, s.analytics.by_source));
       })
       .catch((e) => { if (live) setMissionError(problem(e, "Mission Control")); })
@@ -316,6 +321,15 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   }, [v2, where.section, missionTry, statsRange, statsAgent, refreshed]);
   // Back after the server was away: Mission Control reads again what may have moved meanwhile, keeping the page.
   useResumed(() => setMissionTry((n) => n + 1));
+  // Coding-agent actions happen outside this tab. Read their results on return, and keep visible counts current.
+  useEffect(() => {
+    if (where.section !== "mission") return;
+    const refresh = () => { if (!document.hidden) setMissionTry((n) => n + 1); };
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    const timer = setInterval(refresh, 15_000);
+    return () => { window.removeEventListener("focus", refresh); document.removeEventListener("visibilitychange", refresh); clearInterval(timer); };
+  }, [where.section]);
   useEffect(() => {
     if (where.section !== "mission") return;
     let live = true;
@@ -385,7 +399,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   const learningCap = caps ? ((caps as unknown as { features?: { learning?: "on" | "off" } }).features?.learning ?? null) : undefined;
   editorCaps.learning = learningCap ?? undefined;
   // While no model is ready, the capabilities are read again every MODEL_CHECK_MS and whenever the page comes back into
-  // view, so the bar (and the first screen's card) goes by itself once a key is set where the server starts, or saved.
+  // view, so execution readiness updates once a key is set where the server starts, or saved.
   const modelsReady = caps?.models?.ready;
   useEffect(() => {
     if (modelsReady !== false) return;
@@ -407,7 +421,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
           {imported.state !== "running" && <button type="button" className="caps border px-2 py-1 text-[11px] hover:bg-accent" onClick={() => setImported(null)}>Dismiss</button>}
         </p>
       )}
-      {caps?.models?.ready === false && where.section !== "mission" && <NoModelBanner needs={caps.models.needs} source={caps.models.source} model={caps.models.default} settings={caps.features?.tool_keys?.routes === true && caps.features.tool_keys.at_rest === "sealed"} />}
+      {caps?.models?.ready === false && where.section === "playground" && <NoModelBanner needs={caps.models.needs} source={caps.models.source} model={caps.models.default} settings={caps.features?.tool_keys?.routes === true && caps.features.tool_keys.at_rest === "sealed"} />}
       {where.section === "playground" && startError
         ? <div className="m-8 border p-4" role="alert"><p className="font-mono text-[13px] text-destructive-text">The agents could not be read: {startError}</p><button type="button" className="caps mt-3 border px-3 py-2 text-[12px] hover:bg-accent" onClick={() => setRetry((n) => n + 1)}>Try again</button></div>
         : where.section === "settings"
@@ -417,15 +431,15 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
               : <KeysPage v2={v2} atRest={caps?.features?.tool_keys?.at_rest} onChange={readCaps} />}
           </Settings>
         : where.section === "mission"
-        // The first screen asks for a model key while the server says no agent that names no model runs here yet.
+        // Observation never requires a provider key or a run started on this server.
         ? <div className="flex h-full flex-col">
-            {caps?.models?.ready === false && <ModelKeyCard v2={v2} needs={caps.models.needs} model={caps.models.default} atRest={caps.features.tool_keys?.at_rest} onSaved={readCaps} />}
             <div className="min-h-0 flex-1">
               <MissionControl view={mission} error={missionError} onRetry={() => setMissionTry((n) => n + 1)}
+                actions={<><CodingAgentAction label="Import agents" prompt={importAgentsPrompt(location.origin)} /><CodingAgentAction label="Query" prompt={queryRunsPrompt(location.origin, statsAgent ?? undefined)} playgroundHref="#/playground" /><button type="button" aria-label="Refresh Mission Control" disabled={missionReading} className="inline-flex size-8 items-center justify-center border hover:bg-accent disabled:opacity-50" onClick={() => { setMissionTry((n) => n + 1); setNeedsTry((n) => n + 1); }}><RefreshCw className="size-4" aria-hidden /></button></>}
                 scope={{ range: statsRange, onRange: setStatsRange, agent: statsAgent, onAgent: setStatsAgent, refreshing: missionReading && mission !== null }}
                 needsYou={needs && <NeedsYouStrip asking={needs.asking} failed={needs.failed} live={needs.live} problem={needsProblem} agentName={agentName} onAnswer={answer} onRunAgain={runAgain} onStop={stop} />}
                 startHere={ownRun === false ? <StartHere harnesses={editorCaps.harnesses} tools={editorCaps.tools} onTry={tryIt} imported={importedRuns}
-                  keyCard={keyCardSavesModel} /> : undefined} />
+                  keySettings={caps?.features?.tool_keys?.routes === true && caps.features.tool_keys.at_rest === "sealed"} /> : undefined} />
             </div>
           </div>
         : where.section === "playground"
@@ -437,7 +451,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
           // A new decision agent's judge names the server's decision provider (agentForm's decisionProvider).
           : <AgentEditPage key={where.agent ?? "new"} v2={v2} choices={choices} caps={{ ...editorCaps, modelSource: c?.models?.source, routePrefix: c?.models?.route_prefix, decisionProvider: decisionProvider((caps as unknown as { workflows?: Parameters<typeof decisionProvider>[0] } | null)?.workflows), places: placesOf(caps) }} agentId={where.agent} go={go} />
         : where.run ? <LiveRun key={where.run} v2={v2} runId={where.run} caps={caps} agentName={agentName} />
-        : <RunsList runs={runs} agentName={agentName} error={error} onRetry={() => setRunsTry((n) => n + 1)} onOpen={(id) => go(`#/runs/${encodeURIComponent(id)}`)} loadingMore={more}
+        : <RunsList runs={runs} agentName={agentName} agentId={where.runsOf} error={error} onRetry={() => setRunsTry((n) => n + 1)} onOpen={(id) => go(`#/runs/${encodeURIComponent(id)}`)} loadingMore={more}
             filter={runsFilter} onFilter={(f) => go(runsHash({ runsOf: where.runsOf, ...f }))}
             onMore={cursor ? () => { const n = asked.current; setMore(true); (where.runsOf ? v2.listAgentRuns(where.runsOf, 50, cursor, runsFilter) : v2.listRuns(50, cursor, runsFilter)).then((r) => { if (n === asked.current) { setRuns((x) => appendRuns(x ?? [], r.runs)); setCursor(r.next_cursor); setError(null); } }).catch((e) => setError(problem(e, "more runs"))).finally(() => setMore(false)); } : undefined} />}
     </Shell>

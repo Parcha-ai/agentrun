@@ -18,18 +18,10 @@ export type AnalyticsScope = { range: StatsRange; onRange: (range: StatsRange) =
  *  failures, the runs at work), then how many agents and runs this server has, how many are working, waiting on a person
  *  or failed (each count a link to its list), what they cost (said with its basis, never $0 for a cost not known), runs
  *  per agent, and the latest runs with their agent, duration and cost, with the runs' tokens, time, success and tools
- *  over the range picked (MissionAnalytics). Before the owner's first run, `startHere` takes the place of all of it. */
-export function MissionControl({ view, error, onRetry, scope, needsYou, startHere }: { view: MissionView | null; error?: Problem | null; onRetry?: () => void; scope?: AnalyticsScope; needsYou?: React.ReactNode; startHere?: React.ReactNode }) {
+ *  over the range picked (MissionAnalytics). Before the owner's first run, `startHere` sits above the data; it never replaces it. */
+export function MissionControl({ view, error, onRetry, scope, needsYou, startHere, actions }: { view: MissionView | null; error?: Problem | null; onRetry?: () => void; scope?: AnalyticsScope; needsYou?: React.ReactNode; startHere?: React.ReactNode; actions?: React.ReactNode }) {
   if (error) return <ProblemCard problem={error} onRetry={onRetry} />;
   if (!view) return <MissionSkeleton />;
-  if (startHere) return (
-    <div className="h-full overflow-auto">
-      <div className="mx-auto max-w-[1600px] space-y-6 px-6 py-8">
-        <h1 className="text-2xl font-semibold">Mission Control</h1>
-        {startHere}
-      </div>
-    </div>
-  );
   const name = (id: string) => view.perAgent.find((a) => a.agentId === id)?.name ?? id;
   // Each count links to its list, filtered to it; the active runs have no one list of their own. The cost is said once,
   // in the range's analytics below, never again here.
@@ -46,7 +38,8 @@ export function MissionControl({ view, error, onRetry, scope, needsYou, startHer
   return (
     <div className="h-full overflow-auto">
       <div className="mx-auto max-w-[1600px] space-y-8 px-6 py-8">
-        <h1 className="text-2xl font-semibold">Mission Control</h1>
+        <header className="flex flex-wrap items-center justify-between gap-4"><h1 className="text-2xl font-semibold">Mission Control</h1>{actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}</header>
+        {startHere}
         {needsYou}
         <ul className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5">
           {tiles.map(([label, value, href, tone, note]) => {

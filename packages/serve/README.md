@@ -1196,7 +1196,9 @@ An agent or a run is archived, never deleted: `DELETE` stays `405`. These routes
 Open the link the server prints, once, in a browser. `/` is the console (`apps/console` in the repository), on the
 server's own origin, under a CSP that allows that origin only:
 
-- **Mission Control**: the store's counts and the latest runs.
+- **Mission Control**: the store's counts, imported history, analytics and the latest runs, available before the first
+  server-run agent and without a model-provider key. Its introduction is dismissible. Import agents and Query use
+  the coding-agent selector; the page refreshes when you return from your coding agent.
 - **Agents**: each agent with its kind and harness, archived ones behind **Archived**. **New agent** and an agent's page:
   a name, a description, a prompt (with its model, thinking level and tools) or a workflow, sent to `POST /v2/agents`;
   an edit is `PUT /v2/agents/{id}/definition` with `If-Match` set to the revision it started from (412 when another came
@@ -1245,6 +1247,14 @@ token still works for scripts meanwhile). Serve it over https where you can: on 
 cookie to every server on the same host name, whatever its port, so another app on that host could read it.
 
 ## Importing your sessions
+
+**Import agents** in Mission Control or Agents gives your coding agent a prompt for the import. The selector remembers
+your app or CLI choice across the console; CLI choices copy the prompt, supported apps open it, and Copy prompt is
+always available. It downloads no file. The prompt verifies the source machine and this server's data directory, then
+uses a dry run to review the scope. A remote console cannot read your laptop's sessions: there is no remote import
+endpoint, and importing into a different local store does not populate that remote console. Imports remain history,
+not live connections. Build, edit, run, query and playground handoffs use the same selector and target this server's
+skill, MCP endpoint and API.
 
 `agentrun-serve import --data DIR` reads the Claude Code, Codex and pi sessions in your own home (`~/.claude/projects`,
 `~/.codex/sessions`, `~/.pi/agent/sessions`) into the data directory, once. Each project folder becomes an agent, with its
