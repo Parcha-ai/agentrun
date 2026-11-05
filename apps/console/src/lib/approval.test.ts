@@ -43,7 +43,7 @@ describe("a pending approval", () => {
 describe("an answer the server refused, in words", () => {
   it("says a conflicting answer, a stop's withdrawal and a cancel each plainly", () => {
     expect(approvalRefusal(refused(409, "not_continuable", { reason: "already_answered", decision: "allow" }))).toBe("This call was already allowed, in another tab or by another answer. The run shows what happened next.");
-    expect(approvalRefusal(refused(409, "not_continuable", { reason: "already_answered", decision: "deny" }))).toBe("This call was already declined, by a message or another answer. The run shows what happened next.");
+    expect(approvalRefusal(refused(409, "not_continuable", { reason: "already_answered", decision: "deny" }))).toBe("This call was already declined. The run shows what happened next.");
     expect(approvalRefusal(refused(409, "not_continuable", { reason: "already_answered", decision: "withdrawn" }))).toBe("The run was stopped while this call waited, so the call was withdrawn. It never ran.");
     expect(approvalRefusal(refused(409, "not_continuable", { reason: "already_answered", decision: "canceled" }))).toBe("The run was cancelled while this call waited. The call never ran.");
   });

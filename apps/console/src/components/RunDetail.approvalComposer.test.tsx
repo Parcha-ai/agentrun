@@ -32,6 +32,12 @@ describe("RunDetail's message box while an approval waits", () => {
     expect(text(html)).toContain("Sending it declines the waiting call");
   });
 
+  it("only while an approval waits: a run waiting on a question keeps the question's words", () => {
+    const html = renderToStaticMarkup(createElement(RunDetail, props({ run: { ...run, pending: { kind: "question", question: "Which page?", asked_at: run.created_at } } })));
+    expect(text(html)).toContain("Answer the question · Answers what the agent asked; the run goes back to work.");
+    expect(text(html)).not.toContain("declines");
+  });
+
   it("its send goes as a message, and the card goes once the run is read again", async () => {
     const sent: string[] = [];
     const host = document.body.appendChild(document.createElement("div"));
