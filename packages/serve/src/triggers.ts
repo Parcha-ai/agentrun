@@ -40,6 +40,7 @@ const WRITE_RETRY_MS = 5_000;
 const MAX_TIMEOUT_MS = 2 ** 31 - 1;
 const MAX_NAME = 200;
 const ENDED = new Set(["completed", "failed", "cancelled"]);
+const LOST_AT_SETUP = "The server stopped while setting up the run.";
 
 type Schedule = { kind: "schedule"; cron: string; timezone: string } | { kind: "schedule"; at: string } | { kind: "schedule"; every_s: number; start_at: string };
 type Target = { kind: "start_run"; agent_id: string; input: Json; max_cost_usd: number; effort?: string };
@@ -72,8 +73,9 @@ export type TriggerDeps = {
   start(target: Target, input: Json, origin: RunTrigger): Promise<{ run_id: string }>;
   /** A run's status, or null when there is no such run. */
   statusOf(runId: string): Promise<string | null>;
-  /** The run the agent store started under origin `key`, if one: a firing left due by a server that went down mid-start. */
-  runOf(key: string): Promise<string | null>;
+  /** The run the agent store started under origin `key`, if one: a firing left due by a server that went down mid-start.
+   *  `setup_lost`: that server went down before it set the run up, so the run never started (files.ts SETUP_LOST). */
+  runOf(key: string): Promise<{ run_id: string; setup_lost: boolean } | null>;
   say(fields: Record<string, string | number>): void;
   clock?: TriggerClock;
 };
@@ -332,10 +334,13 @@ export class Triggers {
       const found = this.find(triggerId, key);
       if (!found || found.firing.status !== "due") return;
       // Its run already started (the store has its key) is its run, whatever runs now.
-      const prior = await this.deps.runOf(key).then((runId) => ({ runId }), (error: Error) => ({ retry: error }));
+      const prior = await this.deps.runOf(key).then((run) => ({ run }), (error: Error) => ({ retry: error }));
       if (this.closed) return;
       if ("retry" in prior) return this.retry(triggerId, key, prior.retry);
-      if (prior.runId) return this.settle(triggerId, key, { status: "started", run_id: prior.runId });
+      // A key stays bound to its run: one lost at setup is this firing's failure, never fired again. The next firing
+      // goes ahead, and a run now is the person's retry.
+      if (prior.run?.setup_lost) return this.settle(triggerId, key, { status: "failed", run_id: prior.run.run_id, reason: LOST_AT_SETUP, error: { code: "run_failed", message: LOST_AT_SETUP } });
+      if (prior.run) return this.settle(triggerId, key, { status: "started", run_id: prior.run.run_id });
       const busy = await this.busy(found.trigger, found.firing).catch((error: Error) => ({ retry: error }));
       if (this.closed) return;
       if (typeof busy === "string") return this.settle(triggerId, key, { status: "skipped", reason: busy });

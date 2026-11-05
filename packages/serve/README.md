@@ -943,7 +943,9 @@ trigger and the firing.
 
 A firing starts its run once. Its key comes from the trigger and its nominal time, it is recorded `due` in
 `DIR/triggers.json` (written whole and synced) before its run starts, and the run is started under that key, so a firing
-a restart drives again finds its run. While the trigger's last run is active (working, or waiting on a person), a firing
+a restart drives again finds its run. A firing's key stays bound to that run: when the server stopped while setting the
+run up, the firing reads `failed` ("The server stopped while setting up the run.") with that run's id, it never fires
+again, the next firing goes ahead, and `POST /v2/triggers/{id}/fire` is how a person tries it again. While the trigger's last run is active (working, or waiting on a person), a firing
 is `skipped`, with why; a full server (`429`) keeps it due and tries again. Times missed while the server was down are
 one `missed` firing with their count, and the schedule goes on from now. `PATCH /v2/triggers/{id}` changes it, and
 `{enabled: false}` pauses it: the time it was off is skipped, not caught up. `POST /v2/triggers/{id}/fire` runs it now,

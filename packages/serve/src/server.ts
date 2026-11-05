@@ -21,7 +21,7 @@ import { FAUX_MONID_ENV } from "./monid.js";
 import { FAUX_EXA_ENV } from "./exa-keyless.js";
 import { FAUX_BROWSER_ENV, NODE_TOOLS, toolingOf, toolsView } from "./tools.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
-import { DATA_ENV, DOOR_TOKEN_FILE, HOME_HOST_OWNED, HOMES_DIR, homeOf, readJson, RUN_META, syncDir, TOKEN_FILE, writeDurable } from "./files.js";
+import { DATA_ENV, DOOR_TOKEN_FILE, HOME_HOST_OWNED, HOMES_DIR, homeOf, readJson, RUN_META, SETUP_LOST, syncDir, TOKEN_FILE, writeDurable } from "./files.js";
 import { checkedPath, decodedPath, homePath, hostOwnedOf, hostOwnedRefusal, type OwnedReadAt, ownedByIdentity } from "./home-path.js";
 import { chooseModel, EFFORTS, FAUX_ENV, FAUX_UPSTREAM_ENV, MODEL_NODES, type ModelNeeds, modelSource, THINKING_LEVELS, withoutFaux } from "./model.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, type HarnessCapability, harnessOffers } from "./harness.js";
@@ -767,7 +767,12 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       return { run_id: run.id };
     },
     async runOf(key) {
-      return (await agents.request(() => agents.store.runOfOrigin(key)))?.runId ?? null;
+      const started = await agents.request(() => agents.store.runOfOrigin(key));
+      if (!started) return null;
+      // Not set up (no serve.json) while the store has it running: its server went down first, and this start's recovery
+      // fails it so (runs.ts); or failed so already.
+      const run = await runs.get(started.runId);
+      return { run_id: started.runId, setup_lost: run?.notSetUp === true || run?.error?.details?.reason === SETUP_LOST };
     },
     async statusOf(runId) {
       const row = await agents.request(() => agents.store.readRun(runId));
