@@ -947,3 +947,31 @@ test("a capped pi run whose process is killed mid-request, when the held worst c
   assert.match(run.pending.said, /^Not sent: the run has spent \$1\.6\d* of its \$1\.70 cap, and its next \S+ request needs at least \$0\.11\. Raise the cap to at least \$1\.7\d to run it\.$/);
   assert.equal(existsSync(signal), false, "the request is not sent again");
 });
+
+test("/usage's total counts every priced dollar of a run whose cost is unknown: never below its own lines; the run says what it cost so far", { timeout: 120_000 }, async (t) => {
+  const log = join(await scratch(t), "monid-calls.jsonl");
+  withEnv(t, { MONID_API_KEY: MONID_KEY, AGENTRUN_TEST_FAUX_MONID_CALLS: log });
+  const { api, data } = await serve(t, { faux: new URL("./fixtures/faux-priced.mjs", import.meta.url).pathname, fauxMonid: new URL("./fixtures/faux-monid.mjs", import.meta.url).pathname });
+  assert.equal((await api("POST", "/agents", agent("slow", { tools: ["monid.run"] }))).status, 201);
+  const { body } = await api("POST", "/agents/slow/runs", { input: { content: "Run monid's /slow." } });
+  for (let i = 0; !(existsSync(log) && readFileSync(log, "utf8").includes('"path":"/v1/run"')); i++) {
+    assert.ok(i < 400, "the monid call is sent");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  // The run's process dies mid-call: what the call charged no one knows, so the run's cost is unknown; its model
+  // requests are priced.
+  process.kill(JSON.parse(readFileSync(join(data, "runs", body.run_id, "run.json"), "utf8")).holder.pid, "SIGKILL");
+  await follow(api, body.run_id, ["completed"], { deadlineMs: 90_000 });
+  const { tokens } = metersIn(join(data, "runs", body.run_id, "store", "run.sqlite"));
+  assert.ok(tokens > 0, `the model requests are priced: ${tokens}`);
+  // As the API shows dollars: to a millionth.
+  const known = Math.round(tokens * 1e6) / 1e6;
+  const cost = (await api("GET", `/runs/${body.run_id}`)).body.cost;
+  assert.deepEqual([cost.usd, cost.so_far_usd, cost.unpriced], [null, known, 1], JSON.stringify(cost));
+  for (const group of ["meter", "agent", "day"]) {
+    const usage = (await api("GET", `/usage?group_by=${group}`)).body;
+    // Every dollar known, the unknown call counted unpriced: a lower bound, which unpriced_runs says, and never below a line.
+    assert.deepEqual([usage.total_usd, usage.unpriced_runs], [known, 1], `${group}: ${JSON.stringify(usage)}`);
+    for (const line of usage.lines) assert.ok(usage.total_usd >= line.usd, `${group}: the total ${usage.total_usd} is below its line ${JSON.stringify(line)}`);
+  }
+});
