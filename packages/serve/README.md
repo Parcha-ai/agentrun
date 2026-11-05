@@ -59,7 +59,7 @@ An edit is a new revision: `PUT $AGENTRUN_BASE_URL/agents/calc/definition` with
 | `--port N` | the first free port from `7340` | The port. `0` is any free port. |
 | `--open` | off | Open the console in this machine's browser once the server listens; not in CI, nor on Linux with no display. |
 | `--faux MODULE` | none | Answer every model request from the module's default export (below). |
-| `--allow-host NAME` | none | Another `Host` name to accept. Repeat it. |
+| `--allow-host NAME` | none | Another `Host` name to accept on a loopback address, on any port. Repeat it. |
 | `--max-runs N` | `AGENTRUN_MAX_RUNS`, else as many pi runs as fit | The most runs at once, beside the memory each run's harness reserves ([capacity](#capacity-and-health)). Over either, a new run is `429 rate_limited`. |
 | `--documents DIR` | `AGENTRUN_SERVE_DOCUMENTS` | A read-only directory of documents a workflow's `pdf_pages` calls read by file name, confined to it. |
 | `--allow-code-nodes` | off (`AGENTRUN_SERVE_CODE_NODES=1` turns it on) | Run workflows' `code` nodes. They run in the run's process through the DSL's `new Function` transform, which is no sandbox, so only turn it on for workflows you wrote. Off, a workflow with a code node saves with a `not_set_up_here` warning and its runs are `409 agent_not_runnable` with `details.code: true`. A call `via: "shell"` or `"executor"` is refused either way. |
@@ -406,6 +406,15 @@ input as it goes. Each call is one short command in the run's box, on the same p
   stderr go together to `work/background/<id>/output.log`, beside `command`, `started`, `pid` (its process group) and,
   once it ends, `exit` (its code; 128 + n for signal n). The run's files show them (`GET /v2/runs/{id}/files`), so the
   console and the API show each log, during the run and after it.
+- Those files are for people to read: the run's own file tools can write anything in `work/`, so no call trusts one.
+  The group a signal goes to, the exit code, the start time, the command and the run's-end mark are kept in the box's
+  own directory (its `TMPDIR`, else `/tmp`), out of `work/`; a copy in `work/` is written in that directory and moved
+  over its name from inside `work/background/<id>`, entered and checked by its real path, so a link planted at the name
+  or at the directory is never followed (a failed check skips the copy). `output.log` is opened first and then checked as opened
+  (through `/proc`: the file reached is `work/background/<id>/output.log` itself, by its real path, and a regular file),
+  and every read is of that open file, so a link swapped in after the check is never read. A link planted at it is
+  refused, saying so; so is any log in a box with no `/proc` to check it by. A directory made in `work/background/` that this box
+  did not start reads as gone, and is never signalled.
 - A process runs until no live process of its group is left: a child the command starts with `&` (a server, its
   output sent elsewhere) keeps it running, counted against the cap, signalled with it and ended at the run's end; its
   exit code is the shell's.
@@ -482,10 +491,11 @@ since nothing binds `work/` there):
   what only it holds stays.
 - The sandbox is Daytona's default snapshot, made as its user, with `sudo -n` making `/run/agentrun/run/work`.
 
-### A run in the VM box
+### A run in a Modal sandbox
 
-With the VM box listed in `AGENTRUN_BOXES` (its id is under [Boxes](#boxes)), its token set and its SDK installed, a run
-whose place is the VM box gets one VM sandbox, made on its first `read`, `write`, `edit` or `bash` call. It works like a
+With `modal` listed in `AGENTRUN_BOXES`, its token set and its SDK installed, a run whose place is
+`{"mode": "sandbox", "box": "modal"}` gets one Modal sandbox, made on its first `read`, `write`, `edit` or `bash` call. It
+is Modal's default sandbox runtime (gVisor), not a virtual machine: the server does not ask Modal for its VM runtime. It works like a
 [Daytona box](#a-run-in-a-daytona-box): the same tools, path rules, environment and labels, and its `read`, `write` and
 `edit` run in the sandbox too. What differs:
 
@@ -503,7 +513,7 @@ whose place is the VM box gets one VM sandbox, made on its first `read`, `write`
   show the box's `network` as `none`, with `network_reason`, unless the setting is `none`.
 - A sandbox that is gone (it ended, or its lifetime ran out) is made again on the run's next tool call and seeded
   with the run's `work/`. The call that met the gone box fails, saying so.
-- Each VM box reserves 2 CPUs and 4 GiB of memory by default, which the provider bills for while the box lives:
+- Each Modal sandbox reserves 2 CPUs and 4 GiB of memory by default, which the provider bills for while the box lives:
   the Docker box's defaults, asked of the provider as the sandbox's CPU and memory. `AGENTRUN_BOX_CPUS` and
   `AGENTRUN_BOX_MEMORY` change both boxes alike (such as `AGENTRUN_BOX_CPUS=1 AGENTRUN_BOX_MEMORY=1g`). The provider has
   no process limit, so `AGENTRUN_BOX_PIDS` does not apply. Its lifetime is 24 hours, as every box's is.
@@ -552,8 +562,8 @@ inside the image itself (bwrap, on Linux) comes in a later release.
 
 ### Boxes
 
-A box is a machine apart from this one where a run's tools run. Runs execute in `docker` and `daytona` boxes and in the
-VM box ([place](#place)); the others are set up and probed, and say runs in them are not available yet. `AGENTRUN_BOXES` lists the boxes to set up, as a comma list of the ids below
+A box is a machine apart from this one where a run's tools run. Runs execute in `docker`, `daytona` and `modal` boxes
+([place](#place)); the others are set up and probed, and say runs in them are not available yet. `AGENTRUN_BOXES` lists the boxes to set up, as a comma list of the ids below
 (`AGENTRUN_BOXES=docker,daytona`). The server never probes a box the list does not name, and a name that is no box
 refuses the start. At start the server probes each listed box once. The probes run at once, each within 5 s. Then one
 log line says what the server found:
@@ -586,7 +596,7 @@ provider's answer.
   The probe makes one authenticated read, of a box that does not exist. If Daytona refuses the key, the box is unavailable.
 - `modal`: needs `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` and the SDK, which the host installs (`npm install modal`).
   Its sandboxes live in the app that `AGENTRUN_BOX_APP` names (default `agentrun`). The probe checks that the SDK loads
-  and the token is set. It asks nothing of the provider. Runs execute in it: [a run in the VM box](#a-run-in-the-vm-box).
+  and the token is set. It asks nothing of the provider. Runs execute in it: [a run in a Modal sandbox](#a-run-in-a-modal-sandbox).
 - `bwrap` is not in this release yet.
 
 The boxes come from `@parcha/pi-transport`, an optional peer of this package; install it beside the server to use any.
@@ -2152,8 +2162,11 @@ carries no cost at all, as from a provider that does not price the model. The te
   in the run's `work/`. An agent's saved sign-in stays at the vendor; this server keeps a sealed pointer to it, which a
   run's process gets over its pipe and its tools and model never see. Anyone holding the vendor's key can open that
   context or profile there.
-- It binds 127.0.0.1 by default, and there refuses a request whose `Host` is not a loopback name (DNS rebinding). On
-  another address (`--listen`, the container's `0.0.0.0`) it serves every `Host` name, and the token is its only lock.
+- It binds 127.0.0.1 by default, and there refuses a request whose `Host` names something other than this machine
+  (DNS rebinding): `localhost`, `127.0.0.1`, `[::1]`, the `AGENTRUN_PUBLIC_URL` name and each `--allow-host` name are
+  served, on any port, so a tunnel (`ssh -L 8080:localhost:7340`) or a proxy in front works; any other name is `403`, a
+  page in a browser and a JSON error for a script, each saying which names work. On another address (`--listen`, the
+  container's `0.0.0.0`) it serves every `Host` name, and the token is its only lock.
   It sends no CORS headers, so a page on another origin cannot read an answer.
 - Every route but `GET /capabilities` needs `Authorization: Bearer <the token>`, compared in constant time, or the
   browser's cookie under the rules of [the console](#the-console). The console's own files (its HTML, scripts, styles
