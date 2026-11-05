@@ -416,12 +416,12 @@ test("settings: an http or https URL with no user or password, and nothing else;
   const refused = await bare.api("PUT", "/settings/webhook", { url: "https://example.com/hook" });
   assert.equal(refused.status, 409);
   assert.ok(JSON.stringify(refused.body).includes("no_sealing_key"), JSON.stringify(refused.body));
-  assert.deepEqual((await bare.api("GET", "/capabilities")).body.features.webhooks, { routes: true, events: ["run.needs_input", "run.ended"], signing: "standard-webhooks/v1", at_rest: "unavailable" });
+  assert.deepEqual((await bare.api("GET", "/capabilities")).body.features.webhooks, { routes: true, events: ["run.needs_input", "run.ended", "trigger.failed"], signing: "standard-webhooks/v1", at_rest: "unavailable" });
 
   withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
   const hook = await receiver(t);
   const { api } = await serve(t);
-  assert.deepEqual((await api("GET", "/capabilities")).body.features.webhooks, { routes: true, events: ["run.needs_input", "run.ended"], signing: "standard-webhooks/v1", at_rest: "sealed" });
+  assert.deepEqual((await api("GET", "/capabilities")).body.features.webhooks, { routes: true, events: ["run.needs_input", "run.ended", "trigger.failed"], signing: "standard-webhooks/v1", at_rest: "sealed" });
   const withUser = Object.assign(new URL("https://example.com/hook"), { username: "user", password: "pass" }).href;
   for (const [body, field] of [
     [{ url: "ftp://example.com/hook" }, "url"], [{ url: "file:///etc/passwd" }, "url"], [{ url: "not a url" }, "url"], [{ url: withUser }, "url"],

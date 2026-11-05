@@ -39,7 +39,7 @@ import { EnvironmentLine, environmentLine } from "./environment.js";
 import { effortGuidance } from "./effort-guidance.js";
 import { isObject } from "./validate.js";
 import { mirrorWrites } from "./workspace.js";
-import { runGate } from "./tool-gate.js";
+import { deniedText, runGate } from "./tool-gate.js";
 
 /** The workflow adapters this host gives every run: model nodes, and calls `via: "tool"` to the table's tools. Typed
  *  questions (`runJudge`) run too where the host sets a decision provider's key (decisions.ts). */
@@ -226,7 +226,8 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   const nodeTools = new Map<string, ToolBinding>();
   for (const name of workflowTools(workflowNodeList).nodes) nodeTools.set(name, await bind(name, true));
   // A model node's tools pass the gate too; one set to ask is refused there, as no node can wait for a person. A call
-  // node is the author's own step, which no gate asks about (runnable.ts refuses a run whose call node calls a denied tool).
+  // node is the author's own step, which no gate asks about: runnable.ts refuses a run whose call node calls a denied tool, and
+  // a tool set to deny since is refused as its call node runs (runEffect).
   const gatedTools = toolGate.extension([...nodeTools.values()].flatMap((binding) => binding.tools));
   registry.install(gatedTools);
   // A decision node's images are files of the run's work directory (pdf_pages draws them there).
@@ -254,6 +255,9 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     const at = { path: executionPath ?? null, item: item?.index ?? null, tool: node.tool!, label: node.label };
     log({ t: "effect.start", ...at, input, at: new Date().toISOString() });
     try {
+      // Its tool's permission now, the gate's one rule read as each call node runs (tool-gate.ts policy): a tool set to
+      // deny since the run started is refused in the gate's words, never run. Ask does not apply to the author's own step.
+      if (toolGate.policy(node.tool!) === "deny") throw new Error(deniedText(node.tool!));
       const durable = opened;
       const ledger = durable ? { call: `${node.label}@${executionPath ?? ""}${item ? `#${item.index}` : ""}`, record: rootRecordOf(durable.harness) } : undefined;
       const output = await effect(input, { signal, env, work: where.work, complete, ...(ledger ? { ledger } : {}) });
