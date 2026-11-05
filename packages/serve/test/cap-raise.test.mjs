@@ -588,3 +588,19 @@ test("a message sent while a raise's follow-up waits for the paused process to g
   const { rows } = await follow(api, runId, ENDED, { deadlineMs: 60_000 });
   assert.deepEqual([(await view(api, runId)).status, said(rows)], ["completed", ["Write one.md", CONTINUE("$1"), "And add a title."]]);
 });
+
+test("a message sent while a raised run's follow-up keeps failing is answered not_continuable once the run has failed, promptly, never a 503 at the wait's deadline", { timeout: 120_000 }, async (t) => {
+  const beforeSubmit = (_runId, content) => {
+    if (content.startsWith("The cap was raised")) throw new Error("the door is away");
+  };
+  const { api } = await serve(t, { faux: OUTPUT_PRICED, beforeSubmit });
+  const runId = await paused(api, "fails-then-message");
+  assert.equal((await raise(api, runId, { max_cost_usd: 1 })).status, 200);
+  // Sent while its follow-up is being tried (three tries: at once, then after 1 s and 3 s), so the message waits for it.
+  const at = Date.now();
+  const sent = await api("POST", `/runs/${runId}/messages`, { content: "Go on." });
+  const ms = Date.now() - at;
+  assert.deepEqual([sent.status, sent.body?.error?.code], [409, "not_continuable"], JSON.stringify(sent.body));
+  assert.ok(ms < 20_000, `answered once the run failed, in ${ms} ms, not at the wait's deadline`);
+  assert.equal((await view(api, runId)).status, "failed");
+});
