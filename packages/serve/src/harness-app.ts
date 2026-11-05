@@ -644,7 +644,7 @@ export function adapterRun(
       for (const [request, usage] of inSession(await writer.read()).booked) if (!written.has(request) || (unpriced.has(request) && !priced.has(request))) costed.push({ request, usage });
       await flush();
       // The calls that wait for a person's approval, read before any turn goes on.
-      await gate?.load(durable, context, coding);
+      await gate?.load(durable, context, coding, extra);
       // The park every gated call of the run's takes, built once: the host tools' here, and the MCP gateway's, which takes
       // the same object beside them (`{ gate, park }`). A call parked by its id or by its tool and arguments ends its turn.
       const park: Park = { commit: (change) => commit(change as never) as never, parked: (callId) => void (parked = { callId }), parkedBy: (match) => void (parked = match), turn: () => taking };

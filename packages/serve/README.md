@@ -1607,7 +1607,9 @@ Each run of an agent that learns starts from `main` as it is when the run is mad
   OPENROUTER_API_KEY alone, through OpenRouter, by OpenRouter's name for the run's model; claude-agent through the
   operator's own gateway at ANTHROPIC_BASE_URL, or any harness at an origin its requests could not follow, is offered
   none, which its pin names in `workflows_off`; opencode takes codex's route). A call a crash cut off is answered interrupted,
-  never run again.
+  never run again. The tool gate holds
+  `learned_workflow` like any tool: its settings key is `learned_workflow`, allowed by default (the agent's own graded
+  workflow, each node checked), and tool settings may set it to ask (the run parks until an owner answers) or deny.
 
 The server reads the commit with git plumbing, never the working tree. What it holds that is not a regular UTF-8 file of
 1 MiB or less, or a note out of shape, is not read, and the server's stderr names it. A learning fault never blocks a

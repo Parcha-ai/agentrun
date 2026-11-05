@@ -11,13 +11,13 @@ import { BROWSER_TOOL_NAMES } from "@parcha/pi-browser";
 import { wireName } from "../dist/catalog.js";
 import { REPLAY } from "../dist/host-tools.js";
 import * as gate from "../dist/tool-gate.js";
-import { LEGACY_NAMES, TABLE_TOOLS } from "../dist/tool-plane.js";
+import { LEGACY_NAMES, SERVE_OWN_TOOLS, TABLE_TOOLS } from "../dist/tool-plane.js";
 import { scratch } from "./support.mjs";
 
 const { deniedText, noApproverText, RunGate, waitingText } = gate;
 /** The mapping, where the module has one; none (the red), every name maps to nothing. */
 const keyOf = (harness, name, servers) => (typeof gate.settingsKeyOf === "function" ? gate.settingsKeyOf(harness, name, servers) : undefined);
-const isKey = (key) => typeof key === "string" && (TABLE_TOOLS.includes(key) || /^monid\.[a-z]+$/.test(key) || /^mcp:[a-z][a-z0-9-]*\/.+$/.test(key));
+const isKey = (key) => typeof key === "string" && (TABLE_TOOLS.includes(key) || SERVE_OWN_TOOLS.includes(key) || /^monid\.[a-z]+$/.test(key) || /^mcp:[a-z][a-z0-9-]*\/.+$/.test(key));
 const MONID = ["monid.discover", "monid.inspect", "monid.run"];
 /** A host tool's settings key: its own name, or for a legacy name the capability the tool plane folds it into. */
 const folded = (name) => LEGACY_NAMES[name] ?? name;

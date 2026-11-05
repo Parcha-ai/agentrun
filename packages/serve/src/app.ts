@@ -242,7 +242,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     const onOpen = async (durable: DurableRun) => {
       settleIn(rootRecordOf(durable.harness));
       marked.open(durable);
-      await toolGate.load(durable, BACKGROUND, coding.tools);
+      await toolGate.load(durable, BACKGROUND, coding.tools, learnedTool ? [learnedTool] : []);
       toolGate.start();
     };
     return { models, registry, ...hooks, ...(stops.length ? { wake } : {}), root: { agent: { model, thinkingLevel, instructions, tools } }, onOpen } as unknown as AppOptions;

@@ -394,11 +394,12 @@ test("on codex, learned_workflow set to ask parks the run; the owner's allow run
   const { runId } = await ran(api, data, "asked-flow", "codex", flowFiles("answer", answerFlow()), [], { extra: { tool_settings: { [LEARNED_WORKFLOW_TOOL]: { permission: "ask" } } }, ends: ["input_required", "completed", "failed"] });
   const view = (await api("GET", `/runs/${runId}`)).body;
   assert.deepEqual([view.status, view.pending?.kind, view.pending?.tool], ["input_required", "approval", LEARNED_WORKFLOW_TOOL], JSON.stringify(view));
-  assert.deepEqual(entries(data, runId, ["agentrun.request_started"]).filter((entry) => entry.request === LEARNED_WORKFLOW_TOOL), [], "nothing ran while it waits");
+  // The parked run's process holds its store: what ran is read once it ends (one request, after the allow).
   const answered = await call(server.port, { method: "POST", path: `/v2/runs/${runId}/approvals/${view.pending.id}`, headers: { "content-type": "application/json", cookie, origin }, body: { decision: "allow" } });
   assert.equal(answered.status, 204, answered.text);
   const { rows } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 90_000 });
   assert.equal((await api("GET", `/runs/${runId}`)).body.status, "completed");
-  assert.match(rows.filter((row) => row.kind === "user_message").at(-1)?.text ?? "", /They allowed it, and it ran\. Its result:\n\{\\?"answer\\?":42\}/);
+  const resume = rows.find((row) => row.kind === "user_message" && String(row.text).startsWith("[tool approval]"))?.text ?? "";
+  assert.match(resume, /This answers your learned_workflow call .*They allowed it, and it ran\. Its result:\n\{\\?"answer\\?":42\}/s, resume);
   assert.equal(entries(data, runId, ["agentrun.request_started"]).filter((entry) => entry.request === LEARNED_WORKFLOW_TOOL).length, 1, "its one node ran once");
 });
