@@ -198,6 +198,16 @@ test("the contract's operations are as vendored; this server's own are added and
     }
   };
   for (const [name, schema] of Object.entries(components.schemas)) {
+    // A contract condition this server widens (SignIn's held_by for its own `unreadable` state) is marked on the branch.
+    if (schema.else?.["x-agentrun-serve"] !== undefined) {
+      // Only the widening it is marked for: held_by may name a run when the state is `unreadable`, the vendored branch
+      // whole beneath it, and nothing else.
+      const { "x-agentrun-serve": mark, ...branch } = schema.else;
+      assert.equal(mark, "signins/1", `${name}.else names its addition`);
+      assert.deepEqual(branch, { if: { properties: { state: { const: "unreadable" } } }, then: { properties: { held_by: { oneOf: [{ $ref: "#/components/schemas/Id" }, { type: "null" }] } } }, else: VENDORED.components.schemas[name].else }, `${name}.else widens held_by for unreadable alone`);
+      marked.push(`${name}.else`);
+      schema.else = VENDORED.components.schemas[name].else;
+    }
     // A contract enum this server widens (RunStatus's `paused`) is marked on the schema, each value it adds listed.
     if (schema["x-agentrun-serve"] !== undefined && Array.isArray(schema.enum)) {
       const original = VENDORED.components.schemas[name].enum;
