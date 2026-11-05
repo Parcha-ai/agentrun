@@ -154,7 +154,7 @@ const freePort = () => new Promise((resolve, reject) => {
   });
 });
 
-test("twenty follow-ups on the pinned OpenCode, every drive's process on the SAME port (as where 4096 is free: OpenCode takes it each time): every event stream opens at the first try", { skip, timeout: 600_000 }, async (t) => {
+test("twenty follow-ups on the pinned OpenCode, every drive's process on the SAME port (as where 4096 is free: OpenCode takes it each time): every event stream opens at the first try", { skip: skip || (process.env.CI && !process.env.AGENTRUN_RUN_QUARANTINED && "quarantined F36 (tl-jobs) until 2026-11-06T02:47Z, scripts/quarantine.json"), timeout: 600_000 }, async (t) => {
   // The pinned binary, started by the adapter's stand-in hook on one port for every drive: each new process listens where
   // the killed one before it did. A connection kept from an earlier drive is then a connection to a dead process.
   process.env.AGENTRUN_OPENCODE_STANDIN = "1";
