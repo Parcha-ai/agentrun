@@ -408,7 +408,7 @@ test("a box an earlier process of the run made with another network (none) is ma
   assert.ok(flags(made, "--env").includes(`HTTPS_PROXY=${PROXY}`), "with the proxy");
   assert.ok(flags(made, "--mount").some((mount) => mount.includes(`target=${EGRESS_MOUNT},readonly`)), "and its socket's directory");
   const net = flags(made, "--label").find((label) => label.startsWith("agentrun.net="));
-  assert.equal(net, `agentrun.net=${createHash("sha256").update(DEFAULT.join(",")).digest("hex").slice(0, 16)}`, "labelled with its list");
+  assert.equal(net, `agentrun.net=${createHash("sha256").update([...DEFAULT].sort().join(",")).digest("hex").slice(0, 16)}`, "labelled with its list, sorted");
 });
 
 test("a Docker whose data root this server can't see (the server in a container, given the host's docker socket): docker's network is none at start, with the reason, and a run's box gets no proxy; one it sees keeps the list", { skip: process.platform !== "linux" && "a box's network list needs a Docker daemon of this Linux machine's own", timeout: 120_000 }, async (t) => {
@@ -471,7 +471,7 @@ test("a box bound to a proxy directory the start's sweep took (its run's process
   await until(() => existsSync(work), "the run's work/");
   // The box an earlier process of the run made with this list, its proxy directory since swept (absent now).
   const id = "f".repeat(64);
-  const net = createHash("sha256").update(DEFAULT.join(",")).digest("hex").slice(0, 16);
+  const net = createHash("sha256").update([...DEFAULT].sort().join(",")).digest("hex").slice(0, 16);
   const labels = { "pi-transport.box": "1", "pi-transport.facts": JSON.stringify({ provider: "docker", workspace: "/run/agentrun/run/work", isolation: "container" }), "agentrun.run": runId, "agentrun.box": "run", "agentrun.net": net };
   await rm(egressDir(runId), { recursive: true, force: true });
   await mkdir(join(docker.state, "containers"), { recursive: true });
@@ -481,4 +481,28 @@ test("a box bound to a proxy directory the start's sweep took (its run's process
   assert.deepEqual(answers(data, runId).map((a) => [a.tool, a.error]), [["bash", false]]);
   assert.ok(docker.removed().includes(id), "the box bound to the swept directory is ended");
   assert.equal(docker.runs().length, 1, "and made again");
+});
+
+test("a box's network label does not depend on the list's order: one an earlier process made under the same hosts, listed in another order, is taken over, not made again", { skip: process.platform !== "linux" && "a box's network list needs a Docker daemon of this Linux machine's own", timeout: 120_000 }, async (t) => {
+  const docker = await fakeDocker(t, {}, { [BOX_ALLOW_ENV]: "pypi.org,files.pythonhosted.org" });
+  const { api, data } = await serve(t, { faux: PROBE, fauxEgress: FAKE_EGRESS });
+  const go = await holdFile(t);
+  const runId = await boxedRun(api, [{ wait: go.hold }, { tool: "bash", args: { command: "printf kept > out.txt" } }]);
+  const work = join(realpathSync(data), "runs", runId, "work");
+  await until(() => existsSync(work), "the run's work/");
+  // The box an earlier process of the run made with the same two hosts, the other way round: its label is theirs sorted.
+  const id = "a".repeat(64);
+  const net = createHash("sha256").update("files.pythonhosted.org,pypi.org").digest("hex").slice(0, 16);
+  const labels = { "pi-transport.box": "1", "pi-transport.facts": JSON.stringify({ provider: "docker", workspace: "/run/agentrun/run/work", isolation: "container" }), "agentrun.run": runId, "agentrun.box": "run", "agentrun.net": net };
+  // Its proxy directory is still there, as the earlier process left it: the box's bind holds it.
+  await mkdir(egressDir(runId), { recursive: true, mode: 0o700 });
+  await mkdir(join(docker.state, "containers"), { recursive: true });
+  await writeFile(join(docker.state, "containers", `${id}.json`), JSON.stringify({ Id: id, State: { Running: true, ExitCode: 0 }, Config: { Labels: labels }, HostConfig: { NetworkMode: "none", CapDrop: ["ALL"], SecurityOpt: ["no-new-privileges"] }, env: ["LANG=C.UTF-8", "HOME=/tmp", ...Object.entries(PROXY_ENV).map(([k, v]) => `${k}=${v}`)], mounts: [{ source: work, target: "/run/agentrun/run/work" }, { source: egressDir(runId), target: EGRESS_MOUNT }], workdir: "/run/agentrun/run/work" }));
+  await go.release();
+  await follow(api, runId, ["completed"], { deadlineMs: 60_000 });
+  assert.deepEqual(answers(data, runId).map((a) => [a.tool, a.error]), [["bash", false]]);
+  assert.equal(readFileSync(join(work, "out.txt"), "utf8"), "kept");
+  const execs = readFileSync(join(docker.state, "argv.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line)).filter((args) => args[0] === "exec");
+  assert.ok(execs.length > 0 && execs.every((args) => args.includes(id)), "its commands ran in the box the earlier process made");
+  assert.deepEqual(docker.runs(), [], "taken over: no box made again");
 });

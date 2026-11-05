@@ -443,6 +443,7 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
   const models = { ...modelSource(env), ready: needs === null, needs };
   // Both limits apply: the cap on the count, and the memory each run reserves (host.ts).
   const memory = hostMemory();
+  const tools = toolsView(env, toolSettings, noBoxReason(boxes), refused).map((tool) => (keyOf(tool.name) ? { ...tool, key: keyOf(tool.name) } : tool));
   return {
     backend: "local",
     contract: CONTRACT,
@@ -462,7 +463,7 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
     /** Every tool a revision may name (the closed table in tools.ts): available here, or the variables it is missing; a
      *  web tool, what it resolves to on each harness under this server's tool settings; `key`, the tool key that unlocks
      *  it (tool-keys.ts), when one does. */
-    tools: toolsView(env, toolSettings, noBoxReason(boxes), refused).map((tool) => (keyOf(tool.name) ? { ...tool, key: keyOf(tool.name) } : tool)),
+    tools,
     /** How this server holds its secrets (secrets.ts, the launcher), and what that does not cover. */
     secrets: {
       names: [...SECRET_NAMES],
@@ -491,7 +492,8 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
       usage: { basis: "estimate", meters: ["tokens", "tools", "learning"] },
       efforts: [...EFFORTS],
       thinking: [...THINKING_LEVELS],
-      browser: "none",
+      /** The browser a run's `browser` tool drives: Browserbase's when the tool is available here (tools[]), else none. */
+      browser: tools.some((tool) => tool.name === "browser" && tool.available) ? "browserbase" : "none",
       /** A tool setting's `permission` (definition.tool_settings, /v2/settings/tools): false until the tool gate lands,
        *  and a save that names one is refused. */
       tool_permissions: false,
@@ -701,7 +703,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   // one here (an organization whose tier takes none): from then on each is made with no network, and capabilities say why.
   let daytonaNoList: string | undefined;
   const daytonaNetwork = (offer: BoxOffer): BoxOffer =>
-    !offer.available ? offer : boxAllow === "none" ? { ...offer, network: "none" } : daytonaNoList ? { ...offer, network: "none", reason: noListReason(daytonaNoList) } : { ...offer, network: "allowlist" };
+    !offer.available ? offer : boxAllow === "none" ? { ...offer, network: "none" } : daytonaNoList ? { ...offer, network: "none", network_reason: noListReason(daytonaNoList) } : { ...offer, network: "allowlist" };
   const offersNow = (): BoxOffer[] => boxes.offers().map((offer) => (fauxBox && offer.id === "docker" ? dockerNetwork({ id: "docker", available: true, reason: "a faux box (tests)" }) : offer.id === "docker" ? dockerNetwork(image ? withImage(offer, image.state()) : offer) : offer.id === "daytona" ? daytonaNetwork(offer) : offer));
   const imageLog = (state: ImageState, more: Record<string, number> = {}) => log?.(logLine("box_image", { image: image!.image, state: state.state, ...more, ...("reason" in state ? { reason: state.reason } : {}) }));
   let boxOffers: BoxOffer[] = offersNow();
@@ -725,9 +727,10 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   // its own through the relay below, which holds the key for it (box-relay.ts).
   const remoteBoxes = boxes.provider("daytona");
   // Daytona could not keep a run's box's domain list: said in the log and in capabilities, which recompose now.
-  const onNoBoxList = (code: string) => {
+  // Daytona's own words go to the log, so a refusal for another cause is not taken silently for a tier that takes no list.
+  const onNoBoxList = (code: string, message: string) => {
     daytonaNoList = code;
-    log?.(logLine("box_network", { box: "daytona", network: "none", refused: code }));
+    log?.(logLine("box_network", { box: "daytona", network: "none", refused: code, message }));
     boxOffers = offersNow();
     if (offers) recompose();
   };
