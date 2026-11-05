@@ -411,3 +411,39 @@ test("api refuses a PATH with a dot segment, raw or encoded, or an empty one, wh
   }
   assert.equal(server.requests.length, 0, "nothing was sent");
 });
+
+test("generate-clients --check reads only what the table is made of: a response schema's description changes nothing; a route, a parameter, a body, a response type or a summary fails it", { timeout: 120_000 }, async (t) => {
+  const { dir } = scratch(t);
+  const { servedDocument } = await import(GENERATOR);
+  const served = await servedDocument();
+  const check = (doc) => {
+    const file = join(dir, "doc.json");
+    writeFileSync(file, JSON.stringify(doc));
+    return spawnSync(process.execPath, [GENERATOR, "--check", "--document", file], { encoding: "utf8", cwd: ROOT });
+  };
+  const changed = (edit) => {
+    const doc = structuredClone(served);
+    edit(doc);
+    return doc;
+  };
+  const same = check(served);
+  assert.equal(same.status, 0, same.stderr);
+  const described = check(changed((doc) => {
+    doc.components.schemas.Run.description = "Another description of a run.";
+    for (const property of Object.values(doc.components.schemas.Run.properties)) property.description = "Changed.";
+  }));
+  assert.equal(described.status, 0, described.stderr);
+  const failing = {
+    "a route's path": (doc) => { doc.paths["/stats/all"] = doc.paths["/stats"]; delete doc.paths["/stats"]; },
+    "a route's method": (doc) => { doc.paths["/stats"].post = doc.paths["/stats"].get; delete doc.paths["/stats"].get; },
+    "a parameter": (doc) => { doc.paths["/stats"].get.parameters.find((p) => p.name === "from").description = "Another start."; },
+    "a request body": (doc) => { doc.paths["/agents/{agent_id}/runs"].post.requestBody.required = false; },
+    "a response media type": (doc) => { doc.paths["/stats"].get.responses["200"].content["text/csv"] = { schema: { type: "string" } }; },
+    "a summary": (doc) => { doc.paths["/stats"].get.summary = "Other numbers"; },
+  };
+  for (const [what, edit] of Object.entries(failing)) {
+    const result = check(changed(edit));
+    assert.equal(result.status, 1, `${what}: ${result.stderr}`);
+    assert.match(result.stderr, /run node scripts\/generate-clients\.mjs/, what);
+  }
+});
