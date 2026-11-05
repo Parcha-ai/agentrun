@@ -24,7 +24,7 @@ const ASK = "Run monid's /person/enrich, called again after a raise.";
 const ALLOWED = { "monid.run": { permission: "allow" } };
 /** The paid call's refusal, held at monid's run allowance ($1, no inspect quoted it), of a $0.5 cap: what the run has
  *  spent (the faux harness's requests cost $0.001 each, pi's faux model nothing) and any model request still held. */
-const WORDS = /^Not sent: the run has spent \$[\d.]+( and holds \$[\d.]+ for calls still answering)? of its \$0\.50 cap, and monid_run could cost up to \$1 \(no monid_inspect in this run quoted its price, so it is held at the \$1 allowance; monid_inspect gives its quote\)\. Raise the cap to at least \$1\.\d\d to run it\.$/;
+const WORDS = /^Not sent: this run has spent \$[\d.]+( and holds \$[\d.]+ for steps still running,)? of its \$0\.50 cap, and the next step, monid_run, could cost up to \$1 \(no price was quoted for it in this run, so it counts at the \$1 allowance; monid_inspect gives its price\)\. Raise the cap to at least \$1\.\d\d to continue\.$/;
 const view = async (api, runId) => (await api("GET", `/runs/${runId}`)).body;
 const monidRuns = async (log) => (await readFile(log, "utf8").catch(() => "")).trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)).filter((call) => call.path === "/v1/run").length;
 
@@ -48,7 +48,7 @@ for (const harness of ["pi", "claude-agent", "codex"]) {
     assert.match(paused.pending.said, WORDS);
     assert.equal(await monidRuns(log), 0, "the refused call was not sent");
     const result = rows.find((row) => row.kind === "tool_result");
-    assert.match(result?.text ?? result?.summary ?? "", /Not sent: .*monid_run could cost up to \$1/, JSON.stringify(result));
+    assert.match(result?.text ?? result?.summary ?? "", /Not sent: .*the next step, monid_run, could cost up to \$1/, JSON.stringify(result));
     // The suggested raise sends the run on, and the model calls again: that call is made, once.
     const raised = await api("PATCH", `/runs/${runId}`, { max_cost_usd: paused.pending.suggested_cap_usd });
     assert.deepEqual([raised.status, raised.body.resumed], [200, true], JSON.stringify(raised.body));
@@ -175,7 +175,7 @@ test("pi: a paid call's refusal pauses only the turn's next request, the one aft
   // The turn's next request, after the refused call's result: refused in the call's words.
   assert.ok("refused" in (await paidCall("monid_run", async () => 0, () => 0, hold)));
   const next = await capped.streamSimple(model, afterResult).result();
-  assert.match(next.errorMessage ?? "", /^spend_cap_reached \(out of budget\): Not sent: the run has spent \$0 of its \$0\.50 cap, and monid_run could cost up to \$1 \(the allowance\)\./);
+  assert.match(next.errorMessage ?? "", /^spend_cap_reached \(out of budget\): Not sent: this run has spent \$0 of its \$0\.50 cap, and the next step, monid_run, could cost up to \$1 \(the allowance\)\./);
   assert.equal(sent.length, 0, "not sent");
   // A refusal a stop left behind, and the person's next message: that request goes.
   assert.ok("refused" in (await paidCall("monid_run", async () => 0, () => 0, hold)));
@@ -206,6 +206,6 @@ test("pi: a side request through the run's models (native web_search's own, one 
   const searched = await capped.completeSimple(model, search);
   assert.deepEqual([searched.stopReason, sent.length], ["stop", 1], "the search's request is judged as any other and sent");
   const next = await capped.streamSimple(model, afterResult).result();
-  assert.match(next.errorMessage ?? "", /^spend_cap_reached \(out of budget\): Not sent: the run has spent \$0 of its \$0\.50 cap, and monid_run could cost up to \$1 \(the allowance\)\./, JSON.stringify(next));
+  assert.match(next.errorMessage ?? "", /^spend_cap_reached \(out of budget\): Not sent: this run has spent \$0 of its \$0\.50 cap, and the next step, monid_run, could cost up to \$1 \(the allowance\)\./, JSON.stringify(next));
   assert.equal(sent.length, 1, "the turn's next request not sent");
 });
