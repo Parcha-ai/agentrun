@@ -2220,7 +2220,8 @@ export class Runs {
   /** message()'s decline of the tool call that waits for approval: a deny with the message as its note, which the
    *  run's gate acts on as any deny, resuming the session with the refusal and the person's words in one message. */
   private async declineBy(run: Run, waiting: Approval, content: string): Promise<{ mode: "answer"; messageId: string }> {
-    run.meta.approvals = { ...run.meta.approvals, [waiting.id]: { decision: "deny", note: content.slice(0, 2000), answered_at: new Date().toISOString(), args_shown: shownArgs(waiting, this.redactor(run)), by: "message" } };
+    // The person's message, whole: it is the reason the model reads. Nothing shows the note, so nothing cuts it.
+    run.meta.approvals = { ...run.meta.approvals, [waiting.id]: { decision: "deny", note: content, answered_at: new Date().toISOString(), args_shown: shownArgs(waiting, this.redactor(run)), by: "message" } };
     await this.saveMeta(run);
     this.restate(run);
     this.refresh(run);
