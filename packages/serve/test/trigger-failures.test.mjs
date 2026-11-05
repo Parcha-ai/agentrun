@@ -126,7 +126,7 @@ test("five failed firings in a row turn the trigger off; each sends one signed t
 test("catchup_window_s is checked and taken by PATCH; overlap is skip alone, and no other is taken", { timeout: 60_000 }, async (t) => {
   const { api, baseUrl } = await serve(t, { triggerClock: fakeClock("2026-06-01T00:00:00Z") });
   await made(api, "settings");
-  for (const [field, value, reason] of [["catchup_window_s", -1, "invalid"], ["catchup_window_s", 1.5, "invalid"], ["overlap", "queue", "not_allowed"]]) {
+  for (const [field, value, reason] of [["catchup_window_s", -1, "invalid"], ["catchup_window_s", 1.5, "invalid"], ["catchup_window_s", 366 * 86_400 + 1, "invalid"], ["overlap", "queue", "not_allowed"]]) {
     const answer = await api("POST", "/triggers", { ...schedule("settings", { every_s: 600 }), [field]: value });
     assert.equal(answer.status, 422);
     assert.deepEqual(answer.body.error.fields.map((f) => [f.field, f.reason]), [[field, reason]]);
