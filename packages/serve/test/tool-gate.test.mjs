@@ -495,3 +495,29 @@ test("a stop while an approval waits and a later turn runs withdraws the call an
   await sleep(2_000);
   assert.deepEqual(await dialled(), [], "the call never ran");
 });
+
+test("a person's message while an approval waits declines the call, with the message as the reason, in one turn: on pi and codex the model reads the refusal and the message together, the row says so, and a later allow is 409", { timeout: 150_000 }, async (t) => {
+  const dialled = await network(t);
+  const server = await serve(t, GATE);
+  const answer = await owner(server);
+  const { api } = server;
+  assert.equal((await api("PUT", "/settings/tools", { web_fetch: { permission: "ask" } })).status, 200);
+  const said = "use the cached copy instead";
+  for (const harness of ["pi", "codex"]) {
+    const runId = await fetching(api, `declined-${harness}`, harness);
+    const approval = (await parked(api, runId)).view.pending.id;
+    const sent = await api("POST", `/runs/${runId}/messages`, { content: said });
+    assert.equal(sent.status, 202, JSON.stringify(sent.body));
+    const { message, rows, answer: final } = await resumed(api, runId);
+    // One turn: the gate's message, the refusal with the person's words as its reason; no separate turn of theirs.
+    assert.equal(rows.filter((row) => row.kind === "user_message").length, 2, `${harness}: the first message and one more`);
+    assert.match(message, new RegExp(`^\\[tool approval\\] [\\s\\S]*\\nThe user denied this web_fetch call\\. Reason: ${said}$`), harness);
+    if (harness === "pi") assert.match(final, new RegExp(`Reason: ${said}$`), "the model read the refusal and the message together");
+    const row = rows.find((r) => r.kind === "tool_approval_requested");
+    assert.match(row.summary, /^Declined by your message: web_fetch /, harness);
+    const late = await answer(runId, approval, { decision: "allow" });
+    assert.deepEqual([late.status, late.body.error.details], [409, { reason: "already_answered", decision: "deny" }], harness);
+  }
+  await sleep(2_000);
+  assert.deepEqual(await dialled(), [], "neither call ran");
+});
