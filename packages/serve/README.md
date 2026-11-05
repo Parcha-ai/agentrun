@@ -1796,7 +1796,8 @@ task.", under that `message_id`, which the server sends once the process being l
 new cap. A second raise before it goes raises the cap it names and answers the same `message_id`. It is sent once: a
 server stopped before it went, or between starting its process and sending it, sends it when it starts again. One that
 cannot be sent is tried again (after 1 s, then 3 s); after 3 tries the run ends `failed`, saying the cap was raised but
-the run could not be sent on. The follow-up shows in the run's timeline as a message (`user_message`). A working run's
+the run could not be sent on. The follow-up shows in the run's timeline as the server's, "AgentRun: The cap was raised…", never as the
+person's message (its submit names the server as its origin, `cap_raised`). A working run's
 live process keeps the cap it was opened with until its next one, and the answer's `note` says so. The raise is keyed to
 the refusal's own start mark, so a row shown after the refusal never reads the run paused again.
 

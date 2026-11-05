@@ -2269,7 +2269,8 @@ export class Runs {
     this.refresh(run);
     const cap = run.meta.max_cost_usd ?? 0;
     try {
-      await this.submit(run, `The cap was raised to ${money(cap)}; continue the task.`, "followUp", next.message_id);
+      // The server's line, shown as the server's (MessageOrigin), never as the person's: the model reads the same text.
+      await this.submit(run, `The cap was raised to ${money(cap)}; continue the task.`, "followUp", next.message_id, undefined, { kind: "server", reason: "cap_raised" });
       next.sent = true;
       run.resuming = undefined;
       await this.saveMeta(run).catch((error: Error) => warn(run.id, `its raised cap's follow-up went, but is not marked sent: ${error.message}`));

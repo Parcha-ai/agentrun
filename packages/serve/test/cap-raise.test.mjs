@@ -48,7 +48,7 @@ test("a run paused at its cap, its cap raised, goes on: one follow-up turn in th
   const { rows } = await follow(api, runId, ["completed", "failed", "cancelled"], { deadlineMs: 60_000 });
   const run = await view(api, runId);
   assert.deepEqual([run.status, run.error, run.pending, run.cost.cap_usd], ["completed", null, null, 1], JSON.stringify(run));
-  const said = rows.filter((row) => row.kind === "user_message").map((row) => row.text);
+  const said = rows.filter((row) => row.kind === "user_message" || (row.kind === "phase" && row.summary?.startsWith("AgentRun:"))).map((row) => row.text);
   assert.deepEqual(said, ["Write one.md", "The cap was raised to $1; continue the task."], "the server's one line, after the person's message");
   assert.equal(run.result.final_answer, "On The cap was raised to $1; continue the task.: done.");
   // The refused request has its own start mark and was never sent: the one request sent is the follow-up's answer.
@@ -122,7 +122,8 @@ const CONTINUE = (cap) => `The cap was raised to ${cap}; continue the task.`;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const holderPid = (data, runId) => JSON.parse(readFileSync(join(data, "runs", runId, "run.json"), "utf8")).holder.pid;
 /** What the person's side of the run says, in order: its user messages' text. */
-const said = (rows) => rows.filter((row) => row.kind === "user_message").map((row) => row.text);
+/** The run's messages in order: the person's (user_message) and the server's own (its "AgentRun: …" row, MessageOrigin). */
+const said = (rows) => rows.filter((row) => row.kind === "user_message" || (row.kind === "phase" && row.summary?.startsWith("AgentRun:"))).map((row) => row.text);
 
 test("a raise sent while the paused run's process is still being let go is taken at once, and the run goes on once that process is gone: under the new cap, one follow-up, no locked store and no failed run", { timeout: 120_000 }, async (t) => {
   const gate = join(await scratch(t), "exit");
