@@ -238,7 +238,8 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   };
   if (revision.kind === "agentic") {
     const tools = (await Promise.all(revision.body.tools.filter((name) => !mcpNameOf(name)).map((name) => bind(name)))).flatMap((binding) => binding.tools);
-    // The MCP tools pass the gate in the gateway (mcp-gateway.ts), which the gate's extension leaves alone (mcp__ names).
+    // The MCP tools pass the gate in the gateway (mcp-gateway.ts) and carry its mark (GATED_BY_GATEWAY), so the gate's
+    // extension leaves exactly those; every other tool, any mcp__ name included, it wraps.
     const mcp = gateway ? mcpRegistrations(gateway) : [];
     if (mcp.length) registry.install(defineExtension({ name: "mcp", tools: mcp }));
     tools.push(...mcp);
