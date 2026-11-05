@@ -331,8 +331,10 @@ export class RunGate {
     // A name nothing maps fails closed: it asks (refused where no one can approve), never allows.
     if (key === undefined) return "ask";
     const server = this.serverSettings();
-    // No settings ever read: every tool asks, or keeps the revision's own deny.
-    const permission = server === undefined ? (permissionOf(key, {}, this.overrides) === "deny" ? "deny" : "ask") : permissionOf(key, server, this.overrides);
+    // No settings ever read: every tool asks, the shell watchers too (fail closed: an ask nothing read is never lifted),
+    // or keeps the revision's own deny.
+    if (server === undefined) return permissionOf(key, {}, this.overrides) === "deny" ? "deny" : "ask";
+    const permission = permissionOf(key, server, this.overrides);
     // A shell tool is read by bash's key; a watcher's ask is allow (shellPermission), under every harness's name for it.
     const shell = shellToolOf(tool);
     return shell ? shellPermission(shell, permission) : permission;
