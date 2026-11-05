@@ -458,6 +458,38 @@ test("a run's box made under a wider list is destroyed and made again under a na
   }
 });
 
+test("a run's box under another list whose files cannot all be copied back is kept and not used: the tool call is refused, and nothing only it holds is lost", { timeout: 240_000 }, async (t) => {
+  const failListings = [];
+  const fake = await daytonaSandboxes(t, { key: KEY, failListings });
+  const data = join(await scratch(t), "agents");
+  withEnv(t, { AGENTRUN_BOXES: "daytona", DAYTONA_API_KEY: KEY, DAYTONA_API_URL: fake.url, AGENTRUN_BOX_ALLOW: "pypi.org,github.com" });
+  const first = await startServe({ data, port: 0, faux: PROBE, drainTimeout: "5s" });
+  const firstApi = client(first.baseUrl, first.token);
+  assert.equal((await firstApi("POST", "/agents", { definition: { id: "unpulled", name: "unpulled", instructions: "Probe.", place: DAYTONA, tools: ["bash", "ask_person"] } })).status, 201);
+  const run = await probe(firstApi, "unpulled", [{ tool: "bash", args: { command: "printf one > turn1.txt" } }, { tool: "ask_person", args: { question: "Go on?" } }, { tool: "bash", args: { command: "cat box-only.txt > turn2.txt" } }]);
+  await follow(firstApi, run.run_id, ["input_required"], { deadlineMs: 120_000 });
+  await until(async () => (await fileList(firstApi, run.run_id)).includes("turn1.txt"), "the turn's end's pull");
+  await first.close();
+  const [made] = fake.sandboxes.keys();
+  // Written in the box after its last pull; from now on every copy back fails.
+  await writeFile(fake.pathOf(made, "run/agentrun/run/work/box-only.txt"), "only in the box");
+  for (let n = fake.state.listings + 1; n <= fake.state.listings + 40; n++) failListings.push(n);
+  process.env.AGENTRUN_BOX_ALLOW = "pypi.org";
+  const second = await serve(t, { data, faux: PROBE });
+  assert.equal((await second.api("POST", `/runs/${run.run_id}/messages`, { content: "Yes." })).status, 202);
+  const bashes = () => answers(data, run.run_id).filter((a) => a.tool === "bash");
+  await until(() => bashes().length >= 2, "the next turn's bash answer", 120_000);
+  const said = bashes().at(-1);
+  assert.equal(said.error, true, JSON.stringify(said));
+  assert.match(said.text, /another host list.*kept/);
+  assert.deepEqual(creates(fake).map((body) => body.domainAllowList), ["pypi.org,github.com"], "no box was made in its place");
+  assert.ok(!fake.requests.some((r) => r.method === "DELETE" && r.path.endsWith(`/sandbox/${made}`)), "the box was not destroyed");
+  // Copies back work again: the run's end brings what only the box held.
+  failListings.length = 0;
+  await follow(second.api, run.run_id, ["completed"], { deadlineMs: 120_000 });
+  assert.equal((await second.api("GET", `/runs/${run.run_id}/files/box-only.txt`)).body, "only in the box");
+});
+
 test("AGENTRUN_BOX_ALLOW=none: a Daytona box is made blocked, as before the list, and capabilities say none with no reason", { timeout: 120_000 }, async (t) => {
   const fake = await daytonaSandboxes(t, { key: KEY });
   withEnv(t, { AGENTRUN_BOX_ALLOW: "none" });
