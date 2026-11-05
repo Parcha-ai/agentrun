@@ -10,13 +10,15 @@ export type RunMeters = { tools: number | null; tokens: number | null; browser: 
 export function runLines(run: { usd: number | null; soFar: number; key: string; meters?: RunMeters }): { name: string; usd: number; unpriced: boolean }[] {
   const { usd, soFar, key, meters } = run;
   const tokens = meters && (usd !== null && meters.tools !== null ? usd - meters.tools : usd === null && meters.tools === null ? meters.tokens : null);
-  // The known part of a line whose run's cost is unknown: what the run spent so far beside its known other lines.
-  const knownTokens = meters && tokens === null ? Math.max(0, soFar - (meters.browser.usd ?? 0) - (meters.others ?? 0)) : 0;
+  // Each meter's known dollars, whatever else of it is unknown: an unknown line's own, and on tokens what the run spent
+  // so far beside the other meters' known dollars, so no meter's dollars land on another's line, nor on none.
+  const known = meters?.known ?? { tokens: 0, browser: 0, others: 0 };
+  const knownOn = (name: string) => (name === "browser_time" ? known.browser : name === "tools" ? known.others : Math.max(0, soFar - known.browser - known.others));
   // Each apart, an unknown one unknown (unpriced on its own line), never $0 nor the other's.
   const browser = meters ? meters.browser.usd : 0;
   const tools = meters?.others;
   const parts: [string, number | null][] = !meters ? [[key, usd]] : [[key, tokens ?? null], ...(tools !== 0 ? [["tools", tools ?? null] as [string, number | null]] : []), ...(browser !== 0 ? [["browser_time", browser] as [string, number | null]] : [])];
-  // Its known dollars when unknown: the whole of what it spent so far on a line of its own (by agent, by day), else the
-  // part beside its known meters on tokens.
-  return parts.map(([name, part]) => (part !== null ? { name, usd: part, unpriced: false } : { name, unpriced: true, usd: meters ? (name === key ? knownTokens : 0) : soFar }));
+  // Its known dollars when unknown: the whole of what it spent so far on a line of its own (by agent, by day), else its
+  // meter's own known dollars.
+  return parts.map(([name, part]) => (part !== null ? { name, usd: part, unpriced: false } : { name, unpriced: true, usd: meters ? knownOn(name) : soFar }));
 }
