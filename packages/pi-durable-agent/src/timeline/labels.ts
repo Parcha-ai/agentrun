@@ -96,6 +96,8 @@ export function savedPaths(tool: string, args: Obj, result: ToolResultView): str
 
 /** Tools that use the browser session; the first of them opens one. */
 export const BROWSER_OPENERS: ReadonlySet<string> = new Set(["snapshot", "run", "screenshot", "browser_read", "browser_downloads"]);
+/** Every tool of the browser (pi-browser's): the calls a browser charge with no call of its own may fold into. */
+export const BROWSER_STEPS: ReadonlySet<string> = new Set([...BROWSER_OPENERS, "browser_release", "browser_relaunch", "browser_upload", "browser_request_handoff"]);
 
 const path = (args: Obj) => str(args.path) ?? str(args.file_path);
 const GOTO = /page\.goto\(\s*["'`]([^"'`]+)/;

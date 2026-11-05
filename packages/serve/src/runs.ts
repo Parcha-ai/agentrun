@@ -14,7 +14,7 @@ import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { doorTook } from "@parcha/pi-durable-disk";
 import { AgentHomeError, type Revision, type RevisionKind, type RunOrigin, type RunRow, type RunState, type StoredMetrics } from "@parcha/pi-durable-agent";
-import { isMessageRow, type MessageOrigin, registerLabel, registerTurnEnding, REQUEST_STARTED, type RunMetrics, runMetricsWithDecisions, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
+import { chargedTool, isMessageRow, type MessageOrigin, registerLabel, registerTurnEnding, REQUEST_STARTED, type RunMetrics, runMetricsWithDecisions, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { HARNESS_LOG_EVENT, harnessModelKeys, thinkingFor } from "./adapters.js";
 import { DEFAULT_HARNESS, harnessOfBody, steersMidTurn } from "./harness.js";
 import type { RUN_EVENTS, RunNotice } from "./webhooks.js";
@@ -519,15 +519,21 @@ export const costOf = (rows: readonly TimelineEvent[]): number | null => {
   const usage = usageOf(rows);
   return usage ? (usage.usage?.usd ?? null) : 0;
 };
-/** What a run's paid tools charged (`tool`'s alone, when given), from the same rows its cost is read from: each charge's
- *  line carries it (`usage` on a `phase` row); null when one is unknown. A call still marked, in flight or cut, is no
- *  charge here. */
-export const toolCostOf = (rows: readonly TimelineEvent[], tool?: string): number | null =>
-  rows.reduce<number | null>((sum, row) => (row.kind !== "phase" || !row.usage || (tool !== undefined && row.tool_name !== tool) ? sum : sum === null || row.usage.usd === null ? null : sum + row.usage.usd), 0);
+/** Whether `row` carries a paid tool's charge counted here: `tool`'s alone when given, every other tool's with `others`
+ *  (chargedTool: a charge's own `phase` row, or a browser call's row its charges fold into). */
+const chargeOf = (row: TimelineEvent, tool: string | undefined, others: boolean): boolean => {
+  const charged = chargedTool(row);
+  return charged !== undefined && (tool === undefined || (others ? charged !== tool : charged === tool));
+};
+/** What a run's paid tools charged (`tool`'s alone, when given; every other tool's with `others`), from the same rows its
+ *  cost is read from: each charge's line carries it (`usage` on a `phase` row), and a browser call's row what its charges
+ *  came to; null when one is unknown. A call still marked, in flight or cut, is no charge here. */
+export const toolCostOf = (rows: readonly TimelineEvent[], tool?: string, others = false): number | null =>
+  rows.reduce<number | null>((sum, row) => (!chargeOf(row, tool, others) ? sum : sum === null || row.usage!.usd === null ? null : sum + row.usage!.usd), 0);
 /** What a run's paid tools are known to have charged (`tool`'s alone, when given; every other tool's with `others`): each
- *  charge's line that names its cost, a charge of unknown cost adding nothing. */
+ *  charge's line that names its cost, a charge of unknown cost adding nothing (a browser call's row, what is known of it). */
 export const knownToolCostOf = (rows: readonly TimelineEvent[], tool?: string, others = false): number =>
-  rows.reduce((sum, row) => (row.kind !== "phase" || !row.usage || typeof row.usage.usd !== "number" || (tool !== undefined && (others ? row.tool_name === tool : row.tool_name !== tool)) ? sum : sum + row.usage.usd), 0);
+  rows.reduce((sum, row) => (!chargeOf(row, tool, others) ? sum : sum + (row.usage!.usd ?? row.usage!.so_far_usd ?? 0)), 0);
 /** A run's cost for its views: its usage row's, else what the store kept when it carried the run back (0 before any
  *  request). A usage row that says unknown, or says nothing, stays unknown: what the store kept dates from before a
  *  follow-up. */

@@ -355,6 +355,19 @@ test("the decision providers' widening to parallel is its own addition, decision
   assert.ok(doc.info["x-agentrun-serve"].fields.includes("Capabilities.workflows.decisions"), "info names it among the marked properties");
 });
 
+test("a timeline row's usage says where it shows here: a browser call's row carries the charges booked under it, updated in place; the shape stays the contract's", async (t) => {
+  const { doc } = await served(t);
+  const usage = doc.components.schemas.TimelineRow.properties.usage;
+  assert.equal(usage.$ref, "#/components/schemas/TimelineUsage", "the contract's shape");
+  assert.match(usage["x-agentrun-serve-note"], /On a browser call's `tool_use` row .* the browser session time booked under that call/);
+  assert.match(usage["x-agentrun-serve-note"], /A browser charge has no row of its own\. A charge booked after the row was served .* is served as a change of that row, with the same `id`/);
+  assert.ok(doc.info["x-agentrun-serve"].notes.includes("TimelineRow.usage"));
+  // A browser call's row as it is served validates against the document.
+  const row = { id: "1:7:0", timestamp: "2026-11-05T12:00:00.000Z", created_at: "2026-11-05T12:00:00.000Z", kind: "tool_use", summary: "Looked at the page structure", agent_label: null, tool_name: "snapshot", tool_use_id: "call_1", tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null, text: null, seq: 3, conversation_id: 1, round: 7, usage: { usd: 0.0017, requests: 0 } };
+  assert.deepEqual(schemaProblems(doc, { $ref: "#/components/schemas/TimelineRow" }, row), []);
+  assert.deepEqual(schemaProblems(doc, { $ref: "#/components/schemas/TimelineRow" }, { ...row, usage: { usd: null, requests: 0, so_far_usd: 0.0001, unpriced: 1 } }), []);
+});
+
 /** The closed list of a run's learning reasons, as the console's read shape names them. */
 const REASONS = ["seed_failed", "no_budget", "unknown_cost", "no_write_tool", "tool_denied", "cancelled", "crashed", "reflect_timeout", "reflect_failed", "empty", "unparsed", "propose_failed", "checker", "screen", "screen_down", "grader", "grade_failed"];
 

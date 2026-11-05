@@ -894,9 +894,12 @@ the sessions it still holds are released at their vendor. An agent's browser sta
 ([saved sign-ins](#saved-sign-ins)).
 
 A session's time is the run's spend, as a paid tool's charge is: each browser call books what its session ran since the
-last charge, and the release books the rest, topped up to the provider's minimum. Each is a `Tool cost` line of its own
-on the run's timeline, part of its `cost.usd`, and `/usage`'s `browser_time` meter (dollars, and seconds once the run has
-ended). Prices are by provider (pi-browser's provider name):
+last charge, and the release books the rest, topped up to the provider's minimum. Each is part of its `cost.usd` and
+`/usage`'s `browser_time` meter (dollars, and seconds once the run has ended). On the timeline a charge has no row of its
+own: it shows on the row of the browser call it was booked under, that call's `tool_use` row, as `usage`
+(`{"usd": 0.0017, "requests": 0}`, every charge of that call summed). The release's charge goes under the session's
+last call, so it lands on that call's row. Booked after the answer, it is served as a change of that row (the same `id`,
+its new `usage`), never a new row. Prices are by provider (pi-browser's provider name):
 
 | Provider | List price | Minimum | Its own price |
 | --- | --- | --- | --- |
