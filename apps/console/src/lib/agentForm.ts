@@ -91,10 +91,12 @@ export function createBody(f: { name: string; description: string; instructions:
 /** The default cap field's text as a definition's `max_cost_usd`: empty is none (`value` undefined), a number is sent as
  *  it is (the server judges it), and text that is no number is not sent at all. */
 export function capOf(text: string | undefined): { ok: true; value: number | undefined } | { ok: false; message: string } {
-  const t = (text ?? "").trim().replace(/^\$\s*/, "");
-  if (!t) return { ok: true, value: undefined };
+  const raw = (text ?? "").trim();
+  if (!raw) return { ok: true, value: undefined };
+  // A leading $ is allowed, but a $ with no number after it is no number (never read as an empty field, which clears).
+  const t = raw.replace(/^\$\s*/, "");
   const n = Number(t);
-  return Number.isFinite(n) ? { ok: true, value: n } : { ok: false, message: "A spend cap is a number of dollars, such as 2.50; empty means none." };
+  return t && Number.isFinite(n) ? { ok: true, value: n } : { ok: false, message: "A spend cap is a number of dollars, such as 2.50; empty means none." };
 }
 
 /** One tool the server offers (`GET /v2/capabilities` `tools`): whether it can run here, what it lacks, what it does

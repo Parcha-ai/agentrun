@@ -122,8 +122,11 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
     if (!workflow && !starting) {
       const cap = capOf(f.maxCostText);
       if (!cap.ok) { setSaving(false); setProblem({ kind: "invalid", message: cap.message, fields: { "definition.max_cost_usd": cap.message } }); return; }
-      const value = cap.value ?? (d?.max_cost_usd !== undefined ? 0 : undefined);
-      if (value !== undefined) fields = { ...fields, max_cost_usd: value };
+      // 0 (typed, or an emptied field) clears a saved cap; with no cap saved there is nothing to clear, and a 0 sent
+      // anyway would count as a change and make a revision the server refuses as unchanged.
+      const saved = typeof d?.max_cost_usd === "number" && d.max_cost_usd > 0;
+      const value = cap.value ?? 0;
+      if (value !== 0 || saved) fields = { ...fields, max_cost_usd: value };
     }
     if (workflow) {
       try { fields = { ...fields, workflow: JSON.parse(f.workflowText ?? "") }; }
