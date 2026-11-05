@@ -3,7 +3,7 @@ import type { Agent, Definition, SaveWarning } from "./agentForm";
 import type { AgentLearning, LearningChange, LearningDiff, LearningNote, NoteProblem, NoteText, Page } from "./learning";
 import type { RunGraph } from "./runGraph";
 import { applyPage } from "./timeline";
-import type { ApiError, Run, RunFiles, RunStatus, TimelinePage, TimelineRow, ToolKeys, ToolKeysFeature, ToolSettings, Webhook, WebhookAttempt, WebhookSaved, WebhooksFeature } from "./v2";
+import type { ApiError, RaiseAnswer, Run, RunFiles, RunStatus, TimelinePage, TimelineRow, ToolKeys, ToolKeysFeature, ToolSettings, Webhook, WebhookAttempt, WebhookSaved, WebhooksFeature } from "./v2";
 
 /** A request AgentRun Server refused: its HTTP status and its typed error (`code`, `message`, `retryable`). */
 export type FieldIssue = { field: string; reason: string; message: string };
@@ -170,6 +170,9 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     /** Hides a run from the runs list (or shows it again), its history kept. The answer is the run. */
     archiveRun: (id: string) => call<Run>("POST", `${run(id)}/archive`, { body: {} }),
     unarchiveRun: (id: string) => call<Run>("POST", `${run(id)}/unarchive`, { body: {} }),
+    /** Raises an agentic run's spend cap (only a raise: above its current cap, else 422). A run paused at its cap goes on
+     *  (`resumed`); an ended run is 409 not_continuable. */
+    raiseCap: (id: string, maxCostUsd: number) => call<RaiseAnswer>("PATCH", run(id), { body: { max_cost_usd: maxCostUsd } }),
     /** Starts a run. The server answers 202 with the run; the same key with the same body answers with that same run. */
     startRun: async (agentId: string, body: { input: unknown; revision?: string; effort?: string; max_cost_usd?: number; file_ids?: string[] }, idempotencyKey: string) => {
       const r = await callTagged<Run>("POST", `${agent(agentId)}/runs`, { body, headers: { "idempotency-key": idempotencyKey } });
@@ -227,6 +230,12 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     /** Replaces the server's providers: a capability the body leaves out takes its default. The answer is each one's now. */
     saveToolSettings: (settings: ToolSettings) => call<ToolSettings>("PUT", "/settings/tools", { body: settings }),
     stop: (id: string) => call<unknown>("POST", `${run(id)}/stop`, { body: {} }),
+    /** Answers the tool call the run waits on the owner's approval of (`pending.id`, approvals/1): 204. The owner's
+     *  password session alone may (a token is 403); the first answer wins, so the same one again is 204 and another 409
+     *  `not_continuable` with `details: { reason: "already_answered", decision }`. `note`: with deny, the reason the model
+     *  is told; sent only when given. */
+    answerApproval: (id: string, approvalId: string, decision: "allow" | "deny", note?: string) =>
+      call<unknown>("POST", `${run(id)}/approvals/${encodeURIComponent(approvalId)}`, { body: { decision, ...(note ? { note } : {}) } }),
     cancel: (id: string) => call<unknown>("POST", `${run(id)}/cancel`, { body: {} }),
   };
 }

@@ -28,7 +28,7 @@ import { writeDurableSync } from "./files.js";
 import { DEFAULT_HARNESS, HARNESSES, type HarnessId } from "./harness.js";
 import { savedIn } from "./secrets.js";
 import { hostModel, viaOpenRouter } from "./model.js";
-import { defaultPermission, isCatalogTool, isMcpTool, type Permission, PERMISSIONS, permissionFrom, permissionOf } from "./tool-gate.js";
+import { defaultPermission, isCatalogTool, isMcpTool, type Permission, PERMISSIONS, permissionFrom, permissionOf, SHELL_FAMILY } from "./tool-gate.js";
 
 /**
  * The capabilities a pack or a revision may grant, by name: the tools the kernel gives a run, bound from serve's closed
@@ -58,14 +58,19 @@ export const capabilityOf = (name: string): string => LEGACY_NAMES[name] ?? name
 /** Every tool of serve's table (tools.ts) and its legacy names, by name, so this module needs no import of it: a test
  *  holds the two as one. */
 export const TABLE_TOOLS: readonly string[] = ["read", "write", "edit", "bash", "ask_person", "fetch_page", "web_fetch", "web_search", "browser", "pdf_pages", "llm"];
-/** The table's tools whose approved call the kernel runs itself, outside the model's turn (host-tools.ts's REPLAY): ask is
- *  offered for these and for catalog tools. Any other (browser, ask_person, the call-only ones) is allow or deny. */
-export const ASKABLE: readonly string[] = ["read", "write", "edit", "bash", "fetch_page", "web_fetch", "web_search"];
+/** The tools whose approved call the kernel runs itself, outside the model's turn (host-tools.ts's REPLAY): ask is
+ *  offered for these and for catalog tools. Any other (browser, ask_person, the call-only ones) is allow or deny. The
+ *  run's learned_workflow is one (tool-gate.ts runs an approved call of it on the run's own tools). */
+export const ASKABLE: readonly string[] = ["read", "write", "edit", "bash", "fetch_page", "web_fetch", "web_search", "learned_workflow"];
 /** The permissions `name` may be set to. */
-export const permissionsOf = (name: string): readonly Permission[] => (ASKABLE.includes(name) || isCatalogTool(name) ? PERMISSIONS : ["allow", "deny"]);
-/** A settings key: a tool of the table, a catalog tool (`monid.<tool>`, `mcp:<server>/<tool>`), or an MCP server's
- *  wildcard (`mcp:<server>/*`), which sets each of its tools. */
-const isSettingsKey = (name: string): boolean => isToolSettingsKey(name) && ((TABLE_TOOLS.includes(name) && !Object.hasOwn(LEGACY_NAMES, name)) || isCatalogTool(name) || /^mcp:[^/]+\/\*$/.test(name));
+export const permissionsOf = (name: string): readonly Permission[] => (Object.hasOwn(SHELL_FAMILY, name) && SHELL_FAMILY[name] !== name ? permissionsOf(SHELL_FAMILY[name]!) : ASKABLE.includes(name) || isCatalogTool(name) ? PERMISSIONS : ["allow", "deny"]);
+/** The run's own tools beyond the table, each its own settings key, allowed by default like a table tool: the learned
+ *  workflow a run's pin names runs as `learned_workflow` (learned-workflow.ts LEARNED_WORKFLOW_TOOL). */
+export const SERVE_OWN_TOOLS: readonly string[] = ["learned_workflow"];
+
+/** A settings key: a tool of the table, one of the run's own tools (SERVE_OWN_TOOLS), a catalog tool (`monid.<tool>`,
+ *  `mcp:<server>/<tool>`), or an MCP server's wildcard (`mcp:<server>/*`), which sets each of its tools. */
+const isSettingsKey = (name: string): boolean => isToolSettingsKey(name) && ((TABLE_TOOLS.includes(name) && !Object.hasOwn(LEGACY_NAMES, name)) || SERVE_OWN_TOOLS.includes(name) || isCatalogTool(name) || /^mcp:[^/]+\/\*$/.test(name));
 /** One tool's settings: its provider (a capability that has a choice) and its permission. */
 export type ToolSetting = { provider?: string; permission?: Permission };
 /** The tools' settings, the server's (`/v2/settings/tools`) and an agent's own (`definition.tool_settings`), one shape:
@@ -248,7 +253,9 @@ export function planeFor(env: NodeJS.ProcessEnv, tooling: Tooling, settings: Too
     const chosen = picked(name, settings, tooling.overrides);
     plane[name] = resolveCapability(name, { ...served(env), harness, capped, openRouter: viaOpenRouter(env, harness, model), ...(model ? { model } : {}), ...chosen, ...(run && chosen.permission === "deny" ? { permission: "ask" as const } : {}) });
   }
-  if (plane.web_search === "native" && harness === DEFAULT_HARNESS && model) plane.model = model;
+  // The model a search through its provider's hosted search asks (hosted-search.ts): pi's own web_search, and on
+  // another harness, whose agent searches with its own tool, a learned workflow's call node (learned-workflow.ts).
+  if (plane.web_search === "native" && model) plane.model = model;
   return plane;
 }
 
@@ -318,7 +325,7 @@ export function settingsIssues(value: unknown, at = ""): InputIssue[] {
   if (!isPlain(value)) return [{ field: at || "body", reason: "wrong_type", message: `${at || "the body"} is an object of tools to their settings` }];
   return Object.entries(value).flatMap(([name, setting]): InputIssue[] => {
     const pickable = Object.hasOwn(PROVIDERS, name);
-    if (!isSettingsKey(name)) return [{ field: field(name), reason: "not_allowed", message: `Tool settings are kept for this server's tools (${TABLE_TOOLS.join(", ")}), catalog tools (monid.<tool>, mcp:<server>/<tool>) and an MCP server's tools (mcp:<server>/*); ${name} is none of them.` }];
+    if (!isSettingsKey(name)) return [{ field: field(name), reason: "not_allowed", message: `Tool settings are kept for this server's tools (${[...TABLE_TOOLS, ...SERVE_OWN_TOOLS].join(", ")}), catalog tools (monid.<tool>, mcp:<server>/<tool>) and an MCP server's tools (mcp:<server>/*); ${name} is none of them.` }];
     if (!isPlain(setting)) return [{ field: field(name), reason: "wrong_type", message: `${field(name)} is an object, {${pickable ? "provider, " : ""}permission}` }];
     return Object.entries(setting).flatMap(([key, given]): InputIssue[] => {
       if (key === "permission") {
