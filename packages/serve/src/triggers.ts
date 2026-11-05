@@ -394,6 +394,7 @@ export class Triggers {
       for (const t of this.triggers) {
         if (t.run_now_kept) t.kept_firings = [...(t.kept_firings ?? []), ...t.run_now_kept];
         delete t.run_now_kept;
+        conversed(t);
       }
       // A trigger an earlier server wrote before trigger.failed existed has no failures_in_a_row: its failures were never
       // to be told, so a first start that tells them does not send them late. The next write keeps the mark.
@@ -1019,6 +1020,30 @@ const DATE_MAX_MS = 8.64e15;
 
 function firingView(firing: Firing) {
   return { key: firing.key, by: firing.by, nominal_at: firing.nominal_at, status: firing.status, at: firing.at, run_id: firing.run_id ?? null, reason: firing.reason ?? null, error: firing.error ?? null, ...(firing.count !== undefined ? { count: firing.count } : {}), ...(firing.catch_up ? { catch_up: true } : {}), ...(firing.retry_at ? { attempts: firing.attempts ?? 0, retry_at: firing.retry_at } : {}) };
+}
+
+/** A Slack trigger as a server before conversations kept it (#1694's): its thread map `threads`, by
+ *  `team:channel:thread_ts`, and each firing's `thread` and `user`, made the conversations they are now, one way. The
+ *  next write keeps them so. */
+function conversed(trigger: Trigger): void {
+  const old = trigger as Trigger & { threads?: unknown };
+  if (isObject(old.threads)) {
+    const all = (trigger.conversations ??= {});
+    for (const [key, thread] of Object.entries(old.threads)) {
+      if (!isObject(thread) || typeof thread.firing_key !== "string" || typeof thread.channel !== "string" || typeof thread.thread_ts !== "string" || typeof thread.at !== "string" || typeof thread.last_at !== "string") continue;
+      all[`slack:${key}`] ??= { firing_key: thread.firing_key, where: { kind: "slack", channel: thread.channel, thread_ts: thread.thread_ts }, ...(typeof thread.run_id === "string" ? { run_id: thread.run_id } : {}), at: thread.at, last_at: thread.last_at };
+    }
+  }
+  delete old.threads;
+  for (const firing of [...trigger.firings, ...(trigger.kept_firings ?? [])]) {
+    const legacy = firing as Firing & { thread?: unknown; user?: unknown };
+    if (typeof legacy.thread === "string" && firing.conversation === undefined) {
+      firing.conversation = `slack:${legacy.thread}`;
+      firing.from ??= { user: String(legacy.user ?? ""), channel: legacy.thread.split(":")[1] ?? "" };
+    }
+    delete legacy.thread;
+    delete legacy.user;
+  }
 }
 
 /** `target` with its input as a firing of a trigger named `name` would give it to its run: what create and PATCH check. */
