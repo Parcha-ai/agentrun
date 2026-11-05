@@ -9,9 +9,11 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
-import { mcpPinOf } from "../dist/mcp-gateway.js";
+import { readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { mcpGateway, mcpPinOf } from "../dist/mcp-gateway.js";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
-import { agent, serve as serveOf, withEnv } from "./support.mjs";
+import { agent, follow, serve as serveOf, withEnv } from "./support.mjs";
 
 const TOKEN = `not-a-secret-${"mcp-meta-bearer-0123"}`;
 const REASON = "it runs other actions by name, so a grant can't name the real action. Use the server's direct tools instead.";
@@ -67,4 +69,36 @@ test("a meta tool granted before the rule is refused at the launch, when the run
   const source = { server: () => ({ url: "http://127.0.0.1:9/mcp", tools: [{ name: "COMPOSIO_MULTI_EXECUTE_TOOL", inputSchema: object }, { name: "GMAIL_SEND_EMAIL", inputSchema: object }] }), headers: () => undefined };
   assert.throws(() => mcpPinOf(["mcp:composio/COMPOSIO_MULTI_EXECUTE_TOOL"], source), new RegExp(`mcp:composio/COMPOSIO_MULTI_EXECUTE_TOOL can't be granted: ${REASON.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
   assert.deepEqual(Object.keys(mcpPinOf(["mcp:composio/GMAIL_SEND_EMAIL"], source)), ["composio"]);
+});
+
+test("a grant of a meta tool is 422 on a harness that doesn't bind MCP tools too, never a setup warning", async (t) => {
+  const { api } = await serve(t);
+  await saved(t, api, "composio", ["COMPOSIO_MULTI_EXECUTE_TOOL"]);
+  const refused = await api("POST", "/agents", agent("codex-meta", { harness: "codex", tools: ["mcp:composio/COMPOSIO_MULTI_EXECUTE_TOOL"] }));
+  assert.equal(refused.status, 422, JSON.stringify(refused.body));
+  assert.ok(JSON.stringify(refused.body).includes(`can't be granted: ${REASON}`), JSON.stringify(refused.body));
+});
+
+test("a run's pin made before the rule, holding a meta tool, refuses its next launch in words; the gateway never sends a pinned meta tool", { timeout: 120_000 }, async (t) => {
+  const { api, data } = await serve(t);
+  await saved(t, api, "composio", ["COMPOSIO_MULTI_EXECUTE_TOOL", "GMAIL_SEND_EMAIL"]);
+  assert.equal((await api("POST", "/agents", agent("old", { tools: ["mcp:composio/GMAIL_SEND_EMAIL"] }))).status, 201);
+  const run = await api("POST", "/agents/old/runs", { input: { content: "Hello." } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  const runId = run.body.run_id;
+  await follow(api, runId, ["completed"], { deadlineMs: 60_000 });
+  // The pin as one made before the rule would be: the meta tool beside the direct one.
+  const file = join(data, "runs", runId, "mcp-tools.json");
+  const pin = JSON.parse(await readFile(file, "utf8"));
+  pin.composio.tools.push({ name: "COMPOSIO_MULTI_EXECUTE_TOOL", inputSchema: object });
+  await writeFile(file, JSON.stringify(pin));
+  // The message's launch is refused at once: the run fails in words (the message is answered 409 once it has).
+  const again = await api("POST", `/runs/${runId}/messages`, { content: "Again." });
+  assert.ok([202, 409].includes(again.status), JSON.stringify(again.body));
+  const { last } = await follow(api, runId, ["failed", "completed"], { deadlineMs: 60_000 });
+  const view = (await api("GET", `/runs/${runId}`)).body;
+  assert.deepEqual([last.status, view.error?.message], ["failed", `mcp:composio/COMPOSIO_MULTI_EXECUTE_TOOL can't be granted: ${REASON}`], JSON.stringify(view.error));
+  const gateway = mcpGateway({ pin: { composio: { url: "http://127.0.0.1:9/mcp", tools: [{ name: "COMPOSIO_MULTI_EXECUTE_TOOL", inputSchema: object }] } }, credentials: { composio: { url: "http://127.0.0.1:9/mcp" } }, work: () => data });
+  const said = await gateway.call("composio", "COMPOSIO_MULTI_EXECUTE_TOOL", {}, { signal: new AbortController().signal });
+  assert.deepEqual([said.isError, said.content[0].text], [true, `mcp:composio/COMPOSIO_MULTI_EXECUTE_TOOL can't be granted: ${REASON} Nothing was sent.`]);
 });
