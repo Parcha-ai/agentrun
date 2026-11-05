@@ -402,7 +402,7 @@ test("a Daytona box is the server's to make, and never waits on the Docker box's
   const { api, data } = await serve(t, { faux: PROBE });
   const offers = (await api("GET", "/capabilities")).body.places.boxes;
   assert.deepEqual(offers.find((b) => b.id === "docker"), { id: "docker", available: true, state: "preparing", reason: "building the box image (python, git, curl, node, rg)" });
-  assert.deepEqual(offers.find((b) => b.id === "daytona"), { id: "daytona", available: true, state: "ready" });
+  assert.deepEqual(offers.find((b) => b.id === "daytona"), { id: "daytona", available: true, state: "ready", network: "allowlist" });
   const preparing = (rows) => rows.filter((r) => r.summary?.startsWith("Preparing the box image"));
   // A Daytona agent's run, while Docker's image is held: its box is made, and the run ends, with no row about any image.
   for (const [id, box] of [["remote", "daytona"], ["local", "docker"]]) {

@@ -9,9 +9,12 @@
 // the server reads as `spend_cap_reached`, saying in plain words what was spent and what the request needs. A model serve has
 // no price for cannot be kept within a cap, so under one its requests are refused; a model listed at $0 is a known $0. What the run has
 // spent is read back from its store when the process starts, so it survives a restart, plus each response since; a
-// request in flight holds its worst case until it answers. A request stopped before its end counts at that worst case,
-// the most the provider can have billed for it, since a cut stream's own usage is not what it charged; the figure is
-// written on the request's end mark (request-start.ts), so a later process counts it the same. Nor can a spend no one
+// request in flight holds its worst case until it answers. A request the person stopped before its end counts at its input,
+// what it streamed (one token a byte) and STOP_ALLOWANCE_TOKENS of output the provider may have produced after the last
+// word read, never more than its worst case: a cut stream's own usage is not what it charged, and its worst case, once
+// the request is limited to what is left, is the rest of the cap. One that ended on an error after its response began
+// counts at its worst case. The figure is written on the request's end mark (request-start.ts), so a later process
+// counts it the same. Nor can a spend no one
 // knows (a request a crash cut, a cost that is not a number) or a model whose output is priced and that has no output
 // ceiling be kept within a cap: under one, each refuses the request, never passes as $0.
 // A request carrying a native web search tool reads pages into its input that its body does not hold: on claude-agent
@@ -70,6 +73,31 @@ export const THINKING_BUDGET_LEAST = 1024;
  *  adjustMaxTokensForThinking). Elsewhere a model's reasoning shares the output limit and takes no budget, so it is
  *  allowed its thinking level's budget beside the answer, else it comes back incomplete with no answer. */
 const BUDGET_APIS: ReadonlySet<string> = new Set(["anthropic-messages", "bedrock-converse-stream"]);
+/** The output tokens a request the person stopped counts beyond what it streamed: what the provider may have produced after
+ *  the last word read, before it saw the stop. A stopped request counts its input, each byte it streamed as a token, and
+ *  these, never more than it was held at (stoppedFigure). A stated bound, as NATIVE_SEARCH_ALLOWANCE_TOKENS is. */
+export const STOP_ALLOWANCE_TOKENS = 1024;
+/** The option a request's stopped figure rides on to its end mark (request-start.ts): what it counts at, given the answer
+ *  it streamed, when it is stopped before its end. A symbol, so no provider ever sends it. */
+export const STOPPED_USD = Symbol.for("agentrun.serve.stopped_usd");
+/** What a model answer streamed, in bytes: its text, its thinking, and each tool call's name and arguments as JSON. Each
+ *  byte counts as a token (a byte-level tokenizer never makes a token of less than one byte), as inputBound counts input. */
+export function streamedBytes(message: { content?: unknown } | undefined): number {
+  const blocks = Array.isArray(message?.content) ? (message.content as Array<Record<string, unknown> | null>) : [];
+  let bytes = 0;
+  for (const block of blocks) {
+    if (typeof block?.text === "string") bytes += Buffer.byteLength(block.text, "utf8");
+    if (typeof block?.thinking === "string") bytes += Buffer.byteLength(block.thinking, "utf8");
+    if (block?.type === "toolCall") bytes += Buffer.byteLength(`${typeof block.name === "string" ? block.name : ""}${JSON.stringify(block.arguments ?? {})}`, "utf8");
+  }
+  return bytes;
+}
+/** A request's figure if it is stopped before its end, given the answer it had streamed. */
+export type Stopped = (message: { content?: unknown }) => number;
+/** What a request stopped before its end counts at: its input and `streamed` tokens plus STOP_ALLOWANCE_TOKENS of output,
+ *  at most the output it was sent with (`limit`), at `cost`'s price; never more than `worst`, what it was held at. */
+export const stoppedFigure = (cost: (output: number) => number, limit: number, worst: number, streamed: number): number =>
+  Math.min(worst, cost(Math.min(limit, streamed + STOP_ALLOWANCE_TOKENS)));
 /** How pi's error for a request whose start mark could not be written begins (request-start.ts builds it from this): the
  *  request never left, so the entry answers none, and spentIn leaves it out by this. */
 export const MARK_NOT_WRITTEN = "the model request was not sent: its mark could not be written";
@@ -490,6 +518,10 @@ export interface CapGuard {
    *  or else its output ceiling, at the model's price): what the runner records for it, and counts it at when its own cost
    *  never comes in (cut short, or by a crash). */
   worstOf?(request: { inputTokensMax?: number; outputTokensMax?: number }): number | undefined;
+  /** What a request this guard admitted counts at if its client stops it part way, having streamed `streamed` tokens (one
+   *  a byte): its input bound and those tokens plus STOP_ALLOWANCE_TOKENS of output, at most its output limit, at the
+   *  model's price. The runner counts it at no more than its hold. Undefined when its input was not measured. */
+  stoppedOf?(request: { inputTokensMax?: number; outputTokensMax?: number }, streamed: number): number | undefined;
 }
 export type GuardRequest = {
   spentUsd: number | null;
@@ -532,6 +564,8 @@ export async function capBefore(cap: number | undefined, model: Model<Api> | und
       return most === undefined ? { refuse: capRefusal(cap, spentUsd, holding, name, cost(least)) } : { outputTokensMax: most };
     },
     worstOf: (request) => (typeof request.inputTokensMax === "number" && Number.isFinite(request.inputTokensMax) ? held(request) : undefined),
+    stoppedOf: (request, streamed) => (typeof request.inputTokensMax === "number" && Number.isFinite(request.inputTokensMax) && Number.isFinite(streamed) && streamed >= 0
+      ? price(request.inputTokensMax, Math.min(request.outputTokensMax ?? output, streamed + STOP_ALLOWANCE_TOKENS)) : undefined),
   };
 }
 
@@ -565,7 +599,8 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
   /** A request's worst case and the options it goes with (limited to what is left of the cap, when that is less than
    *  it asks for), or why the cap refuses it. `simpleCall`: through streamSimple or completeSimple, whose thinking pi-ai
    *  turns into a budget or an effort; a direct call sends its maxTokens as is. */
-  const judge = (model: Model<Api>, context: Context, options: Options | undefined, simpleCall: boolean): { worst: number; options?: Options } | { why: string } => {
+  type Judged = { worst: number; stopped: Stopped; options?: Options };
+  const judge = (model: Model<Api>, context: Context, options: Options | undefined, simpleCall: boolean): Judged | { why: string } => {
     if (unpriced.has(model.id)) return { why: noPrice(cap) };
     const ceiling = outputBound(model);
     if (ceiling === undefined) return { why: noCeiling(cap) };
@@ -580,7 +615,7 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
     const left = cap - spent - holding;
     const name = nameOf(model);
     // A model whose output costs nothing and names no ceiling: nothing to limit, only its input and fee to fit.
-    if (ceiling === 0) return cost(0) <= left ? { worst: cost(0) } : { why: capRefusal(cap, spent, holding, name, cost(0)) };
+    if (ceiling === 0) return cost(0) <= left ? { worst: cost(0), stopped: () => cost(0) } : { why: capRefusal(cap, spent, holding, name, cost(0)) };
     // What the request would send as it stands, thinking included: pi-ai clamps its maxTokens (or the model's) to what its
     // context leaves, and on an API whose thinking takes a budget adds the budget to it.
     const transcript = context as unknown as Parameters<typeof simple.clampMaxTokensToContext>[1];
@@ -591,14 +626,16 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
     const least = Math.min(leastOutput(model, thinking, (level) => simple.thinkingBudgetForLevel(level as never, options?.thinkingBudgets)), asked);
     const most = mostOutput(cost, least, asked, left);
     if (most === undefined) return { why: capRefusal(cap, spent, holding, name, cost(least)) };
-    if (most === asked) return { worst: cost(asked) };
+    // Stopped before its end, at most the output it was sent with: what it streamed and the allowance, within its worst case.
+    const stoppedAt = (limit: number): Stopped => (message) => stoppedFigure(cost, limit, cost(limit), streamedBytes(message));
+    if (most === asked) return { worst: cost(asked), stopped: stoppedAt(asked) };
     // Limited: sent with `most` tokens at most, thinking included. On a budget API the budget is squeezed first, keeping
     // the answer's 1,024, and maxTokens is what is left of `most` beside it, so pi-ai's sum is `most`.
     const clamp = { tokens: most, leftUsd: Math.round(left * 1e6) / 1e6, capUsd: cap };
-    if (!budgeted) return { worst: cost(most), options: { ...options, maxTokens: most, [CLAMP]: clamp } };
+    if (!budgeted) return { worst: cost(most), stopped: stoppedAt(most), options: { ...options, maxTokens: most, [CLAMP]: clamp } };
     const level = simple.clampReasoning(thinking)!;
     const budget = Math.min(simple.thinkingBudgetForLevel(thinking, options?.thinkingBudgets), most - ANSWER_TOKENS_LEAST);
-    return { worst: cost(most), options: { ...options, maxTokens: most - budget, thinkingBudgets: { ...options?.thinkingBudgets, [level]: budget }, [CLAMP]: clamp } };
+    return { worst: cost(most), stopped: stoppedAt(most), options: { ...options, maxTokens: most - budget, thinkingBudgets: { ...options?.thinkingBudgets, [level]: budget }, [CLAMP]: clamp } };
   };
   const refusal = (model: Model<Api>, why: string): AssistantMessage => ({
     role: "assistant", content: [], api: model.api, provider: model.provider, model: model.id, stopReason: "error", timestamp: Date.now(),
@@ -606,17 +643,19 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
     // "out of budget" is final to pi-ai's retry policy, whatever digits the amounts hold.
     errorMessage: why,
   });
-  /** Adds what `answer` cost to what the run has spent once it settles. One stopped before its end, one that ended on an
-   *  error after its response began (markResponseBegan: its usage is what had streamed, not what the provider can have
-   *  billed), or that failed with no answer, counts at `worst`, what the cap held for it (as spentIn reads its end mark);
-   *  without one (a deferred response) it is unknown, as is a cost that is not a number, from then on. */
-  const count = (answer: Promise<AssistantMessage>, worst?: number) => {
+  /** Adds what `answer` cost to what the run has spent once it settles. One stopped before its end counts at `stopped`
+   *  of what it streamed (stoppedFigure, at most `worst`); one that ended on an error after its response began
+   *  (markResponseBegan: its usage is what had streamed, not what the provider can have billed), or that failed with no
+   *  answer, at `worst`, what the cap held for it; each as spentIn reads its end mark. Without a figure (a deferred
+   *  response) it is unknown, as is a cost that is not a number, from then on. */
+  const count = (answer: Promise<AssistantMessage>, worst?: number, stopped?: Stopped) => {
     const add = (cost: unknown) => void (spent = spent !== null && typeof cost === "number" && Number.isFinite(cost) ? spent + cost : null);
-    const cut = (message: AssistantMessage) => message.stopReason === "aborted" || (message.stopReason === "error" && responseBegan.has(message));
-    return answer.then((message) => add(cut(message) ? worst : message.usage?.cost?.total), () => add(worst));
+    const at = (message: AssistantMessage) => message.stopReason === "aborted" ? (stopped ? stopped(message) : worst)
+      : message.stopReason === "error" && responseBegan.has(message) ? worst : message.usage?.cost?.total;
+    return answer.then((message) => add(at(message)), () => add(worst));
   };
   /** Sends a request judged to fit at `worst`, holding that until `answer` settles. */
-  const admit = (worst: number, answer: () => Promise<AssistantMessage>): Promise<AssistantMessage> => {
+  const admit = (worst: number, stopped: Stopped, answer: () => Promise<AssistantMessage>): Promise<AssistantMessage> => {
     held += worst;
     let answered: Promise<AssistantMessage>;
     try {
@@ -625,20 +664,20 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
       held -= worst;
       throw error;
     }
-    void count(answered, worst).finally(() => void (held -= worst));
+    void count(answered, worst, stopped).finally(() => void (held -= worst));
     return answered;
   };
   // A paid tool's check reads the spend with the requests in flight held at their worst case (and adds the paid holds
   // itself), and its charge joins it.
   useSpend({ cap, spent: () => (spent === null ? null : spent + held), add: (usd) => void (spent = spent !== null && typeof usd === "number" && Number.isFinite(usd) ? spent + usd : null) });
-  /** `options` with the request's worst case for its marks. */
-  const carrying = <O>(options: O, worst: number): O => ({ ...options, [HELD_USD]: worst }) as O;
+  /** `options` with the request's worst case, and its figure if it is stopped, for its marks. */
+  const carrying = <O>(options: O, { worst, stopped }: Judged): O => ({ ...options, [HELD_USD]: worst, [STOPPED_USD]: stopped }) as O;
   const stream = (send: (model: Model<Api>, context: Context, options?: Options) => AssistantMessageEventStream, simpleCall: boolean) =>
     (model: Model<Api>, context: Context, options?: Options): AssistantMessageEventStream => {
       const judged = judge(model, context, options, simpleCall);
       if ("worst" in judged) {
         let events: AssistantMessageEventStream | undefined;
-        admit(judged.worst, () => (events = send(model, context, carrying(judged.options ?? options, judged.worst))).result());
+        admit(judged.worst, judged.stopped, () => (events = send(model, context, carrying(judged.options ?? options, judged))).result());
         return events!;
       }
       const refused = createAssistantMessageEventStream();
@@ -657,7 +696,7 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
   const complete = (send: (model: Model<Api>, context: Context, options?: Options) => Promise<AssistantMessage>, simpleCall: boolean) =>
     (model: Model<Api>, context: Context, options?: Options): Promise<AssistantMessage> => {
       const judged = judge(model, context, options, simpleCall);
-      return "worst" in judged ? admit(judged.worst, () => send(model, context, carrying(judged.options ?? options, judged.worst))) : Promise.resolve(refusal(model, judged.why));
+      return "worst" in judged ? admit(judged.worst, judged.stopped, () => send(model, context, carrying(judged.options ?? options, judged))) : Promise.resolve(refusal(model, judged.why));
     };
   const guarded: Record<PropertyKey, unknown> = {
     stream: stream(models.stream.bind(models) as never, false),

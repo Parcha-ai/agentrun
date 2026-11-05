@@ -807,7 +807,7 @@ test("a subagent's subagent shows under the call that spawned it", () => {
   ]);
 });
 
-test("no URL value reaches a row, whichever path wrote it; only a user's own text stays as typed", () => {
+test("no URL value reaches a row, whichever path wrote it; only a user's own message, its text and summary, stays as typed", () => {
   const at = (id) => `https://x.example/${id}?token=SECRET${id}`;
   const entries = [
     user(`Open ${at(1)}`, 0),
@@ -837,7 +837,8 @@ test("no URL value reaches a row, whichever path wrote it; only a user's own tex
   for (const rows of [timelineOf(entries), reducer.rows()]) {
     const [typed] = rows.filter((row) => row.kind === "user_message");
     assert.ok(typed.text.includes("SECRET1"), "the person's own text stays as typed");
-    const rest = JSON.stringify(rows.map((row) => (row === typed ? { ...row, text: null } : row)));
+    assert.ok(typed.summary.includes(`Open ${at(1)}`), `the person's own summary stays as typed: ${typed.summary}`);
+    const rest = JSON.stringify(rows.map((row) => (row === typed ? { ...row, text: null, summary: null } : row)));
     assert.deepEqual(rest.match(/SECRET\d+/g), null);
     assert.ok(rest.includes("https://x.example/14?token=…"));
   }

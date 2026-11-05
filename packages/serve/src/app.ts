@@ -129,8 +129,9 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   // installed first so it comes before every other extension's and the instructions.
   if (revision.kind === "agentic") registry.install(EnvironmentLine);
   registry.install(coding.extension);
-  // What the run's agent learned goes into its instructions, the one path for every harness (learning.ts).
-  const learned = revision.kind === "agentic" ? await withLearned(where.root, revision.body.instructions) : "";
+  // What the run's agent learned goes into its instructions, and the skills it wrote join the revision's, the one path for
+  // every harness (learning.ts).
+  const learned = revision.kind === "agentic" ? await withLearned(where.root, where.work, revision.body.instructions, Object.keys(revision.body.skills)) : { instructions: "", skills: [] };
   // The run's effort, as its thinking level reads it: its note on how to work follows the instructions on every harness
   // (effort-guidance.ts). None without an effort.
   const guidance = effortGuidance(process.env[EFFORT_ENV]);
@@ -139,7 +140,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     // claude-agent loads the skills its adapter takes itself (its Skill tool), and its prompt keeps only the ones it would
     // refuse; codex's prompt, and a faux harness's, keep every skill (skills.ts).
     const check = harness === "claude-agent" && !env[FAUX_HARNESS_ENV] ? await claudeSkillCheck() : undefined;
-    const { system: instructions, native } = await systemOf(learned, Object.keys(revision.body.skills), where.work, check);
+    const { system: instructions, native } = await systemOf(learned.instructions, learned.skills, where.work, check);
     // The session's system prompt starts with the line, made as this process opens it: a run resumed on a later day is
     // opened with that day.
     const spec = { key: `run:${run.id}`, label: run.agent, system: [environmentLine(), instructions, guidance].filter((text): text is string => Boolean(text)), context: "fresh" as const, thinking: thinkingFor(harness, thinkingLevel) };
@@ -198,7 +199,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   };
   if (revision.kind === "agentic") {
     const tools = (await Promise.all(revision.body.tools.map((name) => bind(name)))).flatMap((binding) => binding.tools);
-    const instructions = [await promptOf(learned, Object.keys(revision.body.skills), where.work), guidance].filter(Boolean).join("\n\n");
+    const instructions = [await promptOf(learned.instructions, learned.skills, where.work), guidance].filter(Boolean).join("\n\n");
     return { models, registry, ...hooks, ...(stops.length ? { wake } : {}), root: { agent: { model, thinkingLevel, instructions, tools } }, onOpen: async (durable: DurableRun) => (settleIn(rootRecordOf(durable.harness)), marked.open(durable)) } as unknown as AppOptions;
   }
   const input = isObject(meta?.input) ? meta.input : {};

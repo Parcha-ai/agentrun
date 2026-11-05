@@ -344,9 +344,24 @@ since nothing binds `work/` there):
   the key to the calls a run's tools make of their own sandbox (a read of it, and its toolbox's programs and files). It
   refuses every other call (a create, a listing, a stop, a delete, another run's sandbox or token, any other host), and
   it never follows a redirect, nor does the server's own Daytona client: a redirect would carry the key.
-- Its network is blocked (`networkBlockAll`). A sandbox Daytona does not report blocked is deleted, and the tool call
-  fails saying so. An organization on Daytona's tier 1 or 2 keeps its own network policy, which a sandbox cannot
-  override, so a run there gets no Daytona box.
+- It reaches the hosts `AGENTRUN_BOX_ALLOW` names, and no other: Daytona's domain list (`domainAllowList`), which
+  Daytona's egress proxy enforces. Unset or empty, the list is the package registries and GitHub: `pypi.org`,
+  `files.pythonhosted.org`, `registry.npmjs.org`, `registry.yarnpkg.com`, `github.com` and `codeload.github.com`. A
+  comma list of hosts (a `*.` wildcard allowed, at most 100) replaces it, so to add one, copy this list and extend it.
+  `AGENTRUN_BOX_ALLOW=none` blocks its network (`networkBlockAll`), as before the list. `*`, an IP address, a CIDR, a
+  port or a URL refuses the start. Capabilities show the hosts in `places.allow`, and the box's `network` (`allowlist` or
+  `none`) in its `places.boxes` entry. Daytona's proxy re-signs each TLS connection with Daytona's own CA, which the
+  sandbox's environment names to pip, npm, git and curl (`REQUESTS_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`, `GIT_SSL_CAINFO`,
+  `CURL_CA_BUNDLE`, `SSL_CERT_FILE`).
+- A sandbox whose own read does not carry the list it was asked for is deleted. Daytona takes a domain list on its tier 3
+  and 4 only: where it keeps none, or refuses it, the server makes the run's box again with its network blocked, never
+  open, and makes every later Daytona box that way until it starts again. The log says so once
+  (`event=box_network box=daytona network=none refused=<code>`), and capabilities show the box's `network` as `none`
+  with the reason. A box the server finds with no network is kept; one with a list when the setting is `none` is
+  destroyed and made again. A changed list applies to the boxes made after the start that reads it.
+- A sandbox Daytona does not report blocked, when blocked was asked, is deleted, and the tool call fails saying so. An
+  organization on Daytona's tier 1 or 2 keeps its own network policy, which a sandbox cannot override, so a run there
+  gets no Daytona box unless that policy blocks it.
 - A sandbox cannot bind `work/`. The server copies `work/` into it at `/run/agentrun/run/work` when it makes it, and
   copies what changed back at each turn's end (a read of the run's files waits for that copy) and once more before the
   run's end is recorded. Daytona's answer is never trusted: the copy back writes regular files and directories only,
@@ -1264,7 +1279,11 @@ left out: 2 sessions still being written: they come in next time
      [sandbox](#sandbox), where it and the file tools run in the run's box. The run is `queued` until its first message shows; while the process runs, the
      timeline comes from its door's events through `@parcha/pi-durable-agent/timeline`. Once the run is idle and its
      newest row is the agent's answer, the server sends the process SIGTERM. A model error ends it `failed`
-     (`run_failed`), and a run its `max_cost_usd` stops ends `failed` (`spend_cap_reached`, [below](#spend-cap)).
+     (`run_failed`), and a run its `max_cost_usd` stops ends `failed` (`spend_cap_reached`, [below](#spend-cap)). A
+     provider's content filter stopping the answer ends it `failed` with `moderated` on every harness, saying so in plain
+     words ("The model provider stopped this answer (its content filter). Rephrase the request, or try another model.");
+     the provider's own words stay on the Timeline's error row. On claude-agent and codex the session's model proxy reads
+     the provider's stop and ends the turn at once, so the CLI never asks for the refused answer again.
      A stop sent while the run still reads `queued` (a message sent to it not yet in its timeline) waits, up to a
      request's deadline, for that message to show, then stops the turn as it stops any working run.
      A stopped run can be continued: a follow-up starts a fresh turn on the whole history, and the turn the stop cut is
@@ -1335,11 +1354,23 @@ Each run of an agent that learns starts from `main` as it is when the run is mad
   nothing learned yet is told so. A run that does not learn (or whose seed failed) gets no `# Learned`. Every name, description, text and index line is cut of the server's secrets as they are when the run is made,
   as a person's reads are. That is pi's system prompt and claude-agent's and codex's instructions: the same channel
   `CLAUDE.md` and `AGENTS.md` travel in. No such file is written into the run's work (claude-agent keeps project
-  settings off, so a `.claude/` in the work never loads), and no skill is learned. The pin keeps the section the run
+  settings off, so a `.claude/` in the work never loads). The pin keeps the section the run
   reads (`section`), so a resume or a follow-up reads the same; a pin an earlier server wrote, the index alone
   (`learned`), is read as that server gave it.
 - `MEMORY.md` and the active notes are copied into the run's `work/.learning/`, made fresh and cut of the server's
   secrets the same way, for the run to read; a note that is not active is not, and neither is its line in the index.
+- The skills the agent wrote, each a folder `skills/<name>/` on `main` with its `SKILL.md`, join the revision's own:
+  each is copied, every file of it, into the run's `work/.agents/skills/<name>/`, and the run gets it as it gets the
+  revision's (pi and codex read each `SKILL.md` in their prompt, claude-agent loads the ones its adapter takes through
+  its Skill tool). A skill named like one of the revision's is the revision's, and only an active skill is served: one
+  whose `SKILL.md` front matter says `status: pending` (held for its owner's OK), or any status but `active`, is not.
+  The learned ones get 256 KiB, every file of each together, and never more than the revision's skills leave of the 1
+  MiB an adapter takes of a run's skills in all, so they never push the revision's back into the prompt: the one
+  changed last on `main` first, each whole while it fits. One that does not fit, or holds one of the server's secrets,
+  is left out. The pin names the files of the ones laid (`skills`) and the ones left out (`skills_left_out`), and a
+  follow-up gets them laid again, fresh, whatever the run wrote over them; one the work no longer holds whole when the
+  run's process starts is left out of what its harness gets, and the run goes on. A skill whose name or files are out
+  of shape is not read, and a symbolic link or a submodule at `skills/` or anywhere under it is a learning fault.
 
 The server reads the commit with git plumbing, never the working tree. What it holds that is not a regular UTF-8 file of
 1 MiB or less, or a note out of shape, is not read, and the server's stderr names it. A learning fault never blocks a
@@ -1381,8 +1412,8 @@ neither, on the agent's own model. `GET /capabilities` names it as `learning.gra
 cheap model is a poor grader, so point the strong tier (or `--grade-model`) at a strong one. The grader reads each active
 note's index line, the whole text only of the notes the proposal supersedes, what the user said in the run (cut of the
 server's secrets, as the proposal keeps it), and the new notes, so its prompt stays under 200,000 characters however
-many notes the folder holds. Only with Jev's key here does an injection screen
-run first, on Jev: a note it scores at `INJECTION_THRESHOLD` (0.75) or over, or cannot score, drops the run. What the
+many notes the folder holds. No injection screen runs before it: a page classifier cannot see where a note came
+from, and read a preference the user stated as a planted instruction; the grader's Planted question decides. What the
 grade spends is in no run's totals: it is kept on the run's learning, and counted once on `GET /usage` under the meter
 `learning`, by agent and by day; a call cut off at its bound spent what nobody knows, so its cost is unknown, never $0.
 
@@ -1402,8 +1433,8 @@ The run's `learning` (on `GET /runs/{run_id}`, and `{state, reason, detail}` in 
 characters and no time) says how it went: `seeded`, then
 `reflecting` during the turn and until what it answered is checked, `proposed` while it is graded, and `merged`, or
 `dropped` with a reason from a closed list (`seed_failed`, `no_budget`, `unknown_cost`, `cancelled`, `crashed`,
-`reflect_timeout`, `reflect_failed`, `empty`, `unparsed`, `propose_failed`, `checker`, `screen`, `screen_down`,
-`grader`, `grade_failed`; `no_write_tool` and `tool_denied` are an older server's, still read and counted, and no run
+`reflect_timeout`, `reflect_failed`, `empty`, `unparsed`, `propose_failed`, `checker`, `grader`, `grade_failed`;
+`no_write_tool`, `tool_denied`, `screen` and `screen_down` are an older server's, still read and counted, and no run
 gets them now). It is `null` for a
 run that does not learn (its agent's `learning` is not true, the server's switch was off when it started, or it is a
 workflow's or an imported run). Its `detail` says the same in a person's words, never the machine's: "Started from 2
@@ -1540,13 +1571,21 @@ Under a cap, whatever cannot be priced is refused, never passed as $0:
   with no held figure (below). Every later request of the run is refused. `claude-agent` and `codex` runs also continue
   after a cut, at the worst case the cap held, as pi does.
 
-On pi a request stopped before its end (`POST /runs/{id}/stop`, or a summary that failed) or cut by a crash (its process
-gone mid-request) counts at the worst case the cap held for it, the most the provider can have billed, never at the cut
-stream's own usage (the Responses API reports none until the end). The figure is written on the request's start mark
-(`agentrun.request_started`) and on the end mark of one stopped (`agentrun.request_ended`), as `heldUsd`, so a later
-process counts it the same: a capped pi run stopped and sent another message, or opened again after its process died,
-goes on while its cap allows. A cut request from a store written before serve kept the figure has none, and is a spend
-no one knows.
+A request you stop counts what it streamed plus up to 1,024 output tokens the provider may have produced after the last
+word we read; never more than it was held. That is its input bound and each byte it streamed (text, thinking and tool
+calls on pi; the response as it was sent on `claude-agent` and `codex`) as a token, plus 1,024 tokens of output
+(`STOP_ALLOWANCE_TOKENS`), at the model's price, and at most the worst case the cap held for it. The cut stream's own
+usage is never read: it is not what the provider billed (the Responses API reports none until the end, and Anthropic's
+output count comes at the end). The 1,024 tokens are a stated bound, as the native search allowance is: a provider that
+went on producing for longer after the stop could bill past what is counted. A request that ended on an error after its
+response began (an overload part way, a reset), or a summary that failed, still counts at its worst case, and so does a
+request cut by a crash (its process gone mid-request).
+
+On pi the figure is written on the request's start mark (`agentrun.request_started`, its worst case) and on the end mark
+of one stopped (`agentrun.request_ended`, what it counts at), as `heldUsd`; on `claude-agent` and `codex` on the
+request's `runner.request` record (its worst case) and, for one stopped, on its `runner.turn`. A later process counts it
+the same: a capped run stopped and sent another message, or opened again after its process died, goes on while its cap
+allows. A cut request from a store written before serve kept the figure has none, and is a spend no one knows.
 
 A refusal says so in plain words, with the numbers, on the run's error and on its timeline row: "Not sent: this run's
 cap of $0.01 can't cover one Claude Sonnet 5.5 request (at least $0.03). Raise the cap to at least $0.03 to run it.", and
@@ -1606,11 +1645,14 @@ carries no cost at all, as from a provider that does not price the model. The te
 ## Safety
 
 - An import (`agentrun-serve import`, and setup's import) cuts secrets out of everything it writes: the values of the
-  environment's key-shaped variables and the keys saved on this server, and the keys [secretlint](https://github.com/secretlint/secretlint)'s
+  environment's key-shaped variables and the keys saved on this server, the secrets this server made and keeps (its API
+  token, its door token, its sign-in secret, and its webhook's signing secret when the seal key opens it; when it does
+  not, the CLI's import says so once, on stderr, and goes on), and the keys [secretlint](https://github.com/secretlint/secretlint)'s
   recommended rules find in what it reads (Anthropic, OpenAI, GitHub, Slack and Stripe keys, AWS secret keys beside their
   name, private keys, database URLs with a password, and more). Each becomes `[redacted]`, and the import says how many
-  it removed. Known key formats are removed. Other secrets in your session history, like passwords in config files, are
-  imported as they are.
+  distinct values it removed. Known key formats are removed. Other secrets in your session history, like passwords in
+  config files, are imported as they are. So are a key-shaped value this server did not make (a `whsec_` secret from
+  another service) and a run's own door token.
 - The decision keys (`TYPESAFE_API_KEY`, `PARALLEL_API_KEY`, `OPENROUTER_API_KEY` as Jev's or OpenRouter's) are never in
   a run's environment or files: a run's process gets on a pipe of their own only those it needs, for its decision
   providers ([decision workflows](#decision-workflows)) and its web tools: Jev's (by its route) for a node that names Jev
