@@ -236,4 +236,31 @@ describe("AnalyticsTab, read again", () => {
     await act(async () => { await new Promise((r) => setTimeout(r, 1500)); });
     expect(tab.asked).toHaveLength(1);
   });
+
+  it("an unsettled answer that replaced a settled one is never taken for the range on screen: back on 30 days, 30 days is read again", async () => {
+    // 30 days settles; 7 days answers unsettled (its retries then never answer); back on 30 days the figures on screen
+    // are 7 days', so 30 days is read again rather than kept as if it were shown.
+    const reads: (string | undefined)[] = [];
+    const v2 = {
+      statsOver: ({ from }: { from?: string }) => {
+        reads.push(from);
+        const s = statsWith(ANALYTICS);
+        if (reads.length === 1) return Promise.resolve(s);
+        if (reads.length === 2) return Promise.resolve({ ...s, runs: { ...s.runs, status_unknown: 1 } });
+        if (from === "2026-10-09T00:00:00.000Z") return new Promise(() => {});
+        return Promise.resolve(s);
+      },
+      listAgentRuns: async () => ({ runs: [], next_cursor: null }),
+    };
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
+    act(() => root!.render(createElement(AnalyticsTab, { agent: agentFixture("invoice-checker"), v2: v2 as never, now: () => NOW })));
+    await settle();
+    const pick = async (range: string) => { await act(async () => { host.querySelector<HTMLInputElement>(`[aria-label="Range"] input[value="${range}"]`)!.click(); }); await settle(); };
+    await pick("7d");
+    await pick("30d");
+    await settle();
+    expect(reads.filter((f) => f === "2026-09-16T00:00:00.000Z")).toHaveLength(2);
+  });
 });

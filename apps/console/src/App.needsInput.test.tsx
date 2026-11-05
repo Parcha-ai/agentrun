@@ -22,7 +22,7 @@ const STATS = {
   per_agent: [{ agent_id: "calc", name: "Calculator", runs: 2 }], cost: { usd: null, basis: null, unknown_runs: 2 }, archived: { agents: 0, runs: 0 }, analytics: ANALYTICS,
 };
 
-function serve() {
+function serve({ askingFails = false } = {}) {
   vi.stubGlobal("fetch", async (url: string) => {
     const u = new URL(url, "http://serve.test");
     if (u.pathname === "/v2/auth/session") return json(200, { password_set: true, signed_in: true });
@@ -32,6 +32,7 @@ function serve() {
     if (u.pathname === "/v2/agents") return json(200, { agents: [], next_cursor: null });
     if (u.pathname === "/v2/runs") {
       const status = u.searchParams.get("status");
+      if (askingFails && status === "input_required") return json(500, { error: { code: "internal", message: "The store could not be read.", retryable: false } });
       return json(200, { runs: !status || status === "input_required" ? [STOPPED, ASKING] : [], next_cursor: null });
     }
     return json(404, { error: { code: "not_found", message: `no route ${u.pathname}`, retryable: false } });
@@ -59,5 +60,15 @@ describe("Mission Control's Needs input", () => {
     const stopped = [...(section(host, "Recent runs")?.querySelectorAll("li") ?? [])].find((li) => li.textContent?.includes("Write five files"));
     expect(stopped?.textContent).toContain("Stopped");
     expect(stopped?.textContent).toContain("send a message to continue");
+  });
+
+  it("a first read of the questions that fails leaves the tile unknown, never a definite 0", async () => {
+    serve({ askingFails: true });
+    location.hash = "#/";
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(App)));
+    await wait(() => !!section(host, "Recent runs") && !!host.textContent?.includes("could not be read"), "Mission Control, with the questions' read failed");
+    expect(tile(host, "Needs input")).toBe("–");
   });
 });
