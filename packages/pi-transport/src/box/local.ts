@@ -62,22 +62,30 @@ while [ "$round" -lt ${KILL_ROUNDS} ]; do
 	round=$((round + 1))
 	found=$(grep -l -a -z -F -x -e "$3" /proc/[0-9]*/environ 2>/dev/null)
 	[ -n "$found" ] || break
+	# Their groups first: a runner killed alone leaves its program in the group, with nothing left that leads back to it.
+	groups=
+	for environ in $found; do
+		pid=\${environ#/proc/}
+		groups="$groups $(group_of "\${pid%/environ}")"
+	done
+	for group in $(printf '%s\\n' $groups | sort -u); do end_group "$group" "$4"; done
 	for environ in $found; do
 		pid=\${environ#/proc/}
 		kill -KILL "\${pid%/environ}" 2>/dev/null
 	done
 done
 # One listing of every working directory, so a machine with thousands of processes costs two processes, not thousands.
-for pid in $(ls -l /proc/[0-9]*/cwd 2>/dev/null | awk -v d="$dir" -v self="$$" '{
+found=$(ls -l /proc/[0-9]*/cwd 2>/dev/null | awk -v d="$dir" -v self="$$" '{
 	at = index($0, " -> "); if (!at) next
 	path = substr($0, at + 4); sub(/ \\(deleted\\)$/, "", path)
 	if (path != d && index(path, d "/") != 1) next
 	name = substr($0, 1, at - 1); sub(/.*\\/proc\\//, "", name); sub(/\\/cwd$/, "", name)
 	if (name != self) print name
-}'); do
-	end_group "$(group_of "$pid")" "$4"
-	kill -KILL "$pid" 2>/dev/null
-done
+}')
+groups=
+for pid in $found; do groups="$groups $(group_of "$pid")"; done
+for group in $(printf '%s\\n' $groups | sort -u); do end_group "$group" "$4"; done
+for pid in $found; do kill -KILL "$pid" 2>/dev/null; done
 rm -rf -- "$2" 2>/dev/null || { chmod -R u+rwX -- "$2" 2>/dev/null; rm -rf -- "$2"; }`;
 
 export type LocalBoxesOptions = {
