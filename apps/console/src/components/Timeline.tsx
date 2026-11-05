@@ -1,10 +1,10 @@
-import { Brain, ChevronRight, CircleAlert, CircleDollarSign, FileText, Flag, LoaderCircle, MessageCircleQuestion, MessageSquareText, Scale, ShieldQuestion, User, Wrench } from "lucide-react";
+import { Brain, ChevronRight, CircleAlert, CircleDollarSign, CirclePause, FileText, Flag, LoaderCircle, MessageCircleQuestion, MessageSquareText, Scale, ShieldQuestion, User, Wrench } from "lucide-react";
 import { useState } from "react";
 import { BROWSER_TOOL_NAMES } from "@pi-browser/contract";
 import { nameOf } from "@timeline/labels";
 import { Chip } from "@/components/ui/chip";
 import { clock } from "@/lib/format";
-import { rowDetail, rowFailed, type Step, steps } from "@/lib/timeline";
+import { rowDetail, rowFailed, rowPaused, type Step, steps } from "@/lib/timeline";
 import { cn } from "@/lib/utils";
 import type { TimelineRow } from "@/lib/v2";
 
@@ -43,7 +43,7 @@ const took = (ms: number) => (ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)
  *  timeline library gives each (nameOf: "Open or act on a page in the browser", as a run's tool counts show it). */
 const BROWSER = new Set<string>(BROWSER_TOOL_NAMES);
 const toolName = (tool: string | null | undefined) => (tool && BROWSER.has(tool) ? nameOf(tool) : tool);
-const label = (row: TimelineRow) => fromServer(row) ? "AgentRun" :
+const label = (row: TimelineRow) => fromServer(row) ? "AgentRun" : rowPaused(row) ? "Paused" :
   ({ user_message: "You", thinking: "Thinking", tool_use: toolName(row.tool_name) ?? "Tool", tool_result: toolName(row.tool_name) ?? "Result", waiting: "Waiting for you", usage: "Usage", final_answer: "Answer", phase: "Phase", error: "Error", decision: "Decision", text_block: "Text", tool_approval_requested: "Your approval" })[row.kind] ?? row.kind;
 
 /** One step. With one row per action, a call's row carries its own outcome: `running` until it ends (a spinner), a
@@ -53,7 +53,8 @@ function Row({ step, last }: { step: Step; last: boolean }) {
   const row = step.row;
   const [open, setOpen] = useState(false);
   const running = row.kind === "tool_use" && row.tool_status === "running";
-  const Icon = running ? LoaderCircle : ICON[row.kind] ?? Flag;
+  const paused = rowPaused(row);
+  const Icon = running ? LoaderCircle : paused ? CirclePause : ICON[row.kind] ?? Flag;
   const detail = step.above ? null : step.detail ?? rowDetail(row);
   const interrupted = row.tool_status === "interrupted";
   const failed = rowFailed(row) || interrupted;
@@ -61,7 +62,7 @@ function Row({ step, last }: { step: Step; last: boolean }) {
   return (
     <li className="relative flex gap-3">
       <div className="flex w-7 shrink-0 flex-col items-center">
-        <span className={cn("mt-3 flex size-7 items-center justify-center border bg-background", (row.kind === "waiting" || awaitsApproval(row)) && "border-warning/60 text-warning-text", failed && "border-destructive/60 text-destructive-text", missing && "text-muted-foreground")}>
+        <span className={cn("mt-3 flex size-7 items-center justify-center border bg-background", (row.kind === "waiting" || awaitsApproval(row) || paused) && "border-warning/60 text-warning-text", failed && "border-destructive/60 text-destructive-text", missing && "text-muted-foreground")}>
           <Icon className={cn("size-3.5", running && "animate-spin text-run-active")} aria-hidden />
         </span>
         {!last && <span className="w-px flex-1 bg-border" aria-hidden />}
