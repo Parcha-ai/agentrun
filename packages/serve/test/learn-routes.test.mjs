@@ -416,7 +416,7 @@ test("a note's name that holds a value made secret after it was written is never
   // A third run reads the note by that name.
   assert.equal((await first.api("PUT", "/agents/namer/definition", learner("namer", { tools: ["write", "read"], instructions: `Answer the question.\nRead: ${JSON.stringify([`.learning/${named}`])}`, version: 3 }))).status, 200);
   const three = await ended(first.api, await started(first.api, "namer"));
-  assert.deepEqual(three.view.learning.used, [{ file: named, name: "Plan" }], "shown as it is while no secret");
+  assert.deepEqual(three.view.learning.read, [{ file: named, name: "Plan" }], "shown as it is while no secret");
   await first.close();
 
   // The server again, with the name's value as a launcher's secret (the model key).
@@ -450,9 +450,9 @@ test("a note's name that holds a value made secret after it was written is never
   const runTwo = (await api("GET", `/runs/${two.view.run_id}`)).body.learning;
   const runThree = (await api("GET", `/runs/${three.view.run_id}`)).body.learning;
   const listed = (await api("GET", "/agents/namer/runs")).body.runs;
-  assert.deepEqual([runTwo.learned, runThree.used], [[{ file: "[redacted]", name: "Plan", supersedes: ["old-plan.md"] }], [{ file: "[redacted]", name: "Plan" }]]);
+  assert.deepEqual([runTwo.learned, runThree.read], [[{ file: "[redacted]", name: "Plan", supersedes: ["old-plan.md"] }], [{ file: "[redacted]", name: "Plan" }]]);
   const inList = (runId) => listed.find((run) => run.run_id === runId).learning;
-  assert.deepEqual([inList(two.view.run_id).learned, inList(three.view.run_id).used], [runTwo.learned, runThree.used], "and in the list");
+  assert.deepEqual([inList(two.view.run_id).learned, inList(three.view.run_id).read], [runTwo.learned, runThree.read], "and in the list");
   const shown = JSON.stringify([view, page1, page2, log, diff, learned, old.body, [...old.headers], [...own.headers], retire.body, [...retire.headers], after, runTwo, runThree, listed]);
   assert.ok(!shown.includes(value), "the value is nowhere a person reads");
 });

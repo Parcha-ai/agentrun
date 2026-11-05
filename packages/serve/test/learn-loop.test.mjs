@@ -47,9 +47,10 @@ for (const harness of ["pi", "claude-agent", "codex"]) {
     const learned = [{ file: FILE, name: "Check units", supersedes: [] }];
     assert.deepEqual(readsOf(first.rows, READS[0]), ["failed"], "run 1's read of the note failed");
     assert.deepEqual(first.view.learning.learned, learned);
-    assert.equal("used" in first.view.learning, false, "run 1 used no note");
+    assert.equal("read" in first.view.learning, false, "run 1 read no note");
+    assert.equal("given" in first.view.learning, false, "run 1 started with nothing learned");
     const whole1 = (await api("GET", `/runs/${one}/learning`)).body;
-    assert.deepEqual([whole1.learned, "used" in whole1, whole1.detail], [learned, false, "Learned: Check units"], "the run's learning whole says the same");
+    assert.deepEqual([whole1.learned, "read" in whole1, "given" in whole1, whole1.detail], [learned, false, false, "Learned: Check units"], "the run's learning whole says the same");
     for (const path of ["/runs", `/agents/${id}/runs`]) assert.deepEqual((await api("GET", path)).body.runs.find((run) => run.run_id === one).learning, { state: "merged", reason: null, detail: "Learned: Check units", learned }, path);
     // The turn's rows are labelled learning: its message, and its answer, with the note, which is no answer of the run's.
     const turn = reflectRows(first.rows);
@@ -95,12 +96,13 @@ for (const harness of ["pi", "claude-agent", "codex"]) {
     // It used the note, read as the job's first call: the note by its name, MEMORY.md (read too) no note at all. In its
     // view, and in every list, as serve.json keeps it.
     assert.deepEqual([readsOf(second.rows, READS[0]), readsOf(second.rows, READS[1])], [["success"], ["success"]], "run 2 read both");
-    const used = [{ file: FILE, name: "Check units" }];
-    assert.deepEqual(second.view.learning.used, used);
+    const read = [{ file: FILE, name: "Check units" }];
+    assert.deepEqual(second.view.learning.read, read);
+    assert.deepEqual(second.view.learning.given, read, "run 2 started with the note");
     const whole2 = (await api("GET", `/runs/${two}/learning`)).body;
-    assert.deepEqual([whole2.used, "learned" in whole2], [used, false], "the run's learning whole says the same");
-    for (const path of ["/runs", `/agents/${id}/runs`]) assert.deepEqual((await api("GET", path)).body.runs.find((run) => run.run_id === two).learning, { state: "dropped", reason: "empty", detail: "Nothing new to remember from this run.", used }, path);
-    assert.deepEqual((await savedOf(data, two)).learning.used, used, "kept in serve.json as the run settled");
+    assert.deepEqual([whole2.read, whole2.given, "learned" in whole2], [read, read, false], "the run's learning whole says the same");
+    for (const path of ["/runs", `/agents/${id}/runs`]) assert.deepEqual((await api("GET", path)).body.runs.find((run) => run.run_id === two).learning, { state: "dropped", reason: "empty", detail: "Nothing new to remember from this run.", given: read, read }, path);
+    assert.deepEqual([(await savedOf(data, two)).learning.read, (await savedOf(data, two)).learning.given], [read, read], "kept in serve.json as the run settled");
     // It learned nothing new: its turn added nothing, and main did not move.
     settled(second.view, second.rows, "dropped", "empty");
     assert.equal("learned" in second.view.learning, false, "run 2 learned nothing");
