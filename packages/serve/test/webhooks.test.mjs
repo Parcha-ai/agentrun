@@ -984,6 +984,50 @@ test("a start's catch-up queues each end the store holds and the ledger does not
   assert.equal(ledgerOf(dir).lost.ended, now);
 });
 
+test("a start's catch-up queues no end of a run that moved on while it read earlier rows: continued to a new wait, its saved end goes once, whether that end was still being sent or delivered", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
+  const env = { AGENTRUN_SEAL_KEY: sealKey() };
+  for (const first of ["sending", "delivered"]) {
+    let answer;
+    const answered = new Promise((resolve) => (answer = resolve));
+    const isFirstEnd = (r) => JSON.parse(r.body).type === "run.ended" && JSON.parse(r.body).data.run_id === "moved";
+    // While "sending", the first end's try waits for its answer until the catch-up is done.
+    const hook = await receiver(t, (n) => (first === "sending" && isFirstEnd(hook.got[n - 1]) ? answered.then(() => 200) : 200));
+    const dir = await scratch(t);
+    const webhooks = new Webhooks(dir, env, () => undefined, []);
+    t.after(() => webhooks.close());
+    webhooks.save({ url: hook.url });
+    // Set a minute ago: both ends came after it, so both are due.
+    const config = JSON.parse(readFileSync(join(dir, "webhook.json"), "utf8"));
+    writeFileSync(join(dir, "webhook.json"), `${JSON.stringify({ ...config, updated_at: new Date(Date.now() - 60_000).toISOString() })}\n`);
+    const notice = (id, status = "completed") => ({ run_id: id, agent_id: "a", status, title: id });
+    const [earlier, moved] = [new Date(Date.now() - 2_000).toISOString(), new Date(Date.now() - 1_000).toISOString()];
+    // The store as the start read it: both runs ended. The ledger has the second's end, queued before.
+    const store = new Map([["earlier", { id: "earlier", state: "completed", endedAt: earlier }], ["moved", { id: "moved", state: "completed", endedAt: moved }]]);
+    assert.equal(webhooks.emit("run.ended", notice("moved"), moved), "queued");
+    if (first === "delivered") await until(() => webhooks.attemptsView().attempts.length === 1, "its first end, answered");
+    let reading = false;
+    let resume;
+    const resumed = new Promise((resolve) => (resume = resolve));
+    const describe = async (id) => {
+      if (id === "earlier") (reading = true, await resumed);
+      return notice(id);
+    };
+    const catchingUp = webhooks.catchUp([...store.values()], describe);
+    await until(() => reading, "the catch-up reading the earlier row");
+    // While the catch-up reads the earlier row, the second run is continued and comes to a new wait.
+    store.set("moved", { id: "moved", state: "running" });
+    assert.equal(webhooks.emit("run.needs_input", notice("moved", "input_required"), "row_9"), "queued");
+    resume();
+    await catchingUp;
+    answer();
+    await until(() => hook.got.length >= 3, `the earlier end, the moved run's end and its wait (${first})`);
+    await sleep(300);
+    const ids = hook.got.map((r) => r.headers["webhook-id"]).sort();
+    assert.deepEqual(ids, [noticeId("earlier", "run.ended", earlier), noticeId("moved", "run.ended", moved), noticeId("moved", "run.needs_input", "row_9")].sort(), `each once (${first})`);
+  }
+});
+
 test("an end after the webhook was set and inside the day is queued by a start's catch-up, though it came before that server started: a file named end-notices-since is neither read nor written", async (t) => {
   withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
   const env = { AGENTRUN_SEAL_KEY: sealKey() };
