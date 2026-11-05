@@ -2004,7 +2004,9 @@ export class Runs {
   }
 
   /** One message to an agentic run, its mode chosen by the run's state (the contract's table). */
-  async message(run: Run, content: string): Promise<{ mode: "steer" | "answer" | "follow_up"; messageId: string }> {
+  /** `requestId`: the message's id in the run's store, which takes one message per id (a trigger's firing key); default
+   *  a new one. */
+  async message(run: Run, content: string, requestId?: string): Promise<{ mode: "steer" | "answer" | "follow_up"; messageId: string }> {
     if (run.imported) throw this.importedRefusal(run);
     // A cancelled run takes no message, whether or not its end is written yet.
     if (run.cancel) throw this.finished(run);
@@ -2030,7 +2032,7 @@ export class Runs {
     // the same run, which the contract calls follow_up, never a steer it does not do.
     const working = status === "queued" || (status === "working" && state === "working");
     const mode = working ? (steers ? "steer" : "follow_up") : status === "input_required" && state === "waiting" ? "answer" : "follow_up";
-    const messageId = `m${Date.now().toString(36)}${randomBytes(4).toString("hex")}`;
+    const messageId = requestId ?? `m${Date.now().toString(36)}${randomBytes(4).toString("hex")}`;
     // A follow-up to a run the person stopped, whose process has gone: its turn had ended, so the process this message
     // starts resumes nothing. With its process live the message starts none, and a relaunch after that process dies
     // under the message is a crash's, which keeps its row.

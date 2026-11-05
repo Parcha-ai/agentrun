@@ -1,0 +1,6 @@
+---
+packages: @parcha/agentrun-serve
+kind: feature
+---
+A signed webhook starts or messages an agent. A trigger with `source: {kind: "webhook"}` fires on each `POST /v2/hooks/{trigger_id}` signed by its own secret under the Standard Webhooks spec (`webhook-id`, `webhook-timestamp` within 5 minutes, `webhook-signature`), checked on the raw body before anything else; it is the server's one route with no token. A bad signature, a stale timestamp, an unknown trigger, one that is off and one that is not a webhook's all answer the same `401`; a body past 256 KiB is `413`. The secret is made with the trigger, shown in its `201` once, kept sealed in `trigger-secrets.json` (no seal key, no webhook trigger: `409 no_sealing_key`), cut by an import, and rotated with `POST /v2/triggers/{id}/secret`.
+The `webhook-id` is the firing's key: the first request answers `202` once its firing is recorded, and the same id again answers `200` with that firing and starts nothing. The agent gets the trigger's input, then the body, cut at 16 KiB, inside `<trigger-payload source="webhook" untrusted>`. A new target, `{kind: "message_run", run_id, input}`, sends each firing (from a webhook or a schedule) to one run as a message, under the firing's key, which the run's store takes once. Capabilities list `sources: ["schedule", "webhook"]` and `features.triggers.webhook`.

@@ -974,6 +974,32 @@ it on again. `PATCH /v2/triggers/{id}` changes it, and
 `{enabled: false}` pauses it: the time it was off is skipped, not caught up. `POST /v2/triggers/{id}/fire` runs it now,
 once per `Idempotency-Key` (required). `GET /v2/triggers/{id}/firings` lists its last 200 firings.
 
+### Webhook triggers
+
+A trigger with `source: {kind: "webhook"}` fires on each request to `POST /v2/hooks/{trigger_id}`: this server's one
+route with no token. The request is signed by the trigger's own secret under the
+[Standard Webhooks](https://www.standardwebhooks.com) spec, the one this server's outbound [webhooks](#webhooks) sign
+with, so a sender uses any of its libraries: `webhook-id`, `webhook-timestamp` (Unix seconds, within 5 minutes of this
+server's clock either way) and `webhook-signature: v1,<base64 HMAC-SHA256 of "{id}.{timestamp}.{body}">` under the
+secret's bytes (several, space-separated, and any one may match). The signature is checked on the raw body before
+anything else. A bad signature, a stale timestamp, an unknown trigger, one that is off and one that is not a webhook's all
+answer the same `401`, so no trigger id can be found by asking; a body past 256 KiB is `413`.
+
+The secret, `whsec_` and 32 random bytes in base64, is made with the trigger and shown in the `201` once; no `GET`
+shows it. It is kept sealed under `AGENTRUN_SEAL_KEY` in `DIR/trigger-secrets.json`, so with no seal key no webhook
+trigger is made (`409 no_sealing_key`). `POST /v2/triggers/{id}/secret` makes a new one, shown once, and the old one
+signs nothing from then on. An import cuts these secrets out of what it keeps, and no learning text shows one.
+
+The request's `webhook-id` is its firing's key: the first answers `202` once the firing is recorded, and its run starts
+after; the same `webhook-id` again answers `200` with that firing and starts nothing. The agent gets the trigger's input,
+then the body, cut at 16 KiB, inside `<trigger-payload source="webhook" untrusted>...</trigger-payload>`: whatever the
+sender wrote is data, not an instruction.
+
+A trigger's target may also be `{kind: "message_run", run_id, input: {content}}`, with a webhook or a schedule source:
+each firing sends its input to that run as `POST /v2/runs/{id}/messages` would (a steer, an answer, or a follow-up that
+opens a completed run again), under its own cap. The firing's key is the message's id in the run's store, which takes
+one message per id, so a firing driven again after a restart sends it once.
+
 ## What it serves
 
 | Route | Here |
@@ -1004,7 +1030,7 @@ once per `Idempotency-Key` (required). `GET /v2/triggers/{id}/firings` lists its
 | `GET /settings/mcp-servers`, `POST /settings/mcp-servers/preview`, `GET`, `PUT` and `DELETE /settings/mcp-servers/{name}`, `POST .../{name}/refresh` | [MCP servers](#mcp-servers), this server's own routes (`x-agentrun-serve: "mcpservers/1"`): preview a remote MCP server's tools, save it with its credential sealed, read it back without the credential, refresh its tools, or forget it. |
 | `GET /settings/tools`, `PUT /settings/tools` | This server's own: the providers of `web_search` and `web_fetch` ([search and fetch](#search-and-fetch)). |
 | `GET`, `PUT` and `DELETE /settings/webhook`, `POST /settings/webhook/test`, `GET /settings/webhook/deliveries` and `POST .../deliveries/{webhook_id}/redeliver` | [Webhooks](#webhooks), this server's own routes (`x-agentrun-serve: "webhook/1"`): the URL run notices are POSTed to, signed by the Standard Webhooks spec; never its secret but once. |
-| `GET` and `POST /triggers`, `GET`, `PATCH` and `DELETE /triggers/{id}`, `POST /triggers/{id}/fire`, `GET /triggers/{id}/firings` | [Schedules](#schedules), this server's own routes (`x-agentrun-serve: "trigger/1"`): schedules that start an agent's capped runs, each firing once, and their history. |
+| `GET` and `POST /triggers`, `GET`, `PATCH` and `DELETE /triggers/{id}`, `POST /triggers/{id}/fire`, `GET /triggers/{id}/firings`, `POST /triggers/{id}/secret`, `POST /hooks/{id}` (no token: [signed](#webhook-triggers)) | [Schedules](#schedules), this server's own routes (`x-agentrun-serve: "trigger/1"`): schedules that start an agent's capped runs, each firing once, and their history. |
 | `POST /mcp` | This server's own route (`x-agentrun-serve: "mcp/1"`): the [MCP endpoint](#for-coding-agents), Streamable HTTP with one JSON-RPC message per POST (`initialize`, `ping`, `tools/list`, `tools/call`), answered as JSON, stateless. Its ten tools call these routes in process with the caller's token. The Bearer token only, never the page's cookie; a browser `Origin` other than this server's own is `403`; any other method is `405`. |
 | `GET /usage` | The runs' cost estimates, by meter, agent, key, day or region (`key` and `region` are one line, `local`). A run of unknown cost adds no dollars, so no sum is ever null, and is counted in `unpriced_runs` (in the total and in each line) so it never passes as $0. |
 
