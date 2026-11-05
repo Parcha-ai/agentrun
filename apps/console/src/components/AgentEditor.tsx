@@ -261,7 +261,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                       <li key={t.name}><label title={why} className={cn("flex items-center gap-3 border px-3 py-2.5 font-mono text-[13px]", on && "border-foreground", why && !on ? "cursor-not-allowed opacity-60" : "cursor-pointer")}>
                         <input type="checkbox" value={t.name} checked={on} disabled={!!why && !on} onChange={() => { setToolsTouched(true); set({ tools: on ? f.tools!.filter((x) => x !== t.name) : [...(f.tools ?? []), t.name] }); }} className="accent-[hsl(var(--primary))]" />
                         <span className="min-w-0">{t.name}{why && <span className="ml-2 text-[11px] text-muted-foreground">{why}</span>}
-                          {t.summary && <span className="mt-0.5 line-clamp-2 block font-sans text-[11px] text-muted-foreground" title={t.summary}>{t.summary}</span>}</span>
+                          {t.summary && <Summary text={t.summary} />}</span>
                       </label></li>
                     );
                   })}
@@ -405,5 +405,19 @@ function Field({ label, id, required, optional, note, error, warning, aside, chi
       {error && <p className="mt-2 font-mono text-[12px] text-destructive-text" role="alert">{error}</p>}
       {warning && <p className="mt-2 font-mono text-[12px] text-warning-text">{warning}</p>}
     </div>
+  );
+}
+
+/** A tool's description in its card: two lines, and "more" for the rest when it is longer (a tool's summary is written for
+ *  the model, often a paragraph). A <div>-free span pair, so the clamp's own display holds. "more" never ticks the tool. */
+function Summary({ text }: { text: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <span className="mt-0.5 block font-sans text-[11px] text-muted-foreground">
+      <span className={open ? undefined : "line-clamp-2"} title={text}>{text}</span>
+      {text.length > 120 && (
+        <button type="button" className="underline underline-offset-2 hover:text-foreground" onClick={(e) => { e.preventDefault(); e.stopPropagation(); setOpen((v) => !v); }}>{open ? "less" : "more"}</button>
+      )}
+    </span>
   );
 }

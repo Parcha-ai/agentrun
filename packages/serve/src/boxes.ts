@@ -17,7 +17,7 @@ import { withoutSecrets } from "./secrets.js";
 /** Why the VM box has no network, said in capabilities whenever the server's host list is set: its provider's SDK takes
  *  a domain list at a sandbox's create, but has no read of a sandbox's network back, so the server could not check that
  *  a box holds the list it asked for (as it does Daytona's), and it never leaves the provider's open default either. */
-export const VM_NO_LIST = "the VM box takes a host list, but this server cannot read a box's list back to check that it holds, so the VM box has no network";
+export const VM_NO_LIST = "the Modal sandbox takes a host list, but this server cannot read a sandbox's list back to check that it holds, so the Modal sandbox has no network";
 /** The VM provider: its box id, which is also its SDK's npm name, the SDK's client class and the token's names. */
 export const VM_PROVIDER = { id: "modal", client: "ModalClient", keys: ["MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET"] } as const;
 const VM = VM_PROVIDER.id;
