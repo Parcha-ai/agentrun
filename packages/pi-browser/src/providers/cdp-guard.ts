@@ -4,16 +4,19 @@
 // browser's own socket stays on a port no page and no extension can reach (the host's network fence), so this relay is the
 // one way in for anything inside the browser; the host's own code (the provider) uses the socket directly.
 //
-// What it refuses (cdpRefusal):
+// What it passes (cdpRefusal): an allowlist, ALLOWED_METHODS, of the commands pi-browser's driver, its effect observer
+// and live view, and Stagehand (in Node and in its extension) send, measured across pi-browser's real-Chrome suites and
+// serve's with the guard on, and named in their sources. Every other command is refused: among them each one that tells
+// of the machine the browser runs on (SystemInfo.*, Browser.getBrowserCommandLine, its processes), an attach to the
+// browser's own target, Extensions.*, PWA.*, Tethering.*, Cast.*, Target.exposeDevToolsProtocol, setRemoteLocations,
+// openDevTools, Browser.executeBrowserCommand and DOM.setFileInputFiles. Of the commands it passes, these are held to
+// what they may name:
 //  - a navigation or a new target to anything but http, https or about:blank (and the extension's own pages, which the
 //    driver opens to wake its worker): file:, chrome:, devtools:, view-source:, filesystem:, blob:, data:, javascript: and
 //    every other scheme (Page.navigate, Target.createTarget);
 //  - a request rewritten or fetched by the browser to such a URL (Fetch.continueRequest's url, Network.loadNetworkResource);
-//  - a file of this machine handed to a page (DOM.setFileInputFiles, a drag's files, Page.handleFileChooser's files);
+//  - a file of this machine handed to a page (a drag's files, Page.handleFileChooser's files);
 //  - downloads sent to a directory the command names (Browser/Page.setDownloadBehavior with downloadPath);
-//  - the protocol handed to a page or another endpoint, an extension loaded or a browser command run
-//    (Target.exposeDevToolsProtocol, Target.setRemoteLocations, Target.openDevTools, Extensions.*, PWA.*, Tethering.*,
-//    Cast.*, Browser.executeBrowserCommand);
 //  - each of these inside Target.sendMessageToTarget's message as well.
 // A page's own navigation to such a scheme (a link, location.href, window.open from an http page) is Chrome's to refuse,
 // and it does: "Not allowed to load local resource". An extension's page is not held to that rule (it may move itself,
@@ -30,11 +33,29 @@ import { connect, createServer, type AddressInfo, type Socket } from "node:net";
 
 /** Where the guard listens, and the browser's socket it relays to: this machine's loopback. */
 const LOOPBACK = "127.0.0.1"; // key-gate: loopback-rule the guard and the browser socket it relays to listen on loopback alone
+/** Each domain's commands a guarded session passes: the ones pi-browser and Stagehand send (their sources, and what
+ *  pi-browser's and serve's real-Chrome suites sent through the guard, which named none outside them). */
+const ALLOWED_BY_DOMAIN: Readonly<Record<string, readonly string[]>> = {
+  Accessibility: ["enable", "getFullAXTree"],
+  Browser: ["cancelDownload", "close", "grantPermissions", "setDownloadBehavior"],
+  DOM: ["describeNode", "enable", "getBoxModel", "getDocument", "getFrameOwner", "getNodeForLocation", "querySelector", "requestNode", "scrollIntoViewIfNeeded"],
+  DOMStorage: ["enable", "getDOMStorageItems", "setDOMStorageItem"],
+  Emulation: ["setDefaultBackgroundColorOverride", "setDeviceMetricsOverride", "setVisibleSize"],
+  Fetch: ["continueRequest", "disable", "enable", "failRequest", "fulfillRequest"],
+  Input: ["dispatchDragEvent", "dispatchKeyEvent", "dispatchMouseEvent", "insertText"],
+  Network: ["enable", "getResponseBody", "loadNetworkResource", "setExtraHTTPHeaders"],
+  Overlay: ["enable", "hideHighlight", "highlightNode"],
+  Page: ["addScriptToEvaluateOnNewDocument", "bringToFront", "captureScreenshot", "createIsolatedWorld", "enable", "getFrameTree", "getLayoutMetrics", "getNavigationHistory", "handleFileChooser", "handleJavaScriptDialog", "navigate", "navigateToHistoryEntry", "reload", "screencastFrameAck", "setDownloadBehavior", "setLifecycleEventsEnabled", "startScreencast", "stopScreencast"],
+  Runtime: ["addBinding", "callFunctionOn", "enable", "evaluate", "releaseObject", "runIfWaitingForDebugger"],
+  Storage: ["clearCookies", "getCookies", "setCookies"],
+  Target: ["activateTarget", "attachToTarget", "closeTarget", "createTarget", "detachFromTarget", "getTargetInfo", "getTargets", "sendMessageToTarget", "setAutoAttach", "setDiscoverTargets"],
+};
+const ALLOWED_LIST = Object.entries(ALLOWED_BY_DOMAIN).flatMap(([domain, methods]) => methods.map((method) => `${domain}.${method}`));
 /** What a refused command is told. */
-export const GUARD_REFUSAL = "Refused: this browser opens web pages only (http, https and about:blank). Files on the server, browser-internal pages and other local schemes cannot be opened, uploaded from or downloaded to, from a page or from code.";
+export const GUARD_REFUSAL = "Refused: this browser opens web pages only (http, https and about:blank), and answers nothing about the server it runs on. Files on the server, browser-internal pages and other local schemes cannot be opened, uploaded from or downloaded to, from a page or from code.";
 
-const REFUSED_METHODS = new Set(["Target.exposeDevToolsProtocol", "Target.setRemoteLocations", "Target.openDevTools", "Browser.executeBrowserCommand", "DOM.setFileInputFiles"]);
-const REFUSED_DOMAINS = new Set(["Extensions", "PWA", "Tethering", "Cast"]);
+/** The commands a guarded session passes, and no other (cdpRefusal holds some of them to what they name). */
+export const ALLOWED_METHODS: ReadonlySet<string> = new Set(ALLOWED_LIST);
 
 /** Whether `url` is a page this browser may open: http, https, about:blank, or a page of the extension `extension` (an
  *  origin, chrome-extension://<id>) when one is given. Empty is about:blank. */
@@ -54,7 +75,7 @@ export function allowedUrl(url: unknown, extension: string | null = null): boole
 export function cdpRefusal(message: { method?: unknown; params?: unknown }, extension: string | null = null): string | null {
   const method = typeof message.method === "string" ? message.method : "";
   const params = (typeof message.params === "object" && message.params !== null ? message.params : {}) as Record<string, any>;
-  if (REFUSED_METHODS.has(method) || REFUSED_DOMAINS.has(method.split(".")[0]!)) return GUARD_REFUSAL;
+  if (!ALLOWED_METHODS.has(method)) return GUARD_REFUSAL;
   switch (method) {
     case "Page.navigate":
     case "Target.createTarget":

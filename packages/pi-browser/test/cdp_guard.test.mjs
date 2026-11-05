@@ -2,7 +2,7 @@
 // The relay itself is driven on a real Chrome (cdp_local_chrome.test.mjs, and serve's browser-chrome-egress.test.mjs).
 import assert from "node:assert/strict";
 import test from "node:test";
-import { allowedUrl, cdpRefusal, GUARD_REFUSAL } from "../dist/providers/cdp-guard.js";
+import { ALLOWED_METHODS, allowedUrl, cdpRefusal, GUARD_REFUSAL } from "../dist/providers/cdp-guard.js";
 
 const OWN = "chrome-extension://abcdefghijklmnopabcdefghijklmnop";
 
@@ -45,6 +45,20 @@ test("what makes the browser read or write this machine's files, or hand the pro
     { method: "Tethering.bind", params: { port: 1 } },
     { method: "Target.sendMessageToTarget", params: { sessionId: "s", message: JSON.stringify({ id: 1, method: "Page.navigate", params: { url: "file:///etc/passwd" } }) } },
     { method: "Target.sendMessageToTarget", params: { sessionId: "s", message: "not json" } },
+    // What tells of the machine the browser runs on: its command line, its host, its processes.
+    { method: "SystemInfo.getInfo" },
+    { method: "SystemInfo.getProcessInfo" },
+    { method: "SystemInfo.getFeatureState", params: { featureState: "x" } },
+    { method: "Browser.getBrowserCommandLine" },
+    { method: "Browser.getVersion" },
+    { method: "Browser.getHistograms" },
+    { method: "Target.attachToBrowserTarget" },
+    { method: "Target.sendMessageToTarget", params: { sessionId: "s", message: JSON.stringify({ id: 1, method: "SystemInfo.getInfo" }) } },
+    // Anything not on the list, whatever it is.
+    { method: "Memory.getDOMCounters" },
+    { method: "Tracing.start" },
+    { method: "Storage.getUsageAndQuota", params: { origin: "https://example.com" } },
+    {},
   ];
   for (const command of refused) assert.equal(cdpRefusal(command, OWN), GUARD_REFUSAL, JSON.stringify(command));
   const passed = [
@@ -59,7 +73,11 @@ test("what makes the browser read or write this machine's files, or hand the pro
     { method: "Page.captureScreenshot", params: {} },
     { method: "Target.attachToTarget", params: { targetId: "t", flatten: true } },
     { method: "DOM.getDocument" },
-    {},
   ];
   for (const command of passed) assert.equal(cdpRefusal(command, OWN), null, JSON.stringify(command));
+});
+
+test("the list is pi-browser's and Stagehand's commands alone: no domain that tells of the host, loads an extension or hands the protocol on", () => {
+  for (const method of ALLOWED_METHODS) assert.doesNotMatch(method, /^(SystemInfo|Extensions|PWA|Tethering|Cast|Tracing|Memory|IO|HeapProfiler|Profiler|Debugger|ServiceWorker|FileSystem)\./, method);
+  for (const method of ["Browser.getBrowserCommandLine", "Browser.getVersion", "Browser.executeBrowserCommand", "Target.attachToBrowserTarget", "Target.exposeDevToolsProtocol", "Target.setRemoteLocations", "Target.openDevTools", "DOM.setFileInputFiles"]) assert.equal(ALLOWED_METHODS.has(method), false, method);
 });

@@ -115,6 +115,30 @@ test("a guarded session: every client reaches the browser through its guard, Sta
     const answer = await new Promise((ok) => { socket.addEventListener("message", (event) => ok(JSON.parse(event.data))); socket.send(JSON.stringify({ id: 7, method: "Target.createTarget", params: { url: "chrome://settings" } })); });
     socket.close();
     assert.deepEqual([answer.id, answer.error?.message], [7, GUARD_REFUSAL]);
+    // Nothing of the machine through it: the browser's command line and system information are refused.
+    for (const method of ["SystemInfo.getInfo", "Browser.getBrowserCommandLine", "Target.attachToBrowserTarget"]) {
+      const asked = new WebSocket(target.sdkCdpUrl);
+      await new Promise((ok, fail) => (asked.addEventListener("open", ok), asked.addEventListener("error", fail)));
+      const said = await new Promise((ok) => { asked.addEventListener("message", (event) => ok(JSON.parse(event.data))); asked.send(JSON.stringify({ id: 1, method })); });
+      asked.close();
+      assert.equal(said.error?.message, GUARD_REFUSAL, method);
+      assert.equal(said.result, undefined, method);
+    }
+    // Stagehand's heartbeat page, the one offscreen document: an offscreen page has no debugger or tab API (Chrome gives it
+    // chrome.runtime alone), so it is no unlocked way around the guard. Asked on the browser's own socket, the provider's.
+    const raw = new WebSocket(`ws://127.0.0.1:${told[0].debuggingPort}${new URL(target.sdkCdpUrl).pathname}`);
+    await new Promise((ok, fail) => (raw.addEventListener("open", ok), raw.addEventListener("error", fail)));
+    let id = 0;
+    const waiting = new Map();
+    raw.addEventListener("message", (event) => { const m = JSON.parse(event.data); waiting.get(m.id)?.(m); });
+    const send = (method, params = {}, sessionId) => new Promise((ok) => { waiting.set(++id, ok); raw.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) })); });
+    let heartbeat;
+    for (const until = Date.now() + 10_000; !heartbeat && Date.now() < until; await new Promise((r) => setTimeout(r, 200))) heartbeat = (await send("Target.getTargets")).result.targetInfos.find((info) => info.url.endsWith("/offscreen/service-worker-heartbeat.html"));
+    assert.ok(heartbeat, "the heartbeat page runs");
+    const { sessionId } = (await send("Target.attachToTarget", { targetId: heartbeat.targetId, flatten: true })).result;
+    const apis = (await send("Runtime.evaluate", { expression: "[typeof chrome.debugger, typeof chrome.tabs, typeof chrome.offscreen, typeof chrome.runtime].join(',')", returnByValue: true }, sessionId)).result.result.value;
+    raw.close();
+    assert.equal(apis, "undefined,undefined,undefined,object");
     assert.equal((await fetch(`http://127.0.0.1:${told[0].guardPort}/json/version`).catch(() => ({ status: "refused" }))).status, 403);
   } finally {
     await stagehand?.close().catch(() => undefined);

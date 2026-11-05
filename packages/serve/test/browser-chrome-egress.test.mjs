@@ -286,6 +286,16 @@ const raw = (calls) => new Promise((ok, fail) => {
 });
 await step("raw_create_target", () => raw([() => ["Target.createTarget", { url: ${SECRET} }]]));
 await step("raw_navigate", () => raw([() => ["Target.createTarget", { url: "about:blank" }], (a) => ["Target.attachToTarget", { targetId: a[0].targetId, flatten: true }], (a) => ["Page.navigate", { url: ${SECRET} }, a[1].sessionId]]));
+// What the browser would tell of this machine: its command line (the user-data dir, the proxy and socket ports), its
+// host, its processes. Refused, on the browser's own session too.
+await step("system_info", () => raw([() => ["SystemInfo.getInfo", {}]]));
+await step("system_info_browser_session", () => raw([() => ["Target.attachToBrowserTarget", {}], (a) => ["SystemInfo.getInfo", {}, a[0].sessionId]]));
+await step("process_info", () => raw([() => ["SystemInfo.getProcessInfo", {}]]));
+await step("command_line", () => raw([() => ["Browser.getBrowserCommandLine", {}]]));
+await step("nested_command_line", () => raw([() => ["Target.createTarget", { url: "about:blank" }], (a) => ["Target.attachToTarget", { targetId: a[0].targetId, flatten: false }], (a) => ["Target.sendMessageToTarget", { sessionId: a[1].sessionId, message: JSON.stringify({ id: 1, method: "SystemInfo.getInfo" }) }]]));
+// An offscreen document but Stagehand's heartbeat: a fresh extension context, refused; the rest of the API is gone.
+await step("offscreen_other", () => chrome.offscreen.createDocument({ url: "wake-service-worker.html", reasons: ["BLOBS"], justification: "a page of its own" }));
+await step("offscreen_close", () => chrome.offscreen.closeDocument());
 await step("upload_path", async () => { await page.goto(${STEER} + "/upload"); await page.locator("#pick").setInputFiles(${JSON.stringify(secret.url.slice("file://".length))}); await sleep(1000); return String(await page.locator("body").innerText()).slice(0, 300); });
 await step("worker_fetch", async () => (await fetch(${SECRET})).text());
 await step("worker_tabs", async () => { const tab = await chrome.tabs.create({ url: ${SECRET} }); await sleep(1500); const got = await chrome.tabs.get(tab.id); return String(got.url) + " " + String(got.status); });
@@ -306,11 +316,15 @@ return out;`;
   assert.doesNotMatch(answer, /root:x?:0:0/, "/etc/passwd's first line");
   const out = JSON.parse(answer.slice(answer.indexOf("{"), answer.lastIndexOf("}") + 1));
   // The guard's refusals, in its words, naming no path.
-  for (const name of ["goto_passwd", "goto_secret", "goto_settings", "goto_net_internals", "goto_view_source", "goto_data", "new_page", "raw_navigate", "raw_create_target"]) {
+  for (const name of ["goto_passwd", "goto_secret", "goto_settings", "goto_net_internals", "goto_view_source", "goto_data", "new_page", "raw_navigate", "raw_create_target", "system_info", "system_info_browser_session", "process_info", "command_line", "nested_command_line"]) {
     assert.match(out[name]?.error ?? "", /Refused: this browser opens web pages only/, `${name}: ${JSON.stringify(out[name])}`);
     assert.doesNotMatch(out[name].error, /\/etc\/|\/tmp\/|secret\.txt/, `${name} names no path`);
     assert.doesNotMatch(out[name].at, /^(file|chrome|view-source|data):/, `${name} left the page where it was`);
   }
+  // Nothing of this machine's layout or its ports came back by any path.
+  assert.doesNotMatch(answer, /--user-data-dir|\/srv\/|\/home\/|proxy-server|remote-debugging|127\.0\.0\.1:\d/, "no host detail");
+  assert.match(out.offscreen_other.error ?? "", /does not open a page of its own/);
+  assert.match(out.offscreen_close.error ?? "", /closeDocument is not a function/);
   // The extension's own APIs and a public page's script: Chrome's own rules hold (no file access for the extension, no
   // web page may open a local resource); none reads the file.
   for (const name of ["worker_fetch", "worker_tabs", "worker_debugger", "worker_clients", "page_location", "page_open", "upload_path"]) {
@@ -323,6 +337,30 @@ return out;`;
   assert.match(out.goto_http.text, /A public page\./);
   assert.equal(out.goto_blank.at, "about:blank");
   assert.equal(out.goto_blank.error, undefined);
+});
+
+test("a session left idle past the extension worker's idle time still drives its page: the locked worker keeps Stagehand's heartbeat", { skip: SKIP, timeout: 240_000 }, async (t) => {
+  const page = await listen(t, steer);
+  withEnv(t, { STEER_PORT: String(page.port) }, ["STEER_PORT", "AGENTRUN_SERVE_BROWSER_CHROME"]);
+  const { api } = await serve(t, { faux: STEER_MODEL, fauxEgress: STEER_EGRESS, browserChrome: CHROME });
+  assert.equal((await api("PUT", "/settings/tools", { browser: { provider: "chrome" } })).status, 200);
+  assert.equal((await api("POST", "/agents", agent("idler", { instructions: "Browse.", tools: ["browser"] }))).status, 201);
+  const gate = join(await scratch(t), "go");
+  const content = `Steer twice: ${JSON.stringify([`http://${STEER_HOST}/`])} then once ${gate} exists ${JSON.stringify([`http://${STEER_HOST}/again`])}`;
+  const started = await api("POST", "/agents/idler/runs", { input: { content } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  for (const until = Date.now() + 90_000; !(await api("GET", `/runs/${started.body.run_id}/timeline`)).body.rows?.some((row) => row.kind === "tool_result"); ) {
+    assert.ok(Date.now() < until, "the first call answered");
+    await new Promise((done) => setTimeout(done, 200));
+  }
+  // Chrome stops an extension's idle worker after 30 s; the session waits 45 s with no call.
+  await new Promise((done) => setTimeout(done, 45_000));
+  await writeFile(gate, "go");
+  await follow(api, started.body.run_id, ["completed"], { deadlineMs: 120_000 });
+  const answer = (await api("GET", `/runs/${started.body.run_id}`)).body.result.final_answer;
+  const second = answer.slice(answer.indexOf("Second:"));
+  assert.match(second, /"at": "http:\/\/steer\.example\/again"/, answer);
+  assert.match(second, /A public page\./, answer);
 });
 
 test("the guard on a local Chrome's DevTools socket, reached as its attach target: it refuses file and browser-internal targets, file uploads, download paths, extension loads and a protocol handed to a page, nested messages too, and answers no /json; the browser's own socket is the provider's alone", { skip: SKIP, timeout: 120_000 }, async (t) => {
@@ -386,7 +424,7 @@ test("the guard on a local Chrome's DevTools socket, reached as its attach targe
   assert.ok(listed === 403 || listed === "refused", `GET /json/list through the guard: ${listed}`);
 });
 
-test("a browser context given its own proxy setting over Chrome's DevTools socket, direct around the egress proxy, reaches nothing: Chrome resolves no address itself but its proxy's and its own socket's", { skip: SKIP, timeout: 120_000 }, async (t) => {
+test("a browser context given its own proxy setting, direct around the egress proxy: the guard makes none, and on the browser's own socket one still reaches nothing, since Chrome resolves no address itself but its proxy's and its guard's", { skip: SKIP, timeout: 120_000 }, async (t) => {
   const root = await scratch(t);
   const secret = `/direct-${randomBytes(8).toString("hex")}`;
   const decoy = await listen(t, (_req, res) => res.end("DECOY REACHED"));
@@ -402,7 +440,16 @@ test("a browser context given its own proxy setting over Chrome's DevTools socke
   const profiles = join(root, CHROME_PROFILES);
   assert.deepEqual((await readdir(profiles)).filter((name) => !name.startsWith(".")).sort(), ["direct", "direct.downloads"]);
   const { sdkCdpUrl } = await provider.attach(ref);
-  const socket = new WebSocket(sdkCdpUrl);
+  // Through the guard, as anything in the browser reaches it, a browser context is not made at all.
+  const guarded = new WebSocket(sdkCdpUrl);
+  await new Promise((ok, fail) => (guarded.addEventListener("open", ok), guarded.addEventListener("error", fail)));
+  const made = await new Promise((ok) => { guarded.addEventListener("message", (event) => ok(JSON.parse(event.data))); guarded.send(JSON.stringify({ id: 1, method: "Target.createBrowserContext", params: { proxyServer: "direct://", proxyBypassList: "*" } })); });
+  guarded.close();
+  assert.match(made.error?.message ?? "", /^Refused: this browser opens web pages only/);
+  // The fence beneath it holds on its own: on the browser's own socket (the provider's alone), a context told to go
+  // direct still reaches nothing.
+  const browserPort = Number(/^local:\d+:(\d+):/.exec(ref.id)[1]);
+  const socket = new WebSocket(`ws://${LOOPBACK}:${browserPort}${new URL(sdkCdpUrl).pathname}`);
   await new Promise((ok, fail) => (socket.addEventListener("open", ok), socket.addEventListener("error", fail)));
   t.after(() => socket.close());
   let id = 0;
