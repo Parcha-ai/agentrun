@@ -840,3 +840,52 @@ describe("the Learning tab's skills and workflows", () => {
     });
   });
 });
+
+// "What the next run reads": the notes in use (the index) and the skills it is given, the active ones. A run after an
+// Approve is given the approved skill, so an agent whose learning is a skill alone never reads "nothing"; a skill that
+// waits for its owner's OK is given to no run, so it is left out.
+describe("the Learning tab's \"What the next run reads\"", () => {
+  const skill = (name: string, status: "active" | "pending") => ({ name, file: `skills/${name}/SKILL.md`, description: `When ${name} applies`, status, run: "run-b", bytes: 92, etag: `"${name}-v1"` });
+  const skillsOnly = () => view({ index: "", notes: { items: [], total: 0, next_cursor: null }, skills: [skill("find-policies", "active"), skill("issue-refunds", "pending")] } as Partial<AgentLearning>);
+  const panel = (t: Awaited<ReturnType<typeof open>>) => t.host.querySelector('section[aria-label="What the next run reads"]') as HTMLElement;
+
+  it("counts and names the active skill it is given when no note is in use, and leaves out a pending one", async () => {
+    const t = await open(agent(true), { learning: async () => skillsOnly() });
+    const p = panel(t);
+    expect(p).toBeTruthy();
+    expect(p.querySelector("button")!.textContent).toContain("1 skill");
+    expect(p.querySelector("button")!.textContent).not.toContain("nothing");
+    await act(async () => { p.querySelector("button")!.click(); });
+    expect(p.textContent).toContain("Active skills: find-policies");
+    expect(p.textContent).toContain("Read-only: the notes in use, one line each, and the agent's active skills.");
+    expect(p.textContent).not.toContain("issue-refunds");
+    expect(p.textContent).not.toContain("Nothing yet");
+  });
+
+  it("wraps a skill's long name rather than spilling it out of the panel", async () => {
+    const long = `find-${"a".repeat(59)}`;
+    const t = await open(agent(true), { learning: async () => view({ index: "", notes: { items: [], total: 0, next_cursor: null }, skills: [skill(long, "active")] } as Partial<AgentLearning>) });
+    const p = panel(t);
+    await act(async () => { p.querySelector("button")!.click(); });
+    const line = [...p.querySelectorAll("p")].find((x) => x.textContent?.includes(long))!;
+    expect(long.length).toBe(64);
+    expect(line.className.split(" ")).toContain("break-words");
+  });
+
+  it("says the next run gets nothing when learning is off, for the agent or on this server", async () => {
+    for (const [a, server] of [[agent(false), undefined], [agent(true), "off"]] as const) {
+      const t = await open(a, { learning: async () => skillsOnly() }, server ? { server } : {});
+      const p = panel(t);
+      expect(p.querySelector("button")!.textContent).toContain("nothing");
+      await act(async () => { p.querySelector("button")!.click(); });
+      expect(p.textContent).toContain("Learning is off: the next run gets no notes or skills.");
+      expect(p.textContent).not.toContain("Active skills");
+      act(() => root?.unmount()); document.body.innerHTML = "";
+    }
+  });
+
+  it("counts notes and skills together", async () => {
+    const t = await open(agent(true), { learning: async () => view({ skills: [skill("find-policies", "active")] } as Partial<AgentLearning>) });
+    expect(panel(t).querySelector("button")!.textContent).toMatch(/\d+ notes? · 1 skill/);
+  });
+});
