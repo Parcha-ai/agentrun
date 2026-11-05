@@ -19,7 +19,7 @@
 import { rm } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { join } from "node:path";
-import { approve, buildIndex, CAPS, checkNote, INDEX_FILE, INDEX_LINES, isHeld, type LearnedNote, learnedFront, learnedName, learnedPlace, learnedStatus, NOTE_FILE, NOTE_STATUSES, parseNoteFile, type Problem, printable, released, retire, retiredLearned, SKILLS_DIR, supersede, WORKFLOWS_DIR } from "./learn/index.js";
+import { approve, buildIndex, CAPS, checkNote, INDEX_FILE, INDEX_LINES, isHeld, type LearnedNote, learnedFront, learnedName, learnedPlace, learnedStatus, NOTE_FILE, NOTE_STATUSES, parseNoteFile, type Problem, printable, released, retire, retiredLearned, SKILLS_DIR, supersede, unstorable, WORKFLOWS_DIR } from "./learn/index.js";
 import { ApiError, invalid } from "./errors.js";
 import { homeOf, readJson } from "./files.js";
 import { agentFolder, changedOrder, checkOut, detailShown, git, line, mainOf, notesView, openAgentRepo, PROPOSAL, readBlobs, readFolder, readPin, secretsShown, type Shown, withAgentRepo } from "./learning.js";
@@ -44,7 +44,9 @@ const RETIRED_LINE = Buffer.byteLength("status: retired\n");
 const utf8 = new TextDecoder("utf-8", { fatal: true });
 
 type Page<T> = { items: T[]; total: number; next_cursor: string | null };
-type NoteView = { file: string; name: string; description: string; type: string; status: string; origin: string; superseded_by: string | null; text: string; etag: string };
+type NoteView = { file: string; name: string; description: string; type: string; status: string; origin: string; superseded_by: string | null; text: string; etag: string; retired?: Retired };
+/** When a retired note, skill or draft was retired, and by whom: a person (its retire's commit), else a run. */
+type Retired = { at: string; by: "person" | "run" };
 type Change = { by: { run: string } | { user: true; via?: string }; commit: string; at: string; reason: string; files: string[] };
 /** A note on main: its text, and its blob id there, whose ETag its file's GET answers. */
 type Note = LearnedNote & { text: string; oid: string };
@@ -207,7 +209,28 @@ async function notesAt(home: string, repo: string, sha: string): Promise<{ index
  *  workflow.json, with its `readme`), its description, `pending` while it waits for its owner's OK, the run whose merge
  *  last changed it, its size in bytes, and the ETag of the file that says whether it waits (a SKILL.md, a README.md),
  *  which an approval names. */
-type LearnedView = { name: string; file: string; readme?: string; description: string; status: "active" | "pending" | "retired"; run: string | null; bytes: number; etag: string };
+type LearnedView = { name: string; file: string; readme?: string; description: string; status: "active" | "pending" | "retired"; run: string | null; bytes: number; etag: string; retired?: Retired };
+/** By the folder and the commit: when each retired file of `files` was retired and by whom, the newest commit that
+ *  changed it on main's first-parent line (a retired file changes no more: a run never changes it, a person's restore
+ *  makes it active): a person's (its subject `learning: retired by a person:`, or Changed-By: user), else a run's. */
+const retiredCache = new Recent<Map<string, Retired>>(8, 1 << 20);
+async function retiredOf(home: string, repo: string, sha: string, files: readonly string[]): Promise<Map<string, Retired>> {
+  if (!files.length) return new Map();
+  const key = `${repo}\0${sha}\0${[...files].sort().join("\0")}`;
+  const known = retiredCache.get(key);
+  if (known) return known;
+  const out = new Map<string, Retired>();
+  const wanted = new Set(files);
+  for (const { head, files: changed } of recordsOf(await git(home, repo, ["log", "--first-parent", "-z", "--name-only", "--format=%x1e%cI%x1f%s%x1f%(trailers:key=Changed-By,valueonly,separator=%x2C)", sha, "--", ...files]))) {
+    const [at = "", subject = "", by = ""] = head.split("\x1f");
+    const person = subject.startsWith("learning: retired by a person:") || by.trim() === "user";
+    for (const file of changed) if (wanted.has(file) && !out.has(file)) out.set(file, { at, by: person ? "person" : "run" });
+    if (out.size === wanted.size) break;
+  }
+  retiredCache.set(key, out, 128 * out.size + key.length);
+  return out;
+}
+
 /** By the folder and the commit: its skills and drafts, raw (each answer cuts them of the host's secrets as they are
  *  then), for the 8 commits last read. */
 const learnedAtCache = new Recent<{ skills: LearnedView[]; workflows: LearnedView[] }>(8, 4 << 20);
@@ -290,7 +313,10 @@ export async function agentLearning(data: string, agentId: string, shown: Shown,
   const sha = await mainOf(home, repo);
   if (!sha) return { agent: agentId, main: null, index: "", notes: EMPTY, skills: [], workflows: [], log: EMPTY, counts, impact };
   const [{ index, notes }, { skills, workflows }, log] = await Promise.all([notesAt(home, repo, sha), learnedAt(home, repo, sha), logPage(home, repo, sha, 0, LOG_PAGE, shown)]);
-  return { agent: agentId, main: sha, index: shown.text(index), notes: pageOf(notes, sha, 0, NOTES_PAGE, (note) => noteView(note, shown)), skills: skills.map((item) => learnedView(item, shown)), workflows: workflows.map((item) => learnedView(item, shown)), log, counts, impact };
+  // When each retired one was retired, and by whom: a note by its file, a skill by its SKILL.md, a draft by its README.md.
+  const retired = await retiredOf(home, repo, sha, [...notes.filter((note) => note.status === "retired").map((note) => note.file), ...[...skills, ...workflows].filter((item) => item.status === "retired").map((item) => item.readme ?? item.file)]);
+  const withRetired = <T extends object>(view: T, file: string): T => (retired.has(file) ? { ...view, retired: retired.get(file)! } : view);
+  return { agent: agentId, main: sha, index: shown.text(index), notes: pageOf(notes, sha, 0, NOTES_PAGE, (note) => withRetired(noteView(note, shown), note.file)), skills: skills.map((item) => withRetired(learnedView(item, shown), item.file)), workflows: workflows.map((item) => withRetired(learnedView(item, shown), item.readme ?? item.file)), log, counts, impact };
 }
 
 /** GET /agents/{id}/learning/notes?cursor=&limit=&status=: a page of the notes, ordered as the view's, from what the
@@ -303,7 +329,9 @@ export async function learningNotes(data: string, agentId: string, query: URLSea
   const sha = at?.sha ?? (await mainOf(home, repo));
   if (!sha) return EMPTY;
   const { notes } = await notesAt(home, repo, sha);
-  return pageOf(status === null ? notes : notes.filter((note) => note.status === status), sha, at?.offset ?? 0, limit, (note) => noteView(note, shown));
+  const listed = status === null ? notes : notes.filter((note) => note.status === status);
+  const retired = await retiredOf(home, repo, sha, listed.filter((note) => note.status === "retired").map((note) => note.file));
+  return pageOf(listed, sha, at?.offset ?? 0, limit, (note) => (retired.has(note.file) ? { ...noteView(note, shown), retired: retired.get(note.file)! } : noteView(note, shown)));
 }
 
 /** GET /agents/{id}/learning/log?cursor=&limit=: a page of the changes on main, newest first, reading only its own. */
@@ -318,7 +346,7 @@ export async function learningLog(data: string, agentId: string, query: URLSearc
 /** The file a route names, decoded, for its `use`: a note's name; for a read MEMORY.md too, and a skill's SKILL.md or a
  *  draft's workflow.json or README.md (`skills/<name>/SKILL.md`, percent-encoded); for an approval a skill's SKILL.md or
  *  a draft's README.md, the file that says it waits. Anything else is 400. The name is never echoed. */
-function fileOf(raw: string, use: "read" | "write" | "approve" | "retire"): string {
+function fileOf(raw: string, use: "read" | "write" | "approve" | "retire" | "restore"): string {
   let file: string;
   try {
     file = decodeURIComponent(raw);
@@ -331,6 +359,7 @@ function fileOf(raw: string, use: "read" | "write" | "approve" | "retire"): stri
     if (use === "write") throw new ApiError("bad_request", "A skill or a workflow is changed by a run's learning, approved by its owner, or retired: a person edits and creates notes.");
     if (use === "approve" && place.kind === "workflow") throw new ApiError("bad_request", "A workflow is approved by its README.md, the file that says it waits.");
     if (use === "retire" && place.kind === "workflow") throw new ApiError("bad_request", "A workflow is retired by its README.md, the file that says whether it is in use.");
+    if (use === "restore" && place.kind === "workflow") throw new ApiError("bad_request", "A workflow is restored by its README.md, the file that says whether it is in use.");
     return file;
   }
   if (file === INDEX_FILE && use !== "read") throw new ApiError("bad_request", "MEMORY.md is built by the server from the active notes, one line each, and is never written: edit, create or retire a note instead.");
@@ -406,8 +435,8 @@ function conditionOf(ifMatch: string | undefined, ifNoneMatch: string | undefine
  *  only from the commit it was made on (once more on a main that moved meanwhile), then the checked-out files. A note
  *  the checks refuse is never written to git. A retire of a note that is not active, and an edit that changes nothing,
  *  commit nothing. `refuse`: the host's secrets. */
-export async function writeNote(data: string, agentId: string, raw: string, input: { ifMatch?: string; ifNoneMatch?: string; body?: Buffer; refuse: readonly string[]; approve?: boolean }): Promise<{ status: 200 | 201; file: string; text: string; etag: string }> {
-  const file = fileOf(raw, input.approve ? "approve" : input.body === undefined ? "retire" : "write");
+export async function writeNote(data: string, agentId: string, raw: string, input: { ifMatch?: string; ifNoneMatch?: string; body?: Buffer; refuse: readonly string[]; approve?: boolean; restore?: boolean }): Promise<{ status: 200 | 201; file: string; text: string; etag: string }> {
+  const file = fileOf(raw, input.approve ? "approve" : input.restore ? "restore" : input.body === undefined ? "retire" : "write");
   // A skill's SKILL.md or a draft's README.md: only ever approved or retired here.
   const learned = learnedPlace(file);
   const condition = conditionOf(input.ifMatch, input.ifNoneMatch, input.body !== undefined);
@@ -449,7 +478,25 @@ export async function writeNote(data: string, agentId: string, raw: string, inpu
       // Beside the note itself: what an approve marks of the notes the approved one supersedes.
       const also = new Map<string, string>();
       const notes = main ? (await readAt(home, repo, main)).notes : new Map<string, Note>();
-      if (text === undefined && learned && !input.approve) {
+      if (input.restore) {
+        // Restored, a retired note, skill or draft is active again: given to every later run. It is checked again as a
+        // new one is (secrets' shapes, the host's values, hidden characters, its format): a retire takes a leaking one
+        // out of every run unchecked, and a restore never brings the leak back.
+        if (learned) {
+          const status = learnedStatus(current!.text);
+          if (status !== "retired") throw new ApiError("bad_request", `The ${learned.kind === "skill" ? "skill" : "workflow"} is not retired: it is ${status}.`);
+          text = released(current!.text);
+          const problems = unstorable([{ path: file, status: "modified", bytes: Buffer.from(text, "utf8") }], input.refuse);
+          if (problems.length) throw refused(problems);
+        } else {
+          const note = parseNoteFile(file, current!.text);
+          if (Array.isArray(note)) throw refused(note.map((detail) => printable({ rule: "note", path: file, detail }, input.refuse)));
+          if (note.status !== "retired") throw new ApiError("bad_request", `The note is not retired: it is ${note.status}.`);
+          text = approve(current!.text);
+          const { problems } = checkNote(file, Buffer.from(text, "utf8"), input.refuse);
+          if (problems.length) throw refused(problems);
+        }
+      } else if (text === undefined && learned && !input.approve) {
         // Retired, as a note is: no later run is given it. One already retired is answered as it is; nothing else in
         // the folder changes.
         if (learnedStatus(current!.text) === "retired") return { status: 200, file, text: current!.text, etag: etagOf(current!.oid) };
@@ -485,7 +532,7 @@ export async function writeNote(data: string, agentId: string, raw: string, inpu
       const lines = after.filter((note) => note.status === "active").length;
       if (lines > INDEX_LINES) throw refused([{ rule: "index_full", detail: `the index would hold ${lines} lines; it holds at most ${INDEX_LINES}, so retire a note first` }]);
       const parent = main ?? (await openAgentRepo(home, repo, check));
-      const subject = `learning: ${input.approve ? "approved" : given === undefined ? "retired" : current ? "edited" : "created"} by a person: ${file}`;
+      const subject = `learning: ${input.approve ? "approved" : input.restore ? "restored" : given === undefined ? "retired" : current ? "edited" : "created"} by a person: ${file}`;
       const env = { GIT_INDEX_FILE: join(repo, ".git", "person.index") };
       let commit: string;
       let oid: string;

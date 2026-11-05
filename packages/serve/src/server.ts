@@ -376,6 +376,7 @@ export const ROUTES: readonly Route[] = [
   { method: "PUT", pattern: /^\/agents\/([^/]+)\/learning\/files\/([^/]+)$/, name: "writeLearningFile" },
   { method: "POST", pattern: /^\/agents\/([^/]+)\/learning\/files\/([^/]+)\/retire$/, name: "retireLearningFile" },
   { method: "POST", pattern: /^\/agents\/([^/]+)\/learning\/files\/([^/]+)\/approve$/, name: "approveLearningFile" },
+  { method: "POST", pattern: /^\/agents\/([^/]+)\/learning\/files\/([^/]+)\/restore$/, name: "restoreLearningFile" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/learning$/, name: "getRunLearning" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/learning\/diff$/, name: "getRunLearningDiff" },
 ];
@@ -1575,6 +1576,11 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     // page cookie a token can mint (accounts off). The page's cookie stands in for the token only on its own origin
     // with a JSON body (page.ts), so this is CSRF-checked as every page write is. With no credential at all it is 401,
     // as every route is.
+    // Restoring a retired one puts it back in every later run, as an approval does: the same owner's session alone.
+    if (found.name === "restoreLearningFile" && !byOwnerSession(req) && req.headers.authorization !== undefined) {
+      authFailed(`/v2${path}`, "approve_without_session");
+      throw new ApiError("forbidden", owner ? "Restoring a retired note takes the owner's password sign-in in the console, never a token." : "Restoring a retired note takes the owner's password sign-in, and this server has no accounts (AGENTRUN_ACCOUNTS=0).");
+    }
     if (found.name === "approveLearningFile" && !byOwnerSession(req) && req.headers.authorization !== undefined) {
       authFailed(`/v2${path}`, "approve_without_session");
       throw new ApiError("forbidden", owner ? "Approving a note takes the owner's password sign-in in the console, never a token." : "Approving a note takes the owner's password sign-in, and this server has no accounts (AGENTRUN_ACCOUNTS=0).");
@@ -1946,11 +1952,12 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         return sendNote(res, 200, await readNote(data, id, second!, secretsShown(learningSecrets())));
       case "writeLearningFile":
       case "retireLearningFile":
-      case "approveLearningFile": {
+      case "approveLearningFile":
+      case "restoreLearningFile": {
         await needAgent(id);
         const header = (name: string) => (typeof req.headers[name] === "string" ? (req.headers[name] as string) : undefined);
         const body = found.name === "writeLearningFile" ? await noteBody(req, MAX_BODY) : undefined;
-        const written = await writeNote(data, id, second!, { ifMatch: header("if-match"), ifNoneMatch: header("if-none-match"), body, refuse: learningSecrets(), approve: found.name === "approveLearningFile" });
+        const written = await writeNote(data, id, second!, { ifMatch: header("if-match"), ifNoneMatch: header("if-none-match"), body, refuse: learningSecrets(), approve: found.name === "approveLearningFile", restore: found.name === "restoreLearningFile" });
         // A name holding a secret (one the checks let by) is never echoed, not even as where the note is.
         const shown = secretsShown(learningSecrets());
         const located = written.status === 201 && shown.name(written.file) === written.file;

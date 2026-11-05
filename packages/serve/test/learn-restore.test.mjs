@@ -73,8 +73,19 @@ test("a retired note is read whole and restored by its owner: the view says when
   assert.match(active.text, /is not retired: it is active/);
 });
 
-test("a retired skill is restored by its owner and given to the next run again; its SKILL.md serves whole while retired", { timeout: 150_000 }, async (t) => {
-  const { api, cookie, origin, restore, retire } = await keeper(t, { "skills/weekly-summary/SKILL.md": SKILL });
+test("a retired skill is restored by its owner and given to the next run again; its SKILL.md serves whole while retired; a workflow draft is restored by its README.md", { timeout: 150_000 }, async (t) => {
+  const DRAFT = JSON.stringify({ v: 2, name: "price-report", schemas: { In: { type: "object" }, Out: { type: "object", properties: { total: { type: "number" } } } }, input: { schemaId: "In" }, output: { schemaId: "Out", path: "out" }, root: { node: "extract", label: "sum", instructions: "Sum the prices.", out: "Out", as: "out" } });
+  const README = "---\nname: price-report\ndescription: Sums the three shop prices; use for the morning report\n---\n";
+  const { api, cookie, origin, restore, retire } = await keeper(t, { "skills/weekly-summary/SKILL.md": SKILL, "workflows/price-report/workflow.json": DRAFT, "workflows/price-report/README.md": README });
+  await retire("workflows/price-report/README.md");
+  const draft = (await api("GET", "/agents/keeper/learning")).body.workflows.find((item) => item.name === "price-report");
+  assert.deepEqual([draft?.status, draft?.retired?.by], ["retired", "person"], JSON.stringify(draft));
+  const byJson = await restore("workflows/price-report/workflow.json", { ...json, cookie, origin });
+  assert.equal(byJson.status, 400, byJson.text);
+  assert.match(byJson.text, /restored by its README\.md/);
+  const draftBack = await restore("workflows/price-report/README.md", { ...json, cookie, origin });
+  assert.equal(draftBack.status, 200, draftBack.text);
+  assert.equal((await api("GET", "/agents/keeper/learning")).body.workflows.find((item) => item.name === "price-report")?.status, "active");
   await retire("skills/weekly-summary/SKILL.md");
   const view = (await api("GET", "/agents/keeper/learning")).body;
   const skill = view.skills.find((item) => item.name === "weekly-summary");
