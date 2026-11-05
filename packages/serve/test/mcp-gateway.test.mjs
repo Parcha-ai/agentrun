@@ -377,3 +377,11 @@ test("pi's registrations carry GATED_BY_GATEWAY only when the gateway holds the 
   const ungated = mcpRegistrations(mcpGateway({ pin, credentials: {}, work: () => tmpdir() }));
   assert.ok(ungated.every((tool) => tool[GATED_BY_GATEWAY] === undefined), "a gateway without the gate marks none, so the wrapper gates them");
 });
+
+test("a grant whose server is no longer saved, or whose tool a refresh removed, refuses the pin in words naming it", () => {
+  const listed = [{ name: "add", inputSchema: schema }];
+  const saved = { server: (name) => (name === "fake" ? { url: "http://127.0.0.1:9/mcp", tools: listed } : undefined), headers: () => undefined };
+  assert.throws(() => mcpPinOf(["mcp:gone/add"], saved), /^Error: The MCP tool mcp:gone\/add cannot be pinned: the MCP server gone is no longer saved\.$/);
+  assert.throws(() => mcpPinOf(["mcp:fake/add", "mcp:fake/sub"], saved), /^Error: The MCP tool mcp:fake\/sub cannot be pinned: sub is no longer one of its tools since the last refresh\.$/);
+  assert.deepEqual(Object.keys(mcpPinOf(["mcp:fake/add", "read"], saved)), ["fake"], "a name that is no MCP tool's is not the pin's");
+});

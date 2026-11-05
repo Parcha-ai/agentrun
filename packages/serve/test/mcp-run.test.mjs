@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
-import { readdir, readFile } from "node:fs/promises";
+import { readdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
@@ -139,6 +139,38 @@ test("a tool whose header declaration a refresh made unsendable refuses the run 
   assert.equal(refused.status, 409, JSON.stringify(refused.body));
   assert.match(refused.body.error?.message ?? "", /tool tagged declares a header it cannot send: region: x-mcp-header is only allowed on a string, integer or boolean/);
   assert.equal(calls(fake).length, 0);
+});
+
+test("a granted tool whose server was deleted, or whose tool a refresh removed, before the run's pin is made again fails the relaunch in words, and the call is never sent again", { timeout: 180_000 }, async (t) => {
+  const { api, data } = await serve(t, { faux: FAUX_MCP });
+  const fake = await addFake(t, api, "fake");
+  const other = await addFake(t, api, "other");
+  // Each run holds a slow call; its process is killed with its pin gone, so the relaunch makes the pin again, as a first
+  // launch does after the run's check: the window in which a server can go.
+  const held = async (id, server, source) => {
+    assert.equal((await api("POST", "/agents", agent(id, { tools: [`mcp:${server}/slow_write`], tool_settings: { [`mcp:${server}/*`]: { permission: "allow" } } }))).status, 201);
+    const runId = await runOf(api, id, `Call mcp__${server}__slow_write with {"line":"once","seconds":60}`);
+    for (let i = 0; calls(source, "slow_write").length === 0; i++) {
+      assert.ok(i < 600, `${id}: the call reaches the server`);
+      await sleep(100);
+    }
+    await rm(join(data, "runs", runId, "mcp-tools.json"));
+    return runId;
+  };
+  const refreshed = await held("refreshed", "fake", fake);
+  const deleted = await held("deleted", "other", other);
+  delete fake.tools.slow_write;
+  assert.equal((await api("POST", "/settings/mcp-servers/fake/refresh")).status, 200);
+  assert.equal((await api("DELETE", "/settings/mcp-servers/other")).status, 204);
+  const failedWith = async (runId) => {
+    const pid = JSON.parse(await readFile(join(data, "runs", runId, "run.json"), "utf8")).holder.pid;
+    process.kill(pid, "SIGKILL");
+    const { last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 90_000 });
+    return [last.status, (await api("GET", `/runs/${runId}`)).body.error?.message];
+  };
+  assert.deepEqual(await failedWith(refreshed), ["failed", "The MCP tool mcp:fake/slow_write cannot be pinned: slow_write is no longer one of its tools since the last refresh."]);
+  assert.deepEqual(await failedWith(deleted), ["failed", "The MCP tool mcp:other/slow_write cannot be pinned: the MCP server other is no longer saved."]);
+  assert.deepEqual([calls(fake, "slow_write").length, calls(other, "slow_write").length], [1, 1], "each call was sent once, never again");
 });
 
 test("a save that checks a deeply nested tool schema leaves the server answering: /health meanwhile, and a readable refusal past the bounds", { timeout: 90_000 }, async (t) => {
