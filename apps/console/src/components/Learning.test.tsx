@@ -889,3 +889,35 @@ describe("the Learning tab's \"What the next run reads\"", () => {
     expect(panel(t).querySelector("button")!.textContent).toMatch(/\d+ notes? · 1 skill/);
   });
 });
+
+// A placeholder in angle brackets is text wherever learning shows it: a note's card and a skill (rendered from Markdown,
+// where "<name>" was taken for an HTML tag and dropped), a workflow draft (shown as its text).
+describe("text in angle brackets in what it learned", () => {
+  const BODY = 'A refund summary is three lines:\n"Customer: <name>"\n"Amount: $<amount>"\n';
+  const SKILL_FILE = "skills/refund-summary/SKILL.md";
+  const DRAFT_FILE = "workflows/refund-summary/workflow.json";
+  const withAngles = () => view({
+    notes: { items: [note("refund-summary-format.md", "Refund summary format", { text: `---\nname: Refund summary format\ndescription: Use for a refund summary\ntype: feedback\n---\n${BODY}` })], total: 1, next_cursor: null },
+    skills: [{ name: "refund-summary", file: SKILL_FILE, description: "Write a refund summary", status: "active", run: "run-b", bytes: 120, etag: '"s1"' }],
+    workflows: [{ name: "refund-summary", file: DRAFT_FILE, readme: "workflows/refund-summary/README.md", description: "Summarise a refund", status: "active", run: "run-a", bytes: 80, etag: '"r1"' }],
+  } as Partial<AgentLearning>);
+  const reads = async (file: string) => ({ note: file === SKILL_FILE ? `---\nname: refund-summary\ndescription: Write a refund summary\n---\n${BODY}` : '{"template": "Customer: <name>, Amount: $<amount>"}\n', etag: `"v-${file}"` });
+
+  it("a note's card shows <name> and $<amount> as written", async () => {
+    const t = await open(agent(true), { learning: async () => withAngles(), read: reads });
+    const card = t.card("Refund summary format")!;
+    expect(card.textContent).toContain('"Customer: <name>"');
+    expect(card.textContent).toContain('"Amount: $<amount>"');
+  });
+
+  it("an opened skill and an opened workflow draft show them as written too", async () => {
+    const t = await open(agent(true), { learning: async () => withAngles(), read: reads });
+    await t.click(/^Show the skill refund-summary$/);
+    const skill = t.host.querySelector('section[aria-label="Skills it learned"]') as HTMLElement;
+    expect(skill.textContent).toContain('"Customer: <name>"');
+    expect(skill.textContent).toContain('"Amount: $<amount>"');
+    await t.click(/^Show the workflow refund-summary$/);
+    const flow = t.host.querySelector('section[aria-label="Workflows it learned"]') as HTMLElement;
+    expect(flow.textContent).toContain("Customer: <name>, Amount: $<amount>");
+  });
+});

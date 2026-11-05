@@ -38,6 +38,8 @@ export const TOOL_KEYS = [
   { id: "parallel", kind: "tool", label: "Parallel", fields: ["PARALLEL_API_KEY"], unlocks: ["web_fetch", "web_search", "decisions.parallel"] },
   { id: "monid", kind: "tool", label: "Monid", fields: ["MONID_API_KEY"], unlocks: ["monid.discover", "monid.inspect", "monid.run"] },
   { id: "browserbase", kind: "tool", label: "Browserbase", fields: ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"], unlocks: ["browser"] },
+  // The browser's other vendor (tool-plane.ts BROWSER_KEYS): a run's browser is the one its plane picks.
+  { id: "kernel", kind: "tool", label: "Kernel", fields: ["KERNEL_API_KEY"], unlocks: ["browser"] },
   // Jev's decision provider (decisions.ts' `jev`), on TypeSafe's key: a workflow's judges, as Parallel's key unlocks its.
   { id: "typesafe", kind: "tool", label: "TypeSafe (Jev)", fields: ["TYPESAFE_API_KEY"], unlocks: ["decisions.jev"] },
   // A model provider's key (model.ts' MODEL_KEYS, which give each its default model): every run gets it, as the

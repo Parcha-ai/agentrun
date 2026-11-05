@@ -47,7 +47,8 @@ export interface McpServer {
    *  true when none is left. */
   settle(ms: number): Promise<boolean>;
   /** Stops the server: the calls under way are aborted, then waited for, at most CLOSE_SETTLE_MS, so none outlives the
-   *  drive that started it unless it ignores its abort that long. */
+   *  drive that started it unless it ignores its abort that long. One still running then is let go: its timer stopped,
+   *  no longer counted by settle(), and its answer, if it ever comes, written nowhere. */
   close(): Promise<void>;
 }
 
@@ -89,7 +90,8 @@ export async function startMcpServer(options: McpServerOptions): Promise<McpServ
   const tools = options.tools.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema }));
   const known = new Set(tools.map((t) => t.name));
   const progressMs = options.progressMs ?? 15_000;
-  const open = new Set<AbortController>();
+  // Each call under way: its abort, and what stops its progress timer.
+  const open = new Set<{ controller: AbortController; release: () => void }>();
   // Each call's own run (options.call), until it settles: what settle() and close() wait for.
   const running = new Set<Promise<unknown>>();
   const settle = async (ms: number): Promise<boolean> => {
@@ -157,16 +159,27 @@ export async function startMcpServer(options: McpServerOptions): Promise<McpServ
     const meta = isPlain(params._meta) ? params._meta : {};
     const token = typeof meta.progressToken === "string" || typeof meta.progressToken === "number" ? meta.progressToken : undefined;
     const controller = new AbortController();
-    open.add(controller);
+    let timer: ReturnType<typeof setInterval> | undefined;
+    // Its progress stops, and nothing more is written, once its client is gone or the server has let it go. The call
+    // itself still runs until it settles (`running`), so the drive's settle waits for its real outcome.
+    let gone = false;
+    const release = () => {
+      gone = true;
+      if (timer) clearInterval(timer);
+      timer = undefined;
+    };
+    const entry = { controller, release };
+    open.add(entry);
     // The client going away (its abort, its process ending) stops the call; a finished answer does not.
     let answered = false;
     res.on("close", () => {
+      release();
       if (!answered) controller.abort(new Error("the MCP client went away before the answer"));
     });
     res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
-    const send = (body: unknown) => res.write(`event: message\ndata: ${JSON.stringify(body)}\n\n`);
+    const send = (body: unknown) => void (gone || res.write(`event: message\ndata: ${JSON.stringify(body)}\n\n`));
     let progress = 0;
-    const timer = token === undefined ? undefined : setInterval(() => {
+    if (token !== undefined) timer = setInterval(() => {
       progress += 1;
       send({ jsonrpc: "2.0", method: "notifications/progress", params: { progressToken: token, progress } });
     }, progressMs);
@@ -183,9 +196,11 @@ export async function startMcpServer(options: McpServerOptions): Promise<McpServ
       // The drive is stopping (an interrupt, a halt): the call has no answer the log holds, so none is given.
       send(error(id, -32603, String((err as Error)?.message ?? err).slice(0, 500)));
     } finally {
-      if (timer) clearInterval(timer);
-      open.delete(controller);
-      res.end();
+      // A call the server let go (close()) settles here to nothing: its entry is gone, and so is its response.
+      const ended = gone;
+      release();
+      open.delete(entry);
+      if (!ended) res.end();
     }
   }
 
@@ -203,8 +218,12 @@ export async function startMcpServer(options: McpServerOptions): Promise<McpServ
     async close() {
       if (closed) return;
       closed = true;
-      for (const controller of open) controller.abort(new Error("the session's MCP server closed"));
+      for (const { controller } of open) controller.abort(new Error("the session's MCP server closed"));
       if (!(await settle(CLOSE_SETTLE_MS))) options.log?.("opencode: a host tool call was still running when the MCP server closed", { running: running.size });
+      // Past the window, a call that ignores its abort is let go: nothing of it stays live in this process.
+      for (const { release } of open) release();
+      open.clear();
+      running.clear();
       server.closeAllConnections?.();
       await new Promise<void>((resolve) => server.close(() => resolve()));
     },

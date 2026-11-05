@@ -198,6 +198,16 @@ test("the contract's operations are as vendored; this server's own are added and
     }
   };
   for (const [name, schema] of Object.entries(components.schemas)) {
+    // A contract condition this server widens (SignIn's held_by for its own `unreadable` state) is marked on the branch.
+    if (schema.else?.["x-agentrun-serve"] !== undefined) {
+      // Only the widening it is marked for: held_by may name a run when the state is `unreadable`, the vendored branch
+      // whole beneath it, and nothing else.
+      const { "x-agentrun-serve": mark, ...branch } = schema.else;
+      assert.equal(mark, "signins/1", `${name}.else names its addition`);
+      assert.deepEqual(branch, { if: { properties: { state: { const: "unreadable" } } }, then: { properties: { held_by: { oneOf: [{ $ref: "#/components/schemas/Id" }, { type: "null" }] } } }, else: VENDORED.components.schemas[name].else }, `${name}.else widens held_by for unreadable alone`);
+      marked.push(`${name}.else`);
+      schema.else = VENDORED.components.schemas[name].else;
+    }
     // A contract enum this server widens (RunStatus's `paused`) is marked on the schema, each value it adds listed.
     if (schema["x-agentrun-serve"] !== undefined && Array.isArray(schema.enum)) {
       const original = VENDORED.components.schemas[name].enum;
@@ -372,7 +382,7 @@ test("learning is this server's own addition, learning/1: the definition's switc
   const caps = (await api("GET", "/capabilities")).body;
   assert.equal(caps.features.learning, "on", "the server's switch is on by default");
   assert.deepEqual(caps.learning, { grade_model: null, pending: true, approve: false, approve_needs: "password" }, "each run graded on its own model: this server names none; a risky rule the user asked for waits; approving needs the owner's password session");
-  assert.deepEqual(caps.features.usage.meters, ["tokens", "tools", "learning"]);
+  assert.deepEqual(caps.features.usage.meters, ["tokens", "tools", "browser_time", "learning"]);
   assert.deepEqual(schemaProblems(doc, { $ref: "#/components/schemas/Capabilities" }, caps), []);
   // A run whose end-of-run turn gives no note, one whose folder cannot be made (a file where it goes), and one of an agent
   // that does not learn.

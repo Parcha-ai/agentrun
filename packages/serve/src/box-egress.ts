@@ -172,7 +172,7 @@ export const dockerInfo: DockerInfo = (env, timeoutMs) =>
  * given the host's docker socket shares the host's kernel, but not its files: it would bind a directory the daemon does
  * not have, so every box would fail to start. Anything else is no network, and the reason says what was seen, naming the
  * runtime docker info gives. A kernel is the evidence, not a runtime's name: Docker Desktop on WSL2 runs the kernel this
- * server does, and passes (the proxy enforces the list there as anywhere).
+ * server does, but keeps its data outside the distro, so it passes only where the distro has that directory too.
  */
 export async function egressBlockedBy(env: NodeJS.ProcessEnv, options: { info?: DockerInfo; platform?: string; kernel?: string; timeoutMs?: number; sees?: (dir: string) => boolean } = {}): Promise<string | undefined> {
   const platform = options.platform ?? process.platform;

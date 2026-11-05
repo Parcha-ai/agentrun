@@ -614,17 +614,18 @@ test("a file on main that is not a note (over the read cap, not UTF-8, executabl
   assert.equal(git(repo, ["status", "--porcelain"]), "", "the checked-out files are main's");
 });
 
-test("a run's learning shows the grader's item for each new note: a drop of two notes names the one that failed, with its question and why", { timeout: 120_000 }, async (t) => {
+test("a run's learning shows the grader's item for each new note: of two notes, the kept one merges and the dropped one is named with its question and why", { timeout: 120_000 }, async (t) => {
   const { api, baseUrl } = await serve(t, { learning: "on", faux: LEARN });
   const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
   const ONE_CASE = note("One case", "The answer for this one input was 42");
   await made(api, learner("judged", { instructions: "Answer the question.\nGrade: drop one-case.md.", plan: [["check-units.md", UNITS], ["one-case.md", ONE_CASE]] }));
   const run = await ended(api, await started(api, "judged"));
-  settled(run.view, run.rows, "dropped", "grader");
+  settled(run.view, run.rows, "merged");
+  assert.equal(run.view.learning.detail, "Learned: Check units. Not kept: It is about one case.");
   const learned = (await api("GET", `/runs/${run.view.run_id}/learning`)).body;
   assert.deepEqual(schemaProblems(doc, doc.paths["/runs/{run_id}/learning"].get.responses["200"].content["application/json"].schema, learned), []);
   const { items, ...verdict } = learned.verdict;
-  assert.deepEqual(verdict, { merge: false, reason: "A note is about the one case it came from." });
+  assert.deepEqual(verdict, { merge: true, reason: "A note is about the one case it came from." });
   assert.deepEqual([...items].sort((a, b) => a.file.localeCompare(b.file)), [
     { file: "check-units.md", keep: true, origin: "run", why: "It holds as a general rule." },
     { file: "one-case.md", keep: false, question: "General", why: "It is about one case." },

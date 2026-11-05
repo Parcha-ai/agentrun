@@ -23,18 +23,18 @@
 // the session has it, so a process that dies between the two sends it again rather than never.
 import { randomUUID } from "node:crypto";
 import type { Context } from "@earendil-works/chord";
-import { AssistantEntry, type Cursor, ROOT_CONVERSATION_ID, type ToolRegistration, ToolResultEntry, type Tx, UserEntry } from "@earendil-works/pi-durable";
+import { AssistantEntry, type Cursor, type JsonObject, ROOT_CONVERSATION_ID, type ToolRegistration, ToolResultEntry, type Tx, UserEntry } from "@earendil-works/pi-durable";
 import { type AdapterEvent, type AdapterSession, type AgentAdapter, type ModelPortEvent, type ModelUsage, modelPortFor, RUNNER_RECORDS, type SessionSpec, type TurnStatus } from "@parcha/agentrun-kernel";
 import type { DoorContext, DoorEvent, DoorHook, DurableRun } from "@parcha/pi-durable-disk";
 import { type ConfineChild, confineOf } from "./adapters.js";
 import { hostTools, type ToolResults } from "./host-tools.js";
-import { CAP_REFUSED_FIELD, type CapGuard, capToolSpend, holdsInFlight, useSpend } from "./cap.js";
+import { CAP_REFUSED_FIELD, type CapGuard, capToolSpend, holdsInFlight, type RefusalFigures, useSpend } from "./cap.js";
 import { durableSessions } from "./sessions.js";
 import { handsParallel, planeOf } from "./tool-plane.js";
 import { parallelOf } from "./web-fetch.js";
 import { WEB_SEARCH_TOOL } from "./web-search.js";
 import { ADAPTER_API, MESSAGE, MESSAGE_END, TURN_END, type TurnEndData } from "./turn-end.js";
-import { REQUEST_CONTINUED, REQUEST_COST_LATE, REQUEST_COST_PENDING, REQUEST_STARTED, TOOL_COST, TOOL_STARTED } from "@parcha/pi-durable-agent/timeline";
+import { originOf, REQUEST_CONTINUED, REQUEST_COST_LATE, REQUEST_COST_PENDING, REQUEST_STARTED, TOOL_COST, TOOL_STARTED } from "@parcha/pi-durable-agent/timeline";
 
 /** The root's marker of a paid request already written as a pi.assistant entry. */
 export const BOOKED = "adapter.request";
@@ -54,7 +54,8 @@ export { TURN_END } from "./turn-end.js";
 type ToolCall = { type: "toolCall"; id: string; name: string; arguments: Record<string, unknown> };
 type Pending = { request: number; usage: ModelUsage };
 /** An accepted message: `recorded` once its record is on the root. */
-type Message = { id: string; content: string; recorded: Promise<unknown> };
+/** A message the session takes: the person's, or the server's (`origin`, written on its user entry for the Timeline). */
+type Message = { id: string; content: string; origin?: JsonObject; recorded: Promise<unknown> };
 /** The run's stop record as serve keeps it (serve.json, runs.ts stopTurn, saved before the stop's abort): the person's
  *  newest message when they stopped the turn, by its row id (`<conversation>:<entry>`), or, from an older server, how many
  *  messages they had sent then. */
@@ -142,6 +143,8 @@ export function adapterRun(
   // That `refused` is the cap's, not the cancel's: its error entry gets a start mark of its own first, as pi's does, so the
   // run's usage counts no request for it.
   let capRefused = false;
+  // A refusal for room's figures, for its start mark (cap.ts RefusalFigures).
+  let refusedFigures: RefusalFigures | undefined;
   const CANCELLED = "the run was cancelled: the model request was not sent";
   // What the run's paid tools charged, in earlier processes (read at the open) and this one: null once one is unknown.
   let charged: number | null = 0;
@@ -154,6 +157,7 @@ export function adapterRun(
     if (answer && "refuse" in answer) {
       refused = answer.refuse;
       capRefused = !byCancel;
+      refusedFigures = !byCancel && "needsUsd" in answer && typeof answer.needsUsd === "number" && typeof answer.spentUsd === "number" ? { spentUsd: answer.spentUsd, needsUsd: answer.needsUsd } : undefined;
       return answer;
     }
     // Admitted, limited to the output what is left of the cap buys (which the runner hands the model proxy, and holds it
@@ -376,7 +380,7 @@ export function adapterRun(
     await session!.send(message.content);
     await later(() =>
       commit(async (tx) => {
-        await tx.appendEntry(UserEntry, ROOT_CONVERSATION_ID, { model: [{ role: "user", content: [{ type: "text", text: message.content }], timestamp: now() } as never] });
+        await tx.appendEntry(UserEntry, ROOT_CONVERSATION_ID, { model: [{ role: "user", content: [{ type: "text", text: message.content }], timestamp: now() } as never], ...(message.origin ? { data: { origin: message.origin } } : {}) } as never);
         await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: MESSAGE_END, data: { key: spec.key, id: message.id, sent: true } });
       }).then(() => undefined),
     );
@@ -419,6 +423,8 @@ export function adapterRun(
           // the run completes with its answer, this failure kept in the timeline.
           const why = refused ?? halted?.message ?? (failed === undefined ? undefined : `${harness}: ${failed}`);
           const unsent = refused !== undefined && capRefused;
+          const figures = unsent ? refusedFigures : undefined;
+          refusedFigures = undefined;
           refused = undefined;
           capRefused = false;
           const pending = open.size > 0;
@@ -429,7 +435,7 @@ export function adapterRun(
           await flush(true, cut ? undefined : async (tx) => {
             if (why !== undefined) {
               // A refusal of the cap's: a start mark of its own first, as pi's is, so the run's usage counts no request for it.
-              if (unsent) await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: REQUEST_STARTED, data: { [CAP_REFUSED_FIELD]: true } });
+              if (unsent) await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: REQUEST_STARTED, data: { [CAP_REFUSED_FIELD]: true, ...(figures ? { spentUsd: figures.spentUsd, needsUsd: figures.needsUsd } : {}) } });
               await tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [assistantMessage(harness, undefined, undefined, "", [], why) as never] });
             }
             const data: TurnEndData = {
@@ -467,7 +473,8 @@ export function adapterRun(
       if (turn && input.whenBusy === "reject") return { accepted: false, reason: "busy" };
       const id = randomUUID();
       const content = textOf(input.content);
-      const message: Message = { id, content, recorded: commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: MESSAGE, data: { key: spec.key, id, content } }))) };
+      const origin = input.origin;
+      const message: Message = { id, content, ...(origin ? { origin } : {}), recorded: commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: MESSAGE, data: { key: spec.key, id, content, ...(origin ? { origin } : {}) } }))) };
       if (turn) queue.push(message);
       else runTurns(sendOf(message));
       await message.recorded;
@@ -517,7 +524,7 @@ export function adapterRun(
       for (let cursor: Cursor | undefined; root; ) {
         const page = await root.entries({ order: "ascending" }, 500, cursor, context);
         for (const entry of page.items) {
-          const data = entry.data as { key?: unknown; request?: unknown; unpriced?: unknown; id?: unknown; content?: unknown; sent?: unknown } | undefined;
+          const data = entry.data as { key?: unknown; request?: unknown; unpriced?: unknown; id?: unknown; content?: unknown; sent?: unknown; origin?: unknown } | undefined;
           if (entry.kind === TOOL_COST || entry.kind === TOOL_STARTED) paid.push(entry);
           const message = (entry as { model?: { api?: unknown; stopReason?: unknown; role?: unknown }[] }).model?.[0];
           if (unended && message?.api === ADAPTER_API && message.stopReason === "error") unended.failed = true;
@@ -531,7 +538,7 @@ export function adapterRun(
             written.add(data.request);
             (data.unpriced === true ? unpriced : priced).add(data.request);
           } else if (entry.kind === PRICED_LATE && typeof data.request === "number") priced.add(data.request);
-          else if (entry.kind === MESSAGE && typeof data.id === "string") accepted.set(data.id, { id: data.id, content: String(data.content ?? ""), recorded: Promise.resolve() });
+          else if (entry.kind === MESSAGE && typeof data.id === "string") accepted.set(data.id, { id: data.id, content: String(data.content ?? ""), ...(originOf(data.origin) ? { origin: data.origin as JsonObject } : {}), recorded: Promise.resolve() });
           else if (entry.kind === MESSAGE_END && typeof data.id === "string") {
             accepted.delete(data.id);
             if (data.sent === true) unended = { message: data.id, failed: false, answer: null };
@@ -574,7 +581,8 @@ export function adapterRun(
       if (budgetUsd !== undefined) {
         useSpend({
           cap: budgetUsd,
-          spent: async () => (await bookings(BOOKING_WAIT_MS), plus(plus(booking.spentUsd(), charged), inFlight.total())),
+          spent: async () => (await bookings(BOOKING_WAIT_MS), plus(booking.spentUsd(), charged)),
+          held: () => inFlight.total(),
           add: (usd) => void (charged = plus(charged, usd)),
         });
       }
