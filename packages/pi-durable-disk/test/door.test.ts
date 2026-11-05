@@ -261,33 +261,47 @@ describe("the door hook: outcomes", () => {
       const s = await serve(hook);
       const PARK = "agentrun.tool_approval";
       const rootId = (await s.run.harness.root(ctx)).id;
-      // A turn works, and parks its call just after the door has read the newest entries: then the turn ends.
+      // A turn works, and parks its call while the door's admitting step reads the conversation, then the turn ends. A
+      // transaction cannot write after its first read, and commits run one at a time: so the admitting step's first read
+      // is cut, the park is committed, and the step runs again, as the store would order the two. Busy until the park, so
+      // an admission that never reads it is refused BUSY, not WAITING.
       state.busy = true;
       let fired = false;
-      const harness = s.run.harness as unknown as { root: (...args: unknown[]) => Promise<object> };
-      const realRoot = harness.root.bind(harness);
-      harness.root = async (...args: unknown[]) => {
-        const conversation = await realRoot(...args);
-        return new Proxy(conversation, {
-          get(target, prop) {
-            const value = Reflect.get(target, prop) as unknown;
-            if (prop !== "entries" || typeof value !== "function") return typeof value === "function" ? (value as (...a: unknown[]) => unknown).bind(target) : value;
-            return async (...a: unknown[]) => {
-              const page = await (value as (...b: unknown[]) => Promise<unknown>).apply(target, a);
-              if (!fired) {
+      let parked = false;
+      const harness = s.run.harness as unknown as { commit: (fn: (tx: object) => Promise<unknown>, ...rest: unknown[]) => Promise<unknown> };
+      const realCommit = harness.commit.bind(harness);
+      const watched = (fn: (tx: object) => Promise<unknown>) => (tx: object) =>
+        fn(
+          new Proxy(tx, {
+            get(target, prop) {
+              const value = Reflect.get(target, prop) as unknown;
+              if (typeof value !== "function") return value;
+              if (prop !== "scanEntries" || fired) return (value as (...a: unknown[]) => unknown).bind(target);
+              return async () => {
                 fired = true;
-                await s.run.harness.commit((tx) => tx.appendEntry(rootId, { kind: PARK, data: { phase: "requested", id: "ap_9", tool: "web_fetch", call_id: "call_9" } as never }), ctx);
-                state.busy = false;
-              }
-              return page;
-            };
-          },
-        });
+                throw new Error("the park lands during this read");
+              };
+            },
+          }),
+        );
+      harness.commit = async (fn, ...rest) => {
+        try {
+          return await realCommit(watched(fn), ...rest);
+        } catch (error) {
+          if (!fired || parked) throw error;
+          parked = true;
+          await realCommit((tx) => (tx as { appendEntry: (id: unknown, entry: unknown) => Promise<unknown> }).appendEntry(rootId, { kind: PARK, data: { phase: "requested", id: "ap_9", tool: "web_fetch", call_id: "call_9" } }), ...rest);
+          state.busy = false;
+          return realCommit(watched(fn), ...rest);
+        }
       };
       const answer = await call(s.server, "POST", "/submit", { requestId: "event-9", content: "news", answers: false, asks: ["ask_person"], parks: [PARK] });
-      assert.equal(answer.status, 409, JSON.stringify(answer.body));
+      assert.deepEqual([fired, parked], [true, true], "the park was written during the admitting step's read");
+      assert.deepEqual([answer.status, answer.body.error], [409, "WAITING"], JSON.stringify(answer.body));
       assert.equal(calls.submit.length, 0, "the hook never takes it");
       assert.deepEqual(await doorEntries(s.run), [], "nothing admitted");
+      const parks = (await (await s.run.harness.root(ctx)).entries({}, 500, undefined, ctx)).items.filter((e) => e.kind === PARK);
+      assert.deepEqual(parks.map((e) => (e.data as { id?: string }).id), ["ap_9"], "the park is kept");
     }, new LocalDisk("door-park-race"));
   });
 
