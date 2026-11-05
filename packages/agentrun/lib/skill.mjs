@@ -2,13 +2,48 @@
 // into the skill folders of the coding agents on this machine, or into one named. Claude Code reads a person's skills from
 // ~/.claude/skills (CLAUDE_CONFIG_DIR moves ~/.claude), Codex from $CODEX_HOME/skills (default ~/.codex/skills), where its
 // own skill installer writes.
-import { cpSync, existsSync, readFileSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const NAME = "agentrun-cli";
 const SOURCE = fileURLToPath(new URL(`../skills/${NAME}`, import.meta.url));
+
+/** `path` with every link resolved, for a path that does not exist yet too (from the nearest folder that does). */
+const real = (path) => {
+  try {
+    return realpathSync(path);
+  } catch (error) {
+    if (error.code !== "ENOENT" || dirname(path) === path) throw error;
+    return join(real(dirname(path)), basename(path));
+  }
+};
+const within = (path, folder) => path === folder || path.startsWith(`${folder}${sep}`);
+
+/** `target` replaced by a copy of the skill: copied beside it first and moved in by rename, so a copy that fails
+ *  leaves `target` as it was, and the old one goes only once the new one is in its place. */
+function replace(target) {
+  const dir = dirname(target);
+  mkdirSync(dir, { recursive: true });
+  const stamp = `${process.pid}-${Date.now()}`;
+  const fresh = join(dir, `.${NAME}.${stamp}.new`);
+  const old = join(dir, `.${NAME}.${stamp}.old`);
+  try {
+    cpSync(SOURCE, fresh, { recursive: true });
+    const had = existsSync(target);
+    if (had) renameSync(target, old);
+    try {
+      renameSync(fresh, target);
+    } catch (error) {
+      if (had) renameSync(old, target);
+      throw error;
+    }
+  } finally {
+    rmSync(fresh, { recursive: true, force: true });
+    rmSync(old, { recursive: true, force: true });
+  }
+}
 
 /** A folder this command may replace: none there yet, or this skill, by its front matter's name. */
 const ours = (dir) => {
@@ -37,14 +72,17 @@ export const SKILL_INSTALL = {
     const asked = [values.claude && claude, values.codex && codex, values.dir !== undefined && resolve(values.dir)].filter(Boolean);
     const dirs = asked.length ? asked : [claude, codex].filter((dir) => existsSync(join(dir, "..")));
     if (!dirs.length) throw cli.fail(2, `Neither ${join(claude, "..")} nor ${join(codex, "..")} exists: name where with --claude, --codex or --dir DIR.`);
-    const installed = [];
-    for (const dir of dirs) {
-      const target = join(dir, NAME);
+    // Every target checked before any is touched: none may be this package's own skill folder (through a link too),
+    // lie inside it, or hold it, and each is empty or this skill.
+    const source = realpathSync(SOURCE);
+    const targets = dirs.map((dir) => join(dir, NAME));
+    for (const target of targets) {
+      const at = real(target);
+      if (within(at, source) || within(source, at)) throw cli.fail(2, `${target} is this package's own skill folder, lies inside it or holds it: install the skill elsewhere.`);
       if (!ours(target)) throw cli.fail(1, `${target} exists and is not this skill: move it, or install with --dir DIR.`);
-      rmSync(target, { recursive: true, force: true });
-      cpSync(SOURCE, target, { recursive: true });
-      installed.push(target);
     }
+    for (const target of targets) replace(target);
+    const installed = targets;
     io.stdout.write(`${JSON.stringify({ installed })}\n`);
     return 0;
   },
