@@ -148,15 +148,17 @@ function answerOnce(dir: string, id: string, outcome: AskOutcome): AskOutcome {
   return answerOf(readOwn(dir, `${id}.answer.json`))?.outcome ?? outcome;
 }
 
-/** The owner's answer to the run's newest ask: written when it is the first (`first`), else the answer it already has (an
- *  ask past its expiry has `expired`). Undefined when the run has asked nothing. */
+/** The owner's answer to the run's ask: the newest one still waiting, as `openAsk` reads it (two conversations may each
+ *  ask), written when it is the first (`first`); with none waiting, the answer the newest one has. An ask past its expiry
+ *  has `expired`. Undefined when the run has asked nothing. */
 export function answerAsk(runDir: string, outcome: "done" | "cancelled", now = Date.now()): { outcome: AskOutcome; first: boolean } | undefined {
-  const newest = asksIn(runDir)[0];
+  const asks = asksIn(runDir);
+  const target = asks.find(({ answer }) => !answer) ?? asks[0];
   const dir = askDir(runDir);
-  if (!newest || !dir) return undefined;
-  if (newest.answer) return { outcome: newest.answer.outcome, first: false };
-  if (Date.parse(newest.ask.expires_at) <= now) return { outcome: answerOnce(dir, newest.ask.id, "expired"), first: false };
-  const answered = answerOnce(dir, newest.ask.id, outcome);
+  if (!target || !dir) return undefined;
+  if (target.answer) return { outcome: target.answer.outcome, first: false };
+  if (Date.parse(target.ask.expires_at) <= now) return { outcome: answerOnce(dir, target.ask.id, "expired"), first: false };
+  const answered = answerOnce(dir, target.ask.id, outcome);
   return { outcome: answered, first: answered === outcome };
 }
 
