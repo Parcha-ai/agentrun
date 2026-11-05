@@ -1,4 +1,4 @@
-import { BookOpen, ChevronDown, Hourglass, Pencil, Plus, Sparkles, TriangleAlert, User } from "lucide-react";
+import { BookOpen, ChevronDown, Hourglass, Pencil, Plus, RotateCcw, Sparkles, TriangleAlert, User } from "lucide-react";
 import { type KeyboardEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
@@ -9,7 +9,7 @@ import { type Client, ClientError } from "@/lib/client";
 import { markdown, runLabel, when } from "@/lib/format";
 import {
   type AgentLearning, bodyOf, type LearningChange, change, costsShown, dropKind, dropWords, fileFor, impactWords, learningCost, type LearningNote, money, type NoteParts, noteParts,
-  APPROVE_LATER, APPROVE_SIGN_IN, type Approval, approval, CHANGED, HOST_RUNS, isPending, NO_VERSION, type NoteProblem, originOf, WAITS_WHY, notes, noteText, NOTE_TYPES, provenance, runsWord, seenVersion, shortTitle, shownImpact, took, TYPE_HINT, typeLabel, usedBy,
+  APPROVE_LATER, APPROVE_SIGN_IN, type Approval, approval, CHANGED, changeWords, HOST_RUNS, type LastChange, RESTORE_SIGN_IN, RESTORES, type Retired, isPending, NO_VERSION, type NoteProblem, originOf, WAITS_WHY, notes, noteText, NOTE_TYPES, provenance, runsWord, seenVersion, shortTitle, shownImpact, took, TYPE_HINT, typeLabel, usedBy,
   counted, type LearnedItem, learnedItems, statusFile,
 } from "@/lib/learning";
 import { placeOf } from "@/lib/place";
@@ -173,7 +173,7 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent }: Learning
           </ul>
           {later.error !== undefined && <ProblemCard problem={problem(later.error, "more notes")} onRetry={more} className="" />}
           {later.cursor && <div className="flex justify-center"><Button size="sm" onClick={more}>Load more notes</Button></div>}
-          {earlier.length > 0 && <Earlier notes={earlier} all={all} from={from} focus={focus} runs={byRun} />}
+          {earlier.length > 0 && <Earlier notes={earlier} all={all} from={from} focus={focus} runs={byRun} v2={v2} agentId={agent.agent_id} readOnly={readOnly} onChanged={read} />}
         </section>
         {(["skill", "workflow"] as const).map((kind) => {
           const items = kind === "skill" ? skills : workflows;
@@ -193,7 +193,7 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent }: Learning
                   {inUse.map((x) => <li key={x.file}><LearnedCard item={x} kind={kind} v2={v2} agentId={agent.agent_id} readOnly={readOnly} runs={byRun} approves={approves} onChanged={read} /></li>)}
                 </ul>
               )}
-              {gone.length > 0 && <EarlierLearned kind={kind} items={gone} from={from} v2={v2} agentId={agent.agent_id} runs={byRun} />}
+              {gone.length > 0 && <EarlierLearned kind={kind} items={gone} from={from} v2={v2} agentId={agent.agent_id} runs={byRun} readOnly={readOnly} onChanged={read} />}
             </section>
           );
         })}
@@ -388,6 +388,9 @@ function NoteCard({ note, v2, agentId, readOnly, focused, from, runs, usedIn, us
   useEffect(() => { if (!saved) return; const t = setTimeout(() => setSaved(null), 2400); return () => clearTimeout(t); }, [saved]);
   if (editing) return <NoteEditor title="Edit note" v2={v2} agentId={agentId} file={note.file} seen={note} onDone={(ok) => { setEditing(false); if (ok) { setSaved("Saved"); onChanged(); } }} />;
   const body = bodyOf(note.text);
+  // Its newest change by a person (or a run's other than the learning), as the server names it; else, from an older
+  // server, the learning log's: written by you, or edited by you after a run learned it.
+  const person = lastChangeLine(note.last_change) ?? (note.last_change ? null : from?.edited ? `${from.run ? "Edited" : "Written"} by you · ${when(from.edited)}` : null);
   return (
     <article ref={ref} id={`note-${note.file}`} tabIndex={-1} aria-label={note.name} className={cn("border bg-card/40 outline-none focus-visible:border-primary transition-[border-color,box-shadow] duration-700", flash && "border-primary shadow-[0_0_0_1px_hsl(var(--primary))]")}>
       <header className="flex flex-col gap-x-3 gap-y-1 px-5 pt-4 sm:flex-row sm:items-start">
@@ -411,10 +414,9 @@ function NoteCard({ note, v2, agentId, readOnly, focused, from, runs, usedIn, us
       </header>
       {said && <div className="px-5 pt-3">{said}</div>}
       {body.trim() && <Body text={body} />}
-      {(from?.run || from?.edited || (usedIn ?? 0) > 0) && <footer className="flex flex-wrap items-center gap-x-5 gap-y-1.5 border-t px-5 py-2.5 font-mono text-[11px] text-muted-foreground">
-        {from?.run ? <LearnedIn run={from.run.id} runs={runs} at={from.run.at} reason={from.run.reason} />
-          : from?.edited ? <span className="flex items-center gap-1.5"><User className="size-3" aria-hidden />Written by you · {when(from.edited)}</span> : null}
-        {from?.run && from.edited && <span className="flex items-center gap-1.5"><User className="size-3" aria-hidden />Edited by you · {when(from.edited)}</span>}
+      {(from?.run || person || (usedIn ?? 0) > 0) && <footer className="flex flex-wrap items-center gap-x-5 gap-y-1.5 border-t px-5 py-2.5 font-mono text-[11px] text-muted-foreground">
+        {from?.run && <LearnedIn run={from.run.id} runs={runs} at={from.run.at} reason={from.run.reason} />}
+        {person && <span className="flex items-center gap-1.5"><User className="size-3" aria-hidden />{person}</span>}
         {usedIn !== undefined && usedIn > 0 && <span className="flex items-center gap-1.5"><BookOpen className="size-3" aria-hidden />Used in {usedOf ? `${usedIn} of the latest ${usedOf} runs` : runsWord(usedIn)}</span>}
       </footer>}
       {retiring && <RetireConfirm name={note.name} kind="note" retire={async () => {
@@ -503,11 +505,24 @@ function LearnedCard({ item, kind, v2, agentId, readOnly, runs, approves, onChan
         : <pre className="mx-5 mt-3 max-h-80 overflow-auto border bg-background p-3 font-mono text-[12px]">{text}</pre>)}
       <footer className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-1.5 border-t px-5 py-2.5 font-mono text-[11px] text-muted-foreground">
         {item.run && <LearnedIn run={item.run} runs={runs} />}
+        {lastChangeLine(item.last_change) && <span className="flex items-center gap-1.5"><User className="size-3" aria-hidden />{lastChangeLine(item.last_change)}</span>}
         <span>{item.bytes < 1024 ? `${item.bytes} B` : `${(item.bytes / 1024).toFixed(1)} KB`}</span>
       </footer>
       {retiring && <RetireConfirm name={item.name} kind={kind} retire={async () => { await v2.retireNote(agentId, statusFile(item), version); return null; }} onDone={async (ok) => { if (ok) await onChanged(); setRetiring(false); }} />}
     </article>
   );
+}
+
+/** A newest change the server names, in words with when ("Approved by you · Nov 5, 7:30 PM"); none for a run's learning,
+ *  which "Learned in" says, or when the server names no change. */
+function lastChangeLine(last: LastChange | undefined): string | null {
+  return last && last.kind !== "learned" ? `${changeWords(last.kind, last.by)} · ${when(last.at)}` : null;
+}
+
+/** Who retired one and when: the server's `retired` (a newer server's), else the learning log's latest change by a person
+ *  (`logged`), else just "Retired". */
+function retiredLine(retired: Retired | undefined, logged: string | undefined): string {
+  return retired ? `${changeWords("retired", retired.by)} · ${when(retired.at)}` : `Retired${logged ? ` by you · ${when(logged)}` : ""}`;
 }
 
 /** "Learned in" the run that kept it, linked by its title, and when (`at`), with why it was kept as the hover (`reason`). */
@@ -573,6 +588,45 @@ function RetireConfirm({ name, kind, retire, onDone }: { name: string; kind: "no
       {said && <div className="w-full">{said}</div>}
       <Button ref={yes} size="sm" variant="destructive" onClick={() => void go()} disabled={busy}>{busy ? "Retiring" : "Yes, retire"}</Button>
       <Button size="sm" variant="ghost" onClick={() => void onDone(false)} disabled={busy}>Keep</Button>
+    </div>
+  );
+}
+
+/** Restore a retired one, after a confirm: `restore` is made on the version its row shows (If-Match), and the tab is read
+ *  again (`onChanged`). A version changed since says so and reads it again; one no longer retired (restored elsewhere)
+ *  reads it again; a token is told restoring takes the password sign-in; a refusal by the checks a new one passes shows
+ *  the server's words, and it stays retired. */
+function RestoreConfirm({ name, kind, restore, onChanged, onDone }: { name: string; kind: "note" | "skill" | "workflow"; restore: () => Promise<unknown>; onChanged: () => void | Promise<void>; onDone: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [said, setSaid] = useState<ReactNode>(null);
+  const yes = useRef<HTMLButtonElement>(null);
+  useEffect(() => { yes.current?.focus(); }, []);
+  const words = (text: string) => <p className="text-[12px] text-destructive-text" role="alert">{text}</p>;
+  const go = async () => {
+    setBusy(true); setSaid(null);
+    try { await restore(); }
+    catch (e) {
+      setBusy(false);
+      if (e instanceof ClientError && (e.status === 412 || e.code === "precondition_failed")) { setSaid(words(CHANGED)); await onChanged(); return; }
+      if (e instanceof ClientError && e.status === 403) return void setSaid(words(RESTORE_SIGN_IN));
+      if (e instanceof ClientError && e.problems?.length) {
+        return void setSaid(<div className="text-[12px] text-destructive-text" role="alert"><p>Not restored: {e.message}</p><ul className="mt-1 list-disc space-y-0.5 pl-5">{e.problems.map((p, i) => <li key={i}>{p.detail}</li>)}</ul></div>);
+      }
+      // Not retired any more (restored in another tab): the tab is read again, which shows it where it is now.
+      if (e instanceof ClientError && e.status === 400) { await onChanged(); onDone(); return; }
+      return void setSaid(<ProblemCard problem={failed(e, `the ${kind}`, `The ${kind} was not restored.`)} className="" />);
+    }
+    // It landed: the tab is read again (a note's restore also marks what it supersedes), then the confirm goes.
+    await onChanged();
+    onDone();
+  };
+  return (
+    <div role="alertdialog" aria-label={`Restore ${name}?`} onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); onDone(); } }}
+      className="flex flex-wrap items-center gap-3 border-t bg-card px-5 py-3">
+      <p className="min-w-0 flex-1 text-[13px]"><span className="font-semibold">Restore it?</span> {RESTORES}</p>
+      {said && <div className="w-full">{said}</div>}
+      <Button ref={yes} size="sm" variant="solid" onClick={() => void go()} disabled={busy}>{busy ? "Restoring" : "Yes, restore"}</Button>
+      <Button size="sm" variant="ghost" onClick={onDone} disabled={busy}>Keep</Button>
     </div>
   );
 }
@@ -697,7 +751,8 @@ function NoteEditor({ title, v2, agentId, file, seen, taken: names = [], onDone 
 }
 
 /** The notes no longer in use: replaced by a newer one, or retired. Closed until asked; one a link points at opens it. */
-function Earlier({ notes: list, all, from, focus, runs }: { notes: LearningNote[]; all: LearningNote[]; from: ReturnType<typeof provenance>; focus: string[]; runs: Map<string, Run> }) {
+function Earlier({ notes: list, all, from, focus, runs, v2, agentId, readOnly, onChanged }: { notes: LearningNote[]; all: LearningNote[]; from: ReturnType<typeof provenance>; focus: string[]; runs: Map<string, Run>; v2: Client; agentId: string; readOnly: boolean; onChanged: () => void | Promise<void> }) {
+  const [restoring, setRestoring] = useState<string | null>(null);
   const [open, setOpen] = useState(list.some((x) => focus.includes(x.file)));
   // The retired notes opened to their text: read-only, as no later run reads them.
   const [shown, setShown] = useState<Set<string>>(new Set());
@@ -724,10 +779,12 @@ function Earlier({ notes: list, all, from, focus, runs }: { notes: LearningNote[
               <span className="text-[14px] text-muted-foreground line-through decoration-muted-foreground/40">{x.name}</span>
               <Chip tone="muted">{retired ? "Retired" : "Replaced"}</Chip>
               {retired && <ShowButton open={opened} label={`the note ${x.name}`} onClick={() => toggle(x.file)} />}
+              {retired && !readOnly && x.etag && restoring !== x.file && <Button size="sm" onClick={() => setRestoring(x.file)} aria-label={`Restore ${x.name}`}><RotateCcw aria-hidden /> Restore</Button>}
             </div>
             <p className="mt-1 font-mono text-[11px] text-muted-foreground">
-              {x.status === "superseded" && x.superseded_by ? <>Replaced by <button type="button" onClick={() => toNote(x.superseded_by!)} className="text-foreground/80 underline-offset-2 hover:text-foreground hover:underline">{nameOf(x.superseded_by)}</button></> : retired ? `Retired${from.get(x.file)?.edited ? ` by you · ${when(from.get(x.file)!.edited!)}` : ""}` : null}
+              {x.status === "superseded" && x.superseded_by ? <>Replaced by <button type="button" onClick={() => toNote(x.superseded_by!)} className="text-foreground/80 underline-offset-2 hover:text-foreground hover:underline">{nameOf(x.superseded_by)}</button></> : retired ? retiredLine(x.retired, from.get(x.file)?.edited) : null}
             </p>
+            {restoring === x.file && <div className="-mx-4 mt-2"><RestoreConfirm name={x.name} kind="note" restore={() => v2.restoreNote(agentId, x.file, x.etag!)} onChanged={onChanged} onDone={() => setRestoring(null)} /></div>}
             {opened && (
               <div className="-mx-4 mt-2 border-t pt-1">
                 <p className="mt-2 px-5 text-[13px] text-muted-foreground">{x.description}</p>
@@ -758,8 +815,9 @@ function Folded({ title, count, open, onToggle, children }: { title: string; cou
 
 /** The skills or the workflows a person retired, as retired notes are shown: closed until asked, each by its name, and
  *  who retired it and when once the changes read say. No Approve and no Retire: no later run is given it. */
-function EarlierLearned({ kind, items, from, v2, agentId, runs }: { kind: "skill" | "workflow"; items: LearnedItem[]; from: ReturnType<typeof provenance>; v2: Client; agentId: string; runs: Map<string, Run> }) {
+function EarlierLearned({ kind, items, from, v2, agentId, runs, readOnly, onChanged }: { kind: "skill" | "workflow"; items: LearnedItem[]; from: ReturnType<typeof provenance>; v2: Client; agentId: string; runs: Map<string, Run>; readOnly: boolean; onChanged: () => void | Promise<void> }) {
   const [open, setOpen] = useState(false);
+  const [restoring, setRestoring] = useState<string | null>(null);
   // The ones opened to their text, read from the file when opened (a skill's SKILL.md, a workflow's workflow.json).
   const [shown, setShown] = useState<Set<string>>(new Set());
   const toggle = (file: string) => setShown((s) => { const n = new Set(s); if (n.has(file)) n.delete(file); else n.add(file); return n; });
@@ -773,9 +831,12 @@ function EarlierLearned({ kind, items, from, v2, agentId, runs }: { kind: "skill
               <span className="font-mono text-[13px] text-muted-foreground line-through decoration-muted-foreground/40">{x.name}</span>
               <Chip tone="muted">Retired</Chip>
               <ShowButton open={shown.has(x.file)} label={`the ${kind} ${x.name}`} onClick={() => toggle(x.file)} />
+              {!readOnly && restoring !== x.file && <Button size="sm" onClick={() => setRestoring(x.file)} aria-label={`Restore ${x.name}`}><RotateCcw aria-hidden /> Restore</Button>}
             </div>
             {x.description && <p className="mt-1 text-[12px] text-muted-foreground">{x.description}</p>}
-            <p className="mt-1 font-mono text-[11px] text-muted-foreground">{`Retired${edited ? ` by you · ${when(edited)}` : ""}`}</p>
+            <p className="mt-1 font-mono text-[11px] text-muted-foreground">{retiredLine(x.retired, edited)}</p>
+            {/* Restored by the file that says whether it is in use (a skill's SKILL.md, a draft's README), on the listed version. */}
+            {restoring === x.file && <div className="-mx-4 mt-2"><RestoreConfirm name={x.name} kind={kind} restore={() => v2.restoreNote(agentId, statusFile(x), x.etag)} onChanged={onChanged} onDone={() => setRestoring(null)} /></div>}
             {shown.has(x.file) && (
               <div className="-mx-4 mt-2 border-t pt-1">
                 <FileText v2={v2} agentId={agentId} file={x.file} kind={kind} label={`the ${kind} ${x.name}`} />
