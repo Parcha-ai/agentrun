@@ -55,7 +55,11 @@ function runBar(e: ClientError) {
   act(() => root!.render(createElement(RunBar, { agent: workflowAgent(), efforts: [], v2: v2 as never, go: () => {} })));
   return {
     host,
-    run: () => act(async () => { [...host.querySelectorAll("button")].find((b) => /^Run$/.test((b.textContent ?? "").trim()))!.click(); }),
+    // The workflow's input, as JSON: an empty object.
+    run: async () => {
+      act(() => { const t = host.querySelector("textarea")!; Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(t, "{}"); t.dispatchEvent(new Event("input", { bubbles: true })); });
+      await act(async () => { [...host.querySelectorAll("button")].find((b) => /^Run$/.test((b.textContent ?? "").trim()))!.click(); });
+    },
     links: () => [...host.querySelectorAll("[role='alert'] a")].map((a) => [a.textContent, a.getAttribute("href")]),
   };
 }
