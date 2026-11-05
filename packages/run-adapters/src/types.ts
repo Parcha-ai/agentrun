@@ -29,6 +29,14 @@ export interface ToolImage {
  */
 export const HOST_RESULT_MAX_CHARS = 120_000;
 
+/**
+ * The error a turn ends with when its provider stopped the answer on its content filter (Anthropic's `refusal` stop, an
+ * OpenAI answer `incomplete` for `content_filter`): a harness's model proxy reads the stop in the answer it passes
+ * (`ProviderPolicy.filtered`) and the harness halts the turn with this text at once, so its CLI never asks for the refused
+ * answer again. A host reads a run's end by it (agentrun-serve's `moderated`).
+ */
+export const CONTENT_FILTERED = "content_filter: the model provider stopped this answer";
+
 /** A tool the host gives a session. */
 export interface HostTool {
   name: string;
