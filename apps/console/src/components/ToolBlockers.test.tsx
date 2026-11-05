@@ -21,7 +21,9 @@ afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
 
 const ASKS = "This workflow's call node calls web_fetch, which is set to ask, and a workflow's call node can't wait for an approval: set it to allow for this agent.";
-const DENIED = "This workflow's call node calls bash, which is set to deny on this server.";
+// The server names only a call node's tool, and a call node runs only the built-in call tools (CALL_TOOLS: web_fetch,
+// web_search, pdf_pages, llm), at its settings key: a 409's denied and asks name nothing else (runnable.ts).
+const DENIED = "This workflow's call node calls web_search, which is set to deny on this server.";
 const refused = (message: string, details: Record<string, unknown>) => {
   const e = new ClientError(409, "agent_not_runnable", message);
   e.details = details;
@@ -33,7 +35,7 @@ describe("the start blockers a 409 names", () => {
     expect(toolBlockers(undefined)).toEqual({ denied: [], asks: [] });
     expect(toolBlockers({ unbound: [], missing: {} })).toEqual({ denied: [], asks: [] });
     expect(toolBlockers({ asks: ["web_fetch"] })).toEqual({ denied: [], asks: ["web_fetch"] });
-    expect(toolBlockers({ denied: ["bash", "read"], asks: ["web_fetch", "web_search"] })).toEqual({ denied: ["bash", "read"], asks: ["web_fetch", "web_search"] });
+    expect(toolBlockers({ denied: ["web_search", "llm"], asks: ["web_fetch"] })).toEqual({ denied: ["web_search", "llm"], asks: ["web_fetch"] });
     // Not an array of names: nothing to link.
     expect(toolBlockers({ denied: "bash", asks: [3] })).toEqual({ denied: [], asks: [] });
   });
@@ -85,18 +87,18 @@ describe("a refused start on the agent page", () => {
   });
 
   it("denied: the same, the server's words unchanged", async () => {
-    const page = runBar(refused(DENIED, { adapters: [], unbound: [], missing: {}, code: false, denied: ["bash"] }));
+    const page = runBar(refused(DENIED, { adapters: [], unbound: [], missing: {}, code: false, denied: ["web_search"] }));
     await page.run();
     await settle();
     expect(page.host.querySelector("[role='alert']")?.textContent).toContain(`The run did not start: ${DENIED}`);
-    expect(page.links()).toEqual([["Set bash for this agent", "#/agents/fetch-flow/edit?tool=bash"], ["Settings → Tools", "#/settings/tools"]]);
+    expect(page.links()).toEqual([["Set web_search for this agent", "#/agents/fetch-flow/edit?tool=web_search"], ["Settings → Tools", "#/settings/tools"]]);
   });
 
   it("several: a link for each tool, the Settings link once; none at all when the 409 names no tool", async () => {
-    const page = runBar(refused(`${DENIED} ${ASKS}`, { denied: ["bash"], asks: ["web_fetch", "web_search"] }));
+    const page = runBar(refused(`${DENIED} ${ASKS}`, { denied: ["llm", "web_search"], asks: ["web_fetch"] }));
     await page.run();
     await settle();
-    expect(page.links().map(([, href]) => href)).toEqual(["#/agents/fetch-flow/edit?tool=bash", "#/agents/fetch-flow/edit?tool=web_fetch", "#/agents/fetch-flow/edit?tool=web_search", "#/settings/tools"]);
+    expect(page.links().map(([, href]) => href)).toEqual(["#/agents/fetch-flow/edit?tool=llm", "#/agents/fetch-flow/edit?tool=web_search", "#/agents/fetch-flow/edit?tool=web_fetch", "#/settings/tools"]);
     act(() => root?.unmount());
     const box = runBar(refused("This server has no docker box.", { unbound: [], missing: {}, box: "docker" }));
     await box.run();
@@ -152,6 +154,13 @@ describe("a workflow agent's tool permissions in its editor", () => {
   it("the address's tool is the one focused, a legacy name at its settings key's row", async () => {
     const page = await open(workflowAgent(), "fetch_page");
     expect(document.activeElement).toBe(page.scope()!.querySelector("select[aria-label='web_fetch permission']"));
+  });
+
+  it("an address naming a tool with no row here opens the Tools step, focuses nothing, and doesn't fail", async () => {
+    const page = await open(workflowAgent(), "bash");
+    expect(page.scope()).toBeTruthy();
+    expect(page.host.querySelector("[aria-current='step']")?.textContent).toMatch(/Tools/);
+    expect(document.activeElement === document.body || !page.host.contains(document.activeElement)).toBe(true);
   });
 
   it("a permission set here is saved in tool_settings, and the workflow is kept whole", async () => {
