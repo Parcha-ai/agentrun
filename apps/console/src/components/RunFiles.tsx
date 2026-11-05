@@ -72,6 +72,8 @@ export function ArtifactViewer({ file, text, onClose, files = [], onOpen }: { fi
   const releasedOutside = useRef(false);
   const kind = viewKind(file);
   const [view, setView] = useState<View>(kind === "markdown" ? "rendered" : "raw");
+  // A link can move this viewer to another file: that file starts as its own kind does, not as the last one was left.
+  useEffect(() => setView(kind === "markdown" ? "rendered" : "raw"), [file.path]); // eslint-disable-line react-hooks/exhaustive-deps
   const open = openLinkedFile((path) => { const f = files.find((x) => x.path === path); if (f) onOpen?.(f); });
   const download = () => {
     if (text === null) return;
