@@ -4,13 +4,13 @@
 // shown once, kept only sealed, and a rotation retires it.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { test } from "node:test";
 import { ownSecrets } from "../dist/import.js";
 import { schemaProblems } from "./schema-support.mjs";
-import { follow, serve, withEnv } from "./support.mjs";
+import { follow, scratch, serve, withEnv } from "./support.mjs";
 import { firings, keyOf, made } from "./trigger-support.mjs";
 
 // The spec's own library, in the lockfile through the Anthropic SDK: what a sender would install.
@@ -161,4 +161,57 @@ test("a payload past 16 KiB is cut at a character's start and says so; its closi
   assert.ok(inside.endsWith(`\n[cut: the payload was ${Buffer.byteLength(body)} bytes, past 16384]`), inside.slice(-80));
   assert.ok(Buffer.byteLength(inside.slice(0, inside.lastIndexOf("\n[cut:")).replace("<\\/", "</")) <= 16_384, "at most 16 KiB of the sender's bytes");
   await follow(api, fired.run_id, ["completed"]);
+});
+
+test("a message_run firing reaches a run that is working: its live process takes it through its door", { timeout: 120_000 }, async (t) => {
+  withEnv(t, SEAL);
+  const { api, baseUrl } = await serve(t);
+  await made(api, "busy");
+  const run = (await api("POST", "/agents/busy/runs", { input: { content: "Take your time." } })).body;
+  await follow(api, run.run_id, ["working"]);
+  const { id, secret } = (await api("POST", "/triggers", { source: { kind: "webhook" }, target: { kind: "message_run", run_id: run.run_id, input: { content: "Also look at this." } } })).body;
+  const started = Date.now();
+  assert.equal((await post(baseUrl, id, "{\"ticket\":9}", { secret })).status, 202);
+  const [sent] = await firings(api, id, 1);
+  assert.deepEqual([sent.status, sent.run_id, sent.error], ["sent", run.run_id, null], JSON.stringify(sent));
+  assert.ok(Date.now() - started < 10_000, "sent at once, not after a wait on the run's store");
+  assert.equal((await api("POST", `/runs/${run.run_id}/cancel`)).status, 202);
+});
+
+test("an event's webhook-id, after 200 later events moved its firing out of the history, still answers that firing for a day: it never fires again", { timeout: 300_000 }, async (t) => {
+  withEnv(t, SEAL);
+  const { api, baseUrl } = await serve(t);
+  await made(api, "parked", { tools: ["ask_person"] });
+  const { id, secret } = (await api("POST", "/triggers", { ...hooked("parked"), target: { kind: "start_run", agent_id: "parked", input: { content: "Pick a region." }, max_cost_usd: 0.5 } })).body;
+  assert.equal((await post(baseUrl, id, "{}", { secret, id: "msg_first" })).status, 202);
+  const [first] = await firings(api, id, 1);
+  await follow(api, first.run_id, ["input_required"]);
+  const skipped = await post(baseUrl, id, "{}", { secret, id: "msg_old" });
+  assert.equal(skipped.status, 202);
+  for (let n = 0; n < 200; n++) assert.equal((await post(baseUrl, id, "{}", { secret, id: `msg_later_${n}` })).status, 202, `event ${n}`);
+  const history = (await api("GET", `/triggers/${id}/firings`)).body.firings;
+  assert.equal(history.length, 200);
+  assert.ok(!history.some((f) => f.key === skipped.body.key), "the old event's firing left the history");
+  assert.equal((await api("POST", `/runs/${first.run_id}/cancel`)).status, 202);
+  await follow(api, first.run_id, ["cancelled"]);
+  const retried = await post(baseUrl, id, "{}", { secret, id: "msg_old" });
+  assert.equal(retried.status, 200, JSON.stringify(retried.body));
+  assert.deepEqual([retried.body.key, retried.body.status], [skipped.body.key, "skipped"]);
+  assert.equal((await api("GET", "/agents/parked/runs")).body.runs.length, 1, "no work started for it");
+});
+
+test("a trigger secrets file that does not read is never written over: a webhook trigger is refused, a schedule is made, and the rest works", { timeout: 60_000 }, async (t) => {
+  withEnv(t, SEAL);
+  const data = join(await scratch(t), "agents");
+  await mkdir(data, { recursive: true });
+  const garbage = "{ not json";
+  await writeFile(join(data, "trigger-secrets.json"), garbage);
+  const { api } = await serve(t, { data });
+  await made(api, "triage");
+  const refused = await api("POST", "/triggers", hooked("triage"));
+  assert.deepEqual([refused.status, refused.body.error.code], [409, "store_unreadable"], JSON.stringify(refused.body));
+  assert.match(refused.body.error.message, /trigger-secrets\.json/);
+  assert.equal((await api("POST", "/triggers", { ...hooked("triage"), source: { kind: "schedule", every_s: 600 } })).status, 201, "a schedule needs no secret");
+  assert.deepEqual((await api("GET", "/triggers")).body.triggers.map((x) => x.source.kind), ["schedule"]);
+  assert.equal(await readFile(join(data, "trigger-secrets.json"), "utf8"), garbage, "byte for byte");
 });

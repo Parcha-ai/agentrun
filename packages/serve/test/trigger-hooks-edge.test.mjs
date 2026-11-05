@@ -14,6 +14,7 @@ import { firings, made } from "./trigger-support.mjs";
 
 const { Webhook } = createRequire(import.meta.url)("standardwebhooks");
 const SEAL = { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") };
+const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const HOOK_401 = { code: "unauthenticated", message: "this route needs a request signed by the webhook trigger's secret", retryable: false };
 const hooked = (agentId) => ({ name: "on push", source: { kind: "webhook" }, target: { kind: "start_run", agent_id: agentId, input: { content: "Triage this event." }, max_cost_usd: 0.5 } });
 
@@ -71,6 +72,9 @@ test("no route but POST /v2/hooks/{id} (and capabilities, the document and healt
   // A query string is not the path: the hook is still the hook, and its signature still decides.
   const queried = await raw(at, { method: "POST", path: `/v2/hooks/${id}?then=/v2/agents`, headers: signed(secret, body), body });
   assert.equal(queried.status, 202, queried.text);
+  // Its run ends before the server closes, so nothing is still writing when the data directory goes.
+  const [fired] = await firings(api, id, 1);
+  await follow(api, fired.run_id, ["completed"]);
   assert.deepEqual(errorOf(await raw(at, { method: "POST", path: `/v2/hooks/${id}?x=1`, headers: signed(`whsec_${randomBytes(32).toString("base64")}`, body), body })), HOOK_401);
 });
 
@@ -137,11 +141,13 @@ test("the signature covers the exact bytes: a body serialised again differently 
   }
 });
 
-test("a message a run already took, its firing left due by a restart, settles sent without sending it again or opening the completed run", { timeout: 180_000 }, async (t) => {
+// pi keeps a message under its request id; another harness's door keeps its admission under `door <request id>`.
+for (const [harness, options] of [["pi", {}], ["claude-agent", { fauxHarness: FAUX_HARNESS }]])
+test(`a message a run already took (${harness}), its firing left due by a restart, settles sent without sending it again or opening the completed run`, { timeout: 180_000 }, async (t) => {
   withEnv(t, SEAL);
   const data = join(await scratch(t), "agents");
-  const first = await serve(t, { data });
-  await made(first.api, "chat");
+  const first = await serve(t, { data, ...options });
+  await made(first.api, "chat", harness === "pi" ? {} : { harness });
   const run = (await first.api("POST", "/agents/chat/runs", { input: { content: "Say hello." } })).body;
   await follow(first.api, run.run_id, ["completed"]);
   const { id, secret } = (await first.api("POST", "/triggers", { name: "inbox", source: { kind: "webhook" }, target: { kind: "message_run", run_id: run.run_id, input: { content: "A new event came in." } } })).body;
@@ -157,7 +163,7 @@ test("a message a run already took, its firing left due by a restart, settles se
   Object.assign(kept.triggers[0].firings[0], { status: "due", payload: body });
   delete kept.triggers[0].firings[0].run_id;
   await writeFile(file, JSON.stringify(kept));
-  const second = await serve(t, { data });
+  const second = await serve(t, { data, ...options });
   const [again] = await firings(second.api, id, 1);
   assert.deepEqual([again.status, again.run_id], ["sent", run.run_id]);
   const read = (await second.api("GET", `/runs/${run.run_id}`)).body;
