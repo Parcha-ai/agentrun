@@ -322,6 +322,6 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
   });
   // The start mark of a generation request the cap refused (capModels), which never left: pi's error entry answers it. A
   // refusal for room keeps its figures on it (what the cap counted as taken, and the least the request needed).
-  const refused = (figures?: RefusalFigures) => mark(REQUEST_STARTED, { [CAP_REFUSED_FIELD]: true, ...(figures ? { spentUsd: figures.spentUsd, needsUsd: figures.needsUsd } : {}) });
+  const refused = (figures?: RefusalFigures) => mark(REQUEST_STARTED, { [CAP_REFUSED_FIELD]: true, ...(figures ? { spentUsd: figures.spentUsd, needsUsd: figures.needsUsd, leastCapUsd: figures.leastCapUsd } : {}) });
   return { models: proxy, open, refused };
 }

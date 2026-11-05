@@ -115,8 +115,21 @@ export function client(baseUrl, token) {
     try {
       json = JSON.parse(text);
     } catch {}
+    budgetSaysItsLeast(json, `${method} ${path}`);
     return { status: res.status, headers: res.headers, body: json ?? text };
   };
+}
+
+/** A guard on every pause a test reads: a run paused at its cap with its figures carries `least_cap_usd`, the very cap its
+ *  words name ("Raise the cap to at least $X to run it.", runs.ts budgetPending), so the figure and the sentence are never
+ *  apart. A pause with no figures (a refusal an older server wrote) has neither. */
+function budgetSaysItsLeast(body, where) {
+  const pendings = [body?.pending, ...(Array.isArray(body?.runs) ? body.runs.map((run) => run?.pending) : [])];
+  for (const pending of pendings) {
+    if (pending?.kind !== "budget" || pending.spent_usd === undefined) continue;
+    const named = Number(/Raise the cap to at least \$(\d+\.\d\d) to run it\.$/.exec(pending.said ?? "")?.[1]);
+    assert.equal(pending.least_cap_usd, named, `${where}: least_cap_usd is the cap its words name: ${JSON.stringify(pending)}`);
+  }
 }
 
 export const agent = (id, extra = {}) => ({ definition: { id, version: 1, name: id, instructions: "Answer.", skills: [], tools: [], ...extra } });

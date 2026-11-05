@@ -51,7 +51,8 @@ import { GRAPH_CACHE_BYTES, PartCache, type PartKind, servedPart } from "./graph
 import { CONTENT_FILTER_WORDS, contentFiltered, MODERATED } from "./content-filter.js";
 import { BOX_KEYS } from "./boxes.js";
 import { type Place, remotePlace, storedPlace } from "./place.js";
-import { destroyRunBoxes, ensureRemoteBox, PullIncomplete, pullRemoteBox, sweepRunBoxes } from "./run-box.js";
+import { destroyRunBoxes, ensureRemoteBox, PullIncomplete, pullRemoteBox, RUN_LABEL, sweepRunBoxes } from "./run-box.js";
+import { BACKGROUND_DIR, endBackground } from "./background.js";
 import { removeEgressDir, RUN_BOX_ALLOW_ENV } from "./box-egress.js";
 import type { BoxProvider } from "@parcha/pi-transport";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
@@ -332,8 +333,9 @@ export type Run = {
   raising?: Promise<unknown>;
   /** Its raise's follow-up is being sent (resumeRaised), or waits to be tried again (its time): never two at once. */
   resuming?: "sending" | number;
-  /** Its newest refusal for room's figures, from that refusal's own start mark (cap.ts RefusalFigures). */
-  capRefusal?: RefusalFigures;
+  /** Its newest refusal for room's figures, from that refusal's own start mark (cap.ts RefusalFigures); `leastCapUsd`
+   *  absent on a mark an older server wrote. */
+  capRefusal?: Omit<RefusalFigures, "leastCapUsd"> & { leastCapUsd?: number };
   /** That refusal's own start mark (its entry): the pause a raise answers is keyed to it (pauseOf). */
   capMark?: number;
   /** What it has spent paused at that refusal (its row), its process gone: the store's spend (spentNow), read once. */
@@ -384,7 +386,7 @@ function noteTurns(run: Run, entries: readonly unknown[], submissions: readonly 
     // A refusal for room's own start mark: what the cap counted as taken, and the least the request needed.
     const data = value.kind === REQUEST_STARTED && isObject(value.data) && value.data[CAP_REFUSED_FIELD] === true ? value.data : undefined;
     if (data) run.capMark = value.id;
-    if (data) run.capRefusal = typeof data.spentUsd === "number" && typeof data.needsUsd === "number" ? { spentUsd: data.spentUsd, needsUsd: data.needsUsd } : undefined;
+    if (data) run.capRefusal = typeof data.spentUsd === "number" && typeof data.needsUsd === "number" ? { spentUsd: data.spentUsd, needsUsd: data.needsUsd, ...(typeof data.leastCapUsd === "number" ? { leastCapUsd: data.leastCapUsd } : {}) } : undefined;
     // The end-of-run turn's assistant messages, whole, by entry: what the turn answered, whose notes learning reads
     // (learning-run.ts). The ledger skips them; this is their only reader here.
     if (value.kind === "pi.assistant" && reflects(run.meta.reflect, value.id) && Array.isArray(value.model) && isObject(value.model[0])) {
@@ -403,7 +405,7 @@ const meaningful = (rows: readonly TimelineEvent[]) => rows.findLast((r) => show
 /** What a run waits on, as `pending` says it (one field for every kind; a tool call waiting on approval is another):
  *  the question a waiting run asked, read from its last meaningful row (withAsks' waiting row), the same row its
  *  status reads, never from a scan of its timeline. */
-type Pending = { kind: "question"; question: string; asked_at: string } | PendingApproval | { kind: "budget"; cap_usd: number; spent_usd?: number; needs_usd?: number; suggested_cap_usd?: number; said: string; at: string } | null;
+type Pending = { kind: "question"; question: string; asked_at: string } | PendingApproval | { kind: "budget"; cap_usd: number; spent_usd?: number; needs_usd?: number; least_cap_usd?: number; suggested_cap_usd?: number; said: string; at: string } | null;
 const pendingOf = (rows: readonly TimelineEvent[]): Pending => {
   const last = meaningful(rows);
   return last?.kind === "waiting" ? { kind: "question", question: last.text ?? last.summary ?? "", asked_at: last.timestamp } : null;
@@ -493,8 +495,10 @@ const budgetPending = (run: Run, spentNow?: number): Pending | undefined => {
   if (said === undefined || cap === undefined) return undefined;
   const r = run.capRefusal;
   const spent = r && spentNow !== undefined ? Math.min(r.spentUsd, spentNow) : r?.spentUsd;
-  // Shown as cost.usd is (to a millionth of a dollar), the suggestion from the figures as the cap counts them.
-  const figures = r && spent !== undefined ? { spent_usd: micro(spent), needs_usd: micro(r.needsUsd), suggested_cap_usd: suggestedCap(cap, spent, r.needsUsd) } : {};
+  // Shown as cost.usd is (to a millionth of a dollar), the suggestion from the figures as the cap counts them. The least cap
+  // that sends the refused request is the one its words name (`said`), carried from the refusal that wrote them, never
+  // worked out again here from figures that may have moved since.
+  const figures = r && spent !== undefined ? { spent_usd: micro(spent), needs_usd: micro(r.needsUsd), ...(r.leastCapUsd !== undefined ? { least_cap_usd: r.leastCapUsd } : {}), suggested_cap_usd: suggestedCap(cap, spent, r.needsUsd) } : {};
   return { kind: "budget", cap_usd: cap, ...figures, said, at: meaningful(run.rows)?.timestamp ?? run.updatedAt };
 };
 /** The waiting row of a run paused at its cap, after the refusal's error row: "Paused at the run's $1 cap: Not sent: …". */
@@ -1425,6 +1429,17 @@ export class Runs {
     const remote = remotePlace(place);
     const boxes = remote ? this.options.remoteBoxes : this.options.runBoxes;
     if (!boxes) return;
+    // Its background processes first (background.ts), so each one's exit code and whole log are in work/ before the
+    // pull and the destroy. A bound box with no work/background/ started none, and costs no command here. A failure only
+    // warns: the destroy ends them all the same.
+    if (remote || existsSync(join(run.dir, "work", BACKGROUND_DIR))) {
+      try {
+        const ended = await endBackground(boxes, { [RUN_LABEL]: run.id }, boxContext());
+        if (ended) this.options.log?.("background_ended", { run: run.id, ended });
+      } catch (error) {
+        warn(run.id, `its background processes were not ended before its box goes (${(error as Error).message}); destroying the box ends them`);
+      }
+    }
     if (remote) {
       try {
         await this.pullBox(run, true);
