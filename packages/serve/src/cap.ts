@@ -307,8 +307,8 @@ export function spentIn(storeFile: string): number | null {
   // no request's, and no end mark takes one.
   const stopOf = (entry: EntryLike) => (entry.model?.[0] as { stopReason?: unknown } | undefined)?.stopReason;
   const errorsAt: number[] = [];
-  // pi's answers: a `lost` end mark (written before a retry, request-start.ts) takes pi's entry for its request, an
-  // answer or an error, as an error mark takes an error entry: it is counted at the mark's hold, never at its usage too.
+  // pi's answers: a `lost` end mark (written before a retry, request-start.ts) takes pi's entry for its own request, an
+  // answer or an error, the first after the mark: it is counted at the mark's hold, never at its usage too.
   const answersAt: number[] = [];
   let refusals = 0;
   rows.forEach((entry, at) => {
@@ -325,12 +325,21 @@ export function spentIn(storeFile: string): number | null {
   const endsOf = (field: "error" | "lost") => rows.flatMap((entry, at) => entry.kind === REQUEST_ENDED && fieldsOf(entry)[field] === true
     ? [{ at, from: rows.findIndex((start, i) => i < at && generationStart(start) && figureOf(fieldsOf(start)[HELD_FIELD]) === figureOf(fieldsOf(entry)[HELD_FIELD])) }]
     : []);
-  for (const [field, candidates] of [["error", errorsAt], ["lost", [...errorsAt, ...answersAt].sort((a, b) => a - b)]] as const) {
-    for (const { at, from } of endsOf(field).sort((a, b) => b.from - a.from)) {
-      let nearest = -1;
-      for (const entry of candidates) if (entry > from && !taken.has(entry) && (nearest < 0 || Math.abs(entry - at) < Math.abs(nearest - at))) nearest = entry;
-      if (nearest >= 0) taken.add(nearest);
-    }
+  // A `lost` mark is written before its request's retry is sent (request-start.ts watchingLost) and is in the store before
+  // pi has the request's result, so its request's entry is the first after it, before the next generation request's start
+  // (one sent after it): never an earlier request's answer, however near. None there (its entry was the loud failure of a
+  // mark the store took late, END_NOT_WRITTEN, or a crash came first) and it takes none. These go first, so an error mark
+  // never takes a lost request's own entry.
+  const afterMark = [...errorsAt, ...answersAt].sort((a, b) => a - b);
+  for (const { at } of endsOf("lost")) {
+    const next = rows.findIndex((entry, i) => i > at && generationStart(entry));
+    const own = afterMark.find((entry) => entry > at && (next < 0 || entry < next) && !taken.has(entry));
+    if (own !== undefined) taken.add(own);
+  }
+  for (const { at, from } of endsOf("error").sort((a, b) => b.from - a.from)) {
+    let nearest = -1;
+    for (const entry of errorsAt) if (entry > from && !taken.has(entry) && (nearest < 0 || Math.abs(entry - at) < Math.abs(nearest - at))) nearest = entry;
+    if (nearest >= 0) taken.add(nearest);
   }
   // Each paid tool call marked and not settled, by call: what it was held at.
   const calls = new Map<unknown, unknown>();
