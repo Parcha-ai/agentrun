@@ -19,9 +19,11 @@ afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 /** The tab over a server that answers `answer(from)` (the analytics' own filter says the `from` it was asked for).
  *  `first`: the page's own first answer, which the tab opens on. `runs`: the agent's runs (none by default), whose
  *  timelines `timeline` answers. `unknown(n)`: the served runs.status_unknown of the nth stats answer (0 by default). */
-type Extra = { first?: Stats; runs?: Run[]; timeline?: (id: string, o: { after?: number }) => Promise<TimelinePage>; unknown?: (n: number) => number };
-async function open(answer: (from?: string) => Analytics = () => ANALYTICS, { first, runs = [], timeline, unknown = () => 0 }: Extra = {}) {
+type Extra = { first?: Stats; runs?: Run[]; byStatus?: Partial<Record<string, Run[]>>; timeline?: (id: string, o: { after?: number }) => Promise<TimelinePage>; unknown?: (n: number) => number };
+async function open(answer: (from?: string) => Analytics = () => ANALYTICS, { first, runs = [], byStatus, timeline, unknown = () => 0 }: Extra = {}) {
   const asked: string[] = [];
+  const runsAsked: string[] = [];
+  const followed: string[] = [];
   let n = 0;
   const v2 = {
     statsOver: async ({ from, agent: of }: { from?: string; agent?: string }) => {
@@ -30,8 +32,11 @@ async function open(answer: (from?: string) => Analytics = () => ANALYTICS, { fi
       const s = statsWith({ ...a, filter: { ...a.filter, from: from ?? null } });
       return { ...s, runs: { ...s.runs, status_unknown: unknown(n++) } };
     },
-    listAgentRuns: async () => ({ runs, next_cursor: null }),
-    getTimeline: async (id: string, o: { after?: number } = {}) => (timeline ?? (async () => new Promise<TimelinePage>(() => {})))(id, o),
+    listAgentRuns: async (_id: string, _limit: number, _cursor: string | null, filter?: { status?: string }) => {
+      runsAsked.push(filter?.status ?? "any");
+      return { runs: byStatus ? byStatus[filter?.status ?? ""] ?? [] : filter?.status ? runs.filter((r) => r.status === filter.status) : runs, next_cursor: null };
+    },
+    getTimeline: async (id: string, o: { after?: number } = {}) => { if (o.after === undefined) followed.push(id); return (timeline ?? (async () => new Promise<TimelinePage>(() => {})))(id, o); },
   };
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
@@ -42,7 +47,7 @@ async function open(answer: (from?: string) => Analytics = () => ANALYTICS, { fi
   const rows = (heading: string) => [...([...host.querySelectorAll("section")].find((s) => s.querySelector("h3")?.textContent === heading)?.querySelectorAll("tbody tr") ?? [])].map((tr) => [...tr.querySelectorAll("td")].map((td) => td.textContent));
   const pick = async (range: string) => { await act(async () => { host.querySelector<HTMLInputElement>(`[aria-label="Range"] input[value="${range}"]`)!.click(); }); await settle(); };
   const days = (chart: string) => [...host.querySelectorAll(`[aria-label="${chart}"] [role="listitem"]`)].map((d) => d.getAttribute("aria-label"));
-  return { host, asked, tile, rows, pick, days, settle };
+  return { host, asked, runsAsked, followed, tile, rows, pick, days, settle };
 }
 
 describe("AnalyticsTab", () => {
@@ -187,5 +192,48 @@ describe("AnalyticsTab, read again", () => {
     await act(async () => { await new Promise((r) => setTimeout(r, 1500)); });
     expect(never.asked).toHaveLength(3);
     expect(never.tile("Success rate")?.textContent).toContain("5 completed");
+  });
+
+  it("follows the agent's runs that are going whatever their age: it asks for them by status, not among the newest 50", async () => {
+    const run = (id: string, status: string, state: string) => ({ run_id: id, agent_id: "invoice-checker", agent_version: 1, revision: "rv1", kind: "agentic", status, state, title: id, created_at: "2026-10-01T11:00:00Z", ended_at: null, result: null, error: null, cost: null, archived_at: null }) as unknown as Run;
+    const tab = await open(() => ANALYTICS, { byStatus: { input_required: [run("r-old-waiting", "input_required", "waiting")], any: [] } });
+    expect([...tab.runsAsked].sort()).toEqual(["input_required", "paused", "queued", "working"]);
+    expect(tab.followed).toEqual(["r-old-waiting"]);
+  });
+
+  it("a range left and come back to before its answer settled reads it again: its unsettled answer is never taken as done", async () => {
+    // The 30-day answer says a run's end is not in the store yet; the 7-day read never answers; back on 30 days the
+    // tab reads it again rather than keep the unsettled answer.
+    const reads: (string | undefined)[] = [];
+    const v2 = {
+      statsOver: ({ from }: { from?: string }) => {
+        reads.push(from);
+        if (reads.length === 2) return new Promise(() => {});
+        const s = statsWith(ANALYTICS);
+        return Promise.resolve({ ...s, runs: { ...s.runs, status_unknown: reads.length === 1 ? 1 : 0 } });
+      },
+      listAgentRuns: async () => ({ runs: [], next_cursor: null }),
+    };
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
+    act(() => root!.render(createElement(AnalyticsTab, { agent: agentFixture("invoice-checker"), v2: v2 as never, now: () => NOW })));
+    await settle();
+    const pick = async (range: string) => { await act(async () => { host.querySelector<HTMLInputElement>(`[aria-label="Range"] input[value="${range}"]`)!.click(); }); await settle(); };
+    await pick("7d");
+    await pick("30d");
+    for (let i = 0; i < 40 && reads.length < 3; i++) await act(async () => { await new Promise((r) => setTimeout(r, 50)); });
+    expect(reads).toEqual(["2026-09-16T00:00:00.000Z", "2026-10-09T00:00:00.000Z", "2026-09-16T00:00:00.000Z"]);
+    await settle();
+    expect(host.querySelector('[aria-busy="true"]')).toBeNull();
+  });
+
+  it("a tab closed while its answer is unsettled reads no more", async () => {
+    const tab = await open(() => ANALYTICS, { unknown: () => 1 });
+    expect(tab.asked).toHaveLength(1);
+    act(() => root?.unmount());
+    root = undefined;
+    await act(async () => { await new Promise((r) => setTimeout(r, 1500)); });
+    expect(tab.asked).toHaveLength(1);
   });
 });

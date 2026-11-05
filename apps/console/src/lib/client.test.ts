@@ -65,6 +65,18 @@ describe("createClient", () => {
 });
 
 describe("follow", () => {
+  it("with no onRows, follows a run's status alone: each page to onPage, the cursor kept, no rows merged or held", async () => {
+    const first = running.body as unknown as TimelinePage;
+    const done: TimelinePage = { ...first, reset: false, rows: [], unchanged: true, final: true, status: "completed", state: "idle", next_after: first.next_after + 1 };
+    const pages = [first, done];
+    const { fn, calls } = fakeFetch(() => json(200, pages.shift()));
+    const statuses: string[] = [];
+    const out = await follow(createClient({ fetch: fn }), "r1", { onPage: (p) => statuses.push(p.status), waitMs: 1, minDelayMs: 0 });
+    expect(calls.map((c) => new URL(c.url, "http://x").searchParams.get("after"))).toEqual([null, String(first.next_after)]);
+    expect(statuses).toEqual([first.status, "completed"]);
+    expect(out.status).toBe("completed");
+  });
+
   it("applies each page from the previous cursor until the server says final, and never duplicates a row", async () => {
     const first = running.body as unknown as TimelinePage;
     const again: TimelinePage = { ...first, reset: false, rows: first.rows.slice(-1), final: false, next_after: first.next_after + 1 };
