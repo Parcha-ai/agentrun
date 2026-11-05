@@ -14,6 +14,7 @@ import { claudeSkillCheck } from "../dist/adapters.js";
 import { homeOf } from "../dist/files.js";
 // One namespace, so each test reads what it needs of it as it runs.
 import * as learning from "../dist/learning.js";
+import { servedSkill } from "../dist/learn/skills.js";
 import { systemOf } from "../dist/skills.js";
 import { ended, git } from "./learn-support.mjs";
 import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
@@ -256,4 +257,59 @@ test("a learned skill the run's work no longer holds whole is left out of what i
   const { system } = await systemOf(learned.instructions, learned.skills, work);
   assert.deepEqual(inlined(system), ["cite"]);
   assert.ok(!system.includes(CANARY));
+});
+
+test("a learned skill's bytes are counted as the run is given it (servedSkill), so the budget the adapters' cap leaves is the laid files' own", async (t) => {
+  const repo = await scratch(t);
+  git(repo, ["init", "-q", "-b", "main"]);
+  const QUOTED = "---\nname: quoted\ndescription: Use when: a case asks\n---\nDo the job.\n";
+  mkdirSync(join(repo, "skills", "quoted"), { recursive: true });
+  writeFileSync(join(repo, "skills", "quoted", "SKILL.md"), QUOTED);
+  git(repo, ["add", "-A"]);
+  git(repo, ["commit", "-q", "-m", "a skill"]);
+  const sha = git(repo, ["rev-parse", "main"]).trim();
+  const { skills } = await learning.readSkills(repo, repo, sha);
+  const [one] = skills;
+  assert.equal(one.files["SKILL.md"], '---\nname: quoted\ndescription: "Use when: a case asks"\n---\nDo the job.\n', "the text the run is given");
+  assert.equal(one.bytes, Buffer.byteLength(one.files["SKILL.md"]), "counted as it is laid, not as main holds it");
+  assert.notEqual(one.bytes, Buffer.byteLength(QUOTED));
+});
+
+test("a learned skill with escapes in its quoted description is laid as it was counted: the text read is the text written", async (t) => {
+  const repo = await scratch(t);
+  git(repo, ["init", "-q", "-b", "main"]);
+  mkdirSync(join(repo, "skills", "refund"), { recursive: true });
+  writeFileSync(join(repo, "skills", "refund", "SKILL.md"), '---\nname: refund\ndescription: "Use when: a case says \\"refund\\""\n---\nDo the job.\n');
+  git(repo, ["add", "-A"]);
+  git(repo, ["commit", "-q", "-m", "a skill"]);
+  const { skills } = await learning.readSkills(repo, repo, git(repo, ["rev-parse", "main"]).trim());
+  const [one] = skills;
+  // laySkills writes servedSkill(text): the same bytes as the counted text, not more.
+  assert.equal(servedSkill(one.files["SKILL.md"]), one.files["SKILL.md"]);
+  assert.equal(one.bytes, Buffer.byteLength(servedSkill(one.files["SKILL.md"])));
+  assert.match(one.files["SKILL.md"], /^description: "Use when: a case says \\"refund\\""$/m);
+});
+
+test("a learned skill on main whose quoted description decodes to a hidden character is left out of what a run is given, and named as skipped", async (t) => {
+  const repo = await scratch(t);
+  git(repo, ["init", "-q", "-b", "main"]);
+  mkdirSync(join(repo, "skills", "flipped"), { recursive: true });
+  writeFileSync(join(repo, "skills", "flipped", "SKILL.md"), '---\nname: flipped\ndescription: "Use when: \\u202E a case flips"\n---\nDo the job.\n');
+  git(repo, ["add", "-A"]);
+  git(repo, ["commit", "-q", "-m", "a skill"]);
+  const { skills, skipped } = await learning.readSkills(repo, repo, git(repo, ["rev-parse", "main"]).trim());
+  assert.deepEqual(skills, []);
+  assert.deepEqual(skipped, ["skills/flipped (holds a hidden character)"]);
+});
+
+test("a learned skill on main whose quoted description decodes to a control character (an escaped CR) is left out, and named as skipped", async (t) => {
+  const repo = await scratch(t);
+  git(repo, ["init", "-q", "-b", "main"]);
+  mkdirSync(join(repo, "skills", "carried"), { recursive: true });
+  writeFileSync(join(repo, "skills", "carried", "SKILL.md"), '---\nname: carried\ndescription: "Use when: a case asks\\rhooks: x"\n---\nDo the job.\n');
+  git(repo, ["add", "-A"]);
+  git(repo, ["commit", "-q", "-m", "a skill"]);
+  const { skills, skipped } = await learning.readSkills(repo, repo, git(repo, ["rev-parse", "main"]).trim());
+  assert.deepEqual(skills, []);
+  assert.deepEqual(skipped, ["skills/carried (holds a hidden character)"]);
 });

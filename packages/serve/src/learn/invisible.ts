@@ -1,8 +1,9 @@
 // The Pi learning guard's rule for hidden characters, which can carry instructions a reader of the file never sees.
 
 // Format and default-ignorable characters (zero-width, bidi controls, tag characters, variation selectors), private use,
-// lone surrogates, line and paragraph separators, the braille blank, and C0/C1 controls other than tab, newline and CR.
-const HIDDEN = /[\p{Cf}\p{Co}\p{Cs}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}\u2800\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/u;
+// lone surrogates, line and paragraph separators, the braille blank, and C0/C1 controls other than tab and newline. A CR
+// is text only where it ends a CRLF line: a lone one is a line break to some readers (YAML) and none to others.
+const HIDDEN = /[\p{Cf}\p{Co}\p{Cs}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}\u2800\u0000-\u0008\u000B-\u001F\u007F-\u009F]/u;
 const PICTOGRAPH = /^\p{Extended_Pictographic}$/u;
 const EMOJI_MODIFIER = /^\p{Emoji_Modifier}$/u;
 const KEYCAP_BASE = /^[0-9#*]$/;
@@ -15,12 +16,13 @@ const ZWJ = "\u200d";
 const VS16 = "\ufe0f";
 const KEYCAP = "\u20e3";
 
-/** U+FE0F after an emoji, a ZWJ inside an emoji sequence, and a ZWJ or ZWNJ between letters of a script that needs
+/** A CR before a newline (a CRLF line end), U+FE0F after an emoji, a ZWJ inside an emoji sequence, and a ZWJ or ZWNJ between letters of a script that needs
  *  them are text. Every other hidden character is not. */
 function allowedHidden(chars: readonly string[], i: number): boolean {
   const ch = chars[i]!;
   const before = chars[i - 1] ?? "";
   const after = chars[i + 1] ?? "";
+  if (ch === "\r") return after === "\n";
   if (ch === VS16) return PICTOGRAPH.test(before) || (KEYCAP_BASE.test(before) && after === KEYCAP);
   if (ch !== ZWJ && ch !== ZWNJ) return false;
   if (JOINER_BEFORE.test(before) && JOINER_AFTER.test(after) && JOINER_SCRIPT.test(before) && JOINER_SCRIPT.test(after)) return true;

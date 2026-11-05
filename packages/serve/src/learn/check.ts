@@ -6,7 +6,7 @@
 import { hiddenCharacter } from "./invisible.js";
 import { INDEX_FILE, INDEX_LINES, type LearnedNote, NOTE_FILE, parseNoteFile } from "./notes.js";
 import { redactSecrets, secretShapes, valueMatcher } from "./secrets.js";
-import { draftProblems, type DraftReader, frontKeys, LEARNED_KEYS, learnedName, learnedPlace, type LearnedPlace, setsStatus, skillProblems, WORKFLOWS_DIR } from "./skills.js";
+import { draftProblems, type DraftReader, frontKeys, LEARNED_KEYS, learnedFront, learnedName, learnedPlace, type LearnedPlace, servedHidden, setsStatus, skillProblems, WORKFLOWS_DIR } from "./skills.js";
 
 /** The most the host adds to a run's note as it merges it: `origin: you` and `status: pending`, a front matter line
  *  each (notes.ts mergedNote). */
@@ -170,6 +170,14 @@ function learnedChecked(change: Change, place: LearnedPlace, refused: (text: str
   // other key. `status` has its own rule.
   const extra = (frontKeys(text) ?? []).filter((key) => !LEARNED_KEYS.includes(key) && key !== "status");
   if (extra.length) add("skill_front_matter", `its front matter sets ${extra.join(", ")}: a learned ${place.kind === "skill" ? "skill" : "workflow"} sets name and description alone`, path);
+  // A quoted value is served decoded (servedSkill reads its escapes): what a run is given is checked, not only what is
+  // written, so an escape never brings in what the text's own checks refuse.
+  const front = learnedFront(text);
+  const served = [front?.name, front?.description].filter((value) => value !== undefined).join("\n");
+  const hidden = servedHidden(text);
+  if (hidden) add("invisible_unicode", `its front matter, read as served, holds U+${hidden.code.toString(16).toUpperCase().padStart(4, "0")}, a control character or one a reader does not see`, path);
+  for (const kind of secretShapes(served)) add("secret_shape", `its front matter, read as served, holds text shaped like a secret (${kind})`, path);
+  if (refused(served)) add("secret_value", "its front matter, read as served, holds a value the host named as secret", path);
   if (place.kind === "skill" && setsStatus(text)) add("status", "a run never sets a skill's status: the host does, when it holds one for its owner's OK", path);
 }
 

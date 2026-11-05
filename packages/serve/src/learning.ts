@@ -33,7 +33,7 @@ import { constants, existsSync } from "node:fs";
 import { lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, posix, relative } from "node:path";
 import { SKILL_BYTES } from "@parcha/agentrun-kernel";
-import { INDEX_FILE, type LearnedNote, loadedIndex, NOTE_FILE, parseNoteFile, type Problem, redactSecrets, secretShapes, servedSkill, SKILLS_DIR, valueMatcher, type Verdict } from "./learn/index.js";
+import { hiddenCharacter, INDEX_FILE, type LearnedNote, loadedIndex, NOTE_FILE, parseNoteFile, type Problem, redactSecrets, secretShapes, servedHidden, servedSkill, SKILLS_DIR, valueMatcher, type Verdict } from "./learn/index.js";
 import { homeOf, serialBy, writeDurable } from "./files.js";
 import { DETAIL_MAX, LIST_DETAIL, short, wordsOf } from "./learning-words.js";
 import { isObject } from "./validate.js";
@@ -512,7 +512,21 @@ export async function readSkills(cwd: string, repo: string, sha: string): Promis
       continue;
     }
     const status = statusOf(texts["SKILL.md"]);
-    if (status === undefined || status === "active") skills.push({ name, bytes, files: texts });
+    if (status !== undefined && status !== "active") continue;
+    // The SKILL.md as a run is given it (servedSkill), counted as it will be laid: the budget is the laid files' own.
+    const served = { ...texts, "SKILL.md": servedSkill(texts["SKILL.md"]!) };
+    // Its escapes decoded as served: one that makes a character a reader does not see leaves the skill out (the checker
+    // refuses it at learn time; this holds for what was on main before).
+    if (servedHidden(texts["SKILL.md"]!) || hiddenCharacter(served["SKILL.md"])) {
+      skipped.push(`${SKILLS_DIR}/${name} (holds a hidden character)`);
+      continue;
+    }
+    const laid = Object.values(served).reduce((sum, text) => sum + Buffer.byteLength(text), 0);
+    if (laid > LEARNED_SKILLS_BUDGET) {
+      skills.push({ name, bytes: laid });
+      continue;
+    }
+    skills.push({ name, bytes: laid, files: served });
   }
   return { skills, skipped };
 }

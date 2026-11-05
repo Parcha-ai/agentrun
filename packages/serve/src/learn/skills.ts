@@ -2,6 +2,7 @@
 // `workflows/<name>/workflow.json` with its `README.md`. Their places in the learning folder and the shape each file must
 // have. check.ts checks them; nothing here reads a file, runs a draft or calls a model.
 import type { inspectWorkflow, validateWorkflow, Workflow } from "@parcha/agentrun-dsl";
+import { hiddenCharacter } from "./invisible.js";
 
 /** Where a skill and a workflow draft live in the folder. */
 export const SKILLS_DIR = "skills";
@@ -32,6 +33,21 @@ export function learnedPlace(path: string): LearnedPlace | undefined {
 /** Whether `name` is a good name for a folder of `kind`. */
 export const learnedName = (kind: LearnedPlace["kind"], name: string): boolean => (kind === "skill" ? SKILL_NAME : WORKFLOW_NAME).test(name);
 
+/** A one-line YAML value as the text it says: a double-quoted one decoded (its escapes, as JSON reads them), a
+ *  single-quoted one with its doubled quotes undone, a plain one as it is. A double-quoted one JSON can't read stays as
+ *  written between its quotes. */
+function unquoted(own: string): string {
+  if (/^"(.*)"$/.test(own)) {
+    try {
+      return String(JSON.parse(own)).trim();
+    } catch {
+      return own.slice(1, -1).trim();
+    }
+  }
+  if (/^'(.*)'$/.test(own)) return own.slice(1, -1).replace(/''/g, "'").trim();
+  return own.trim();
+}
+
 /** A SKILL.md's or a draft README's front matter: its lines, where it closes (the index of its closing `\n---\n`, in
  *  `lf`, the text with LF line ends) and each key's value, a folded or literal block value read as one line. A string
  *  is why there is none. */
@@ -47,7 +63,7 @@ function frontOf(text: string): { lf: string; end: number; value: (key: string) 
     const own = lines[at]!.slice(key.length + 1).trim();
     const more: string[] = [];
     for (const line of lines.slice(at + 1)) if (/^\s+\S/.test(line)) more.push(line.trim()); else break;
-    return (/^[>|][-+]?$/.test(own) ? more.join(" ") : own).replace(/^(["'])(.*)\1$/, "$2").trim();
+    return /^[>|][-+]?$/.test(own) ? more.join(" ").trim() : unquoted(own);
   };
   return { lf, end, value };
 }
@@ -65,16 +81,42 @@ export function frontKeys(text: string): string[] | undefined {
  *  runs. `status` is the host's (a held one). */
 export const LEARNED_KEYS: readonly string[] = ["name", "description"];
 
+// A control character (C0 but tab, DEL, C1, whose NEL is a line break to some YAML readers) or a line or paragraph
+// separator: never written raw in front matter, and never in a learned name or description.
+const CONTROL = /[\u0000-\u0008\u000A-\u001F\u007F-\u009F\u2028\u2029]/;
+const CONTROLS = /[\u007F-\u009F\u2028\u2029]/g;
+
+/** A front matter value as written: plain where YAML reads it as one plain line of text, otherwise double-quoted with
+ *  every control character escaped (JSON's escapes, and \uXXXX for those JSON leaves raw), which unquoted reads back. */
+function scalar(value: string): string {
+  const plain = /^[^\s\-?:,[\]{}#&*!|>'"%@`][^\n]*$/.test(value) && !/:\s|\s#|:$|\t/.test(value) && !CONTROL.test(value) && !/\s$/.test(value);
+  if (plain) return value;
+  return JSON.stringify(value).replace(CONTROLS, (ch) => `\\u${ch.charCodeAt(0).toString(16).padStart(4, "0")}`);
+}
+
+/** The first character a reader does not see, or control character, in a learned SKILL.md's or README's name and
+ *  description as they are served (decoded); undefined when there is none. */
+export function servedHidden(text: string): { code: number } | undefined {
+  const front = learnedFront(text);
+  for (const value of [front?.name, front?.description]) {
+    if (value === undefined) continue;
+    const control = CONTROL.exec(value);
+    if (control) return { code: control[0].codePointAt(0)! };
+    const hidden = hiddenCharacter(value);
+    if (hidden) return { code: hidden.code };
+  }
+  return undefined;
+}
+
 /** `text`, a learned skill's SKILL.md, as a run is given it: front matter with its name and its description alone,
  *  written again whatever else its file holds (servedSkill is the one door a learned skill reaches a harness by), then its
  *  body as it is. A text with no front matter is as it is. */
 export function servedSkill(text: string): string {
   const front = frontOf(text);
   if (typeof front === "string") return text;
-  const description = front.value("description") ?? "";
-  // Quoted only where YAML would read it as more than one plain line of text.
-  const plain = /^[^\s\-?:,[\]{}#&*!|>'"%@`][^\n]*$/.test(description) && !/: |\s#|:$/.test(description);
-  const lines = [`name: ${front.value("name") ?? ""}`, `description: ${plain ? description : JSON.stringify(description)}`];
+  // Each value quoted only where YAML would read it as more than one plain line of text; a control character is
+  // never written raw (scalar).
+  const lines = [`name: ${scalar(front.value("name") ?? "")}`, `description: ${scalar(front.value("description") ?? "")}`];
   return `---\n${lines.join("\n")}\n---\n${front.lf.slice(front.end + 5)}`;
 }
 
