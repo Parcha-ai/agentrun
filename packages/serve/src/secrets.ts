@@ -33,6 +33,10 @@ export const DECISION_KEYS: readonly string[] = ["TYPESAFE_API_KEY", "PARALLEL_A
 const held = new Map<string, string>();
 /** Whether this process was handed its secrets over a pipe, and closed it. */
 let handed: { fd: number; closed: boolean } | undefined;
+/** The pair a run's saved sign-in comes as on the same pipe (sign-ins.ts): JSON `{provider, ref, save}`, held apart from
+ *  the secrets, so it is no tool's environment and no key a scan looks for by name. */
+const SIGN_IN_PAIR = "AGENTRUN_SIGN_IN";
+let signIn: string | undefined;
 
 /** NAME=VALUE pairs, each ended by a NUL. */
 const encode = (pairs: Iterable<readonly [string, string]>): Buffer => Buffer.concat([...pairs].map(([name, value]) => Buffer.from(`${name}=${value}\0`)));
@@ -40,6 +44,7 @@ function decode(bytes: Buffer): void {
   for (const pair of bytes.toString("utf8").split("\0")) {
     const at = pair.indexOf("=");
     if (at > 0 && SECRET_NAMES.includes(pair.slice(0, at))) held.set(pair.slice(0, at), pair.slice(at + 1));
+    else if (pair.slice(0, at) === SIGN_IN_PAIR) signIn = pair.slice(at + 1);
   }
 }
 
@@ -145,6 +150,19 @@ export function handover(names: readonly string[], stored?: StoredKeys): Buffer 
     const value = secret(name, stored);
     return value === undefined ? [] : [[name, value] as const];
   }));
+}
+
+/** A run's saved sign-in as its pipe carries it, after its secrets (handover). */
+export const handoverSignIn = (value: { provider: string; ref: string; save: boolean }): Buffer => encode([[SIGN_IN_PAIR, JSON.stringify(value)]]);
+
+/** The saved sign-in this run's process was handed over its pipe, if any: read by the browser tool alone. */
+export function handedSignIn(): { provider: string; ref: string; save: boolean } | undefined {
+  try {
+    const value = signIn === undefined ? undefined : (JSON.parse(signIn) as { provider?: unknown; ref?: unknown; save?: unknown });
+    return value && typeof value.provider === "string" && typeof value.ref === "string" && value.ref && typeof value.save === "boolean" ? { provider: value.provider, ref: value.ref, save: value.save } : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** pi-ai's auth context over `env` (one `withSecrets` made): its providers find their keys there, not in process.env. */

@@ -104,6 +104,9 @@ curl -sN "$AGENTRUN_BASE_URL/runs/$run/timeline" -H "$H" -H 'accept: text/event-
 curl -s "$AGENTRUN_BASE_URL/runs/$run/files" -H "$H"; curl -s "$AGENTRUN_BASE_URL/runs/$run/files/out.txt" -H "$H"
 ```
 
+The `place` above is what a new agent gets anyway on a server with docker, so a definition that names only its name and
+instructions lands in the box too, with `bash` as its one tool ([Place](#place)).
+
 The timeline ends when the run does. `out.txt` names the image's Debian, whatever this machine runs, and it is in
 the run's `work/`, the one directory the container binds. No key? Start the server with `--faux box.mjs`, a
 [faux model](#the-faux-model) that makes one `bash` call and then answers, and run the same commands:
@@ -269,11 +272,26 @@ A definition may name where its runs execute: `{"mode": "runner"}` or `{"mode": 
 the ids under [Boxes](#boxes). A runner has no shell. In a sandbox the agent's `bash` runs in the named box and its
 file tools (`read`, `write`, `edit`) work on the `work/` the box has ([a run in a Docker box](#a-run-in-a-docker-box)),
 while the agent's loop, its log and every key stay on the server, whatever its harness. Any other shape is `422 input_invalid` on `definition.place`, whose `fix` is the change to make: the field to
-remove, or the place it most likely meant, to copy (`"place": {"mode": "sandbox", "box": "docker"}`). A definition that
-names none runs in this host's default (`capabilities.places.default`, `runner` here), and its answers show no place; one
-that names a place keeps it, `runner` included. An edit that names no place keeps the agent's.
+remove, or the place it most likely meant, to copy (`"place": {"mode": "sandbox", "box": "docker"}`). One that names a
+place keeps it, `runner` included. An edit that names no place keeps the agent's.
 
-A run runs in its revision's place, else this host's default. A run request names no place: `POST /agents/{id}/runs`
+The box is a new agent's default machine. A new agentic agent whose definition names no place is saved in the Docker box
+(`{"mode": "sandbox", "box": "docker"}`) wherever this server has docker, ready or still preparing its image (its first
+run then waits for the image, with one timeline row). The place is written on the agent's first revision, so its answers
+show it. If that definition names no `tools` either, it gets `["bash"]`, so the agent has a shell. A definition that
+names its tools keeps exactly those, an empty list included. Where docker is unavailable, a new agent is saved as before,
+with no place, and runs on the runner. So is one whose tools name one the box refuses (`browser`, runner-only for now). A
+workflow is never given a box.
+
+`capabilities.places` says both sides. `default_place` is the place a new agent gets here. When that is the runner,
+`default_reason` says why in docker's own words, such as `new agents run on the runner, because the docker box is
+unavailable here: not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker`. `default` stays `runner`,
+because it means where a revision that names no place runs. An agent saved with no place (before this, where docker was
+unavailable, or a workflow) keeps running on the runner, whatever the server has now. The default is never worked out
+again at run time. The console's new-agent form starts on `default_place`, with bash ticked when that place is a sandbox.
+What a person picks or unticks there is what is sent.
+
+A run runs in its revision's place, else on the runner. A run request names no place: `POST /agents/{id}/runs`
 with `place` is `422 input_invalid`, as with any field the body does not keep. The run keeps the place it resolved to,
 and `GET /v2/runs/{id}` shows it as `place`. A harness's own tools in the box, when they come, will be an option of
 `sandbox` (such as `native_tools: true`), never a third mode.
@@ -283,11 +301,11 @@ the sandbox place as its `fix`), and a workflow's place is `runner` or none (`42
 its `fix`). In `capabilities.tools`, `bash` is `available: false` with a `reason` (`no box is set up on this server: …`,
 each box's own reason) when no box this server has can run it.
 
-`GET /v2/capabilities` lists `places`: the modes, the default, and each box with `available`, its `state` (`ready`,
+`GET /v2/capabilities` lists `places`: the modes, the default, a new agent's place, and each box with `available`, its `state` (`ready`,
 `preparing` while the server builds or pulls its image, or `unavailable`) and, when it is not ready, the `reason`.
 A definition naming a box this server does not have saves with a warning on `definition.place`, and a run of it is
 `409 agent_not_runnable` with `details.box`. `GET /v2/openapi.json` marks `definition.place`, the run's `place` and
-`capabilities.places` `x-agentrun-serve: "place/1"`.
+`capabilities.places` `x-agentrun-serve: "place/1"`, and `default_place` and `default_reason` `"place/3"`.
 
 ### A run in a Docker box
 
@@ -761,7 +779,7 @@ read 2026-11-03), an estimate: a `fast` search $0.001 for up to 10 results and $
 $0.001 a URL; on a 4xx other than a 408 nothing (Parallel refused it), and on a 408, a 5xx, a timeout or a lost
 connection its price (Parallel may have billed it). Under a [spend cap](#spend-cap) each is a paid call: sent only when
 what the run has spent and holds, plus its price, fits the cap. Otherwise nothing reaches Parallel: a search answers the
-cap's refusal (`spend_cap_reached: Parallel's search was not sent. It could cost up to $0.001 …`) and a page is the
+cap's refusal (`spend_cap_reached: Not sent: the run has spent $0 of its $0.0009 cap, and Parallel's search could cost up to $0.001 …`) and a page is the
 guarded direct fetch, with `parallel` giving the same words. One sent holds its price until Parallel answers: a model
 request checked meanwhile, from any branch, tool round or harness, counts it beside what the run has spent, so the two
 never pass the cap together. A workflow's `call` node naming either tool is booked the same way, under the node's own
@@ -792,7 +810,8 @@ run's process over its pipe, as the rest do. A session's custody (its lease, its
 doing) is kept in the run's own store, so a run opened again on its directory reconciles the sessions it held. Each
 page it reads is filed under the run's `work/evidence/`, each read in a file of its own (`0001-browser_read.md`, ...),
 reads at once included. There is no recording and no live view. When the run is let go (its work done, or a SIGTERM)
-the sessions it still holds are released at their vendor.
+the sessions it still holds are released at their vendor. An agent's browser stays signed in from one run to the next
+([saved sign-ins](#saved-sign-ins)).
 
 A session's time is the run's spend, as a paid tool's charge is: each browser call books what its session ran since the
 last charge, and the release books the rest, topped up to the provider's minimum. Each is a `Tool cost` line of its own
@@ -808,6 +827,53 @@ ended). Prices are by provider (pi-browser's provider name):
 A variable gives the provider's price in US dollars an hour (a contract rate; the minimum stays). A provider with no price,
 or a variable that is not a non-negative decimal, has no price: its time is booked as an unknown cost, and under a cap
 every browser call is refused. Under a cap the browser's time is held before it runs (see [Spend cap](#spend-cap)).
+
+### Saved sign-ins
+
+Sign in once in one of an agent's runs (for now, through the run's browser while it runs), and every later run of that
+agent starts from that signed-in browser. Sign-ins are kept per agent, never shared between agents, and the server
+picks which one a run gets, never the model.
+
+- **Where the cookies are.** At the browser's vendor: a Browserbase context, or a Kernel profile under a random name
+  (`agentrun-` and 24 hex digits: Kernel's names are its account's, so a name derived from the agent would be any
+  server's that shares the key). This
+  server keeps only a pointer per agent and vendor, sealed under the seal key (`AGENTRUN_SEAL_KEY`) and bound to its
+  agent, in `<data>/homes/<key>/sign-ins/sign-ins.json`. With no seal key nothing is kept and runs start signed out;
+  capabilities say `sign_ins: true` only with a seal key and a browser vendor here. A local Chrome keeps none: its
+  cookies would sit on this server's disk.
+- **How a run gets it.** Before a run with the `browser` tool is launched, the server makes the agent's context at
+  Browserbase (`POST /v1/contexts`, which opens no session; Browserbase bills sessions, not contexts) or its profile at
+  Kernel (`POST /profiles`, which starts no browser) if it has none,
+  and hands the run's process the pointer over its pipe, with its secrets, never in its environment. The run's process
+  never gets the seal key. Every session the run opens uses that profile, by the name `default`; the model never sees
+  the pointer. A vendor that does not answer leaves that run's browser signed out, said in the server's log.
+- **One run saves at a time.** The first run of an agent to start with the browser holds the sign-in's save lease, and
+  its sessions save what changed (Browserbase `persist`, Kernel `save_changes`). A run of the same agent started while
+  another holds it starts signed in and saves nothing. The lease ends when its run ends (completed, failed or
+  cancelled) or lets go cleanly to wait for its person. A run whose process went, or a server restart, keeps it with
+  the run for its relaunch, since a session it opened before may still write back at the vendor, but for no longer than
+  such a session can live (pi-browser's session timeout, 30 minutes) while its process stays gone: a run that waits on
+  its person after its process died, or is never opened again, lets the others save after that. A run whose process
+  went without letting its sessions go keeps the lease that way even once it ends. Each launch decides again whether
+  its run saves: a follow-up of a run that saved, opened while another run holds the lease, saves nothing. One that names a run
+  that ended while the server was down counts as let go. Browserbase writes a saved context back a few seconds after
+  its session ends, so a Browserbase saver's lease stays named for it 10 seconds past its end (a bound this server
+  chose; Browserbase publishes none): a run started in that time starts from the context as it was, and saves nothing
+  over it, and the saver itself, resumed in that time, waits it out before it saves again. A gone holder's Browserbase
+  lease gets the same 10 seconds past the 30 minutes. A V1 limit: the lease goes to the first run of the agent to
+  start with the browser in its tools, whether or not it opens a browser, and stays with it until it ends, so a long
+  run that never browses keeps the others of that agent from saving meanwhile.
+- **What you see.** `GET /v2/agents/{id}` lists `sign_ins`: `{key: "default", provider, state, held_by, verified_at}`,
+  `held` with the run's id while a run holds the lease, else `ready`; `verified_at` is when a saving session last ended.
+  `unreadable` (this server's own state, marked `signins/1` in the served contract) is a pointer that does not open
+  under the seal key the server has now (none, or another): runs start signed out, and none is made in its place until
+  you forget it, since the vendor's object it points to would be left behind. Its `held_by` still names a run that
+  holds its lease, as a held one does.
+  Never the pointer. `DELETE /v2/agents/{id}/sign-ins/{key}` forgets one: the vendor's context or profile is deleted,
+  then the pointer. A delete the vendor does not answer is said in the answer (`at_vendor: "not_deleted"`), and the
+  pointer goes all the same. It is `409 sign_in_held` while a run holds the lease. A run of the agent that is still
+  going without the lease keeps the pointer it was handed: once the vendor's object is gone, its later sessions fail. Archiving an agent keeps its
+  sign-ins; this server has no route that deletes an agent.
 
 `monid.discover`, `monid.inspect` and `monid.run` give an agent [monid](https://monid.ai)'s whole catalog of data
 endpoints on one key, `MONID_API_KEY`: it finds an endpoint in plain words, reads its input schemas and price, and runs
@@ -905,7 +971,7 @@ answers once capabilities, a save's checks and a run's checks see the change, in
 key, so a key leaves what each harness offers as it is, and the harnesses are not checked again. A run already
 running keeps what it was handed; the next run started, or a run's process started again, takes what is saved then.
 `BROWSERBASE_PROJECT_ID` is on the launcher's list for this, as every field a person may save is. Capabilities name each
-tool's key (`tools[].key`, a `GET /settings/tool-keys` id, `browserbase` for `browser`, which `kernel` unlocks too), so a page can link a tool's
+tool's key (`tools[].key`, a `GET /settings/tool-keys` id; for `browser` its vendor's, `kernel` where Kernel is picked or resolved, else `browserbase`), so a page can link a tool's
 missing names to where its key is saved. `agentrun-serve import` opens the saved keys in its data directory too and
 cuts each out of what it writes, as it cuts a key-shaped variable of its environment; one that does not open there is
 not known, so not cut, and the import says so.
@@ -1071,11 +1137,12 @@ firing has left the history too, and later it is a new firing that a run the key
 | `GET /health` | Without a credential: whether the store reads and the disk has room ([capacity and health](#capacity-and-health)). |
 | `GET /openapi.json` | Without a credential: this API as an OpenAPI 3.1 document, the `agentrun.v2/0` contract (vendored in `src/openapi/`, its source in `info`) with this server's own routes marked `x-agentrun-serve` the operations it answers `501` marked `x-agentrun-serve-unsupported`, and a contract operation that takes more than the contract gives marked `x-agentrun-serve-changed` with each change named; `links.openapi` in capabilities points at it. |
 | `GET /capabilities` | Without a credential. `backend: local`, every feature flag present and true only when it works; `tools`, the tools an agentic revision may name; `workflows`, what a workflow revision's model nodes get and, in `workflows.decisions.providers`, the decision providers its typed questions run on; `models`, where models come from and the model of each tier. |
-| `POST /agents`, `GET /agents`, `GET /agents/{id}` | `POST` takes `{definition, skills?, note?}` and makes the agent with its first revision, current. A definition has `instructions` (an agentic revision) or `workflow` (a workflow revision, checked by the DSL first), and `name`, `description`, `model` and `thinking` (agentic only), `harness` ([harnesses](#harnesses)), `place` ([place](#place)), `tools`, `tool_settings` ([search and fetch](#search-and-fetch)), `skills` (names; each `<name>/SKILL.md` is in `skills`) and `version`, which is the number the revision gets, and `max_cost_usd` (agentic only), the agent's default cap ([spend cap](#spend-cap)). A field the store does not keep (`input_schema`, `output_schema`) is `422 input_invalid` by name, and so is a definition that can never run here; one this host cannot run yet saves with `warnings` ([models](#models)). The ETag (`home_etag`) is the current revision's id. `GET /agents/{id}` adds `tools`, the tools its current revision grants with each one's provider ([search and fetch](#search-and-fetch)). |
+| `POST /agents`, `GET /agents`, `GET /agents/{id}` | `POST` takes `{definition, skills?, note?}` and makes the agent with its first revision, current. A definition has `instructions` (an agentic revision) or `workflow` (a workflow revision, checked by the DSL first), and `name`, `description`, `model` and `thinking` (agentic only), `harness` ([harnesses](#harnesses)), `place` ([place](#place)), `tools`, `tool_settings` ([search and fetch](#search-and-fetch)), `skills` (names; each `<name>/SKILL.md` is in `skills`) and `version`, which is the number the revision gets, and `max_cost_usd` (agentic only), the agent's default cap, kept by an edit that leaves it out and cleared only by 0 ([spend cap](#spend-cap)). A field the store does not keep (`input_schema`, `output_schema`) is `422 input_invalid` by name, and so is a definition that can never run here; one this host cannot run yet saves with `warnings` ([models](#models)). The ETag (`home_etag`) is the current revision's id. `GET /agents/{id}` adds `tools`, the tools its current revision grants with each one's provider ([search and fetch](#search-and-fetch)). |
 | `PUT /agents/{id}/definition` | The same body, checked [the same way](#models): a new revision, its parent the current one, made current. Without `skills` the current revision's skill files carry over. A definition that is the current revision already writes nothing, so a PUT sent twice makes one revision. An agent's id, name and description stay those it was made with. `If-Match` that is not the current ETag is `412 precondition_failed`; the store compares it again inside the commit, so of two edits that read the same revision exactly one lands. The contract's body is taken too: the definition itself, with `If-Match` required (`412` without it) and `definition.version` greater than the current one (`422`). Any such version is taken, and always makes a new revision, the same definition included; the revision is numbered as this server numbers them, the next, and the answer says which; the route reads a body holding `definition` as this one, any other as the contract's. |
 | `GET /agents/{id}/revisions` | The agent's revisions, newest first: `revision`, `version`, `parent`, `kind`, `current`, `note`, `created_at` and the `definition`. |
 | `POST /agents/{id}/current` | `{revision}`: one of the agent's revisions becomes current again. |
 | `POST /agents/{id}/archive`, `POST /agents/{id}/unarchive` | [Archiving](#archiving): hides the agent and its runs from the lists, or shows them again. Answers the agent, with `archived_at`. |
+| `DELETE /agents/{id}/sign-ins/{key}` | This server's own route (`x-agentrun-serve: "signins/1"`): forgets one of the agent's [saved sign-ins](#saved-sign-ins), at its vendor and here. `409 sign_in_held` while a run holds its save lease. |
 | `POST /agents/{id}/runs`, `GET /agents/{id}/runs` | A run of the current revision, or of `revision`. An agentic run's input is `{content: string}`; a workflow run's is what its workflow's input schema takes. `file_ids` names [uploaded](#uploads) files, copied into the run's `work/inputs/` before it starts and named in its first message. The agent's runs, newest first. |
 | `GET /runs` | Every agent's runs, newest first, a page of at most 100; `agent`, `revision` and `status` narrow it, and `archived=true` lists only archived ones. A failed run's summary carries its `error`, and a waiting run's its `pending`. |
 | `GET /runs/{id}` | The run: its revision, kind, status, state, result, error, `pending` (this server's own, `pending/1`: what it waits on, by `kind`, such as `{kind: "question", question, asked_at}` for a question it asked a person; else null) and cost (`basis: estimate`; $0 before its first model request, a cancelled run's included). |
@@ -1099,8 +1166,7 @@ firing has left the history too, and later it is a new firing that a run the key
 | `GET /usage` | The runs' cost estimates, by meter, agent, key, day or region (`key` and `region` are one line, `local`). A run of unknown cost adds no dollars, so no sum is ever null, and is counted in `unpriced_runs` (in the total and in each line) so it never passes as $0. |
 
 Home export and import, quotes and `POST /runs/{id}/kill` answer `501 unsupported_here` naming the feature, and
-capabilities declare each one false. No run waits out `input_wait_s` here (`null`), and runs carry no
-browser sign-ins (`sign_ins: false`). `limits.max_cost_usd` is the highest cap a run may name: `null` here, as any cap
+capabilities declare each one false. No run waits out `input_wait_s` here (`null`). `limits.max_cost_usd` is the highest cap a run may name: `null` here, as any cap
 above $0 is taken; it does not mean caps are unsupported ([spend cap](#spend-cap)).
 
 ## Uploads
@@ -1162,11 +1228,12 @@ at once, the last wins. A body over `capabilities.home.max_file_bytes` (`limits.
 `DELETE` removes a file (`204`; `404` when it is not there) and leaves an emptied directory in place. Paths are checked
 as a run's are, a write goes at most 16 directories deep (as deep as the list goes), and a link anywhere on the way is
 never followed: a read is `404`, a write or a delete
-`403 system_file_forbidden`. `learning/` is the server's alone: the list shows it as one entry,
-`{"path": "learning", "host_owned": true}`, with none of its notes, and a `GET`, `PUT` or `DELETE` at or under it,
-however the path is spelled (`./Learning/x`), is `403 system_file_forbidden` (`details.reason` `host_owned`). A read's
-refusal names the learning API (`/v2/agents/{id}/learning`) on a server that has that route, and on one that does not
-says `the server keeps learning/ for itself; this server has no learning API yet`. A host-owned name is matched by its
+`403 system_file_forbidden`. `learning/` and `sign-ins/` (the agent's [saved sign-ins](#saved-sign-ins)) are the
+server's alone (`capabilities.home.host_owned`): the list shows each as one entry, `{"path": "learning", "host_owned":
+true}`, with none of what is in it, and a `GET`, `PUT` or `DELETE` at or under one, however the path is spelled
+(`./Learning/x`), is `403 system_file_forbidden` (`details.reason` `host_owned`). A read's refusal names where to read
+it instead: the learning API (`/v2/agents/{id}/learning`) on a server that has that route (on one that does not, `the
+server keeps learning/ for itself; this server has no learning API yet`), and `/v2/agents/{id}` for `sign-ins/`. A host-owned name is matched by its
 first segment folded (compatibility form, any case, no combining marks) and, where that segment and `learning/` are both
 on disk, by identity (the same
 device and inode), so a disk that takes another spelling for one name is refused the same way. A path takes only plain
@@ -1250,7 +1317,10 @@ harness, with the provider's first sentence only.
 tool and reads its other files with `read_skill_file`, and the system prompt holds the instructions alone. A skill the
 adapter does not take (a name that is not lowercase letters, digits and dashes, a `SKILL.md` without front matter giving
 its `name` and a `description`, a file path that is not plain or is deeper than five segments) stays inlined in the
-system prompt, as every skill is on `pi`, `codex` and `opencode`; so do all of them when together they hold more than 1 MiB.
+system prompt; so do all of them when together they hold more than 1 MiB. On `pi`, `codex` and `opencode`, a run with the
+`read` or `bash` tool is told each skill's name, what it is for (its `description`) and its `SKILL.md`'s path under
+`.agents/skills/`, and reads the file when the skill fits the step it is on; a run with neither gets every `SKILL.md`
+inlined in its system prompt.
 
 `definition.harness` and `capabilities.harnesses` are this server's, outside the `agentrun.v2/0` contract:
 `GET /v2/openapi.json` marks each `x-agentrun-serve: "harness/1"`, beside the other properties it adds (`model/1`,
@@ -1677,9 +1747,10 @@ log shows `by: {user: true, via: "console"}` at the commit's time, never the not
 ## Spend cap
 
 An agentic run may name `max_cost_usd` (a workflow run may not: `422`). A run that names none takes its agent's default,
-the `max_cost_usd` of the revision it runs (a number above 0, kept with the revision like `tool_settings`, and like
-them dropped by an edit that leaves it out); a run's own cap wins, since its caller chose it. A workflow definition keeps
-none (`422 not_allowed`). The cap is checked in the run's own process
+the `max_cost_usd` of the revision it runs, kept with the revision; a run's own cap wins, since its caller chose it. A
+definition's `max_cost_usd` above 0 sets that default, and 0 clears it (no default); anything else is `422`. An edit that
+leaves the field out keeps the agent's default, as it keeps its harness and place: leaving a field out never removes a
+spend limit. A workflow definition keeps none: above 0 is `422 not_allowed`, and 0 changes nothing. The cap is checked in the run's own process
 before each model request, the agent's and a compaction's alike, on every harness: what the run has spent so far, plus
 the worst case of each request still in flight, plus this request's worst case must stay within it, or the request is
 not sent and the run pauses ([below](#a-run-paused-at-its-cap)). A request's worst case is its input bound at the higher of
@@ -1706,7 +1777,8 @@ it up to), pi-browser's idle window before it releases a session nobody calls (1
 confirmed at the provider; at Browserbase's price, 270 s or $0.009. Before each browser call, the call is held at what its
 session ran since its last charge plus two stretches (one for the call's own time, one for a session it opens): spent, plus
 every hold, plus that must stay within the cap. Otherwise the call is not made: the model gets the cap's words
-(`spend_cap_reached: This browser call was not sent. It could cost up to $0.018 ...`), and the run's session is released.
+(`spend_cap_reached: Not sent: the run has spent $X of its $C cap, and this browser call could cost up to $0.018 ...`), and
+the run's session is released.
 A session's first charge moves one stretch of its call's hold to the session, held until its release is booked, which
 covers its idle time, its top-up and its release; each call's charge comes out of the call's hold, which goes when the
 call returns. So what the run spent plus what it holds stays within the cap through a session's create, its calls, the
@@ -1788,14 +1860,37 @@ the $0.15 left of the run's $0.50 cap could buy."
 
 A refusal for room (what is left of the cap cannot buy the next request's least) pauses the run instead of ending it: the
 refused request was not sent, so the cap holds, and a higher cap would send it. The run is `input_required` and
-`waiting`, `error` null, with `pending: {kind: "budget", cap_usd, spent_usd, needs_usd, said, at}`: its cap, what the
-cap counted as taken (spent, and held for requests still answering) and the least the refused request needs (a cap above
-their sum sends it), the refusal's words above, and when it came. The figures come from the refusal's own start mark, so a
-server started again says them too. Its timeline shows the refusal's row, then a waiting row: "Paused at the run's $0.05 cap: Not sent: …". The
+`waiting`, `error` null, with `pending: {kind: "budget", cap_usd, spent_usd, needs_usd, suggested_cap_usd, said, at}`:
+its cap, what the cap counted as taken (spent, and held for requests still answering) and the least the refused request
+needs (a cap above their sum sends it), the raise it is offered, the refusal's words above, and when it came. The
+offered raise, `suggested_cap_usd`, is `spent_usd` + 10 × `needs_usd` rounded up to a whole dollar, and always above the
+cap, so a `PATCH` with it (below) resumes the run; it is absent with the other figures. The figures come from the refusal's own start mark, so a
+server started again says them too, shown as `cost.usd` is (to a millionth of a dollar), except `spent_usd` once the paused process is gone: the refusal counted requests
+still answering at what it held for them, so then it is the store's spend, when that is lower, and `suggested_cap_usd`
+follows it. The refusal's words (`said`) keep its own figures. Its timeline shows the refusal's row, then a waiting row: "Paused at the run's $0.05 cap: Not sent: …". The
 webhook's `run.needs_input` says `pending.kind: "budget"`. Its process is let go while it waits (SIGTERM: it drains and
-releases the run), so a paused run holds no place; a server started again reads it paused from its store. A message to a
+releases the run), so a paused run holds no place; a server started again reads it paused from its store. A paused
+process that does not let go within the drain timeout (`--drain-timeout`, 30 s by default) is killed, and the run ends
+`failed`, as any run whose process is killed does, unless its cap was raised meanwhile: it held nothing, so the raise's
+follow-up goes (below). A message to a
 paused run is `409 budget_reached`; a stop does nothing more, and a cancel ends it `cancelled`. Only a refusal for room
 pauses a run: one no cap fixes (above) ends it `failed`, as does a cost found past the cap after a response.
+
+`PATCH /runs/{run_id}` with `{max_cost_usd}` raises the cap, and only raises it: the new cap is above the run's current
+cap, its last raise included, by more than a float's tail (1e-9; `422` otherwise, and for a run with no cap or a workflow
+run; `409 not_continuable` for an ended run). The same raise sent again (a retry), within that tail, changes nothing and
+answers as the first did. The run's serve.json keeps the raise before any answer, with each raise in `cap_raised`, so its
+next process opens under it, as does a server started again; a raise it could not keep is not taken (an error answers it),
+and the same raise again is taken anew. A run paused at its cap goes on: the answer is `{run_id, max_cost_usd, resumed: true,
+message_id, status, state}` at once, and the pause gets one follow-up turn, "The cap was raised to $2; continue the
+task.", under that `message_id`, which the server sends once the process being let go is gone, and which runs under the
+new cap. A second raise before it goes raises the cap it names and answers the same `message_id`. It is sent once: a
+server stopped before it went, or between starting its process and sending it, sends it when it starts again. One that
+cannot be sent is tried again (after 1 s, then 3 s); after 3 tries the run ends `failed`, saying the cap was raised but
+the run could not be sent on. The follow-up shows in the run's timeline as the server's, "AgentRun: The cap was raised…", never as the
+person's message (its submit names the server as its origin, `cap_raised`). A working run's
+live process keeps the cap it was opened with until its next one, and the answer's `note` says so. The raise is keyed to
+the refusal's own start mark, so a row shown after the refusal never reads the run paused again.
 
 A request carrying a native web search tool reads pages into its input that its body does not hold (the provider bills
 them as input): under a cap its input bound is its body's plus an allowance. Claude's own search, an explicit `native`
@@ -1830,7 +1925,7 @@ export default function reply(context, faux) {
 
 `startServe({ faux, fauxBrowser, fauxWeb })` (the tests', not the CLI's) also names modules whose default exports give
 the `browser` tool's `{ provider, driver }` in place of Browserbase's or Kernel's (pi-browser's fake backend, told the
-vendor the run's plane names: `test/fixtures/faux-browser.mjs`), `web_fetch`'s direct fetch's `{ lookup, fetchImpl }` in place of the system's resolver and
+vendor the run's plane names and the saved sign-in the run was handed: `test/fixtures/faux-browser.mjs`), `web_fetch`'s direct fetch's `{ lookup, fetchImpl }` in place of the system's resolver and
 undici (a table of names and pages, `test/fixtures/faux-web.mjs`), and, as `fauxMonid`, the fetch the monid tools send
 through in place of monid's API (`test/fixtures/faux-monid.mjs`). Each is honored only with `faux`.
 
@@ -1862,7 +1957,9 @@ carries no cost at all, as from a provider that does not price the model. The te
   machine, its network or a cloud's metadata address through it.
 - A `browser` session runs at Browserbase or Kernel, not on this machine: a page the model opens is reached from that
   vendor's network, so what the model may reach there is the operator's choice of vendor, keys and project. Its downloads and uploads stay
-  in the run's `work/`.
+  in the run's `work/`. An agent's saved sign-in stays at the vendor; this server keeps a sealed pointer to it, which a
+  run's process gets over its pipe and its tools and model never see. Anyone holding the vendor's key can open that
+  context or profile there.
 - It binds 127.0.0.1 by default, and there refuses a request whose `Host` is not a loopback name (DNS rebinding). On
   another address (`--listen`, the container's `0.0.0.0`) it serves every `Host` name, and the token is its only lock.
   It sends no CORS headers, so a page on another origin cannot read an answer.

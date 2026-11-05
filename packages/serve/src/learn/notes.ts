@@ -50,7 +50,8 @@ export function parseNoteFile(file: string, text: string): LearnedNote | string[
     fields.set(match[1]!, unquoted((match[2] ?? "").trim()));
   }
   for (const key of ["name", "description"]) if (!fields.get(key)) out.push(`${key} is missing`);
-  const type = fields.get("type");
+  // No type is a project note (Claude Code's memory reads one the same way); a type it does not know is refused.
+  const type = fields.has("type") ? fields.get("type") : "project";
   if (!(NOTE_TYPES as readonly string[]).includes(type ?? "")) out.push(`type is not ${NOTE_TYPES.join(", ")}`);
   const status = fields.get("status") || "active";
   if (!(NOTE_STATUSES as readonly string[]).includes(status)) out.push(`status is not ${NOTE_STATUSES.slice(1, -1).join(", ")} or ${NOTE_STATUSES.at(-1)}`);

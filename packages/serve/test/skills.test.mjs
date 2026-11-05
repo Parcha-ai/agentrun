@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { skillProblems } from "@parcha/agentrun-harness-claude";
-import { promptOf, READS_AT_ONCE, skillsOf, splitSkills, systemOf } from "../dist/skills.js";
+import { ON_DEMAND, promptOf, READS_AT_ONCE, readsFiles, skillsOf, splitSkills, systemOf } from "../dist/skills.js";
 import { workspaceTestHooks } from "../dist/workspace.js";
 
 const CANARY = `not-a-secret-canary-${process.pid}`;
@@ -145,4 +145,51 @@ test("the system prompt: with the adapter's check, the skills it takes leave the
   const { work: nativeOnly } = await workWith(t, { "cite/SKILL.md": md("cite") });
   assert.deepEqual(await systemOf("Answer.", ["cite/SKILL.md"], nativeOnly, skillProblems), { system: "Answer.", native: [{ name: "cite", files: { "SKILL.md": md("cite") } }] }, "every skill native: the instructions alone");
   assert.deepEqual(await systemOf("  Answer.\n", [], nativeOnly, skillProblems), { system: "Answer.", native: [] }, "no skills: the instructions alone");
+});
+
+test("on demand: a run that reads its files is told each skill's name, what it is for and its SKILL.md's path, never its text; one that cannot read gets each SKILL.md whole", async (t) => {
+  const files = {
+    "cite/SKILL.md": md("cite", `${CANARY} cite every source.`, "Cite each source by its title."),
+    "cite/reference/sources.md": "Primary sources first.\n",
+    "legacy/SKILL.md": "# Legacy way\nThe old way.\n",
+  };
+  const { work } = await workWith(t, files);
+  const paths = Object.keys(files);
+  const listed = await promptOf("Answer.", paths, work, { onDemand: true });
+  assert.equal(listed, `Answer.\n\n${ON_DEMAND}\n\n- cite: Cite each source by its title. (.agents/skills/cite/SKILL.md)\n- legacy: Legacy way (.agents/skills/legacy/SKILL.md)`);
+  assert.ok(!listed.includes(CANARY), "no skill's text is in the prompt");
+  assert.doesNotMatch(listed, /<skill name=/);
+  // A run that cannot read its files: every SKILL.md whole, as before.
+  assert.match(await promptOf("Answer.", paths, work), /<skill name="cite">\n---\nname: cite/);
+  // systemOf with no harness check is promptOf's; with claude-agent's check, its Skill tool's as before, on demand or not.
+  assert.deepEqual(await systemOf("Answer.", paths, work, undefined, { onDemand: true }), { system: listed, native: [] });
+  assert.deepEqual(await systemOf("Answer.", paths, work, skillProblems, { onDemand: true }), await systemOf("Answer.", paths, work, skillProblems));
+  assert.equal(await promptOf("Answer.", [], work, { onDemand: true }), "Answer.", "no skills: the instructions alone");
+});
+
+test("a run reads its files when it has the read or the bash tool", () => {
+  assert.equal(readsFiles(["read"]), true);
+  assert.equal(readsFiles(["web_fetch", "bash"]), true);
+  assert.equal(readsFiles(["web_fetch", "write"]), false);
+  assert.equal(readsFiles([]), false);
+});
+
+test("on demand: a skill's description is read whole as YAML folds it: a plain one that wraps onto indented lines, and one written entirely on the next indented line", async (t) => {
+  const files = {
+    "wrapped/SKILL.md": "---\nname: wrapped\ndescription: Find refund policies\n  and shipping policies\n---\nThe body.\n",
+    "below/SKILL.md": "---\nname: below\ndescription:\n  Answer a question\n  about a store's returns\n---\nThe body.\n",
+    "folded/SKILL.md": "---\nname: folded\ndescription: >\n  Folded words\n  on two lines\n---\nThe body.\n",
+  };
+  const { work } = await workWith(t, files);
+  const listed = await promptOf("Answer.", Object.keys(files), work, { onDemand: true });
+  assert.match(listed, /- wrapped: Find refund policies and shipping policies \(/, listed);
+  assert.match(listed, /- below: Answer a question about a store's returns \(/, listed);
+  assert.match(listed, /- folded: Folded words on two lines \(/, listed);
+});
+
+test("on demand: an indented comment after a plain name or description is no part of it", async (t) => {
+  const files = { "cite/SKILL.md": "---\nname: cite\n  # Citation helper\ndescription: Cite each source\n  # a note to self\n  by its title\n---\nThe body.\n" };
+  const { work } = await workWith(t, files);
+  const listed = await promptOf("Answer.", Object.keys(files), work, { onDemand: true });
+  assert.match(listed, /- cite: Cite each source by its title \(\.agents\/skills\/cite\/SKILL\.md\)/, listed);
 });
