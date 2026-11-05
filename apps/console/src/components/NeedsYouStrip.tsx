@@ -5,7 +5,7 @@ import { ago, choicesOf, failureGroups } from "@/lib/needs";
 import { elapsed } from "@/lib/runGraph";
 import { NO_MESSAGES, runState } from "@/lib/runState";
 import { cn } from "@/lib/utils";
-import { capWords } from "@/components/NeedsYou";
+import { pausedWords } from "@/components/NeedsYou";
 import type { BudgetPending, Run } from "@/lib/v2";
 
 export type NeedsYouProps = {
@@ -85,8 +85,8 @@ function Paused({ run, pending, agentName }: { run: Run; pending: BudgetPending;
         <span className="shrink-0 font-mono text-[12px]">{agentName}</span>
         <a href={runHref(run.run_id)} className="min-w-0 truncate text-muted-foreground hover:text-foreground">{run.title}</a>
       </p>
-      <p className="caps mt-2 text-[11px] text-warning-text">Paused at its {capWords(pending.cap_usd)} spend cap</p>
-      <p className="mt-1 text-[15px] leading-snug">{pending.said}</p>
+      <p className="caps mt-2 text-[11px] text-warning-text">{pausedWords(pending)}</p>
+      {typeof pending.said === "string" && <p className="mt-1 text-[15px] leading-snug">{pending.said}</p>}
       <p className="mt-3 font-mono text-[12px] text-muted-foreground"><a href={runHref(run.run_id)} className="underline-offset-4 hover:underline">open the run</a></p>
     </li>
   );

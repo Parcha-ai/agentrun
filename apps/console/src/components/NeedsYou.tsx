@@ -8,13 +8,18 @@ export function capWords(usd: number): string {
   return `$${usd.toFixed(8)}`;
 }
 
+/** "Paused at its $X spend cap", or without the figure when the run's `pending` names none (a server that sends only its
+ *  kind: the console reads what is there, never a field it lacks). */
+export const pausedWords = (pending: BudgetPending): string =>
+  `Paused at its ${typeof pending.cap_usd === "number" && Number.isFinite(pending.cap_usd) ? `${capWords(pending.cap_usd)} ` : ""}spend cap`;
+
 /** A run paused at its spend cap: why, in the cap's own words. It takes no message (409 budget_reached) until its cap is
  *  raised, so it offers no answer. */
 export function BudgetPaused({ pending }: { pending: BudgetPending }) {
   return (
     <section className="border border-warning/50 bg-warning/5 p-4" aria-label="Paused at its spend cap">
-      <p className="caps flex items-center gap-2 text-[11px] text-warning-text"><CircleDollarSign className="size-3.5" aria-hidden /> Paused at its {capWords(pending.cap_usd)} spend cap</p>
-      <p className="mt-2 text-[15px] leading-relaxed">{pending.said}</p>
+      <p className="caps flex items-center gap-2 text-[11px] text-warning-text"><CircleDollarSign className="size-3.5" aria-hidden /> {pausedWords(pending)}</p>
+      {typeof pending.said === "string" && <p className="mt-2 text-[15px] leading-relaxed">{pending.said}</p>}
       <p className="mt-1 text-[13px] text-muted-foreground">It waits for its cap to be raised; a message can't go on until then.</p>
     </section>
   );
