@@ -126,8 +126,11 @@ export type ServeOptions = {
   /** A faux model module (no key, no network): see the README. */
   faux?: string;
   /** With `faux` only: a module whose default export gives the `browser` tool's `{ provider, driver }` (the tests' fake
-   *  backend), in place of Browserbase's. */
+   *  backend), in place of Browserbase's or Kernel's. */
   fauxBrowser?: string;
+  /** With `faux` only: a module whose default export is the fetch the check of a Kernel key goes through (the tests'
+   *  fake), in place of Kernel's API. */
+  fauxKernel?: string;
   /** With `faux` only: a module whose default export gives `fetch_page` its `{ lookup, fetchImpl }` (the tests' fake
    *  network), in place of the system's resolver and undici. */
   fauxWeb?: string;
@@ -587,7 +590,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const fakes: Record<string, string | undefined> = { monid: options.fauxMonid, parallel: options.fauxParallel, typesafe: options.fauxJev };
   const checkFetch = async (id: string): Promise<typeof fetch | undefined> => {
     if (!options.faux) return fetch;
-    const fake = fakes[id];
+    const fake = id === "kernel" ? options.fauxKernel : fakes[id];
     return fake ? ((await import(pathToFileURL(resolve(fake)).href)) as { default: typeof fetch }).default : undefined;
   };
   // Aborted as close() begins: a key's check still waiting on its provider stops waiting, and its save stores nothing.

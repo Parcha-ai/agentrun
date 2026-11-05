@@ -35,8 +35,10 @@ export type Capability = (typeof CAPABILITIES)[number];
  *  server holds its key, else keyless Exa; `native`, the harness's own tool or its model provider's hosted one, and
  *  nothing else; `exa-keyless`, Exa's public MCP endpoint, no key; `kernel`, the guarded direct fetch; `parallel`,
  *  Parallel's Search and Extract APIs on PARALLEL_API_KEY; `off`, web_search turned off: nothing is searched, and an
- *  agent naming it is refused until it is turned on again. */
-export const PROVIDERS = Object.freeze({ web_search: ["auto", "native", "exa-keyless", "parallel", "off"], web_fetch: ["kernel", "parallel"] } as const);
+ *  agent naming it is refused until it is turned on again. The browser's: `auto`, Browserbase where the server holds its
+ *  keys, else Kernel where it holds Kernel's; `browserbase` or `kernel`, that one alone; `chrome`, a Chrome on the
+ *  server's own host, which no server sets up yet (browserBy). */
+export const PROVIDERS = Object.freeze({ web_search: ["auto", "native", "exa-keyless", "parallel", "off"], web_fetch: ["kernel", "parallel"], browser: ["auto", "browserbase", "kernel", "chrome"] } as const);
 export type Pickable = keyof typeof PROVIDERS;
 export const PICKABLE = Object.keys(PROVIDERS) as Pickable[];
 /** Older names a revision may still grant, and the capability each one is: `fetch_page` runs web_fetch, under its own
@@ -50,7 +52,7 @@ export type ToolSetting = { provider?: string };
  *  (`definition.tool_settings`), one shape. */
 export type ToolSettingsMap = Partial<Record<Pickable, ToolSetting>>;
 /** What a capability resolves to on a run: the native tool, the kernel's own, keyless Exa, Parallel, or why not. */
-export type Resolution = "native" | "kernel" | "exa-keyless" | "parallel" | `unavailable: ${string}`;
+export type Resolution = "native" | "kernel" | "exa-keyless" | "parallel" | "browserbase" | `unavailable: ${string}`;
 export const NO_PARALLEL_KEY: Resolution = "unavailable: parallel picked, no PARALLEL_API_KEY";
 /** web_search with `off` picked: no search leaves the server. */
 export const SEARCH_OFF: Resolution = "unavailable: web_search is turned off in settings";
@@ -71,6 +73,8 @@ export type ResolveInput = {
   /** The server holds PARALLEL_API_KEY; `parallelKeyFrom`, where from: its own environment, or saved on Tool keys. */
   parallelKey: boolean;
   parallelKeyFrom?: "server" | "saved";
+  /** Which of the browser's providers the server holds the keys of (BROWSER_KEYS); none given, neither. */
+  browserKeys?: Record<BrowserVendor, boolean>;
   /** The run has a spend cap: Codex's own search sends a request with no input bound, which a cap cannot admit. */
   capped?: boolean;
   /** The harness's model requests go through OpenRouter (model.ts' viaOpenRouter), where its own search does not run. */
@@ -113,6 +117,7 @@ export function explainCapability(capability: Pickable, input: ResolveInput): { 
   if (chosen === "off") return { resolves: SEARCH_OFF, why: "turned off in settings" };
   if (chosen === "parallel") return input.parallelKey ? { resolves: "parallel", why: `Parallel, ${picked}: ${key}` } : { resolves: NO_PARALLEL_KEY, why: "Parallel is picked, and no PARALLEL_API_KEY is set or saved" };
   if (capability === "web_fetch") return { resolves: "kernel", why: "the guarded direct fetch" };
+  if (capability === "browser") return browserBy(chosen, picked, input.browserKeys);
   if (chosen === "exa-keyless") return { resolves: "exa-keyless", why: `keyless Exa, ${picked}: Exa's free search, no key` };
   const none = noNative(input);
   if (chosen === "native") return none === undefined ? { resolves: "native", why: nativeWhy(input) } : { resolves: `unavailable: no native search for ${none.id}`, why: `no native search for ${none.id}` };
@@ -130,10 +135,35 @@ export const isUnavailable = (resolution: Resolution | undefined): resolution is
 /** Why a resolution is unavailable: its words after "unavailable: " (any other resolution as it is). */
 export const whyUnavailable = (resolution: string): string => resolution.replace(/^unavailable: /, "");
 
+/** The keys each of the browser's vendors needs, by name: a tool key's fields (tool-keys.ts), set or saved. Its plane
+ *  value is the vendor's id: `kernel` on browser is Kernel's hosted browser, never the guarded fetch web_fetch calls so. */
+export const BROWSER_KEYS = Object.freeze({ browserbase: ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"], kernel: ["KERNEL_API_KEY"] } as const);
+type BrowserVendor = keyof typeof BROWSER_KEYS;
+const LABELS: Record<BrowserVendor, string> = { browserbase: "Browserbase", kernel: "Kernel" };
+const isVendor = (name: unknown): name is BrowserVendor => name === "browserbase" || name === "kernel";
+const browserKeysOf = (env: NodeJS.ProcessEnv): Record<BrowserVendor, boolean> => ({ browserbase: BROWSER_KEYS.browserbase.every((name) => Boolean(env[name])), kernel: BROWSER_KEYS.kernel.every((name) => Boolean(env[name])) });
+/** A vendor picked whose keys the server does not hold: unavailable, never the other vendor. */
+const noBrowserKey = (vendor: BrowserVendor): Resolution => `unavailable: ${vendor} picked, no ${BROWSER_KEYS[vendor].join(" and ")}`;
+/** `auto` where the server holds neither vendor's keys. */
+export const NO_BROWSER_KEY: Resolution = "unavailable: no browser key: set or save Browserbase's (BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID) or Kernel's (KERNEL_API_KEY)";
+/** `chrome` picked: a Chrome on the server's own host, refused by name until a server can set one up. */
+export const NO_CHROME: Resolution = "unavailable: a local Chrome is not set up on this server";
+
+/** The browser `chosen` (picked as `picked` says) resolves to with the vendors' `keys`: `auto` is Browserbase where its
+ *  keys are held, else Kernel where its key is, else unavailable; a vendor picked is that vendor or unavailable; `chrome`
+ *  is unavailable by name. */
+function browserBy(chosen: string, picked: string, keys: Record<BrowserVendor, boolean> = { browserbase: false, kernel: false }): { resolves: Resolution; why: string } {
+  if (chosen === "chrome") return { resolves: NO_CHROME, why: whyUnavailable(NO_CHROME) };
+  if (isVendor(chosen)) return keys[chosen] ? { resolves: chosen, why: `${LABELS[chosen]}, ${picked}` } : { resolves: noBrowserKey(chosen), why: `${LABELS[chosen]} is picked, and no ${BROWSER_KEYS[chosen].join(" and ")} is set or saved` };
+  if (keys.browserbase) return { resolves: "browserbase", why: "Browserbase: its key is set or saved" };
+  if (keys.kernel) return { resolves: "kernel", why: "Kernel: its key is set or saved, and Browserbase's is not" };
+  return { resolves: NO_BROWSER_KEY, why: whyUnavailable(NO_BROWSER_KEY) };
+}
+
 /** The server's environment's part of every resolution: its gateway and Parallel's key, and where the key is from. */
 const served = (env: NodeJS.ProcessEnv) => {
   const parallelKey = PARALLEL_KEY_ENV in decisionKeysOf(env);
-  return { gateway: Boolean(env.AGENT_MODEL_BASE_URL), parallelKey, ...(parallelKey ? { parallelKeyFrom: savedIn(env).has(PARALLEL_KEY_ENV) ? ("saved" as const) : ("server" as const) } : {}) };
+  return { gateway: Boolean(env.AGENT_MODEL_BASE_URL), parallelKey, browserKeys: browserKeysOf(env), ...(parallelKey ? { parallelKeyFrom: savedIn(env).has(PARALLEL_KEY_ENV) ? ("saved" as const) : ("server" as const) } : {}) };
 };
 
 /** Each pickable capability on each harness under the server's `settings` and an agent's `overrides`, on `model`
@@ -181,11 +211,11 @@ export function planeFor(env: NodeJS.ProcessEnv, tooling: Tooling, settings: Too
   return plane;
 }
 
-/** A run's kept Plane at a later launch: as it was, but Parallel where the server no longer holds its key, which is
- *  unavailable, never another provider. */
+/** A run's kept Plane at a later launch: as it was, but Parallel, or the browser's vendor, where the server no longer
+ *  holds its key, which is unavailable, never another provider. */
 export function recheckPlane(plane: Plane, env: NodeJS.ProcessEnv): Plane {
   const keyed = served(env).parallelKey;
-  return Object.fromEntries(Object.entries(plane).map(([name, value]) => [name, value === "parallel" && !keyed ? NO_PARALLEL_KEY : value])) as Plane;
+  return Object.fromEntries(Object.entries(plane).map(([name, value]) => [name, name === "browser" && isVendor(value) && !browserKeysOf(env)[value] ? noBrowserKey(value) : value === "parallel" && !keyed ? NO_PARALLEL_KEY : value])) as Plane;
 }
 
 /** The Plane the server handed this run's process; empty when it handed none. */

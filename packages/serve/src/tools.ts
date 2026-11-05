@@ -21,12 +21,13 @@ import { bookedIn, booking, type Ledger } from "./paid-calls.js";
 import { forModel } from "./result.js";
 import { fetchFor, runPages, WEB_FETCH_TOOL, webFetchTool } from "./web-fetch.js";
 import { searchFor, WEB_SEARCH_TOOL, webSearchTool } from "./web-search.js";
-import { capabilityOf, explainsView, isUnavailable, NO_PARALLEL_KEY, type Pickable, PICKABLE, PROVIDERS, type Tooling, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
+import { capabilityOf, explainsView, isUnavailable, NO_PARALLEL_KEY, type Pickable, PICKABLE, planeOf, PROVIDERS, type Tooling, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
 import { PARALLEL_KEY_ENV } from "./decisions.js";
 
 export const ASK_TOOL = "ask_person";
-/** Under `--faux` only: a module whose default export gives the browser's `{ provider, driver }`, in place of
- *  Browserbase's (the tests' fake backend). */
+/** Under `--faux` only: a module whose default export gives the browser's `{ provider, driver }` for the run's
+ *  environment and the vendor its plane names (`browserbase`, `kernel`), in place of that vendor's (the tests' fake
+ *  backend). */
 export const FAUX_BROWSER_ENV = "AGENTRUN_SERVE_FAUX_BROWSER";
 
 /** What the result of `ask_person` says; the person's page shows the question as a waiting row. */
@@ -161,32 +162,47 @@ export const evidenceIn = (work: string) => {
   };
 };
 
-/** A Browserbase browser driven through Stagehand, on pi-browser's durable adapter: its sessions' custody lives in the
- *  run's own store. No recording and no live view; a session the run still holds is released when the run is let go. */
+/** A hosted browser driven through Stagehand, on pi-browser's durable adapter: Browserbase or Kernel (headless), the one
+ *  the run's plane names (tool-plane.ts: picked, else Browserbase where the server holds its keys, else Kernel), kept
+ *  for the run's life; a plane that names none (a run kept from before the pick) is Browserbase. Its sessions' custody
+ *  lives in the run's own store. No recording and no live view; a session the run still holds is released when the run
+ *  is let go. Where the plane says unavailable (its vendor's key gone since), each call is refused, saying why. */
 const browserTool: ToolEntry = {
-  summary: "Drive a Browserbase browser: open pages, read and screenshot them, and act on them.",
-  needs: ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"],
+  summary: "Drive a hosted browser, Browserbase's or Kernel's (picked in tool settings, else whichever's key the server holds): open pages, read and screenshot them, and act on them.",
+  // Which vendor's keys it needs is the plane's to say (tool-plane.ts BROWSER_KEYS): neither alone is required.
+  needs: [],
   nodes: true,
   // Its downloads and uploads go through work/ by path (pi-browser), which a box's command could turn through a link.
   runnerOnly: true,
   bind: async (host) => {
-    const [{ BACKGROUND_CONTEXT: context }, { createBrowserExtension }, { DEFAULT_BROWSER_POLICY }] = await Promise.all([
+    const [{ BACKGROUND_CONTEXT: context }, { createBrowserExtension }, { DEFAULT_BROWSER_POLICY, BrowserFailureError, browserFailure }] = await Promise.all([
       import("@earendil-works/chord/context"),
       import("@parcha/pi-browser/durable"),
       import("@parcha/pi-browser"),
     ]);
+    const vendor = planeOf(host.env).browser ?? "browserbase";
+    const refused = isUnavailable(vendor) ? new BrowserFailureError(browserFailure("browser_unavailable", `The browser does not run here: ${whyUnavailable(vendor)}.`)) : undefined;
     const faux = host.env[FAUX_ENV] ? host.env[FAUX_BROWSER_ENV] : undefined;
     const parts = faux
-      ? ((await import(pathToFileURL(faux).href)) as { default: (env: NodeJS.ProcessEnv) => { provider: unknown; driver: unknown } }).default(host.env)
-      : { provider: (await import("@parcha/pi-browser/providers/browserbase")).browserbaseProvider({ env: host.env }), driver: (await import("@parcha/pi-browser/driver/stagehand")).stagehandDriver() };
-    const browser = createBrowserExtension({ provider: () => parts.provider as never, driver: parts.driver as never, evidence: evidenceIn(host.where.work) as never, workspace: () => host.where.work });
+      ? ((await import(pathToFileURL(faux).href)) as { default: (env: NodeJS.ProcessEnv, vendor: string) => { provider: unknown; driver: unknown } }).default(host.env, vendor)
+      : {
+          provider: refused ? undefined : vendor === "kernel" ? (await import("@parcha/pi-browser/providers/kernel")).kernelProvider({ env: host.env, headless: true }) : (await import("@parcha/pi-browser/providers/browserbase")).browserbaseProvider({ env: host.env }),
+          driver: (await import("@parcha/pi-browser/driver/stagehand")).stagehandDriver(),
+        };
+    const provider = () => {
+      if (refused) throw refused;
+      return parts.provider as never;
+    };
+    const browser = createBrowserExtension({ provider, driver: parts.driver as never, evidence: evidenceIn(host.where.work) as never, workspace: () => host.where.work });
     const extension = browser.extension as unknown as Extension;
     host.install(extension);
     host.onConversation(async (tx, conversationId) => {
       Object.assign(await tx.doc(browser.docs.Config, conversationId as never), { label: "run", run: host.where.ref.id, policy: DEFAULT_BROWSER_POLICY });
     });
-    host.beforeResume(async (harness) => void (await browser.reconcile(harness as never, () => true, context)));
+    // With its vendor's key gone there is no session to reconcile or release from here: each would only fail.
+    host.beforeResume(async (harness) => void (refused ? undefined : await browser.reconcile(harness as never, () => true, context)));
     host.beforeRelease(async (harness) => {
+      if (refused) return;
       const held = await harness.snapshot(browser.docs.Inventory as never, context) as { rows?: Record<string, { conversationId: number; state: string }> } | undefined;
       for (const id of new Set(Object.values(held?.rows ?? {}).filter((row) => row.state !== "released").map((row) => row.conversationId))) {
         const conversation = await harness.conversation(id as never, context);

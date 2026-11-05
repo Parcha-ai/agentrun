@@ -8,7 +8,7 @@ import { evidenceIn } from "../dist/tools.js";
 import { answerFlow, client, follow, scratch, serve } from "./support.mjs";
 
 const FAUX_BROWSER = new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname;
-const KEYS = ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"];
+const KEYS = ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "KERNEL_API_KEY"];
 
 /** Sets `values` in this process's environment for test `t`, which a server and its runs' processes inherit. */
 function withEnv(t, values) {
@@ -24,19 +24,22 @@ test("capabilities list browser with the variables it is missing (names only), a
   withEnv(t, { BROWSERBASE_PROJECT_ID: "fake-project" });
   const { api, baseUrl } = await serve(t);
   const caps = (await client(baseUrl)("GET", "/capabilities")).body;
-  assert.deepEqual(caps.tools.find((tool) => tool.name === "browser"), { name: "browser", summary: caps.tools.find((tool) => tool.name === "browser").summary, nodes: true, calls: false, available: false, reason: "Needs BROWSERBASE_API_KEY", missing: ["BROWSERBASE_API_KEY"], harnesses: ["pi"], key: "browserbase" });
+  // Half of Browserbase's keys and none of Kernel's: no vendor runs, and the reason names each one's variables.
+  const reason = "no browser key: set or save Browserbase's (BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID) or Kernel's (KERNEL_API_KEY)";
+  const { summary: _, why: __, ...listed } = caps.tools.find((tool) => tool.name === "browser");
+  assert.deepEqual(listed, { name: "browser", nodes: true, calls: false, available: false, reason, harnesses: ["pi"], providers: ["auto", "browserbase", "kernel", "chrome"], provider: "auto", default_provider: "auto", resolves: { pi: `unavailable: ${reason}`, "claude-agent": `unavailable: ${reason}`, codex: `unavailable: ${reason}` }, key: "browserbase" });
   assert.ok(caps.workflows.node_tools.includes("browser"));
   assert.ok(!JSON.stringify(caps).includes("fake-project"), "no value of a variable is shown");
   assert.equal((await api("POST", "/agents", { definition: { id: "browse", name: "browse", instructions: "Browse.", tools: ["browser"] } })).status, 201);
   const refused = await api("POST", "/agents/browse/runs", { input: { content: "Browse the example page." } });
   assert.deepEqual([refused.status, refused.body.error.code], [409, "agent_not_runnable"]);
-  assert.deepEqual(refused.body.error.details.missing, { browser: ["BROWSERBASE_API_KEY"] });
-  assert.match(refused.body.error.message, /the tool browser needs BROWSERBASE_API_KEY/);
+  assert.match(refused.body.error.message, /The tool browser does not run here on pi: no browser key: set or save Browserbase's \(BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID\) or Kernel's \(KERNEL_API_KEY\)\./);
   const flow = answerFlow();
   flow.root.steps[0].tools = ["browser"];
   assert.equal((await api("POST", "/agents", { definition: { id: "flow", name: "flow", workflow: flow, tools: ["browser"] } })).status, 201);
   const node = await api("POST", "/agents/flow/runs", { input: { question: "x" } });
-  assert.deepEqual([node.status, node.body.error.details.missing], [409, { browser: ["BROWSERBASE_API_KEY"] }], "a workflow's node naming it too");
+  assert.deepEqual([node.status, node.body.error.code], [409, "agent_not_runnable"], "a workflow's node naming it too");
+  assert.match(node.body.error.message, /The tool browser does not run here on pi: no browser key/);
   assert.deepEqual((await api("GET", "/runs")).body.runs, []);
 });
 
