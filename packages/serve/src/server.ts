@@ -21,7 +21,7 @@ import { FAUX_MONID_ENV } from "./monid.js";
 import { FAUX_EXA_ENV } from "./exa-keyless.js";
 import { FAUX_BROWSER_ENV, NODE_TOOLS, toolingOf, toolsView } from "./tools.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
-import { DATA_ENV, DOOR_TOKEN_FILE, HOME_HOST_OWNED, HOMES_DIR, homeOf, readJson, RUN_META, syncDir, writeDurable } from "./files.js";
+import { DATA_ENV, DOOR_TOKEN_FILE, HOME_HOST_OWNED, HOMES_DIR, homeOf, readJson, RUN_META, syncDir, TOKEN_FILE, writeDurable } from "./files.js";
 import { checkedPath, decodedPath, homePath, hostOwnedOf, hostOwnedRefusal, type OwnedReadAt, ownedByIdentity } from "./home-path.js";
 import { chooseModel, EFFORTS, FAUX_ENV, FAUX_UPSTREAM_ENV, MODEL_NODES, type ModelNeeds, modelSource, THINKING_LEVELS, withoutFaux } from "./model.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, type HarnessCapability, harnessOffers } from "./harness.js";
@@ -33,7 +33,7 @@ import { agentLearning, learningLog, learningNotes, noteBody, readNote, runDiff,
 import { answerLlms, MCP_PATH, mcpEndpoint } from "./mcp.js";
 import { openapiDocument, servedOpenapi, UNSUPPORTED } from "./openapi.js";
 import { boxesLine, noBoxReason, type Place, placesOf, resolvePlace } from "./place.js";
-import { boxLimitsOf, FAUX_BOX_ENV, fauxBoxes } from "./run-box.js";
+import { BOX_ALLOW_ENV, boxAllowOf, boxLimitsOf, FAUX_BOX_ENV, fauxBoxes } from "./run-box.js";
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
 import { answerPage, byOwnerSession, isJson, ownerCookie, ownOrigin, signedIn } from "./page.js";
 import { durationMs, logLine } from "./print.js";
@@ -46,9 +46,11 @@ import { DOCUMENTS_ENV } from "./pdf-pages.js";
 import { metersIn } from "./cap.js";
 import { blockersOf, CODE_NODES_ENV, issueOf, type RevisionShape } from "./runnable.js";
 import { hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from "./secrets.js";
+import { redactedOutput } from "./key-refusal.js";
 import { analyticsFilter, analyticsView, statsView } from "./stats.js";
 import { outcomes } from "./usage.js";
 import { keyOf, SEAL_KEY_ENV, sealKeyOf, TOOL_FIELDS, ToolKeys } from "./tool-keys.js";
+import { MCP_AUTH_TYPES, McpServers } from "./mcp-servers.js";
 import { WEBHOOK_EVENTS, Webhooks } from "./webhooks.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, ID, inputIssues, isObject, type Json, stable, unknownFields } from "./validate.js";
 import { agentTools, settingsIssues, ToolSettings, type ToolSettingsMap, withDefaults } from "./tool-plane.js";
@@ -63,7 +65,6 @@ const workerArgs = (args: readonly string[]): string[] =>
   args.filter((arg, i) => !arg.startsWith("--input-type") && !/^(?:-e|--eval|-p|--print)(?:=|$)/.test(arg) && !/^(?:-e|--eval|-p|--print)$/.test(args[i - 1] ?? ""));
 export const DEFAULT_PORT = 7340;
 const VERSION: string = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")).version;
-const TOKEN_FILE = ".token";
 const IDEMPOTENCY_FILE = ".idempotency.json";
 const MAX_BODY = 1 << 20;
 const MAX_MESSAGE = 20_000;
@@ -307,6 +308,12 @@ export const ROUTES: readonly Route[] = [
   { method: "GET", pattern: /^\/settings\/tool-keys$/, name: "listToolKeys" },
   { method: "PUT", pattern: /^\/settings\/tool-keys\/([^/]+)$/, name: "saveToolKey" },
   { method: "DELETE", pattern: /^\/settings\/tool-keys\/([^/]+)$/, name: "deleteToolKey" },
+  { method: "GET", pattern: /^\/settings\/mcp-servers$/, name: "listMcpServers" },
+  { method: "POST", pattern: /^\/settings\/mcp-servers\/preview$/, name: "previewMcpServer" },
+  { method: "GET", pattern: /^\/settings\/mcp-servers\/([^/]+)$/, name: "getMcpServer" },
+  { method: "PUT", pattern: /^\/settings\/mcp-servers\/([^/]+)$/, name: "saveMcpServer" },
+  { method: "DELETE", pattern: /^\/settings\/mcp-servers\/([^/]+)$/, name: "deleteMcpServer" },
+  { method: "POST", pattern: /^\/settings\/mcp-servers\/([^/]+)\/refresh$/, name: "refreshMcpServer" },
   { method: "GET", pattern: /^\/settings\/tools$/, name: "getToolSettings" },
   { method: "PUT", pattern: /^\/settings\/tools$/, name: "putToolSettings" },
   { method: "GET", pattern: /^\/settings\/webhook$/, name: "getWebhook" },
@@ -388,6 +395,10 @@ export async function readingOf(base: NodeJS.ProcessEnv, maxRuns: number, stored
  *  `learning` is the server's learning switch (`--learning`), AGENTRUN_SERVE_LEARNING's when not given; with this
  *  server's tool settings, what each web tool resolves to (tool-plane.ts); `boxes`, the box offers its places show;
  *  `gradeModel`, its `--grade-model`. */
+/** Why a Daytona box has no network although AGENTRUN_BOX_ALLOW names hosts: Daytona refused its domain list (`code`). */
+const noListReason = (code: string) =>
+  `Daytona did not keep a sandbox's domain list (${code}), so this server's Daytona boxes have no network until it starts again: Daytona takes a domain list on its tier 3 and 4 only. To keep them closed without trying, set ${BOX_ALLOW_ENV}=none`;
+
 export async function capabilities(env: NodeJS.ProcessEnv = withSecrets(process.env), maxRuns = maxRunsOf(env), learning: LearningMode = learningOf(env), toolSettings: ToolSettingsMap = {}, boxes: readonly BoxOffer[] = [], gradeModel?: string) {
   return capabilitiesWith(env, maxRuns, await harnessOffers(env), learning, await needsOf(env), toolSettings, boxes, gradeModel);
 }
@@ -417,7 +428,7 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
     // `keys`, what a model key would unlock, is the key rows' (listToolKeys), never served here.
     harnesses: harnesses.map(({ keys: _keys, ...offer }) => ({ ...offer, max_concurrent_runs: Math.min(maxRuns, runsThatFit(offer.id, memory)) })),
     /** The places a revision may name (`definition.place`), this host's default, and whether this server has each box. */
-    places: placesOf(boxes),
+    places: placesOf(boxes, boxAllowOf(env)),
     models,
     /** What grades a run's proposed notes: the model this server names for it (learning.ts gradeModelOf), or null when
      *  each run is graded on its agent's own model; and `pending`: a risky rule, the user's or the run's own, is kept to
@@ -466,6 +477,9 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
       /** GET, PUT and DELETE /settings/tool-keys: a tool's key saved by name, kept sealed under the launcher's seal key
        *  (tool-keys.ts); with none handed over, nothing is kept, never in the clear. */
       tool_keys: { routes: true, at_rest: sealKeyOf(env[SEAL_KEY_ENV]) ? "sealed" : "unavailable" },
+      /** /settings/mcp-servers: remote MCP servers previewed and saved, each credential sealed under the same seal key
+       *  (mcp-servers.ts); with none, only servers that take no credential are kept. */
+      mcp_client: { routes: true, transports: ["streamable-http"], auth: [...MCP_AUTH_TYPES], at_rest: sealKeyOf(env[SEAL_KEY_ENV]) ? "sealed" : "unavailable" },
       /** This server's learning switch (`--learning`): on, a run learns when its agent says `learning: true`; off, none does. */
       learning,
       /** /settings/webhook: one URL POSTed, signed by the Standard Webhooks spec, when a run needs its person and when it
@@ -536,6 +550,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   if (options.drainTimeout !== undefined && durationMs(options.drainTimeout) === undefined) throw new Error(`the drain timeout ${options.drainTimeout} is not a duration such as 8s`);
   enabledBoxes(process.env);
   boxLimitsOf(process.env);
+  const boxAllow = boxAllowOf(process.env);
   const maxRuns = maxRunsOf(process.env, options.maxRuns);
   const learning = learningOf(process.env, options.learning);
   const learningBudget = learningBudgetOf(process.env, options.learningBudget);
@@ -555,7 +570,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   try {
     // The server's record, which its stop rewrites in place (server-lock.ts): made now, so the stop makes nothing.
     markRunning(data);
-    return await startHolding(options, data, lock, { maxRuns, minFreeBytes, learning, learningBudget }, stops);
+    return await startHolding(options, data, lock, { maxRuns, minFreeBytes, learning, learningBudget, boxAllow }, stops);
   } catch (error) {
     for (const stop of stops) await stop().catch(() => undefined);
     lock.release();
@@ -563,8 +578,8 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   }
 }
 
-async function startHolding(options: ServeOptions, data: string, lock: ServerLock, checked: { maxRuns: number; minFreeBytes: number; learning: LearningMode; learningBudget: number }, stops: Array<() => Promise<void>>): Promise<Serve> {
-  const { maxRuns, minFreeBytes, learning, learningBudget } = checked;
+async function startHolding(options: ServeOptions, data: string, lock: ServerLock, checked: { maxRuns: number; minFreeBytes: number; learning: LearningMode; learningBudget: number; boxAllow: readonly string[] | "none" }, stops: Array<() => Promise<void>>): Promise<Serve> {
+  const { maxRuns, minFreeBytes, learning, learningBudget, boxAllow } = checked;
   const tokenFile = options.token === undefined ? join(data, TOKEN_FILE) : null;
   const stored = options.token === undefined ? await tokenIn(tokenFile!) : undefined;
   const token = options.token ?? stored!.token;
@@ -594,6 +609,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const storedKeys: StoredKeys = (name) => toolKeys.value(name);
   // A stored key that does not open is said once at the start, never a refusal to start.
   toolKeys.view();
+  const mcpServers = new McpServers(data, withSecrets(base, "own"), VERSION);
   // The server's tool settings, beside the agent store: capabilities say what they resolve to, again after a PUT.
   const settings = new ToolSettings(data);
   // The server's reading, in parts: `env`, its environment with its secrets, saved keys among them (storedKeys);
@@ -646,7 +662,12 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   // is preparing until it is in, and unavailable if the pull fails. Its record tells the run's processes; with no Docker
   // box here there is none, so no run waits on one an earlier start left.
   let image: DockerImage | undefined;
-  const offersNow = (): BoxOffer[] => boxes.offers().map((offer) => (fauxBox && offer.id === "docker" ? { id: "docker", available: true, reason: "a faux box (tests)" } : offer.id === "docker" && image ? withImage(offer, image.state()) : offer));
+  // A Daytona box reaches the hosts AGENTRUN_BOX_ALLOW names, through Daytona's domain list, until Daytona cannot keep
+  // one here (an organization whose tier takes none): from then on each is made with no network, and capabilities say why.
+  let daytonaNoList: string | undefined;
+  const daytonaNetwork = (offer: BoxOffer): BoxOffer =>
+    !offer.available ? offer : boxAllow === "none" ? { ...offer, network: "none" } : daytonaNoList ? { ...offer, network: "none", reason: noListReason(daytonaNoList) } : { ...offer, network: "allowlist" };
+  const offersNow = (): BoxOffer[] => boxes.offers().map((offer) => (fauxBox && offer.id === "docker" ? { id: "docker", available: true, reason: "a faux box (tests)" } : offer.id === "docker" && image ? withImage(offer, image.state()) : offer.id === "daytona" ? daytonaNetwork(offer) : offer));
   const imageLog = (state: ImageState, more: Record<string, number> = {}) => log?.(logLine("box_image", { image: image!.image, state: state.state, ...more, ...("reason" in state ? { reason: state.reason } : {}) }));
   let boxOffers: BoxOffer[] = offersNow();
   const boxImage = !fauxBox && boxes.provider("docker") ? boxImageOf(env) : undefined;
@@ -668,6 +689,13 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   // Daytona's boxes are made, seeded, pulled and destroyed here, with the key this server holds; a run's process reaches
   // its own through the relay below, which holds the key for it (box-relay.ts).
   const remoteBoxes = boxes.provider("daytona");
+  // Daytona could not keep a run's box's domain list: said in the log and in capabilities, which recompose now.
+  const onNoBoxList = (code: string) => {
+    daytonaNoList = code;
+    log?.(logLine("box_network", { box: "daytona", network: "none", refused: code }));
+    boxOffers = offersNow();
+    if (offers) recompose();
+  };
   log?.(logLine("boxes", boxesLog(boxOffers, enabledBoxes(env))));
   if (image) imageLog(image.state());
   const openapi = openapiDocument((operationId) => ROUTES.find((r) => r.name === operationId)?.capability);
@@ -681,7 +709,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   if (swept > 0) log?.(logLine("uploads_swept", { removed: swept }));
   const documents = options.documents ?? process.env[DOCUMENTS_ENV];
   if (documents !== undefined && !(await stat(documents).then((info) => info.isDirectory(), () => false))) throw new Error(`the documents directory ${documents} is not a directory`);
-  const runs = new Runs({ agents, token, storedKeys, doorTokenFile, doorToken, learning, learningBudget, ...(documents ? { documents: resolve(documents) } : {}), fauxEnv: fauxEnvOf(options), toolSettings: () => settings.get(), ...(runBoxes ? { runBoxes } : {}), ...(remoteBoxes ? { remoteBoxes } : {}), ...(remoteBoxes && daytonaApi(env) ? { remoteApi: daytonaApi(env)! } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(options.reflectTimeoutMs ? { reflectTimeoutMs: options.reflectTimeoutMs } : {}), ...(options.gradeTimeoutMs ? { gradeTimeoutMs: options.gradeTimeoutMs } : {}), ...(options.gradeModel ? { gradeModel: options.gradeModel } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}), notify: (event, run, marker) => webhooks.emit(event, run, marker) });
+  const runs = new Runs({ agents, token, storedKeys, doorTokenFile, doorToken, learning, learningBudget, ...(documents ? { documents: resolve(documents) } : {}), fauxEnv: fauxEnvOf(options), toolSettings: () => settings.get(), ...(runBoxes ? { runBoxes } : {}), ...(remoteBoxes ? { remoteBoxes } : {}), ...(remoteBoxes && daytonaApi(env) ? { remoteApi: daytonaApi(env)! } : {}), ...(remoteBoxes ? { boxAllow, onNoBoxList } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(options.reflectTimeoutMs ? { reflectTimeoutMs: options.reflectTimeoutMs } : {}), ...(options.gradeTimeoutMs ? { gradeTimeoutMs: options.gradeTimeoutMs } : {}), ...(options.gradeModel ? { gradeModel: options.gradeModel } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}), notify: (event, run, marker) => webhooks.emit(event, run, marker) });
   const daytona = daytonaApi(env);
   const relay = remoteBoxes && daytona ? await startBoxRelay({ root: data, tokenOf: (id) => runs.relayToken(id), ...daytona, serves: (id) => runs.servesBox(id), ensure: (id) => runs.ensureBox(id) }) : undefined;
   if (relay) stops.push(() => relay.close());
@@ -770,6 +798,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       worker.once("exit", (code) => {
         workers.delete(worker);
         if (answer) answered(answer);
+        // A count the close ended: stopped, not failed (the next start counts again).
+        else if (closing && task === "plan") answered({ stopped: true });
         else failed(new Error(`the import's worker ended (${code}) with no answer`));
       });
     });
@@ -955,7 +985,10 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       if (wrong.length) throw invalid(wrong);
       const place = resolvePlace(revision.body.place as Place | undefined);
       await runnable(revision, place, { capped: body.max_cost_usd !== undefined });
-      const title = revision.kind === "workflow" ? workflowTitle(entry.agent.name || entry.agent.id, input) : typeof input.content === "string" ? input.content : (Object.values(input).find((v): v is string => typeof v === "string") ?? JSON.stringify(input));
+      // The title shows on the run's page, the runs list and Mission Control: built from its input as shown, each held
+      // value redacted before a long one is cut (a cut key could no longer be found), and the run gets its input as given.
+      const shown = redactedOutput(input, learningSecrets());
+      const title = revision.kind === "workflow" ? workflowTitle(entry.agent.name || entry.agent.id, isObject(shown) ? shown : {}) : typeof input.content === "string" ? input.content : (Object.values(input).find((v): v is string => typeof v === "string") ?? JSON.stringify(input));
       const run = await runs.create(entry, revision, version, { input, title, place, ...(typeof body.effort === "string" ? { effort: body.effort } : {}), ...(typeof body.max_cost_usd === "number" ? { maxCostUsd: body.max_cost_usd } : {}), ...(files.length ? { inputs: (work: string) => uploads.copyInto(work, files) } : {}) });
       // Its view from the run itself: it is written, with its first message, so an answer read from the store, which a
       // busy store would turn into home_busy, would refuse a run that runs, and a retry would start a second one.
@@ -1248,19 +1281,21 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         return send(res, 201, { signed_in: true, ...(body.import === true ? { importing: true } : {}) }, { "set-cookie": ownerCookie(req, me.session(), SESSION_S) });
       }
       case "/setup/import": {
-        if (!offersImport) throw new ApiError("not_found", "no route /v2/setup/import");
-        // Before the owner is set, to the setup page: that it can import (202 while it counts), and then how many projects
-        // and sessions it would, or null for each when the count failed.
+        // No offer is an answer, `{ offer: false }`, never a 404: the console reads this on its first page, and a browser
+        // logs every 404 as an error.
+        // Before the owner is set, to the setup page: none on a server that cannot import, else that it can (202 while it
+        // counts), and then how many projects and sessions it would, or null for each when the count failed.
         if (!me.hasPassword()) {
           pageRead(req);
+          if (!offersImport) return send(res, 200, { offer: false });
           countSessions();
           if (count?.state === "counted") return send(res, 200, { projects: count.projects, sessions: count.sessions });
           if (count?.state === "failed") return send(res, 200, { projects: null, sessions: null });
           return send(res, 202, { counting: true });
         }
-        // After, to the signed-in owner: the import asked for at setup, running, done or stopped.
-        if (!signedIn(req, me) || importState === undefined) throw new ApiError("not_found", "no route /v2/setup/import");
-        return send(res, 200, importState);
+        // After, to the signed-in owner: the import asked for at setup, running, done or stopped, or none asked.
+        if (!signedIn(req, me)) throw new ApiError("not_found", "no route /v2/setup/import");
+        return send(res, 200, importState ?? { offer: false });
       }
       case "/auth/sign-in": {
         fromPage(req);
@@ -1578,6 +1613,20 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         toolKeys.remove(id);
         await keysChanged();
         return void res.writeHead(204, { "cache-control": "no-store" }).end();
+      // Never through `idempotent`: its record keeps the body, and a body may hold a credential.
+      case "listMcpServers":
+        return send(res, 200, mcpServers.list());
+      case "getMcpServer":
+        return send(res, 200, mcpServers.get(id));
+      case "previewMcpServer":
+        return send(res, 200, await mcpServers.preview(await bodyOf(req), stopping.signal));
+      case "saveMcpServer":
+        return send(res, 200, await mcpServers.save(id, await bodyOf(req), stopping.signal));
+      case "refreshMcpServer":
+        return send(res, 200, await mcpServers.refresh(id, stopping.signal));
+      case "deleteMcpServer":
+        mcpServers.remove(id);
+        return void res.writeHead(204, { "cache-control": "no-store" }).end();
       case "getToolSettings":
         return send(res, 200, withDefaults(settings.get()));
       case "putToolSettings": {
@@ -1737,11 +1786,14 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       void (log ? log(logLine("stopping_mark_unwritten", fields)) : process.stderr.write(`agentrun-serve: ${logLine("stopping_mark_unwritten", fields)}\n`));
     }
     if (busy > 0) noticeOf(options)(`stopping: waiting up to ${seconds(boundMs)} for ${busy === 1 ? "1 run to finish its turn" : `${busy} runs to finish their turn`}`);
-    // An import (or its count) under way stops between two session files and is waited for: nothing writes the store
-    // after close.
+    // An import under way stops between two session files and is waited for: nothing writes the store after close. A
+    // count writes nothing (it lists and reads), so it is ended at once: its listing of a big home checks for no stop.
     closing = true;
     stopping.abort();
-    for (const worker of workers.keys()) worker.postMessage("stop");
+    for (const [worker, { task }] of workers) {
+      if (task === "plan") void worker.terminate();
+      else worker.postMessage("stop");
+    }
     await Promise.all([...workers.values()].map((w) => w.exit));
     await importing;
     // Runs that end while their processes stop still give their notices; then the deliveries stop, before the lock goes.

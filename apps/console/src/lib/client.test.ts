@@ -115,6 +115,21 @@ describe("agents", () => {
     }
   });
 
+  it("retires a learned skill's SKILL.md and a draft's README.md through the note's retire route, slashes percent-encoded, under If-Match", async () => {
+    const { fn, calls } = fakeFetch(() => new Response("---\nname: find-policies\nstatus: retired\n---\n", { status: 200, headers: { "content-type": "text/markdown", etag: '"skill-v2"' } }));
+    const v2 = createClient({ fetch: fn });
+    const done = await v2.retireNote("refunds", "skills/find-policies/SKILL.md", '"skill-v1"');
+    await v2.retireNote("refunds", "workflows/check-refunds/README.md", '"readme-v1"');
+    expect(calls.map((c) => `${c.init?.method} ${c.url}`)).toEqual([
+      "POST /v2/agents/refunds/learning/files/skills%2Ffind-policies%2FSKILL.md/retire",
+      "POST /v2/agents/refunds/learning/files/workflows%2Fcheck-refunds%2FREADME.md/retire",
+    ]);
+    expect(new Headers(calls[0].init?.headers).get("if-match")).toBe('"skill-v1"');
+    expect(new Headers(calls[1].init?.headers).get("if-match")).toBe('"readme-v1"');
+    expect(calls[0].init?.credentials).toBe("same-origin");
+    expect(done).toEqual({ note: "---\nname: find-policies\nstatus: retired\n---\n", etag: '"skill-v2"' });
+  });
+
   it("lists runs in one state, or the archived ones, with the server's list parameters", async () => {
     const { fn, calls } = fakeFetch(() => json(200, { runs: [], next_cursor: null }));
     const v2 = createClient({ fetch: fn });
@@ -249,6 +264,26 @@ describe("the owner's session", () => {
       'POST /v2/auth/sign-in {"password":"pw-1"}', 'POST /v2/setup {"password":"pw-2","code":"c-1"}', "POST /v2/auth/sign-out {}",
     ]);
     expect(calls.every((c) => c.init?.credentials === "same-origin")).toBe(true);
+  });
+});
+
+describe("setup's import status", () => {
+  it("reads a 200 that says there is no offer as none, and still a 404 or 403 from an older server", async () => {
+    const answers: [number, unknown][] = [
+      [200, { offer: false }],
+      [404, { error: { code: "not_found", message: "no route /v2/setup/import", retryable: false } }],
+      [403, { error: { code: "forbidden", message: "this read must come from this server's page", retryable: false } }],
+    ];
+    const { fn, calls } = fakeFetch(() => json(...answers.shift()!));
+    const v2 = createClient({ fetch: fn });
+    expect([await v2.setupImport(), await v2.setupImport(), await v2.setupImport()]).toEqual([null, null, null]);
+    expect(calls.map((c) => `${c.init?.method} ${c.url}`)).toEqual(Array(3).fill("GET /v2/setup/import"));
+  });
+  it("passes an offer and an import's state through as the server says them", async () => {
+    const answers: unknown[] = [{ counting: true }, { projects: 1, sessions: 2 }, { state: "done", agents: 1, runs: 2, skipped: 0 }];
+    const { fn } = fakeFetch(() => json(200, answers.shift()));
+    const v2 = createClient({ fetch: fn });
+    expect([await v2.setupImport(), await v2.setupImport(), await v2.setupImport()]).toEqual([{ counting: true }, { projects: 1, sessions: 2 }, { state: "done", agents: 1, runs: 2, skipped: 0 }]);
   });
 });
 

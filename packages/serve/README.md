@@ -344,9 +344,24 @@ since nothing binds `work/` there):
   the key to the calls a run's tools make of their own sandbox (a read of it, and its toolbox's programs and files). It
   refuses every other call (a create, a listing, a stop, a delete, another run's sandbox or token, any other host), and
   it never follows a redirect, nor does the server's own Daytona client: a redirect would carry the key.
-- Its network is blocked (`networkBlockAll`). A sandbox Daytona does not report blocked is deleted, and the tool call
-  fails saying so. An organization on Daytona's tier 1 or 2 keeps its own network policy, which a sandbox cannot
-  override, so a run there gets no Daytona box.
+- It reaches the hosts `AGENTRUN_BOX_ALLOW` names, and no other: Daytona's domain list (`domainAllowList`), which
+  Daytona's egress proxy enforces. Unset or empty, the list is the package registries and GitHub: `pypi.org`,
+  `files.pythonhosted.org`, `registry.npmjs.org`, `registry.yarnpkg.com`, `github.com` and `codeload.github.com`. A
+  comma list of hosts (a `*.` wildcard allowed, at most 100) replaces it, so to add one, copy this list and extend it.
+  `AGENTRUN_BOX_ALLOW=none` blocks its network (`networkBlockAll`), as before the list. `*`, an IP address, a CIDR, a
+  port or a URL refuses the start. Capabilities show the hosts in `places.allow`, and the box's `network` (`allowlist` or
+  `none`) in its `places.boxes` entry. Daytona's proxy re-signs each TLS connection with Daytona's own CA, which the
+  sandbox's environment names to pip, npm, git and curl (`REQUESTS_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`, `GIT_SSL_CAINFO`,
+  `CURL_CA_BUNDLE`, `SSL_CERT_FILE`).
+- A sandbox whose own read does not carry the list it was asked for is deleted. Daytona takes a domain list on its tier 3
+  and 4 only: where it keeps none, or refuses it, the server makes the run's box again with its network blocked, never
+  open, and makes every later Daytona box that way until it starts again. The log says so once
+  (`event=box_network box=daytona network=none refused=<code>`), and capabilities show the box's `network` as `none`
+  with the reason. A box the server finds with no network is kept; one with a list when the setting is `none` is
+  destroyed and made again. A changed list applies to the boxes made after the start that reads it.
+- A sandbox Daytona does not report blocked, when blocked was asked, is deleted, and the tool call fails saying so. An
+  organization on Daytona's tier 1 or 2 keeps its own network policy, which a sandbox cannot override, so a run there
+  gets no Daytona box unless that policy blocks it.
 - A sandbox cannot bind `work/`. The server copies `work/` into it at `/run/agentrun/run/work` when it makes it, and
   copies what changed back at each turn's end (a read of the run's files waits for that copy) and once more before the
   run's end is recorded. Daytona's answer is never trusted: the copy back writes regular files and directories only,
@@ -597,7 +612,8 @@ only where it is picked: `auto` there skips Claude's own search, an explicit `na
 `web_search`, Parallel, where the server holds a Parallel key (`PARALLEL_API_KEY` in its environment, or one saved on Tool
 keys): `auto` then uses that key and bills it, each search booked as the run's cost ($0.001 a search); (4) the kernel's
 keyless fallback. A revision's `tools` (and a pack's grant) names the capability, never a provider. On codex, `auto` is
-Codex's own search, except behind a gateway or under a spend cap (its request has no input bound, which a cap cannot
+Codex's own search, except behind a gateway, on OpenRouter (which runs neither Codex's nor Claude's own search, and
+counts no searches to price) or under a spend cap (its request has no input bound, which a cap cannot
 admit), where it is Parallel on the server's key, else keyless Exa. `off` turns `web_search` off: nothing is searched,
 and an agent naming it is refused (`409`) until it is turned on again. A pick of `exa-keyless` is keyless Exa alone,
 the key held or not.
@@ -607,8 +623,8 @@ unavailable for a workflow.
 
 | | `claude-agent` | `codex` | pi |
 | --- | --- | --- | --- |
-| `web_search`, `auto` (the default) | Parallel on the server's key, else keyless Exa: Claude's own WebSearch is the `native` pick | Codex's own search, each search booked; behind a gateway or under a spend cap, Parallel on the server's key, else keyless Exa, a host tool | one request to the run's own model provider with its hosted search (Anthropic, OpenAI direct); behind a gateway (`AGENT_MODEL_BASE_URL`) or on another provider, Parallel on the server's key, else keyless Exa |
-| `web_search`, `native` | Claude's own WebSearch, unavailable under a spend cap | the same, unavailable behind a gateway or under a spend cap | the same, unavailable where there is none: never keyless Exa |
+| `web_search`, `auto` (the default) | Parallel on the server's key, else keyless Exa: Claude's own WebSearch is the `native` pick | Codex's own search, each search booked; behind a gateway, on OpenRouter or under a spend cap, Parallel on the server's key, else keyless Exa, a host tool | one request to the run's own model provider with its hosted search (Anthropic, OpenAI direct); behind a gateway (`AGENT_MODEL_BASE_URL`) or on another provider, Parallel on the server's key, else keyless Exa |
+| `web_search`, `native` | Claude's own WebSearch, unavailable on OpenRouter or under a spend cap | the same, unavailable behind a gateway, on OpenRouter or under a spend cap | the same, unavailable where there is none: never keyless Exa |
 | `web_search`, `off` | unavailable (`web_search is turned off in settings`): nothing is searched | the same | the same |
 | `web_search`, `exa-keyless` | Exa's public MCP search, a host tool | the same | the same |
 | `web_fetch`, `kernel` (the default) | the guarded direct fetch | the same | the same |
@@ -820,6 +836,63 @@ missing names to where its key is saved. `agentrun-serve import` opens the saved
 cuts each out of what it writes, as it cuts a key-shaped variable of its environment; one that does not open there is
 not known, so not cut, and the import says so.
 
+## MCP servers
+
+Add a remote MCP server once, with its credential, and see its tools before you keep it. Agents granting its tools
+come in a later version; this is the API that saves the server.
+
+```sh
+curl -X POST "$BASE/v2/settings/mcp-servers/preview" -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"url": "https://mcp.example.com/mcp", "auth": {"type": "bearer", "token": "..."}}'
+curl -X PUT "$BASE/v2/settings/mcp-servers/example" -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"url": "https://mcp.example.com/mcp", "auth": {"type": "bearer", "token": "..."}}'
+```
+
+`POST /v2/settings/mcp-servers/preview` takes `{url, auth}` (or `{name}` for a saved server) and connects over
+Streamable HTTP with the official MCP SDK client (`@modelcontextprotocol/client`): the 2026-07-28 revision first, a
+2025-era server through its `initialize`. It answers the revision agreed (`protocol`), the server's `server_info`, any
+`instructions` and every tool `tools/list` gives, all pages, each with its name, title, description, `input_schema`,
+`output_schema` and `annotations` (the server's own claims, not checked). It stores nothing. `auth` is `{type: "none"}`
+(or absent), `{type: "bearer", token}` (sent as `Authorization: Bearer <token>`) or `{type: "headers", headers: {Name:
+value}}` (up to 8). `oauth` is refused for now (`422`, reason `not_yet`). `url` is `https`, or `http` on loopback.
+
+What can go wrong, told apart:
+
+- `422 auth_required`: the server answered 401 or 403. `details.auth` is `oauth` when it names protected-resource
+  metadata (in its `WWW-Authenticate`, or at `/.well-known/oauth-protected-resource`), else `bearer`.
+- `422 not_mcp`: the URL answered, but nothing it answered was a JSON-RPC reply (a web page, a JSON API, a 404).
+- `422 input_invalid`, field `url`, reason `redirect`: the server answered a redirect. None is followed, so a
+  credential goes only to the address you gave; the message names where it points.
+- `424 upstream_failed`: the server could not be reached, did not answer within 15 s (30 s for the whole listing),
+  answered 5xx or more than 4 MiB at once, or failed to list its tools; `details.status` is its HTTP status, if any.
+
+A server is kept with at most 500 tools and 1 MiB of tool names, descriptions and schemas: past either, the listing
+stops at that page and the answer is `422 input_invalid` (field `url`, reason `too_many_tools` or `tools_too_large`),
+naming the limit and how many tools were read.
+
+`PUT /v2/settings/mcp-servers/{name}` previews the same way, then keeps the server: its URL, the tools it listed (the
+snapshot an agent will be shown) and its credential. A name is lowercase letters, digits and dashes, starting with a
+letter, at most 32, with no underscores, so `mcp__<server>__<tool>` splits one way. Each credential header's value is
+sealed like a [tool key](#tool-keys): AES-256-GCM under `AGENTRUN_SEAL_KEY`, bound to the server's name and the header,
+in `DIR/mcp-servers.json` (0600, written whole, synced and renamed), which holds no value in the clear. With no seal key,
+a server that takes a credential is `409 no_sealing_key`, before anything is contacted; one with `auth.type` none is
+kept. A `PUT` that sends no `token` (or no `headers`) keeps the sealed credential, as long as the auth type and the URL's
+origin stay the same: a saved credential never goes to another origin unless you send it again.
+
+`GET /v2/settings/mcp-servers` and `GET .../{name}` show each server with `credential`: `sealed`, `seal_key_missing`
+(no seal key now) or `unreadable` (sealed under another key, or damaged: a `PUT` with the credential seals it again),
+null for `auth.type` none. No read, log line or error shows a credential; a server's error text is cut of the values
+sent before it is shown. `POST .../{name}/refresh` lists the tools again with the saved URL and credential, keeps them,
+and answers `{added, removed, changed, server}`: `changed` names a tool whose title, description, schemas or
+annotations differ. `DELETE .../{name}` forgets the server and its credential. A saved-servers file that does not read (damaged, or
+another format) is never written over: the list answers `servers: []` with `file_unreadable: true`, and every other
+route is `409 store_unreadable` until the file is restored or removed. Capabilities' `features.mcp_client`
+says `transports: ["streamable-http"]`, the `auth` types and `at_rest` (`sealed`, or `unavailable` with no seal key).
+
+`test/fixtures/fake-mcp-server.mjs` is a loopback MCP server for trying this: `startFakeMcp({era, token, oauth})`
+answers `{url, log, tools, close}`; it serves `add`, `slow_write`, `delete_thing` and `paid`, and logs each request's
+method, tool and whether an `Authorization` header came, never its value.
+
 ## Webhooks
 
 One URL hears of your runs without anyone watching the page. `PUT /v2/settings/webhook` with `{url}` sets it: an `http`
@@ -898,6 +971,7 @@ lists the last 50 attempts (`webhook_id`, type, status code, latency, error, whe
 | `POST /runs/{id}/pause`, `POST /runs/{id}/resume` | A workflow run: what is in flight finishes, and no node, model call or decision starts until it is resumed. Its status reads `paused`, and stays so across a server restart. An agentic run is `501`, an ended one `409`. |
 | `POST /workflows/validate` | `{workflow, tools?}`: every issue a save would refuse (`[{path, code, message}]`, the DSL's validation with code not run) and what this host lacks as `warnings`. Writes nothing. A refused save's `422` carries each issue as a field under `definition.workflow`, with its `code`. |
 | `GET /settings/tool-keys`, `PUT` and `DELETE /settings/tool-keys/{id}` | [Tool keys](#tool-keys), this server's own routes (`x-agentrun-serve: "toolkeys/1"`): each key's fields by name and where each is set, never a value; save one sealed, or forget it. |
+| `GET /settings/mcp-servers`, `POST /settings/mcp-servers/preview`, `GET`, `PUT` and `DELETE /settings/mcp-servers/{name}`, `POST .../{name}/refresh` | [MCP servers](#mcp-servers), this server's own routes (`x-agentrun-serve: "mcpservers/1"`): preview a remote MCP server's tools, save it with its credential sealed, read it back without the credential, refresh its tools, or forget it. |
 | `GET /settings/tools`, `PUT /settings/tools` | This server's own: the providers of `web_search` and `web_fetch` ([search and fetch](#search-and-fetch)). |
 | `GET`, `PUT` and `DELETE /settings/webhook`, `POST /settings/webhook/test`, `GET /settings/webhook/deliveries` and `POST .../deliveries/{webhook_id}/redeliver` | [Webhooks](#webhooks), this server's own routes (`x-agentrun-serve: "webhook/1"`): the URL run notices are POSTed to, signed by the Standard Webhooks spec; never its secret but once. |
 | `POST /mcp` | This server's own route (`x-agentrun-serve: "mcp/1"`): the [MCP endpoint](#for-coding-agents), Streamable HTTP with one JSON-RPC message per POST (`initialize`, `ping`, `tools/list`, `tools/call`), answered as JSON, stateless. Its ten tools call these routes in process with the caller's token. The Bearer token only, never the page's cookie; a browser `Origin` other than this server's own is `403`; any other method is `405`. |
@@ -916,7 +990,8 @@ A run's input files. Send one in one call, its bytes the body and its path in th
 curl -s "$AGENTRUN_BASE_URL/files?path=plan.md" -H "authorization: Bearer $AGENTRUN_API_KEY" --data-binary @plan.md
 ```
 
-It answers `201` with the file `ready`: its `file_id`, `size_bytes` (the body's length) and `sha256` (the body's own).
+It answers `201` with the file, `ready`, under `file`: its `file_id`, `size_bytes` (the body's length) and `sha256`
+(the body's own).
 Its `content_type` is the query's `content_type`, else the request's own type when it names one (not
 `application/octet-stream`, not curl's `application/x-www-form-urlencoded`), else its path's extension's, as a run's files
 are served (`plan.md` is `text/markdown; charset=utf-8`), else `application/octet-stream`. A `sha256` in the query is
@@ -1211,7 +1286,11 @@ left out: 2 sessions still being written: they come in next time
      [sandbox](#sandbox), where it and the file tools run in the run's box. The run is `queued` until its first message shows; while the process runs, the
      timeline comes from its door's events through `@parcha/pi-durable-agent/timeline`. Once the run is idle and its
      newest row is the agent's answer, the server sends the process SIGTERM. A model error ends it `failed`
-     (`run_failed`), and a run its `max_cost_usd` stops ends `failed` (`spend_cap_reached`, [below](#spend-cap)).
+     (`run_failed`), and a run its `max_cost_usd` stops ends `failed` (`spend_cap_reached`, [below](#spend-cap)). A
+     provider's content filter stopping the answer ends it `failed` with `moderated` on every harness, saying so in plain
+     words ("The model provider stopped this answer (its content filter). Rephrase the request, or try another model.");
+     the provider's own words stay on the Timeline's error row. On claude-agent and codex the session's model proxy reads
+     the provider's stop and ends the turn at once, so the CLI never asks for the refused answer again.
      A stop sent while the run still reads `queued` (a message sent to it not yet in its timeline) waits, up to a
      request's deadline, for that message to show, then stops the turn as it stops any working run.
      A stopped run can be continued: a follow-up starts a fresh turn on the whole history, and the turn the stop cut is
@@ -1282,11 +1361,23 @@ Each run of an agent that learns starts from `main` as it is when the run is mad
   nothing learned yet is told so. A run that does not learn (or whose seed failed) gets no `# Learned`. Every name, description, text and index line is cut of the server's secrets as they are when the run is made,
   as a person's reads are. That is pi's system prompt and claude-agent's and codex's instructions: the same channel
   `CLAUDE.md` and `AGENTS.md` travel in. No such file is written into the run's work (claude-agent keeps project
-  settings off, so a `.claude/` in the work never loads), and no skill is learned. The pin keeps the section the run
+  settings off, so a `.claude/` in the work never loads). The pin keeps the section the run
   reads (`section`), so a resume or a follow-up reads the same; a pin an earlier server wrote, the index alone
   (`learned`), is read as that server gave it.
 - `MEMORY.md` and the active notes are copied into the run's `work/.learning/`, made fresh and cut of the server's
   secrets the same way, for the run to read; a note that is not active is not, and neither is its line in the index.
+- The skills the agent wrote, each a folder `skills/<name>/` on `main` with its `SKILL.md`, join the revision's own:
+  each is copied, every file of it, into the run's `work/.agents/skills/<name>/`, and the run gets it as it gets the
+  revision's (pi and codex read each `SKILL.md` in their prompt, claude-agent loads the ones its adapter takes through
+  its Skill tool). A skill named like one of the revision's is the revision's, and only an active skill is served: one
+  whose `SKILL.md` front matter says `status: pending` (held for its owner's OK), or any status but `active`, is not.
+  The learned ones get 256 KiB, every file of each together, and never more than the revision's skills leave of the 1
+  MiB an adapter takes of a run's skills in all, so they never push the revision's back into the prompt: the one
+  changed last on `main` first, each whole while it fits. One that does not fit, or holds one of the server's secrets,
+  is left out. The pin names the files of the ones laid (`skills`) and the ones left out (`skills_left_out`), and a
+  follow-up gets them laid again, fresh, whatever the run wrote over them; one the work no longer holds whole when the
+  run's process starts is left out of what its harness gets, and the run goes on. A skill whose name or files are out
+  of shape is not read, and a symbolic link or a submodule at `skills/` or anywhere under it is a learning fault.
 
 The server reads the commit with git plumbing, never the working tree. What it holds that is not a regular UTF-8 file of
 1 MiB or less, or a note out of shape, is not read, and the server's stderr names it. A learning fault never blocks a
@@ -1328,8 +1419,8 @@ neither, on the agent's own model. `GET /capabilities` names it as `learning.gra
 cheap model is a poor grader, so point the strong tier (or `--grade-model`) at a strong one. The grader reads each active
 note's index line, the whole text only of the notes the proposal supersedes, what the user said in the run (cut of the
 server's secrets, as the proposal keeps it), and the new notes, so its prompt stays under 200,000 characters however
-many notes the folder holds. Only with Jev's key here does an injection screen
-run first, on Jev: a note it scores at `INJECTION_THRESHOLD` (0.75) or over, or cannot score, drops the run. What the
+many notes the folder holds. No injection screen runs before it: a page classifier cannot see where a note came
+from, and read a preference the user stated as a planted instruction; the grader's Planted question decides. What the
 grade spends is in no run's totals: it is kept on the run's learning, and counted once on `GET /usage` under the meter
 `learning`, by agent and by day; a call cut off at its bound spent what nobody knows, so its cost is unknown, never $0.
 
@@ -1349,8 +1440,8 @@ The run's `learning` (on `GET /runs/{run_id}`, and `{state, reason, detail}` in 
 characters and no time) says how it went: `seeded`, then
 `reflecting` during the turn and until what it answered is checked, `proposed` while it is graded, and `merged`, or
 `dropped` with a reason from a closed list (`seed_failed`, `no_budget`, `unknown_cost`, `cancelled`, `crashed`,
-`reflect_timeout`, `reflect_failed`, `empty`, `unparsed`, `propose_failed`, `checker`, `screen`, `screen_down`,
-`grader`, `grade_failed`; `no_write_tool` and `tool_denied` are an older server's, still read and counted, and no run
+`reflect_timeout`, `reflect_failed`, `empty`, `unparsed`, `propose_failed`, `checker`, `grader`, `grade_failed`;
+`no_write_tool`, `tool_denied`, `screen` and `screen_down` are an older server's, still read and counted, and no run
 gets them now). It is `null` for a
 run that does not learn (its agent's `learning` is not true, the server's switch was off when it started, or it is a
 workflow's or an imported run). Its `detail` says the same in a person's words, never the machine's: "Started from 2
@@ -1487,13 +1578,21 @@ Under a cap, whatever cannot be priced is refused, never passed as $0:
   with no held figure (below). Every later request of the run is refused. `claude-agent` and `codex` runs also continue
   after a cut, at the worst case the cap held, as pi does.
 
-On pi a request stopped before its end (`POST /runs/{id}/stop`, or a summary that failed) or cut by a crash (its process
-gone mid-request) counts at the worst case the cap held for it, the most the provider can have billed, never at the cut
-stream's own usage (the Responses API reports none until the end). The figure is written on the request's start mark
-(`agentrun.request_started`) and on the end mark of one stopped (`agentrun.request_ended`), as `heldUsd`, so a later
-process counts it the same: a capped pi run stopped and sent another message, or opened again after its process died,
-goes on while its cap allows. A cut request from a store written before serve kept the figure has none, and is a spend
-no one knows.
+A request you stop counts what it streamed plus up to 1,024 output tokens the provider may have produced after the last
+word we read; never more than it was held. That is its input bound and each byte it streamed (text, thinking and tool
+calls on pi; the response as it was sent on `claude-agent` and `codex`) as a token, plus 1,024 tokens of output
+(`STOP_ALLOWANCE_TOKENS`), at the model's price, and at most the worst case the cap held for it. The cut stream's own
+usage is never read: it is not what the provider billed (the Responses API reports none until the end, and Anthropic's
+output count comes at the end). The 1,024 tokens are a stated bound, as the native search allowance is: a provider that
+went on producing for longer after the stop could bill past what is counted. A request that ended on an error after its
+response began (an overload part way, a reset), or a summary that failed, still counts at its worst case, and so does a
+request cut by a crash (its process gone mid-request).
+
+On pi the figure is written on the request's start mark (`agentrun.request_started`, its worst case) and on the end mark
+of one stopped (`agentrun.request_ended`, what it counts at), as `heldUsd`; on `claude-agent` and `codex` on the
+request's `runner.request` record (its worst case) and, for one stopped, on its `runner.turn`. A later process counts it
+the same: a capped run stopped and sent another message, or opened again after its process died, goes on while its cap
+allows. A cut request from a store written before serve kept the figure has none, and is a spend no one knows.
 
 A refusal says so in plain words, with the numbers, on the run's error and on its timeline row: "Not sent: this run's
 cap of $0.01 can't cover one Claude Sonnet 5.5 request (at least $0.03). Raise the cap to at least $0.03 to run it.", and
@@ -1553,11 +1652,14 @@ carries no cost at all, as from a provider that does not price the model. The te
 ## Safety
 
 - An import (`agentrun-serve import`, and setup's import) cuts secrets out of everything it writes: the values of the
-  environment's key-shaped variables and the keys saved on this server, and the keys [secretlint](https://github.com/secretlint/secretlint)'s
+  environment's key-shaped variables and the keys saved on this server, the secrets this server made and keeps (its API
+  token, its door token, its sign-in secret, and its webhook's signing secret when the seal key opens it; when it does
+  not, the CLI's import says so once, on stderr, and goes on), and the keys [secretlint](https://github.com/secretlint/secretlint)'s
   recommended rules find in what it reads (Anthropic, OpenAI, GitHub, Slack and Stripe keys, AWS secret keys beside their
   name, private keys, database URLs with a password, and more). Each becomes `[redacted]`, and the import says how many
-  it removed. Known key formats are removed. Other secrets in your session history, like passwords in config files, are
-  imported as they are.
+  distinct values it removed. Known key formats are removed. Other secrets in your session history, like passwords in
+  config files, are imported as they are. So are a key-shaped value this server did not make (a `whsec_` secret from
+  another service) and a run's own door token.
 - The decision keys (`TYPESAFE_API_KEY`, `PARALLEL_API_KEY`, `OPENROUTER_API_KEY` as Jev's or OpenRouter's) are never in
   a run's environment or files: a run's process gets on a pipe of their own only those it needs, for its decision
   providers ([decision workflows](#decision-workflows)) and its web tools: Jev's (by its route) for a node that names Jev

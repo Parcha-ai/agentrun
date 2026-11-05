@@ -134,7 +134,7 @@ same ground with no key.
 | | Names on main |
 | --- | --- |
 | Serves | `POST /v2/agents/{id}/runs` (`input`, `revision`, `effort`, `max_cost_usd`), `GET /v2/runs`, `GET /v2/runs/{id}`, `GET /v2/runs/{id}/timeline` (pages or SSE), `POST /v2/runs/{id}/{messages,stop,cancel,pause,resume}`, `GET /v2/runs/{id}/graph`, `GET /v2/usage`, and `harnesses[]` in `GET /v2/capabilities` |
-| Run fields others read | `status`, `state`, `result.final_answer`, `error.code` (`spend_cap_reached`, `run_failed`, `escalated`), `cost.usd` (`null` when unknown) |
+| Run fields others read | `status`, `state`, `result.final_answer`, `error.code` (`spend_cap_reached`, `moderated`, `run_failed`, `escalated`), `cost.usd` (`null` when unknown) |
 | Journal | In the run's store, from `@parcha/pi-durable-agent/timeline`: `REQUEST_STARTED` (`heldUsd`, `capRefused`), `REQUEST_ENDED` (`heldUsd`, `unsent`), `REQUEST_COST`, `REQUEST_REFUSED`, `REQUEST_COST_PENDING`, `REQUEST_COST_LATE`, `REQUEST_CONTINUED`. Read through `timelineOf` and `runMetricsOf` |
 | Run directory | `DIR/runs/<id>/`: `run.json` (`status`, `holder.pid`, `generation`), `serve.json`, `store/run.sqlite`, `work/`, `process.log` |
 | Adapters it calls | `adapterFor(harness, env, needs: AdapterNeeds)` gives an `AgentAdapter` (`check`, `open`) for a `SessionSpec`, driven by `createHarnessRunner`. There the cap is the runner's `beforeRequest`, asked by `startModelProxy` under a `ProviderPolicy`; on pi it wraps the models (`capModels`) |
