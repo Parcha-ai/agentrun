@@ -91,7 +91,7 @@ test("its own container, read from /proc/self/mountinfo (the source of the /etc/
   const { ownContainerOf } = await import("../dist/box-paths.js");
   assert.equal(ownContainerOf(mountinfo(ID)), ID);
   assert.equal(ownContainerOf("22 1 259:1 / / rw,relatime shared:1 - ext4 /dev/root rw\n"), undefined, "a host");
-  assert.equal(ownContainerOf(`1 1 259:1 /var/lib/docker/containers/${ID}/hostname /srv/hostname rw - ext4 /dev/root rw\n`), undefined, "only its own /etc/hostname counts");
+  assert.equal(ownContainerOf(`1 1 259:1 /var/lib/docker/containers/${ID}/hostname /opt/hostname rw - ext4 /dev/root rw\n`), undefined, "only its own /etc/hostname counts");
 });
 test("where the daemon has the data directory: the read-write named volume of its container that holds it, on Docker Engine 26+; any other layout is compose's one way in, an older engine says so", async () => {
   const { pathsOf, IN_COMPOSE, OLD_ENGINE } = await import("../dist/box-paths.js");
@@ -158,7 +158,7 @@ test("the server in a container that this Docker does not have, its data not on 
     [{ marks: { "docker-api": "1.44\n" } }, "Docker Engine <26 can't mount a named volume's subpath: upgrade to Docker 26+"],
   ]) {
     const data = await dataDir(t);
-    const mounts = given.bind ? [{ Type: "bind", Source: "/srv/agentrun", Destination: data, RW: true }] : [{ Type: "volume", Name: "v", Source: "/var/lib/docker/volumes/v/_data", Destination: data, RW: true }];
+    const mounts = given.bind ? [{ Type: "bind", Source: "/opt/agentrun-data", Destination: data, RW: true }] : [{ Type: "volume", Name: "v", Source: "/var/lib/docker/volumes/v/_data", Destination: data, RW: true }];
     const fake = await containerDocker(t, { mounts, volumes: { v: data }, ...given });
     // The bind case names its mountinfo as a server under test in a container does: in the process's environment.
     if (given.bind) withEnv(t, { AGENTRUN_SERVE_FAUX_MOUNTINFO: fake.mountinfo });
