@@ -135,9 +135,9 @@ export const MAX_LISTING_BYTES = 64 * 1024 * 1024;
  */
 export type Pipe = { readonly kind: "stream" } | { readonly kind: "files"; readonly chunkBytes?: number };
 
-export const decoder = new TextDecoder();
+const decoder = new TextDecoder();
 const strict = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
-export const encoder = new TextEncoder();
+const encoder = new TextEncoder();
 
 /** A path's bytes as a string, with each byte that is not part of a UTF-8 character kept as U+DC00 plus the byte. */
 export function decodePath(bytes: Uint8Array): string {

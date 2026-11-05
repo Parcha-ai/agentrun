@@ -13,9 +13,7 @@ import {
 	DEFAULT_CALL_TIMEOUT_MS,
 	DEFAULT_STALL_MS,
 	decodePath,
-	decoder,
 	encodePath,
-	encoder,
 	exitOnce,
 	filesSink,
 	filesSource,
@@ -57,6 +55,10 @@ export {
 	type WorkspaceOptions,
 } from "../sync/transfer.ts";
 
+// Its own text codecs, as `../sync/transfer.ts` keeps its own: an exported one would put node's `util` types in the
+// built declarations.
+const decoder = new TextDecoder();
+const encoder = new TextEncoder();
 const HASH_SCRIPT = 'cd -- "$1" || exit 3; exec xargs -0 -r sha256sum -z --';
 const PACK_SCRIPT = `cd -- "$1" || exit 3; exec ${TAR_CREATE}`;
 const PACK_FILES_SCRIPT = packFilesScript(TAR_CREATE);
