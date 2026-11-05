@@ -35,19 +35,25 @@ const HAS_PROC = existsSync("/proc/self/environ");
 
 /**
  * Runs detached from the host and ends the box when its lifetime has passed: `$1` seconds, `$2` the box's directory,
- * `$3` the marker its programs carry. A box that was destroyed first has no record left, and the script does nothing.
+ * `$3` the marker its programs carry, `$4` the process group of the host that made the box, which it never ends. A box that was destroyed first has no record left, and the script does nothing.
  * It ends the recorded programs whose start time still matches, then every process that carries the marker, then every
  * process working in a directory inside the box's, with its process group.
  */
 const WATCHDOG_SCRIPT = `sleep "$1" || exit 0
 [ -f "$2/${RECORD_FILE}" ] || exit 0
+# end_group <group> <host's group>: ends the group unless it is 1 or less, this watchdog's own, or the host's ($4, the
+# group of the process that made the box).
+end_group() {
+	[ -n "$1" ] && [ "$1" -gt 1 ] 2>/dev/null && [ "$1" != "$2" ] && [ "$1" != "$$" ] && kill -KILL "-$1" 2>/dev/null
+}
+group_of() { sed 's/.*) //' "/proc/$1/stat" 2>/dev/null | cut -d' ' -f3; }
 chmod u+rwx -- "$2" "$2/pids" 2>/dev/null
 rm -f -- "$2/${RECORD_FILE}"
 for file in "$2"/pids/*; do
 	[ -f "$file" ] || continue
 	pid=\${file##*/}
 	started=$(sed 's/.*) //' "/proc/$pid/stat" 2>/dev/null | cut -d' ' -f20)
-	[ -n "$started" ] && [ "$started" = "$(cat "$file")" ] && kill -KILL "-$pid" 2>/dev/null
+	[ -n "$started" ] && [ "$started" = "$(cat "$file")" ] && end_group "$pid" "$4"
 done
 round=0
 while [ "$round" -lt ${KILL_ROUNDS} ]; do
@@ -67,8 +73,7 @@ for pid in $(ls -l /proc/[0-9]*/cwd 2>/dev/null | awk -v d="$2" -v self="$$" '{
 	name = substr($0, 1, at - 1); sub(/.*\\/proc\\//, "", name); sub(/\\/cwd$/, "", name)
 	if (name != self) print name
 }'); do
-	group=$(sed 's/.*) //' "/proc/$pid/stat" 2>/dev/null | cut -d' ' -f3)
-	[ -n "$group" ] && [ "$group" -gt 1 ] && kill -KILL "-$group" 2>/dev/null
+	end_group "$(group_of "$pid")" "$4"
 	kill -KILL "$pid" 2>/dev/null
 done
 rm -rf -- "$2" 2>/dev/null || { chmod -R u+rwX -- "$2" 2>/dev/null; rm -rf -- "$2"; }`;
@@ -548,11 +553,15 @@ export function localBoxes(options: LocalBoxesOptions): BoxProvider {
 			}
 			const seconds = (spec.maxLifetimeMs / 1000).toFixed(3);
 			const shell = options.shell ?? "sh";
-			const watchdog = spawn(shell, ["-c", WATCHDOG_SCRIPT, "sh", seconds, directory, `${BOX_MARKER}=${id}`], {
-				env: { PATH: DEFAULT_PATH, [WATCHDOG_MARKER]: id },
-				stdio: "ignore",
-				detached: true,
-			});
+			const watchdog = spawn(
+				shell,
+				["-c", WATCHDOG_SCRIPT, "sh", seconds, directory, `${BOX_MARKER}=${id}`, String(OWN_GROUP ?? 0)],
+				{
+					env: { PATH: DEFAULT_PATH, [WATCHDOG_MARKER]: id },
+					stdio: "ignore",
+					detached: true,
+				},
+			);
 			const failure = await new Promise<Error | undefined>((resolve) => {
 				watchdog.once("spawn", () => resolve(undefined));
 				watchdog.once("error", resolve);
