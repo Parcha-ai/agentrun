@@ -39,6 +39,7 @@ import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
 import { answerPage, byOwnerSession, isJson, ownerCookie, ownOrigin, signedIn } from "./page.js";
 import { durationMs, logLine } from "./print.js";
 import { type CarryBackRetry, type Run, Runs, STATUSES, type Status, statusOf, toolCostOf } from "./runs.js";
+import { runLines } from "./usage-lines.js";
 import { BOX_QUARANTINE, type BoxHost, Quarantine } from "./box/sweep.js";
 import { type BoxOffer, boxesLog, boxRegistry, daytonaApi, enabledBoxes } from "./boxes.js";
 import { type DockerNetwork, FAUX_EGRESS_ENV, sweepEgressDirs } from "./box-egress.js";
@@ -1331,25 +1332,12 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       // `tokens`, all from the same records: a live run's rows (a call still marked is no charge), else its store as it
       // ended (a call a crash cut makes `tools` unknown, never `tokens`). An unknown meter counts the run as unpriced on it.
       const meters = group !== "meter" || usd === 0 ? undefined : live ? { tools: toolCostOf(live.rows), tokens: null, browser: { usd: toolCostOf(live.rows, "browser"), seconds: null }, others: toolCostOf(live.rows.filter((r) => r.tool_name !== "browser")) } : metersOf(row);
-      const tokens = meters && (usd !== null && meters.tools !== null ? usd - meters.tools : usd === null && meters.tools === null ? meters.tokens : null);
-      // The known part of a line whose run's cost is unknown: what the run spent so far beside its known other lines.
-      const knownTokens = meters && tokens === null ? Math.max(0, soFar - (meters.browser.usd ?? 0) - (meters.others ?? 0)) : 0;
-      // Each apart, an unknown one unknown (unpriced on its own line), never $0 nor the other's.
-      const browser = meters ? meters.browser.usd : 0;
-      const tools = meters?.others;
-      const parts: [string, number | null][] = !meters ? [[key, usd]] : [[key, tokens ?? null], ...(tools !== 0 ? [["tools", tools ?? null] as [string, number | null]] : []), ...(browser !== 0 ? [["browser_time", browser] as [string, number | null]] : [])];
-      if (meters && browser !== 0) browserSeconds = browserSeconds === null || meters.browser.seconds === null ? null : browserSeconds + meters.browser.seconds;
-      // A run whose cost is unknown adds no dollars, so no sum turns unknown; it is counted as unpriced instead, so it
-      // never passes as $0.
-      for (const [name, part] of parts) {
-        const line = lines.get(name) ?? lines.set(name, { usd: 0, unpriced: 0 }).get(name)!;
-        if (part !== null) line.usd += part;
-        else {
-          line.unpriced++;
-          // Its known dollars: the whole of what it spent so far on a line of its own (by agent, by day), else the part
-          // beside its known meters on tokens.
-          line.usd += meters ? (name === key ? knownTokens : 0) : soFar;
-        }
+      if (meters && meters.browser.usd !== 0) browserSeconds = browserSeconds === null || meters.browser.seconds === null ? null : browserSeconds + meters.browser.seconds;
+      // Its parts of the lines (usage-lines.ts): an unknown one counts the run unpriced there and adds what is known of it.
+      for (const part of runLines({ usd, soFar, key, meters })) {
+        const line = lines.get(part.name) ?? lines.set(part.name, { usd: 0, unpriced: 0 }).get(part.name)!;
+        line.usd += part.usd;
+        if (part.unpriced) line.unpriced++;
       }
       if (usd === null) total.unpriced++;
       total.usd += usd ?? soFar;
