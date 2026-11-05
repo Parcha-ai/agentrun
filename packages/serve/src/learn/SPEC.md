@@ -70,7 +70,8 @@ name: the tools its definition grants that a workflow's call node runs on this s
 (`Bash`, `exec_command`, `apply_patch`) is never on it. A model node that names any tool is refused: a learned
 workflow's model node runs without tools. So is a node the learned runner cannot run: a learned workflow runs model
 and tool-call nodes, and a judge, pick or sift node (or a route by question, a verify, an ask) needs a decision provider a
-run is not given. With no list, a draft that names any tool is refused. A draft
+run is not given. So is an agent node that asks more than the learned runner's 8 turns, or `context: "fork"` (each node
+starts a fresh session). With no list, a draft that names any tool is refused. A draft
 holds no node that runs code: no `code` node, and no call `via: "shell"` or `via: "executor"`.
 
 ## The index

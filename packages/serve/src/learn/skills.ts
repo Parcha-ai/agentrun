@@ -202,11 +202,16 @@ export const LEARNED_NODES = "a learned workflow runs model and tool-call nodes"
  *  that asks for more is refused at learn time and before a call, never when it comes up after earlier nodes spent. */
 export const LEARNED_MAX_TURNS = 8;
 
-/** A draft's agent nodes that ask more turns than LEARNED_MAX_TURNS. */
+/** A draft's agent nodes that ask what the learned runner refuses when the node comes up (the pi runner's request-time
+ *  checks, with the options learned-workflow.ts hands it; learn-runner-parity.test.mjs holds the two together): more
+ *  turns than LEARNED_MAX_TURNS, or `context: "fork"` (every node starts a fresh session, with no transcript to fork). */
 const longNodes = (dsl: DraftReader, doc: unknown): DraftProblem[] =>
   dsl.inspectWorkflow(doc).nodes.flatMap((node) => {
-    const turns = (at(doc, node.path) as { max_turns?: unknown } | undefined)?.max_turns;
-    return typeof turns === "number" && turns > LEARNED_MAX_TURNS ? [{ rule: "workflow" as const, detail: `the agent node at ${node.path} asks max_turns ${turns}: a learned workflow's model node runs at most ${LEARNED_MAX_TURNS} turns` }] : [];
+    const fields = (at(doc, node.path) as { max_turns?: unknown; context?: unknown } | undefined) ?? {};
+    const out: DraftProblem[] = [];
+    if (typeof fields.max_turns === "number" && fields.max_turns > LEARNED_MAX_TURNS) out.push({ rule: "workflow", detail: `the agent node at ${node.path} asks max_turns ${fields.max_turns}: a learned workflow's model node runs at most ${LEARNED_MAX_TURNS} turns` });
+    if (fields.context === "fork") out.push({ rule: "workflow", detail: `the agent node at ${node.path} asks context fork: a learned workflow's model node starts a fresh session` });
+    return out;
   });
 
 /** The node the learned runner cannot run, as the DSL's own check says it (assertWorkflowCapabilities, which runWorkflow
