@@ -2184,7 +2184,7 @@ export class Runs {
     run.submitted++;
     this.refresh(run);
     try {
-      await this.submit(run, content, mode === "steer" ? "steer" : "followUp", messageId, undefined, this.messageOrigin?.(run.id, content), answers);
+      await this.submit(run, content, mode === "steer" ? "steer" : "followUp", messageId, undefined, answers ? this.messageOrigin?.(run.id, content) : undefined, answers);
     } catch (error) {
       run.submitted = Math.max(0, run.submitted - 1);
       this.refresh(run);

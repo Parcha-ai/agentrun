@@ -285,6 +285,8 @@ export async function serveRun(options: ServeOptions = {}): Promise<RunServer> {
     if (answers !== undefined && answers !== false) throw new HttpError(400, "BAD_REQUEST", "answers is false, or absent");
     if (asks !== undefined && !(Array.isArray(asks) && asks.every((name) => typeof name === "string"))) throw new HttpError(400, "BAD_REQUEST", "asks is a list of tool names");
     const guarded = answers === false;
+    // A guarded input could be refused after its origin's entry is queued (a busy run): the server's messages carry none.
+    if (guarded && origin !== undefined) throw new HttpError(400, "BAD_REQUEST", "an input with answers false takes no origin");
     if (typeof requestId !== "string" || !REQUEST_ID.test(requestId)) throw new HttpError(400, "BAD_REQUEST", "requestId must be 1 to 200 printable ASCII characters");
     if (typeof content !== "string" && !Array.isArray(content)) throw new HttpError(400, "BAD_REQUEST", "content must be a string or an array of content blocks");
     if (whenBusy !== undefined && whenBusy !== "steer" && whenBusy !== "followUp" && whenBusy !== "reject") throw new HttpError(400, "BAD_REQUEST", "whenBusy is steer, followUp or reject");
