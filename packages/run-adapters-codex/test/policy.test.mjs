@@ -714,15 +714,21 @@ test("the content a Responses stream shows, as the policy reads each event: answ
   );
 });
 
-test("the #1592 walk on codex: a request at $100 a million output tokens under a $0.50 cap, stopped after 1,146 characters of answer text in the Responses API's own framing, counts that text and the allowance, not its whole hold, and the next request ('Go on.') is admitted", async () => {
-  // As the provider frames each piece: its sequence number, item id, indexes, logprobs and obfuscation, around a few
-  // characters of text; about 11.7 wire bytes a character.
-  const text = 'The quarterly figures reconcile once the deferred revenue moves into the period it was earned in. '.repeat(12).slice(0, 1_146);
+/** The #1592 walk on codex, as the provider streams it: a response.created and a response.in_progress that each echo the
+ *  request (its instructions and tool definitions, several kB), then answer text a few characters a delta in the
+ *  Responses API's own framing (sequence number, item id, indexes, logprobs, obfuscation), then the person's stop. The
+ *  cap holds the request at what is left (5,000 tokens of output here), counts the stop at what it streamed plus 1,024
+ *  tokens, and refuses the next request unless 1,024 tokens fit. */
+async function codexWalk({ perMillion, cap, chars }) {
+  const tools = Array.from({ length: 6 }, (_, i) => ({ type: 'function', name: `tool_${i}`, description: `Tool ${i}: ${'reads a page of the ledger and returns its rows with their dates and amounts. '.repeat(12)}`, parameters: { type: 'object', properties: { path: { type: 'string' }, page: { type: 'number' } }, required: ['path'] } }));
+  const echoed = { id: 'resp_1', object: 'response', status: 'in_progress', model: 'session-model', instructions: 'You are a careful bookkeeper. '.repeat(20), tools, reasoning: { effort: 'none' }, output: [], usage: null };
+  const text = 'The quarterly figures reconcile once the deferred revenue moves into the period it was earned in. '.repeat(14).slice(0, chars);
   let seq = 0;
-  const piece = (delta) => `event: response.output_text.delta\ndata: ${JSON.stringify({ type: 'response.output_text.delta', sequence_number: seq++, item_id: 'msg_0a1b2c3d4e5f60718293a4b5c6d7e8f9', output_index: 1, content_index: 0, delta, logprobs: [], obfuscation: 'Xk3a9QwEr' })}\n\n`;
-  const stream = `event: response.created\ndata: ${JSON.stringify({ type: 'response.created', sequence_number: seq++, response: { id: 'resp_1' } })}\n\n`
-    + Array.from({ length: Math.ceil(text.length / 3) }, (_, i) => piece(text.slice(i * 3, i * 3 + 3))).join('');
-  assert.ok(Buffer.byteLength(stream) > 10 * text.length, `setup: the wire is the provider's framing, ${Buffer.byteLength(stream)} bytes for ${text.length} characters`);
+  const event = (type, extra) => `event: ${type}\ndata: ${JSON.stringify({ type, sequence_number: seq++, ...extra })}\n\n`;
+  const stream = event('response.created', { response: echoed }) + event('response.in_progress', { response: echoed })
+    + event('response.output_item.added', { output_index: 1, item: { id: 'msg_0a1b2c3d4e5f60718293a4b5c6d7e8f9', type: 'message', status: 'in_progress', content: [], role: 'assistant' } })
+    + event('response.content_part.added', { item_id: 'msg_0a1b2c3d4e5f60718293a4b5c6d7e8f9', output_index: 1, content_index: 0, part: { type: 'output_text', annotations: [], logprobs: [], text: '' } })
+    + Array.from({ length: Math.ceil(text.length / 3) }, (_, i) => event('response.output_text.delta', { item_id: 'msg_0a1b2c3d4e5f60718293a4b5c6d7e8f9', output_index: 1, content_index: 0, delta: text.slice(i * 3, i * 3 + 3), logprobs: [], obfuscation: 'Xk3a9QwEr' })).join('');
   const reports = [];
   let reported;
   const done = new Promise((resolve) => (reported = resolve));
@@ -742,7 +748,7 @@ test("the #1592 walk on codex: a request at $100 a million output tokens under a
     const { hostname, port } = new URL(p.url);
     const req = request({ host: hostname, port, method: 'POST', path: '/v1/responses', headers: { 'content-type': 'application/json', authorization: `Bearer ${KEY}`, accept: 'text/event-stream' } }, (res) => {
       let read = 0;
-      // The person stops 6.3 s in, once these 1,146 characters have reached the harness.
+      // The person stops once these characters have reached the harness.
       res.on('data', (chunk) => { read += chunk.length; if (read >= Buffer.byteLength(stream)) { req.destroy(); resolve(); } });
       res.on('error', resolve);
       res.on('close', resolve);
@@ -752,10 +758,7 @@ test("the #1592 walk on codex: a request at $100 a million output tokens under a
   });
   await done;
   const [booked] = reports;
-  // The cap as serve keeps it: $100 a million output, input free, a $0.50 cap; a request is held at what is left (here
-  // 5,000 tokens, $0.50), counts a stop at what streamed plus 1,024 tokens, and the next is refused unless 1,024 tokens fit.
-  const cap = 0.5;
-  const price = (tokens) => tokens * 100 / 1e6;
+  const price = (tokens) => tokens * perMillion / 1e6;
   const stoppedUsd = (tokens) => price(Math.min(5_000, tokens + 1_024));
   const store = (await import('@parcha/agentrun-kernel/testing')).memorySessionStore();
   const booking = await modelPortFor(await store.open('chat:walk'), { key: 'chat:walk', beforeRequest: (r) => (r.spentUsd === null || r.spentUsd + price(1_024) > cap ? { refuse: 'spend_cap_reached' } : { holdUsd: cap - r.spentUsd, stoppedUsd }) });
@@ -763,9 +766,16 @@ test("the #1592 walk on codex: a request at $100 a million output tokens under a
   await booking.models.afterRequest(booked);
   const nano = (usd) => Math.round(usd * 1e9) / 1e9;
   const goOn = await booking.models.beforeRequest({ model: 'session-model' }).then(() => 'admitted', (error) => `refused: ${error?.message ?? error}`);
-  assert.deepEqual(
-    { streamed: booked.stoppedAfterBytes, counted: nano(booking.spentUsd()), goOn },
-    { streamed: Buffer.byteLength(text), counted: nano(stoppedUsd(Buffer.byteLength(text))), goOn: 'admitted' },
-    'the text it showed and the allowance, $0.217 of the $0.50 cap, and "Go on." goes',
-  );
+  return { wire: Buffer.byteLength(stream), text: Buffer.byteLength(text), seen: { streamed: booked.stoppedAfterBytes, counted: nano(booking.spentUsd()), goOn }, want: { streamed: Buffer.byteLength(text), counted: nano(stoppedUsd(Buffer.byteLength(text))), goOn: 'admitted' } };
+}
+
+test("the #1592 walk on codex: a request at $100 a million output tokens under a $0.50 cap, stopped after 1,146 characters of answer text after the stream's echo of the request, counts that text and the allowance, not its whole hold, and the next request ('Go on.') is admitted", async () => {
+  const run = await codexWalk({ perMillion: 100, cap: 0.5, chars: 1_146 });
+  assert.ok(run.wire > 10 * run.text, `setup: the wire is the provider's framing and echo, ${run.wire} bytes for ${run.text} of text`);
+  assert.deepEqual(run.seen, run.want, 'the text it showed and the allowance, $0.217 of the $0.50 cap, and "Go on." goes');
+});
+
+test("the #1592 walk on codex at a catalog price: $10 a million output tokens under a $0.05 cap, stopped after 1,170 characters after the echo, counts that text and the allowance, far below its hold, and 'Go on.' is admitted", async () => {
+  const run = await codexWalk({ perMillion: 10, cap: 0.05, chars: 1_170 });
+  assert.deepEqual(run.seen, run.want, 'the text and the allowance, $0.02194 of the $0.05 cap, and "Go on." goes');
 });

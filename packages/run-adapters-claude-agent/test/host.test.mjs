@@ -800,14 +800,18 @@ test("the content a Messages stream shows, as the policy reads each event: text,
   );
 });
 
-test("the #1592 walk on claude-agent: a request at $100 a million output tokens under a $0.50 cap, stopped after 1,146 characters of answer text in the Messages API's own framing, counts that text and the allowance, not its whole hold, and the next request ('Go on.') is admitted", async () => {
+/** The #1592 walk on claude-agent, as the provider streams it: a message_start (the message's id, model and usage), a
+ *  content block's start and a ping, then answer text a few characters a delta in the Messages API's own framing, then
+ *  the person's stop. The cap holds the request at what is left (5,000 tokens of output here), counts the stop at what it
+ *  streamed plus 1,024 tokens, and refuses the next request unless 1,024 tokens fit. */
+async function claudeWalk({ perMillion, cap, chars }) {
   const writer = anthropicPolicy({ model: 'claude-main', tools: [], maxOutputTokens: 32_000 });
-  const text = 'The quarterly figures reconcile once the deferred revenue moves into the period it was earned in. '.repeat(12).slice(0, 1_146);
+  const text = 'The quarterly figures reconcile once the deferred revenue moves into the period it was earned in. '.repeat(14).slice(0, chars);
   const sse = (type, extra) => `event: ${type}\ndata: ${JSON.stringify({ type, ...extra })}\n\n`;
-  const stream = sse('message_start', { message: { id: 'msg_w', type: 'message', role: 'assistant', model: 'claude-main', content: [], usage: { input_tokens: 10, output_tokens: 1 } } })
+  const stream = sse('message_start', { message: { id: 'msg_01XFDUDYJgAACzvnptvVoYEL', type: 'message', role: 'assistant', model: 'claude-main', content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 2_120, cache_creation_input_tokens: 0, cache_read_input_tokens: 18_204, output_tokens: 1, service_tier: 'standard' } } })
     + sse('content_block_start', { index: 0, content_block: { type: 'text', text: '' } })
+    + sse('ping', {})
     + Array.from({ length: Math.ceil(text.length / 3) }, (_, i) => sse('content_block_delta', { index: 0, delta: { type: 'text_delta', text: text.slice(i * 3, i * 3 + 3) } })).join('');
-  assert.ok(Buffer.byteLength(stream) > 20 * text.length, `setup: the wire is the provider's framing, ${Buffer.byteLength(stream)} bytes for ${text.length} characters`);
   const streaming = async (_url, init) => new Response(new ReadableStream({
     start(controller) {
       controller.enqueue(new TextEncoder().encode(stream));
@@ -833,8 +837,7 @@ test("the #1592 walk on claude-agent: a request at $100 a million output tokens 
   } finally {
     await proxy.close();
   }
-  const cap = 0.5;
-  const price = (tokens) => tokens * 100 / 1e6;
+  const price = (tokens) => tokens * perMillion / 1e6;
   const stoppedUsd = (tokens) => price(Math.min(5_000, tokens + 1_024));
   const store = memorySessionStore();
   const booking = await modelPortFor(await store.open('chat:walk'), { key: 'chat:walk', beforeRequest: (r) => (r.spentUsd === null || r.spentUsd + price(1_024) > cap ? { refuse: 'spend_cap_reached' } : { holdUsd: cap - r.spentUsd, stoppedUsd }) });
@@ -842,9 +845,16 @@ test("the #1592 walk on claude-agent: a request at $100 a million output tokens 
   await booking.models.afterRequest(booked);
   const nano = (usd) => Math.round(usd * 1e9) / 1e9;
   const goOn = await booking.models.beforeRequest({ model: 'claude-main' }).then(() => 'admitted', (error) => `refused: ${error?.message ?? error}`);
-  assert.deepEqual(
-    { streamed: booked.stoppedAfterBytes, counted: nano(booking.spentUsd()), goOn },
-    { streamed: Buffer.byteLength(text), counted: nano(stoppedUsd(Buffer.byteLength(text))), goOn: 'admitted' },
-    'the text it showed and the allowance, $0.217 of the $0.50 cap, and "Go on." goes',
-  );
+  return { wire: Buffer.byteLength(stream), text: Buffer.byteLength(text), seen: { streamed: booked.stoppedAfterBytes, counted: nano(booking.spentUsd()), goOn }, want: { streamed: Buffer.byteLength(text), counted: nano(stoppedUsd(Buffer.byteLength(text))), goOn: 'admitted' } };
+}
+
+test("the #1592 walk on claude-agent: a request at $100 a million output tokens under a $0.50 cap, stopped after 1,146 characters of answer text in the Messages API's own framing, counts that text and the allowance, not its whole hold, and the next request ('Go on.') is admitted", async () => {
+  const run = await claudeWalk({ perMillion: 100, cap: 0.5, chars: 1_146 });
+  assert.ok(run.wire > 20 * run.text, `setup: the wire is the provider's framing, ${run.wire} bytes for ${run.text} of text`);
+  assert.deepEqual(run.seen, run.want, 'the text it showed and the allowance, $0.217 of the $0.50 cap, and "Go on." goes');
+});
+
+test("the #1592 walk on claude-agent at a catalog price: $15 a million output tokens under a $0.075 cap, stopped after 1,170 characters, counts that text and the allowance, far below its hold, and 'Go on.' is admitted", async () => {
+  const run = await claudeWalk({ perMillion: 15, cap: 0.075, chars: 1_170 });
+  assert.deepEqual(run.seen, run.want, 'the text and the allowance, about $0.033 of the $0.075 cap, and "Go on." goes');
 });
