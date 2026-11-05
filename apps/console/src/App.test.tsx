@@ -54,6 +54,9 @@ describe("route", () => {
 // A server without GET /v2/stats (or one that fails it) says so on the page, never a "Loading..." that never ends.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let root: ReturnType<typeof createRoot> | undefined;
+// The Playground's pickers watch their field's size; jsdom has no ResizeObserver (not a stub: the tests' own globals
+// are unstubbed after each).
+globalThis.ResizeObserver ??= class { observe() {} unobserve() {} disconnect() {} } as unknown as typeof ResizeObserver;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; vi.unstubAllGlobals(); location.hash = ""; });
 
 describe("App, Mission Control when the stats can't be read", () => {
@@ -445,9 +448,14 @@ describe("App, the agents' names", () => {
     await until(() => location.hash === `#/agents/${encodeURIComponent(made.agent_id)}`);
     // Straight to the Playground, as a person tries a new agent: it is offered there, picked, and run.
     await act(async () => { location.hash = "#/playground"; });
-    const pick = () => host.querySelector<HTMLSelectElement>("select");
-    await until(() => [...(pick()?.options ?? [])].some((o) => o.value === made.agent_id));
-    await act(async () => { const s = pick()!; Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(s, made.agent_id); s.dispatchEvent(new Event("change", { bubbles: true })); });
+    // The Agent picker: opened, the agent made here is among its options, and picked.
+    const pick = () => host.querySelector<HTMLButtonElement>('button[aria-haspopup="listbox"][aria-label="Agent"]');
+    await until(() => !!pick());
+    await act(async () => { pick()!.click(); });
+    const option = () => [...document.querySelectorAll('[role="listbox"] [role="option"]')].find((o) => o.textContent === made.definition.name) as HTMLElement | undefined;
+    await until(() => !!option());
+    await act(async () => { option()!.click(); });
+    await until(() => !!pick()?.textContent?.includes(made.definition.name!));
     await type(host.querySelector<HTMLTextAreaElement>("textarea")!, "Check the 2.3.0 entry.");
     await act(async () => { button(/send request/i)!.click(); });
     // The run panel's breadcrumb names the agent, as the run's page does.
