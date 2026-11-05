@@ -1184,7 +1184,8 @@ completed run's line carry its final answer, redacted, cut to 3,000 characters a
 links nowhere in Slack; the trigger is read as it is when the run ends. Lines
 wait in `DIR/slack-outbox.json` and are tried again on the webhook's schedule until Slack takes them; a post whose answer
 never came is tried again, so it can show twice. A bot token Slack refuses turns posting off until the app is set again.
-An import cuts the Slack secrets out of what it keeps, and no learning text shows them.
+An import cuts the Slack secrets out of what it keeps; a learned note holding one is refused, and no run's answer, post
+or learning text shows them.
 
 ### GitHub triggers
 

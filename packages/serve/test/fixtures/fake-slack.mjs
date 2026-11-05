@@ -1,6 +1,6 @@
 // A fake of Slack's Web API on loopback, for the Slack trigger's tests: auth.test names the example workspace and bot
 // user for the one bot token it knows; chat.postMessage keeps each post and answers it taken, unless the test queued
-// another answer for the next ones (`answers`).
+// another answer for the next ones (`answers`), which may be held until the test lets it go (`hold`, a promise).
 import { createServer } from "node:http";
 
 export const SLACK_TEAM = "T0EXAMPLE1";
@@ -10,12 +10,12 @@ export const SLACK_BOT_TOKEN = "not-a-secret-bot-token";
 
 export async function fakeSlack(t) {
   const posts = [];
-  /** Answers for the next chat.postMessage calls, in order: `{status?, body?, headers?}`. */
+  /** Answers for the next chat.postMessage calls, in order: `{status?, body?, headers?, hold?}`. */
   const answers = [];
   const server = createServer((req, res) => {
     const chunks = [];
     req.on("data", (chunk) => chunks.push(chunk));
-    req.on("end", () => {
+    req.on("end", async () => {
       const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
       const known = req.headers.authorization === `Bearer ${SLACK_BOT_TOKEN}`;
       const reply = (status, json, headers = {}) => void res.writeHead(status, { "content-type": "application/json", ...headers }).end(JSON.stringify(json));
@@ -23,6 +23,7 @@ export async function fakeSlack(t) {
       if (req.url !== "/api/chat.postMessage") return reply(404, { ok: false, error: "unknown_method" });
       posts.push({ authorized: known, body });
       const next = answers.shift();
+      if (next?.hold) await next.hold;
       if (next) return reply(next.status ?? 200, next.body ?? { ok: true }, next.headers);
       return reply(200, known ? { ok: true, channel: body.channel, ts: `${(Date.now() / 1000).toFixed(6)}` } : { ok: false, error: "invalid_auth" });
     });

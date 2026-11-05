@@ -23,6 +23,8 @@ export const SLACK_TOLERANCE_S = 300;
 /** The most of a run's answer a thread is posted, when its trigger asks for the answer (its source's `post_answer`). */
 export const ANSWER_POSTED_CHARS = 3_000;
 const TIMEOUT_MS = 15_000;
+/** How soon an outbox write that failed is tried again: until it is kept, the next server could post a taken line again. */
+const WRITE_RETRY_MS = 5_000;
 /** A ledger entry is dropped this long after it was last written: its thread is gone from the trigger by then. */
 const LEDGER_KEPT_MS = 30 * 86_400_000;
 const AUTH_GONE = new Set(["invalid_auth", "not_authed", "token_revoked", "token_expired", "account_inactive"]);
@@ -140,6 +142,9 @@ export class Slack {
   private readonly timers = new Set<NodeJS.Timeout>();
   private readonly stop = new AbortController();
   private closed = false;
+  /** The outbox in memory differs from the one on disk: its last write failed, and is tried again (WRITE_RETRY_MS). */
+  private unsaved = false;
+  private rewrite: NodeJS.Timeout | undefined;
 
   /** `api`: Slack's Web API (a test's fake); `retryMs`: the waits between tries of a post. */
   constructor(data: string, env: NodeJS.ProcessEnv, private readonly say: (fields: Record<string, string | number>) => void, private readonly api = SLACK_API, private readonly retryMs: readonly number[] = RETRY_MS) {
@@ -160,6 +165,8 @@ export class Slack {
   }
 
   close(): void {
+    // What it holds, written once more as it stops: a line Slack took and a write that failed would be posted again.
+    if (this.unsaved) this.write();
     this.closed = true;
     this.stop.abort();
     for (const timer of this.timers) clearTimeout(timer);
@@ -202,7 +209,8 @@ export class Slack {
   }
 
   /** The signing secret and who this app is, to check a request by; undefined when Slack is not set here (or its secret
-   *  does not open). */
+   *  does not open). Posting turned off (`disabled`, its bot token refused) leaves it: a request signed by the saved
+   *  secret is Slack's, which a refused bot token does not change, so its run starts and its line waits for a save. */
   checker(): { signing_secret: string; team_id: string; bot_user_id: string; app_id?: string } | undefined {
     const settings = this.settings();
     const opened = settings && this.opened(settings);
@@ -236,9 +244,10 @@ export class Slack {
     this.write();
   }
 
-  /** Whether `run`'s end was told its thread already: a start's catch-up queues one it lacks. */
-  toldEnd(runId: string): boolean {
-    return this.told[runId]?.ended !== undefined;
+  /** Whether `run`'s end at `marker` (its end time) was told its thread already: a start's catch-up queues one it lacks.
+   *  A run a thread reply opened again ends again, at another time, so an earlier end is not this one. */
+  toldEnd(runId: string, marker: string): boolean {
+    return this.told[runId]?.ended === marker;
   }
 
   private line(type: "run.needs_input" | "run.ended", run: RunNotice, answer?: string | null): string {
@@ -269,8 +278,12 @@ export class Slack {
     post.attempts += 1;
     if (answer.ok) return this.drop(post);
     if (AUTH_GONE.has(answer.error)) {
-      this.writeSettings({ ...settings, disabled: { at: new Date().toISOString(), reason: `Slack refused the bot token (${answer.error}): save the settings again` } });
-      this.say({ condition: "slack_disabled", error: answer.error });
+      // Turned off only as the settings still stand: ones deleted or saved again during the wait are never written back.
+      const now = this.settings();
+      if (now && now.updated_at === settings.updated_at && now.bot_token === settings.bot_token) {
+        this.writeSettings({ ...now, disabled: { at: new Date().toISOString(), reason: `Slack refused the bot token (${answer.error}): save the settings again` } });
+        this.say({ condition: "slack_disabled", error: answer.error });
+      }
       return this.drop(post, answer.error);
     }
     const wait = this.retryMs[post.attempts - 1];
@@ -311,9 +324,21 @@ export class Slack {
     for (const [id, told] of Object.entries(this.told)) if (Date.parse(told.at) < old) delete this.told[id];
     try {
       writeDurableSync(this.outbox, `${JSON.stringify({ v: 1, posts: this.posts, told: this.told })}\n`);
+      this.unsaved = false;
     } catch (error) {
-      // Held here: the next write carries it, and a post's own try goes on.
+      // Held here and tried again until kept (a stop writes it too): a post's own try goes on meanwhile.
+      this.unsaved = true;
       this.say({ condition: "slack_outbox_unwritable", file: this.outbox, error: (error as NodeJS.ErrnoException).code ?? "unknown" });
+      if (!this.rewrite && !this.closed) {
+        const timer = setTimeout(() => {
+          this.timers.delete(timer);
+          this.rewrite = undefined;
+          if (this.unsaved) this.write();
+        }, WRITE_RETRY_MS);
+        timer.unref();
+        this.timers.add(timer);
+        this.rewrite = timer;
+      }
     }
   }
 
