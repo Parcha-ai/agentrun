@@ -41,7 +41,7 @@ import { durationMs, logLine } from "./print.js";
 import { type CarryBackRetry, knownToolCostOf, type Run, Runs, STATUSES, type Status, statusOf, toolCostOf, WAITS_ON_A_PERSON } from "./runs.js";
 import { runLines } from "./usage-lines.js";
 import { BOX_QUARANTINE, type BoxHost, Quarantine } from "./box/sweep.js";
-import { type BoxOffer, boxesLog, boxRegistry, daytonaApi, enabledBoxes, VM_NO_LIST, VM_PROVIDER } from "./boxes.js";
+import { type BoxOffer, boxesByDefault, boxesLog, boxRegistry, daytonaApi, enabledBoxes, VM_NO_LIST, VM_PROVIDER } from "./boxes.js";
 import { type DockerNetwork, FAUX_EGRESS_ENV, sweepEgressDirs } from "./box-egress.js";
 import { boxImageOf, clearImage, type DockerImage, dockerImage, type ImageState, withImage } from "./box-image.js";
 import { startBoxRelay } from "./box-relay.js";
@@ -714,7 +714,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     if (offersFrom && inputs.length === offersFrom.length && inputs.every((value, i) => value === offersFrom![i])) recompose();
     else await probe("key");
   };
-  // The boxes AGENTRUN_BOXES lists, each probed once (boxes.ts); runs execute in Docker's (place.ts). Under --faux, a faux
+  // The boxes AGENTRUN_BOXES lists, docker when it is not set, each probed once (boxes.ts); runs execute in Docker's (place.ts). Under --faux, a faux
   // box stands in for Docker, and nothing asks Docker.
   // Under --faux, the tests' fake stands in for the VM provider's SDK (startServe's `fauxVm`), never the provider.
   const boxes = await boxRegistry(env, options.faux && options.fauxVm ? { vmSdk: () => import(pathToFileURL(resolve(options.fauxVm!)).href) as Promise<Record<string, unknown>> } : {});
@@ -2136,7 +2136,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     tokenFile,
     tokenMade: stored?.made ?? false,
     ...(setupUrl ? { setupUrl } : {}),
-    boxesLine: boxesLine(boxOffers, enabledBoxes(env), boxAllow),
+    boxesLine: boxesLine(boxOffers, enabledBoxes(env), boxAllow, boxesByDefault(env)),
     // Once: a second call, at any time, is the first one's promise, so a close repeated after the next server started
     // never writes this data root's record again (the next server's, by then).
     close: () => (stopped ??= stop()),

@@ -39,12 +39,13 @@ async function stopChild(child, exited) {
   await within(exited, 5_000);
 }
 
-/** This environment with a fresh home, no model key, and no browser. */
+/** This environment with a fresh home, no model key, no box, and no browser. */
 function bare(t) {
   const home = mkdtempSync(join(tmpdir(), "agentrun-npx-"));
   t.after(() => rmSync(home, { recursive: true, force: true }));
   const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !MODEL_KEYS.includes(name)));
-  return { home, env: { ...env, HOME: home, XDG_CONFIG_HOME: join(home, ".config"), XDG_DATA_HOME: join(home, ".local", "share"), CI: "1" } };
+  // AGENTRUN_BOXES=none: the server it starts asks no Docker (on by default when the setting is not set).
+  return { home, env: { ...env, HOME: home, XDG_CONFIG_HOME: join(home, ".config"), XDG_DATA_HOME: join(home, ".local", "share"), CI: "1", AGENTRUN_BOXES: "none" } };
 }
 
 test("demo: with no model key, the bin starts on a free loopback port and prints one line, the address the server says to open; the server has no model and the console asks for its first password", { timeout: 120_000 }, async (t) => {

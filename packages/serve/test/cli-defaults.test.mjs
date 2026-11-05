@@ -14,6 +14,9 @@ import * as host from "../dist/host.js";
 import { startServe } from "../dist/index.js";
 import * as model from "../dist/model.js";
 
+// A server here, or one the CLI starts, asks no Docker (on by default when AGENTRUN_BOXES is not set): support.mjs's rule.
+process.env.AGENTRUN_BOXES = "none";
+
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 const FAUX = new URL("./fixtures/faux-model.mjs", import.meta.url).pathname;
 
