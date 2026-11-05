@@ -233,5 +233,10 @@ export type ReconcileReport = { released: string[]; kept: string[]; lost: string
 /** A null price records the quantity unpriced. */
 export type PriceTable = { sessionUsdPerHour: number | null; sessionMinimumS: number; fetchUsd: number; fetchProxiedUsd: number; searchUsd: number };
 
+/** One charge of a session's time, as its record bills it: `seconds` and `usd` since the session's last charge, through `at`,
+ *  or, `final`, at its release, topped up to the provider's minimum. `state` says whether `usd` is a price (`priced`) or
+ *  the time went unpriced (`unpriced`, `invalid`: `usd` is 0 and is no charge). */
+export type SessionCharge = { conversationId: number; tag: string; provider: string; at: string; seconds: number; usd: number; final: boolean; state: PriceState };
+
 /** Browserbase list prices as of 2026-10-06: the Developer overage rate, one-minute minimum. */
 export const LIST_PRICES: PriceTable = Object.freeze({ sessionUsdPerHour: 0.12, sessionMinimumS: 60, fetchUsd: 0.001, fetchProxiedUsd: 0.004, searchUsd: 0.007 });

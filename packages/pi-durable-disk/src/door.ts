@@ -4,7 +4,7 @@
 // `hook.submit` at most once, across incarnations: a retry answers the record's current status. Each entry is indexed by
 // a done write submission whose requestId is the door's key, so a lookup is pi's `submissionByRequest`, not a scan.
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
-import type { ConversationId, Cursor, Tx, UserInput } from "@earendil-works/pi-durable";
+import type { ConversationId, Cursor, JsonObject, Tx, UserInput } from "@earendil-works/pi-durable";
 import type { Context } from "@earendil-works/chord";
 import { processTable } from "./process-table.ts";
 import type { DurableRun } from "./run.ts";
@@ -15,6 +15,9 @@ export interface DoorInput {
   readonly requestId: string;
   readonly content: UserInput;
   readonly whenBusy: "steer" | "followUp" | "reject";
+  /** Who wrote it, when the person did not (`{ kind: "server", reason }`): the hook writes it on the input's user entry,
+   *  which the Timeline shows as the server's. Absent: the person's own message. */
+  readonly origin?: JsonObject;
 }
 
 export type DoorEvent = { readonly type: "run_start" } | { readonly type: "run_end" };
