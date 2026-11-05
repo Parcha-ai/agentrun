@@ -148,6 +148,18 @@ test("two ask calls entered at once, as pi runs a turn's calls in parallel: exac
   assert.deepEqual(written.filter((entry) => entry.kind).map((entry) => entry.data.call_id), ["c1"], "one request in the run's store");
 });
 
+test("the reflect carve-out holds only where the gate checks the path the tool writes: in a box that does not bind this machine's work/ (a remote box), a reflect turn's write in .learning/ asks like any write; on this machine's work/ it runs", async (t) => {
+  const [root, work, data] = [await scratch(t), await scratch(t), await scratch(t)];
+  await mkdir(join(work, ".learning"), { recursive: true });
+  await writeFile(join(root, TURN_ORIGIN_FILE), JSON.stringify({ origin: "reflect" }));
+  const park = { commit: async (change) => change({ appendEntry: async () => undefined }), parked: () => undefined };
+  // A remote box's .learning/ is not this machine's: a link made in it is never seen here, so nothing here can clear it.
+  const remote = new RunGate({ root, work, data, runId: "r1", learningAt: async () => false }, { write: { permission: "ask" } });
+  assert.equal((await remote.enter("write", { path: ".learning/notes.md", content: "x" }, "c1", park))?.parked, true, "a remote box: the write asks");
+  const here = new RunGate({ root, work, data, runId: "r2", learningAt: async () => true }, { write: { permission: "ask" } });
+  assert.equal(await here.enter("write", { path: ".learning/notes.md", content: "x" }, "c2", park), undefined, "this machine's work/ (the runner, or a box that binds it): it runs");
+});
+
 test("capabilities and an agent's tools show each tool's permission, its default and where it came from; a catalog tool asks by default; an MCP server's wildcard is kept; settings refuse a permission not offered", async (t) => {
   withEnv(t, { AGENT_MODEL: "anthropic/claude-sonnet-5-5" }, ["PARALLEL_API_KEY", "AGENT_MODEL_BASE_URL"]);
   const { api } = await serve(t);
