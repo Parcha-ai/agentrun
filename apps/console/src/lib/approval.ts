@@ -30,8 +30,9 @@ const ALREADY: Record<string, string> = {
   allow: "This call was already allowed, in another tab or by another answer. The run shows what happened next.",
   // A message sent while the call waited declines it too (as its reason): "deny" covers both.
   deny: "This call was already declined. The run shows what happened next.",
-  withdrawn: "The run was stopped while this call waited, so the call was withdrawn. It never ran.",
-  canceled: "The run was cancelled while this call waited. The call never ran.",
+  // A stop or a cancel withdraws a call that waits, or one answered and not acted on yet: neither runs.
+  withdrawn: "The run was stopped before this call ran, so it was withdrawn and never ran.",
+  canceled: "The run was cancelled before this call ran, so it never ran.",
 };
 
 /** An answer the server refused, in plain words: an answer given before (`already_answered`, with its decision: another

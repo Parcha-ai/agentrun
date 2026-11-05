@@ -13,6 +13,9 @@ const ICON: Record<string, typeof Brain> = {
   usage: CircleDollarSign, final_answer: FileText, phase: Flag, error: CircleAlert, decision: Scale, text_block: MessageSquareText,
   tool_approval_requested: ShieldQuestion,
 };
+/** What a declining message that a stop or a cancel overtook said, never sent: the server keeps it in the approval row's
+ *  text, after its arguments ("Not sent: the run was stopped. Your message: …"). */
+const notSent = (row: TimelineRow) => (row.kind === "tool_approval_requested" ? /\n\n(Not sent: [\s\S]*)$/.exec(row.text ?? "")?.[1] : undefined);
 /** A tool call's approval row while the call still waits: its summary (the server's) says so. */
 const awaitsApproval = (row: TimelineRow) => row.kind === "tool_approval_requested" && row.summary.startsWith("Waiting for your approval");
 
@@ -70,6 +73,7 @@ function Row({ step, last }: { step: Step; last: boolean }) {
             </span>
             <span className={cn("mt-0.5 block break-words text-[15px] leading-snug", missing && "text-muted-foreground")}>{step.above ? (row.kind === "tool_approval_requested" ? "Waits for your approval above." : "Asked you the question above.") : title(row)}</span>
             {step.saved && <span className="mt-0.5 block font-mono text-[12px] text-muted-foreground">saved {step.saved}</span>}
+            {notSent(row) && <span className="mt-0.5 block break-words text-[13px] text-muted-foreground">{notSent(row)}</span>}
           </span>
           <span className="caps shrink-0 pt-0.5 text-[11px] text-muted-foreground">{clock(row.timestamp)}</span>
           {detail && <ChevronRight className={cn("mt-0.5 size-4 shrink-0 text-muted-foreground transition-transform", open && "rotate-90")} aria-hidden />}
