@@ -3,22 +3,31 @@ import { marked } from "marked";
 import type { MouseEvent } from "react";
 import type { Cost } from "./v2";
 
-/** Whether the sanitizer keeps a tag by this name: decided by DOMPurify itself (an empty element of that name survives
- *  sanitizing or not), once per name. */
-const kept = new Map<string, boolean>();
+/** The tags DOMPurify keeps: its own allowed-tag config, read once through its uponSanitizeElement hook (the tag list is
+ *  not exported). A tag's own name decides, never the tag tried alone: a table's <tr> and <td> are kept in a table, where
+ *  on its own a browser drops them before the sanitizer sees them. */
+let allowed: Record<string, boolean> | undefined;
 const keeps = (name: string) => {
-  const n = name.toLowerCase();
-  if (!kept.has(n)) kept.set(n, DOMPurify.sanitize(`<${n}></${n}>`) !== "");
-  return kept.get(n)!;
+  if (!allowed) {
+    DOMPurify.addHook("uponSanitizeElement", (_node, data) => { allowed ??= data.allowedTags; });
+    DOMPurify.sanitize("<b></b>");
+    DOMPurify.removeHook("uponSanitizeElement");
+  }
+  return allowed?.[name.toLowerCase()] === true;
 };
 const escapeHtml = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
 // Markdown as the console reads it, everywhere it renders some (markdown() below). A single line break is a break: an
 // answer asked for in three lines shows three (marked joined them into one). A tag the sanitizer would drop is text: an
 // agent's placeholder ("Customer: <name>", "$<amount>") or a <script> it quotes reads as written, where marked passed it
-// through as HTML and DOMPurify then removed it unseen. Tags DOMPurify keeps (<b>, <br>, <img>) stay HTML, and
-// DOMPurify stays the last pass over everything.
-marked.use({ breaks: true, renderer: { html: ({ text }) => text.replace(/<\/?([A-Za-z][\w:-]*)[^<>]*>/g, (tag, name: string) => (keeps(name) ? tag : escapeHtml(tag))) } });
+// through as HTML and DOMPurify then removed it unseen. Tags DOMPurify keeps (<b>, <br>, <img>, a table's cells) stay
+// HTML, and DOMPurify stays the last pass over everything. A block marked read as HTML that turns wholly into text (a
+// template whose first line is "<name>") is a paragraph, its lines kept as `breaks` keeps a paragraph's.
+marked.use({ breaks: true, renderer: { html: ({ text, block }) => {
+  let kept = 0;
+  const out = text.replace(/<\/?([A-Za-z][\w:-]*)[^<>]*>/g, (tag, name: string) => (keeps(name) ? (kept++, tag) : escapeHtml(tag)));
+  return block && !kept && out !== text ? `<p>${out.trim().replace(/\n/g, "<br>\n")}</p>\n` : out;
+} } });
 
 /** A run's short label, the one every place that shows one uses: the id's last 8 characters. Run ids are UUIDv7s, whose
  *  leading digits are the start time (the same for runs started within about a minute); the tail is random. */
