@@ -1281,7 +1281,11 @@ left out: 2 sessions still being written: they come in next time
      newest row is the agent's answer, the server sends the process SIGTERM. A model error ends it `failed`
      (`run_failed`). A run whose `max_cost_usd` cannot buy its next request is paused, `input_required` and `waiting`
      with `pending.kind` `budget`; one its cap refuses for a reason no cap fixes ends `failed` (`spend_cap_reached`,
-     [below](#spend-cap)).
+     [below](#spend-cap)). A
+     provider's content filter stopping the answer ends it `failed` with `moderated` on every harness, saying so in plain
+     words ("The model provider stopped this answer (its content filter). Rephrase the request, or try another model.");
+     the provider's own words stay on the Timeline's error row. On claude-agent and codex the session's model proxy reads
+     the provider's stop and ends the turn at once, so the CLI never asks for the refused answer again.
      A stop sent while the run still reads `queued` (a message sent to it not yet in its timeline) waits, up to a
      request's deadline, for that message to show, then stops the turn as it stops any working run.
      A stopped run can be continued: a follow-up starts a fresh turn on the whole history, and the turn the stop cut is
