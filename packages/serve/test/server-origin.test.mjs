@@ -77,7 +77,7 @@ test("the door refuses an origin that is not the server's, and writes nothing fo
   assert.equal((await api("POST", "/agents", agent("origin-bad", { tools: [] }))).status, 201);
   const runId = (await api("POST", "/agents/origin-bad/runs", { input: { content: `Hold the answer until ${go}.` } })).body.run_id;
   await follow(api, runId, ["working"], { deadlineMs: 30_000 });
-  for (const [at, origin] of [{ kind: "person" }, { kind: "server" }, { kind: "server", reason: "Cap Raised" }, "server"].entries()) {
+  for (const [at, origin] of [{ kind: "person" }, { kind: "server" }, { kind: "server", reason: "Cap Raised" }, { kind: "server", reason: "other" }, { kind: "server", reason: "approval", said: "words" }, "server"].entries()) {
     const sent = await toDoor(data, runId, { requestId: `bad-${at}`, content: RAISED, whenBusy: "followUp", origin });
     assert.equal(sent.status, 400, `refused: ${JSON.stringify(origin)} ${JSON.stringify(sent)}`);
   }
@@ -89,4 +89,21 @@ test("the door refuses an origin that is not the server's, and writes nothing fo
 test("the door's marker kind is the Timeline's: one name for the entry that names a server message's origin", () => {
   assert.equal(typeof disk.MESSAGE_ORIGIN_KIND, "string", "the door names its marker kind");
   assert.equal(disk.MESSAGE_ORIGIN_KIND, timeline.MESSAGE_ORIGIN);
+});
+
+test("a follow-up the server writes down the messages route (counted as sent, as a raised cap's is) arrives: the run answers it and completes, never left working", { timeout: 120_000 }, async (t) => {
+  const origin = { kind: "server", reason: "cap_raised" };
+  const { api } = await serve(t, { messageOrigin: (_runId, content) => (content === RAISED ? origin : undefined) });
+  assert.equal((await api("POST", "/agents", agent("origin-sent", { tools: [] }))).status, 201);
+  const runId = (await api("POST", "/agents/origin-sent/runs", { input: { content: "hi" } })).body.run_id;
+  await follow(api, runId, ["completed"], { deadlineMs: 60_000 });
+  const sent = await api("POST", `/runs/${runId}/messages`, { content: RAISED });
+  assert.equal(sent.status, 202, JSON.stringify(sent.body));
+  let last;
+  for (const end = Date.now() + 60_000; Date.now() < end; await new Promise((resolve) => setTimeout(resolve, 500))) {
+    last = (await api("GET", `/runs/${runId}`)).body;
+    const rows = (await api("GET", `/runs/${runId}/timeline?limit=500`)).body.rows ?? [];
+    if (last.status === "completed" && rows.some((r) => r.kind === "phase" && r.summary === `AgentRun: ${RAISED}`)) break;
+  }
+  assert.equal(last?.status, "completed", `the server's follow-up arrived and was answered: ${JSON.stringify(last?.status)}`);
 });
