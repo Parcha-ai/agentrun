@@ -3,7 +3,7 @@ import { useState } from "react";
 import { BROWSER_TOOL_NAMES } from "@pi-browser/contract";
 import { nameOf } from "@timeline/labels";
 import { Chip } from "@/components/ui/chip";
-import { clock } from "@/lib/format";
+import { chargeWords, clock } from "@/lib/format";
 import { rowDetail, rowFailed, type Step, steps } from "@/lib/timeline";
 import { cn } from "@/lib/utils";
 import type { TimelineRow } from "@/lib/v2";
@@ -71,6 +71,8 @@ function Row({ step, last }: { step: Step; last: boolean }) {
           <span className="min-w-0 flex-1">
             <span className="flex items-center gap-2 text-[13px] text-muted-foreground">
               {label(row)}
+              {/* A call's own charge (a browser call's session time, #1736): on its row, never a row of its own. */}
+              {row.kind === "tool_use" && row.usage && <span className="font-mono text-[11px]">· {chargeWords(row.usage)}</span>}
               {row.kind === "waiting" && <Chip tone="warning">Input required</Chip>}
               {awaitsApproval(row) && <Chip tone="warning">Approval required</Chip>}
               {failed && <Chip tone="error">{interrupted ? "Interrupted" : "Error"}</Chip>}
