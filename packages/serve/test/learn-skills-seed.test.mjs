@@ -74,8 +74,8 @@ const systemText = (body) => (typeof body?.system === "string" ? body.system : (
 
 /** Agent `id`, learning, on `harness`, with the revision's skill `cite`; its run made and ended: its id, its prompt as
  *  the faux model or harness says it, and its view. */
-async function ranWithCite(api, id, harness) {
-  const created = await api("POST", "/agents", { ...agent(id, { learning: true, harness, instructions: "Answer the question.", skills: ["cite"] }), skills: { "cite/SKILL.md": CITE } });
+async function ranWithCite(api, id, harness, tools = []) {
+  const created = await api("POST", "/agents", { ...agent(id, { learning: true, harness, instructions: "Answer the question.", skills: ["cite"], tools }), skills: { "cite/SKILL.md": CITE } });
   assert.equal(created.status, 201, JSON.stringify(created.body));
   const run = await api("POST", `/agents/${id}/runs`, { input: { content: "hi" } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
@@ -174,6 +174,21 @@ for (const harness of ["pi", "codex"]) {
     assert.equal(readFileSync(join(skillsDir(work), "check-units", "SKILL.md"), "utf8"), UNITS);
     assert.equal(readFileSync(join(skillsDir(work), "check-units", "reference", "units.md"), "utf8"), UNITS_TABLE);
     assert.deepEqual(pinOf(data, runId), { seed: sha, skills: ["check-units/SKILL.md", "check-units/reference/units.md"] });
+  });
+}
+
+for (const harness of ["pi", "codex"]) {
+  test(`a ${harness} run that reads its files gets its skills on demand: each one's name, what it is for and its SKILL.md's path, the revision's and the learned ones alike, no skill's text; the file is there to read`, { timeout: 120_000 }, async (t) => {
+    const { api, data } = await serve(t, { faux: SYSTEM, fauxHarness: SYSTEM });
+    const id = `ondemand-${harness}`;
+    await folderWith(data, id, asLearned({ "check-units": { "SKILL.md": UNITS, "reference/units.md": UNITS_TABLE } }));
+    const { runId, prompt } = await ranWithCite(api, id, harness, ["read"]);
+    assert.deepEqual(inlined(prompt), [], prompt);
+    assert.ok(!prompt.includes("Convert every amount to one unit") && !prompt.includes(CITE.trim()), `no skill's text in the prompt: ${prompt}`);
+    assert.match(prompt, /- check-units: What check-units is for\. \(\.agents\/skills\/check-units\/SKILL\.md\)/, prompt);
+    assert.match(prompt, /- cite: [^\n]+ \(\.agents\/skills\/cite\/SKILL\.md\)/, prompt);
+    const work = workOf(data, runId);
+    for (const name of ["check-units", "cite"]) assert.ok(existsSync(join(work, ".agents", "skills", name, "SKILL.md")), `${name}'s SKILL.md is where the prompt says`);
   });
 }
 
