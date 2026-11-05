@@ -13,7 +13,8 @@ import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { createSocket } from "node:dgram";
 import { createServer } from "node:http";
-import { readdir, readFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { CHROME_PROFILES, checkChrome, localChrome } from "../dist/local-chrome.js";
@@ -172,6 +173,64 @@ test("a run's local Chrome, steered by a public page to this server's port, meta
     left = (await readdir(profiles).catch(() => [])).filter((name) => !name.startsWith(".") && !name.endsWith(".downloads"));
     if (left.length === 0 || Date.now() > until) break;
   }
+  assert.deepEqual(left, [], "no session's profile is left");
+});
+
+/** The pids of the browser processes (not their renderers, GPU or utility processes, which carry --type) whose profile is under `dir`. */
+const browsersUnder = (dir) => {
+  let out = "";
+  try { out = execFileSync("ps", ["-eo", "pid=,args="], { encoding: "utf8", maxBuffer: 16 * 2 ** 20 }); } catch { return []; }
+  return out.split("\n").filter((line) => line.includes(`--user-data-dir=${dir}/`) && line.includes("--remote-debugging-port=") && !line.includes(" --type=")).map((line) => Number(line.trim().split(/\s+/)[0]));
+};
+const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+
+test("a run's process killed while its local Chrome is open: the run opens again, its surviving Chrome (whose relay died with the process) is released, not kept, and the next browser call opens a fresh Chrome on the new relay; the model is told the session ended", { skip: SKIP, timeout: 240_000 }, async (t) => {
+  const page = await listen(t, steer);
+  withEnv(t, { STEER_PORT: String(page.port) }, ["STEER_PORT", "AGENTRUN_SERVE_BROWSER_CHROME"]);
+  const { api, data } = await serve(t, { faux: STEER_MODEL, fauxEgress: STEER_EGRESS, browserChrome: CHROME });
+  assert.equal((await api("PUT", "/settings/tools", { browser: { provider: "chrome" } })).status, 200);
+  assert.equal((await api("POST", "/agents", agent("survivor", { instructions: "Browse.", tools: ["browser"] }))).status, 201);
+  const gate = join(await scratch(t), "go");
+  const content = `Steer twice: ${JSON.stringify([`http://${STEER_HOST}/`])} then once ${gate} exists ${JSON.stringify([`http://${STEER_HOST}/again`])}`;
+  const started = await api("POST", "/agents/survivor/runs", { input: { content } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  const runId = started.body.run_id;
+  const profiles = join(data, "runs", runId, CHROME_PROFILES);
+  // The first call has answered (the public page loaded), and the run waits on the gate with its Chrome open.
+  let old = [];
+  for (const until = Date.now() + 90_000; ; await new Promise((done) => setTimeout(done, 200))) {
+    old = browsersUnder(profiles);
+    const answered = (await api("GET", `/runs/${runId}/timeline`)).body.rows?.some((row) => row.kind === "tool_result");
+    if ((old.length && answered) || Date.now() > until) break;
+  }
+  assert.ok((await decisions(data, runId)).some((d) => d.host === STEER_HOST && d.class === "ok"), "the first page loaded through the proxy");
+  assert.equal(old.length, 1, "one Chrome, open");
+  t.after(() => { for (const pid of old) if (alive(pid)) process.kill(pid, "SIGKILL"); });
+  // The run's process dies the way a crash kills it; its Chrome (its own process group) outlives it, and so would its
+  // profile.
+  const holder = JSON.parse(await readFile(join(data, "runs", runId, "run.json"), "utf8")).holder.pid;
+  process.kill(holder, "SIGKILL");
+  for (let i = 0; alive(holder); i++) {
+    assert.ok(i < 200, "the run's process dies");
+    await new Promise((done) => setTimeout(done, 50));
+  }
+  assert.ok(alive(old[0]), "its Chrome survived the process");
+  await writeFile(gate, "go");
+  await follow(api, runId, ["completed"], { deadlineMs: 180_000 });
+  const answer = (await api("GET", `/runs/${runId}`)).body.result.final_answer;
+  t.diagnostic(`model saw: ${answer.replace(/\s+/g, " ").slice(0, 1500)}`);
+  // The second call ran on a fresh Chrome behind the new relay: the public page loaded.
+  assert.match(answer.slice(0, answer.indexOf("Second:")), /A public page\./, "the first call answered before the kill");
+  const second = answer.slice(answer.indexOf("Second:"));
+  assert.match(second, /"at": "http:\/\/steer\.example\/again"/, answer);
+  assert.match(second, /A public page\./, answer);
+  assert.match(second, /Your browser session ended during an interruption/, "told as a released session is");
+  // The old Chrome is gone, and so is its profile.
+  for (let i = 0; alive(old[0]); i++) {
+    assert.ok(i < 300, `the surviving Chrome ${old[0]} is stopped`);
+    await new Promise((done) => setTimeout(done, 50));
+  }
+  const left = (await readdir(profiles)).filter((name) => !name.startsWith(".") && !name.endsWith(".downloads"));
   assert.deepEqual(left, [], "no session's profile is left");
 });
 

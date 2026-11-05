@@ -295,7 +295,8 @@ const browserTool: ToolEntry = {
       // With its vendor's key gone there is no session to reconcile or release from here: each would only fail.
       if (refused) return;
       // Every session custody still tracks across a restart is held from here; one kept is released an idle window on
-      // unless a call uses it.
+      // unless a call uses it. A local Chrome's is never kept (its provider is processBound, local-chrome.ts): released,
+      // and its conversation told it ended.
       await browser.reconcile(harness as never, () => true, context);
       await spend.reopened(harness, browser.docs, context);
     });

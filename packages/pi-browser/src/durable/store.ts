@@ -297,7 +297,14 @@ export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, 
         }
         const status = await provider.status({ id: live.resourceId!, tag: live.tag });
         if (status === "gone" || status === "stopped") await outcome("lost", (tx) => move(tx, live, { state: "released", reason: "ended", at, notice: "lost" }));
-        else if (row.state === "held") await outcome("kept");
+        else if (provider.caps.processBound) {
+          // Usable only from the process that started it, which is gone: released, and told as a lost session is.
+          await outcome("released", async (tx) => {
+            await requestRelease(tx, live, "lost", at);
+            const state = await tx.doc(Sessions, cidOf(row));
+            addNotice(state, notices.lost(state.sessions.find((r) => r.tag === row.tag)?.lastUrl ?? null));
+          });
+        } else if (row.state === "held") await outcome("kept");
         else if (isActive(cidOf(row))) await outcome("kept", (tx) => move(tx, live, { state: "live", at, notice: "kept" }));
         else await outcome("released", (tx) => requestRelease(tx, live, "lost", at));
       } catch {

@@ -163,6 +163,7 @@ test("the local Chrome's provider: pi-browser's cdp provider, which refuses a pr
   // A session that names a profile is refused by name before any Chrome starts (pi-browser's profileRefusal, its
   // tools.test.mjs), and none does: the run hands it no sign-in (tools.ts asHanded drops a profile it was not handed).
   assert.equal(provider.caps.profiles, false);
+  assert.equal(provider.caps.processBound, true, "a Chrome that outlives its process is released at the reopen, never kept");
   assert.equal(provider.vault, undefined);
   assert.equal(typeof provider.downloads, "object", "its downloads stay in the session's own directory");
   assert.equal(CHROME_PROFILES, "browser-chrome");

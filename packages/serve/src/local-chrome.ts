@@ -101,8 +101,12 @@ export async function localChrome(options: { executablePath: string; root: strin
       }
     };
     // No saved sign-in on this machine's Chrome: a session that names a profile is refused by name (pi-browser's
-    // profileRefusal), as on any provider that keeps none; and no vault target, so no session's state is captured.
-    return { provider: { ...chrome, create, caps: { ...chrome.caps, profiles: false } }, close: () => egress.close() };
+    // profileRefusal), as on any provider that keeps none; and no vault target, so no session's state is captured. Bound
+    // to this process: its Chrome reaches the network through this process's relay alone, which goes with it, so a
+    // Chrome that outlives it (a crash) reaches nothing. Its next process releases that Chrome at the reopen (stopped,
+    // its profile removed) and tells its conversation the session ended, so the next call opens a fresh one on the new
+    // relay; it held no sign-in to lose.
+    return { provider: { ...chrome, create, caps: { ...chrome.caps, profiles: false, processBound: true } }, close: () => egress.close() };
   } catch (error) {
     await egress.close();
     throw error;

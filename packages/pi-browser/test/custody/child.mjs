@@ -32,6 +32,8 @@ const inner = env.KERNEL_URL
   : remoteProvider(env.FAKE);
 const provider = {
   ...inner,
+  // PROCESS_BOUND: a provider whose sessions only the process that started them can use.
+  ...(env.PROCESS_BOUND === "1" ? { caps: { ...inner.caps, processBound: true } } : {}),
   // THROWING_DIAL: dial headers that throw, when the effect observer reads them, an error naming a connect URL with a
   // token, as a provider's SDK error can.
   attach: async (ref, signal) => { const target = await inner.attach(ref, signal); return env.THROWING_DIAL === "1" ? { ...target, dial: { url: target.dial?.url ?? target.sdkCdpUrl, get headers() { if (!new Error().stack.includes("effects.js")) return target.dial?.headers; throw new Error("connect failed: wss://connect.example.test/session?signingKey=SECRETTOKEN-0123456789"); } } } : target; },
