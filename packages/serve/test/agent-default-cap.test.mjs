@@ -1,6 +1,7 @@
 // An agent's default spend cap, through the API: a definition's max_cost_usd is kept with its revision and caps every run
-// started without one of its own, a trigger's included, read when the firing starts; a run's own cap wins; a workflow
-// agent keeps none, since a workflow run is not capped here; and a trigger with no cap of its own needs the agent's.
+// started without one of its own, a trigger's included, read when the firing starts; a run's own cap wins; leaving the
+// field out of an edit never removes the cap, only 0 does; a workflow agent keeps none, since a workflow run is not capped
+// here; and a trigger with no cap of its own needs the agent's.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { agent, answerFlow, flowAgent, follow, serve } from "./support.mjs";
@@ -19,20 +20,32 @@ test("a definition's max_cost_usd is the agent's default cap: kept with its revi
   assert.equal(own.cost.cap_usd, 2, "the run's own wins");
   await follow(api, byDefault.run_id, ["completed"]);
   await follow(api, own.run_id, ["completed"]);
-  // A definition saved without it keeps none, as it keeps no tool_settings it leaves out: the next run is uncapped.
-  const { definition } = (await api("GET", "/agents/capped")).body;
-  const { max_cost_usd: _, version: __, ...without } = definition;
-  const saved = await api("PUT", "/agents/capped/definition", { definition: without });
-  assert.equal(saved.status, 200, JSON.stringify(saved.body));
-  assert.equal((await api("GET", "/agents/capped")).body.definition.max_cost_usd, undefined);
+  // An edit that leaves it out never removes a spend limit: the agent keeps its default, and the next run is capped by it.
+  const edit = async (extra) => {
+    const { max_cost_usd: _, version: __, ...definition } = (await api("GET", "/agents/capped")).body.definition;
+    return api("PUT", "/agents/capped/definition", { definition: { ...definition, instructions: `Answer. ${Math.random()}`, ...extra } });
+  };
+  const kept = await edit({});
+  assert.equal(kept.status, 200, JSON.stringify(kept.body));
+  assert.equal((await api("GET", "/agents/capped")).body.definition.max_cost_usd, 0.5, "kept on an edit that leaves it out");
+  const stillCapped = (await api("POST", "/agents/capped/runs", { input: { content: "Answer soon." } })).body;
+  assert.equal(stillCapped.cost.cap_usd, 0.5);
+  await follow(api, stillCapped.run_id, ["completed"]);
+  // Only an explicit 0 clears it: no default, and the next run is uncapped.
+  assert.equal((await edit({ max_cost_usd: 0 })).status, 200);
+  assert.equal((await api("GET", "/agents/capped")).body.definition.max_cost_usd, undefined, "cleared by 0");
   const uncapped = (await api("POST", "/agents/capped/runs", { input: { content: "Answer soon." } })).body;
   assert.equal(uncapped.cost.cap_usd, null);
   await follow(api, uncapped.run_id, ["completed"]);
-  // Refused: not a number above 0, and any on a workflow agent, whose runs are not capped here.
-  for (const value of [0, -1, "1"]) assert.deepEqual(fields(await api("POST", "/agents", agent(`bad-${String(value)}`, { max_cost_usd: value }))), [["definition.max_cost_usd", "wrong_type"]], String(value));
+  // Refused: anything but a number of at least 0 (null included); and above 0 on a workflow agent, whose runs are not
+  // capped here, where 0 says nothing and is taken.
+  for (const value of [-1, "1", null]) assert.deepEqual(fields(await api("POST", "/agents", agent(`bad-${String(value)}`, { max_cost_usd: value }))), [["definition.max_cost_usd", "wrong_type"]], String(value));
   const flow = await api("POST", "/agents", flowAgent("flow", answerFlow(), { max_cost_usd: 1 }));
   assert.deepEqual(fields(flow), [["definition.max_cost_usd", "not_allowed"]]);
   assert.match(flow.body.error.fields[0].message, /workflow/);
+  const flowZero = await api("POST", "/agents", flowAgent("flow-zero", answerFlow(), { max_cost_usd: 0 }));
+  assert.equal(flowZero.status, 201, JSON.stringify(flowZero.body));
+  assert.equal(flowZero.body.definition.max_cost_usd, undefined);
 });
 
 test("a trigger with no max_cost_usd of its own caps each run with the agent's default as it stands when the firing starts; with neither it is refused, and a firing that finds none fails", { timeout: 180_000 }, async (t) => {
@@ -61,8 +74,14 @@ test("a trigger with no max_cost_usd of its own caps each run with the agent's d
   const [second] = await firings(api, id, 2);
   assert.equal((await api("GET", `/runs/${second.run_id}`)).body.cost.cap_usd, 0.7, "the default as it stands");
   await follow(api, second.run_id, ["completed"]);
-  // Gone, the next firing starts no uncapped run: it fails, saying why.
-  assert.equal((await edit({})).status, 200);
+  // An edit that leaves it out keeps it; one that clears it (0) leaves the trigger with no cap: a new one with no cap of
+  // its own is refused, and the next firing starts no uncapped run: it fails, saying why.
+  const { max_cost_usd: ___, version: ____, ...plain } = (await api("GET", "/agents/nightly")).body.definition;
+  assert.equal((await api("PUT", "/agents/nightly/definition", { definition: { ...plain, instructions: "Answer, kept." } })).status, 200);
+  assert.equal((await api("GET", "/agents/nightly")).body.definition.max_cost_usd, 0.7, "kept");
+  assert.equal((await edit({ max_cost_usd: 0 })).status, 200);
+  const late = await api("POST", "/triggers", { ...schedule("nightly", { every_s: 600, start_at: "2026-06-01T01:00:00Z" }), target });
+  assert.deepEqual([late.status, ...fields(late)], [422, ["target.max_cost_usd", "missing"]]);
   clock.to("2026-06-01T00:30:00Z");
   const [third] = await firings(api, id, 3);
   assert.deepEqual([third.status, third.run_id, third.error?.code], ["failed", null, "input_invalid"]);
