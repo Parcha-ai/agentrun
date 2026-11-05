@@ -13,7 +13,10 @@
 // loopback in the run's process, never the backend's sentinel vendor address: it has one page, and sends one screencast
 // frame (FRAME, bytes no image decoder needs) once the page's screencast starts. It is started at the first attach. Each
 // Input command it gets (the person's input, through the live view) is logged by its name alone.
-import { appendFileSync, readFileSync } from "node:fs";
+//
+// With $FAUX_BROWSER_STATE (a file), the backend's sessions outlive the run's process, as a vendor's do: each one created
+// or released is written there, and a process that starts finds the ones still running.
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { createServer } from "node:http";
 import { BrowserFailureError, browserFailure } from "@parcha/pi-browser";
@@ -96,6 +99,11 @@ export default function browser(env = process.env, vendor = "browserbase", signI
   }
   const start = "https://example.test/";
   const backend = new FakeBackend({ name: process.env.FAUX_BROWSER_PROVIDER || vendor, start, caps: { profiles: true }, pages: { [start]: fixturePage(start, `The answer is forty-two. This browser is ${vendor}'s.`, "Example") }, ...(log ? { logFile: log } : {}) });
+  // The vendor's sessions as the last process left them.
+  const stateFile = process.env.FAUX_BROWSER_STATE;
+  const saved = stateFile ? (() => { try { return JSON.parse(readFileSync(stateFile, "utf8")); } catch { return []; } })() : [];
+  for (const { id, tag, url } of saved) backend.sessions.set(id, { id, tag, metadata: {}, state: "running", url, broker: false, plane: "default" });
+  const save = () => { if (stateFile) writeFileSync(stateFile, JSON.stringify(backend.live().map(({ id, tag }) => ({ id, tag, url: backend.sessions.get(id)?.url ?? start })))); };
   const { downloads: _, ...withoutDownloads } = backend.provider;
   const provider = vendor === "kernel" ? withoutDownloads : backend.provider;
   const create = (spec, signal) => {
@@ -103,13 +111,14 @@ export default function browser(env = process.env, vendor = "browserbase", signI
     // A saving session refused in the words pi-browser's one-saver rule uses, which name the vendor's profile (Kernel's
     // name is the run's pointer).
     if (signIn && spec.profile?.save && process.env.FAUX_BROWSER_REFUSE_WITH_REF) throw new BrowserFailureError(browserFailure("refused", `browser profile "${signIn.ref}": one session at a time may save to a profile, and another session is saving to it now. Wait for it to end, or start without saving. No session was started.`));
-    return provider.create(spec, signal);
+    return provider.create(spec, signal).then((ref) => (save(), ref));
   };
+  const release = (ref, signal) => provider.release(ref, signal).finally(save);
   // The session's id stays in the address's query, where the fake driver reads it.
   const attach = async (ref, signal) => {
     const target = await provider.attach(ref, signal);
     const id = new URL(target.sdkCdpUrl).searchParams.get("sessionId") ?? "";
     return { ...target, sdkCdpUrl: `${await devtoolsUrl()}?sessionId=${encodeURIComponent(id)}` };
   };
-  return { provider: { ...provider, create, attach }, driver: fakeDriver(backend) };
+  return { provider: { ...provider, create, attach, release }, driver: fakeDriver(backend) };
 }

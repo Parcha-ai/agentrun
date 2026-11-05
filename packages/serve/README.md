@@ -842,7 +842,8 @@ own viewer, a screencast of the page the agent is on), never the vendors' own li
 process. As a session opens, the run's process runs its viewer on a loopback port of its own and hands it to the server in
 one file in the run's directory, outside `work/` (`browser-live/<session>.json`, one file per session, 0600), which goes
 when that session ends: a session's end never touches another's, so a relaunch's old session never hides its new one's
-view. `GET /v2/runs/{id}/browser` answers `{state: "live", viewer}` while a session is open (`viewer`, a link on this server
+view. A session a restarted process keeps (it was still running at the vendor) gets its viewer handed over again by the
+new process, with a new token, and nobody holding the browser. `GET /v2/runs/{id}/browser` answers `{state: "live", viewer}` while a session is open (`viewer`, a link on this server
 with its token in the fragment), `{state: "none"}` when the run has a browser but no session is open, and
 `{state: "off", reason}` when it has none: its agent has no `browser` tool, or its browser resolves unavailable here (the
 tool plane's words, `a local Chrome is not set up on this server`, `kernel picked, no KERNEL_API_KEY`). It takes the owner's

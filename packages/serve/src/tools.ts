@@ -305,6 +305,18 @@ const browserTool: ToolEntry = {
       // unless a call uses it.
       await browser.reconcile(harness as never, () => true, context);
       await spend.reopened(harness, browser.docs, context);
+      // A session kept across the restart has no viewer in this process yet, and reconcile tells no session's change: each
+      // one's viewer is opened here and handed over, as a launch's is. It starts with nobody holding the browser.
+      const kept = Object.values(((await harness.snapshot(browser.docs.Inventory as never, context)) as { rows?: Record<string, { tag: string; resourceId: string | null; state: string }> } | undefined)?.rows ?? {});
+      for (const row of kept.filter((r) => (r.state === "live" || r.state === "held") && r.resourceId !== null)) {
+        try {
+          const opened = await watched?.liveView?.({ id: row.resourceId!, tag: row.tag });
+          const handover = opened?.fullscreen ? live.handoverOf(opened.fullscreen, row.tag) : undefined;
+          if (handover) await live.writeHandover(host.where.root, handover);
+        } catch {
+          // A browser that cannot be reached has no view to give: the owner reads none, as for any session without one.
+        }
+      }
     });
     host.beforeRelease(async (harness) => {
       try {

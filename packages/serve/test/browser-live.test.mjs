@@ -15,6 +15,7 @@ import { builtConsole, call, cookieOf, follow, scratch, serve, withEnv } from ".
 
 const FAUX_BROWSER = new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname;
 const BROWSE_ASK = new URL("./fixtures/faux-browse-ask.mjs", import.meta.url).pathname;
+const RECOVER = new URL("./fixtures/faux-browse-recover.mjs", import.meta.url).pathname;
 const KEYS = ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "KERNEL_API_KEY", "FAUX_BROWSER_LOG"];
 const json = { "content-type": "application/json" };
 /** A test password, no real one. */
@@ -198,6 +199,32 @@ test("a run's process that dies without letting its sessions go takes its hand-o
   assert.deepEqual((await browserOf(w, { cookie: w.cookie })).json, { state: "none" }, "no live process: no viewer");
   assert.equal((await call(w.server.port, { path: `/v2/runs/${w.runId}/browser/live/v/${handed.id}`, headers: { cookie: w.cookie } })).status, 404, "nothing proxied");
   assert.equal((await liveWs(w, `/v2/runs/${w.runId}/browser/live/v/${handed.id}/ws`)).status, 404);
+});
+
+test("a run's process that restarts with its browser session kept hands that session's viewer over again: the owner reads live, its viewer answers with a frame through the proxy, and nobody holds the browser", { timeout: 180_000 }, async (t) => {
+  withEnv(t, { FAUX_BROWSER_STATE: join(await scratch(t), "vendor-sessions.json") }, ["FAUX_BROWSER_STATE"]);
+  const w = await watched(t, { faux: RECOVER });
+  const before = JSON.parse(readFileSync(w.file, "utf8"));
+  const { holder } = JSON.parse(readFileSync(join(w.server.data, "runs", w.runId, "run.json"), "utf8"));
+  process.kill(holder.pid, "SIGKILL");
+  assert.ok(await until(() => stat(w.file).then(() => false, () => true)), "the hand-over went with the process");
+  // The next message starts a new process for the run, which finds its session still running at the vendor and keeps it;
+  // that turn makes no browser call.
+  assert.equal((await w.server.api("POST", `/runs/${w.runId}/messages`, { content: "Go on." })).status, 202);
+  await follow(w.server.api, w.runId, ["input_required"], { after: w.after });
+  assert.ok(await until(async () => (await browserOf(w, { cookie: w.cookie })).json?.state === "live", 20_000), "the kept session's viewer is handed over again");
+  const live = (await browserOf(w, { cookie: w.cookie })).json;
+  const [, id, token] = /\/v\/([A-Za-z0-9_-]{22})#t=([A-Za-z0-9_-]{43})$/.exec(live.viewer) ?? [];
+  assert.ok(id && token);
+  assert.notEqual(token, before.token, "the new process's own viewer: the old token died with the old process");
+  const viewer = await liveWs(w, `/v2/runs/${w.runId}/browser/live/v/${id}/ws`);
+  assert.equal(viewer.status, 101);
+  viewer.ws.sendJson({ type: "hello", token });
+  assert.deepEqual(JSON.parse((await viewer.ws.next(5_000)).data), { type: "ready", drive: "idle", takeOver: true, held: false }, "it starts with no hold");
+  const { item: frame } = await viewer.ws.until((m) => m.type === "binary", 10_000);
+  assert.ok(frame, "a frame through the proxy");
+  assert.deepEqual(frame.data.subarray(4), FRAME.bytes);
+  viewer.ws.destroy();
 });
 
 test("the viewer's code is always this server's own: a run's port that answers the viewer's page and files with a planted script is never served from, and only the viewer's socket reaches it", { timeout: 120_000 }, async (t) => {
