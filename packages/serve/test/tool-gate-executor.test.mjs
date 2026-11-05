@@ -165,3 +165,24 @@ test("an approved MCP call whose answer a stop overrides after the live gate rea
   await sleep(300);
   assert.deepEqual([resumed, executor.calls.length], [["ap_first"], 0], "the overridden allow ran nothing and resumed nothing");
 });
+
+test("a stop of the run while an approved MCP call is in flight aborts the executor's signal, and its result never resumes the model", async (t) => {
+  let aborted = false;
+  const executor = fakeExecutor(undefined, () => undefined);
+  const holding = async (tool, args, callId, signal) => {
+    executor.calls.push({ tool, args, callId });
+    await new Promise((resolve) => signal.addEventListener("abort", () => ((aborted = true), resolve()), { once: true }));
+    return { text: "late answer", isError: false };
+  };
+  const run = await runOn(t, { executor: holding });
+  await run.gate.enter(TOOL, ARGS, "c1", run.park);
+  const id = await approvalId(run.harness);
+  await answer(run.where, id, "allow");
+  run.start();
+  await until(() => executor.calls.length === 1);
+  // A stop overrides the answer the gate is acting on (runs.ts supersede): the gate cuts the call in flight.
+  await writeFile(join(run.where.root, "serve.json"), JSON.stringify({ approvals: { [id]: { decision: "withdrawn", answered_at: new Date().toISOString(), superseded: { decision: "allow", answered_at: new Date().toISOString() } } } }));
+  await until(() => aborted && !run.gate.waiting());
+  await sleep(300);
+  assert.deepEqual([aborted, run.resumed.length], [true, 0], "the executor saw the abort, and nothing resumed");
+});
