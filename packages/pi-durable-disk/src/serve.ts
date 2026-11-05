@@ -31,12 +31,15 @@ const REQUEST_ID = /^[\x21-\x7e]{1,200}$/;
 /** The entry kind that names the origin of a server-written message (pi-durable-agent's MESSAGE_ORIGIN, the same text):
  *  `{ origin, text }`, matched by its text to the user entry that follows it. */
 export const MESSAGE_ORIGIN_KIND = "agentrun.message_origin";
+/** The reasons a server-written message has, the ones the Timeline reads (pi-durable-agent's MessageOrigin): any other
+ *  is refused, never accepted and then shown as the person's. */
+const ORIGIN_REASONS: ReadonlySet<string> = new Set(["cap_raised", "approval", "approval_declined"]);
 /** A submit's `origin`: `{ kind: "server", reason }`, who wrote a message the person did not; with `said` (a non-empty
  *  string, the person's own words) only for `approval_declined`. */
 const isOrigin = (value: unknown): boolean => {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const { kind, reason, said, ...rest } = value as Record<string, unknown>;
-  if (kind !== "server" || typeof reason !== "string" || !/^[a-z_]{1,40}$/.test(reason) || Object.keys(rest).length) return false;
+  if (kind !== "server" || typeof reason !== "string" || !ORIGIN_REASONS.has(reason) || Object.keys(rest).length) return false;
   return reason === "approval_declined" ? typeof said === "string" && said.trim() !== "" : said === undefined;
 };
 /** An input's text: the string, or its text blocks joined, as the Timeline reads a user entry's. */
@@ -263,7 +266,7 @@ export async function serveRun(options: ServeOptions = {}): Promise<RunServer> {
     if (typeof requestId !== "string" || !REQUEST_ID.test(requestId)) throw new HttpError(400, "BAD_REQUEST", "requestId must be 1 to 200 printable ASCII characters");
     if (typeof content !== "string" && !Array.isArray(content)) throw new HttpError(400, "BAD_REQUEST", "content must be a string or an array of content blocks");
     if (whenBusy !== undefined && whenBusy !== "steer" && whenBusy !== "followUp" && whenBusy !== "reject") throw new HttpError(400, "BAD_REQUEST", "whenBusy is steer, followUp or reject");
-    if (origin !== undefined && !isOrigin(origin)) throw new HttpError(400, "BAD_REQUEST", "origin is { kind: \"server\", reason } (a reason of letters and _), with said (the person's words) for approval_declined");
+    if (origin !== undefined && !isOrigin(origin)) throw new HttpError(400, "BAD_REQUEST", "origin is { kind: \"server\", reason }, a reason cap_raised, approval or approval_declined, with said (the person's words) for approval_declined");
     if (pauses > 0) throw unavailable("PARKING", "the run is parking or draining");
     if (door) {
       if (body.conversationId !== undefined) throw new HttpError(400, "BAD_REQUEST", "a door hook takes its input in the root conversation: no conversationId");

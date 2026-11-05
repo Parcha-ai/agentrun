@@ -59,6 +59,10 @@ export function originMatcher(): (entry: EntryLike) => MessageOrigin | undefined
   };
 }
 
+/** Whether a Timeline row is a message its run took: a person's (`user_message`), or the server's (`origin: "server"`). A
+ *  host that counts a run's messages (their arrival, where a stop stands) counts these, never the kind alone. */
+export const isMessageRow = (row: { kind: string; origin?: string }): boolean => row.kind === "user_message" || row.origin === "server";
+
 /** The user entries of `entries` that the server wrote, with their origin (originMatcher, read in order). */
 export function messageOrigins(entries: readonly EntryLike[]): Map<EntryLike, MessageOrigin> {
   const match = originMatcher();
