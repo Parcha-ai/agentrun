@@ -20,18 +20,22 @@ async function open(slug: string, extra: Partial<Parameters<typeof AgentEditor>[
 }
 
 describe("AgentEditor's History, a workflow agent's past revision", () => {
-  it("View opens its workflow as the read-only graph, marked against the current revision, with no save, and Back returns", async () => {
+  it.each([2, 3])("View uses current revision %s even when history is older, with a read-only graph and Back", async (version) => {
     const past = revisionsOf("support-triage").find((r) => !r.current)!;
     const validate = vi.fn();
-    const page = await open("support-triage", { validate });
-    expect(page.button(/^View rev 2$/), "the current revision is not offered").toBeUndefined();
+    const agent = agentFixture("support-triage");
+    const current = version === 2 ? agent : { ...agent, revision: "new-current", revisions: 3, definition: { ...agent.definition, version: 3 } };
+    const page = await open("support-triage", { validate, agent: current });
+    expect(page.host.querySelector("header")?.textContent).toContain(`rev ${version} current`);
+    if (version === 2) expect(page.button(/^View rev 2$/), "the current revision is not offered").toBeUndefined();
+    else expect(page.button(/^View rev 2$/), "an older history marker does not make that revision current").toBeTruthy();
     await page.click(new RegExp(`^View rev ${past.version}$`));
     const area = page.host.querySelector("textarea[aria-label='Workflow JSON']") as HTMLTextAreaElement;
     expect(JSON.parse(area.value)).toEqual(past.definition!.workflow);
     expect(area.readOnly).toBe(true);
     expect(page.host.querySelector("svg")).not.toBeNull();
     expect(page.host.textContent).toContain("Read-only");
-    expect(page.host.textContent).toMatch(/against rev 2, the current one|Same as rev 2, the current one/);
+    expect(page.host.textContent).toMatch(new RegExp(`against rev ${version}, the current one|Same as rev ${version}, the current one`));
     expect(page.button(/^Save revision$/)).toBeUndefined();
     expect(validate).not.toHaveBeenCalled();
     await page.click(/^Back to History$/);

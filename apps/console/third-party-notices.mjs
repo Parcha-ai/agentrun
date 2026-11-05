@@ -7,12 +7,12 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path/posix";
 
 export const NOTICES_FILE = "THIRD-PARTY-NOTICES.txt";
-const LICENSE_FILE = /^(?:licen[cs]e|copying)(?:[.-].*)?$/i;
+const LICENSE_FILE = /^(?:licen[cs]e|copying|ofl)(?:[.-].*)?$/i;
 
 /** The directory of the package a bundled module id is in (the innermost node_modules), or undefined for the console's
  *  and the repository's own source. Vite's ids use forward slashes; a query or a virtual prefix on one is ignored. */
 export function packageDirOf(id) {
-  const path = id.replace(/^\0+/, "").split("?")[0];
+  const path = id.replace(/^\0+/, "").split("?")[0].replaceAll("\\", "/");
   const marker = "/node_modules/";
   const at = path.lastIndexOf(marker);
   if (at < 0) return undefined;
@@ -73,4 +73,3 @@ export function thirdPartyNotices() {
     },
   };
 }
-

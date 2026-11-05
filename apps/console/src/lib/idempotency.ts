@@ -47,6 +47,10 @@ export function keepersByRun(newKey: () => string = uuid): (runId: string) => Re
 /** The next page of runs added to those shown: the server's cursor is an offset, so a run a new one pushed down is sent
  *  again and is kept once. */
 export function appendRuns(held: Run[], page: Run[]): Run[] {
-  const seen = new Set(held.map((r) => r.run_id));
-  return [...held, ...page.filter((r) => !seen.has(r.run_id))];
+  const seen = new Set<string>();
+  return [...held, ...page].filter((run) => {
+    if (seen.has(run.run_id)) return false;
+    seen.add(run.run_id);
+    return true;
+  });
 }

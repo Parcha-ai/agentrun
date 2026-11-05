@@ -31,6 +31,7 @@ describe("App, setup's import of this machine's sessions", () => {
     let set = false;
     vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
       const path = new URL(url, "http://serve.test").pathname;
+      if (path === "/v2/capabilities") return json(200, { harnesses: [], features: {} });
       if (path === "/v2/auth/session") return json(200, { password_set: set, signed_in: set });
       if (path === "/v2/setup") { set = true; const body = JSON.parse(String(init?.body)); sent.push(body); return json(201, { signed_in: true, ...(body.import ? { importing: true } : {}) }); }
       if (path === "/v2/setup/import") {
@@ -131,6 +132,7 @@ describe("App, setup's import of this machine's sessions", () => {
     const sent: unknown[] = [];
     vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
       const u = new URL(url, "http://serve.test");
+      if (u.pathname === "/v2/capabilities") return json(200, { harnesses: [], features: {} });
       if (u.pathname === "/v2/auth/session") return json(200, { password_set: set, signed_in: set });
       if (u.pathname === "/v2/setup") { set = true; sent.push(JSON.parse(String(init?.body))); return json(201, { signed_in: true, importing: true }); }
       if (u.pathname === "/v2/setup/import") {

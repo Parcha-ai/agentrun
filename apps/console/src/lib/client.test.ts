@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { ClientError, allPages, createClient, follow } from "./client";
 import type { TimelinePage } from "./v2";
 import page412 from "../fixtures/error.definition-stale-etag.json";
@@ -15,6 +15,87 @@ function fakeFetch(answers: (call: Call) => Response) {
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
 describe("createClient", () => {
+  it.each(["/v2?mode=test", "/v2#fragment"])("rejects the relative API base %s before storing or requesting it", (base) => {
+    expect(() => createClient({ base })).toThrow(/query|fragment/i);
+    expect(() => createClient({ base, auth: { type: "bearer", token: "example" } })).toThrow(/query|fragment/i);
+  });
+  it("uses explicit bearer credentials without cookies for an SDK request to another server", async () => {
+    const { fn, calls } = fakeFetch(() => json(200, { runs: [], next_cursor: null }));
+    const v2 = createClient({ fetch: fn, base: "https://server.example/v2", auth: { type: "bearer", token: () => "example-sdk-token" } });
+    await v2.listRuns();
+    expect(calls[0].url).toBe("https://server.example/v2/runs?limit=50");
+    expect(calls[0].init?.credentials).toBe("omit");
+    expect(new Headers(calls[0].init?.headers).get("authorization")).toBe("Bearer example-sdk-token");
+    expect(() => createClient({ fetch: fn, base: "https://server.example/v2" })).toThrow(/same.origin/i);
+  });
+
+  it.each([false, true])("uploads original bytes through the configured credential boundary (bearer=%s)", async (bearer) => {
+    const uploaded = { file_id: "upload-1", path: "report data.txt", size_bytes: 5, content_type: "text/plain", sha256: "example", status: "ready" };
+    const { fn, calls } = fakeFetch(() => json(201, { file: uploaded }));
+    const base = bearer ? "https://server.example/v2" : "/console-api";
+    const v2 = createClient({ fetch: fn, base, ...(bearer ? { auth: { type: "bearer" as const, token: "example-sdk-token" } } : {}) });
+    const file = new File(["bytes"], uploaded.path, { type: "text/plain" });
+    const progress = vi.fn();
+    expect(await v2.upload(file, progress, new AbortController().signal)).toEqual(uploaded);
+    expect(calls[0].url).toBe(`${base}/files?path=report%20data.txt`);
+    expect(calls[0].init?.body).toBe(file);
+    expect(calls[0].init?.credentials).toBe(bearer ? "omit" : "same-origin");
+    expect(new Headers(calls[0].init?.headers).get("authorization")).toBe(bearer ? "Bearer example-sdk-token" : null);
+    expect(new Headers(calls[0].init?.headers).get("content-type")).toBe("text/plain");
+    expect(progress.mock.calls.map(([fraction]) => fraction)).toEqual([0, 1]);
+  });
+
+  it("invalidates protected session state on a 401 without treating a rejected sign-in as session expiry", async () => {
+    const { fn } = fakeFetch(() => json(401, { error: { code: "unauthenticated", message: "Sign in again.", retryable: false } }));
+    const v2 = createClient({ fetch: fn });
+    const expired = vi.fn();
+    const unsubscribe = v2.onUnauthorized(expired);
+    await v2.signIn("wrong").catch(() => {});
+    expect(expired).not.toHaveBeenCalled();
+    await v2.getRun("private-run").catch(() => {});
+    expect(expired).toHaveBeenCalledOnce();
+    unsubscribe();
+    await v2.getRun("private-run").catch(() => {});
+    expect(expired).toHaveBeenCalledOnce();
+  });
+
+  it("ignores an old identity's late 401 after private session state is cleared", async () => {
+    let release!: (response: Response) => void;
+    const pending = new Promise<Response>((resolve) => { release = resolve; });
+    const v2 = createClient({ fetch: (() => pending) as typeof fetch });
+    const expired = vi.fn();
+    v2.onUnauthorized(expired);
+    const old = v2.getRun("owner-a-run").catch((error) => error);
+    v2.clearSessionState();
+    release(json(401, { error: { code: "unauthenticated", message: "Old session ended.", retryable: false } }));
+    expect(await old).toMatchObject({ code: "session_changed" });
+    expect(expired).not.toHaveBeenCalled();
+  });
+
+  it("does not populate a new identity's warning cache from an old create response", async () => {
+    let release!: (response: Response) => void;
+    const pending = new Promise<Response>((resolve) => { release = resolve; });
+    const agent = { agent_id: "shared-id", revision: "same-revision", definition: { version: 1, name: "Agent", skills: [], tools: [] } };
+    const v2 = createClient({ fetch: (async (_url, init) => init?.method === "POST" ? pending : json(200, agent)) as typeof fetch });
+    const old = v2.createAgent({ definition: agent.definition }).catch((error) => error);
+    v2.clearSessionState();
+    release(json(201, { ...agent, warnings: [{ field: "definition.model", reason: "private", message: "Owner A private setup warning" }] }));
+    expect(await old).toMatchObject({ code: "session_changed" });
+    expect((await v2.getAgent("shared-id")).agent.warnings).toBeUndefined();
+  });
+
+  it.each(["start", "upload"])("does not dispatch an old %s if identity changes while its bearer token is being resolved", async (operation) => {
+    let release!: (token: string) => void;
+    const pending = new Promise<string>((resolve) => { release = resolve; });
+    const f = vi.fn(async () => json(202, { run_id: "unexpected" }));
+    const v2 = createClient({ fetch: f as typeof fetch, auth: { type: "bearer", token: () => pending } });
+    const old = (operation === "start" ? v2.startRun("agent", { input: { content: "Owner A task" } }, "stable-request") : v2.upload(new File(["Owner A file"], "private.txt"), () => {}, new AbortController().signal)).catch((error) => error);
+    v2.clearSessionState();
+    release("replacement-owner-token");
+    expect(await old).toMatchObject({ code: "session_changed" });
+    expect(f).not.toHaveBeenCalled();
+  });
+
   it("throws the server's typed error, with its status, for a refused request", async () => {
     const { fn } = fakeFetch(() => json(412, page412.body));
     const v2 = createClient({ fetch: fn });
@@ -77,6 +158,25 @@ describe("raiseCap", () => {
 });
 
 describe("follow", () => {
+  it("resumes a disconnected timeline at its saved cursor without replacing prior rows", async () => {
+    const first = running.body as unknown as TimelinePage;
+    const checkpoint = { rows: [] as TimelinePage["rows"], after: undefined as number | undefined };
+    let fail = false;
+    const requests: (number | undefined)[] = [];
+    const v2 = { getTimeline: async (_id: string, opts: { after?: number }) => {
+      requests.push(opts.after);
+      if (fail) throw new TypeError("Network disconnected");
+      fail = true;
+      return { ...first, final: false };
+    } };
+    await expect(follow(v2 as never, "r1", { checkpoint, minDelayMs: 0, onRows: () => {} })).rejects.toThrow("Network disconnected");
+    const restored: string[][] = [];
+    v2.getTimeline = async (_id, opts) => { requests.push(opts.after); return { ...first, reset: false, rows: [], final: true }; };
+    await follow(v2 as never, "r1", { checkpoint, minDelayMs: 0, onRows: (rows) => restored.push(rows.map((r) => r.id)) });
+    expect(requests).toEqual([undefined, first.next_after, first.next_after]);
+    expect(restored[0]).toEqual(first.rows.map((r) => r.id));
+  });
+
   it("with no onRows, follows a run's status alone: each page to onPage, the cursor kept, no rows merged or held", async () => {
     const first = running.body as unknown as TimelinePage;
     const done: TimelinePage = { ...first, reset: false, rows: [], unchanged: true, final: true, status: "completed", state: "idle", next_after: first.next_after + 1 };
@@ -221,6 +321,15 @@ describe("agents", () => {
 });
 
 describe("review fixes", () => {
+  it("preserves a binary artifact's bytes instead of decoding them as UTF-8", async () => {
+    const bytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0xff, 0x00]);
+    const { fn, calls } = fakeFetch(() => new Response(bytes, { headers: { "content-type": "image/png" } }));
+    const blob = await createClient({ fetch: fn }).readFileBlob("r1", "plots/a b.png");
+    expect([...new Uint8Array(await blob.arrayBuffer())]).toEqual([0x89, 0x50, 0x4e, 0x47, 0xff, 0x00]);
+    expect(calls[0].url).toBe("/v2/runs/r1/files/plots/a%20b.png");
+    expect(calls[0].init?.credentials).toBe("same-origin");
+  });
+
   it("reads a file's bytes as text, even a JSON file the server labels application/json", async () => {
     const { fn } = fakeFetch(() => json(200, { a: 1 }));
     const text = await createClient({ fetch: fn }).readFile("r1", "out.json");

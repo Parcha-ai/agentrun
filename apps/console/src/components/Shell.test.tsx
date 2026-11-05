@@ -60,8 +60,8 @@ describe("Shell's navigation", () => {
     return [...host.querySelectorAll('nav[aria-label="Navigation"] button')].map((b) => b.textContent?.trim());
   };
   it("offers Schedules where the server has them, after Runs, and not where it does not", () => {
-    expect(items(true)).toEqual(["Mission Control", "Playground", "Agents", "Runs", "Schedules"]);
+    expect(items(true)).toEqual(["Mission Control", "Agents", "Runs", "Schedules", "API playground", "Settings"]);
     act(() => root?.unmount());
-    expect(items(false)).toEqual(["Mission Control", "Playground", "Agents", "Runs"]);
+    expect(items(false)).toEqual(["Mission Control", "Agents", "Runs", "API playground", "Settings"]);
   });
 });

@@ -1,5 +1,5 @@
 import { CornerDownLeft } from "lucide-react";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import type { MessageMode } from "@/lib/runState";
 
@@ -19,20 +19,32 @@ export function Composer({ mode, onSend, sending: sendingProp, sent, purpose }: 
   const words = purpose ?? MODE[mode];
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
+  const inFlight = useRef(false);
+  const [error, setError] = useState<string | null>(null);
   const sending = sendingProp || busy;
   // The draft stays until the server takes the message: a send that fails (it resolves false) keeps it to send again.
   const send = async () => {
-    if (!text.trim() || !onSend || sending) return;
+    if (!text.trim() || !onSend || sending || inFlight.current) return;
+    inFlight.current = true;
     setBusy(true);
-    const ok = await onSend(text.trim());
-    setBusy(false);
-    if (ok !== false) setText("");
+    setError(null);
+    try {
+      const ok = await onSend(text.trim());
+      if (ok !== false) setText("");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      inFlight.current = false;
+      setBusy(false);
+    }
   };
   return (
     <form className="border bg-card" onSubmit={(e) => { e.preventDefault(); void send(); }}>
+      <label className="sr-only" htmlFor="composer">Message</label>
       <textarea id="composer" rows={2} value={text} readOnly={sending} aria-busy={sending} onChange={(e) => setText(e.target.value)} placeholder={words.placeholder}
-        onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); } }}
+        onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing && e.keyCode !== 229) { e.preventDefault(); void send(); } }}
         className="block w-full resize-none bg-transparent px-4 pt-3 font-mono text-[13px] outline-none placeholder:text-muted-foreground" />
+      {error && <p className="px-4 pb-3 text-[13px] text-destructive-text" role="alert">Message could not be sent: {error}</p>}
       <div className="flex items-center justify-between gap-3 px-3 pb-3">
         <span className="min-w-0 text-[11px] text-muted-foreground">
           <label htmlFor="composer" className="font-medium text-foreground">{words.label}</label> · {sent ? "Sent. It appears on the timeline when the run takes it." : words.does}

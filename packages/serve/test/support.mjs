@@ -81,6 +81,7 @@ export async function builtConsole(t) {
   await writeFile(join(root, "assets", "index-Ab12Cd34.js"), "document.getElementById('root').textContent = 'console';\n");
   await writeFile(join(root, "assets", "index-Ef56Gh78.css"), "body { margin: 0; }\n");
   await writeFile(join(root, "assets", "mono-latin-400-normal-Ij90Kl12.woff2"), Buffer.from("wOF2"));
+  await writeFile(join(root, "asset-manifest.json"), JSON.stringify({ files: ["index.html", "assets/index-Ab12Cd34.js", "assets/index-Ef56Gh78.css", "assets/mono-latin-400-normal-Ij90Kl12.woff2"] }));
   return root;
 }
 

@@ -412,8 +412,15 @@ console.log(JSON.stringify({core:true,jev:true,pi:true,archil:true,browser:true,
   assert.match((await offlineNode(['node_modules/@parcha/agentrun-serve/dist/cli.js', '--help'])).stdout, /^usage: agentrun-serve /, 'the installed agentrun-serve bin prints its usage');
   assert.match((await offlineNode(['node_modules/@parcha/agentrun/bin/agentrun.mjs', '--help'])).stdout, /^Usage: npx @parcha\/agentrun /, 'the installed agentrun bin prints its usage');
   if (requireConsole) {
-    const index = await readFile(join(consumer, 'node_modules/@parcha/agentrun-serve/dist/console/index.html'), 'utf8').catch(() => '');
+    const consoleDir = join(consumer, 'node_modules/@parcha/agentrun-serve/dist/console');
+    const index = await readFile(join(consoleDir, 'index.html'), 'utf8').catch(() => '');
     assert.match(index, /\ssrc="\.\/assets\/[^"]+\.js"/, 'the installed agentrun-serve has the console, dist/console/index.html');
+    const assets = JSON.parse(await readFile(join(consoleDir, 'asset-manifest.json'), 'utf8'));
+    assert.ok(Array.isArray(assets.files) && assets.files.length > 0, 'the installed console has an exact asset manifest');
+    for (const file of assets.files) {
+      assert.ok(/^(?:assets\/[A-Za-z0-9_-][A-Za-z0-9._-]*|THIRD-PARTY-NOTICES\.txt)$/.test(file), 'manifest files are public assets');
+      assert.ok((await readFile(join(consoleDir, file))).length > 0, `manifest asset is installed: ${file}`);
+    }
     // The console bundles third-party code; its notices ship beside it, one section per bundled package with its license
     // text, and NOTICE points to them. React and the fonts are in every console bundle, so a notices file without them is not
     // this bundle's.

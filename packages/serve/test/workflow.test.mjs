@@ -1,7 +1,7 @@
 // A workflow revision's run: the workflow runs in the run's process on the DSL's durable runner, its model nodes on the
 // run's model, and the run is read from its store once its process has exited.
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
@@ -101,11 +101,17 @@ test("an escalated workflow run is completed on /v2 with no error and a review, 
   assert.deepEqual((await api("GET", "/runs?status=completed")).body.runs.map((r) => [r.error, r.review]), [[null, review]]);
   assert.deepEqual((await api("GET", "/runs?status=failed")).body.runs, [], "an escalated run is not a failed one");
   assert.equal(storeRun(data, started.run_id).state, "escalated");
+  assert.equal((await api("GET", "/runs")).body.runs[0].result_available, false, "the review reason is not a result");
   await close();
+  // Stored output and review are independent facts.
+  const meta = join(data, "runs", started.run_id, "serve.json");
+  await writeFile(meta, JSON.stringify({ ...JSON.parse(await readFile(meta, "utf8")), output: { answer: 42 } }));
   const again = await startServe({ data, port: 0, faux: FAUX });
   t.after(() => again.close());
   const read = client(again.baseUrl, again.token);
   assert.deepEqual((await read("GET", "/runs")).body.runs.map((r) => [r.status, r.error, r.review]), [["completed", null, review]], "read from the store's row and serve.json");
+  assert.equal((await read("GET", "/runs")).body.runs[0].result_available, true, "a saved workflow output remains available beside its review");
+  assert.deepEqual((await read("GET", `/runs/${started.run_id}`)).body.result.output, { answer: 42 });
   assert.deepEqual((await read("GET", `/runs/${started.run_id}`)).body.review, review);
 });
 

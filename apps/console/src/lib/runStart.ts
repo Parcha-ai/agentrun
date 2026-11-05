@@ -76,10 +76,16 @@ export { keeper };
 
 const sh = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 
+/** The supplied API endpoint is complete; an origin-only caller uses the standalone server's /v2 endpoint. */
+export function runStartUrl(origin: string, agentId: string, apiBase?: string): string {
+  const base = (apiBase === undefined ? `${origin.replace(/\/$/, "")}/v2` : new URL(apiBase, `${origin.replace(/\/$/, "")}/`).href).replace(/\/$/, "");
+  return `${base}/agents/${encodeURIComponent(agentId)}/runs`;
+}
+
 /** The request as cURL for the code pane. The token is `$AGENTRUN_TOKEN`: a value never appears. */
-export function curlFor(origin: string, agentId: string, body: StartBody, key: string): string {
+export function curlFor(origin: string, agentId: string, body: StartBody, key: string, apiBase?: string): string {
   return [
-    `curl -X POST ${sh(`${origin}/v2/agents/${encodeURIComponent(agentId)}/runs`)} \\`,
+    `curl -X POST ${sh(runStartUrl(origin, agentId, apiBase))} \\`,
     `  -H "Authorization: Bearer $AGENTRUN_TOKEN" \\`,
     `  -H 'Content-Type: application/json' \\`,
     `  -H ${sh(`Idempotency-Key: ${key}`)} \\`,

@@ -33,6 +33,7 @@ test("a run starts queued, its timeline follows it to completed and final, and t
   assert.equal(typeof run.ended_at, "string");
   const index = (await api("GET", "/agents/calc/runs")).body.runs;
   assert.deepEqual(index.map((r) => [r.run_id, r.status]), [[started.run_id, "completed"]]);
+  assert.deepEqual([index[0].result_available, index[0].files_available], [true, false], "the completed answer is available, with no public files");
   const carried = await api("GET", "/agents/calc");
   assert.equal(carried.headers.get("etag"), etag, "a run is no edit: the current revision stays");
   assert.deepEqual(carried.body.runs, { count: 1, live: 0 });
@@ -287,6 +288,7 @@ test("a run, and every run summary in both runs indexes, meet the served documen
   const check = async (call, when) => {
     for (const path of ["/agents/calc/runs", "/runs"]) {
       const runs = await index(call, path);
+      for (const listed of runs) assert.deepEqual([listed.result_available, listed.files_available], [listed.status === "completed", false], `result and file availability ${path} ${when}`);
       const listed = Object.fromEntries(runs.map((r) => [r.run_id, Object.hasOwn(r, "effort") ? r.effort : "none"]));
       assert.deepEqual(listed, Object.fromEntries(Object.entries(want).filter(([id]) => path === "/runs" || id !== failed.run_id)), `${path} ${when}`);
     }

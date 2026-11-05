@@ -8,7 +8,7 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { agent, builtConsole, call, CONSOLE_INDEX, cookieOf, scratch, serve } from "./support.mjs";
 
-const CSP = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+const CSP = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 /** A test password, no real one (built, so the source export's credential scan reads no literal). */
 const PASSWORD = ["not-a-secret", "owner"].join("-");
 
@@ -19,6 +19,7 @@ async function consoleWithTraps(t) {
   const outside = dirname(root);
   await writeFile(join(root, "notes.txt"), "a kind of file the console never builds\n");
   await writeFile(join(root, "assets", ".hidden.js"), "hidden\n");
+  await writeFile(join(root, "assets", "unreviewed.js"), "not in the build manifest\n");
   await writeFile(join(outside, "secret.js"), "outside the console\n");
   await writeFile(join(outside, "secret.html"), "outside the console\n");
   await symlink(join(outside, "secret.js"), join(root, "assets", "escape.js"));
@@ -63,7 +64,7 @@ test("nothing outside the console's directory: dot segments, encoded ones, hidde
     "/assets/../secret.js", "/assets/../../secret.js", "/assets/./index-Ab12Cd34.js", "/assets//index-Ab12Cd34.js",
     "/assets/%2e%2e/secret.js", "/assets/%2E%2E/secret.html", "/assets/..%2fsecret.js", "/assets%2f..%2fsecret.js",
     "/assets/%69ndex-Ab12Cd34.js", "/assets/%2e%2e%2f%2e%2e%2fsecret.js", "/assets/..%5csecret.js", "/assets\\..\\secret.js",
-    "/assets/.hidden.js", "/assets/escape.js", "/assets/", "/assets/missing.js", "/notes.txt", "/index.html", "/secret.js",
+    "/assets/.hidden.js", "/assets/escape.js", "/assets/unreviewed.js", "/assets/", "/assets/missing.js", "/notes.txt", "/index.html", "/secret.js",
     "/console/assets/index-Ab12Cd34.js",
   ]) {
     const res = await call(server.port, { path });

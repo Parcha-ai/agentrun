@@ -43,6 +43,45 @@ describe("AgentEditor, a new agent's tools", () => {
   });
 });
 
+describe("AgentEditor, native revision fields", () => {
+  const agent = { agent_id: "citer", kind: "agentic" as const, revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Citer", instructions: "Cite.", harness: "pi", skills: ["cite"], tools: [] } };
+
+  it("keeps existing files unless a complete replacement is explicitly confirmed", async () => {
+    const { act } = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    const sent: { skillFiles?: Record<string, string> }[] = [];
+    const host = document.body.appendChild(document.createElement("div"));
+    const root = createRoot(host);
+    act(() => root.render(createElement(AgentEditor, { agent, caps, step: "tools", onSave: async (fields) => { sent.push(fields); return null; } })));
+    const click = async (label: RegExp) => { await act(async () => { [...host.querySelectorAll("button")].find((b) => label.test((b.textContent ?? "").trim()))!.click(); }); };
+    try {
+      await click(/Save revision/);
+      expect(sent).toHaveLength(1);
+      expect(sent[0]).not.toHaveProperty("skillFiles");
+      await click(/^Replace skill bundle$/);
+      const files = { "cite/SKILL.md": "# Cite carefully\n", "cite/reference.md": "Primary sources.\n" };
+      act(() => {
+        const box = host.querySelector('[aria-label="Skill files JSON"]')!;
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(box, JSON.stringify(files));
+        box.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      await click(/Save revision/);
+      expect(sent).toHaveLength(1);
+      expect(host.querySelector('[role="alert"]')).toBeTruthy();
+      act(() => host.querySelector<HTMLInputElement>('[aria-label="Confirm skill replacement"]')!.click());
+      await click(/Save revision/);
+      expect(sent[1]?.skillFiles).toEqual(files);
+    } finally { act(() => root.unmount()); host.remove(); }
+  });
+
+  it("offers no model input on a workflow revision whose server refuses one", () => {
+    const workflow = { ...agent, kind: "workflow" as const, definition: { ...agent.definition, workflow: { root: { node: "agent", instructions: "Answer." } } } };
+    const html = renderToStaticMarkup(createElement(AgentEditor, { agent: workflow, caps, step: "settings" }));
+    expect(html).not.toContain('placeholder="provider/model"');
+  });
+});
+
 // An agent given no web tool on purpose (a file-only agent) is not nagged on every step: the Tools step says it quietly.
 describe("AgentEditor, an agent with no web tool on purpose", () => {
   const files = { agent_id: "files", kind: "agentic" as const, revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Files", instructions: "Tidy the files.", harness: "pi", skills: [], tools: ["read", "write"] } };

@@ -17,6 +17,7 @@ test('a module id names the package it is in: the innermost node_modules, a scop
   assert.equal(packageDirOf('/w/apps/console/node_modules/react/cjs/react.production.min.js'), '/w/apps/console/node_modules/react');
   assert.equal(packageDirOf('/w/node_modules/@fontsource/jetbrains-mono/index.css?used'), '/w/node_modules/@fontsource/jetbrains-mono');
   assert.equal(packageDirOf('\0/w/node_modules/a/node_modules/b/index.js'), '/w/node_modules/a/node_modules/b');
+  assert.equal(packageDirOf('C:\\w\\node_modules\\@fontsource\\jetbrains-mono'), 'C:/w/node_modules/@fontsource/jetbrains-mono', 'native font roots are accepted on Windows');
   assert.equal(packageDirOf('/w/apps/console/src/App.tsx'), undefined, "the console's own source");
   assert.equal(packageDirOf('/w/packages/dsl/src/graph.ts'), undefined, "the repository's own source");
   assert.equal(packageDirOf('/w/node_modules/@scope'), undefined, 'a scope with no package');
@@ -26,7 +27,7 @@ test('each bundled package once, sorted, with its version, license and every lic
   await put('node_modules/react/package.json', JSON.stringify({ name: 'react', version: '18.3.1', license: 'MIT' }));
   await put('node_modules/react/LICENSE', 'MIT License\n\nCopyright (c) Meta Platforms, Inc. and affiliates.\n');
   await put('node_modules/@fontsource/jetbrains-mono/package.json', JSON.stringify({ name: '@fontsource/jetbrains-mono', version: '5.1.1', license: 'OFL-1.1' }));
-  await put('node_modules/@fontsource/jetbrains-mono/LICENSE', 'SIL Open Font License, Version 1.1\n');
+  await put('node_modules/@fontsource/jetbrains-mono/OFL', 'SIL Open Font License, Version 1.1\n');
   await put('node_modules/dompurify/package.json', JSON.stringify({ name: 'dompurify', version: '3.2.3', license: '(MPL-2.0 OR Apache-2.0)' }));
   await put('node_modules/dompurify/LICENSE', 'Apache and MPL\n');
   await put('node_modules/bare/package.json', JSON.stringify({ name: 'bare', version: '1.0.0', license: 'ISC' }));

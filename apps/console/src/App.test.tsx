@@ -18,6 +18,11 @@ describe("route", () => {
     expect(route("#/runs")).toEqual({ section: "runs" });
     expect(route("#/runs/r1")).toEqual({ section: "runs", run: "r1" });
     expect(route("#/runs?agent=calc")).toEqual({ section: "runs", runsOf: "calc" });
+    expect(route("#/runs/bad%escape")).toEqual({ section: "runs", run: "bad%escape" });
+    expect(route("#/agents/bad%escape/edit")).toEqual({ section: "agents", agent: "bad%escape", edit: true });
+  });
+  it("keeps the agent and pinned revision in a run handoff's playground link", () => {
+    expect(route("#/playground?agent=agent%20one&revision=rev-two")).toEqual({ section: "playground", startAgent: "agent one", startRevision: "rev-two" });
   });
   it("opens the schedules list, a new schedule, one schedule, and its editor at their own addresses", () => {
     expect(route("#/schedules")).toEqual({ section: "schedules" });
@@ -115,7 +120,114 @@ describe("App, Mission Control after a failed read", () => {
   });
 });
 
-// Settings shows only on a server with the tool keys routes, so the console never offers a page its server lacks.
+describe("App, Mission Control's loaded recent range", () => {
+  afterEach(() => { vi.useRealTimers(); });
+
+  async function open() {
+    vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+    vi.setSystemTime(Date.parse("2026-10-30T06:00:00Z"));
+    let version = 1;
+    const run = (id: string) => ({ run_id: id, agent_id: "calc", agent_version: 1, revision: "rv1", kind: "agentic", status: "completed", state: "idle", title: id, created_at: "2026-10-30T06:00:00Z", ended_at: "2026-10-30T06:00:03Z", result: null, error: null, cost: null, archived_at: null });
+    let rows = Array.from({ length: 25 }, (_, i) => run(`r${i + 1}`));
+    let hold: "head" | "tail" | undefined;
+    let release: (() => void) | undefined;
+    let recentReads = 0;
+    const json = (body: unknown) => new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } });
+    vi.stubGlobal("fetch", async (url: string) => {
+      const u = new URL(url, "http://serve.test");
+      if (u.pathname === "/v2/setup/import") return new Response(null, { status: 404 });
+      if (u.pathname === "/v2/health") return json({ status: "ok" });
+      if (u.pathname === "/v2/auth/session") return json({ password_set: true, signed_in: true });
+      if (u.pathname === "/v2/capabilities") return json({ harnesses: [], features: {} });
+      if (u.pathname === "/v2/agents") return json({ agents: [], next_cursor: null });
+      if (u.pathname === "/v2/stats") return json({ agents: 1, runs: { total: rows.length, active: 0, needs_input: 0, failed: 0, status_unknown: 0 }, per_agent: [], cost: { usd: null, basis: null, unknown_runs: rows.length } });
+      if (u.pathname === "/v2/runs") {
+        if (u.searchParams.has("status")) return json({ runs: [], next_cursor: null });
+        const cursor = u.searchParams.get("cursor");
+        if (!cursor) recentReads++;
+        if (cursor && !cursor.startsWith(`${version}:`)) return new Response(JSON.stringify({ error: { code: "invalid_cursor", message: "cursor belongs to an older listing", retryable: false } }), { status: 400 });
+        const start = cursor ? Number(cursor.split(":")[1]) : 0;
+        const end = start + Number(u.searchParams.get("limit"));
+        const response = json({ runs: rows.slice(start, end), next_cursor: end < rows.length ? `${version}:${end}` : null });
+        if (hold === (cursor ? "tail" : "head")) {
+          hold = undefined;
+          return new Promise<Response>((resolve) => { release = () => { release = undefined; resolve(response); }; });
+        }
+        return response;
+      }
+      throw new Error(`Unexpected request: ${u}`);
+    });
+    location.hash = "";
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    await act(async () => { root!.render(createElement(App)); });
+    const recent = () => [...host.querySelectorAll("section")].find((section) => section.querySelector("h2")?.textContent === "Recent runs")!;
+    const ids = () => [...recent().querySelectorAll<HTMLAnchorElement>('a[href^="#/runs/"]')].map((link) => link.getAttribute("href")!.slice("#/runs/".length));
+    const click = async (label: string) => { await act(async () => { [...host.querySelectorAll("button")].find((button) => button.textContent === label)!.click(); }); };
+    return { host, ids, click, reads: () => recentReads, change: () => { version++; rows = [run("new"), ...rows.filter((row) => row.run_id !== "r15")]; }, hold: (page: "head" | "tail") => { hold = page; }, release: async () => { expect(release).toBeTypeOf("function"); await act(async () => { release!(); }); } };
+  }
+
+  it.each(["poll", "manual"] as const)("refreshes the loaded range from new cursors after a %s refresh", async (refresh) => {
+    const page = await open();
+    await page.click("Load more");
+    expect(page.ids()).toHaveLength(20);
+    expect(page.ids()).toContain("r20");
+    page.change();
+    if (refresh === "poll") await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+    else await page.click("Refresh");
+    expect(page.ids()).toHaveLength(20);
+    expect(page.ids()).toContain("new");
+    expect(page.ids()).toContain("r20");
+    expect(page.ids()).not.toContain("r15");
+    await page.click("Load more");
+    expect(page.ids()).toHaveLength(25);
+    expect(new Set(page.ids()).size).toBe(25);
+    expect(page.ids()).toContain("r25");
+    expect(page.host.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it.each(["more", "poll"] as const)("lets an explicit action supersede an older %s response without losing the expanded fresh range", async (pending) => {
+    const page = await open();
+    page.hold(pending === "more" ? "tail" : "head");
+    if (pending === "more") await page.click("Load more");
+    else await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+    page.change();
+    if (pending === "more") await page.click("Refreshing");
+    else await page.click("Load more");
+    expect(page.ids()).toHaveLength(20);
+    expect(page.ids()).toContain("new");
+    expect(page.ids()).not.toContain("r15");
+    await page.release();
+    expect(page.ids()).toHaveLength(20);
+    expect(page.ids()).toContain("new");
+    expect(page.ids()).not.toContain("r15");
+    await page.click("Load more");
+    expect(page.ids()).toHaveLength(25);
+    expect(page.host.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it("lets a refresh slower than the poll interval settle before polling again", async () => {
+    const page = await open();
+    await page.click("Load more");
+    page.hold("tail");
+    await page.click("Refresh");
+    const reads = page.reads();
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(page.reads()).toBe(reads);
+    await page.release();
+    expect(page.ids()).toHaveLength(20);
+    expect([...page.host.querySelectorAll("button")].some((button) => button.textContent === "Refresh" && !button.disabled)).toBe(true);
+    page.change();
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+    expect(page.reads()).toBeGreaterThan(reads);
+    expect(page.ids()).toHaveLength(20);
+    expect(page.ids()).toContain("new");
+    expect(page.ids()).not.toContain("r15");
+    expect(page.host.querySelector('[role="alert"]')).toBeNull();
+  });
+});
+
+// Settings always describes the connection; key editing is present only when this server supports it.
 describe("App, Settings", () => {
   const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
   const keys = { keys: [{ id: "monid", label: "Monid", fields: [{ name: "MONID_API_KEY", set: false, source: null }], unlocks: ["monid.run"], harnesses: ["pi"] }], reenter: null };
@@ -174,6 +286,7 @@ describe("App, Settings", () => {
     const wait = async (ok: () => boolean) => { const end = Date.now() + 3000; while (!ok() && Date.now() < end) await act(async () => { await new Promise((r) => setTimeout(r, 20)); }); };
     const select = () => host.querySelector<HTMLSelectElement>('tr[data-tool="web_search"] select');
     await wait(() => !!select());
+    expect(select(), host.textContent ?? "tools page").toBeTruthy();
     const choose = async (p: string) => { await act(async () => { const s = select()!; Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(s, p); s.dispatchEvent(new Event("change", { bubbles: true })); }); };
     await choose("native");
     await choose("parallel");
@@ -184,10 +297,12 @@ describe("App, Settings", () => {
     expect(row).not.toContain("pi: native");
   });
 
-  it("has no Settings in the nav when the server has no features.tool_keys", async () => {
-    const page = await open({}, "#/runs");
+  it("keeps connection Settings available without offering unsupported tool-key routes", async () => {
+    const page = await open({}, "#/settings");
     expect(page.nav()).toContain("Runs");
-    expect(page.nav()).not.toContain("Settings");
+    expect(page.nav()).toContain("Settings");
+    expect(page.host.querySelector("h1")?.textContent).toBe("Server connection");
+    expect(page.asked).not.toContain("GET /v2/settings/tool-keys");
   });
 
   it("#/settings/tools opens Tools, with a tab for each settings page, when the server offers a choice of provider", async () => {
@@ -212,7 +327,7 @@ describe("App, Settings", () => {
     const page = await open({ tool_keys: { routes: true, at_rest: "sealed" } }, "#/settings/keys");
     expect(page.nav()).toContain("Settings");
     expect(page.host.querySelector('[aria-current="page"]')?.textContent?.trim()).toBe("Settings");
-    expect(page.host.querySelector("h1")?.textContent).toBe("Keys");
+    expect(page.host.querySelector("h1")?.textContent).toBe("Server connection");
     expect(page.host.textContent).toContain("MONID_API_KEYnot set");
   });
 
@@ -248,6 +363,57 @@ describe("App, Settings", () => {
     await act(async () => { button(/^Save$/).click(); }); await settle();
     expect(page.asked).toContain("PUT /v2/settings/tool-keys/monid");
     expect(caps()).toBe(2);
+  });
+});
+
+describe("App, expired local-owner session", () => {
+  it("clears private data and rechecks the session when a protected request is unauthorized", async () => {
+    let expired = false;
+    const sessions: boolean[] = [];
+    const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+    vi.stubGlobal("fetch", async (url: string) => {
+      const path = new URL(url, "http://serve.test").pathname;
+      if (path === "/v2/auth/session") { sessions.push(!expired); return json(200, { password_set: true, signed_in: !expired }); }
+      if (expired) return json(401, { error: { code: "unauthenticated", message: "The session ended.", retryable: false } });
+      if (path === "/v2/capabilities") return json(200, { harnesses: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } });
+      if (path === "/v2/agents") return json(200, { agents: [], next_cursor: null });
+      return json(200, { runs: [{ run_id: "private", agent_id: "agent", agent_version: 1, revision: "rev", kind: "agentic", status: "completed", state: "idle", title: "Private customer answer", created_at: "2026-11-01T00:00:00Z", ended_at: "2026-11-01T00:00:01Z", result: null, error: null, cost: null, archived_at: null }], next_cursor: null });
+    });
+    location.hash = "#/runs";
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    await act(async () => { root!.render(createElement(App)); });
+    expect(host.textContent).toContain("Private customer answer");
+    expired = true;
+    await act(async () => { [...host.querySelectorAll<HTMLButtonElement>('nav[aria-label="Navigation"] button')].find((button) => button.textContent?.trim() === "Agents")!.click(); window.dispatchEvent(new HashChangeEvent("hashchange")); });
+    expect(host.textContent).not.toContain("Private customer answer");
+    expect(host.querySelector('input[type="password"]')).not.toBeNull();
+    expect(sessions).toEqual([true, false]);
+  });
+});
+
+describe("App, explicitly restricted listings", () => {
+  it.each(["agents", "runs"] as const)("hides the %s listing and refuses its direct route without requesting it", async (restricted) => {
+    const asked: string[] = [];
+    const json = (body: unknown) => new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } });
+    vi.stubGlobal("fetch", async (url: string) => {
+      const path = new URL(url, "http://serve.test").pathname;
+      asked.push(path);
+      if (path === "/v2/auth/session") return json({ password_set: true, signed_in: true });
+      if (path === "/v2/capabilities") return json({ harnesses: [], features: {
+        agents: { create: true, update: true, list: restricted !== "agents", revisions: true },
+        runs: { list: restricted !== "runs" },
+        messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false },
+      } });
+      return json({ agents: [], runs: [], next_cursor: null });
+    });
+    location.hash = `#/${restricted}`;
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    await act(async () => { root!.render(createElement(App)); });
+    expect(host.textContent).toContain("listing is unavailable on this server");
+    expect([...host.querySelectorAll('nav[aria-label="Navigation"] button')].map((button) => button.textContent?.trim())).not.toContain(restricted === "agents" ? "Agents" : "Runs");
+    expect(asked).not.toContain(`/v2/${restricted}`);
   });
 });
 
@@ -296,6 +462,40 @@ describe("App, the model key card on the first screen", () => {
 // Archive on a run's page hides it from the runs list and keeps it among the archived runs; the list's filters ask the
 // server with its own parameters, and the address keeps them.
 describe("App, archiving a run and filtering the runs list", () => {
+  it("keeps an old page's failure from replacing a new filter's rows or releasing its pending page", async () => {
+    const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+    const row = (id: string): Run => ({ run_id: id, agent_id: "calc", agent_version: 1, revision: "rv1", kind: "agentic", status: "failed", state: "idle", title: id,
+      created_at: new Date().toISOString(), ended_at: null, result: null, error: null, cost: null, archived_at: null });
+    let failOld!: () => void, finishNew!: () => void;
+    vi.stubGlobal("fetch", async (url: string) => {
+      const u = new URL(url, "http://serve.test");
+      if (u.pathname === "/v2/auth/session") return json(200, { password_set: true, signed_in: true });
+      if (u.pathname === "/v2/capabilities") return json(200, { harnesses: [], features: {} });
+      if (u.pathname === "/v2/agents") return json(200, { agents: [], next_cursor: null });
+      if (u.searchParams.get("cursor") === "old") return new Promise<Response>((resolve) => { failOld = () => resolve(json(503, { error: { code: "unavailable", message: "Old page failed", retryable: true } })); });
+      if (u.searchParams.get("cursor") === "new") return new Promise<Response>((resolve) => { finishNew = () => resolve(json(200, { runs: [row("Filtered tail")], next_cursor: null })); });
+      return json(200, { runs: [row(u.searchParams.has("status") ? "Filtered head" : "Original head")], next_cursor: u.searchParams.has("status") ? "new" : "old" });
+    });
+    location.hash = "#/runs";
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    await act(async () => { root!.render(createElement(App)); });
+    const button = (label: string) => [...host.querySelectorAll<HTMLButtonElement>("button")].find((item) => item.textContent?.trim() === label)!;
+    await act(async () => { button("Load more").click(); });
+    await act(async () => { host.querySelector<HTMLButtonElement>('[role="combobox"][aria-label="Runs in one state"]')!.click(); });
+    await act(async () => { document.querySelector<HTMLElement>('[role="option"][aria-label="Failed"]')!.click(); });
+    expect(host.textContent).toContain("Filtered head");
+    expect(button("Load more").disabled).toBe(false);
+    await act(async () => { button("Load more").click(); });
+    await act(async () => { failOld(); });
+    expect(host.querySelector('[role="alert"]')).toBeNull();
+    expect(host.textContent).toContain("Filtered head");
+    expect(button("Loading").disabled).toBe(true);
+    await act(async () => { finishNew(); });
+    expect(host.textContent).toContain("Filtered tail");
+    expect(host.textContent).not.toContain("Original head");
+  });
+
   it("Archive moves the run out of the default list into the archived one; the state filter asks the server", async () => {
     const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
     const run = { run_id: "r1", agent_id: "calc", agent_version: 1, revision: "rv1", kind: "agentic", status: "completed", state: "idle", title: "What is two and two?", created_at: "2026-10-30T06:00:00Z", ended_at: "2026-10-30T06:00:03Z", result: { final_answer: "4" }, error: null, cost: null, archived_at: null as string | null };
@@ -341,8 +541,10 @@ describe("App, archiving a run and filtering the runs list", () => {
     await wait(() => !!host.textContent?.includes("What is two and two?"), "the archived runs hold it");
     expect(location.hash).toBe("#/runs?archived=true");
     expect(host.querySelector("h1")?.textContent).toBe("Archived runs");
-    const select = host.querySelector("select[aria-label='Runs in one state']") as HTMLSelectElement;
-    await act(async () => { select.value = "failed"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+    const select = host.querySelector<HTMLButtonElement>("[role='combobox'][aria-label='Runs in one state']")!;
+    await act(async () => select.click());
+    const failed = [...document.querySelectorAll<HTMLElement>("[role='option']")].find((option) => option.textContent === "Failed")!;
+    await act(async () => failed.click());
     await wait(() => !!host.textContent?.includes("No run matches."), "no archived run failed");
     expect(location.hash).toBe("#/runs?status=failed&archived=true");
     expect(asked).toContain("GET /v2/runs?limit=50&status=failed&archived=true");
@@ -350,6 +552,49 @@ describe("App, archiving a run and filtering the runs list", () => {
 });
 
 describe("App, an agent's address", () => {
+  it.each([false, true])("keeps a newer pinned playground agent with an existing selection loaded: %s", async (loaded) => {
+    const json = (body: unknown) => new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } });
+    const agent = (id: string): Agent => ({ agent_id: id, kind: "agentic", revision: `${id}-revision`, revisions: 1, archived_at: null,
+      definition: { version: 1, name: `${id} agent`, instructions: "Answer.", harness: "pi", skills: [], tools: [] } });
+    let version = "old";
+    const pending: ((response: Response) => void)[] = [];
+    vi.stubGlobal("fetch", async (url: string) => {
+      const u = new URL(url, "http://serve.test");
+      if (u.pathname === "/v2/auth/session") return json({ password_set: true, signed_in: true });
+      if (u.pathname === "/v2/capabilities") return json({ harnesses: [{ id: "pi", available: true }], features: {} });
+      if (u.pathname.endsWith("/revisions")) return json({ revisions: [], next_cursor: null });
+      if (u.searchParams.has("archived")) return json({ agents: [], next_cursor: null });
+      if ((version === "old" && !loaded) || (version === "new" && loaded)) return new Promise<Response>((resolve) => pending.push(resolve));
+      return json({ agents: [agent(version)], next_cursor: null });
+    });
+    location.hash = "#/playground?agent=old";
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    await act(async () => { root!.render(createElement(App)); });
+    let loading = host.textContent;
+    const selected = () => host.querySelector('[role="combobox"][aria-label="Agent"]')?.textContent;
+    if (loaded) {
+      expect(selected()).toContain("old agent");
+      await act(async () => {
+        const task = host.querySelector<HTMLTextAreaElement>('textarea[aria-label="Task"]')!;
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(task, "Use the selected agent");
+        task.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      expect([...host.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.includes("Send request"))?.disabled).toBe(false);
+    }
+    version = "new";
+    await act(async () => { location.hash = "#/playground?agent=new"; window.dispatchEvent(new HashChangeEvent("hashchange")); });
+    if (loaded) {
+      loading = host.textContent;
+      expect([...host.querySelectorAll("button")].some((button) => button.textContent?.includes("Send request"))).toBe(false);
+      await act(async () => { for (const resolve of pending) resolve(json({ agents: [agent("new")], next_cursor: null })); });
+    }
+    expect(selected()).toContain("new agent");
+    if (!loaded) await act(async () => { for (const resolve of pending) resolve(json({ agents: [agent("old")], next_cursor: null })); });
+    expect(selected()).toContain("new agent");
+    expect(loading).toContain("Loading agents");
+  });
+
   it("opens the agent's page, and /edit opens its editor", async () => {
     const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
     const calc = { agent_id: "calc", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Calc", instructions: "Answer.", harness: "pi", skills: [], tools: [] } };
@@ -398,6 +643,10 @@ describe("App, the agents' names", () => {
       if (what === "agents" && !id && u.searchParams.get("archived") && archivedFails) return json(503, { error: { code: "store_busy", message: "the store is busy", retryable: true } });
       if (what === "agents" && !id) return json(200, { agents: u.searchParams.get("archived") ? archived : active, next_cursor: null });
       if (what === "agents" && !sub) return json(200, [...active, ...archived].find((a) => a.agent_id === id), { etag: `"${made.revision}"` });
+      if (what === "agents" && sub === "revisions") {
+        const agent = [...active, ...archived].find((a) => a.agent_id === id)!;
+        return json(200, { revisions: [{ revision: agent.revision, version: agent.definition.version, current: true, note: null, created_at: "2026-11-02T12:00:00Z", kind: agent.kind, definition: agent.definition }], next_cursor: null });
+      }
       if (what === "agents" && sub === "runs" && method === "POST") { runs.unshift(started); return json(202, started); }
       if (what === "agents" && sub === "runs") return json(200, { runs: runs.filter((r) => r.agent_id === id), next_cursor: null });
       if (what === "runs" && !id) return json(200, { runs, next_cursor: null });
@@ -430,10 +679,15 @@ describe("App, the agents' names", () => {
     await type(host.querySelector<HTMLInputElement>('input[placeholder="e.g., Invoice checker"]')!, made.definition.name!);
     await type(host.querySelector<HTMLTextAreaElement>('textarea[placeholder^="Describe what the agent does"]')!, made.definition.instructions!);
     await act(async () => { button(/^Create$/)!.click(); });
-    // Its page, then a run of it from the run bar: the run's page opens.
-    await until(() => location.hash === `#/agents/${encodeURIComponent(made.agent_id)}` && !!host.querySelector('section[aria-label="Start a run"] textarea'));
-    await type(host.querySelector<HTMLTextAreaElement>('section[aria-label="Start a run"] textarea')!, "Check the 2.3.0 entry.");
-    await act(async () => { button(/^Run$/)!.click(); });
+    // Its administration page launches the displayed revision in the API playground.
+    const playground = `#/playground?agent=${encodeURIComponent(made.agent_id)}&revision=${encodeURIComponent(made.revision)}`;
+    await until(() => location.hash === `#/agents/${encodeURIComponent(made.agent_id)}` && !!host.querySelector(`a[href="${playground}"]`));
+    await act(async () => { host.querySelector<HTMLAnchorElement>(`a[href="${playground}"]`)!.click(); });
+    await until(() => location.hash === playground && !!host.querySelector('textarea[aria-label="Task"]'));
+    await type(host.querySelector<HTMLTextAreaElement>('textarea[aria-label="Task"]')!, "Check the 2.3.0 entry.");
+    await act(async () => { button(/^Send request$/)!.click(); });
+    await until(() => !!button(/^Open this run$/));
+    await act(async () => { button(/^Open this run$/)!.click(); });
     await until(() => location.hash === `#/runs/${encodeURIComponent(started.run_id)}` && !!host.querySelector("h1"));
     // The run's page names its agent in its breadcrumb.
     await until(() => host.textContent!.includes(made.definition.name!));

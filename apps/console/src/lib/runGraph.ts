@@ -278,11 +278,14 @@ export function itemCounts(items: RunItem[] = []) {
   return c;
 }
 
-/** A run's cost as its graph totals give it: the server's total, else (one unknown makes it unknown) the sum of the
- *  priced decisions with a count of the unpriced. The run's header and its totals bar both read it. */
-export function costOf(g: RunGraph): { usd: number; unknown: number } {
-  const unknown = g.decisions.filter((d) => d.cost_usd === null).length;
-  return { usd: g.totals.cost_usd ?? g.decisions.reduce((a, d) => a + (d.cost_usd ?? 0), 0), unknown: g.totals.cost_usd === null ? unknown : 0 };
+/** The server's total, or a subtotal of priced decisions with an explicit count of those left unpriced. */
+export function costOf(g: RunGraph): { usd: number | null; unknown: number } {
+  if (g.totals.cost_usd !== null) return { usd: g.totals.cost_usd, unknown: 0 };
+  const priced = g.decisions.filter((d) => d.cost_usd !== null);
+  return {
+    usd: priced.length ? priced.reduce((sum, d) => sum + d.cost_usd!, 0) : null,
+    unknown: g.decisions.length - priced.length,
+  };
 }
 
 export const usd = (v: number | null | undefined) => (v == null ? "Unknown" : v > 0 && v < 0.0001 ? "<$0.0001" : v < 1 ? `$${v.toFixed(4)}` : `$${v.toFixed(2)}`);

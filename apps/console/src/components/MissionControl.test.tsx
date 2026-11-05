@@ -36,6 +36,51 @@ const view: MissionView = {
 
 // Mission Control: the console's first page. Counts, cost said honestly, runs per agent and the latest runs, linked.
 describe("MissionControl", () => {
+  it.each([true, false])("shows actionable activity, pinned revisions and availability with file access %s", (filesSupported) => {
+    const now = Date.parse("2026-10-30T03:02:00Z");
+    vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(now);
+    try {
+      const activity = [
+        run("active", "working", "working", "Active task"), run("queued", "queued", "idle", "Queued task"),
+        run("waiting", "input_required", "waiting", "Waiting task"), run("paused", "paused", "idle", "Paused task"),
+        { ...run("review", "completed", "idle", "Review task"), review: { kind: "decision", node: "judge", reason: "Needs human review" } },
+        { ...run("escalated", "failed", "idle", "Escalated task"), error: { code: "escalated", message: "Needs human review", retryable: false } },
+        run("failed", "failed", "idle", "Failed task"),
+      ];
+      const recent = [
+        { ...run("available", "completed", "idle", "Saved report"), result_available: true, files_available: true },
+        { ...run("absent", "completed", "idle", "No saved output"), result_available: false, files_available: false },
+        { ...run("unknown", "completed", "idle", "Unknown output"), result_available: null, files_available: null },
+        run("legacy", "completed", "idle", "Older server"),
+      ];
+      const html = renderToStaticMarkup(createElement(MissionControl, { view: { ...view, recent, activity, activityComplete: false, nextCursor: "page2", readAt: now }, filesSupported, onMore: () => {}, onRefresh: () => {} }));
+      for (const label of ["Active work", "Needs attention", "Failed runs", "Active task", "Waiting task", "Failed task", "rev 1", "2 min", "Load more", "Partial activity", "Snapshot current"]) expect(html).toContain(label);
+      for (const id of ["active", "waiting", "failed"]) expect(html).toContain(`href="#/runs/${id}"`);
+      const page = new DOMParser().parseFromString(html, "text/html");
+      for (const [id, result, files] of [["available", "Result available", "Files available"], ["absent", "No result", "No files"], ["unknown", "Result availability unknown", "File availability unknown"], ["legacy", "Result availability unknown", "File availability unknown"]]) {
+        const row = page.querySelector(`a[href="#/runs/${id}"]`)!;
+        expect(row.textContent).toContain(result);
+        expect(row.textContent).toContain(filesSupported ? files : "File access unavailable");
+      }
+      for (const [title, statuses] of [["Active work", ["queued", "working"]], ["Needs attention", ["input_required", "paused", "completed", "failed"]], ["Failed runs", ["failed"]]] as const) {
+        const section = page.querySelector(`section[aria-label="${title}"]`)!;
+        expect([...section.querySelectorAll('a[href^="#/runs?"]')].map((link) => link.getAttribute("href"))).toEqual(statuses.map((status) => `#/runs?status=${status}`));
+      }
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("keeps the previous snapshot visible on disconnect and labels its age", () => {
+    const now = Date.parse("2026-10-30T03:02:00Z");
+    vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(now);
+    try {
+      const html = renderToStaticMarkup(createElement(MissionControl, { view: { ...view, readAt: now - 60_000 }, error: "Network unavailable", onRefresh: () => {} }));
+      expect(html).toContain("What is six times seven?");
+      expect(html).toContain("Disconnected");
+      expect(html).toContain("Stale snapshot");
+      expect(html).toContain("Refresh");
+    } finally { vi.useRealTimers(); }
+  });
+
   it("shows the agents, the runs and how many are active, waiting on a person, or failed", () => {
     const html = renderToStaticMarkup(createElement(MissionControl, { view }));
     for (const s of ["Mission Control", ">2<", ">7<", "Active", "Needs input", "Failed"]) expect(html).toContain(s);
@@ -46,11 +91,13 @@ describe("MissionControl", () => {
     expect(html).toContain('href="#/runs/run-2"');
     expect(html).toContain('href="#/agents/calc/runs"');
   });
-  it("renders a store with nothing in it, without error", () => {
+  it.each([true, false])("renders an empty store with agent creation supported: %s", (canCreate) => {
     const none = analytics({ totals: { ...g(0, 0, 0, 0, 0, null), input: 0, cache_read: 0, cache_write: 0, output: 0, requests: 0, unmetered: 0 }, time: { ended_runs: 0, wall_ms: 0, active_runs: 0, active_ms: 0 }, by_harness_effort: [], by_day: [], by_source: [], tools: [] });
     const empty: MissionView = { agents: 0, runs: { total: 0, active: 0, needsInput: 0, failed: 0, statusUnknown: 0, needsReview: 0 }, perAgent: [], cost: { usd: null, basis: null, unknownRuns: 0 }, recent: [], analytics: none };
-    const html = renderToStaticMarkup(createElement(MissionControl, { view: empty }));
+    const html = renderToStaticMarkup(createElement(MissionControl, { view: empty, canCreate }));
     expect(html).toContain("No agents yet");
+    if (canCreate) expect(html).toContain('href="#/agents/new"');
+    else expect(html).not.toContain('href="#/agents/new"');
     expect(html).toContain("No runs yet");
     expect(html).not.toMatch(/\$0(\.0+)?\b/);
   });
@@ -166,7 +213,7 @@ describe("MissionControl's analytics", () => {
     expect(imported).toContain("Run here: 9 runs · Imported from codex: 3 runs");
   });
 
-  it("the range picker is native radios (arrow keys, one Tab stop) that ask for another range, and the agent picker for one agent", async () => {
+  it("keeps range changes independent from the searchable agent filter and applies an explicitly selected agent", async () => {
     const onRange = vi.fn(), onAgent = vi.fn();
     const host = document.body.appendChild(document.createElement("div"));
     const root = createRoot(host);
@@ -177,10 +224,27 @@ describe("MissionControl's analytics", () => {
     await act(async () => { radio("7d").click(); });
     await act(async () => { radio("all").click(); });
     expect(onRange.mock.calls).toEqual([["7d"], ["all"]]);
-    const select = host.querySelector("select[aria-label='Agent']") as HTMLSelectElement;
-    await act(async () => { select.value = "calc"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+    const picker = host.querySelector<HTMLButtonElement>("button[aria-label='Agent']");
+    expect(picker).not.toBeNull();
+    await act(async () => { picker!.click(); });
+    const search = document.querySelector<HTMLInputElement>("input[role='combobox']")!;
+    expect(document.activeElement).toBe(search);
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(search, "calc");
+      search.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(document.querySelector("[role='option'][aria-label='Meeting notes']")).toBeNull();
+    expect(onAgent).not.toHaveBeenCalled();
+    await act(async () => { search.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })); });
     expect(onAgent).toHaveBeenCalledWith("calc");
+    expect(picker!.getAttribute("aria-expanded")).toBe("false");
+    expect(document.activeElement).toBe(picker);
+    await act(async () => { picker!.click(); });
+    await act(async () => { document.querySelector("input[role='combobox']")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", shiftKey: true, bubbles: true })); });
+    expect(document.activeElement).toBe(radio("30d"));
+    expect(onAgent.mock.calls).toEqual([["calc"]]);
     act(() => root.unmount());
+    host.remove();
   });
 });
 
@@ -244,7 +308,11 @@ describe("MissionControl, the counts as links and the latest runs in full", () =
     expect(html.match(/>Cost<\/p>/g)).toHaveLength(1);
   });
   it("leaves Active unlinked: it counts queued, working and paused runs, which no one list holds", () => {
-    expect(render(view)).not.toContain('href="#/runs?status=working"');
+    const page = new DOMParser().parseFromString(render(view), "text/html");
+    const totals = page.querySelector('ul[aria-label="Server totals"]')!;
+    const active = [...totals.children].find((tile) => tile.querySelector("p")?.textContent === "Active")!;
+    expect(active.textContent).toContain(String(view.runs.active));
+    expect(active.querySelector("a")).toBeNull();
   });
   it("shows each latest run's agent, how long it took, and its cost when known", () => {
     const done: Run = { ...run("run-9", "completed", "idle", "Check invoice INV-2291"), ended_at: "2026-10-30T03:00:42Z", cost: { usd: 0.0086, basis: "estimate", charge_state: null, cap_usd: null } };
@@ -273,4 +341,14 @@ describe("MissionControl, the counts as links and the latest runs in full", () =
     expect(fresh).not.toContain("Needs input");
     expect(fresh).not.toContain("Recent runs");
   });
+  it("keeps the selected agent in every activity state link", () => {
+    const page = new DOMParser().parseFromString(render(view, { ...scope, agent: "agent /?" }), "text/html");
+    const links = [...page.querySelectorAll('section nav a')].filter((a) => a.getAttribute("href")?.startsWith("#/runs?status="));
+    expect(links.length).toBeGreaterThan(0);
+    for (const link of links) {
+      const params = new URLSearchParams(link.getAttribute("href")!.split("?")[1]);
+      expect(params.get("agent")).toBe("agent /?");
+    }
+  });
+
 });

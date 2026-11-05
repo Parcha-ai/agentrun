@@ -12,7 +12,7 @@ import { APPROVAL_ROW, approvalOf } from "@/lib/approval";
 import { type LearningDiff, learningSteps } from "@/lib/learning";
 import { isEscalated, type MessageFeatures, type RunView, runState } from "@/lib/runState";
 import { cn } from "@/lib/utils";
-import { latest, pendingQuestion } from "@/lib/viewing";
+import { latest, pendingQuestion, viewKind } from "@/lib/viewing";
 import type { Run, RunFile, TimelineRow } from "@/lib/v2";
 
 export type RunDetailProps = {
@@ -23,9 +23,16 @@ export type RunDetailProps = {
   /** Whether the run's harness steers mid-turn (`harnessSteers`): on one that does not, a working run takes a follow_up. */
   harnessSteers: boolean;
   rows: TimelineRow[];
+  timelineLoading?: boolean;
+  timelineUnavailable?: boolean;
   files: RunFile[];
   /** Reads a file's text (the authenticated bytes from /v2/runs/{id}/files/{path}). */
   readFile?: (file: RunFile) => Promise<string>;
+  readFileBlob?: (file: RunFile) => Promise<Blob>;
+  filesComplete?: boolean;
+  filesTruncated?: boolean;
+  filesLoading?: boolean;
+  filesSupported?: boolean;
   openFile?: RunFile | null;
   actions?: RunActions;
   /** Sends a message; resolves false when it failed, so the composer keeps the draft. */
@@ -73,17 +80,28 @@ function beforeAnswer(run: Pick<Run, "status" | "state" | "pending">, view: RunV
 }
 
 /** The run page: Report / Timeline / Files tabs over AgentRun Server's run, timeline and files. */
-export function RunDetail({ run, agentName, messages, harnessSteers, rows, files, readFile, openFile = null, actions, onMessage, onApprove, tab: initial, graphView, costText, readLearningDiff }: RunDetailProps) {
-  // A run paused at its spend cap takes no message until its cap is raised (409 budget_reached): no composer for it.
+export function RunDetail({ run, agentName, messages, harnessSteers, rows, timelineLoading = false, timelineUnavailable = false, files, readFile, readFileBlob, filesComplete = true, filesTruncated = false, filesLoading = false, filesSupported = true, openFile = null, actions, onMessage, onApprove, tab: initial, graphView, costText, readLearningDiff }: RunDetailProps) {
   const budget = run.pending?.kind === "budget" ? run.pending : null;
-  const state = runState(run.status, run.state, run.kind, messages, harnessSteers, run.error, run.review);
+  const state = runState(run.status, run.state, run.kind, messages, harnessSteers, run.error, run.review, run);
   const view = budget ? { ...state, canMessage: false, messageMode: null } : state;
   const [tab, setTab] = useState<Tab>(initial ?? (graphView ? "graph" : view.final && run.status === "completed" ? "report" : "timeline"));
-  const [open, setOpen] = useState<{ file: RunFile; text: string | null } | null>(openFile ? { file: openFile, text: null } : null);
-  // A tool call waiting on the owner's approval takes the question's place: an earlier question, answered, may still be
-  // the newest waiting row, and is no question now.
-  const approval = approvalOf(run);
+  const [accepted, setAccepted] = useState<{ text: string; prior: Set<string> } | null>(null);
+  const [open, setOpen] = useState<{ file: RunFile; text: string | null; blob?: Blob; error?: string } | null>(openFile ? { file: openFile, text: null } : null);
+  const approval = run.imported_from ? null : approvalOf(run);
   const waiting = approval ? null : pendingQuestion(run.status, run.state, rows);
+  const sent = accepted !== null && !rows.some((row) => {
+    if (row.kind !== "user_message" || accepted.prior.has(row.id)) return false;
+    const text = row.text ?? row.summary.replace(/^You(?: \(steer\))?:\s*/, "");
+    return text === accepted.text || (text.length > 3 && text.length < accepted.text.length && text.endsWith("...") && accepted.text.startsWith(text.slice(0, -3)));
+  });
+  useEffect(() => { if (accepted && !sent) setAccepted(null); }, [accepted, sent]);
+  const message = async (text: string) => {
+    if (!onMessage) return false;
+    const prior = new Set(rows.filter((row) => row.kind === "user_message").map((row) => row.id));
+    const ok = await onMessage(text);
+    if (ok !== false) { setAccepted({ text, prior }); setTab("timeline"); }
+    return ok;
+  };
   // The approval's timeline row, which follows the call's result: its step points to the card above.
   const approvalRow = approval ? rows.findLast((r) => r.kind === APPROVAL_ROW && r.tool_use_id === approval.call_id) : undefined;
   // A refused answer, in words. The run is read again after it, and when another answer, a stop or a cancel came first
@@ -99,19 +117,27 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
   // Only the newest read lands: closing the viewer or opening another file retires a read still in flight.
   const reads = useRef(latest()).current;
   const show = async (file: RunFile) => {
+    if (!filesSupported) return;
     const token = reads.begin();
     setOpen({ file, text: null });
-    if (!readFile) return;
-    const text = await readFile(file);
-    if (reads.current(token)) setOpen({ file, text });
+    if (!readFile && !readFileBlob) return;
+    try {
+      const blob = readFileBlob ? await readFileBlob(file) : undefined;
+      const kind = viewKind(file);
+      const text = blob ? (["markdown", "text", "html"].includes(kind) ? await blob.text() : "") : await readFile!(file);
+      if (reads.current(token)) setOpen({ file, text, blob });
+    } catch (e) {
+      if (reads.current(token)) setOpen({ file, text: null, error: e instanceof Error ? e.message : String(e) });
+    }
   };
   const close = () => { reads.cancel(); setOpen(null); };
   // What the run's learning changed: read once, shown under the report and under the timeline's look-back.
   const changes = useRunChanges(run, readLearningDiff);
   // A story or a deep link can open a file on first render.
-  useEffect(() => { if (openFile && readFile) void show(openFile); }, [openFile]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (filesSupported && openFile && (readFile || readFileBlob)) void show(openFile); }, [openFile, filesSupported]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (!filesSupported) { close(); if (tab === "files") setTab("timeline"); } }, [filesSupported]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const tabs: [Tab, string][] = [...(graphView ? [["graph", "Graph"] as [Tab, string]] : []), ["report", "Report"], ["timeline", "Timeline"], ["files", `Files ${files.length}`]];
+  const tabs: [Tab, string][] = [...(graphView ? [["graph", "Graph"] as [Tab, string]] : []), ["report", "Report"], ["timeline", "Timeline"], ...(filesSupported ? [["files", filesLoading ? "Files" : `Files ${files.length}`] as [Tab, string]] : [])];
   return (
     <div className="flex h-full min-h-0 flex-col">
       <RunHeader run={run} agentName={agentName} actions={actions} costText={costText} />
@@ -125,6 +151,11 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
       </div>
       {tab === "graph" ? <div className="min-h-0 flex-1">{graphView}</div> : <div className="min-h-0 flex-1 overflow-auto">
         <div className="mx-auto max-w-4xl space-y-6 px-5 py-8 md:px-8">
+          {run.imported_from ? (
+            <section className="border p-4" aria-label="Imported history"><p className="text-[14px] text-muted-foreground">This run was imported from {run.imported_from.source} and takes no more messages. Start a new run of the agent to continue this work.</p></section>
+          ) : run.kind === "agentic" && run.archived_at && run.status === "completed" ? (
+            <section className="border p-4" aria-label="Archived history"><p className="text-[14px] text-muted-foreground">Unarchive this run to send a follow-up. Its agent must also be active.</p></section>
+          ) : null}
           {run.status === "failed" && run.error && <RunError error={run.error} title={isEscalated(run.status, run.error) ? "The run escalated" : undefined} />}
           {run.status === "cancelled" && (
             <section className="border border-border-strong/60 p-4"><p className="caps text-[11px] text-muted-foreground">Cancelled</p>
@@ -139,22 +170,22 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
           {approval ? <ApprovalCard key={approval.id} pending={approval} onAnswer={(decision, note) => approve(approval.id, decision, note)} />
             : view.needsYou && (budget ? <BudgetPaused pending={budget} /> : <NeedsYou waiting={waiting} />)}
           {/* With no served cap the banner names none to raise above; the run header's raise reads the run's own cap. */}
-          {view.needsYou && budget && typeof budget.cap_usd === "number" && actions?.onRaiseCap && <RaiseCap key={`${run.run_id}:${budget.at}`} cap={budget.cap_usd} suggested={suggestedCap(budget)} paused onRaise={actions.onRaiseCap} />}
+          {view.needsYou && !run.imported_from && budget && typeof budget.cap_usd === "number" && actions?.onRaiseCap && <RaiseCap key={`${run.run_id}:${budget.at}`} cap={budget.cap_usd} suggested={suggestedCap(budget)} paused onRaise={actions.onRaiseCap} />}
           {tab === "report" && <RunResult run={run} rows={rows} files={files} onOpen={show} />}
           {tab === "report" && !run.result && !view.final && <Working {...beforeAnswer(run, view)} />}
-          {tab === "report" && view.final && !run.result?.final_answer && !run.result?.output && !rows.some((r) => r.kind === "final_answer") && run.status !== "failed" && run.status !== "cancelled" && !run.review && (
+          {tab === "report" && view.final && !run.result?.final_answer && run.result?.output == null && !rows.some((r) => r.kind === "final_answer") && run.status !== "failed" && run.status !== "cancelled" && !run.review && (
             <p className="font-mono text-[13px] text-muted-foreground">This run gave no answer.</p>
           )}
-          {tab === "timeline" && <Timeline rows={learningSteps(rows, run.learning)} live={view.live} asking={approvalRow?.id ?? (view.needsYou && !budget ? waiting?.id : undefined)} />}
+          {tab === "timeline" && <Timeline rows={learningSteps(rows, run.learning)} live={view.live} loading={timelineLoading} unavailable={timelineUnavailable} asking={approvalRow?.id ?? (view.needsYou && !budget ? waiting?.id : undefined)} />}
           {(tab === "report" || tab === "timeline") && changes && <RunChanges got={changes.got} retry={changes.retry} />}
-          {tab === "files" && <RunFiles files={files} onOpen={show} />}
+          {tab === "files" && <RunFiles files={files} complete={filesComplete} truncated={filesTruncated} loading={filesLoading} onOpen={show} />}
         </div>
       </div>}
       {/* While a call waits on an approval, a message declines it, as its reason: the box says so. */}
       {view.canMessage && (
-        <div className="border-t px-5 py-4 md:px-8"><div className="mx-auto max-w-4xl"><Composer mode={view.messageMode!} onSend={onMessage} purpose={approval ? DECLINES : undefined} /></div></div>
+        <div className="border-t px-5 py-4 md:px-8"><div className="mx-auto max-w-4xl"><Composer mode={view.messageMode!} onSend={onMessage ? message : undefined} sent={sent} purpose={approval ? DECLINES : undefined} /></div></div>
       )}
-      {open && <ArtifactViewer file={open.file} text={open.text} onClose={close} files={files} onOpen={show} />}
+      {open && <ArtifactViewer file={open.file} text={open.text} blob={open.blob} error={open.error} onRetry={() => void show(open.file)} onClose={close} files={files} onOpen={show} />}
     </div>
   );
 }

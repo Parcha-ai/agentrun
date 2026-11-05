@@ -11,7 +11,7 @@ export type AgentsListActions = { onOpen?: (id: string) => void; onEdit?: (id: s
 
 /** The hosted console's agent grid: a search box, the count, and a card per agent (name, kind, harness, what it does,
  *  its revision and runs, and its actions). Archived agents are their own view. */
-export function AgentsList({ agents, archived = false, onArchivedChange, actions = {}, error }: { agents: Agent[] | null; archived?: boolean; onArchivedChange?: (archived: boolean) => void; actions?: AgentsListActions; error?: string | null }) {
+export function AgentsList({ agents, archived = false, onArchivedChange, actions = {}, error, permissions = {} }: { agents: Agent[] | null; archived?: boolean; onArchivedChange?: (archived: boolean) => void; actions?: AgentsListActions; error?: string | null; permissions?: { create?: boolean; update?: boolean; archive?: boolean; runs?: boolean } }) {
   const [q, setQ] = useState("");
   const shown = (agents ?? []).filter((a) => `${a.definition.name} ${a.definition.description ?? ""}`.toLowerCase().includes(q.toLowerCase()));
   return (
@@ -23,21 +23,21 @@ export function AgentsList({ agents, archived = false, onArchivedChange, actions
           <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search agents by name or description..." aria-label="Search agents"
             className="min-w-0 flex-1 bg-transparent font-mono text-[13px] outline-none placeholder:text-muted-foreground max-sm:portrait:placeholder:text-transparent" />
         </label>
-        <Button size="lg" variant={archived ? "primary" : "outline"} aria-pressed={archived} onClick={() => onArchivedChange?.(!archived)}><Archive aria-hidden /> Archived</Button>
-        {!archived && <Button size="lg" variant="primary" onClick={actions.onNew}><Plus aria-hidden /> New agent</Button>}
+        {permissions.archive !== false && <Button size="lg" variant={archived ? "primary" : "outline"} aria-pressed={archived} onClick={() => onArchivedChange?.(!archived)}><Archive aria-hidden /> Archived</Button>}
+        {!archived && permissions.create !== false && <Button size="lg" variant="primary" onClick={actions.onNew}><Plus aria-hidden /> New agent</Button>}
       </div>
-      {error ? <p className="border p-4 font-mono text-[13px] text-destructive-text" role="alert">{error}</p>
-        : !agents ? <ListSkeleton label="Loading the agents" rows={6} />
+      {error && <p className="mb-4 border p-4 font-mono text-[13px] text-destructive-text" role="alert">{error}</p>}
+      {!agents ? (error ? null : <ListSkeleton label="Loading the agents" rows={6} />)
         : !shown.length ? (
           <div className="border px-4 py-12 text-center">
             <p className="font-mono text-[13px] text-muted-foreground">{q ? "No agent matches." : archived ? "No archived agents." : "No agents yet."}</p>
-            {!q && !archived && <Button className="mt-4" variant="primary" onClick={actions.onNew}><Plus aria-hidden /> New agent</Button>}
+            {!q && !archived && permissions.create !== false && <Button className="mt-4" variant="primary" onClick={actions.onNew}><Plus aria-hidden /> New agent</Button>}
           </div>
         ) : (
           <>
             <p className="mb-3 font-mono text-[12px] text-muted-foreground">{shown.length} {shown.length === 1 ? "agent" : "agents"}</p>
             <ul className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
-              {shown.map((a) => <AgentCard key={a.agent_id} agent={a} actions={actions} />)}
+              {shown.map((a) => <AgentCard key={a.agent_id} agent={a} actions={actions} permissions={permissions} />)}
             </ul>
           </>
         )}
@@ -45,7 +45,7 @@ export function AgentsList({ agents, archived = false, onArchivedChange, actions
   );
 }
 
-function AgentCard({ agent: a, actions }: { agent: Agent; actions: AgentsListActions }) {
+function AgentCard({ agent: a, actions, permissions }: { agent: Agent; actions: AgentsListActions; permissions: { update?: boolean; archive?: boolean; runs?: boolean } }) {
   const Icon = a.kind === "workflow" ? Workflow : Bot;
   const archived = !!a.archived_at;
   return (
@@ -62,15 +62,18 @@ function AgentCard({ agent: a, actions }: { agent: Agent; actions: AgentsListAct
           <span className="mt-1.5 line-clamp-2 block font-mono text-[12px] leading-relaxed text-muted-foreground">{a.definition.description || (a.kind === "workflow" ? workflowShape(a.definition.workflow) : "No description.")}</span>
         </span>
       </button>
-      <div className="mt-auto flex items-center gap-2 pt-4">
-        <span className="caps border px-1.5 py-0.5 text-[10px] text-muted-foreground">{a.revisions} {a.revisions === 1 ? "revision" : "revisions"}</span>
-        {a.runs && <span className="caps border px-1.5 py-0.5 text-[10px] text-muted-foreground">{a.runs.count} {a.runs.count === 1 ? "run" : "runs"}{a.runs.live ? ` · ${a.runs.live} live` : ""}</span>}
-        <span className="flex-1" />
-        <Button size="icon" variant="outline" aria-label={`Edit ${a.definition.name}`} onClick={() => actions.onEdit?.(a.agent_id)}><Pencil aria-hidden /></Button>
-        <Button size="icon" variant="outline" aria-label={`Runs of ${a.definition.name}`} onClick={() => actions.onRuns?.(a.agent_id)}><History aria-hidden /></Button>
-        <Button size="icon" variant="outline" aria-label={`${archived ? "Unarchive" : "Archive"} ${a.definition.name}`} onClick={() => actions.onArchive?.(a.agent_id, !archived)}>
-          {archived ? <ArchiveRestore aria-hidden /> : <Archive aria-hidden />}
-        </Button>
+      <div className="mt-auto flex flex-col gap-3 pt-4">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="caps shrink-0 whitespace-nowrap border px-1.5 py-0.5 text-[10px] text-muted-foreground">{a.revisions} {a.revisions === 1 ? "revision" : "revisions"}</span>
+          {a.runs && <span className="caps shrink-0 whitespace-nowrap border px-1.5 py-0.5 text-[10px] text-muted-foreground">{a.runs.count} {a.runs.count === 1 ? "run" : "runs"}{a.runs.live ? ` · ${a.runs.live} live` : ""}</span>}
+        </div>
+        <div className="flex shrink-0 items-center gap-2 self-end">
+          {permissions.update !== false && <Button size="icon" variant="outline" aria-label={`Edit ${a.definition.name}`} onClick={() => actions.onEdit?.(a.agent_id)}><Pencil aria-hidden /></Button>}
+          {permissions.runs !== false && <Button size="icon" variant="outline" aria-label={`Runs of ${a.definition.name}`} onClick={() => actions.onRuns?.(a.agent_id)}><History aria-hidden /></Button>}
+          {permissions.archive !== false && <Button size="icon" variant="outline" aria-label={`${archived ? "Unarchive" : "Archive"} ${a.definition.name}`} onClick={() => actions.onArchive?.(a.agent_id, !archived)}>
+            {archived ? <ArchiveRestore aria-hidden /> : <Archive aria-hidden />}
+          </Button>}
+        </div>
       </div>
     </li>
   );

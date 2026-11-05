@@ -1,9 +1,11 @@
 import type { Stats } from "./mission";
-import type { Agent, Definition, SaveWarning } from "./agentForm";
+import type { UploadedFile } from "./uploads";
+import type { Agent, Definition, SaveWarning, ToolOffer } from "./agentForm";
+import type { components } from "./contract.generated";
 import type { AgentLearning, LearningChange, LearningDiff, LearningNote, NoteProblem, NoteText, Page } from "./learning";
 import type { RunGraph } from "./runGraph";
 import { applyPage } from "./timeline";
-import type { ApiError, Firing, RaiseAnswer, Run, RunFiles, RunStatus, TimelinePage, TimelineRow, ToolKeys, ToolKeysFeature, ToolSettings, Trigger, TriggerInput, Webhook, WebhookAttempt, WebhookSaved, WebhooksFeature } from "./v2";
+import type { ApiError, Firing, RaiseAnswer, Run, RunFiles, RunStatus, TimelinePage, TimelineRow, ToolKeys, ToolSettings, Trigger, TriggerInput, Webhook, WebhookAttempt, WebhookSaved } from "./v2";
 
 /** A request AgentRun Server refused: its HTTP status and its typed error (`code`, `message`, `retryable`). */
 export type FieldIssue = { field: string; reason: string; message: string };
@@ -50,40 +52,85 @@ const runsQuery = (limit: number, cursor: string | null | undefined, { status, a
   return `?${q}`;
 };
 
-/** `limits`: this server's own (the largest upload, the most files a run names); absent on an older server. */
-/** `models.ready`: whether an agent that names no model runs here; when not, `needs` says what would make it: a model
- *  provider's key, or another default model. Absent on an older server. */
-export type Capabilities = { harnesses: { id: string; available: boolean; reason?: string; steer?: boolean }[]; features: { messages: { steer: boolean; answer: boolean; follow_up: boolean; steer_workflow_runs: boolean }; tool_keys?: ToolKeysFeature; webhooks?: WebhooksFeature; triggers?: { routes: boolean; min_every_s?: number; history_kept?: number } }; limits?: { max_upload_bytes?: number; max_files_per_run?: number }; models?: { default?: string | null; ready?: boolean; needs?: "key" | "model" | null; source?: "faux" | "gateway" | "providers" } };
+export type NativeCapabilities = components["schemas"]["Capabilities"];
+type NativeFeatures = components["schemas"]["Features"];
+type CompatibleFeatures = { [K in keyof NativeFeatures]?: NativeFeatures[K] extends readonly unknown[] ? NativeFeatures[K] : NativeFeatures[K] extends object ? Partial<NativeFeatures[K]> : NativeFeatures[K] };
+/** Older compatible servers may omit newer fields or list tool names without offers. The generated schema describes
+ *  this server in full; these optional fields keep those older responses usable without inventing capabilities. */
+export type Capabilities = Omit<Partial<NativeCapabilities>, "harnesses" | "features" | "models" | "tools" | "workflows"> & {
+  harnesses: { id: string; available: boolean; reason?: string; steer?: boolean }[];
+  models?: Omit<NonNullable<NativeCapabilities["models"]>, "source"> & { source?: "faux" | "gateway" | "providers"; ready?: boolean; needs?: "key" | "model" | null };
+  tools?: (string | ToolOffer)[];
+  workflows?: { nodes?: string[]; node_tools?: string[]; adapters?: string[]; decisions?: { providers?: { id: string; available: boolean; reason?: string; note?: string }[] } };
+  features: CompatibleFeatures & Pick<NativeFeatures, "messages"> & {
+    triggers?: { routes: boolean; min_every_s?: number; history_kept?: number };
+    [extension: string]: unknown;
+  };
+};
+export type ClientOptions = {
+  fetch?: typeof fetch;
+  base?: string;
+  /** Cookie sessions are restricted to the page's own origin. SDK callers opt into bearer transport, which omits cookies. */
+  auth?: { type: "cookie" } | { type: "bearer"; token: string | (() => string | Promise<string>) };
+};
+export type AgentRevision = { revision: string; version: number; current: boolean; note: string | null; created_at: string; kind: "agentic" | "workflow"; definition: Definition };
+export type StopResult = components["schemas"]["StopResult"];
+export type CancelResult = components["schemas"]["CancelResult"];
+export type MessageResult = components["schemas"]["MessageResult"];
 export type Client = ReturnType<typeof createClient>;
 
 /** The console's client for `agentrun.v2/0`, on the page's own origin: the server's HttpOnly cookie is the session, and
  *  every write is same-origin JSON (the server refuses a cookie write from another origin). */
-export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), base = "/v2" }: { fetch?: typeof fetch; base?: string } = {}) {
-  async function call<T>(method: string, path: string, opts: { body?: unknown; headers?: Record<string, string>; signal?: AbortSignal; text?: boolean } = {}): Promise<T> {
-    return (await callTagged<T>(method, path, opts)).body;
+export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), base = "/v2", auth = { type: "cookie" } }: ClientOptions = {}) {
+  const endpoint = base.replace(/\/$/, "");
+  const url = new URL(endpoint, globalThis.location?.href ?? "https://agentrun.invalid/");
+  if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error("The API base must be an HTTP(S) endpoint without credentials, a query or a fragment.");
+  const absolute = /^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(endpoint);
+  if (auth.type === "cookie" && ((globalThis.location && url.origin !== globalThis.location.origin) || (!globalThis.location && absolute))) throw new Error("Cookie transport requires a same-origin API. Use explicit bearer transport for another server.");
+  const unauthorized = new Set<() => void>();
+  const created = new Map<string, { revision: string; warnings: SaveWarning[] }>();
+  let generation = 0;
+  const current = (started: number) => {
+    if (started !== generation) throw new ClientError(0, "session_changed", "The connection or identity changed while the request was in flight.");
+  };
+  async function call<T>(method: string, path: string, opts: { body?: unknown; raw?: boolean; headers?: Record<string, string>; signal?: AbortSignal; text?: boolean; blob?: boolean } = {}): Promise<T> {
+    const started = generation;
+    const answer = await callTagged<T>(method, path, opts);
+    current(started);
+    return answer.body;
   }
   /** A request and its response's ETag (an agent's current revision, for the next If-Match). `text`: the body as text
    *  whatever its type (a run's file is its bytes, never parsed). */
-  async function callTagged<T>(method: string, path: string, { body, headers = {}, signal, text = false }: { body?: unknown; headers?: Record<string, string>; signal?: AbortSignal; text?: boolean } = {}): Promise<{ body: T; etag: string | null; status: number }> {
+  async function callTagged<T>(method: string, path: string, { body, raw = false, headers = {}, signal, text = false, blob = false }: { body?: unknown; raw?: boolean; headers?: Record<string, string>; signal?: AbortSignal; text?: boolean; blob?: boolean } = {}): Promise<{ body: T; etag: string | null; status: number }> {
+    const started = generation;
     // Every write is JSON, a bodiless DELETE too: the server takes the cookie on a write only with this type.
-    const json = body !== undefined || (method !== "GET" && method !== "HEAD");
-    const res = await f(`${base}${path}`, {
+    const json = !raw && (body !== undefined || (method !== "GET" && method !== "HEAD"));
+    const bearer = auth.type === "bearer" ? (typeof auth.token === "function" ? await auth.token() : auth.token) : undefined;
+    current(started);
+    const res = await f(`${endpoint}${path}`, {
       method,
       signal,
-      credentials: "same-origin",
-      headers: { accept: "application/json", ...(json ? { "content-type": "application/json" } : {}), ...headers },
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
+      credentials: auth.type === "bearer" ? "omit" : "same-origin",
+      headers: { accept: "application/json", ...(json ? { "content-type": "application/json" } : {}), ...(bearer !== undefined ? { authorization: `Bearer ${bearer}` } : {}), ...headers },
+      body: body === undefined ? undefined : raw ? body as BodyInit : JSON.stringify(body),
+    }).catch((error) => { current(started); throw error; });
+    current(started);
     if (!res.ok) {
       const e = ((await res.json().catch(() => null)) as { error?: ApiError & { fields?: FieldIssue[]; retry_after_ms?: number; problems?: NoteProblem[] } } | null)?.error;
+      current(started);
       const err = new ClientError(res.status, e?.code ?? "http_error", e?.message ?? `${method} ${path}: ${res.status}`, e?.retryable ?? false, e?.request_id);
       if (e?.fields) err.fields = e.fields;
       if (typeof e?.retry_after_ms === "number") err.retryAfterMs = e.retry_after_ms;
       if (e?.details && typeof e.details === "object" && !Array.isArray(e.details)) err.details = e.details;
       if (Array.isArray(e?.problems)) err.problems = e.problems;
+      if (res.status === 401 && !path.startsWith("/auth/") && path !== "/setup") {
+        created.clear();
+        for (const listener of unauthorized) listener();
+      }
       throw err;
     }
-    const out = !text && (res.headers.get("content-type") ?? "").includes("json") ? ((await res.json()) as T) : ((await res.text()) as T);
+    const out = blob ? ((await res.blob()) as T) : !text && (res.headers.get("content-type") ?? "").includes("json") ? ((await res.json()) as T) : ((await res.text()) as T);
+    current(started);
     return { body: out, etag: res.headers.get("etag"), status: res.status };
   }
   const agent = (id: string) => `/agents/${encodeURIComponent(id)}`;
@@ -92,12 +139,25 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
   // A create's warnings come on its answer, and the agent's page that opens next reads the agent again (a read carries
   // none): they are kept here and put on a read of that same revision, until the next save or make-current of the agent,
   // after which they may be stale (the host can be set up since), so they go.
-  const created = new Map<string, { revision: string; warnings: SaveWarning[] }>();
   const note = (id: string, file: string) => `${agent(id)}/learning/files/${encodeURIComponent(file)}`;
   // A note is text (text/markdown) both ways round, with its version as the ETag; a refusal is still JSON.
   const asNote = (r: { body: string; etag: string | null }): NoteText => ({ note: r.body, etag: r.etag });
   const noteAccept = { accept: "text/markdown, application/json" };
   return {
+    /** Non-secret connection identity; bearer credentials are kept inside the transport closure. */
+    endpoint,
+    /** Uploads through this client's endpoint and credential boundary. Fetch reports completion, not byte progress. */
+    upload: async (file: File, onProgress: (fraction: number) => void, signal: AbortSignal): Promise<UploadedFile> => {
+      if (signal.aborted) throw new ClientError(0, "aborted", "The upload was stopped.");
+      onProgress(0);
+      const answer = await call<{ file: UploadedFile }>("POST", `/files?path=${encodeURIComponent(file.name)}`, { body: file, raw: true, headers: file.type ? { "content-type": file.type } : {}, signal });
+      if (!answer.file?.file_id) throw new ClientError(0, "bad_answer", "The server's answer named no file.");
+      if (signal.aborted) throw new ClientError(0, "aborted", "The upload was stopped.");
+      onProgress(1);
+      return answer.file;
+    },
+    onUnauthorized: (listener: () => void) => { unauthorized.add(listener); return () => { unauthorized.delete(listener); }; },
+    clearSessionState: () => { generation++; created.clear(); },
     capabilities: () => call<Capabilities>("GET", "/capabilities"),
     /** The owner's session; its status too, since a server without accounts answers 404. */
     session: () => callTagged<{ password_set: boolean; signed_in: boolean }>("GET", "/auth/session").then((r) => ({ status: r.status, body: r.body as unknown }), (e) => {
@@ -116,7 +176,7 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
       if (e instanceof ClientError && (e.status === 404 || e.status === 403)) return null;
       throw e;
     }),
-    signOut: () => call<{ signed_out: boolean }>("POST", "/auth/sign-out", { body: {} }),
+    signOut: async () => { const started = generation; const answer = await call<{ signed_out: boolean }>("POST", "/auth/sign-out", { body: {} }); current(started); generation++; created.clear(); return answer; },
     /** Counts and sums from the server's store, for Mission Control (`GET /v2/stats`, a serve extension). */
     stats: () => call<Stats>("GET", "/stats"),
     listRuns: (limit = 50, cursor?: string | null, filter?: RunsFilter) => call<{ runs: Run[]; next_cursor: string | null }>("GET", `/runs${runsQuery(limit, cursor, filter)}`),
@@ -130,24 +190,30 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
       return call<{ agents: Agent[]; next_cursor: string | null }>("GET", `/agents${q.size ? `?${q}` : ""}`);
     },
     getAgent: async (id: string) => {
+      const started = generation;
       const r = await callTagged<Agent>("GET", agent(id));
+      current(started);
       const kept = created.get(id);
       return { agent: kept && kept.revision === r.body.revision && !r.body.warnings ? { ...r.body, warnings: kept.warnings } : r.body, etag: r.etag };
     },
     createAgent: async (body: { definition: Definition; skills?: Record<string, string> }) => {
+      const started = generation;
       const made = await call<Agent>("POST", "/agents", { body });
+      current(started);
       if (made.warnings?.length) created.set(made.agent_id, { revision: made.revision, warnings: made.warnings });
       return made;
     },
     /** Saves a new revision. `etag` is the revision the edit was made on: the server refuses the save (412) when another
      *  landed first. The answer's ETag is the new revision, for the next edit. */
     updateDefinition: async (id: string, body: { definition: Partial<Definition>; note?: string; skills?: Record<string, string> }, etag: string | null) => {
+      const started = generation;
       const r = await callTagged<Agent>("PUT", `${agent(id)}/definition`, { body, headers: etag ? { "if-match": etag } : {} });
+      current(started);
       created.delete(id);
       return { agent: r.body, etag: r.etag };
     },
-    listRevisions: (id: string, cursor?: string | null) => call<{ revisions: { revision: string; version: number; current: boolean; note: string | null; created_at: string; kind: string; definition: Definition }[]; next_cursor: string | null }>("GET", `${agent(id)}/revisions${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`),
-    setCurrent: async (id: string, revision: string) => { const r = await call<Agent>("POST", `${agent(id)}/current`, { body: { revision } }); created.delete(id); return r; },
+    listRevisions: (id: string, cursor?: string | null) => call<{ revisions: AgentRevision[]; next_cursor: string | null }>("GET", `${agent(id)}/revisions${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`),
+    setCurrent: async (id: string, revision: string) => { const started = generation; const r = await call<Agent>("POST", `${agent(id)}/current`, { body: { revision } }); current(started); created.delete(id); return r; },
     archiveAgent: (id: string) => call<Agent>("POST", `${agent(id)}/archive`, { body: {} }),
     unarchiveAgent: (id: string) => call<Agent>("POST", `${agent(id)}/unarchive`, { body: {} }),
     /** What an agent learned: its notes' first page, the index its next run reads, the changes, and how its runs did. */
@@ -189,9 +255,11 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     /** Deletes an upload (`DELETE /v2/files/{id}`): one the person removed before a run named it. */
     deleteUpload: (fileId: string) => call<string>("DELETE", `/files/${encodeURIComponent(fileId)}`),
     readFile: (id: string, path: string) => call<string>("GET", `${run(id)}/files/${path.split("/").map(encodeURIComponent).join("/")}`, { text: true }),
+    /** The authenticated original bytes, for downloads and binary previews. */
+    readFileBlob: (id: string, path: string) => call<Blob>("GET", `${run(id)}/files/${path.split("/").map(encodeURIComponent).join("/")}`, { blob: true }),
     /** One send, one key: a retry of the same send reuses its key, so the server keeps the first request's identity. */
     sendMessage: (id: string, content: string, idempotencyKey: string) =>
-      call<{ mode: string; message_id: string }>("POST", `${run(id)}/messages`, { body: { content }, headers: { "idempotency-key": idempotencyKey } }),
+      call<MessageResult>("POST", `${run(id)}/messages`, { body: { content }, headers: { "idempotency-key": idempotencyKey } }),
     /** A workflow run's graph, live: each node's state, its decisions and tool calls, and the totals. */
     getRunGraph: (id: string, signal?: AbortSignal) => call<RunGraph>("GET", `${run(id)}/graph`, { signal }),
     /** Pauses a workflow run: calls in flight finish, and no new node starts until it resumes. */
@@ -208,7 +276,7 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
       return call<Stats>("GET", `/stats${q.size ? `?${q}` : ""}`);
     },
     /** A run file's URL on this origin (a rendered page's image), for an <img>: the session cookie goes with it. */
-    fileUrl: (id: string, path: string) => `${base}${run(id)}/files/${path.split("/").map(encodeURIComponent).join("/")}`,
+    fileUrl: (id: string, path: string) => `${endpoint}${run(id)}/files/${path.split("/").map(encodeURIComponent).join("/")}`,
     /** The tool keys and where each field is set, never a value (a serve extension; 404 on a server without it). */
     listToolKeys: () => call<ToolKeys>("GET", "/settings/tool-keys"),
     /** Saves the given fields of one key (204); its other fields stay. No Idempotency-Key: the same PUT twice is the same
@@ -240,14 +308,14 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     toolSettings: () => call<ToolSettings>("GET", "/settings/tools"),
     /** Replaces the server's providers: a capability the body leaves out takes its default. The answer is each one's now. */
     saveToolSettings: (settings: ToolSettings) => call<ToolSettings>("PUT", "/settings/tools", { body: settings }),
-    stop: (id: string) => call<unknown>("POST", `${run(id)}/stop`, { body: {} }),
+    stop: (id: string) => call<StopResult>("POST", `${run(id)}/stop`, { body: {} }),
     /** Answers the tool call the run waits on the owner's approval of (`pending.id`, approvals/1): 204. The owner's
      *  password session alone may (a token is 403); the first answer wins, so the same one again is 204 and another 409
      *  `not_continuable` with `details: { reason: "already_answered", decision }`. `note`: with deny, the reason the model
      *  is told; sent only when given. */
     answerApproval: (id: string, approvalId: string, decision: "allow" | "deny", note?: string) =>
       call<unknown>("POST", `${run(id)}/approvals/${encodeURIComponent(approvalId)}`, { body: { decision, ...(note ? { note } : {}) } }),
-    cancel: (id: string) => call<unknown>("POST", `${run(id)}/cancel`, { body: {} }),
+    cancel: (id: string) => call<CancelResult>("POST", `${run(id)}/cancel`, { body: {} }),
   };
 }
 
@@ -265,22 +333,24 @@ export async function allPages<P extends { next_cursor: string | null }, T>(page
 }
 
 /** Follows a run's timeline from its cursor until the server says the timeline is final and has no more rows (or
- *  `signal` aborts), handing the merged rows to `onRows` after each page. With no `onRows` it watches the run's status
- *  alone: each page goes to `onPage` and only the cursor is kept, no row is merged or held. A request in flight when
- *  `signal` aborts is cancelled, and nothing after the abort is published. Resolves with the last page. */
+ *  `signal` aborts), handing the merged rows to `onRows` after each page. A request in flight when `signal` aborts is
+ *  cancelled, and nothing after the abort is published. Resolves with the last page. */
+export type TimelineCheckpoint = { rows: TimelineRow[]; after?: number };
+
 export async function follow(
   v2: Client,
   runId: string,
-  { onRows, onPage, signal, waitMs = 25000, minDelayMs = 250 }: { onRows?: (rows: TimelineRow[]) => void; onPage?: (page: TimelinePage) => void; signal?: AbortSignal; waitMs?: number; minDelayMs?: number },
+  { onRows, onPage, signal, checkpoint, waitMs = 25000, minDelayMs = 250 }: { onRows?: (rows: TimelineRow[]) => void; onPage?: (page: TimelinePage) => void; signal?: AbortSignal; checkpoint?: TimelineCheckpoint; waitMs?: number; minDelayMs?: number },
 ): Promise<TimelinePage> {
-  let rows: TimelineRow[] = [];
-  let after: number | undefined;
+  let rows: TimelineRow[] = checkpoint?.rows ?? [];
+  let after: number | undefined = checkpoint?.after;
   let last: TimelinePage | undefined;
   while (!signal?.aborted) {
     const page = await v2.getTimeline(runId, after === undefined ? { signal } : { after, waitMs, signal }).catch((e) => { if (signal?.aborted) return null; throw e; });
     if (!page || signal?.aborted) break;
     last = page;
     if (onRows) rows = applyPage(rows, page);
+    if (checkpoint) { checkpoint.rows = rows; checkpoint.after = page.next_after; }
     onPage?.(page);
     onRows?.(rows);
     if (page.final && !page.has_more) break;

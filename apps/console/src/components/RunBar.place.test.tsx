@@ -31,13 +31,13 @@ function mount(a: Agent, refuse?: ClientError) {
 }
 
 describe("RunBar, a run of a sandbox agent", () => {
-  it("offers no place for an agent in a box: no \"Run on the server instead\", and the start sends its input alone", async () => {
+  it("offers no place for an agent in a box: no \"Run on the server instead\", and the start sends its input and loaded revision", async () => {
     const m = mount(agent({ mode: "sandbox", box: "docker" }));
     expect(m.toggle()).toBeNull();
     expect(m.host.textContent).not.toContain("Run on the server instead");
     m.write("hi");
     await m.run();
-    expect(m.starts).toEqual([{ input: { content: "hi" } }]);
+    expect(m.starts).toEqual([{ input: { content: "hi" }, revision: "rv1" }]);
   });
 
   it("a start refused for a box this server lacks says so, and points to where the agent runs, in its settings", async () => {

@@ -51,7 +51,7 @@ describe("RunBar, files", () => {
     await act(async () => { pending[0]!(made); await Promise.resolve(); });
     expect(page.button(/Run/).disabled).toBe(false);
     await act(async () => { page.button(/Run/).click(); await Promise.resolve(); });
-    expect(started).toEqual([{ input: { content: "Check this invoice." }, file_ids: [made.file_id] }]);
+    expect(started).toEqual([{ input: { content: "Check this invoice." }, revision: agentFixture("invoice-checker").revision, file_ids: [made.file_id] }]);
     expect(opened).toEqual(["#/runs/run_1"]);
   });
 });
@@ -68,7 +68,7 @@ describe("Playground, files", () => {
     await act(async () => { pending[0]!(made); await Promise.resolve(); });
     expect(page.host.querySelector("pre")!.textContent).toContain(`"file_ids":["${made.file_id}"]`);
     await act(async () => { page.button(/Send request/).click(); await Promise.resolve(); await Promise.resolve(); });
-    expect(sent).toEqual([{ input: { content: "Check this invoice." }, file_ids: [made.file_id] }]);
+    expect(sent).toEqual([{ input: { content: "Check this invoice." }, revision: agentFixture("invoice-checker").revision, file_ids: [made.file_id] }]);
     expect(page.host.querySelector('[aria-label="Attached files"]')).toBeNull();
   });
 });

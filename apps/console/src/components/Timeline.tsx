@@ -94,11 +94,13 @@ function Row({ step, last }: { step: Step; last: boolean }) {
 /** The run's live timeline as a step list (lib/timeline's `steps`: each tool once, from either of the server's shapes;
  *  a question once; repeated failures once): newest last, older steps folded behind "N earlier steps". `asking`: the
  *  waiting row of the question the page shows above while the run waits on it; its step points there. */
-export function Timeline({ rows, live, fold = 6, asking }: { rows: TimelineRow[]; live: boolean; fold?: number; asking?: string }) {
+export function Timeline({ rows, live, fold = 6, asking, loading = false, unavailable = false }: { rows: TimelineRow[]; live: boolean; fold?: number; asking?: string; loading?: boolean; unavailable?: boolean }) {
   const [all, setAll] = useState(false);
   const told = steps(rows).map((s) => (asking && s.row.id === asking ? { ...s, above: true } : s));
   const hidden = all ? 0 : Math.max(0, told.length - fold);
   const shown = told.slice(hidden);
+  if (!rows.length && unavailable) return <Working title="Timeline unavailable" note="Reconnect to read the run's recorded steps." spin={false} />;
+  if (!rows.length && loading) return <Working title="Reading the timeline" note="Recorded steps appear when the server responds." />;
   if (!rows.length) return <Working title={live ? "The run is starting" : "Nothing on the timeline"} note={live ? "Steps appear here as the agent works." : "This run recorded no steps."} spin={live} />;
   return (
     <div>

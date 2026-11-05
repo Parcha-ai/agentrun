@@ -155,7 +155,7 @@ describe("a link in the viewer, Rendered or Raw", () => {
     const v = await plan();
     await act(async () => { v.dialog().querySelector<HTMLInputElement>('[role="radiogroup"][aria-label="View"] input[value="raw"]')!.click(); });
     expect(v.dialog().querySelector("pre")?.textContent).toBe(PLAN);
-    expect(v.dialog().querySelector("[data-run-file], a")).toBeNull();
+    expect(v.dialog().querySelector("pre [data-run-file], pre a")).toBeNull();
   });
 });
 

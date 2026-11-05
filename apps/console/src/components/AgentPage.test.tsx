@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { AgentPage } from "./AgentPage";
 import { agentFixture, archivedAgents, editorCaps, recorded, runFixture, runNames } from "@/fixtures";
 import type { Agent } from "@/lib/agentForm";
-import { ClientError, type FieldIssue } from "@/lib/client";
+import { ClientError, type Capabilities, type FieldIssue } from "@/lib/client";
 import { ANALYTICS, statsWith } from "./AgentAnalytics.sample";
 import type { Run, TimelinePage } from "@/lib/v2";
 
@@ -38,16 +38,17 @@ type Answer = { run: Run } | { refused: string };
 const recordedPages = new Map(runNames.map((n) => recorded<TimelinePage>(`${n}.timeline`).body).map((p) => [p.run_id, p]));
 /** A final page with no rows, at the run's own status: what a run without a recorded timeline is followed through. */
 const endedPage = (r: Run): TimelinePage => ({ run_id: r.run_id, status: r.status, state: r.state, rows: [], drop: [], reset: true, unchanged: false, final: true, has_more: false, next_after: 1 });
-type Opts = { runs?: Run[]; next?: string | null; more?: () => Promise<{ runs: Run[]; next_cursor: string | null }>; tab?: string; answer?: Answer; stats?: () => Promise<unknown>; models?: { default: string; source: string; route_prefix?: string | null }; harnesses?: { id: string; default_model?: string | null; available?: boolean; reason?: string }[]; hold?: Promise<unknown>; strict?: boolean; timeline?: (id: string, o: { after?: number }) => Promise<TimelinePage>; reread?: (id: string) => Promise<Run>; agentError?: unknown };
+type Opts = { runs?: Run[]; next?: string | null; more?: () => Promise<{ runs: Run[]; next_cursor: string | null }>; tab?: string; answer?: Answer; stats?: () => Promise<unknown>; models?: { default: string; source: string; route_prefix?: string | null }; harnesses?: { id: string; default_model?: string | null; available?: boolean; reason?: string }[]; hold?: Promise<unknown>; strict?: boolean; timeline?: (id: string, o: { after?: number }) => Promise<TimelinePage>; reread?: (id: string) => Promise<Run>; agentError?: unknown; capabilities?: Capabilities };
 /** By default the server's stats carry the sample analytics. `followed` lists the latest run's reads (its
  *  timeline's pages and its record), apart from the page's own reads in `asked`. */
-async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = null, more, tab, answer = { run: recorded<Run>("start.run").body }, stats = async () => statsWith(ANALYTICS), models, harnesses, hold, strict = false, timeline, reread, agentError }: Opts = {}) {
+async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = null, more, tab, answer = { run: recorded<Run>("start.run").body }, stats = async () => statsWith(ANALYTICS), models, harnesses, hold, strict = false, timeline, reread, agentError, capabilities }: Opts = {}) {
   const went: string[] = [];
   const asked: string[] = [];
   const followed: string[] = [];
   const statsAsked: string[] = [];
   const starts: { id: string; body: Record<string, unknown>; key: string }[] = [];
   const v2 = {
+    endpoint: "https://agentrun.example/v2",
     statsOver: async ({ from, agent: of }: { from?: string; agent?: string }) => { statsAsked.push(`stats ${of}${from ? ` from ${from}` : ""}`); return stats(); },
     startRun: async (id: string, body: Record<string, unknown>, key: string) => {
       starts.push({ id, body, key });
@@ -69,7 +70,7 @@ async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = nul
   };
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
-  const props = { v2: v2 as never, agentId: agent.agent_id, defaultModel: models?.default ?? editorCaps.defaultModel, modelSource: models?.source, routePrefix: models?.route_prefix, harnesses, efforts, go: (h: string) => went.push(h), tab };
+  const props = { v2: v2 as never, agentId: agent.agent_id, defaultModel: models?.default ?? editorCaps.defaultModel, modelSource: models?.source, routePrefix: models?.route_prefix, harnesses, efforts, go: (h: string) => went.push(h), tab, capabilities };
   act(() => root!.render(strict ? createElement(StrictMode, null, createElement(AgentPage, props)) : createElement(AgentPage, props)));
   const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
   await settle();
@@ -79,17 +80,43 @@ async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = nul
   const fact = (name: string) => [...host.querySelectorAll("dt")].find((t) => t.textContent === name)?.nextElementSibling?.textContent;
   const bar = () => host.querySelector('section[aria-label="Start a run"]');
   const input = () => bar()!.querySelector("textarea") as HTMLTextAreaElement;
-  const set = async (el: HTMLTextAreaElement | HTMLSelectElement, value: string) => {
+  const set = async (el: HTMLTextAreaElement | HTMLButtonElement, value: string) => {
+    if (el instanceof HTMLButtonElement) {
+      await act(async () => el.click());
+      await act(async () => { [...document.querySelectorAll<HTMLElement>('[role="option"]')].find((option) => option.textContent === (value || "default"))!.click(); });
+      return;
+    }
     await act(async () => {
       Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), "value")!.set!.call(el, value);
-      el.dispatchEvent(new Event(el instanceof HTMLSelectElement ? "change" : "input", { bubbles: true }));
+      el.dispatchEvent(new Event("input", { bubbles: true }));
     });
   };
-  const effort = () => bar()!.querySelector('select[aria-label="Effort"]') as HTMLSelectElement;
+  const effort = () => bar()!.querySelector('[role="combobox"][aria-label="Effort"]') as HTMLButtonElement;
   return { host, went, asked, followed, statsAsked, starts, click, button, tabs, fact, bar, input, set, effort };
 }
 
 describe("AgentPage", () => {
+  it("offers coding-agent and pinned API run entries beside the native start form", async () => {
+    const agent = agentFixture("invoice-checker");
+    const page = await open(agent);
+    expect(page.input()).toBeTruthy();
+    const api = [...page.host.querySelectorAll<HTMLAnchorElement>("a")].find((a) => a.textContent === "API playground");
+    expect(api?.getAttribute("href")).toBe(`#/playground?agent=${agent.agent_id}&revision=${agent.revision}`);
+    await page.click(/^Run with your coding agent$/);
+    const prompt = page.host.querySelector("dialog textarea") as HTMLTextAreaElement;
+    const context = JSON.parse(prompt.value.split("```json\n")[1].split("\n```")[0]);
+    expect(context.request).toEqual({ revision: agent.revision });
+    expect(context.agent_id).toBe(agent.agent_id);
+  });
+
+  it("does not read unsupported run history on an agent's direct address", async () => {
+    const capabilities = { harnesses: [], features: { runs: { list: false, stop: false, cancel: false, kill: false, kinds: ["agentic"] }, messages: { steer: false, answer: false, follow_up: false, steer_workflow_runs: false } } } as Capabilities;
+    const page = await open(agentFixture("invoice-checker"), { capabilities, stats: async () => { throw new Error("Stats unavailable"); } });
+    expect(page.asked).toEqual(["agent invoice-checker"]);
+    expect(page.host.querySelector('ul[aria-label="Runs"]')).toBeNull();
+    expect(page.host.querySelector('[role="status"]')).toBeTruthy();
+  });
+
   it("shows a run's cost so far and how many charges have no price, and an unknown cost with nothing known not at all", async () => {
     const runs = runsOf("invoice-checker");
     const unknown = { usd: null, basis: "estimate", charge_state: null, cap_usd: null };
@@ -329,21 +356,23 @@ describe("AgentPage", () => {
 
   it("runs the agent from its page with the picked effort, never an output, and opens the run it started", async () => {
     const page = await open(agentFixture("invoice-checker"));
-    expect([...page.effort().options].map((o) => o.textContent)).toEqual(["default", ...efforts]);
+    await act(async () => page.effort().click());
+    expect([...document.querySelectorAll('[role="option"]')].map((o) => o.textContent)).toEqual(["default", ...efforts]);
+    await act(async () => page.effort().dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
     await page.set(page.input(), "Check invoice INV-1050.");
     await page.set(page.effort(), "high");
     await page.click(/^Run$/);
-    expect(page.starts.map((s) => [s.id, s.body])).toEqual([["invoice-checker", { input: { content: "Check invoice INV-1050." }, effort: "high" }]]);
+    expect(page.starts.map((s) => [s.id, s.body])).toEqual([["invoice-checker", { input: { content: "Check invoice INV-1050." }, effort: "high", revision: agentFixture("invoice-checker").revision }]]);
     expect(page.starts[0].key).toBeTruthy();
     expect(page.went).toEqual([`#/runs/${recorded<Run>("start.run").body.run_id}`]);
   });
 
   it("sends no effort when the effort is default, so the server's own order applies", async () => {
     const page = await open(agentFixture("invoice-checker"));
-    expect(page.effort().value).toBe("");
+    expect(page.effort().textContent).toBe("default");
     await page.set(page.input(), "Check invoice INV-1050.");
     await page.click(/^Run$/);
-    expect(page.starts.map((s) => s.body)).toEqual([{ input: { content: "Check invoice INV-1050." } }]);
+    expect(page.starts.map((s) => s.body)).toEqual([{ input: { content: "Check invoice INV-1050." }, revision: agentFixture("invoice-checker").revision }]);
   });
 
   it("gives a workflow agent its input as JSON, from its example, and sends it parsed", async () => {
@@ -355,7 +384,7 @@ describe("AgentPage", () => {
     expect(JSON.parse(page.input().value)).toEqual(example.body!.input);
     expect(page.bar()!.textContent).toContain("The workflow's example input.");
     await page.click(/^Run$/);
-    expect(page.starts.map((s) => s.body)).toEqual([{ input: example.body!.input }]);
+    expect(page.starts.map((s) => s.body)).toEqual([{ input: example.body!.input, revision: a.revision }]);
     expect(page.went).toEqual([`#/runs/${recorded<Run>("start.workflow-run").body.run_id}`]);
   });
 
@@ -405,7 +434,7 @@ describe("AgentPage", () => {
     await page.set(page.input(), "Check invoice INV-1050.");
     await page.set(page.effort(), "high");
     await page.click(/^Run$/);
-    expect(page.starts.map((s) => s.body)).toEqual([{ input: { content: "Check invoice INV-1050." }, effort: "high" }]);
+    expect(page.starts.map((s) => s.body)).toEqual([{ input: { content: "Check invoice INV-1050." }, effort: "high", revision: agentFixture("invoice-checker").revision }]);
     expect(page.went).toEqual([`#/runs/${started.run_id}`]);
     act(() => root?.unmount());
     // Back on the agent's page: the run is listed with the effort it was started at, and the Analytics tab reads the agent's.

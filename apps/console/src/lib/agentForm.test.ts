@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { capOf, createBody, DECISION, decisionProvider, defaultTools, editBody, harnessOptions, reachesWeb, same, sandboxReason, saveError, toolOffers, toolsFor, WORKFLOW } from "./agentForm";
+import { capOf, createBody, DECISION, decisionProvider, defaultTools, editBody, harnessOptions, parseSkillBundle, readSkillFiles, reachesWeb, same, sandboxReason, saveError, toolOffers, toolsFor, WORKFLOW } from "./agentForm";
 import { DECISION_STARTER } from "./decisionStarter";
 import { WORKFLOW_STARTER } from "./workflowStarter";
 import { ClientError } from "./client";
@@ -11,6 +11,27 @@ import stale from "../fixtures/write.definition-put-stale.json";
 
 const a = agent.body as never;
 const w = workflow.body as never;
+
+describe("native skill bundles", () => {
+  it.each([
+    ["invalid JSON", "{"],
+    ["not a map", "[]"],
+    ["absolute path", '{"/cite/SKILL.md":"x"}'],
+    ["traversal", '{"cite/../SKILL.md":"x"}'],
+    ["backslash", JSON.stringify({ "cite\\SKILL.md": "x" })],
+    ["missing SKILL.md", '{"cite/reference.md":"x"}'],
+    ["non-text file", '{"cite/SKILL.md":5}'],
+  ])("refuses %s before a revision request", (_case, text) => {
+    expect(() => parseSkillBundle(text)).toThrow();
+  });
+
+  it("reads complete skill folders with relative paths and refuses duplicate or binary uploads", async () => {
+    const file = (path: string, text: string) => ({ name: path.split("/").at(-1)!, webkitRelativePath: path, arrayBuffer: async () => new TextEncoder().encode(text).buffer }) as File;
+    expect(await readSkillFiles([file("cite/SKILL.md", "# Cite\n"), file("cite/reference.md", "Sources.\n")])).toEqual({ "cite/SKILL.md": "# Cite\n", "cite/reference.md": "Sources.\n" });
+    await expect(readSkillFiles([file("cite/SKILL.md", "a"), file("cite/SKILL.md", "b")])).rejects.toThrow();
+    await expect(readSkillFiles([file("cite/SKILL.md", "\u0000")])).rejects.toThrow();
+  });
+});
 
 describe("editBody", () => {
   it("is the current definition with the edited fields, as the next revision, keeping every field the form does not show", () => {
@@ -70,6 +91,14 @@ describe("editBody", () => {
     expect(body.definition.workflow).toEqual((workflow.body.definition as { workflow: unknown }).workflow);
     expect(body.definition).not.toHaveProperty("thinking");
   });
+
+  it("sends an explicitly replaced skill bundle without guessing whether its contents need a new version", () => {
+    const skillFiles = { "cite/SKILL.md": "# Cite\n", "cite/references/sources.md": "Primary sources.\n" };
+    const body = editBody(a, { skillFiles }, "Citations");
+    expect(body).toMatchObject({ skills: skillFiles, definition: { skills: ["cite"] }, unchanged: false });
+    expect(body.definition).not.toHaveProperty("skillFiles");
+    expect(body.definition).not.toHaveProperty("version");
+  });
 });
 
 describe("createBody", () => {
@@ -82,6 +111,13 @@ describe("createBody", () => {
   it("is a first revision with what the form names, and an empty skill set", () => {
     expect(createBody({ name: "Changelog checker", description: "", instructions: "Read the change.", harness: "pi", tools: ["read"] })).toEqual({
       definition: { version: 1, name: "Changelog checker", instructions: "Read the change.", harness: "pi", skills: [], tools: ["read"] },
+    });
+  });
+
+  it("creates a native revision with each uploaded skill's files and names", () => {
+    const skillFiles = { "cite/SKILL.md": "# Cite\n", "cite/reference.md": "Primary sources.\n" };
+    expect(createBody({ name: "Citer", description: "", instructions: "Cite.", harness: "pi", tools: [], skillFiles, place: { mode: "sandbox", box: "docker" }, learning: true, max_cost_usd: 2.5, tool_settings: { web_search: { provider: "parallel" } } })).toEqual({
+      definition: { version: 1, name: "Citer", instructions: "Cite.", harness: "pi", tools: [], skills: ["cite"], place: { mode: "sandbox", box: "docker" }, learning: true, max_cost_usd: 2.5, tool_settings: { web_search: { provider: "parallel" } } }, skills: skillFiles,
     });
   });
 });

@@ -6,7 +6,9 @@ import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { AgentToolSettings } from "@/components/ToolSettings";
 import { WorkflowEditor } from "@/components/WorkflowEditor";
-import { type Agent, type AgentFields, capOf, DECISION, defaultTools, harnessOptions, isStarter, reachesWeb, same, sandboxReason, type SaveProblem, type ToolOffer, toolsFor, warningsFor } from "@/lib/agentForm";
+import { CodingAgentHandoff } from "@/components/CodingAgentHandoff";
+import { type Agent, type AgentFields, capOf, createBody, DECISION, defaultTools, editBody, harnessOptions, isStarter, parseSkillBundle, readSkillFiles, reachesWeb, same, sandboxReason, type SaveProblem, type ToolOffer, toolsFor, warningsFor } from "@/lib/agentForm";
+import type { CodingAgentContext } from "@/lib/codingAgentHandoff";
 import type { WorkflowCheck } from "@/lib/client";
 import { markdown, when } from "@/lib/format";
 import { harnessDefault, modelLabel, NO_DEFAULT } from "@/lib/models";
@@ -21,12 +23,13 @@ export type Revision = { revision: string; version: number; current: boolean; no
  *  the server runs no decision workflows a starter can use, and then Decision is offered disabled. `modelSource`:
  *  capabilities' `models.source`; `routePrefix`, its `models.route_prefix`, the routing prefix taken off model ids. A harness's `default_model` is the
  *  model the server runs for it when a definition names none (null: none). */
-export type EditorCaps = { harnesses: { id: string; available: boolean; reason?: string; default_model?: string | null }[]; tools: ToolOffer[]; thinking: string[]; defaultModel?: string; modelSource?: string; routePrefix?: string | null; decisionProvider?: string; places?: Places | null; learning?: "on" | "off" };
+export type EditorCaps = { harnesses: { id: string; available: boolean; reason?: string; default_model?: string | null }[]; tools: ToolOffer[]; thinking: string[]; defaultModel?: string; modelSource?: string; routePrefix?: string | null; decisionProvider?: string; places?: Places | null; learning?: "on" | "off"; agents?: { create?: boolean; update?: boolean; revisions?: boolean }; archive?: boolean };
 export type EditorProps = {
   /** The agent being edited, or null for a new one. */
   agent: Agent | null;
   revisions?: Revision[];
   caps: EditorCaps;
+  serverUrl?: string;
   /** Saves the form: a new agent, or the next revision of this one. Resolves with the server's refusal, or null. */
   onSave?: (fields: AgentFields, note: string) => Promise<SaveProblem | null>;
   onMakeCurrent?: (revision: string) => void;
@@ -71,10 +74,10 @@ const STEPS: { id: Step; label: string; note: string; Icon: typeof FileText }[] 
 /** The hosted console's agent builder, over AgentRun Server's agents: a numbered step rail, one step at a time, and a
  *  save that makes a new revision. A save made on a revision that is no longer current is refused (If-Match), and the
  *  editor says so instead of overwriting the other save. */
-export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent, onArchive, onReload, onBack, step: initialStep, problem: initialProblem = null, notice, draft, validate, providerChoices = [], permissionGates = [], focusTool }: EditorProps) {
+export function AgentEditor({ agent, revisions = [], caps, serverUrl, onSave, onMakeCurrent, onArchive, onReload, onBack, step: initialStep, problem: initialProblem = null, notice, draft, validate, providerChoices = [], permissionGates = [], focusTool }: EditorProps) {
   const creating = !agent;
   const d = agent?.definition;
-  const [step, setStep] = useState<Step>(initialStep ?? (agent?.kind === "workflow" ? "workflow" : "context"));
+  const [selectedStep, setStep] = useState<Step>(initialStep ?? (agent?.kind === "workflow" ? "workflow" : "context"));
   // Tools are on by default: a new agent starts with every tool its harness runs here; an agent keeps its own. A new
   // agent starts on the place the server gives new agents (a sandbox where it has a box: bash ticked too); else none.
   const startPlace = creating ? newAgentPlace(caps.places) : undefined;
@@ -98,6 +101,10 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
   const [note, setNote] = useState("");
   const [preview, setPreview] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [skillMode, setSkillMode] = useState(false);
+  const [skillText, setSkillText] = useState("{}");
+  const [skillConfirmed, setSkillConfirmed] = useState(false);
+  const [readingSkills, setReadingSkills] = useState(false);
   const [problem, setProblem] = useState<SaveProblem | null>(initialProblem);
   const [saved, setSaved] = useState(false);
   // A workflow agent's past revision, opened from History as its read-only graph.
@@ -115,11 +122,14 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
   const starting = creating && isStarter(f.harness);
   const choices = harnessOptions(caps.harnesses, creating ? { available: !!caps.decisionProvider } : undefined);
   // `revisions` counts them; the current one is the agent's `revision`, which can be an earlier one after "Make current".
-  const current = revisions.find((r) => r.revision === agent?.revision) ?? revisions.find((r) => r.current);
-  const steps = STEPS.filter((s) => !(creating && s.id === "history") && (s.id !== "workflow" || workflow) && !(starting && s.id === "tools"));
-  const at = steps.findIndex((s) => s.id === step);
+  const current = agent ? { revision: agent.revision, version: agent.definition.version } : revisions.find((r) => r.current);
+  const isCurrent = (revision: Revision) => revision.revision === current?.revision;
+  const maySave = (creating ? caps.agents?.create : caps.agents?.update) !== false;
+  const steps = STEPS.filter((s) => !((creating || caps.agents?.revisions === false) && s.id === "history") && (s.id !== "workflow" || workflow) && !(starting && s.id === "tools"));
+  const at = Math.max(0, steps.findIndex((s) => s.id === selectedStep));
+  const step = steps[at].id;
   const save = async () => {
-    if (!onSave) return;
+    if (!onSave || !maySave || saving || readingSkills) return;
     setSaving(true);
     // A workflow agent's edit is sent as its parsed JSON; text that does not parse is not sent at all.
     let fields: AgentFields = { ...f, workflowText: undefined, maxCostText: undefined };
@@ -133,6 +143,14 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
       const saved = typeof d?.max_cost_usd === "number" && d.max_cost_usd > 0;
       const value = cap.value ?? 0;
       if (value !== 0 || saved) fields = { ...fields, max_cost_usd: value };
+    }
+    if (skillMode) {
+      try {
+        if (!creating && !skillConfirmed) throw new Error("Confirm that this complete bundle replaces the current revision's skill files.");
+        fields.skillFiles = parseSkillBundle(skillText);
+      } catch (e) {
+        setSaving(false); setProblem({ kind: "invalid", message: (e as Error).message, fields: { skills: (e as Error).message } }); return;
+      }
     }
     if (workflow) {
       try { fields = { ...fields, workflow: JSON.parse(f.workflowText ?? "") }; }
@@ -151,18 +169,35 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
   const modelDefault = fallback ? modelLabel(fallback, { source: caps.modelSource, default: caps.defaultModel, route_prefix: caps.routePrefix }) : undefined;
   // The tools that reach the web which this agent's harness runs here, for the Tools step's hint when it has none of them.
   const webHere = toolsFor(f.harness ?? "pi", caps.tools).filter((t) => reachesWeb([t.name])).map((t) => t.name);
+  const handoff = (): CodingAgentContext => {
+    let request: unknown;
+    try {
+      const fields: AgentFields = { ...f, workflowText: undefined, maxCostText: undefined, ...(workflow ? { workflow: JSON.parse(f.workflowText ?? "") } : {}), ...(skillMode ? { skillFiles: parseSkillBundle(skillText) } : {}) };
+      if (!workflow && !starting) {
+        const cap = capOf(f.maxCostText);
+        if (!cap.ok) throw new Error(cap.message);
+        const savedCap = typeof d?.max_cost_usd === "number" && d.max_cost_usd > 0;
+        const value = cap.value ?? 0;
+        if (value !== 0 || savedCap) fields.max_cost_usd = value;
+      }
+      if (agent) { const { unchanged: _unchanged, ...body } = editBody(agent, fields, note); request = body; }
+      else request = createBody({ name: fields.name ?? "", description: fields.description ?? "", instructions: fields.instructions ?? "", harness: fields.harness ?? "pi", tools: fields.tools ?? [], thinking: fields.thinking, model: fields.model, tool_settings: fields.tool_settings, place: fields.place, learning: fields.learning, max_cost_usd: fields.max_cost_usd, decisionProvider: caps.decisionProvider, skillFiles: fields.skillFiles });
+    } catch { request = { incomplete_draft: f, ...(skillMode ? { skill_files_json_draft: skillText } : {}) }; }
+    return agent ? { kind: "edit", agentId: agent.agent_id, revision: agent.revision, request } : { kind: "create", request };
+  };
 
   return (
     <div className="flex h-full min-h-0 flex-col">
       <header className="flex flex-wrap items-center gap-3 border-b px-5 py-4 md:px-8">
         <Button size="icon" variant="ghost" aria-label="Back to agents" onClick={onBack}><ArrowLeft aria-hidden /></Button>
         <h1 className="min-w-0 flex-1 truncate font-mono text-xl font-semibold" title={creating ? undefined : d!.name}>{creating ? "New agent" : d!.name}</h1>
+        {maySave && <CodingAgentHandoff context={handoff} serverUrl={serverUrl} />}
         {/* The kind, revision count and Archive: a row of their own under the name on a phone, so the name keeps the width. */}
         {agent && (
           <div className="flex basis-full flex-wrap items-center gap-3 sm:basis-auto" role="group" aria-label="About this agent">
             <Chip>{agent.kind}</Chip>
             <span className="caps text-[11px] text-muted-foreground">{current ? `rev ${current.version} current · ` : ""}{agent.revisions} {agent.revisions === 1 ? "revision" : "revisions"}</span>
-            {onArchive && <Button size="sm" variant={agent.archived_at ? "primary" : "outline"} onClick={() => onArchive(!agent.archived_at)}><Archive aria-hidden /> {agent.archived_at ? "Unarchive" : "Archive"}</Button>}
+            {onArchive && caps.archive !== false && <Button size="sm" variant={agent.archived_at ? "primary" : "outline"} onClick={() => onArchive(!agent.archived_at)}><Archive aria-hidden /> {agent.archived_at ? "Unarchive" : "Archive"}</Button>}
           </div>
         )}
       </header>
@@ -283,6 +318,27 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
               <Field label="Skills" note="Skill files are saved with each revision and kept as they are by an edit.">
                 {d?.skills?.length ? <ul className="border">{d.skills.map((s) => <li key={s} className="border-b px-3 py-2 font-mono text-[13px] last:border-b-0">{s}</li>)}</ul>
                   : <p className="border px-3 py-4 font-mono text-[13px] text-muted-foreground">No skills.</p>}
+                {!skillMode ? <Button className="mt-3" size="sm" onClick={() => { setSkillMode(true); setSkillConfirmed(false); setSaved(false); }}>{creating ? "Add skill bundle" : "Replace skill bundle"}</Button> : (
+                  <div className="mt-3 space-y-3 rounded-xl border p-4">
+                    <p className="text-[12px] text-muted-foreground">Supply every file for this revision as relative paths and UTF-8 text. Each skill needs &lt;name&gt;/SKILL.md. Include its reference files too.</p>
+                    <label className="block text-[12px]">Upload a skill folder
+                      <input type="file" multiple {...{ webkitdirectory: "" }} aria-label="Upload skill folder" disabled={readingSkills} className="mt-2 block max-w-full text-[12px]" onChange={async (e) => {
+                        const files = [...(e.currentTarget.files ?? [])];
+                        e.currentTarget.value = "";
+                        if (!files.length) return;
+                        setReadingSkills(true);
+                        try { setSkillText(JSON.stringify(await readSkillFiles(files), null, 2)); setSkillConfirmed(false); setSaved(false); setProblem(null); }
+                        catch (error) { setProblem({ kind: "invalid", message: (error as Error).message, fields: { skills: (error as Error).message } }); }
+                        finally { setReadingSkills(false); }
+                      }} />
+                    </label>
+                    <label className="block text-[12px]">Or paste the complete file map as JSON
+                      <textarea aria-label="Skill files JSON" value={skillText} onChange={(e) => { setSkillText(e.target.value); setSkillConfirmed(false); setSaved(false); }} rows={8} spellCheck={false} className={cn(input, "mt-2 leading-relaxed")} />
+                    </label>
+                    {!creating && <label className="flex items-start gap-2 text-[12px]"><input type="checkbox" aria-label="Confirm skill replacement" checked={skillConfirmed} onChange={(e) => setSkillConfirmed(e.target.checked)} className="mt-0.5" /><span>Replace all current skill files with this complete bundle. Files left out are removed from the new revision; previous revisions keep their files.</span></label>}
+                    <Button size="sm" variant="ghost" onClick={() => { setSkillMode(false); setSkillConfirmed(false); setProblem(null); }}>Keep {creating ? "no skills" : "current skills"}</Button>
+                  </div>
+                )}
               </Field>
             </div>
           )}
@@ -332,7 +388,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                   </div>
                 </Field>
               )}
-              {!starting && (
+              {!workflow && !starting && (
                 <Field label="Model" id="agent-model" optional note={modelDefault ? <>Empty uses the server's default (<span title={modelDefault.title}>{modelDefault.text}</span>).</> : NO_DEFAULT} error={fieldError("model")} warning={fieldWarning("model")}>
                   <input id="agent-model" value={f.model ?? ""} onChange={(e) => set({ model: e.target.value || undefined })} placeholder="provider/model" className={input} />
                 </Field>
@@ -354,7 +410,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                 <span className="caps text-[12px]">rev {viewing.version}</span>
                 <span className="min-w-0 flex-1 text-[14px]">{viewing.note ?? <span className="text-muted-foreground">No note</span>}</span>
                 <span className="font-mono text-[11px] text-muted-foreground">{when(viewing.created_at)}</span>
-                <Button size="sm" onClick={() => onMakeCurrent?.(viewing.revision)} disabled={!onMakeCurrent}>Make current</Button>
+                {caps.agents?.update !== false && <Button size="sm" onClick={() => onMakeCurrent?.(viewing.revision)} disabled={!onMakeCurrent}>Make current</Button>}
               </div>
               <WorkflowEditor readOnly text={JSON.stringify(viewing.definition?.workflow, null, 2)} onText={() => {}} base={d!.workflow} baseLabel={current ? `rev ${current.version}, the current one` : "the current revision"} />
             </div>
@@ -367,8 +423,8 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                   <span className="caps w-14 text-[12px]">rev {r.version}</span>
                   <span className="min-w-0 flex-1 text-[14px]">{r.note ?? <span className="text-muted-foreground">No note</span>}</span>
                   <span className="font-mono text-[11px] text-muted-foreground">{when(r.created_at)}</span>
-                  {workflow && !r.current && r.definition?.workflow !== undefined && <Button size="sm" variant="ghost" onClick={() => setViewing(r)} aria-label={`View rev ${r.version}`}><Eye aria-hidden /> View</Button>}
-                  {r.current ? <Chip tone="success">Current</Chip> : <Button size="sm" onClick={() => onMakeCurrent?.(r.revision)} disabled={!onMakeCurrent}>Make current</Button>}
+                  {workflow && !isCurrent(r) && r.definition?.workflow !== undefined && <Button size="sm" variant="ghost" onClick={() => setViewing(r)} aria-label={`View rev ${r.version}`}><Eye aria-hidden /> View</Button>}
+                  {isCurrent(r) ? <Chip tone="success">Current</Chip> : caps.agents?.update !== false && <Button size="sm" onClick={() => onMakeCurrent?.(r.revision)} disabled={!onMakeCurrent}>Make current</Button>}
                 </li>
               ))}
             </ul>
@@ -381,7 +437,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
         {step === "history" && <span className="flex-1" />}
         {saved && <span className="caps text-[11px] text-success-text">Saved</span>}
         {at < steps.length - 1 && <Button size="sm" onClick={() => goTo(steps[at + 1].id)}>Next <ArrowRight aria-hidden /></Button>}
-        {!viewing && <Button size="sm" variant="solid" onClick={save} disabled={!onSave || saving || !f.name?.trim() || (!workflow && !starting && !f.instructions?.trim())}>{saving ? "Saving" : creating ? "Create" : "Save revision"}</Button>}
+        {!viewing && maySave && <Button size="sm" variant="solid" onClick={save} disabled={!onSave || saving || readingSkills || !f.name?.trim() || (!workflow && !starting && !f.instructions?.trim())}>{saving ? "Saving" : creating ? "Create" : "Save revision"}</Button>}
       </footer>
     </div>
   );

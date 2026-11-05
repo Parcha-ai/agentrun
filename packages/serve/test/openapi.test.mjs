@@ -162,7 +162,7 @@ test("the contract's operations are as vendored; this server's own are added and
   const components = structuredClone(doc.components);
   const marked = [];
   const notes = [];
-  const strip = (schema, at) => {
+  const strip = (schema, at, original) => {
     for (const [field, property] of Object.entries(schema.properties ?? {})) {
       for (const mark of ["x-agentrun-serve-unsupported", "x-agentrun-serve-details", "x-agentrun-serve-note"]) {
         if (property[mark] === undefined) continue;
@@ -170,7 +170,7 @@ test("the contract's operations are as vendored; this server's own are added and
         notes.push(`${at}.${field}`);
       }
       if (property["x-agentrun-serve"] === undefined) {
-        strip(property, `${at}.${field}`);
+        strip(property, `${at}.${field}`, original?.properties?.[field]);
         continue;
       }
       // A contract property whose enum this server widens (models.source) is marked on the property, each value it adds
@@ -185,6 +185,13 @@ test("the contract's operations are as vendored; this server's own are added and
         continue;
       }
       assert.match(property["x-agentrun-serve"], /^[a-z]+\/\d+$/, `${at}.${field} names its addition`);
+      const originalEnum = original?.properties?.[field]?.enum;
+      if (Array.isArray(property.enum) && Array.isArray(originalEnum)) {
+        for (const value of property.enum.filter((v) => !originalEnum.includes(v))) marked.push(`${at}.${field}.${value}`);
+        property.enum = property.enum.filter((v) => originalEnum.includes(v));
+        delete property["x-agentrun-serve"];
+        continue;
+      }
       // An addition inside one (a later mark on a property of this server's own) is listed too.
       const inner = (object, where) => {
         for (const [name, nested] of Object.entries(object.properties ?? {})) {
@@ -215,7 +222,7 @@ test("the contract's operations are as vendored; this server's own are added and
       schema.enum = schema.enum.filter((v) => original.includes(v));
       delete schema["x-agentrun-serve"];
     }
-    strip(schema, name);
+    strip(schema, name, VENDORED.components.schemas[name]);
   }
   // A security scheme this server adds is its own, marked (the owner's session that approving a note takes).
   for (const [name, scheme] of Object.entries(components.securitySchemes ?? {})) if (scheme["x-agentrun-serve"] !== undefined) delete components.securitySchemes[name];
@@ -301,6 +308,9 @@ test("live answers meet the served document: capabilities, and an agent made, re
   const { api } = await serve(t);
   const check = (name, value) => assert.deepEqual(schemaProblems(doc, { $ref: `#/components/schemas/${name}` }, value), [], `${name}: ${JSON.stringify(value)}`);
   check("Capabilities", (await api("GET", "/capabilities")).body);
+  for (const env of [{}, { AGENT_MODEL_BASE_URL: "https://models.example/v1", AGENT_MODEL: "example-model" }]) {
+    check("Capabilities", await capabilities(env));
+  }
   for (const [id, body] of [["on-pi", agent("on-pi", { model: "faux/faux-1", thinking: "high" })], ["on-claude", agent("on-claude", { harness: "claude-agent" })], ["in-runner", agent("in-runner", { place: { mode: "runner" } })], ["in-bwrap", agent("in-bwrap", { place: { mode: "sandbox", box: "bwrap" } })], ["in-sandbox", agent("in-sandbox", { place: { mode: "sandbox", box: "daytona" } })], ["on-codex", flowAgent("on-codex", undefined, { harness: "codex" })]]) {
     const { warnings: _, ...made } = (await api("POST", "/agents", body)).body;
     const read = (await api("GET", `/agents/${id}`)).body;

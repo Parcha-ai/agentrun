@@ -51,7 +51,7 @@ export function useRunGraph(load: (signal: AbortSignal) => Promise<RunGraph>, { 
   return { data, error, readAt, reload: () => setNudge((n) => n + 1) };
 }
 
-export type GraphActions = { onPause?: () => void; onResume?: () => void; busy?: "pause" | "resume" | null };
+export type GraphActions = { onPause?: () => void; onResume?: () => void; busy?: "pause" | "resume" | null; supported?: boolean };
 
 /** A workflow run as a live graph: the totals, pause and resume, the graph with each node's and item's state, and the
  *  drawer for the node or item picked. */
@@ -115,7 +115,7 @@ function Totals({ data, readAt, now, actions, stale }: { data: RunGraph; readAt:
       ))}
       <div className="flex flex-1 items-center justify-end gap-3 px-5 py-2 md:px-8">
         {stale > 0 && <span className="font-mono text-[11px] text-muted-foreground" role="status">Last read {elapsed(stale)} ago, reading again</span>}
-        {!final && (data.run.paused
+        {!final && actions.supported !== false && (data.run.paused
           ? <Button size="sm" variant="solid" onClick={actions.onResume} disabled={!actions.onResume || !!actions.busy}><Play aria-hidden /> {actions.busy === "resume" ? "Resuming" : "Resume"}</Button>
           : <Button size="sm" onClick={actions.onPause} disabled={!actions.onPause || !!actions.busy} title="Calls in flight finish; no new node starts."><Pause aria-hidden /> {actions.busy === "pause" ? "Pausing" : "Pause"}</Button>)}
       </div>

@@ -16,16 +16,53 @@ export type SaveWarning = { field: string; reason: string; message: string };
 /** `warnings`: on a create's or an edit's answer only (never on a read of the agent); the console keeps a create's for
  *  the agent's page that opens after it (client.ts). */
 export type Agent = { agent_id: string; kind: "agentic" | "workflow"; revision: string; revisions: number; definition: Definition; archived_at: string | null; runs?: { count: number; live: number }; warnings?: SaveWarning[]; tools?: AgentTool[] };
-export type AgentFields = Partial<Pick<Definition, "name" | "description" | "instructions" | "harness" | "thinking" | "model" | "tools" | "workflow" | "learning" | "tool_settings" | "max_cost_usd">> & { workflowText?: string; maxCostText?: string; place?: Place };
+export type AgentFields = Partial<Pick<Definition, "name" | "description" | "instructions" | "harness" | "thinking" | "model" | "tools" | "workflow" | "learning" | "tool_settings" | "max_cost_usd">> & { workflowText?: string; maxCostText?: string; place?: Place; skillFiles?: Record<string, string> };
+
+/** A native revision names every directory holding a SKILL.md; its other files travel in the same bundle. */
+export const skillNames = (files: Record<string, string>) => Object.keys(files).filter((path) => path.endsWith("/SKILL.md")).map((path) => path.slice(0, -"/SKILL.md".length)).sort();
+
+/** Validate the complete bundle before sending it. Paths are relative to the revision's skill directory. */
+export function parseSkillBundle(text: string): Record<string, string> {
+  let files: unknown;
+  try { files = JSON.parse(text); } catch { throw new Error("Skill files must be a JSON object of relative paths to text."); }
+  if (!files || typeof files !== "object" || Array.isArray(files)) throw new Error("Skill files must be a JSON object of relative paths to text.");
+  for (const [path, content] of Object.entries(files)) {
+    if (!path || path.length > 512 || path.startsWith("/") || /[\\\u0000-\u001f\u007f]/.test(path) || path.split("/").some((part) => !part || part === "." || part === "..")) {
+      throw new Error(`Skill path ${JSON.stringify(path)} must be relative, without empty, . or .. segments or backslashes.`);
+    }
+    if (typeof content !== "string" || content.includes("\u0000")) throw new Error(`Skill file ${path} must contain text.`);
+  }
+  const bundle = files as Record<string, string>;
+  const names = skillNames(bundle);
+  for (const path of Object.keys(bundle)) if (!names.some((name) => path.startsWith(`${name}/`))) {
+    throw new Error(`Include the skill's <name>/SKILL.md alongside ${path}.`);
+  }
+  return bundle;
+}
+
+/** Read a browser folder selection as UTF-8 text, keeping its relative paths and refusing duplicate files. */
+export async function readSkillFiles(files: Iterable<File>): Promise<Record<string, string>> {
+  const entries: [string, string][] = [];
+  const paths = new Set<string>();
+  for (const file of files) {
+    const path = file.webkitRelativePath || file.name;
+    if (paths.has(path)) throw new Error(`The skill bundle contains ${path} twice.`);
+    paths.add(path);
+    try { entries.push([path, new TextDecoder("utf-8", { fatal: true }).decode(await file.arrayBuffer())]); }
+    catch { throw new Error(`Skill file ${path} must be UTF-8 text.`); }
+  }
+  return parseSkillBundle(JSON.stringify(Object.fromEntries(entries)));
+}
 
 /** The body of a definition edit: the current definition with the edited fields; name and
  *  description stay as the agent was created. Every field the
  *  form does not show (schemas, tools, a workflow, connection references) is kept as it is, never dropped. A workflow
- *  revision keeps no thinking level (the server refuses one). Skill files are not sent, so they stay as they are. */
-export function editBody(agent: Agent, fields: AgentFields, note: string): { definition: Definition; note?: string; unchanged: boolean } {
+ *  revision keeps no thinking level (the server refuses one). Skill files stay as they are unless a complete replacement is supplied. */
+export function editBody(agent: Agent, fields: AgentFields, note: string): { definition: Partial<Definition>; skills?: Record<string, string>; note?: string; unchanged: boolean } {
   // The agent store keeps an agent's id, name and description from its creation: an edit never sends a changed one.
-  const { name: _name, description: _description, ...editable } = fields as AgentFields & { id?: string };
+  const { name: _name, description: _description, skillFiles, workflowText: _text, ...editable } = fields as AgentFields & { id?: string };
   const edited: Definition = { ...agent.definition, ...editable };
+  if (skillFiles !== undefined) edited.skills = skillNames(skillFiles);
   // A workflow revision takes no instructions, model or thinking beside its workflow (validate.ts refuses each).
   if (agent.kind === "workflow") { delete edited.thinking; delete edited.instructions; delete edited.model; }
   // An empty model is no model: the server's default. No tool settings of its own are none: the server's.
@@ -36,7 +73,10 @@ export function editBody(agent: Agent, fields: AgentFields, note: string): { def
   // is the current one's. A changed definition is the next revision, number revisions + 1.
   const unchanged = same({ ...edited, version: 0 }, { ...agent.definition, version: 0 });
   edited.version = unchanged ? agent.definition.version : agent.revisions + 1;
-  return { definition: edited, ...(note.trim() ? { note: note.trim() } : {}), unchanged };
+  // A read returns skill hashes, not their contents. Let the server choose the version when files are supplied:
+  // an identical complete bundle is a no-op, while changed contents make the next revision.
+  const { version: _version, ...withoutVersion } = edited;
+  return { definition: skillFiles === undefined ? edited : withoutVersion, ...(skillFiles !== undefined ? { skills: skillFiles } : {}), ...(note.trim() ? { note: note.trim() } : {}), unchanged: unchanged && skillFiles === undefined };
 }
 
 /** Deep equality of two JSON values, whatever their keys' order. */
@@ -72,19 +112,21 @@ export function decisionProvider(workflows: { adapters?: string[]; decisions?: {
   return STARTER_PROVIDERS.find((id) => providers.some((p) => p.id === id && p.available));
 }
 
-/** The body that creates an agent: its first revision, with what the form names and no skills yet. A starter choice
+/** The body that creates an agent: its first revision, with what the form names and any complete skill bundle. A starter choice
  *  (Decision, Workflow) makes a workflow agent from that starter (Decision's on the server's decision provider), with no
  *  instructions, harness, thinking, model or tools: a workflow revision keeps none of those beside its workflow. */
-export function createBody(f: { name: string; description: string; instructions: string; harness: string; tools: string[]; thinking?: string; model?: string; learning?: boolean; decisionProvider?: string; tool_settings?: ToolSettings; place?: Place; max_cost_usd?: number }): { definition: Definition } {
+export function createBody(f: { name: string; description: string; instructions: string; harness: string; tools: string[]; thinking?: string; model?: string; learning?: boolean; decisionProvider?: string; tool_settings?: ToolSettings; place?: Place; max_cost_usd?: number; skillFiles?: Record<string, string> }): { definition: Definition; skills?: Record<string, string> } {
+  const skills = f.skillFiles === undefined ? [] : skillNames(f.skillFiles);
+  const files = f.skillFiles === undefined ? {} : { skills: f.skillFiles };
   if (isStarter(f.harness)) {
-    return { definition: { version: 1, name: f.name, ...(f.description.trim() ? { description: f.description } : {}), workflow: STARTERS[f.harness]!(f.decisionProvider), skills: [], tools: [] } };
+    return { definition: { version: 1, name: f.name, ...(f.description.trim() ? { description: f.description } : {}), workflow: STARTERS[f.harness]!(f.decisionProvider), skills, tools: [] }, ...files };
   }
   return {
     definition: {
       version: 1, name: f.name, ...(f.description.trim() ? { description: f.description } : {}), instructions: f.instructions, harness: f.harness,
-      ...(f.thinking ? { thinking: f.thinking } : {}), ...(f.model?.trim() ? { model: f.model.trim() } : {}), ...(f.place ? { place: f.place } : {}), ...(f.learning ? { learning: true } : {}), ...(f.max_cost_usd !== undefined ? { max_cost_usd: f.max_cost_usd } : {}), skills: [], tools: f.tools,
+      ...(f.thinking ? { thinking: f.thinking } : {}), ...(f.model?.trim() ? { model: f.model.trim() } : {}), ...(f.place ? { place: f.place } : {}), ...(f.learning ? { learning: true } : {}), ...(f.max_cost_usd !== undefined ? { max_cost_usd: f.max_cost_usd } : {}), skills, tools: f.tools,
       ...(f.tool_settings && Object.keys(f.tool_settings).length ? { tool_settings: f.tool_settings } : {}),
-    },
+    }, ...files,
   };
 }
 

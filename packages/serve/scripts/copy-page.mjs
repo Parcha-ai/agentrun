@@ -30,4 +30,7 @@ if (existsSync(join(built, "index.html"))) {
   if (!existsSync(notices)) throw new Error("apps/console/dist has no THIRD-PARTY-NOTICES.txt: build apps/console again (its Vite build writes it)");
   cpSync(notices, join(root, "dist", "console", "THIRD-PARTY-NOTICES.txt"));
   if (existsSync(join(built, "assets"))) cpSync(join(built, "assets"), join(root, "dist", "console", "assets"), { recursive: true, filter: (from) => !from.endsWith(".map") });
+  const manifest = join(built, "asset-manifest.json");
+  if (!existsSync(manifest)) throw new Error("Console build is missing asset-manifest.json");
+  cpSync(manifest, join(root, "dist", "console", "asset-manifest.json"));
 }

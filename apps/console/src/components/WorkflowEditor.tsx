@@ -11,7 +11,7 @@ import { type Issue, type Json, lineCol, lintWorkflow, nodeAtOffset, parseWithSp
 const LINE_PX = 20;
 const CHECK_MS = 400;
 
-type Check = { text: string; check: WorkflowCheck } | { text: string; failed: string } | "unsupported" | null;
+type Check = { text: string; toolsKey: string; check: WorkflowCheck } | { text: string; toolsKey: string; failed: string } | "unsupported" | null;
 
 /** The server's check of the text, asked CHECK_MS after the last keystroke that left it parseable. A server without the
  *  route (404, 405) is not asked again, and the console's own lint stands in. A check that failed otherwise is named, the
@@ -19,17 +19,17 @@ type Check = { text: string; check: WorkflowCheck } | { text: string; failed: st
 function useServerCheck(text: string, value: Json | undefined, ok: boolean, tools: string[] | undefined, validate?: (body: { workflow: unknown; tools?: string[] }, signal?: AbortSignal) => Promise<WorkflowCheck>) {
   const [check, setCheck] = useState<Check>(null);
   const [again, setAgain] = useState(0);
-  const toolsKey = (tools ?? []).join(",");
+  const toolsKey = JSON.stringify(tools ?? null);
   useEffect(() => {
     if (!validate || !ok || check === "unsupported") return;
     const ctl = new AbortController();
     const t = setTimeout(() => {
       validate({ workflow: value, ...(tools ? { tools } : {}) }, ctl.signal).then(
-        (answer) => { if (!ctl.signal.aborted) setCheck({ text, check: answer }); },
+        (answer) => { if (!ctl.signal.aborted) setCheck({ text, toolsKey, check: answer }); },
         (e: { status?: number; message?: string }) => {
           if (ctl.signal.aborted) return;
           if (e?.status === 404 || e?.status === 405) setCheck("unsupported");
-          else setCheck({ text, failed: e?.message || `the server answered ${e?.status ?? "nothing"}` });
+          else setCheck({ text, toolsKey, failed: e?.message || `the server answered ${e?.status ?? "nothing"}` });
         },
       );
     }, CHECK_MS);
@@ -37,7 +37,7 @@ function useServerCheck(text: string, value: Json | undefined, ok: boolean, tool
   }, [text, ok, toolsKey, validate, again]); // eslint-disable-line react-hooks/exhaustive-deps
   const retry = () => { setCheck(null); setAgain((n) => n + 1); };
   if (check === "unsupported" || !validate) return { mode: "lint" as const, retry };
-  if (check && check.text === text) return "failed" in check ? { mode: "failed" as const, failed: check.failed, retry } : { mode: "server" as const, check: check.check, retry };
+  if (check && check.text === text && check.toolsKey === toolsKey) return "failed" in check ? { mode: "failed" as const, failed: check.failed, retry } : { mode: "server" as const, check: check.check, retry };
   return { mode: "pending" as const, retry };
 }
 

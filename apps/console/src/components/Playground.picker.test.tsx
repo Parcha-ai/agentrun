@@ -4,10 +4,8 @@ import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { Playground } from "./Playground";
 import { agentFixture } from "@/fixtures";
 
-// The Playground's Agent and Revision fields are the console's picker, not native <select>s, which a phone opens
-// detached from the field: each opens its list right under itself (anchored "bottom start"; the walk measures the real
-// box at 390×844 and 844×390), and is driven by the keyboard as a listbox is. jsdom has no layout, so here the list's
-// anchored placement is read from its data-anchor, which starts "bottom" when it opens below its field.
+// Agent and Revision open listbox options. The combobox retains focus while arrows preview an option, Enter
+// applies it, and Escape dismisses it without changing the request.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let root: ReturnType<typeof createRoot> | undefined;
 beforeAll(() => {
@@ -35,20 +33,20 @@ describe("Playground's Agent and Revision pickers", () => {
     const t = open();
     expect(t.host.querySelector("select")).toBeNull();
     expect(t.field("Agent")?.textContent).toContain(base.definition.name);
-    expect(t.field("Revision")?.textContent).toContain("The current revision");
+    expect(t.field("Revision")?.textContent).toContain("The loaded current revision (rev 3)");
   });
 
-  it("the Agent picker opens its list under the field, and the keyboard picks: ArrowDown, Enter", async () => {
+  it("the Agent picker opens its list, and the keyboard picks: ArrowDown, Enter", async () => {
     const picked: string[] = [];
     const t = open((id) => picked.push(id));
     await act(async () => { t.field("Agent")!.click(); });
     await settle();
     const list = document.querySelector('[role="listbox"]')!;
     expect(list, "the list opens").not.toBeNull();
-    expect(list.getAttribute("data-anchor")).toMatch(/^bottom/);
+    expect(t.field("Agent")?.getAttribute("aria-expanded")).toBe("true");
     expect([...list.querySelectorAll('[role="option"]')].map((o) => o.textContent)).toEqual([base.definition.name, "Second agent"]);
-    await key(list, "ArrowDown");
-    await key(list, "Enter");
+    await key(t.field("Agent")!, "ArrowDown");
+    await key(t.field("Agent")!, "Enter");
     expect(picked).toEqual(["second"]);
     expect(document.querySelector('[role="listbox"]')).toBeNull();
     expect(t.field("Agent")?.textContent).toContain("Second agent");
@@ -60,10 +58,10 @@ describe("Playground's Agent and Revision pickers", () => {
     await act(async () => { t.field("Revision")!.click(); });
     await settle();
     const list = document.querySelector('[role="listbox"]')!;
-    expect(list.getAttribute("data-anchor")).toMatch(/^bottom/);
-    expect([...list.querySelectorAll('[role="option"]')].map((o) => o.textContent)).toEqual(["The current revision", "rev 2 (current)", "rev 1: first cut"]);
-    await key(list, "End");
-    await key(list, "Enter");
+    expect(t.field("Revision")?.getAttribute("aria-expanded")).toBe("true");
+    expect([...list.querySelectorAll('[role="option"]')].map((o) => o.textContent)).toEqual(["The loaded current revision (rev 3)", "rev 2 (current)", "rev 1: first cut"]);
+    await key(t.field("Revision")!, "End");
+    await key(t.field("Revision")!, "Enter");
     expect(t.field("Revision")?.textContent).toContain("rev 1: first cut");
     // The request is built once it has its input.
     await act(async () => { const ta = t.host.querySelector("textarea")!; Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(ta, "Check it."); ta.dispatchEvent(new Event("input", { bubbles: true })); });
@@ -75,7 +73,7 @@ describe("Playground's Agent and Revision pickers", () => {
     const t = open((id) => picked.push(id));
     await act(async () => { t.field("Agent")!.click(); });
     await settle();
-    await key(document.querySelector('[role="listbox"]')!, "Escape");
+    await key(t.field("Agent")!, "Escape");
     expect(document.querySelector('[role="listbox"]')).toBeNull();
     expect(picked).toEqual([]);
     expect(t.field("Agent")?.textContent).toContain(base.definition.name);

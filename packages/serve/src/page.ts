@@ -13,13 +13,13 @@ import { fileURLToPath } from "node:url";
 import { storeApi } from "@parcha/pi-durable-agent/serve";
 import { ApiError } from "./errors.js";
 
-const CSP = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+const CSP = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 const SECURITY = { "content-security-policy": CSP, "x-content-type-options": "nosniff", "referrer-policy": "no-referrer", "cache-control": "no-store" };
 const HTML = "text/html; charset=utf-8";
 /** The console's build, beside the server. */
 const CONSOLE_DIR = fileURLToPath(new URL("./console/", import.meta.url));
 /** The kinds of file Vite builds the console into; any other is not served. */
-const CONSOLE_TYPES: Record<string, string> = { ".html": HTML, ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".woff2": "font/woff2", ".woff": "font/woff" };
+const CONSOLE_TYPES: Record<string, string> = { ".html": HTML, ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".woff2": "font/woff2", ".woff": "font/woff", ".txt": "text/plain; charset=utf-8" };
 /** A segment of an asset's path as sent: no dot segment, no hidden file, no percent-encoding, no separator. */
 const CONSOLE_SEGMENT = /^[A-Za-z0-9_-][A-Za-z0-9._-]*$/;
 /** Addresses the console had before it took "/", and the old page's setup and sign-in, which the printed setup link
@@ -65,6 +65,10 @@ async function file(req: IncomingMessage, res: ServerResponse, raw: string, dir:
   const missing = () => refuse(req, res, new ApiError("not_found", `no file ${raw} in the console`));
   const type = CONSOLE_TYPES[extname(rel).toLowerCase()];
   if (!type || !rel.split("/").every((segment) => CONSOLE_SEGMENT.test(segment))) return missing();
+  if (rel !== "index.html" && rel !== "THIRD-PARTY-NOTICES.txt") {
+    const manifest = await readFile(join(dir, "asset-manifest.json"), "utf8").then((bytes) => JSON.parse(bytes) as { files?: unknown }).catch(() => null);
+    if (!manifest || !Array.isArray(manifest.files) || !manifest.files.includes(rel)) return missing();
+  }
   const [root, real] = await Promise.all([realpath(dir).catch(() => null), realpath(join(dir, rel)).catch(() => null)]);
   if (!root || !real) {
     // A refusal (a wrong link token) stays a refusal on a server without its console: only a plain miss is a 404.
@@ -130,7 +134,7 @@ export function answerPage(req: IncomingMessage, res: ServerResponse, raw: strin
     }
     return false;
   }
-  if (raw !== "/" && !raw.startsWith("/assets/") && !raw.startsWith("/api/") && !MOVED.has(raw)) return false;
+  if (raw !== "/" && raw !== "/THIRD-PARTY-NOTICES.txt" && !raw.startsWith("/assets/") && !raw.startsWith("/api/") && !MOVED.has(raw)) return false;
   answer(req, res, raw, server, held).catch(() => {
     if (!res.headersSent) refuse(req, res, new ApiError("internal", "the console could not be read"));
     else res.destroy();

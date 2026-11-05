@@ -1,5 +1,5 @@
 AgentRun
 Copyright 2026 Parcha Labs, Inc.
 
-The console in dist/console bundles third-party software. dist/console/THIRD-PARTY-NOTICES.txt names each
-package it holds, with its version, its license and its license text.
+The console in dist/console bundles third-party code and fonts. dist/console/THIRD-PARTY-NOTICES.txt names
+each package it holds, with its version, its license and its license text.

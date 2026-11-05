@@ -22,6 +22,7 @@ async function fixture(t) {
   await write('package-lock.json', JSON.stringify({ lockfileVersion: 3, packages: {
     '': {}, 'packages/dsl': {}, 'packages/jev': {}, 'packages/pi': {}, 'packages/pi-durable-disk': {}, 'packages/pi-browser': {}, 'packages/pi-vision': {}, 'packages/pi-transport': {}, 'packages/pi-durable-agent': {}, 'packages/serve': {}, 'packages/pi-git-remote': {}, 'packages/pi-agent-learn': {}, 'packages/learn': {}, 'packages/decisions': {}, 'packages/run-adapters': {}, 'packages/run-adapters-claude-agent': {}, 'packages/run-adapters-codex': {}, 'packages/harness': {}, 'packages/agentrun': {},
   } }));
+  await write('apps/console/package-lock.json', JSON.stringify({ lockfileVersion: 3, packages: { '': { dependencies: { 'public-ui': '1.0.0' } }, 'node_modules/public-ui': { version: '1.0.0', license: 'MIT' } } }));
   await write('docs/guide.md', '# Public fixture\n');
   await write('packages/dsl/schema/workflow.schema.json', '{}\n');
   const run = (...args) => exec(process.execPath, [join(root, 'scripts/export-source.mjs'), ...args], { cwd: root });
@@ -52,6 +53,7 @@ test('source archives exclude website files, build output, and private review st
   assert.equal(receipt.status, 'passed');
   assert.equal(receipt.publicationReady, false);
   assert.equal(receipt.archive.sha256, hash(archive));
+  assert.deepEqual(receipt.runtimeDependencies.packages.find(row => row.name === 'public-ui')?.consumers, ['console']);
   assert.ok(!('siteDownload' in receipt));
   assert.ok(!receipt.files.some(file => /(?:^|\/)(?:site|dist)\//.test(file.path)));
   await f.run();
@@ -123,7 +125,7 @@ test('the removed website output flag is rejected before writing artifacts', asy
 
 test('root and package license notices are scanned and retained byte-for-byte', async t => {
   const f = await fixture(t);
-  const notices = ['LICENSE', 'NOTICE'].flatMap(name => [name, ...['dsl', 'jev', 'pi'].map(pkg => `packages/${pkg}/${name}`)]);
+  const notices = ['LICENSE', 'NOTICE'].flatMap(name => [name, `apps/console/${name}`, ...['dsl', 'jev', 'pi'].map(pkg => `packages/${pkg}/${name}`)]);
   for (const path of notices) await f.write(path, `Notice fixture: ${path}\n`);
   await f.run();
   for (const path of notices) {
@@ -189,6 +191,17 @@ test('a recorded event stream (.sse) is archived and scanned as text: a machine 
   await assert.rejects(f.run(), /Source export blocked/);
   const blocked = JSON.parse(await readFile(join(f.root, '.release/source-export-receipt.json'), 'utf8'));
   assert.ok(blocked.findings.some(finding => finding.path === path));
+});
+
+test('the generated public agent-home route is reviewed while a filesystem path in the same file is blocked', async t => {
+  const f = await fixture(t);
+  const path = 'apps/console/src/lib/contract.generated.ts';
+  await f.write(path, `"${['', 'agents', '{agent_id}', 'home', 'files', '{path}'].join('/')}": {\n};\n`);
+  await f.run();
+  const receipt = JSON.parse(await readFile(join(f.root, '.release/source-export-receipt.json'), 'utf8'));
+  assert.ok(receipt.reviewedFindings.some(finding => finding.path === path && finding.rule === 'machine_path'));
+  await f.write(path, `const secret = "${['', 'home', 'someone', 'private.txt'].join('/')}";\n`);
+  await assert.rejects(f.run(), /Source export blocked/);
 });
 
 test('a PDF is archived only when one line of ASSETS.md names it with its SHA-256', async t => {

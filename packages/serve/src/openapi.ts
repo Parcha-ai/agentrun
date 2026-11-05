@@ -1295,6 +1295,8 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
   InputIssue: { code: { type: "string", description: "A workflow definition's issue: the DSL's validation code (`STATE_PATH_UNPRODUCED`, say), with `field` the path to it under `definition.workflow`.", "x-agentrun-serve": "validate/1" } },
   RunSummary: {
     ...RUN_FIELDS,
+    result_available: { type: ["boolean", "null"], description: "Whether a result is recorded, without its content. Null when availability cannot be established from the saved metadata.", "x-agentrun-serve": "availability/1" },
+    files_available: { type: ["boolean", "null"], description: "Whether at least one readable public work file was found, without reading file content. Dot paths, links and unsafe entries are excluded. The confined scan limits entry metadata reads to 128 and directory depth to 16; directory-name enumeration is not bounded by that metadata budget. True means a readable file was found, even if other entries were not inspected. False means a complete scan found none. Null means none was found and the scan was incomplete, unreadable, unavailable or imported.", "x-agentrun-serve": "availability/1" },
     effort: { $ref: "#/components/schemas/Effort", description: "The effort the run was started with, as the run shows it; absent when it was started with none.", "x-agentrun-serve": "effort/1" },
     error: { oneOf: [{ $ref: "#/components/schemas/RunError" }, { type: "null" }], description: "Set when `failed`, as the run's own.", "x-agentrun-serve": "serve/1" },
     learning: LEARNING_SHORT,

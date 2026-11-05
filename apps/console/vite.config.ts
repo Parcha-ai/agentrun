@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 import { devProxy } from "./src/lib/devProxy";
-import { thirdPartyNotices } from "./third-party-notices.mjs";
+import { consoleBoundary } from "./build-boundary.mjs";
 
 // The console builds to static files with relative URLs, so AgentRun Server can serve them from any path.
 // `npm run dev` proxies /v2 as src/lib/devProxy.ts says: to the AgentRun Server AGENTRUN_URL names, else the one on this
@@ -20,8 +20,7 @@ const workers = wanted === "" ? undefined : Number(wanted);
 
 export default defineConfig({
   base: "./",
-  // THIRD-PARTY-NOTICES.txt beside index.html: the licenses of what the bundle holds (third-party-notices.mjs).
-  plugins: [react(), thirdPartyNotices()],
+  plugins: [react(), consoleBoundary()],
   server: {
     proxy: {
       "/v2": {

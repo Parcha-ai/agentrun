@@ -1,7 +1,7 @@
 import { workflowGraph } from "@dsl/graph";
 import { describe, expect, it } from "vitest";
 import { BATCH_MID, batchPausedRun, batchRunAt, kybRun } from "@/fixtures/dwf/runs";
-import { itemCounts, itemLabel, itemOutcome, itemStates, type RunGraph, runMarks, toneOf, usd, verdictOf } from "./runGraph";
+import { costOf, itemCounts, itemLabel, itemOutcome, itemStates, type RunGraph, runMarks, toneOf, usd, verdictOf } from "./runGraph";
 
 const MAP = "/root/steps/0";
 
@@ -108,5 +108,21 @@ describe("itemLabel", () => {
     for (const it of g.nodes[MAP].items!) delete it.label;
     expect(itemLabel(g, MAP, 0)).toBe("coi-bramblewood.pdf");
     expect(itemLabel(g, MAP, 19)).toBeUndefined();
+  });
+});
+
+
+describe("graph cost shown by the run header and totals", () => {
+  it.each([
+    { prices: [], total: null, expected: { usd: null, unknown: 0 } },
+    { prices: [null, null], total: null, expected: { usd: null, unknown: 2 } },
+    { prices: [0, null], total: null, expected: { usd: 0, unknown: 1 } },
+    { prices: [0.25, null], total: null, expected: { usd: 0.25, unknown: 1 } },
+    { prices: [null], total: 0.5, expected: { usd: 0.5, unknown: 0 } },
+  ])("keeps an absent price unknown while retaining priced subtotals: $prices / $total", ({ prices, total, expected }) => {
+    const g = batchRunAt(BATCH_MID);
+    g.decisions = prices.map((cost_usd) => ({ ...g.decisions[0], cost_usd }));
+    g.totals.cost_usd = total;
+    expect(costOf(g)).toEqual(expected);
   });
 });

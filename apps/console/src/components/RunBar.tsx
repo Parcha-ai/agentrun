@@ -1,12 +1,14 @@
 import { Play } from "lucide-react";
+import { CodingAgentHandoff } from "@/components/CodingAgentHandoff";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { FilePicker, type UploadLimits, useAttachments } from "@/components/FilePicker";
 import { ToolBlockers } from "@/components/ToolBlockers";
 import { Button } from "@/components/ui/button";
+import { Select } from "@/components/ui/select";
 import type { Agent } from "@/lib/agentForm";
 import { type Client, ClientError, type FieldIssue } from "@/lib/client";
 import { exampleInput, keeper, startBody, submitStart } from "@/lib/runStart";
-import { sendUpload, type Upload } from "@/lib/uploads";
+import type { Upload } from "@/lib/uploads";
 import { cn } from "@/lib/utils";
 
 type Problem = { message: string; fields?: FieldIssue[]; box?: string; details?: Record<string, unknown> };
@@ -18,7 +20,7 @@ type Sent = { status: number; runId?: string; problem?: Problem };
  *  `blocked`: why no run can start here (a harness the server can't run): Run is off, and sends nothing. A start refused
  *  for a box this server lacks says so, and that the fix is where the agent runs, in its settings. Files picked here are
  *  sent at once and named by the run (`file_ids`); Run waits until each is sent. */
-export function RunBar({ agent, efforts, v2, go, blocked, limits, upload = sendUpload }: { agent: Agent; efforts: string[]; v2: Client; go: (hash: string) => void; blocked?: string; limits?: UploadLimits; upload?: Upload }) {
+export function RunBar({ agent, efforts, v2, go, blocked, limits, endpoint, upload = v2.upload }: { agent: Agent; efforts: string[]; v2: Client; go: (hash: string) => void; blocked?: string; limits?: UploadLimits; endpoint?: string; upload?: Upload }) {
   const workflow = agent.kind === "workflow";
   const example = useMemo(() => (workflow ? exampleInput(agent.definition.workflow) : null), [workflow, agent.definition.workflow]);
   const [text, setText] = useState(example?.text ?? "");
@@ -26,9 +28,10 @@ export function RunBar({ agent, efforts, v2, go, blocked, limits, upload = sendU
   const [problem, setProblem] = useState<Problem | null>(null);
   const keys = useMemo(() => keeper(), []);
   const [sending, setSending] = useState(false);
+  const inFlight = useRef(false);
   // The files hold still while a start that names them is under way.
   const attachments = useAttachments({ upload, remove: v2.deleteUpload, limits, frozen: sending });
-  const built = startBody(agent.kind, { text, effort, fileIds: attachments.fileIds });
+  const built = startBody(agent.kind, { text, revision: agent.revision, effort, fileIds: attachments.fileIds });
   const send = async (id: string, body: Parameters<Client["startRun"]>[1], key: string): Promise<Sent> => {
     try {
       const r = await v2.startRun(id, body, key);
@@ -45,14 +48,19 @@ export function RunBar({ agent, efforts, v2, go, blocked, limits, upload = sendU
     return () => { mounted.current = false; };
   }, []);
   const start = async () => {
-    if (!built.ok || sending || blocked || attachments.busy) return;
+    if (!built.ok || sending || inFlight.current || blocked || attachments.busy) return;
+    inFlight.current = true;
     setSending(true); setProblem(null);
-    const r = await submitStart(keys, agent.agent_id, built.body, send);
-    if (!mounted.current) return;
-    setSending(false);
-    // The run has its own copies: the page forgets the files before it goes, so leaving never deletes them.
-    if (r.runId) { attachments.clear(); go(`#/runs/${encodeURIComponent(r.runId)}`); }
-    else setProblem(r.problem ?? { message: `The server answered ${r.status}.` });
+    try {
+      const r = await submitStart(keys, agent.agent_id, built.body, send);
+      if (!mounted.current) return;
+      // The run has its own copies: leaving the page never deletes them.
+      if (r.runId) { attachments.clear(); go(`#/runs/${encodeURIComponent(r.runId)}`); }
+      else setProblem(r.problem ?? { message: `The server answered ${r.status}.` });
+    } finally {
+      inFlight.current = false;
+      if (mounted.current) setSending(false);
+    }
   };
   // A 422 names its fields; each one whose message says more than the refusal's is listed under it.
   const more = (problem?.fields ?? []).filter((f) => f.message !== problem?.message);
@@ -68,9 +76,8 @@ export function RunBar({ agent, efforts, v2, go, blocked, limits, upload = sendU
           {efforts.length > 0 && (
             <label className="flex items-center gap-2" title="How hard the model thinks before it answers. default leaves it to the agent.">
               <span className="flex flex-col leading-tight"><span className="caps text-[11px] text-muted-foreground">Effort</span><span className="text-[11px] text-muted-foreground">How hard the model thinks</span></span>
-              <select value={effort} onChange={(e) => setEffort(e.target.value)} aria-label="Effort" className="h-10 border bg-background px-3 font-mono text-[13px]">
-                {["", ...efforts].map((e) => <option key={e || "default"} value={e}>{e || "default"}</option>)}
-              </select>
+              <Select aria-label="Effort" value={effort} onValueChange={setEffort}
+                options={["", ...efforts].map((e) => ({ value: e, label: e || "default" }))} className="h-10" />
             </label>
           )}
           <Button variant="solid" onClick={() => void start()} disabled={!built.ok || sending || !!blocked || attachments.busy} title={blocked ?? (attachments.busy ? "Waiting for the files to be sent" : undefined)}><Play aria-hidden /> {sending ? "Starting" : "Run"}</Button>
@@ -87,6 +94,10 @@ export function RunBar({ agent, efforts, v2, go, blocked, limits, upload = sendU
           {more.length > 0 && <ul className="mt-1">{more.map((f) => <li key={`${f.field}:${f.message}`}>{f.field}: {f.message}</li>)}</ul>}
         </div>
       )}
+      <div className="mt-3 flex flex-wrap items-center gap-3" aria-label="Run agent">
+        <CodingAgentHandoff context={{ kind: "run", agentId: agent.agent_id, revision: agent.revision }} serverUrl={endpoint ?? v2.endpoint} label="Run with your coding agent" />
+        <a href={`#/playground?agent=${encodeURIComponent(agent.agent_id)}&revision=${encodeURIComponent(agent.revision)}`} className="text-[12px] text-primary hover:underline">API playground</a>
+      </div>
     </section>
   );
 }

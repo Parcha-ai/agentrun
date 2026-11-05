@@ -6,7 +6,7 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { closeSync, existsSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { open as openFile, rm, stat } from "node:fs/promises";
+import { lstat, open as openFile, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
@@ -58,6 +58,7 @@ import type { BoxProvider } from "@parcha/pi-transport";
 import type { RemoteLimits } from "./run-box.js";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { Emitted } from "./webhooks.js";
+import { WALK_DEPTH, walkWork } from "./workspace.js";
 
 export type Status = "queued" | "working" | "paused" | "input_required" | "completed" | "failed" | "cancelled";
 export type State = "working" | "waiting" | "idle";
@@ -86,6 +87,8 @@ const SETTLE_RETRY_MS = 30_000;
 const STATUS_OF: Record<Ended, Status> = { completed: "completed", failed: "failed", escalated: "completed", stopped: "cancelled" };
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+/** Availability scans stop at the first readable public file and bound entry metadata reads. */
+const FILE_AVAILABILITY_CAP = 128;
 // A run's process that exited and was never reaped (a zombie, under a PID 1 that does not reap) is not alive.
 const alive = processAlive;
 /** Waits between carry backs that found the store busy: each attempt itself waits 5 s for the store's lock. */
@@ -3031,8 +3034,30 @@ export class Runs {
   }
 
   async summary(run: Run) {
-    const { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, effort, created_at, ended_at, error, review, pending, cost, archived_at, imported_from, trigger, learning } = await this.view(run);
-    return { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, ...(effort ? { effort } : {}), created_at, ended_at, error, review, pending, cost, archived_at, imported_from, trigger, learning: learning && shortOf(learning) };
+    const { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, effort, created_at, ended_at, error, review, pending, cost, archived_at, imported_from, result, trigger, learning } = await this.view(run);
+    const result_available = result !== null && (result.final_answer !== null || result.output !== null);
+    const files_available = imported_from ? null : await this.filesAvailable(run_id);
+    return { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, ...(effort ? { effort } : {}), created_at, ended_at, error, review, pending, cost, archived_at, imported_from, trigger, learning: learning && shortOf(learning), result_available, files_available };
+  }
+
+  /** Whether a run has a readable public work file. A missing/unreadable workspace or incomplete scan is unknown. */
+  private async filesAvailable(id: string): Promise<boolean | null> {
+    let found = false, incomplete = false, visited = 0;
+    try {
+      const work = join(this.options.agents.dir, "runs", id, "work");
+      if (!(await lstat(work)).isDirectory()) return null;
+      await walkWork(work, (path, stats, readable) => {
+        if (stats.isFile() && readable) { found = true; return false; }
+        if (stats.isFile() || path.split("/").length > WALK_DEPTH) incomplete = true;
+      }, {
+        skip: (name) => {
+          if (++visited > FILE_AVAILABILITY_CAP) { incomplete = true; return true; }
+          return name.startsWith(".");
+        },
+        refused: (_path, reason) => { if (reason === "unreadable" || reason === "unheld") incomplete = true; },
+      });
+    } catch { return null; }
+    return found ? true : incomplete ? null : false;
   }
 
   /** A run's status for a list: an ended run's from its row, a running one's from the run itself. */
@@ -3042,12 +3067,16 @@ export class Runs {
     return run ? statusOf(run).status : "queued";
   }
 
-  /** A run's summary for a list. An ended run this server holds no Run for is read from its row and its serve.json alone,
-   *  not its store; `versions` numbers its agent's revisions. */
-  async summaryOfRow(row: RunRow, versions: Map<string, number>): Promise<Awaited<ReturnType<Runs["summary"]>>> {
+  /** A run's summary for a list. An ended run's status and result availability come from its row and serve.json,
+   *  without opening its store; file availability uses a workspace scan with bounded metadata reads. `versions` numbers its revisions. */
+  async summaryOfRow(row: RunRow, versions: Map<string, number>): Promise<Omit<Awaited<ReturnType<Runs["summary"]>>, "result_available"> & { result_available: boolean | null }> {
     const known = this.runs.get(row.id) ?? (row.state === "running" ? await this.get(row.id) : null);
     if (known) return this.summary(known);
     const meta = (await readJson(join(this.options.agents.dir, "runs", row.id, RUN_META))) as Partial<RunMeta> | null;
+    const result_available = row.state === "completed" || row.state === "escalated"
+      ? row.kind === "workflow" ? meta ? meta.output != null : null : row.state === "completed" && typeof row.summary === "string" ? true : null
+      : row.state === "failed" && meta?.error?.code === SPEND_CAP_REACHED ? null : false;
+    const files_available = row.importedFrom ? null : await this.filesAvailable(row.id);
     return {
       run_id: row.id, agent_id: row.agent, agent_version: versions.get(row.revision) ?? 0, revision: row.revision, kind: row.kind, sha: null,
       status: STATUS_OF[row.state as Ended], state: "idle" as State, title: typeof meta?.title === "string" ? meta.title : "",
@@ -3060,6 +3089,8 @@ export class Runs {
       // A run read from its row alone has ended: it waits on nothing.
       pending: null,
       imported_from: row.importedFrom ?? null,
+      result_available,
+      files_available,
       trigger: triggerOf(meta),
       // Its row says it ended: what serve.json holds of its learning is as it settled.
       learning: this.learning.short(isObject(meta?.learning) ? (meta.learning as Learning) : null, true),

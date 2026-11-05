@@ -121,8 +121,14 @@ jobs:
           path: ${{ runner.temp }}/build
       - name: The build job's output, for this tree and this Node
         run: node scripts/ci-build-output.mjs unpack "$RUNNER_TEMP/build"
+      - name: Install the independent console dependencies for contract checks
+        if: matrix.shard == 'checks' || startsWith(matrix.shard, 'any-')
+        run: node scripts/build-console.mjs --dependencies
       - if: matrix.shard == 'checks'
         run: npm run typecheck
+      - name: Native console contract matches the served OpenAPI
+        if: matrix.shard == 'checks'
+        run: npm run generate:contract --prefix apps/console -- --check
       - name: Demo setup prompts match their specs
         if: matrix.shard == 'checks'
         run: node scripts/check-setup-prompts.mjs
@@ -311,6 +317,9 @@ jobs:
         # pi-durable and one chord there, and the reference job's record equal to the one fixed for this pi.
         if: matrix.part == 'consumer'
         run: node scripts/verify-packages.mjs --pi ${{ matrix.pi }}
+      - name: Prepare the console used by native client contract tests
+        if: matrix.part != 'consumer'
+        run: node scripts/build-console.mjs
       - name: The family at the leg's pi, and this part's type-checks and test files on it
         if: matrix.part != 'consumer'
         env:

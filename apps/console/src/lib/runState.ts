@@ -59,7 +59,7 @@ export const needsReview = (status: RunStatus, review?: unknown) => status === "
  *  cancel). Stopped (input_required, idle), input required (input_required, waiting) and cancelled stay distinct, and so
  *  does a run that ended escalated (`error`'s code), which reads Escalated, never Failed, and a completed run with a
  *  `review`, which reads Needs review, never Completed. */
-export function runState(status: RunStatus, state: RunState, kind: Run["kind"], messages: MessageFeatures, steers: boolean, error?: { code: string } | null, review?: unknown): RunView {
+export function runState(status: RunStatus, state: RunState, kind: Run["kind"], messages: MessageFeatures, steers: boolean, error?: { code: string } | null, review?: unknown, history?: Pick<Run, "archived_at" | "imported_from">): RunView {
   const final = FINAL.has(status);
   const agentic = kind === "agentic";
   const escalated = isEscalated(status, error);
@@ -73,15 +73,18 @@ export function runState(status: RunStatus, state: RunState, kind: Run["kind"], 
     escalated || reviewing ? "warning"
     : status === "completed" ? "success" : status === "failed" ? "error" : status === "cancelled" ? "muted"
     : status === "input_required" || status === "paused" ? "warning" : "active";
-  const messageMode = modeFor(status, state, kind, messages, steers);
+  // Archiving closes a completed run to reopening, while an active archived run still takes its native controls.
+  // Imported runs are kept as history: messages are refused and stop/cancel have no effect.
+  const imported = !!history?.imported_from;
+  const messageMode = imported || (status === "completed" && !!history?.archived_at) ? null : modeFor(status, state, kind, messages, steers);
   return {
     label,
     tone,
     live: status === "queued" || status === "working",
     needsYou: status === "input_required",
     final,
-    canStop: agentic && status === "working" && state === "working",
-    canCancel: !final,
+    canStop: !imported && agentic && status === "working" && state === "working",
+    canCancel: !imported && !final,
     canMessage: messageMode !== null,
     messageMode,
   };

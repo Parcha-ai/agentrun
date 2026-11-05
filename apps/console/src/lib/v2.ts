@@ -1,4 +1,5 @@
 // The slice of agentrun.v2/0 the console reads, typed from the server's recorded responses (src/fixtures).
+import type { components } from "./contract.generated";
 
 import type { RunLearning } from "./learning";
 
@@ -51,6 +52,11 @@ export type Run = {
   /** Where the run's learning is: null for a run that does not learn, absent from a server without learning. */
   learning?: RunLearning;
   archived_at: string | null;
+  /** History run elsewhere: native messages are refused, and stop/cancel move nothing. */
+  imported_from?: components["schemas"]["Run"]["imported_from"];
+  /** Optional native summary facts; absent/null means availability has not been established. */
+  result_available?: components["schemas"]["RunSummary"]["result_available"];
+  files_available?: components["schemas"]["RunSummary"]["files_available"];
   poll_after_ms?: number;
   /** A workflow run that escalated: it completed, and waits for a person to review it (`kind`, the node it stopped
    *  at, and why). Null or absent on every other run. */
@@ -59,8 +65,6 @@ export type Run = {
    *  owner's approval; or, paused at its spend cap, the cap, the refusal's figures and words (a message to it is refused
    *  until its cap is raised). Null on every other run. */
   pending?: PendingQuestion | PendingApproval | BudgetPending | null;
-  /** Imported history: where the run was run (`claude-code`, `codex` or `pi`) and its session there; else null. */
-  imported_from?: { source: string; session: string } | null;
   /** The schedule that started it and its firing (serve's trigger/1); null for a run a caller started, absent from an
    *  older server. The schedule may have been deleted since. */
   trigger?: { id: string; firing_key: string } | null;

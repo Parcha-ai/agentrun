@@ -1,6 +1,6 @@
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentEditPage, AgentsPage } from "./AgentsPage";
 import { AgentPage } from "./AgentPage";
 import { ClientError } from "@/lib/client";
@@ -31,6 +31,27 @@ async function open(v2: Record<string, unknown>) {
 }
 
 describe("AgentEditPage", () => {
+  it.each([["create", null], ["update", "calc"]] as const)("refuses a direct editor route when the server disables agent %s", async (operation, agentId) => {
+    const getAgent = vi.fn();
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    await act(async () => root!.render(createElement(AgentEditPage, { v2: { getAgent } as never, caps: { ...caps, agents: { [operation]: false } }, agentId, go: () => {} })));
+    expect(host.querySelector('input[placeholder="e.g., Invoice checker"]')).toBeNull();
+    expect(host.querySelector('[role="status"]')).toBeTruthy();
+    expect(getAgent).not.toHaveBeenCalled();
+  });
+
+  it("opens an editable agent without reading unsupported history or offering archive/current actions", async () => {
+    const listRevisions = vi.fn();
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    const v2 = { getAgent: async () => ({ agent: agentAt("r1", "Answer."), etag: "r1" }), listRevisions };
+    await act(async () => root!.render(createElement(AgentEditPage, { v2: v2 as never, caps: { ...caps, agents: { revisions: false }, archive: false }, agentId: "calc", go: () => {} })));
+    expect(host.querySelector("textarea")?.value).toBe("Answer.");
+    expect([...host.querySelectorAll("button")].some((b) => /History|Archive|Make current/.test(b.textContent ?? ""))).toBe(false);
+    expect(listRevisions).not.toHaveBeenCalled();
+  });
+
   it("an archive whose page refresh fails still reads as done, from the write's own answer", async () => {
     const v2 = {
       getAgent: (() => { let n = 0; return async () => { if (++n > 1) throw new ClientError(503, "store_busy", "the store is busy", true); return { agent: agentAt("r1", "Answer."), etag: "r1" }; }; })(),
@@ -135,9 +156,21 @@ describe("AgentEditPage, a new agent from a starter", () => {
 });
 
 describe("AgentsPage, where an agent's card goes", () => {
-  it("opens the agent's page from its card, its Runs tab from its History icon, and the editor from its Edit icon", async () => {
-    const went: string[] = [];
+  it("keeps read-only cards when creation, editing, run history and archive are unsupported", async () => {
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
     const v2 = { listAgents: async () => ({ agents: [agentAt("r1", "Answer.")], next_cursor: null }) };
+    await act(async () => root!.render(createElement(AgentsPage, { v2: v2 as never, archived: false, capabilities: { features: { agents: { create: false, update: false, revisions: false, list: true }, runs: { list: false }, archive: { agents: false } } } as never, go: () => {} })));
+    expect(host.textContent).toContain("Calc");
+    expect(host.querySelector('[aria-label="Edit Calc"]')).toBeNull();
+    expect(host.querySelector('[aria-label="Archive Calc"]')).toBeNull();
+    expect(host.querySelector('[aria-label="Runs of Calc"]')).toBeNull();
+    expect([...host.querySelectorAll("button")].some((b) => /New agent|Build with|Archived/.test(b.textContent ?? ""))).toBe(false);
+  });
+
+  it("opens the card's page, history and editor, and keeps those actions available after an archive refusal", async () => {
+    const went: string[] = [];
+    const v2 = { listAgents: async () => ({ agents: [agentAt("r1", "Answer.")], next_cursor: null }), archiveAgent: vi.fn(async () => { throw new ClientError(403, "forbidden", "This agent cannot be archived."); }) };
     const host = document.body.appendChild(document.createElement("div"));
     root = createRoot(host);
     act(() => root!.render(createElement(AgentsPage, { v2: v2 as never, archived: false, go: (h: string) => went.push(h) })));
@@ -147,23 +180,31 @@ describe("AgentsPage, where an agent's card goes", () => {
     click(host.querySelector('[aria-label="Edit Calc"]'));
     click(host.querySelector('[aria-label="Runs of Calc"]'));
     expect(went).toEqual(["#/agents/calc", "#/agents/calc/edit", "#/agents/calc/runs"]);
+    await act(async () => { host.querySelector<HTMLButtonElement>('[aria-label="Archive Calc"]')!.click(); });
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain("This agent cannot be archived.");
+    expect(host.querySelector('[aria-label="Edit Calc"]')).toBeTruthy();
+    await act(async () => { host.querySelector<HTMLButtonElement>('[aria-label="Archive Calc"]')!.click(); });
+    expect(v2.archiveAgent).toHaveBeenCalledTimes(2);
   });
 });
 
 describe("AgentEditPage, a new agent", () => {
   it("lands on the new agent's page once it is created", async () => {
     const went: string[] = [];
-    const v2 = { createAgent: async () => agentAt("r1", "Answer.") };
+    const v2 = { createAgent: vi.fn(async () => agentAt("r1", "Answer.")) };
     const host = document.body.appendChild(document.createElement("div"));
     root = createRoot(host);
     act(() => root!.render(createElement(AgentEditPage, { v2: v2 as never, caps: caps as never, agentId: null, go: (h: string) => went.push(h) })));
     const type = (el: HTMLInputElement | HTMLTextAreaElement, value: string) => act(() => {
+      expect(el).not.toBeNull();
       Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), "value")!.set!.call(el, value);
       el.dispatchEvent(new Event("input", { bubbles: true }));
     });
-    type(host.querySelector('input[placeholder="e.g., Invoice checker"]') as HTMLInputElement, "Calc");
-    type(host.querySelector("textarea") as HTMLTextAreaElement, "Answer.");
+    type(host.querySelector('input#agent-name') as HTMLInputElement, "Calc");
+    type(host.querySelector('input#agent-description') as HTMLInputElement, "Checks arithmetic.");
+    type(host.querySelector('textarea#agent-instructions') as HTMLTextAreaElement, "Answer.");
     await act(async () => { [...host.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Create")!.click(); });
     expect(went).toEqual(["#/agents/calc"]);
+    expect(v2.createAgent).toHaveBeenCalledWith({ definition: { version: 1, name: "Calc", description: "Checks arithmetic.", instructions: "Answer.", harness: "pi", skills: [], tools: [] } });
   });
 });

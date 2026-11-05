@@ -11,6 +11,43 @@ const runWith = (c: Cost): Run => ({
 });
 const DISCLAIMER = "A local estimate, not a bill";
 
+it.each([
+  ["calc", "#/agents/calc"],
+  ["agent one", "#/agents/agent%20one"],
+  ["new", "#/agents/new/runs"],
+])("links a directly opened run to its agent, including reserved names: %s", async (agentId, target) => {
+  const run = { ...runWith({ usd: null, basis: "estimate", charge_state: null, cap_usd: null }), agent_id: agentId };
+  const host = document.body.appendChild(document.createElement("div"));
+  host.innerHTML = renderToStaticMarkup(createElement(RunHeader, { run, agentName: "Calc" }));
+  const before = location.href;
+  let moved: (() => void) | undefined;
+  try {
+    history.replaceState(null, "", "#/runs/r1");
+    const link = host.querySelector<HTMLAnchorElement>('nav[aria-label="Breadcrumb"] a');
+    expect(link, "the agent name is a navigation link").not.toBeNull();
+    expect(link!.getAttribute("href")).toBe(target);
+    expect(link!.textContent).toContain("Calc");
+    const navigated = new Promise<void>((resolve) => { moved = resolve; window.addEventListener("hashchange", moved, { once: true }); });
+    link!.click();
+    await navigated;
+    expect(location.hash).toBe(target);
+  } finally {
+    host.remove();
+    history.replaceState(null, "", before);
+    if (moved) window.removeEventListener("hashchange", moved);
+  }
+});
+
+it("hides stop and cancel when the server explicitly does not support them", () => {
+  const run = { ...runWith({ usd: null, basis: "estimate", charge_state: null, cap_usd: null }), status: "working" as const, state: "working" as const };
+  const html = renderToStaticMarkup(createElement(RunHeader, { run, agentName: "Calc", actions: { supported: { stop: false, cancel: false }, onStop: () => {}, onCancel: () => {} } }));
+  const host = document.createElement("div");
+  host.innerHTML = html;
+  const labels = [...host.querySelectorAll("button")].map((button) => button.textContent?.trim());
+  expect(labels).not.toContain("Stop");
+  expect(labels).not.toContain("Cancel run");
+});
+
 describe("RunHeader's cost", () => {
   it("a charged cost has no estimate disclaimer", () => {
     const html = renderToStaticMarkup(createElement(RunHeader, { run: runWith({ usd: 1.5, basis: "charge", charge_state: null, cap_usd: null }), agentName: "Calc" }));
