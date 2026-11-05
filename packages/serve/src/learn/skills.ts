@@ -283,6 +283,13 @@ export function draftProblems(dsl: DraftReader, text: string, tools?: readonly s
     // fails its output schema when the call ends, after every node spent.
     const path = (doc as { output?: { path?: unknown } } | null)?.output?.path;
     if (typeof path !== "string" || !path) out.push({ rule: "workflow", detail: LEARNED_OUTPUT_PATH });
+    // A composed workflow node's child too: its output is the value at its own output.path, or it fails the same way.
+    for (const node of dsl.inspectWorkflow(doc).nodes) {
+      if (node.kind !== "workflow") continue;
+      const child = (at(doc, node.path) as { workflow?: { output?: { path?: unknown } } } | undefined)?.workflow;
+      const childPath = child?.output?.path;
+      if (typeof childPath !== "string" || !childPath) out.push({ rule: "workflow", detail: `the workflow node at ${node.path}: ${LEARNED_OUTPUT_PATH}` });
+    }
   } catch (error) {
     // The inspection reads the whole document, as validation need not: what it cannot read is refused, never passed.
     return [{ rule: "workflow", detail: `the workflow DSL cannot inspect it: ${(error as Error).message.slice(0, 200)}` }];
