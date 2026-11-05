@@ -418,12 +418,19 @@ export function spentIn(storeFile: string): number | null {
 /** /usage's meters for a run that ended, from its store: `tools`, each TOOL_COST's `usd`, unknown (null) when one is,
  *  or when a call was cut (marked, never settled: what it charged no one knows); and `tokens`, the rest of its root
  *  conversation as its settled timeline prices it; `browser`, the part of `tools` that is browser session time
- *  (browser-cost.ts), with its seconds; and `others`, the rest of `tools`, each unknown (null) apart; and `notMetered`,
- *  the tool calls it ran with no price (TOOL_UNMETERED, an MCP tool its owner set none for), outside every figure here
- *  (absent when none). A mark is never a charge here (the cap's alone). Never for a live run: its process holds the
- *  store exclusively. */
-export function metersIn(storeFile: string): { tools: number | null; tokens: number | null; browser: { usd: number | null; seconds: number }; others: number | null; notMetered?: number } {
-  if (!existsSync(storeFile)) return { tools: 0, tokens: null, browser: { usd: 0, seconds: 0 }, others: 0 };
+ *  (browser-cost.ts), with its seconds; and `others`, the rest of `tools`, each unknown (null) apart; and `notMetered`, the tool calls it ran with no price (TOOL_UNMETERED, an MCP tool its owner set none for), outside every figure here (absent when none). A mark is never a charge here (the cap's alone). Never for a live run: its process
+ *  holds the store exclusively. */
+export type Meters = { tools: number | null; tokens: number | null; browser: { usd: number | null; seconds: number }; others: number | null; notMetered?: number };
+export function metersIn(storeFile: string): Meters {
+  const { known: _, ...meters } = meterFiguresIn(storeFile);
+  return meters;
+}
+
+/** metersIn's meters, and beside them each meter's known dollars: its settled charges' figures, whether or not another of
+ *  its charges is unknown (a hold, a call cut or never settled, is no charge here: it adds nothing). What a run of
+ *  unknown cost is known to have spent on each (server.ts /usage). */
+export function meterFiguresIn(storeFile: string): Meters & { known: { tokens: number; browser: number; others: number } } {
+  if (!existsSync(storeFile)) return { tools: 0, tokens: null, browser: { usd: 0, seconds: 0 }, others: 0, known: { tokens: 0, browser: 0, others: 0 } };
   const db = new DatabaseSync(storeFile, { readOnly: true, timeout: 2_000 });
   try {
     const rows = db.prepare("SELECT conversation_id AS conversation, record FROM entries ORDER BY rowid").all().map((row) => ({ conversation: Number(row.conversation), entry: JSON.parse(String(row.record)) as EntryLike }));
@@ -432,13 +439,17 @@ export function metersIn(storeFile: string): { tools: number | null; tokens: num
     const charges: (number | undefined)[] = [];
     const browser = { usd: 0 as number | null, seconds: 0 };
     const others: (number | undefined)[] = [];
+    // Each meter's known dollars, whether or not one of its charges is unknown: what a run of unknown cost is known to
+    // have spent on it (server.ts /usage).
+    const known = { tokens: 0, browser: 0, others: 0 };
     for (const { entry } of rows) {
       const data = (entry.data ?? {}) as Record<string, unknown>;
       if (entry.kind === TOOL_STARTED) marks.add(data.call);
       else if (entry.kind === TOOL_COST) marks.delete(data.call), charges.push(figureOf(data.usd));
-      if (entry.kind === TOOL_COST && data.tool !== "browser") others.push(figureOf(data.usd));
+      if (entry.kind === TOOL_COST && data.tool !== "browser") others.push(figureOf(data.usd)), (known.others += figureOf(data.usd) ?? 0);
       if (entry.kind !== TOOL_COST || data.tool !== "browser") continue;
       const usd = figureOf(data.usd);
+      known.browser += usd ?? 0;
       browser.usd = browser.usd === null || usd === undefined ? null : browser.usd + usd;
       browser.seconds += figureOf(data.seconds) ?? 0;
     }
@@ -446,8 +457,9 @@ export function metersIn(storeFile: string): { tools: number | null; tokens: num
     const rest = rows.filter(({ conversation, entry }) => conversation === root && entry.kind !== TOOL_STARTED && entry.kind !== TOOL_COST).map(({ entry }) => entry);
     const usage = timelineOf(rest, { settled: true }).find((row) => row.kind === "usage");
     const otherTools = marks.size || others.some((usd) => usd === undefined) ? null : (others as number[]).reduce((sum, usd) => sum + usd, 0);
+    known.tokens = usage ? (usage.usage?.usd ?? usage.usage?.so_far_usd ?? 0) : 0;
     const notMetered = usage?.usage?.not_metered;
-    return { tools, tokens: usage ? (usage.usage?.usd ?? null) : 0, browser, others: otherTools, ...(notMetered ? { notMetered } : {}) };
+    return { tools, tokens: usage ? (usage.usage?.usd ?? null) : 0, browser, others: otherTools, known, ...(notMetered ? { notMetered } : {}) };
   } finally {
     db.close();
   }

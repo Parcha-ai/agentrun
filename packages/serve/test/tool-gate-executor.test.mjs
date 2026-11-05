@@ -25,7 +25,7 @@ async function runOn(t, { storage = new MemoryStorage(), where, executor } = {})
   await harness.root(ctx);
   const dirs = where ?? { root: await scratch(t), work: await scratch(t), data: await scratch(t) };
   const gate = new RunGate({ ...dirs, runId: "r1", harness: "claude-agent" });
-  if (executor) gate.executor?.("mcp:", executor);
+  if (executor) gate.executor("mcp:", executor);
   await gate.load({ harness }, ctx);
   const resumed = [];
   const park = { commit: (change) => harness.commit(change, ctx), parked: () => undefined };
@@ -150,7 +150,7 @@ test("an approved MCP call whose answer a stop overrides after the live gate rea
   const given = (decision) => ({ decision, answered_at: new Date().toISOString(), args_shown: JSON.stringify(ARGS) });
   await writeFile(meta, JSON.stringify({ approvals: { ap_first: given("deny"), ap_second: given("allow") } }));
   const gate = new RunGate({ ...where, runId: "r1", harness: "claude-agent" });
-  gate.executor?.("mcp:", executor.run);
+  gate.executor("mcp:", executor.run);
   await gate.load({ harness }, ctx);
   const resumed = [];
   gate.start(async (id, _content, mark) => {

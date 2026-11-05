@@ -17,7 +17,7 @@ import { writesHeld } from "../dist/workspace.js";
 import { DEFAULT_DOCKER_IMAGE, RECIPE_HASH, RECIPE_LABEL } from "../dist/box-image.js";
 import { startServe } from "../dist/index.js";
 import { SERVER_LOCK } from "../dist/server-lock.js";
-import { client, follow, scratch, serve, withEnv } from "./support.mjs";
+import { client, follow, jsonLines, scratch, serve, withEnv } from "./support.mjs";
 
 const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;
 const FAKE = new URL("./fixtures/fake-docker.mjs", import.meta.url).pathname;
@@ -41,7 +41,7 @@ async function fakeDocker(t, vars = {}) {
   // These are the box with no network (AGENTRUN_BOX_ALLOW=none): its network list is box-network.test.mjs's.
   withEnv(t, { PATH: `${bin}:${process.env.PATH}`, FAKE_DOCKER_STATE: state, AGENTRUN_BOXES: "docker", AGENTRUN_BOX_ALLOW: "none", ...vars });
   assert.equal(spawnSync("sh", ["-c", "command -v docker"], { encoding: "utf8" }).stdout.trim(), join(bin, "docker"), "the fake is the docker on PATH");
-  const calls = () => (existsSync(join(state, "argv.jsonl")) ? readFileSync(join(state, "argv.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line)) : []);
+  const calls = () => jsonLines(join(state, "argv.jsonl"));
   const containers = async () => (await readdir(join(state, "containers")).catch(() => [])).filter((name) => name.endsWith(".json")).map((name) => JSON.parse(readFileSync(join(state, "containers", name), "utf8")));
   // The fake writes a call's argv before it acts on it, so an `rm` is in `removed()` before its container's file is gone:
   // a wait on a box's destroy waits on both.

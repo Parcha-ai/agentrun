@@ -18,7 +18,7 @@ import { RUN_RESUMED } from "@parcha/pi-durable-agent/timeline";
 import { settleIn } from "./paid-calls.js";
 import type { AppContext, AppOptions, BeforeResume, DurableRun } from "@parcha/pi-durable-disk";
 import { capBefore, capModels, capOf, spentIn } from "./cap.js";
-import { codingSource, writesHere } from "./coding-tools.js";
+import { codingSource } from "./coding-tools.js";
 import { cancelledIn, markRequests } from "./request-start.js";
 import { decisionProvidersOf } from "./decisions.js";
 import { FOLLOW_UP_OPEN_ENV, readJson, RUN_META } from "./files.js";
@@ -129,8 +129,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   // Every tool call the run's model makes passes the run's tool gate (tool-gate.ts): pi's tools wrapped by name where the
   // registry composes each agent's, another harness's host tools in their call. An approved call runs on this coding
   // source, as the run's own would.
-  // Its reflect carve-out holds only where the file tools write this machine's work/ (coding-tools.ts writesHere).
-  const toolGate = runGate({ ...where, learningAt: () => writesHere(place, box) }, run.id, revision);
+  const toolGate = runGate(where, run.id, revision);
   // Its remote MCP servers, as its first launch pinned them, with the credentials this launch handed it (mcp-gateway.ts).
   const pinned = (await readJson(join(where.root, MCP_PIN))) as McpPin | null;
   // Its records (a held ask, a priced call's mark and charge, an unpriced call's "not metered") go on the run's root, once
