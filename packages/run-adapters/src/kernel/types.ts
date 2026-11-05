@@ -24,6 +24,9 @@ export interface Submission {
    *  follow-up, whose `text` in the session's state (foldSession) holds it first, pending or placed. A person's stop
    *  withdraws this way (settleTurn): what they asked is kept, never run on its own. */
   carry?: true;
+  /** For a `carry` withdraw of a placed prompt or follow-up its CLI never recorded (process/settle.ts `unsent`):
+   *  its text is carried as an unplaced one's is, and it stays placed, so nothing sends it on its own. */
+  unsent?: true;
   receivedAt: Date;
 }
 
