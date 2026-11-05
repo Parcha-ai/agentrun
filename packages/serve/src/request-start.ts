@@ -77,23 +77,13 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
     const held = (options as Record<symbol, unknown> | undefined)?.[HELD_USD];
     return typeof held === "number" && Number.isFinite(held) ? { [HELD_FIELD]: held } : {};
   };
-  /** What the run's cap counts a request stopped before its end at, given the answer it had streamed (its options'
-   *  STOPPED_USD), as an end mark's field; its worst case when the cap gave no such figure; none without a cap. */
-  /** Whether a request that ended on an error before any event is lost (piEnded, from the attempts its cap recorded):
-   *  it left and can have been billed, so it counts at its hold. A request no cap watched (no hold) is never lost here. */
-  /** Whether a request the cap watched is lost (piEnded): an error before any event that left, or an answer after an
-   *  attempt that was lost. */
+  /** Whether a request the cap watched is lost (piEnded, from the attempts its cap recorded): an error before any event
+   *  that left, or an answer after an attempt that was lost. It can have been billed, so it counts at its hold. Only a
+   *  request the cap watched (a hold, and its attempts, or null on an API it cannot watch): another is read as before. */
   const lostOf = (options: unknown, message: AssistantMessage): boolean => {
     const record = options as Record<symbol, unknown> | undefined;
     if (typeof record?.[HELD_USD] !== "number" || !record || !(ATTEMPTS in record)) return false;
     return piEnded(message, false, (record[ATTEMPTS] as Attempt[] | null) ?? undefined).end === "lost";
-  };
-  const lostBefore = (options: unknown, message: AssistantMessage): boolean => {
-    const record = options as Record<symbol, unknown> | undefined;
-    // Only a request the cap watched (its attempts, or null on an API it cannot watch): another is read as before.
-    if (typeof record?.[HELD_USD] !== "number" || !record || !(ATTEMPTS in record)) return false;
-    const attempts = record[ATTEMPTS] as Attempt[] | null;
-    return piEnded(message, false, attempts ?? undefined).end === "lost";
   };
   /** `options` whose fetch writes the request's end mark at its hold (`lost`), once, the moment an attempt is known lost:
    *  a rejection once it could have left (any code but a connect one, and not the run's own stop) or a gateway's timeout
@@ -132,6 +122,8 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
       return response;
     }) as typeof fetch } as O;
   };
+  /** What the run's cap counts a request stopped before its end at, given the answer it had streamed (its options'
+   *  STOPPED_USD), as an end mark's field; its worst case when the cap gave no such figure; none without a cap. */
   const stoppedOf = (options: unknown, message: AssistantMessage): Record<string, number> => {
     const stopped = (options as Record<symbol, unknown> | undefined)?.[STOPPED_USD] as Stopped | undefined;
     const figure = typeof stopped === "function" ? stopped(message) : undefined;
@@ -230,7 +222,7 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
       } else if (result.stopReason === "aborted") {
         const responseId = (result as { responseId?: unknown }).responseId;
         ending = mark(REQUEST_ENDED, { ...(typeof responseId === "string" ? { responseId } : {}), ...stoppedOf(options, result) });
-      } else if (result.stopReason === "error" && (began || lostBefore(options, result))) {
+      } else if (result.stopReason === "error" && (began || lostOf(options, result))) {
         // An error after its response began (an overload part way, a reset): its usage is what had streamed, not what the
         // provider can have billed. Its message is recorded (markResponseBegan), which the cap counts at its hold in this
         // process, and its end is marked with the hold (`error`), which the spend read back counts. One before any event

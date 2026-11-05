@@ -150,7 +150,11 @@ export function recordingFetch(attempts: Attempt[], inner?: typeof fetch): typeo
  *  left. */
 const answeredOk = (a: Attempt) => "status" in a && a.status >= 200 && a.status < 300;
 /** Whether one attempt was lost: refused after it could have left (any code but a connect one), a gateway's timeout, or
- *  an answer that was not the request's last attempt (pi-ai tried again after it). */
+ *  an answer that was not the request's last attempt (pi-ai tried again after it). That last reading assumes every fetch
+ *  through the recorder is a model attempt. pi-ai's Anthropic workload identity federation (anthropic-messages.js,
+ *  getAnthropicFederation) exchanges its token through the same fetch, so under it "a 2xx that was not the last" would
+ *  read every answer as lost. It arms only when no API key or auth header resolves, and serve always gives pi-ai an API
+ *  key, so it never arms here. */
 export const attemptLost = (a: Attempt, last: boolean): boolean => ("code" in a ? !isConnectCode(a.code) : isGatewayTimeout(a.status) || (answeredOk(a) && !last));
 /** Whether any attempt of a request was lost (attemptLost), its last counted as the last; one the run's own stop cut is
  *  none. A request lost so counts at its hold however it then ended: answered, failed or stopped. */
