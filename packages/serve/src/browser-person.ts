@@ -203,7 +203,7 @@ type Note = (kind: string, data: Record<string, string>) => Promise<void>;
  *  under the cap (browser-cost.ts); `note` commits a root entry, which reaches the run's timeline. */
 export function personHands(options: {
   root: string;
-  gates: (tag: string) => { give(why: "answered" | "cap", message?: string): boolean };
+  gates: (tag: string) => { give?(why: "answered" | "cap", message?: string): boolean };
   personTime(what: string, seconds: number): Promise<{ refused: string } | { drop(): void }>;
   note: Note;
   holdMs?: number;
@@ -273,7 +273,7 @@ export function personHands(options: {
       }
       // No room: a take-over ends here. An ask needs no more (it expires within the time already held for it).
       ledger.refused = hold.refused;
-      if (ledger.users.has(TAKE_USER)) options.gates(tag).give("cap", hold.refused);
+      if (ledger.users.has(TAKE_USER)) options.gates(tag).give?.("cap", hold.refused);
     })(), holdMs);
   };
   /** `user` is done with session `tag`: the last one out drops what was held. */
@@ -313,7 +313,7 @@ export function personHands(options: {
     settled.set(id, answered);
     open.delete(id);
     ask.drop();
-    options.gates(ask.tag).give("answered");
+    options.gates(ask.tag).give?.("answered");
     void note(HOST_PHASE, { summary: ASK_ENDED[answered] });
     if (!open.size && poll) (clearInterval(poll), (poll = undefined));
     return answered;

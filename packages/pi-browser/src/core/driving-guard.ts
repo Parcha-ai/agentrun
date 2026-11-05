@@ -1,5 +1,5 @@
 import { BrowserFailureError, FenceRefusal, type BrowserDriver, type CustodyPort, type ToolOutput } from "./custody.js";
-import { drivingGates, personDrivingFailure, PERSON_DRIVING, type DrivingGate, type DrivingGates } from "./driving.js";
+import { drivingGates, epochOf, isHeld, personDrivingFailure, PERSON_DRIVING, type DrivingGate, type DrivingGates } from "./driving.js";
 import { browserFailure } from "./failures.js";
 import type { ToolCall, ToolImpl } from "./tools.js";
 
@@ -22,7 +22,7 @@ function epochFenced<D extends BrowserDriver>(driver: D, gate: DrivingGate, epoc
       const value = Reflect.get(target, key);
       if (typeof value !== "function") return value;
       return (...args: unknown[]) => {
-        if (gate.epoch() !== epoch) return Promise.reject(new FenceRefusal(personTookFailure(acted)));
+        if (epochOf(gate) !== epoch) return Promise.reject(new FenceRefusal(personTookFailure(acted)));
         acted = true;
         return value.apply(target, args);
       };
@@ -46,16 +46,16 @@ export function drivingGuard<D extends BrowserDriver, A = unknown>(impl: ToolImp
       let waited = false;
       for (;;) {
         const gate = gates(tag);
-        if (gate.held()) {
+        if (isHeld(gate)) {
           waited = true;
-          try { await gate.untilFree(call?.signal); } catch { throw STOPPED_WAITING(); }
+          try { await gate.untilFree?.(call?.signal); } catch { throw STOPPED_WAITING(); }
           continue;
         }
         const entered = gate.model();
         // A BrowserFailureError is what a tool already turns into a typed failure result, as it does for its own refusals.
         if (entered === PERSON_DRIVING) throw new BrowserFailureError(personDrivingFailure());
         held?.release();
-        held = { tag, release: entered.release, gate, epoch: gate.epoch() };
+        held = { tag, release: entered.release, gate, epoch: epochOf(gate) };
         return { drove: entered.drove === true, waited };
       }
     };

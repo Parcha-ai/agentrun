@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import type { Duplex } from "node:stream";
-import { drivingGates } from "../core/driving.js";
+import { drivingGates, isHeld } from "../core/driving.js";
 import type { LiveView } from "../core/host.js";
 import { CLOSE_CODES, encodeFrame, LIMITS, parseClientMessage, type ClientMessage, type DrivingGate, type DrivingGates, type HoldEnd, type ServerMessage, type Stream, type StreamFactory, type ViewerAssets } from "./protocol.js";
 import { openStream } from "./stream.js";
@@ -190,9 +190,9 @@ export function createLiveView(options: LiveViewOptions): LiveViewHost {
     entry.viewer = viewer;
     // A person who sits still with the viewer open is still using the session: custody does not release it on its own while this is set. A read-only viewer
     // only watches, so it keeps nothing open; a take-over viewer keeps it only by its hold, and its presence keeps the hold from its away window.
-    if (takeOver) viewer.gate.setPresent(true);
+    if (takeOver) viewer.gate.setPresent?.(true);
     else if (!options.readOnly) viewer.gate.setViewing(true);
-    send(conn, { type: "ready", drive: viewer.gate.state(), ...(options.readOnly ? { readOnly: true as const } : takeOver ? { takeOver: true as const, held: viewer.gate.held() } : {}) });
+    send(conn, { type: "ready", drive: viewer.gate.state(), ...(options.readOnly ? { readOnly: true as const } : takeOver ? { takeOver: true as const, held: isHeld(viewer.gate) } : {}) });
   };
 
   const onViewerMessage = (entry: Entry, viewer: Viewer, data: string | Buffer, binary: boolean): void => {
@@ -209,7 +209,7 @@ export function createLiveView(options: LiveViewOptions): LiveViewHost {
     if (options.readOnly) { excess("read_only"); return; }
     if (message.type === "take" || message.type === "give") { if (takeOver) hands(entry, viewer, message.type); else excess("bad_message"); return; }
     // A take-over viewer drives only while it holds the browser: anything else is dropped here, before the browser. A hover is not worth a notice.
-    if (takeOver && !viewer.gate.held()) { if (!(message.type === "mouse" && message.action === "move")) send(viewer.conn, { type: "held", reason: "not_taken" }); return; }
+    if (takeOver && !isHeld(viewer.gate)) { if (!(message.type === "mouse" && message.action === "move")) send(viewer.conn, { type: "held", reason: "not_taken" }); return; }
     // While a model call is in flight the input is dropped, not queued: a keystroke replayed after the model moved the page is worse than a lost one.
     if (viewer.gate.input() === "agent_acting") { send(viewer.conn, { type: "held", reason: "agent_acting" }); return; }
     // Mouse moves and scrolls arrive once per animation frame, so a slow browser command is always followed by a run of them. A run is combined into its last waiting
@@ -238,7 +238,7 @@ export function createLiveView(options: LiveViewOptions): LiveViewHost {
       const message = item.message;
       if (entry.viewer !== viewer) { viewer.queued -= 1; return; }
       // The hold may have ended while the message waited (handed back, idle, the agent's ask answered): it is not delivered.
-      if (takeOver && !viewer.gate.held()) { send(viewer.conn, { type: "held", reason: "not_taken" }); viewer.queued -= 1; return; }
+      if (takeOver && !isHeld(viewer.gate)) { send(viewer.conn, { type: "held", reason: "not_taken" }); viewer.queued -= 1; return; }
       // Messages wait their turn behind a slow command, so the gate is asked again at delivery: the model may have taken the browser since the message arrived.
       if (viewer.gate.input() === "agent_acting") { send(viewer.conn, { type: "held", reason: "agent_acting" }); viewer.queued -= 1; return; }
       // The person's turn must not lapse while their own command runs (a navigation can take seconds, the window is 3 s): it is renewed until the command returns.
@@ -257,8 +257,8 @@ export function createLiveView(options: LiveViewOptions): LiveViewHost {
    *  hold ends, the host's `end` is called and the viewer of the moment is told. */
   const hands = (entry: Entry, viewer: Viewer, what: "take" | "give"): void => {
     const gate = viewer.gate;
-    if (what === "give") { gate.give("given"); return; }
-    if (gate.held()) { send(viewer.conn, { type: "hold", held: true }); return; }
+    if (what === "give") { gate.give?.("given"); return; }
+    if (isHeld(gate)) { send(viewer.conn, { type: "hold", held: true }); return; }
     // One take at a time is asked of the host: a second one meanwhile is told so.
     if (entry.taking) { send(viewer.conn, { type: "held", reason: "taking" }); return; }
     entry.taking = true;
@@ -270,7 +270,7 @@ export function createLiveView(options: LiveViewOptions): LiveViewHost {
         if (entry.viewer) send(entry.viewer.conn, { type: "hold", held: false, reason: why, ...(message ? { message } : {}) });
       };
       // A session released, or a viewer gone, while the host answered: no hold starts, and the host lets go of what it took for one.
-      if (entry.released || entry.viewer !== viewer || !(options.gates ?? drivingGates)(entry.tag).take(ended)) { answer.end("released"); return; }
+      if (entry.released || entry.viewer !== viewer || !(options.gates ?? drivingGates)(entry.tag).take?.(ended)) { answer.end("released"); return; }
       send(viewer.conn, { type: "hold", held: true });
     }, () => {
       entry.taking = false;
@@ -283,7 +283,7 @@ export function createLiveView(options: LiveViewOptions): LiveViewHost {
     if (!viewer) return;
     entry.viewer = null;
     viewer.unsubscribe();
-    if (takeOver) viewer.gate.setPresent(false);
+    if (takeOver) viewer.gate.setPresent?.(false);
     else if (!options.readOnly) viewer.gate.setViewing(false);
     try { viewer.stream.close(); } catch { /* the stream is gone either way */ }
   };
@@ -345,7 +345,7 @@ export function createLiveView(options: LiveViewOptions): LiveViewHost {
       return entry.view;
     },
     known: (tag) => { const entry = byTag.get(tag); return entry && !entry.released ? entry.view : null; },
-    driving: (tag) => { const entry = byTag.get(tag); if (!entry) return false; const gate = (options.gates ?? drivingGates)(tag); return gate.held() || (!!entry.viewer && gate.state() === "person"); },
+    driving: (tag) => { const entry = byTag.get(tag); if (!entry) return false; const gate = (options.gates ?? drivingGates)(tag); return isHeld(gate) || (!!entry.viewer && gate.state() === "person"); },
     tracked: () => ({ sessions: byTag.size, opening: [...opening.values()].reduce((n, marks) => n + marks.size, 0) }),
     release,
     async close() {

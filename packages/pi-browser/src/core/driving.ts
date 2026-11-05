@@ -29,22 +29,26 @@ export type DrivingGate = {
   viewing(): boolean;
   /** The live view's server sets it when a viewer's hello is accepted and clears it when that viewer's socket closes or the session is released. */
   setViewing(on: boolean): void;
-  /** The person takes the browser (the live view's Take over): a sticky hold that lasts until `give`, `idleMs` of the hold with no input, or
+  /** The person's hold, below (take, give, held, epoch, setPresent, untilFree): optional, so a registry of the host's own that
+   *  predates them still works. A gate without them is never held (no call waits) and its epoch never moves; the live view's
+   *  takeOver needs them.
+   *
+   *  The person takes the browser (the live view's Take over): a sticky hold that lasts until `give`, `idleMs` of the hold with no input, or
    *  `awayMs` with no viewer present (`setPresent`), or the session's end. While held the person's input is the only input, every model call
    *  waits (`untilFree`), and the epoch moves, so a driver a model call took before the take acts no more. `onEnd` is called once, when the hold
    *  ends, with why (and the host's words, when it gave them). False when the browser is already held (nothing changes). */
-  take(onEnd?: (why: HoldEnd, message?: string) => void): boolean;
+  take?(onEnd?: (why: HoldEnd, message?: string) => void): boolean;
   /** Ends the hold (`given`: the person handed back; `answered`: the agent's ask was answered; `cap`: the host's spend cap has no room for more of
    *  the person's time, `message` its words). False when nothing was held. */
-  give(why?: "given" | "answered" | "cap", message?: string): boolean;
+  give?(why?: "given" | "answered" | "cap", message?: string): boolean;
   /** True while a person holds the browser. */
-  held(): boolean;
+  held?(): boolean;
   /** Moves at each change of hands (a take, a hold's end): a model call checks it before each act on the browser. */
-  epoch(): number;
+  epoch?(): number;
   /** The take-over viewer is connected (true) or gone (false): while held with no viewer, the hold ends after the away window. */
-  setPresent(on: boolean): void;
+  setPresent?(on: boolean): void;
   /** Resolves once nobody holds the browser (at once when nobody does); rejects with `signal`'s reason when it aborts first. */
-  untilFree(signal?: AbortSignal): Promise<void>;
+  untilFree?(signal?: AbortSignal): Promise<void>;
   /** The session was released: listeners dropped, the gate forgotten, no viewer. */
   end(): void;
 };
@@ -282,3 +286,8 @@ export function rearmWhenLeft(gate: DrivingGate, alive: () => boolean, rearm: ()
   poll.unref?.();
   return () => clearInterval(poll);
 }
+
+/** Whether `gate` is held for a person now: false for a gate without holds (a registry that predates them). */
+export const isHeld = (gate: DrivingGate): boolean => typeof gate.held === "function" && gate.held();
+/** `gate`'s epoch: 0, unmoving, for a gate without holds. */
+export const epochOf = (gate: DrivingGate): number => (typeof gate.epoch === "function" ? gate.epoch() : 0);
