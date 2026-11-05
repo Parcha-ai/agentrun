@@ -147,7 +147,9 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
     }
     const sent = f;
     // `leaveSaved`: this editor's own guard, for a page that moves on once the save lands (a new agent opening its page).
-    const p = await onSave(fields, note, { leaveSaved });
+    // It lifts the guard only while the form is still what this save sent: an edit made while the save was under way
+    // was never sent, so the move asks, and Cancel keeps it (as the answer below keeps it unsaved).
+    const p = await onSave(fields, note, { leaveSaved: () => { if (same(formNow.current, sent)) leaveSaved(); } });
     // A provider picked or reset while the save was under way is not in it: the form keeps that change, unsaved. Saved
     // and unchanged since, the tool settings are the agent's own: the form shows them as the definition has them.
     const unchanged = same(formNow.current.tool_settings ?? {}, fields.tool_settings ?? {});
