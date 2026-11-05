@@ -453,7 +453,14 @@ function withApprovals(rows: readonly TimelineEvent[], run: Pick<Run, "approvals
   const byCall = new Map([...run.approvals.values()].map((approval) => [approval.call_id, approval]));
   const waiting = waitingApproval(run);
   return rows.flatMap((row) => {
-    const approval = row.kind === "tool_result" && row.tool_use_id ? byCall.get(row.tool_use_id) : undefined;
+    // The gate's resume, the server's row: it says what came of the answer, never the head the model reads.
+    const resumed = row.kind === "phase" && row.text?.startsWith(RESUME_PREFIX) ? resumedBy(row.text, byCall) : undefined;
+    if (resumed) return [{ ...row, summary: resumeSays(resumed, run.meta.approvals?.[resumed.id], row.text!) }];
+    const own = (row.kind === "tool_use" || row.kind === "tool_result") && row.tool_use_id ? byCall.get(row.tool_use_id) : undefined;
+    // The call's own rows: what it answered at the park is not what it did, so they say what came of the approval.
+    const called = own ? { ...row, summary: parkedCallSays(own, run, waiting), tool_status: null } : row;
+    if (row.kind === "tool_use") return [called];
+    const approval = own;
     if (!approval) return [row];
     const args = shownArgs(approval, redact);
     const said = run.meta.approvals?.[approval.id]?.decision;
@@ -464,8 +471,27 @@ function withApprovals(rows: readonly TimelineEvent[], run: Pick<Run, "approvals
     // the row says so (the record keeps them whole).
     const dropped = run.meta.approvals?.[approval.id]?.superseded;
     const text = dropped?.by === "message" && dropped.note !== undefined ? `${args}\n\nNot sent: the run was ${said === "canceled" ? "cancelled" : "stopped"}. Your message: ${redact(dropped.note)}` : args;
-    return [row, { ...row, id: `${row.id}:approval`, kind: APPROVAL_ROW, summary, text, tool_name: approval.tool, tool_status: null, tool_input_preview: clip(args, 500), tool_result_preview: null, tool_result_size_bytes: null }];
+    return [called, { ...row, id: `${row.id}:approval`, kind: APPROVAL_ROW, summary, text, tool_name: approval.tool, tool_status: null, tool_input_preview: clip(args, 500), tool_result_preview: null, tool_result_size_bytes: null }];
   });
+}
+/** What a call that waited for approval came to, as its own rows (its call's and its result's) say it: the park answered
+ *  it with the gate's waiting text, so they never say it ran while it had not (no tool verb, no outcome, no status). */
+function parkedCallSays(approval: Approval, run: Pick<Run, "meta">, waiting: Approval | undefined): string {
+  const given = run.meta.approvals?.[approval.id];
+  if (approval === waiting || !given) return approval.resolved ? "Not run" : "Not run yet: it waits for your approval";
+  const ended = given.decision === "canceled" ? "cancelled" : "stopped";
+  if (given.decision === "withdrawn" || given.decision === "canceled")
+    return given.superseded?.decision === "allow" ? `Allowed, then the run was ${ended}: no result of it reached the model` : `Not run: the run was ${ended} while it waited`;
+  if (given.decision === "deny") return given.by === "message" ? "Not run: your message declined it" : "Not run: you declined it";
+  return approval.resolved ? "Allowed: its result is in the message that resumed the run" : "Allowed: it runs now";
+}
+/** The call a resume (resumeText, its text as the row has it) answers: its head names the call's tool and id. */
+const resumedBy = (text: string, byCall: ReadonlyMap<string, Approval>): Approval | undefined =>
+  [...byCall.values()].find((approval) => text.startsWith(`${RESUME_PREFIX}This answers your ${approval.tool} call ${approval.call_id} `));
+/** A resume's row as the approval's outcome: what ran, or what was refused. Only the tool's name and fixed words. */
+function resumeSays(approval: Approval, given: { decision: string; by?: string } | undefined, text: string): string {
+  if (given?.decision === "deny") return `AgentRun: ${approval.tool} was refused: ${given.by === "message" ? "your message declined it" : "you declined it"}`;
+  return `AgentRun: ${approval.tool} ran once you allowed it${text.includes(" They allowed it, and it ran and failed.") ? ", and failed" : ""}`;
 }
 /** A dollar figure to a millionth, as the timeline's cost.usd is. */
 const micro = (usd: number): number => Math.round(usd * 1e6) / 1e6;
