@@ -9,7 +9,9 @@ export type TimelineKind =
   /** A workflow decision: a judge's answers or a route's branch (serve's decision rows). */
   | "decision"
   /** Where a run's learning ended: proposed, merged or dropped (serve's learning row). */
-  | "learning";
+  | "learning"
+  /** A tool call that waited for a person's approval, after its result's row (serve's tool gate). */
+  | "tool_approval_requested";
 
 /** Grep's public `TimelineEvent` (its 13 fields) plus the open additions, all optional. */
 export type TimelineEvent = {

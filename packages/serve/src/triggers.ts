@@ -56,7 +56,9 @@ const ENDED = new Set(["completed", "failed", "cancelled"]);
 const LOST_AT_SETUP = "The server stopped while setting up the run.";
 
 type Schedule = { kind: "schedule"; cron: string; timezone: string } | { kind: "schedule"; at: string } | { kind: "schedule"; every_s: number; start_at: string };
-type Target = { kind: "start_run"; agent_id: string; input: Json; max_cost_usd: number; effort?: string };
+/** `max_cost_usd`: each run's cap; absent, the agent's default as it stands when the firing starts (one of the two is
+ *  required: server.ts targetIssues and start). */
+type Target = { kind: "start_run"; agent_id: string; input: Json; max_cost_usd?: number; effort?: string };
 type FiringStatus = (typeof FIRING_STATUSES)[number];
 type Firing = {
   key: string;
@@ -231,17 +233,16 @@ function sourceOf(value: unknown, now: number, issues: InputIssue[]): Schedule |
 
 function targetOf(value: unknown, issues: InputIssue[]): Target | undefined {
   const bad = (field: string, reason: string, message: string) => void issues.push({ field: `target${field ? `.${field}` : ""}`, reason, message });
-  if (!isObject(value)) return bad("", value === undefined ? "missing" : "wrong_type", "target is an object: {kind: \"start_run\", agent_id, input, max_cost_usd, effort?}"), undefined;
+  if (!isObject(value)) return bad("", value === undefined ? "missing" : "wrong_type", "target is an object: {kind: \"start_run\", agent_id, input, max_cost_usd?, effort?}"), undefined;
   if (value.kind !== "start_run") return bad("kind", "not_an_option", "target.kind is start_run: a trigger starts a run of an agent"), undefined;
   const before = issues.length;
   issues.push(...unknownFields(value, ["kind", "agent_id", "input", "max_cost_usd", "effort"]).map((i) => ({ ...i, field: `target.${i.field}` })));
   if (typeof value.agent_id !== "string" || !ID.test(value.agent_id)) bad("agent_id", value.agent_id === undefined ? "missing" : "wrong_type", "agent_id is an agent's id");
   if (!isObject(value.input)) bad("input", value.input === undefined ? "missing" : "wrong_type", "input is the run's input, as POST /agents/{agent_id}/runs takes it: {content}");
-  if (value.max_cost_usd === undefined) bad("max_cost_usd", "missing", "max_cost_usd is required: every run a trigger starts is capped");
-  else if (!(typeof value.max_cost_usd === "number" && value.max_cost_usd > 0 && Number.isFinite(value.max_cost_usd))) bad("max_cost_usd", "wrong_type", "max_cost_usd is a number above 0");
+  if (value.max_cost_usd !== undefined && !(typeof value.max_cost_usd === "number" && value.max_cost_usd > 0 && Number.isFinite(value.max_cost_usd))) bad("max_cost_usd", "wrong_type", "max_cost_usd is a number above 0");
   if (value.effort !== undefined && !(EFFORTS as readonly unknown[]).includes(value.effort)) bad("effort", "not_an_option", `effort is one of ${EFFORTS.join(", ")}`);
   if (issues.length > before) return undefined;
-  return { kind: "start_run", agent_id: value.agent_id as string, input: value.input as Json, max_cost_usd: value.max_cost_usd as number, ...(typeof value.effort === "string" ? { effort: value.effort } : {}) };
+  return { kind: "start_run", agent_id: value.agent_id as string, input: value.input as Json, ...(typeof value.max_cost_usd === "number" ? { max_cost_usd: value.max_cost_usd } : {}), ...(typeof value.effort === "string" ? { effort: value.effort } : {}) };
 }
 
 /** `catchup_window_s`, as given (absent: undefined). */
@@ -259,7 +260,7 @@ function wellFormed(t: unknown): t is Trigger {
   const { source, target } = t;
   if (!isObject(source) || source.kind !== "schedule") return false;
   const timed = typeof source.cron === "string" ? typeof source.timezone === "string" : source.at !== undefined ? instantOf(source.at) !== undefined : Number.isSafeInteger(source.every_s) && instantOf(source.start_at) !== undefined;
-  if (!timed || !isObject(target) || target.kind !== "start_run" || typeof target.agent_id !== "string" || !isObject(target.input) || typeof target.max_cost_usd !== "number") return false;
+  if (!timed || !isObject(target) || target.kind !== "start_run" || typeof target.agent_id !== "string" || !isObject(target.input) || !(target.max_cost_usd === undefined || typeof target.max_cost_usd === "number")) return false;
   const firing = (f: unknown) => isObject(f) && typeof f.key === "string" && (FIRING_STATUSES as readonly unknown[]).includes(f.status) && (f.by === "schedule" || f.by === "manual") && instantOf(f.nominal_at) !== undefined && typeof f.at === "string";
   return Array.isArray(t.firings) && t.firings.every(firing) && (t.run_now_kept === undefined || (Array.isArray(t.run_now_kept) && t.run_now_kept.every(firing)));
 }

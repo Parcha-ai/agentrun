@@ -97,7 +97,7 @@ test("demo: a Daytona place runs read, write, edit and bash in the run's box: wo
   const places = (await api("GET", "/capabilities")).body.places;
   assert.deepEqual(places.boxes.find((b) => b.id === "daytona"), { id: "daytona", available: true, state: "ready", network: "allowlist" });
   assert.deepEqual(places.allow, ["pypi.org", "files.pythonhosted.org", "registry.npmjs.org", "registry.yarnpkg.com", "github.com", "codeload.github.com"]);
-  const made = await api("POST", "/agents", { definition: { id: "remote", name: "remote", instructions: "Probe.", place: DAYTONA, tools: ["read", "write", "edit", "bash", "monid.discover"] } });
+  const made = await api("POST", "/agents", { definition: { id: "remote", name: "remote", instructions: "Probe.", place: DAYTONA, tools: ["read", "write", "edit", "bash", "monid.discover"], tool_settings: { "monid.discover": { permission: "allow" } } } });
   assert.equal(made.status, 201, JSON.stringify(made.body));
   assert.deepEqual(made.body.warnings, []);
   const input = await upload(server, "brief.txt", "seeded from the run's work/\n");
@@ -362,7 +362,7 @@ test("an agent's edit to a file the host filed and mirrored into the box comes b
   const fake = await daytonaSandboxes(t, { key: KEY });
   withEnv(t, { MONID_API_KEY: MONID_KEY });
   const { api, data } = await onDaytona(t, fake, { fauxMonid: FAUX_MONID });
-  assert.equal((await api("POST", "/agents", { definition: { id: "editor", name: "editor", instructions: "Probe.", place: DAYTONA, tools: ["bash", "monid.discover"] } })).status, 201);
+  assert.equal((await api("POST", "/agents", { definition: { id: "editor", name: "editor", instructions: "Probe.", place: DAYTONA, tools: ["bash", "monid.discover"], tool_settings: { "monid.discover": { permission: "allow" } } } })).status, 201);
   const plan = [
     // Filed before any box is open: queued, then sent at the open.
     { tool: "monid_discover", args: { query: "everything at once" } },
