@@ -2160,14 +2160,15 @@ export class Runs {
     if (run.imported) throw this.importedRefusal(run);
     // A cancelled run takes no message, whether or not its end is written yet.
     if (run.cancel) throw this.finished(run);
-    // A person's message: no turn from here on is the server's own reflect turn (tool-gate.ts's carve-out).
-    await rm(join(run.dir, TURN_ORIGIN_FILE), { force: true }).catch((error: Error) => warn(run.id, `its turn's origin is not removed: ${error.message}`));
     // A message while a tool call waits for approval declines it, with the message as the reason (as Claude Code takes
     // what is typed at its permission prompt): the gate's resume carries the refusal and their words in one turn, and
     // nothing else is sent, so no second turn races the parked call.
     if (run.kind === "agentic") {
       const waiting = waitingApproval(run);
-      if (waiting) return this.declineBy(run, waiting, content);
+      if (waiting) {
+        await this.personsTurn(run);
+        return this.declineBy(run, waiting, content);
+      }
     }
     // Every wait first, then a last look for a stop in flight, again after any wait a stop came during: from that look
     // to the count below nothing awaits, so no stop can begin in between.
@@ -2202,6 +2203,9 @@ export class Runs {
     run.submitted++;
     this.refresh(run);
     try {
+      // After every wait, and once the count above holds the run from ending (so no end-of-run turn is asked from here):
+      // one asked while this message waited for the run's end wrote its origin then, after any earlier removal.
+      await this.personsTurn(run);
       await this.submit(run, content, mode === "steer" ? "steer" : "followUp", messageId);
     } catch (error) {
       run.submitted = Math.max(0, run.submitted - 1);
@@ -2211,6 +2215,12 @@ export class Runs {
       run.followUpOpen = undefined;
     }
     return { mode, messageId };
+  }
+
+  /** A person's turn is sent next: no turn from here on is the server's own end-of-run turn (tool-gate.ts's carve-out),
+   *  so its origin goes, right before the turn is sent. */
+  private async personsTurn(run: Run): Promise<void> {
+    await rm(join(run.dir, TURN_ORIGIN_FILE), { force: true }).catch((error: Error) => warn(run.id, `its turn's origin is not removed: ${error.message}`));
   }
 
   /** Waits, up to a request's deadline, while `holds` (checked every `everyMs`): else 503 `unavailable`, saying `why`. */
