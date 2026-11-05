@@ -991,3 +991,10 @@ test("a message after an adapter turn's end is the person's next message, not a 
   ];
   assert.deepEqual([userMessages(timelineOf(entries)), userMessages(live(entries))], [["You: Write five files", "You: Go on."], ["You: Write five files", "You: Go on."]]);
 });
+
+test("a browser session reads as opened only on a failure that shows one: refused before creation (a navigation policy the provider can't enforce), a provider error or a timeout at the start opened none", () => {
+  const read = (code) => timelineOf([user("Browse.", 0), assistant([call("a", "browser_read", {})], 1), result("a", "browser_read", JSON.stringify({ ok: false, code, message: "x" }), 2, { isError: true })]);
+  const opened = (rows) => rows.some((r) => SESSION.test(r.summary ?? ""));
+  for (const code of ["refused", "command_failed", "timeout", "auth", "browser_unavailable", "rate_limited", "aborted", "no_such_code"]) assert.equal(opened(read(code)), false, `${code}: no session shown`);
+  for (const code of ["not_content", "stale_snapshot", "code_error", "session_ended", "session_replaced", "blocked", "effect_unknown", "waiting_for_human"]) assert.equal(opened(read(code)), true, `${code}: the session it failed in`);
+});
