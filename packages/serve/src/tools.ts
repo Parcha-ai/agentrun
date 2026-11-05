@@ -192,7 +192,11 @@ const browserTool: ToolEntry = {
     host.onConversation(async (tx, conversationId) => {
       Object.assign(await tx.doc(browser.docs.Config, conversationId as never), { label: "run", run: host.where.ref.id, policy: DEFAULT_BROWSER_POLICY });
     });
-    host.beforeResume(async (harness) => void (await browser.reconcile(harness as never, () => true, context)));
+    host.beforeResume(async (harness) => {
+      // Its charges move what the process counts once each is committed, reconcile's own among them.
+      spend.watch(harness);
+      await browser.reconcile(harness as never, () => true, context);
+    });
     host.beforeRelease(async (harness) => {
       const held = await harness.snapshot(browser.docs.Inventory as never, context) as { rows?: Record<string, { conversationId: number; state: string }> } | undefined;
       for (const id of new Set(Object.values(held?.rows ?? {}).filter((row) => row.state !== "released").map((row) => row.conversationId))) {

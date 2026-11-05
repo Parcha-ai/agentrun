@@ -51,6 +51,7 @@ async function run(t, { provider = "browserbase", price = BROWSERBASE, reads, re
   registry.install(extension);
   const harness = await durable.Harness.open(new durable.MemoryStorage(), { models, registry, onReport: () => {} }, ctx);
   t.after(() => harness.close(ctx));
+  spend.watch(harness);
   const policy = { proxies: false, verified: false, captcha: false, geolocation: null, region: null, contextId: null, sessionTimeoutS: 1800, idleReleaseS: idleS, batchTimeoutMs: 60_000 };
   const root = await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" } }, init: async (tx, id) => { Object.assign(await tx.doc(browser.docs.Config, id), { label: "run", run: "run-cost", policy }); } });
   await browser.reconcile(harness, () => true, ctx);
@@ -131,6 +132,25 @@ test("capped, a session whose release the provider never confirms ends lost: bil
   assert.ok(booked[0].seconds === 3 && booked[1].seconds >= 57, "the call's 3 s, then what it ran until custody gave up, at least the rest of its minute");
   assert.deepEqual([record.spent.final, total(booked)], [true, record.spent.usd]);
   assert.equal(paidHolds(), 0, "no stretch is left held for a session custody no longer tracks as open");
+});
+
+test("a charge joins the run's spend and moves its holds only once the commit that books it is in: one that fails leaves neither", async (t) => {
+  const [{ BACKGROUND_CONTEXT: ctx }, durable, { createModels }] = await Promise.all([import("@earendil-works/chord/context"), import("@earendil-works/pi-durable"), import("@earendil-works/pi-ai/models")]);
+  let spent = 0;
+  useSpend({ cap: 1, spent: () => spent, add: (usd) => void (spent += usd) });
+  t.after(() => useSpend(undefined));
+  const harness = await durable.Harness.open(new durable.MemoryStorage(), { models: createModels(), registry: durable.createRegistry(), onReport: () => {} }, ctx);
+  t.after(() => harness.close(ctx));
+  await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" } } });
+  const spend = browserSpend("browserbase", BROWSERBASE, 180, async () => undefined);
+  spend.watch(harness);
+  const charge = { conversationId: 1, tag: "ar-run-1", provider: "browserbase", at: new Date(T0).toISOString(), seconds: 3, usd: 0.0001, final: false, state: "priced" };
+  await assert.rejects(harness.commit(async (tx) => { await spend.onCharge(charge, tx); throw new Error("the commit fails after the charge"); }, ctx));
+  assert.deepEqual([spent, paidHolds()], [0, 0], "nothing booked: no spend counted, no reserve held");
+  await harness.commit((tx) => spend.onCharge(charge, tx), ctx);
+  assert.deepEqual([spent, paidHolds()], [0.0001, spend.stretch], "booked: its spend counted, and its session's reserve held");
+  await harness.commit((tx) => spend.onCharge({ ...charge, seconds: 57, usd: 0.0019, final: true }, tx), ctx);
+  assert.deepEqual([Math.round(spent * 1e12) / 1e12, paidHolds()], [0.002, 0]);
 });
 
 test("prices by provider: Browserbase, Kernel and local Chrome, each overridden by its own variable; one unknown or unreadable has none", async (t) => {

@@ -1,6 +1,7 @@
 // Browser minutes in the run's spend: each charge of a browser session's time (pi-browser's onCharge) is booked as a
 // TOOL_COST in the commit that writes it on the session's record, so the run's cost, /usage and the cap read it as they read
-// monid's, and a crash never leaves one booked and not billed or billed and not booked. Under a cap, no session time runs
+// monid's, and a crash never leaves one booked and not billed or billed and not booked. What the run's process counts
+// (its spend, the holds below) moves once that commit is in, from the commit itself. Under a cap, no session time runs
 // that the cap has not held first (cap.ts' paid holds):
 // - The next stretch is the most a session can run before the run can check again: the provider's minimum (what a
 //   release may top it up to), the idle window before pi-browser releases it, and RELEASE_ALLOWANCE_S for that release
@@ -16,7 +17,7 @@
 // confirmed, and a session kept across a restart of the run's process (its down time, held by no process) can pass it,
 // by that excess, booked and shown.
 import type { Context } from "@earendil-works/chord";
-import { ROOT_CONVERSATION_ID, type Conversation, type ToolExecutionApi, type ToolRegistration, type Tx } from "@earendil-works/pi-durable";
+import { ROOT_CONVERSATION_ID, type Conversation, type Session, type ToolExecutionApi, type ToolRegistration, type Tx } from "@earendil-works/pi-durable";
 import type { SessionCharge } from "@parcha/pi-browser";
 import { TOOL_COST } from "@parcha/pi-durable-agent/timeline";
 import { addSpend, keepHold, paidCall, runCap, SPEND_CAP_REACHED } from "./cap.js";
@@ -47,7 +48,9 @@ export function browserPrice(provider: string, env: NodeJS.ProcessEnv): { usdPer
 }
 
 type Hold = ReturnType<typeof keepHold>;
-type Session = { cid: number; reserve: Hold; at: number; call: string | null };
+/** A browser charge as its TOOL_COST holds it. */
+type Booked = { tool: "browser"; charged_by: string; call: string | null; usd: number | null; seconds: number; tag: string; conversation: number; at: string; final: boolean };
+type Open = { cid: number; reserve: Hold; at: number; call: string | null };
 
 /** One run's browser bookings, for its one provider at `price` with pi-browser's idle window `idleS`. `release` lets go of
  *  a conversation's session (pi-browser's release, "close"). */
@@ -56,31 +59,49 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
   const usdOf = (seconds: number) => ((rate ?? 0) * seconds) / 3600;
   const stretchS = price.minimumS + idleS + RELEASE_ALLOWANCE_S;
   const stretch = usdOf(stretchS);
-  const sessions = new Map<string, Session>();
+  const sessions = new Map<string, Open>();
   /** Each call under way, by its id: its conversation and its hold. */
   const calls = new Map<string, { cid: number; hold: Hold }>();
   const take = (hold: Hold | undefined, usd: number) => void (hold && (hold.usd = Math.max(0, hold.usd - usd)));
 
   /** Booked in the commit that bills it: a TOOL_COST under the call that ran it (a release's, under its session's last
-   *  call), what it cost or null when its time has no price, and the seconds it was for. A $0 charge is no cost. */
+   *  call), what it cost or null when its time has no price, and the seconds it was for, with what `booked` needs. A free
+   *  provider's time books nothing and holds nothing. */
   async function onCharge(charge: SessionCharge, tx: Tx, call?: { callId: string }): Promise<void> {
+    if (rate === 0) return;
     const usd = charge.state === "priced" ? charge.usd : null;
-    const session = sessions.get(charge.tag);
-    if (usd !== 0) await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: TOOL_COST, data: { tool: "browser", charged_by: charge.provider, call: call?.callId ?? session?.call ?? null, usd, seconds: charge.seconds } });
-    addSpend(usd);
-    const at = Date.parse(charge.at);
-    if (charge.final) {
+    const data: Booked = { tool: "browser", charged_by: charge.provider, call: call?.callId ?? sessions.get(charge.tag)?.call ?? null, usd, seconds: charge.seconds, tag: charge.tag, conversation: charge.conversationId, at: charge.at, final: charge.final };
+    await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: TOOL_COST, data });
+  }
+
+  /** A charge whose commit is in (watch): it joins what the run's process counts as spent, and moves the holds. Never
+   *  inside the commit, so one that fails changes neither. */
+  function booked(data: Booked): void {
+    const usd = data.usd ?? 0;
+    const session = sessions.get(data.tag);
+    addSpend(data.usd);
+    if (data.final) {
       // A session the provider ended before its first charge has no reserve: its release comes out of its call's hold.
-      take(session?.reserve ?? [...calls.values()].find((c) => c.cid === charge.conversationId)?.hold, usd ?? 0);
+      take(session?.reserve ?? [...calls.values()].find((c) => c.cid === data.conversation)?.hold, usd);
       session?.reserve.drop();
-      sessions.delete(charge.tag);
+      sessions.delete(data.tag);
     } else if (session) {
-      take(call && calls.get(call.callId)?.hold, usd ?? 0);
-      Object.assign(session, { at, call: call?.callId ?? session.call });
+      take(data.call === null ? undefined : calls.get(data.call)?.hold, usd);
+      Object.assign(session, { at: Date.parse(data.at), call: data.call ?? session.call });
     } else {
-      take(call && calls.get(call.callId)?.hold, (usd ?? 0) + stretch);
-      sessions.set(charge.tag, { cid: charge.conversationId, reserve: keepHold(stretch), at, call: call?.callId ?? null });
+      take(data.call === null ? undefined : calls.get(data.call)?.hold, usd + stretch);
+      sessions.set(data.tag, { cid: data.conversation, reserve: keepHold(stretch), at: Date.parse(data.at), call: data.call });
     }
+  }
+
+  /** Applies each browser charge `harness` commits, once the commit is in. */
+  function watch(harness: Pick<Session, "subscribeCommits">): void {
+    harness.subscribeCommits((publication) => {
+      for (const change of publication.changes) {
+        const data = change.type === "entry" && change.value.kind === TOOL_COST ? (change.value.data as Partial<Booked> | undefined) : undefined;
+        if (data?.tool === "browser" && typeof data.tag === "string") booked(data as Booked);
+      }
+    });
   }
 
   /** `tool` held under the run's cap before each call. */
@@ -115,5 +136,5 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
     return forModel(JSON.stringify({ error: why }), { isError: true });
   }
 
-  return { onCharge, capped, stretch };
+  return { onCharge, watch, capped, stretch };
 }
