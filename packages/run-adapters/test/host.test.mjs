@@ -401,6 +401,57 @@ test("a request its client stops before the provider's first header is booked as
   assert.equal(overloaded.hooks.after[0].stoppedAfterBytes, undefined, 'an error status: no stop figure, so its hold');
 });
 
+/** A provider that streams `pieces` (bytes) as separate chunks and holds the stream open until the proxy aborts it. */
+const holdingPieces = (pieces) => async (_url, init) => new Response(new ReadableStream({
+  start(c) { for (const piece of pieces) c.enqueue(piece); init.signal.addEventListener('abort', () => c.error(new Error('aborted')), { once: true }); },
+}), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+/** A client that sends `body` and leaves once `total` bytes of the answer have reached it. */
+const stopAfter = (url, body, total) => new Promise((resolve) => {
+  const { hostname, port } = new URL(url);
+  const req = request({ host: hostname, port, method: 'POST', path: '/v1/test', headers: { 'content-type': 'application/json', authorization: `Bearer ${KEY}` } }, (res) => {
+    let read = 0;
+    res.on('data', (chunk) => { read += chunk.length; if (read >= total) { req.destroy(); resolve(); } });
+    res.on('error', resolve);
+    res.on('close', resolve);
+  });
+  req.on('error', () => resolve());
+  req.end(JSON.stringify(body));
+});
+/** A policy that reads each event's reasoning and content as the real ones do: its data lines, joined, as JSON. */
+const crlfPolicy = {
+  ...policy,
+  reasoningHidden: () => 100,
+  reasoningBytesOf: (event) => { const data = JSON.parse(event.split('\n').filter((l) => l.startsWith('data:')).map((l) => l.slice(5).trimStart()).join('\n')); return Buffer.byteLength(data.reasoning ?? ''); },
+  contentBytesOf: (event) => { const data = JSON.parse(event.split('\n').filter((l) => l.startsWith('data:')).map((l) => l.slice(5).trimStart()).join('\n')); return Buffer.byteLength(data.reasoning ?? '') + Buffer.byteLength(data.text ?? ''); },
+};
+const [crlfThought, crlfText] = ['Weighing é ✓', 'The answer: 思考 done'];
+/** Two events, each line ended "\r\n" and each event by a blank line, as a CRLF provider frames them. */
+const CRLF_STREAM = Buffer.from(`event: reasoning\r\ndata: ${JSON.stringify({ reasoning: crlfThought })}\r\n\r\nevent: text\r\ndata: ${JSON.stringify({ text: crlfText })}\r\n\r\n`);
+/** What a stop after `pieces` books: the content and the reasoning it was sent. */
+async function crlfStop(t, pieces) {
+  const run = await proxy(t, { policy: crlfPolicy, fetch: holdingPieces(pieces) });
+  await stopAfter(run.p.url, { model: 'other', input: 'hi' }, CRLF_STREAM.length);
+  await settledAfter(run.hooks);
+  const [booked] = run.hooks.after;
+  return { content: booked?.stoppedAfterBytes, reasoning: booked?.stoppedReasoningBytes };
+}
+const CRLF_WANT = { content: Buffer.byteLength(crlfThought) + Buffer.byteLength(crlfText), reasoning: Buffer.byteLength(crlfThought) };
+
+test("a CRLF stream whose chunk ends between the two line ends of an event's blank line (\"\\r\\n\\r|\\n\") counts both events' content and reasoning, not 0", async (t) => {
+  const cut = CRLF_STREAM.indexOf('\r\n\r\n') + 3;
+  assert.equal(CRLF_STREAM.subarray(cut - 3, cut + 1).toString(), '\r\n\r\n', 'setup: the cut falls inside the first event\'s blank line');
+  assert.deepEqual(await crlfStop(t, [CRLF_STREAM.subarray(0, cut), CRLF_STREAM.subarray(cut)]), CRLF_WANT, 'both events read whole across the cut');
+});
+
+test("a CRLF stream counts the same content and reasoning wherever a chunk boundary falls: at every byte offset of a two-event stream", async (t) => {
+  const seen = [];
+  for (let cut = 1; cut < CRLF_STREAM.length; cut += 1) {
+    const got = await crlfStop(t, [CRLF_STREAM.subarray(0, cut), CRLF_STREAM.subarray(cut)]);
+    if (got.content !== CRLF_WANT.content || got.reasoning !== CRLF_WANT.reasoning) seen.push({ cut, ...got });
+  }
+  assert.deepEqual(seen, [], `every cut counts ${JSON.stringify(CRLF_WANT)}`);
+});
+
 test('close() while a request waits for the runner: it is not sent, and it is released, booked once at nothing', async (t) => {
   let admit;
   const waiting = new Promise((resolve) => { admit = resolve; });
