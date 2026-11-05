@@ -199,9 +199,9 @@ test('a /home/ or /Users/ right after a path parameter is an API route, not a ma
   const home = ['', 'home', 'someone', 'x'].join('/');
   const users = ['x ', 'Users', 'someone', 'y'].join('/');
   // A `}` that closes no route parameter does not excuse what follows: an interpolation, a bare brace, an encoded one.
-  const interpolated = ['${root}', 'home', 'ubuntu', '.config', ''].join('/');
-  const braced = ['done {} }', 'Users', 'miguel', 'x', ''].join('/');
-  const encoded = ['%7D', 'home', 'ubuntu', 'y', ''].join('%2F');
+  const interpolated = ['${root}', 'home', 'someone', '.config', ''].join('/');
+  const braced = ['done {} }', 'Users', 'someone', 'x', ''].join('/');
+  const encoded = ['%7D', 'home', 'someone', 'y', ''].join('%2F');
   for (const [path, text] of [['packages/x/lib/home.mjs', `"${home}"\n`], ['packages/x/lib/users.mjs', `"${users}"\n`], ['packages/x/lib/interpolated.mjs', `\`${interpolated}\`\n`], ['packages/x/lib/braced.mjs', `"${braced}"\n`], ['packages/x/lib/encoded.mjs', `"${encoded}"\n`]]) {
     await f.write(path, text);
     await assert.rejects(f.run(), /Source export blocked/);
