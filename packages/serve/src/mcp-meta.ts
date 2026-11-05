@@ -32,6 +32,8 @@ export const MCP_META_TOOLS: readonly MetaTool[] = [
   // Docker's MCP gateway with dynamic tools (docker/mcp-gateway@7e0f34277, pkg/gateway/dynamic_mcps.go and
   // pkg/codemode/codemode.go): a session tool by name, and the code-mode tools it generates.
   { name: "mcp-exec", source: "docker/mcp-gateway@7e0f34277 pkg/gateway/dynamic_mcps.go" },
+  // prefix: Docker generates these names; a non-Docker tool named code-mode-* is refused too, by design (code mode is
+  // never granted, and a false match only refuses a grant).
   { name: "code-mode-", prefix: true, source: "docker/mcp-gateway@7e0f34277 pkg/codemode/codemode.go" },
   // Cloudflare MCP server portals (developers.cloudflare.com/cloudflare-one/access-controls/ai-controls/mcp-portals/):
   // search_and_execute's execute, and Code Mode's JavaScript.
