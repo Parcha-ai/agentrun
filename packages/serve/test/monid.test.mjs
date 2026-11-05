@@ -84,7 +84,7 @@ test("under a cap, a paid call is refused before it is sent unless the spend plu
   useSpend({ cap: 2, spent: () => spent, add: (usd) => void (added.push(usd), (spent += usd)) });
   t.after(() => useSpend(undefined));
   const refused = await paidCall("monid_run", call, chargeOf, quoted(0.7));
-  assert.match(refused.refused, /^spend_cap_reached: monid_run was not sent\. It could cost up to \$0\.7 \(the price monid_inspect quoted\), and with \$1\.500000 spent the run would pass its cap of \$2: the run is out of budget\.$/);
+  assert.match(refused.refused, /^spend_cap_reached: Not sent: the run has spent \$1\.50 of its \$2 cap, and monid_run could cost up to \$0\.70 \(the price monid_inspect quoted\)\. Raise the cap to at least \$2\.20 to run it\.$/);
   assert.equal(sent, 0, "refused, not sent");
   assert.deepEqual([(await paidCall("monid_run", call, chargeOf, quoted(0.4))).result?.status, sent, added], ["COMPLETED", 1, [0.2]], "0.4 fits: it runs");
   // Two at once: the first is checked (1.5 + 0.4), sent and charged (1.7) before the second is checked (1.7 + 0.4 > 2).
@@ -152,7 +152,7 @@ test("a run whose monid call times out (TIMED_OUT, no cost said) books its charg
   useSpend({ cap: 5, spent: () => capToolSpend(root), add: () => {} });
   assert.ok("result" in (await paidCall("monid_run", async () => ({}), chargeOf, { usd: 0.003, basis: "quoted" })), "a paid call that fits goes");
   useSpend({ cap: 1.002, spent: () => capToolSpend(root), add: () => {} });
-  assert.match((await paidCall("monid_run", async () => ({}), chargeOf, { usd: 0.003, basis: "quoted" })).refused ?? "", /with \$1\.000000 spent the run would pass its cap of \$1\.002/, "one that does not is refused for room");
+  assert.match((await paidCall("monid_run", async () => ({}), chargeOf, { usd: 0.003, basis: "quoted" })).refused ?? "", /^spend_cap_reached: Not sent: the run has spent \$1 of its \$1\.002 cap, and monid_run could cost up to \$0\.003 \(quoted\)\. Raise the cap to at least \$1\.01 to run it\.$/, "one that does not is refused for room");
   const guard = await capBefore(5, { id: "faux", api: "faux", provider: "faux", maxTokens: 10, contextWindow: 100, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } });
   assert.deepEqual(guard.beforeRequest({ spentUsd: capToolSpend(root), inFlight: [], inputTokensMax: 1 }), { outputTokensMax: 10 }, "and a model request that fits goes, at its whole output (#1539's clamp leaves it whole)");
 });
