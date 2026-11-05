@@ -22,6 +22,9 @@ export const GITHUB_API = "https://api.github.com";
 /** The most of a run's answer a comment carries, when its trigger asks for the answer (its source's `post_answer`). */
 export const ANSWER_POSTED_CHARS = 3_000;
 const TIMEOUT_MS = 15_000;
+/** How soon an outbox write that failed is tried again: until it is kept, the next server could post a taken comment
+ *  again. */
+const WRITE_RETRY_MS = 5_000;
 /** A ledger entry is dropped this long after it was last written: its issue is gone from the trigger by then. */
 const LEDGER_KEPT_MS = 30 * 86_400_000;
 /** U+2060 WORD JOINER: shown as nothing, and it ends a mention or a reference GitHub would link. */
@@ -190,6 +193,9 @@ export class GitHub {
   private readonly timers = new Set<NodeJS.Timeout>();
   private readonly stop = new AbortController();
   private closed = false;
+  /** The outbox in memory differs from the one on disk: its last write failed, and is tried again (WRITE_RETRY_MS). */
+  private unsaved = false;
+  private rewrite: NodeJS.Timeout | undefined;
 
   /** `api`: GitHub's REST API (a test's fake); `retryMs`: the waits between tries of a comment. */
   constructor(data: string, env: NodeJS.ProcessEnv, private readonly say: (fields: Record<string, string | number>) => void, private readonly api = GITHUB_API, private readonly retryMs: readonly number[] = RETRY_MS) {
@@ -204,6 +210,8 @@ export class GitHub {
   }
 
   close(): void {
+    // What it holds, written once more as it stops: a comment GitHub took and a write that failed would be posted again.
+    if (this.unsaved) this.write();
     this.closed = true;
     this.stop.abort();
     for (const timer of this.timers) clearTimeout(timer);
@@ -283,9 +291,10 @@ export class GitHub {
     this.write();
   }
 
-  /** Whether `run`'s end was told its issue already: a start's catch-up queues one it lacks. */
-  toldEnd(runId: string): boolean {
-    return this.told[runId]?.ended !== undefined;
+  /** Whether `run`'s end at `marker` (its end time) was told its issue already: a start's catch-up queues one it lacks.
+   *  A run a mention opened again ends again, at another time, so an earlier end is not this one. */
+  toldEnd(runId: string, marker: string): boolean {
+    return this.told[runId]?.ended === marker;
   }
 
   private schedule(post: Post, delayMs: number): void {
@@ -312,8 +321,12 @@ export class GitHub {
     post.attempts += 1;
     if (answer.ok) return this.drop(post);
     if (answer.status === 401) {
-      this.writeSettings({ ...settings, disabled: { at: new Date().toISOString(), reason: "GitHub refused the token (401): save the settings again with a token that can comment" } });
-      this.say({ condition: "github_disabled", error: "401" });
+      // Turned off only as the settings still stand: ones deleted or saved again during the wait are never written back.
+      const now = this.settings();
+      if (now && now.updated_at === settings.updated_at && now.token === settings.token) {
+        this.writeSettings({ ...now, disabled: { at: new Date().toISOString(), reason: "GitHub refused the token (401): save the settings again with a token that can comment" } });
+        this.say({ condition: "github_disabled", error: "401" });
+      }
       return this.drop(post, answer.error);
     }
     const wait = this.retryMs[post.attempts - 1];
@@ -361,9 +374,21 @@ export class GitHub {
     for (const [id, told] of Object.entries(this.told)) if (Date.parse(told.at) < old) delete this.told[id];
     try {
       writeDurableSync(this.outbox, `${JSON.stringify({ v: 1, posts: this.posts, told: this.told })}\n`);
+      this.unsaved = false;
     } catch (error) {
-      // Held here: the next write carries it, and a post's own try goes on.
+      // Held here and tried again until kept (a stop writes it too): a comment's own try goes on meanwhile.
+      this.unsaved = true;
       this.say({ condition: "github_outbox_unwritable", file: this.outbox, error: (error as NodeJS.ErrnoException).code ?? "unknown" });
+      if (!this.rewrite && !this.closed) {
+        const timer = setTimeout(() => {
+          this.timers.delete(timer);
+          this.rewrite = undefined;
+          if (this.unsaved) this.write();
+        }, WRITE_RETRY_MS);
+        timer.unref();
+        this.timers.add(timer);
+        this.rewrite = timer;
+      }
     }
   }
 
