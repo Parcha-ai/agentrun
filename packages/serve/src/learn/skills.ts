@@ -47,7 +47,14 @@ function frontOf(text: string): { lf: string; end: number; value: (key: string) 
     const own = lines[at]!.slice(key.length + 1).trim();
     const more: string[] = [];
     for (const line of lines.slice(at + 1)) if (/^\s+\S/.test(line)) more.push(line.trim()); else break;
-    return (/^[>|][-+]?$/.test(own) ? more.join(" ") : own).replace(/^(["'])(.*)\1$/, "$2").trim();
+    if (/^[>|][-+]?$/.test(own)) return more.join(" ").trim();
+    // A plain value folds the indented lines after it in, one space each, as YAML reads it: one that wraps, or one
+    // written entirely on the next lines. A quoted one is read as its own line says.
+    // A comment line (`# ...`) is no part of a plain value; a block keeps its lines as written.
+    const words = more.filter((line) => !line.startsWith("#"));
+    if (!own) return words.join(" ").trim();
+    if (words.length && !/^["']/.test(own)) return [own, ...words].join(" ").trim();
+    return own.replace(/^(["'])(.*)\1$/, "$2").trim();
   };
   return { lf, end, value };
 }
