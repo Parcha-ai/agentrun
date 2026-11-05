@@ -71,8 +71,11 @@ export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, 
    *  again by tag after the create deadline and releases whatever landed. */
   const unknownCreate = (tx: Tx, row: InventoryRow, at: string) => requestRelease(tx, row, "create_failed", at, Date.now() + createDeadlineMs);
 
-  async function releaseAll(row: InventoryRow, provider: BrowserProvider, signal?: AbortSignal): Promise<string[]> {
+  /** `found` hears the ids before any is released: a release that stops a session and then fails (its status check after
+   *  the stop) leaves the session known only to its caller, since the provider's tag lookup lists running sessions only. */
+  async function releaseAll(row: InventoryRow, provider: BrowserProvider, signal?: AbortSignal, found: (ids: string[]) => void = () => {}): Promise<string[]> {
     const ids = [...new Set([row.resourceId, ...(await provider.findByTag(row.tag, signal)).map((ref) => ref.id)].filter((id): id is string => id !== null))];
+    found(ids);
     for (const id of ids) await provider.release({ id, tag: row.tag }, signal);
     return ids;
   }
@@ -81,8 +84,8 @@ export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, 
     return false;
   };
   /** The ids released under `row`'s tag once none of them runs; null while one does. */
-  const releasedIds = async (provider: BrowserProvider, row: InventoryRow, signal?: AbortSignal) => {
-    const ids = await releaseAll(row, provider, signal);
+  const releasedIds = async (provider: BrowserProvider, row: InventoryRow, signal?: AbortSignal, found?: (ids: string[]) => void) => {
+    const ids = await releaseAll(row, provider, signal, found);
     return (await anyRunning(provider, row, ids, signal)) ? null : ids;
   };
   /** A session found by its tag (its create's answer lost: the record has no id) is billed at its release too: the
@@ -136,8 +139,10 @@ export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, 
         const { attempt } = task.state.checkpoint;
         const found = union(task.input.found, task.state.checkpoint.found);
         if (attempt === 0 && notBefore && runtime.now() < notBefore) await runtime.sleep(notBefore, context);
-        const released = await step(runtime, async () => releaseAll(row, await providerOf(runtime, cidOf(row), row.plane, context), runtime.signal), null);
-        if (!released) return retry(runtime, row, attempt, context, found);
+        let seen: string[] = [];
+        const released = await step(runtime, async () => releaseAll(row, await providerOf(runtime, cidOf(row), row.plane, context), runtime.signal, (ids) => void (seen = ids)), null);
+        // What the lookup found goes on to the next attempt even when its release failed: the stop may have landed.
+        if (!released) return retry(runtime, row, attempt, context, union(found, seen));
         // Confirmed together: what this attempt released and what earlier ones did.
         const ids = union(found, released);
         await runtime.commit(() => ({ status: "running", checkpoint: { phase: "confirm", attempt, ids, polls: 0 } }), context);
@@ -167,10 +172,10 @@ export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, 
     abort: async (task, runtime, context) => {
       const { row, notBefore } = task.input;
       const checkpoint = task.state.checkpoint;
-      const found = union(task.input.found, checkpoint.phase === "confirm" ? checkpoint.ids : checkpoint.found);
+      let found = union(task.input.found, checkpoint.phase === "confirm" ? checkpoint.ids : checkpoint.found);
       let stopped: string[] | null = null;
       // Before the create deadline nothing found is proof of nothing: the successor keeps the delayed lookup.
-      if (!(notBefore && runtime.now() < notBefore)) stopped = await providerOf(runtime, cidOf(row), row.plane, context).then((provider) => releasedIds(provider, row, context.abortSignal)).catch(() => null);
+      if (!(notBefore && runtime.now() < notBefore)) stopped = await providerOf(runtime, cidOf(row), row.plane, context).then((provider) => releasedIds(provider, row, context.abortSignal, (ids) => void (found = union(found, ids)))).catch(() => null);
       await runtime.commit(async (tx) => {
         if (stopped) await move(tx, row, { state: "released", at: iso(runtime.now()), ...foundId(row, union(found, stopped)) });
         else await tx.createTask(ReleaseTask, { ...task.input, ...(found.length ? { found } : {}) }, { ownership: { kind: "conversation" }, conversationId: cidOf(row), background: true });

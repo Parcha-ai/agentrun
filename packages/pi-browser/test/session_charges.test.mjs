@@ -10,7 +10,7 @@ const T0 = Date.UTC(2026, 10, 5, 12, 0, 0);
 
 /** A run whose model calls browser_read `reads` times, each read taking `readS` seconds, with the host's `prices` and
  *  `options`; `setup` readies the fake backend first. */
-async function run(t, { prices, reads, readS, options = {}, setup = () => {} }) {
+async function run(t, { prices, reads, readS, options = {}, setup = () => {}, lastTurn = () => {}, pump = false }) {
   t.mock.timers.enable({ apis: ["Date"], now: T0 });
   const [{ BACKGROUND_CONTEXT: ctx }, { createModels }, faux, durable, { createBrowserExtension }, { fakeDriver }] = await Promise.all([
     import("@earendil-works/chord/context"), import("@earendil-works/pi-ai/models"), import("@earendil-works/pi-ai/providers/faux"),
@@ -33,6 +33,7 @@ async function run(t, { prices, reads, readS, options = {}, setup = () => {} }) 
     const done = context.messages.filter((m) => m.role === "toolResult").length;
     // The model thinks for 20 s between calls: idle time the next call's charge bills.
     if (done > 0) t.mock.timers.tick(20_000);
+    if (done >= reads) lastTurn(backend);
     return done < reads ? faux.fauxAssistantMessage([faux.fauxToolCall("browser_read", {})], { stopReason: "toolUse" }) : faux.fauxAssistantMessage([faux.fauxText("done")], { stopReason: "stop" });
   }));
   const models = createModels();
@@ -47,7 +48,9 @@ async function run(t, { prices, reads, readS, options = {}, setup = () => {} }) 
   await (await root.submit({ type: "input", content: "go" }, ctx)).wait(ctx);
   t.mock.timers.tick(5_000);
   await browser.release(root, "close", ctx);
-  await browser.drain(harness, ctx);
+  // `pump`: the mock clock moves as real time does while the release task backs off.
+  const pumping = pump ? setInterval(() => t.mock.timers.tick(5), 5) : undefined;
+  await browser.drain(harness, ctx).finally(() => clearInterval(pumping));
   const [record] = (await harness.snapshot(browser.docs.Sessions, root.id, ctx)).sessions;
   const booked = (await harness.commit((tx) => tx.scanEntries({ conversationId: durable.ROOT_CONVERSATION_ID, order: "ascending" }, 200), ctx)).items.filter((entry) => entry.kind === "host.charge");
   return { charges, record, booked, backend };
@@ -98,4 +101,14 @@ test("a session found by its tag, its create's answer lost, is billed when that 
   assert.equal(record.state, "released");
   assert.deepEqual(charges.map(({ seconds, final, call }) => [seconds, final, call]), [[60, true, null]], "its whole minimum, once, at the release");
   assert.deepEqual([record.spent.seconds, record.spent.usd, record.spent.final], [60, 0.002, true]);
+});
+
+test("a session found by its tag stays billed when its release stops it and then fails: the next attempt's lookup no longer finds it", async (t) => {
+  // The create's answer is lost and its first lookup fails, so the session is left to a release after the create deadline.
+  // That release finds it by its tag and stops it, and the provider's answer is lost (its status check failed after the
+  // stop); the next attempt's lookup lists running sessions only, and finds nothing.
+  const { charges, record, backend } = await run(t, { reads: 1, readS: 2, pump: true, options: { createDeadlineMs: 50 }, setup: (backend) => { backend.lose("create"); backend.fail("findByTag", 1); }, lastTurn: (backend) => backend.lose("release") });
+  assert.deepEqual([backend.tally().creates, backend.liveCount()], [1, 0]);
+  assert.deepEqual([record.state, record.spent.final], ["released", true]);
+  assert.deepEqual(charges.map(({ seconds, usd, final }) => [seconds, usd, final]), [[60, 0.002, true]], "its minimum, once, at the release");
 });
