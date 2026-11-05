@@ -110,10 +110,12 @@ test("a message to a working run, the first after a key is saved too, never wait
   const dir = await scratch(t);
   // A key is kept sealed: this server's seal key, as its launcher would give it.
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
-  // A run's read of its revision from the agent store waits 10 s before its next try: a message that made one would be
-  // answered after that. The answer's own read of the run (its status) waits about 2 s, as any request's does; the bound
-  // below leaves a slow machine room for that and still sits well short of the revision read's 10 s.
-  const { api, data, port, token } = await serve(t, { carryBackRetry: { delaysMs: [10_000] } });
+  // A run's read of its revision from the agent store waits REVISION_RETRY_MS before its next try: a message that made one
+  // would be answered after that. Without one, an answer comes once the store is free (HOLD_MS) plus the answer's own read
+  // of the run (about 2 s, as any request's): 4.1 to 4.2 s on CI, and up to 6.5 s on its slowest runners (F34, 11-05). The
+  // bound sits halfway to the retry: twice the slowest answer seen, and half the time a message that waited would take.
+  const REVISION_RETRY_MS = 30_000;
+  const { api, data, port, token } = await serve(t, { carryBackRetry: { delaysMs: [REVISION_RETRY_MS] } });
   assert.equal((await api("POST", "/agents", agent("steered", { instructions: `Answer once ${join(dir, "go")} exists.` }))).status, 201);
   const run = await api("POST", "/agents/steered/runs", { input: { content: "hi" } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
@@ -129,7 +131,7 @@ test("a message to a working run, the first after a key is saved too, never wait
     release();
     const answer = await sent;
     assert.equal(answer.status, 202, JSON.stringify(answer.body));
-    assert.ok(answer.took < HOLD_MS + 5_000, `"${content}" was answered at ${answer.took} ms: it waited on a read of its revision`);
+    assert.ok(answer.took < REVISION_RETRY_MS / 2, `"${content}" was answered at ${answer.took} ms: it waited on a read of its revision (its retry is ${REVISION_RETRY_MS} ms)`);
   };
   await message("Before any key is saved.");
   // OpenAI's key: a save does not check it with its provider (key-check.ts' NOT_CHECKED), so this reaches no network.

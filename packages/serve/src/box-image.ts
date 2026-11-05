@@ -1,5 +1,6 @@
 // The image a Docker box starts from, made ready at the server's start, so a run's first tool call is never a silent pull
-// or build. By default it is this server's own, built here from BOX_RECIPE (python 3.12 with git and curl), tagged
+// or build. By default it is this server's own, built here from BOX_RECIPE (python 3.12 with git, curl, node, npm and rg,
+// and socat, the relay to the box's network proxy when it has one: box-egress.ts), tagged
 // `agentrun-box:<the recipe's hash>` and labelled with the whole hash (RECIPE_LABEL): built on first use, and again only
 // when the recipe changes. AGENTRUN_DOCKER_IMAGE names another image instead, which is pulled when Docker has none.
 //
@@ -10,7 +11,8 @@
 // RETRY_AFTER_MS later, docker preparing meanwhile with why ("trying once more: <the failure>"); one that fails again, or
 // does not finish in time, makes docker unavailable with the reason, until a restart tries again. Docker's own output
 // is never in a reason, as for the probes: the reason says what kind of failure it was, and what to do. The build
-// reaches the network (the base image, apt); a box never does (`--network none`, run-box.ts).
+// reaches the network (the base image, apt); a box never does by Docker's network (`--network none`, run-box.ts), only,
+// with the server's host list, through its egress proxy (box-egress.ts).
 //
 // The state is written to IMAGE_STATE_FILE in the data directory at each change, for the run's processes: a run's first
 // box create reads it there (awaitImage, from run-box.ts) and, while the image is coming, waits for it, with one row on
@@ -31,7 +33,7 @@ import { BOX_KEYS, type BoxOffer } from "./boxes.js";
 /** The setting that names another image for Docker boxes than this server's own. */
 export const DOCKER_IMAGE_ENV = "AGENTRUN_DOCKER_IMAGE";
 /** What the default image has, in words. */
-export const RECIPE_HAS = "python, git, curl, node, rg";
+export const RECIPE_HAS = "python, git, curl, node, npm, rg";
 /** The base the default image builds from: `python:3.12-slim`, pinned to the multi-arch index digest Docker Hub served
  *  for that tag on 2026-11-03, so a build gets the same base wherever it runs. To move it, read the tag's index digest
  *  again (an anonymous pull token from auth.docker.io for `repository:library/python:pull`, then a HEAD of
@@ -44,7 +46,7 @@ export const BOX_BASE = "python:3.12-slim@sha256:b18b261e1b4974b4f321451ad5251de
 export const BOX_RECIPE = [
   `FROM ${BOX_BASE}`,
   "RUN apt-get update \\",
-  " && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git curl ca-certificates nodejs ripgrep \\",
+  " && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git curl ca-certificates nodejs npm ripgrep socat \\",
   " && rm -rf /var/lib/apt/lists/*",
   "",
 ].join("\n");
@@ -123,9 +125,9 @@ function buildFailure(answer: Answer, timeoutMs: number): Failure {
   if (answer.code === "timeout") return { cause: `the build of the box image did not finish within ${span(timeoutMs)}`, next };
   if (/no space left on device/i.test(answer.stderr)) return { cause: "the build of the box image ran out of disk space", next: "free some, then restart the server" };
   // A base that could not be fetched for want of a network says so in both ways: the network is the cause.
-  if (UNREACHABLE.test(answer.stderr)) return { cause: "the build of the box image could not reach the network (it pulls python:3.12-slim and installs git, curl, nodejs and ripgrep with apt)", next };
+  if (UNREACHABLE.test(answer.stderr)) return { cause: "the build of the box image could not reach the network (it pulls python:3.12-slim and installs git, curl, nodejs, npm, ripgrep and socat with apt)", next };
   if (/pull access denied|manifest unknown|not found: manifest|failed to resolve source metadata|failed to fetch anonymous token/i.test(answer.stderr)) return { cause: "the build of the box image could not pull its base, python:3.12-slim", next };
-  if (/Unable to locate package|has no installation candidate|E: Package/i.test(answer.stderr)) return { cause: "apt could not install what the box image needs (git, curl, nodejs, ripgrep)", next };
+  if (/Unable to locate package|has no installation candidate|E: Package/i.test(answer.stderr)) return { cause: "apt could not install what the box image needs (git, curl, nodejs, npm, ripgrep, socat)", next };
   return { cause: `docker build of the box image failed (${exitOf(answer)})`, next };
 }
 
@@ -208,7 +210,7 @@ export async function dockerImage(env: NodeJS.ProcessEnv, data: string, image: s
   const row = built ? `Preparing the box image: building it (${RECIPE_HAS})…` : `Preparing the box image: pulling ${image}…`;
   await write({ until: started + timeoutMs, row });
   const retryAfterMs = options.retryAfterMs ?? RETRY_AFTER_MS;
-  // The build's network is Docker's default, for the base image and apt; a box made from it has none (run-box.ts).
+  // The build's network is Docker's default, for the base image and apt; a box made from it has none of Docker's (run-box.ts).
   const attempt = (): Promise<Answer> => built
     ? buildContext(env, image, timeoutMs, controller.signal).catch((error: Error) => ({ code: (error as NodeJS.ErrnoException).code ?? error.name, stdout: "", stderr: "" }))
     : docker(env, ["pull", "--quiet", image], timeoutMs, { signal: controller.signal });
