@@ -43,6 +43,45 @@ describe("AgentEditor, a new agent's tools", () => {
   });
 });
 
+// An agent given no web tool on purpose (a file-only agent) is not nagged on every step: the Tools step says it quietly.
+describe("AgentEditor, an agent with no web tool on purpose", () => {
+  const files = { agent_id: "files", kind: "agentic" as const, revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Files", instructions: "Tidy the files.", harness: "pi", skills: [], tools: ["read", "write"] } };
+  it("shows no page-level notice on a step other than Tools", () => {
+    for (const step of ["context", "settings", "history"] as const) {
+      expect(renderToStaticMarkup(createElement(AgentEditor, { agent: files, caps, step }))).not.toContain("can&#x27;t reach the web");
+    }
+  });
+  it("says it on the Tools step, inside the step, with the same plain words", () => {
+    const html = renderToStaticMarkup(createElement(AgentEditor, { agent: files, caps, step: "tools" }));
+    const section = html.slice(html.indexOf("<section"));
+    expect(section).toContain("This agent can&#x27;t reach the web: tick fetch_page in Tools.");
+    expect(html.slice(0, html.indexOf("<section"))).not.toContain("can&#x27;t reach the web");
+  });
+});
+
+// On a phone (375 px) the name gets the row: the kind chip, revision count and Archive sit in their own row under it,
+// and the step rail shows step numbers, the labels kept for screen readers.
+describe("AgentEditor, on a narrow screen", () => {
+  const agent = { agent_id: "qa", kind: "agentic" as const, revision: "r1", revisions: 3, archived_at: null, definition: { version: 1, name: "QA pi", instructions: "Answer.", harness: "pi", skills: [], tools: ["read"] } };
+  it("puts the badges in a row of their own, full width below the sm breakpoint", () => {
+    const html = renderToStaticMarkup(createElement(AgentEditor, { agent, caps, step: "context", onArchive: () => {} }));
+    const header = html.slice(html.indexOf("<header"), html.indexOf("</header>"));
+    const row = header.match(/<div class="([^"]*)" role="group" aria-label="About this agent">([\s\S]*)<\/div>/);
+    expect(row?.[1].split(" ")).toEqual(expect.arrayContaining(["basis-full", "sm:basis-auto"]));
+    expect(row?.[2]).toContain("agentic");
+    expect(row?.[2]).toContain("3 revisions");
+    expect(row?.[2]).toContain("Archive");
+    expect(row?.[2]).not.toContain("QA pi");
+  });
+  it("shows step numbers only below md: each step's label is for screen readers there", () => {
+    const html = renderToStaticMarkup(createElement(AgentEditor, { agent, caps, step: "context" }));
+    const rail = html.slice(html.indexOf("<ol"), html.indexOf("</ol>"));
+    const narrow = [...rail.matchAll(/<span class="([^"]*md:hidden[^"]*)">([^<]*)<\/span>/g)];
+    expect(narrow.map((m) => m[2])).toEqual(["Context", "Tools &amp; skills", "Settings", "History"]);
+    for (const m of narrow) expect(m[1].split(" ")).toContain("sr-only");
+  });
+});
+
 describe("AgentEditor, a new agent whose server capabilities arrive after it opens", () => {
   it("ticks the harness's tools once they arrive, as a page does when /v2/capabilities answers late", async () => {
     const { act } = await import("react");

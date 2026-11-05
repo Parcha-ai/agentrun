@@ -11,8 +11,9 @@
 // label (sideRequests), and its cost is its tokens' plus the fee its tool names.
 //
 // Under a cap (cap.ts), each request comes with the worst case the cap held for it, and its start mark carries that
-// figure (`heldUsd`), as does the end mark of one stopped before its end (or a summary that failed): the cap counts a
-// request a stop or a crash cut at it, in a later process too. The timeline does not read it, so the run's shown cost
+// figure (`heldUsd`), as does the end mark of a summary that failed: the cap counts a request a crash cut at it, in a
+// later process too. The end mark of one stopped before its end carries what the cap counts it at given what it streamed
+// (cap.ts stoppedFigure: what it streamed and an allowance, never more than its worst case). The timeline does not read it, so the run's shown cost
 // is unknown as before. A request the cap refused gets a start mark of its own (`capRefused`), written before pi writes
 // its error entry, so that entry answers its own mark and never stands for an earlier request a stop or a crash cut.
 import { existsSync } from "node:fs";
@@ -22,7 +23,7 @@ import type { Api, AssistantMessage, Context, Model, Models } from "@earendil-wo
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { REQUEST_COST, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED } from "@parcha/pi-durable-agent/timeline";
 import type { DurableRun } from "@parcha/pi-durable-disk";
-import { CAP_REFUSED_FIELD, CLAMP, HELD_FIELD, HELD_USD, MARK_NOT_WRITTEN, markResponseBegan, sideRequests } from "./cap.js";
+import { CAP_REFUSED_FIELD, CLAMP, HELD_FIELD, HELD_USD, MARK_NOT_WRITTEN, markResponseBegan, sideRequests, STOPPED_USD, type Stopped } from "./cap.js";
 import { RUN_CANCELLED } from "./files.js";
 
 
@@ -60,6 +61,13 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
   const heldOf = (options: unknown): Record<string, number> => {
     const held = (options as Record<symbol, unknown> | undefined)?.[HELD_USD];
     return typeof held === "number" && Number.isFinite(held) ? { [HELD_FIELD]: held } : {};
+  };
+  /** What the run's cap counts a request stopped before its end at, given the answer it had streamed (its options'
+   *  STOPPED_USD), as an end mark's field; its worst case when the cap gave no such figure; none without a cap. */
+  const stoppedOf = (options: unknown, message: AssistantMessage): Record<string, number> => {
+    const stopped = (options as Record<symbol, unknown> | undefined)?.[STOPPED_USD] as Stopped | undefined;
+    const figure = typeof stopped === "function" ? stopped(message) : undefined;
+    return typeof figure === "number" && Number.isFinite(figure) ? { [HELD_FIELD]: figure } : heldOf(options);
   };
   /** A start mark's figures: its worst case, and what the cap limited its output to when it did (CLAMP), so a reply cut
    *  short there says so on the run's timeline. */
@@ -134,7 +142,7 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
       let ending: Promise<void> | undefined;
       if (result.stopReason === "aborted") {
         const responseId = (result as { responseId?: unknown }).responseId;
-        ending = mark(REQUEST_ENDED, { ...(typeof responseId === "string" ? { responseId } : {}), ...heldOf(options) });
+        ending = mark(REQUEST_ENDED, { ...(typeof responseId === "string" ? { responseId } : {}), ...stoppedOf(options, result) });
       } else if (result.stopReason === "error" && began) {
         // An error after its response began (an overload part way, a reset): its usage is what had streamed, not what the
         // provider can have billed. Its message is recorded (markResponseBegan), which the cap counts at its hold in this
@@ -176,7 +184,7 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
     }
     // Its cost closes it; an abort, as for a generation's request, closes it unpriced. A store that cannot take either
     // leaves it open, which reads as cut, at an unknown cost.
-    if (result.stopReason === "aborted") await mark(REQUEST_ENDED, { ...COMPACTION, ...heldOf(options) }).catch(() => undefined);
+    if (result.stopReason === "aborted") await mark(REQUEST_ENDED, { ...COMPACTION, ...stoppedOf(options, result) }).catch(() => undefined);
     else {
       const total = result.usage?.cost?.total;
       // A side request's fee is its cost too, on the answer as well: the cap counts the answer's total (cap.ts).

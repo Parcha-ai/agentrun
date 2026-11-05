@@ -605,3 +605,27 @@ test("the profiles file's lock is never outlived by the context call it protects
   await assert.rejects(readFileText(`${file}.lock`), { code: "ENOENT" }, "the lock is free");
   assert.equal(await store.resolve("acct|profile:work", async () => "ctx_ok"), "ctx_ok", "the next caller makes it");
 });
+
+test("a create Browserbase refuses (401, 403) frees its saving profile's or kept context's claim, so the next saver's create is sent; a 500 or a dropped connection keeps the claim until findByTag has looked", async () => {
+  const other = { tag: "ar-run1-2-1", metadata: { run: "run-2", label: "other" } };
+  const cases = [["profile", (n) => ({ profile: { name: `refused-${n}`, save: true } })], ["kept context", (n) => ({ contextId: `ctx_refused_${n}` })]];
+  for (const status of [401, 403]) {
+    for (const [what, saving] of cases) {
+      const knobs = { createError: Object.assign(new Error(`${status}`), { status }) };
+      const { fake, provider } = rig(knobs, proxied(), { profiles: memoryStore(), sleep: async () => {}, profileSettleMs: 0 });
+      await assert.rejects(provider.create(spec(saving(status)), new AbortController().signal), (error) => error.status === status);
+      delete knobs.createError;
+      assert.ok((await provider.create(spec({ ...other, ...saving(status) }), new AbortController().signal)).id, `${what}, ${status}: another owner's saving create is not refused for the claim`);
+      assert.equal(fake.only("sessions.create").length, 2, `${what}, ${status}: and its create was sent`);
+    }
+  }
+  const failures = { 500: Object.assign(new Error("500"), { status: 500 }), reset: Object.assign(new Error("socket hang up"), { cause: Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" }) }) };
+  for (const [kind, createError] of Object.entries(failures)) {
+    for (const [what, saving] of cases) {
+      const { fake, provider } = rig({ createError }, proxied(), { profiles: memoryStore(), sleep: async () => {}, profileSettleMs: 0 });
+      await assert.rejects(provider.create(spec(saving(kind)), new AbortController().signal), (error) => error === createError);
+      await assert.rejects(provider.create(spec({ ...other, ...saving(kind) }), new AbortController().signal), (error) => error.failure?.code === "refused" && /one session at a time/.test(error.failure.message), `${what}, ${kind}: the claim is kept, the session may exist`);
+      assert.equal(fake.only("sessions.create").length, 1, `${what}, ${kind}: the second create was never sent`);
+    }
+  }
+});

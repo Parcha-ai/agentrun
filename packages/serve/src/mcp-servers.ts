@@ -16,6 +16,9 @@ import { isObject, unknownFields } from "./validate.js";
 export const MCP_SERVERS_FILE = "mcp-servers.json";
 const FORMAT = "mcp-servers/1";
 export const MCP_SERVER_NAME = /^[a-z][a-z0-9-]{0,31}$/;
+/** The names AgentRun's own tools are called by, which no MCP server takes: claude-agent calls the kernel's host tools
+ *  as `mcp__hands__<tool>`, and monid's are `monid_<tool>` (tool-gate.ts settingsKeyOf reads both as AgentRun's). */
+export const RESERVED_MCP_NAMES: readonly string[] = ["hands", "monid"];
 export const MCP_AUTH_TYPES = ["none", "bearer", "headers"] as const;
 const REQUEST_MS = 15_000;
 const PREVIEW_MS = 30_000;
@@ -87,6 +90,7 @@ export class McpServers {
    *  the auth type and the URL's origin stay the same. */
   async save(name: string, body: Record<string, unknown>, stop?: AbortSignal) {
     if (!MCP_SERVER_NAME.test(name)) throw invalid([{ field: "name", reason: "invalid", message: "A server's name is 1 to 32 lowercase letters, digits and dashes, starting with a letter (no underscores, so mcp__<server>__<tool> splits one way)." }]);
+    if (RESERVED_MCP_NAMES.includes(name)) throw invalid([{ field: "name", reason: "reserved", message: `'${name}' is reserved for AgentRun's own tools: a server under it would take their names and their permissions. Name the server another way.` }]);
     const { url, auth, prices } = this.admit(body, true);
     if (auth.type !== "none" && !this.key) throw new ApiError("no_sealing_key", `This server was handed no seal key (${SEAL_KEY_ENV}), so it keeps no MCP server credential: it never keeps one in the clear.`);
     const was = this.servers()[name];

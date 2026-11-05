@@ -2,6 +2,7 @@
 // No error carries the key, the URL or Kernel's text: only the call, the status and the code.
 import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { isRefusal } from "../core/failures.js";
 import type { AttachTarget, BrowserProvider, LiveView, ProviderCaps, SessionSpec } from "../core/host.js";
 import type { LeaseRef, ResourceStatus } from "../core/lease.js";
 import { directFetch } from "./http.js";
@@ -184,8 +185,11 @@ export function kernelProvider(options: KernelOptions = {}): KernelProvider {
         body = kernelCreateBody(spec, { stealth: options.stealth, headless: options.headless, extension: await untilAborted(extension(), signal) });
       } catch (error) { freeWriter(spec.tag); throw error; }
       // At most once: a lost answer is found again by its tag (findByTag), never by a second create. A failed send keeps the
-      // profile's claim until findByTag has looked: the browser may exist.
-      const created = await call("POST", "/browsers", { body, signal });
+      // profile's claim until findByTag has looked: the browser may exist. A refusal (401, 403) made none, so it frees the claim.
+      const created = await call("POST", "/browsers", { body, signal }).catch((error: unknown) => {
+        if (isRefusal(error)) freeWriter(spec.tag);
+        throw error;
+      });
       const id = nonEmpty(created.json?.session_id);
       const url = nonEmpty(created.json?.cdp_ws_url);
       if (created.status === 404 || !id || !url) throw new KernelError("POST /browsers", created.status, "no_session");

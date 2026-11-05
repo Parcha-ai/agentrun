@@ -4,7 +4,7 @@
 // back to the agent store (`carryBack`), and it is finished. A run whose process went before the run ended is opened
 // again on its directory, and resumes from its store.
 import { type ChildProcess, spawn } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { closeSync, existsSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { open as openFile, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
@@ -36,7 +36,7 @@ import { DEFAULT_MODEL_ENV, EFFORT_ENV, GATEWAY_KEY_ENV, hostModel, llmTiers, mo
 import { llmAnswers, pausedIn, readNodeLog, RUN_PAUSED } from "./pause.js";
 import { durationMs } from "./print.js";
 import { handsParallel, type Plane, planeFor, recheckPlane, TOOL_PLANE_ENV, type Tooling, type ToolSettingsMap } from "./tool-plane.js";
-import { APPROVAL_ENTRY, APPROVAL_ROW, NO_APPROVER_ENV, type PendingApproval, permissionOf, TURN_ORIGIN_FILE } from "./tool-gate.js";
+import { APPROVAL_ENTRY, APPROVAL_ROW, NO_APPROVER_ENV, type PendingApproval, permissionOf, previewOf, RESUME_PREFIX, TURN_ORIGIN_FILE } from "./tool-gate.js";
 import { ChangeClock, type Page, RowLog } from "./rows.js";
 import { TOOL_KEYS } from "./tool-keys.js";
 import { isObject, type Json } from "./validate.js";
@@ -44,7 +44,7 @@ import { firstMessage } from "./run-manifest.js";
 import { REFLECT_REQUEST, Turns } from "./turns.js";
 import { DECISION_KEYS, handover, hostSecrets, mcpHandover, mcpSecretValues, secret, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, type StoredKeys, withoutSecrets, withSecrets } from "./secrets.js";
 import { MIN_SECRET } from "./learn/secrets.js";
-import { keyRefusal, redacted, redactedLive, runKeyOf, withoutLoopback } from "./key-refusal.js";
+import { keyRefusal, redacted, redactedAnswer, redactedLive, redactedOutput, runKeyOf, withoutLoopback } from "./key-refusal.js";
 import { BOX_KEYS } from "./boxes.js";
 import { type Place, remotePlace, storedPlace } from "./place.js";
 import { destroyRunBoxes, ensureRemoteBox, PullIncomplete, pullRemoteBox, sweepRunBoxes } from "./run-box.js";
@@ -165,8 +165,13 @@ type RunMeta = {
 };
 /** A tool call that waited for a person's approval, as the run's store has it (tool-gate.ts): `resolved` once the run's
  *  process acted on the answer. */
-type Approval = { id: string; tool: string; call_id: string; args_preview: string; requested_at: string; price?: number | "not metered"; resolved?: true };
-type ApprovalAnswer = { decision: "allow" | "deny" | "canceled"; note?: string; answered_at: string };
+type Approval = { id: string; tool: string; call_id: string; args_json: string; requested_at: string; price?: number | "not metered"; resolved?: true };
+/** `args_shown`: the call's arguments as the server shows them (shownArgs), which the gate's resume message names. */
+/** `by`: "message", a deny a person's message gave while the call waited (Runs.message). */
+/** `superseded`: the answer a stop or a cancel overrode before the run's process acted on it, kept as it was given. */
+type ApprovalAnswer = { decision: "allow" | "deny" | "canceled" | "withdrawn"; note?: string; answered_at: string; args_shown?: string; by?: "message"; superseded?: { decision: string; answered_at: string; note?: string; by?: "message" } };
+/** A call withdrawn with its run (a cancel, or a stop while it waited): never run, and an answer after is 409. */
+const withdrawn = (answer: ApprovalAnswer | undefined) => answer?.decision === "canceled" || answer?.decision === "withdrawn";
 type RunError = { code: string; message: string; retryable: boolean; details?: { reason: string } };
 /** Why an escalated workflow run waits for a person: the escalation's kind, the escalate node's label, its summary,
  *  and when the run ended (`at`, the run's `ended_at`). */
@@ -186,10 +191,15 @@ const reviewOfRow = (row: Pick<RunRow, "state" | "summary">, meta: Partial<RunMe
   row.state !== "escalated" ? null : (meta?.review ?? { kind: null, node: null, reason: row.summary ?? "The workflow escalated." });
 
 /** One run as this server holds it. */
+/** A run's answer or output as a view served it: `out`, redacted from `input` over the held values whose digest is `keys`. */
+type Served = { keys: string; input: unknown; out: unknown };
+
 export type Run = {
   id: string;
   /** The values of the secrets each launch handed its process: what its errors never show, a key rotated since included. */
   handed?: Set<string>;
+  /** What a view last served of its answer and its workflow output (runs.ts servedOnce), with what it was made from. */
+  served?: { answer?: Served; output?: Served };
   agentId: string;
   kind: RevisionKind;
   revision: string;
@@ -356,19 +366,35 @@ function noteApprovals(run: Run, entries: readonly unknown[]): void {
     const data = value.data;
     run.approvals ??= new Map();
     const known = run.approvals.get(data.id as string);
-    if (data.phase === "requested" && !known) run.approvals.set(data.id as string, { id: data.id as string, tool: String(data.tool), call_id: String(data.call_id), args_preview: String(data.args_preview ?? ""), requested_at: String(data.requested_at), ...(typeof data.price === "number" || data.price === "not metered" ? { price: data.price } : {}) });
+    if (data.phase === "requested" && !known) run.approvals.set(data.id as string, { id: data.id as string, tool: String(data.tool), call_id: String(data.call_id), args_json: "args" in data ? (JSON.stringify(data.args ?? {}) ?? "{}") : String(data.args_preview ?? ""), requested_at: String(data.requested_at), ...(typeof data.price === "number" || data.price === "not metered" ? { price: data.price } : {}) });
     else if (data.phase === "resolved" && known) known.resolved = true;
   }
 }
 /** The tool call that waits for a person's answer: requested in the run's store, not resolved there, not answered. */
 const waitingApproval = (run: Pick<Run, "approvals" | "meta">): Approval | undefined => [...(run.approvals?.values() ?? [])].find((a) => !a.resolved && !run.meta.approvals?.[a.id]);
+/** What is shown of a call's arguments: the whole of them redacted with the run's redactor, then cut (previewOf), so
+ *  no cut leaves the head of a held key. */
+const shownArgs = (approval: Pick<Approval, "args_json">, redact: (text: string) => string): string => previewOf(redact(approval.args_json));
+/** `entries` with the gate's resume messages (RESUME_PREFIX) redacted whole with `redact`, before the timeline cuts
+ *  them: the message carries a call's arguments and its result, which may hold a held key. */
+function redactGateMessages<T>(entries: readonly T[], redact: (text: string) => string): T[] {
+  return entries.map((entry) => {
+    const first = isObject(entry) && Array.isArray(entry.model) ? entry.model[0] : undefined;
+    if (!isObject(first) || first.role !== "user") return entry;
+    const content = first.content;
+    const text = typeof content === "string" ? content : Array.isArray(content) ? content.map((block) => (isObject(block) && block.type === "text" ? String(block.text ?? "") : "")).join("") : "";
+    if (!text.startsWith(RESUME_PREFIX)) return entry;
+    const redacted = typeof content === "string" ? redact(content) : (content as Json[]).map((block) => (isObject(block) && block.type === "text" && typeof block.text === "string" ? { ...block, text: redact(block.text) } : block));
+    return { ...(entry as Json), model: [{ ...first, content: redacted }, ...((entry as Json).model as Json[]).slice(1)] } as T;
+  });
+}
 /** The run's pending approval (`pending`, kind approval): the call that waits; else undefined. */
 const approvalOf = (run: Run, redact: (text: string) => string): PendingApproval | undefined => {
   const waiting = waitingApproval(run);
-  return waiting ? { kind: "approval", id: waiting.id, tool: waiting.tool, call_id: waiting.call_id, args_preview: redact(waiting.args_preview), requested_at: waiting.requested_at, ...(waiting.price !== undefined ? { price: waiting.price } : {}) } : undefined;
+  return waiting ? { kind: "approval", id: waiting.id, tool: waiting.tool, call_id: waiting.call_id, args_preview: shownArgs(waiting, redact), requested_at: waiting.requested_at, ...(waiting.price !== undefined ? { price: waiting.price } : {}) } : undefined;
 };
 /** One answered (allow or deny) whose answer the run's process has not acted on yet. */
-const actingOn = (run: Pick<Run, "approvals" | "meta">) => [...(run.approvals?.values() ?? [])].some((a) => !a.resolved && run.meta.approvals?.[a.id] && run.meta.approvals[a.id]!.decision !== "canceled");
+const actingOn = (run: Pick<Run, "approvals" | "meta">) => [...(run.approvals?.values() ?? [])].some((a) => !a.resolved && run.meta.approvals?.[a.id] && !withdrawn(run.meta.approvals[a.id]));
 /** The row after each tool call that waited for approval, beside its result's row. Its arguments are redacted whole
  *  (`redact`, the Timeline's own: no held key), before any cut. */
 function withApprovals(rows: readonly TimelineEvent[], run: Pick<Run, "approvals" | "meta">, redact: (text: string) => string): TimelineEvent[] {
@@ -378,9 +404,16 @@ function withApprovals(rows: readonly TimelineEvent[], run: Pick<Run, "approvals
   return rows.flatMap((row) => {
     const approval = row.kind === "tool_result" && row.tool_use_id ? byCall.get(row.tool_use_id) : undefined;
     if (!approval) return [row];
-    const args = redact(approval.args_preview);
-    const summary = `${approval === waiting ? "Waiting for your approval" : "Asked your approval"}: ${approval.tool} ${clip(args, 400)}`;
-    return [row, { ...row, id: `${row.id}:approval`, kind: APPROVAL_ROW, summary, text: args, tool_name: approval.tool, tool_status: null, tool_input_preview: clip(args, 500), tool_result_preview: null, tool_result_size_bytes: null }];
+    const args = shownArgs(approval, redact);
+    const said = run.meta.approvals?.[approval.id]?.decision;
+    const byMessage = run.meta.approvals?.[approval.id]?.by === "message";
+    const head = approval === waiting ? "Waiting for your approval" : byMessage ? "Declined by your message" : said === "withdrawn" ? "Withdrawn when the run was stopped" : said === "canceled" ? "Withdrawn when the run was cancelled" : "Asked your approval";
+    const summary = `${head}: ${approval.tool} ${clip(args, 400)}`;
+    // A message that would have declined the call, which a stop or a cancel overrode: its words were never sent, and
+    // the row says so (the record keeps them whole).
+    const dropped = run.meta.approvals?.[approval.id]?.superseded;
+    const text = dropped?.by === "message" && dropped.note !== undefined ? `${args}\n\nNot sent: the run was ${said === "canceled" ? "cancelled" : "stopped"}. Your message: ${redact(dropped.note)}` : args;
+    return [row, { ...row, id: `${row.id}:approval`, kind: APPROVAL_ROW, summary, text, tool_name: approval.tool, tool_status: null, tool_input_preview: clip(args, 500), tool_result_preview: null, tool_result_size_bytes: null }];
   });
 }
 /** An import's answer, the one row reading of an answer left: its records hold no turn's end (it ran elsewhere), so its
@@ -516,7 +549,7 @@ export type StartOptions = { input: Json; title: string; place: Place; effort?: 
 /** `maxRuns`: the most runs with a live process at once; `settleRetryMs`: how often a carry back the store refused is
  *  tried again; `readyTimeoutMs`: how long a request to a run waits for its door (a run's first message, sent by its
  *  start, always waits READY_TIMEOUT_MS); `log` takes a run's start and end (print.ts). */
-export type RunsOptions = { agents: Agents; token: string; /** The server's saved tool keys, read by name for its runs alone (secrets.ts). */ storedKeys?: StoredKeys; /** The server's saved MCP servers (mcp-servers.ts): a run's pin and its credentials come from them at each launch. */ mcpServers?: McpServerSource; documents?: string; doorTokenFile: string; doorToken: string; /** The test switches a run's process gets (server.ts fauxEnvOf): empty outside tests. */ fauxEnv?: NodeJS.ProcessEnv; runBoxes?: BoxProvider; /** The server's Daytona provider, with its key: remote boxes are made, seeded, pulled and destroyed with it, here alone (box-relay.ts). */ remoteBoxes?: BoxProvider; /** Daytona's API and the same key, for what the provider does not do: a kept box's idle stop, and its wake at a start (daytona-api.ts). */ remoteApi?: DaytonaApi; toolSettings?: () => ToolSettingsMap; /** Whether anyone can answer a tool call's approval here (accounts on); false, the run's gate refuses each ask (tool-gate.ts). */ approvers?: boolean; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; reflectTimeoutMs?: number; gradeTimeoutMs?: number; /** The grader's model (`--grade-model`), before AGENTRUN_SERVE_GRADE_MODEL and the strong tier (grade.ts gradeModelOf). */ gradeModel?: string; /** How much of what a run learned its instructions hold, in bytes (`--learning-budget`, learning.ts learnedOf). */ learningBudget?: number; log?: (event: string, fields: Record<string, string | number>) => void; notify?: RunNotify; learning?: LearningMode };
+export type RunsOptions = { agents: Agents; token: string; /** The server's saved tool keys, read by name for its runs alone (secrets.ts). */ storedKeys?: StoredKeys; /** The server's saved MCP servers (mcp-servers.ts): a run's pin and its credentials come from them at each launch. */ mcpServers?: McpServerSource; documents?: string; doorTokenFile: string; doorToken: string; /** The test switches a run's process gets (server.ts fauxEnvOf): empty outside tests. */ fauxEnv?: NodeJS.ProcessEnv; runBoxes?: BoxProvider; /** The server's Daytona provider, with its key: remote boxes are made, seeded, pulled and destroyed with it, here alone (box-relay.ts). */ remoteBoxes?: BoxProvider; /** Daytona's API and the same key, for what the provider does not do: a kept box's idle stop, and its wake at a start (daytona-api.ts). */ remoteApi?: DaytonaApi; /** The hosts a remote box may reach (run-box.ts boxAllowOf); `none`, or absent, for none. */ boxAllow?: readonly string[] | "none"; /** Called once, with the provider's refusal's code, when it cannot keep that list here: from then on each remote box is made with no network. */ onNoBoxList?: (code: string) => void; toolSettings?: () => ToolSettingsMap; /** Whether anyone can answer a tool call's approval here (accounts on); false, the run's gate refuses each ask (tool-gate.ts). */ approvers?: boolean; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; reflectTimeoutMs?: number; gradeTimeoutMs?: number; /** The grader's model (`--grade-model`), before AGENTRUN_SERVE_GRADE_MODEL and the strong tier (grade.ts gradeModelOf). */ gradeModel?: string; /** How much of what a run learned its instructions hold, in bytes (`--learning-budget`, learning.ts learnedOf). */ learningBudget?: number; log?: (event: string, fields: Record<string, string | number>) => void; notify?: RunNotify; learning?: LearningMode };
 /** Told of a run's moment each time it is seen (webhooks.ts' emit, which queues each one once): a wait it reached, and an
  *  end once the agent store has it. `marker` names the moment (the person's turn it waits at, the end's time), the same
  *  when another server sees it again. It says what came of it: `unsaved`, not in the outbox on disk yet. */
@@ -667,6 +700,8 @@ export class Runs {
   /** Each workflow run's last graph read whole: what a poll that met a busy store answers, marked stale. */
   private readonly graphs = new Map<string, object>();
   private readonly adopting = new Map<string, Promise<Run>>();
+  /** The hosts this server's next remote box asks for: the setting's, until the provider cannot keep a list here, then none. */
+  private remoteAllow: readonly string[] | "none" | undefined;
   private readonly clock = new ChangeClock();
   private readonly cli = fileURLToPath(new URL("./cli.js", import.meta.resolve("@parcha/pi-durable-disk")));
   private readonly app = fileURLToPath(new URL("./app.js", import.meta.url));
@@ -883,7 +918,7 @@ export class Runs {
     run.working = false;
     noteTurns(run, entries, submissions);
     noteApprovals(run, entries);
-    this.take(run, timelineOf(entries as never, { settled: true, path: rowPaths(run.dir), redact: this.redactor(run) }));
+    this.take(run, timelineOf(redactGateMessages(entries, this.redactor(run)) as never, { settled: true, path: rowPaths(run.dir), redact: this.redactor(run) }));
   }
 
   /** New rows in: into the log, then the run's status, then whatever the status asks for. */
@@ -898,6 +933,14 @@ export class Runs {
     run.keep = keep;
     this.show(run);
     this.refresh(run);
+  }
+
+  /** The approval rows as the run's answers say them now (a stop or a cancel withdraws a call, an answer settles one),
+   *  shown at once: an answer takes no new rows. */
+  private restate(run: Run): void {
+    if (!run.approvals?.size) return;
+    run.rows = withApprovals(run.rows.filter((row) => row.kind !== APPROVAL_ROW), run, this.redactor(run));
+    this.show(run);
   }
 
   /** The run's rows into its log, as served: a workflow run's decisions and the run's learning row are the served view's
@@ -965,6 +1008,30 @@ export class Runs {
    *  no loopback address. */
   private shown(run: Run, text: string): string {
     return withoutLoopback(redacted(text, this.refusedValues(run)));
+  }
+
+  /** A run's answer as serve serves it: no held secret, never cut (redactedAnswer). Loopback addresses stay: an answer is
+   *  the model's own words, and a local address there can be what the person asked about. */
+  private servedAnswer(run: Run, text: string | null): string | null {
+    return text ? (this.servedOnce(run, "answer", text, (values) => redactedAnswer(text, values)) as string) : text;
+  }
+
+  /** A workflow run's output as serve serves it: each string in it as servedAnswer, its shape kept. */
+  private servedOutput(run: Run, output: unknown): unknown {
+    return output === null ? null : this.servedOnce(run, "output", output, (values) => redactedOutput(output, values));
+  }
+
+  /** `redact(values)` over the values `run` holds, read once per input and held value set: a console polls a run's
+   *  view, and an answer a run was made to write can be large. The run keeps the one it served last, of each slot; a key
+   *  saved or deleted changes the values' digest, and the next view redacts again. */
+  private servedOnce(run: Run, slot: "answer" | "output", input: unknown, redact: (values: string[]) => unknown): unknown {
+    const values = this.refusedValues(run);
+    const keys = createHash("sha256").update(JSON.stringify([...values].sort())).digest("hex");
+    const last = run.served?.[slot];
+    if (last && last.keys === keys && last.input === input) return last.out;
+    const out = redact(values);
+    run.served = { ...run.served, [slot]: { keys, input, out } };
+    return out;
   }
 
   /** The timeline's redaction of `run`'s error rows and of what a tool's result shows (its summary and preview), applied
@@ -1190,7 +1257,13 @@ export class Runs {
     if (!run || !boxes || !this.servesBox(id)) return Promise.reject(new Error(`no run ${id} of this server is in a remote box`));
     // After any pull of this run's box, so a seed never meets a pull.
     run.boxing ??= (run.pulling ?? Promise.resolve())
-      .then(() => ensureRemoteBox(boxes, run, boxContext(REMOTE_SYNC_MS), this.wakeOf(run.id)))
+      .then(() =>
+        ensureRemoteBox(boxes, run, boxContext(REMOTE_SYNC_MS), this.wakeOf(run.id), (this.remoteAllow ??= this.options.boxAllow ?? "none"), (code) => {
+          if (this.remoteAllow === "none") return;
+          this.remoteAllow = "none";
+          this.options.onNoBoxList?.(code);
+        }),
+      )
       .finally(() => void (run.boxing = undefined));
     return run.boxing;
   }
@@ -1338,7 +1411,8 @@ export class Runs {
         const entries = events.flatMap((e) => (Array.isArray(e.entries) ? e.entries : e.entry !== undefined ? [e.entry] : []));
         noteTurns(run, entries, submissions, inputs);
         noteApprovals(run, entries);
-        reducer.apply(events as never);
+        const redact = this.redactor(run);
+        reducer.apply(events.map((e) => (Array.isArray(e.entries) ? { ...e, entries: redactGateMessages(e.entries, redact) } : e.entry !== undefined ? { ...e, entry: redactGateMessages([e.entry], redact)[0] } : e)) as never);
         // A stopped turn is over while the run's process lives on: a request it cut is a charge with no price (costsofar/1),
         // as the settled read counts it, never one in flight.
         if (!run.working && stopped(run)) reducer.idle();
@@ -2034,6 +2108,13 @@ export class Runs {
     if (run.cancel) throw this.finished(run);
     // A person's message: no turn from here on is the server's own reflect turn (tool-gate.ts's carve-out).
     await rm(join(run.dir, TURN_ORIGIN_FILE), { force: true }).catch((error: Error) => warn(run.id, `its turn's origin is not removed: ${error.message}`));
+    // A message while a tool call waits for approval declines it, with the message as the reason (as Claude Code takes
+    // what is typed at its permission prompt): the gate's resume carries the refusal and their words in one turn, and
+    // nothing else is sent, so no second turn races the parked call.
+    if (run.kind === "agentic") {
+      const waiting = waitingApproval(run);
+      if (waiting) return this.declineBy(run, waiting, content);
+    }
     // Every wait first, then a last look for a stop in flight, again after any wait a stop came during: from that look
     // to the count below nothing awaits, so no stop can begin in between.
     do {
@@ -2146,14 +2227,68 @@ export class Runs {
     // rows first, so the mark it saves (the person's last message) covers the message the turn answers; then it stops
     // the turn as it stops any working run.
     if (run.kind !== "workflow") await this.caughtUp(run);
+    // A tool call that waits for approval is withdrawn by the stop (never run, an answer after is 409); then a turn that
+    // runs meanwhile is stopped as any working run's is, and with none the run is stopped as a stop leaves one.
+    const open = run.kind === "agentic" && !run.cancel && !run.outcome && !run.finishing;
+    const withdrawn = open && waitingApproval(run) ? await this.withdraw(run) : false;
+    // An answer the run's process has not acted on yet is overridden too: a stop wins, so nothing runs and nothing resumes.
+    const superseded = open ? await this.supersede(run, "withdrawn") : false;
     const { status, state } = statusOf(run);
-    if (run.kind === "workflow" || !this.live(run) || !(status === "working" && state === "working") || run.submitted > 0) return false;
+    if (run.kind === "workflow" || !this.live(run) || !(status === "working" && state === "working") || run.submitted > 0) return withdrawn || superseded ? this.stopIdle(run) : false;
     run.stopping = true;
     try {
       return await this.stopTurn(run);
     } finally {
       run.stopping = undefined;
     }
+  }
+
+  /** message()'s decline of the tool call that waits for approval: a deny with the message as its note, which the
+   *  run's gate acts on as any deny, resuming the session with the refusal and the person's words in one message. */
+  private async declineBy(run: Run, waiting: Approval, content: string): Promise<{ mode: "answer"; messageId: string }> {
+    // The person's message, whole: it is the reason the model reads. Nothing shows the note, so nothing cuts it.
+    run.meta.approvals = { ...run.meta.approvals, [waiting.id]: { decision: "deny", note: content, answered_at: new Date().toISOString(), args_shown: shownArgs(waiting, this.redactor(run)), by: "message" } };
+    await this.saveMeta(run);
+    this.restate(run);
+    this.refresh(run);
+    if (!run.outcome && !run.finishing && !run.cancel) void this.ensureLive(run).catch((error: Error) => warn(run.id, `its declined approval waits for its process: ${error.message}`));
+    return { mode: "answer", messageId: `m${Date.now().toString(36)}${randomBytes(4).toString("hex")}` };
+  }
+
+  /** The answers given and not acted on yet (the run's process has not resolved them), overridden by a stop or a cancel:
+   *  `withdrawn` or `canceled`, each keeping the answer it superseded, so nothing runs and nothing resumes, and the
+   *  history shows what was given. The run's gate reads the answer again just before it acts (tool-gate.ts). */
+  private async supersede(run: Run, decision: "withdrawn" | "canceled"): Promise<boolean> {
+    const given = [...(run.approvals?.values() ?? [])].filter((a) => !a.resolved && run.meta.approvals?.[a.id] && !withdrawn(run.meta.approvals[a.id]));
+    if (!given.length) return false;
+    const now = new Date().toISOString();
+    const overridden = given.map((a) => {
+      const was = run.meta.approvals![a.id]!;
+      return [a.id, { decision, answered_at: now, superseded: { decision: was.decision, answered_at: was.answered_at, ...(was.note !== undefined ? { note: was.note } : {}), ...(was.by ? { by: was.by } : {}) } }] as const;
+    });
+    run.meta.approvals = { ...run.meta.approvals, ...Object.fromEntries(overridden) };
+    await this.saveMeta(run);
+    this.restate(run);
+    return true;
+  }
+
+  /** stop()'s withdrawal of the tool call that waits for approval: never run, and an answer after is 409. */
+  private async withdraw(run: Run): Promise<boolean> {
+    const waiting = waitingApproval(run)!;
+    run.meta.approvals = { ...run.meta.approvals, [waiting.id]: { decision: "withdrawn", answered_at: new Date().toISOString() } };
+    await this.saveMeta(run);
+    this.restate(run);
+    return true;
+  }
+
+  /** stop() of a run with no turn to abort (parked on an approval it withdrew): the stop's mark, as a stop saves it. */
+  private async stopIdle(run: Run): Promise<boolean> {
+    delete run.meta.stopped_at;
+    delete run.meta.stopped_after;
+    Object.assign(run.meta, stopMark(run.rows));
+    await this.saveMeta(run);
+    this.refresh(run);
+    return true;
   }
 
   /** stop()'s mark and abort, once it took the stop. */
@@ -2186,10 +2321,11 @@ export class Runs {
     if (!given && !run.approvals?.has(id)) throw new ApiError("not_found", `The run ${run.id} has no tool call ${id} waiting for approval.`);
     if (given) {
       if (given.decision === decision) return;
-      throw new ApiError("not_continuable", `The tool call ${id} was already ${given.decision === "canceled" ? "canceled with its run" : `answered: ${given.decision}`}.`, { details: { reason: "already_answered", decision: given.decision } });
+      throw new ApiError("not_continuable", `The tool call ${id} was already ${given.decision === "canceled" ? "canceled with its run" : given.decision === "withdrawn" ? "withdrawn when its run was stopped" : `answered: ${given.decision}`}.`, { details: { reason: "already_answered", decision: given.decision } });
     }
-    run.meta.approvals = { ...run.meta.approvals, [id]: { decision, ...(note ? { note } : {}), answered_at: new Date().toISOString() } };
+    run.meta.approvals = { ...run.meta.approvals, [id]: { decision, ...(note ? { note } : {}), answered_at: new Date().toISOString(), args_shown: shownArgs(run.approvals!.get(id)!, this.redactor(run)) } };
     await this.saveMeta(run);
+    this.restate(run);
     this.refresh(run);
     if (!run.outcome && !run.finishing && !run.cancel) void this.ensureLive(run).catch((error: Error) => warn(run.id, `its answered approval waits for its process: ${error.message}`));
   }
@@ -2208,7 +2344,10 @@ export class Runs {
     if (waiting) {
       run.meta.approvals = { ...run.meta.approvals, [waiting.id]: { decision: "canceled", answered_at: new Date().toISOString() } };
       await this.saveMeta(run).catch((error: Error) => warn(run.id, `its canceled approval is not saved: ${error.message}`));
+      this.restate(run);
     }
+    // An answer its process has not acted on yet is overridden too: nothing runs and nothing resumes.
+    await this.supersede(run, "canceled").catch((error: Error) => warn(run.id, `its superseded approval is not saved: ${error.message}`));
     if (run.kind === "agentic") {
       run.finishing = "cancelled";
       run.endedAt = new Date().toISOString();
@@ -2345,7 +2484,8 @@ export class Runs {
       created_at: run.meta.created_at,
       updated_at: run.updatedAt,
       ended_at: endedAt,
-      result: status === "completed" ? { output: run.kind === "workflow" ? (run.meta.output ?? null) : null, final_answer: finalAnswer } : kept ? { output: null, final_answer: kept } : null,
+      // An answer is served with no held secret in it, whole (key-refusal.ts redactedAnswer); the stored one stays as written.
+      result: status === "completed" ? { output: run.kind === "workflow" ? (this.servedOutput(run, run.meta.output ?? null)) : null, final_answer: this.servedAnswer(run, finalAnswer) } : kept ? { output: null, final_answer: this.servedAnswer(run, kept) } : null,
       error: status === "failed" ? (run.error ?? { code: "run_failed", message: "The run failed.", retryable: false }) : null,
       review: endedAt === null ? null : reviewAt(run.meta.review ?? (row ? reviewOfRow(row, run.meta) : null), endedAt),
       pending: status === "input_required" && state === "waiting" ? (approvalOf(run, this.redactor(run)) ?? pendingOf(run.rows)) : null,

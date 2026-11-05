@@ -1,5 +1,7 @@
 import { Brain, ChevronRight, CircleAlert, CircleDollarSign, FileText, Flag, LoaderCircle, MessageCircleQuestion, MessageSquareText, Scale, User, Wrench } from "lucide-react";
 import { useState } from "react";
+import { BROWSER_TOOL_NAMES } from "@pi-browser/contract";
+import { nameOf } from "@timeline/labels";
 import { Chip } from "@/components/ui/chip";
 import { clock } from "@/lib/format";
 import { rowDetail, rowFailed, type Step, steps } from "@/lib/timeline";
@@ -24,8 +26,12 @@ const title = (row: TimelineRow) => {
 };
 /** How long a tool took: "27 ms", or "3.5 s" from a second on. */
 const took = (ms: number) => (ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`);
+/** pi-browser's tools. Their wire names ("run", "snapshot") say nothing of the browser, so their rows take the name the
+ *  timeline library gives each (nameOf: "Open or act on a page in the browser", as a run's tool counts show it). */
+const BROWSER = new Set<string>(BROWSER_TOOL_NAMES);
+const toolName = (tool: string | null | undefined) => (tool && BROWSER.has(tool) ? nameOf(tool) : tool);
 const label = (row: TimelineRow) =>
-  ({ user_message: "You", thinking: "Thinking", tool_use: row.tool_name ?? "Tool", tool_result: row.tool_name ?? "Result", waiting: "Waiting for you", usage: "Usage", final_answer: "Answer", phase: "Phase", error: "Error", decision: "Decision", text_block: "Text" })[row.kind] ?? row.kind;
+  ({ user_message: "You", thinking: "Thinking", tool_use: toolName(row.tool_name) ?? "Tool", tool_result: toolName(row.tool_name) ?? "Result", waiting: "Waiting for you", usage: "Usage", final_answer: "Answer", phase: "Phase", error: "Error", decision: "Decision", text_block: "Text" })[row.kind] ?? row.kind;
 
 /** One step. With one row per action, a call's row carries its own outcome: `running` until it ends (a spinner), a
  *  failed or interrupted one reads as failed, and a missing one (a read that found nothing the run wrote) is grey. */

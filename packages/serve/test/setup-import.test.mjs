@@ -14,7 +14,7 @@ import { DatabaseSync } from "node:sqlite";
 import { openStoreReader } from "@parcha/pi-durable-agent";
 import { startServe } from "../dist/index.js";
 import { at as minute, claudeSession, claudeSubagent, codexSession, piSession } from "./fixtures/import-sessions.mjs";
-import { call, cookieOf, FAUX, scratch, serve, withEnv } from "./support.mjs";
+import { call, client, cookieOf, FAUX, scratch, serve, withEnv } from "./support.mjs";
 
 const LAUNCHER = new URL("../launcher/agentrun-serve", import.meta.url).pathname;
 const json = { "content-type": "application/json" };
@@ -233,6 +233,8 @@ test("a server closed during the import at setup stops it between sessions and w
   await sleep(1_500);
   assert.equal(count(), atClose, "no run written after close");
   assert.equal(existsSync(join(data, ".import-at-setup")), atClose < 40, "the yes is kept while the import is unfinished");
+  // Waited for, not ended: the stopped import answered what it took, and the yes keeps it (setup wrote it empty).
+  if (atClose < 40) assert.equal(JSON.parse(readFileSync(join(data, ".import-at-setup"), "utf8") || "{}").runs, atClose, "the import stopped between sessions and said so");
 });
 
 test("a setup with the box ticked still being answered when the server closes starts no import after close: the yes waits for the next start", { timeout: 60_000 }, async (t) => {
@@ -406,6 +408,49 @@ test("setup's count of a big home reads none of its sessions for keys: it answer
   assert.equal(outcome, "exited", `${Date.now() - stopped} ms after SIGTERM with a ${DRAIN} drain window`);
 });
 
+test("a server stopped while setup still lists a home's session files exits at once: the count, which writes nothing, is ended, not waited for", { timeout: 120_000 }, async (t) => {
+  const root = await scratch(t);
+  const home = join(root, "home");
+  const site = join(home, "code", "many");
+  mkdirSync(site, { recursive: true });
+  claudeSession(home, site, 1);
+  // 120,000 empty session files: a count lists and stats every one before it reads any, for seconds.
+  const many = join(home, ".claude", "projects", "-many");
+  mkdirSync(many, { recursive: true });
+  for (let k = 0; k < 120_000; k++) writeFileSync(join(many, `${k}.jsonl`), "");
+  const [data, config, temp] = [join(root, "agents"), join(root, "config"), join(root, "tmp")];
+  mkdirSync(temp, { recursive: true });
+  const { AGENTRUN_PUBLIC_URL: _, RENDER_EXTERNAL_URL: __, AGENTRUN_TOKEN: ___, ...inherited } = process.env;
+  const child = spawn(LAUNCHER, ["--data", data, "--port", "0"], { detached: true, stdio: ["ignore", "pipe", "pipe"], env: { ...inherited, HOME: home, TMPDIR: temp, XDG_CONFIG_HOME: config } });
+  // Its group is signalled only while it is alive: once it has exited, the group's number may be another's.
+  let alive = true;
+  const exited = new Promise((resolve) => child.once("exit", () => resolve((alive = false))));
+  // stderr is whole only at "close" (after "exit", once its stdio has drained).
+  const closed = new Promise((resolve) => child.once("close", resolve));
+  t.after(async () => {
+    if (alive) process.kill(-child.pid, "SIGKILL");
+    await exited;
+  });
+  let [out, err] = ["", ""];
+  child.stdout.on("data", (chunk) => (out += chunk));
+  child.stderr.on("data", (chunk) => (err += chunk));
+  for (const deadline = Date.now() + 30_000; !/AGENTRUN_BASE_URL=http:\/\/[^:]+:(\d+)/.test(out); ) {
+    assert.ok(Date.now() < deadline, `the server started: ${out}${err}`);
+    await sleep(50);
+  }
+  const port = Number(/AGENTRUN_BASE_URL=http:\/\/[^:]+:(\d+)/.exec(out)[1]);
+  // A server the CLI starts with no owner counts as it starts: stopped while that count still lists.
+  const read = await call(port, { path: "/v2/setup/import", headers: { "sec-fetch-site": "same-origin" } });
+  assert.deepEqual([read.status, read.json], [202, { counting: true }], read.text);
+  const stopped = Date.now();
+  if (alive) process.kill(-child.pid, "SIGTERM");
+  // Unreferenced: the bound holds no exited test's process open.
+  const outcome = await Promise.race([exited.then(() => "exited"), sleep(5_000, "still running", { ref: false })]);
+  assert.equal(outcome, "exited", `${Date.now() - stopped} ms after SIGTERM, the count still listing`);
+  await closed;
+  assert.doesNotMatch(err, /the count of this machine's sessions failed/, "an ended count is no failed one");
+});
+
 test("under its launcher, setup's import cuts each of the server's own secrets out of everything it writes: a session's text, the project's instructions and its skills", { timeout: 90_000 }, async (t) => {
   // A value of its own for every name the launcher protects (its SECRETS line), each handed over its pipe: no environment
   // of the server's has one. The seal key is one a server takes: 32 bytes in base64.
@@ -444,6 +489,44 @@ test("under its launcher, setup's import cuts each of the server's own secrets o
   for (const deadline = Date.now() + 30_000; (await state()).state === "running" && Date.now() < deadline; ) await sleep(100);
   assert.deepEqual(await state(), { state: "done", agents: 1, runs: 1, skipped: 0 }, err);
   for (const [name, value] of Object.entries(keys)) assert.deepEqual(holding(data, value), [], `no file under the data directory holds ${name}'s value`);
+});
+
+test("setup's import cuts the secrets this server made and keeps, pasted into a session: its webhook signing secret, its two tokens and its sign-in sessions' secret", { timeout: 90_000 }, async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, ["AGENTRUN_SEAL_KEY"]);
+  const root = await scratch(t);
+  const data = join(root, "agents");
+  // An earlier start, before accounts: its webhook set, its secret shown once.
+  const first = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  let firstOpen = true;
+  t.after(() => firstOpen && first.close());
+  const api = client(first.baseUrl, first.token);
+  const set = await api("PUT", "/settings/webhook", { url: "http://127.0.0.1:9/hook" });
+  assert.equal(set.status, 201, JSON.stringify(set.body));
+  await first.close();
+  firstOpen = false;
+  // This start sets the owner, and with it the sign-in sessions' secret; the sessions are written before the box is ticked.
+  const home = join(root, "home");
+  const site = join(home, "code", "hooks");
+  mkdirSync(site, { recursive: true });
+  claudeSession(home, site, 1);
+  const server = await serve(t, { data, accounts: true, openSetup: true, sessionsHome: { home, temp: join(root, "tmp") } });
+  const own = {
+    webhook: set.body.secret,
+    token: server.token,
+    door: readFileSync(join(data, ".door-token"), "utf8").trim(),
+    session: readFileSync(join(data, ".session-secret"), "utf8").trim(),
+  };
+  for (const [name, value] of Object.entries(own)) assert.ok(typeof value === "string" && value.length >= 32, `${name}: ${typeof value}`);
+  claudeSession(home, site, 2, { prompt: `The webhook's secret is ${own.webhook}, check the receiver.`, output: `token ${own.token}, door ${own.door}` });
+  codexSession(home, site, 3, { prompt: `The session secret is ${own.session}.` });
+  const kept = new Map(Object.entries(own).map(([name, value]) => [name, holding(data, value)]));
+  const ticked = await call(server.port, { method: "POST", path: "/v2/setup", headers: page(server), body: { password: PASSWORD, import: true } });
+  assert.deepEqual([ticked.status, ticked.json], [201, { signed_in: true, importing: true }], ticked.text);
+  const state = async () => (await call(server.port, { path: "/v2/setup/import", headers: { cookie: cookieOf(ticked) } })).json;
+  for (const deadline = Date.now() + 30_000; (await state()).state === "running" && Date.now() < deadline; ) await sleep(100);
+  assert.deepEqual(await state(), { state: "done", agents: 1, runs: 3, skipped: 0 });
+  // Only the server's own files hold them, as before the import.
+  for (const [name, value] of Object.entries(own)) assert.deepEqual(holding(data, value), kept.get(name), `${name}: no file the import wrote holds it`);
 });
 
 test("a key saved on the Tool keys page is cut out of everything setup's import writes, and so is the server's own key of the same name when it differs: a session's text and title, its subagent's file, and a session named after its file, kept under a redacted- id that the next start's import finds again", { timeout: 90_000 }, async (t) => {

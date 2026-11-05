@@ -60,7 +60,7 @@ export const ASKABLE: readonly string[] = ["read", "write", "edit", "bash", "fet
 export const permissionsOf = (name: string): readonly Permission[] => (ASKABLE.includes(name) || isCatalogTool(name) ? PERMISSIONS : ["allow", "deny"]);
 /** A settings key: a tool of the table, a catalog tool (`monid.<tool>`, `mcp:<server>/<tool>`), or an MCP server's
  *  wildcard (`mcp:<server>/*`), which sets each of its tools. */
-const isSettingsKey = (name: string): boolean => TABLE_TOOLS.includes(name) || isCatalogTool(name) || /^mcp:[^/]+\/\*$/.test(name);
+const isSettingsKey = (name: string): boolean => (TABLE_TOOLS.includes(name) && !Object.hasOwn(LEGACY_NAMES, name)) || isCatalogTool(name) || /^mcp:[^/]+\/\*$/.test(name);
 /** One tool's settings: its provider (a capability that has a choice) and its permission. */
 export type ToolSetting = { provider?: string; permission?: Permission };
 /** The tools' settings, the server's (`/v2/settings/tools`) and an agent's own (`definition.tool_settings`), one shape:
@@ -270,20 +270,50 @@ export const withDefaults = (map: ToolSettingsMap): ToolSettingsMap & Record<Pic
 /** The server's tool settings, beside the agent store in its data directory: not a secret, and not in store.sqlite,
  *  which runs hold open. Read once at the start, written whole and durably (0600) at each PUT; a missing file is every
  *  default, and so is one it cannot read, which it says in one line. */
+/** The tool settings in `dir` as the server and the tool gate read them, failing closed: each entry that reads is kept;
+ *  one that does not is dropped, but a known tool keeps what of it reads, and its permission, when not one offered,
+ *  reads ask (deny where ask is not offered), never its allow default. `problems`: one line for each entry dropped or
+ *  changed, naming the file and the field, never a value. `unreadable`: the file as a whole does not read (none, a
+ *  missing file is every default). */
+export function readToolSettings(dir: string): { settings: ToolSettingsMap; problems: string[]; unreadable?: true } {
+  const file = join(dir, ToolSettings.FILE);
+  let read: unknown;
+  try {
+    read = JSON.parse(readFileSync(file, "utf8"));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { settings: {}, problems: [] };
+    return { settings: {}, problems: [`${file} does not read as JSON`], unreadable: true };
+  }
+  const isPlain = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+  if (!isPlain(read)) return { settings: {}, problems: [`${file} is not an object of tools to their settings`], unreadable: true };
+  const settings: ToolSettingsMap = {};
+  const problems: string[] = [];
+  for (const [name, setting] of Object.entries(read)) {
+    const issues = settingsIssues({ [name]: setting });
+    if (!issues.length) {
+      settings[name] = setting as ToolSetting;
+      continue;
+    }
+    problems.push(`${file}: ${issues.map((issue) => `${issue.field} ${issue.reason}`).join(", ")}`);
+    if (!isSettingsKey(name) || !isPlain(setting)) continue;
+    const kept: ToolSetting = {};
+    if (typeof setting.provider === "string" && !settingsIssues({ [name]: { provider: setting.provider } }).length) kept.provider = setting.provider;
+    if (setting.permission !== undefined) {
+      const offered = permissionsOf(isMcpTool(name) ? name : name.replace(/\/\*$/, "/_"));
+      kept.permission = offered.includes(setting.permission as Permission) ? (setting.permission as Permission) : offered.includes("ask") ? "ask" : "deny";
+    }
+    if (Object.keys(kept).length) settings[name] = kept;
+  }
+  return { settings, problems };
+}
+
 export class ToolSettings {
   static readonly FILE = "tool-settings.json";
   private current: ToolSettingsMap;
   constructor(private readonly dir: string, warn: (line: string) => void = (line) => void process.stderr.write(`${line}\n`)) {
-    const file = join(dir, ToolSettings.FILE);
-    let read: unknown = {};
-    try {
-      read = JSON.parse(readFileSync(file, "utf8"));
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") read = undefined;
-    }
-    const bad = read === undefined || settingsIssues(read).length > 0;
-    if (bad) warn(`agentrun-serve: ${file} is not tool settings this server reads; every tool takes its default provider until a PUT /v2/settings/tools`);
-    this.current = bad ? {} : (read as ToolSettingsMap);
+    const { settings, problems, unreadable } = readToolSettings(dir);
+    for (const line of problems) warn(`agentrun-serve: ${line}; ${unreadable ? "every tool takes its defaults" : "that entry is dropped (a permission that is not offered reads ask)"} until a PUT /v2/settings/tools`);
+    this.current = settings;
   }
 
   get(): ToolSettingsMap {

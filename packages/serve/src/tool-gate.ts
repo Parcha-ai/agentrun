@@ -36,7 +36,7 @@ import { LEARNED_DIR } from "./learning.js";
 import type { TurnOrigin } from "./learning-run.js";
 import { forModel } from "./result.js";
 import { durableSessions } from "./sessions.js";
-import { ToolSettings } from "./tool-plane.js";
+import { LEGACY_NAMES, readToolSettings, TABLE_TOOLS } from "./tool-plane.js";
 
 /** What the gate does with a tool's calls. */
 export const PERMISSIONS = ["allow", "ask", "deny"] as const;
@@ -56,6 +56,39 @@ export const defaultPermission = (name: string): Permission => (isCatalogTool(na
 export function permissionKeys(name: string): string[] {
   if (!isMcpTool(name)) return [name];
   return [name, `${name.slice(0, name.indexOf("/"))}/*`];
+}
+
+/** The browser's registrations on pi (pi-browser's BROWSER_TOOL_NAMES, which a test holds this list to): each is a call
+ *  of the table's `browser`. */
+const BROWSER_REGISTRATIONS: readonly string[] = ["snapshot", "run", "screenshot", "browser_read", "browser_release", "browser_relaunch", "browser_request_handoff", "browser_downloads", "browser_upload"];
+/** A CLI's own tools, by harness, and the table's tool each one is. */
+const NATIVE_TOOLS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  "claude-agent": { WebSearch: "web_search", WebFetch: "web_fetch", Bash: "bash", Read: "read", Write: "write", Edit: "edit" },
+  codex: { web_search: "web_search", shell: "bash" },
+};
+/** The MCP server through which claude-agent calls the kernel's host tools (`mcp__hands__<wire name>`). */
+const HOST_TOOLS_SERVER = "hands";
+
+/** The settings key a call named `name` on `harness` is held to: the one mapping from every name a call reaches the gate
+ *  by. A settings key is itself (a table tool, `monid.<tool>`, `mcp:<server>/<tool>`); a CLI's own tool is the table's it
+ *  is; an MCP alias, `mcp__<server>__<tool>` (claude-agent's host tools `mcp__hands__<wire name>`, mapped as their
+ *  wire name) and on OpenCode `<server>_<tool>`, is `mcp:<server>/<tool>`; a catalog's wire name (`monid_run`) is its
+ *  catalog name; the browser's registrations are `browser`. OpenCode's `<server>_<tool>` maps only for a server of
+ *  `mcpServers` (the run's configured MCP servers), never by its shape, since a host tool's name has the same shape.
+ *  Undefined: nothing maps it, and the gate asks. The key only: an MCP call enters the gate once, in the MCP gateway. */
+export function settingsKeyOf(harness: string, name: string, mcpServers: readonly string[] = []): string | undefined {
+  // A legacy name the tool plane folds into a capability (fetch_page into web_fetch) is held to that capability's key.
+  if (Object.hasOwn(LEGACY_NAMES, name)) return LEGACY_NAMES[name];
+  if (TABLE_TOOLS.includes(name) || isCatalogTool(name)) return name;
+  const native = NATIVE_TOOLS[harness]?.[name];
+  if (native) return native;
+  const mcp = /^mcp__([a-z][a-z0-9-]*)__(.+)$/.exec(name);
+  if (mcp) return mcp[1] === HOST_TOOLS_SERVER ? settingsKeyOf(harness, mcp[2]!, mcpServers) : mcpToolName(mcp[1]!, mcp[2]!);
+  const monid = /^monid_([a-z]+)$/.exec(name);
+  if (monid) return `monid.${monid[1]}`;
+  if (BROWSER_REGISTRATIONS.includes(name)) return "browser";
+  const alias = harness === "opencode" ? /^([a-z][a-z0-9-]*)_(.+)$/.exec(name) : null;
+  return alias && mcpServers.includes(alias[1]!) ? mcpToolName(alias[1]!, alias[2]!) : undefined;
 }
 
 /** A layer of tool settings (the server's, PUT /v2/settings/tools, or an agent's own, definition.tool_settings) as the
@@ -210,24 +243,31 @@ export type ApprovalRequest = { id: string; tool: string; call_id: string; args:
 /** Resumes the session with `content` as one message of its own (`approval-<id>`), writing `mark` with it or after it. */
 export type Resume = (id: string, content: string, mark: (tx: Tx) => Promise<unknown>) => Promise<void>;
 
-/** `args` as JSON, at most ARGS_PREVIEW_BYTES. */
-export function argsPreview(args: unknown): string {
-  const bytes = Buffer.from(JSON.stringify(args ?? {}) ?? "", "utf8");
+/** `text` cut to at most ARGS_PREVIEW_BYTES. What is shown of a call's arguments is the whole of them redacted first, then
+ *  cut (runs.ts), so a cut never leaves the head of a key no redaction recognizes. */
+export function previewOf(text: string): string {
+  const bytes = Buffer.from(text, "utf8");
   return bytes.length <= ARGS_PREVIEW_BYTES ? bytes.toString("utf8") : `${bytes.subarray(0, ARGS_PREVIEW_BYTES - 3).toString("utf8").replace(/\uFFFD+$/, "")}…`;
 }
+/** `args` as JSON, at most ARGS_PREVIEW_BYTES: the request's own record of them, never shown as it is. */
+export const argsPreview = (args: unknown): string => previewOf(JSON.stringify(args ?? {}) ?? "");
+
+/** How the gate's resume message starts: the server knows its row by it, and redacts the row whole (runs.ts). */
+export const RESUME_PREFIX = "[tool approval] ";
 
 /** The one message that resumes a session once a person answered: it names the call it answers (its tool, call id and
  *  arguments), so the model tells it from a person's new input, and carries the call's result, or the refusal. */
-export function resumeText(request: Pick<ApprovalRequest, "tool" | "call_id" | "args_preview">, decision: "allow" | "deny", result: ToolAnswer): string {
-  const args = request.args_preview.length > 300 ? `${request.args_preview.slice(0, 299)}…` : request.args_preview;
-  const head = `[tool approval] This answers your ${request.tool} call ${request.call_id} (arguments ${args}), which waited for a person's approval; it is not a new message from them.`;
+export function resumeText(request: Pick<ApprovalRequest, "tool" | "call_id">, shown: string, decision: "allow" | "deny", result: ToolAnswer): string {
+  // `shown`: the arguments as the server shows them, redacted whole then cut (runs.ts): never the call's own.
+  const args = shown.length > 300 ? `${shown.slice(0, 299)}…` : shown;
+  const head = `${RESUME_PREFIX}This answers your ${request.tool} call ${request.call_id} (arguments ${args}), which waited for a person's approval; it is not a new message from them.`;
   return decision === "allow" ? `${head} They allowed it, and it ran${result.isError ? " and failed" : ""}. Its result:\n${result.text}` : `${head}\n${result.text}`;
 }
 
 /** The gate of the run `runId` at `where` (its directory, under the data directory's runs/), on its pinned revision:
  *  an agentic run's parks an asked call; a workflow's model node cannot. */
-export function runGate(where: { root: string; work: string }, runId: string, revision: { kind: string; body: { toolSettings?: unknown } }): RunGate {
-  return new RunGate({ root: where.root, work: where.work, data: resolve(where.root, "..", ".."), runId }, (revision.body.toolSettings ?? {}) as PermissionSettings, revision.kind === "agentic", process.env[NO_APPROVER_ENV] !== "1");
+export function runGate(where: { root: string; work: string }, runId: string, revision: { kind: string; body: { toolSettings?: unknown; harness?: string } }): RunGate {
+  return new RunGate({ root: where.root, work: where.work, data: resolve(where.root, "..", ".."), runId, harness: revision.body.harness ?? "pi" }, (revision.body.toolSettings ?? {}) as PermissionSettings, revision.kind === "agentic", process.env[NO_APPROVER_ENV] !== "1");
 }
 
 /** The gate in a run's process, park mode: its policy, the turn's origin, the calls that wait, and the answers acted on. */
@@ -245,11 +285,35 @@ export class RunGate {
   /** `where.data`: the server's data directory, its tool settings beside the store; `overrides`: the pinned revision's
    *  own; `parks`: whether an asked call parks the run (an agentic run's), which a workflow's model node cannot;
    *  `approvers`: whether anyone can answer an ask here (the owner's password session: accounts on). */
-  constructor(private readonly where: { root: string; work: string; data: string; runId: string }, private readonly overrides: PermissionSettings = {}, private readonly parks = true, private readonly approvers = true) {}
+  constructor(private readonly where: { root: string; work: string; data: string; runId: string; harness?: string; mcpServers?: readonly string[] }, private readonly overrides: PermissionSettings = {}, private readonly parks = true, private readonly approvers = true) {}
 
   /** A tool's permission now (permissionOf): the revision's own over the server's setting, read at each call, so a change
    *  reaches a live run at its next call. */
-  readonly policy = (tool: string): Permission => permissionOf(tool, new ToolSettings(this.where.data, () => undefined).get() as PermissionSettings, this.overrides);
+  readonly policy = (tool: string): Permission => {
+    const key = settingsKeyOf(this.where.harness ?? "pi", tool, this.where.mcpServers);
+    // A name nothing maps fails closed: it asks (refused where no one can approve), never allows.
+    if (key === undefined) return "ask";
+    const server = this.serverSettings();
+    // No settings ever read: every tool asks, or keeps the revision's own deny.
+    if (server === undefined) return permissionOf(key, {}, this.overrides) === "deny" ? "deny" : "ask";
+    return permissionOf(key, server, this.overrides);
+  };
+
+  private lastGood?: PermissionSettings;
+  private readonly told = new Set<string>();
+  /** The server's settings now: read at each call, so a change reaches a live run; a file that does not read keeps the
+   *  last good (undefined: none read yet). Each problem is said once, by file and field, never a value. */
+  private serverSettings(): PermissionSettings | undefined {
+    const read = readToolSettings(this.where.data);
+    for (const line of read.problems) {
+      if (this.told.has(line)) continue;
+      this.told.add(line);
+      process.stderr.write(`agentrun-serve: the tool gate: ${line}\n`);
+    }
+    if (read.unreadable) return this.lastGood;
+    this.lastGood = read.settings as PermissionSettings;
+    return this.lastGood;
+  }
 
   /** The origin of the turn running now: what the server's internal path wrote for it; none for a person's turn. */
   turnOrigin(): TurnOrigin | undefined {
@@ -262,8 +326,10 @@ export class RunGate {
 
   /** One model-initiated call at the gate: undefined when it may run; else its answer, refused at once (deny) or parked
    *  (ask). One call waits at a time: another asked meanwhile is answered so, not run. */
-  async enter(tool: string, args: unknown, callId: string, park: Park, options: EnterOptions = {}): Promise<Entered> {
-    const permission = this.policy(tool);
+  async enter(name: string, args: unknown, callId: string, park: Park, options: EnterOptions = {}): Promise<Entered> {
+    // Held to its settings key (settingsKeyOf), the name its request, a refusal and the approved call give.
+    const tool = settingsKeyOf(this.where.harness ?? "pi", name, this.where.mcpServers) ?? name;
+    const permission = this.policy(name);
     const turnOrigin = permission === "ask" ? this.turnOrigin() : undefined;
     const verdict = gateToolCall({ tool, args }, { ...(turnOrigin ? { turnOrigin } : {}), work: this.where.work, policy: () => permission });
     if (verdict === "allow") return undefined;
@@ -366,14 +432,28 @@ export class RunGate {
     }
     this.settling = true;
     try {
-      const answers = (await readJson(join(this.where.root, RUN_META)))?.approvals as Record<string, { decision?: string; note?: string }> | undefined;
+      const answers = (await readJson(join(this.where.root, RUN_META)))?.approvals as Record<string, { decision?: string; note?: string; args_shown?: string }> | undefined;
       for (const held of open) {
         const answer = answers?.[held.id];
+        // Withdrawn with its run (a cancel, or a stop while it waited): never run and nothing resumed; resolved, so the
+        // run waits on it no more.
+        if (answer?.decision === "canceled" || answer?.decision === "withdrawn") {
+          await this.resolveSilently(held, answer.decision);
+          continue;
+        }
         if (answer?.decision !== "allow" && answer?.decision !== "deny") continue;
         const decision = answer.decision;
+        // Read again just before acting: a stop or a cancel since overrides the answer (runs.ts supersede), and then
+        // nothing runs and nothing resumes. Once the call's intent is written, a stop takes its turn as any stop does.
+        const now = ((await readJson(join(this.where.root, RUN_META)))?.approvals as Record<string, { decision?: string }> | undefined)?.[held.id];
+        if (now?.decision !== decision) {
+          if (now?.decision === "canceled" || now?.decision === "withdrawn") await this.resolveSilently(held, now.decision);
+          continue;
+        }
         // An allow runs the call, unless its tool was set to deny since it asked.
         const result = decision === "deny" ? { text: refusedText(held.tool, answer.note), isError: true } : this.policy(held.tool) === "deny" ? { text: deniedText(held.tool), isError: true } : await this.run(held);
-        await this.resume!(held.id, resumeText(held, decision, result), (tx) => tx.appendEntry(ROOT_CONVERSATION_ID, { kind: APPROVAL_ENTRY, data: { phase: "resolved", id: held.id, decision } }));
+        // The arguments the message names are the server's redacted ones: the gate never writes a held value there.
+        await this.resume!(held.id, resumeText(held, answer.args_shown ?? "(not shown)", decision, result), (tx) => tx.appendEntry(ROOT_CONVERSATION_ID, { kind: APPROVAL_ENTRY, data: { phase: "resolved", id: held.id, decision } }));
         held.resolved = true;
       }
     } catch (error) {
@@ -384,15 +464,18 @@ export class RunGate {
     }
   }
 
+  /** A call withdrawn with its run: resolved in the run's store with nothing run and nothing resumed. */
+  private async resolveSilently(held: ApprovalRequest & { resolved?: true }, decision: string): Promise<void> {
+    await this.durable!.harness.commit((tx) => tx.appendEntry(ROOT_CONVERSATION_ID, { kind: APPROVAL_ENTRY, data: { phase: "resolved", id: held.id, decision } }), this.context!);
+    held.resolved = true;
+  }
+
   /** The approved call, run once by the kernel through the journal any host tool's call goes through, as an effect of
    *  the run's own `approvals:` session, on the run's coding source: its intent is durable before it runs, its outcome
    *  after; a replay-safe call a crash cut off runs again, any other is answered interrupted and never runs again. */
   private async run(held: ApprovalRequest): Promise<ToolAnswer> {
-    // Imported here, not at the top: host-tools reaches the web tools, which reach tool-plane, which reads this module's
-    // permission rule, and a cycle of top-level imports leaves one of them uninitialized for whichever loads first.
-    const { hostTools } = await import("./host-tools.js");
-    const [tool] = hostTools(this.durable!, [held.tool], this.context!, new Map(), this.coding);
-    if (!tool) return { text: `The approved ${held.tool} call is not one the kernel runs outside the model's turn.`, isError: true };
+    const runner = await this.runnerOf(held);
+    if ("refused" in runner) return { text: runner.refused, isError: true };
     this.drive ??= durableSessions(this.durable!.harness, this.context!)
       .open(`approvals:${this.where.runId}`)
       .then((writer) => openDrive({ writer, signal: this.stop.signal }))
@@ -401,8 +484,8 @@ export class RunGate {
         throw error;
       });
     try {
-      return await (await this.drive).effect(`approval:${held.id}`, { name: held.tool, replay: tool.replay, input: held.args }, async ({ signal }) => {
-        const answer = await tool.call(held.args, { callId: held.call_id, signal });
+      return await (await this.drive).effect(`approval:${held.id}`, { name: held.tool, replay: runner.replay, input: held.args }, async ({ signal }) => {
+        const answer = await runner.call(signal);
         return { text: answer.text, isError: answer.isError === true };
       });
     } catch (error) {
@@ -410,6 +493,32 @@ export class RunGate {
       if (error instanceof EffectFailure) return { text: error.message, isError: true };
       throw error;
     }
+  }
+
+  private readonly executors = new Map<string, Executor>();
+
+  /** Registers how an approved call of tools named `prefix…` runs (the MCP gateway's, "mcp:"): one per prefix and run.
+   *  The gate runs it exactly once on its journaled path, as it runs a kernel host tool. */
+  executor(prefix: string, run: Executor): void {
+    this.executors.set(prefix, run);
+  }
+
+  /** What runs an approved call: the executor its tool's prefix names, which may have effects anywhere, so a call a
+   *  crash cut off is never run again; else the kernel's host tool of the name, as replay-safe as that tool is. Neither:
+   *  refused, in words, and never run. */
+  private async runnerOf(held: ApprovalRequest): Promise<{ replay: "safe" | "never"; call(signal: AbortSignal): Promise<ToolAnswer> } | { refused: string }> {
+    const prefix = [...this.executors.keys()].find((given) => held.tool.startsWith(given));
+    if (prefix) {
+      const executor = this.executors.get(prefix)!;
+      return { replay: "never", call: (signal) => executor(held.tool, held.args, held.call_id, signal) };
+    }
+    if (isMcpTool(held.tool)) return { refused: `The approved ${held.tool} call was not run: nothing in this run runs mcp: calls.` };
+    // Imported here, not at the top: host-tools reaches the web tools, which reach tool-plane, which reads this module's
+    // permission rule, and a cycle of top-level imports leaves one of them uninitialized for whichever loads first.
+    const { hostTools } = await import("./host-tools.js");
+    const [tool] = hostTools(this.durable!, [held.tool], this.context!, new Map(), this.coding);
+    if (!tool) return { refused: `The approved ${held.tool} call is not one the kernel runs outside the model's turn.` };
+    return { replay: tool.replay, call: (signal) => tool.call(held.args, { callId: held.call_id, signal }) as Promise<ToolAnswer> };
   }
 }
 

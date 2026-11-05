@@ -45,6 +45,27 @@ test('a request cut short in this process (its cost booked unknown) counts at th
   assert.equal((await port(store, 0.25)).spentUsd(), 0.26);
 });
 
+test("a request its client stopped part way counts at the host's figure for what streamed (stoppedUsd), never more than its hold, in this process and the next; one cut otherwise at its hold", async () => {
+  const store = memorySessionStore();
+  const asked = [];
+  // The host holds $0.9 and counts a stop at $0.00001 a streamed token.
+  const booking = await modelPortFor(await store.open(key), { key, beforeRequest: (r) => (asked.push(r.spentUsd), { holdUsd: 0.9, stoppedUsd: (tokens) => tokens / 1e5 }) });
+  await booking.models.beforeRequest({ model: 'm' });
+  await booking.models.afterRequest({ input: 0, output: 0, cacheRead: 0, usd: null, stoppedAfterBytes: 300 });
+  assert.equal(booking.spentUsd(), 0.003, 'stopped after 300 bytes: $0.003, not the $0.9 held');
+  await booking.models.beforeRequest({ model: 'm' });
+  assert.deepEqual(asked, [0, 0.003], 'the next check sees it');
+  // Past its hold, it counts at its hold; with no report of what streamed (cut otherwise), at its hold.
+  await booking.models.afterRequest({ input: 0, output: 0, cacheRead: 0, usd: null, stoppedAfterBytes: 10_000_000 });
+  await booking.models.beforeRequest({ model: 'm' });
+  await booking.models.afterRequest({ input: 0, output: 0, cacheRead: 0, usd: null });
+  assert.equal(Math.round(booking.spentUsd() * 1e9) / 1e9, 1.803);
+  const turns = (await runnerRecords(store)).filter(([kind]) => kind === RUNNER_RECORDS.turn).map(([, data]) => data);
+  assert.deepEqual(turns, [{ turn: 1, usd: null, heldUsd: 0.003, stopped: true }, { turn: 2, usd: null, heldUsd: 0.9, stopped: true }, { turn: 3, usd: null }], 'a stopped turn keeps what it counts at');
+  // A later process reads the same.
+  assert.equal(Math.round((await port(store, 0.9)).spentUsd() * 1e9) / 1e9, 1.803);
+});
+
 test('a request a crash cut off counts at the figure held for it in the next process, booked once as cut, counted once however often the session is opened', async () => {
   const store = memorySessionStore();
   const first = await port(store, 0.25);

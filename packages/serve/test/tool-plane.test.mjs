@@ -276,7 +276,9 @@ test("a kept plane at a later launch: as it was, but Parallel with its key gone 
     assert.deepEqual(new ToolSettings(dir, (line) => said.push(line)).get(), {}, text);
   }
   assert.equal(said.length, 2);
-  assert.match(said[0], /tool-settings\.json is not tool settings this server reads; every tool takes its default provider/);
+  assert.match(said[0], /tool-settings\.json does not read as JSON; every tool takes its defaults until a PUT/);
+  assert.match(said[1], /tool-settings\.json: web_search\.provider not_an_option; that entry is dropped/);
+  assert.ok(!said.join("").includes("bing"), "no value is said");
 });
 
 test("a workflow's model node naming web_search, its revision listing no tools, resolves and runs: on auto, to Parallel where the server holds its key; with keyless Exa picked, to Exa; an empty setting is no setting", async (t) => {
