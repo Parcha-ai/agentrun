@@ -174,7 +174,7 @@ describe("Settings → Tools, a Retry's read and a save", () => {
     const v2 = {
       // The first read answers at once; the Retry's read is held, and answers with what was saved before the change.
       toolSettings: async () => { if (++reads === 2) await new Promise<void>((r) => { release = r; }); return { web_search: { provider: "off" } }; },
-      saveToolSettings: async (b: ToolSettings) => { puts.push(b); return b; },
+      saveToolSettings: async (b: ToolSettings) => b,
     };
     const host = document.body.appendChild(document.createElement("div"));
     root = createRoot(host);
