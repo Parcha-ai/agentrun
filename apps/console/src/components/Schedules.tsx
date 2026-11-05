@@ -10,7 +10,7 @@ import { runLabel, when } from "@/lib/format";
 import { uuid } from "@/lib/idempotency";
 import { type Problem, problem } from "@/lib/problem";
 import type { Tone } from "@/lib/runState";
-import { atLeast, bodyOf, utcWhen, type Draft, draftOf, emptyDraft, FIRING_LABEL, firingWords, instantOf, issuesOf, patchOf, whenWords } from "@/lib/schedules";
+import { atLeast, bodyOf, capWords, utcWhen, type Draft, draftOf, emptyDraft, FIRING_LABEL, firingWords, instantOf, issuesOf, patchOf, whenWords } from "@/lib/schedules";
 import type { Firing, Trigger } from "@/lib/v2";
 
 /** Which schedules page: the list (no `schedule`), a new one (`schedule` null), one schedule, or its editor (`edit`). */
@@ -136,7 +136,7 @@ function ScheduleDetail({ v2, go, agentName, id }: PageProps & { id: string }) {
       <dl className="mt-5 grid grid-cols-1 gap-x-6 gap-y-3 border p-4 text-[13px] sm:grid-cols-[max-content_minmax(0,1fr)]">
         <dt className="caps text-[11px] text-muted-foreground">Agent</dt><dd className="min-w-0 break-words"><a href={`#/agents/${encodeURIComponent(trigger.target.agent_id)}`} className="hover:underline">{agentName(trigger.target.agent_id) || trigger.target.agent_id}</a></dd>
         <dt className="caps text-[11px] text-muted-foreground">Each run is asked</dt><dd className="min-w-0 whitespace-pre-wrap break-words">{content ?? JSON.stringify(trigger.target.input)}</dd>
-        <dt className="caps text-[11px] text-muted-foreground">Cost cap</dt><dd className="font-mono">${trigger.target.max_cost_usd} a run</dd>
+        <dt className="caps text-[11px] text-muted-foreground">Cost cap</dt><dd className="font-mono">{capWords(trigger.target.max_cost_usd)}</dd>
         <dt className="caps text-[11px] text-muted-foreground">While a run is going</dt><dd>The next time is skipped.</dd>
       </dl>
       <section className="mt-6" aria-label="Firings">

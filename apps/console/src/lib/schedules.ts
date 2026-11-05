@@ -31,6 +31,9 @@ export function whenWords(source: TriggerSource): string {
   return `Every ${span(source.every_s)}`;
 }
 
+/** A cost cap: "$2.00 a run", "$0.50 a run"; a cap finer than a cent as given ("$0.005 a run"). */
+export const capWords = (usd: number) => `$${Number.isInteger(Math.round(usd * 1e6) / 1e4) ? usd.toFixed(2) : String(usd)} a run`;
+
 /** What came of a firing. A started one's run is linked beside it. */
 export function firingWords(f: Firing): string {
   const why = (head: string, text: string | null | undefined) => (text ? `${head}: ${text}` : head);
