@@ -925,7 +925,8 @@ browser session on it. Nothing else turns it on: `auto` never picks it, and no a
   session whose Chrome cannot start it later is refused, saying so.
 - **A Chrome of the run's own.** Each session starts a fresh Chrome, headless, on a fresh profile under the run's
   directory that its release removes (nothing is loaded into it: no cookies, no storage, no saved profile), with its
-  DevTools socket on a loopback port picked for it and open to Stagehand's extension in it alone. Its release stops
+  DevTools socket on a loopback port picked for it, which nothing in the browser can reach (everything else goes
+  through the guard in front of it, below). Its release stops
   that Chrome by its exact pid. It never attaches to a Chrome that is already running (a shared one on port 9222
   included), and no port or endpoint is taken from a setting. A run whose process dies while its Chrome is open (a
   crash) releases that Chrome when it opens again: it reaches nothing once its relay is gone, so it is stopped, its
@@ -937,16 +938,27 @@ browser session on it. Nothing else turns it on: `auto` never picks it, and no a
   box's tools use), run in the run's process with no host list, on a Unix socket in a 0700 directory of its own and
   reached over a relay on an ephemeral loopback port. Chrome is started with `--proxy-server` at that relay and
   `--proxy-bypass-list=<-loopback>`, which takes away the bypass Chrome gives loopback and link-local addresses by
-  default, so they go through the proxy too, with one exception: its own DevTools socket. The proxy resolves each name
-  itself and refuses, after the lookup, every address that is not public: loopback (this server's own port among
-  them), private ranges, link-local addresses, the clouds' metadata addresses and this machine's own addresses. A
-  page that steers the browser to one, by a link, a redirect, a script or an embed, gets the proxy's refusal (`egress
-  refused: loopback`). Chrome resolves no name or address
-  itself but the relay's and its DevTools socket's (`--host-resolver-rules`), so a request sent around the proxy, a
-  browser context given its own proxy setting included, reaches nothing. QUIC is off (`--disable-quic`), and WebRTC
-  sends nothing past the proxy (`--webrtc-ip-handling-policy=disable_non_proxied_udp`: it gathers no ICE candidate,
-  and no STUN packet leaves). A run's browser may hold 128 connections open at once and open 100,000 in all. The proxy's decisions (host,
-  port, address and class, never a path) are `browser_egress` lines in the run's `process.log`.
+  default, so they go through the proxy too, with one exception: the guard on its DevTools socket (below). The proxy
+  resolves each name itself and refuses, after the lookup, every address that is not public: loopback (this server's
+  own port among them), private ranges, link-local addresses, the clouds' metadata addresses and this machine's own
+  addresses. A page that steers the browser to one, by a link, a redirect, a script or an embed, gets the proxy's
+  refusal (`egress refused: loopback`). Chrome resolves no name or address itself but the relay's and the guard's
+  (`--host-resolver-rules`), so a request sent around the proxy, a browser context given its own proxy setting
+  included, reaches nothing. QUIC is off (`--disable-quic`), and WebRTC sends nothing past the proxy
+  (`--webrtc-ip-handling-policy=disable_non_proxied_udp`: it gathers no ICE candidate, and no STUN packet leaves). A
+  run's browser may hold 128 connections open at once and open 100,000 in all. The proxy's decisions (host, port,
+  address and class, never a path) are `browser_egress` lines in the run's `process.log`.
+- **No files of this machine.** The browser runs on this server's disk, so nothing it is driven by may open a file
+  there. Every client of its DevTools socket (the driver, and the code a model runs in the browser through Stagehand's
+  extension) goes through pi-browser's guard (`cdp-guard.ts`), a relay in front of the socket that reads each command:
+  a navigation or a new tab to anything but `http`, `https` or `about:blank` (`file:`, `chrome:`, `view-source:`,
+  `data:`, `javascript:` and the rest), a file handed to a page (an upload by path, a drop), a download sent to a
+  directory, an extension loaded or the protocol handed to a page is refused, in words that name no path. No client may
+  drive an extension's page, which could move itself onto a file, and a page the guard sees on a file or a
+  browser-internal URL is closed. The extension's own APIs that would go around the guard (opening or moving a tab or a
+  window, the debugger API, its worker's clients) are taken away in its copy before any code runs there; a web page's
+  own move to a file (a link, a script, `window.open`) is Chrome's to refuse, and it does. The browser's own socket is
+  on a port nothing in the browser can reach.
 - **What it can't do.** No saved sign-ins; no vendor proxies, verified browsing, geolocation or region, which a vendor's
   browser offers and this one has none of; and nothing on this machine or a private network, however the page or the
   model asks. Its downloads stay in a folder of the session's own under the run's directory, after its release too,
