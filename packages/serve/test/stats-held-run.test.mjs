@@ -20,7 +20,14 @@ function hold(t, data) {
   return release;
 }
 
-test("GET /stats while a completed run's end waits for the agent store: counted completed, not running, its cost never unknown; whole once the store has its end", async (t) => {
+/** `promise`, or a failure saying `what` after `ms`: a wait the server never ends fails the test by name, never hangs it. */
+const within = (promise, ms, what) => {
+  let timer;
+  const late = new Promise((_resolve, reject) => (timer = setTimeout(() => reject(new Error(`${what} within ${ms / 1000} s`)), ms)));
+  return Promise.race([promise, late]).finally(() => clearTimeout(timer));
+};
+
+test("GET /stats while a completed run's end waits for the agent store: counted completed, not running, its cost never unknown; whole once the store has its end", { timeout: 60_000 }, async (t) => {
   const dir = await scratch(t);
   let firstBusy;
   const busy = new Promise((resolve) => (firstBusy = resolve));
@@ -31,7 +38,7 @@ test("GET /stats while a completed run's end waits for the agent store: counted 
   const runId = started.body.run_id;
   const release = hold(t, data);
   await writeFile(join(dir, "go"), "");
-  await busy;
+  await within(busy, 10_000, "the run's end never waited for the held store (carryBackRetry.onBusy did not fire)");
   // The window: the server holds the run as ended, and the store still has it running.
   const run = (await api("GET", `/runs/${runId}`)).body;
   assert.equal(run.status, "completed", JSON.stringify(run));
