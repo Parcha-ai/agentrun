@@ -45,10 +45,16 @@ function capRecipe(commands) {
   }
   const lines = [intro, ''];
   if (raise) {
-    const field = raise.flags.find((f) => f.name === '--max-cost-usd') ? '--max-cost-usd 2' : `--body '{"max_cost_usd": 2}'`;
-    lines.push('A cap is raised by the person who set it: ask them for the new cap (`pending.suggested_cap_usd` is one that lets it go on), then:', '',
-      '```sh', `run=$(node -p 'require("./run.json").run_id')`, `${usage(raise).replace('RUN_ID', '"$run"')} ${field}`, 'agentrun runs wait "$run" > run.json', '# exit 0 completed, as in recipe 2', '```', '');
+    const field = (usd) => (raise.flags.find((f) => f.name === '--max-cost-usd') ? `--max-cost-usd ${usd}` : `--body '{"max_cost_usd": ${usd}}'`);
+    lines.push('A cap too small for the task stops the run before the request it cannot pay for, and nothing is spent past it:', '',
+      '```sh',
+      `agentrun runs start notes --max-cost-usd 0.05 --body '{"input": {"content": "Write moon.md with everything known about the Moon."}}' --wait > run.json`,
+      '# exit 8 once it stops at its cap: run.json has pending.kind budget, with cap_usd, spent_usd and suggested_cap_usd; 0 if the cap was enough',
+      '```', '',
+      'Only the person who set the cap raises it: ask them for the new cap (`pending.suggested_cap_usd` is one that lets it go on). Then the run goes on from where it stopped:', '',
+      '```sh', `run=$(node -p 'require("./run.json").run_id')`, `${usage(raise).replace('RUN_ID', '"$run"')} ${field(1)}`, 'agentrun runs wait "$run" > run.json', '# exit 0 completed, as in recipe 2', '```', '');
   }
+  if (!approve) lines.push('A tool call waiting for approval is answered by the person in the console (the run\'s `console_url`) until this CLI has a command for it.');
   if (approve) lines.push(`A tool call waiting for approval (\`pending.id\` names it) is answered by the person: \`${usage(approve)}${approve.flags.find((f) => f.name === '--decision') ? ' --decision allow' : ''}\` (${approve.summary.toLowerCase()}). The server may take that answer only from the person's own session; a \`403\` means they answer it in the console.`);
   return lines;
 }

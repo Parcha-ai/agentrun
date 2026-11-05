@@ -19,7 +19,7 @@ const GENERATOR = join(ROOT, "scripts", "generate-clients.mjs");
 const DROPPED = ["AGENTRUN_BASE_URL", "AGENTRUN_API_KEY", "AGENTRUN_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL", "AGENTRUN_BOXES", "CLAUDE_CONFIG_DIR", "CODEX_HOME", "PARALLEL_API_KEY"];
 
 // Writes the file the first message names (`write NAME.md`); asks its person first when told to ask, and writes what
-// they said; then answers.
+// they said; then answers. Priced, so recipe 5's run stops at its cap.
 const FAUX = `const textOf = (m) => (typeof m?.content === "string" ? m.content : (m?.content ?? []).map((c) => (c.type === "text" ? c.text : "")).join(""));
 export default (context, faux) => {
   const users = context.messages.filter((m) => m.role === "user").map(textOf);
@@ -29,6 +29,9 @@ export default (context, faux) => {
   const file = /write (\\S+\\.md)/i.exec(users[0])?.[1] ?? "out.md";
   return faux.message(faux.toolCall("write", { path: file, content: "# " + users.at(-1) + "\\n" }), { stopReason: "toolUse" });
 };
+// Priced on output only, $100 a million, as the server's cap tests price it: a request's least (1,024 tokens) is
+// $0.1024, so a run capped under that stops at its cap before its first request.
+export const cost = { input: 0, output: 100, cacheRead: 0, cacheWrite: 0 };
 `;
 
 /** The server, its data in HOME/.agentrun where the CLI looks with no flag, and a PATH with `agentrun` on it. */
@@ -88,15 +91,21 @@ test("SKILL.md: its front matter, its size, and each recipe block run in order a
   const work = join(server.dir, "work");
   mkdirSync(work);
   const seen = [];
+  const ran = [];
   for (const block of blocks) {
-    const ran = spawnSync("sh", ["-e", "-c", block.code], { cwd: work, env: server.env, encoding: "utf8", timeout: 60_000 });
-    seen.push(ran.stdout, ran.stderr);
-    assert.equal(ran.status, block.exit, `${block.title}:\n${block.code}\n${ran.stdout}\n${ran.stderr}`);
+    const done = spawnSync("sh", ["-e", "-c", block.code], { cwd: work, env: server.env, encoding: "utf8", timeout: 60_000 });
+    seen.push(done.stdout, done.stderr);
+    assert.equal(done.status, block.exit, `${block.title}:\n${block.code}\n${done.stdout}\n${done.stderr}`);
+    ran.push({ ...block, out: done.stdout, run: existsSync(join(work, "run.json")) ? JSON.parse(readFileSync(join(work, "run.json"), "utf8")) : undefined });
   }
-  const run = JSON.parse(readFileSync(join(work, "run.json"), "utf8"));
-  assert.deepEqual([run.status, run.cost.cap_usd], ["completed", 0.5], "the last run read is the one that asked, answered and capped");
-  const read = spawnSync("sh", ["-c", `agentrun runs read-file ${run.run_id} region.md`], { cwd: work, env: server.env, encoding: "utf8" });
-  assert.equal(read.stdout, "# Europe\n", "it wrote what its person answered");
+  const of = (n) => ran.filter((block) => block.title.startsWith(`${n}.`));
+  assert.match(of(4)[0].out, /^# Europe$/m, "recipe 4 read what the run that asked wrote: its person's answer");
+  const [stopped, raised] = of(5);
+  assert.ok(raised, "recipe 5 raises a cap: the table has the command");
+  assert.deepEqual([stopped.run.status, stopped.run.pending?.kind, stopped.run.cost.cap_usd], ["input_required", "budget", 0.05], "it stopped at its cap");
+  assert.deepEqual([raised.run.run_id, raised.run.status, raised.run.pending, raised.run.cost.cap_usd], [stopped.run.run_id, "completed", null, 1], "raised, the same run went on and completed under the new cap");
+  const read = spawnSync("sh", ["-c", `agentrun runs read-file ${raised.run.run_id} moon.md`], { cwd: work, env: server.env, encoding: "utf8" });
+  assert.equal(read.status, 0, read.stderr);
   for (const out of seen) assert.ok(!out.includes(server.token), "no output holds the token");
 
   await t.test("skill install --dir writes the folder; with no flag, each agent's folder that exists; never over a folder not its own", () => {
