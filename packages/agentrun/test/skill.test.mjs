@@ -3,9 +3,9 @@
 // skill names a command the CLI does not have; `skill install` writes the folder; `tool-keys set` and `login` take their
 // secret from stdin or the environment and never print it; a config file open to others is refused.
 import assert from "node:assert/strict";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { createServer } from "node:http";
 import { join } from "node:path";
@@ -378,6 +378,46 @@ test("a secret-bearing command never prints a server's error body, and cuts the 
     const fromEnv = await cli(["agents", "list"], { extra: { ...key.extra, AGENTRUN_BASE_URL: bad } });
     assert.equal(fromEnv.code, 2, `AGENTRUN_BASE_URL ${bad}`);
   }
+});
+
+/** Every file under `dir`, by its path, with its bytes' SHA-256. */
+const treeOf = (dir) => Object.fromEntries(readdirSync(dir, { recursive: true, withFileTypes: true }).filter((e) => e.isFile()).map((e) => {
+  const file = join(e.parentPath, e.name);
+  return [file.slice(dir.length), createHash("sha256").update(readFileSync(file)).digest("hex")];
+}).sort());
+
+test("skill install never installs into its own skill folder, inside it or over a folder holding it, and replaces an older copy whole", { timeout: 60_000 }, (t) => {
+  // A copy of the package, so the folder a wrong install would delete is the copy's. It sits in a folder named
+  // agentrun-cli, so that DIR/agentrun-cli for DIR its parent holds the skill folder.
+  const dir = mkdtempSync(join(tmpdir(), "agentrun-skill-own-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const pkg = join(dir, "agentrun-cli");
+  for (const part of ["bin", "lib", "skills", "package.json"]) cpSync(join(ROOT, "packages", "agentrun", part), join(pkg, part), { recursive: true });
+  const source = join(pkg, "skills", "agentrun-cli");
+  const before = treeOf(source);
+  symlinkSync(join(pkg, "skills"), join(dir, "link"));
+  const env = { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !DROPPED.includes(name))), HOME: dir };
+  const install = (...args) => spawnSync(process.execPath, [join(pkg, "bin", "agentrun.mjs"), "skill", "install", ...args], { env, encoding: "utf8", timeout: 30_000 });
+
+  for (const target of [join(pkg, "skills"), join(dir, "link"), join(source, "references"), dir]) {
+    const refused = install("--dir", target);
+    assert.equal(refused.status, 2, `${target}: ${refused.stdout}${refused.stderr}`);
+    assert.match(refused.stderr, /this package's own skill folder/);
+    assert.equal(refused.stdout, "");
+    assert.deepEqual(treeOf(source), before, `${target}: the skill folder is as it was`);
+  }
+
+  // An older copy of this skill, with a file the new one lacks: replaced whole.
+  const elsewhere = join(dir, "project", "skills");
+  mkdirSync(join(elsewhere, "agentrun-cli"), { recursive: true });
+  writeFileSync(join(elsewhere, "agentrun-cli", "SKILL.md"), "---\nname: agentrun-cli\n---\nAn older copy.\n");
+  writeFileSync(join(elsewhere, "agentrun-cli", "stale.md"), "gone after\n");
+  const done = install("--dir", elsewhere);
+  assert.equal(done.status, 0, done.stderr);
+  assert.deepEqual(JSON.parse(done.stdout), { installed: [join(elsewhere, "agentrun-cli")] });
+  assert.deepEqual(treeOf(join(elsewhere, "agentrun-cli")), before);
+  assert.deepEqual(readdirSync(elsewhere), ["agentrun-cli"], "no temporary folder left beside it");
+  assert.deepEqual(treeOf(source), before);
 });
 
 test("generate-clients --check passes on the committed skill, and fails on a hand-edited SKILL.md or a recipe naming a command the CLI does not have", { timeout: 60_000 }, (t) => {
