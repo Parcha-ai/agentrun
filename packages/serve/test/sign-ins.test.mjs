@@ -883,6 +883,10 @@ test("a hidden run interrupted in its end-of-run learning turn still ends failed
   await made(first.api, learner("alpha", { tools: ["browser"], instructions: `Answer the question.\nReflect once ${hold} exists.` }));
   const runId = await started(first.api, "alpha");
   await until(async () => (await first.api("GET", `/runs/${runId}`)).body.learning?.state, (state) => state === "reflecting");
+  // Killed only once serve.json on disk holds the end-of-run turn (`reflect`): a kill before it was saved would leave a
+  // run the next server never finds reflecting, and this would pass whatever learning does with a hidden run.
+  const saved = await until(async () => JSON.parse(await readFile(join(data, "runs", runId, "serve.json"), "utf8").catch(() => "{}")).reflect, (reflect) => Boolean(reflect));
+  assert.equal(saved.outcome, "completed", "its job's outcome, which a hidden run must never end with");
   first.child.kill("SIGKILL");
   await new Promise((resolve) => first.child.once("exit", resolve));
   const { holder } = JSON.parse(await readFile(join(data, "runs", runId, "run.json"), "utf8"));
