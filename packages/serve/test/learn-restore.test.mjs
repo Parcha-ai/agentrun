@@ -148,3 +148,76 @@ test("every item in the learning view says its last change, from the newest comm
   assert.equal(paged?.last_change?.kind, "restored");
   void data;
 });
+
+test("restoring a note that supersedes another marks that one superseded, as approving it would: one note's rule reaches MEMORY.md, never both", { timeout: 150_000 }, async (t) => {
+  const SHORT = note("Answer in short tables", "The user wants answers as short tables", "Keep each table to five rows.\n", "supersedes: [answer-in-tables.md]\norigin: you\nstatus: pending\n");
+  const { api, repo, cookie, origin, restore, retire } = await keeper(t, { "answer-in-tables.md": TABLES, "answer-in-short-tables.md": SHORT });
+  await retire("answer-in-short-tables.md");
+  const restored = await restore("answer-in-short-tables.md", { ...json, cookie, origin });
+  assert.equal(restored.status, 200, restored.text);
+  const statusOf = (file) => (api("GET", "/agents/keeper/learning").then((res) => res.body.notes.items.find((item) => item.file === file)?.status));
+  assert.deepEqual([await statusOf("answer-in-short-tables.md"), await statusOf("answer-in-tables.md")], ["active", "superseded"]);
+  const index = git(repo, ["show", "main:MEMORY.md"]);
+  assert.match(index, /answer-in-short-tables\.md/);
+  assert.doesNotMatch(index, /\(answer-in-tables\.md\)/, "the superseded one is out of MEMORY.md");
+});
+
+test("restoring a workflow draft checks its workflow.json too: one holding the server's own secret stays retired, and nothing is committed", { timeout: 150_000 }, async (t) => {
+  const README = "---\nname: price-report\ndescription: Sums the three shop prices; use for the morning report\nstatus: retired\n---\n";
+  const { repo, cookie, origin, restore, server } = await keeper(t, {});
+  const draft = (secret) => JSON.stringify({ v: 2, name: "price-report", schemas: { In: { type: "object" }, Out: { type: "object" } }, input: { schemaId: "In" }, output: { schemaId: "Out", path: "out" }, root: { node: "extract", label: "sum", instructions: `Sum the prices; sign in with ${secret}.`, out: "Out", as: "out" } });
+  mkdirSync(join(repo, "workflows", "price-report"), { recursive: true });
+  writeFileSync(join(repo, "workflows", "price-report", "workflow.json"), draft(server.token));
+  writeFileSync(join(repo, "workflows", "price-report", "README.md"), README);
+  git(repo, ["add", "--", "workflows"]);
+  git(repo, ["commit", "-q", "-m", "a retired draft now holding a secret"]);
+  const before = git(repo, ["rev-parse", "main"]).trim();
+  const res = await restore("workflows/price-report/README.md", { ...json, cookie, origin });
+  assert.ok(res.status >= 400 && res.status < 500, `${res.status} ${res.text}`);
+  assert.match(res.text, /secret_value/);
+  assert.ok(!res.text.includes(server.token), "never printed");
+  assert.equal(git(repo, ["rev-parse", "main"]).trim(), before, "nothing committed");
+});
+
+test("a retired note edited while retired keeps when it was retired: retired.at is its retire's, and last_change says edited", { timeout: 150_000 }, async (t) => {
+  const { api, retire, etag } = await keeper(t, { "answer-in-tables.md": TABLES });
+  await retire("answer-in-tables.md");
+  const itemOf = async () => (await api("GET", "/agents/keeper/learning")).body.notes.items.find((item) => item.file === "answer-in-tables.md");
+  const retiredAt = (await itemOf()).retired.at;
+  await new Promise((done) => setTimeout(done, 1100));
+  const edited = await api("PUT", "/agents/keeper/learning/files/answer-in-tables.md", { text: note("Answer in tables", "The user wants answers as tables", "Answer every question as a small table, with units.\n", "status: retired\n") }, { "if-match": await etag("answer-in-tables.md") });
+  assert.equal(edited.status, 200, JSON.stringify(edited.body));
+  const after = await itemOf();
+  assert.deepEqual([after.status, after.retired?.at, after.retired?.by, after.last_change?.kind], ["retired", retiredAt, "person", "edited"], JSON.stringify(after));
+  assert.notEqual(after.last_change.at, retiredAt, "the edit is newer");
+});
+
+test("restoring a skill checks every file of its folder and its format as a new skill is checked: a reference holding the server's secret, or a directive in its front matter, keeps it retired", { timeout: 150_000 }, async (t) => {
+  const RETIRED_SKILL = "---\nname: weekly-summary\ndescription: Writes the weekly support summary\nstatus: retired\n---\nWeekly summary: <dates>\n";
+  const HOOKED = "---\nname: hooked\ndescription: Writes the weekly support summary\nhooks: run-something\nstatus: retired\n---\nBody.\n";
+  const { repo, cookie, origin, restore, server } = await keeper(t, { "skills/hooked/SKILL.md": HOOKED });
+  mkdirSync(join(repo, "skills", "weekly-summary", "references"), { recursive: true });
+  writeFileSync(join(repo, "skills", "weekly-summary", "SKILL.md"), RETIRED_SKILL);
+  writeFileSync(join(repo, "skills", "weekly-summary", "references", "x.md"), `Sign in with ${server.token}.\n`);
+  git(repo, ["add", "--", "skills"]);
+  git(repo, ["commit", "-q", "-m", "a retired skill whose reference now holds a secret"]);
+  const before = git(repo, ["rev-parse", "main"]).trim();
+  for (const [file, rule] of [["skills/weekly-summary/SKILL.md", "secret_value"], ["skills/hooked/SKILL.md", "skill_front_matter"]]) {
+    const res = await restore(file, { ...json, cookie, origin });
+    assert.ok(res.status >= 400 && res.status < 500, `${file}: ${res.status} ${res.text}`);
+    assert.match(res.text, new RegExp(rule), `${file}: ${res.text}`);
+    assert.ok(!res.text.includes(server.token), "never printed");
+  }
+  assert.equal(git(repo, ["rev-parse", "main"]).trim(), before, "nothing committed");
+});
+
+test("restoring an item that waited for its owner's OK before it was retired is recorded as the owner's approval too: Approved-Via: console", { timeout: 150_000 }, async (t) => {
+  const PENDING = note("Buy from PaperDepot24 first", "Where to buy office paper", "Buy from PaperDepot24 first.\n", "origin: you\nstatus: pending\n");
+  const { repo, cookie, origin, restore, retire } = await keeper(t, { "paperdepot24-first.md": PENDING, "answer-in-tables.md": TABLES });
+  await retire("paperdepot24-first.md");
+  await retire("answer-in-tables.md");
+  assert.equal((await restore("paperdepot24-first.md", { ...json, cookie, origin })).status, 200);
+  assert.match(git(repo, ["log", "-1", "--format=%B", "main"]), /Approved-Via: console/, "held before its retire: the restore is its approval");
+  assert.equal((await restore("answer-in-tables.md", { ...json, cookie, origin })).status, 200);
+  assert.doesNotMatch(git(repo, ["log", "-1", "--format=%B", "main"]), /Approved-Via:/, "active before its retire: a plain restore");
+});
