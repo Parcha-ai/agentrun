@@ -1,4 +1,4 @@
-import { act, createElement } from "react";
+import { act, createElement, StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
@@ -55,12 +55,14 @@ beforeEach(() => {
 });
 afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.innerHTML = ""; vi.unstubAllGlobals(); location.hash = ""; });
 
-async function open(hash: string) {
+// `strict`: under StrictMode, as main.tsx renders the console (in development each effect is set up, cleaned up and set up
+// again).
+async function open(hash: string, { strict = false } = {}) {
   location.hash = hash;
   await new Promise((r) => setTimeout(r, 20));
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
-  act(() => root!.render(createElement(App)));
+  act(() => root!.render(strict ? createElement(StrictMode, null, createElement(App)) : createElement(App)));
   const wait = async (ok: () => boolean, what: string) => {
     const end = Date.now() + 4000;
     while (!ok() && Date.now() < end) await act(async () => { await new Promise((r) => setTimeout(r, 25)); });
@@ -169,6 +171,17 @@ describe("App, leaving the agent editor with nothing unsaved", () => {
     await page.type(page.instructions(), "Answer.");
     await page.click(page.button(/^Create$/));
     await page.wait(() => location.hash === "#/agents/made", "on the new agent's page");
+    expect(confirms).toEqual([]);
+  });
+
+  it("a new agent's Create opens its page under StrictMode too, as main.tsx renders the console", async () => {
+    const page = await open("#/agents/new", { strict: true });
+    await page.wait(() => !!page.instructions(), "the new agent's editor");
+    await page.type(page.host.querySelector("#agent-name"), "Made");
+    await page.type(page.instructions(), "Answer.");
+    await page.click(page.button(/^Create$/));
+    await page.wait(() => location.hash === "#/agents/made", "on the new agent's page");
+    expect(asked.filter((a) => a === "POST /v2/agents")).toHaveLength(1);
     expect(confirms).toEqual([]);
   });
 });
