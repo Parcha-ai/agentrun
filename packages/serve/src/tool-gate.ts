@@ -29,7 +29,7 @@ import { lstatSync, readFileSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { Context } from "@earendil-works/chord";
 import { type Cursor, defineExtension, type Extension, ROOT_CONVERSATION_ID, type ToolRegistration, type Tx, wrapTool } from "@earendil-works/pi-durable";
-import { type Drive, EffectFailure, openDrive } from "@parcha/agentrun-kernel/kernel";
+import { type Drive, EffectFailure, INTERRUPTED_TEXT, openDrive } from "@parcha/agentrun-kernel/kernel";
 import type { DurableRun } from "@parcha/pi-durable-disk";
 import { readJson, RUN_META } from "./files.js";
 import { LEARNED_DIR } from "./learning.js";
@@ -423,7 +423,8 @@ export class RunGate {
   };
 
   private async settle(): Promise<void> {
-    if (this.settling) return;
+    // Acting on an answer already: an approved call may be in flight, which a stop or a cancel since cuts.
+    if (this.settling) return void this.cutIfWithdrawn().catch(() => undefined);
     const open = [...this.requests.values()].filter((held) => !held.resolved);
     if (!open.length) {
       clearInterval(this.timer);
@@ -452,6 +453,12 @@ export class RunGate {
         }
         // An allow runs the call, unless its tool was set to deny since it asked.
         const result = decision === "deny" ? { text: refusedText(held.tool, answer.note), isError: true } : this.policy(held.tool) === "deny" ? { text: deniedText(held.tool), isError: true } : await this.run(held);
+        // And again once the call is done: a stop or a cancel while it ran drops its result, which never reaches the model.
+        const after = ((await readJson(join(this.where.root, RUN_META)))?.approvals as Record<string, { decision?: string }> | undefined)?.[held.id];
+        if (after?.decision === "canceled" || after?.decision === "withdrawn") {
+          await this.resolveSilently(held, after.decision);
+          continue;
+        }
         // The arguments the message names are the server's redacted ones: the gate never writes a held value there.
         await this.resume!(held.id, resumeText(held, answer.args_shown ?? "(not shown)", decision, result), (tx) => tx.appendEntry(ROOT_CONVERSATION_ID, { kind: APPROVAL_ENTRY, data: { phase: "resolved", id: held.id, decision } }));
         held.resolved = true;
@@ -462,6 +469,17 @@ export class RunGate {
     } finally {
       this.settling = false;
     }
+  }
+
+  /** The approved call in flight, and its own abort: a stop or a cancel of the run cuts it (cutIfWithdrawn). */
+  private inFlight?: { id: string; cut: AbortController };
+
+  /** Cuts the approved call in flight when a stop or a cancel since withdrew its answer (runs.ts supersede). */
+  private async cutIfWithdrawn(): Promise<void> {
+    const flying = this.inFlight;
+    if (!flying || flying.cut.signal.aborted) return;
+    const now = ((await readJson(join(this.where.root, RUN_META)))?.approvals as Record<string, { decision?: string }> | undefined)?.[flying.id];
+    if (now?.decision === "canceled" || now?.decision === "withdrawn") flying.cut.abort(new Error(INTERRUPTED_TEXT));
   }
 
   /** A call withdrawn with its run: resolved in the run's store with nothing run and nothing resumed. */
@@ -487,10 +505,25 @@ export class RunGate {
         throw error;
       });
     try {
-      return await (await this.drive).effect(`approval:${held.id}`, { name: held.tool, replay: tool.replay, input: held.args }, async ({ signal }) => {
-        const answer = await tool.call(held.args, { callId: held.call_id, signal });
-        return { text: answer.text, isError: answer.isError === true };
-      });
+      // Its own abort beside the drive's: a stop or a cancel of the run cuts this call, which runs outside any turn.
+      const cut = new AbortController();
+      this.inFlight = { id: held.id, cut };
+      try {
+        return await (await this.drive).effect(`approval:${held.id}`, { name: held.tool, replay: tool.replay, input: held.args }, async ({ signal }) => {
+          try {
+            const answer = await tool.call(held.args, { callId: held.call_id, signal: AbortSignal.any([signal, cut.signal]) });
+            // A host tool answers its own abort as an error result: still the stop's cut.
+            if (cut.signal.aborted) throw new Error(INTERRUPTED_TEXT);
+            return { text: answer.text, isError: answer.isError === true };
+          } catch (error) {
+            // Cut by a stop: its journal answers it interrupted, as a crash's cut call is.
+            if (cut.signal.aborted) throw new Error(INTERRUPTED_TEXT);
+            throw error;
+          }
+        });
+      } finally {
+        this.inFlight = undefined;
+      }
     } catch (error) {
       // Its outcome (interrupted, or a throw), journaled; anything else (the drive fenced) is tried again.
       if (error instanceof EffectFailure) return { text: error.message, isError: true };

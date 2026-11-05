@@ -448,6 +448,8 @@ test("a stop of a parked run withdraws the call: stopped, no pending approval, i
   const cancelId = (await parked(first.api, cancelRun)).view.pending.id;
   assert.equal((await first.api("POST", `/runs/${cancelRun}/cancel`)).status, 202);
   await follow(first.api, cancelRun, ["cancelled"], { deadlineMs: 30_000 });
+  // A cancel with no answered call in flight waits on nothing: its serve.json says no such wait.
+  assert.equal(JSON.parse(await readFile(join(first.data, "runs", cancelRun, "serve.json"), "utf8")).cancel_waits_for, undefined, "a plain cancel waits on nothing");
   const cancelRow = (await first.api("GET", `/runs/${cancelRun}/timeline`)).body.rows.find((r) => r.kind === "tool_approval_requested");
   assert.match(cancelRow.summary, /^Withdrawn/);
   assert.deepEqual((await answer(cancelRun, cancelId, { decision: "deny" })).status, 409);
@@ -600,4 +602,35 @@ test("a stop or a cancel that lands after an answer, before the run's process ac
     assert.deepEqual([view.status, view.state, view.pending], ["input_required", "idle", null], `${name}: stopped`);
   }
   assert.deepEqual(await dialled(), [], "no call ran");
+});
+
+test("a stop or a cancel cuts an approved call in flight: the tool sees the abort (monid is asked to stop the run), its result never reaches the model, and the row says withdrawn", { timeout: 150_000 }, async (t) => {
+  const log = join(await scratch(t), "monid-calls.jsonl");
+  withEnv(t, { MONID_API_KEY: MONID_KEY, AGENTRUN_TEST_FAUX_MONID_CALLS: log });
+  const server = await serve(t, { accounts: true, openSetup: true, fauxMonid: fixture("faux-monid.mjs") });
+  const answer = await owner(server);
+  const { api } = server;
+  const calls = async () => (await readFile(log, "utf8").catch(() => "")).trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
+  for (const [end, said] of [["stop", "stopped"], ["cancel", "cancelled"]]) {
+    // monid.run asks by default: the call parks; monid's /slow then runs until its caller stops it.
+    assert.equal((await api("POST", "/agents", agent(`slow-${end}`, { tools: ["monid.run"] }))).status, 201);
+    const runId = (await api("POST", `/agents/slow-${end}/runs`, { input: { content: "Run monid's /slow." } })).body.run_id;
+    const { view } = await parked(api, runId);
+    const before = (await calls()).length;
+    assert.equal((await answer(runId, view.pending.id, { decision: "allow" })).status, 204);
+    // The approved call is in flight: monid's run started, and it runs until stopped.
+    for (const until = Date.now() + 30_000; !(await calls()).slice(before).some((call) => call.path === "/v1/run"); await sleep(50)) assert.ok(Date.now() < until, `${end}: the approved call is in flight`);
+    if (end === "stop") assert.equal((await api("POST", `/runs/${runId}/stop`, {})).body.stopped, true);
+    else {
+      assert.equal((await api("POST", `/runs/${runId}/cancel`)).status, 202);
+      // The cancel overrode an answer the run's process was acting on, and waited for its gate to cut that call.
+      assert.deepEqual(JSON.parse(await readFile(join(server.data, "runs", runId, "serve.json"), "utf8")).cancel_waits_for, [view.pending.id], "the cancel says it waits for the approved call to be cut");
+    }
+    for (const until = Date.now() + 15_000; !(await calls()).slice(before).some((call) => /^\/v1\/runs\/[^/]+\/stop$/.test(call.path)); await sleep(50)) assert.ok(Date.now() < until, `${end}: the tool saw the abort, and monid was asked to stop the run`);
+    await sleep(2_000);
+    const rows = (await api("GET", `/runs/${runId}/timeline`)).body.rows;
+    assert.equal(rows.filter((row) => row.kind === "user_message").length, 1, `${end}: no resume turn`);
+    assert.ok(!rows.some((row) => row.kind === "final_answer" && row.text === "Ran."), `${end}: the result never reached the model`);
+    assert.match(rows.find((row) => row.kind === "tool_approval_requested").summary, new RegExp(`^Withdrawn when the run was ${said}`), end);
+  }
 });
