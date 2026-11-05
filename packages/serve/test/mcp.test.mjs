@@ -342,7 +342,8 @@ test("a run paused at its spend cap: the instructions, runs_get and runs_respond
   assert.match(init.result.instructions, /pending kind budget.*paused at its spend cap.*do not answer it/s);
   const { tools } = (await mcp.request("tools/list")).result;
   const described = Object.fromEntries(tools.map((tool) => [tool.name, tool.description]));
-  assert.match(described.runs_get, /\{kind: "budget", cap_usd, spent_usd, needs_usd, said, at\}/);
+  assert.match(described.runs_get, /\{kind: "budget", cap_usd, spent_usd, needs_usd, suggested_cap_usd, said, at\}/);
+  assert.match(described.runs_get, /waits for its cap to be raised, PATCH \/v2\/runs\/\{run_id\} \{max_cost_usd\}, which a person decides; suggested_cap_usd is a raise that resumes it/);
   assert.match(described.runs_respond, /paused at its spend cap \(pending kind budget\) takes no message: 409 budget_reached/);
   // The run: a $0.05 cap under the least of one request ($0.1024), paused before anything was sent.
   await mcp.tool("agents_create", { id: "capped", name: "Capped", instructions: "Answer." });
