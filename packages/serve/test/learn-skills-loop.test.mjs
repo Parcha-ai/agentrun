@@ -78,18 +78,33 @@ test("a skill from a run whose job failed is dropped by the checks as skill_outc
   assert.deepEqual(mergesOf(repoOf(data, "failing"), view.run_id), []);
 });
 
-test("a draft may name only the agent's own tools: with read granted a draft that names it merges, and without it the checks refuse it", { timeout: 120_000 }, async (t) => {
+/** A draft whose call node fetches the store's page with `tool`. */
+const callDraft = (tool) => {
+  const doc = JSON.parse(draft());
+  doc.schemas.Page = { type: "object" };
+  doc.output = { schemaId: "Page", path: "page" };
+  doc.root = { node: "call", label: "fetch", via: "tool", tool, args: { url: "{url}" }, out: "Page", as: "page", deadline_s: 30 };
+  return JSON.stringify(doc, null, 2);
+};
+
+test("a draft may name only the agent's own tools, on a call node: with web_fetch granted a draft that runs it merges, and without it the checks refuse it; a model node that names a tool is refused though the agent was granted it", { timeout: 120_000 }, async (t) => {
   const { api, data } = await server(t);
-  const text = answer({ json: draft(["read"]) });
-  await made(api, answering("reader", text, [], { tools: ["read"] }));
-  const granted = await ended(api, await started(api, "reader"));
+  const text = answer({ json: callDraft("web_fetch") });
+  await made(api, answering("fetcher", text, [], { tools: ["web_fetch"] }));
+  const granted = await ended(api, await started(api, "fetcher"));
   assert.equal(granted.view.learning?.state, "merged", JSON.stringify(granted.view.learning));
   await made(api, answering("bare", text));
   const bare = await ended(api, await started(api, "bare"));
   assert.deepEqual([bare.view.learning?.state, bare.view.learning?.reason], ["dropped", "checker"]);
   const saved = await savedOf(data, bare.view.run_id);
   assert.deepEqual(saved.learning.problems.map((problem) => problem.rule), ["workflow"]);
-  assert.match(saved.learning.problems[0].detail, /tool "read" is not one of the host's tools/);
+  assert.match(saved.learning.problems[0].detail, /tool "web_fetch" is not one of the host's tools/);
+  // A learned model node runs without tools: one that names web_fetch is refused at learn time, though it is granted.
+  await made(api, answering("tooled", answer({ json: draft(["web_fetch"]) }), [], { tools: ["web_fetch"] }));
+  const tooled = await ended(api, await started(api, "tooled"));
+  assert.deepEqual([tooled.view.learning?.state, tooled.view.learning?.reason], ["dropped", "checker"], JSON.stringify(tooled.view.learning));
+  const refused = await savedOf(data, tooled.view.run_id);
+  assert.match(refused.learning.problems[0].detail, /model node at \/root names a tool \(web_fetch\): a learned workflow's model node runs without tools/);
 });
 
 test("the grader drops a draft that singles out one case, and with it the whole answer: nothing merges", { timeout: 120_000 }, async (t) => {
