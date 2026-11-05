@@ -1,4 +1,4 @@
-Patch: 014-mcp-servers
+Patch: 017-mcp-servers
 Reason: the stand-in for app-server calls a remote MCP server's tool as Codex 0.164 does (the server and its granted tools from config.toml's mcp_servers, a function_call in the server's namespace, item/started for an mcpToolCall and the tools/call sent at once with its call id in _meta), fails thread/start when a required server does not start, and says the tool outputs a thread holds, for the demo of a codex run calling a saved MCP server's tool through the session's proxy
 Upstream: ours
 Pins: codex: an agent granted mcp:fake/add calls it through the session's proxy; the timeline reads fake · add, the fake saw the bearer, no file holds it
