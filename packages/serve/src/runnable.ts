@@ -31,7 +31,7 @@ export type RevisionShape =
  *  (code nodes this server does not run), `shell` (a shell or executor call), `tier`, `harness`, `box` (the place's,
  *  which this server does not have) and `denied` (a tool a workflow's call node calls that is set to deny) name it for a
  *  run's 409 details. */
-export type Blocker = InputIssue & { host: boolean; tool?: string; missing?: { tool: string; vars: string[] }; adapter?: string; decision?: { provider: string; needs: string[] }; codeNodes?: true; shell?: true; tier?: string; harness?: string; box?: string; denied?: string };
+export type Blocker = InputIssue & { host: boolean; tool?: string; missing?: { tool: string; vars: string[] }; adapter?: string; decision?: { provider: string; needs: string[] }; codeNodes?: true; shell?: true; tier?: string; harness?: string; box?: string; denied?: string; asks?: string };
 
 /**
  * The model `harness` runs an agentic revision on here: `ref`, its own `provider/model-id`, or with none this host's
@@ -46,7 +46,7 @@ export async function harnessModel(env: NodeJS.ProcessEnv, harness: string, ref:
   const own = harness === "claude-agent" && !env[FAUX_HARNESS_ENV];
   if (own && !available) return undefined;
   // codex's is the run's usual model, but an OpenAI model it reaches through OpenRouter alone is OpenRouter's (codexRef).
-  const chosen = own ? (await import("./adapters.js")).claudeModel(env, ref) : harness === "codex" ? await (await import("./adapters.js")).codexModel(env, ref) : await chooseModel(env, ref, "default", harness);
+  const chosen = own ? (await import("./adapters.js")).claudeModel(env, ref) : harness === "codex" || harness === "opencode" ? await (await import("./adapters.js")).codexModel(env, ref, harness) : await chooseModel(env, ref, "default", harness);
   if ("why" in chosen) return chosen;
   // The harness runs here; whether it runs this model (the revision's, or the default) is checked on it.
   if (harness !== DEFAULT_HARNESS && available) {
@@ -164,9 +164,11 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
   }
   for (const tool of named.calls) {
     if (!allows(CALL_TOOLS, tool)) out.push({ field: "definition.workflow", reason: "not_an_option", message: `A workflow's call nodes run the tools ${CALL_TOOLS.join(", ")} here; this workflow also calls ${tool}.`, host: false, tool });
-    // A call node is the author's own step, which no gate asks about (ask does not apply to it); one that calls a tool
-    // set to deny would be refused mid-run, so the run never starts.
-    else if (permissionOf(tool, settings as never, (revision.toolSettings ?? {}) as never) === "deny") out.push({ field: "definition.workflow", reason: NOT_SET_UP, message: `This workflow's call node calls ${tool}, which is set to deny on this server.`, host: true, denied: tool });
+    // A call node is the author's own step, and it cannot wait for an approval: one that calls a tool set to deny, or to
+    // ask (which it could never get), would be refused mid-run (app.ts runEffect), so the run never starts.
+    // Held to its settings key: a legacy name (fetch_page) takes its capability's permission (web_fetch's), as the gate does.
+    else if (permissionOf(capabilityOf(tool), settings as never, (revision.toolSettings ?? {}) as never) === "ask") out.push({ field: "definition.workflow", reason: NOT_SET_UP, message: `This workflow's call node calls ${capabilityOf(tool) === tool ? tool : `${tool} (${capabilityOf(tool)})`}, which is set to ask, and a workflow's call node can't wait for an approval: set it to allow for this agent.`, host: true, asks: capabilityOf(tool) });
+    else if (permissionOf(capabilityOf(tool), settings as never, (revision.toolSettings ?? {}) as never) === "deny") out.push({ field: "definition.workflow", reason: NOT_SET_UP, message: `This workflow's call node calls ${capabilityOf(tool) === tool ? tool : `${tool} (${capabilityOf(tool)})`}, which is set to deny on this server.`, host: true, denied: capabilityOf(tool) });
   }
   const granted = await grantedTools(revision);
   for (const tool of new Set([...named.nodes.filter((name) => allows(NODE_TOOLS, name)), ...named.calls.filter((name) => allows(CALL_TOOLS, name))])) {

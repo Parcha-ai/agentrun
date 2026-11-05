@@ -1,10 +1,10 @@
-Patch: 018-mcp-servers
+Patch: 020-mcp-servers
 Reason: an app's remote MCP servers are called by the CLI's own MCP client at the session's model proxy (/mcp/<server>, behind the session key), set over its stdin with setMcpServers (an options.mcpServers entry would be in its argv), each call allowed by name and recorded as a built-in's (intent before it runs, outcome after); a server that does not connect fails the turn, and tool search is off so the granted tools are offered whole
 Upstream: ours
 Pins: claude-agent: the Claude CLI's own MCP client calls mcp:fake/add through the session's proxy; the fake saw the bearer, the CLI never held it
 ---
 diff --git a/packages/harness-claude-code/src/harness.ts b/packages/harness-claude-code/src/harness.ts
-index e4d549c..c56ad85 100644
+index 4d284db..f80efe5 100644
 --- a/packages/harness-claude-code/src/harness.ts
 +++ b/packages/harness-claude-code/src/harness.ts
 @@ -196,6 +196,15 @@ export interface ClaudeCodeHarnessOptions {
@@ -115,5 +115,5 @@ index e4d549c..c56ad85 100644
          const messages = q[Symbol.asyncIterator]();
 +        if (mcpServers.length) await connectMcp(q as unknown as McpQuery, machine, mcpServers.map((server) => server.name), bridge.tools.length ? { [MCP_SERVER]: server } : {}, Math.max(1_000, deadline - Date.now()));
  
-         const send = async (text: string, placed: Submission[], how: { synthetic?: string; priority?: 'next' | 'later' } = {}) => {
+         const send = async (text: string, placed: Submission[], how: { synthetic?: string; priority?: 'next' | 'later'; covers?: string[] } = {}) => {
            // The drive's first message says, once, what the sandbox told it (a lost Drive).

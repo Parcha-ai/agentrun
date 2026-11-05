@@ -15,9 +15,12 @@
 //
 // Each tool also has a permission, the tool gate's (tool-gate.ts): allow, ask or deny, the agent's over the server's over
 // the owner's default (a built-in kernel tool allow, a third-party catalog tool ask, told apart by its name), read by
-// the gate's one rule, permissionOf. A capability set to deny resolves to no provider; under ask, a harness's own search
-// (inside its CLI, where no call can wait for a person) gives way to the kernel's.
+// the gate's one rule, permissionOf. A capability set to deny resolves to no provider where it is shown; under ask, a
+// harness's own search (inside its CLI, where no call can wait for a person) gives way to the kernel's. A run is never
+// told a deny: its Plane resolves a denied capability as under ask, and the gate, which reads the permission at each
+// call, is the one place that refuses it, so a deny lifted mid-run is lifted at the next call.
 import { readFileSync } from "node:fs";
+import { isToolSettingsKey } from "@parcha/pi-durable-agent";
 import { join } from "node:path";
 import { decisionKeysOf, PARALLEL_KEY_ENV } from "./decisions.js";
 import type { InputIssue } from "./errors.js";
@@ -25,7 +28,7 @@ import { writeDurableSync } from "./files.js";
 import { DEFAULT_HARNESS, HARNESSES, type HarnessId } from "./harness.js";
 import { savedIn } from "./secrets.js";
 import { hostModel, viaOpenRouter } from "./model.js";
-import { defaultPermission, isCatalogTool, isMcpTool, type Permission, PERMISSIONS, permissionFrom, permissionOf } from "./tool-gate.js";
+import { defaultPermission, isCatalogTool, isMcpTool, type Permission, PERMISSIONS, permissionFrom, permissionOf, SHELL_FAMILY } from "./tool-gate.js";
 
 /**
  * The capabilities a pack or a revision may grant, by name: the tools the kernel gives a run, bound from serve's closed
@@ -41,8 +44,10 @@ export type Capability = (typeof CAPABILITIES)[number];
  *  server holds its key, else keyless Exa; `native`, the harness's own tool or its model provider's hosted one, and
  *  nothing else; `exa-keyless`, Exa's public MCP endpoint, no key; `kernel`, the guarded direct fetch; `parallel`,
  *  Parallel's Search and Extract APIs on PARALLEL_API_KEY; `off`, web_search turned off: nothing is searched, and an
- *  agent naming it is refused until it is turned on again. */
-export const PROVIDERS = Object.freeze({ web_search: ["auto", "native", "exa-keyless", "parallel", "off"], web_fetch: ["kernel", "parallel"] } as const);
+ *  agent naming it is refused until it is turned on again. The browser's: `auto`, Browserbase where the server holds its
+ *  keys, else Kernel where it holds Kernel's; `browserbase` or `kernel`, that one alone; `chrome`, a Chrome on the
+ *  server's own host, which no server sets up yet (browserBy). */
+export const PROVIDERS = Object.freeze({ web_search: ["auto", "native", "exa-keyless", "parallel", "off"], web_fetch: ["kernel", "parallel"], browser: ["auto", "browserbase", "kernel", "chrome"] } as const);
 export type Pickable = keyof typeof PROVIDERS;
 export const PICKABLE = Object.keys(PROVIDERS) as Pickable[];
 /** Older names a revision may still grant, and the capability each one is: `fetch_page` runs web_fetch, under its own
@@ -57,17 +62,17 @@ export const TABLE_TOOLS: readonly string[] = ["read", "write", "edit", "bash", 
  *  offered for these and for catalog tools. Any other (browser, ask_person, the call-only ones) is allow or deny. */
 export const ASKABLE: readonly string[] = ["read", "write", "edit", "bash", "fetch_page", "web_fetch", "web_search"];
 /** The permissions `name` may be set to. */
-export const permissionsOf = (name: string): readonly Permission[] => (ASKABLE.includes(name) || isCatalogTool(name) ? PERMISSIONS : ["allow", "deny"]);
+export const permissionsOf = (name: string): readonly Permission[] => (Object.hasOwn(SHELL_FAMILY, name) && SHELL_FAMILY[name] !== name ? permissionsOf(SHELL_FAMILY[name]!) : ASKABLE.includes(name) || isCatalogTool(name) ? PERMISSIONS : ["allow", "deny"]);
 /** A settings key: a tool of the table, a catalog tool (`monid.<tool>`, `mcp:<server>/<tool>`), or an MCP server's
  *  wildcard (`mcp:<server>/*`), which sets each of its tools. */
-const isSettingsKey = (name: string): boolean => (TABLE_TOOLS.includes(name) && !Object.hasOwn(LEGACY_NAMES, name)) || isCatalogTool(name) || /^mcp:[^/]+\/\*$/.test(name);
+const isSettingsKey = (name: string): boolean => isToolSettingsKey(name) && ((TABLE_TOOLS.includes(name) && !Object.hasOwn(LEGACY_NAMES, name)) || isCatalogTool(name) || /^mcp:[^/]+\/\*$/.test(name));
 /** One tool's settings: its provider (a capability that has a choice) and its permission. */
 export type ToolSetting = { provider?: string; permission?: Permission };
 /** The tools' settings, the server's (`/v2/settings/tools`) and an agent's own (`definition.tool_settings`), one shape:
  *  by settings key. */
 export type ToolSettingsMap = Partial<Record<string, ToolSetting>>;
 /** What a capability resolves to on a run: the native tool, the kernel's own, keyless Exa, Parallel, or why not. */
-export type Resolution = "native" | "kernel" | "exa-keyless" | "parallel" | `unavailable: ${string}`;
+export type Resolution = "native" | "kernel" | "exa-keyless" | "parallel" | "browserbase" | `unavailable: ${string}`;
 export const NO_PARALLEL_KEY: Resolution = "unavailable: parallel picked, no PARALLEL_API_KEY";
 /** web_search with `off` picked: no search leaves the server. */
 export const SEARCH_OFF: Resolution = "unavailable: web_search is turned off in settings";
@@ -92,6 +97,8 @@ export type ResolveInput = {
   /** The server holds PARALLEL_API_KEY; `parallelKeyFrom`, where from: its own environment, or saved on Tool keys. */
   parallelKey: boolean;
   parallelKeyFrom?: "server" | "saved";
+  /** Which of the browser's providers the server holds the keys of (BROWSER_KEYS); none given, neither. */
+  browserKeys?: Record<BrowserVendor, boolean>;
   /** The run has a spend cap: Codex's own search sends a request with no input bound, which a cap cannot admit. */
   capped?: boolean;
   /** The harness's model requests go through OpenRouter (model.ts' viaOpenRouter), where its own search does not run. */
@@ -118,6 +125,8 @@ function noNative(input: ResolveInput): { id: string; why: string } | undefined 
   if ((input.harness === "claude-agent" || input.harness === "codex") && input.openRouter) return { id: `${input.harness} on OpenRouter`, why: `through OpenRouter ${input.harness === "codex" ? "Codex" : "Claude"}'s own search is not run, and its searches are not counted to price` };
   if (input.harness === "claude-agent") return input.capped ? { id: CLAUDE_CAPPED, why: "under a spend cap Claude's own search is not offered, since a cap cannot reserve its per-use fees yet" } : undefined;
   if (input.harness === "codex") return input.gateway ? { id: "codex behind a gateway", why: "behind a gateway Codex has no own search" } : input.capped ? { id: "codex under a spend cap", why: "under a spend cap Codex's own search is not offered, since its request has no input bound" } : undefined;
+  // OpenCode has none: its model requests carry no provider-hosted tool (its proxy policy refuses one).
+  if (input.harness === "opencode") return { id: "opencode, whose model requests carry no provider-hosted tool", why: "OpenCode's model requests carry no provider-hosted tool" };
   if (input.gateway) return { id: `${input.harness} behind a gateway`, why: `behind a gateway ${input.harness} has no hosted search` };
   if (vendor && HOSTED_SEARCH_PROVIDERS.includes(vendor)) return undefined;
   return input.model ? { id: input.model, why: `${input.model} has no hosted search here` } : { id: "a model with none named", why: "no model is named, so there is no hosted search" };
@@ -137,6 +146,7 @@ export function explainCapability(capability: Pickable, input: ResolveInput): { 
   if (chosen === "off") return { resolves: SEARCH_OFF, why: "turned off in settings" };
   if (chosen === "parallel") return input.parallelKey ? { resolves: "parallel", why: `Parallel, ${picked}: ${key}` } : { resolves: NO_PARALLEL_KEY, why: "Parallel is picked, and no PARALLEL_API_KEY is set or saved" };
   if (capability === "web_fetch") return { resolves: "kernel", why: "the guarded direct fetch" };
+  if (capability === "browser") return browserBy(chosen, picked, input.browserKeys);
   if (chosen === "exa-keyless") return { resolves: "exa-keyless", why: `keyless Exa, ${picked}: Exa's free search, no key` };
   // Under ask, a harness's own search runs inside its CLI, where no call can wait for a person: none on claude-agent or
   // codex then, and the kernel's search, which the gate holds, in its place. pi's is a tool of the run's, which it holds.
@@ -159,10 +169,37 @@ export const isUnavailable = (resolution: Resolution | undefined): resolution is
 /** Why a resolution is unavailable: its words after "unavailable: " (any other resolution as it is). */
 export const whyUnavailable = (resolution: string): string => resolution.replace(/^unavailable: /, "");
 
+/** The keys each of the browser's vendors needs, by name: a tool key's fields (tool-keys.ts), set or saved. Its plane
+ *  value is the vendor's id: `kernel` on browser is Kernel's hosted browser, never the guarded fetch web_fetch calls so. */
+export const BROWSER_KEYS = Object.freeze({ browserbase: ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"], kernel: ["KERNEL_API_KEY"] } as const);
+type BrowserVendor = keyof typeof BROWSER_KEYS;
+const LABELS: Record<BrowserVendor, string> = { browserbase: "Browserbase", kernel: "Kernel" };
+const isVendor = (name: unknown): name is BrowserVendor => name === "browserbase" || name === "kernel";
+const browserKeysOf = (env: NodeJS.ProcessEnv): Record<BrowserVendor, boolean> => ({ browserbase: BROWSER_KEYS.browserbase.every((name) => Boolean(env[name])), kernel: BROWSER_KEYS.kernel.every((name) => Boolean(env[name])) });
+/** A vendor picked whose keys the server does not hold: unavailable, never the other vendor. */
+const noBrowserKey = (vendor: BrowserVendor): Resolution => `unavailable: ${vendor} picked, no ${BROWSER_KEYS[vendor].join(" and ")}`;
+/** The keys a browser that resolves to `resolution` runs on: its vendor's (BROWSER_KEYS), none for no vendor. */
+export const browserNeeds = (resolution: string | undefined): readonly string[] => (isVendor(resolution) ? BROWSER_KEYS[resolution] : []);
+/** `auto` where the server holds neither vendor's keys. */
+export const NO_BROWSER_KEY: Resolution = "unavailable: no browser key: set or save Browserbase's (BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID) or Kernel's (KERNEL_API_KEY)";
+/** `chrome` picked: a Chrome on the server's own host, refused by name until a server can set one up. */
+export const NO_CHROME: Resolution = "unavailable: a local Chrome is not set up on this server";
+
+/** The browser `chosen` (picked as `picked` says) resolves to with the vendors' `keys`: `auto` is Browserbase where its
+ *  keys are held, else Kernel where its key is, else unavailable; a vendor picked is that vendor or unavailable; `chrome`
+ *  is unavailable by name. */
+function browserBy(chosen: string, picked: string, keys: Record<BrowserVendor, boolean> = { browserbase: false, kernel: false }): { resolves: Resolution; why: string } {
+  if (chosen === "chrome") return { resolves: NO_CHROME, why: whyUnavailable(NO_CHROME) };
+  if (isVendor(chosen)) return keys[chosen] ? { resolves: chosen, why: `${LABELS[chosen]}, ${picked}` } : { resolves: noBrowserKey(chosen), why: `${LABELS[chosen]} is picked, and no ${BROWSER_KEYS[chosen].join(" and ")} is set or saved` };
+  if (keys.browserbase) return { resolves: "browserbase", why: "Browserbase: its key is set or saved" };
+  if (keys.kernel) return { resolves: "kernel", why: "Kernel: its key is set or saved, and Browserbase's is not" };
+  return { resolves: NO_BROWSER_KEY, why: whyUnavailable(NO_BROWSER_KEY) };
+}
+
 /** The server's environment's part of every resolution: its gateway and Parallel's key, and where the key is from. */
 const served = (env: NodeJS.ProcessEnv) => {
   const parallelKey = PARALLEL_KEY_ENV in decisionKeysOf(env);
-  return { gateway: Boolean(env.AGENT_MODEL_BASE_URL), parallelKey, ...(parallelKey ? { parallelKeyFrom: savedIn(env).has(PARALLEL_KEY_ENV) ? ("saved" as const) : ("server" as const) } : {}) };
+  return { gateway: Boolean(env.AGENT_MODEL_BASE_URL), parallelKey, browserKeys: browserKeysOf(env), ...(parallelKey ? { parallelKeyFrom: savedIn(env).has(PARALLEL_KEY_ENV) ? ("saved" as const) : ("server" as const) } : {}) };
 };
 
 /** Each pickable capability on each harness under the server's `settings` and an agent's `overrides`, on `model`
@@ -194,8 +231,10 @@ export type Tooling = { harness?: string; tools: readonly string[]; model?: stri
 /** The run's process's description of its tools' providers: JSON of its Plane. */
 export const TOOL_PLANE_ENV = "AGENTRUN_SERVE_TOOL_PLANE";
 
-/** The Plane of a run of `tooling`, in the server's `env` (with its secrets) under its `settings`. */
-export function planeFor(env: NodeJS.ProcessEnv, tooling: Tooling, settings: ToolSettingsMap, { capped = false }: { capped?: boolean } = {}): Plane {
+/** The Plane of a run of `tooling`, in the server's `env` (with its secrets) under its `settings`. `run`: the Plane a
+ *  run's process is handed, where a capability set to deny resolves as under ask (the provider a held call would use),
+ *  since the gate refuses its calls while it is denied; else the one shown and checked, where it resolves denied. */
+export function planeFor(env: NodeJS.ProcessEnv, tooling: Tooling, settings: ToolSettingsMap, { capped = false, run = false }: { capped?: boolean; run?: boolean } = {}): Plane {
   const harness = tooling.harness ?? DEFAULT_HARNESS;
   // A workflow's model nodes may each run on another tier's model, and a native search asks one model's provider: a
   // workflow's search resolves with no model (keyless Exa, or Parallel where picked), never on a model a node may not use.
@@ -205,23 +244,56 @@ export function planeFor(env: NodeJS.ProcessEnv, tooling: Tooling, settings: Too
   const plane: Plane = {};
   const granted = tooling.tools.map(capabilityOf);
   for (const name of PICKABLE) {
-    if (granted.includes(name)) plane[name] = resolveCapability(name, { ...served(env), harness, capped, openRouter: viaOpenRouter(env, harness, model), ...(model ? { model } : {}), ...picked(name, settings, tooling.overrides) });
+    if (!granted.includes(name)) continue;
+    const chosen = picked(name, settings, tooling.overrides);
+    plane[name] = resolveCapability(name, { ...served(env), harness, capped, openRouter: viaOpenRouter(env, harness, model), ...(model ? { model } : {}), ...chosen, ...(run && chosen.permission === "deny" ? { permission: "ask" as const } : {}) });
   }
   if (plane.web_search === "native" && harness === DEFAULT_HARNESS && model) plane.model = model;
   return plane;
 }
 
-/** A run's kept Plane at a later launch: as it was, but Parallel where the server no longer holds its key, which is
- *  unavailable, never another provider; and, given `now` (the Plane it would get today and each capability's permission
- *  today), a capability set to ask or deny, or kept denied, as it resolves today: a harness's own search cannot wait for
- *  a person, and a deny that was lifted is lifted. */
+/** A run's kept Plane at a later launch: as it was, but Parallel, or the browser's vendor, where the server no longer
+ *  holds its key, which is unavailable, never another provider; and, given `now` (the Plane it would get today and each
+ *  capability's permission today), a capability set to ask or deny, or kept denied, as it resolves today: a harness's
+ *  own search cannot wait for a person, and a deny that was lifted is lifted. The browser keeps its vendor, whose
+ *  sessions it has: only a deny it was kept with is lifted. */
 export function recheckPlane(plane: Plane, env: NodeJS.ProcessEnv, now?: { fresh: Plane; permission: (name: Pickable) => Permission }): Plane {
   const keyed = served(env).parallelKey;
   return Object.fromEntries(Object.entries(plane).map(([name, value]) => {
     const fresh = name === "model" ? undefined : now?.fresh[name as Pickable];
-    if (fresh !== undefined && (value === DENIED || now!.permission(name as Pickable) !== "allow")) return [name, fresh];
-    return [name, value === "parallel" && !keyed ? NO_PARALLEL_KEY : value];
+    if (fresh !== undefined && (value === DENIED || (name !== "browser" && now!.permission(name as Pickable) !== "allow"))) return [name, fresh];
+    return [name, name === "browser" && isVendor(value) && !browserKeysOf(env)[value] ? noBrowserKey(value) : value === "parallel" && !keyed ? NO_PARALLEL_KEY : value];
   })) as Plane;
+}
+
+/** The Plane kept for a run made before its plane was kept, resolved at a later launch (runs.ts): its browser stays
+ *  Browserbase, the one vendor there was then, never today's pick, which could check its sessions at another vendor. It
+ *  keeps the vendor, never a refusal: the plane each launch hands over is checked again (recheckPlane), so Browserbase's
+ *  keys missing make it unavailable for that launch alone, and restored keys make the next one run. */
+export const keptFromBefore = (plane: Plane): Plane => (plane.browser === undefined ? plane : { ...plane, browser: "browserbase" });
+
+/** A run's saved Plane as a launch reads it: a vendor's missing-key refusal an earlier server saved (noBrowserKey's exact
+ *  words, Browserbase's or Kernel's) is that vendor again, which the launch checks again as usual (recheckPlane), so
+ *  restored keys make it run. Every other saved value stays as it is: `auto` with no key at a run's first launch
+ *  (NO_BROWSER_KEY) and `chrome` stay frozen. The same Plane where nothing changes. */
+export function keptVendor(plane: Plane): Plane {
+  const vendor = (Object.keys(BROWSER_KEYS) as BrowserVendor[]).find((name) => plane.browser === noBrowserKey(name));
+  return vendor ? { ...plane, browser: vendor } : plane;
+}
+
+/** The key row (tool-keys.ts) of the browser's vendor on `resolution` with `picked` the provider in force: Kernel's where
+ *  Kernel is picked or resolved, else Browserbase's, so a page links a missing key to the row it is saved on. */
+export const browserKeyRow = (picked: string | undefined, resolution: string | undefined): "kernel" | "browserbase" => (picked === "kernel" || resolution === "kernel" ? "kernel" : "browserbase");
+
+/** The Plane a run's process is handed at a launch, under the server's `settings` now: its kept Plane (as keptVendor
+ *  reads it) checked again (recheckPlane) against the one it would get today; with none kept, today's, its browser kept
+ *  (keptFromBefore). At a launch after its first (a relaunch, a follow-up's, one after a restart) a capability set
+ *  to deny is handed denied (planeFor without `run`), the tool's own refusal backing the gate's; at its `first`, as
+ *  under ask, so a deny lifted while that process lives is lifted at the next call. */
+export function relaunchPlane(kept: Plane | undefined, env: NodeJS.ProcessEnv, tooling: Tooling | undefined, settings: ToolSettingsMap, { capped = false, first = false }: { capped?: boolean; first?: boolean } = {}): Plane {
+  const fresh = tooling ? planeFor(env, tooling, settings, { capped, run: first }) : {};
+  if (kept) return recheckPlane(kept, env, { fresh, permission: (name) => permissionOf(name, settings, tooling?.overrides ?? {}) });
+  return tooling ? recheckPlane(keptFromBefore(fresh), env) : {};
 }
 
 /** The Plane the server handed this run's process; empty when it handed none. */

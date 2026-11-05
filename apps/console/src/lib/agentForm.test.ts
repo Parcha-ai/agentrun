@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createBody, DECISION, decisionProvider, defaultTools, editBody, harnessOptions, reachesWeb, same, sandboxReason, saveError, toolOffers, toolsFor, WORKFLOW } from "./agentForm";
+import { capOf, createBody, DECISION, decisionProvider, defaultTools, editBody, harnessOptions, reachesWeb, same, sandboxReason, saveError, toolOffers, toolsFor, WORKFLOW } from "./agentForm";
 import { DECISION_STARTER } from "./decisionStarter";
 import { WORKFLOW_STARTER } from "./workflowStarter";
 import { ClientError } from "./client";
@@ -86,6 +86,35 @@ describe("createBody", () => {
   });
 });
 
+describe("the agent's default spend cap per run (definition.max_cost_usd)", () => {
+  const capped = { ...(agent.body as object), definition: { ...agent.body.definition, max_cost_usd: 2.5, some_future_field: { kept: true } } } as never;
+  it("an edit keeps every field the form does not show: max_cost_usd and an unknown one", () => {
+    const body = editBody(capped, { instructions: "Check it twice." }, "");
+    expect(body.definition).toMatchObject({ max_cost_usd: 2.5, some_future_field: { kept: true }, instructions: "Check it twice." });
+  });
+  it("an edit sets a new cap, and a cleared one is sent as an explicit 0, never left out", () => {
+    expect(editBody(capped, { max_cost_usd: 4 }, "").definition.max_cost_usd).toBe(4);
+    const cleared = editBody(capped, { max_cost_usd: 0 }, "");
+    expect([cleared.unchanged, cleared.definition.max_cost_usd, cleared.definition.some_future_field]).toEqual([false, 0, { kept: true }]);
+  });
+  it("a new agent's first revision carries the cap typed, none when empty, and a starter never one", () => {
+    const f = { name: "A", description: "", instructions: "Do it.", harness: "pi", tools: [] };
+    expect(createBody({ ...f, max_cost_usd: 0.75 }).definition.max_cost_usd).toBe(0.75);
+    expect(createBody(f).definition).not.toHaveProperty("max_cost_usd");
+    expect(createBody({ ...f, harness: DECISION, decisionProvider: "jev", max_cost_usd: 0.75 }).definition).not.toHaveProperty("max_cost_usd");
+  });
+});
+
+describe("capOf, the default cap field's text", () => {
+  it("empty is none, a number (with or without a leading $) is that number, and a $ alone or text is refused", () => {
+    expect(capOf("")).toEqual({ ok: true, value: undefined });
+    expect(capOf("   ")).toEqual({ ok: true, value: undefined });
+    expect(capOf("$2.50")).toEqual({ ok: true, value: 2.5 });
+    expect(capOf(" 4 ")).toEqual({ ok: true, value: 4 });
+    for (const text of ["$", " $ ", "ten"]) expect(capOf(text).ok, text).toBe(false);
+  });
+});
+
 describe("harnessOptions", () => {
   it("offers pi, Claude and Codex in that order, each available or disabled with the server's reason", () => {
     expect(harnessOptions(caps.body.harnesses)).toEqual([
@@ -96,6 +125,14 @@ describe("harnessOptions", () => {
   });
   it("offers nothing the server does not list", () => {
     expect(harnessOptions([{ id: "pi", available: true }]).map((h) => h.id)).toEqual(["pi"]);
+  });
+  it("offers OpenCode last of the harnesses, when the server lists it", () => {
+    const listed = [{ id: "opencode", available: false, reason: "opencode is not installed here" }, { id: "pi", available: true }, { id: "codex", available: true }];
+    expect(harnessOptions(listed)).toEqual([
+      { id: "pi", label: "Pi", available: true, reason: undefined },
+      { id: "codex", label: "Codex", available: true, reason: undefined },
+      { id: "opencode", label: "OpenCode", available: false, reason: "opencode is not installed here" },
+    ]);
   });
 });
 

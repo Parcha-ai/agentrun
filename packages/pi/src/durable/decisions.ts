@@ -50,7 +50,9 @@ export type DecisionRow = {
   usage: { input_tokens: number; output_tokens: number } | null;
   cost_usd: number | null;
   latency_ms: number;
+  /** The request's error, as its receipt kept it: whole up to 64 KB, a longer one cut there with `error_truncated`. */
   error?: string;
+  error_truncated?: boolean;
   /** How the request ended (`answered`, `failed` or `cancelled`); absent on a row written before it was kept. */
   status?: "answered" | "failed" | "cancelled";
   /** The provider that answered, when the host's judge names it or the node pins it. */

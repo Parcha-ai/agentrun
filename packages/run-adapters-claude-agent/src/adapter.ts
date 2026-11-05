@@ -15,11 +15,12 @@ import { dirname, join } from "node:path";
 import { READ_SKILL_FILE, readSkillFileTool, skillProblems, type AdapterSession, type AgentAdapter, type HostSkill, type HostTool, type SessionIO, type SessionSpec, type ToolImage, type TurnStatus } from "@parcha/agentrun-kernel";
 import { abortedOutcome, openDrive, pendingSubmissions, Restart, SessionHalt, type Drive, type HostTool as KernelTool } from "@parcha/agentrun-kernel/kernel";
 import { toolSchemaProblems } from "@parcha/agentrun-kernel";
-import { recoveryNote, settleTurn, transcriptOf } from "@parcha/agentrun-kernel/process";
+import { NativeJournal, recoveryNote, settleTurn, transcriptOf } from "@parcha/agentrun-kernel/process";
 import { checkedOnce, hostHeaderProblems, mcpRoute, type ModelProxyOptions, sha256OfFile } from "@parcha/agentrun-kernel/host";
 import { findClaudeExecutable, platformSuffix } from "./binary.js";
 import { CLAUDE_AGENT_PACKAGE, ClaudeAgentNotInstalled, ClaudeAgentPinMismatch, ClaudeAgentThinkingOff } from "./errors.js";
-import { type ClaudeAgentSdk, claudeCodeHarness } from "./harness.js";
+import { type ClaudeAgentSdk, claudeCodeHarness, lostPrompts } from "./harness.js";
+import { JournalSessionStore } from "./store.js";
 import { type ConfineChild, localMachine } from "./host/machine.js";
 import { serialWriter } from "./serial.js";
 import { MCP_SERVER } from "./transcript.js";
@@ -143,6 +144,24 @@ export function thinkingOf(spec: Pick<SessionSpec, "thinking" | "effort">, fallb
   const asked = (spec.thinking ?? spec.effort) as string | undefined;
   if (asked === "minimal") return "low";
   return asked && THINKING.has(asked) ? (asked as ClaudeAgentThinking) : fallback;
+}
+
+/**
+ * The SDK that is handed no message once the drive is stopped: its prompt stream ends instead, so no turn starts after a
+ * stop. Whether a placed message reached the CLI is the CLI's own record, not this hand-over: the SDK writes a message to
+ * the CLI's stdin at once, and a stop can kill the CLI before it reads it (settleOpenTurn reads the transcript).
+ */
+export function withStopEndingPrompts(sdk: ClaudeAgentSdk, signal: () => AbortSignal): ClaudeAgentSdk {
+  const until = async function* <T>(prompt: AsyncIterable<T>) {
+    for await (const message of prompt) {
+      if (signal().aborted) return;
+      yield message;
+    }
+  };
+  return {
+    ...sdk,
+    query: ((args: Parameters<ClaudeAgentSdk["query"]>[0]) => sdk.query({ ...args, prompt: (typeof args.prompt === "string" ? args.prompt : until(args.prompt as AsyncIterable<unknown>)) as typeof args.prompt })) as ClaudeAgentSdk["query"],
+  };
 }
 
 /** The SDK with every query thinking at `level`: adaptive thinking, at that effort. */
@@ -390,7 +409,8 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
       });
       // The SDK this session runs on (the host's, or the one installed beside this package, checked above), thinking at
       // the session's level.
-      const sdk = thinkingAt(options.sdk ?? (await import("@anthropic-ai/claude-agent-sdk")) as unknown as ClaudeAgentSdk, thinkingOf(spec, thinking));
+      // Handed nothing once the drive of the moment is stopped (withStopEndingPrompts).
+      const sdk = withStopEndingPrompts(thinkingAt(options.sdk ?? (await import("@anthropic-ai/claude-agent-sdk")) as unknown as ClaudeAgentSdk, thinkingOf(spec, thinking)), () => drive.signal);
       const harness = claudeCodeHarness({
         name: CLAUDE_AGENT_ID,
         sandbox: {
@@ -505,12 +525,19 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
           await ready();
           void run();
         },
-        async settleOpenTurn() {
+        async settleOpenTurn(options = {}) {
           if (state !== "open_turn") throw new Error("agentrun-harness-claude: there is no turn to settle");
           await ready();
           // The turn's end in the session's own transcript, as a turn that ends writes it: the next open finds no open turn,
-          // and the next turn carries no recovery of this one. Nothing is sent.
-          await settleTurn(drive);
+          // and the next turn carries no recovery of this one. Nothing is sent. A prompt the turn placed that the CLI never
+          // recorded (the stop came before the CLI read it) is carried into the next message, as an unplaced one is; a
+          // follow-up's own is not. The record is the CLI's transcript as the session keeps it (lostPrompts over the
+          // journal's transcript store), the history a resumed CLI is given: a message it lacks the next turn's model never
+          // saw, so carrying it never sends it twice.
+          const folded = drive.state();
+          const transcript = new JournalSessionStore(new NativeJournal(drive), { records: await new NativeJournal(drive).read() });
+          const unsent = lostPrompts(folded, recoveryNote(folded)?.turn.placed ?? [], transcript);
+          await settleTurn(drive, { unsent, ...(options.opening === undefined ? {} : { host: options.opening }) });
           state = "idle";
         },
         async turnEnd() {

@@ -38,7 +38,7 @@ export function gated<P, R>(root: string, fn: (params: P) => Promise<R>): (param
 export type NodeLine =
   | { t: "node.start" | "node.end"; path: string; kind: string; at: string; status?: string; duration_ms?: number; error?: string }
   | { t: "effect.start"; path: string | null; item: number | null; tool: string; label: string; input: unknown; at: string }
-  | { t: "effect.end"; path: string | null; item: number | null; tool: string; label: string; status: "done" | "failed"; output?: unknown; error?: string; at: string };
+  | { t: "effect.end"; path: string | null; item: number | null; tool: string; label: string; status: "done" | "failed"; output?: unknown; error?: string; error_truncated?: boolean; at: string };
 
 /** Appends to the run's node log; a write that fails is lost, never the run's. */
 export const nodeLog = (root: string) => (line: NodeLine) => {

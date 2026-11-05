@@ -23,6 +23,14 @@
 // replay-safe, and is answered interrupted otherwise) on the run's own coding source, and resumes the session with one
 // message that names the call and carries its result, or the refusal. A result is cut as every host tool's is
 // (HOST_RESULT_MAX_CHARS); the gate spills nothing.
+//
+// A stop or a cancel wins over an answer (runs.ts supersede): the gate reads the answer again before it writes the
+// call's intent, cuts an approved call in flight when its answer is withdrawn, and reads it again once the call is
+// done. Two windows of milliseconds remain, the same class as a stop racing any tool call inside a turn:
+// - A stop that lands between the read before the intent and drive.effect's intent lets a short call that does not
+//   heed its abort run. Its result is dropped (the read after the call), never resumed.
+// - A stop that lands between the read after the call and resume()'s commit can start the resume turn on a stopped
+//   run: a stop, unlike a cancel, leaves no mark the resume is held to.
 
 import { createHash } from "node:crypto";
 import { lstatSync, readFileSync } from "node:fs";
@@ -30,12 +38,14 @@ import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { Context } from "@earendil-works/chord";
 import { type Cursor, defineExtension, type Extension, ROOT_CONVERSATION_ID, type ToolRegistration, type Tx, wrapTool } from "@earendil-works/pi-durable";
 import { type Drive, EffectFailure, INTERRUPTED_TEXT, openDrive } from "@parcha/agentrun-kernel/kernel";
+import { boundResult } from "@parcha/agentrun-kernel/process";
 import type { DurableRun } from "@parcha/pi-durable-disk";
 import { readJson, RUN_META } from "./files.js";
 import { LEARNED_DIR } from "./learning.js";
 import type { TurnOrigin } from "./learning-run.js";
 import { forModel } from "./result.js";
 import { durableSessions } from "./sessions.js";
+import { SHELL_TOOLS } from "./background.js";
 import { LEGACY_NAMES, readToolSettings, TABLE_TOOLS } from "./tool-plane.js";
 
 /** What the gate does with a tool's calls. */
@@ -50,6 +60,16 @@ export const isMcpTool = (name: string): boolean => /^mcp:[^/]+\/.+$/.test(name)
 export const isCatalogTool = (name: string): boolean => name.startsWith("monid.") || isMcpTool(name);
 /** The owner's defaults (11-01): a built-in kernel tool allow; a third-party catalog tool ask. */
 export const defaultPermission = (name: string): Permission => (isCatalogTool(name) ? "ask" : "allow");
+
+/** The tools that run a command in the run's box (background.ts SHELL_TOOLS), each held to bash's setting: bash: deny
+ *  refuses bash_background as it refuses bash, and none of them is a settings key of its own. */
+export const SHELL_FAMILY: Readonly<Record<string, string>> = Object.freeze(Object.fromEntries(SHELL_TOOLS.map((name) => [name, "bash"])));
+/** The shell tool a call named `name` is, under claude-agent's host-tool name too (`mcp__hands__bash_background`), when
+ *  it is one held to another's setting: its own name, which its request, its refusal and its approved call keep. */
+const shellToolOf = (name: string): string | undefined => {
+  const own = name.replace(/^mcp__hands__/, "");
+  return Object.hasOwn(SHELL_FAMILY, own) && SHELL_FAMILY[own] !== own ? own : undefined;
+};
 
 /** The settings keys that may set `name`'s permission, most specific first: the tool's own name, then, for an MCP
  *  tool, its server's wildcard `mcp:<server>/*`. */
@@ -77,8 +97,10 @@ const HOST_TOOLS_SERVER = "hands";
  *  `mcpServers` (the run's configured MCP servers), never by its shape, since a host tool's name has the same shape.
  *  Undefined: nothing maps it, and the gate asks. The key only: an MCP call enters the gate once, in the MCP gateway. */
 export function settingsKeyOf(harness: string, name: string, mcpServers: readonly string[] = []): string | undefined {
-  // A legacy name the tool plane folds into a capability (fetch_page into web_fetch) is held to that capability's key.
+  // A legacy name the tool plane folds into a capability (fetch_page into web_fetch) is held to that capability's key,
+  // and a tool that runs a command in the box (bash_background and the rest) to bash's: before the table's own names.
   if (Object.hasOwn(LEGACY_NAMES, name)) return LEGACY_NAMES[name];
+  if (Object.hasOwn(SHELL_FAMILY, name)) return SHELL_FAMILY[name];
   if (TABLE_TOOLS.includes(name) || isCatalogTool(name)) return name;
   const native = NATIVE_TOOLS[harness]?.[name];
   if (native) return native;
@@ -99,6 +121,8 @@ export type PermissionSettings = Readonly<Record<string, { permission?: Permissi
  *  server wildcard, the server's exact key, the server's server wildcard, then the default. Rules over a call's
  *  arguments are not in V1. */
 export function permissionFrom(name: string, server: PermissionSettings, agent: PermissionSettings = {}): { permission: Permission; from: "agent" | "server" | "default" } {
+  // A shell tool's permission is bash's (SHELL_FAMILY), wherever it is read: the gate, capabilities, an agent's tools.
+  if (Object.hasOwn(SHELL_FAMILY, name) && SHELL_FAMILY[name] !== name) return permissionFrom(SHELL_FAMILY[name]!, server, agent);
   for (const [from, layer] of [["agent", agent], ["server", server]] as const) {
     for (const key of permissionKeys(name)) {
       const set = layer[key]?.permission;
@@ -135,7 +159,7 @@ export type PendingApproval = {
 /** The run's journal commit for the call, which makes the request durable before the gate answers, and who is told it
  *  parked, so its turn ends (harness-app.ts endsTurn): by the call's id, or, where the caller cannot name it, by its tool
  *  and its arguments' digest. */
-export type Park = { commit<T>(change: (tx: unknown) => Promise<T>): Promise<T>; parked?(callId: string): void; parkedBy?(match: { tool: string; argsDigest: string }): void };
+export type Park = { commit<T>(change: (tx: unknown) => Promise<T>): Promise<T>; parked?(callId: string): void; parkedBy?(match: { tool: string; argsDigest: string }): void; /** The message the turn running the call took (harness-app's), kept with its request. */ turn?(): string | undefined };
 
 /** What a call's ask carries beyond the call. */
 export type EnterOptions = {
@@ -160,8 +184,10 @@ export interface Gate {
   spill(callId: string, text: string): string;
 }
 
-/** The refusal of a call whose tool is set to deny. */
-export const deniedText = (tool: string): string => `Permission denied: ${tool} is set to deny on this server. Don't retry it.`;
+/** The refusal of a call whose tool is set to deny; of one held to another tool's setting (`heldTo`, a shell tool's
+ *  bash), naming the setting to change. */
+export const deniedText = (tool: string, heldTo?: string): string =>
+  heldTo && heldTo !== tool ? `Permission denied: ${tool} follows ${heldTo}'s setting, which is deny on this server. Don't retry it.` : `Permission denied: ${tool} is set to deny on this server. Don't retry it.`;
 /** The refusal of an ask where no one can approve it: a server with accounts off, whose answer route takes no token. */
 export const noApproverText = (tool: string): string => `Permission denied: ${tool} needs the owner's approval, and this server has accounts off (AGENTRUN_ACCOUNTS=0), so no one can give it: set the tool to allow or deny in the agent's Tools.`;
 /** Set by the server in a run's environment when no one can approve here (accounts off): the gate refuses each ask. */
@@ -199,7 +225,7 @@ export function gateOf(policy: (tool: string) => Permission): Gate {
 
 
 /** The file in a run's directory that names the origin of the turn it runs now: written by the server alone, as it sends
- *  the learning lane's reflect turn (runs.ts's toLiveDoor), and gone once a person's message comes. */
+ *  the learning lane's reflect turn (runs.ts's toLiveDoor), and gone before a person's turn is sent (runs.ts's personsTurn). */
 export const TURN_ORIGIN_FILE = "turn-origin.json";
 /** The run's store's record of a call that waits for approval (`phase: "requested"`), and of its answer acted on
  *  (`phase: "resolved"`), on its root conversation. */
@@ -239,7 +265,7 @@ export function inLearning(work: string, path: unknown): boolean {
 }
 
 /** One call that waits for approval, as the run's store keeps it. */
-export type ApprovalRequest = { id: string; tool: string; call_id: string; args: unknown; args_preview: string; requested_at: string; price?: ApprovalPrice };
+export type ApprovalRequest = { id: string; tool: string; call_id: string; args: unknown; args_preview: string; requested_at: string; /** The message the turn that parked it took: a reopen settles that turn, answered or not. */ turn?: string; price?: ApprovalPrice };
 /** Resumes the session with `content` as one message of its own (`approval-<id>`), writing `mark` with it or after it. */
 export type Resume = (id: string, content: string, mark: (tx: Tx) => Promise<unknown>) => Promise<void>;
 
@@ -266,8 +292,8 @@ export function resumeText(request: Pick<ApprovalRequest, "tool" | "call_id">, s
 
 /** The gate of the run `runId` at `where` (its directory, under the data directory's runs/), on its pinned revision:
  *  an agentic run's parks an asked call; a workflow's model node cannot. */
-export function runGate(where: { root: string; work: string }, runId: string, revision: { kind: string; body: { toolSettings?: unknown; harness?: string } }): RunGate {
-  return new RunGate({ root: where.root, work: where.work, data: resolve(where.root, "..", ".."), runId, harness: revision.body.harness ?? "pi" }, (revision.body.toolSettings ?? {}) as PermissionSettings, revision.kind === "agentic", process.env[NO_APPROVER_ENV] !== "1");
+export function runGate(where: { root: string; work: string; learningAt?: () => Promise<boolean> }, runId: string, revision: { kind: string; body: { toolSettings?: unknown; harness?: string } }): RunGate {
+  return new RunGate({ root: where.root, work: where.work, data: resolve(where.root, "..", ".."), runId, harness: revision.body.harness ?? "pi", ...(where.learningAt ? { learningAt: where.learningAt } : {}) }, (revision.body.toolSettings ?? {}) as PermissionSettings, revision.kind === "agentic", process.env[NO_APPROVER_ENV] !== "1");
 }
 
 /** The gate in a run's process, park mode: its policy, the turn's origin, the calls that wait, and the answers acted on. */
@@ -285,7 +311,7 @@ export class RunGate {
   /** `where.data`: the server's data directory, its tool settings beside the store; `overrides`: the pinned revision's
    *  own; `parks`: whether an asked call parks the run (an agentic run's), which a workflow's model node cannot;
    *  `approvers`: whether anyone can answer an ask here (the owner's password session: accounts on). */
-  constructor(private readonly where: { root: string; work: string; data: string; runId: string; harness?: string; mcpServers?: readonly string[] }, private readonly overrides: PermissionSettings = {}, private readonly parks = true, private readonly approvers = true) {}
+  constructor(private readonly where: { root: string; work: string; data: string; runId: string; harness?: string; mcpServers?: readonly string[]; /** Whether the file tools write this machine's work/, where the carve-out's path is checked; absent, they do. */ learningAt?: () => Promise<boolean> }, private readonly overrides: PermissionSettings = {}, private readonly parks = true, private readonly approvers = true) {}
 
   /** A tool's permission now (permissionOf): the revision's own over the server's setting, read at each call, so a change
    *  reaches a live run at its next call. */
@@ -327,13 +353,19 @@ export class RunGate {
   /** One model-initiated call at the gate: undefined when it may run; else its answer, refused at once (deny) or parked
    *  (ask). One call waits at a time: another asked meanwhile is answered so, not run. */
   async enter(name: string, args: unknown, callId: string, park: Park, options: EnterOptions = {}): Promise<Entered> {
-    // Held to its settings key (settingsKeyOf), the name its request, a refusal and the approved call give.
-    const tool = settingsKeyOf(this.where.harness ?? "pi", name, this.where.mcpServers) ?? name;
+    // Held to its settings key (settingsKeyOf), the name its request, a refusal and the approved call give; a shell tool
+    // held to bash's (SHELL_FAMILY) keeps its own name, so an approved bash_background runs bash_background, never bash.
+    const key = settingsKeyOf(this.where.harness ?? "pi", name, this.where.mcpServers) ?? name;
+    const tool = shellToolOf(name) ?? key;
     const permission = this.policy(name);
-    const turnOrigin = permission === "ask" ? this.turnOrigin() : undefined;
-    const verdict = gateToolCall({ tool, args }, { ...(turnOrigin ? { turnOrigin } : {}), work: this.where.work, policy: () => permission });
+    // The reflect turn's carve-out holds only where the path checked here is the file the tool writes (learningAt): a
+    // remote box's .learning/ is not this machine's, and a link made in it is never seen here. Read before the look for
+    // a call that waits below, which stays in one tick with its hold.
+    const origin = permission === "ask" ? this.turnOrigin() : undefined;
+    const turnOrigin = origin && (await (this.where.learningAt?.() ?? Promise.resolve(true))) ? origin : undefined;
+    const verdict = gateToolCall({ tool: key, args }, { ...(turnOrigin ? { turnOrigin } : {}), work: this.where.work, policy: () => permission });
     if (verdict === "allow") return undefined;
-    if (verdict === "deny") return { text: deniedText(tool), isError: true };
+    if (verdict === "deny") return { text: deniedText(tool, key), isError: true };
     // No one can answer here: refused at once with why, never parked until a cancel.
     if (!this.approvers) return { text: noApproverText(tool), isError: true };
     if (!this.parks) return { text: `This ${tool} call needs a person's approval, which a workflow's model node cannot wait for; it was not run.`, isError: true };
@@ -342,9 +374,17 @@ export class RunGate {
     const other = [...this.requests.values()].find((held) => !held.resolved && held.id !== id);
     if (other) return { text: `This ${tool} call was not run: the ${other.tool} call ${other.call_id} already waits for a person's approval. Call it again once that one is answered.`, isError: true };
     if (!this.requests.has(id)) {
-      const request: ApprovalRequest = { id, tool, call_id: callId, args: args ?? null, args_preview: argsPreview(args), requested_at: new Date().toISOString(), ...(options.price !== undefined ? { price: options.price } : {}) };
-      await park.commit((tx) => (tx as Tx).appendEntry(ROOT_CONVERSATION_ID, { kind: APPROVAL_ENTRY, data: { phase: "requested", ...request } as never }));
+      const turn = park.turn?.();
+      const request: ApprovalRequest = { id, tool, call_id: callId, args: args ?? null, args_preview: argsPreview(args), requested_at: new Date().toISOString(), ...(turn !== undefined ? { turn } : {}), ...(options.price !== undefined ? { price: options.price } : {}) };
+      // Held before the commit's await, in the tick of the look above: pi runs a turn's calls in parallel, and an ask
+      // entered meanwhile finds this one and is refused. A commit that fails lets it go.
       this.requests.set(id, request);
+      try {
+        await park.commit((tx) => (tx as Tx).appendEntry(ROOT_CONVERSATION_ID, { kind: APPROVAL_ENTRY, data: { phase: "requested", ...request } as never }));
+      } catch (error) {
+        this.requests.delete(id);
+        throw error;
+      }
     }
     park.parked?.(callId);
     this.watch();
@@ -390,6 +430,12 @@ export class RunGate {
   /** Whether a call waits for its answer, or for its answer to be acted on: a harness keeps the turn it ended closed. */
   waiting(): boolean {
     return [...this.requests.values()].some((held) => !held.resolved);
+  }
+
+  /** Whether a call of the turn that took `message` was parked, answered or not: that turn ended at the park, though a
+   *  process that went before the next open settled it leaves it open in its session. */
+  parkedIn(message: string | undefined): boolean {
+    return message !== undefined && [...this.requests.values()].some((held) => held.turn === message);
   }
 
   /** Acts on the answers from now on, resuming the session through `resume`; by default pi's root conversation. */
@@ -452,15 +498,17 @@ export class RunGate {
           continue;
         }
         // An allow runs the call, unless its tool was set to deny since it asked.
-        const result = decision === "deny" ? { text: refusedText(held.tool, answer.note), isError: true } : this.policy(held.tool) === "deny" ? { text: deniedText(held.tool), isError: true } : await this.run(held);
+        const result = decision === "deny" ? { text: refusedText(held.tool, answer.note), isError: true } : this.policy(held.tool) === "deny" ? { text: deniedText(held.tool, settingsKeyOf(this.where.harness ?? "pi", held.tool, this.where.mcpServers)), isError: true } : await this.run(held);
         // And again once the call is done: a stop or a cancel while it ran drops its result, which never reaches the model.
         const after = ((await readJson(join(this.where.root, RUN_META)))?.approvals as Record<string, { decision?: string }> | undefined)?.[held.id];
         if (after?.decision === "canceled" || after?.decision === "withdrawn") {
           await this.resolveSilently(held, after.decision);
           continue;
         }
-        // The arguments the message names are the server's redacted ones: the gate never writes a held value there.
-        await this.resume!(held.id, resumeText(held, answer.args_shown ?? "(not shown)", decision, result), (tx) => tx.appendEntry(ROOT_CONVERSATION_ID, { kind: APPROVAL_ENTRY, data: { phase: "resolved", id: held.id, decision } }));
+        // The arguments the message names are the server's redacted ones: the gate never writes a held value there. The
+        // result is cut as every host tool's is (boundResult, HOST_RESULT_MAX_CHARS, in its words): an executor's (an
+        // MCP call's) comes uncut, and its journal keeps it whole.
+        await this.resume!(held.id, resumeText(held, answer.args_shown ?? "(not shown)", decision, { ...result, text: boundResult(result.text).text }), (tx) => tx.appendEntry(ROOT_CONVERSATION_ID, { kind: APPROVAL_ENTRY, data: { phase: "resolved", id: held.id, decision } }));
         held.resolved = true;
       }
     } catch (error) {

@@ -2,6 +2,7 @@
 // One interface serves both hosts: a DSL host's `runNode` (createHarnessRunner) and serve's runs. Nothing here
 // imports a host.
 import type { WorkflowDeps } from "@parcha/agentrun-dsl";
+import type { Ended } from "./booking.js";
 
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 
@@ -28,6 +29,14 @@ export interface ToolImage {
  * takes at most 500,000 here.
  */
 export const HOST_RESULT_MAX_CHARS = 120_000;
+
+/**
+ * The error a turn ends with when its provider stopped the answer on its content filter (Anthropic's `refusal` stop, an
+ * OpenAI answer `incomplete` for `content_filter`): a harness's model proxy reads the stop in the answer it passes
+ * (`ProviderPolicy.filtered`) and the harness halts the turn with this text at once, so its CLI never asks for the refused
+ * answer again. A host reads a run's end by it (agentrun-serve's `moderated`).
+ */
+export const CONTENT_FILTERED = "content_filter: the model provider stopped this answer";
 
 /** A tool the host gives a session. */
 export interface HostTool {
@@ -140,9 +149,15 @@ export interface ModelUsage {
    *  id such as LiteLLM's `x-litellm-call-id`): what joins this booking to the provider's own log. A cut request has
    *  them only if its response had begun. */
   providerIds?: Record<string, string>;
-  /** A response its client stopped part way, its cost unknown, with the bytes of it the client was sent (the model
-   *  proxy's `stoppedAfterBytes`): the host counts it by what streamed (`Admission.stoppedUsd`), never more than its hold. */
+  /** A response its client stopped part way, its cost unknown, with what of it the client was sent (the model proxy's
+   *  `stoppedAfterBytes`: its content's UTF-8 bytes where the policy reads it): the host counts it by what streamed
+   *  (`Admission.stoppedUsd`), never more than its hold. */
   stoppedAfterBytes?: number;
+  /** A stopped response's reasoning budget (the proxy's `stoppedHiddenTokens`): the part of it the reasoning it sent
+   *  did not cover, max(0, budget - `stoppedReasoningBytes`), counts beside `stoppedAfterBytes`, never past the hold. */
+  stoppedHiddenTokens?: number;
+  /** The bytes of reasoning a stopped response sent (the proxy's `stoppedReasoningBytes`). */
+  stoppedReasoningBytes?: number;
 }
 
 /** The session's model requests, through the runner: every paid request is announced before it is sent, and may be
@@ -152,7 +167,9 @@ export interface ModelPort {
   beforeRequest(request: ModelRequest): Promise<ModelTicket | void>;
   /** Books a completed request. `ticket` is what its own `beforeRequest` returned: requests may be in flight together, so
    *  an answer is booked under the turn it was admitted as, not the latest one. */
-  afterRequest(usage: ModelUsage, ticket?: ModelTicket): Promise<void>;
+  /** `ended`: how the request ended, as the model proxy saw it (booking.ts), what it is booked by; absent (a host from
+   *  before it), booked as before, by `usd` and `stoppedAfterBytes`. */
+  afterRequest(usage: ModelUsage, ticket?: ModelTicket, ended?: Ended): Promise<void>;
   /** Records the ids a paid request's response gave it, as its headers arrive and before its answer is read. */
   responded?(ids: Record<string, string>, ticket?: ModelTicket): Promise<void>;
 }
@@ -210,8 +227,9 @@ export interface AdapterSession {
   /** Record the open turn as ended, interrupted, and send nothing: the turn is not to be resumed (a person stopped it, and
    *  an interrupt writes no end in the session). Only when `state` is `open_turn`; the session is `idle` after, here and
    *  when a later process opens it, and the next `send` is a turn of its own. A follow-up closes a cut turn the same way
-   *  (kernel/follow-up.ts, FollowUpTarget.settleOpenTurn). */
-  settleOpenTurn(): Promise<void>;
+   *  (kernel/follow-up.ts, FollowUpTarget.settleOpenTurn), naming its own prompt (`opening`): that one is withdrawn and
+   *  never carried, and the rest is left as it is. */
+  settleOpenTurn(options?: { opening?: string }): Promise<void>;
   /** Resolves when the turn in flight ends. */
   turnEnd(): Promise<{ status: TurnStatus; error?: string }>;
   /** Stop the turn in flight; calls it left open end interrupted. With `drainMs`, a pause: no new turn is sent, and the
