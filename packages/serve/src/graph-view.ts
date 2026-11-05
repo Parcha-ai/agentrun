@@ -36,13 +36,17 @@ type Frame = { done?: string[]; states?: Record<string, unknown>; inputs?: Recor
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const at = (state: unknown, path: string): unknown => path.split(".").reduce<unknown>((value, key) => (isObject(value) ? value[key] : undefined), state);
+/** A map item's label: the item, or its name, whole. The server redacts it, then cuts it (runs.ts servedGraph): a view kept
+ *  for a busy store's read holds what was written, so a key saved after it is still found whole. */
 const labelOf = (item: unknown): string | undefined => {
-  if (typeof item === "string") return item.slice(0, 200);
+  if (typeof item === "string") return item;
   if (typeof item === "number") return String(item);
   if (!isObject(item)) return undefined;
   const named = item.name ?? item.label ?? item.title ?? item.id ?? item.file ?? item.path ?? item.url;
-  return typeof named === "string" || typeof named === "number" ? String(named).slice(0, 200) : undefined;
+  return typeof named === "string" || typeof named === "number" ? String(named) : undefined;
 };
+
+
 
 export async function runGraph(given: GraphInput) {
   const [{ graphNodeOf, nodeStatus, workflowGraph }, { readWorkflowRun }, { durableDecisions, readJournal }] = await Promise.all([
@@ -176,13 +180,15 @@ export async function runGraph(given: GraphInput) {
       questions: r.questions ?? null, answers: r.answers ?? null, evidence: r.evidence ?? [], rule: r.rule ?? null, action: r.action ?? null,
       cost_usd: typeof r.cost_usd === "number" ? r.cost_usd : null, cost_basis: r.cost_basis ?? null, latency_ms: r.latency_ms ?? null,
       state: r.state ?? null, state_truncated: r.state_truncated === true, error: typeof r.error === "string" ? r.error : null,
+      // Whole up to 64 KB (the DSL's receipt); `error_cut` marks one it kept cut, for the server to hold its tail back.
+      ...(r.error_truncated === true ? { error_cut: true } : {}),
       images: images.map((image) => ({ token: image.token ?? null, ref: image.ref ?? null, url: typeof image.ref === "string" ? runFile(image.ref) : null })),
     };
   });
 
   // The calls, each start paired with its end in order.
   const open = new Map<string, Extract<NodeLine, { t: "effect.start" }>[]>();
-  const effects: Array<{ node: string | null; executionPath: string | null; item: number | null; tool: string; status: string; input: unknown; output: unknown; error: string | null; startedAt: string; endedAt: string | null }> = [];
+  const effects: Array<{ node: string | null; executionPath: string | null; item: number | null; tool: string; status: string; input: unknown; output: unknown; error: string | null; error_cut?: boolean; startedAt: string; endedAt: string | null }> = [];
   const placeOf = new Map<Extract<NodeLine, { t: "effect.start" }>, number>();
   for (const line of lines) {
     if (line.t === "effect.start") {
@@ -194,7 +200,10 @@ export async function runGraph(given: GraphInput) {
       const start = open.get(`${line.path}\n${line.tool}\n${line.label}`)?.shift();
       if (!start) continue;
       const effect = effects[placeOf.get(start)!]!;
-      Object.assign(effect, { status: line.status, output: line.output ?? null, error: line.error ?? null, endedAt: line.at });
+      // An error is stored whole up to 64 KB (app.ts), longer ones cut and marked; one of a log from before, cut at 2000.
+      // Whole, as logged (up to 64 KB, app.ts); `error_cut` marks one stored cut, for the server to hold its tail back
+      // (graph-served.ts, which also takes one of exactly 2000 characters, from a log made before, as cut).
+      Object.assign(effect, { status: line.status, output: line.output ?? null, error: line.error ?? null, ...(line.error_truncated === true ? { error_cut: true } : {}), endedAt: line.at });
     }
   }
 
