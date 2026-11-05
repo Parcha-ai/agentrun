@@ -215,7 +215,7 @@ function targetOf(value: unknown, issues: InputIssue[]): Target | undefined {
 
 /** `catchup_window_s`, as given (absent: undefined). */
 function settingsOf(body: Json, issues: InputIssue[]): { catchup_window_s?: number } {
-  if (body.catchup_window_s !== undefined && !(Number.isSafeInteger(body.catchup_window_s) && (body.catchup_window_s as number) >= 0)) issues.push({ field: "catchup_window_s", reason: "invalid", message: "catchup_window_s is a whole number of seconds, 0 or more (0: a missed time never fires)" });
+  if (body.catchup_window_s !== undefined && !(Number.isSafeInteger(body.catchup_window_s) && (body.catchup_window_s as number) >= 0 && (body.catchup_window_s as number) <= MAX_EVERY_S)) issues.push({ field: "catchup_window_s", reason: "invalid", message: `catchup_window_s is a whole number of seconds, 0 to ${MAX_EVERY_S} (0: a missed time never fires)` });
   return typeof body.catchup_window_s === "number" ? { catchup_window_s: body.catchup_window_s } : {};
 }
 const WRITABLE = ["name", "enabled", "source", "target", "catchup_window_s"];
