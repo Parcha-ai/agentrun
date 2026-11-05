@@ -171,7 +171,9 @@ export type EnterOptions = {
  *  (`isError: true`), or the waiting text with `parked: true`, after which the caller ends the turn. */
 export type Entered = undefined | (ToolAnswer & { parked?: true });
 
-/** Runs an APPROVED parked call of a tool family the gate does not own (the MCP gateway's), exactly once. */
+/** Runs an APPROVED parked call of a tool family the gate does not own (the MCP gateway's), exactly once. It owns the
+ *  call's deadline: the gate puts no wall-clock bound on it (only a stop or a cancel cuts it, through `signal`), so an
+ *  executor bounds its own work and answers a timeout as an error result (`isError: true`), never by waiting on. */
 export type Executor = (tool: string, args: unknown, callId: string, signal: AbortSignal) => Promise<ToolAnswer>;
 
 /** The gate of one run, in the run's process. */
@@ -579,7 +581,8 @@ export class RunGate {
   private readonly executors = new Map<string, Executor>();
 
   /** Registers how an approved call of tools named `prefix…` runs (the MCP gateway's, "mcp:"): one per prefix and run.
-   *  The gate runs it exactly once on its journaled path, as it runs a kernel host tool. */
+   *  The gate runs it exactly once on its journaled path, as it runs a kernel host tool, with no deadline of its own: the
+   *  executor bounds the call (Executor). */
   executor(prefix: string, run: Executor): void {
     this.executors.set(prefix, run);
   }
