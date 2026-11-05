@@ -4,8 +4,8 @@
 // writes nothing else of this machine. Its shape is the part of the SDK's client pi-transport's VM provider calls (apps,
 // images, sandboxes; a sandbox's exec, poll, terminate and tags), as pi-transport's own test fake has it. The test reads the
 // same module instance as the server: `vm` is every client made, every sandbox and every create's parameters.
-import { spawn } from "node:child_process";
-import { mkdirSync, rmSync } from "node:fs";
+import { execFileSync, spawn } from "node:child_process";
+import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -28,6 +28,8 @@ export const vm = {
   failWait: false,
   /** An error each program's start throws, as the provider's would (its text can quote anything). */
   failExec: undefined,
+  /** The bytes every `tar -c` in a box prints in place of its archive (a box whose copy back cannot be read). */
+  hostileTar: undefined,
   /** Ends sandbox `id` as the provider would at its lifetime: its programs killed, its directory gone. */
   end: (id) => vm.sandboxes.find((sandbox) => sandbox.sandboxId === id)?.terminate({ wait: true }),
   reset: () => {
@@ -35,11 +37,23 @@ export const vm = {
     vm.failStdout = false;
     vm.failWait = false;
     vm.failExec = undefined;
+    vm.hostileTar = undefined;
     for (const sandbox of vm.sandboxes) sandbox.terminate({ wait: true });
     vm.clients.length = 0;
     vm.sandboxes.length = 0;
   },
 };
+
+/** A `tar` first on PATH that prints vm.hostileTar for `-c` and runs the real one otherwise. */
+function hostileBin() {
+  const bin = join(vm.root, "hostile-bin");
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(join(bin, "archive"), vm.hostileTar);
+  const real = execFileSync("sh", ["-c", "command -v tar"], { encoding: "utf8" }).trim();
+  writeFileSync(join(bin, "tar"), `#!/bin/sh\nfor a in "$@"; do [ "$a" = -c ] && exec cat '${join(bin, "archive")}'; done\nexec '${real}' "$@"\n`);
+  chmodSync(join(bin, "tar"), 0o755);
+  return bin;
+}
 
 class FakeSandbox {
   constructor(sandboxId, params) {
@@ -67,7 +81,16 @@ class FakeSandbox {
     const [program, ...rest] = probed ? ["printf", "%s", "disk=104857600\nptrace=1\nfuse_dev=1\n"] : command.map((part) => this.inBox(part));
     const cwd = params.workdir ? this.inBox(params.workdir) : this.dir;
     mkdirSync(cwd, { recursive: true });
-    const child = spawn(program ?? "", rest, { cwd, env: { PATH: process.env.PATH ?? "", ...this.params.env, TMPDIR: join(this.dir, "tmp") }, stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn(program ?? "", rest, { cwd, env: { PATH: `${vm.hostileTar ? `${hostileBin()}:` : ""}${process.env.PATH ?? ""}`, ...this.params.env, TMPDIR: join(this.dir, "tmp") }, stdio: ["pipe", "pipe", "pipe"] });
+    // Whoever reads the program's output and lets it go before its end (return()) is noted, so a test sees it.
+    const entry = this.execs.at(-1);
+    entry.released = [];
+    const noted = (name, stream) => ({
+      [Symbol.asyncIterator]() {
+        const it = stream[Symbol.asyncIterator]();
+        return { next: () => it.next(), return: (value) => (entry.released.push(name), it.return(value)) };
+      },
+    });
     this.children.add(child);
     child.stdin.on("error", () => {});
     let closed = false;
@@ -101,8 +124,8 @@ class FakeSandbox {
               throw new Error("the output stream broke");
             }
           })()
-        : child.stdout,
-      stderr: child.stderr,
+        : noted("stdout", child.stdout),
+      stderr: noted("stderr", child.stderr),
       wait: failWait ? () => Promise.reject(Object.assign(new Error("the program was lost"), { code: 14 })) : () => exited,
     };
   }

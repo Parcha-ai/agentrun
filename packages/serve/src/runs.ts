@@ -1422,6 +1422,9 @@ export class Runs {
   private async dropBox(run: Run, ending = false): Promise<void> {
     const place = run.meta.place;
     if (place?.mode !== "sandbox") return;
+    // The relay's hold on the run's programs (box-relay-vm.ts) ends with the run, whatever becomes of its box: one kept
+    // for a later pull, or one whose destroy failed, still lets them go, and their output with them.
+    this.options.vmRelay?.drop(run.id);
     const remote = remotePlace(place);
     const boxes = remote ? this.remoteOf(place) : this.options.runBoxes;
     if (!boxes) return;
@@ -1440,7 +1443,6 @@ export class Runs {
     }
     try {
       await destroyRunBoxes(boxes, run.id, boxContext());
-      this.options.vmRelay?.drop(run.id);
       // The box's egress proxy directory (box-egress.ts), its socket the run's process left: nothing binds it now.
       await removeEgressDir(run.id).catch(() => undefined);
     } catch (error) {

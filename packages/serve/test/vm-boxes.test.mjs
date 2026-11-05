@@ -139,6 +139,30 @@ test("a cancel ends the run's box", { timeout: 180_000 }, async (t) => {
   assert.deepEqual(await fileList(api, run.run_id), ["kept.txt"], "what the box wrote came back first");
 });
 
+test("a run's end lets the relay's hold on its programs go even when its box is kept: a program it holds is no longer read", { timeout: 180_000 }, async (t) => {
+  const { api, data } = await onVm(t);
+  assert.equal((await api("POST", "/agents", { definition: { id: "asker", name: "asker", instructions: "Probe.", place: PLACE, tools: ["bash", "ask_person"] } })).status, 201);
+  const run = await probe(api, "asker", [{ tool: "bash", args: { command: "true" } }, { tool: "ask_person", args: { question: "Go on?" } }]);
+  await follow(api, run.run_id, ["input_required"], { deadlineMs: 120_000 });
+  const [box] = vm.running();
+  // A program the relay holds and nobody reads: as one a run's process started just before it went.
+  const { url } = JSON.parse(readFileSync(join(data, BOX_RELAY_FILE), "utf8"));
+  const door = readFileSync(join(data, "runs", run.run_id, "door-token"), "utf8").trim();
+  const started = await fetch(`${url}/runs/${run.run_id}/vm/sandbox/${box.sandboxId}/exec`, { method: "POST", headers: { authorization: `Bearer ${door}`, "content-type": "application/json" }, body: JSON.stringify({ command: ["sleep", "30"] }) });
+  assert.equal(started.status, 200);
+  const held = box.execs.find((exec) => exec.command[0] === "sleep");
+  assert.deepEqual(held.released, []);
+  // Its last copy back cannot be read (a file changed in the box since the turn's pull, and its archive is no archive),
+  // so the box is kept at the run's end.
+  writeFileSync(join(box.dir, "run", "agentrun", "run", "work", "late.txt"), "changed in the box");
+  vm.hostileTar = Buffer.from("this is not an archive ".repeat(64));
+  assert.equal((await api("POST", `/runs/${run.run_id}/cancel`)).status, 202);
+  await follow(api, run.run_id, ["cancelled"], { deadlineMs: 120_000 });
+  assert.deepEqual(vm.running().map((sandbox) => sandbox.sandboxId), [box.sandboxId], "the box is kept");
+  await until(() => held.released.length === 2, "the relay letting the program's output go");
+  assert.deepEqual([...held.released].sort(), ["stderr", "stdout"]);
+});
+
 test("the VM box never gets a network: with AGENTRUN_BOX_ALLOW set, capabilities and the banner say none and why, and the box is made blocked; with it none, none and no reason", { timeout: 120_000 }, async (t) => {
   const server = await onVm(t, { env: { AGENTRUN_BOX_ALLOW: "pypi.org,*.pythonhosted.org" } });
   const { api, data } = server;
