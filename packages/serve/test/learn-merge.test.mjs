@@ -409,3 +409,20 @@ test("a second message to a run that learns, sent while the first one opens it a
   assert.deepEqual([a.status, b.status], [202, 202], JSON.stringify([a.body, b.body]));
   await ended(api, runId);
 });
+
+test("an edit to a note that was there, holding a secret's shape or an unseen character, refuses the whole answer: the good new note beside it is not kept either", { timeout: 150_000 }, async (t) => {
+  const shaped = ["s", "k-", "Zx9".repeat(10)].join("");
+  for (const [id, body, rule] of [["edit-secret", `Refunds live under /orders/. Sign in with ${shaped}.\n`, "secret_shape"], ["edit-hidden", "Refunds live under /orders/‮.\n", "invisible_unicode"]]) {
+    const { api, data, repo } = await seeded(t, id, SEED);
+    const main = git(repo, ["rev-parse", "main"]);
+    await plans(api, id, [["refunds.md", note("Refunds path", "Refunds live under /orders/", body)], ["check-units.md", note("Check units", "Convert every amount to one unit before comparing")]]);
+    const runId = await started(api, id);
+    const { view, rows } = await ended(api, runId);
+    settled(view, rows, "dropped", "checker");
+    const { learning } = await savedOf(data, runId);
+    assert.ok(learning.problems.some((problem) => problem.rule === rule && problem.path === "refunds.md"), JSON.stringify(learning.problems));
+    assert.ok(!JSON.stringify(learning).includes(shaped), "the secret is never printed");
+    assert.equal(git(repo, ["rev-parse", "main"]), main, "nothing merged");
+    assert.equal(existsSync(join(data, "runs", runId, "learning-proposal.json")), false, "nothing proposed");
+  }
+});
