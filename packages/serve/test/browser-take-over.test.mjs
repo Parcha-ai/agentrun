@@ -68,6 +68,18 @@ async function watched(t, { faux, cap, env = {}, hook } = {}) {
   w.next = async (ws, type, ms = 10_000) => JSON.parse((await ws.until((m) => m.type === "text" && JSON.parse(m.data).type === type, ms)).item?.data ?? "null");
   /** What the run's browser was sent through the DevTools endpoint as input. */
   w.inputs = () => readFileSync(log, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)).filter((line) => line.op === "devtools").map((line) => line.method);
+  /** The owner types `text` while holding the browser, and it reaches the browser: sent again while the run's viewer says it
+   *  was not delivered (a stream still following the page, under load), whatever it said kept for the failure. */
+  w.typed = async (ws, text) => {
+    const said = [];
+    for (const end = Date.now() + 30_000; Date.now() < end; ) {
+      ws.sendJson({ type: "text", text });
+      const { item } = await ws.until((m) => m.type === "text" && JSON.parse(m.data).type === "held", 2_000);
+      if (item) said.push(JSON.parse(item.data).reason);
+      if (await until(() => w.inputs().includes("Input.insertText"), item ? 200 : 2_000)) return;
+    }
+    assert.fail(`the owner's input never reached the browser; the viewer said: ${JSON.stringify(said)}`);
+  };
   w.view = async () => (await server.api("GET", `/runs/${runId}`)).body;
   w.rows = async () => (await server.api("GET", `/runs/${runId}/timeline`)).body.rows;
   w.handBack = (outcome, headers = { cookie }) => call(server.port, { method: "POST", path: `/v2/runs/${runId}/browser/hand-back`, headers: { ...json, origin, ...headers }, body: { outcome } });
@@ -90,8 +102,7 @@ test("take over and hand back over the proxied socket: input outside a hold is d
   ws.sendJson({ type: "take" });
   assert.deepEqual(await w.next(ws, "hold"), { type: "hold", held: true });
   assert.ok(await until(async () => summaries(await w.rows()).includes("You took over the browser")), "the timeline says the owner took it");
-  ws.sendJson({ type: "text", text: "tomsmith" });
-  assert.ok(await until(() => w.inputs().includes("Input.insertText")), "the owner's input reached the browser");
+  await w.typed(ws, "tomsmith");
 
   // The agent's next browser call waits while the owner holds the browser; the run is working, not waiting on anyone.
   assert.equal((await w.server.api("POST", `/runs/${w.runId}/messages`, { content: "Look again." })).status, 202);
@@ -185,8 +196,7 @@ test("the agent asks: input_required with pending.kind browser, a waiting row an
   const { ws } = await w.viewer();
   ws.sendJson({ type: "take" });
   assert.deepEqual(await w.next(ws, "hold"), { type: "hold", held: true });
-  ws.sendJson({ type: "text", text: "my own password" });
-  assert.ok(await until(() => w.inputs().includes("Input.insertText")), "the owner's input reached the browser");
+  await w.typed(ws, "my own password");
 
   assert.equal((await w.handBack("finished")).status, 422);
   const done = await w.handBack("done");
