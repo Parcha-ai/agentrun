@@ -436,6 +436,21 @@ export function responsesReasoningBytes(event: string): number {
   return typeof parsed.type === "string" && REASONING_DELTAS.has(parsed.type) && typeof parsed.delta === "string" ? Buffer.byteLength(parsed.delta, "utf8") : 0;
 }
 
+/** The Responses stream's events whose deltas are content: answer text, reasoning, and a tool call's input. */
+const CONTENT_DELTAS: ReadonlySet<string> = new Set([
+  "response.output_text.delta", "response.reasoning_summary_text.delta", "response.reasoning_text.delta",
+  "response.function_call_arguments.delta", "response.custom_tool_call_input.delta",
+]);
+
+/** The bytes of content one Responses stream event carries: a content delta's text, UTF-8, never the framing around it
+ *  (its sequence number, item id, indexes, logprobs, obfuscation); 0 for every other event. */
+export function responsesContentBytes(event: string): number {
+  const data = event.split("\n").filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trimStart()).join("\n");
+  if (!data.startsWith("{")) return 0;
+  const parsed = JSON.parse(data) as { type?: unknown; delta?: unknown };
+  return typeof parsed.type === "string" && CONTENT_DELTAS.has(parsed.type) && typeof parsed.delta === "string" ? Buffer.byteLength(parsed.delta, "utf8") : 0;
+}
+
 /** A Responses body with its output limited to `max` tokens, reasoning included: never raised, and never longer. */
 export function limitResponsesOutput(body: Record<string, unknown>, max: number): Record<string, unknown> {
   const asked = responsesOutputAsked(body);
@@ -496,6 +511,7 @@ export function codexPolicy(options: CodexPolicyOptions): ProviderPolicy {
     outputLeast: responsesOutputLeast,
     reasoningHidden: (body) => responsesReasoningHidden(body, maxOutputTokens),
     reasoningBytesOf: responsesReasoningBytes,
+    contentBytesOf: responsesContentBytes,
     limitOutput: limitResponsesOutput,
     serverInputOverhead: search ? (body) => {
       if (Array.isArray(body.tools) && body.tools.some((tool) => isPlain(tool) && tool.type === "web_search")) return undefined;
