@@ -62,7 +62,8 @@ test("the server's Slack app is set once, checked with Slack, kept sealed and ne
   assert.ok(!JSON.stringify(read.body).includes(SIGNING) && !JSON.stringify(read.body).includes(SLACK_BOT_TOKEN), "never shown");
   assert.deepEqual(await hook(verification), { status: 200, body: { challenge: "not-a-secret-challenge" } });
   // Another secret, a stale or a future timestamp: one answer, which says nothing of why.
-  for (const options of [{ secret: "not-a-secret-wrong" }, { ts: Math.floor(Date.now() / 1000) - 301 }, { ts: Math.floor(Date.now() / 1000) + 301 }]) {
+  // Well past the 300 s window either way, so a slow request on a loaded machine cannot bring a future one back inside it.
+  for (const options of [{ secret: "not-a-secret-wrong" }, { ts: Math.floor(Date.now() / 1000) - 400 }, { ts: Math.floor(Date.now() / 1000) + 400 }]) {
     const answer = await hook(verification, options);
     assert.deepEqual([answer.status, answer.body.error.code, answer.body.error.message], [401, "unauthenticated", "this route needs a request signed by the server's Slack app"], JSON.stringify(options));
   }
