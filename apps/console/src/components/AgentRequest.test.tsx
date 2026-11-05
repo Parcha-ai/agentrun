@@ -174,7 +174,7 @@ describe("AgentRequest, local definition requests", () => {
     });
     await send();
     expect(button("Send request").disabled).toBe(true);
-    expect(host.querySelector('[role="alert"]')?.textContent).toContain("Managed agents");
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain("Connected agents");
     await send();
     expect(writes()).toHaveLength(1);
   });

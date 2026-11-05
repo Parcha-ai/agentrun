@@ -1,6 +1,6 @@
 import type { Stats } from "./mission";
 import type { Agent, Definition, SaveWarning } from "./agentForm";
-import type { AgentLearning, LearningChange, LearningDiff, LearningNote, NoteProblem, NoteText, Page } from "./learning";
+import type { AgentLearning, LearningChange, LearningDiff, LearningNote, RunLearningResultData, NoteProblem, NoteText, Page } from "./learning";
 import type { RunGraph } from "./runGraph";
 import { applyPage } from "./timeline";
 import type { ApiError, Run, RunFiles, RunStatus, TimelinePage, TimelineRow, ToolKeys, ToolKeysFeature, ToolSettings, Webhook, WebhookAttempt, WebhookSaved, WebhooksFeature } from "./v2";
@@ -165,6 +165,8 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     /** Approves a note that waits for the owner's OK, so later runs read it; 412 when it changed since `etag`. */
     approveNote: async (id: string, file: string, etag: string) => asNote(await callTagged<string>("POST", `${note(id, file)}/approve`, { body: {}, headers: { ...noteAccept, "if-match": etag }, text: true })),
     getRun: (id: string) => call<Run>("GET", run(id)),
+    /** The run's recorded learning outcome, grader decisions and usage; null when it did not learn. */
+    runLearningResult: (id: string) => call<RunLearningResultData | null>("GET", `${run(id)}/learning`),
     /** What the run's learning changed in its agent's notes, file by file (each with its patch, or why it is withheld). */
     runLearningDiff: (id: string) => call<LearningDiff>("GET", `${run(id)}/learning/diff`),
     /** Hides a run from the runs list (or shows it again), its history kept. The answer is the run. */

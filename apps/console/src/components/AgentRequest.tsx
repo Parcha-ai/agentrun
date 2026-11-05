@@ -35,7 +35,7 @@ export function AgentRequest({ v2, origin, operation, agentId, draft, harnesses 
   const [copied, setCopied] = useState(false);
   useEffect(() => {
     if (!editing) return;
-    if (!agentId) { setLoadError("Choose an agent from Managed agents to edit its definition."); return; }
+    if (!agentId) { setLoadError("Choose an agent from Connected agents to edit its definition."); return; }
     let active = true;
     setSource(null); setLoadError(null);
     v2.getAgent(agentId).then(({ agent, etag: version }) => {
@@ -139,7 +139,7 @@ export function AgentRequest({ v2, origin, operation, agentId, draft, harnesses 
     <section className="flex min-h-0 flex-col">
       <header className="flex h-12 shrink-0 items-center gap-5 border-b px-6">{(["code", "response"] as const).map((tab) => <button key={tab} onClick={() => setPane(tab)} className={cn("h-12 border-b text-xs capitalize", pane === tab ? "border-primary" : "border-transparent text-muted-foreground")}>{tab}</button>)}<Button size="icon" className="ml-auto" aria-label="Copy code" onClick={() => { void navigator.clipboard.writeText(code).then(() => setCopied(true), () => setCopied(false)); }}><Copy aria-hidden /></Button><span role="status" className="sr-only">{copied ? "Code copied" : ""}</span></header>
       {pane === "code" ? <><div className="flex h-12 shrink-0 gap-5 border-b px-6">{(["curl", "fetch"] as const).map((lang) => <button key={lang} onClick={() => setLanguage(lang)} className={cn("border-b text-xs", language === lang ? "border-primary" : "border-transparent text-muted-foreground")}>{lang === "curl" ? "cURL" : "JavaScript"}</button>)}</div><pre className="min-h-0 flex-1 overflow-auto p-6 font-mono text-xs leading-6">{code}</pre></> : <div className="min-h-0 flex-1 space-y-4 overflow-auto p-6">
-        {result ? <><p className="font-mono text-xs">{result.status || "Network error"} · {Math.round(result.ms)} ms</p><pre className="overflow-auto whitespace-pre-wrap break-words font-mono text-xs leading-6">{JSON.stringify(result.body, null, 2)}</pre>{savedId && <a className="inline-flex items-center gap-2 text-sm text-primary" href={agentHash(savedId)}>Open agent<ArrowUpRight className="size-4" /></a>}{result.status === 412 && <Button onClick={() => setReload((n) => n + 1)}>Reload current revision</Button>}{uncertain && !savedId && <p role="alert" className="text-sm">The creation request may have succeeded. Check <a href="#/agents" className="text-primary underline">Managed agents</a> before sending another creation request.</p>}</> : <p className="text-sm text-muted-foreground">Send a request to see its response.</p>}
+        {result ? <><p className="font-mono text-xs">{result.status || "Network error"} · {Math.round(result.ms)} ms</p><pre className="overflow-auto whitespace-pre-wrap break-words font-mono text-xs leading-6">{JSON.stringify(result.body, null, 2)}</pre>{savedId && <a className="inline-flex items-center gap-2 text-sm text-primary" href={agentHash(savedId)}>Open agent<ArrowUpRight className="size-4" /></a>}{result.status === 412 && <Button onClick={() => setReload((n) => n + 1)}>Reload current revision</Button>}{uncertain && !savedId && <p role="alert" className="text-sm">The creation request may have succeeded. Check <a href="#/agents" className="text-primary underline">Connected agents</a> before sending another creation request.</p>}</> : <p className="text-sm text-muted-foreground">Send a request to see its response.</p>}
       </div>}
     </section>
   </div>;

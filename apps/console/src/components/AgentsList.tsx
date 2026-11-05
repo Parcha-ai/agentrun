@@ -19,7 +19,7 @@ export function AgentsList({ agents, archived = false, onArchivedChange, actions
   return (
     <section className="flex min-h-full flex-col">
       <header className="flex min-h-12 flex-wrap items-center justify-between gap-3 border-b px-5 py-2">
-        <h1 className="caps flex items-center gap-2 text-[13px] font-semibold"><Bot className="size-4" aria-hidden />{archived ? "Archived agents" : "Managed agents"}</h1>
+        <h1 className="caps flex items-center gap-2 text-[13px] font-semibold"><Bot className="size-4" aria-hidden />{archived ? "Archived agents" : "Connected agents"}</h1>
         <div className="flex flex-wrap items-center gap-2">{handoff}{!archived && <CodingAgentAction label="Build an agent" prompt={buildAgentPrompt(location.origin)} playgroundHref="#/playground?operation=create-agent" />}</div>
       </header>
       <div className="p-5 md:p-6">

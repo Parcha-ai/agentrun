@@ -5,9 +5,10 @@ import { type RunActions, RunHeader } from "@/components/RunHeader";
 import { RunError } from "@/components/RunError";
 import { ArtifactViewer, RunFiles } from "@/components/RunFiles";
 import { RunResult } from "@/components/RunResult";
+import { RunLearningResult } from "@/components/RunLearningResult";
 import { RunChanges, useRunChanges } from "@/components/RunChanges";
 import { Timeline, Working } from "@/components/Timeline";
-import { type LearningDiff, learningSteps } from "@/lib/learning";
+import { type LearningDiff, type RunLearningResultData, learningSteps } from "@/lib/learning";
 import { isEscalated, type MessageFeatures, type RunView, runState } from "@/lib/runState";
 import { cn } from "@/lib/utils";
 import { latest, pendingQuestion } from "@/lib/viewing";
@@ -36,8 +37,10 @@ export type RunDetailProps = {
   /** Reads what the run's learning changed (GET /v2/runs/{id}/learning/diff): "What it changed", read only for a run
    *  that kept a note. */
   readLearningDiff?: () => Promise<LearningDiff>;
+  /** The recorded grader result and provenance, read only when the Learning tab opens. */
+  readLearningResult?: () => Promise<RunLearningResultData | null>;
 };
-type Tab = "graph" | "report" | "timeline" | "files";
+type Tab = "graph" | "report" | "timeline" | "files" | "learning";
 
 /** What the Report tab says while a run has no answer and has not ended: only a queued or working run is writing it. One
  *  that waits on a kind of thing this console doesn't know (its `pending.kind`, a newer server's; nothing else of it is
@@ -55,7 +58,7 @@ function beforeAnswer(run: Pick<Run, "status" | "state" | "pending">, view: RunV
 }
 
 /** The run page: Report / Timeline / Files tabs over AgentRun Server's run, timeline and files. */
-export function RunDetail({ run, agentName, messages, harnessSteers, rows, files, readFile, openFile = null, actions, onMessage, tab: initial, graphView, costText, readLearningDiff }: RunDetailProps) {
+export function RunDetail({ run, agentName, messages, harnessSteers, rows, files, readFile, openFile = null, actions, onMessage, tab: initial, graphView, costText, readLearningDiff, readLearningResult }: RunDetailProps) {
   const view = runState(run.status, run.state, run.kind, messages, harnessSteers, run.error, run.review);
   const [tab, setTab] = useState<Tab>(initial ?? (graphView ? "graph" : view.final && run.status === "completed" ? "report" : "timeline"));
   const [open, setOpen] = useState<{ file: RunFile; text: string | null } | null>(openFile ? { file: openFile, text: null } : null);
@@ -75,14 +78,14 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
   // A story or a deep link can open a file on first render.
   useEffect(() => { if (openFile && readFile) void show(openFile); }, [openFile]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const tabs: [Tab, string][] = [...(graphView ? [["graph", "Graph"] as [Tab, string]] : []), ["report", "Report"], ["timeline", "Timeline"], ["files", `Files ${files.length}`]];
+  const tabs: [Tab, string][] = [...(graphView ? [["graph", "Graph"] as [Tab, string]] : []), ["report", "Report"], ["timeline", "Timeline"], ...(run.learning ? [["learning", "Learning"] as [Tab, string]] : []), ["files", `Files ${files.length}`]];
   return (
     <div className="flex h-full min-h-0 flex-col">
       <RunHeader run={run} agentName={agentName} actions={actions} costText={costText} />
-      <div className="flex border-b px-5 md:px-8" role="tablist">
+      <div className="flex overflow-x-auto border-b px-5 md:px-8" role="tablist">
         {tabs.map(([id, name]) => (
           <button key={id} type="button" role="tab" aria-selected={tab === id} onClick={() => setTab(id)}
-            className={cn("caps -mb-px border-b-2 px-3 py-3 text-[12px]", tab === id ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground")}>
+            className={cn("caps -mb-px shrink-0 border-b-2 px-3 py-3 text-[12px]", tab === id ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground")}>
             {name}
           </button>
         ))}
@@ -107,6 +110,7 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
           )}
           {tab === "timeline" && <Timeline rows={learningSteps(rows, run.learning)} live={view.live} asking={view.needsYou ? waiting?.id : undefined} />}
           {(tab === "report" || tab === "timeline") && changes && <RunChanges got={changes.got} retry={changes.retry} />}
+          {tab === "learning" && <RunLearningResult key={run.run_id} run={run} read={readLearningResult} onViewChanges={changes ? () => setTab("report") : undefined} />}
           {tab === "files" && <RunFiles files={files} onOpen={show} />}
         </div>
       </div>}

@@ -19,6 +19,17 @@ function mount(props: Partial<ComponentProps<typeof Shell>> = {}) {
 }
 
 describe("Shell's hosted navigation", () => {
+  it("offers Agent Dojo as a separate active destination", () => {
+    const onNavigate = vi.fn();
+    const { host } = mount({ active: "dojo", onNavigate });
+    const dojo = [...host.querySelectorAll<HTMLButtonElement>('nav button')].find((b) => b.textContent?.trim() === "Agent Dojo")!;
+    expect(dojo).toBeTruthy();
+    expect(dojo.getAttribute("aria-current")).toBe("page");
+    expect(dojo.closest("#agent-navigation")).toBeNull();
+    act(() => dojo.click());
+    expect(onNavigate).toHaveBeenCalledWith("dojo");
+  });
+
   it("groups working local agent destinations and leaves Settings at the foot", () => {
     const onNavigate = vi.fn();
     const onBuild = vi.fn();
@@ -30,7 +41,7 @@ describe("Shell's hosted navigation", () => {
     expect(toggle.getAttribute("aria-expanded")).toBe("true");
     act(() => button("Build").click());
     expect(onBuild).toHaveBeenCalledOnce();
-    act(() => button("Managed agents").click());
+    act(() => button("Connected agents").click());
     expect(onNavigate).toHaveBeenLastCalledWith("agents");
     act(() => button("Runs").click());
     expect(onNavigate).toHaveBeenLastCalledWith("runs");
@@ -40,10 +51,10 @@ describe("Shell's hosted navigation", () => {
     act(() => button("Settings").click());
     expect(onNavigate).toHaveBeenLastCalledWith("settings");
     expect(button("Settings").closest('[data-sidebar-account]')).not.toBeNull();
-    expect(navigation.textContent).not.toMatch(/Billing|Teams|Deployments|Connected agents/);
+    expect(navigation.textContent).not.toMatch(/Billing|Teams|Deployments|Managed agents/);
   });
 
-  it("highlights Build separately from Managed agents and opens the section on navigation", () => {
+  it("highlights Build separately from Connected agents and opens the section on navigation", () => {
     const { host } = mount({ active: "agents", building: true });
     const current = () => host.querySelector('[aria-current="page"]')?.textContent?.trim();
     expect(current()).toBe("Build");
@@ -60,7 +71,7 @@ describe("Shell's hosted navigation", () => {
     const menu = host.querySelector<HTMLButtonElement>('button[aria-label="Navigation"]')!;
     act(() => menu.click());
     expect(menu.getAttribute("aria-expanded")).toBe("true");
-    const destination = [...host.querySelectorAll<HTMLButtonElement>('nav button')].find((b) => b.textContent?.trim() === "Managed agents")!;
+    const destination = [...host.querySelectorAll<HTMLButtonElement>('nav button')].find((b) => b.textContent?.trim() === "Connected agents")!;
     act(() => destination.click());
     expect(menu.getAttribute("aria-expanded")).toBe("false");
     expect(onNavigate).toHaveBeenCalledWith("agents");

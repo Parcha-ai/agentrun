@@ -116,7 +116,7 @@ export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: str
       <RunDetail key={run.run_id} run={run} agentName={agentName(run.agent_id)} messages={offer.messages} harnessSteers={offer.steers}
         graphView={run.kind === "workflow" && !noGraph ? <LiveGraph v2={v2} runId={runId} graph={graph} onMoved={() => { void refresh(); }} /> : undefined}
         costText={run.kind === "workflow" && !FINAL_RUN.has(run.status) && graph.data ? graphCostText(graph.data) : undefined}
-        rows={rows} files={files} readFile={(f) => v2.readFile(runId, f.path)} readLearningDiff={() => v2.runLearningDiff(runId)} onMessage={message}
+        rows={rows} files={files} readFile={(f) => v2.readFile(runId, f.path)} readLearningDiff={() => v2.runLearningDiff(runId)} readLearningResult={() => v2.runLearningResult(runId)} onMessage={message}
         actions={{ onStop: () => void act("stop"), onCancel: () => void act("cancel"), onArchive: () => void archive(), busy }} />
     </div>
   );

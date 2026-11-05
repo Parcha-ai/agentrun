@@ -1,12 +1,12 @@
-import { Brain, ChevronDown, Code, Hammer, History, LayoutGrid, LogOut, Menu, Monitor, Moon, Settings, Sun } from "lucide-react";
+import { Brain, ChevronDown, Code, Hammer, History, LayoutGrid, LogOut, Menu, Monitor, Moon, Settings, Sparkles, Sun } from "lucide-react";
 import { type ReactNode, useEffect, useState } from "react";
 import { ConnectionBanner } from "@/components/Connection";
 import { cn } from "@/lib/utils";
 import { applyTheme, currentTheme, saveTheme, type Theme, THEMES } from "@/lib/theme";
 
-export type Section = "mission" | "playground" | "agents" | "runs" | "settings";
+export type Section = "mission" | "playground" | "agents" | "runs" | "dojo" | "settings";
 
-const ROUTES: Record<Section, string> = { mission: "#/", playground: "#/playground", agents: "#/agents", runs: "#/runs", settings: "#/settings/keys" };
+const ROUTES: Record<Section, string> = { mission: "#/", playground: "#/playground", agents: "#/agents", runs: "#/runs", dojo: "#/dojo", settings: "#/settings/keys" };
 const THEME_LABEL: Record<Theme, [string, typeof Brain]> = { system: ["System", Monitor], light: ["Light", Sun], dark: ["Dark", Moon] };
 
 /** System (the OS's), Light or Dark: a pick shows at once and is kept in this browser (lib/theme). */
@@ -68,10 +68,11 @@ export function Shell({ active, settings = false, building = false, onBuild, onN
               </button>
               <div id="agent-navigation" hidden={!agentsExpanded} className="space-y-0.5">
                 <button type="button" className={navStyle(building, true)} aria-current={building ? "page" : undefined} onClick={build}><Hammer className="size-3.5 shrink-0" aria-hidden />Build</button>
-                <button type="button" className={navStyle(active === "agents" && !building, true)} aria-current={active === "agents" && !building ? "page" : undefined} onClick={() => navigate("agents")}><Brain className="size-3.5 shrink-0" aria-hidden />Managed agents</button>
+                <button type="button" className={navStyle(active === "agents" && !building, true)} aria-current={active === "agents" && !building ? "page" : undefined} onClick={() => navigate("agents")}><Brain className="size-3.5 shrink-0" aria-hidden />Connected agents</button>
                 <button type="button" className={navStyle(active === "runs", true)} aria-current={active === "runs" ? "page" : undefined} onClick={() => navigate("runs")}><History className="size-3.5 shrink-0" aria-hidden />Runs</button>
               </div>
             </div>
+            <button type="button" className={navStyle(active === "dojo")} aria-current={active === "dojo" ? "page" : undefined} onClick={() => navigate("dojo")}><Sparkles className="size-4 shrink-0" aria-hidden />Agent Dojo</button>
           </div>
           {settings && <div data-sidebar-account className="mt-auto border-t pb-2 pt-3">
             <button type="button" className={navStyle(active === "settings")} aria-current={active === "settings" ? "page" : undefined} onClick={() => navigate("settings")}><Settings className="size-4 shrink-0" aria-hidden />Settings</button>

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Code, RefreshCw } from "lucide-react";
 import type { EditorCaps } from "@/components/AgentEditor";
 import { AgentPage } from "@/components/AgentPage";
+import { AgentDojo } from "@/components/AgentDojo";
 import { AgentEditPage, AgentsPage } from "@/components/AgentsPage";
 import { BuildAgent } from "@/components/BuildAgent";
 import { RunsRequest } from "@/components/RunsRequest";
@@ -44,6 +45,7 @@ const MODEL_CHECK_MS = 10_000;
 type Where = { section: Section; playgroundAgent?: string; operation?: AgentOperation | "list-runs"; draft?: string; run?: string; agent?: string | null; edit?: boolean; tab?: string; notes?: string[]; runsOf?: string; archived?: boolean; status?: RunStatus; settings?: SettingsPage };
 /** The page an address opens. Exported for its test. */
 export function route(h: string = location.hash): Where {
+  if (h === "#/dojo") return { section: "dojo" };
   let m = h.match(/^#\/runs\/([^/?]+)$/);
   if (m) return { section: "runs", run: decodeURIComponent(m[1]) };
   if (h === "#/agents/new") return { section: "agents", agent: null };
@@ -271,7 +273,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   const choices = toolChoices(c?.tools);
   // The settings pages this server has: tool keys (their routes), and tools (a capability with a choice of provider).
   const settingsOffered: SettingsPage[] = [...(caps?.features?.tool_keys?.routes ? ["keys" as const] : []), ...(choices.length ? ["tools" as const] : []), ...(caps?.features?.webhooks?.routes ? ["webhook" as const] : [])];
-  const nav = (s: Section) => go({ runs: "#/runs", agents: "#/agents", playground: "#/playground", mission: "#/", settings: `#/settings/${settingsOffered[0] ?? "keys"}` }[s]);
+  const nav = (s: Section) => go({ runs: "#/runs", agents: "#/agents", playground: "#/playground", dojo: "#/dojo", mission: "#/", settings: `#/settings/${settingsOffered[0] ?? "keys"}` }[s]);
   // One click on a template makes its agent (once) on the first harness with a model, runs it, and opens the run.
   // Try it keeps its start's key until a start lands: a click after a lost answer is the same start, not a second run.
   const templateKeys = useRef(keeper()).current;
@@ -436,6 +438,8 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
               : where.settings === "webhook" ? <WebhookPage v2={v2} atRest={caps?.features?.webhooks?.at_rest} />
               : <KeysPage v2={v2} atRest={caps?.features?.tool_keys?.at_rest} onChange={readCaps} />}
           </Settings>
+        : where.section === "dojo"
+        ? <AgentDojo key={refreshed} v2={v2} server={learningCap} />
         : where.section === "mission"
         // Observation never requires a provider key or a run started on this server.
         ? <div className="flex h-full flex-col">
