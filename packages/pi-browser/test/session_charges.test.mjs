@@ -10,7 +10,7 @@ const T0 = Date.UTC(2026, 10, 5, 12, 0, 0);
 
 /** A run whose model calls browser_read `reads` times, each read taking `readS` seconds, with the host's `prices` and
  *  `options`; `setup` readies the fake backend first. */
-async function run(t, { prices, reads, readS, options = {}, setup = () => {}, lastTurn = () => {}, pump = false, after = async () => {} }) {
+async function run(t, { prices, reads, readS, options = {}, setup = () => {}, lastTurn = () => {}, pump = false, after = async () => {}, cutRelease = false }) {
   t.mock.timers.enable({ apis: ["Date"], now: T0 });
   const [{ BACKGROUND_CONTEXT: ctx }, { createModels }, faux, durable, { createBrowserExtension }, { fakeDriver }] = await Promise.all([
     import("@earendil-works/chord/context"), import("@earendil-works/pi-ai/models"), import("@earendil-works/pi-ai/providers/faux"),
@@ -18,9 +18,20 @@ async function run(t, { prices, reads, readS, options = {}, setup = () => {}, la
   ]);
   const backend = new FakeBackend({ start: START, pages: { [START]: fixturePage(START, "The start page.") } });
   setup(backend);
+  // `cutRelease`: the first release stops the session, then the conversation's tasks are aborted before it answers, as a
+  // server stop cuts a release attempt between its stop and its next checkpoint.
+  let root;
+  let cut = false;
+  const cutting = { ...backend.provider, release: async (ref, signal) => {
+    await backend.provider.release(ref, signal);
+    if (cut) return;
+    cut = true;
+    void root.abort(ctx, { background: true });
+    await new Promise((_, reject) => signal?.addEventListener("abort", () => reject(signal.reason), { once: true }));
+  } };
   const charges = [];
   const browser = createBrowserExtension({ ...options,
-    provider: () => backend.provider, driver: fakeDriver(backend), evidence: { file: async () => null }, prices,
+    provider: () => (cutRelease ? cutting : backend.provider), driver: fakeDriver(backend), evidence: { file: async () => null }, prices,
     onCharge: async (charge, tx, call) => {
       charges.push({ ...charge, call: call?.callId ?? null });
       // Booked in the same commit as the bill.
@@ -43,7 +54,7 @@ async function run(t, { prices, reads, readS, options = {}, setup = () => {}, la
   const harness = await durable.Harness.open(new durable.MemoryStorage(), { models, registry, onReport: () => {} }, ctx);
   t.after(() => harness.close(ctx));
   const policy = { proxies: false, verified: false, captcha: false, geolocation: null, region: null, contextId: null, sessionTimeoutS: 1800, idleReleaseS: 0, batchTimeoutMs: 60_000 };
-  const root = await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" } }, init: async (tx, id) => { Object.assign(await tx.doc(browser.docs.Config, id), { label: "run", run: "run-charges", policy }); } });
+  root = await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" } }, init: async (tx, id) => { Object.assign(await tx.doc(browser.docs.Config, id), { label: "run", run: "run-charges", policy }); } });
   await browser.reconcile(harness, () => true, ctx);
   await (await root.submit({ type: "input", content: "go" }, ctx)).wait(ctx);
   t.mock.timers.tick(5_000);
@@ -130,4 +141,13 @@ test("a lost session known only by its tag stays billed when a reopen's release 
   assert.equal(backend.liveCount(), 0);
   assert.deepEqual([record.state, record.spent.final], ["lost", true]);
   assert.deepEqual(charges.map(({ seconds, usd, final }) => [seconds, usd, final]), [[60, 0.002, true]], "its minimum, once, when the reconcile released it");
+});
+
+test("a session found by its tag stays billed when its release attempt is aborted between its stop and its next checkpoint", async (t) => {
+  // The create's answer is lost and its first lookup fails; the delayed release finds the session by its tag and stops it,
+  // and the task is aborted before the attempt answers. The abort handler's own lookup lists running sessions only.
+  const { charges, record, backend } = await run(t, { reads: 1, readS: 2, pump: true, cutRelease: true, options: { createDeadlineMs: 50 }, setup: (backend) => { backend.lose("create"); backend.fail("findByTag", 1); } });
+  assert.deepEqual([backend.tally().creates, backend.liveCount()], [1, 0]);
+  assert.deepEqual([record.state, record.spent.final], ["released", true]);
+  assert.deepEqual(charges.map(({ seconds, usd, final }) => [seconds, usd, final]), [[60, 0.002, true]], "billed by the abort handler, from the ids the attempt kept before its stop");
 });

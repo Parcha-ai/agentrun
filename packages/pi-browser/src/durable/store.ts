@@ -73,9 +73,9 @@ export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, 
 
   /** `found` hears the ids before any is released: a release that stops a session and then fails (its status check after
    *  the stop) leaves the session known only to its caller, since the provider's tag lookup lists running sessions only. */
-  async function releaseAll(row: InventoryRow, provider: BrowserProvider, signal?: AbortSignal, found: (ids: string[]) => void = () => {}): Promise<string[]> {
+  async function releaseAll(row: InventoryRow, provider: BrowserProvider, signal?: AbortSignal, found: (ids: string[]) => void | Promise<void> = () => {}): Promise<string[]> {
     const ids = [...new Set([row.resourceId, ...(await provider.findByTag(row.tag, signal)).map((ref) => ref.id)].filter((id): id is string => id !== null))];
-    found(ids);
+    await found(ids);
     for (const id of ids) await provider.release({ id, tag: row.tag }, signal);
     return ids;
   }
@@ -84,7 +84,7 @@ export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, 
     return false;
   };
   /** The ids released under `row`'s tag once none of them runs; null while one does. */
-  const releasedIds = async (provider: BrowserProvider, row: InventoryRow, signal?: AbortSignal, found?: (ids: string[]) => void) => {
+  const releasedIds = async (provider: BrowserProvider, row: InventoryRow, signal?: AbortSignal, found?: (ids: string[]) => void | Promise<void>) => {
     const ids = await releaseAll(row, provider, signal, found);
     return (await anyRunning(provider, row, ids, signal)) ? null : ids;
   };
@@ -140,7 +140,15 @@ export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, 
         const found = union(task.input.found, task.state.checkpoint.found);
         if (attempt === 0 && notBefore && runtime.now() < notBefore) await runtime.sleep(notBefore, context);
         let seen: string[] = [];
-        const released = await step(runtime, async () => releaseAll(row, await providerOf(runtime, cidOf(row), row.plane, context), runtime.signal, (ids) => void (seen = ids)), null);
+        // Ids the lookup found that the task does not hold yet are committed before any stop is sent: an attempt cut
+        // between its stop and its next commit (the task's abort) leaves them for the abort handler, whose own lookup
+        // no longer lists a stopped session.
+        const keep = async (ids: string[]) => {
+          seen = ids;
+          const known = union(found, ids);
+          if (known.length > found.length) await runtime.commit(() => ({ status: "running", checkpoint: { phase: "release", attempt, found: known } }), context);
+        };
+        const released = await step(runtime, async () => releaseAll(row, await providerOf(runtime, cidOf(row), row.plane, context), runtime.signal, keep), null);
         // What the lookup found goes on to the next attempt even when its release failed: the stop may have landed.
         if (!released) return retry(runtime, row, attempt, context, union(found, seen));
         // Confirmed together: what this attempt released and what earlier ones did.
