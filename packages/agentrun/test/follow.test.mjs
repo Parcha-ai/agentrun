@@ -256,3 +256,17 @@ test("backoff: the client's own delay doubles up to its cap; the server's retry 
   assert.equal(backoff(1, 3_000), 3_000, "the server's retry, above the client's delay");
   assert.equal(backoff(20, 120_000), 120_000, "a server's retry beyond the cap is still honored");
 });
+
+test("runs wait takes a run id as one whole path segment: an empty, . or .. one is refused, exit 2, and nothing is sent", async (t) => {
+  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !DROPPED.includes(name)));
+  const cli = cliOf({ ...env, AGENTRUN_API_KEY: "fake-test-key" }, []);
+  const requests = [];
+  const server = createServer((req, res) => (requests.push(req.url), res.writeHead(404, { "content-type": "application/json" }).end('{"error":{"code":"not_found"}}')));
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => (server.closeAllConnections(), server.close()));
+  const base = `http://127.0.0.1:${server.address().port}/v2`;
+  for (const id of ["", ".", ".."]) assert.equal((await cli(["runs", "wait", id, "--base-url", base])).code, 2, JSON.stringify(id));
+  assert.deepEqual(requests, [], "nothing was sent");
+  assert.equal((await cli(["runs", "wait", "a/../b", "--base-url", base])).code, 1, "a slash is part of the id, encoded");
+  assert.deepEqual(requests, ["/v2/runs/a%2F..%2Fb/timeline?after=0&wait_ms=0"]);
+});

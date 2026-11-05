@@ -255,12 +255,16 @@ function timeoutOf(value) {
   return seconds * 1000;
 }
 
+/** A run id goes whole into one path segment (encoded); one that fetch would read as no segment or a step up is none. */
+const runIdOk = (id) => typeof id === "string" && !["", ".", ".."].includes(id);
+
 /** `runs wait RUN_ID [--timeout SECONDS]`. */
 async function wait(argv, env, io) {
   const { values, positionals } = parse(argv, { ...GLOBAL, timeout: { type: "string" } });
   if (values.help) return io.stdout.write(`${helpOf(WAIT, WAIT.help)}\n`), 0;
   const args = positionals.slice(WAIT.command.length);
   if (args.length !== 1) throw usageError(`${helpOf(WAIT, WAIT.help)}\n\n${usageOf(WAIT)} takes 1 argument, given ${args.length}.`);
+  if (!runIdOk(args[0])) throw usageError(`${usageOf(WAIT)}: RUN_ID may not be empty, . or ..`);
   const timeout = timeoutOf(values.timeout);
   return waitRun(clientOf(targetOf(values, env), io), args[0], timeout);
 }
@@ -365,7 +369,7 @@ async function command(entry, argv, env, io) {
   const started = await request(client, req);
   if (started.code !== undefined) return started.code;
   const run = jsonOf(started.bytes)?.value;
-  if (typeof run?.run_id !== "string") return io.stderr.write("The server's answer to the start names no run_id.\n"), 1;
+  if (!runIdOk(run?.run_id)) return io.stderr.write("The server's answer to the start names no usable run_id.\n"), 1;
   return waitRun(client, run.run_id, timeout);
 }
 
