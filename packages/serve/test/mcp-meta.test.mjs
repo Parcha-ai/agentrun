@@ -1,0 +1,70 @@
+// A meta tool (one that runs other actions by name: Composio's COMPOSIO_MULTI_EXECUTE_TOOL, Klavis Strata's
+// execute_action, Zapier's execute actions, Arcade's UseTool, Docker's mcp-exec, Cloudflare's portal_execute and code
+// mode) is never granted: a grant of it could not name the real action, so allow would cover every inner action and deny
+// could target none. The rule is a closed list of known names, a generic name matched with its provider's host; a meta
+// tool the list does not know stays an MCP tool like any other, asked by default. Through the API against the fake MCP
+// server: the server's tools read the meta tool grantable false with the reason; a grant of it is 422 in those words, and
+// a direct tool of the same server is granted; Klavis's generic execute_action on a host that is not Klavis's is not
+// refused. A grant saved before the rule is refused at the launch, when the run's tools are pinned.
+import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
+import { test } from "node:test";
+import { mcpPinOf } from "../dist/mcp-gateway.js";
+import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
+import { agent, serve as serveOf, withEnv } from "./support.mjs";
+
+const TOKEN = `not-a-secret-${"mcp-meta-bearer-0123"}`;
+const REASON = "it runs other actions by name, so a grant can't name the real action. Use the server's direct tools instead.";
+const serve = (t) => (withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }), serveOf(t));
+const object = { type: "object", properties: {} };
+const answer = () => ({ content: [{ type: "text", text: "ran" }] });
+
+/** The fake MCP server with `tools` added, saved as `name`. */
+async function saved(t, api, name, tools) {
+  const fake = await startFakeMcp({ token: TOKEN });
+  t.after(() => fake.close());
+  for (const tool of tools) fake.tools[tool] = { description: `${tool}, for the test.`, input: object, run: answer };
+  const put = await api("PUT", `/settings/mcp-servers/${name}`, { url: fake.url, auth: { type: "bearer", token: TOKEN } });
+  assert.equal(put.status, 200, JSON.stringify(put.body));
+  return put.body;
+}
+
+test("Composio's COMPOSIO_MULTI_EXECUTE_TOOL reads grantable false with the reason and a grant of it is 422 in words; the server's direct tool is granted", async (t) => {
+  const { api } = await serve(t);
+  const view = await saved(t, api, "composio", ["COMPOSIO_MULTI_EXECUTE_TOOL", "GMAIL_SEND_EMAIL"]);
+  const byName = Object.fromEntries(view.tools.map((tool) => [tool.name, tool]));
+  assert.deepEqual([byName.COMPOSIO_MULTI_EXECUTE_TOOL.grantable, byName.COMPOSIO_MULTI_EXECUTE_TOOL.reason], [false, REASON], "the save's answer");
+  assert.equal(byName.GMAIL_SEND_EMAIL.grantable, undefined, "a direct tool is grantable as any");
+  const read = (await api("GET", "/settings/mcp-servers/composio")).body.tools.find((tool) => tool.name === "COMPOSIO_MULTI_EXECUTE_TOOL");
+  assert.deepEqual([read.grantable, read.reason], [false, REASON], "a read says so too");
+  const refused = await api("POST", "/agents", agent("meta", { tools: ["mcp:composio/COMPOSIO_MULTI_EXECUTE_TOOL"] }));
+  assert.equal(refused.status, 422, JSON.stringify(refused.body));
+  assert.ok(JSON.stringify(refused.body).includes(`mcp:composio/COMPOSIO_MULTI_EXECUTE_TOOL can't be granted: ${REASON}`), JSON.stringify(refused.body));
+  assert.equal((await api("POST", "/agents", agent("direct", { tools: ["mcp:composio/GMAIL_SEND_EMAIL"] }))).status, 201, "the direct tool is granted");
+  const doc = (await api("GET", "/openapi.json")).body;
+  const tool = Object.values(doc.components.schemas).find((schema) => schema?.properties?.input_schema && schema.properties.grantable);
+  assert.ok(tool, "the served document names grantable on an MCP tool");
+});
+
+test("a generic name is a meta tool only on its provider's host: Klavis's execute_action on a host that is not Klavis's is granted", async (t) => {
+  const { api } = await serve(t);
+  const view = await saved(t, api, "local", ["execute_action"]);
+  assert.equal(view.tools.find((tool) => tool.name === "execute_action").grantable, undefined);
+  assert.equal((await api("POST", "/agents", agent("generic", { tools: ["mcp:local/execute_action"] }))).status, 201);
+  // The list itself: the generic names only on their hosts, the provider-named ones anywhere.
+  const { metaToolOf } = await import("../dist/mcp-meta.js");
+  assert.equal(metaToolOf("https://strata.klavis.ai/mcp/?strata_id=x", "execute_action")?.reason, REASON);
+  assert.equal(metaToolOf("https://klavis.ai.example.com/mcp", "execute_action"), undefined, "a host that only looks like Klavis's");
+  assert.equal(metaToolOf("https://mcp.zapier.com/api/mcp/s/x/mcp", "write_code_action")?.reason, REASON);
+  assert.equal(metaToolOf("http://127.0.0.1:9/mcp", "write_code_action"), undefined);
+  for (const name of ["COMPOSIO_MULTI_EXECUTE_TOOL", "COMPOSIO_REMOTE_WORKBENCH", "execute_zapier_write_action", "Arcade_UseTool", "mcp-exec", "portal_execute", "portal_codemode_execute"]) {
+    assert.equal(metaToolOf("http://127.0.0.1:9/mcp", name)?.reason, REASON, name);
+  }
+  for (const name of ["COMPOSIO_SEARCH_TOOLS", "add", "execute", "code"]) assert.equal(metaToolOf("http://127.0.0.1:9/mcp", name), undefined, `${name} runs nothing by name, or is no known meta tool`);
+});
+
+test("a meta tool granted before the rule is refused at the launch, when the run's tools are pinned", () => {
+  const source = { server: () => ({ url: "http://127.0.0.1:9/mcp", tools: [{ name: "COMPOSIO_MULTI_EXECUTE_TOOL", inputSchema: object }, { name: "GMAIL_SEND_EMAIL", inputSchema: object }] }), headers: () => undefined };
+  assert.throws(() => mcpPinOf(["mcp:composio/COMPOSIO_MULTI_EXECUTE_TOOL"], source), new RegExp(`mcp:composio/COMPOSIO_MULTI_EXECUTE_TOOL can't be granted: ${REASON.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+  assert.deepEqual(Object.keys(mcpPinOf(["mcp:composio/GMAIL_SEND_EMAIL"], source)), ["composio"]);
+});
