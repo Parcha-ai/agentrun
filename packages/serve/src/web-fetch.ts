@@ -1,4 +1,4 @@
-// web_fetch: fetch_page's Page (fetch-page.ts) plus `via`, the path that served it. It is the kernel's guarded direct
+// web_fetch: the guarded fetch's Page (fetch-page.ts) plus `via`, the path that served it. It is the kernel's guarded direct
 // fetch unless the run's plane resolves it to Parallel (tool-plane.ts: the agent's or the server's pick): then the page is
 // read through Parallel's Extract API (https://docs.parallel.ai/api-reference/extract-beta/extract, about $0.001 a URL),
 // and when Parallel answers no page (the URL in its `errors`, no content, a 5xx, a timeout) through the guarded direct
@@ -123,7 +123,7 @@ export function parallelExtract(apiKey: string, send: typeof fetch = fetch): Ext
   };
 }
 
-/** Whether the public-host guard passes `url` within `ms` and the caller's signal: fetch_page's port check, then
+/** Whether the public-host guard passes `url` within `ms` and the caller's signal: the guarded fetch's port check, then
  *  publicFetch's own checks of the first hop (scheme, name, every address it resolves to), stopped before it dials. A
  *  check that runs out of time (a resolver that does not answer) does not pass; publicFetch ends a lookup at the abort. */
 async function passes(url: string, options: GuardOptions, ms: number): Promise<boolean> {
@@ -136,7 +136,7 @@ async function passes(url: string, options: GuardOptions, ms: number): Promise<b
 }
 
 /** The page at `url` read once: through `parallel` when it is given and live and the guard passes the URL within
- *  `checkMs` (default fetch_page's 30 s), else (or when it answers no page) through fetch_page's guarded fetch. A page
+ *  `checkMs` (default the guarded fetch's 30 s), else (or when it answers no page) through the guarded fetch. A page
  *  fetched directly where `parallel` was given says why Parallel gave none (`parallel`): a picked provider that fails is
  *  never a silent fallback. */
 async function readOnce(url: unknown, parallel: Extract | null | undefined, checkMs: number, options: GuardOptions): Promise<WebRead | WebUnread> {
@@ -263,7 +263,7 @@ export function webFetchText(page: WebPage | Page, name: string = WEB_FETCH_TOOL
   return lines.join("\n");
 }
 
-/** The agent's tool: the WebPage as JSON text (webFetchText), named `name` (fetch_page, its legacy name, runs it too). A
+/** The agent's tool: the WebPage as JSON text (webFetchText), named `name`. A
  *  run whose web_fetch resolves to Parallel reads its key as the tool is made, when the run opens. */
 /** Typed here, so its declaration names the schema type by a package serve declares (pi-ai), whatever else the build loads. */
 export function webFetchTool(env: NodeJS.ProcessEnv, name = WEB_FETCH_TOOL): ToolRegistration<TSchema, JsonValue> {

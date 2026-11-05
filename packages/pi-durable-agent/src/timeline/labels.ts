@@ -119,11 +119,9 @@ const fetchOutcome: OutcomeFn = (result) => {
   const failure = unfetched(result);
   return failure && { failed: true, text: `${failure.refused ? "refused" : "failed"}: ${failure.detail}` };
 };
-// web_fetch and fetch_page answer the same page, `{ok, url, status, title, text, links, refused?, error?}`.
-for (const tool of ["web_fetch", "fetch_page"]) {
-  registerLabel(tool, fetchLabel, fetchFold, { name: "Fetch web pages" });
-  registerOutcome(tool, fetchOutcome);
-}
+// web_fetch answers a page, `{ok, url, status, title, text, links, refused?, error?}`.
+registerLabel("web_fetch", fetchLabel, fetchFold, { name: "Fetch web pages" });
+registerOutcome("web_fetch", fetchOutcome);
 registerLabel("web_search", (a) => {
   const query = str(a.query);
   return query ? `Searched the web for "${cut(scrubUrls(query), 60)}"` : "Searched the web";

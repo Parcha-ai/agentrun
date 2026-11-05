@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import { BOUND_TOOLS, TOOLS, toolsView } from "../dist/tools.js";
-import { CAPABILITIES, explainsView, LEGACY_NAMES, planeFor, PROVIDERS, recheckPlane, relaunchPlane, resolveCapability, settingsIssues, TABLE_TOOLS, ToolSettings } from "../dist/tool-plane.js";
+import { CAPABILITIES, explainsView, planeFor, PROVIDERS, recheckPlane, relaunchPlane, resolveCapability, settingsIssues, TABLE_TOOLS, ToolSettings } from "../dist/tool-plane.js";
 import { CANARY } from "./fixtures/faux-parallel.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 import { agent, answerFlow, flowAgent, follow, scratch, serve, withEnv } from "./support.mjs";
@@ -16,10 +16,10 @@ import { blockersOf } from "../dist/runnable.js";
 
 const base = { gateway: false, parallelKey: false };
 
-test("the capabilities a grant may name are tools the table binds, fetch_page and the call-only tools not among them; web_search and web_fetch each offer their providers, the default first", () => {
+test("the capabilities a grant may name are tools the table binds, the call-only tools not among them; web_search and web_fetch each offer their providers, the default first", () => {
   assert.deepEqual([...CAPABILITIES], ["read", "write", "edit", "web_search", "web_fetch", "browser", "ask_person"]);
   for (const name of CAPABILITIES) assert.ok(BOUND_TOOLS.includes(name), name);
-  for (const name of ["fetch_page", "pdf_pages", "llm", "monid.discover"]) assert.ok(!CAPABILITIES.includes(name), name);
+  for (const name of ["pdf_pages", "llm", "monid.discover"]) assert.ok(!CAPABILITIES.includes(name), name);
   assert.deepEqual(PROVIDERS, { web_search: ["auto", "native", "exa-keyless", "parallel", "off"], web_fetch: ["kernel", "parallel"], browser: ["auto", "browserbase", "kernel", "chrome"] });
 });
 
@@ -151,7 +151,6 @@ test("a run's plane: each web tool its revision names, resolved in the server's 
   assert.deepEqual(planeFor(env, { harness: "claude-agent", tools: ["web_search"], overrides: { web_search: { provider: "native" } } }, {}), { web_search: "native", model: "anthropic/claude-sonnet-4-5" }, "picked: Claude's own for its agent, and the model a learned workflow's call node searches on");
   assert.deepEqual(planeFor(env, { tools: ["web_search"], overrides: { web_search: { provider: "exa-keyless" } } }, { web_search: { provider: "parallel" } }), { web_search: "exa-keyless" });
   assert.deepEqual(planeFor({}, { tools: ["read"] }, {}), {}, "no web tool, nothing to say");
-  assert.deepEqual(planeFor(env, { tools: ["fetch_page"] }, { web_fetch: { provider: "parallel" } }), { web_fetch: "parallel" }, "fetch_page resolves as web_fetch does");
   // A workflow's nodes may each run on another tier's model: its search never asks one model's provider natively.
   assert.deepEqual(planeFor(env, { tools: ["web_search"], workflow: true }, {}), { web_search: "parallel" }, "a workflow searches through Parallel on the server's key, never on the default model a fast node may not use");
   assert.deepEqual(planeFor({ AGENT_MODEL: env.AGENT_MODEL }, { tools: ["web_search"], workflow: true }, {}), { web_search: "exa-keyless" }, "and keyless with no key");
@@ -194,7 +193,7 @@ test("settings are checked before anything is kept: an unknown tool, a provider 
   // The background tools follow bash's setting (tool-gate.ts SHELL_FAMILY): none is a name of the table's settings.
   const { SHELL_FAMILY } = await import("../dist/tool-gate.js");
   const heldToAnother = (name) => Object.hasOwn(SHELL_FAMILY, name) && SHELL_FAMILY[name] !== name;
-  assert.deepEqual([...TABLE_TOOLS].sort(), [...Object.keys(TOOLS).filter((name) => !name.startsWith("monid.") && !heldToAnother(name)), ...Object.keys(LEGACY_NAMES)].sort(), "tool-plane's names of the table are tools.ts's, but those held to bash's setting, and its legacy names");
+  assert.deepEqual([...TABLE_TOOLS].sort(), [...Object.keys(TOOLS).filter((name) => !name.startsWith("monid.") && !heldToAnother(name))].sort(), "tool-plane's names of the table are tools.ts's, but those held to bash's setting");
   assert.deepEqual(settingsIssues({ web_search: "parallel" }).map((i) => i.reason), ["wrong_type"]);
   assert.deepEqual(settingsIssues([]).map((i) => [i.field, i.reason]), [["body", "wrong_type"]]);
 });
@@ -232,12 +231,12 @@ test("GET and PUT /v2/settings/tools: the defaults, a PUT that replaces them, ke
   assert.deepEqual(tools.web_search, { pi: "exa-keyless", "claude-agent": "exa-keyless", codex: "exa-keyless", opencode: "exa-keyless" }, "recomputed with no restart");
   assert.deepEqual((await api("GET", "/capabilities")).body.tools.filter((tool) => tool.providers).map((tool) => [tool.provider, tool.default_provider]), [["kernel", "kernel"], ["exa-keyless", "auto"], ["auto", "auto"]], "the server's pick, and the built-in default");
   assert.equal(tools.read, undefined, "a tool with no provider choice resolves nothing");
-  assert.equal("fetch_page" in tools, false, "fetch_page, web_fetch's legacy name, is not in the table");
+  assert.equal("fetch_page" in tools, false, "fetch_page is no tool");
   assert.equal((await stat(join(first.data, "tool-settings.json"))).mode & 0o777, 0o600);
 
   // An agent's own settings: over the server's, kept in its revision and shown in its definition.
-  // Granted out of the table's order, fetch_page (web_fetch's legacy name) among them: listed in capabilities' order.
-  const made = await api("POST", "/agents", agent("searcher", { tools: ["web_fetch", "fetch_page", "web_search", "read"], tool_settings: { web_search: { provider: "native" } } }));
+  // Granted out of the table's order: listed in capabilities' order.
+  const made = await api("POST", "/agents", agent("searcher", { tools: ["web_fetch", "web_search", "read"], tool_settings: { web_search: { provider: "native" } } }));
   assert.equal(made.status, 201, JSON.stringify(made.body));
   assert.deepEqual(made.body.definition.tool_settings, { web_search: { provider: "native" } });
   const own = (await api("GET", "/agents/searcher")).body;
@@ -246,7 +245,6 @@ test("GET and PUT /v2/settings/tools: the defaults, a PUT that replaces them, ke
   assert.deepEqual(own.tools, [
     { name: "read", ...allowed() },
     { name: "web_fetch", ...allowed(), provider: "kernel", provider_from: "default", default_provider: "kernel", resolved: "kernel" },
-    { name: "fetch_page", ...allowed(), provider: "kernel", provider_from: "default", default_provider: "kernel", resolved: "kernel" },
     { name: "web_search", ...allowed(), provider: "native", provider_from: "agent", default_provider: "exa-keyless", resolved: "native" },
   ], "capabilities' order; its own pick over the server's, which is its default");
   assert.equal((await api("GET", "/agents")).body.agents[0].tools, undefined, "the projection is the one agent's read alone");

@@ -12,7 +12,7 @@ import { wireName } from "../dist/catalog.js";
 import { BACKGROUND_TOOLS } from "../dist/background.js";
 import { REPLAY } from "../dist/host-tools.js";
 import * as gate from "../dist/tool-gate.js";
-import { LEGACY_NAMES, SERVE_OWN_TOOLS, TABLE_TOOLS } from "../dist/tool-plane.js";
+import { SERVE_OWN_TOOLS, TABLE_TOOLS } from "../dist/tool-plane.js";
 import { scratch } from "./support.mjs";
 
 const { deniedText, noApproverText, RunGate, waitingText } = gate;
@@ -22,13 +22,12 @@ const isKey = (key) => typeof key === "string" && (TABLE_TOOLS.includes(key) || 
 const MONID = ["monid.discover", "monid.inspect", "monid.run"];
 /** A host tool's settings key: its own name, or for a legacy name the capability the tool plane folds it into; a
  *  background tool (background.ts) is held to bash's. */
-const folded = (name) => LEGACY_NAMES[name] ?? (BACKGROUND_TOOLS.includes(name) ? "bash" : name);
+const folded = (name) => (BACKGROUND_TOOLS.includes(name) ? "bash" : name);
 
 /** Every name a call reaches the gate by, on each harness, and the key it must map to. */
 const NAMES = {
   pi: [
     ...["read", "write", "edit", "bash", "ask_person", "web_fetch", "web_search"].map((name) => [name, name]),
-    ["fetch_page", "web_fetch"],
     ...BACKGROUND_TOOLS.map((name) => [name, "bash"]),
     ...MONID.map((name) => [wireName(name), name]),
     ...BROWSER_TOOL_NAMES.map((name) => [name, "browser"]),
@@ -125,14 +124,6 @@ test("an MCP-named call reaches no enter() of this gate's on any harness: the MC
   assert.equal(entered, 0);
 });
 
-test("a legacy name the tool plane folds into a capability (fetch_page, web_fetch's) is held to that capability's setting: asked where it asks, refused where it denies, and never a settings key of its own", async (t) => {
-  const { LEGACY_NAMES, settingsIssues } = await import("../dist/tool-plane.js");
-  for (const [legacy, target] of Object.entries(LEGACY_NAMES)) {
-    for (const harness of ["pi", "claude-agent", "codex"]) assert.equal(keyOf(harness, legacy), target, `${harness} ${legacy}`);
-    assert.deepEqual(settingsIssues({ [legacy]: { permission: "deny" } }).map((issue) => [issue.field, issue.reason]), [[legacy, "not_allowed"]], `${legacy} is set by ${target}`);
-  }
-  const asked = await onPi(t, { web_fetch: { permission: "ask" } }, "fetch_page");
-  assert.deepEqual([asked.text, asked.ran, asked.kept.map((entry) => entry.data?.tool)], [waitingText("web_fetch"), 0, ["web_fetch"]], "web_fetch: ask parks a fetch_page call");
-  const denied = await onPi(t, { web_fetch: { permission: "deny" } }, "fetch_page");
-  assert.deepEqual([denied.text, denied.ran], [deniedText("web_fetch"), 0], "web_fetch: deny refuses it");
+test("fetch_page, web_fetch's old name, maps to no settings key on any harness, so the gate asks: nothing runs it by that name", () => {
+  for (const harness of ["pi", "claude-agent", "codex"]) assert.equal(keyOf(harness, "fetch_page"), undefined, harness);
 });

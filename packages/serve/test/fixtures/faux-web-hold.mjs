@@ -1,4 +1,4 @@
-// fetch_page's network in the run's process for the tests, as faux-web.mjs, with one more page: http://public.example/hold
+// web_fetch's network in the run's process for the tests, as faux-web.mjs, with one more page: http://public.example/hold
 // answers only once the file its `until` query names exists, so a harness's turn holds, in its own process, until the
 // test lets it go.
 import { existsSync } from "node:fs";

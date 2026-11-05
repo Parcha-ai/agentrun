@@ -46,7 +46,7 @@ test("every host tool's largest result is within the host's result bound, which 
   const keep = (tool, ...texts) => void (results[tool] = [...(results[tool] ?? []), ...texts]);
   const wide = "世"; // three bytes of UTF-8 a character: the most a UTF-16 character takes
 
-  // web_fetch, and fetch_page, its legacy name (the longer one, in the line that says where the page goes on).
+  // web_fetch.
   const url = `${PUBLIC}${"p".repeat(pages.URL_MAX - PUBLIC.length)}`;
   const links = Array.from({ length: 4 * pages.LINKS_CAP }, (_, i) => `<a href="https://l.example/${i}?${"\\".repeat(60)}">${i}</a>`).join(" ");
   const html = `<html><head><title>${'"'.repeat(4 * pages.TITLE_CAP)}</title></head><body><p>${'"\\'.repeat(2 * pages.TEXT_CAP)}</p>${links}</body></html>`;
@@ -65,7 +65,7 @@ test("every host tool's largest result is within the host's result bound, which 
   assert.equal(widest.ok, true, JSON.stringify({ ...widest, text: undefined }));
   assert.deepEqual([widest.chars, Buffer.byteLength(widest.text) > 3 * (pages.TEXT_CAP - 10), widest.url.length, Buffer.byteLength(widest.title) > 3 * (pages.TITLE_CAP - 2), Boolean(widest.parallel && widest.truncated)], [pages.TEXT_CAP, true, pages.URL_MAX, true, true], "50,000 three-byte characters, the longest URL, a title of three-byte characters at its cap, Parallel's failure said");
   assert.ok(widest.links.reduce((n, link) => n + JSON.stringify(link).length + 1, 0) > pages.LINKS_CHARS - 200, "the links at theirs, with the text");
-  for (const tool of ["web_fetch", "fetch_page"]) keep(tool, web.webFetchText(page, tool), web.webFetchText(cjk, tool), web.webFetchText(widest, tool));
+  for (const tool of ["web_fetch"]) keep(tool, web.webFetchText(page, tool), web.webFetchText(cjk, tool), web.webFetchText(widest, tool));
 
   // web_search: every result at its caps; the answer keeps the most relevant that fit.
   const hit = { url: `https://s.example/${'"'.repeat(pages.URL_MAX)}`, title: '"'.repeat(pages.TITLE_CAP), snippet: '"'.repeat(search.SNIPPET_MAX), published: '"'.repeat(200) };

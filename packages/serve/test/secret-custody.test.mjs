@@ -493,7 +493,7 @@ test("secretsFor: a tool key's fields only for a revision naming a tool its row 
   assert.deepEqual(await secretsOf(agentic(["monid.run"])), without(...BROWSER));
   assert.deepEqual(await secretsOf(agentic(["read", "browser"])), without("MONID_API_KEY"));
   assert.deepEqual(await secretsOf(agentic(["monid.discover", "browser"])), without());
-  assert.deepEqual(await secretsOf(agentic(["read", "fetch_page", "ask_person"])), without(...TOOL_KEYS));
+  assert.deepEqual(await secretsOf(agentic(["read", "web_fetch", "ask_person"])), without(...TOOL_KEYS));
   assert.deepEqual(await secretsOf(agentic([])), without(...TOOL_KEYS));
   // Only a `tool` row's fields are scoped by the tools: a row of another kind (a model's) leaves its field to the model,
   // so a run on OpenAI's model gets OpenAI's key, unless the same row is a tool key's that unlocks none of its tools.

@@ -177,7 +177,7 @@ const FAUX_WEB_HOLD = new URL("./fixtures/faux-web-hold.mjs", import.meta.url).p
 /** A claude-agent run held on a fetch until `go` exists, and a message_run webhook trigger to it whose one event its
  *  door has refused as busy (answers false: whenBusy reject): the firing is due, to be tried again. */
 async function refusedWhileBusy(api, baseUrl, go) {
-  await made(api, "held", { harness: "claude-agent", instructions: `Hold the answer until ${go}.`, tools: ["fetch_page"] });
+  await made(api, "held", { harness: "claude-agent", instructions: `Hold the answer until ${go}.`, tools: ["web_fetch"] });
   const run = (await api("POST", "/agents/held/runs", { input: { content: "hi" }, max_cost_usd: 1 })).body;
   await follow(api, run.run_id, ["working"], { deadlineMs: 30_000 });
   const { id, secret } = (await api("POST", "/triggers", { name: "inbox", source: { kind: "webhook" }, target: { kind: "message_run", run_id: run.run_id, input: { content: "A new event came in." } } })).body;

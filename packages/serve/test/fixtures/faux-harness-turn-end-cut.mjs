@@ -67,6 +67,6 @@ import { script as base } from "./faux-harness.mjs";
 export function script(spec) {
   const queued = /Queue two follow-ups until (\S+), then hold the last until (\S+)\./.exec(spec.system.join("\n"));
   if (!queued) return base(spec);
-  const hold = (until) => ({ call: "fetch_page", args: { url: `http://public.example/hold?until=${encodeURIComponent(until)}` }, usd: 0.001 });
+  const hold = (until) => ({ call: "web_fetch", args: { url: `http://public.example/hold?until=${encodeURIComponent(until)}` }, usd: 0.001 });
   return [hold(queued[1]), { say: "Answer 1.", usd: 0.001 }, { end: true, usd: 0.001 }, { end: true, usd: 0.001 }, hold(queued[2]), { say: "Answer 3.", usd: 0.001 }, { end: true, usd: 0.001 }];
 }

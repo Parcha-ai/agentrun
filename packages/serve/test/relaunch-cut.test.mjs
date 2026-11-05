@@ -18,7 +18,7 @@ const rowsOf = async (api, runId) => (await api("GET", `/runs/${runId}/timeline`
 /** A claude-agent run of `instructions` whose first turn has answered, then a follow-up whose turn's first request has
  *  left (its start mark makes the usage row count 3 requests: turn 1's two and this one). */
 async function inSecondTurn(api, id, instructions) {
-  assert.equal((await api("POST", "/agents", agent(id, { harness: "claude-agent", instructions, tools: ["fetch_page"] }))).status, 201);
+  assert.equal((await api("POST", "/agents", agent(id, { harness: "claude-agent", instructions, tools: ["web_fetch"] }))).status, 201);
   const { body } = await api("POST", `/agents/${id}/runs`, { input: { content: "hi" } });
   await follow(api, body.run_id, ["completed"], { deadlineMs: 55_000 });
   assert.equal((await api("POST", `/runs/${body.run_id}/messages`, { content: "and then?" })).status, 202);

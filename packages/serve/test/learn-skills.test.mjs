@@ -39,7 +39,7 @@ test("the tools a draft may name are the agent's granted tools a workflow's call
   // A learned workflow's model node runs without tools: only a call node's tool is on the list (read is a model node's).
   assert.deepEqual(tools.learnedWorkflowTools(GRANTED), ["web_fetch", "web_search"]);
   // A legacy name a revision still grants is on the list as granted, and by its capability's name.
-  assert.deepEqual(tools.learnedWorkflowTools(["fetch_page"]), ["fetch_page", "web_fetch"]);
+  assert.deepEqual(tools.learnedWorkflowTools(["web_fetch"]), ["web_fetch"]);
   assert.deepEqual(tools.learnedWorkflowTools([]), []);
   for (const name of ["Bash", "exec_command", "apply_patch", "bash", "ask_person"]) assert.ok(!tools.learnedWorkflowTools([...tools.BOUND_TOOLS, name]).includes(name), name);
 });
@@ -100,7 +100,7 @@ test("a draft whose model node names any tool is refused as workflow, though the
 test("the tools a learned workflow may name on a run are those its run resolves: one its plane makes unavailable is not on the list", () => {
   assert.deepEqual(tools.learnedWorkflowTools(["web_fetch", "web_search"], { web_fetch: "unavailable: parallel picked, no PARALLEL_API_KEY", web_search: "native" }), ["web_search"]);
   assert.deepEqual(tools.learnedWorkflowTools(["web_fetch", "web_search"], { web_fetch: "kernel", web_search: "unavailable: web_search is turned off in settings" }), ["web_fetch"]);
-  assert.deepEqual(tools.learnedWorkflowTools(["fetch_page", "web_search"], { web_fetch: "parallel", web_search: "exa-keyless" }), ["fetch_page", "web_fetch", "web_search"]);
+  assert.deepEqual(tools.learnedWorkflowTools(["web_fetch", "web_search"], { web_fetch: "parallel", web_search: "exa-keyless" }), ["web_fetch", "web_search"]);
 });
 
 test("with no tool list a draft that names a tool is refused as no_tool_list; a tool-free draft passes", () => {

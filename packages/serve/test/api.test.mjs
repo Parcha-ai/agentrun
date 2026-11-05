@@ -276,7 +276,6 @@ test("the tool table is closed: a name outside it is refused by name, and a tool
   assert.equal(toolsView({}, { web_search: { provider: "parallel" } }).find((t) => t.name === "web_search").reason, "parallel picked, no PARALLEL_API_KEY");
   assert.equal(toolsView({}).find((t) => t.name === "monid.discover").reason, "Needs MONID_API_KEY");
   for (const t of toolsView({}, { web_search: { provider: "off" } })) assert.equal(typeof t.reason === "string" && t.reason.length > 0, !t.available, `${t.name}: a reason exactly when it is unavailable`);
-  assert.deepEqual(toolRefusal(["fetch_page", "read"], {}, "calls").unbound, ["read"], "a call node runs only a tool the table gives an effect, fetch_page as web_fetch's legacy name");
-  assert.equal(toolRefusal(["fetch_page"], {}), undefined, "fetch_page, no longer listed, is still a name a revision may grant");
+  assert.deepEqual(toolRefusal(["web_fetch", "read"], {}, "calls").unbound, ["read"], "a call node runs only a tool the table gives an effect");
   assert.equal(toolRefusal(["browser"], {}), undefined, "the browser needs either vendor's keys: whether it runs is its plane's (tool-plane.ts), as web_search's is");
 });
