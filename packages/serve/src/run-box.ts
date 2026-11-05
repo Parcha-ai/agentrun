@@ -21,7 +21,8 @@ import { BACKGROUND_CONTEXT as BACKGROUND } from "@earendil-works/chord/context"
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import type { Box, BoxProvider, BoxSpec } from "@parcha/pi-transport";
 import type { Manifest, PullReceipt } from "@parcha/pi-transport/sync";
-import { type BoxEgress, type DockerNetwork, egressBlockedBy, forwarderStart, hostEgress, PROXY_ENV, relayFailed, runBoxAllowOf } from "./box-egress.js";
+import { type BoxEgress, type DockerNetwork, EGRESS_MOUNT, egressBlockedBy, forwarderStart, hostEgress, PROXY_ENV, relayFailed, runBoxAllowOf } from "./box-egress.js";
+import { runBoxVolumeOf, vmDocker, vmEgress } from "./box-egress-vm.js";
 import { awaitImage, boxImageOf } from "./box-image.js";
 import { RELAYED_KEY, relayedBox, relayFetch } from "./box-relay.js";
 import { readJson, writeDurable } from "./files.js";
@@ -128,7 +129,12 @@ export async function boxNetworkOf(env: NodeJS.ProcessEnv, options: Parameters<t
   const allow = boxAllowOf(env);
   if (allow === "none") return { allow: "none", reason: `${BOX_ALLOW_ENV} is none` };
   const blocked = await egressBlockedBy(env, options);
-  return blocked ? { allow: "none", reason: blocked } : { allow };
+  if (!blocked) return { allow };
+  // On a Mac only: a Docker that docker info names as a VM runtime this server knows gets the proxy container
+  // (box-egress-vm.ts); any other stays none, saying why.
+  if ((options.platform ?? process.platform) !== "darwin") return { allow: "none", reason: blocked };
+  const vm = await vmDocker(env, { ...(options.platform ? { platform: options.platform } : {}), ...(options.kernel ? { kernel: options.kernel } : {}), ...(options.timeoutMs ? { timeoutMs: options.timeoutMs } : {}) });
+  return "runtime" in vm ? { allow, vm: vm.runtime } : { allow: "none", reason: vm.reason };
 }
 
 /** Under `--faux` only: a module whose default export, given the data root, is the provider runs' boxes come from in
@@ -185,11 +191,13 @@ export async function runBoxProvider(place: Place, env: NodeJS.ProcessEnv, root:
   const image = boxImageOf(env);
   // The list the server resolved for this run's box (box-egress.ts boxNetworkOf), or none.
   const allow = runBoxAllowOf(env);
+  // On a Mac, the server's proxy container's volume (box-egress-vm.ts), which every box mounts read-only.
+  const volume = allow === "none" ? undefined : runBoxVolumeOf(env);
   return {
-    ...dockerBoxes({ image, ...(user ? { user } : {}), ...boxLimitsOf(env), dropCapabilities: true }),
+    ...dockerBoxes({ image, ...(user ? { user } : {}), ...boxLimitsOf(env), dropCapabilities: true, ...(volume ? { volumes: [{ name: volume, target: EGRESS_MOUNT, readOnly: true }] } : {}) }),
     ready: (context, note) => awaitImage(root, image, context, note),
     // Where the proxy runs: the one line that picks it (box-egress.ts BoxEgress).
-    ...(allow === "none" ? {} : { egress: hostEgress(allow, env, egressLog), net: netLabelOf(allow) }),
+    ...(allow === "none" ? {} : { egress: volume ? vmEgress : hostEgress(allow, env, egressLog), net: netLabelOf(allow) }),
   };
 }
 
@@ -365,7 +373,7 @@ async function localRunBox(boxes: RunBoxes, run: { id: string; root: string; dir
   // Docker's network stays none either way: the box's only way out is the proxy's socket, which checks everything.
   const spec: BoxSpec = {
     env: egress ? { ...BOX_ENV, ...PROXY_ENV } : BOX_ENV, workspace: agentWorkDir(run.dir, run.place),
-    mounts: [...(await boxMounts(run.root, run.dir, run.place)), ...(egress ? [egress.mount] : [])],
+    mounts: [...(await boxMounts(run.root, run.dir, run.place)), ...(egress?.mount ? [egress.mount] : [])],
     labels: { [RUN_LABEL]: run.id, [KIND_LABEL]: "run", ...(boxes.net ? { [NET_LABEL]: boxes.net } : {}) }, network: "none", maxLifetimeMs: BOX_LIFETIME_MS,
   };
   const made = await boxes.create(spec, context);
