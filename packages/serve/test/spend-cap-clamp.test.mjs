@@ -18,8 +18,9 @@ const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pat
 const OUTPUT_PRICED = new URL("./fixtures/faux-output-priced.mjs", import.meta.url).pathname;
 const FAUX_PER_TOKEN = 100 / 1e6;
 
+/** The run's end, or its pause at its cap. */
 const ended = async (api, runId) => {
-  const { rows } = await follow(api, runId, ["completed", "failed", "cancelled"], { deadlineMs: 60_000 });
+  const { rows } = await follow(api, runId, ["input_required", "completed", "failed", "cancelled"], { deadlineMs: 60_000 });
   return { run: (await api("GET", `/runs/${runId}`)).body, rows };
 };
 
@@ -69,13 +70,13 @@ test("pi: a cap under one request's worst case at the ceiling runs, the request 
   assert.ok(sent >= 15_999 && sent <= 16_000 && sent < GATEWAY_MAX_OUTPUT, `max_output_tokens ${sent}`);
 });
 
-test("pi: a cap that cannot buy its first request's least is refused before anything is sent, in plain words, and the run made no request", async (t) => {
+test("pi: a cap that cannot buy its first request's least is refused before anything is sent, in plain words, the run made no request, and it pauses at its cap", async (t) => {
   // A gateway model reasons, and its reasoning shares max_output_tokens: its least is 1,024 tokens for the answer and the
   // medium thinking level's 8,192 (pi-ai's table), 9,216 at $1 a million, $0.009216 (rounded up in the words to $0.01).
   const { api, posts } = await gateway(t, "0,1");
   const { run, rows } = await ended(api, (await start(api, "tiny", "What is six times seven?", { max_cost_usd: 0.0005 })).run_id);
-  assert.deepEqual([run.status, run.error?.code, posts()], ["failed", "spend_cap_reached", 0], JSON.stringify(run.error));
-  assert.match(run.error.message, /^Not sent: this run's cap of \$0\.0005 can't cover one \S+ request \(at least \$0\.01\)\. Raise the cap to at least \$0\.01 to run it\.$/);
+  assert.deepEqual([run.status, run.state, run.error, run.pending?.kind, posts()], ["input_required", "waiting", null, "budget", 0], JSON.stringify(run));
+  assert.match(run.pending.said, /^Not sent: this run's cap of \$0\.0005 can't cover one \S+ request \(at least \$0\.01\)\. Raise the cap to at least \$0\.01 to run it\.$/);
   assert.equal(run.cost.usd, 0);
   noPhantomRequest(rows);
 });
@@ -94,26 +95,26 @@ for (const harness of ["claude-agent", "codex"]) {
     assert.ok(held.length === 3 && held.every((usd, i) => Math.abs(usd - limits[i] * FAUX_PER_TOKEN) < 1e-9 && usd <= 0.5), `held at each clamped limit: ${JSON.stringify(held)}`);
   });
 
-  test(`${harness}: a cap that cannot buy its first request's least is refused before anything is sent, in plain words, and the run made no request`, { timeout: 90_000 }, async (t) => {
+  test(`${harness}: a cap that cannot buy its first request's least is refused before anything is sent, in plain words, the run made no request, and it pauses at its cap`, { timeout: 90_000 }, async (t) => {
     const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS, faux: OUTPUT_PRICED });
     const { run_id } = await start(api, `tiny-${harness}`, "go", { max_cost_usd: 0.05 }, { harness, instructions: "Make three requests." });
     const { run, rows } = await ended(api, run_id);
-    assert.deepEqual([run.status, run.error?.code], ["failed", "spend_cap_reached"], JSON.stringify(run.error));
+    assert.deepEqual([run.status, run.state, run.error, run.pending?.kind], ["input_required", "waiting", null, "budget"], JSON.stringify(run));
     // 1,024 tokens at $0.0001 are $0.1024: the least cap is $0.11 in the words.
-    assert.match(run.error.message, /^Not sent: this run's cap of \$0\.05 can't cover one \S+ request \(at least \$0\.11\)\. Raise the cap to at least \$0\.11 to run it\.$/);
+    assert.match(run.pending.said, /^Not sent: this run's cap of \$0\.05 can't cover one \S+ request \(at least \$0\.11\)\. Raise the cap to at least \$0\.11 to run it\.$/);
     assert.equal(records(data, run_id, "faux.request").length, 0, "nothing was sent");
     noPhantomRequest(rows);
   });
 
-  test(`${harness}: a run that spends its cap down is refused once what is left cannot buy 1,024 tokens, saying so, and the refused request counts as none`, { timeout: 90_000 }, async (t) => {
+  test(`${harness}: a run that spends its cap down is refused once what is left cannot buy 1,024 tokens, saying so, the refused request counts as none, and the run pauses at its cap`, { timeout: 90_000 }, async (t) => {
     // $0.105 passes the least ($0.1024). The first request is admitted with 1,050 tokens and costs $0.001, the second with
     // 1,040 and costs $0.002; then $0.102 is left, 1,020 tokens: the third is refused.
     const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS, faux: OUTPUT_PRICED });
     const { run_id } = await start(api, `down-${harness}`, "go", { max_cost_usd: 0.105 }, { harness, instructions: "Make three requests." });
     const { run, rows } = await ended(api, run_id);
-    assert.deepEqual([run.status, run.error?.code], ["failed", "spend_cap_reached"], JSON.stringify(run.error));
+    assert.deepEqual([run.status, run.state, run.error, run.pending?.kind], ["input_required", "waiting", null, "budget"], JSON.stringify(run));
     // To run it the cap would have to be what was spent and the next request's least: $0.003 + $0.1024, $0.11 up to the cent.
-    assert.match(run.error.message, /^Not sent: the run has spent \$0\.003 of its \$0\.105 cap, and its next \S+ request needs at least \$0\.11\. Raise the cap to at least \$0\.11 to run it\.$/);
+    assert.match(run.pending.said, /^Not sent: the run has spent \$0\.003 of its \$0\.105 cap, and its next \S+ request needs at least \$0\.11\. Raise the cap to at least \$0\.11 to run it\.$/);
     assert.equal(records(data, run_id, "faux.request").length, 2, "two were sent");
     const usage = rows.findLast((r) => r.kind === "usage")?.usage;
     assert.equal(usage?.requests, 2, JSON.stringify(usage));

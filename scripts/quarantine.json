@@ -1,0 +1,4 @@
+{
+  "about": "Flaky tests skipped on CI: each a flake id, its owner lane and an expiry at most 24 h on, at most 3 at once. scripts/quarantine.mjs --add writes an entry and prints the test's skip; --check (and scripts/quarantine.test.mjs, on every pull request) fails once one expires.",
+  "tests": []
+}

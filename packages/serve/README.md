@@ -334,8 +334,9 @@ go through `work/` by path.
     in a directory this server sees. The kernel is the evidence, not the runtime's name:
     - a Docker whose kernel differs from this server's (Docker Desktop on a Mac, OrbStack, Colima) sees a socket bound
       in from the host but cannot connect to it, so its box has no network;
-    - a Docker on this server's kernel passes whatever it calls itself; Docker Desktop with WSL2 shares the kernel
-      string and passes, and the proxy enforces the list there as anywhere;
+    - a Docker on this server's kernel passes whatever it calls itself, if its data directory is one this server sees:
+      Docker Desktop with WSL2 shares the kernel string, but keeps its data outside the distro, so it gets none unless
+      the distro has that directory (`/var/lib/docker`); where it passes, the proxy enforces the list as anywhere;
     - a server in a container given the host's docker socket shares the host's kernel but not its files (docker
       info's `DockerRootDir` is not there), so its box has no network rather than every tool call failing.
 
@@ -1379,7 +1380,9 @@ left out: 2 sessions still being written: they come in next time
      [sandbox](#sandbox), where it and the file tools run in the run's box. The run is `queued` until its first message shows; while the process runs, the
      timeline comes from its door's events through `@parcha/pi-durable-agent/timeline`. Once the run is idle and its
      newest row is the agent's answer, the server sends the process SIGTERM. A model error ends it `failed`
-     (`run_failed`), and a run its `max_cost_usd` stops ends `failed` (`spend_cap_reached`, [below](#spend-cap)). A
+     (`run_failed`). A run whose `max_cost_usd` cannot buy its next request is paused, `input_required` and `waiting`
+     with `pending.kind` `budget`; one its cap refuses for a reason no cap fixes ends `failed` (`spend_cap_reached`,
+     [below](#spend-cap)). A
      provider's content filter stopping the answer ends it `failed` with `moderated` on every harness, saying so in plain
      words ("The model provider stopped this answer (its content filter). Rephrase the request, or try another model.");
      the Timeline's error row keeps the harness's own words for the stop: pi-ai's on pi ("Response incomplete:
@@ -1646,7 +1649,7 @@ log shows `by: {user: true, via: "console"}` at the commit's time, never the not
 An agentic run may name `max_cost_usd` (a workflow run may not: `422`). The cap is checked in the run's own process
 before each model request, the agent's and a compaction's alike, on every harness: what the run has spent so far, plus
 the worst case of each request still in flight, plus this request's worst case must stay within it, or the request is
-not sent and the run ends `failed` with `spend_cap_reached`. A request's worst case is its input bound at the higher of
+not sent and the run pauses ([below](#a-run-paused-at-its-cap)). A request's worst case is its input bound at the higher of
 the model's input and cache-write prices (the provider may bill any of the input as a cache write), plus the output it is
 sent with at the output price, plus any fee its tokens do not show (below). Under a cap each request is limited to the
 output tokens what is left of the cap can buy, thinking included, never more than it asks for or than the model's
@@ -1664,7 +1667,8 @@ by side cannot pass the cap together. Spent so far is read from the run's store 
 survives a restart, plus each response since, and with them each charge a paid tool booked (`monid.run`, which is itself
 refused once the spend reaches the cap; see [monid](#tools)).
 
-Under a cap, whatever cannot be priced is refused, never passed as $0:
+Under a cap, whatever cannot be priced is refused, never passed as $0, and the run ends `failed` with
+`spend_cap_reached`, since no cap would send it:
 
 - A model serve has no price for (a gateway id pi-ai's catalog does not know, with no `AGENT_MODEL_PRICE`): its first
   request is refused before anything is sent, and the run ends `spend_cap_reached` at $0. With no cap its run's cost
@@ -1692,7 +1696,8 @@ request's `runner.request` record (its worst case) and, for one stopped, on its 
 the same: a capped run stopped and sent another message, or opened again after its process died, goes on while its cap
 allows. A cut request from a store written before serve kept the figure has none, and is a spend no one knows.
 
-A refusal says so in plain words, with the numbers, on the run's error and on its timeline row: "Not sent: this run's
+A refusal says so in plain words, with the numbers, on its timeline row and on the run's `pending` (or, for a refusal
+no cap fixes, its error): "Not sent: this run's
 cap of $0.01 can't cover one Claude Sonnet 5.5 request (at least $0.03). Raise the cap to at least $0.03 to run it.", and
 once a run has spent: "Not sent: the run has spent $0.45 of its $0.50 cap, and its next Claude Sonnet 5.5 request needs at
 least $0.03. Raise the cap to at least $0.48 to run it." The cap that would run it is what was spent, what requests still
@@ -1702,6 +1707,19 @@ retry reads only an error's text, and takes "out of budget" as final whatever di
 refused was never sent: the run's usage counts no request for it, and a run whose only request was refused says "no model
 request sent". A reply the limit cut short says so on the run's timeline: "The reply stopped at 1,500 tokens: all that
 the $0.15 left of the run's $0.50 cap could buy."
+
+### A run paused at its cap
+
+A refusal for room (what is left of the cap cannot buy the next request's least) pauses the run instead of ending it: the
+refused request was not sent, so the cap holds, and a higher cap would send it. The run is `input_required` and
+`waiting`, `error` null, with `pending: {kind: "budget", cap_usd, spent_usd, needs_usd, said, at}`: its cap, what the
+cap counted as taken (spent, and held for requests still answering) and the least the refused request needs (a cap above
+their sum sends it), the refusal's words above, and when it came. The figures come from the refusal's own start mark, so a
+server started again says them too. Its timeline shows the refusal's row, then a waiting row: "Paused at the run's $0.05 cap: Not sent: …". The
+webhook's `run.needs_input` says `pending.kind: "budget"`. Its process is let go while it waits (SIGTERM: it drains and
+releases the run), so a paused run holds no place; a server started again reads it paused from its store. A message to a
+paused run is `409 budget_reached`; a stop does nothing more, and a cancel ends it `cancelled`. Only a refusal for room
+pauses a run: one no cap fixes (above) ends it `failed`, as does a cost found past the cap after a response.
 
 A request carrying a native web search tool reads pages into its input that its body does not hold (the provider bills
 them as input): under a cap its input bound is its body's plus an allowance. Claude's own search, an explicit `native`
