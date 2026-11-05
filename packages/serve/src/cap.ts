@@ -159,6 +159,13 @@ export function piEnded(message: Pick<AssistantMessage, "stopReason" | "usage" |
 /** How pi's error for a request whose start mark could not be written begins (request-start.ts builds it from this): the
  *  request never left, so the entry answers none, and spentIn leaves it out by this. */
 export const MARK_NOT_WRITTEN = "the model request was not sent: its mark could not be written";
+/** pi's error for a request that left and whose end mark the store refused (request-start.ts): its cost is not recorded
+ *  as booked, so it stays open, read at its start mark's hold, never closed by this entry at its own usage. */
+export const END_NOT_WRITTEN = "the model request's end could not be recorded";
+const endUnrecorded = (entry: EntryLike): boolean => {
+  const message = entry.kind === "pi.assistant" ? (entry.model?.[0] as { stopReason?: unknown; errorMessage?: unknown } | undefined) : undefined;
+  return message?.stopReason === "error" && typeof message.errorMessage === "string" && message.errorMessage.startsWith(END_NOT_WRITTEN);
+};
 
 /** The input a request carrying claude-agent's native web search may read in beyond its body, added to its input bound
  *  by its adapter (adapters.ts hands it over): Claude's CLI asks for at most 8 searches a request (max_uses 8), and each
@@ -299,7 +306,7 @@ export function spentIn(storeFile: string): number | null {
   let refusals = 0;
   rows.forEach((entry, at) => {
     if (entry.kind === REQUEST_REFUSED) refusals += 1;
-    else if (entry.kind === "pi.assistant" && stopOf(entry) === "error" && !refusedHere(entry) && !notSentHere(entry)) {
+    else if (entry.kind === "pi.assistant" && stopOf(entry) === "error" && !refusedHere(entry) && !notSentHere(entry) && !endUnrecorded(entry)) {
       if (refusals > 0) refusals -= 1;
       else errorsAt.push(at);
     } else if (entry.kind === "pi.assistant" && stopOf(entry) !== "error" && stopOf(entry) !== "aborted") answersAt.push(at);
@@ -335,6 +342,8 @@ export function spentIn(storeFile: string): number | null {
     // pi's entry for a marked request stopped before its end (what had streamed of it): the request is counted by its
     // marks instead, at the figure its end holds, or cut. Before the first mark (an older run) it stays unknown.
     if (marked && entry.kind === "pi.assistant" && (entry.model?.[0] as { stopReason?: unknown } | undefined)?.stopReason === "aborted") continue;
+    // pi's entry for a request whose end mark the store refused: the request stays open, at its start's hold.
+    if (marked && endUnrecorded(entry)) continue;
     if (taken.has(at)) continue;
     entries.push(bound === undefined ? entry : { ...entry, data: { ...data, usd: bound } });
     read.push(entry);
