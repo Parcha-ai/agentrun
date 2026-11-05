@@ -814,8 +814,10 @@ picks which one a run gets, never the model.
   the pointer. A vendor that does not answer leaves that run's browser signed out, said in the server's log.
 - **One run saves at a time.** The first run of an agent to start with the browser holds the sign-in's save lease, and
   its sessions save what changed (Browserbase `persist`, Kernel `save_changes`). A run of the same agent started while
-  another holds it starts signed in and saves nothing. The lease ends when its run's process goes or the run ends
-  (completed, failed or cancelled); one that names a run that ended while the server was down counts as let go.
+  another holds it starts signed in and saves nothing. The lease ends when its run ends (completed, failed or
+  cancelled) or lets go cleanly to wait for its person. A run whose process went, or a server restart, keeps it with
+  the run for its relaunch, since a session it opened before may still write back at the vendor. One that names a run
+  that ended while the server was down counts as let go.
 - **What you see.** `GET /v2/agents/{id}` lists `sign_ins`: `{key: "default", provider, state, held_by, verified_at}`,
   `held` with the run's id while a run holds the lease, else `ready`; `verified_at` is when a saving session last ended.
   Never the pointer. `DELETE /v2/agents/{id}/sign-ins/{key}` forgets one: the vendor's context or profile is deleted,

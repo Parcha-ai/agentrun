@@ -258,3 +258,18 @@ test("through the API: an agent's first run holds the sign-in and saves; one sta
   assert.equal((await api("DELETE", "/agents/alpha/sign-ins/default")).status, 404);
   assert.equal((await api("DELETE", "/agents/nobody/sign-ins/default")).status, 404);
 });
+
+test("a run's save lease outlives its process until the run ends: a server that stops with it mid-browse leaves the lease with it, for its relaunch, never for another run to take while its session may still write back", { timeout: 120_000 }, async (t) => {
+  const dir = await scratch(t);
+  const log = join(dir, "browser.jsonl");
+  const seal = randomBytes(32);
+  withEnv(t, { BROWSERBASE_API_KEY: BB_KEY, BROWSERBASE_PROJECT_ID: "proj-1", AGENTRUN_SEAL_KEY: seal.toString("base64"), FAUX_BROWSER_LOG: log }, KEYS);
+  const server = await serve(t, { fauxBrowser: FAUX_BROWSER, fauxBrowserbase: FAUX_BROWSERBASE });
+  assert.equal((await server.api("POST", "/agents", agent("alpha", { instructions: "Browse.", tools: ["browser"] }))).status, 201);
+  const started = await server.api("POST", "/agents/alpha/runs", { input: { content: `Browse the example page once ${join(dir, "never")} exists.` } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  await until(async () => (await readFile(log, "utf8").catch(() => "")), (text) => text.includes('"op":"profile"'));
+  await server.close();
+  const view = await new SignIns(server.data, seal, {}, async () => true).view("alpha");
+  assert.deepEqual(view.map((s) => [s.state, s.held_by]), [["held", started.body.run_id]]);
+});

@@ -8,8 +8,9 @@
 //
 // Saving is leased across runs: each run is its own process, so pi-browser's one-saver rule (per process) cannot see
 // two runs of one agent. The first run of the agent to start with the browser holds the lease and its sessions save;
-// a run started while another holds it starts from the same sign-in and saves nothing. The lease ends when its run's
-// process goes or the run ends (runs.ts), and one whose run has ended since (a server that went down first) is stale.
+// a run started while another holds it starts from the same sign-in and saves nothing. The lease ends when its run
+// ends, or lets go cleanly to wait for its person (runs.ts); a relaunch or a restart keeps it, since a session the run
+// opened before its process went may still write back. One whose run has ended since (a server down first) is stale.
 import { randomBytes } from "node:crypto";
 import { lstat, mkdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -124,7 +125,7 @@ export class SignIns {
     });
   }
 
-  /** Ends the lease run `runId` holds, if it holds one: its process went, or it ended. A session of it that saved (its
+  /** Ends the lease run `runId` holds, if it holds one: it ended, or let go to wait for its person. A session of it that saved (its
    *  run directory's SIGN_IN_SAVED) makes that the sign-in's `verified_at`. */
   release(agentId: string, runId: string, runDir: string): Promise<void> {
     return this.locked(agentId, async () => {

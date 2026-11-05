@@ -1664,8 +1664,6 @@ export class Runs {
     const pid = holderPid(record);
     // A process that is gone serves no door, whatever its last heartbeat says.
     const gone = !this.live(run) && !(pid !== undefined && pid !== process.pid && alive(pid) && this.doorOf(record));
-    // Its process gone, its sign-in's save lease goes with it: a launch again takes it again, if no other run has.
-    if (gone) await this.releaseSignIn(run);
     // Its metrics are this settle's read, or none: never an earlier end's.
     run.metrics = undefined;
     if (released || gone) await this.storeWhenFree(run, true);
@@ -1699,6 +1697,10 @@ export class Runs {
     if (!ended) {
       // Work left and no process: opened again. A run that waits for the person waits without one, until a message.
       const stalled = run.kind === "workflow" || statusOf(run).status !== "input_required";
+      // Its sign-in's save lease stays with it until it ends (carryBack), through a relaunch or a restart: a session it
+      // opened before its process went may still be live at the vendor, and would write back over another run's. One
+      // that let go cleanly to wait for its person released its sessions first, so its lease goes now.
+      if (gone && released && !stalled) await this.releaseSignIn(run);
       if (!gone || !stalled || this.closing) return this.refresh(run);
       // Opened again without a place, as a run already going, unless its harness never fits this host (a restart on a
       // smaller one): that run fails with why.
