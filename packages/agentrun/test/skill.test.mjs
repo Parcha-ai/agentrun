@@ -228,10 +228,16 @@ test("SKILL.md: its front matter, its size, and each recipe block run in order a
 });
 
 /** A server on loopback that answers each request with `answer.status` and a body quoting `answer.secret` (raw in a
- *  text body, or JSON-escaped and URL-encoded in a JSON error), as a careless or hostile server could. */
+ *  text body, or JSON-escaped and URL-encoded in a JSON error), as a careless or hostile server could. It answers only
+ *  under its own random path prefix (part of `base`), recording each such request's method and path past it; any other
+ *  request, a stray one from another test on this machine, gets a bare 404 and is not recorded. */
 async function echoServer(t) {
   const answer = { status: 422, secret: "", form: "json" };
+  const prefix = `/${randomBytes(8).toString("hex")}`;
+  const requests = [];
   const server = createServer((req, res) => {
+    if (!req.url.startsWith(`${prefix}/`)) return void req.resume().on("end", () => res.writeHead(404).end());
+    requests.push(`${req.method} ${req.url.slice(prefix.length)}`);
     const chunks = [];
     req.on("data", (chunk) => chunks.push(chunk));
     req.on("end", () => {
@@ -256,7 +262,7 @@ async function echoServer(t) {
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => (server.closeAllConnections(), server.close()));
-  return { answer, base: `http://127.0.0.1:${server.address().port}/v2` };
+  return { answer, requests, base: `http://127.0.0.1:${server.address().port}${prefix}/v2` };
 }
 
 /** The CLI, run without blocking this process (the echo server runs in it). */
@@ -290,6 +296,7 @@ test("a secret-bearing command never prints a server's error body, and cuts the 
       Object.assign(echo.answer, { status: 422, secret, form });
       const set = await cli(["tool-keys", "set", "parallel", "PARALLEL_API_KEY", ...base], { ...key, input: secret });
       assert.equal(set.code, 1, set.err);
+      assert.equal(echo.requests.at(-1), "PUT /v2/settings/tool-keys/parallel", "it reached this test's own server");
       clean(set, secret, `tool-keys set, ${form}`);
       if (form === "json") assert.match(set.err, /422 input_invalid/);
 
@@ -303,6 +310,7 @@ test("a secret-bearing command never prints a server's error body, and cuts the 
       Object.assign(echo.answer, { status: 401 });
       const login = await cli(["login", ...base], { input: `${secret}\n` });
       assert.equal(login.code, 4, login.err);
+      assert.equal(echo.requests.at(-1), "GET /v2/agents?limit=1");
       clean(login, secret, `login, ${form}`);
       assert.equal(existsSync(config), false);
     }
@@ -320,6 +328,7 @@ test("a secret-bearing command never prints a server's error body, and cuts the 
   for (const args of [["mcp-servers", "preview"], ["mcp-servers", "save", "srv"]]) {
     const sent = await cli([...args, "--body", "-", ...base], { ...key, input: JSON.stringify({ url: "https://mcp.example.com/mcp", auth: { type: "headers", headers } }) });
     assert.equal(sent.code, 0, sent.err);
+    assert.match(echo.requests.at(-1), /^(?:POST \/v2\/settings\/mcp-servers\/preview|PUT \/v2\/settings\/mcp-servers\/srv)$/);
     for (const value of Object.values(headers)) clean(sent, value, `${args.join(" ")}, a header's value`);
     assert.match(sent.out, /"url":"https:\/\/mcp\.example\.com\/mcp"/, "the server's URL is no secret");
   }
@@ -357,6 +366,11 @@ test("a secret-bearing command never prints a server's error body, and cuts the 
   assert.equal(existsSync(config), false);
 
   // Every command takes its base URL whole: no query, fragment, user or password, from a flag, the environment or the config file.
+  // A request outside its prefix, as a stray one from another test would be: a bare 404, and not recorded.
+  const before = echo.requests.length;
+  const stray = await fetch(`${new URL(echo.base).origin}/v2/settings/tool-keys/parallel`, { method: "PUT", body: "{}" });
+  assert.deepEqual([stray.status, await stray.text(), echo.requests.length], [404, "", before]);
+
   for (const bad of [`${echo.base}#x`, `${echo.base}?x=1`, Object.assign(new URL(echo.base), { username: "user", password: "pw" }).href, "ftp://127.0.0.1/v2", "not a url"]) {
     const flagged = await cli(["agents", "list", "--base-url", bad], key);
     assert.equal(flagged.code, 2, bad);
