@@ -283,7 +283,7 @@ const composedDraft = (tool) => JSON.stringify({
   output: { schemaId: "Page", path: "got" },
   root: { node: "workflow", label: "sub", workflow: JSON.parse(callDraft(tool)), input: { url: "{url}" }, out: "Page", as: "got" },
 }, null, 2);
-const ASK_WORDS = "This workflow's call node calls web_fetch, which is set to ask, and a workflow's call node can't wait for an approval: set it to allow for this agent";
+const ASK_WORDS = "This workflow's call node calls web_fetch, which is set to ask, and a workflow's call node can't wait for an approval: set it to allow for this agent.";
 const DENY_WORDS = "This workflow's call node calls web_fetch, which is set to deny on this server.";
 const quote = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 

@@ -340,6 +340,21 @@ export const allows = (allowed: readonly string[], name: string): boolean => all
 export const learnedWorkflowTools = (granted: readonly string[], plane?: Plane): string[] =>
   [...new Set(granted.filter((name) => allows(CALL_TOOLS, name) && !isUnavailable(plane?.[capabilityOf(name) as Pickable])).flatMap((name) => [name, capabilityOf(name)]))];
 
+/** The tools a learned draft may name (learnedWorkflowTools) that the gate allows: `permission` is what the gate holds a
+ *  tool to now (tool-gate.ts permissionOf, or the run's gate's policy), by its capability's settings key, as the gate
+ *  holds a legacy name. One set to ask or deny is left out of `tools`, so the end-of-run prompt never offers it, and named
+ *  in `gated` with its setting, which the checker and a learned workflow's check before it runs refuse a draft for. */
+export const learnedDraftTools = (granted: readonly string[], permission: (name: string) => string, plane?: Plane): { tools: string[]; gated: Record<string, string> } => {
+  const gated: Record<string, string> = {};
+  const tools = learnedWorkflowTools(granted, plane).filter((name) => {
+    const setting = permission(capabilityOf(name));
+    if (setting === "allow") return true;
+    gated[name] = setting;
+    return false;
+  });
+  return { tools, gated };
+};
+
 /** The tools a workflow names (`nodes` from workflowNodes): on its model nodes (`tools`), and on its `call` nodes
  *  `via: "tool"` (`tool`). */
 export function workflowTools(nodes: readonly Record<string, unknown>[]): { nodes: string[]; calls: string[] } {

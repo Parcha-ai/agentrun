@@ -24,7 +24,8 @@ import type { ModelRef } from "./model.js";
 import { type Ledger, ledgerOf } from "./paid-calls.js";
 import { forModel } from "./result.js";
 import type { Plane } from "./tool-plane.js";
-import { allows, CALL_TOOLS, learnedWorkflowTools, toolOf } from "./tools.js";
+import { deniedText } from "./tool-gate.js";
+import { allows, CALL_TOOLS, learnedDraftTools, toolOf } from "./tools.js";
 import type { Complete } from "./llm.js";
 
 export const LEARNED_WORKFLOW_TOOL = "learned_workflow";
@@ -51,6 +52,10 @@ export type LearnedWorkflowRun = {
   modelOf(tier: string | undefined): ModelRef | undefined;
   /** The `llm` tool's completion, for a call node that names it. */
   complete?: Complete;
+  /** The run's gate's permission of a tool now (tool-gate.ts RunGate policy): a call node's tool set to ask or deny is
+   *  refused before any node runs, and asked again as each call node runs, a composed workflow's inner ones too, so one
+   *  set to either since the call began is refused there, never run. None: every tool allowed (a test's run). */
+  policy?: (tool: string) => string;
 };
 
 /** The most characters of a learned workflow's output its answer holds, monid's bound (monid.ts CLIP): within the
@@ -133,8 +138,9 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
   const dsl = await import("@parcha/agentrun-dsl");
   // Checked again at the call, against the agent's own tools as its run has them, before any node runs: what merged under
   // another revision may name one it has no more.
-  const tools = learnedWorkflowTools(run.granted, run.plane);
-  const problems = draftProblems(dsl, flow.workflow, tools);
+  // The tools the gate allows now; one set to ask or deny is refused in the words a workflow revision's call node is.
+  const { tools, gated } = learnedDraftTools(run.granted, (name) => run.policy?.(name) ?? "allow", run.plane);
+  const problems = draftProblems(dsl, flow.workflow, tools, gated);
   if (problems.length) return refuse(problems.map(({ detail }) => detail).join("; "));
   const doc = JSON.parse(flow.workflow);
   const { createPiHostRunner } = await import("@parcha/agentrun-pi");
@@ -160,6 +166,12 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
     const tool = node.via === "tool" ? node.tool : undefined;
     const effect = tool && allows(CALL_TOOLS, tool) && tools.includes(tool) ? toolOf(tool)?.effect : undefined;
     if (!effect) throw new Error(`call node "${node.label}": this agent runs no tool ${tool ?? `via ${node.via}`}`);
+    // The gate's one rule, read as each call node runs, as a workflow revision's call node reads it (app.ts runEffect):
+    // a tool set to deny since the call began is refused in the gate's words, one set to ask too, since a call node
+    // cannot wait for an approval. Neither runs.
+    const permission = run.policy?.(tool!) ?? "allow";
+    if (permission === "deny") throw new Error(deniedText(tool!));
+    if (permission === "ask") throw new Error(`This ${tool} call needs a person's approval, which a workflow's call node cannot wait for; it was not run.`);
     // Its paid requests booked under the tool's call, as a call of its own: the node, its execution path, its item in a map.
     const booked = ledger ? { ledger: { call: `${ledger.call}/${node.label}@${executionPath ?? ""}${item ? `#${item.index}` : ""}`, record: ledger.record } } : {};
     return effect(given, { signal: own, env: run.env, work: run.work, ...(run.complete ? { complete: run.complete } : {}), ...booked });

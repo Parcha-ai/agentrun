@@ -617,7 +617,7 @@ export class LearningRuns {
       const seed = await seedAt(this.options.agents.dir, run.agentId, pin.seed);
       await this.kernel.save(run);
       const { reflectPrompt } = await import("./learn/index.js");
-      const tools = await this.draftTools(run);
+      const { tools } = await this.draftTools(run);
       // The one call that sends the end-of-run turn, with its origin. Only while the run is finishing with no outcome yet,
       // read in the same tick the origin's write starts in (toLiveDoor writes it before its first await): a message
       // waits while the run is finishing (runs.ts message), so a write starts only before that wait ends. One whose
@@ -687,13 +687,18 @@ export class LearningRuns {
     return once(this.proposing, run.id, () => this.propose(run));
   }
 
-  /** The tools a run's workflow draft may name: its revision's granted tools a workflow's call node runs here (tools.ts
-   *  learnedWorkflowTools); none for a revision not found, so a draft that names one is refused. */
-  private async draftTools(run: Run): Promise<string[]> {
+  /** The tools a run's workflow draft may name: its revision's granted tools a workflow's call node runs here that the
+   *  gate allows, under the server's tool settings and the agent's own (tools.ts learnedDraftTools); `gated`, those set to
+   *  ask or deny, which a draft that calls one is refused for. None for a revision not found, so a draft that names one is
+   *  refused. */
+  private async draftTools(run: Run): Promise<{ tools: string[]; gated: Record<string, string> }> {
     const known = await this.options.agents.revision(run.agentId, run.revision);
-    if (known?.revision.kind !== "agentic") return [];
-    const { learnedWorkflowTools } = await import("./tools.js");
-    return learnedWorkflowTools(known.revision.body.tools);
+    if (known?.revision.kind !== "agentic") return { tools: [], gated: {} };
+    const [{ learnedDraftTools }, { permissionOf }, { readToolSettings }] = await Promise.all([import("./tools.js"), import("./tool-gate.js"), import("./tool-plane.js")]);
+    // The server's settings, beside the agent store, as the run's gate reads them, and the agent's own.
+    const server = readToolSettings(this.options.agents.dir).settings;
+    const agent = (known.revision.body.toolSettings ?? {}) as never;
+    return learnedDraftTools(known.revision.body.tools, (name) => permissionOf(name, server as never, agent));
   }
 
   private async propose(run: Run): Promise<void> {
@@ -704,7 +709,7 @@ export class LearningRuns {
       const { proposeRun } = await import("./propose.js");
       // The secrets this server holds, wherever its launcher put them, the keys saved on it, what each launch handed the
       // run, and its own tokens. How the job ended, before its end-of-run turn: only a completed run keeps a skill.
-      const proposed = await proposeRun({ data: this.options.agents.dir, agentId: run.agentId, runDir: run.dir, seed: pin.seed, turn: await readTurn(run.dir), refuse: this.refused(run), ...(run.meta.reflect ? { outcome: run.meta.reflect.outcome } : {}), tools: await this.draftTools(run) });
+      const proposed = await proposeRun({ data: this.options.agents.dir, agentId: run.agentId, runDir: run.dir, seed: pin.seed, turn: await readTurn(run.dir), refuse: this.refused(run), ...(run.meta.reflect ? { outcome: run.meta.reflect.outcome } : {}), ...(await this.draftTools(run)) });
       // What the checks left out goes on with it (`problems`), to be said with what it learned.
       if (proposed.state === "proposed") this.setLearning(run, "proposed", null, said.proposed(proposed.notes, proposed.skills, proposed.workflows), proposed.left ? { problems: proposed.left } : {});
       else if (proposed.reason === "empty") this.setLearning(run, "dropped", "empty", said.empty);

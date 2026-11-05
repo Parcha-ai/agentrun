@@ -67,7 +67,9 @@ from the one-line description the draft's block gives (`draftFiles`): front matt
 `description`, and `status: pending` when the grader holds the draft. A run adds or changes at most one draft. The workflow DSL's own
 `validateWorkflow` judges the draft, with no code run (`executeCode: false`) and the agent's tools as the list a node may
 name: the tools its definition grants that a workflow's call node runs on this server, so a harness's own tool
-(`Bash`, `exec_command`, `apply_patch`) is never on it. A model node that names any tool is refused: a learned
+(`Bash`, `exec_command`, `apply_patch`) is never on it, nor is a tool the gate does not allow (set to ask or deny, under the
+server's tool settings and the agent's own): a draft whose call node calls one, a composed workflow's inner node too, is
+refused in the words a workflow revision's call node is, and the end-of-run prompt offers only tools set to allow. A model node that names any tool is refused: a learned
 workflow's model node runs without tools. So is a node the learned runner cannot run: a learned workflow runs model
 and tool-call nodes, and a judge, pick or sift node (or a route by question, a verify, an ask) needs a decision provider a
 run is not given. So is an agent node that asks more than the learned runner's 8 turns, or `context: "fork"` (each node
