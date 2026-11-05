@@ -200,6 +200,8 @@ export type ServeOptions = {
   beforeReopenLaunch?: (runId: string) => Promise<void> | void;
   /** A test's seam: awaited by a message before it goes to the run's door, so a test can act while it is in flight. */
   beforeSubmit?: (runId: string, content: string) => Promise<void> | void;
+  /** A test's seam: awaited before a run's serve.json is written (runs.ts beforeMetaSave). */
+  beforeMetaSave?: (runId: string, meta: Readonly<Record<string, unknown>>) => Promise<void> | void;
   /** A test's seam: who wrote a message sent to a run through its messages route (`origin`, as a raised cap's follow-up
    *  carries it), so a test sends a server-written message down the path a person's message takes. */
   messageOrigin?: (runId: string, content: string) => MessageOrigin | undefined;
@@ -751,6 +753,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   if (options.beforeAbort) runs.beforeAbort = options.beforeAbort;
   if (options.beforeReopenLaunch) runs.beforeReopenLaunch = options.beforeReopenLaunch;
   if (options.beforeSubmit) runs.beforeSubmit = options.beforeSubmit;
+  if (options.beforeMetaSave) runs.beforeMetaSave = options.beforeMetaSave;
   if (options.messageOrigin) runs.messageOrigin = options.messageOrigin;
   // Answered keys are kept in the data directory for the retention capabilities state, and written before the answer
   // is sent, so a client that retries after a restart gets the first answer back.

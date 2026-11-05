@@ -790,6 +790,9 @@ export class Runs {
   beforeReopenLaunch?: (runId: string) => Promise<void> | void;
   /** A test's seam (startServe's `beforeSubmit`): awaited by a message before it goes to the run's door. */
   beforeSubmit?: (runId: string, content: string) => Promise<void> | void;
+  /** A test's seam (startServe's `beforeMetaSave`): awaited before a run's serve.json is written; one that throws fails
+   *  the write, as a full disk would. */
+  beforeMetaSave?: (runId: string, meta: Readonly<RunMeta>) => Promise<void> | void;
   /** A test's seam (startServe's `messageOrigin`): the origin a message sent through the messages route carries. */
   messageOrigin?: (runId: string, content: string) => MessageOrigin | undefined;
 
@@ -906,6 +909,7 @@ export class Runs {
   private saveMeta(run: Run): Promise<void> {
     run.saving = (run.saving ?? Promise.resolve()).catch(() => undefined).then(async () => {
       const { learning } = run.meta;
+      await this.beforeMetaSave?.(run.id, run.meta);
       await writeWhole(join(run.dir, RUN_META), `${JSON.stringify(run.meta)}\n`);
       await this.learning.onSaved(run, learning);
     });

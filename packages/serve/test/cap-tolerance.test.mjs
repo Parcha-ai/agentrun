@@ -4,7 +4,7 @@
 // cap itself, so the raise it names is one PATCH takes.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { capBefore } from "../dist/cap.js";
+import { capBefore, raiseTo } from "../dist/cap.js";
 
 // The walk's gateway model as priced there: output at $100 a million, so 3,072 tokens are $0.3072.
 const model = { id: "gpt-6-luna", name: "gpt-6-luna", api: "openai-responses", provider: "p", maxTokens: 64000, contextWindow: 400000, cost: { input: 0, output: 100, cacheRead: 0, cacheWrite: 0 } };
@@ -21,4 +21,10 @@ test("a request past the cap names a raise a cent above it, never the cap itself
     const refused = cap.beforeRequest({ spentUsd, inFlight: [], inputTokensMax: 0, outputTokensLeast: 3072 })?.refuse ?? "";
     assert.match(refused, /Raise the cap to at least \$0\.32 to run it\.$/, `${spentUsd}: ${refused}`);
   }
+});
+
+test("the raise a refusal names is above the cap by more than a float's tail, a cap a hair under a whole cent included", () => {
+  // A cap 5e-10 under $1: $1.00 is within its tail, and no raise; the cent above it is.
+  assert.equal(raiseTo(0.9999999995, 0.9999999995), "$1.01");
+  assert.equal(raiseTo(1.9999999995, 2.003), "$2.01");
 });
