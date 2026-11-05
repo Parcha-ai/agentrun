@@ -40,7 +40,7 @@ import { durationMs, logLine } from "./print.js";
 import { type CarryBackRetry, type Run, Runs, STATUSES, type Status, statusOf, toolCostOf } from "./runs.js";
 import { BOX_QUARANTINE, type BoxHost, Quarantine } from "./box/sweep.js";
 import { type BoxOffer, boxesLog, boxRegistry, daytonaApi, enabledBoxes } from "./boxes.js";
-import { type DockerNetwork, FAUX_EGRESS_ENV } from "./box-egress.js";
+import { type DockerNetwork, FAUX_EGRESS_ENV, sweepEgressDirs } from "./box-egress.js";
 import { boxImageOf, clearImage, type DockerImage, dockerImage, type ImageState, withImage } from "./box-image.js";
 import { startBoxRelay } from "./box-relay.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
@@ -661,6 +661,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   // What a Docker box's programs reach, resolved once here (run-box.ts boxNetworkOf): the setting's list, on a Docker
   // daemon of this Linux machine's own; else none, and why. A run's process gets the list or none (RUN_BOX_ALLOW_ENV).
   const boxNetwork: DockerNetwork = fauxBox ? { allow: "none", reason: "a faux box (tests)" } : boxes.provider("docker") ? await boxNetworkOf(env) : { allow: "none", reason: "no Docker box on this server" };
+  // The proxy directories runs that are gone left in /tmp (box-egress.ts): a live run's, any server's, stays.
+  if (!fauxBox && boxes.provider("docker")) await sweepEgressDirs().catch(() => 0);
   const dockerNetwork = (offer: BoxOffer): BoxOffer =>
     !offer.available ? offer : boxNetwork.allow === "none" ? { ...offer, network: "none", network_reason: boxNetwork.reason } : { ...offer, network: "allowlist" };
   // A Daytona box reaches the hosts AGENTRUN_BOX_ALLOW names, through Daytona's domain list, until Daytona cannot keep

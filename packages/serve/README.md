@@ -328,11 +328,19 @@ go through `work/` by path.
     none. Its decisions are in the run's process log (`box_egress`: host, port, address, class).
   - Only a Docker daemon on this same Linux machine can reach the proxy's socket. The server checks it once, at start,
     and fails closed: the box has the list only when this machine is Linux, the docker CLI's endpoint is a local unix
-    socket, and `docker info` answers within 5 s with Linux containers on this machine's own kernel. A Docker that runs
-    in a VM (Docker Desktop, OrbStack, Colima and their kin, on a Mac or elsewhere) sees a socket bound in from the host
-    but cannot connect to it, so there the box has no network, and capabilities and the banner say why, naming what
-    was found: `docker boxes have no network: this Docker (OrbStack) runs in a VM (its kernel is "6.15.11-orbstack-…",
-    this machine's "6.1.0-…") that can't reach this server's egress proxy yet`.
+    socket, and `docker info` answers within 5 s with Linux containers on this machine's own kernel, keeping its data
+    in a directory this server sees. The kernel is the evidence, not the runtime's name:
+    - a Docker whose kernel differs from this server's (Docker Desktop on a Mac, OrbStack, Colima) sees a socket bound
+      in from the host but cannot connect to it, so its box has no network;
+    - a Docker on this server's kernel passes whatever it calls itself; Docker Desktop with WSL2 shares the kernel
+      string and passes, and the proxy enforces the list there as anywhere;
+    - a server in a container given the host's docker socket shares the host's kernel but not its files (docker
+      info's `DockerRootDir` is not there), so its box has no network rather than every tool call failing.
+
+    Capabilities and the banner say why, naming what was found: `docker boxes have no network: this Docker (OrbStack)
+    runs in a VM (its kernel is "6.15.11-orbstack-…", this machine's "6.1.0-…") that can't reach this server's egress
+    proxy yet`. At each start the server removes the proxy directories of runs that are gone (a socket that refuses a
+    connect, over a minute old); a live run's, of any server of this user's, stays.
   - Capabilities give the list as `places.allow`, and each box's `network`: `allowlist` or `none`, with
     `network_reason` when an available box has none. An image with no `socat` gets no network, and the run's timeline
     says so once.

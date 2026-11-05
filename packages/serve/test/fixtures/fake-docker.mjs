@@ -69,12 +69,12 @@ switch (args[0]) {
     done("27.0.0-fake\n");
     break;
   case "info": {
-    // `docker info --format {{.OSType}}|{{.KernelVersion}}|{{.OperatingSystem}}`: a daemon of this Linux machine's own
-    // (its kernel), or what `docker-info` in the state directory says; it fails with `docker-info-fail`'s text, and with
+    // `docker info --format {{.OSType}}|{{.KernelVersion}}|{{.DockerRootDir}}|{{.OperatingSystem}}`: a daemon of this
+    // Linux machine's own (its kernel, and its state directory as its data root), or what `docker-info` there says; it fails with `docker-info-fail`'s text, and with
     // `docker-info-hold` it never answers.
     if (existsSync(join(state, "docker-info-hold"))) setInterval(() => {}, 60_000);
     else if (existsSync(join(state, "docker-info-fail"))) fail(readFileSync(join(state, "docker-info-fail"), "utf8").trim() || "Cannot connect to the Docker daemon");
-    else done(existsSync(join(state, "docker-info")) ? readFileSync(join(state, "docker-info"), "utf8") : `linux|${release()}|Debian GNU/Linux 13 (trixie)\n`);
+    else done(existsSync(join(state, "docker-info")) ? readFileSync(join(state, "docker-info"), "utf8") : `linux|${release()}|${state}|Debian GNU/Linux 13 (trixie)\n`);
     break;
   }
   case "image": {

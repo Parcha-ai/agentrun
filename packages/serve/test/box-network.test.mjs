@@ -281,24 +281,26 @@ async function dockerOf(api) {
 
 test("where a Docker runs, by docker info (fails closed): the network goes on only for a daemon of this Linux machine, by its own kernel; any other answer, or none, is no network, naming what was seen", async (t) => {
   const { egressBlockedBy } = await import("../dist/box-egress.js");
-  const said = (answer) => ({ info: async () => answer, kernel: "6.1.0-28-amd64", platform: "linux" });
+  const said = (answer) => ({ info: async () => answer, kernel: "6.1.0-28-amd64", platform: "linux", sees: (dir) => dir === "/var/lib/docker" });
   withEnv(t, {}, ["DOCKER_HOST", "DOCKER_CONTEXT"]);
   const env = { DOCKER_CONFIG: join(await scratch(t), "no-config") };
-  assert.equal(await egressBlockedBy(env, said("linux|6.1.0-28-amd64|Debian GNU/Linux 13 (trixie)\n")), undefined, "this machine's own kernel: no VM in between");
+  assert.equal(await egressBlockedBy(env, said("linux|6.1.0-28-amd64|/var/lib/docker|Debian GNU/Linux 13 (trixie)\n")), undefined, "this machine's own kernel: no VM in between");
   // Each runtime a Mac (or a desktop) runs Docker in: another kernel than this machine's.
   for (const [name, kernel] of [["Docker Desktop", "6.10.14-linuxkit"], ["OrbStack", "6.15.11-orbstack-00539-g9885ebd8e3f4"], ["Rancher Desktop WSL Distribution", "5.15.167.4-microsoft-standard-WSL2"], ["Colima", "6.8.0-50-generic"], ["Podman Machine", "6.12.7-200.fc41.aarch64"], ["Boot2Docker 19.03.12 (TCL 10.1)", "4.19.130-boot2docker"]]) {
-    assert.equal(await egressBlockedBy(env, said(`linux|${kernel}|${name}`)), `this Docker (${name}) runs in a VM (its kernel is ${JSON.stringify(kernel)}, this machine's "6.1.0-28-amd64") that can't reach this server's egress proxy yet`, name);
+    assert.equal(await egressBlockedBy(env, said(`linux|${kernel}|/var/lib/docker|${name}`)), `this Docker (${name}) runs in a VM (its kernel is ${JSON.stringify(kernel)}, this machine's "6.1.0-28-amd64") that can't reach this server's egress proxy yet`, name);
   }
   // A named runtime on this kernel still passes: the kernel is the evidence, not the name.
-  assert.equal(await egressBlockedBy(env, said("linux|6.1.0-28-amd64|Docker Engine - Community")), undefined);
-  assert.equal(await egressBlockedBy(env, said("windows|10.0 20348 (20348.1.amd64fre.fe_release.210507-1500)|Windows Server 2022 Datacenter")), `this Docker (Windows Server 2022 Datacenter) runs "windows" containers, not Linux ones on this machine, so it can't reach this server's egress proxy`);
-  for (const garbage of ["", "nonsense", "linux||", "a|b|c|d", "<html>"]) {
+  assert.equal(await egressBlockedBy(env, said("linux|6.1.0-28-amd64|/var/lib/docker|Docker Engine - Community")), undefined);
+  assert.equal(await egressBlockedBy(env, said("windows|10.0 20348 (20348.1.amd64fre.fe_release.210507-1500)|C:\\ProgramData\\docker|Windows Server 2022 Datacenter")), `this Docker (Windows Server 2022 Datacenter) runs "windows" containers, not Linux ones on this machine, so it can't reach this server's egress proxy`);
+  for (const garbage of ["", "nonsense", "linux|||", "linux|6.1.0-28-amd64|Debian", "a|b|c|d|e", "<html>"]) {
     assert.match(await egressBlockedBy(env, said(garbage)), /^docker info's answer could not be read \(.*\), so this server can't tell this Docker is on this machine$/, JSON.stringify(garbage));
   }
   assert.equal(await egressBlockedBy(env, { ...said(""), info: async () => { throw new Error("it failed (exit 1)"); } }), "docker info did not say where this Docker runs (it failed (exit 1)), so this server can't tell it is on this machine");
   assert.equal(await egressBlockedBy(env, { ...said(""), platform: "darwin" }), "this server runs on macOS, where Docker runs in a VM that can't reach this server's egress proxy yet");
-  assert.equal(await egressBlockedBy({ ...env, DOCKER_HOST: "tcp://docker.example.com:2376" }, said("linux|6.1.0-28-amd64|Debian GNU/Linux 13 (trixie)")), "this Docker (DOCKER_HOST=tcp://docker.example.com:2376) is not on this machine, so it can't reach this server's egress proxy");
-  assert.equal(await egressBlockedBy({ ...env, DOCKER_HOST: "unix:///var/run/docker.sock" }, said("linux|6.1.0-28-amd64|Debian GNU/Linux 13 (trixie)")), undefined, "a unix socket is this machine's");
+  assert.equal(await egressBlockedBy({ ...env, DOCKER_HOST: "tcp://docker.example.com:2376" }, said("linux|6.1.0-28-amd64|/var/lib/docker|Debian GNU/Linux 13 (trixie)")), "this Docker (DOCKER_HOST=tcp://docker.example.com:2376) is not on this machine, so it can't reach this server's egress proxy");
+  assert.equal(await egressBlockedBy({ ...env, DOCKER_HOST: "unix:///var/run/docker.sock" }, said("linux|6.1.0-28-amd64|/var/lib/docker|Debian GNU/Linux 13 (trixie)")), undefined, "a unix socket is this machine's");
+  // A server in a container given the host's docker socket: the host's kernel, but not its files.
+  assert.equal(await egressBlockedBy(env, said("linux|6.1.0-28-amd64|/host/var/lib/docker|Docker Engine - Community")), `this Docker (Docker Engine - Community) keeps its data in "/host/var/lib/docker", which this server can't see: it runs on another machine's files (this server in a container, given the host's docker socket), so it can't reach this server's egress proxy`);
 });
 
 test("docker info that errors or does not answer in time is no network, saying so", async (t) => {
@@ -322,7 +324,7 @@ test("capabilities and the banner: on a Docker of this Linux machine's own, plac
 });
 
 test("a Docker in a VM (docker info names the runtime, on another kernel): docker's network is none with the reason naming it, in capabilities and the banner, and a run's box gets no proxy", { timeout: 120_000 }, async (t) => {
-  const docker = await fakeDocker(t, { "docker-info": "linux|6.15.11-orbstack-00539-g9885ebd8e3f4|OrbStack\n" });
+  const docker = await fakeDocker(t, { "docker-info": "linux|6.15.11-orbstack-00539-g9885ebd8e3f4|/var/lib/docker|OrbStack\n" });
   const server = await serve(t, { faux: PROBE, fauxEgress: FAKE_EGRESS });
   const { places, docker: offer } = await dockerOf(server.api);
   const why = process.platform === "linux"
@@ -404,4 +406,43 @@ test("a box an earlier process of the run made with another network (none) is ma
   assert.ok(flags(made, "--mount").some((mount) => mount.includes(`target=${EGRESS_MOUNT},readonly`)), "and its socket's directory");
   const net = flags(made, "--label").find((label) => label.startsWith("agentrun.net="));
   assert.equal(net, `agentrun.net=${createHash("sha256").update(DEFAULT.join(",")).digest("hex").slice(0, 16)}`, "labelled with its list");
+});
+
+test("a Docker whose data root this server can't see (the server in a container, given the host's docker socket): docker's network is none at start, with the reason, and a run's box gets no proxy; one it sees keeps the list", { skip: process.platform !== "linux" && "a box's network list needs a Docker daemon of this Linux machine's own", timeout: 120_000 }, async (t) => {
+  const missing = join(await scratch(t), "host-var-lib-docker");
+  const docker = await fakeDocker(t, { "docker-info": `linux|${KERNEL}|${missing}|Docker Engine - Community\n` });
+  const server = await serve(t, { faux: PROBE, fauxEgress: FAKE_EGRESS });
+  const { docker: offer } = await dockerOf(server.api);
+  assert.equal(offer.network, "none");
+  assert.equal(offer.network_reason, `this Docker (Docker Engine - Community) keeps its data in ${JSON.stringify(missing)}, which this server can't see: it runs on another machine's files (this server in a container, given the host's docker socket), so it can't reach this server's egress proxy`);
+  const runId = await boxedRun(server.api, [{ tool: "bash", args: { command: "true" } }]);
+  await follow(server.api, runId, ["completed"], { deadlineMs: 60_000 });
+  assert.equal(answers(server.data, runId)[0].error, false, "the call runs, with no network");
+  assert.ok(!flags(docker.runs()[0], "--mount").some((mount) => mount.includes(EGRESS_MOUNT)));
+  // The same, its data root one this server sees: the list.
+  await mkdir(missing);
+  const seen = await serve(t, { faux: PROBE, fauxEgress: FAKE_EGRESS });
+  assert.equal((await dockerOf(seen.api)).docker.network, "allowlist");
+});
+
+test("the start's sweep removes only dead proxy directories of this user's: one whose socket refuses (or has none) and is older than a minute goes, a live one and a new one stay", async (t) => {
+  const { sweepEgressDirs, STALE_EGRESS_MS } = await import("../dist/box-egress.js");
+  const { createServer } = await import("node:net");
+  const { utimes } = await import("node:fs/promises");
+  const parent = join("/tmp", `agentrun-egress-${process.getuid()}`);
+  await mkdir(parent, { recursive: true, mode: 0o700 });
+  const dir = (n) => join(parent, createHash("sha256").update(`sweep-test-${process.pid}-${n}`).digest("hex").slice(0, 16));
+  const [dead, live, fresh, empty] = [dir(1), dir(2), dir(3), dir(4)];
+  t.after(() => Promise.all([dead, live, fresh, empty].map((d) => rm(d, { recursive: true, force: true }))));
+  for (const d of [dead, live, fresh, empty]) await mkdir(d, { mode: 0o700 });
+  // dead: a socket file nothing listens on (a regular file refuses a connect the same way); live: a listener.
+  await writeFile(join(dead, "egress.sock"), "");
+  const listener = createServer((socket) => socket.end());
+  await new Promise((resolve) => listener.listen(join(live, "egress.sock"), resolve));
+  t.after(() => new Promise((resolve) => listener.close(resolve)));
+  const old = new Date(Date.now() - 2 * STALE_EGRESS_MS);
+  for (const d of [dead, live, empty]) await utimes(d, old, old);
+  const removed = await sweepEgressDirs(process.getuid());
+  assert.ok(removed >= 2, `removed ${removed}`);
+  assert.deepEqual([dead, live, fresh, empty].map((d) => existsSync(d)), [false, true, true, false], "dead and empty go; live and fresh stay");
 });

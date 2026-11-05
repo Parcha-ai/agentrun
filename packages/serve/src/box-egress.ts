@@ -10,7 +10,9 @@
 // with none would reach every public host.
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { lstat, mkdir, rm } from "node:fs/promises";
+import { statSync } from "node:fs";
+import { lstat, mkdir, readdir, rm } from "node:fs/promises";
+import { connect } from "node:net";
 import { release } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -138,8 +140,8 @@ async function fauxSeams(env: NodeJS.ProcessEnv): Promise<Seams> {
 export const INFO_TIMEOUT_MS = 5_000;
 /** A platform by the name people use. */
 const PLATFORM_NAMES: Readonly<Record<string, string>> = { darwin: "macOS", win32: "Windows" };
-/** What `docker info` is asked: the daemon's OS type, its kernel, and the name it gives its OS. */
-export const INFO_FORMAT = "{{.OSType}}|{{.KernelVersion}}|{{.OperatingSystem}}";
+/** What `docker info` is asked: the daemon's OS type, its kernel, where it keeps its data, and the name it gives its OS. */
+export const INFO_FORMAT = "{{.OSType}}|{{.KernelVersion}}|{{.DockerRootDir}}|{{.OperatingSystem}}";
 
 /** `docker info`'s answer to INFO_FORMAT, its stdout, or a throw that says why there is none. */
 export type DockerInfo = (env: NodeJS.ProcessEnv, timeoutMs: number) => Promise<string>;
@@ -161,9 +163,13 @@ export const dockerInfo: DockerInfo = (env, timeoutMs) =>
  * evidence that the daemon is this machine's: this machine is Linux; the docker CLI's endpoint is a local unix socket
  * (no DOCKER_HOST or a unix:// one, and the default context or a unix one: pi-transport's dockerDaemon); and `docker
  * info` answers within its bound with OS type linux and this machine's own kernel (os.release()): the same kernel, so no
- * VM in between. Anything else is no network, and the reason says what was seen, naming the runtime docker info gives.
+ * VM in between; and the directory it keeps its data in (DockerRootDir) is one this server sees. A server in a container
+ * given the host's docker socket shares the host's kernel, but not its files: it would bind a directory the daemon does
+ * not have, so every box would fail to start. Anything else is no network, and the reason says what was seen, naming the
+ * runtime docker info gives. A kernel is the evidence, not a runtime's name: Docker Desktop on WSL2 runs the kernel this
+ * server does, and passes (the proxy enforces the list there as anywhere).
  */
-export async function egressBlockedBy(env: NodeJS.ProcessEnv, options: { info?: DockerInfo; platform?: string; kernel?: string; timeoutMs?: number } = {}): Promise<string | undefined> {
+export async function egressBlockedBy(env: NodeJS.ProcessEnv, options: { info?: DockerInfo; platform?: string; kernel?: string; timeoutMs?: number; sees?: (dir: string) => boolean } = {}): Promise<string | undefined> {
   const platform = options.platform ?? process.platform;
   if (platform !== "linux") return `this server runs on ${PLATFORM_NAMES[platform] ?? platform}, where Docker runs in a VM that can't reach this server's egress proxy yet`;
   const { dockerDaemon } = await import("@parcha/pi-transport/box/docker");
@@ -176,14 +182,68 @@ export async function egressBlockedBy(env: NodeJS.ProcessEnv, options: { info?: 
     return `docker info did not say where this Docker runs (${(error as Error).message}), so this server can't tell it is on this machine`;
   }
   const fields = answer.trim().split("|");
-  const [osType, kernel, name] = fields.map((field) => field.trim());
+  const [osType, kernel, root, name] = fields.map((field) => field.trim());
   const shown = (text: string) => JSON.stringify(text.slice(0, 80));
-  if (fields.length !== 3 || !osType || !kernel) return `docker info's answer could not be read (${shown(answer.trim())}), so this server can't tell this Docker is on this machine`;
+  if (fields.length !== 4 || !osType || !kernel || !root) return `docker info's answer could not be read (${shown(answer.trim())}), so this server can't tell this Docker is on this machine`;
   const runtime = name ? `this Docker (${name.slice(0, 80)})` : "this Docker";
   if (osType !== "linux") return `${runtime} runs ${shown(osType)} containers, not Linux ones on this machine, so it can't reach this server's egress proxy`;
   const here = options.kernel ?? release();
   if (kernel !== here) return `${runtime} runs in a VM (its kernel is ${shown(kernel)}, this machine's ${shown(here)}) that can't reach this server's egress proxy yet`;
+  const sees = options.sees ?? ((dir: string) => {
+    try {
+      return statSync(dir).isDirectory();
+    } catch {
+      return false;
+    }
+  });
+  if (!sees(root)) return `${runtime} keeps its data in ${shown(root)}, which this server can't see: it runs on another machine's files (this server in a container, given the host's docker socket), so it can't reach this server's egress proxy`;
   return undefined;
+}
+
+/** How old a run's proxy directory with no live socket must be before the start's sweep takes it: one just made, whose
+ *  proxy is still starting, is not yet listening. */
+export const STALE_EGRESS_MS = 60_000;
+
+/**
+ * The start's sweep of this user's proxy directories (egressDir's parent): each whose socket refuses a connect (or has
+ * none) and that is older than STALE_EGRESS_MS is a run's process that is gone, and is removed, by its exact path. One
+ * whose socket answers is a live run's, this server's or another's under this uid, and stays. Returns how many went.
+ */
+export async function sweepEgressDirs(uid: number = process.getuid?.() ?? 0, now: number = Date.now()): Promise<number> {
+  const parent = join("/tmp", `agentrun-egress-${uid}`);
+  let names: string[];
+  try {
+    const at = await lstat(parent);
+    if (!at.isDirectory() || at.isSymbolicLink() || at.uid !== uid) return 0;
+    names = await readdir(parent);
+  } catch {
+    return 0;
+  }
+  let removed = 0;
+  for (const name of names) {
+    if (!/^[0-9a-f]{16}$/.test(name)) continue;
+    const dir = join(parent, name);
+    try {
+      const at = await lstat(dir);
+      if (!at.isDirectory() || at.isSymbolicLink() || at.uid !== uid || now - at.mtimeMs < STALE_EGRESS_MS) continue;
+    } catch {
+      continue;
+    }
+    if (await answers(join(dir, EGRESS_SOCKET))) continue;
+    await rm(dir, { recursive: true, force: true });
+    removed++;
+  }
+  return removed;
+}
+
+/** Whether a Unix socket at `path` takes a connection: no for a refusal or no such file, yes for anything else. */
+function answers(path: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = connect(path);
+    const timer = setTimeout(() => (socket.destroy(), resolve(true)), 2_000);
+    socket.once("connect", () => (clearTimeout(timer), socket.destroy(), resolve(true)));
+    socket.once("error", (error: NodeJS.ErrnoException) => (clearTimeout(timer), resolve(error.code !== "ECONNREFUSED" && error.code !== "ENOENT")));
+  });
 }
 
 /** What a server's Docker boxes reach, resolved once at its start (run-box.ts boxNetworkOf): the list, or none and why. */

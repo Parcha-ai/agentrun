@@ -8,6 +8,7 @@
 // box from it reaches a listed host through its egress proxy (the tests' fake network) and nothing else.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { createServer, connect } from "node:net";
 import { networkInterfaces } from "node:os";
@@ -26,6 +27,10 @@ const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const FAKE_EGRESS = new URL("./fixtures/fake-egress.mjs", import.meta.url).pathname;
 const GUARD = new URL("./fixtures/net-guard.mjs", import.meta.url).pathname;
+/** The proxy variables a box with the list has (box-egress.ts PROXY_ENV). */
+const PROXY_NAMES = ["HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy"];
+/** A run's proxy directory (box-egress.ts egressDir). */
+const egressDirOf = (runId) => join("/tmp", `agentrun-egress-${process.getuid()}`, createHash("sha256").update(runId).digest("hex").slice(0, 16));
 const SANDBOX = { mode: "sandbox", box: "docker" };
 /** The image CI pulls before this file runs; the default image, built here, has a test of its own (below). */
 const PULLED = "debian:bookworm-slim";
@@ -111,7 +116,13 @@ test("live Docker (pi): bash runs in the box, and write, read and edit on the wo
   await noSecretIn(inspected, server);
   const [record] = JSON.parse(inspected);
   assert.equal(record.HostConfig.NetworkMode, "none");
-  assert.deepEqual(record.Mounts.map((m) => [m.Type, m.Source, m.Destination, m.RW]), [["bind", join(canonical, "runs", runId, "work"), "/run/agentrun/run/work", true]]);
+  // Its work/, read-write; and, on a Docker of this Linux machine's own, its proxy's directory, read-only (the default
+  // network list; box-network.test.mjs).
+  const listed = (await api("GET", "/capabilities")).body.places.boxes.find((b) => b.id === "docker")?.network === "allowlist";
+  assert.deepEqual(record.Mounts.map((m) => [m.Type, m.Source, m.Destination, m.RW]), [
+    ["bind", join(canonical, "runs", runId, "work"), "/run/agentrun/run/work", true],
+    ...(listed ? [["bind", egressDirOf(runId), "/run/agentrun/egress", false]] : []),
+  ]);
   assert.equal(record.Config.User, `${process.getuid()}:${process.getgid()}`);
   await follow(api, runId, ["completed"], { deadlineMs: 180_000 });
   const said = answers(data, runId);
@@ -122,14 +133,14 @@ test("live Docker (pi): bash runs in the box, and write, read and edit on the wo
   assert.equal(readFileSync(out, "utf8"), "hi");
   assert.equal(statSync(out).uid, process.getuid(), "a file the box made is serve's");
   assert.ok((await api("GET", `/runs/${runId}/files`)).body.files.some((f) => f.path === "out.txt"));
-  // The environment: the fixed one, with the image's PATH and Docker's HOSTNAME.
-  assert.deepEqual(envNames(at(4)).filter((name) => !SHELL_OWN.includes(name)).sort(), ["HOME", "LANG", "PATH"], at(4));
+  // The environment: the fixed one (and the proxy's, with the list), with the image's PATH and Docker's HOSTNAME.
+  assert.deepEqual(envNames(at(4)).filter((name) => !SHELL_OWN.includes(name)).sort(), ["HOME", "LANG", "PATH", ...(listed ? PROXY_NAMES : [])].sort(), at(4));
   await noSecretIn(at(4), server);
   await noSecretIn(at(5), server);
   assert.ok(at(5).includes("sleep"), "PID 1, the box's sleep, was read");
   assert.deepEqual(at(6).trim().split("\n"), ["lo"], "loopback only");
   assert.deepEqual(at(7).trim().split("\n"), [...targets.map(([host]) => `CLOSED ${host}`), "NO_NAME"]);
-  assert.match(at(8), /^run\nwork\n/, "the box holds the run's work/ alone");
+  assert.match(at(8), listed ? /^egress\nrun\nwork\n/ : /^run\nwork\n/, "the box holds the run's work/ alone (and its proxy's directory)");
   assert.match(at(8), /No such file or directory/);
   assert.ok(!at(8).includes(server.token));
   assert.equal(said[9].error, true, "the data root is not in the box");
@@ -159,13 +170,14 @@ test("live Docker (claude-agent, codex on the faux harness): bash writes out.txt
   }
 });
 
-test("live Docker, the default image: the server builds it once from its recipe (its network is the build's alone), with python 3.12, git, curl, node and rg, labelled with the recipe's hash; a box from it still has no network", { skip: !LIVE_BUILD && "set AGENTRUN_SERVE_LIVE_DOCKER=1 and AGENTRUN_SERVE_LIVE_DOCKER_BUILD=1 with a Docker daemon that can reach Docker Hub and Debian's mirrors", timeout: 900_000 }, async (t) => {
+test("live Docker, the default image: the server builds it once from its recipe (its network is the build's alone), with python 3.12, git, curl, node and rg, labelled with the recipe's hash; a box from it reaches no host off its list", { skip: !LIVE_BUILD && "set AGENTRUN_SERVE_LIVE_DOCKER=1 and AGENTRUN_SERVE_LIVE_DOCKER_BUILD=1 with a Docker daemon that can reach Docker Hub and Debian's mirrors", timeout: 900_000 }, async (t) => {
   withEnv(t, { ...SENTINELS, AGENTRUN_BOXES: "docker" }, ["AGENTRUN_DOCKER_IMAGE"]);
   const { api, data } = await serve(t, { faux: PROBE });
   const offer = async () => (await api("GET", "/capabilities")).body.places.boxes.find((b) => b.id === "docker");
   // Built on this start, or already built by an earlier one with this recipe.
   await until(async () => (await offer()).state !== "preparing", "the box image's build", 840_000);
-  assert.deepEqual(await offer(), { id: "docker", available: true, state: "ready" });
+  // On a Docker of this Linux machine's own, the box reaches the default list (box-network.test.mjs).
+  assert.deepEqual(await offer(), { id: "docker", available: true, state: "ready", network: "allowlist" });
   assert.equal(docker("image", "inspect", "--format", `{{ index .Config.Labels "${RECIPE_LABEL}" }}`, DEFAULT_DOCKER_IMAGE).trim(), RECIPE_HASH);
   assert.equal((await api("POST", "/agents", { definition: { id: "built", name: "built", instructions: "Probe.", place: SANDBOX, tools: ["bash"] } })).status, 201);
   const plan = [
@@ -218,9 +230,12 @@ test("live Docker, a network list: the box stays --network none, reaches a liste
   // Past the proxy: no route.
   assert.match(said[2].text, /curl exit=7/, said[2].text);
   assert.match(said[2].text, /Network is unreachable/, said[2].text);
-  // No key in the box: its environment is the fixed one and the proxy's.
+  // No key in the box: its environment is the fixed one and the proxy's, and the image's own (what it declares, read
+  // from Docker: python's PATH, GPG_KEY and PYTHON_*), nothing else.
+  const imageEnv = JSON.parse(docker("image", "inspect", "--format", "{{json .Config.Env}}", DEFAULT_DOCKER_IMAGE)).map((pair) => pair.slice(0, pair.indexOf("=")));
   const shown = envNames(said[3].text).filter((name) => !SHELL_OWN.includes(name)).sort();
-  assert.deepEqual(shown, ["HOME", "HTTPS_PROXY", "HTTP_PROXY", "LANG", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy"], said[3].text);
+  assert.deepEqual(shown, [...new Set(["HOME", "LANG", ...PROXY_NAMES, ...imageEnv])].sort(), said[3].text);
+  for (const name of PROXY_NAMES) assert.ok(shown.includes(name), `${name} is set`);
   await noSecretIn(said.map((a) => a.text).join("\n"), server);
   // Nothing reached past loopback: not this process, not the run's (each loaded the guard).
   const lines = readFileSync(guardLog, "utf8").trim().split("\n").map((line) => JSON.parse(line));
