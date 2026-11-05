@@ -195,6 +195,13 @@ test("agents_create and agents_revise pass any other definition field through to
   const unplaced = await mcp.tool("agents_revise", { agent_id: "placed", definition: { place: null } }, { ok: false });
   assert.deepEqual([unplaced.structuredContent.error.code, unplaced.structuredContent.error.fields[0].field], ["input_invalid", "definition.place"]);
   assert.deepEqual((await v2(server, "GET", "/agents/placed")).body.definition.place, { mode: "sandbox", box: "bwrap" }, "a refused revise changes nothing");
+  // A default cap: set through definition, kept by a revise that leaves it out, refused as null (only 0 clears it), and
+  // cleared by 0.
+  assert.equal((await mcp.tool("agents_revise", { agent_id: "placed", definition: { max_cost_usd: 0.5 } })).structuredContent.definition.max_cost_usd, 0.5);
+  assert.equal((await mcp.tool("agents_revise", { agent_id: "placed", instructions: "Answer, capped." })).structuredContent.definition.max_cost_usd, 0.5, "kept");
+  const nullCap = await mcp.tool("agents_revise", { agent_id: "placed", definition: { max_cost_usd: null } }, { ok: false });
+  assert.deepEqual([nullCap.structuredContent.error.code, nullCap.structuredContent.error.fields.map((f) => f.field)], ["input_invalid", ["definition.max_cost_usd"]]);
+  assert.equal((await mcp.tool("agents_revise", { agent_id: "placed", definition: { max_cost_usd: 0 } })).structuredContent.definition.max_cost_usd, undefined, "cleared by 0");
   const wrong = await mcp.tool("agents_revise", { agent_id: "placed", definition: "sandbox" }, { ok: false });
   assert.deepEqual([wrong.structuredContent.error.code, wrong.structuredContent.error.fields[0].field], ["input_invalid", "definition"]);
   // The tools say so.
@@ -342,7 +349,8 @@ test("a run paused at its spend cap: the instructions, runs_get and runs_respond
   assert.match(init.result.instructions, /pending kind budget.*paused at its spend cap.*do not answer it/s);
   const { tools } = (await mcp.request("tools/list")).result;
   const described = Object.fromEntries(tools.map((tool) => [tool.name, tool.description]));
-  assert.match(described.runs_get, /\{kind: "budget", cap_usd, spent_usd, needs_usd, said, at\}/);
+  assert.match(described.runs_get, /\{kind: "budget", cap_usd, spent_usd, needs_usd, suggested_cap_usd, said, at\}/);
+  assert.match(described.runs_get, /waits for its cap to be raised, PATCH \/v2\/runs\/\{run_id\} \{max_cost_usd\}, which a person decides; suggested_cap_usd is a raise that resumes it/);
   assert.match(described.runs_respond, /paused at its spend cap \(pending kind budget\) takes no message: 409 budget_reached/);
   // The run: a $0.05 cap under the least of one request ($0.1024), paused before anything was sent.
   await mcp.tool("agents_create", { id: "capped", name: "Capped", instructions: "Answer." });

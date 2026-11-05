@@ -35,6 +35,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { existsSync } from "node:fs";
 import { providerInputOverhead } from "@parcha/agentrun-kernel/host";
+import { bookRequest, type Ended, isConnectCode, isGatewayTimeout, rejectionCode } from "@parcha/agentrun-kernel";
 import { type EntryLike, REQUEST_CONTINUED, REQUEST_COST, REQUEST_COST_LATE, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED, timelineOf, TOOL_COST, TOOL_STARTED } from "@parcha/pi-durable-agent/timeline";
 import type { Api, AssistantMessage, AssistantMessageEventStream, Context, Model, Models, Usage } from "@earendil-works/pi-ai";
 
@@ -42,6 +43,13 @@ import type { Api, AssistantMessage, AssistantMessageEventStream, Context, Model
 export const CAP_ENV = "AGENTRUN_SERVE_MAX_COST_USD";
 /** How a request the cap refused begins its error, which the server ends the run with. */
 export const SPEND_CAP_REACHED = "spend_cap_reached";
+/** How near two dollar figures are the same figure: a sum a float puts a hair past the cap (0.0028 + 0.3072 is
+ *  0.31000000000000005) is the cap, and fits it. A raise must be above a run's cap by more (runs.ts). */
+export const CAP_TOLERANCE = 1e-9;
+/** How far past what is left a sum may read and still fit it: a float's own tail (0.0028 + 0.3072 is 0.31000000000000005
+ *  against a 0.31 cap), never a spend that is past the cap, by however little (a 1e-11 hair is past it). CAP_TOLERANCE
+ *  is the other question: how near two caps are the same cap. */
+export const FIT_TOLERANCE = 1e-12;
 /** The option a request's worst case rides on from the cap to its marks (request-start.ts): what the cap held for it. A
  *  symbol, so no provider ever sends it. */
 export const HELD_USD = Symbol.for("agentrun.serve.held_usd");
@@ -104,10 +112,85 @@ export type Stopped = (message: { content?: unknown }) => number;
 /** What a request stopped before its end counts at: its input and `streamed` tokens plus STOP_ALLOWANCE_TOKENS of output,
  *  at most the output it was sent with (`limit`), at `cost`'s price; never more than `worst`, what it was held at. */
 export const stoppedFigure = (cost: (output: number) => number, limit: number, worst: number, streamed: number): number =>
-  Math.min(worst, cost(Math.min(limit, streamed + STOP_ALLOWANCE_TOKENS)));
+  bookRequest({ end: "stopped", streamedTokens: streamed }, { hold: worst, stoppedPrice: stoppedPriceOf(cost, limit) }).usd!;
+/** What a stopped request counts at, having streamed `streamed` tokens: those and STOP_ALLOWANCE_TOKENS of output, at
+ *  most the output it was sent with (`limit`), at `cost`'s price; bookRequest keeps it within the hold. */
+export const stoppedPriceOf = (cost: (output: number) => number, limit: number) => (streamed: number): number => cost(Math.min(limit, streamed + STOP_ALLOWANCE_TOKENS));
+
+/** The option a request's attempts ride on to its marks (request-start.ts): each HTTP attempt pi-ai made for it, as the
+ *  fetch the cap gave it saw them. A symbol, so no provider ever sends it. */
+export const ATTEMPTS = Symbol.for("agentrun.serve.attempts");
+/** One attempt of a request: the status it was answered with, or the code its fetch was refused with, `aborted` when the
+ *  request's own signal had fired by then (the run stopped it: no attempt lost to the provider). */
+export type Attempt = { status: number } | { code: string | undefined; aborted?: true };
+/** The APIs whose requests the cap cannot watch through a fetch, each with why: it gives them no recording fetch, and
+ *  a request on one that fails before any event books its hold (piEnded). The one table both read. */
+export const UNWATCHED_APIS: Readonly<Record<string, string>> = {
+  "openai-codex-responses": "tries a WebSocket first, which a fetch never sees",
+  "bedrock-converse-stream": "sends through its own AWS client, never options.fetch",
+  "cloudflare-ai-binding": "calls a Workers binding, never options.fetch",
+  "cloudflare-workers-ai-system-one": "never reads options.fetch",
+  "google-generative-ai": "throws on a custom fetch",
+  "google-vertex": "throws on a custom fetch",
+  "openai-decisions": "never reads options.fetch",
+  "typesafe-system-one": "never reads options.fetch",
+};
+const unwatched = (api: string): boolean => Object.hasOwn(UNWATCHED_APIS, api);
+/** A fetch that does what `inner` does (globalThis.fetch by default) and records each attempt in `attempts`. An attempt
+ *  is `aborted` only when the request's own signal (`stop`, the run's) had fired: the SDKs hand fetch a signal of their
+ *  own, which they also abort on their own timeout, and an attempt that timed out left, so it is lost, never a stop. */
+export function recordingFetch(attempts: Attempt[], inner?: typeof fetch, stop?: AbortSignal): typeof fetch {
+  return (async (input, init) => {
+    try {
+      const response = await (inner ?? globalThis.fetch)(input, init);
+      attempts.push({ status: response.status });
+      return response;
+    } catch (error) {
+      attempts.push({ code: rejectionCode(error), ...(stop?.aborted ? { aborted: true as const } : {}) });
+      throw error;
+    }
+  }) as typeof fetch;
+}
+/** How a pi request ended (booking.ts), from pi's message, whether its response began (an event came in), and its
+ *  attempts (undefined on an API the cap cannot watch). The worst over its attempts, in the order lost > answered >
+ *  nothing: an attempt is lost when its fetch was refused after it could have left (any code but a connect one), when a
+ *  gateway gave up on it (504, 524), or when it was answered 2xx and its request then ended on an error, or was tried
+ *  again. An answer after a lost attempt can have been billed twice: lost. No attempt seen on a watched API: it never
+ *  left. */
+const answeredOk = (a: Attempt) => "status" in a && a.status >= 200 && a.status < 300;
+/** Whether one attempt was lost: refused after it could have left (any code but a connect one), a gateway's timeout, or
+ *  an answer that was not the request's last attempt (pi-ai tried again after it). That last reading assumes every fetch
+ *  through the recorder is a model attempt. pi-ai's Anthropic workload identity federation (anthropic-messages.js,
+ *  getAnthropicFederation) exchanges its token through the same fetch, so under it "a 2xx that was not the last" would
+ *  read every answer as lost. It arms only when no API key or auth header resolves, and serve always gives pi-ai an API
+ *  key, so it never arms here. */
+export const attemptLost = (a: Attempt, last: boolean): boolean => ("code" in a ? !isConnectCode(a.code) : isGatewayTimeout(a.status) || (answeredOk(a) && !last));
+/** Whether any attempt of a request was lost (attemptLost), its last counted as the last; one the run's own stop cut is
+ *  none. A request lost so counts at its hold however it then ended: answered, failed or stopped. */
+export const anyAttemptLost = (attempts: readonly Attempt[] | undefined): boolean =>
+  attempts?.some((a, at) => !("aborted" in a && a.aborted) && attemptLost(a, at === attempts.length - 1)) ?? false;
+export function piEnded(message: Pick<AssistantMessage, "stopReason" | "usage" | "api">, began: boolean, attempts: readonly Attempt[] | undefined): Ended {
+  const ok = answeredOk;
+  const anyLost = anyAttemptLost(attempts);
+  if (message.stopReason !== "error") return anyLost ? { end: "lost", label: "retried" } : { end: "answered", usd: typeof message.usage?.cost?.total === "number" ? message.usage.cost.total : null };
+  if (began) return { end: "lost", label: "error_after", began: true };
+  // On an API the cap cannot watch (UNWATCHED_APIS), or with no record of its attempts, nothing says it never left.
+  if (attempts === undefined || unwatched(message.api)) return { end: "lost", label: "error_before" };
+  const last = attempts.at(-1);
+  if (last && "status" in last && isGatewayTimeout(last.status)) return { end: "lost", label: "gateway_timeout" };
+  if (anyLost || (last !== undefined && ok(last))) return { end: "lost", label: "error_before" };
+  return { end: "nothing", label: last === undefined || "code" in last ? "never_left" : "status" };
+}
 /** How pi's error for a request whose start mark could not be written begins (request-start.ts builds it from this): the
  *  request never left, so the entry answers none, and spentIn leaves it out by this. */
 export const MARK_NOT_WRITTEN = "the model request was not sent: its mark could not be written";
+/** pi's error for a request that left and whose end mark the store refused (request-start.ts): its cost is not recorded
+ *  as booked, so it stays open, read at its start mark's hold, never closed by this entry at its own usage. */
+export const END_NOT_WRITTEN = "the model request's end could not be recorded";
+const endUnrecorded = (entry: EntryLike): boolean => {
+  const message = entry.kind === "pi.assistant" ? (entry.model?.[0] as { stopReason?: unknown; errorMessage?: unknown } | undefined) : undefined;
+  return message?.stopReason === "error" && typeof message.errorMessage === "string" && message.errorMessage.startsWith(END_NOT_WRITTEN);
+};
 
 /** The input a request carrying claude-agent's native web search may read in beyond its body, added to its input bound
  *  by its adapter (adapters.ts hands it over): Claude's CLI asks for at most 8 searches a request (max_uses 8), and each
@@ -242,24 +325,39 @@ export function spentIn(storeFile: string): number | null {
   // no request's, and no end mark takes one.
   const stopOf = (entry: EntryLike) => (entry.model?.[0] as { stopReason?: unknown } | undefined)?.stopReason;
   const errorsAt: number[] = [];
+  // pi's answers: a `lost` end mark (written before a retry, request-start.ts) takes pi's entry for its own request, an
+  // answer or an error, the first after the mark: it is counted at the mark's hold, never at its usage too.
+  const answersAt: number[] = [];
   let refusals = 0;
   rows.forEach((entry, at) => {
     if (entry.kind === REQUEST_REFUSED) refusals += 1;
-    else if (entry.kind === "pi.assistant" && stopOf(entry) === "error" && !refusedHere(entry) && !notSentHere(entry)) {
+    else if (entry.kind === "pi.assistant" && stopOf(entry) === "error" && !refusedHere(entry) && !notSentHere(entry) && !endUnrecorded(entry)) {
       if (refusals > 0) refusals -= 1;
       else errorsAt.push(at);
-    }
+    } else if (entry.kind === "pi.assistant" && stopOf(entry) !== "error" && stopOf(entry) !== "aborted") answersAt.push(at);
   });
   const taken = new Set<number>();
   const fieldsOf = (entry: EntryLike) => (entry.data ?? {}) as Record<string, unknown>;
   const generationStart = (entry: EntryLike) => entry.kind === REQUEST_STARTED && typeof fieldsOf(entry).request !== "string" && fieldsOf(entry)[CAP_REFUSED_FIELD] !== true;
   // Each such end mark, with the earliest start holding its figure (-1 for none: any error entry then).
-  const ends = rows.flatMap((entry, at) => entry.kind === REQUEST_ENDED && fieldsOf(entry).error === true
+  const endsOf = (field: "error" | "lost" | "unpriced") => rows.flatMap((entry, at) => entry.kind === REQUEST_ENDED && fieldsOf(entry)[field] === true
     ? [{ at, from: rows.findIndex((start, i) => i < at && generationStart(start) && figureOf(fieldsOf(start)[HELD_FIELD]) === figureOf(fieldsOf(entry)[HELD_FIELD])) }]
     : []);
-  for (const { at, from } of ends.sort((a, b) => b.from - a.from)) {
+  // A `lost` mark is written before its request's retry is sent (request-start.ts watchingLost) and is in the store before
+  // pi has the request's result, so its request's entry is the first after it, before the next generation request's start
+  // (one sent after it): never an earlier request's answer, however near. None there (its entry was the loud failure of a
+  // mark the store took late, END_NOT_WRITTEN, or a crash came first) and it takes none. These go first, so an error mark
+  // never takes a lost request's own entry.
+  const afterMark = [...errorsAt, ...answersAt].sort((a, b) => a - b);
+  // An `unpriced` mark (an answer whose cost cannot be read, at its hold) is written the same way, before pi has the answer.
+  for (const { at } of [...endsOf("lost"), ...endsOf("unpriced")]) {
+    const next = rows.findIndex((entry, i) => i > at && generationStart(entry));
+    const own = afterMark.find((entry) => entry > at && (next < 0 || entry < next) && !taken.has(entry));
+    if (own !== undefined) taken.add(own);
+  }
+  for (const { at, from } of endsOf("error").sort((a, b) => b.from - a.from)) {
     let nearest = -1;
-    for (const error of errorsAt) if (error > from && !taken.has(error) && (nearest < 0 || Math.abs(error - at) < Math.abs(nearest - at))) nearest = error;
+    for (const entry of errorsAt) if (entry > from && !taken.has(entry) && (nearest < 0 || Math.abs(entry - at) < Math.abs(nearest - at))) nearest = entry;
     if (nearest >= 0) taken.add(nearest);
   }
   // Each paid tool call marked and not settled, by call: what it was held at.
@@ -279,12 +377,15 @@ export function spentIn(storeFile: string): number | null {
     // pi's entry for a marked request stopped before its end (what had streamed of it): the request is counted by its
     // marks instead, at the figure its end holds, or cut. Before the first mark (an older run) it stays unknown.
     if (marked && entry.kind === "pi.assistant" && (entry.model?.[0] as { stopReason?: unknown } | undefined)?.stopReason === "aborted") continue;
+    // pi's entry for a request whose end mark the store refused: the request stays open, at its start's hold.
+    if (marked && endUnrecorded(entry)) continue;
     if (taken.has(at)) continue;
     entries.push(bound === undefined ? entry : { ...entry, data: { ...data, usd: bound } });
     read.push(entry);
     const held = data[HELD_FIELD];
     // A summary that ended on an error after its response began (its cost mark says `failed`) counts at its hold.
-    if (entry.kind === REQUEST_COST && data.failed === true && figureOf(held) !== undefined) entries[entries.length - 1] = { ...entry, data: { ...data, usd: held } };
+    // So does one whose cost could not be read (`unpriced`): the booking rule's figure for an answer with no cost.
+    if (entry.kind === REQUEST_COST && (data.failed === true || data.unpriced === true) && figureOf(held) !== undefined) entries[entries.length - 1] = { ...entry, data: { ...data, usd: held } };
     if (entry.kind !== REQUEST_ENDED || data.unsent === true || typeof held !== "number" || !Number.isFinite(held)) continue;
     // The stopped request closed at what the cap held for it: a summary by its cost, a generation by an answer.
     entries.push(typeof data.request === "string"
@@ -379,13 +480,18 @@ export function holdsInFlight() {
   };
 }
 
-/** The run's spend as its process counts it, for a paid tool: what it has spent (`spent`, model requests in flight held
- *  at their worst case; null when unknown) and the charge a call adds (`add`). Set by the run's cap, on pi (capModels)
- *  and on another harness (harness-app.ts); none without a cap. A run is one process, so one is set per process. */
-export type RunSpend = { cap: number; spent(): number | null | Promise<number | null>; add(usd: number | null): void };
+/** The run's spend as its process counts it, for a paid tool: what it has spent (`spent`; null when unknown), what its
+ *  model requests in flight are held at, at their worst case (`held`, read once `spent` is in; absent: none apart from
+ *  `spent`), and the charge a call adds (`add`). Set by the run's cap, on pi (capModels) and on another harness
+ *  (harness-app.ts); none without a cap. A run is one process, so one is set per process. */
+export type RunSpend = { cap: number; spent(): number | null | Promise<number | null>; held?(): number; add(usd: number | null): void };
 let runSpend: RunSpend | undefined;
 let paying: Promise<unknown> = Promise.resolve();
-export const useSpend = (spend: RunSpend | undefined): void => void (runSpend = spend);
+export const useSpend = (spend: RunSpend | undefined): void => {
+  runSpend = spend;
+  // A paid call's refusal is its own spend's (its run's): another spend starts with none.
+  paidRoomRefusal = undefined;
+};
 
 /** Each paid call sent under the cap and not settled, at what it is held at. */
 const paidOpen = new Set<{ usd: number }>();
@@ -413,15 +519,36 @@ export const runCap = (): number | undefined => runSpend?.cap;
  *  reports (`charge` of its result, undefined for none) joins the spend. A charge it does not say (null), or a call that
  *  fails, counts at its held figure, as its mark does from the store (spentIn), since it may have charged that much.
  *  With no cap it just runs. */
+/** A paid call this run's cap refused for room (paidCall): its words, after the code, and its figures as a model
+ *  request's refusal keeps them (what was taken, and the call's hold as what it needs). The model's next request is
+ *  refused in these words and with these figures (takePaidRefusal), so the turn ends on the refusal, as a refused model
+ *  request's does, and the run waits on a raise (runs.ts pausedAt), its model never given a turn to route around it. */
+let paidRoomRefusal: { owner: RunSpend; words: string; figures: RefusalFigures } | undefined;
+/** The paid call's refusal the next model request of the run whose spend is `owner` is refused with, once: undefined
+ *  when there is none, or it is another spend's. Only a run's own guard asks (capModels for pi, harness-app.ts for the
+ *  others), never a guard a caller builds apart. */
+export function takePaidRefusal(owner: RunSpend | undefined): { words: string; figures: RefusalFigures } | undefined {
+  const refusal = paidRoomRefusal;
+  if (!refusal || !owner || refusal.owner !== owner) return undefined;
+  paidRoomRefusal = undefined;
+  return { words: refusal.words, figures: refusal.figures };
+}
+
 export async function paidCall<T>(name: string, call: () => Promise<T>, charge: (result: T) => number | null | undefined, hold: { usd: number; basis: string }): Promise<{ refused: string } | { result: T }> {
   const spend = runSpend;
   if (!spend) return { result: await call() };
   const turn = paying.then(async () => {
     const read = await spend.spent();
-    if (read === null) return { refused: `${SPEND_CAP_REACHED}: ${name} was not sent. What the run has spent is unknown, so its cap of $${spend.cap} cannot be kept: the run is out of budget.` };
-    const spent = read + paidHolds();
+    if (read === null) return { refused: `${SPEND_CAP_REACHED}: ${name} was not sent. What the run has spent is unknown, so its cap of ${money(spend.cap)} cannot be kept: the run is out of budget.` };
+    // What is held for requests and calls still answering, apart from what was spent, as a model request's refusal says it.
+    const holding = (spend.held?.() ?? 0) + paidHolds();
     // Written so that a figure that is not a number refuses.
-    if (!(spent + hold.usd <= spend.cap)) return { refused: `${SPEND_CAP_REACHED}: ${name} was not sent. It could cost up to $${hold.usd} (${hold.basis}), and with $${spent.toFixed(6)} spent the run would pass its cap of $${spend.cap}: the run is out of budget.` };
+    if (!(read + holding + hold.usd <= spend.cap + FIT_TOLERANCE)) {
+      // Refused for room: a raise would send it, so the run pauses at the model's next request (takePaidRefusal).
+      const refused = paidRefusal(spend.cap, read, holding, name, hold);
+      paidRoomRefusal = { owner: spend, words: refused.slice(`${SPEND_CAP_REACHED}: `.length), figures: { spentUsd: read + holding, needsUsd: hold.usd } };
+      return { refused };
+    }
     // Held from here; settled into the spend in the same step that lets the hold go, so no check between sees neither.
     const open = { usd: hold.usd };
     paidOpen.add(open);
@@ -467,13 +594,13 @@ export function piOverhead(model: Pick<Model<Api>, "api">, context: Context): nu
   return providerInputOverhead(model.api, { tools: (context.tools?.length ?? 0) > 0, toolChoice: "any", images: parts.filter((part) => part?.type === "image").length });
 }
 
-const unmeasured = (cap: number) => `${SPEND_CAP_REACHED}: the next model request was not sent. The size of a request's input is unknown, so the run's cap of $${cap} cannot be kept: the run is out of budget.`;
+const unmeasured = (cap: number) => `${SPEND_CAP_REACHED}: Not sent: the size of the next model request's input is unknown, so the run's cap of ${money(cap)} cannot be kept: the run is out of budget.`;
 
-const noPrice = (cap: number) => `${SPEND_CAP_REACHED}: the next model request was not sent. Its model has no price here, so the run's cap of $${cap} cannot be kept: the run is out of budget.`;
+const noPrice = (cap: number) => `${SPEND_CAP_REACHED}: Not sent: the next model request's model has no price here, so the run's cap of ${money(cap)} cannot be kept: the run is out of budget.`;
 
-const noCeiling = (cap: number) => `${SPEND_CAP_REACHED}: the next model request was not sent. Its model has no output ceiling here and its output is priced, so what a request may cost has no bound and the run's cap of $${cap} cannot be kept: the run is out of budget.`;
+const noCeiling = (cap: number) => `${SPEND_CAP_REACHED}: Not sent: the next model request's model has no output ceiling here and its output is priced, so what a request may cost has no bound and the run's cap of ${money(cap)} cannot be kept: the run is out of budget.`;
 
-const unknownSpend = (cap: number) => `${SPEND_CAP_REACHED}: the next model request was not sent. What the run has spent is unknown, so its cap of $${cap} cannot be kept: the run is out of budget.`;
+const unknownSpend = (cap: number) => `${SPEND_CAP_REACHED}: Not sent: what the run has spent is unknown, so its cap of ${money(cap)} cannot be kept: the run is out of budget.`;
 
 /** A request's worst case at `model`'s price: `input` tokens at the dearer of its input and cache-write prices, and
  *  `output` tokens at its output price. */
@@ -508,7 +635,15 @@ export const roomRefusal = (text: string | undefined): string | undefined => (te
 export const nameOf = (model: Pick<Model<Api>, "name" | "id">): string => (model.name || model.id).replace(/^[^:]{1,40}:\s+(?=\S)/, "");
 
 /** A least in words: rounded up to the cent, so that it is enough ($0.1024 is $0.11). */
-export const leastMoney = (usd: number): string => `$${(Math.ceil(usd * 100 - 1e-9) / 100).toFixed(2)}`;
+// Cents rounded up within the tail the fit check allows (FIT_TOLERANCE), no wider: a total past a cent by more than a
+// float's own tail rounds to the cent above, so the cap a refusal names admits what it refused.
+export const leastMoney = (usd: number): string => `$${(Math.ceil(usd * 100 - FIT_TOLERANCE * 100) / 100).toFixed(2)}`;
+/** The cap to raise to for a request past `cap` that needs `total` in all: a cent at least, and above the cap, never
+ *  the cap itself, so a raise to it is one PATCH /runs/{id} takes. */
+export const raiseTo = (cap: number, total: number): string => {
+  const cents = Math.ceil(total * 100 - FIT_TOLERANCE * 100);
+  return `$${((cents / 100 > cap + CAP_TOLERANCE ? cents : Math.floor((cap + CAP_TOLERANCE) * 100) + 1) / 100).toFixed(2)}`;
+};
 
 
 /** The cap's refusal of a request what is left of it cannot buy the least of, in plain words with the numbers: what
@@ -516,22 +651,35 @@ export const leastMoney = (usd: number): string => `$${(Math.ceil(usd * 100 - 1e
  *  that would run it (spent, held and that least, rounded up to the cent, so that it is enough). After its code
  *  (CAP_REFUSAL_CODE), which keeps it final to pi-ai's retry. */
 function capRefusal(cap: number, spent: number, held: number, name: string, least: number): string {
-  const [need, raise] = [leastMoney(least), leastMoney(spent + held + least)];
+  const [need, raise] = [leastMoney(least), raiseTo(cap, spent + held + least)];
   if (spent === 0 && held === 0) return `${CAP_REFUSAL_CODE}Not sent: this run's cap of ${money(cap)} can't cover one ${name} request (at least ${need}). Raise the cap to at least ${raise} to run it.`;
   const owes = held > 0 ? `spent ${money(spent)} and holds ${money(held)} for requests still answering, of its ${money(cap)} cap` : `spent ${money(spent)} of its ${money(cap)} cap`;
   return `${CAP_REFUSAL_CODE}Not sent: the run has ${owes}, and its next ${name} request needs at least ${need}. Raise the cap to at least ${raise} to run it.`;
 }
 
+/** The cap's refusal of a paid call (paidCall) what is left of it cannot hold, in one sentence, as capRefusal says a model
+ *  request's: what the run spent (and holds for requests and calls still answering) of its cap, what the call could cost
+ *  and why, and the cap that would run it: spent, held and the call's figure, rounded up to the cent, and a cent above the
+ *  cap at the least, since a figure past the cap by less than a cent still needs more than the cap. Every amount by money,
+ *  the raise by leastMoney. */
+function paidRefusal(cap: number, spent: number, held: number, name: string, hold: { usd: number; basis: string }): string {
+  const holds = held > 0 ? ` and holds ${money(held)} for calls still answering` : "";
+  // The model refusal's rule (raiseTo): a cent at least, and above the cap, never the cap itself.
+  const raise = raiseTo(cap, spent + held + hold.usd);
+  return `${SPEND_CAP_REACHED}: Not sent: the run has spent ${money(spent)}${holds} of its ${money(cap)} cap, and ${name} could cost up to ${money(hold.usd)} (${hold.basis}). Raise the cap to at least ${raise} to run it.`;
+}
+
 /** The most output tokens from `least` to `asked` whose request costs no more than `left` (`cost`, its price at that
  *  many, rising with them); undefined when even `least` costs more. A search, so that a price with tiers is exact. */
 function mostOutput(cost: (output: number) => number, least: number, asked: number, left: number): number | undefined {
-  // Written so that a cost that is not a number refuses.
-  if (!(cost(least) <= left)) return undefined;
-  if (cost(asked) <= left) return asked;
+  // Written so that a cost that is not a number refuses; within a float's tail of what is left fits (FIT_TOLERANCE).
+  const fits = (tokens: number) => cost(tokens) <= left + FIT_TOLERANCE;
+  if (!fits(least)) return undefined;
+  if (fits(asked)) return asked;
   let [low, high] = [least, asked];
   while (high - low > 1) {
     const mid = Math.floor((low + high) / 2);
-    if (cost(mid) <= left) low = mid;
+    if (fits(mid)) low = mid;
     else high = mid;
   }
   return low;
@@ -594,7 +742,7 @@ export async function capBefore(cap: number | undefined, model: Model<Api> | und
       const left = cap - spentUsd - holding;
       const cost = (tokens: number) => price(inputTokensMax!, tokens);
       // A model whose output costs nothing and names no ceiling: nothing to limit, only its input to fit.
-      if (output === 0) return cost(0) <= left ? undefined : { refuse: capRefusal(cap, spentUsd, holding, name, cost(0)), spentUsd: spentUsd + holding, needsUsd: cost(0) };
+      if (output === 0) return cost(0) <= left + FIT_TOLERANCE ? undefined : { refuse: capRefusal(cap, spentUsd, holding, name, cost(0)), spentUsd: spentUsd + holding, needsUsd: cost(0) };
       const asked = Math.min(outputTokensAsked ?? output, output);
       const least = Math.min(outputTokensLeast ?? ANSWER_TOKENS_LEAST, asked);
       const most = mostOutput(cost, least, asked, left);
@@ -602,7 +750,7 @@ export async function capBefore(cap: number | undefined, model: Model<Api> | und
     },
     worstOf: (request) => (typeof request.inputTokensMax === "number" && Number.isFinite(request.inputTokensMax) ? held(request) : undefined),
     stoppedOf: (request, streamed) => (typeof request.inputTokensMax === "number" && Number.isFinite(request.inputTokensMax) && Number.isFinite(streamed) && streamed >= 0
-      ? price(request.inputTokensMax, Math.min(request.outputTokensMax ?? output, streamed + STOP_ALLOWANCE_TOKENS)) : undefined),
+      ? stoppedPriceOf((tokens) => price(request.inputTokensMax!, tokens), request.outputTokensMax ?? output)(streamed) : undefined),
   };
 }
 
@@ -632,16 +780,26 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
   const [{ calculateCost, createAssistantMessageEventStream }, simple] = await Promise.all([import("@earendil-works/pi-ai"), import("@earendil-works/pi-ai/api/simple-options")]);
   const partsOf = requestParts(overhead);
   let held = 0;
+  // The run's spend as a paid tool's check reads it (installed below, useSpend): the requests in flight held at their
+  // worst case apart from it (it adds the paid holds itself), and its charge joins the spend.
+  const own: RunSpend = { cap, spent: () => spent, held: () => held, add: (usd) => void (spent = spent !== null && typeof usd === "number" && Number.isFinite(usd) ? spent + usd : null) };
   type Options = { maxTokens?: number; reasoning?: string; thinkingBudgets?: Record<string, number> } & Record<PropertyKey, unknown>;
   /** A request's worst case and the options it goes with (limited to what is left of the cap, when that is less than
    *  it asks for), or why the cap refuses it. `simpleCall`: through streamSimple or completeSimple, whose thinking pi-ai
    *  turns into a budget or an effort; a direct call sends its maxTokens as is. */
   type Judged = { worst: number; stopped: Stopped; options?: Options };
-  const judge = (model: Model<Api>, context: Context, options: Options | undefined, simpleCall: boolean): Judged | { why: string; figures?: RefusalFigures } => {
+  const judge = (model: Model<Api>, context: Context, options: Options | undefined, simpleCall: boolean, turn: boolean): Judged | { why: string; figures?: RefusalFigures } => {
     if (unpriced.has(model.id)) return { why: noPrice(cap) };
     const ceiling = outputBound(model);
     if (ceiling === undefined) return { why: noCeiling(cap) };
     if (spent === null) return { why: unknownSpend(cap) };
+    // A paid call the cap just refused for room: the turn's next request, the one after its result, is refused in its
+    // words, and the run pauses there. A request after a message of the person's instead (a stop came first, and the
+    // person moved on) is a new turn's: the refusal is let go, and this request is judged as any other. Only the turn's
+    // own requests (stream, streamSimple) take it: a side request through the run's models (completeSimple: a
+    // compaction's summary, native web_search's own, request-start.ts) is judged as any other and leaves it for them.
+    const paid = turn ? takePaidRefusal(own) : undefined;
+    if (paid && context.messages.at(-1)?.role === "toolResult") return { why: `${CAP_REFUSAL_CODE}${paid.words}`, figures: paid.figures };
     const parts = partsOf(model, context);
     if (parts === undefined) return { why: unmeasured(cap) };
     const price = worstOf(calculateCost, model);
@@ -652,7 +810,7 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
     const left = cap - spent - holding;
     const name = nameOf(model);
     // A model whose output costs nothing and names no ceiling: nothing to limit, only its input and fee to fit.
-    if (ceiling === 0) return cost(0) <= left ? { worst: cost(0), stopped: () => cost(0) } : { why: capRefusal(cap, spent, holding, name, cost(0)), figures: { spentUsd: spent + holding, needsUsd: cost(0) } };
+    if (ceiling === 0) return cost(0) <= left + FIT_TOLERANCE ? { worst: cost(0), stopped: () => cost(0) } : { why: capRefusal(cap, spent, holding, name, cost(0)), figures: { spentUsd: spent + holding, needsUsd: cost(0) } };
     // What the request would send as it stands, thinking included: pi-ai clamps its maxTokens (or the model's) to what its
     // context leaves, and on an API whose thinking takes a budget adds the budget to it.
     const transcript = context as unknown as Parameters<typeof simple.clampMaxTokensToContext>[1];
@@ -700,18 +858,20 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
     errorMessage: why,
   });
   /** Adds what `answer` cost to what the run has spent once it settles. One stopped before its end counts at `stopped`
-   *  of what it streamed (stoppedFigure, at most `worst`); one that ended on an error after its response began
+   *  of what it streamed (stoppedFigure, at most `worst`), unless an attempt before the stop was lost: then at `worst`, as
+   *  its lost mark reads in a later process; one that ended on an error after its response began
    *  (markResponseBegan: its usage is what had streamed, not what the provider can have billed), or that failed with no
    *  answer, at `worst`, what the cap held for it; each as spentIn reads its end mark. Without a figure (a deferred
    *  response) it is unknown, as is a cost that is not a number, from then on. */
-  const count = (answer: Promise<AssistantMessage>, worst?: number, stopped?: Stopped) => {
+  const count = (answer: Promise<AssistantMessage>, worst?: number, stopped?: Stopped, attempts?: readonly Attempt[]) => {
     const add = (cost: unknown) => void (spent = spent !== null && typeof cost === "number" && Number.isFinite(cost) ? spent + cost : null);
-    const at = (message: AssistantMessage) => message.stopReason === "aborted" ? (stopped ? stopped(message) : worst)
-      : message.stopReason === "error" && responseBegan.has(message) ? worst : message.usage?.cost?.total;
+    // One rule (bookRequest), from how the request ended (piEnded) as its marks read it too.
+    const at = (message: AssistantMessage) => message.stopReason === "aborted" ? (stopped && !anyAttemptLost(attempts) ? stopped(message) : worst)
+      : bookRequest(piEnded(message, responseBegan.has(message), attempts), worst === undefined ? {} : { hold: worst }).usd;
     return answer.then((message) => add(at(message)), () => add(worst));
   };
   /** Sends a request judged to fit at `worst`, holding that until `answer` settles. */
-  const admit = (worst: number, stopped: Stopped, answer: () => Promise<AssistantMessage>): Promise<AssistantMessage> => {
+  const admit = (worst: number, stopped: Stopped, answer: () => Promise<AssistantMessage>, attempts?: readonly Attempt[]): Promise<AssistantMessage> => {
     held += worst;
     let answered: Promise<AssistantMessage>;
     try {
@@ -720,20 +880,28 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
       held -= worst;
       throw error;
     }
-    void count(answered, worst, stopped).finally(() => void (held -= worst));
+    void count(answered, worst, stopped, attempts).finally(() => void (held -= worst));
     return answered;
   };
-  // A paid tool's check reads the spend with the requests in flight held at their worst case (and adds the paid holds
-  // itself), and its charge joins it.
-  useSpend({ cap, spent: () => (spent === null ? null : spent + held), add: (usd) => void (spent = spent !== null && typeof usd === "number" && Number.isFinite(usd) ? spent + usd : null) });
+  // A paid tool's check reads the spend, and the requests in flight held at their worst case apart from it (it adds the
+  // paid holds itself), and its charge joins the spend.
+  useSpend(own);
   /** `options` with the request's worst case, and its figure if it is stopped, for its marks. */
-  const carrying = <O>(options: O, { worst, stopped }: Judged): O => ({ ...options, [HELD_USD]: worst, [STOPPED_USD]: stopped }) as O;
+  /** `options` with the request's worst case, its figure if it is stopped, and its attempts' record, for its marks: on an
+   *  API the cap can watch, a fetch that records each attempt (`attempts`, undefined on one it cannot). */
+  const carrying = <O>(options: O, { worst, stopped }: Judged, attempts: Attempt[] | undefined): O => ({
+    ...options, [HELD_USD]: worst, [STOPPED_USD]: stopped,
+    // null on an API the cap cannot watch: its marks read a failure before any event as lost.
+    ...(attempts ? { [ATTEMPTS]: attempts, fetch: recordingFetch(attempts, (options as { fetch?: typeof fetch } | undefined)?.fetch, (options as { signal?: AbortSignal } | undefined)?.signal) } : { [ATTEMPTS]: null }),
+  }) as O;
+  const attemptsFor = (model: Model<Api>): Attempt[] | undefined => (unwatched(model.api) ? undefined : []);
   const stream = (send: (model: Model<Api>, context: Context, options?: Options) => AssistantMessageEventStream, simpleCall: boolean) =>
     (model: Model<Api>, context: Context, options?: Options): AssistantMessageEventStream => {
-      const judged = judge(model, context, options, simpleCall);
+      const judged = judge(model, context, options, simpleCall, true);
       if ("worst" in judged) {
         let events: AssistantMessageEventStream | undefined;
-        admit(judged.worst, judged.stopped, () => (events = send(model, context, carrying(judged.options ?? options, judged))).result());
+        const attempts = attemptsFor(model);
+        admit(judged.worst, judged.stopped, () => (events = send(model, context, carrying(judged.options ?? options, judged, attempts))).result(), attempts);
         return events!;
       }
       const refused = createAssistantMessageEventStream();
@@ -751,8 +919,10 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
     };
   const complete = (send: (model: Model<Api>, context: Context, options?: Options) => Promise<AssistantMessage>, simpleCall: boolean) =>
     (model: Model<Api>, context: Context, options?: Options): Promise<AssistantMessage> => {
-      const judged = judge(model, context, options, simpleCall);
-      return "worst" in judged ? admit(judged.worst, judged.stopped, () => send(model, context, carrying(judged.options ?? options, judged))) : Promise.resolve(refusal(model, judged.why));
+      const judged = judge(model, context, options, simpleCall, false);
+      if (!("worst" in judged)) return Promise.resolve(refusal(model, judged.why));
+      const attempts = attemptsFor(model);
+      return admit(judged.worst, judged.stopped, () => send(model, context, carrying(judged.options ?? options, judged, attempts)), attempts);
     };
   const guarded: Record<PropertyKey, unknown> = {
     stream: stream(models.stream.bind(models) as never, false),

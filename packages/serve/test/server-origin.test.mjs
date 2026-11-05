@@ -71,6 +71,29 @@ for (const harness of ["pi", "claude-agent", "opencode"]) {
   });
 }
 
+test("pi: a caller's request id never collides with the marker a server message writes: after the server's \"foo\", an input the caller names \"foo:origin\" reaches the model, its submission done and its answer there", { timeout: 120_000 }, async (t) => {
+  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS, fauxWeb: FAUX_WEB_HOLD });
+  const go = join(await scratch(t), "go");
+  assert.equal((await api("POST", "/agents", agent("origin-ids", { tools: [] }))).status, 201);
+  const run = await api("POST", "/agents/origin-ids/runs", { input: { content: `Hold the answer until ${go}.` } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  const runId = run.body.run_id;
+  await follow(api, runId, ["working"], { deadlineMs: 30_000 });
+  const server = await toDoor(data, runId, { requestId: "foo", content: RAISED, whenBusy: "followUp", origin: { kind: "server", reason: "cap_raised" } });
+  assert.ok(server.status < 400, `the door took the server's message: ${JSON.stringify(server)}`);
+  // Any printable ASCII id is the caller's to choose, this one included.
+  const SAID = "And one more thing from me.";
+  const caller = await toDoor(data, runId, { requestId: "foo:origin", content: SAID, whenBusy: "followUp" });
+  assert.ok(caller.status < 400, `the door took the caller's own "foo:origin": ${JSON.stringify(caller)}`);
+  // The same request again, waiting: its own submission, answered once the run reaches it.
+  const answered = toDoor(data, runId, { requestId: "foo:origin", content: SAID, whenBusy: "followUp", wait: true });
+  await writeFile(go, "");
+  const done = await answered;
+  assert.deepEqual([done.status, done.body?.submission?.type, done.body?.submission?.status, typeof done.body?.answer], [200, "input", "done", "object"], `its submission is done and answered: ${JSON.stringify(done)}`);
+  await follow(api, runId, ["completed"], { deadlineMs: 90_000 });
+  assert.ok(userTexts(data, runId).includes(SAID), `the model was given the caller's text: ${JSON.stringify(userTexts(data, runId))}`);
+});
+
 test("the door refuses an origin that is not the server's, and writes nothing for it", { timeout: 120_000 }, async (t) => {
   const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
   const go = join(await scratch(t), "go");
@@ -84,6 +107,21 @@ test("the door refuses an origin that is not the server's, and writes nothing fo
   await writeFile(go, "");
   await follow(api, runId, ["completed"], { deadlineMs: 90_000 });
   assert.ok(!userTexts(data, runId).includes(RAISED), "nothing written for a refused origin");
+});
+
+// An input that may not answer (answers false: a trigger's message) is refused while the run works, after the door
+// would have queued its origin's marker: a marker with no input after it would name the next message as the server's.
+test("the door refuses an origin on an input that may not answer: 400, and no marker written, though the run works", { timeout: 120_000 }, async (t) => {
+  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
+  const go = join(await scratch(t), "go");
+  assert.equal((await api("POST", "/agents", agent("origin-guarded", { tools: [] }))).status, 201);
+  const runId = (await api("POST", "/agents/origin-guarded/runs", { input: { content: `Hold the answer until ${go}.` } })).body.run_id;
+  await follow(api, runId, ["working"], { deadlineMs: 30_000 });
+  const sent = await toDoor(data, runId, { requestId: "guarded-1", content: RAISED, answers: false, asks: ["ask_person"], origin: { kind: "server", reason: "cap_raised" } });
+  await writeFile(go, "");
+  await follow(api, runId, ["completed"], { deadlineMs: 90_000 });
+  assert.deepEqual(storeEntries(data, runId).filter((e) => e.kind === disk.MESSAGE_ORIGIN_KIND), [], `no marker left with no message after it (the door answered ${JSON.stringify(sent)})`);
+  assert.deepEqual([sent.status, sent.body?.error], [400, "BAD_REQUEST"], JSON.stringify(sent));
 });
 
 test("the door's marker kind is the Timeline's: one name for the entry that names a server message's origin", () => {

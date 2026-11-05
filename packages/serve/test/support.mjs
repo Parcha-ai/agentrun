@@ -16,6 +16,15 @@ export const FAUX = new URL("./fixtures/faux-model.mjs", import.meta.url).pathna
 // on loopback (boxes.test.mjs).
 delete process.env.AGENTRUN_BOXES;
 
+/** The records of a log another process appends to (a line of JSON each, as the fake docker's): only its whole lines,
+ *  each ended by its newline. A file just made and still empty, or a last line still being written, is read as the
+ *  records before it, never parsed half. None when there is no file. */
+export function jsonLines(file) {
+  if (!existsSync(file)) return [];
+  const text = readFileSync(file, "utf8");
+  return text.slice(0, text.lastIndexOf("\n") + 1).split("\n").filter(Boolean).map((line) => JSON.parse(line));
+}
+
 export async function scratch(t) {
   const dir = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "agentrun-serve-"));
   // Retried: a server that is still closing can write into it during the rm (ENOTEMPTY).

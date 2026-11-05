@@ -341,3 +341,14 @@ test("names an empty object would inherit are no saved servers: 404 on every rou
   const headers = await api("POST", "/settings/mcp-servers/preview", { url: (await fake(t)).url, auth: { type: "headers", headers: { constructor: "a-value" } } });
   assert.equal(headers.status, 200, `a header named constructor is no duplicate: ${JSON.stringify(headers.body)}`);
 });
+
+test("the names AgentRun's own tools are called by, hands and monid, are no MCP server's: a PUT under one is 422 on its name, with why, and nothing is saved", async (t) => {
+  const { api } = await serve(t);
+  const server = await fake(t, {});
+  for (const name of ["hands", "monid"]) {
+    const refused = await api("PUT", `/settings/mcp-servers/${name}`, { url: server.url, auth: { type: "none" } });
+    assert.deepEqual([refused.status, refused.body.error?.code, refused.body.error?.fields?.map((f) => [f.field, f.reason])], [422, "input_invalid", [["name", "reserved"]]], `${name}: ${JSON.stringify(refused.body)}`);
+    assert.match(refused.body.error.fields[0].message, new RegExp(`'${name}' is reserved for AgentRun's own tools`));
+    assert.equal((await api("GET", `/settings/mcp-servers/${name}`)).status, 404, `${name}: nothing saved`);
+  }
+});

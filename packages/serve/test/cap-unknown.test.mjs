@@ -96,7 +96,7 @@ test("/usage by meter for a run whose monid call a crash cut: its cost is unknow
   const log = join(await scratch(t), "monid-calls.jsonl");
   withEnv(t, { MONID_API_KEY: MONID_KEY, AGENTRUN_TEST_FAUX_MONID_CALLS: log });
   const { api, data } = await serve(t, { faux: new URL("./fixtures/faux-priced.mjs", import.meta.url).pathname, fauxMonid: new URL("./fixtures/faux-monid.mjs", import.meta.url).pathname });
-  assert.equal((await api("POST", "/agents", agent("slow", { tools: ["monid.run"] }))).status, 201);
+  assert.equal((await api("POST", "/agents", agent("slow", { tools: ["monid.run"], tool_settings: { "monid.run": { permission: "allow" } } }))).status, 201);
   const { body } = await api("POST", "/agents/slow/runs", { input: { content: "Run monid's /slow." } });
   for (let i = 0; !(existsSync(log) && readFileSync(log, "utf8").includes('"path":"/v1/run"')); i++) {
     assert.ok(i < 400, "the monid call is sent");
@@ -362,28 +362,31 @@ test("pi under a cap, with a spend the store cannot say: every request is refuse
   assert.match((await completed).errorMessage, UNKNOWN);
 });
 
-test("pi under a cap: an answer whose cost is unknown makes what the run has spent unknown, and the next request is refused", async () => {
-  for (const [why, ending] of [["no cost total", {}]]) {
-    const { models, sent } = fakeModels();
-    const capped = await capModels(models, 1, 0);
-    const first = capped.streamSimple(priced, context);
-    sent[0].end(ending);
-    await first.result();
-    await settle();
-    const next = capped.streamSimple(priced, context);
-    assert.equal(sent.length, 1, `${why}: the next request is not sent`);
-    assert.match((await next.result()).errorMessage, UNKNOWN, why);
-  }
+test("pi under a cap: an answer whose cost is unknown counts at its hold (the booking rule), never $0 and never more: the next request is judged with that held figure spent", async () => {
+  // Each request is held at about $0.0011 here: one held figure spent leaves no room for another under $0.0015.
   const { models, sent } = fakeModels();
-  const capped = await capModels(models, 1, 0);
+  const capped = await capModels(models, 0.0015, 0);
   const first = capped.streamSimple(priced, context);
-  sent[0].end({ total: 0.0001 });
+  sent[0].end({});
   await first.result();
   await settle();
   const next = capped.streamSimple(priced, context);
-  assert.equal(sent.length, 2, "after an answer of known cost the next request goes");
-  sent[1].end({ total: 0 });
-  await next.result();
+  assert.equal(sent.length, 1, "no cost total: counted at its hold, so the next request is not sent");
+  const refused = (await next.result()).errorMessage;
+  assert.match(refused, /^spend_cap_reached/, refused);
+  assert.doesNotMatch(refused, UNKNOWN, "what the run has spent is known: the hold, not unknown");
+  {
+    const { models, sent } = fakeModels();
+    const capped = await capModels(models, 0.0015, 0);
+    const first = capped.streamSimple(priced, context);
+    sent[0].end({ total: 0.0001 });
+    await first.result();
+    await settle();
+    const next = capped.streamSimple(priced, context);
+    assert.equal(sent.length, 2, "after an answer of known cost the next request goes");
+    sent[1].end({ total: 0 });
+    await next.result();
+  }
 });
 
 // $1 a million output tokens and nothing for input, a ceiling of 1,000: each request's worst case is $0.001 exactly.
