@@ -128,7 +128,7 @@ test("the grader runs on the model the server names for it, --grade-model (AGENT
 
 // A learning end an older server wrote, with a reason no run gets any more (an agent with no write tool, before the
 // end-of-run turn answered with its notes), still counts in /v2/stats, by its reason, read back from the ledger.
-test("a run's learning end an older server recorded as no_write_tool still counts in /v2/stats under its reason, from the ledger and from its serve.json", { timeout: 120_000 }, async (t) => {
+test("a run's learning end with a reason this server does not give (an older server's tool_denied) is not counted in /v2/stats", { timeout: 120_000 }, async (t) => {
   withEnv(t, {}, ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENTRUN_TEST_FAUX_GRADE_HOLD", "AGENTRUN_TEST_FAUX_CALLS"]);
   const first = await serve(t, { learning: "on", faux: LEARN });
   const { data } = first;
@@ -138,16 +138,12 @@ test("a run's learning end an older server recorded as no_write_tool still count
   settled(view, rows, "dropped", "empty");
   await savedOf(data, runId);
   await first.close();
-  // As the older server left it: its serve.json and its ledger line say no_write_tool.
-  const meta = JSON.parse(readFileSync(join(runDir(data, runId), "serve.json"), "utf8"));
-  writeFileSync(join(runDir(data, runId), "serve.json"), JSON.stringify({ ...meta, learning: { ...meta.learning, reason: "no_write_tool", detail: "The agent has no write tool to add a note with." } }));
+  // Its ledger line says tool_denied, a reason no server gives now: read as any reason it does not know.
   const ledger = join(data, "learning-usage.jsonl");
-  writeFileSync(ledger, readFileSync(ledger, "utf8").replaceAll('"reason":"empty"', '"reason":"no_write_tool"'));
-  assert.ok(readFileSync(ledger, "utf8").includes('"no_write_tool"'));
+  writeFileSync(ledger, readFileSync(ledger, "utf8").replaceAll('"reason":"empty"', '"reason":"tool_denied"'));
+  assert.ok(readFileSync(ledger, "utf8").includes('"tool_denied"'));
   const again = await serve(t, { learning: "on", faux: LEARN, data });
-  assert.deepEqual((await again.api("GET", "/stats?agent=older")).body.learning, { runs: 1, merged: 0, dropped: { no_write_tool: 1 }, in_progress: 0 }, "from the ledger");
-  const read = (await again.api("GET", `/runs/${runId}`)).body.learning;
-  assert.deepEqual([read.state, read.reason], ["dropped", "no_write_tool"], "from its serve.json");
+  assert.deepEqual((await again.api("GET", "/stats?agent=older")).body.learning, { runs: 0, merged: 0, dropped: {}, in_progress: 0 }, "not counted");
 });
 
 test("the grader reads what the user said in the run, in order and cut of the server's secrets, and never the end-of-run turn's message", { timeout: 150_000 }, async (t) => {
