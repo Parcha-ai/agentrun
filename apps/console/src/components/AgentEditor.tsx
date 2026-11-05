@@ -410,7 +410,7 @@ function Field({ label, id, required, optional, note, error, warning, aside, chi
 }
 
 /** One tool in the editor's grid. Collapsed, every card is one height (h-32): its name, ONE human line (the served
- *  `blurb`, else its description clamped to two lines), its state as a short tag (the full reason its title), and Details.
+ *  `blurb`; an MCP server's tool has none, so its description, clamped to two lines), its state as a short tag (the full reason its title), and Details.
  *  Details shows the model-facing description and the reason in place, and that card grows; Details never ticks it. */
 function ToolCard({ name, blurb, summary, why, tag, on, disabled, onToggle }: { name: string; blurb?: string; summary?: string; why?: string; tag?: string; on: boolean; disabled: boolean; onToggle: () => void }) {
   const [open, setOpen] = useState(false);

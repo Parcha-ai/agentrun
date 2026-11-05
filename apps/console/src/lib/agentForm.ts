@@ -101,7 +101,7 @@ export function capOf(text: string | undefined): { ok: true; value: number | und
 
 /** One tool the server offers (`GET /v2/capabilities` `tools`): whether it can run here, what it lacks, what it does
  *  (`summary`), and, when the server says, which harnesses run it. */
-export type ToolOffer = { name: string; available: boolean; summary?: string; /** One line for people (≤ 48 chars), served beside the model-facing `summary`; absent on an older server and on MCP tools. */ blurb?: string; missing?: string[]; reason?: string; harnesses?: string[]; call_only?: true; sandbox_only?: true; nodes?: boolean };
+export type ToolOffer = { name: string; available: boolean; summary?: string; /** One line for people (≤ 48 chars), served beside the model-facing `summary`; an MCP server's tool has none. */ blurb?: string; missing?: string[]; reason?: string; harnesses?: string[]; call_only?: true; sandbox_only?: true; nodes?: boolean };
 
 export function toolOffers(raw: unknown): ToolOffer[] {
   return (Array.isArray(raw) ? raw : []).flatMap((t): ToolOffer[] => {
