@@ -5,7 +5,7 @@ import type { AgentTool, ToolSettings } from "./v2";
 import { decisionStarter, STARTER_PROVIDERS } from "./decisionStarter";
 import { workflowStarter } from "./workflowStarter";
 
-export type HarnessId = "pi" | "claude-agent" | "codex";
+export type HarnessId = "pi" | "claude-agent" | "codex" | "opencode";
 /** `learning`: whether the agent's runs learn (an agentic revision's switch; absent is off). */
 export type Definition = { version: number; name: string; description?: string; instructions?: string; workflow?: unknown; harness?: string; thinking?: string; model?: string; learning?: boolean; skills: string[]; tools: string[]; tool_settings?: ToolSettings; [field: string]: unknown };
 /** What a save's answer says this host lacks to run the revision (`reason` not_set_up_here, say): it saved, and a run of it
@@ -125,10 +125,10 @@ export const WEB_TOOLS: readonly string[] = ["fetch_page", "web_fetch", "web_sea
 /** Whether an agent with these tools can reach the web: through any of WEB_TOOLS. */
 export const reachesWeb = (tools: readonly string[]) => tools.some((t) => WEB_TOOLS.includes(t));
 
-const LABEL: Record<HarnessId, string> = { pi: "Pi", "claude-agent": "Claude", codex: "Codex" };
-const ORDER: HarnessId[] = ["pi", "claude-agent", "codex"];
+const LABEL: Record<HarnessId, string> = { pi: "Pi", "claude-agent": "Claude", codex: "Codex", opencode: "OpenCode" };
+const ORDER: HarnessId[] = ["pi", "claude-agent", "codex", "opencode"];
 
-/** The harness choices: pi, Claude and Codex as the server lists them (`GET /v2/capabilities` `harnesses`), each one the
+/** The harness choices: pi, Claude, Codex and OpenCode as the server lists them (`GET /v2/capabilities` `harnesses`), each one the
  *  server does not run shown disabled with its reason. A harness the server does not list is not offered. With
  *  `decision` (a new agent), the starters follow them: Decision, available when the server runs decision workflows,
  *  and Workflow, available on every server. */

@@ -23,7 +23,7 @@ export function runKeyOf(env: NodeJS.ProcessEnv, harness: string = DEFAULT_HARNE
   const gateway: RunKey = { who: "The gateway at AGENT_MODEL_BASE_URL", field: "AGENT_MODEL_API_KEY", saved: false };
   if (harness === "claude-agent") return row(provider === "openrouter" || openRouterOnly("claude-agent", env) ? "openrouter" : "anthropic");
   if (env.AGENT_MODEL_BASE_URL) return gateway;
-  if (harness === "codex") return row(provider === "openrouter" || openRouterOnly("codex", env) ? "openrouter" : "openai");
+  if (harness === "codex" || harness === "opencode") return row(provider === "openrouter" || openRouterOnly(harness, env) ? "openrouter" : "openai");
   return provider === undefined ? undefined : row(provider);
 }
 

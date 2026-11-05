@@ -8,7 +8,7 @@ import { RunResult } from "@/components/RunResult";
 import { RunChanges, useRunChanges } from "@/components/RunChanges";
 import { Timeline, Working } from "@/components/Timeline";
 import { type LearningDiff, learningSteps } from "@/lib/learning";
-import { isEscalated, type MessageFeatures, runState } from "@/lib/runState";
+import { isEscalated, type MessageFeatures, type RunView, runState } from "@/lib/runState";
 import { cn } from "@/lib/utils";
 import { latest, pendingQuestion } from "@/lib/viewing";
 import type { Run, RunFile, TimelineRow } from "@/lib/v2";
@@ -38,6 +38,21 @@ export type RunDetailProps = {
   readLearningDiff?: () => Promise<LearningDiff>;
 };
 type Tab = "graph" | "report" | "timeline" | "files";
+
+/** What the Report tab says while a run has no answer and has not ended: only a queued or working run is writing it. One
+ *  that waits on a kind of thing this console doesn't know (its `pending.kind`, a newer server's; nothing else of it is
+ *  read) waits for the person, whatever its state; one that asked a question (named so, or from a server that sends no
+ *  `pending`) waits for the answer, in the box below where the server takes one from here; a stopped one (input
+ *  required, idle) stopped before it wrote one, and a message continues it; a paused workflow run starts no step until
+ *  it is resumed. */
+function beforeAnswer(run: Pick<Run, "status" | "state" | "pending">, view: RunView): { title: string; note: string; spin: boolean } {
+  const kind = (run.pending as { kind?: unknown } | null | undefined)?.kind;
+  if (run.status === "input_required" && kind !== undefined && kind !== "question") return { title: "Waiting for you", note: "The run continues once you give it what it waits on.", spin: false };
+  if (run.status === "input_required" && run.state === "waiting") return { title: "Waiting for your answer", note: view.messageMode === "answer" ? "The run continues when you reply below." : "The run continues once the question is answered.", spin: false };
+  if (run.status === "input_required") return { title: "Stopped", note: `Stopped before it wrote an answer.${view.canMessage ? " Send a message below to continue it." : ""}`, spin: false };
+  if (run.status === "paused") return { title: "Paused", note: "No new step starts until it's resumed. The answer appears here when it finishes.", spin: false };
+  return { title: "Writing the answer", note: "The answer appears here when the run finishes. Follow it on the timeline.", spin: view.live };
+}
 
 /** The run page: Report / Timeline / Files tabs over AgentRun Server's run, timeline and files. */
 export function RunDetail({ run, agentName, messages, harnessSteers, rows, files, readFile, openFile = null, actions, onMessage, tab: initial, graphView, costText, readLearningDiff }: RunDetailProps) {
@@ -85,8 +100,8 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
               <p className="mt-1 font-mono text-[12px] text-muted-foreground">{[run.review.node && `Stopped at ${run.review.node}`, run.review.kind].filter(Boolean).join(" · ")}. A person takes it from here.</p></section>
           )}
           {view.needsYou && <NeedsYou waiting={waiting} />}
-          {tab === "report" && <RunResult run={run} rows={rows} />}
-          {tab === "report" && !run.result && !view.final && <Working title="Writing the answer" note="The answer appears here when the run finishes. Follow it on the timeline." spin={view.live} />}
+          {tab === "report" && <RunResult run={run} rows={rows} files={files} onOpen={show} />}
+          {tab === "report" && !run.result && !view.final && <Working {...beforeAnswer(run, view)} />}
           {tab === "report" && view.final && !run.result?.final_answer && !run.result?.output && !rows.some((r) => r.kind === "final_answer") && run.status !== "failed" && run.status !== "cancelled" && !run.review && (
             <p className="font-mono text-[13px] text-muted-foreground">This run gave no answer.</p>
           )}
@@ -98,7 +113,7 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
       {view.canMessage && (
         <div className="border-t px-5 py-4 md:px-8"><div className="mx-auto max-w-4xl"><Composer mode={view.messageMode!} onSend={onMessage} /></div></div>
       )}
-      {open && <ArtifactViewer file={open.file} text={open.text} onClose={close} />}
+      {open && <ArtifactViewer file={open.file} text={open.text} onClose={close} files={files} onOpen={show} />}
     </div>
   );
 }

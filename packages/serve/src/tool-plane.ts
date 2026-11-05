@@ -95,6 +95,8 @@ function noNative(input: ResolveInput): { id: string; why: string } | undefined 
   if ((input.harness === "claude-agent" || input.harness === "codex") && input.openRouter) return { id: `${input.harness} on OpenRouter`, why: `through OpenRouter ${input.harness === "codex" ? "Codex" : "Claude"}'s own search is not run, and its searches are not counted to price` };
   if (input.harness === "claude-agent") return input.capped ? { id: CLAUDE_CAPPED, why: "under a spend cap Claude's own search is not offered, since a cap cannot reserve its per-use fees yet" } : undefined;
   if (input.harness === "codex") return input.gateway ? { id: "codex behind a gateway", why: "behind a gateway Codex has no own search" } : input.capped ? { id: "codex under a spend cap", why: "under a spend cap Codex's own search is not offered, since its request has no input bound" } : undefined;
+  // OpenCode has none: its model requests carry no provider-hosted tool (its proxy policy refuses one).
+  if (input.harness === "opencode") return { id: "opencode, whose model requests carry no provider-hosted tool", why: "OpenCode's model requests carry no provider-hosted tool" };
   if (input.gateway) return { id: `${input.harness} behind a gateway`, why: `behind a gateway ${input.harness} has no hosted search` };
   if (vendor && HOSTED_SEARCH_PROVIDERS.includes(vendor)) return undefined;
   return input.model ? { id: input.model, why: `${input.model} has no hosted search here` } : { id: "a model with none named", why: "no model is named, so there is no hosted search" };

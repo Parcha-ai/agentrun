@@ -101,6 +101,8 @@ test('a test that never settles fails by --test-timeout, named in the shard\'s l
   assert.match(output, major >= 24 ? /✖ a test that never settles/ : /not ok \d+ - test\/hang\.test\.mjs/, output);
   assert.match(output, /^failed: npm exec -w stall -c "node --test --test-timeout=1000 test\/hang\.test\.mjs"$/m, output);
   assert.doesNotMatch(output, /::error::ci-shard/, 'the shard\'s limit did not fire');
+  // Its time against its model, failed or not: how a stale scripts/ci-timings.json shows in the log.
+  assert.match(output, /^ci-shard: any-1 ran \d+ s, modelled \d+ s$/m, output);
   assert.ok(seconds < 25, `${seconds} s`);
 });
 
