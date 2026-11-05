@@ -184,6 +184,12 @@ type Served = { keys: string; input: unknown; out: unknown };
 /** GET /runs/{id}/graph's view (graph-view.ts, loaded when a graph is first read). */
 type GraphView = Awaited<ReturnType<typeof import("./graph-view.js")["runGraph"]>>;
 
+/** The most of a map item's label and of a call's error the graph shows (runs.ts servedGraph). */
+const LABEL_SHOWN = 200;
+const ERROR_SHOWN = 2000;
+
+const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+
 /** The most parts of a run's graph servedGraph keeps redacted; past it, it starts again. */
 const GRAPH_PARTS = 2048;
 
@@ -956,31 +962,40 @@ export class Runs {
     return out;
   }
 
-  /** What graph-view.ts shows of a text it cuts (a map item's label, a call's error, a decision's state stored cut), before
-   *  it cuts it: held values taken out by a run's answer's rule, and a stored cut's last characters held back, as many
-   *  as a held value takes in its widest form. */
-  private graphShown(run: Run): { redact: (text: string) => string; hold: number } {
-    const values = this.refusedValues(run);
-    return { redact: (text) => redactedAnswer(text, values), hold: 6 * values.reduce((most, value) => Math.max(most, value.length), 0) + 16 };
-  }
-
   /** A workflow run's graph as serve serves it: its nodes, each decision and each call (its input, output and error) with
-   *  no held secret, by its answer's rule (redactedOutput), each read once per content and held value set: a console
-   *  polls the graph while the run goes, and a call's output can be large. Its workflow and graph are its revision's. */
+   *  no held secret, by its answer's rule (redactedOutput), and only then cut: a map item's label at 200 characters, a
+   *  call's error at 2000, and a text stored cut (a decision's state past 64 KB, an error logged cut) less its last 6
+   *  times the longest held value plus 16 characters, where a value the stored cut split would sit. The view a busy
+   *  store's read keeps is the one graph-view.ts made, whole, so a key saved after it is still found. Each part is
+   *  served once per content and held value set: a console polls the graph while the run goes. */
   private servedGraph<T extends { nodes: unknown; decisions: unknown[]; effects: unknown[] }>(run: Run, view: T): T {
     const values = this.refusedValues(run);
     const keys = digestOf([...values].sort());
     if (run.servedParts?.keys !== keys) run.servedParts = { keys, parts: new Map() };
     const parts = run.servedParts.parts;
-    const once = (value: unknown): unknown => {
-      const at = digestOf(value);
+    const hold = 6 * values.reduce((most, value) => Math.max(most, value.length), 0) + 16;
+    const heldBack = (text: string) => `${text.slice(0, Math.max(0, text.length - hold))}…`;
+    const once = (kind: string, value: unknown, serve: (shown: unknown) => unknown): unknown => {
+      const at = `${kind}:${digestOf(value)}`;
       if (parts.has(at)) return parts.get(at);
-      const out = redactedOutput(value, values);
+      const out = serve(redactedOutput(value, values));
       if (parts.size >= GRAPH_PARTS) parts.clear();
       parts.set(at, out);
       return out;
     };
-    return { ...view, nodes: once(view.nodes), decisions: view.decisions.map(once), effects: view.effects.map(once) };
+    const nodes = (shown: unknown) => (isRecord(shown) ? Object.fromEntries(Object.entries(shown).map(([path, node]) => [path, isRecord(node) && Array.isArray(node.items) ? { ...node, items: node.items.map((item) => (isRecord(item) && typeof item.label === "string" ? { ...item, label: item.label.slice(0, LABEL_SHOWN) } : item)) } : node])) : shown);
+    const decision = (shown: unknown) => (isRecord(shown) && shown.state_truncated === true && typeof shown.state === "string" ? { ...shown, state: heldBack(shown.state) } : shown);
+    const effect = (raw: Record<string, unknown>) => (shown: unknown) => {
+      if (!isRecord(shown)) return shown;
+      const { error_cut: _, ...rest } = shown;
+      return typeof rest.error === "string" ? { ...rest, error: (raw.error_cut === true ? heldBack(rest.error) : rest.error).slice(0, ERROR_SHOWN) } : rest;
+    };
+    return {
+      ...view,
+      nodes: once("nodes", view.nodes, nodes),
+      decisions: view.decisions.map((value) => once("decision", value, decision)),
+      effects: view.effects.map((value) => once("effect", value, effect(isRecord(value) ? value : {}))),
+    };
   }
 
   /** The timeline's redaction of `run`'s error rows and of what a tool's result shows (its summary and preview), applied
@@ -2224,7 +2239,6 @@ export class Runs {
     const given = {
       run: { id: run.id, agent: run.agentId, revision: run.revision, status, paused: status === "paused", startedAt: run.meta.created_at, endedAt: ended ? (run.endedAt ?? run.updatedAt) : null },
       ended, workflow, storeFile: this.storeFile(run), root: run.dir, input: run.meta.input ?? {}, modelCost: costOf(run.rows), llmRead: run.llmRead ?? 0,
-      shown: this.graphShown(run),
     };
     // A poll never answers home_busy: a store still held answers the live view, or the last whole one, marked stale.
     try {
