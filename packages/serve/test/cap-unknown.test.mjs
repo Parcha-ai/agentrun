@@ -16,7 +16,8 @@ import { REQUEST_COST, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED, runMetri
 import { CAP_REFUSED_FIELD, capBefore, capModels, capToolSpend, HELD_FIELD, HELD_USD, MARK_NOT_WRITTEN, metersIn, spentIn, streamedBytes } from "../dist/cap.js";
 import { markRequests } from "../dist/request-start.js";
 import { KEY as MONID_KEY } from "./fixtures/faux-monid.mjs";
-import { agent, follow, letGo, scratch, serve, withEnv } from "./support.mjs";
+import { startServe } from "../dist/index.js";
+import { agent, client, follow, letGo, scratch, serve, withEnv } from "./support.mjs";
 
 const UNKNOWN = /^spend_cap_reached: .*spent is unknown.*out of budget/;
 const NO_CEILING = /^spend_cap_reached: .*no output ceiling.*out of budget/;
@@ -974,4 +975,44 @@ test("/usage's total counts every priced dollar of a run whose cost is unknown: 
     assert.deepEqual([usage.total_usd, usage.unpriced_runs], [known, 1], `${group}: ${JSON.stringify(usage)}`);
     for (const line of usage.lines) assert.ok(usage.total_usd >= line.usd, `${group}: the total ${usage.total_usd} is below its line ${JSON.stringify(line)}`);
   }
+});
+
+test("/usage puts a run's known tool dollars on tools when another tool charge is unknown, never on tokens nor nowhere, its lines summing to its total; and reads an ended run's figures from its store, never loading its timeline", { timeout: 150_000 }, async (t) => {
+  const log = join(await scratch(t), "monid-calls.jsonl");
+  withEnv(t, { MONID_API_KEY: MONID_KEY, AGENTRUN_TEST_FAUX_MONID_CALLS: log });
+  const data = join(await scratch(t), "agents");
+  const fauxMonid = new URL("./fixtures/faux-monid.mjs", import.meta.url).pathname;
+  const faux = new URL("./fixtures/faux-priced.mjs", import.meta.url).pathname;
+  let server = await startServe({ data, port: 0, faux, fauxMonid, drainTimeout: "5s" });
+  t.after(() => server?.close());
+  let api = client(server.baseUrl, server.token);
+  assert.equal((await api("POST", "/agents", agent("two-calls", { tools: ["monid.run"] }))).status, 201);
+  const { body } = await api("POST", "/agents/two-calls/runs", { input: { content: "Run monid's /person/enrich, then its slow endpoint." } });
+  // The second monid run call, the slow one, is sent: faux monid files one line per call.
+  const runCalls = () => (existsSync(log) ? readFileSync(log, "utf8").split("\n").filter((line) => line.includes('"path":"/v1/run"')).length : 0);
+  for (let i = 0; runCalls() < 2; i++) {
+    assert.ok(i < 400, "the slow call is sent");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  // A crash cuts the slow call: its charge is unknown; the first call's ($0.003) and the model requests' are known.
+  process.kill(JSON.parse(readFileSync(join(data, "runs", body.run_id, "run.json"), "utf8")).holder.pid, "SIGKILL");
+  await follow(api, body.run_id, ["completed"], { deadlineMs: 90_000 });
+  const { tokens } = metersIn(join(data, "runs", body.run_id, "store", "run.sqlite"));
+  const round = (usd) => Math.round(usd * 1e6) / 1e6;
+  const check = async (api, where) => {
+    const usage = (await api("GET", "/usage?group_by=meter")).body;
+    const lines = Object.fromEntries(usage.lines.map((line) => [line.meter, [line.usd, line.unpriced_runs]]));
+    assert.deepEqual(lines, { tokens: [round(tokens), 0], tools: [0.003, 1] }, `${where}: ${JSON.stringify(usage)}`);
+    assert.deepEqual([usage.total_usd, usage.unpriced_runs], [round(tokens + 0.003), 1], `${where}: ${JSON.stringify(usage)}`);
+    assert.equal(round(usage.lines.reduce((sum, line) => sum + line.usd, 0)), usage.total_usd, `${where}: its lines sum to its total`);
+  };
+  await check(api, "live server");
+  await server.close();
+  // A server started again reads the ended run's figures from its store: the run itself is never loaded for /usage.
+  const loaded = [];
+  server = await startServe({ data, port: 0, faux, fauxMonid, drainTimeout: "5s", onRunLoad: (id) => loaded.push(id) });
+  api = client(server.baseUrl, server.token);
+  await check(api, "after a restart");
+  for (const group of ["agent", "day"]) assert.equal((await api("GET", `/usage?group_by=${group}`)).body.total_usd, round(tokens + 0.003), group);
+  assert.deepEqual(loaded.filter((id) => id === body.run_id), [], "the run's timeline is not loaded for /usage");
 });

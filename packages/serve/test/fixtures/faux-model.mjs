@@ -154,6 +154,11 @@ export default function reply(context, faux) {
     if (results === 0) return faux.message([faux.thinking(`I hold ${key} now.`), faux.text(`The key is ${Buffer.from(key).toString("base64")}.`), faux.toolCall("read", { path: `notes/${key}.txt` })], { stopReason: "toolUse" });
     return faux.message(`Done with ${key}.`);
   }
+  // Runs monid's /person/enrich (priced at once), then /slow (held until stopped, or cut by a crash), then answers.
+  if (first.includes("Run monid's /person/enrich, then its slow endpoint.")) {
+    const steps = [["monid_run", { provider: "faux", endpoint: "/person/enrich", input: { name: "Ada" } }], ["monid_run", { provider: "faux", endpoint: "/slow", input: {} }]];
+    return results < steps.length ? faux.message(faux.toolCall(...steps[results]), { stopReason: "toolUse" }) : faux.message("Ran.");
+  }
   // Finds, reads and runs a monid endpoint, a call per turn, under the tools' wire names; then answers with the run's result.
   if (first.includes("Enrich with monid")) {
     const steps = [["monid_discover", { query: "enrich a person" }], ["monid_inspect", { provider: "faux", endpoint: "/person/enrich" }], ["monid_run", { provider: "faux", endpoint: "/person/enrich", input: { name: "Ada" } }]];

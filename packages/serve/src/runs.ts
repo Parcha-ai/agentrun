@@ -802,6 +802,8 @@ export class Runs {
   /** A test's seam (startServe's `beforeReopenLaunch`): awaited by a reopen after the run reads open again and before its
    *  launch, so a test can hold a reopen there. */
   beforeReopenLaunch?: (runId: string) => Promise<void> | void;
+  /** A test's seam (startServe's `onRunLoad`): told each run read in from its store, its timeline with it. */
+  onRunLoad?: (runId: string) => void;
   /** A test's seam (startServe's `beforeSubmit`): awaited by a message before it goes to the run's door. */
   beforeSubmit?: (runId: string, content: string) => Promise<void> | void;
   /** A test's seam (startServe's `beforeMetaSave`): awaited before a run's serve.json is written; one that throws fails
@@ -842,6 +844,7 @@ export class Runs {
   }
 
   private async load(row: RunRow): Promise<Run> {
+    this.onRunLoad?.(row.id);
     const dir = join(this.options.agents.dir, "runs", row.id);
     const stored = (await readJson(join(dir, RUN_META))) as Partial<RunMeta> | null;
     const trigger = triggerOf(stored);
