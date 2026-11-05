@@ -828,7 +828,8 @@ picks which one a run gets, never the model.
   `held` with the run's id while a run holds the lease, else `ready`; `verified_at` is when a saving session last ended.
   `unreadable` (this server's own state, marked `signins/1` in the served contract) is a pointer that does not open
   under the seal key the server has now (none, or another): runs start signed out, and none is made in its place until
-  you forget it, since the vendor's object it points to would be left behind.
+  you forget it, since the vendor's object it points to would be left behind. Its `held_by` still names a run that
+  holds its lease, as a held one does.
   Never the pointer. `DELETE /v2/agents/{id}/sign-ins/{key}` forgets one: the vendor's context or profile is deleted,
   then the pointer. A delete the vendor does not answer is said in the answer (`at_vendor: "not_deleted"`), and the
   pointer goes all the same. It is `409 sign_in_held` while a run holds the lease. A run of the agent that is still

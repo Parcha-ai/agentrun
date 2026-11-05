@@ -319,7 +319,7 @@ test("a pointer that does not open under this server's seal key reads unreadable
   const vendors = { create: async () => assert.fail("made in its place"), remove: async () => assert.fail("no pointer to delete with") };
   for (const key of [randomBytes(32), undefined]) {
     const other = new SignIns(data, key, vendors, async () => true);
-    assert.deepEqual(await other.view("alpha"), [{ key: "default", provider: "browserbase", state: "unreadable", held_by: null, verified_at: null }], key ? "another seal key" : "none");
+    assert.deepEqual(await other.view("alpha"), [{ key: "default", provider: "browserbase", state: "unreadable", held_by: "run-1", verified_at: null }], key ? "another seal key" : "none");
   }
   const rotated = new SignIns(data, randomBytes(32), vendors, async () => false);
   await assert.rejects(rotated.forRun("alpha", "run-2", "browserbase"), /does not open under this server's seal key: forget it \(DELETE \/v2\/agents\/alpha\/sign-ins\/default\)/);
@@ -416,4 +416,16 @@ test("a write that lands and then fails (the folder's sync) keeps both the point
   assert.deepEqual(removed, [], "its pointer is on disk");
   const again = new SignIns(data, key, { create: async () => assert.fail("made again") }, async () => false);
   assert.equal((await again.forRun("alpha", "run-2", "browserbase")).ref, "ctx-landed");
+});
+
+test("an unreadable sign-in still names the run that holds its lease, which forget waits for; the served contract takes it", async (t) => {
+  const data = await scratch(t);
+  const vendors = { create: async () => "ctx-1", remove: async () => {} };
+  await new SignIns(data, randomBytes(32), vendors, async () => true).forRun("alpha", "run-1", "browserbase");
+  const rotated = new SignIns(data, randomBytes(32), vendors, async (run) => run === "run-1");
+  assert.deepEqual(await rotated.view("alpha"), [{ key: "default", provider: "browserbase", state: "unreadable", held_by: "run-1", verified_at: null }]);
+  await assert.rejects(rotated.forget("alpha", "default"), (error) => error.code === "sign_in_held");
+  const signIn = openapiDocument(() => undefined).components.schemas.SignIn;
+  const unreadable = signIn.else;
+  assert.deepEqual([unreadable.if, unreadable.then.properties.held_by.oneOf.length, unreadable.else.properties.held_by, unreadable["x-agentrun-serve"]], [{ properties: { state: { const: "unreadable" } } }, 2, { type: "null" }, "signins/1"]);
 });

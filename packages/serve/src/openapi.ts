@@ -1399,9 +1399,15 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   const signInState = ((schemas.SignIn as Json).properties as Record<string, Json>).state as Json & { enum?: string[] };
   if (Array.isArray(signInState.enum) && !signInState.enum.includes("unreadable")) {
     signInState.enum = [...signInState.enum, "unreadable"];
-    signInState.description = "`held` while a run holds its save lease, else `ready`. `unreadable` (this server's own): its pointer does not open under this server's seal key (none now, or another), so runs start signed out and none is made in its place until it is forgotten (DELETE /agents/{agent_id}/sign-ins/{key}).";
+    signInState.description = "`held` while a run holds its save lease, else `ready`. `unreadable` (this server's own): its pointer does not open under this server's seal key (none now, or another), so runs start signed out and none is made in its place until it is forgotten (DELETE /agents/{agent_id}/sign-ins/{key}); its `held_by` names a run that still holds its lease, else null.";
     signInState["x-agentrun-serve"] = "signins/1";
     fields.push("SignIn.state.unreadable");
+    // An unreadable sign-in still names a run that holds its lease (held_by), as a held one does; a ready one never.
+    const signIn = schemas.SignIn as Json & { else?: Json };
+    if (signIn.else) {
+      signIn.else = { if: { properties: { state: { const: "unreadable" } } }, then: { properties: { held_by: { oneOf: [ref("schemas/Id"), { type: "null" }] } } }, else: signIn.else, "x-agentrun-serve": "signins/1" };
+      fields.push("SignIn.else");
+    }
   }
   // A workflow run pauses here (POST /runs/{run_id}/pause): its status reads `paused` until it is resumed.
   const runStatus = schemas.RunStatus as Json & { enum?: string[] };

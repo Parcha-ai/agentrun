@@ -32,7 +32,7 @@ export type Vendor = "browserbase" | "kernel";
 export type HandedSignIn = { provider: Vendor; ref: string; save: boolean };
 /** A sign-in as GET /agents/{id} shows it (the contract's SignIn): never its ref. `unreadable` (this server's own state):
  *  its pointer does not open under this server's seal key (none now, or another), so no run starts from it and none is
- *  made in its place until it is forgotten (DELETE). */
+ *  made in its place until it is forgotten (DELETE); `held_by` names a run that still holds its lease. */
 export type SignInView = { key: string; provider: Vendor; state: "ready" | "held" | "unreadable"; held_by: string | null; verified_at: string | null };
 /** The vendor's side: make an agent's object (its pointer), and delete one. */
 export type Vendors = { create(vendor: Vendor): Promise<string>; remove(vendor: Vendor, ref: string): Promise<void> };
@@ -128,8 +128,9 @@ export class SignIns {
   async view(agentId: string): Promise<SignInView[]> {
     const entries = await this.read(agentId).catch(() => []);
     return Promise.all(entries.map(async (entry) => {
-      if (this.open(agentId, entry) === undefined) return { key: entry.key, provider: entry.provider, state: "unreadable" as const, held_by: null, verified_at: entry.verified_at };
       const held = await this.held(entry);
+      // Unreadable or not, a run that holds its lease is named: forget is refused until it ends.
+      if (this.open(agentId, entry) === undefined) return { key: entry.key, provider: entry.provider, state: "unreadable" as const, held_by: held ? entry.held_by : null, verified_at: entry.verified_at };
       return { key: entry.key, provider: entry.provider, state: held ? "held" : "ready", held_by: held ? entry.held_by : null, verified_at: entry.verified_at };
     }));
   }

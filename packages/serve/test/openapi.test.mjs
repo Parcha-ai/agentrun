@@ -198,6 +198,11 @@ test("the contract's operations are as vendored; this server's own are added and
     }
   };
   for (const [name, schema] of Object.entries(components.schemas)) {
+    // A contract condition this server widens (SignIn's held_by for its own `unreadable` state) is marked on the branch.
+    if (schema.else?.["x-agentrun-serve"] !== undefined) {
+      marked.push(`${name}.else`);
+      schema.else = VENDORED.components.schemas[name].else;
+    }
     // A contract enum this server widens (RunStatus's `paused`) is marked on the schema, each value it adds listed.
     if (schema["x-agentrun-serve"] !== undefined && Array.isArray(schema.enum)) {
       const original = VENDORED.components.schemas[name].enum;
