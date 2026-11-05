@@ -142,14 +142,15 @@ describe("LiveRun, one row per action", () => {
   });
 });
 
-// A run paused at its spend cap is raised from its page: one PATCH with the cap prefilled from the served figures, then
+// A run paused at its spend cap is raised from its page: one PATCH with the server's suggested cap prefilled, then
 // the run is read again, so the pause and the raise give way to the run going on.
 describe("LiveRun, a run paused at its spend cap", () => {
-  it("Raise the cap and continue sends the suggested cap once and reads the run again: the pause is gone", async () => {
+  it("Raise the cap and continue sends the server's suggested cap once and reads the run again: the pause is gone", async () => {
     let raised = false, reads = 0;
     const raises: unknown[] = [];
     const paused: Run = { ...at("working", false), status: "input_required", state: "waiting", ended_at: null,
-      pending: { kind: "budget", cap_usd: 0.05, spent_usd: 0, needs_usd: 0.1024, said: "Not sent: the cap is reached.", at: "2026-11-04T20:08:05.127Z" } };
+      cost: { usd: 0, basis: "estimate", charge_state: null, cap_usd: 0.05 },
+      pending: { kind: "budget", cap_usd: 0.05, spent_usd: 0, needs_usd: 0.1024, suggested_cap_usd: 2, said: "Not sent: the cap is reached.", at: "2026-11-04T20:08:05.127Z" } };
     const v2 = {
       getRun: async () => { reads++; return raised ? { ...at("working", false), state: "working" } : paused; },
       listFiles: async () => ({ run_id: "r1", files: [], complete: true, truncated: false }),
@@ -163,12 +164,12 @@ describe("LiveRun, a run paused at its spend cap", () => {
     const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
     await settle();
     expect(host.textContent).toContain("Paused at its $0.05 spend cap");
-    expect((host.querySelector('input[aria-label="New cap in dollars"]') as HTMLInputElement | null)?.value).toBe("1.03");
+    expect((host.querySelector('form[aria-label="Raise the cap"] input[aria-label="New cap in dollars"]') as HTMLInputElement | null)?.value).toBe("2");
     const before = reads;
     const button = [...host.querySelectorAll("button")].find((b) => b.textContent === "Raise the cap and continue")!;
     await act(async () => { button.click(); });
     await settle();
-    expect(raises).toEqual([["r1", 1.03]]);
+    expect(raises).toEqual([["r1", 2]]);
     expect(reads).toBeGreaterThan(before);
     expect(host.textContent).not.toContain("Paused at its $0.05 spend cap");
     expect(host.querySelector('input[aria-label="New cap in dollars"]')).toBeNull();
