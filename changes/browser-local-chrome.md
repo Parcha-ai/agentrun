@@ -1,0 +1,11 @@
+---
+packages: @parcha/agentrun-serve, @parcha/pi-browser
+kind: feature
+---
+The `browser` tool can run on a headless Chrome on the server's own machine, held to public addresses by the egress proxy: an operator turns it on with `--browser-chrome PATH` (or `AGENTRUN_SERVE_BROWSER_CHROME`), and `chrome` picked (`PUT /v2/settings/tools` `{browser: {provider: "chrome"}}`, or an agent's `definition.tool_settings`) then runs each session there. Off by default; a server given none keeps `chrome` unavailable (`409 agent_not_runnable` at a run), and `auto` never picks it.
+- The path is checked at the start: one that is not an executable file refuses it. Each session starts a fresh Chrome of the run's own (headless, Chrome's sandbox on, its profile under the run's directory and removed at release, its DevTools socket on a loopback port picked for it), never one already running.
+- Every request goes through the kernel's egress proxy, with no host list, run in the run's process: `--proxy-server` at a loopback relay to its socket, `--proxy-bypass-list=<-loopback>` (loopback and link-local through the proxy too, but Chrome's own DevTools socket), `--host-resolver-rules` that resolve nothing but those two, `--disable-quic`, and WebRTC on no UDP. The proxy refuses, after its lookup, loopback (this server's port among them), private, link-local, metadata and this machine's own addresses; a page that steers the browser there gets its refusal. A real-Chrome test proves it in CI's real-chrome job.
+- No saved sign-ins: none is made, leased or handed to a run on the local Chrome, a profile is refused by name, and `features.sign_ins` is false while the server's browser is the local Chrome.
+- A run kept on `chrome` is unavailable at a launch on a server no longer given one, never moved to a vendor. `features.browser` can be `chrome`, and a tool's `resolves` can read `chrome` (the served contract's pattern takes it). The local Chrome takes no tool key.
+- Its minutes are free by default (`cdp`, $0 an hour); `AGENTRUN_BROWSER_USD_PER_HOUR_CDP` prices them, and the run's spend and cap count them.
+- pi-browser: the cdp provider's `chrome.args` may be a function of the session's DevTools port, which it then picks free before the start (`--remote-debugging-port`), so a host's arguments can name it; `chromeArgs` takes `debuggingPort`.
