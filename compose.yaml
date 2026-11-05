@@ -37,7 +37,7 @@ services:
       # The hosts a box may reach, as a comma list; empty, the package registries and GitHub; none for no network.
       AGENTRUN_BOX_ALLOW: ${AGENTRUN_BOX_ALLOW:-}
       AGENTRUN_TOKEN: ${AGENTRUN_TOKEN:-}
-      AGENTRUN_PUBLIC_URL: "${AGENTRUN_PUBLIC_URL:-http://127.0.0.1:7340}" # key-gate: loopback-rule the published loopback port, the printed link
+      AGENTRUN_PUBLIC_URL: "${AGENTRUN_PUBLIC_URL:-http://127.0.0.1:7340/}" # key-gate: loopback-rule the published loopback port, the printed link
       AGENT_MODEL: ${AGENT_MODEL:-}
       AGENT_MODEL_FAST: ${AGENT_MODEL_FAST:-}
       AGENT_MODEL_STRONG: ${AGENT_MODEL_STRONG:-}
