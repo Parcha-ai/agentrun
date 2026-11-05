@@ -1007,15 +1007,12 @@ export class Runs {
     // An ended run handed a sign-in that does not open under this server's seal key: what it said could repeat the pointer,
     // which nothing here can cut, so none of it is served: its store is not read, and its answer, output and error words
     // are withheld. It ended as it ended: nothing is stopped or failed. Here only, never saved for it: each server decides
-    // from its own key, so the sign-in opening again shows it again, cut. A run from before servers kept sign_in_handed:
-    // any with a browser plane (a signed-out one is withheld too, only while the sign-in cannot be read).
-    if (row.state !== "running" && signIn === "unreadable" && (run.meta.sign_in_handed || run.meta.tool_plane?.browser) && !run.meta.unshown) run.meta.unshown = true;
+    // from its own key, so the sign-in opening again shows it again, cut. Only a run that was handed it: one launched
+    // signed out is shown as any other.
+    if (row.state !== "running" && signIn === "unreadable" && run.meta.sign_in_handed && !run.meta.unshown) run.meta.unshown = true;
     // Hidden under a key that did not open its sign-in, and that very sign-in opens again now (not one made since in its
     // place, which would not cut the pointer its rows hold): its rows are read, cut of it.
-    // An ended run that never kept which sign-in it was handed (one from before servers did, its hidden mark saved by some
-    // later write) is shown again once the agent's sign-in opens: it was withheld only for want of the key.
-    const opensAgain = typeof signIn === "object" && (typeof run.meta.sign_in_handed === "string" ? pointerHash(signIn.ref) === run.meta.sign_in_handed : row.state !== "running" && run.meta.sign_in_handed === undefined);
-    if (run.meta.unshown && opensAgain) {
+    if (run.meta.unshown && typeof signIn === "object" && typeof run.meta.sign_in_handed === "string" && pointerHash(signIn.ref) === run.meta.sign_in_handed) {
       delete run.meta.unshown;
       // Unsaved, the next server finds it hidden and this same sign-in open, and shows it again as this one does.
       await this.saveMeta(run).catch((error: Error) => warn(run.id, `that it is shown again is not saved: ${error.message}`));

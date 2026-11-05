@@ -918,13 +918,10 @@ picks which one a run gets, never the model.
   (the right seal key back), its rows are read and shown, cut of it. A run that had already ended keeps how it ended,
   but while the sign-in does not open none of what it said is served (rows, answer, output, error words, a workflow
   run's graph, which answers 403 `forbidden`), it can't be continued, and what its end-of-run learning turn wrote is
-  not checked, graded or merged (it waits as it was for a server that reads the sign-in); this holds for any ended run
-  with a browser, so one from before servers kept the mark is withheld too. It is shown again, cut, once the sign-in
-  opens. A run that was never handed the sign-in (one launched signed out since the key changed) is taken up as any
-  other. That a run was handed it is kept in its `serve.json`; a launch that can't save that hands it none, and the
-  run browses signed out. A one-time limit of the upgrade to this: a run still going across that upgrade has no such
-  mark, so if the upgraded server also can't read its sign-in at that same start, it is taken up signed out and its
-  text is not cut of the pointer. Its `held_by` still names a run that holds its lease, as a held one does.
+  not checked, graded or merged (it waits as it was for a server that reads the sign-in). It is shown again, cut, once
+  the sign-in opens. A run that was never handed the sign-in (one launched signed out since the key changed) is taken
+  up as any other. That a run was handed it is kept in its `serve.json`; a launch that can't save that hands it none,
+  and the run browses signed out. Its `held_by` still names a run that holds its lease, as a held one does.
   Never the pointer. `DELETE /v2/agents/{id}/sign-ins/{key}` forgets one: the vendor's context or profile is deleted,
   then the pointer. A delete the vendor does not answer is said in the answer (`at_vendor: "not_deleted"`), and the
   pointer goes all the same. It is `409 sign_in_held` while a run holds the lease. A run of the agent that is still
