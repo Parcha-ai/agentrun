@@ -437,16 +437,19 @@ export class Triggers {
     const known = this.known(trigger, key);
     if (known) return { created: false, firing: firingView(known) };
     const thread = `${message.team}:${message.channel}:${message.thread_ts}`;
-    const reply = trigger.threads?.[thread] !== undefined;
-    if (!reply && !message.mention) return undefined;
     const now = this.clock.now();
+    // A thread untouched for THREAD_KEPT_MS is gone, whether or not a newer message has pruned it yet.
+    const kept = (t: Thread) => now - Date.parse(t.last_at) <= THREAD_KEPT_MS;
+    const held = trigger.threads?.[thread];
+    const reply = held !== undefined && kept(held);
+    if (!reply && !message.mention) return undefined;
     const firing: Firing = { key, by: "slack", nominal_at: second(now), status: "due", at: iso(now), payload: cut(message.text), thread, user: message.user, ...(reply ? { reply: true } : {}) };
     this.commit(() => {
       this.record(trigger, firing);
       const threads = trigger.threads ?? {};
       threads[thread] = reply ? { ...threads[thread]!, last_at: iso(now) } : { firing_key: key, channel: message.channel, thread_ts: message.thread_ts, at: iso(now), last_at: iso(now) };
       // Threads untouched for THREAD_KEPT_MS go, and the oldest past SLACK_THREADS_KEPT: a reply to one is ignored then.
-      trigger.threads = Object.fromEntries(Object.entries(threads).filter(([, t]) => now - Date.parse(t.last_at) <= THREAD_KEPT_MS).sort(([, a], [, b]) => a.last_at.localeCompare(b.last_at)).slice(-SLACK_THREADS_KEPT));
+      trigger.threads = Object.fromEntries(Object.entries(threads).filter(([, t]) => kept(t)).sort(([, a], [, b]) => a.last_at.localeCompare(b.last_at)).slice(-SLACK_THREADS_KEPT));
     });
     void this.drive(trigger.id, key);
     return { created: true, firing: firingView(firing) };

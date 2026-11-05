@@ -1089,7 +1089,8 @@ are one firing, never dropped and never done twice. A message from a bot, this a
 another workspace in a shared channel, an edit, a direct message, and a message in no thread the trigger started that
 mentions no one, are answered `200` and ignored. The agent gets the trigger's input, then the message, cut at 16 KiB,
 inside `<trigger-payload source="slack" user="U..." channel="C..." untrusted>...</trigger-payload>`; a reply is that
-block alone. A trigger keeps a thread for 30 days after its last mention or reply, and its 1,000 most recent.
+block alone. A trigger keeps a thread for 30 days after its last mention or reply, and its 1,000 most recent; a reply
+in a thread it no longer keeps reaches nothing, and a mention there starts a new thread.
 
 When the run comes to need its person, and when it ends, one line is posted in its thread through `chat.postMessage`:
 "Waiting for your answer: reply in this thread", "Stopped: reply in this thread to go on", "Paused at its spend cap",
