@@ -57,6 +57,12 @@ test("a draft whose call or model node names Bash, exec_command or apply_patch i
   assert.equal(check(draft(richWorkflow({ tool: "web_search" }))).ok, true);
 });
 
+test("a draft with a node the learned runner cannot run (a judge, pick or sift node, which needs a decision provider a run is not given) is refused as workflow at learn time, never at a call", () => {
+  const result = check(draft(richWorkflow({ judge: true })));
+  assert.deepEqual(result.problems.map((p) => [p.rule, p.path]), [["workflow", DRAFT_PATH]], JSON.stringify(result.problems));
+  assert.match(result.problems[0].detail, /judge node "refund" requires runJudge: a learned workflow runs model and tool-call nodes/, result.problems[0].detail);
+});
+
 test("a draft whose model node names any tool is refused as workflow, though the agent was granted it: a learned model node runs without tools, so it is refused at learn time, never at a call after earlier nodes spent", () => {
   for (const named of [["web_fetch"], ["web_search"]]) {
     for (const node of ["agent", "extract"]) {

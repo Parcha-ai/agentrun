@@ -179,6 +179,21 @@ test("a learned workflow whose later model node names a tool, though the agent w
   assert.deepEqual(entries(data, runId, ["agentrun.request_started"]).filter((entry) => entry.request === LEARNED_WORKFLOW_TOOL), [], "its first node never ran");
 });
 
+test("a learned workflow whose later node is a judge is refused before any node runs: no model request is sent", { timeout: 120_000 }, async (t) => {
+  const { api, data } = await serve(t, { learning: "on" });
+  const flow = answerFlow();
+  flow.schemas.Check = { type: "object", properties: { right: { type: "boolean", description: "Is the answer right?" } }, required: ["right"] };
+  flow.root.steps = [
+    { node: "extract", label: "first", instructions: "Answer the question.", out: "Answer", as: "answer" },
+    { node: "judge", label: "check", state: { answer: "{answer}" }, out: "Check", as: "check" },
+  ];
+  const { runId, rows } = await ran(api, data, "late-judge", "pi", flowFiles("answer", flow));
+  const result = learnedResult(rows);
+  assert.equal(result?.tool_status, "failed", JSON.stringify(result));
+  assert.match(JSON.stringify(result), /The learned workflow answer was not run: .*judge node \\?"check\\?" requires runJudge/, JSON.stringify(result));
+  assert.deepEqual(entries(data, runId, ["agentrun.request_started"]).filter((entry) => entry.request === LEARNED_WORKFLOW_TOOL), [], "its first node never ran");
+});
+
 /** Agent `id`'s learning folder with `files` on main, and its seed pinned for a run: the pin. */
 async function pinned(t, id, files, secrets = [], extra = {}) {
   const data = join(await scratch(t), "agents");

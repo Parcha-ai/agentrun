@@ -41,8 +41,9 @@ export const workflow = ({ name = "find-policies", tools = [], node = "agent" } 
   root: { node, label: "find", instructions: "Find the store's refund policy from its public pages.", out: "Policies", as: "policies", tools },
 }, null, 2);
 
-/** A draft with a model node, a call node on `tool` and a judge node; with `code`, a code node in the model node's place. */
-export const richWorkflow = ({ tool = "web_fetch", code } = {}) => JSON.stringify({
+/** A draft with a model node, a call node on `tool` and a model node that reads the page; with `judge`, a judge node in
+ *  its place (which a learned workflow cannot run); with `code`, a code node in the first model node's place. */
+export const richWorkflow = ({ tool = "web_fetch", code, judge = false } = {}) => JSON.stringify({
   v: 2,
   name: "find-policies",
   schemas: {
@@ -58,7 +59,9 @@ export const richWorkflow = ({ tool = "web_fetch", code } = {}) => JSON.stringif
       ? { node: "extract", label: "prep", instructions: "Name the path where this store keeps its policies.", out: "Target", as: "target", tools: [] }
       : { node: "code", label: "prep", code },
     { node: "call", label: "fetch", via: "tool", tool, args: { url: "{url}" }, out: "Page", as: "page", deadline_s: 30 },
-    { node: "judge", label: "refund", state: { page: "{page}" }, out: "Verdict", as: "verdict" },
+    judge
+      ? { node: "judge", label: "refund", state: { page: "{page}" }, out: "Verdict", as: "verdict" }
+      : { node: "extract", label: "refund", instructions: "Say whether the page {page} states the store's refund policy.", out: "Verdict", as: "verdict", tools: [] },
   ] },
 }, null, 2);
 
