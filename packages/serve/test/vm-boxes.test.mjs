@@ -177,12 +177,28 @@ test("the relay takes a run's VM calls only for that run's own box, and never on
   const boxOf = (runId) => vm.running().find((sandbox) => sandbox.params.tags["agentrun.run"] === runId).sandboxId;
   const { url } = JSON.parse(readFileSync(join(data, BOX_RELAY_FILE), "utf8"));
   const tokenOf = (runId) => readFileSync(join(data, "runs", runId, "door-token"), "utf8").trim();
-  const call = (runId, path, body, token = tokenOf(runId)) => fetch(`${url}/runs/${runId}/vm/${path}`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify(body ?? {}) });
+  const call = (runId, path, body, token = tokenOf(runId), signal) => fetch(`${url}/runs/${runId}/vm/${path}`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify(body ?? {}), ...(signal ? { signal } : {}) });
   assert.equal((await call(a.run_id, `sandbox/${boxOf(a.run_id)}/poll`)).status, 200, "its own box");
   assert.equal((await call(a.run_id, `sandbox/${boxOf(b.run_id)}/poll`)).status, 404, "another run's box is not there for it");
   assert.equal((await call(a.run_id, `sandbox/${boxOf(a.run_id)}/poll`, {}, tokenOf(b.run_id))).status, 401, "another run's token");
   for (const op of ["terminate", "tags/set", "create", "list"]) assert.equal((await call(a.run_id, `sandbox/${boxOf(a.run_id)}/${op}`)).status, 403, op);
   assert.equal(vm.running().length, 2, "nothing was ended");
+  // Programs started at once are counted as they start, each start taking a while: past the limit (64 a run), the rest
+  // are refused.
+  vm.execDelayMs = 200;
+  const starts = await Promise.all(Array.from({ length: 70 }, () => call(a.run_id, `sandbox/${boxOf(a.run_id)}/exec`, { command: ["sleep", "1"] })));
+  assert.deepEqual([starts.filter((r) => r.status === 200).length, starts.filter((r) => r.status === 429).length], [64, 6]);
+  vm.execDelayMs = 0;
+  // A reader that goes away lets its program go: what it held is dropped, and the program is no longer the run's to ask.
+  const started = await call(b.run_id, `sandbox/${boxOf(b.run_id)}/exec`, { command: ["yes"] });
+  assert.equal(started.status, 200);
+  const { exec } = await started.json();
+  const reading = new AbortController();
+  const reader = (await call(b.run_id, `exec/${exec}/stdout`, undefined, undefined, reading.signal)).body.getReader();
+  assert.ok((await reader.read()).value.length > 0, "its output flows");
+  reading.abort();
+  await reader.cancel().catch(() => undefined);
+  await until(async () => (await call(b.run_id, `exec/${exec}/stdin-close`)).status === 404, "the program let go");
   for (const run of [a, b]) assert.equal((await api("POST", `/runs/${run.run_id}/cancel`)).status, 202);
 });
 

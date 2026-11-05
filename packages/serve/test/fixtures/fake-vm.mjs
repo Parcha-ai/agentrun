@@ -20,9 +20,12 @@ export const vm = {
   sandboxes: [],
   root: join(process.env.TMPDIR ?? tmpdir(), `agentrun-fake-vm-${process.pid}`),
   running: () => vm.sandboxes.filter((sandbox) => sandbox.exitCode === null),
+  /** How long each program's start takes, as a provider's round trip does (0: at once). */
+  execDelayMs: 0,
   /** Ends sandbox `id` as the provider would at its lifetime: its programs killed, its directory gone. */
   end: (id) => vm.sandboxes.find((sandbox) => sandbox.sandboxId === id)?.terminate({ wait: true }),
   reset: () => {
+    vm.execDelayMs = 0;
     for (const sandbox of vm.sandboxes) sandbox.terminate({ wait: true });
     vm.clients.length = 0;
     vm.sandboxes.length = 0;
@@ -47,6 +50,7 @@ class FakeSandbox {
   async exec(command, params) {
     if (this.exitCode !== null) throw Object.assign(new Error("the sandbox has been terminated"), { code: 9 });
     this.execs.push({ command, params });
+    if (vm.execDelayMs) await new Promise((resolve) => setTimeout(resolve, vm.execDelayMs));
     // The provider's probe of the box's disk, Yama setting and FUSE reads this machine's /proc: answered as a box would.
     const probed = command[0] === "sh" && command[2]?.includes("ptrace_scope");
     const [program, ...rest] = probed ? ["printf", "%s", "disk=104857600\nptrace=1\nfuse_dev=1\n"] : command.map((part) => this.inBox(part));

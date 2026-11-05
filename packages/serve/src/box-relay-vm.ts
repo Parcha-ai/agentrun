@@ -52,19 +52,36 @@ const failureOf = (error: unknown): Failure => {
 
 /** One output stream, read from the program as soon as it starts (the SDK's stream holds its output only while it is
  *  read), and held here until the run's process reads it, up to MAX_BUFFERED_BYTES ahead. */
-type Pump = { chunks: Uint8Array[]; bytes: number; done: boolean; failure?: unknown; wake?: () => void; space?: () => void };
+type Pump = { chunks: Uint8Array[]; bytes: number; done: boolean; failure?: unknown; wake?: () => void; space?: () => void; cancel(): void };
 function pump(source: AsyncIterable<Uint8Array>): Pump {
-  const state: Pump = { chunks: [], bytes: 0, done: false };
+  const iterator = source[Symbol.asyncIterator]();
+  let cancelled = false;
+  const state: Pump = {
+    chunks: [], bytes: 0, done: false,
+    // Let go: what it holds is dropped, the source's read is ended, and whoever waits on it is woken.
+    cancel() {
+      if (cancelled) return;
+      cancelled = true;
+      state.chunks.length = 0;
+      state.bytes = 0;
+      state.done = true;
+      void Promise.resolve(iterator.return?.()).catch(() => undefined);
+      state.space?.();
+      state.wake?.();
+    },
+  };
   void (async () => {
     try {
-      for await (const chunk of source) {
-        state.chunks.push(chunk);
-        state.bytes += chunk.length;
+      for (;;) {
+        const next = await iterator.next();
+        if (next.done || cancelled) break;
+        state.chunks.push(next.value);
+        state.bytes += next.value.length;
         state.wake?.();
-        while (state.bytes > MAX_BUFFERED_BYTES) await new Promise<void>((resolve) => (state.space = resolve));
+        while (state.bytes > MAX_BUFFERED_BYTES && !cancelled) await new Promise<void>((resolve) => (state.space = resolve));
       }
     } catch (error) {
-      state.failure = error ?? new Error("the stream failed");
+      if (!cancelled) state.failure = error ?? new Error("the stream failed");
     }
     state.done = true;
     state.wake?.();
@@ -80,6 +97,8 @@ type Held = { run: string; process: VmProcess; streams: Record<"stdout" | "stder
 export function vmRelay(sdk: VmSdk): { handle(runId: string, path: string, req: IncomingMessage, res: ServerResponse): Promise<void>; drop(runId: string): void } {
   const known = new Map<string, { sandbox: VmSandbox; run: string | undefined }>();
   const execs = new Map<string, Held>();
+  /** The programs each run is starting now: counted with those it holds, so starts at once cannot pass the limit. */
+  const starting = new Map<string, number>();
 
   /** Sandbox `id` and the run its label names, as the provider says; undefined when it has none. */
   const sandboxOf = async (id: string) => {
@@ -102,6 +121,9 @@ export function vmRelay(sdk: VmSdk): { handle(runId: string, path: string, req: 
   const forget = (id: string) => {
     const held = execs.get(id);
     if (held?.timer) clearTimeout(held.timer);
+    // Its streams' reads end with it, and a reply still writing one is let go.
+    held?.streams.stdout.cancel();
+    held?.streams.stderr.cancel();
     execs.delete(id);
   };
   /** A program is let go once its exit was read and both its streams were read through, or EXEC_KEEP_MS after its exit. */
@@ -138,8 +160,18 @@ export function vmRelay(sdk: VmSdk): { handle(runId: string, path: string, req: 
             const body = (await jsonOf(req)) as { command?: unknown; workdir?: unknown; timeoutMs?: unknown } | null;
             const command = body?.command;
             if (!Array.isArray(command) || !command.length || !command.every((part) => typeof part === "string")) return answer(res, 400, { message: "exec names its command: a list of strings" });
-            if ([...execs.values()].filter((held) => held.run === runId).length >= MAX_EXECS_PER_RUN) return answer(res, 429, { message: `a run holds at most ${MAX_EXECS_PER_RUN} programs in its box at once` });
-            const process = await found.sandbox.exec(command as string[], { mode: "binary", ...(typeof body?.workdir === "string" ? { workdir: body.workdir } : {}), ...(typeof body?.timeoutMs === "number" ? { timeoutMs: body.timeoutMs } : {}) });
+            const pending = starting.get(runId) ?? 0;
+            if ([...execs.values()].filter((held) => held.run === runId).length + pending >= MAX_EXECS_PER_RUN) return answer(res, 429, { message: `a run holds at most ${MAX_EXECS_PER_RUN} programs in its box at once` });
+            // Its slot is taken before the start is awaited, and given back once the program is held or did not start.
+            starting.set(runId, pending + 1);
+            let process: VmProcess;
+            try {
+              process = await found.sandbox.exec(command as string[], { mode: "binary", ...(typeof body?.workdir === "string" ? { workdir: body.workdir } : {}), ...(typeof body?.timeoutMs === "number" ? { timeoutMs: body.timeoutMs } : {}) });
+            } finally {
+              const left = (starting.get(runId) ?? 1) - 1;
+              if (left > 0) starting.set(runId, left);
+              else starting.delete(runId);
+            }
             const exec = randomUUID();
             const held: Held = { run: runId, process, streams: { stdout: pump(process.stdout), stderr: pump(process.stderr) }, waited: false, read: new Set() };
             execs.set(exec, held);
@@ -186,17 +218,31 @@ export function vmRelay(sdk: VmSdk): { handle(runId: string, path: string, req: 
           held.read.add(name);
           const stream = held.streams[name];
           res.writeHead(200, { "content-type": "application/octet-stream", "cache-control": "no-store" });
+          // A caller that goes away (its process ended, or it stopped reading) lets the stream go: its read is ended and
+          // nothing waits on it.
+          let gone = false;
+          let woke: () => void = () => {};
+          res.once("close", () => {
+            if (res.writableFinished) return;
+            gone = true;
+            stream.cancel();
+            woke();
+          });
           for (;;) {
-            while (stream.chunks.length) {
+            while (stream.chunks.length && !gone) {
               const chunk = stream.chunks.shift()!;
               stream.bytes -= chunk.length;
               stream.space?.();
-              if (!res.write(chunk)) await new Promise((resolve) => res.once("drain", resolve));
+              if (!res.write(chunk)) await new Promise<void>((resolve) => {
+                woke = resolve;
+                res.once("drain", resolve);
+              });
             }
-            if (stream.done) break;
-            await new Promise<void>((resolve) => (stream.wake = resolve));
+            if (stream.done || gone) break;
+            await new Promise<void>((resolve) => (stream.wake = woke = resolve));
           }
           // A stream that broke is a broken answer, never a short one: the caller sees its read fail.
+          if (gone) return void forget(id);
           if (stream.failure !== undefined) res.destroy();
           else res.end();
           settle(id);
