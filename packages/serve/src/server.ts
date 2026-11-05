@@ -784,9 +784,16 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const tellSlack = (event: "run.needs_input" | "run.ended", run: RunNotice, marker: string) => {
     const thread = slackThreadOf(run.run_id);
     if (!thread) return;
-    // The answer only for a trigger that posts it (its source's post_answer), read as the trigger is now.
-    void (event === "run.ended" && run.status === "completed" && thread.post_answer ? runs.get(run.run_id).then((held) => (held ? runs.view(held) : null)).then((view) => view?.result?.final_answer ?? null, () => null) : Promise.resolve(null))
-      .then((answer) => slack!.emit(event, run, marker, { channel: thread.channel, thread_ts: thread.thread_ts }, answer))
+    // Read from the run's view only where the line needs it: the answer, for a trigger that posts it (its source's
+    // post_answer, as the trigger is now); the tool an approval waits on, which the notice does not carry.
+    const answered = event === "run.ended" && run.status === "completed" && thread.post_answer;
+    const approval = event === "run.needs_input" && run.pending?.kind === "approval";
+    void (answered || approval ? runs.get(run.run_id).then((held) => (held ? runs.view(held) : null)).catch(() => null) : Promise.resolve(null))
+      .then((view) => {
+        const tool = approval ? (view?.pending as { tool?: unknown } | null | undefined)?.tool : undefined;
+        const told = typeof tool === "string" ? ({ ...run, pending: { kind: "approval", tool } } as RunNotice) : run;
+        slack!.emit(event, told, marker, { channel: thread.channel, thread_ts: thread.thread_ts }, answered ? (view?.result?.final_answer ?? null) : null);
+      })
       .catch((error: Error) => void process.stderr.write(`agentrun-serve: slack: ${error.message}\n`));
   };
   const uploads = new Uploads(join(data, UPLOADS_DIR));
