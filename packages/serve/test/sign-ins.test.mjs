@@ -252,11 +252,11 @@ test("through the API: an agent's first run holds the sign-in and saves; one sta
     assert.ok(!JSON.stringify((await api("GET", "/agents")).body).includes(handed.ref));
     const listed = (await api("GET", `/agents/${id}/home/files`)).body.files;
     assert.deepEqual(listed.filter((file) => file.host_owned).map((file) => file.path), ["sign-ins"]);
-    const signInsFile = ["sign-ins", "sign-ins.json"].join("/");
-    const read = await api("GET", `/agents/${id}/home/files/${signInsFile}`);
+    const signInsFile = [`/agents/${id}`, "home", "files", "sign-ins", "sign-ins.json"].join("/");
+    const read = await api("GET", signInsFile);
     assert.deepEqual([read.status, read.body.error.details.reason], [403, "host_owned"]);
     assert.match(read.body.error.message, new RegExp(`read it through /v2/agents/${id}$`));
-    const written = await api("PUT", `/agents/${id}/home/files/${signInsFile}`, { format: "sign-ins/1", sign_ins: [] });
+    const written = await api("PUT", signInsFile, { format: "sign-ins/1", sign_ins: [] });
     assert.equal(written.status, 403);
   }
   const onDisk = await readFile(join(homeOf(data, "alpha"), "sign-ins", "sign-ins.json"), "utf8");
