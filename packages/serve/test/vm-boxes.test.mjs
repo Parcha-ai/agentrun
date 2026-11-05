@@ -197,6 +197,7 @@ test("the relay takes a run's VM calls only for that run's own box, and never on
   assert.deepEqual(await (await call(b.run_id, `exec/${big.exec}/wait`)).json(), { code: 0 });
   await new Promise((resolve) => setTimeout(resolve, 300));
   assert.equal((await slow.arrayBuffer()).byteLength, 4_000_000, "the whole output, read after the exit");
+  await until(async () => (await call(b.run_id, `exec/${big.exec}/stdin-close`)).status === 404, "the delivered program let go");
   // A program whose output stream broke has its reply broken, and is let go once its exit is read: it holds no slot.
   vm.failStdout = true;
   const broken = await (await call(b.run_id, `sandbox/${boxOf(b.run_id)}/exec`, { command: ["sh", "-c", "echo one; sleep 0.2; echo two"] })).json();
@@ -205,6 +206,15 @@ test("the relay takes a run's VM calls only for that run's own box, and never on
   assert.equal(await (await call(b.run_id, `exec/${broken.exec}/stderr`)).text(), "");
   assert.equal(typeof (await (await call(b.run_id, `exec/${broken.exec}/wait`)).json()).code, "number", "its exit is read");
   await until(async () => (await call(b.run_id, `exec/${broken.exec}/stdin-close`)).status === 404, "the broken program let go");
+  // A program whose exit cannot be read (the provider lost it) is let go once that failure is answered and its output
+  // replies ended.
+  vm.failWait = true;
+  const lost = await (await call(b.run_id, `sandbox/${boxOf(b.run_id)}/exec`, { command: ["true"] })).json();
+  vm.failWait = false;
+  assert.equal(await (await call(b.run_id, `exec/${lost.exec}/stdout`)).text(), "");
+  assert.equal(await (await call(b.run_id, `exec/${lost.exec}/stderr`)).text(), "");
+  assert.equal((await call(b.run_id, `exec/${lost.exec}/wait`)).status, 502, "the exit's failure is answered");
+  await until(async () => (await call(b.run_id, `exec/${lost.exec}/stdin-close`)).status === 404, "the lost program let go");
   // A reader that goes away lets its program go: what it held is dropped, and the program is no longer the run's to ask.
   const started = await call(b.run_id, `sandbox/${boxOf(b.run_id)}/exec`, { command: ["yes"] });
   assert.equal(started.status, 200);

@@ -20,7 +20,12 @@ const MAX_EXECS_PER_RUN = 64;
 /** How many bytes of a program's output stream the relay holds before it stops reading the stream, until the run's
  *  process reads them. */
 const MAX_BUFFERED_BYTES = 16 * 2 ** 20;
-/** How long a program the run's process stopped asking about is held, once it exited. */
+/** How long a program the run's process stopped asking about is held, once it exited. A program is let go:
+ *  - once its exit was read (or failed to be) and both its output replies ended, whole or broken (settle);
+ *  - at once when a caller goes away mid-read (the reply's close);
+ *  - at the run's end (drop), whatever it is doing;
+ *  - else EXEC_KEEP_MS after its exit: an exit or an output not read yet is still the caller's to read.
+ *  A program still running holds its slot until it exits or the run ends. */
 const EXEC_KEEP_MS = 10 * 60_000;
 /** The most sandboxes the relay remembers the run of; past it, it asks the provider again. */
 const KNOWN_MAX = 1024;
@@ -209,7 +214,17 @@ export function vmRelay(sdk: VmSdk): { handle(runId: string, path: string, req: 
           await held.process.stdin.close();
           return answer(res, 200, {});
         case "wait": {
-          const code = await held.process.wait();
+          // The exit is read whether the provider gives it or fails to: either way the caller has its answer, and the
+          // program goes once its streams' replies have ended.
+          let code: number;
+          try {
+            code = await held.process.wait();
+          } catch (error) {
+            held.waited = true;
+            held.exited ??= -1;
+            failed(res, error);
+            return settle(id);
+          }
           held.waited = true;
           answer(res, 200, { code });
           return settle(id);
