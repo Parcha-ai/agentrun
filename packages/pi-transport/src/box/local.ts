@@ -399,6 +399,17 @@ function groupOf(pid: number): number | undefined {
 	}
 }
 
+/** Every process group and its members, from one pass over `/proc`. */
+function groupsNow(): Map<number, number[]> {
+	const groups = new Map<number, number[]>();
+	for (const name of readdirSync("/proc")) {
+		if (!/^\d+$/.test(name)) continue;
+		const group = groupOf(Number(name));
+		if (group !== undefined) groups.set(group, [...(groups.get(group) ?? []), Number(name)]);
+	}
+	return groups;
+}
+
 /** This process's own group, which a box's end never kills: every program a box starts runs in a group of its own. */
 const OWN_GROUP = HAS_PROC ? groupOf(process.pid) : undefined;
 
@@ -426,14 +437,17 @@ function endPrograms(directory: string, id: string): number[] {
 	}
 	for (let round = 0; round < KILL_ROUNDS; round += 1) {
 		const { programs, watchdogs } = processesOf(real, id);
-		for (const pid of [...watchdogs, ...programs]) {
-			// A program's group goes with it: a member that cleared its environment and works elsewhere is found by it alone,
-			// and once the program is killed the group has no other way back to the box.
-			const group = groupOf(pid);
-			if (programs.includes(pid) && group !== undefined && group !== OWN_GROUP) {
-				ended.push(...groupMembers(group));
+		// A program's group goes with it: a member that cleared its environment and works elsewhere is found by it alone,
+		// and once the program is killed the group has no other way back to the box. Each group is read and ended once.
+		const groups = new Set(programs.map(groupOf).filter((group) => group !== undefined && group !== OWN_GROUP));
+		if (groups.size > 0) {
+			const members = groupsNow();
+			for (const group of groups) {
+				ended.push(...(members.get(group as number) ?? []));
 				killGroup(group);
 			}
+		}
+		for (const pid of [...watchdogs, ...programs]) {
 			try {
 				process.kill(pid, "SIGKILL");
 				ended.push(pid);
