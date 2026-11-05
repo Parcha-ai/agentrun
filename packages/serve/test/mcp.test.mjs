@@ -195,6 +195,13 @@ test("agents_create and agents_revise pass any other definition field through to
   const unplaced = await mcp.tool("agents_revise", { agent_id: "placed", definition: { place: null } }, { ok: false });
   assert.deepEqual([unplaced.structuredContent.error.code, unplaced.structuredContent.error.fields[0].field], ["input_invalid", "definition.place"]);
   assert.deepEqual((await v2(server, "GET", "/agents/placed")).body.definition.place, { mode: "sandbox", box: "bwrap" }, "a refused revise changes nothing");
+  // A default cap: set through definition, kept by a revise that leaves it out, refused as null (only 0 clears it), and
+  // cleared by 0.
+  assert.equal((await mcp.tool("agents_revise", { agent_id: "placed", definition: { max_cost_usd: 0.5 } })).structuredContent.definition.max_cost_usd, 0.5);
+  assert.equal((await mcp.tool("agents_revise", { agent_id: "placed", instructions: "Answer, capped." })).structuredContent.definition.max_cost_usd, 0.5, "kept");
+  const nullCap = await mcp.tool("agents_revise", { agent_id: "placed", definition: { max_cost_usd: null } }, { ok: false });
+  assert.deepEqual([nullCap.structuredContent.error.code, nullCap.structuredContent.error.fields.map((f) => f.field)], ["input_invalid", ["definition.max_cost_usd"]]);
+  assert.equal((await mcp.tool("agents_revise", { agent_id: "placed", definition: { max_cost_usd: 0 } })).structuredContent.definition.max_cost_usd, undefined, "cleared by 0");
   const wrong = await mcp.tool("agents_revise", { agent_id: "placed", definition: "sandbox" }, { ok: false });
   assert.deepEqual([wrong.structuredContent.error.code, wrong.structuredContent.error.fields[0].field], ["input_invalid", "definition"]);
   // The tools say so.

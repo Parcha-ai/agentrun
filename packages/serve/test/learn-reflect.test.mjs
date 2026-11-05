@@ -167,6 +167,24 @@ test("a follow-up sent as the run settles changes nothing that is checked: the t
   assert.deepEqual(git(repo, ["ls-tree", "--name-only", "main"]).split("\n"), ["MEMORY.md", "check-units.md"], "nothing of the follow-up's");
 });
 
+test("an end-of-run turn's origin written after a person's follow-up came does not carry to the follow-up's turn: under ask, its write in .learning/ parks for approval", { timeout: 150_000 }, async (t) => {
+  // The end-of-run turn's origin is written as the turn is asked (runs.ts toLiveDoor). A follow-up that came before that
+  // write waits for the run's end, then opens it again: the write lands here as it opens (beforeReopen), after the
+  // message came and before its turn is sent, the window a late write lands in.
+  learningTestHooks.beforeReopen = (runDir) => writeFile(join(runDir, "turn-origin.json"), `${JSON.stringify({ origin: "reflect" })}\n`);
+  t.after(() => (learningTestHooks.beforeReopen = undefined));
+  const { api, data } = await serve(t, { learning: "on", faux: LEARN, accounts: true, openSetup: true });
+  await made(api, learner("asked", { plan: PLAN, tools: ["write"], tool_settings: { write: { permission: "ask" } } }));
+  const runId = await started(api, "asked");
+  await follow(api, runId, ["completed"], { deadlineMs: 90_000 });
+  const sent = await api("POST", `/runs/${runId}/messages`, { content: `Write: ${JSON.stringify([["extra.md", note("Extra", "A note the follow-up wrote")]])}` });
+  assert.equal(sent.status, 202, JSON.stringify(sent.body));
+  await follow(api, runId, ["input_required", "completed"], { deadlineMs: 90_000 });
+  const view = (await api("GET", `/runs/${runId}`)).body;
+  assert.deepEqual([view.status, view.pending?.kind, view.pending?.tool], ["input_required", "approval", "write"], "a person's write in .learning/ asks");
+  assert.ok(!existsSync(join(copyOf(data, runId), "extra.md")), "and is not written");
+});
+
 test("what the user asks the agent to remember during the task survives: the job writes it to .learning/notes.txt and says it saved it, and the end-of-run turn, which reads the whole conversation, answers it as a note that merges; a file the job scribbled in .learning/ is never read", { timeout: 120_000 }, async (t) => {
   const { api, data } = await serve(t, { learning: "on", faux: LEARN });
   await made(api, learner("keeper", { tools: ["write"], instructions: `Answer the question.\nScribble: ${JSON.stringify([["draft.md", note("Draft", "A note the job wrote mid-task")]])}` }));

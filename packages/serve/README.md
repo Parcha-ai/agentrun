@@ -700,8 +700,10 @@ where none is set; `PUT /settings/tools` takes the same map and replaces it (a c
 default). An agent's `definition.tool_settings` has the same shape and is over the server's. A provider is one offered
 for its capability (`auto`, `native`, `exa-keyless` or `parallel` for `web_search`; `kernel` or `parallel` for `web_fetch`;
 `auto`, `browserbase`, `kernel` or `chrome` for `browser`, [below](#tools)); an
-unknown capability or provider is `422`, and so is a `permission` (`reason: not_yet`): permissions arrive with the tool
-gate, and capabilities say `features.tool_permissions: false` until then. The settings are kept in the data directory
+unknown capability or provider is `422`. Any tool's settings also take a `permission`, `allow`, `ask` or `deny`, which the
+tool gate holds every call to (an ask parks the run for the owner's approval); a workflow's call node, which cannot wait
+for an approval, refuses its run when its tool is set to ask or deny (`409`, `details.asks` or `details.denied`). The
+settings are kept in the data directory
 (`tool-settings.json`, 0600, written whole and durably), not a secret, and read by every run launched from then on.
 `GET /capabilities` is the one tool catalog: each of the three tools there gives the providers offered (`providers`), the
 server's (`provider`, its default where it sets none), the built-in default (`default_provider`) and `resolves`, what it
@@ -720,6 +722,10 @@ in the run's `serve.json` for the run's life (a later `PUT` changes the next run
 Parallel key gone since makes Parallel unavailable, never another provider), and hands its process the outcome as a
 description with no secret in it (`AGENTRUN_SERVE_TOOL_PLANE`); the run reads its providers there, never from a request.
 A workflow's tools are those its revision lists and those its model and call nodes name.
+
+Upgrading to the tool gate: a workflow whose call node's tool is set to ask, by a setting or a default, now refuses its
+run (`409` with `details.asks`); set that tool to allow for the agent (`definition.tool_settings`). Built-in tools are
+allowed by default; catalog (`monid.*`) and MCP tools, which ask by default, are no call node's tools here.
 
 Upgrading: a server holding `PARALLEL_API_KEY` used to read every `web_fetch` page through Parallel's extract on its own.
 Now `web_fetch` is the guarded direct fetch unless Parallel is picked; to keep the old behaviour, set
@@ -1099,8 +1105,10 @@ A schedule starts an agent's runs with no one there. `POST /v2/triggers` with a 
 A source is a cron line of five fields in an IANA zone (default UTC), `{at}` for one time (the trigger turns itself off
 after it fires), or `{every_s, start_at?}` for every N seconds, from 60 to a year and a day, on the grid from `start_at`. A time a clock
 change repeats fires once, at its first pass; one it skips fires at the first time after the gap. Each next time is
-reckoned from the last nominal one, so a timer that wakes late does not drift. `max_cost_usd` is required: every run a
-trigger starts is capped, and a workflow agent is refused, since a workflow run's spend is not capped here. Each run's
+reckoned from the last nominal one, so a timer that wakes late does not drift. Every run a trigger starts is capped: by
+the target's `max_cost_usd`, else by the agent's default (its definition's `max_cost_usd`) as it stands when the firing
+starts. A target with neither is `422`, and a firing that finds neither (the default removed since) fails, so no trigger
+starts an uncapped run. A workflow agent is refused, since a workflow run's spend is not capped here. Each run's
 input ends with a line naming the schedule and the time it fired for, in its zone, and the run's `trigger` names the
 trigger and the firing, in the run's view and in the runs lists (`GET /v2/runs`, `GET /v2/agents/{id}/runs`) alike;
 a run a caller started has `trigger: null`.
@@ -1135,7 +1143,7 @@ firing has left the history too, and later it is a new firing that a run the key
 | `GET /health` | Without a credential: whether the store reads and the disk has room ([capacity and health](#capacity-and-health)). |
 | `GET /openapi.json` | Without a credential: this API as an OpenAPI 3.1 document, the `agentrun.v2/0` contract (vendored in `src/openapi/`, its source in `info`) with this server's own routes marked `x-agentrun-serve` the operations it answers `501` marked `x-agentrun-serve-unsupported`, and a contract operation that takes more than the contract gives marked `x-agentrun-serve-changed` with each change named; `links.openapi` in capabilities points at it. |
 | `GET /capabilities` | Without a credential. `backend: local`, every feature flag present and true only when it works; `tools`, the tools an agentic revision may name; `workflows`, what a workflow revision's model nodes get and, in `workflows.decisions.providers`, the decision providers its typed questions run on; `models`, where models come from and the model of each tier. |
-| `POST /agents`, `GET /agents`, `GET /agents/{id}` | `POST` takes `{definition, skills?, note?}` and makes the agent with its first revision, current. A definition has `instructions` (an agentic revision) or `workflow` (a workflow revision, checked by the DSL first), and `name`, `description`, `model` and `thinking` (agentic only), `harness` ([harnesses](#harnesses)), `place` ([place](#place)), `tools`, `tool_settings` ([search and fetch](#search-and-fetch)), `skills` (names; each `<name>/SKILL.md` is in `skills`) and `version`, which is the number the revision gets. A field the store does not keep (`input_schema`, `output_schema`, `max_cost_usd`) is `422 input_invalid` by name, and so is a definition that can never run here; one this host cannot run yet saves with `warnings` ([models](#models)). The ETag (`home_etag`) is the current revision's id. `GET /agents/{id}` adds `tools`, the tools its current revision grants with each one's provider ([search and fetch](#search-and-fetch)). |
+| `POST /agents`, `GET /agents`, `GET /agents/{id}` | `POST` takes `{definition, skills?, note?}` and makes the agent with its first revision, current. A definition has `instructions` (an agentic revision) or `workflow` (a workflow revision, checked by the DSL first), and `name`, `description`, `model` and `thinking` (agentic only), `harness` ([harnesses](#harnesses)), `place` ([place](#place)), `tools`, `tool_settings` ([search and fetch](#search-and-fetch)), `skills` (names; each `<name>/SKILL.md` is in `skills`) and `version`, which is the number the revision gets, and `max_cost_usd` (agentic only), the agent's default cap, kept by an edit that leaves it out and cleared only by 0 ([spend cap](#spend-cap)). A field the store does not keep (`input_schema`, `output_schema`) is `422 input_invalid` by name, and so is a definition that can never run here; one this host cannot run yet saves with `warnings` ([models](#models)). The ETag (`home_etag`) is the current revision's id. `GET /agents/{id}` adds `tools`, the tools its current revision grants with each one's provider ([search and fetch](#search-and-fetch)). |
 | `PUT /agents/{id}/definition` | The same body, checked [the same way](#models): a new revision, its parent the current one, made current. Without `skills` the current revision's skill files carry over. A definition that is the current revision already writes nothing, so a PUT sent twice makes one revision. An agent's id, name and description stay those it was made with. `If-Match` that is not the current ETag is `412 precondition_failed`; the store compares it again inside the commit, so of two edits that read the same revision exactly one lands. The contract's body is taken too: the definition itself, with `If-Match` required (`412` without it) and `definition.version` greater than the current one (`422`). Any such version is taken, and always makes a new revision, the same definition included; the revision is numbered as this server numbers them, the next, and the answer says which; the route reads a body holding `definition` as this one, any other as the contract's. |
 | `GET /agents/{id}/revisions` | The agent's revisions, newest first: `revision`, `version`, `parent`, `kind`, `current`, `note`, `created_at` and the `definition`. |
 | `POST /agents/{id}/current` | `{revision}`: one of the agent's revisions becomes current again. |
@@ -1744,7 +1752,11 @@ log shows `by: {user: true, via: "console"}` at the commit's time, never the not
 
 ## Spend cap
 
-An agentic run may name `max_cost_usd` (a workflow run may not: `422`). The cap is checked in the run's own process
+An agentic run may name `max_cost_usd` (a workflow run may not: `422`). A run that names none takes its agent's default,
+the `max_cost_usd` of the revision it runs, kept with the revision; a run's own cap wins, since its caller chose it. A
+definition's `max_cost_usd` above 0 sets that default, and 0 clears it (no default); anything else is `422`. An edit that
+leaves the field out keeps the agent's default, as it keeps its harness and place: leaving a field out never removes a
+spend limit. A workflow definition keeps none: above 0 is `422 not_allowed`, and 0 changes nothing. The cap is checked in the run's own process
 before each model request, the agent's and a compaction's alike, on every harness: what the run has spent so far, plus
 the worst case of each request still in flight, plus this request's worst case must stay within it, or the request is
 not sent and the run pauses ([below](#a-run-paused-at-its-cap)). A request's worst case is its input bound at the higher of

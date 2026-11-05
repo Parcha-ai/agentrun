@@ -18,7 +18,7 @@ import { RUN_RESUMED } from "@parcha/pi-durable-agent/timeline";
 import { settleIn } from "./paid-calls.js";
 import type { AppContext, AppOptions, BeforeResume, DurableRun } from "@parcha/pi-durable-disk";
 import { capBefore, capModels, capOf, spentIn } from "./cap.js";
-import { codingSource } from "./coding-tools.js";
+import { codingSource, writesHere } from "./coding-tools.js";
 import { cancelledIn, markRequests } from "./request-start.js";
 import { decisionProvidersOf } from "./decisions.js";
 import { FOLLOW_UP_OPEN_ENV, readJson, RUN_META } from "./files.js";
@@ -39,6 +39,7 @@ import { EnvironmentLine, environmentLine } from "./environment.js";
 import { effortGuidance } from "./effort-guidance.js";
 import { isObject } from "./validate.js";
 import { mirrorWrites } from "./workspace.js";
+import { deniedText, runGate } from "./tool-gate.js";
 
 /** The workflow adapters this host gives every run: model nodes, and calls `via: "tool"` to the table's tools. Typed
  *  questions (`runJudge`) run too where the host sets a decision provider's key (decisions.ts). */
@@ -124,6 +125,11 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   // What the run's host tools file in work/ is copied into a remote box too, which does not share this machine's work/.
   if (box?.mirror) mirrorWrites(where.work, box.mirror);
   const coding = codingSource(place, box);
+  // Every tool call the run's model makes passes the run's tool gate (tool-gate.ts): pi's tools wrapped by name where the
+  // registry composes each agent's, another harness's host tools in their call. An approved call runs on this coding
+  // source, as the run's own would.
+  // Its reflect carve-out holds only where the file tools write this machine's work/ (coding-tools.ts writesHere).
+  const toolGate = runGate({ ...where, learningAt: () => writesHere(place, box) }, run.id, revision);
   const registry = createRegistry();
   // An agentic run's system prompt starts with the date and the workspace (environment.ts). On pi it is a section,
   // installed first so it comes before every other extension's and the instructions.
@@ -161,7 +167,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     // The cancel mark serve writes is read here too, as pi's model wrapper reads it (request-start.ts).
     // The run's stop record (serve.json, as serve saved it before a stop's abort): a turn it names is not resumed.
     const stopRecord = { ...(typeof meta?.stopped_at === "string" ? { stopped_at: meta.stopped_at } : {}), ...(typeof meta?.stopped_after === "number" ? { stopped_after: meta.stopped_after } : {}) };
-    const { door, onOpen } = adapterRun(make, harness, spec, BACKGROUND, cap, named, dir, guard, cancelledIn(where.root), where.work, coding.tools, stopRecord);
+    const { door, onOpen } = adapterRun(make, harness, spec, BACKGROUND, cap, named, dir, guard, cancelledIn(where.root), where.work, coding.tools, stopRecord, toolGate);
     // A paid host tool's settle goes to the run's root, as on pi (paid-calls.ts settleIn).
     return { models: {}, registry: createRegistry(), door, onOpen: async (durable: DurableRun) => (settleIn(rootRecordOf(durable.harness)), onOpen(durable)), beforeResume: markResumed } as unknown as AppOptions;
   }
@@ -198,9 +204,17 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   };
   if (revision.kind === "agentic") {
     const tools = (await Promise.all(revision.body.tools.map((name) => bind(name)))).flatMap((binding) => binding.tools);
+    registry.install(toolGate.extension(tools));
     // Each skill named with its file when the run reads its files (it reads the SKILL.md when it fits), else whole.
     const instructions = [await promptOf(learned.instructions, learned.skills, where.work, { onDemand: readsFiles(revision.body.tools) }), guidance].filter(Boolean).join("\n\n");
-    return { models, registry, ...hooks, ...(stops.length ? { wake } : {}), root: { agent: { model, thinkingLevel, instructions, tools } }, onOpen: async (durable: DurableRun) => (settleIn(rootRecordOf(durable.harness)), marked.open(durable)) } as unknown as AppOptions;
+    // The calls that wait for a person's approval are read as the run opens, and their answers acted on from then.
+    const onOpen = async (durable: DurableRun) => {
+      settleIn(rootRecordOf(durable.harness));
+      marked.open(durable);
+      await toolGate.load(durable, BACKGROUND, coding.tools);
+      toolGate.start();
+    };
+    return { models, registry, ...hooks, ...(stops.length ? { wake } : {}), root: { agent: { model, thinkingLevel, instructions, tools } }, onOpen } as unknown as AppOptions;
   }
   const input = isObject(meta?.input) ? meta.input : {};
   const [{ BACKGROUND_CONTEXT }, { createWorkflowExtension, decisionRecovery, durableDecisions, nodeRunner, taskScope }, { EffectFailure, inspectWorkflow, judgeFromProviders }, { withRecovery, workspaceFiles }, { startWorkflowRevision }, decisionProviders] = await Promise.all([
@@ -214,6 +228,11 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   ]);
   const nodeTools = new Map<string, ToolBinding>();
   for (const name of workflowTools(workflowNodeList).nodes) nodeTools.set(name, await bind(name, true));
+  // A model node's tools pass the gate too; one set to ask is refused there, as no node can wait for a person. A call
+  // node is the author's own step, which cannot wait for an approval: runnable.ts refuses a run whose call node calls a tool
+  // set to deny or ask, and a tool set to either since is refused as its call node runs (runEffect).
+  const gatedTools = toolGate.extension([...nodeTools.values()].flatMap((binding) => binding.tools));
+  registry.install(gatedTools);
   // A decision node's images are files of the run's work directory (pdf_pages draws them there).
   const loadImage = imageLoader(where.work);
   const log = nodeLog(where.root);
@@ -239,6 +258,12 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     const at = { path: executionPath ?? null, item: item?.index ?? null, tool: node.tool!, label: node.label };
     log({ t: "effect.start", ...at, input, at: new Date().toISOString() });
     try {
+      // Its tool's permission now, the gate's one rule read as each call node runs (tool-gate.ts policy): a tool set to
+      // deny since the run started is refused in the gate's words, and one set to ask too, since a call node cannot wait
+      // for an approval. Neither runs.
+      const permission = toolGate.policy(node.tool!);
+      if (permission === "deny") throw new Error(deniedText(node.tool!));
+      if (permission === "ask") throw new Error(`This ${node.tool} call needs a person's approval, which a workflow's call node cannot wait for; it was not run.`);
       const durable = opened;
       const ledger = durable ? { call: `${node.label}@${executionPath ?? ""}${item ? `#${item.index}` : ""}`, record: rootRecordOf(durable.harness) } : undefined;
       const output = await effect(input, { signal, env, work: where.work, complete, ...(ledger ? { ledger } : {}) });
@@ -265,7 +290,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   /** A model node's agent: its tier's model, the tools it names, and the extensions they come from. */
   const nodeAgent = (node: { tier?: string; tools?: string[] }) => {
     const bindings = (node.tools ?? []).flatMap((name) => nodeTools.get(name) ?? []);
-    return { model: byTier.get((node.tier as Tier | undefined) ?? "default")!, thinkingLevel, extensions: [...new Set([coding.extension, ...bindings.flatMap((b) => b.extensions)])], tools: bindings.flatMap((b) => b.tools) };
+    return { model: byTier.get((node.tier as Tier | undefined) ?? "default")!, thinkingLevel, extensions: [...new Set([coding.extension, ...bindings.flatMap((b) => b.extensions), gatedTools])], tools: bindings.flatMap((b) => b.tools) };
   };
   const nodes = nodeRunner({ agent: (node) => nodeAgent(node) as never });
   /** The node log's starts and ends, from the workflow's events: what a graph shows of a node's timing. */

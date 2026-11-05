@@ -156,7 +156,7 @@ test("reset-password clears the password and ends every session; the next visit 
   assert.equal((await call(server.port, { method: "POST", path: "/v2/auth/reset-password", headers: page(server), body: {} })).status, 404, "never an HTTP route");
 });
 
-test("every route, called with no credential, is a 401 but capabilities, the contract and health; the owner's session and the token are let into every one but the MCP endpoint, which takes the token only, and approving a note, which takes the session only", async (t) => {
+test("every route, called with no credential, is a 401 but capabilities, the contract and health; the owner's session and the token are let into every one but the MCP endpoint, which takes the token only, and approving a note or answering a tool call's approval, which take the session only", async (t) => {
   const server = await owned(t);
   for (const route of ROUTES) {
     const path = `/v2${route.pattern.source.replace(/^\^\\\//, "/").replace(/\$$/, "").replace(/\(\[\^\/\]\+\)/g, "x").replace(/\\\//g, "/").replace(/\\\./g, ".")}`;
@@ -170,8 +170,9 @@ test("every route, called with no credential, is a 401 but capabilities, the con
     for (const headers of [{ ...(writes ? page(server) : {}), cookie: server.cookie }, { ...(body ? json : {}), authorization: `Bearer ${server.token}` }]) {
       const res = await call(server.port, { method: route.method, path, headers, body });
       if (route.name === "callMcp" && headers.cookie) assert.equal(res.status, 401, `${route.method} ${path} with the session alone: ${res.status} ${res.text}`);
-      // Approving a note takes the owner's session alone: a token, whoever holds it, is 403 (learn-pending.test.mjs).
-      else if (route.name === "approveLearningFile" && !headers.cookie) assert.equal(res.status, 403, `${route.method} ${path} with the token: ${res.status} ${res.text}`);
+      // Approving a note and answering a tool call's approval take the owner's session alone: a token, whoever holds it,
+      // is 403 (learn-pending.test.mjs, tool-gate.test.mjs).
+      else if ((route.name === "approveLearningFile" || route.name === "answerApproval") && !headers.cookie) assert.equal(res.status, 403, `${route.method} ${path} with the token: ${res.status} ${res.text}`);
       else assert.ok(![401, 403].includes(res.status), `${route.method} ${path} with ${headers.cookie ? "the session" : "the token"}: ${res.status} ${res.text}`);
     }
   }

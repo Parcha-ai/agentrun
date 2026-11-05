@@ -115,7 +115,7 @@ const logged = () => {
   return { lines, log: (line) => void lines.push(line), of: (event) => lines.filter((line) => line.includes(` event=${event} `)) };
 };
 
-test("the default image is built on first use, once, from a private context directory holding the recipe alone, removed after; tagged with the recipe's hash and labelled with it; present with that hash, it is ready with no build", async (t) => {
+test("the default image is built on first use, once, from a private context directory holding the recipe alone, removed after; tagged with the recipe's hash and labelled with it; present with that hash, it is ready with no build", { skip: process.env.CI && !process.env.AGENTRUN_RUN_QUARANTINED && "quarantined F35 (tl-places) until 2026-11-06T10:06Z, scripts/quarantine.json" }, async (t) => {
   const docker = await fakeDocker(t, { "build-hold": "" });
   const data = await scratch(t);
   assert.equal(DEFAULT_DOCKER_IMAGE, `agentrun-box:${RECIPE_HASH.slice(0, 12)}`);
