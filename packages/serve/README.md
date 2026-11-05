@@ -1053,8 +1053,10 @@ then the body, cut at 16 KiB, inside `<trigger-payload source="webhook" untruste
 sender wrote is data, not an instruction.
 
 A trigger's target may also be `{kind: "message_run", run_id, input: {content}}`, with a webhook or a schedule source:
-each firing sends its input to that run as `POST /v2/runs/{id}/messages` would (a steer, an answer, or a follow-up that
-opens a completed run again), under its own cap. The firing's key is the message's id in the run's store, which takes
+each firing sends its input to that run as `POST /v2/runs/{id}/messages` would (a steer, or a follow-up that opens a
+completed run again), under its own cap. The run must have a cap (`422` on `target.run_id` otherwise, and a firing to a
+run that has none fails), and a firing never answers a run that waits on its person (a question, an approval, its
+cap): it is `skipped`, "The run is waiting on a person.", and the run still waits. The firing's key is the message's id in the run's store, which takes
 one message per id; a firing driven again after a restart first looks for it there, so it sends the message once and
 never opens a completed run again for one it already has.
 

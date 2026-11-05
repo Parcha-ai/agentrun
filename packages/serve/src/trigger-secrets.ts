@@ -114,20 +114,35 @@ export const HOOK_TOLERANCE_S = 300;
 const HOOK_ID = /^[\x21-\x7e]{1,255}$/;
 /** The longest `webhook-signature` list read: room for many keys during a rotation, never an unbounded loop. */
 const MAX_SIGNATURES_CHARS = 2048;
+/** The fewest bytes a signing key may have (the spec's secrets are 24 to 64; this server makes 32): a shorter one,
+ *  an empty one above all, signs nothing. */
+const MIN_KEY_BYTES = 24;
+
+/** Why a request's webhook headers are refused before its body is read, or undefined when they may be checked:
+ *  present, a webhook-id of printable ASCII, a bounded signature list, a timestamp within HOOK_TOLERANCE_S. */
+export function hookHeadersRefusal(headers: Record<string, string | string[] | undefined>, nowMs: number): string | undefined {
+  const [id, timestamp, signatures] = ["webhook-id", "webhook-timestamp", "webhook-signature"].map((name) => headers[name]);
+  if (typeof id !== "string" || typeof timestamp !== "string" || typeof signatures !== "string") return "missing_headers";
+  if (!HOOK_ID.test(id) || signatures.length > MAX_SIGNATURES_CHARS) return "malformed_headers";
+  if (!/^\d{1,12}$/.test(timestamp) || Math.abs(nowMs / 1000 - Number(timestamp)) > HOOK_TOLERANCE_S) return "stale_timestamp";
+  return undefined;
+}
 
 /** Why a request to /v2/hooks/{id} is not signed by `secret` under the Standard Webhooks spec, or undefined when it is:
  *  `webhook-signature` lists `v1,<base64 HMAC-SHA256 of "{webhook-id}.{webhook-timestamp}.{body}">` signatures, space
  *  separated, under the secret's bytes, and any one that matches passes; the timestamp is within HOOK_TOLERANCE_S. */
 export function hookRefusal(secret: string, headers: Record<string, string | string[] | undefined>, body: Buffer, nowMs: number): string | undefined {
-  const [id, timestamp, signatures] = ["webhook-id", "webhook-timestamp", "webhook-signature"].map((name) => headers[name]);
-  if (typeof id !== "string" || typeof timestamp !== "string" || typeof signatures !== "string") return "missing_headers";
-  if (!HOOK_ID.test(id) || signatures.length > MAX_SIGNATURES_CHARS) return "malformed_headers";
-  if (!/^\d{1,12}$/.test(timestamp) || Math.abs(nowMs / 1000 - Number(timestamp)) > HOOK_TOLERANCE_S) return "stale_timestamp";
-  const expected = createHmac("sha256", Buffer.from(secret.slice("whsec_".length), "base64")).update(`${id}.${timestamp}.`).update(body).digest();
-  const matched = signatures.split(" ").some((part) => {
+  const early = hookHeadersRefusal(headers, nowMs);
+  if (early) return early;
+  const [id, timestamp, signatures] = ["webhook-id", "webhook-timestamp", "webhook-signature"].map((name) => headers[name] as string);
+  const key = Buffer.from(secret.slice("whsec_".length), "base64");
+  const expected = createHmac("sha256", key).update(`${id}.${timestamp}.`).update(body).digest();
+  // Compared all the same, so a short key costs what a good one does; it fails after.
+  const matched = signatures!.split(" ").some((part) => {
     const [version, signature] = part.split(",");
     const given = Buffer.from(signature ?? "", "base64");
     return version === "v1" && given.length === expected.length && timingSafeEqual(given, expected);
   });
+  if (key.length < MIN_KEY_BYTES) return "short_key";
   return matched ? undefined : "bad_signature";
 }

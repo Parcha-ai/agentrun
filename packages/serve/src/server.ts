@@ -37,7 +37,7 @@ import { BOX_ALLOW_ENV, boxAllowOf, boxLimitsOf, boxNetworkOf, FAUX_BOX_ENV, fau
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
 import { answerPage, byOwnerSession, isJson, ownerCookie, ownOrigin, signedIn } from "./page.js";
 import { durationMs, logLine } from "./print.js";
-import { type CarryBackRetry, type Run, Runs, STATUSES, type Status, statusOf, toolCostOf } from "./runs.js";
+import { type CarryBackRetry, type Run, Runs, STATUSES, type Status, statusOf, toolCostOf, WAITS_ON_A_PERSON } from "./runs.js";
 import { BOX_QUARANTINE, type BoxHost, Quarantine } from "./box/sweep.js";
 import { type BoxOffer, boxesLog, boxRegistry, daytonaApi, enabledBoxes } from "./boxes.js";
 import { type DockerNetwork, FAUX_EGRESS_ENV, sweepEgressDirs } from "./box-egress.js";
@@ -53,7 +53,7 @@ import { outcomes } from "./usage.js";
 import { keyOf, SEAL_KEY_ENV, sealKeyOf, TOOL_FIELDS, ToolKeys } from "./tool-keys.js";
 import { MCP_AUTH_TYPES, McpServers } from "./mcp-servers.js";
 import { WEBHOOK_EVENTS, Webhooks } from "./webhooks.js";
-import { HOOK_TOLERANCE_S, hookRefusal, TriggerSecrets } from "./trigger-secrets.js";
+import { HOOK_TOLERANCE_S, hookHeadersRefusal, hookRefusal, TriggerSecrets } from "./trigger-secrets.js";
 import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, OVERLAP, PAYLOAD_KEPT_BYTES, type RunTrigger, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, ID, IDEMPOTENCY_TTL_S, inputIssues, isObject, type Json, stable, unknownFields } from "./validate.js";
 import { agentTools, settingsIssues, ToolSettings, type ToolSettingsMap, withDefaults } from "./tool-plane.js";
@@ -259,6 +259,8 @@ async function tokenIn(file: string): Promise<{ token: string; made: boolean }> 
 }
 
 const digest = (text: string) => createHash("sha256").update(text).digest();
+/** Why a trigger never messages a run: it has no spend cap, and every turn a trigger drives is capped. */
+const NO_CAP = "The run has no spend cap: a trigger only messages a run with one, as every turn it drives is capped.";
 /** What an unknown trigger's request is checked against, so it is refused in a known trigger's time. */
 const NO_TRIGGER_SECRET = `whsec_${randomBytes(32).toString("base64")}`;
 const sha256Hex = (text: string) => createHash("sha256").update(text).digest("hex");
@@ -813,7 +815,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       if (target.kind === "message_run") {
         const run = await runs.get(target.run_id);
         if (!run) return [{ field: "target.run_id", reason: "not_found", message: `no run ${target.run_id}` }];
-        return run.kind === "workflow" ? [{ field: "target.run_id", reason: "not_allowed", message: "A workflow run takes no messages here." }] : [];
+        if (run.kind === "workflow") return [{ field: "target.run_id", reason: "not_allowed", message: "A workflow run takes no messages here." }];
+        return run.meta.max_cost_usd === undefined ? [{ field: "target.run_id", reason: "not_allowed", message: NO_CAP }] : [];
       }
       const entry = await agents.get(target.agent_id);
       if (!entry) return [{ field: "target.agent_id", reason: "not_found", message: `no agent ${target.agent_id}` }];
@@ -831,7 +834,17 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       if (run.kind === "workflow") throw unsupported("messages.steer_workflow_runs", "A workflow run takes no messages here.");
       // A store held past its retries is a busy store: the firing stays due and is tried again, never failed.
       if (await runs.tookMessage(run, key).catch((error: unknown) => { throw storeBusy(error) ? homeBusy() : error; })) return;
-      await runs.message(run, String(input.content), key);
+      // Never an uncapped turn, nor an answer to a person's question, an approval or a budget pause: a run that waits on
+      // its person is told nothing by a trigger.
+      if (run.meta.max_cost_usd === undefined) throw new ApiError("not_continuable", NO_CAP);
+      const { status, state } = statusOf(run);
+      if (status === "input_required" && state === "waiting") return { skipped: WAITS_ON_A_PERSON };
+      try {
+        await runs.message(run, String(input.content), key, { answers: false });
+      } catch (error) {
+        if (error instanceof ApiError && error.message === WAITS_ON_A_PERSON) return { skipped: WAITS_ON_A_PERSON };
+        throw error;
+      }
     },
     secrets: { mint: (id) => triggerSecrets!.mint(id), remove: (id) => triggerSecrets!.remove(id) },
     notify: (failed, key) => webhooks.emitTrigger(failed, key),
@@ -951,6 +964,13 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
    *  webhook's, and a check that fails are one answer, so no trigger id can be found by asking; an unknown one is
    *  checked against a secret of no trigger's, so it takes the same time. A webhook-id already fired answers its firing. */
   async function hook(req: IncomingMessage, res: ServerResponse, path: string): Promise<void> {
+    const refuse = (reason: string) => {
+      authFailed(`/v2${path}`, reason);
+      return new ApiError("unauthenticated", "this route needs a request signed by the webhook trigger's secret");
+    };
+    // Headers that can never pass are refused before a byte of the body is read; they say nothing of the trigger.
+    const early = hookHeadersRefusal(req.headers, Date.now());
+    if (early) throw refuse(early);
     const body = await bytesOf(req, HOOK_MAX_BODY);
     let id = "";
     try {
@@ -958,10 +978,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     } catch {}
     const secret = ID.test(id) && triggers.hookable(id) ? triggerSecrets!.value(id) : undefined;
     const refusal = hookRefusal(secret ?? NO_TRIGGER_SECRET, req.headers, body, Date.now());
-    if (!secret || refusal) {
-      authFailed(`/v2${path}`, secret ? refusal! : "no_webhook_trigger");
-      throw new ApiError("unauthenticated", "this route needs a request signed by the webhook trigger's secret");
-    }
+    if (!secret || refusal) throw refuse(secret ? refusal! : "no_webhook_trigger");
     const { created, firing } = triggers.receive(id, String(req.headers["webhook-id"]), body.toString("utf8"));
     return send(res, created ? 202 : 200, firing, created ? {} : { "idempotent-replayed": "true" });
   }
@@ -1813,13 +1830,17 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         return send(res, 200, triggers.list());
       case "createTrigger": {
         const body = await bodyOf(req);
-        const create = async () => {
-          const made = await triggers.create(body);
-          return { status: 201, body: made, headers: { location: `/v2/triggers/${made.id}` } };
-        };
-        // A webhook trigger's answer holds its secret, shown once: never kept in the idempotency record.
-        const answer = isObject(body.source) && body.source.kind === "webhook" ? await create() : await idempotent(req, "/triggers", body, create);
-        return send(res, answer.status, answer.body, answer.headers);
+        // A webhook trigger's secret is in its first answer alone: the Idempotency-Key's record keeps the trigger and a
+        // note, so a retry under the key gets the same trigger, never a second one, and never the secret.
+        let secret: string | undefined;
+        const answer = await idempotent(req, "/triggers", body, async () => {
+          const { secret: shown, ...made } = await triggers.create(body);
+          secret = shown;
+          return { status: 201, body: shown ? { ...made, note: `Its secret was shown once, in the first answer; POST /v2/triggers/${made.id}/secret makes a new one.` } : made, headers: { location: `/v2/triggers/${made.id}` } };
+        });
+        const replayed = answer.headers?.["idempotent-replayed"] === "true";
+        const { note: _, ...first } = answer.body as Json;
+        return send(res, answer.status, secret && !replayed ? { ...first, secret } : answer.body, answer.headers);
       }
       case "rotateTriggerSecret":
         return send(res, 200, triggers.rotate(id));

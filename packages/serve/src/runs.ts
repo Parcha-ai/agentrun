@@ -487,6 +487,9 @@ export type RunsOptions = { /** What a run's Docker box reaches, as the server r
  *  when another server sees it again. It says what came of it: `unsaved`, not in the outbox on disk yet. */
 export type RunNotify = (event: (typeof RUN_EVENTS)[number], run: RunNotice & { status: Status }, marker: string) => Emitted;
 
+/** Why a message that may not answer a person's question is not sent. */
+export const WAITS_ON_A_PERSON = "The run is waiting on a person.";
+
 /** The server's own secrets, which a run's process never gets: the API token, by name or by value, the seal key
  *  the tool keys are kept under (tool-keys.ts), and the boxes' keys (boxes.ts), which only the server's box providers use. */
 const SERVER_ONLY = new Set(["AGENTRUN_TOKEN", "AGENTRUN_API_KEY", "AGENTRUN_SEAL_KEY", ...BOX_KEYS]);
@@ -2035,7 +2038,7 @@ export class Runs {
 
   /** One message to an agentic run, its mode chosen by the run's state (the contract's table). `requestId`: the message's
    *  id in the run's store, which takes one message per id (a trigger's firing key); default a new one. */
-  async message(run: Run, content: string, requestId?: string): Promise<{ mode: "steer" | "answer" | "follow_up"; messageId: string }> {
+  async message(run: Run, content: string, requestId?: string, { answers = true }: { answers?: boolean } = {}): Promise<{ mode: "steer" | "answer" | "follow_up"; messageId: string }> {
     if (run.imported) throw this.importedRefusal(run);
     // A cancelled run takes no message, whether or not its end is written yet.
     if (run.cancel) throw this.finished(run);
@@ -2061,6 +2064,8 @@ export class Runs {
     // the same run, which the contract calls follow_up, never a steer it does not do.
     const working = status === "queued" || (status === "working" && state === "working");
     const mode = working ? (steers ? "steer" : "follow_up") : status === "input_required" && state === "waiting" ? "answer" : "follow_up";
+    // A message that may not answer (a trigger's): one that would is refused here, past every wait, before it is sent.
+    if (mode === "answer" && !answers) throw new ApiError("not_continuable", WAITS_ON_A_PERSON, { details: { reason: "waiting" } });
     const messageId = requestId ?? `m${Date.now().toString(36)}${randomBytes(4).toString("hex")}`;
     // A follow-up to a run the person stopped, whose process has gone: its turn had ended, so the process this message
     // starts resumes nothing. With its process live the message starts none, and a relaunch after that process dies
