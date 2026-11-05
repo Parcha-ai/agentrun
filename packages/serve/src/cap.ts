@@ -327,7 +327,7 @@ export function spentIn(storeFile: string): number | null {
   const fieldsOf = (entry: EntryLike) => (entry.data ?? {}) as Record<string, unknown>;
   const generationStart = (entry: EntryLike) => entry.kind === REQUEST_STARTED && typeof fieldsOf(entry).request !== "string" && fieldsOf(entry)[CAP_REFUSED_FIELD] !== true;
   // Each such end mark, with the earliest start holding its figure (-1 for none: any error entry then).
-  const endsOf = (field: "error" | "lost") => rows.flatMap((entry, at) => entry.kind === REQUEST_ENDED && fieldsOf(entry)[field] === true
+  const endsOf = (field: "error" | "lost" | "unpriced") => rows.flatMap((entry, at) => entry.kind === REQUEST_ENDED && fieldsOf(entry)[field] === true
     ? [{ at, from: rows.findIndex((start, i) => i < at && generationStart(start) && figureOf(fieldsOf(start)[HELD_FIELD]) === figureOf(fieldsOf(entry)[HELD_FIELD])) }]
     : []);
   // A `lost` mark is written before its request's retry is sent (request-start.ts watchingLost) and is in the store before
@@ -336,7 +336,8 @@ export function spentIn(storeFile: string): number | null {
   // mark the store took late, END_NOT_WRITTEN, or a crash came first) and it takes none. These go first, so an error mark
   // never takes a lost request's own entry.
   const afterMark = [...errorsAt, ...answersAt].sort((a, b) => a - b);
-  for (const { at } of endsOf("lost")) {
+  // An `unpriced` mark (an answer whose cost cannot be read, at its hold) is written the same way, before pi has the answer.
+  for (const { at } of [...endsOf("lost"), ...endsOf("unpriced")]) {
     const next = rows.findIndex((entry, i) => i > at && generationStart(entry));
     const own = afterMark.find((entry) => entry > at && (next < 0 || entry < next) && !taken.has(entry));
     if (own !== undefined) taken.add(own);
@@ -370,7 +371,8 @@ export function spentIn(storeFile: string): number | null {
     read.push(entry);
     const held = data[HELD_FIELD];
     // A summary that ended on an error after its response began (its cost mark says `failed`) counts at its hold.
-    if (entry.kind === REQUEST_COST && data.failed === true && figureOf(held) !== undefined) entries[entries.length - 1] = { ...entry, data: { ...data, usd: held } };
+    // So does one whose cost could not be read (`unpriced`): the booking rule's figure for an answer with no cost.
+    if (entry.kind === REQUEST_COST && (data.failed === true || data.unpriced === true) && figureOf(held) !== undefined) entries[entries.length - 1] = { ...entry, data: { ...data, usd: held } };
     if (entry.kind !== REQUEST_ENDED || data.unsent === true || typeof held !== "number" || !Number.isFinite(held)) continue;
     // The stopped request closed at what the cap held for it: a summary by its cost, a generation by an answer.
     entries.push(typeof data.request === "string"

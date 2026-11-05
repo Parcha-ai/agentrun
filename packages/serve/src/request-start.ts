@@ -193,6 +193,10 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
       // before pi has the result, however long the store takes, and a refused one fails the request loudly. A stop's
       // mark keeps its bound: without it the request stays open, read at its hold, which is never less.
       let holding = false;
+      // An answer whose cost cannot be read counts at its hold (the booking rule), in this process and in a later one: its
+      // end mark carries the hold (`unpriced`), in the store before pi has the answer, as a lost request's does.
+      const total = result.usage?.cost?.total;
+      const unpriced = result.stopReason !== "error" && result.stopReason !== "aborted" && !(typeof total === "number" && Number.isFinite(total)) && Object.keys(heldOf(options)).length > 0;
       // A request marked lost before its retry was sent has its end in the store already, at its hold: nothing more.
       if (lostMarked) {
         if (result.stopReason === "error" && failure?.type === "error") markResponseBegan(failure.error);
@@ -207,6 +211,9 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
         markResponseBegan(result);
         if (failure?.type === "error") markResponseBegan(failure.error);
         ending = mark(REQUEST_ENDED, { error: true, ...heldOf(options) });
+        holding = true;
+      } else if (unpriced) {
+        ending = mark(REQUEST_ENDED, { unpriced: true, ...heldOf(options) });
         holding = true;
       }
       // The end mark goes in before pi has the result, so the store holds it before pi's entry; a store that has not taken
@@ -265,7 +272,8 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
       if (began) markResponseBegan(result);
       // Failed before any response, it counts at its hold too unless it provably never left (piEnded): the same figure the
       // cap books in this process, which a later process reads from this mark.
-      const failure = began || lostOf(options, result) ? { failed: true, ...heldOf(options) } : {};
+      // An answer whose cost cannot be read counts at its hold too (the booking rule), which its mark carries.
+      const failure = began || lostOf(options, result) ? { failed: true, ...heldOf(options) } : result.stopReason !== "error" && !(typeof usd === "number" && Number.isFinite(usd)) && Object.keys(heldOf(options)).length > 0 ? { unpriced: true, ...heldOf(options) } : {};
       await mark(REQUEST_COST, usage ? { ...COMPACTION, usd, usage: usage as never, ...failure } : { ...COMPACTION, usd, ...failure }).catch(() => undefined);
     }
     return result;
