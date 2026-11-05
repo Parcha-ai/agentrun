@@ -354,10 +354,12 @@ go through `work/` by path.
     port. The server turns this on only when `docker info` names a VM runtime it knows, on a kernel that is not the
     Mac's: `Operating System: Docker Desktop` (Docker Desktop), `OrbStack` (OrbStack), or a host name of `colima` or
     `colima-<profile>` (colima). Anything else on a Mac (Rancher Desktop, a Podman machine, a colima whose host name
-    was changed, a daemon elsewhere) has no network, and `network_reason` says what was seen. At each start the server
-    makes the volume if it is missing, removes every container of its own label, pulls the image once if Docker lacks
-    it, starts the proxy and waits up to 10 s for it to say it is ready; until then, and if it never does, the box's
-    network is `none` with why. Docker restarts a proxy that dies (`--restart unless-stopped`); the server starts one
+    was changed, a daemon elsewhere) has no network, and `network_reason` says what was seen. At each start, before any
+    run gets the volume's name, the server makes the volume if it is missing; a volume named exactly this server's
+    `agentrun-egress-<12 hex>` that lacks its label (Docker made it with its defaults when a box mounted it first) is
+    replaced, and no other volume is touched. It removes every container of its own label, pulls the image once if
+    Docker lacks it, starts the proxy and waits up to 10 s for it to say it is ready; until then, and if it never does,
+    the box's network is `none` with why. Docker restarts a proxy that dies (`--restart unless-stopped`); the server starts one
     that is gone again within about 10 s; its stop removes it. Linux keeps the path above, unchanged.
   - The proxy container's own threat model, on a Mac. It has a network: Docker's bridge, the VM's NAT, then the Mac, its
     LAN and the internet. Nothing reaches it but through the socket in the volume: no TCP listener, no published port,

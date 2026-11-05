@@ -186,7 +186,8 @@ export const egressRunArgs = (options: { key: string; uid: number; gid: number; 
  *  `unavailable` when it could not start, with why. */
 export type EgressState = { state: "ready" } | { state: "preparing" | "unavailable"; reason: string };
 
-export type EgressContainer = { readonly volume: string; state(): EgressState; close(): Promise<void> };
+/** `volume`: the volume a run's box mounts, once it is made; absent when it could not be. */
+export type EgressContainer = { readonly volume?: string; state(): EgressState; close(): Promise<void> };
 
 const OWN_WORDS = /^egress: [\x20-\x7e]{1,200}$/;
 
@@ -222,12 +223,22 @@ export async function startEgressContainer(options: { env: NodeJS.ProcessEnv; da
       if (removed.code !== 0 && !/no such container/i.test(removed.stderr)) throw new Error(`docker rm of an old proxy failed (${removed.code})`);
     }
   };
+  /** Makes the server's volume, unless it is there with this server's label: why not, or undefined. One of its name
+   *  without the label (Docker makes a volume a box names with its own defaults: root's, not tmpfs) is replaced when
+   *  nothing holds it, and is a failure, saying how to remove it, when something does. */
+  const ensureVolume = async (): Promise<string | undefined> => {
+    const seen = await docker(["volume", "inspect", "--format", `{{index .Labels "${EGRESS_LABEL}"}}`, name], 10_000);
+    if (seen.code === 0 && seen.stdout.trim() === key) return undefined;
+    if (seen.code === 0 && (await docker(["volume", "rm", name], 10_000)).code !== 0) return `a volume ${name} that this server did not make is in use: stop what uses it and run docker volume rm ${name}`;
+    const made = await docker(egressVolumeArgs(key, options.uid, options.gid), 10_000);
+    return made.code === 0 ? undefined : `docker volume create failed (${made.code})`;
+  };
   /** Starts the container, the image already in, and waits for its ready line. */
   const run = async (): Promise<EgressState> => {
-    if ((await docker(["volume", "inspect", name], 10_000)).code !== 0) {
-      const made = await docker(egressVolumeArgs(key, options.uid, options.gid), 10_000);
-      if (made.code !== 0) return failed(`docker volume create failed (${made.code})`);
-    }
+    const volume = await ensureVolume();
+    if (volume) return failed(volume);
+    // A close since: nothing is removed or started, so a server that took this data root after it keeps its own proxy.
+    if (closed) return state;
     await sweep();
     const code = await egressCode(options.data);
     if (closed) return state;
@@ -258,6 +269,13 @@ export async function startEgressContainer(options: { env: NodeJS.ProcessEnv; da
 
   let busy: Promise<void> | undefined;
   const once = (step: () => Promise<void>) => (busy ??= step().finally(() => (busy = undefined)));
+  // The volume first, before any run is handed its name: a box that mounted a missing one would have Docker make it
+  // with its own defaults.
+  const noVolume = await ensureVolume().catch((error: Error) => error.message);
+  if (noVolume) {
+    state = failed(noVolume);
+    return { state: () => state, close: async () => void (closed = true) };
+  }
   const inspected = await docker(["image", "inspect", "--format", "{{.Id}}", EGRESS_IMAGE], 10_000);
   if (inspected.code === 0) set(await start());
   else {
@@ -268,7 +286,8 @@ export async function startEgressContainer(options: { env: NodeJS.ProcessEnv; da
       set(pulled.code === 0 ? await start() : failed(`docker pull ${EGRESS_IMAGE.split("@")[0]} failed (${pulled.code}): run it on this machine to see why`));
     });
   }
-  // Docker restarts a proxy that dies; one that is gone, or stopped, the watch starts again, after two looks in a row.
+  // Docker restarts a proxy that dies; one that is gone, or stopped, makes the network none at the first look, and the
+  // watch starts it again at the second in a row.
   let misses = 0;
   const watch = setInterval(() => {
     if (closed || busy || state.state === "unavailable") return;
@@ -279,6 +298,7 @@ export async function startEgressContainer(options: { env: NodeJS.ProcessEnv; da
         if (state.state !== "ready") set({ state: "ready" });
         return;
       }
+      set({ state: "preparing", reason: "the box network proxy is not running" });
       if (++misses < 2) return;
       misses = 0;
       set({ state: "preparing", reason: "the box network proxy was gone, and is starting again" });
@@ -294,6 +314,9 @@ export async function startEgressContainer(options: { env: NodeJS.ProcessEnv; da
       closed = true;
       clearInterval(watch);
       stopping.abort();
+      // What was under way ends first (a pull or a wait is aborted; a start checks `closed`), so nothing of this server's
+      // touches Docker after its close.
+      await busy?.catch(() => undefined);
       await docker(["rm", "--force", name], 10_000);
     },
   };

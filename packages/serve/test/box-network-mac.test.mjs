@@ -255,6 +255,9 @@ test("a proxy container that is gone (removed by hand) is started again by the s
   const key = keyOf(data);
   assert.equal(docker.started().length, 1);
   assert.equal(spawnSync(process.execPath, [FAKE, "rm", "--force", `agentrun-egress-${key}`], { env: process.env }).status, 0);
+  // Seen gone at the watch's first look: none at once, saying why, before it is started again.
+  await until(async () => (await dockerOf(api)).network === "none", "none once it is seen gone", 20_000);
+  assert.match((await dockerOf(api)).network_reason, /^the box network proxy (is not running|was gone, and is starting again)$/);
   await until(() => docker.started().length === 2, "the proxy started again", 40_000);
   await until(async () => (await dockerOf(api)).network === "allowlist", "allowlist again");
   const socket = join(docker.volumeDir(`agentrun-egress-${key}`), "egress.sock");
@@ -299,4 +302,35 @@ test("the proxy's entry refuses to start with no list, or one that is not names;
   assert.equal(said.trim().split("\n")[0], "egress ready allow=pypi.org");
   assert.equal(statSync(socket).mode & 0o777, 0o600);
   assert.equal((await viaSocket(socket, { method: "GET", path: "http://pypi.org/", headers: { host: "pypi.org" } })).status, 200);
+});
+
+test("the volume is made before any run gets its name, even while the proxy's image is pulled; one of its name that Docker made with its defaults (no label) is replaced with the server's tmpfs one", { timeout: 90_000 }, async (t) => {
+  const docker = await fakeDocker(t, "docker-desktop", { "no-image": "", "pull-hold": "" });
+  const data = join(await scratch(t), "agents");
+  await mkdir(data, { recursive: true });
+  const name = `agentrun-egress-${keyOf(data)}`;
+  // As Docker leaves it when a box mounted the name before the server made it: root's, no label.
+  await mkdir(docker.volumeDir(name), { recursive: true });
+  const { api } = await serve(t, { ...MAC, data });
+  assert.deepEqual(docker.volumes().map((args) => args.slice(0, 2)), [["volume", "rm"], ["volume", "create"]], "replaced at the start, while the pull holds");
+  assert.ok(docker.volumes()[1].includes(`agentrun.egress=${keyOf(data)}`));
+  const offer = await dockerOf(api);
+  assert.equal(offer.network, "none");
+  assert.equal(offer.network_reason, "the box network proxy is pulling its image, node:22-bookworm-slim");
+  assert.deepEqual(docker.proxies(), [], "no proxy before its image is in");
+  await rm(join(docker.state, "pull-hold"));
+  await until(async () => (await dockerOf(api)).network === "allowlist", "allowlist once the image is in");
+});
+
+test("a server's close while its proxy's image is pulled ends the pull, starts nothing, and leaves Docker alone after it", { timeout: 90_000 }, async (t) => {
+  const docker = await fakeDocker(t, "docker-desktop", { "no-image": "", "pull-hold": "" });
+  const server = await serve(t, MAC);
+  await until(() => docker.argv().some((args) => args[0] === "pull" && args.at(-1) === EGRESS_IMAGE), "the pull");
+  await server.close();
+  const after = docker.argv().length;
+  await rm(join(docker.state, "pull-hold"));
+  await new Promise((resolve) => setTimeout(resolve, 2_000));
+  assert.equal(docker.argv().length, after, "nothing after the close");
+  assert.deepEqual(docker.proxies(), [], "no proxy started");
+  assert.equal(docker.argv().at(-1)[0], "rm", "the close's own rm is its last call");
 });

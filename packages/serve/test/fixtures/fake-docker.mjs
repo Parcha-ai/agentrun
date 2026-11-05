@@ -154,7 +154,8 @@ switch (args[0]) {
       } else if (args[i] === "--env") container.env.push(args[++i]);
       else if (args[i] === "--mount") {
         const fields = Object.fromEntries(value.split(",").map((part) => [part.split("=")[0], part.slice(part.indexOf("=") + 1)]));
-        if (fields.type === "volume" && !existsSync(volumeDir(fields.source))) fail(`docker: Error response from daemon: no such volume: ${fields.source}`, 125);
+        // As Docker does, a volume a mount names that is not there is made, with Docker's defaults and no label.
+        if (fields.type === "volume" && !existsSync(volumeDir(fields.source))) mkdirSync(volumeDir(fields.source), { recursive: true });
         container.mounts.push({ source: fields.type === "volume" ? volumeDir(fields.source) : fields.source, target: fields.target, type: fields.type });
         i++;
       } else if (args[i] === "--name") container.Name = args[++i]; else if (args[i] === "--workdir") container.workdir = args[++i];
@@ -191,12 +192,21 @@ switch (args[0]) {
   }
   case "volume": {
     const name = args.at(-1);
-    if (args[1] === "inspect") existsSync(volumeDir(name)) ? done(`[{"Name":${JSON.stringify(name)}}]\n`) : fail(`Error response from daemon: get ${name}: no such volume`);
-    else if (args[1] === "create") {
+    // A volume's labels are in `.labels.json` in its directory (none for one Docker made on its own).
+    const labels = () => (existsSync(join(volumeDir(name), ".labels.json")) ? JSON.parse(readFileSync(join(volumeDir(name), ".labels.json"), "utf8")) : {});
+    if (args[1] === "inspect") {
+      if (!existsSync(volumeDir(name))) fail(`Error response from daemon: get ${name}: no such volume`);
+      const label = /^\{\{index \.Labels "([^"]+)"\}\}$/.exec(args[args.indexOf("--format") + 1] ?? "");
+      done(label ? `${labels()[label[1]] ?? "<no value>"}\n` : `[{"Name":${JSON.stringify(name)},"Labels":${JSON.stringify(labels())}}]\n`);
+    } else if (args[1] === "create") {
       appendFileSync(join(state, "volumes.jsonl"), `${JSON.stringify(args)}\n`);
       mkdirSync(volumeDir(name), { recursive: true, mode: 0o700 });
+      const made = {};
+      for (let i = 2; i < args.length; i++) if (args[i] === "--label") made[args[i + 1].split("=")[0]] = args[++i].slice(args[i].indexOf("=") + 1);
+      writeFileSync(join(volumeDir(name), ".labels.json"), JSON.stringify(made));
       done(`${name}\n`);
     } else if (args[1] === "rm") {
+      appendFileSync(join(state, "volumes.jsonl"), `${JSON.stringify(args)}\n`);
       rmSync(volumeDir(name), { recursive: true, force: true });
       done(`${name}\n`);
     } else fail(`fake docker: no volume ${args[1]}`);
