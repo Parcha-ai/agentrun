@@ -29,6 +29,10 @@ export type GraphInput = {
   modelCost: number | null;
   /** How many of its llm calls' answers its node log held when its rows were last read: their cost is in `modelCost`. */
   llmRead?: number;
+  /** What the graph shows of a text it cuts, before it cuts it: held values taken out (`redact`), and, of a text that was
+   *  stored cut, the last `hold` characters held back, since a held value the stored cut split could not be found there.
+   *  The server's own (runs.ts servedGraph); none, as written. */
+  shown?: { redact: (text: string) => string; hold: number };
 };
 
 type Frame = { done?: string[]; states?: Record<string, unknown>; inputs?: Record<string, unknown>; steps?: Record<string, unknown>; routes?: Record<string, { branch?: string }>; decisions?: Record<string, Record<string, { status?: string }>>; failures?: Record<string, unknown>; partial?: { path?: string } };
@@ -36,15 +40,27 @@ type Frame = { done?: string[]; states?: Record<string, unknown>; inputs?: Recor
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const at = (state: unknown, path: string): unknown => path.split(".").reduce<unknown>((value, key) => (isObject(value) ? value[key] : undefined), state);
-const labelOf = (item: unknown): string | undefined => {
-  if (typeof item === "string") return item.slice(0, 200);
-  if (typeof item === "number") return String(item);
+/** A map item's label: the item, or its name, cut at 200 characters, after `shown` takes held values out of the whole of
+ *  it (a key the cut split could no longer be found). */
+const labelOf = (item: unknown, shown: (text: string) => string): string | undefined => {
+  if (typeof item === "string") return shown(item).slice(0, 200);
+  if (typeof item === "number") return shown(String(item));
   if (!isObject(item)) return undefined;
   const named = item.name ?? item.label ?? item.title ?? item.id ?? item.file ?? item.path ?? item.url;
-  return typeof named === "string" || typeof named === "number" ? String(named).slice(0, 200) : undefined;
+  return typeof named === "string" || typeof named === "number" ? shown(String(named)).slice(0, 200) : undefined;
 };
 
+/** The most of a call's error the graph shows. */
+const ERROR_SHOWN = 2000;
+
 export async function runGraph(given: GraphInput) {
+  const redact = given.shown?.redact ?? ((text: string) => text);
+  /** A text stored cut: what `redact` shows of it, less the last `hold` characters, where a held value the cut split
+   *  would sit. */
+  const storedCut = (text: string) => {
+    const out = redact(text);
+    return given.shown ? `${out.slice(0, Math.max(0, out.length - given.shown.hold))}…` : out;
+  };
   const [{ graphNodeOf, nodeStatus, workflowGraph }, { readWorkflowRun }, { durableDecisions, readJournal }] = await Promise.all([
     import("@parcha/agentrun-dsl/graph"),
     import("@parcha/pi-durable-agent/workflow"),
@@ -153,7 +169,7 @@ export async function runGraph(given: GraphInput) {
       else if (Object.values(pin.steps ?? {}).some((step, i) => isObject(step) && step.status === "failed" && inside(Object.keys(pin.steps!)[i]!))) status = "failed";
       else if (seen.has(index)) status = given.ended ? (own.status === "failed" ? "failed" : own.status === "escalated" ? "escalated" : "stopped") : "working";
       else status = given.ended ? "not_run" : "pending";
-      const label = labelOf(list?.[index]);
+      const label = labelOf(list?.[index], redact);
       // Each route in the body that ran for this item, and its branch: the committed decision, else the branch that ran.
       const branches: Record<string, string> = {};
       for (const route of routesIn) {
@@ -175,7 +191,7 @@ export async function runGraph(given: GraphInput) {
       provider: r.provider ?? null, model: r.model ?? null, status: r.status ?? null,
       questions: r.questions ?? null, answers: r.answers ?? null, evidence: r.evidence ?? [], rule: r.rule ?? null, action: r.action ?? null,
       cost_usd: typeof r.cost_usd === "number" ? r.cost_usd : null, cost_basis: r.cost_basis ?? null, latency_ms: r.latency_ms ?? null,
-      state: r.state ?? null, state_truncated: r.state_truncated === true, error: typeof r.error === "string" ? r.error : null,
+      state: r.state_truncated === true && typeof r.state === "string" ? storedCut(r.state) : (r.state ?? null), state_truncated: r.state_truncated === true, error: typeof r.error === "string" ? r.error : null,
       images: images.map((image) => ({ token: image.token ?? null, ref: image.ref ?? null, url: typeof image.ref === "string" ? runFile(image.ref) : null })),
     };
   });
@@ -194,7 +210,9 @@ export async function runGraph(given: GraphInput) {
       const start = open.get(`${line.path}\n${line.tool}\n${line.label}`)?.shift();
       if (!start) continue;
       const effect = effects[placeOf.get(start)!]!;
-      Object.assign(effect, { status: line.status, output: line.output ?? null, error: line.error ?? null, endedAt: line.at });
+      // An error is stored whole up to 64 KB (app.ts), longer ones cut and marked; one of a log from before, cut at 2000.
+      const error = line.error === undefined ? null : (line.error_truncated === true || line.error.length === ERROR_SHOWN ? storedCut(line.error) : redact(line.error)).slice(0, ERROR_SHOWN);
+      Object.assign(effect, { status: line.status, output: line.output ?? null, error, endedAt: line.at });
     }
   }
 

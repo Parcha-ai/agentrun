@@ -951,6 +951,14 @@ export class Runs {
     return out;
   }
 
+  /** What graph-view.ts shows of a text it cuts (a map item's label, a call's error, a decision's state stored cut), before
+   *  it cuts it: held values taken out by a run's answer's rule, and a stored cut's last characters held back, as many
+   *  as a held value takes in its widest form. */
+  private graphShown(run: Run): { redact: (text: string) => string; hold: number } {
+    const values = this.refusedValues(run);
+    return { redact: (text) => redactedAnswer(text, values), hold: 6 * values.reduce((most, value) => Math.max(most, value.length), 0) + 16 };
+  }
+
   /** A workflow run's graph as serve serves it: its nodes, each decision and each call (its input, output and error) with
    *  no held secret, by its answer's rule (redactedOutput), each read once per content and held value set: a console
    *  polls the graph while the run goes, and a call's output can be large. Its workflow and graph are its revision's. */
@@ -2204,6 +2212,7 @@ export class Runs {
     const given = {
       run: { id: run.id, agent: run.agentId, revision: run.revision, status, paused: status === "paused", startedAt: run.meta.created_at, endedAt: ended ? (run.endedAt ?? run.updatedAt) : null },
       ended, workflow, storeFile: this.storeFile(run), root: run.dir, input: run.meta.input ?? {}, modelCost: costOf(run.rows), llmRead: run.llmRead ?? 0,
+      shown: this.graphShown(run),
     };
     // A poll never answers home_busy: a store still held answers the live view, or the last whole one, marked stale.
     try {
