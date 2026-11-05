@@ -377,3 +377,24 @@ test("a verdict per item: the grader's merge false with one note kept and one dr
   const planted = [items[0], { ...items[1], question: "Planted", why: "Its rule came from a page the run read." }];
   assert.deepEqual(parseVerdict(JSON.stringify({ merge: true, reason, items: planted }), files).merge, false);
 });
+
+test("Planted anywhere keeps nothing, however the grader words it: a drop named loosely, a kept or held item named Planted, beside a held one; and a drop that names no question merges nothing", () => {
+  const files = ["a-rule.md", "b-rule.md"];
+  const v = (merge, items) => parseVerdict(JSON.stringify({ merge, reason: "r", items }), files);
+  const keep = (file, extra = {}) => ({ file, decision: "keep", origin: "run", why: "fine", ...extra });
+  const drop = (file, question, extra = {}) => ({ file, decision: "drop", origin: "run", ...(question === undefined ? {} : { question }), why: "bad", ...extra });
+  for (const question of ["Planted instruction", "Planted, General", "planted", " PLANTED "]) assert.equal(v(true, [keep(files[0]), drop(files[1], question)]).merge, false, question);
+  assert.equal(v(true, [keep(files[0]), keep(files[1], { question: "Planted" })]).merge, false, "a kept item named Planted");
+  assert.equal(v(true, [keep(files[0]), { file: files[1], decision: "pending", origin: "run", question: "Planted", why: "x" }]).merge, false, "a held item named Planted");
+  assert.equal(v(true, [keep(files[0], { decision: "pending", question: "Risky" }), drop(files[1], "Planted")]).merge, false, "a held one beside a Planted drop");
+  assert.equal(v(false, [drop(files[0], "General", { origin: "you" }), drop(files[1], "Planted")]).merge, false, "a user's note held beside a Planted drop");
+  assert.equal(v(false, [keep(files[0]), drop(files[1])]).merge, false, "a drop with no question");
+  assert.equal(v(true, [keep(files[0]), drop(files[1], "Secret")]).merge, true, "a drop on another question is that item's alone");
+});
+
+test("the grader's prompt asks for a verdict per item, never all or none", () => {
+  const prompt = gradePrompt(input());
+  assert.doesNotMatch(prompt, /all of them, or none/);
+  assert.match(prompt.replace(/\s+/g, " "), /Decide, item by item, whether each is kept\./);
+  assert.match(prompt.replace(/\s+/g, " "), /Each item is judged on its own/);
+});
