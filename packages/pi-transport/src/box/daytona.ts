@@ -17,7 +17,7 @@ import {
 	type BoxStatus,
 	isReservedLabel,
 } from "./box.ts";
-import { refuseMounts, refuseNetworkFields } from "./network.ts";
+import { parseNetwork, refuseMounts, refuseNetworkFields } from "./network.ts";
 
 const DEFAULT_API_URL = "https://app.daytona.io/api";
 const DEFAULT_WORKSPACE = "/tmp/workspace";
@@ -159,6 +159,9 @@ type SandboxInfo = {
 	readonly sandboxClass?: string;
 	/** Daytona blocks all of the sandbox's outbound traffic. A single sandbox's read carries it; a listing does not. */
 	readonly networkBlockAll?: boolean;
+	/** The hosts Daytona lets the sandbox reach (`domainAllowList`: comma-separated, or a list of hosts). A single sandbox's
+	 *  read carries it. Anything else is no list Daytona keeps. */
+	readonly domainAllowList?: unknown;
 	readonly errorReason?: string;
 	/** Disk in GiB and the creation time, as Daytona reports them. */
 	readonly disk?: number;
@@ -214,6 +217,32 @@ function delay(ms: number, context: Context): Promise<void> {
 function redirected(cause: unknown): boolean {
 	const inner = (cause as { cause?: unknown } | null)?.cause;
 	return /redirect/i.test(`${(cause as Error | null)?.message ?? ""} ${(inner as Error | null)?.message ?? ""}`);
+}
+
+/** A box's facts from its domain list: `allowlist` with its hosts; nothing (unknown) for none, or a list not read. */
+function allowFacts(domains: string[] | undefined): { network?: "allowlist"; allow?: readonly string[] } {
+	return domains && domains.length > 0 ? { network: "allowlist", allow: domains } : {};
+}
+
+/** Whether two domain lists hold the same hosts. */
+function sameDomains(a: readonly string[], b: readonly string[]): boolean {
+	const left = new Set(a);
+	const right = new Set(b.map((entry) => entry.toLowerCase()));
+	return left.size === right.size && [...left].every((entry) => right.has(entry));
+}
+
+/** The hosts of a `domainAllowList` (comma-separated, or a list of hosts), trimmed, lower-cased, without empty entries; none
+ *  when it is absent; `undefined` for any other value, which is no list this code reads, never a throw. */
+function domainsOf(list: unknown): string[] | undefined {
+	const entries =
+		list === undefined || list === null
+			? []
+			: typeof list === "string"
+				? list.split(",")
+				: Array.isArray(list) && list.every((entry) => typeof entry === "string")
+					? (list as string[])
+					: undefined;
+	return entries?.map((entry) => entry.trim().toLowerCase()).filter((entry) => entry !== "");
 }
 
 function parseJson(bytes: Uint8Array): unknown {
@@ -490,7 +519,7 @@ function factsOf(info: SandboxInfo, provider: DaytonaBoxesOptions): BoxFacts {
 		workspace: info.labels?.[WORKSPACE_LABEL] ?? provider.workspace ?? DEFAULT_WORKSPACE,
 		maxLifetimeMs: Number.isFinite(lifetime) && lifetime > 0 ? lifetime : null,
 		// Only a block Daytona reports is `none`; anything else is left unknown (a tier's own policy may hold).
-		...(info.networkBlockAll === true ? { network: "none" as const } : {}),
+		...(info.networkBlockAll === true ? { network: "none" as const } : allowFacts(domainsOf(info.domainAllowList))),
 		snapshot: null,
 		...(typeof info.disk === "number" && info.disk > 0 ? { diskGb: Math.floor(info.disk) } : {}),
 		...(info.createdAt !== undefined && !Number.isNaN(Date.parse(info.createdAt))
@@ -833,7 +862,10 @@ async function waitListed(
  * `pi-transport` or starts with `pi-transport.` is refused with `invalid`; the provider keeps its records there. Any `mounts`
  * are refused with `unsupported`: a sandbox cannot bind a path of this machine. A `network` of `none` asks Daytona to
  * block all outbound traffic (`networkBlockAll`) and is refused with `unsupported`, the sandbox deleted, when the sandbox
- * Daytona made does not report it blocked; an allowlist, ports and capabilities are refused with `unsupported`.
+ * Daytona made does not report it blocked. An allowlist of domains asks Daytona for a domain list (`domainAllowList`,
+ * which Daytona's egress proxy enforces, re-signing TLS with its own CA) and is refused the same way when the sandbox's
+ * read does not carry that list (a tier that takes none); an allowlist with a CIDR, ports and capabilities are refused
+ * with `unsupported`.
  * `region` is the Daytona target. A box that outlives `maxLifetimeMs` is ended by Daytona (`ttlMinutes`, rounded up to
  * whole minutes).
  */
@@ -854,7 +886,16 @@ export function daytonaBoxes(options: DaytonaBoxesOptions): BoxProvider {
 			if (spec.workspace !== undefined && !spec.workspace.startsWith("/")) {
 				return err(new BoxError("invalid", `the workspace ${spec.workspace} is not an absolute path in the box`));
 			}
-			const refused = refuseNetworkFields(spec, "daytona", true) ?? refuseMounts(spec, "daytona");
+			// A list of domains is Daytona's `domainAllowList`; a CIDR is refused (its CIDR list holds ten at most and no name).
+			const network = parseNetwork(spec.network);
+			if (network instanceof BoxError) return err(network);
+			if (network.kind === "allowlist" && network.cidrs.length > 0) {
+				return err(new BoxError("unsupported", "a daytona box takes a list of domains, not a CIDR"));
+			}
+			const allow = network.kind === "allowlist" ? network.domains : [];
+			const refused =
+				refuseNetworkFields(allow.length > 0 ? { ...spec, network: "open" } : spec, "daytona", true) ??
+				refuseMounts(spec, "daytona");
 			if (refused !== undefined) return err(refused);
 			const reserved = Object.keys(spec.labels ?? {}).find(isReservedLabel);
 			if (reserved !== undefined) {
@@ -892,6 +933,7 @@ export function daytonaBoxes(options: DaytonaBoxesOptions): BoxProvider {
 				autoStopInterval: 0,
 				autoDeleteInterval: 0,
 				...(spec.network === "none" ? { networkBlockAll: true } : {}),
+				...(allow.length > 0 ? { domainAllowList: allow.join(",") } : {}),
 			};
 			const created = await rest.create(body, context);
 			if (!created.ok) return created;
@@ -916,11 +958,23 @@ export function daytonaBoxes(options: DaytonaBoxesOptions): BoxProvider {
 			const started = await waitStarted(rest, created.value, options, context);
 			if (!started.ok) return abandon(started.error);
 			let info = started.value;
-			if (spec.network === "none" && info.networkBlockAll !== true) {
+			const kept = (got: SandboxInfo) =>
+				spec.network === "none"
+					? got.networkBlockAll === true
+					: allow.length === 0 || sameDomains(domainsOf(got.domainAllowList) ?? [], allow);
+			if (!kept(info)) {
 				// A create's answer may leave the setting out, as a listing does: the sandbox's own read says.
 				const read = await rest.get(info.id, context);
 				if (!read.ok) return abandon(read.error);
 				info = read.value ?? info;
+			}
+			if (allow.length > 0 && !kept(info)) {
+				return abandon(
+					new BoxError(
+						"unsupported",
+						"Daytona did not keep this sandbox's domain list (domainAllowList is not set on it as asked): an organization on tier 1 or 2 keeps its own network policy, which a sandbox cannot override",
+					),
+				);
 			}
 			if (spec.network === "none" && info.networkBlockAll !== true) {
 				return abandon(

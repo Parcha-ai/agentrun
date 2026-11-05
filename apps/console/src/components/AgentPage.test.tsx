@@ -310,7 +310,7 @@ describe("AgentPage", () => {
 
   it("opens the address's Analytics tab once the stats are read, and Runs when they can't be", async () => {
     let answer!: (v: unknown) => void;
-    // The page's read waits; the tab opens on its answer, with no read of its own.
+    // The page's read waits; the tab opens on its answer, then reads them again itself (a run may have ended since).
     const page = await open(agentFixture("invoice-checker"), { tab: "analytics", stats: () => new Promise((r) => (answer = r)) });
     // Waiting for the stats: no other tab's content is read meanwhile.
     expect(page.host.querySelector('ul[aria-label="Runs"]')).toBeNull();
@@ -320,7 +320,7 @@ describe("AgentPage", () => {
     expect(page.host.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toBe("Analytics");
     expect(page.host.querySelector('[role="radiogroup"][aria-label="Range"]')).toBeTruthy();
     expect(page.host.textContent).toContain("Success by harness and effort");
-    expect(page.statsAsked).toHaveLength(1);
+    expect(page.statsAsked).toHaveLength(2);
     act(() => root?.unmount());
     const failed = await open(agentFixture("invoice-checker"), { tab: "analytics", stats: async () => { throw new Error("the store is busy"); } });
     expect(failed.host.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toBe("Runs");
@@ -417,9 +417,9 @@ describe("AgentPage", () => {
     act(() => root?.unmount());
     const analytics = await open(agentFixture("invoice-checker"), { tab: "analytics", stats: async () => statsWith(ANALYTICS) });
     expect(analytics.host.querySelector('[role="tabpanel"]')?.getAttribute("aria-label")).toBe("Analytics");
-    // One read: the page's, over the tab's first range, which the tab opens on.
-    expect(analytics.statsAsked).toHaveLength(1);
-    expect(analytics.statsAsked[0]).toMatch(/^stats invoice-checker from \d{4}-\d{2}-\d{2}T00:00:00\.000Z$/);
+    // The page's read, over the tab's first range, which the tab opens on, then the tab's own read of the same range.
+    expect(analytics.statsAsked).toHaveLength(2);
+    for (const asked of analytics.statsAsked) expect(asked).toMatch(/^stats invoice-checker from \d{4}-\d{2}-\d{2}T00:00:00\.000Z$/);
     expect(analytics.host.textContent).toContain("Success by harness and effort");
   });
   it("a start that answers after the page is gone leaves the person where they went: no navigation", async () => {
@@ -433,7 +433,7 @@ describe("AgentPage", () => {
     expect(page.went).toEqual([]);
   });
 
-  it("under React's StrictMode (effects run twice), a start still ends: Run comes back and the run opens; the tab reads its stats once", async () => {
+  it("under React's StrictMode (effects run twice), a start still ends: Run comes back and the run opens; the tab adds one read of its own", async () => {
     const page = await open(agentFixture("invoice-checker"), { strict: true });
     await page.set(page.input(), "Check invoice INV-1050.");
     await page.click(/^Run$/);
@@ -441,25 +441,25 @@ describe("AgentPage", () => {
     expect(page.button(/^Run$/)).toBeTruthy();
     expect(page.button(/^Starting$/)).toBeUndefined();
     act(() => root?.unmount());
-    // StrictMode runs the page's own read twice in development; the Analytics tab adds none of its own to it.
+    // StrictMode runs the page's own read twice in development; the Analytics tab adds one of its own, not two.
     const runs = await open(agentFixture("invoice-checker"), { strict: true, stats: async () => statsWith(ANALYTICS) });
     const pageReads = runs.statsAsked.length;
     act(() => root?.unmount());
     const tab = await open(agentFixture("invoice-checker"), { strict: true, tab: "analytics", stats: async () => statsWith(ANALYTICS) });
     expect(tab.host.textContent).toContain("Success by harness and effort");
-    expect(tab.statsAsked).toHaveLength(pageReads);
+    expect(tab.statsAsked).toHaveLength(pageReads + 1);
   });
 
-  it("opening the page, then its Analytics tab, reads the agent's stats once", async () => {
+  it("opening the page, then its Analytics tab, reads the agent's stats again when the tab opens (a run may have ended since)", async () => {
     let reads = 0;
     const page = await open(agentFixture("invoice-checker"), { stats: async () => { reads++; return statsWith(ANALYTICS); } });
     expect(page.tabs()).toEqual(["Runs", "Analytics"]);
     act(() => root?.unmount());
-    // The tab's address, as the click goes there: the page reads once, and the tab shows that answer.
+    // The tab's address, as the click goes there: the page reads once, and the tab reads again as it opens.
     const tab = await open(agentFixture("invoice-checker"), { tab: "analytics", stats: async () => { reads++; return statsWith(ANALYTICS); } });
     expect(tab.host.textContent).toContain("Success by harness and effort");
-    expect(tab.statsAsked).toHaveLength(1);
-    expect(reads).toBe(2);
+    expect(tab.statsAsked).toHaveLength(2);
+    expect(reads).toBe(3);
   });
 });
 

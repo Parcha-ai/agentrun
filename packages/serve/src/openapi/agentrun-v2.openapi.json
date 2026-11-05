@@ -2472,6 +2472,7 @@
           },
           "browser": {
             "type": "string",
+            "description": "The browser a run's `browser` tool drives here: the vendor it resolves to under the server's tool settings (`browserbase` or `kernel`) when `tools[]` lists `browser` as available, else `none`.",
             "enum": [
               "browserbase",
               "chrome",

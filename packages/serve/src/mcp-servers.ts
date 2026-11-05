@@ -18,6 +18,9 @@ import { isObject, unknownFields } from "./validate.js";
 export const MCP_SERVERS_FILE = "mcp-servers.json";
 const FORMAT = "mcp-servers/1";
 export const MCP_SERVER_NAME = /^[a-z][a-z0-9-]{0,31}$/;
+/** The names AgentRun's own tools are called by, which no MCP server takes: claude-agent calls the kernel's host tools
+ *  as `mcp__hands__<tool>`, and monid's are `monid_<tool>` (tool-gate.ts settingsKeyOf reads both as AgentRun's). */
+export const RESERVED_MCP_NAMES: readonly string[] = ["hands", "monid"];
 export const MCP_AUTH_TYPES = ["none", "bearer", "headers", "oauth"] as const;
 /** A run's launch refreshes an OAuth access token that expires within this. */
 export const REFRESH_MARGIN_MS = 5 * 60_000;
@@ -49,7 +52,9 @@ export type McpTool = { name: string; title?: string; description?: string; inpu
 type Listed = { protocol: string; server_info: unknown; instructions?: string; tools: McpTool[] };
 /** An OAuth sign-in, what may be shown of it: never a token. */
 type OAuthNote = { expires_at?: string; scopes: string[]; client: ClientKind; client_id?: string; expired?: true };
-type Kept = Listed & { url: string; auth: { type: AuthType; sealed?: Record<string, string>; check?: string; oauth?: OAuthNote }; listed_at: string; updated_at: string };
+/** A tool's declared price in USD a call, by its name: what a run's cap holds and books for each call (mcp-gateway.ts). */
+export type McpPrices = Record<string, number>;
+type Kept = Listed & { url: string; auth: { type: AuthType; sealed?: Record<string, string>; check?: string; oauth?: OAuthNote }; prices?: McpPrices; listed_at: string; updated_at: string };
 type HeaderMap = Record<string, string>;
 type Auth = { type: AuthType; headers?: HeaderMap };
 
@@ -135,7 +140,7 @@ export class McpServers {
    *  the auth type and the URL's origin stay the same. */
   async save(name: string, body: Record<string, unknown>, stop?: AbortSignal) {
     nameOf(name);
-    const { url, auth } = this.admit(body);
+    const { url, auth, prices } = this.admit(body, true);
     if (auth.type !== "none" && !this.key) throw new ApiError("no_sealing_key", `This server was handed no seal key (${SEAL_KEY_ENV}), so it keeps no MCP server credential: it never keeps one in the clear. ${SEAL_KEY_HOW}`);
     const was = this.servers()[name];
     let headers = auth.headers;
@@ -149,6 +154,9 @@ export class McpServers {
       headers = this.opened(name, now, credentialMissing(auth.type, "").field);
     }
     const listed = await listServer(url, headers ?? {}, this.version, stop);
+    // A price names a tool the server listed now, or nothing is saved.
+    const unlisted = Object.keys(prices ?? {}).filter((tool) => !listed.tools.some((listedTool) => listedTool.name === tool));
+    if (unlisted.length) throw invalid(unlisted.map((tool) => ({ field: `prices.${tool}`, reason: "not_an_option", message: `The server ${name} lists no tool ${tool}; its tools are ${listed.tools.map((t) => t.name).join(", ") || "none"}.` })));
     const now = new Date().toISOString();
     const sealed = auth.type !== "oauth" && headers && Object.fromEntries(Object.entries(headers).map(([header, value]) => [header, seal(this.key!, Buffer.from(value, "utf8"), aad(name, header)).toString("base64")]));
     const servers = this.servers();
@@ -156,7 +164,7 @@ export class McpServers {
     // lands, or a PUT or DELETE, while this listed makes the listing stale: its token never goes with another URL.
     if (auth.type === "oauth" && (!servers[name] || saving(servers[name]) !== saving(was!))) throw new ApiError("unavailable", `The server ${name} was signed in to, saved or forgotten while its tools were listed: save it again.`);
     const kept = auth.type === "oauth" ? servers[name]!.auth : { type: auth.type, ...(sealed ? { sealed, check: this.sealCheck } : {}) };
-    servers[name] = { url: url.href, auth: kept, ...listed, listed_at: now, updated_at: now };
+    servers[name] = { url: url.href, auth: kept, ...listed, ...(prices && Object.keys(prices).length ? { prices } : {}), listed_at: now, updated_at: now };
     this.write(servers);
     return this.view(name, servers[name]);
   }
@@ -173,7 +181,12 @@ export class McpServers {
     if (canonical([now.url, now.auth, now.updated_at]) !== canonical([was.url, was.auth, was.updated_at])) throw new ApiError("unavailable", `The server ${name} was changed while its tools were listed: refresh it again.`);
     const before = new Map(now.tools.map((tool) => [tool.name, canonical(tool)]));
     const after = new Map(listed.tools.map((tool) => [tool.name, canonical(tool)]));
-    servers[name] = { ...now, ...listed, listed_at: new Date().toISOString() };
+    const next: Kept = { ...now, ...listed, listed_at: new Date().toISOString() };
+    // A price of a tool the server no longer lists goes with it.
+    const prices = Object.entries(now.prices ?? {}).filter(([tool]) => after.has(tool));
+    if (prices.length) next.prices = Object.fromEntries(prices);
+    else delete next.prices;
+    servers[name] = next;
     this.write(servers);
     return {
       added: [...after.keys()].filter((tool) => !before.has(tool)),
@@ -224,7 +237,9 @@ export class McpServers {
       // Saved, signed in to again or forgotten since this sign-in started: that stands.
       if (stale(servers)) return back("changed_meanwhile");
       const now = new Date().toISOString();
-      servers[entry.name] = { url: entry.url, auth: this.sealedSet(entry.name, set), ...listed, listed_at: now, updated_at: now };
+      // The tools' prices stay with a sign-in again to the same address.
+      const prices = servers[entry.name]?.url === entry.url ? servers[entry.name]!.prices : undefined;
+      servers[entry.name] = { url: entry.url, auth: this.sealedSet(entry.name, set), ...listed, ...(prices ? { prices } : {}), listed_at: now, updated_at: now };
       this.write(servers);
       return back();
     } catch (error) {
@@ -348,13 +363,14 @@ export class McpServers {
     throw invalid([{ field, reason: "missing", message: `The saved credential of ${name} does not open here (sealed under another seal key, or damaged): send it again.` }]);
   }
 
-  /** A body's URL and auth, or 422. */
-  private admit(body: Record<string, unknown>): { url: URL; auth: Auth } {
-    const issues = unknownFields(body, ["url", "auth"]);
+  /** A body's URL, auth and prices, or 422. */
+  private admit(body: Record<string, unknown>, priced = false): { url: URL; auth: Auth; prices?: McpPrices } {
+    const issues = unknownFields(body, priced ? ["url", "auth", "prices"] : ["url", "auth"]);
     const url = urlOf(body.url, issues);
     const auth = authOf(body.auth, issues);
+    const prices = pricesOf(body.prices, issues);
     if (issues.length) throw invalid(issues);
-    return { url: url!, auth: auth! };
+    return { url: url!, auth: auth!, ...(prices ? { prices } : {}) };
   }
 
   /** The saved servers: none with no file, "unreadable" when the file does not read as this format. */
@@ -393,6 +409,7 @@ const notFound = (name: string) => new ApiError("not_found", `No MCP server ${na
 const credentialMissing = (type: AuthType, message: string): InputIssue => ({ field: type === "bearer" ? "auth.token" : type === "oauth" ? "auth.type" : "auth.headers", reason: "missing", message: type === "oauth" ? `${message} An OAuth server is signed in to first: POST /v2/settings/mcp-servers/{name}/oauth/start.` : message });
 const nameOf = (name: string) => {
   if (!MCP_SERVER_NAME.test(name)) throw invalid([{ field: "name", reason: "invalid", message: "A server's name is 1 to 32 lowercase letters, digits and dashes, starting with a letter (no underscores, so mcp__<server>__<tool> splits one way)." }]);
+  if (RESERVED_MCP_NAMES.includes(name)) throw invalid([{ field: "name", reason: "reserved", message: `'${name}' is reserved for AgentRun's own tools: a server under it would take their names and their permissions. Name the server another way.` }]);
 };
 
 /** JSON with sorted keys, so two listings of one tool compare equal whatever order the server sends its fields in. */
@@ -400,6 +417,17 @@ const canonical = (value: unknown): string =>
   Array.isArray(value) ? `[${value.map(canonical).join(",")}]`
   : isObject(value) ? `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}`
   : JSON.stringify(value) ?? "null";
+
+/** The body's prices: each tool's USD a call, a finite number, 0 or more. Which tools the server lists is checked once
+ *  it has listed them. */
+function pricesOf(value: unknown, issues: InputIssue[]): McpPrices | undefined {
+  if (value === undefined) return undefined;
+  if (!isObject(value)) return void issues.push({ field: "prices", reason: "wrong_type", message: "prices is an object of the server's tool names to their price in USD a call." });
+  const bad = Object.entries(value).filter(([, usd]) => typeof usd !== "number" || !Number.isFinite(usd) || usd < 0);
+  for (const [tool] of bad) issues.push({ field: `prices.${tool}`, reason: "invalid", message: `prices.${tool} is a price in USD a call: a finite number, 0 or more.` });
+  // Keyed by tool names, which may be an object's own properties (`__proto__`): no prototype to fall into.
+  return bad.length ? undefined : (Object.assign(Object.create(null), value) as McpPrices);
+}
 
 function urlOf(value: unknown, issues: InputIssue[]): URL | undefined {
   if (typeof value !== "string" || value === "") return void issues.push({ field: "url", reason: value === undefined ? "missing" : "wrong_type", message: "url is the MCP server's Streamable HTTP endpoint, as text." });

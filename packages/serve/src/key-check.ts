@@ -39,6 +39,9 @@ export const KEY_CHECKS: Record<string, (key: string, env: NodeJS.ProcessEnv) =>
   // A list of the key's projects: Browserbase bills a session's browser time and proxy bandwidth, and this opens no
   // session (https://docs.browserbase.com/reference/api/list-projects, https://docs.browserbase.com/account/billing/plans).
   browserbase: (key, env) => ({ url: `${base(env.BROWSERBASE_BASE_URL, "https://api.browserbase.com")}/v1/projects`, headers: { "x-bb-api-key": key } }),
+  // A list of the key's browser sessions, one at most: Kernel bills a browser's running time, and this starts none
+  // (https://www.kernel.sh/docs/api-reference/browsers/list-browser-sessions, https://www.kernel.sh/docs/info/pricing).
+  kernel: (key, env) => ({ url: `${base(env.KERNEL_BASE_URL, "https://api.onkernel.com")}/browsers?limit=1`, headers: { authorization: `Bearer ${key}` } }),
   // A list of the account's models: TypeSafe prices a System One request's input tokens
   // (https://docs.typesafe.ai/api/list-models, https://docs.typesafe.ai/models).
   typesafe: (key, env) => ({ url: `${base(env.TYPESAFE_BASE_URL, "https://api.typesafe.ai")}/v1/models`, headers: { authorization: `Bearer ${key}` } }),
@@ -74,8 +77,9 @@ function quoted(text: string, key: string): string {
 }
 
 /** `row`'s key checked against its provider through `fetcher` (undefined: a faux server with no fake for it, so no call
- *  is made), in at most `ms`, and no longer than `stop` (the server closing) lets it wait. */
-export async function checkKey(row: { id: string; label: string }, key: string, env: NodeJS.ProcessEnv, fetcher: typeof fetch | undefined | null, ms = CHECK_MS, stop?: AbortSignal): Promise<CheckOutcome> {
+ *  is made), in at most `ms`, and no longer than `stop` (the server closing) lets it wait. A refusal names the key as
+ *  `name` (the server's own key, by its variable), else "this key" (the one a PUT sends). */
+export async function checkKey(row: { id: string; label: string }, key: string, env: NodeJS.ProcessEnv, fetcher: typeof fetch | undefined | null, ms = CHECK_MS, stop?: AbortSignal, name = "this key"): Promise<CheckOutcome> {
   const at = new Date().toISOString();
   const notChecked = (reason: string): KeyCheck => ({ state: "not_checked", reason, at });
   if (Object.hasOwn(NOT_CHECKED, row.id)) return notChecked(NOT_CHECKED[row.id]);
@@ -104,7 +108,7 @@ export async function checkKey(row: { id: string; label: string }, key: string, 
   // The status decides. The provider's words only add to it: quoted when its body reads in time, else not at all, so a
   // 401 whose body is cut off or stalls past the deadline still refuses the key.
   const said = quoted(await res.text().catch(() => ""), key);
-  if (status === 401) return { state: "refused", message: `${row.label} refused this key (401${said ? `: ${said}` : ""})` };
+  if (status === 401) return { state: "refused", message: `${row.label} refused ${name} (401${said ? `: ${said}` : ""})` };
   if (status === 403) return notChecked(`${row.label} would not answer the check (403${said ? `: ${said}` : ""}); the key may still work for its tools`);
   return notChecked(`${row.label} answered ${status}${said ? ` (${said})` : ""}`);
 }

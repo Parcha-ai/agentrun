@@ -9,6 +9,7 @@ import { randomUUID } from "node:crypto";
 import { Compile } from "typebox/compile";
 import { submitParameters } from "@parcha/agentrun-dsl";
 import { HarnessRunError, SessionFenced } from "./errors.js";
+import { bookRequest, type Ended } from "./booking.js";
 import type { AdapterEvent, AgentAdapter, HarnessEvent, HostTool, ModelPort, ModelRequest, ModelTicket, ModelUsage, NodeRequest, SessionRecord, SessionSpec, SessionStore, SessionWriter } from "./types.js";
 
 /** Exactly the interpreter's `runNode`, plus `stop`: a pause of every node it is running. With `drainMs`, each node
@@ -65,8 +66,10 @@ export type BeforeRequest = (request: {
 /** A request admitted and not yet answered, as a budget holds it. */
 export type InFlight = { turn: number; model: string; inputTokensMax?: number; outputTokensMax?: number };
 /** A host's admission: what it holds for the request (`holdUsd`), and the most output tokens, thinking included, it may
- *  be sent with (`outputTokensMax`, what is left of a cap can buy), which its ticket carries to the model proxy. */
-export type Admission = { holdUsd?: number; outputTokensMax?: number };
+ *  be sent with (`outputTokensMax`, what is left of a cap can buy), which its ticket carries to the model proxy. A
+ *  request its client stops part way (`ModelUsage.stoppedAfterBytes`), its cost unknown, counts at `stoppedUsd` of what
+ *  streamed, in tokens (one a byte), never more than `holdUsd`; without it, at `holdUsd`. */
+export type Admission = { holdUsd?: number; outputTokensMax?: number; stoppedUsd?: (streamedTokens: number) => number };
 
 export interface HarnessRunnerOptions {
   /** The run's store, through whoever owns it. */
@@ -163,6 +166,8 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
   let turns = inherited.length;
   /** What the host held for each request, by turn: what it counts at when its own cost never comes in. */
   const held = new Map<number, number>();
+  /** What the host counts each request of this process at if its client stops it part way (Admission.stoppedUsd). */
+  const stoppedAt = new Map<number, (streamedTokens: number) => number>();
   requests.forEach((data, i) => {
     const figure = heldFigure(data.heldUsd);
     if (figure !== undefined) held.set(inherited[i]!, figure);
@@ -173,10 +178,13 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
   let spentUsd: number | null = 0;
   for (const r of options.records) {
     if (r.kind !== RUNNER_RECORDS.turn) continue;
-    const data = r.data as { turn?: number; usd?: number | null };
+    const data = r.data as { turn?: number; usd?: number | null; heldUsd?: unknown; bookedUsd?: unknown };
     const turn = data.turn ?? inherited.find((t) => !answered.has(t)) ?? 0;
     answered.add(turn);
-    spentUsd = spent(spentUsd, data.usd === null ? held.get(turn) : (data.usd ?? 0));
+    // The figure it was booked at (bookRequest), as written. A record from before that has none: a cost that never came
+    // in at the figure its answer was booked at (a stopped request's), else what was held for it.
+    const booked = data.bookedUsd === null ? null : heldFigure(data.bookedUsd);
+    spentUsd = spent(spentUsd, booked !== undefined ? (booked ?? undefined) : data.usd === null ? (heldFigure(data.heldUsd) ?? held.get(turn)) : (data.usd ?? 0));
   }
   for (const turn of inherited) if (!answered.has(turn)) spentUsd = spent(spentUsd, held.get(turn));
   // The ids each request's response gave it, kept as its headers arrived: a request cut off after them reached the provider.
@@ -235,6 +243,8 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
     await write([{ kind: RUNNER_RECORDS.request, data: { turn, model, ...(hold === undefined ? {} : { heldUsd: hold }) } }]);
     turns = turn;
     if (hold !== undefined) held.set(turn, hold);
+    const stoppedUsd = verdict && "stoppedUsd" in verdict && typeof verdict.stoppedUsd === "function" ? verdict.stoppedUsd : undefined;
+    if (stoppedUsd) stoppedAt.set(turn, stoppedUsd);
     // A stop that came while the record was written: the request has not left. It is booked withdrawn, at $0, so no
     // later process books it as cut at an unknown price; if that write fails, it is booked cut, which is never less.
     // Its record is written, so it costs a turn of the cap, never money.
@@ -265,17 +275,33 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
         throw error;
       }
     },
-    afterRequest: async (usage: ModelUsage, ticket?: ModelTicket) => {
+    afterRequest: async (usage: ModelUsage, ticket?: ModelTicket, ended?: Ended) => {
       // The turn this request was admitted as (its ticket; without one, the earliest still in flight).
       const turn = ticket?.turn ?? open[0]?.turn ?? turns;
       const at = open.findIndex((f) => f.turn === turn);
       if (at >= 0) open.splice(at, 1);
-      // A cost that never came in (a response cut short): at what the host held for the request, else unknown.
-      spentUsd = spent(spentUsd, usage.usd === null ? held.get(turn) : usage.usd);
+      // A cost that never came in (a response cut short): at what the host held for the request, else unknown. One its
+      // client stopped part way at what the host counts it at by what streamed (one token a byte), never more than that.
+      const hold = held.get(turn);
+      const stoppedUsd = stoppedAt.get(turn);
+      stoppedAt.delete(turn);
+      // Its hidden reasoning counts beside all it sent, less the reasoning it sent: max(0, budget - reasoning bytes), so
+      // reasoning that streamed is not counted twice and answer text never stands in for it.
+      const figure0 = (value: unknown) => (typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0);
+      const hidden = figure0(usage.stoppedHiddenTokens);
+      const reasoned = figure0(usage.stoppedReasoningBytes);
+      const sent = typeof usage.stoppedAfterBytes === "number" && usage.stoppedAfterBytes >= 0 ? usage.stoppedAfterBytes : undefined;
+      const stopped = usage.usd === null && hold !== undefined && stoppedUsd && sent !== undefined ? heldFigure(stoppedUsd(sent + Math.max(0, hidden - reasoned))) : undefined;
+      // How its path saw it end, booked by the one rule (booking.ts); a host from before that says nothing of it: as
+      // before, its own cost, else what streamed of a stop, else the hold.
+      const booking = ended ? bookRequest(ended, { ...(hold === undefined ? {} : { hold }), ...(stoppedUsd ? { stoppedPrice: stoppedUsd } : {}) }) : undefined;
+      const figure = booking ? booking.usd : usage.usd !== null ? usage.usd : stopped === undefined ? hold : Math.min(hold!, stopped);
+      spentUsd = spent(spentUsd, figure ?? undefined);
       try {
-        // A runner.turn with the ids holds what a carried response record of this turn would: that one is dropped.
+        // A runner.turn with the ids holds what a carried response record of this turn would: that one is dropped. A
+        // stopped one keeps the figure it counts at (`heldUsd`), so a later process counts it the same.
         const covers = (r: SessionRecord) => usage.providerIds !== undefined && (r.data as { turn?: number }).turn === turn;
-        await write([{ kind: RUNNER_RECORDS.turn, data: { turn, usd: usage.usd, ...tokensOf(usage), ...(usage.estimated ? { estimated: true } : {}), ...(usage.tableUsd === undefined ? {} : { tableUsd: usage.tableUsd }), ...(usage.providerIds ? { providerIds: usage.providerIds } : {}) } }], covers);
+        await write([{ kind: RUNNER_RECORDS.turn, data: { turn, usd: usage.usd, ...tokensOf(usage), ...(usage.estimated ? { estimated: true } : {}), ...(usage.tableUsd === undefined ? {} : { tableUsd: usage.tableUsd }), ...(usage.providerIds ? { providerIds: usage.providerIds } : {}), ...(stopped === undefined ? {} : { heldUsd: Math.min(hold!, stopped), stopped: true }), ...(booking ? { bookedUsd: booking.usd, rule: booking.rule } : {}) } }], covers);
       } catch (error) {
         // A paid request whose cost can't be kept: the attempt stops, saying so, rather than spend on uncounted.
         if (!options.stopped?.()) failed ??= end("model_error", `harness node stopped: the cost of a paid request could not be recorded: ${String((error as Error)?.message ?? error).slice(0, 200)}`);

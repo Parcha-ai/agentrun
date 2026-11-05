@@ -18,7 +18,18 @@ harness adapter the way they run on Pi, durable in AgentRun's own store.
   call that finished during the pause is never run, or paid for, again.
 - `AgentAdapter` is the interface a harness implements: `check` refuses a session before anything is spent (a fork it
   cannot make), and `open` restores a session from its records. A session's `settleOpenTurn()` ends a turn its records
-  still hold open (one the person stopped), interrupted, and runs nothing, so the turn is never resumed.
+  still hold open (one the person stopped), interrupted, and runs nothing, so the turn is never resumed. A prompt it
+  stopped before the harness placed it stays in the conversation: the next prompt or follow-up carries its text first,
+  with a line saying it was stopped before any work on it began. The carry is in that message's text in the session's
+  state, so a crash's recovery of it, placed but never recorded by the CLI, sends the stopped words too. So does a
+  prompt the harness placed and its CLI never took (the stop came between the two), carried by `settleTurn`'s `unsent`.
+  Whether the CLI took it is the CLI's own record as the session keeps it, the history a resumed CLI is given:
+  claude-agent's transcript, Codex's rollout (Codex answers `turn/start` before it writes the message, and the Claude
+  SDK writes a message to the CLI at once, so a stop can kill either before it records it). A prompt that record lacks
+  the next turn's model never saw, so carrying it never sends it twice. OpenCode marks a prompt just before it sends it,
+  and a marked one is never carried. A recovery message records which placed prompts it carries before it goes, so once
+  the CLI holds it they count as recorded, across a chain of recoveries. A follow-up's own prompt, named to the settle
+  (`opening`), is withdrawn and never carried.
 - `SessionStore` is the run's store for sessions. A session is written only through a writer, and `open(key)` takes the
   session: every writer opened earlier for that key is fenced from then on, and its appends are refused
   (`SessionFenced`) with nothing written. The runner opens one writer per attempt and hands it to the adapter, so a

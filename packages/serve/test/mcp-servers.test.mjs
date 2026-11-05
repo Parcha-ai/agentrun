@@ -358,3 +358,14 @@ test("the launcher's warning for a seal key it cannot use names MCP server crede
   assert.equal(ran.status, 0, ran.stderr);
   assert.match(ran.stderr, /so the server keeps no tool key and no MCP server credential: make the file 0600 and its directory 0700 \(chmod 700 \S+; chmod 600 \S+seal\.key\)/);
 });
+
+test("the names AgentRun's own tools are called by, hands and monid, are no MCP server's: a PUT under one is 422 on its name, with why, and nothing is saved", async (t) => {
+  const { api } = await serve(t);
+  const server = await fake(t, {});
+  for (const name of ["hands", "monid"]) {
+    const refused = await api("PUT", `/settings/mcp-servers/${name}`, { url: server.url, auth: { type: "none" } });
+    assert.deepEqual([refused.status, refused.body.error?.code, refused.body.error?.fields?.map((f) => [f.field, f.reason])], [422, "input_invalid", [["name", "reserved"]]], `${name}: ${JSON.stringify(refused.body)}`);
+    assert.match(refused.body.error.fields[0].message, new RegExp(`'${name}' is reserved for AgentRun's own tools`));
+    assert.equal((await api("GET", `/settings/mcp-servers/${name}`)).status, 404, `${name}: nothing saved`);
+  }
+});

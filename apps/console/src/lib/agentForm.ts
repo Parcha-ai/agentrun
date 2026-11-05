@@ -5,16 +5,18 @@ import type { AgentTool, ToolSettings } from "./v2";
 import { decisionStarter, STARTER_PROVIDERS } from "./decisionStarter";
 import { workflowStarter } from "./workflowStarter";
 
-export type HarnessId = "pi" | "claude-agent" | "codex";
+export type HarnessId = "pi" | "claude-agent" | "codex" | "opencode";
 /** `learning`: whether the agent's runs learn (an agentic revision's switch; absent is off). */
-export type Definition = { version: number; name: string; description?: string; instructions?: string; workflow?: unknown; harness?: string; thinking?: string; model?: string; learning?: boolean; skills: string[]; tools: string[]; tool_settings?: ToolSettings; [field: string]: unknown };
+/** `max_cost_usd`: the agent's default spend cap per run, in dollars, for a run (or a trigger) with no cap of its own; an
+ *  agentic revision's only. Absent or 0 is none, and an edit clears it only with an explicit 0. */
+export type Definition = { version: number; name: string; description?: string; instructions?: string; workflow?: unknown; harness?: string; thinking?: string; model?: string; learning?: boolean; max_cost_usd?: number; skills: string[]; tools: string[]; tool_settings?: ToolSettings; [field: string]: unknown };
 /** What a save's answer says this host lacks to run the revision (`reason` not_set_up_here, say): it saved, and a run of it
  *  is refused until the host has it. `field` names the definition's field (`definition.model`, `definition.tools[2]`). */
 export type SaveWarning = { field: string; reason: string; message: string };
 /** `warnings`: on a create's or an edit's answer only (never on a read of the agent); the console keeps a create's for
  *  the agent's page that opens after it (client.ts). */
 export type Agent = { agent_id: string; kind: "agentic" | "workflow"; revision: string; revisions: number; definition: Definition; archived_at: string | null; runs?: { count: number; live: number }; warnings?: SaveWarning[]; tools?: AgentTool[] };
-export type AgentFields = Partial<Pick<Definition, "name" | "description" | "instructions" | "harness" | "thinking" | "model" | "tools" | "workflow" | "learning" | "tool_settings">> & { workflowText?: string; place?: Place };
+export type AgentFields = Partial<Pick<Definition, "name" | "description" | "instructions" | "harness" | "thinking" | "model" | "tools" | "workflow" | "learning" | "tool_settings" | "max_cost_usd">> & { workflowText?: string; maxCostText?: string; place?: Place };
 
 /** The body of a definition edit: the current definition with the edited fields; name and
  *  description stay as the agent was created. Every field the
@@ -73,17 +75,28 @@ export function decisionProvider(workflows: { adapters?: string[]; decisions?: {
 /** The body that creates an agent: its first revision, with what the form names and no skills yet. A starter choice
  *  (Decision, Workflow) makes a workflow agent from that starter (Decision's on the server's decision provider), with no
  *  instructions, harness, thinking, model or tools: a workflow revision keeps none of those beside its workflow. */
-export function createBody(f: { name: string; description: string; instructions: string; harness: string; tools: string[]; thinking?: string; model?: string; learning?: boolean; decisionProvider?: string; tool_settings?: ToolSettings; place?: Place }): { definition: Definition } {
+export function createBody(f: { name: string; description: string; instructions: string; harness: string; tools: string[]; thinking?: string; model?: string; learning?: boolean; decisionProvider?: string; tool_settings?: ToolSettings; place?: Place; max_cost_usd?: number }): { definition: Definition } {
   if (isStarter(f.harness)) {
     return { definition: { version: 1, name: f.name, ...(f.description.trim() ? { description: f.description } : {}), workflow: STARTERS[f.harness]!(f.decisionProvider), skills: [], tools: [] } };
   }
   return {
     definition: {
       version: 1, name: f.name, ...(f.description.trim() ? { description: f.description } : {}), instructions: f.instructions, harness: f.harness,
-      ...(f.thinking ? { thinking: f.thinking } : {}), ...(f.model?.trim() ? { model: f.model.trim() } : {}), ...(f.place ? { place: f.place } : {}), ...(f.learning ? { learning: true } : {}), skills: [], tools: f.tools,
+      ...(f.thinking ? { thinking: f.thinking } : {}), ...(f.model?.trim() ? { model: f.model.trim() } : {}), ...(f.place ? { place: f.place } : {}), ...(f.learning ? { learning: true } : {}), ...(f.max_cost_usd !== undefined ? { max_cost_usd: f.max_cost_usd } : {}), skills: [], tools: f.tools,
       ...(f.tool_settings && Object.keys(f.tool_settings).length ? { tool_settings: f.tool_settings } : {}),
     },
   };
+}
+
+/** The default cap field's text as a definition's `max_cost_usd`: empty is none (`value` undefined), a number is sent as
+ *  it is (the server judges it), and text that is no number is not sent at all. */
+export function capOf(text: string | undefined): { ok: true; value: number | undefined } | { ok: false; message: string } {
+  const raw = (text ?? "").trim();
+  if (!raw) return { ok: true, value: undefined };
+  // A leading $ is allowed, but a $ with no number after it is no number (never read as an empty field, which clears).
+  const t = raw.replace(/^\$\s*/, "");
+  const n = Number(t);
+  return t && Number.isFinite(n) ? { ok: true, value: n } : { ok: false, message: "A spend cap is a number of dollars, such as 2.50; empty means none." };
 }
 
 /** One tool the server offers (`GET /v2/capabilities` `tools`): whether it can run here, what it lacks, what it does
@@ -115,9 +128,14 @@ export function toolsFor(harness: string, offers: ToolOffer[]): ToolOffer[] {
 export const sandboxReason = (tool: ToolOffer, place: unknown): string | undefined =>
   tool.sandbox_only && (place as { mode?: unknown } | undefined)?.mode !== "sandbox" ? "Sandbox-only: it runs in a box, and this agent's place is the runner" : undefined;
 
-/** A new agent's tools: on by default, every tool its harness runs here that the server can run now, but a sandbox-only
- *  one (bash): a new agent's place is the runner, which has no shell. */
-export const defaultTools = (harness: string, offers: ToolOffer[]) => toolsFor(harness, offers).filter((t) => t.available && !t.sandbox_only).map((t) => t.name);
+/** The tools the server refuses in a sandbox place (serve's runnable.ts, `runnerOnly`): the browser, which files the run's
+ *  work/ from the server by path. The server's own rule, until its capabilities mark them. */
+const RUNNER_ONLY: ReadonlySet<string> = new Set(["browser"]);
+
+/** A new agent's tools: on by default, every tool its harness runs here that the server can run now. In a sandbox `place`
+ *  (the server's default for a new agent, where it has a box) a sandbox-only one (bash) too, and never a runner-only one
+ *  (browser); on the runner, no sandbox-only one, since the runner has no shell. */
+export const defaultTools = (harness: string, offers: ToolOffer[], place?: Place) => toolsFor(harness, offers).filter((t) => t.available && (place?.mode === "sandbox" ? !RUNNER_ONLY.has(t.name) : !t.sandbox_only)).map((t) => t.name);
 
 /** The tools that reach the web: a page read (fetch_page, web_fetch) or a search (web_search). The server's capabilities
  *  mark no tool as one, so they are named here. */
@@ -125,10 +143,10 @@ export const WEB_TOOLS: readonly string[] = ["fetch_page", "web_fetch", "web_sea
 /** Whether an agent with these tools can reach the web: through any of WEB_TOOLS. */
 export const reachesWeb = (tools: readonly string[]) => tools.some((t) => WEB_TOOLS.includes(t));
 
-const LABEL: Record<HarnessId, string> = { pi: "Pi", "claude-agent": "Claude", codex: "Codex" };
-const ORDER: HarnessId[] = ["pi", "claude-agent", "codex"];
+const LABEL: Record<HarnessId, string> = { pi: "Pi", "claude-agent": "Claude", codex: "Codex", opencode: "OpenCode" };
+const ORDER: HarnessId[] = ["pi", "claude-agent", "codex", "opencode"];
 
-/** The harness choices: pi, Claude and Codex as the server lists them (`GET /v2/capabilities` `harnesses`), each one the
+/** The harness choices: pi, Claude, Codex and OpenCode as the server lists them (`GET /v2/capabilities` `harnesses`), each one the
  *  server does not run shown disabled with its reason. A harness the server does not list is not offered. With
  *  `decision` (a new agent), the starters follow them: Decision, available when the server runs decision workflows,
  *  and Workflow, available on every server. */

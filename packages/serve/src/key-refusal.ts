@@ -3,7 +3,7 @@
 // holds on every harness. Only the shapes the harnesses give count (REFUSED); a 401 anywhere else in an error (a
 // count, a file name, a duration, another service's status) is no refused key, and the error is left as it is.
 import { DEFAULT_HARNESS } from "./harness.js";
-import { redactSecrets } from "./learn/secrets.js";
+import { redactSecrets, valueMatcher } from "./learn/secrets.js";
 import { hostModel, MODEL_KEYS, openRouterOnly } from "./model.js";
 
 /** The key a run's model requests carry, and who reads it: a provider's (saved in Settings → Model keys, or set where
@@ -23,7 +23,7 @@ export function runKeyOf(env: NodeJS.ProcessEnv, harness: string = DEFAULT_HARNE
   const gateway: RunKey = { who: "The gateway at AGENT_MODEL_BASE_URL", field: "AGENT_MODEL_API_KEY", saved: false };
   if (harness === "claude-agent") return row(provider === "openrouter" || openRouterOnly("claude-agent", env) ? "openrouter" : "anthropic");
   if (env.AGENT_MODEL_BASE_URL) return gateway;
-  if (harness === "codex") return row(provider === "openrouter" || openRouterOnly("codex", env) ? "openrouter" : "openai");
+  if (harness === "codex" || harness === "opencode") return row(provider === "openrouter" || openRouterOnly(harness, env) ? "openrouter" : "openai");
   return provider === undefined ? undefined : row(provider);
 }
 
@@ -67,6 +67,68 @@ export function redacted(text: string, secrets: readonly string[]): string {
   const shift = window - out.length + 2 * out.split("[redacted]").length - 2;
   const keep = SHOWN - shift;
   return keep <= 0 ? "[redacted]" : `${out.slice(0, keep)}...`;
+}
+
+/** The most of a run's answer one redaction pass reads: learning's redactSecrets restarts after each overlapping match,
+ *  so its cost grows with the square of what it reads; pieces this size keep each pass small. */
+const ANSWER_PIECE = 8192;
+
+/** How many texts redactedAnswer has read in this process: a test reads it to see a run's view served from what an
+ *  earlier view redacted (runs.ts servedOnce). */
+export const answerPasses = { count: 0 };
+
+/** `text`, a run's answer as serve serves it (its final answer, or a string in its workflow output), with no held secret
+ *  in it, and NEVER cut: an answer is shown whole. The same rule as redacted() (redactSecrets over `secrets`), over the
+ *  whole text, read in pieces of about ANSWER_PIECE characters cut at whitespace. No form of a held value redactSecrets
+ *  finds as it stands (as written, JSON-escaped, base64, hex) holds whitespace, so a cut there splits none. A run of more
+ *  than ANSWER_PIECE characters with no whitespace is no person's text and is shown as "[redacted]", unread. A value split
+ *  by whitespace across a cut, or a form only found across pieces, still shows to one valueMatcher pass over the joined
+ *  output, and then the whole answer is "[redacted]", as redactSecrets does with a text that still holds a value. */
+export function redactedAnswer(text: string, secrets: readonly string[]): string {
+  if (!text) return text;
+  answerPasses.count++;
+  const parts: string[] = [];
+  for (let from = 0; from < text.length; ) {
+    let to = Math.min(text.length, from + ANSWER_PIECE);
+    if (to < text.length) {
+      const space = text.slice(from, to).search(/\s[^\s]*$/);
+      if (space <= 0) {
+        // No whitespace in this piece: the run of text with none goes on to the next whitespace, read as one.
+        const next = text.slice(to).search(/\s/);
+        to = next < 0 ? text.length : to + next;
+        parts.push(to - from > ANSWER_PIECE ? "[redacted]" : redactSecrets(text.slice(from, to), secrets, Buffer.byteLength(text.slice(from, to))));
+        from = to;
+        continue;
+      }
+      to = from + space + 1;
+    }
+    const piece = text.slice(from, to);
+    parts.push(redactSecrets(piece, secrets, Buffer.byteLength(piece)));
+    from = to;
+  }
+  const out = parts.join("");
+  return valueMatcher(secrets)(out) ? "[redacted]" : out;
+}
+
+/** `value`, a run's workflow output, with redactedAnswer applied to each string and number in it, property NAMES
+ *  included (a dictionary field can be keyed by anything a run wrote), its shape kept. Two names of one object that come
+ *  out the same would merge one value over the other: that object is withheld whole, as "[redacted]". */
+export function redactedOutput(value: unknown, secrets: readonly string[]): unknown {
+  if (typeof value === "string") return redactedAnswer(value, secrets);
+  // A held value can be all digits (a gateway's key), and a record can quote it as a number: one whose digits hold a held
+  // value, by the same rule as a string's, is withheld as "[redacted]". A boolean's text is shorter than any held value.
+  // A number can also EQUAL a held value whose text differs from its own (a leading zero, 1e21, a long key read lossy).
+  if (typeof value === "number" || typeof value === "bigint") {
+    const text = String(value);
+    const held = redactedAnswer(text, secrets) !== text || secrets.some((secret) => secret.trim() !== "" && Number(secret) === Number(value));
+    return held ? "[redacted]" : value;
+  }
+  if (Array.isArray(value)) return value.map((item) => redactedOutput(item, secrets));
+  if (value && typeof value === "object") {
+    const entries = Object.entries(value).map(([key, item]) => [redactedAnswer(key, secrets), redactedOutput(item, secrets)] as const);
+    return new Set(entries.map(([key]) => key)).size === entries.length ? Object.fromEntries(entries) : "[redacted]";
+  }
+  return value;
 }
 
 /** What a thinking or text block may show while it streams (pi-durable-agent's `redactLive`): what has streamed so far,

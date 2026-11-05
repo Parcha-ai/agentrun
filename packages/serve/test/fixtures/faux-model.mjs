@@ -26,7 +26,14 @@ export default function reply(context, faux) {
   const browse = first.includes("Browse the example page");
   // Files the page as evidence with browser_read, then delivers the record.
   const read = first.includes("Read the example page");
-  if (context.messages.some((m) => m.role === "system" && m.toolsAdded?.some((tool) => tool.name === "submit"))) {
+  // "Use the learned workflow <name> on <question>.": the run's learned_workflow, then its answer as the tool said it.
+  const learned = /Use the learned workflow (\S+) on (.+?)\.$/.exec(first);
+  if (learned && !context.messages.some((m) => m.role === "system" && m.toolsAdded?.some((tool) => tool.name === "submit")) && !context.tools?.some((tool) => tool.name === "submit")) {
+    return results === 0 ? faux.message(faux.toolCall("learned_workflow", { name: learned[1], input: { question: learned[2] } }), { stopReason: "toolUse" }) : faux.message(`Ran: ${textOf(context.messages.at(-1))}`);
+  }
+  // A workflow's model node on pi-durable (its submit tool added by a system message), or in a session of its own (a
+  // learned workflow's: agentrun-pi's host runner, its tools in the context).
+  if (context.messages.some((m) => m.role === "system" && m.toolsAdded?.some((tool) => tool.name === "submit")) || context.tools?.some((tool) => tool.name === "submit")) {
     // A node that says whether anything it can reach holds a decision key (Jev's or Parallel's): this process's
     // environment (as its tools get it), the environment the kernel shows, the descriptor the server hands the keys on,
     // and a program it starts.
@@ -34,6 +41,21 @@ export default function reply(context, faux) {
     const canary = JSON.stringify(context);
     // A node whose provider echoed the key it was sent (timeline-key-words.test.mjs holds that value as a key).
     if (canary.includes("Fail echoing a held key")) return faux.message("", { stopReason: "error", errorMessage: '401 {"message":"Key not-a-secret-echoed-key-0123 is not valid"}' });
+    // A node whose record carries the key as a property NAME, nested too; and two names that redact to the same one.
+    if (canary.includes("Submit the held key as a name")) {
+      if (answered) return faux.message("Submitted.");
+      return faux.message(faux.toolCall("submit", { note: "ok", n: 1, dict: { [CUT_KEY]: "found", nested: { [CUT_KEY]: "deep", kept: "yes" } } }), { stopReason: "toolUse" });
+    }
+    // A node whose record carries an all-digit held key as a number (final-answer-redact.test.mjs holds it as the model key).
+    if (canary.includes("Submit the held number")) {
+      if (answered) return faux.message("Submitted.");
+      return faux.message(faux.toolCall("submit", { note: "ok", n: Number(["1234", "5678", "9012"].join("")), kept: 42 }), { stopReason: "toolUse" });
+    }
+    // A node whose record carries the key in a string field (final-answer-redact.test.mjs holds CUT_KEY as a key).
+    if (canary.includes("Submit the held key")) {
+      if (answered) return faux.message("Submitted.");
+      return faux.message(faux.toolCall("submit", { note: `kept ${CUT_KEY} here`, n: 7 }), { stopReason: "toolUse" });
+    }
     // A node whose model request a provider refused (401), in pi-ai's words.
     if (canary.includes("Fail with a refused key")) return faux.message("", { stopReason: "error", errorMessage: '401: {"message":"User not found","code":401}' });
     // A node that says which decision keys its process was handed on their descriptor: names only, never a value.
@@ -84,7 +106,11 @@ export default function reply(context, faux) {
     if ((browse || read) && results === 0) return faux.message(faux.toolCall(read ? "browser_read" : "snapshot", {}), { stopReason: "toolUse" });
     if ((browse || read) && results === 1) return faux.message(faux.toolCall("submit", { answer: 42 }), { stopReason: "toolUse" });
     if (answered) return faux.message("Submitted.");
-    const submit = faux.message(faux.toolCall("submit", { answer: 42 }), { stopReason: "toolUse" });
+    // In a session of its own (agentrun-pi's host runner), submit takes the DSL's envelope: the record under `value`.
+    const submitTool = [...context.messages.flatMap((m) => m.toolsAdded ?? []), ...(context.tools ?? [])].find((tool) => tool.name === "submit");
+    const params = submitTool?.parameters;
+    const enveloped = Boolean(params?.properties?.value && Object.keys(params.properties).length === 1 && params.required?.includes("value"));
+    const submit = faux.message(faux.toolCall("submit", enveloped ? { value: { answer: 42 } } : { answer: 42 }), { stopReason: "toolUse" });
     // "Answer once <file> exists.": the node submits when the test has made that file.
     const gate = /Answer once (\S+?) exists\./.exec(first)?.[1];
     if (gate) return untilExists(gate).then(() => submit);
@@ -121,16 +147,52 @@ export default function reply(context, faux) {
   }
   // Quotes a key read from a file the test names (so the prompt never holds it): in its thinking, in its text (base64),
   // in a tool call's arguments, then in its answer (timeline-redact-all.test.mjs holds that value as a key).
+  // Records the first message it was given, exactly as the model received it, then answers (user-row-redact.test.mjs).
+  const record = /Record what you got in (\S+) now\.$/.exec(first);
+  if (record) {
+    process.getBuiltinModule("node:fs").writeFileSync(record[1], first);
+    return faux.message("Recorded.");
+  }
+  // Answers with a console link and the key in a file, in a URL's query (answer-urls.test.mjs).
+  const linked = /^Answer with the console link and the key in (\S+)$/.exec(first);
+  if (linked) {
+    const key = process.getBuiltinModule("node:fs").readFileSync(linked[1], "utf8").trim();
+    return faux.message(`Open http://127.0.0.1:7340/#/runs/01a1a961-3257-7131-a652-c6fb78880244?x=1 and see https://api.example/v1?k=${key}&y=2 for it.`); // key-gate: loopback-rule a console link an agent's answer gives, as text
+  }
   const quote = /^Quote the key in (\S+)$/.exec(first);
   if (quote) {
     const key = process.getBuiltinModule("node:fs").readFileSync(quote[1], "utf8").trim();
     if (results === 0) return faux.message([faux.thinking(`I hold ${key} now.`), faux.text(`The key is ${Buffer.from(key).toString("base64")}.`), faux.toolCall("read", { path: `notes/${key}.txt` })], { stopReason: "toolUse" });
     return faux.message(`Done with ${key}.`);
   }
+  // Runs monid's /person/enrich (priced at once), then /slow (held until stopped, or cut by a crash), then answers.
+  if (first.includes("Run monid's /person/enrich, then its slow endpoint.")) {
+    const steps = [["monid_run", { provider: "faux", endpoint: "/person/enrich", input: { name: "Ada" } }], ["monid_run", { provider: "faux", endpoint: "/slow", input: {} }]];
+    return results < steps.length ? faux.message(faux.toolCall(...steps[results]), { stopReason: "toolUse" }) : faux.message("Ran.");
+  }
+  // Runs monid's /person/enrich with no inspect first (held at the run allowance): one call in the first turn, then, in
+  // each turn after it (a raised cap's follow-up), one more call, or two with "twice"; then answers with the last result.
+  if (first.includes("Run monid's /person/enrich, called again after a raise")) {
+    const calls = first.includes("twice") ? 2 * users.length - 1 : users.length;
+    return results < calls ? faux.message(faux.toolCall("monid_run", { provider: "faux", endpoint: "/person/enrich", input: { name: "Ada" } }), { stopReason: "toolUse" }) : faux.message(`Ran: ${textOf(context.messages.at(-1))}`);
+  }
   // Finds, reads and runs a monid endpoint, a call per turn, under the tools' wire names; then answers with the run's result.
   if (first.includes("Enrich with monid")) {
     const steps = [["monid_discover", { query: "enrich a person" }], ["monid_inspect", { provider: "faux", endpoint: "/person/enrich" }], ["monid_run", { provider: "faux", endpoint: "/person/enrich", input: { name: "Ada" } }]];
     return results < steps.length ? faux.message(faux.toolCall(...steps[results]), { stopReason: "toolUse" }) : faux.message(`Ran: ${textOf(context.messages.at(-1))}`);
+  }
+  // Uses the skill that fits, as a run told of its skills on demand does: reads the SKILL.md whose path its system prompt
+  // names, then answers with the skill's FORMAT-LINE as the file has it. A prompt that already holds the skill's text says
+  // BODY-INLINED; one that names no skill's file says so.
+  if (first.startsWith("Use the skill that fits:")) {
+    const sectionText = (part) => (typeof part === "string" ? part : Array.isArray(part) ? part.map((p) => (typeof p?.text === "string" ? p.text : "")).join("") : "");
+    const system = [context.systemPrompt ?? "", ...context.messages.filter((m) => m.role === "system").flatMap((m) => [textOf(m), ...Object.values(m.sections ?? {}).map(sectionText)])].join("\n");
+    if (/^FORMAT-LINE:/m.test(system)) return faux.message("BODY-INLINED");
+    if (!answered) {
+      const path = /\((\.agents\/skills\/[^)\s]+\/SKILL\.md)\)/.exec(system)?.[1];
+      return path ? faux.message(faux.toolCall("read", { path }), { stopReason: "toolUse" }) : faux.message("NO SKILL LISTED");
+    }
+    return faux.message(/^FORMAT-LINE:.*$/m.exec(textOf(context.messages.at(-1)))?.[0] ?? "NO FORMAT IN THE FILE");
   }
   // Reads each path its first message lists with read, one per turn, then says so; "once <file> exists" holds the first
   // read until the test has made that file (and planted what the reads need).
@@ -159,6 +221,11 @@ export default function reply(context, faux) {
   // Searches the web once for what its first message says, with web_search, then says so.
   const query = /^Search the web for (.+)$/s.exec(first)?.[1];
   if (query) return results === 0 ? faux.message(faux.toolCall("web_search", { query, n: 3 }), { stopReason: "toolUse" }) : faux.message("Searched.");
+  // A follow-up that browses once more: a snapshot, then what it saw.
+  if (browse && users.length > 1 && last === "Browse the example page again.") return answered ? faux.message(`Seen again: ${textOf(context.messages.at(-1))}`) : faux.message(faux.toolCall("snapshot", {}), { stopReason: "toolUse" });
+  // "Browse the example page once <file> exists." answers, its browser still open, only once the test has made that file.
+  const browseGate = /^Browse the example page once (\S+) exists\.$/.exec(first)?.[1];
+  if (browse && results > 0 && browseGate) return untilExists(browseGate).then(() => faux.message(`Seen: ${textOf(context.messages.at(-1))}`));
   if (browse) return results === 0 ? faux.message(faux.toolCall("snapshot", {}), { stopReason: "toolUse" }) : faux.message(`Seen: ${textOf(context.messages.at(-1))}`);
   // A follow-up whose answer starts only after a minute: a stop before then cuts it before its first content.
   if (users.length > 1 && last === "Slowly, please.") return slow(faux, 60_000, "Done slowly.");
@@ -219,8 +286,25 @@ export default function reply(context, faux) {
   // The key echoed with a line break in its middle, as a provider that wraps long lines would.
   if (first.includes("Fail with a wrapped key")) return faux.message("", { stopReason: "error", errorMessage: `401 {"message":"Key ${CUT_KEY.slice(0, 18)}\n${CUT_KEY.slice(18)} is not valid"}` });
   if (first.includes("Fail echoing an encoded key")) return faux.message("", { stopReason: "error", errorMessage: `401 {"message":"Key ${Buffer.from(CUT_KEY).toString("base64")} is not valid"}` });
+  // An answer that quotes the held key, plainly and base64-encoded (final-answer-redact.test.mjs holds CUT_KEY as a key).
+  if (first.includes("Answer quoting the held key.")) return faux.message(`Here it is: ${CUT_KEY} and ${Buffer.from(CUT_KEY).toString("base64")}. The rest stays.`);
+  // A long answer (about 50 KB) that quotes the held key near its end.
+  if (first.includes("Answer at length quoting the held key.")) return faux.message(`${"word ".repeat(10_000)}near the end ${CUT_KEY} done.`);
+  // A workflow's llm call that answers with the held key, and one whose provider echoes it in its error (graph-redact.test.mjs).
+  if (first.includes("Answer the graph with the held key.")) return faux.message(`Graph: ${CUT_KEY} here, and ${["later", "held", "zyxwvutsrq"].join("-")} too.`);
+  if (first.includes("Fail the graph call echoing the held key.")) return faux.message("", { stopReason: "error", errorMessage: `500 {"message":"Key ${CUT_KEY} is not valid"}` });
+  // A provider error of about 4 KB that quotes the held key again and again, so one copy sits across any cut at 2000.
+  if (first.includes("Fail the graph call at length.")) return faux.message("", { stopReason: "error", errorMessage: `500 ${`${CUT_KEY} `.repeat(110)}` });
+  // About 1 MB of "sk-" runs, a space every 8 K: each run is one long sk- shape that every third character starts again.
+  if (first.includes("Answer with a megabyte of sk- runs.")) return faux.message(`${"sk-".repeat(2730)} `.repeat(128));
+  // An answer quoting a value no key holds yet (final-answer-redact.test.mjs saves it as one after the run).
+  if (first.includes("Answer quoting the later key.")) return faux.message(`Later: ${["not-a-secret", "later-key-0123456789abcdef"].join("-")} ends here.`);
   // A provider error that is no 401 but echoes the key it was sent.
   if (first.includes("Fail echoing a held key")) return faux.message("", { stopReason: "error", errorMessage: '500 {"message":"Key not-a-secret-echoed-key-0123 is not valid"}' });
+  // A provider's content filter stopping the answer, in pi-ai's words for it on each API (its stop reason "error"): the
+  // Responses API's incomplete answer, Chat Completions' finish_reason, and the Messages API's refusal with no explanation.
+  const filtered = /Stop on the content filter \((responses|completions|anthropic)\)/.exec(first)?.[1];
+  if (filtered) return faux.message("", { stopReason: "error", errorMessage: { responses: "Response incomplete: content_filter", completions: "Provider finish_reason: content_filter", anthropic: "The model refused to complete the request" }[filtered] });
   // pi-ai's words for a provider that refused the key (401), as a model request on any tier would end.
   if (first.includes("Fail with a refused key")) return faux.message("", { stopReason: "error", errorMessage: '401: {"message":"User not found","code":401}' });
   // A final stop of the model's own with no text (turn-record.test.mjs): one empty text block (and an empty thinking

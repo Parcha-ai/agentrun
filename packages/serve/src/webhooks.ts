@@ -17,9 +17,13 @@ import { seal, unseal } from "@parcha/pi-durable-agent";
 import { ApiError, invalid } from "./errors.js";
 import { writeDurableSync } from "./files.js";
 import { SEAL_KEY_ENV, sealKeyOf } from "./tool-keys.js";
+import type { TriggerFailed } from "./triggers.js";
 import { isObject, unknownFields } from "./validate.js";
 
-export const WEBHOOK_EVENTS = ["run.needs_input", "run.ended"] as const;
+/** A run's two notices, which runs.ts tells. */
+export const RUN_EVENTS = ["run.needs_input", "run.ended"] as const;
+/** Every message type a webhook is sent: a run's notices, and a trigger's failed firing (triggers.ts). */
+export const WEBHOOK_EVENTS = [...RUN_EVENTS, "trigger.failed"] as const;
 /** The message types: a run's two notices, and the test send's. */
 export const MESSAGE_TYPES = [...WEBHOOK_EVENTS, "webhook.test"] as const;
 type MessageType = (typeof MESSAGE_TYPES)[number];
@@ -46,7 +50,7 @@ const MAX_URL = 2048;
  *  held here only, its outbox write failed; `off`, no webhook set, or one a 410 turned off, so nothing is to be sent;
  *  `closed`, the server is stopping. */
 export type Emitted = "queued" | "unsaved" | "off" | "closed";
-export type RunNotice = { run_id: string; agent_id: string; status: string; title: string; pending?: { kind: "question" | "stopped" } };
+export type RunNotice = { run_id: string; agent_id: string; status: string; title: string; pending?: { kind: "question" | "approval" | "stopped" | "budget" } };
 type Config = { url: string; secret: string; updated_at: string; disabled?: { at: string; reason: string } };
 type Message = { id: string; type: MessageType; body: string; created_at: string; status: "pending" | "delivered" | "failed"; attempts: number; next_at: number | null };
 /** What the outbox queued of one run: its end (its time), and the wait it stands at (its mark), kept until the run moves
@@ -61,6 +65,34 @@ const iso = (ms: number) => new Date(ms).toISOString();
 /** The signature header of `body`, sent as message `id` at `timestamp` (Unix seconds), under `secret` (`whsec_...`). */
 export const signatureOf = (secret: string, id: string, timestamp: string, body: string) =>
   `v1,${createHmac("sha256", Buffer.from(secret.slice("whsec_".length), "base64")).update(`${id}.${timestamp}.${body}`).digest("base64")}`;
+
+/** The webhook as `file` keeps it, if it holds one. */
+function configIn(file: string): Config | undefined {
+  try {
+    const doc = JSON.parse(readFileSync(file, "utf8")) as unknown;
+    return isObject(doc) && doc.v === 1 && typeof doc.url === "string" && typeof doc.secret === "string" ? (doc as unknown as Config) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Its secret, opened under `key`, or why it is not. */
+function opened(key: Buffer | undefined, config: Config): { secret: string } | { signing: Exclude<Signing, "sealed"> } {
+  if (!key) return { signing: "seal_key_missing" };
+  try {
+    return { secret: unseal(key, Buffer.from(config.secret, "base64"), aad).toString("utf8") };
+  } catch {
+    return { signing: "unreadable" };
+  }
+}
+
+/** The signing secret of the webhook data directory `data` keeps, opened with the seal key of `env`, or why it does not
+ *  open (no seal key, or one it was not sealed under); undefined when it keeps none. Read for an import, which cuts it
+ *  out of what it keeps. */
+export function webhookSecretIn(data: string, env: NodeJS.ProcessEnv): ReturnType<typeof opened> | undefined {
+  const config = configIn(join(data, WEBHOOK_FILE));
+  return config && opened(sealKeyOf(env[SEAL_KEY_ENV]), config);
+}
 
 export class Webhooks {
   private readonly file: string;
@@ -152,7 +184,7 @@ export class Webhooks {
    *  a webhook is set and on, and kept in the ledger in the same write. `marker` makes its webhook-id: the same moment,
    *  seen again after a restart, has the same id, which is a receiver's idempotency key. An end before the ledger began,
    *  before the webhook was set, or past the outbox's day counts as sent. */
-  emit(type: (typeof WEBHOOK_EVENTS)[number], run: RunNotice, marker: string): Emitted {
+  emit(type: (typeof RUN_EVENTS)[number], run: RunNotice, marker: string): Emitted {
     if (this.closed) return "closed";
     this.told.add(run.run_id);
     const ends = type === "run.ended";
@@ -175,6 +207,17 @@ export class Webhooks {
       const data = { run_id: run.run_id, agent_id: run.agent_id, status: run.status, title: run.title, url: `${this.base}/#/runs/${encodeURIComponent(run.run_id)}`, ...(run.pending ? { pending: run.pending } : {}) };
       this.schedule(this.enqueue(id, type, data), 0);
     }
+    return this.unsaved ? "unsaved" : "queued";
+  }
+
+  /** A trigger's failed firing (triggers.ts), queued once: its webhook-id is made from the firing's key, so the same
+   *  failure told again, by a later server too, is the same message. Its trigger keeps whether it was queued. */
+  emitTrigger(failed: TriggerFailed, firingKey: string): Emitted {
+    if (this.closed) return "closed";
+    const config = this.config();
+    if (!config || config.disabled) return "off";
+    const id = `msg_${createHash("sha256").update(`trigger.failed\n${firingKey}`).digest("hex").slice(0, 32)}`;
+    if (!this.messages.some((m) => m.id === id)) this.schedule(this.enqueue(id, "trigger.failed", failed), 0);
     return this.unsaved ? "unsaved" : "queued";
   }
 
@@ -232,13 +275,7 @@ export class Webhooks {
   }
 
   private config(): Config | undefined {
-    if (this.held) return this.held;
-    try {
-      const doc = JSON.parse(readFileSync(this.file, "utf8")) as unknown;
-      return isObject(doc) && doc.v === 1 && typeof doc.url === "string" && typeof doc.secret === "string" ? (doc as unknown as Config) : undefined;
-    } catch {
-      return undefined;
-    }
+    return this.held ?? configIn(this.file);
   }
 
   /** Throws when the write fails: what was held stays held. */
@@ -320,12 +357,7 @@ export class Webhooks {
 
   /** The secret, opened, or why it is not. */
   private secret(config: Config): { secret: string } | { signing: Exclude<Signing, "sealed"> } {
-    if (!this.key) return { signing: "seal_key_missing" };
-    try {
-      return { secret: unseal(this.key, Buffer.from(config.secret, "base64"), aad).toString("utf8") };
-    } catch {
-      return { signing: "unreadable" };
-    }
+    return opened(this.key, config);
   }
 
   private enqueue(id: string, type: MessageType, data: Record<string, unknown>): Message {

@@ -80,6 +80,13 @@ export function pollSettled(read: () => Promise<unknown>, every: number): () => 
 }
 
 export type Needs = { asking: Run[]; failed: Run[]; live: Run[] };
+/** Whether a run asks a person for something: its served `pending` names what it waits on (a question today; any kind
+ *  the server sends counts, none is named here). Needs you lists exactly these, and the Needs input tile counts them,
+ *  so the two never disagree. A run the person stopped (input_required, idle) has none: it asks nothing. */
+export const asksPerson = (run: Pick<Run, "pending">) => run.pending != null;
+/** A run the person stopped: input_required and idle (the server's "stopped"), with nothing pending. It waits for a
+ *  message, never for an answer. */
+export const stoppedRun = (run: Pick<Run, "status" | "state" | "pending">) => run.status === "input_required" && run.state !== "waiting" && !asksPerson(run);
 const SECTIONS = [["asking", "The runs asking a question"], ["failed", "The failed runs"], ["live", "The running runs"]] as const;
 
 /** The strip's three reads, landed apart: each that landed is taken, one that failed keeps the section's last answer,

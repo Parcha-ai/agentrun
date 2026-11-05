@@ -49,7 +49,7 @@ test("a person sees what the agent learned and controls it: the view, the log by
   // An agent whose learning was never on has no folder: an empty view; its run has no learning and no diff.
   await made(api, agent("plain"));
   const plain = (await api("GET", "/agents/plain/learning")).body;
-  assert.deepEqual(plain, { agent: "plain", main: null, index: "", notes: { items: [], total: 0, next_cursor: null }, log: { items: [], total: 0, next_cursor: null }, counts: { merged: 0, dropped: {}, in_progress: 0 }, impact: null });
+  assert.deepEqual(plain, { agent: "plain", main: null, index: "", notes: { items: [], total: 0, next_cursor: null }, skills: [], workflows: [], log: { items: [], total: 0, next_cursor: null }, counts: { merged: 0, dropped: {}, in_progress: 0 }, impact: null });
   meets("/agents/{agent_id}/learning", plain);
   const plainRun = await started(api, "plain");
   await follow(api, plainRun, ["completed"]);
@@ -386,9 +386,12 @@ test("a commit's notes are read once: a later page and the view at the same main
   assert.deepEqual([log2.items.map((c) => c.reason), log2.total], [["created by a person: b-two.md"], 3]);
   assert.deepEqual(reads(), [["log", "--skip=1", "--max-count=1"]]);
 
-  // The view at the same main: its notes as kept, its log's first page read.
+  // The view at the same main: its notes as kept, its log's first page read, and its skills and workflows listed once
+  // (one tree read; a folder with none reads no history for them). A second view reads its log's page alone.
   const view = (await api("GET", "/agents/paged/learning")).body;
-  assert.deepEqual([view.notes.items.map((n) => n.file), view.log.items.length], [["c-three.md", "b-two.md", "a-one.md"], 3]);
+  assert.deepEqual([view.notes.items.map((n) => n.file), view.log.items.length, view.skills, view.workflows], [["c-three.md", "b-two.md", "a-one.md"], 3, [], []]);
+  assert.deepEqual(reads().sort(), [["log", "--skip=0", "--max-count=20"], ["ls-tree"]]);
+  await api("GET", "/agents/paged/learning");
   assert.deepEqual(reads(), [["log", "--skip=0", "--max-count=20"]]);
 });
 
@@ -611,17 +614,18 @@ test("a file on main that is not a note (over the read cap, not UTF-8, executabl
   assert.equal(git(repo, ["status", "--porcelain"]), "", "the checked-out files are main's");
 });
 
-test("a run's learning shows the grader's item for each new note: a drop of two notes names the one that failed, with its question and why", { timeout: 120_000 }, async (t) => {
+test("a run's learning shows the grader's item for each new note: of two notes, the kept one merges and the dropped one is named with its question and why", { timeout: 120_000 }, async (t) => {
   const { api, baseUrl } = await serve(t, { learning: "on", faux: LEARN });
   const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
   const ONE_CASE = note("One case", "The answer for this one input was 42");
   await made(api, learner("judged", { instructions: "Answer the question.\nGrade: drop one-case.md.", plan: [["check-units.md", UNITS], ["one-case.md", ONE_CASE]] }));
   const run = await ended(api, await started(api, "judged"));
-  settled(run.view, run.rows, "dropped", "grader");
+  settled(run.view, run.rows, "merged");
+  assert.equal(run.view.learning.detail, "Learned: Check units. Not kept: It is about one case.");
   const learned = (await api("GET", `/runs/${run.view.run_id}/learning`)).body;
   assert.deepEqual(schemaProblems(doc, doc.paths["/runs/{run_id}/learning"].get.responses["200"].content["application/json"].schema, learned), []);
   const { items, ...verdict } = learned.verdict;
-  assert.deepEqual(verdict, { merge: false, reason: "A note is about the one case it came from." });
+  assert.deepEqual(verdict, { merge: true, reason: "A note is about the one case it came from." });
   assert.deepEqual([...items].sort((a, b) => a.file.localeCompare(b.file)), [
     { file: "check-units.md", keep: true, origin: "run", why: "It holds as a general rule." },
     { file: "one-case.md", keep: false, question: "General", why: "It is about one case." },

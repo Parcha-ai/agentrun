@@ -15,12 +15,13 @@ import { HOST_RESULT_MAX_CHARS, READ_SKILL_FILE, readSkillFileTool, skillProblem
 import type { AdapterEvent, AdapterSession, AgentAdapter, HostTool, SessionIO, SessionSpec, TurnStatus } from "@parcha/agentrun-kernel";
 import { abortedOutcome, openDrive, SessionHalt, type Drive, type HostTool as KernelTool } from "@parcha/agentrun-kernel/kernel";
 import { pendingSubmissions } from "@parcha/agentrun-kernel/kernel";
-import { recoveryNote, settleTurn, transcriptOf } from "@parcha/agentrun-kernel/process";
+import { NativeJournal, recoveryNote, settleTurn, transcriptOf } from "@parcha/agentrun-kernel/process";
 import { CODEX_VERSION } from "./binary.js";
 import { codexSchemaProblems, describedDescription } from "./schema.js";
 import { withCheckedBinary } from "./host/sandbox.js";
 import { verifyCodex } from "./verify.js";
-import { codexHarness, type CodexHarnessOptions } from "./harness.js";
+import { codexHarness, type CodexHarnessOptions, owedSubmissions } from "./harness.js";
+import { isRolloutPath, isSessionMeta, rolloutStream, summarizeRollout, THREAD_STREAM } from "./rollout.js";
 import { type ConfineChild, localMachine, type MachineSeed, sessionDir } from "./host/machine.js";
 import { serialWriter, type ModelProxyOptions } from "@parcha/agentrun-kernel/host";
 
@@ -117,6 +118,18 @@ const SKILLS_DIR = "skills";
 /** The skills as the files the session's CODEX_HOME holds (`skills/<name>/<path>`): the machine's seed. */
 function skillsSeed(skills: readonly HostSkill[]): MachineSeed {
   return { dir: "codex-home", files: Object.fromEntries(skills.flatMap((skill) => Object.entries(skill.files).map(([path, text]) => [`${SKILLS_DIR}/${skill.name}/${path}`, text]))) };
+}
+
+/**
+ * The mirrored rollout the next drive resumes Codex from, by the harness's own rule (harness.ts, `resume`: the last
+ * thread, its first line `session_meta`, its path the one the harness derives); none when it would start a new thread.
+ * The settle reads only this, so it and the next Codex agree on what Codex has. The copied harness keeps its own copy
+ * of the rule: its own patch budget has no room for a call here.
+ */
+export async function resumedRollout(journal: NativeJournal): Promise<string[]> {
+  const thread = journal.records<{ threadId: string; path: string }>(THREAD_STREAM).at(-1)?.data;
+  const restored = thread ? (await journal.read<string>(rolloutStream(thread.threadId))).map((r) => r.data) : [];
+  return thread && isSessionMeta(restored[0]) && isRolloutPath(thread.path, thread.threadId) ? restored : [];
 }
 
 export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
@@ -276,12 +289,19 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
           await ready();
           void run();
         },
-        async settleOpenTurn() {
+        async settleOpenTurn(options = {}) {
           if (state !== "open_turn") throw new Error("agentrun-harness-codex: there is no turn to settle");
           await ready();
           // The turn's end in the session's own transcript, as a turn that ends writes it: the next open finds no open turn,
-          // and the next turn carries no recovery of this one. Nothing is sent.
-          await settleTurn(drive);
+          // and the next turn carries no recovery of this one. Nothing is sent. A prompt the turn placed that Codex never
+          // recorded (the stop came before its rollout held it: Codex answers turn/start first) is carried into the next
+          // message, as an unplaced one is; a follow-up's own is not. The record is the rollout as the session keeps it (its
+          // mirror, which a stopped drive adds nothing to), the rollout the next Codex is resumed from: a prompt it lacks the
+          // next turn's model never saw, so carrying it never sends it twice.
+          const folded = drive.state();
+          const rollout = await resumedRollout(new NativeJournal(drive));
+          const unsent = owedSubmissions(folded, recoveryNote(folded)?.turn.placed ?? [], summarizeRollout(rollout).clientIds).map((s) => s.id);
+          await settleTurn(drive, { unsent, ...(options.opening === undefined ? {} : { host: options.opening }) });
           state = "idle";
         },
         async turnEnd() {
