@@ -20,7 +20,8 @@ export const vm = {
   sandboxes: [],
   root: join(process.env.TMPDIR ?? tmpdir(), `agentrun-fake-vm-${process.pid}`),
   running: () => vm.sandboxes.filter((sandbox) => sandbox.exitCode === null),
-  /** How long each program's start takes, as a provider's round trip does (0: at once). */
+  /** How long each program's start takes, as a provider's round trip does (0: at once); or, given the command, how long
+   *  that program's start takes. */
   execDelayMs: 0,
   /** Makes each program's stdout fail after its first chunk, as a broken stream from the provider does. */
   failStdout: false,
@@ -73,9 +74,11 @@ class FakeSandbox {
   async exec(command, params) {
     if (this.exitCode !== null) throw Object.assign(new Error("the sandbox has been terminated"), { code: 9 });
     if (vm.failExec) throw vm.failExec;
-    this.execs.push({ command, params });
+    const entry = { command, params };
+    this.execs.push(entry);
     const failWait = vm.failWait;
-    if (vm.execDelayMs) await new Promise((resolve) => setTimeout(resolve, vm.execDelayMs));
+    const delay = typeof vm.execDelayMs === "function" ? vm.execDelayMs(command) : vm.execDelayMs;
+    if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
     // The provider's probe of the box's disk, Yama setting and FUSE reads this machine's /proc: answered as a box would.
     const probed = command[0] === "sh" && command[2]?.includes("ptrace_scope");
     const [program, ...rest] = probed ? ["printf", "%s", "disk=104857600\nptrace=1\nfuse_dev=1\n"] : command.map((part) => this.inBox(part));
@@ -83,7 +86,6 @@ class FakeSandbox {
     mkdirSync(cwd, { recursive: true });
     const child = spawn(program ?? "", rest, { cwd, env: { PATH: `${vm.hostileTar ? `${hostileBin()}:` : ""}${process.env.PATH ?? ""}`, ...this.params.env, TMPDIR: join(this.dir, "tmp") }, stdio: ["pipe", "pipe", "pipe"] });
     // Whoever reads the program's output and lets it go before its end (return()) is noted, so a test sees it.
-    const entry = this.execs.at(-1);
     entry.released = [];
     const noted = (name, stream) => ({
       [Symbol.asyncIterator]() {
