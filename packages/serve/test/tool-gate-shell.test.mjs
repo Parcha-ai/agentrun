@@ -140,6 +140,41 @@ test("capabilities agree: a server file with bash set to a value not offered sho
   assert.deepEqual(served.bash, { permission: "ask" });
 });
 
+test("the stand-in for a value not offered survives a save of the whole map, an explicit ask, and a restart: the watchers still ask, and the file keeps the value as written", { timeout: 120_000 }, async (t) => {
+  const { mkdir, readFile } = await import("node:fs/promises");
+  const data = join(await scratch(t), "agents");
+  await mkdir(data, { recursive: true });
+  const file = join(data, "tool-settings.json");
+  await writeFile(file, JSON.stringify({ bash: { permission: "maybe" } }));
+  const watchersAsk = async (api, at) => {
+    const caps = Object.fromEntries((await api("GET", "/capabilities")).body.tools.map((tool) => [tool.name, tool]));
+    for (const name of WATCHERS) assert.equal(caps[name].permission, "ask", `${at}: capabilities ${name}`);
+    for (const name of ["bash_output", "bash_signal"]) {
+      const gate = await watcherAt(t, data, name);
+      assert.deepEqual([gate.policy, gate.ran, gate.tools], ["ask", 0, [name]], `${at}: the gate ${name}`);
+    }
+    assert.equal(JSON.parse(await readFile(file, "utf8")).bash?.permission, "maybe", `${at}: the file keeps bash as written`);
+  };
+  await t.test("an unrelated save of the whole map, as the console sends it", async (t2) => {
+    const { api } = await serve(t2, { data });
+    const served = (await api("GET", "/settings/tools")).body;
+    assert.deepEqual(served.bash, { permission: "ask" });
+    const put = await api("PUT", "/settings/tools", { ...served, web_fetch: { ...served.web_fetch, permission: "deny" } });
+    assert.equal(put.status, 200, JSON.stringify(put.body));
+    assert.equal(JSON.parse(await readFile(file, "utf8")).web_fetch?.permission, "deny", "the change itself is saved");
+    await watchersAsk(api, "after the save");
+    // The owner's explicit ask is the same ask on the wire: it keeps the stand-in (the console's own control is the choice).
+    assert.equal((await api("PUT", "/settings/tools", { bash: { permission: "ask" } })).status, 200);
+    await watchersAsk(api, "after an explicit ask");
+  });
+  // A restart reads the file again.
+  const { api } = await serve(t, { data });
+  await watchersAsk(api, "after a restart");
+  // A different permission is a choice, written as given.
+  assert.equal((await api("PUT", "/settings/tools", { bash: { permission: "deny" } })).status, 200);
+  assert.equal(JSON.parse(await readFile(file, "utf8")).bash?.permission, "deny");
+});
+
 test("no setting of a watcher's own lifts bash's deny or ask: a run's gate reads bash's key for each, under claude-agent's mcp__hands__ names too", async (t) => {
   const [root, work, data] = [await scratch(t), await scratch(t), await scratch(t)];
   await writeFile(join(data, "tool-settings.json"), JSON.stringify({ bash: { permission: "deny" }, bash_output: { permission: "allow" } }));
