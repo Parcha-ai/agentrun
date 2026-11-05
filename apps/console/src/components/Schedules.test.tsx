@@ -200,6 +200,7 @@ describe("one schedule", () => {
     const t = await open(server({ firings }).v2, { schedule: "trg_1" });
     expect(t.text()).toContain("nightly triage");
     expect(t.text()).toContain("Cron 30 1 * * * · America/Los_Angeles");
+    expect(t.text()).toContain("$2.00 a run");
     const rows = [...t.host.querySelectorAll("[data-firing]")];
     expect(rows.map((r) => r.getAttribute("data-firing"))).toEqual(["f3", "f2", "f1"]);
     expect(rows[0].textContent).toContain("Started");

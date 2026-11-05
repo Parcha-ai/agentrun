@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ClientError } from "./client";
-import { bodyOf, type Draft, draftOf, emptyDraft, firingWords, instantOf, issuesOf, patchOf, span, utcWhen, wallOf, whenWords } from "./schedules";
+import { bodyOf, capWords, type Draft, draftOf, emptyDraft, firingWords, instantOf, issuesOf, patchOf, span, utcWhen, wallOf, whenWords } from "./schedules";
 import type { Firing, Trigger } from "./v2";
 
 const draft = (over: Partial<Draft>): Draft => ({ ...emptyDraft(), agentId: "triage", content: "Triage last night's issues.", maxCost: "2", ...over });
@@ -21,6 +21,12 @@ describe("a schedule's when, in words", () => {
     expect(whenWords({ kind: "schedule", at: "2026-11-05T09:30:00Z" })).toBe("Once, Nov 5, 9:30 AM UTC");
     expect(whenWords({ kind: "schedule", every_s: 300, start_at: "2026-11-04T00:00:00Z" })).toBe("Every 5 minutes");
     expect([60, 90, 3600, 7200, 5400, 86400].map(span)).toEqual(["minute", "90 seconds", "hour", "2 hours", "90 minutes", "24 hours"]);
+  });
+});
+
+describe("a schedule's cost cap, in words", () => {
+  it("is dollars and cents, and keeps a cap finer than a cent whole", () => {
+    expect([2, 0.5, 12.3, 0.005].map(capWords)).toEqual(["$2.00 a run", "$0.50 a run", "$12.30 a run", "$0.005 a run"]);
   });
 });
 
