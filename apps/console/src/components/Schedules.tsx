@@ -33,6 +33,20 @@ export function SchedulesPage({ v2, view, go, agentName, minEvery, refreshMs = 1
   return <ScheduleDetail key={view.schedule} v2={v2} go={go} agentName={agentName} id={view.schedule} every={refreshMs} />;
 }
 
+/** `read` again every `every` ms while the tab shows, and once when it shows again; nothing while it is hidden (SWR's
+ *  refreshInterval with refreshWhenHidden off). Stops when the page goes. */
+function useRereads(read: () => void, every: number, deps: unknown[]) {
+  const latest = useRef(read);
+  latest.current = read;
+  useEffect(() => {
+    const shown = () => document.visibilityState !== "hidden";
+    const timer = setInterval(() => { if (shown()) latest.current(); }, every);
+    const back = () => { if (shown()) latest.current(); };
+    document.addEventListener("visibilitychange", back);
+    return () => { clearInterval(timer); document.removeEventListener("visibilitychange", back); };
+  }, [every, ...deps]); // eslint-disable-line react-hooks/exhaustive-deps
+}
+
 /** How a schedule's last firing went, or that it has not fired. */
 const lastWords = (t: Trigger) => (t.last_firing ? `${firingWords(t.last_firing)} · ${at(t.last_firing.nominal_at)}` : "Not fired yet");
 
@@ -40,21 +54,19 @@ function ScheduleList({ v2, go, agentName, every }: PageProps & { every: number 
   const [triggers, setTriggers] = useState<Trigger[] | null>(null);
   const [error, setError] = useState<Problem | null>(null);
   const [tries, setTries] = useState(0);
-  // Read now, and again every `every` ms while the page is open (one read at a time), so a schedule's firings show.
-  useEffect(() => {
-    let live = true;
-    let reading = false;
-    const read = () => {
-      if (reading) return;
-      reading = true;
-      v2.listTriggers()
-        .then((r) => { if (live) { setTriggers(r.triggers); setError(null); } }, (e) => { if (live) setError(problem(e, "the schedules")); })
-        .finally(() => { reading = false; });
-    };
-    read();
-    const timer = setInterval(read, every);
-    return () => { live = false; clearInterval(timer); };
-  }, [v2, tries, every]);
+  // Read now, and again while the page is open (one read at a time), so a schedule's firings show.
+  const reading = useRef(false);
+  const live = useRef(true);
+  useEffect(() => { live.current = true; return () => { live.current = false; }; }, []);
+  const read = () => {
+    if (reading.current) return;
+    reading.current = true;
+    v2.listTriggers()
+      .then((r) => { if (live.current) { setTriggers(r.triggers); setError(null); } }, (e) => { if (live.current) setError(problem(e, "the schedules")); })
+      .finally(() => { reading.current = false; });
+  };
+  useEffect(read, [v2, tries]); // eslint-disable-line react-hooks/exhaustive-deps
+  useRereads(read, every, [v2]);
   return (
     <div className="p-5 md:p-8">
       <div className="mb-5 flex flex-wrap items-center gap-3">
@@ -107,12 +119,9 @@ function ScheduleDetail({ v2, go, agentName, id, every }: PageProps & { id: stri
       .finally(() => { reading.current = false; });
   };
   useEffect(() => { read().catch((e) => setError(problem(e, "the schedule"))); }, [v2, id, tries]); // eslint-disable-line react-hooks/exhaustive-deps
-  // Read again every `every` ms while the page is open, so a timed firing, its run and the next time show with no
-  // reload; not while a read or a Run now is out. A read that fails here leaves the page as it was.
-  useEffect(() => {
-    const timer = setInterval(() => { if (!reading.current && !firing.current) read().catch(() => {}); }, every);
-    return () => clearInterval(timer);
-  }, [v2, id, every]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Read again while the page is open, so a timed firing, its run and the next time show with no reload; not while a
+  // read or a Run now is out. A read that fails here leaves the page as it was.
+  useRereads(() => { if (!reading.current && !firing.current) read().catch(() => {}); }, every, [v2, id]);
   if (!trigger) return error ? <ProblemCard problem={error} onRetry={() => setTries((n) => n + 1)} link={{ href: "#/schedules", label: "All schedules" }} /> : <ListSkeleton label="Loading the schedule" rows={4} />;
 
   const act = async (what: "pause" | "delete", work: () => Promise<unknown>, failed: string) => {
