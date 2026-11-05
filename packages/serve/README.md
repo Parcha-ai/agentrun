@@ -1035,7 +1035,8 @@ change repeats fires once, at its first pass; one it skips fires at the first ti
 reckoned from the last nominal one, so a timer that wakes late does not drift. `max_cost_usd` is required: every run a
 trigger starts is capped, and a workflow agent is refused, since a workflow run's spend is not capped here. Each run's
 input ends with a line naming the schedule and the time it fired for, in its zone, and the run's `trigger` names the
-trigger and the firing.
+trigger and the firing, in the run's view and in the runs lists (`GET /v2/runs`, `GET /v2/agents/{id}/runs`) alike;
+a run a caller started has `trigger: null`.
 
 A firing starts its run once. Its key comes from the trigger and its nominal time, it is recorded `due` in
 `DIR/triggers.json` (written whole and synced) before its run starts, and the run is started under that key, so a firing

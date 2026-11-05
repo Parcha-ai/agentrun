@@ -515,6 +515,12 @@ export function statusOf(run: Run): { status: Status; state: State } {
   return { status: "working", state: "idle" };
 }
 
+/** The trigger a serve.json says started its run, as read back: `{id, firing_key}`, or null. */
+function triggerOf(meta: Partial<RunMeta> | null): RunTrigger | null {
+  const trigger = meta?.trigger as unknown;
+  return isObject(trigger) && typeof trigger.id === "string" && typeof trigger.firing_key === "string" ? { id: trigger.id, firing_key: trigger.firing_key } : null;
+}
+
 /** The waits between carry backs that found the store busy, and a hook called at each such refusal. */
 export type CarryBackRetry = { delaysMs?: readonly number[]; onBusy?: (runId: string, attempt: number) => void };
 /** How a run is asked to start: its input and title, its effort and cap, and what puts its files in its work/. `origin`:
@@ -761,6 +767,7 @@ export class Runs {
   private async load(row: RunRow): Promise<Run> {
     const dir = join(this.options.agents.dir, "runs", row.id);
     const stored = (await readJson(join(dir, RUN_META))) as Partial<RunMeta> | null;
+    const trigger = triggerOf(stored);
     const meta: RunMeta = {
       title: typeof stored?.title === "string" ? stored.title : "",
       created_at: typeof stored?.created_at === "string" ? stored.created_at : row.startedAt,
@@ -777,7 +784,7 @@ export class Runs {
       ...(stored?.place ? { place: storedPlace(stored.place) } : {}),
       ...(isObject(stored?.learning) ? { learning: stored.learning as Learning } : {}),
       ...(isObject(stored?.reflect) ? { reflect: stored.reflect as Reflect } : {}),
-      ...(isObject(stored?.trigger) && typeof stored.trigger.id === "string" && typeof stored.trigger.firing_key === "string" ? { trigger: { id: stored.trigger.id, firing_key: stored.trigger.firing_key } } : {}),
+      ...(trigger ? { trigger } : {}),
     };
     // A seed copy a server went down during is taken back before anything holds the run: its relaunch, a settle, a
     // follow-up (learning-run.ts onLoad).
@@ -2418,8 +2425,8 @@ export class Runs {
   }
 
   async summary(run: Run) {
-    const { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, effort, created_at, ended_at, error, review, pending, cost, archived_at, imported_from, learning } = await this.view(run);
-    return { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, ...(effort ? { effort } : {}), created_at, ended_at, error, review, pending, cost, archived_at, imported_from, learning: learning && shortOf(learning) };
+    const { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, effort, created_at, ended_at, error, review, pending, cost, archived_at, imported_from, trigger, learning } = await this.view(run);
+    return { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, ...(effort ? { effort } : {}), created_at, ended_at, error, review, pending, cost, archived_at, imported_from, trigger, learning: learning && shortOf(learning) };
   }
 
   /** A run's status for a list: an ended run's from its row, a running one's from the run itself. */
@@ -2447,6 +2454,7 @@ export class Runs {
       // A run read from its row alone has ended: it waits on nothing.
       pending: null,
       imported_from: row.importedFrom ?? null,
+      trigger: triggerOf(meta),
       // Its row says it ended: what serve.json holds of its learning is as it settled.
       learning: this.learning.short(isObject(meta?.learning) ? (meta.learning as Learning) : null, true),
     };

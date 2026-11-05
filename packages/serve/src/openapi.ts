@@ -447,6 +447,12 @@ const RUN_NOTES: Record<string, Json> = {
 const closedWith = (properties: Record<string, Json>, optional: Record<string, Json>) => ({ ...closed(properties), properties: { ...properties, ...optional } });
 /** trigger/1: schedules that start an agent's capped runs (triggers.ts). */
 const TRIGGER_MARK = { "x-agentrun-serve": "trigger/1" };
+/** A run's `trigger`, on Run and on RunSummary alike. */
+const RUN_TRIGGER: Json = {
+  oneOf: [closed({ id: { type: "string", description: "The trigger (GET /triggers/{trigger_id}); it may have been deleted since." }, firing_key: { type: "string", pattern: "^fir_[0-9a-f]{32}$", description: "The firing that started it." } }), { type: "null" }],
+  description: "The trigger that started the run, and its firing; null for a run a caller started.",
+  ...TRIGGER_MARK,
+};
 const DATE_TIME = { type: "string", format: "date-time" };
 const TRIGGER_SOURCE = {
   oneOf: [
@@ -1166,11 +1172,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       description: "Imported history (`agentrun-serve import`): where the run was run, and its session there; else null. An imported run takes no message (`409 not_continuable`, `details.reason` `imported`); a stop or a cancel answers as for an ended run.",
       "x-agentrun-serve": "imported/1",
     },
-    trigger: {
-      oneOf: [closed({ id: { type: "string", description: "The trigger (GET /triggers/{trigger_id}); it may have been deleted since." }, firing_key: { type: "string", pattern: "^fir_[0-9a-f]{32}$", description: "The firing that started it." } }), { type: "null" }],
-      description: "The trigger that started the run, and its firing; null for a run a caller started.",
-      ...TRIGGER_MARK,
-    },
+    trigger: RUN_TRIGGER,
   },
   InputIssue: { code: { type: "string", description: "A workflow definition's issue: the DSL's validation code (`STATE_PATH_UNPRODUCED`, say), with `field` the path to it under `definition.workflow`.", "x-agentrun-serve": "validate/1" } },
   RunSummary: {
@@ -1188,6 +1190,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       description: "Imported history (`agentrun-serve import`): where the run was run, and its session there; else null. An imported run takes no message (`409 not_continuable`, `details.reason` `imported`); a stop or a cancel answers as for an ended run.",
       "x-agentrun-serve": "imported/1",
     },
+    trigger: RUN_TRIGGER,
   },
   RunError: {
     details: {
