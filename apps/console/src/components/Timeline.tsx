@@ -43,19 +43,24 @@ const took = (ms: number) => (ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)
  *  timeline library gives each (nameOf: "Open or act on a page in the browser", as a run's tool counts show it). */
 const BROWSER = new Set<string>(BROWSER_TOOL_NAMES);
 const toolName = (tool: string | null | undefined) => (tool && BROWSER.has(tool) ? nameOf(tool) : tool);
-const label = (row: TimelineRow) => fromServer(row) ? "AgentRun" : rowPaused(row) ? "Paused" :
+const label = (row: TimelineRow) => fromServer(row) ? "AgentRun" : rowPaused(row) ? "Paused at its spend cap" :
   ({ user_message: "You", thinking: "Thinking", tool_use: toolName(row.tool_name) ?? "Tool", tool_result: toolName(row.tool_name) ?? "Result", waiting: "Waiting for you", usage: "Usage", final_answer: "Answer", phase: "Phase", error: "Error", decision: "Decision", text_block: "Text", tool_approval_requested: "Your approval" })[row.kind] ?? row.kind;
 
 /** One step. With one row per action, a call's row carries its own outcome: `running` until it ends (a spinner), a
  *  failed or interrupted one reads as failed, and a missing one (a read that found nothing the run wrote) is grey. */
-function Row({ step, last }: { step: Step; last: boolean }) {
+/** A waiting row's chip, by what the run waits on now (its `pending.kind`, the run page's to pass: a row carries no kind
+ *  of its own), as the run header's status chip says it. */
+const WAITING_CHIP: Record<string, string> = { budget: "Paused at cap", approval: "Approval required" };
+
+function Row({ step, last, waitingChip }: { step: Step; last: boolean; waitingChip?: string }) {
   // The row a step shows, and so its label: the one place a row is read for display.
   const row = step.row;
   const [open, setOpen] = useState(false);
   const running = row.kind === "tool_use" && row.tool_status === "running";
   const paused = rowPaused(row);
   const Icon = running ? LoaderCircle : paused ? CirclePause : ICON[row.kind] ?? Flag;
-  const detail = step.above ? null : step.detail ?? rowDetail(row);
+  // A cap pause's row is a quiet marker: the banner says the server's sentence, so the row keeps it for its expand.
+  const detail = step.above ? null : step.detail ?? (rowPaused(row) ? (row.text ?? row.summary) : rowDetail(row));
   const interrupted = row.tool_status === "interrupted";
   const failed = rowFailed(row) || interrupted;
   const missing = row.tool_status === "missing";
@@ -72,14 +77,14 @@ function Row({ step, last }: { step: Step; last: boolean }) {
           <span className="min-w-0 flex-1">
             <span className="flex items-center gap-2 text-[13px] text-muted-foreground">
               {label(row)}
-              {row.kind === "waiting" && <Chip tone="warning">Input required</Chip>}
+              {row.kind === "waiting" && <Chip tone="warning">{waitingChip ?? "Input required"}</Chip>}
               {awaitsApproval(row) && <Chip tone="warning">Approval required</Chip>}
               {failed && <Chip tone="error">{interrupted ? "Interrupted" : "Error"}</Chip>}
               {row.agent_label && <Chip>{row.agent_label}</Chip>}
               {step.ms !== undefined && <span className="font-mono text-[11px]">{took(step.ms)}</span>}
               {step.times && <span className="font-mono text-[11px]">{step.times} times{step.until ? ` over ${took(Math.max(0, Date.parse(step.until) - Date.parse(row.timestamp)))}` : ""}</span>}
             </span>
-            <span className={cn("mt-0.5 block break-words text-[15px] leading-snug", (missing || fromServer(row)) && "text-muted-foreground")}>{step.above ? (row.kind === "tool_approval_requested" ? "Waits for your approval above." : "Asked you the question above.") : title(row)}</span>
+            {!rowPaused(row) && <span className={cn("mt-0.5 block break-words text-[15px] leading-snug", (missing || fromServer(row)) && "text-muted-foreground")}>{step.above ? (row.kind === "tool_approval_requested" ? "Waits for your approval above." : "Asked you the question above.") : title(row)}</span>}
             {step.saved && <span className="mt-0.5 block font-mono text-[12px] text-muted-foreground">saved {step.saved}</span>}
             {notSent(row) && <span className="mt-0.5 block break-words text-[13px] text-muted-foreground">{notSent(row)}</span>}
           </span>
@@ -95,7 +100,10 @@ function Row({ step, last }: { step: Step; last: boolean }) {
 /** The run's live timeline as a step list (lib/timeline's `steps`: each tool once, from either of the server's shapes;
  *  a question once; repeated failures once): newest last, older steps folded behind "N earlier steps". `asking`: the
  *  waiting row of the question the page shows above while the run waits on it; its step points there. */
-export function Timeline({ rows, live, fold = 6, asking }: { rows: TimelineRow[]; live: boolean; fold?: number; asking?: string }) {
+export function Timeline({ rows, live, fold = 6, asking, waitingOn }: { rows: TimelineRow[]; live: boolean; fold?: number; asking?: string;
+  /** What the run waits on now (its `pending.kind`): the newest waiting row's chip says so. */
+  waitingOn?: string }) {
+  const current = waitingOn ? rows.findLast((r) => r.kind === "waiting")?.id : undefined;
   const [all, setAll] = useState(false);
   const told = steps(rows).map((s) => (asking && s.row.id === asking ? { ...s, above: true } : s));
   const hidden = all ? 0 : Math.max(0, told.length - fold);
@@ -108,7 +116,7 @@ export function Timeline({ rows, live, fold = 6, asking }: { rows: TimelineRow[]
           <ChevronRight className="size-3" aria-hidden /> {hidden} earlier steps
         </button>
       )}
-      <ol>{shown.map((step, i) => <Row key={step.row.id} step={step} last={i === shown.length - 1 && !live} />)}</ol>
+      <ol>{shown.map((step, i) => <Row key={step.row.id} step={step} last={i === shown.length - 1 && !live} waitingChip={step.row.id === current && waitingOn ? WAITING_CHIP[waitingOn] : undefined} />)}</ol>
       {live && <Working title="Working" note="Steps appear as the agent takes them." spin />}
     </div>
   );
