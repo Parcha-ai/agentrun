@@ -120,20 +120,23 @@ test("demo: the CLI creates an agent, starts a capped run, reads it, lists runs 
     assert.equal(cli([...args, ...data]).code, 2, args.join(" "));
   }
   // A body that carries a secret is never taken from the command line.
-  const inline = cli(["tool-keys", "save", "exa", "--body", '{"values":{"EXA_API_KEY":"inline-secret"}}', ...data]);
+  const inline = cli(["tool-keys", "save", "exa", "--body", '{"values":{"EXA_API_KEY":"not-a-secret"}}', ...data]);
   assert.equal(inline.code, 2);
   assert.match(inline.err, /--body -/);
-  assert.equal(cli(["api", "PUT", "/settings/tool-keys/exa", "--body", '{"values":{"EXA_API_KEY":"inline-secret"}}', ...data]).code, 2);
+  const rawInline = cli(["api", "PUT", "/settings/tool-keys/exa", "--body", '{"values":{"EXA_API_KEY":"not-a-secret"}}', ...data]);
+  assert.equal(rawInline.code, 2);
+  for (const run of [inline, rawInline]) assert.ok(!`${run.out}${run.err}`.includes("not-a-secret"), "the refused value is in no output");
   // 3: nothing answers.
   const port = await closedPort();
-  const unreachable = cli(["agents", "list", "--base-url", `http://127.0.0.1:${port}/v2`], { extra: { AGENTRUN_API_KEY: "some-key" } });
+  const unreachable = cli(["agents", "list", "--base-url", `http://127.0.0.1:${port}/v2`], { extra: { AGENTRUN_API_KEY: "fake-test-key" } });
   assert.equal(unreachable.code, 3);
   assert.match(unreachable.err, /Cannot reach the server/);
   // 4: no token for a server named by URL, and a token the server refuses.
   const noToken = cli(["agents", "list", "--base-url", written.base_url]);
   assert.equal(noToken.code, 4);
   assert.match(noToken.err, /AGENTRUN_API_KEY/);
-  const wrong = cli(["agents", "list", ...data], { extra: { AGENTRUN_API_KEY: "ar_local_not_the_token" } });
+  const wrong = cli(["agents", "list", ...data], { extra: { AGENTRUN_API_KEY: "fake-test-key" } });
+  assert.notEqual(server.token, "fake-test-key");
   assert.equal(wrong.code, 4);
   // The local server's token is never sent to another address.
   const elsewhere = cli(["agents", "list", "--base-url", `http://127.0.0.1:${port}/v2`, ...data]);
