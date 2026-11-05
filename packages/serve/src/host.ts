@@ -42,18 +42,22 @@ export function runsThatFit(harness: string, memory: number): number {
 export const defaultMaxRuns = (memory: number): number => runsThatFit(DEFAULT_HARNESS, memory);
 
 const sizeOf = (mib: number): string => `${Math.round(mib)} MB`;
+/** "a pi run", "an opencode run". */
+const aRun = (harness: string): string => `${/^[aeiou]/i.test(harness) ? "an" : "a"} ${harness} run`;
+/** "pi", "pi and codex", "pi, claude-agent and codex". */
+const listed = (names: string[]): string => (names.length > 1 ? `${names.slice(0, -1).join(", ")} and ${names.at(-1)}` : names.join(""));
 
 /** Why no run of `harness` can ever start on a host of `memory` bytes, in words; undefined when one fits. */
 export function neverFits(harness: string, memory: number): string | undefined {
   if (runsThatFit(harness, memory) > 0) return undefined;
   const fit = HARNESSES.filter((id) => runsThatFit(id, memory) > 0);
-  return `This server has ${sizeOf(memory / MiB)} of memory and keeps ${sizeOf(SERVER_MIB)} for itself; a ${harness} run needs about ${sizeOf(runMibOf(harness))} more, so it can't start here. ${fit.join(" and ")} runs fit.`;
+  return `This server has ${sizeOf(memory / MiB)} of memory and keeps ${sizeOf(SERVER_MIB)} for itself; ${aRun(harness)} needs about ${sizeOf(runMibOf(harness))} more, so it can't start here. ${listed(fit)} runs fit.`;
 }
 
 /** Why a run of `harness` cannot start now, with `heldMib` of the memory for runs held: the memory runs hold, in words. */
 export function memoryFull(harness: string, memory: number, heldMib: number): string {
   const free = Math.max(0, runsMemoryMib(memory) - heldMib);
-  return `This server's memory is held by the runs it has going: a ${harness} run needs about ${sizeOf(runMibOf(harness))}, and ${sizeOf(free)} of the ${sizeOf(runsMemoryMib(memory))} it has for runs is free; start this one when another ends.`;
+  return `This server's memory is held by the runs it has going: ${aRun(harness)} needs about ${sizeOf(runMibOf(harness))}, and ${sizeOf(free)} of the ${sizeOf(runsMemoryMib(memory))} it has for runs is free; start this one when another ends.`;
 }
 
 /** The cap on how many runs at once: `given`, else `AGENTRUN_MAX_RUNS`, else the default for this host's memory. The
