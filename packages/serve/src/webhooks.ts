@@ -216,9 +216,11 @@ export class Webhooks {
    *  before anything is awaited, the ledger as the store now stands: a run the store no longer has goes, and a wait of a
    *  run it holds as ended goes (an end the webhook was off for never moved it past). Then each end the store holds that
    *  the ledger does not, and that is still due, is queued under the store's end time, so under the same webhook-id: its
-   *  server was killed between the store's end and the outbox write, or that write never reached the disk. `describe`
-   *  gives its notice. */
-  async catchUp(rows: Iterable<{ id: string; state?: string; endedAt?: string }>, describe: (id: string) => Promise<RunNotice | null>): Promise<void> {
+   *  server was killed between the store's end and the outbox write, or that write never reached the disk. `current`
+   *  reads the run as the store holds it right before its end is queued, with its notice (null: no such run now). The
+   *  server takes requests meanwhile, so a run continued since the rows were read has moved past that end, which was
+   *  queued before it could be continued: its end is not queued again. */
+  async catchUp(rows: Iterable<{ id: string; state?: string; endedAt?: string }>, current: (id: string) => Promise<{ state?: string; endedAt?: string; notice: RunNotice } | null>): Promise<void> {
     const config = this.config();
     if (this.closed || !config || config.disabled) return;
     const store = new Map([...rows].map((row) => [row.id, row]));
@@ -233,8 +235,13 @@ export class Webhooks {
     if (dropped) this.writeOutbox();
     for (const { id, state, endedAt } of store.values()) {
       if (state === "running" || !endedAt || this.notices[id]?.ended === endedAt || !this.due(endedAt, config)) continue;
-      const run = await describe(id).catch((error: Error) => (this.say({ condition: "notice_unread", run: id, error: error.message }), null));
-      if (run) this.emit("run.ended", run, endedAt);
+      const now = await current(id).catch((error: Error) => (this.say({ condition: "notice_unread", run: id, error: error.message }), undefined));
+      if (now === undefined) continue;
+      if (!now || now.state === "running" || now.endedAt !== endedAt) {
+        this.say({ condition: "end_moved_on", run: id, ended: endedAt });
+        continue;
+      }
+      this.emit("run.ended", now.notice, endedAt);
     }
   }
 

@@ -928,6 +928,11 @@ test("a run.needs_input whose outbox write failed is not recorded, so after a ki
 // ---- the notice ledger: what the outbox has queued of each run, in the outbox's own write.
 
 const ledgerOf = (dir) => JSON.parse(readFileSync(join(dir, "webhook-outbox.json"), "utf8")).notices;
+/** A catch-up's rows, and its read of each run as the store holds it now: as the rows say, with an ended run's notice. */
+const stored = (rows) => [rows, async (id) => {
+  const row = rows.find((r) => r.id === id);
+  return row ? { state: row.state, endedAt: row.endedAt, notice: { run_id: id, agent_id: "a", status: "completed", title: id } } : null;
+}];
 
 test("a notice and its record are one write: the outbox holds the end and the wait it queued of each run; the same moment again queues nothing, here or in the next server", async (t) => {
   withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
@@ -975,9 +980,8 @@ test("a start's catch-up queues each end the store holds and the ledger does not
   const before = new Date(Date.now() - 60_000).toISOString();
   webhooks.save({ url: hook.url });
   const now = new Date().toISOString();
-  const describe = async (id) => ({ run_id: id, agent_id: "a", status: "completed", title: id });
-  await webhooks.catchUp([{ id: "old", endedAt: before }, { id: "lost", endedAt: now }], describe);
-  await webhooks.catchUp([{ id: "lost", endedAt: now }], describe);
+  await webhooks.catchUp(...stored([{ id: "old", endedAt: before }, { id: "lost", endedAt: now }]));
+  await webhooks.catchUp(...stored([{ id: "lost", endedAt: now }]));
   await until(() => hook.got.length === 1, "the lost end sent");
   await sleep(200);
   assert.deepEqual(hook.got.map((r) => JSON.parse(r.body).data.run_id), ["lost"], "once, and never the end before the webhook was set");
@@ -1009,11 +1013,11 @@ test("a start's catch-up queues no end of a run that moved on while it read earl
     let reading = false;
     let resume;
     const resumed = new Promise((resolve) => (resume = resolve));
-    const describe = async (id) => {
+    const current = async (id) => {
       if (id === "earlier") (reading = true, await resumed);
-      return notice(id);
+      return { ...store.get(id), notice: notice(id) };
     };
-    const catchingUp = webhooks.catchUp([...store.values()], describe);
+    const catchingUp = webhooks.catchUp([...store.values()], current);
     await until(() => reading, "the catch-up reading the earlier row");
     // While the catch-up reads the earlier row, the second run is continued and comes to a new wait.
     store.set("moved", { id: "moved", state: "running" });
@@ -1031,7 +1035,6 @@ test("a start's catch-up queues no end of a run that moved on while it read earl
 test("an end after the webhook was set and inside the day is queued by a start's catch-up, though it came before that server started: a file named end-notices-since is neither read nor written", async (t) => {
   withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
   const env = { AGENTRUN_SEAL_KEY: sealKey() };
-  const describe = async (id) => ({ run_id: id, agent_id: "a", status: "completed", title: id });
   for (const leftover of [undefined, `${new Date().toISOString()}\n`]) {
     const hook = await receiver(t);
     const dir = await scratch(t);
@@ -1045,7 +1048,7 @@ test("an end after the webhook was set and inside the day is queued by a start's
     const ended = new Date(Date.now() - 300_000).toISOString();
     const webhooks = new Webhooks(dir, env, () => undefined, []);
     t.after(() => webhooks.close());
-    await webhooks.catchUp([{ id: "ended-before-start", endedAt: ended }], describe);
+    await webhooks.catchUp(...stored([{ id: "ended-before-start", endedAt: ended }]));
     await until(() => hook.got.length === 1, `its run.ended (${leftover === undefined ? "no" : "a leftover"} end-notices-since)`);
     assert.equal(hook.got[0].headers["webhook-id"], noticeId("ended-before-start", "run.ended", ended));
     assert.equal(existsSync(since) ? readFileSync(since, "utf8") : undefined, leftover, "left as it was");
@@ -1098,8 +1101,7 @@ test("the ledger keeps an end exactly as long as a start's catch-up looks for it
   // A new notice writes the ledger, pruned as the catch-up would read it.
   webhooks.emit("run.ended", { run_id: "now", agent_id: "a", status: "completed", title: "t" }, new Date().toISOString());
   assert.deepEqual(Object.keys(ledgerOf(dir)).sort(), ["inside", "now"], "the end past the day is dropped; the one inside it stays");
-  const describe = async (id) => ({ run_id: id, agent_id: "a", status: "completed", title: id });
-  await webhooks.catchUp([{ id: "inside", endedAt: inside }, { id: "past", endedAt: past }], describe);
+  await webhooks.catchUp(...stored([{ id: "inside", endedAt: inside }, { id: "past", endedAt: past }]));
   await until(() => hook.got.length === 1, "the new end sent");
   await sleep(300);
   assert.deepEqual(hook.got.map((r) => JSON.parse(r.body).data.run_id), ["now"], "neither earlier end sent again");
@@ -1130,7 +1132,7 @@ test("an end just inside the catch-up's day, its ledger entry at the pruning edg
   const next = new Webhooks(dir, env, () => undefined, []);
   t.after(() => next.close());
   next.emit("run.ended", run("pruning"), new Date().toISOString());
-  await next.catchUp([{ id: "sent", endedAt: sent }, { id: "lost", endedAt: lost }], async (id) => run(id));
+  await next.catchUp(...stored([{ id: "sent", endedAt: sent }, { id: "lost", endedAt: lost }]));
   // A continuation tells the same end again.
   next.emit("run.ended", run("sent"), sent);
   await until(() => hook.got.length === 4, "the new end and the lost one");
@@ -1246,9 +1248,8 @@ test("a start drops the ledger's waits of runs the store holds as ended or no lo
   writeFileSync(join(dir, "webhook-outbox.json"), `${JSON.stringify({ v: 3, messages: [], attempts: [], notices: { deleted: { wait: "row_1" }, ended: { wait: "row_2" }, kept: { wait: "row_3", ended: recent }, open: { wait: "row_4" } } })}\n`);
   const webhooks = new Webhooks(dir, env, () => undefined, []);
   t.after(() => webhooks.close());
-  const describe = async (id) => ({ run_id: id, agent_id: "a", status: "completed", title: id });
   // The store's rows: "deleted" is gone, "ended" and "kept" have ended, "open" still waits (two days on).
-  await webhooks.catchUp([{ id: "ended", state: "completed", endedAt: old }, { id: "kept", state: "completed", endedAt: recent }, { id: "open", state: "running" }], describe);
+  await webhooks.catchUp(...stored([{ id: "ended", state: "completed", endedAt: old }, { id: "kept", state: "completed", endedAt: recent }, { id: "open", state: "running" }]));
   assert.deepEqual(ledgerOf(dir), { kept: { ended: recent }, open: { wait: "row_4" } });
   await sleep(300);
   assert.equal(hook.got.length, 0, "nothing sent");

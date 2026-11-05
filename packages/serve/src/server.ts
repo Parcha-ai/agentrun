@@ -848,14 +848,16 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     .catch((error: Error) => void process.stderr.write(`agentrun-serve: recovery: ${error.message}\n`))
     .then(async () => {
       const rows = (await agents.request(() => agents.store.listRuns())).filter((row) => !row.importedFrom);
-      const byId = new Map(rows.map((row) => [row.id, row]));
-      // An end's notice from its row and its serve.json alone, as the run list reads an ended run (summaryOfRow): never
-      // its own store, whose read can fail, so a busy store loses no end. The same body a live end's notice has.
+      // An end's notice from its row as the agent store holds it now and its serve.json alone, as the run list reads an
+      // ended run (summaryOfRow): never its own store, whose read can fail, so a busy store loses no end. The same body a
+      // live end's notice has.
       await webhooks.catchUp(rows, async (id) => {
-        const row = byId.get(id);
-        if (!row) return null;
         const meta = await readJson(join(agents.dir, "runs", id, RUN_META));
-        return { run_id: id, agent_id: row.agent, status: await runs.statusOfRow(row), title: isObject(meta) && typeof meta.title === "string" ? meta.title : "" };
+        // Read last, so nothing but this read stands between the run as it is now and its end's queuing.
+        const row = await agents.request(() => agents.store.readRun(id));
+        if (!row) return null;
+        const notice = { run_id: id, agent_id: row.agent, status: await runs.statusOfRow(row), title: isObject(meta) && typeof meta.title === "string" ? meta.title : "" };
+        return { state: row.state, endedAt: row.endedAt, notice };
       });
     })
     .catch((error: Error) => void process.stderr.write(`agentrun-serve: the webhook's catch-up: ${error.message}\n`));
