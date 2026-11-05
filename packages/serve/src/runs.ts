@@ -260,7 +260,8 @@ export type Run = {
   relaunches: number;
   /** Its newest launch has not reported back: its mark (RUN_LAUNCHING) is on disk. */
   launching?: boolean;
-  /** The store has it running and it has no serve.json: its server went down before it was set up, so it never launched. */
+  /** The store has it running and its serve.json holds no input: its server went down before it set the run up (whose
+   *  first write is the input), so it never launched. A serve.json written since (its failure, a stop) never adds one. */
   notSetUp?: boolean;
   /** Its files being copied into its work/ before its first launch, until they are: nothing launches it meanwhile (a
    *  request that would waits for it), and nothing but a cancel settles it. */
@@ -477,7 +478,7 @@ export type StartOptions = { input: Json; title: string; place: Place; effort?: 
 /** `maxRuns`: the most runs with a live process at once; `settleRetryMs`: how often a carry back the store refused is
  *  tried again; `readyTimeoutMs`: how long a request to a run waits for its door (a run's first message, sent by its
  *  start, always waits READY_TIMEOUT_MS); `log` takes a run's start and end (print.ts). */
-export type RunsOptions = { agents: Agents; token: string; /** The server's saved tool keys, read by name for its runs alone (secrets.ts). */ storedKeys?: StoredKeys; documents?: string; doorTokenFile: string; doorToken: string; /** The test switches a run's process gets (server.ts fauxEnvOf): empty outside tests. */ fauxEnv?: NodeJS.ProcessEnv; runBoxes?: BoxProvider; /** The server's Daytona provider, with its key: remote boxes are made, seeded, pulled and destroyed with it, here alone (box-relay.ts). */ remoteBoxes?: BoxProvider; /** Daytona's API and the same key, for what the provider does not do: a kept box's idle stop, and its wake at a start (daytona-api.ts). */ remoteApi?: DaytonaApi; toolSettings?: () => ToolSettingsMap; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; reflectTimeoutMs?: number; gradeTimeoutMs?: number; /** The grader's model (`--grade-model`), before AGENTRUN_SERVE_GRADE_MODEL and the strong tier (grade.ts gradeModelOf). */ gradeModel?: string; /** How much of what a run learned its instructions hold, in bytes (`--learning-budget`, learning.ts learnedOf). */ learningBudget?: number; log?: (event: string, fields: Record<string, string | number>) => void; notify?: RunNotify; learning?: LearningMode };
+export type RunsOptions = { agents: Agents; token: string; /** The server's saved tool keys, read by name for its runs alone (secrets.ts). */ storedKeys?: StoredKeys; documents?: string; doorTokenFile: string; doorToken: string; /** The test switches a run's process gets (server.ts fauxEnvOf): empty outside tests. */ fauxEnv?: NodeJS.ProcessEnv; runBoxes?: BoxProvider; /** The server's Daytona provider, with its key: remote boxes are made, seeded, pulled and destroyed with it, here alone (box-relay.ts). */ remoteBoxes?: BoxProvider; /** Daytona's API and the same key, for what the provider does not do: a kept box's idle stop, and its wake at a start (daytona-api.ts). */ remoteApi?: DaytonaApi; /** The hosts a remote box may reach (run-box.ts boxAllowOf); `none`, or absent, for none. */ boxAllow?: readonly string[] | "none"; /** Called once, with the provider's refusal's code, when it cannot keep that list here: from then on each remote box is made with no network. */ onNoBoxList?: (code: string) => void; toolSettings?: () => ToolSettingsMap; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; reflectTimeoutMs?: number; gradeTimeoutMs?: number; /** The grader's model (`--grade-model`), before AGENTRUN_SERVE_GRADE_MODEL and the strong tier (grade.ts gradeModelOf). */ gradeModel?: string; /** How much of what a run learned its instructions hold, in bytes (`--learning-budget`, learning.ts learnedOf). */ learningBudget?: number; log?: (event: string, fields: Record<string, string | number>) => void; notify?: RunNotify; learning?: LearningMode };
 /** Told of a run's moment each time it is seen (webhooks.ts' emit, which queues each one once): a wait it reached, and an
  *  end once the agent store has it. `marker` names the moment (the person's turn it waits at, the end's time), the same
  *  when another server sees it again. It says what came of it: `unsaved`, not in the outbox on disk yet. */
@@ -628,6 +629,8 @@ export class Runs {
   /** Each workflow run's last graph read whole: what a poll that met a busy store answers, marked stale. */
   private readonly graphs = new Map<string, object>();
   private readonly adopting = new Map<string, Promise<Run>>();
+  /** The hosts this server's next remote box asks for: the setting's, until the provider cannot keep a list here, then none. */
+  private remoteAllow: readonly string[] | "none" | undefined;
   private readonly clock = new ChangeClock();
   private readonly cli = fileURLToPath(new URL("./cli.js", import.meta.resolve("@parcha/pi-durable-disk")));
   private readonly app = fileURLToPath(new URL("./app.js", import.meta.url));
@@ -645,6 +648,8 @@ export class Runs {
   /** The runs' learning (learning-run.ts): a step this file calls as a run starts, ends, settles, opens again and is
    *  recovered, handed what it moves of a run. */
   readonly learning: LearningRuns;
+  /** When this server took the data root (one server a root): a run started since is its own, never one to recover. */
+  private readonly bootedAt = new Date().toISOString();
   constructor(private readonly options: RunsOptions) {
     this.learning = new LearningRuns(options, {
       held: (id) => this.runs.get(id),
@@ -730,7 +735,7 @@ export class Runs {
     const run = this.blank(row, dir, meta, known?.version ?? 0, harnessOfBody(known?.revision.body ?? {}), known ? await toolingOf(known.revision) : undefined, known?.revision);
     this.runs.set(row.id, run);
     run.launching = existsSync(join(dir, RUN_LAUNCHING));
-    run.notSetUp = row.state === "running" && !existsSync(join(dir, RUN_META));
+    run.notSetUp = row.state === "running" && !isObject(stored?.input);
     const record = await this.record(run);
     // An ended run is ended before its rows are read, so they never make it a wait: a last row that asks is no notice.
     if (row.state !== "running") run.outcome = STATUS_OF[row.state];
@@ -1171,7 +1176,13 @@ export class Runs {
     if (!run || !boxes || !this.servesBox(id)) return Promise.reject(new Error(`no run ${id} of this server is in a remote box`));
     // After any pull of this run's box, so a seed never meets a pull.
     run.boxing ??= (run.pulling ?? Promise.resolve())
-      .then(() => ensureRemoteBox(boxes, run, boxContext(REMOTE_SYNC_MS), this.wakeOf(run.id)))
+      .then(() =>
+        ensureRemoteBox(boxes, run, boxContext(REMOTE_SYNC_MS), this.wakeOf(run.id), (this.remoteAllow ??= this.options.boxAllow ?? "none"), (code) => {
+          if (this.remoteAllow === "none") return;
+          this.remoteAllow = "none";
+          this.options.onNoBoxList?.(code);
+        }),
+      )
       .finally(() => void (run.boxing = undefined));
     return run.boxing;
   }
@@ -1209,7 +1220,8 @@ export class Runs {
     // The learning a server left between steps, picked up once every running run is read (learning-run.ts).
     const recoverLearning = this.learning.recover();
     await this.sweepOnce();
-    const rows = await this.options.agents.request(() => this.store.listRuns());
+    // Only what an earlier server left: a store slow to answer here must not hand back a run a create is setting up now.
+    const rows = (await this.options.agents.request(() => this.store.listRuns())).filter((row) => row.startedAt < this.bootedAt);
     for (const row of rows) {
       if (row.state !== "running" || row.importedFrom) continue;
       const run = await this.adopt(row).catch((error: Error) => (warn(row.id, `not recovered: ${error.message}; the next start tries again`), null));
