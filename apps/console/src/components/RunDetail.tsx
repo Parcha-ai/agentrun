@@ -81,7 +81,10 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
   // What the run's learning changed: read once, shown under the report and under the timeline's look-back.
   const changes = useRunChanges(run, readLearningDiff);
   // The run's browser: a tab of its own while it has one (not `off`), "live" in its name while a page is open.
-  const browser = useRunBrowser(readBrowser, view.live, browserEvery);
+  // The run can still open a browser while it is queued or working, or waits on its question with its process held: read
+  // the browser again while it can, and once when it no longer can (the session it held is released at its end).
+  const browserOpens = view.live || (run.status === "input_required" && run.state === "waiting");
+  const browser = useRunBrowser(readBrowser, browserOpens, browserEvery);
   // A story or a deep link can open a file on first render.
   useEffect(() => { if (openFile && readFile) void show(openFile); }, [openFile]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -118,7 +121,7 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
           {tab === "timeline" && <Timeline rows={learningSteps(rows, run.learning)} live={view.live} asking={view.needsYou && !budget ? waiting?.id : undefined} />}
           {(tab === "report" || tab === "timeline") && changes && <RunChanges got={changes.got} retry={changes.retry} />}
           {tab === "files" && <RunFiles files={files} onOpen={show} />}
-          {tab === "browser" && browser && <BrowserPanel browser={browser} />}
+          {tab === "browser" && browser && <BrowserPanel browser={browser} opens={browserOpens} followUp={view.canMessage && view.messageMode === "follow_up"} />}
         </div>
       </div>}
       {view.canMessage && (

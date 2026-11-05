@@ -19,7 +19,7 @@ beforeEach(() => {
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; vi.restoreAllMocks(); logs.length = 0; localStorage.clear(); sessionStorage.clear(); });
 
 const f = runFixture("run.completed.idle.1");
-const working = { ...f.run, status: "working", state: "working", result: null } as Run;
+const working = { ...f.run, kind: "agentic", status: "working", state: "working", result: null } as Run;
 const RUN = working.run_id;
 const VIEWER = `/v2/runs/${RUN}/browser/live/v/AbCdEfGhIjKlMnOpQrStUv#t=SECRET-TOKEN-one-1234567890`;
 const VIEWER2 = `/v2/runs/${RUN}/browser/live/v/ZyXwVuTsRqPoNmLkJiHgFe#t=SECRET-TOKEN-two-0987654321`;

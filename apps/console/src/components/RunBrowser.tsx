@@ -43,7 +43,15 @@ export function useRunBrowser(read: (() => Promise<RunBrowser>) | undefined, liv
  *  The viewer (a same-origin path, its token in the fragment) is the iframe's src and nothing else: never the address
  *  bar, the history, storage, a log or an error. A new session (a release, then a page again) is a new viewer: the
  *  iframe is made again for it. Take over and hand back, and what the agent waits on, are to come in their places here. */
-export function BrowserPanel({ browser }: { browser: RunBrowser }) {
+export function BrowserPanel({ browser, opens, followUp }: {
+  browser: RunBrowser;
+  /** Whether the run can still open a browser: queued, working, or waiting on its question with its process (and any
+   *  session) held. Otherwise `none` is a browser that closed with the run, never one to wait for. */
+  opens: boolean;
+  /** Whether the ended run takes a follow-up: its turn runs in a new process, whose browser tool opens a new session if
+   *  the agent uses it (serve's tools.ts, the live view handed over per session as the process opens one). */
+  followUp: boolean;
+}) {
   // Each viewer gets an iframe of its own (a new session is a new page); the key is a count, never the viewer itself.
   const session = useRef({ viewer: "", n: 0 });
   if (browser.state === "live" && browser.viewer !== session.current.viewer) session.current = { viewer: browser.viewer, n: session.current.n + 1 };
@@ -61,7 +69,9 @@ export function BrowserPanel({ browser }: { browser: RunBrowser }) {
         // to this server, which checks the session cookie and the Origin, and it clears the fragment from its own history.
         // Nothing else: no forms, no popups, no navigating the console.
         ? <iframe key={session.current.n} src={browser.viewer} title="The run's browser" referrerPolicy="no-referrer" sandbox="allow-scripts allow-same-origin" className="block aspect-[16/10] w-full bg-background" />
-        : <p className="px-4 py-12 text-center font-mono text-[13px] text-muted-foreground">Waiting for the browser. The agent's page shows here once it opens one.</p>}
+        : <p className="px-4 py-12 text-center font-mono text-[13px] text-muted-foreground">
+            {opens ? "Waiting for the browser. The agent's page shows here once it opens one." : `The browser closed when the run ended.${followUp ? " A follow-up opens a new one if the agent needs it." : ""}`}
+          </p>}
     </section>
   );
 }
