@@ -27,7 +27,7 @@ import type { McpCallResult, McpTool, SessionMcp } from "@parcha/agentrun-kernel
 import { TOOL_COST, TOOL_STARTED, TOOL_UNMETERED } from "@parcha/pi-durable-agent/timeline";
 import { paidCall } from "./cap.js";
 import { wireName } from "./catalog.js";
-import { type Gate, mcpToolName, type Park } from "./tool-gate.js";
+import { type Gate, GATED_BY_GATEWAY, mcpToolName, type Park } from "./tool-gate.js";
 import { forModel } from "./result.js";
 import { writeInWork } from "./workspace.js";
 
@@ -179,6 +179,9 @@ export interface McpGatewayOptions {
 /** The gateway: a session's servers, and a call that takes the gate's `park` of the harness it came from (its journal's
  *  commit, and how it ends a parked call's turn); none, the run's root commit. */
 export type McpGateway = Omit<SessionMcp, "call"> & { call(server: string, tool: string, args: Record<string, unknown>, context: { signal: AbortSignal; callId?: string; park?: Park }): Promise<McpCallResult> };
+
+/** The gateways that hold their run's gate: each of their calls enters it, in `call`. */
+const gating = new WeakSet<McpGateway>();
 
 export function mcpGateway(options: McpGatewayOptions): McpGateway {
   type Upstream = { callTool(params: unknown, options: unknown): Promise<unknown> };
@@ -337,7 +340,7 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
     return { text: result.content.map((block) => block.text).join("\n\n"), isError: result.isError === true };
   });
 
-  return {
+  const gateway: McpGateway = {
     servers: [...pins].map(([name, pinned]) => ({ name, tools: pinned.tools })),
     async call(server, tool, args, { signal, callId, park: given }) {
       const why = unsendable(server, tool);
@@ -370,6 +373,8 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
       return sent(server, tool, args, id, signal);
     },
   };
+  if (options.gate) gating.add(gateway);
+  return gateway;
 }
 
 const PARKED = Symbol("agentrun.mcp.parked");
@@ -382,8 +387,11 @@ export const isParked = (result: McpCallResult): boolean => (result as { [PARKED
 /** pi's tools for the gateway's servers: each granted tool under its wire name (`mcp__<server>__<tool>`), with the pinned
  *  description and schema, never run again after a crash. */
 export function mcpRegistrations(gateway: McpGateway): ToolRegistration[] {
+  // Marked when the gateway holds the run's gate: its calls enter the gate in the gateway, so the gate's own wrapper
+  // (tool-gate.ts extension) leaves them be. Unmarked, the wrapper gates them as any tool.
+  const marked = gating.has(gateway) ? { [GATED_BY_GATEWAY]: true as const } : {};
   return gateway.servers.flatMap((server) =>
-    server.tools.map((tool) =>
+    server.tools.map((tool) => Object.assign(
       defineTool({
         name: wireName(`mcp:${server.name}/${tool.name}`),
         description: tool.description || tool.title || `${tool.name}, a tool of the MCP server ${server.name}.`,
@@ -398,7 +406,8 @@ export function mcpRegistrations(gateway: McpGateway): ToolRegistration[] {
           // A parked call ends the turn, as ask_person's does; the gate resumes the session once a person answers.
           return isParked(result) ? forModel(text, { control: { terminate: true } }) : forModel(text, { isError: result.isError === true });
         },
-      }) as unknown as ToolRegistration,
-    ),
+      }),
+      marked,
+    ) as unknown as ToolRegistration),
   );
 }

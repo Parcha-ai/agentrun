@@ -9,8 +9,8 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { mcpRoute, startModelProxy } from "@parcha/agentrun-kernel/host";
 import { useSpend } from "../dist/cap.js";
-import { HEADER_SCAN_DEPTH, isParked, MCP_CLIP, mcpCredentialsOf, mcpGateway, mcpHeaderProblem, mcpPinOf } from "../dist/mcp-gateway.js";
-import { deniedText, gateOf, waitingText } from "../dist/tool-gate.js";
+import { HEADER_SCAN_DEPTH, isParked, MCP_CLIP, mcpCredentialsOf, mcpGateway, mcpHeaderProblem, mcpPinOf, mcpRegistrations } from "../dist/mcp-gateway.js";
+import { deniedText, GATED_BY_GATEWAY, gateOf, waitingText } from "../dist/tool-gate.js";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 
 const TOKEN = `not-a-secret-${"gateway-bearer-0123"}`;
@@ -367,4 +367,13 @@ test("an approved call to a server that never answers ends at the call's deadlin
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
   assert.deepEqual(await gateway.call("fake", "add", { a: 2, b: 3 }, { signal: signal(), callId: "c2" }), { content: [{ type: "text", text: "5" }] }, "the next call goes on");
+});
+
+test("pi's registrations carry GATED_BY_GATEWAY only when the gateway holds the run's gate, so the gate's wrapper leaves exactly those", () => {
+  const pin = { fake: { url: "http://127.0.0.1:9/mcp", tools } };
+  const gated = mcpRegistrations(mcpGateway({ pin, credentials: {}, work: () => tmpdir(), gate: { enter: async () => undefined } }));
+  assert.deepEqual(gated.map((tool) => [tool.name, tool[GATED_BY_GATEWAY]]), tools.map((tool) => [`mcp__fake__${tool.name}`, true]));
+  assert.equal(typeof gated[0].execute, "function", "the marked registration is the tool, whole");
+  const ungated = mcpRegistrations(mcpGateway({ pin, credentials: {}, work: () => tmpdir() }));
+  assert.ok(ungated.every((tool) => tool[GATED_BY_GATEWAY] === undefined), "a gateway without the gate marks none, so the wrapper gates them");
 });
