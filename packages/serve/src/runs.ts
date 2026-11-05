@@ -993,13 +993,16 @@ export class Runs {
     if (row.state === "running" && signIn === "unreadable" && run.meta.sign_in_handed && !run.meta.unshown) {
       run.error = { code: "run_failed", message: UNREADABLE_SIGN_IN, retryable: false };
       run.meta.unshown = true;
-      await this.saveMeta(run);
+      // Unsaved (a full disk), it is still hidden here, stopped and ended; the next server reads the same unreadable
+      // sign-in and hides it again. A load that threw here would leave this run cached half taken up, never watched.
+      await this.saveMeta(run).catch((error: Error) => warn(run.id, `that it is hidden is not saved: ${error.message}`));
     }
     // Hidden under a key that did not open its sign-in, and that very sign-in opens again now (not one made since in its
     // place, which would not cut the pointer its rows hold): its rows are read, cut of it.
     if (run.meta.unshown && typeof signIn === "object" && typeof run.meta.sign_in_handed === "string" && pointerHash(signIn.ref) === run.meta.sign_in_handed) {
       delete run.meta.unshown;
-      await this.saveMeta(run);
+      // Unsaved, the next server finds it hidden and this same sign-in open, and shows it again as this one does.
+      await this.saveMeta(run).catch((error: Error) => warn(run.id, `that it is shown again is not saved: ${error.message}`));
     }
     // Only a store no live instance holds is opened: released, or left by an instance whose lease lapsed.
     if ((row.state !== "running" || !this.doorOf(record)) && !run.meta.unshown) await this.storeWhenFree(run);
