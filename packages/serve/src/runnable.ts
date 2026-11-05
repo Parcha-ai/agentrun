@@ -110,11 +110,12 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
         if (!named) out.push({ field, reason: "not_an_option", message: `${tool} is not an MCP tool's name: mcp:<server>/<tool>, the server's name in lowercase letters, digits and -.`, host: false, tool });
         // claude-agent's own tools are its MCP server `hands`: a remote server of that name could never be called there.
         else if (named.server === "hands") out.push({ field, reason: "not_an_option", message: `${tool} names the MCP server hands, a name the harnesses keep for their own tools: save the server under another name.`, host: false, tool });
+        // A meta tool runs other actions by name: a grant of it could not name the action (mcp-meta.ts). Refused before
+        // the harness's check, since no host setup makes it grantable.
+        else if (listedTool?.grantable === false) out.push({ field, reason: "not_an_option", message: `${tool} can't be granted: ${listedTool.reason}`, host: false, tool });
         else if (!MCP_HARNESSES.includes(harness)) out.push({ field, reason: NOT_SET_UP, message: `${tool} runs on ${MCP_HARNESSES.join(" and ")} here; on ${harness} MCP tools are not bound yet.`, host: true, tool });
         else if (!listed) out.push({ field, reason: "not_an_option", message: `No MCP server ${named.server} is saved on this server: add it in Settings → MCP servers first.`, host: false, tool });
         else if (!listed.includes(named.tool)) out.push({ field, reason: "not_an_option", message: `The MCP server ${named.server} has no tool ${named.tool}; its tools are ${listed.join(", ") || "none"}.`, host: false, tool });
-        // A meta tool runs other actions by name: a grant of it could not name the action (mcp-meta.ts).
-        else if (listedTool?.grantable === false) out.push({ field, reason: "not_an_option", message: `${tool} can't be granted: ${listedTool.reason}`, host: false, tool });
         else if (dropped) out.push({ field, reason: "not_an_option", message: `The MCP server ${named.server}'s tool ${named.tool} cannot be offered on claude-agent: ${dropped.replace(/^mcp__\S+: /, "")}.`, host: false, tool });
         else if (declared) out.push({ field, reason: "not_an_option", message: `The MCP server ${named.server}'s tool ${named.tool} declares a header it cannot send: ${declared}.`, host: false, tool });
         else if (wireName(tool) !== `mcp__${named.server}__${named.tool}`) out.push({ field, reason: "not_an_option", message: `${tool} is too long: mcp__${named.server}__${named.tool} must be at most 52 characters, the budget every harness's tool names share.`, host: false, tool });

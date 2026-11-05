@@ -292,6 +292,8 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
   const unsendable = (server: string, tool: string): string | undefined => {
     const pinned = pins.get(server);
     if (!pinned?.tools.some((t) => t.name === tool)) return `${tool} is not a tool of the MCP server ${server} in this run.`;
+    const meta = metaToolOf(pinned.url, tool);
+    if (meta) return `mcp:${server}/${tool} can't be granted: ${meta.reason} Nothing was sent.`;
     const now = credentials.get(server);
     if (!now) return `The MCP server ${server} is no longer saved on this server; nothing was sent.`;
     if (now.url !== pinned.url) return `The MCP server ${server}'s address changed since this run started; nothing was sent. Start a new run to use it at its new address.`;
