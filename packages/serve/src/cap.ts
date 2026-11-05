@@ -92,6 +92,13 @@ export function streamedBytes(message: { content?: unknown } | undefined): numbe
   }
   return bytes;
 }
+/** What of a model answer's reasoning streamed, in bytes (streamedBytes' unit): its thinking blocks. */
+export function reasoningBytes(message: { content?: unknown } | undefined): number {
+  const blocks = Array.isArray(message?.content) ? (message.content as Array<Record<string, unknown> | null>) : [];
+  let bytes = 0;
+  for (const block of blocks) if (typeof block?.thinking === "string") bytes += Buffer.byteLength(block.thinking, "utf8");
+  return bytes;
+}
 /** A request's figure if it is stopped before its end, given the answer it had streamed. */
 export type Stopped = (message: { content?: unknown }) => number;
 /** What a request stopped before its end counts at: its input and `streamed` tokens plus STOP_ALLOWANCE_TOKENS of output,
@@ -309,25 +316,34 @@ export function spentIn(storeFile: string): number | null {
 
 /** /usage's meters for a run that ended, from its store: `tools`, each TOOL_COST's `usd`, unknown (null) when one is,
  *  or when a call was cut (marked, never settled: what it charged no one knows); and `tokens`, the rest of its root
- *  conversation as its settled timeline prices it. A mark is never a charge here (the cap's alone). Never for a live
- *  run: its process holds the store exclusively. */
-export function metersIn(storeFile: string): { tools: number | null; tokens: number | null } {
-  if (!existsSync(storeFile)) return { tools: 0, tokens: null };
+ *  conversation as its settled timeline prices it; `browser`, the part of `tools` that is browser session time
+ *  (browser-cost.ts), with its seconds; and `others`, the rest of `tools`, each unknown (null) apart. A mark is never a charge here (the cap's alone). Never for a live run: its process
+ *  holds the store exclusively. */
+export function metersIn(storeFile: string): { tools: number | null; tokens: number | null; browser: { usd: number | null; seconds: number }; others: number | null } {
+  if (!existsSync(storeFile)) return { tools: 0, tokens: null, browser: { usd: 0, seconds: 0 }, others: 0 };
   const db = new DatabaseSync(storeFile, { readOnly: true, timeout: 2_000 });
   try {
     const rows = db.prepare("SELECT conversation_id AS conversation, record FROM entries ORDER BY rowid").all().map((row) => ({ conversation: Number(row.conversation), entry: JSON.parse(String(row.record)) as EntryLike }));
     const root = rows.reduce((min, row) => Math.min(min, row.conversation), Infinity);
     const marks = new Set<unknown>();
     const charges: (number | undefined)[] = [];
+    const browser = { usd: 0 as number | null, seconds: 0 };
+    const others: (number | undefined)[] = [];
     for (const { entry } of rows) {
       const data = (entry.data ?? {}) as Record<string, unknown>;
       if (entry.kind === TOOL_STARTED) marks.add(data.call);
       else if (entry.kind === TOOL_COST) marks.delete(data.call), charges.push(figureOf(data.usd));
+      if (entry.kind === TOOL_COST && data.tool !== "browser") others.push(figureOf(data.usd));
+      if (entry.kind !== TOOL_COST || data.tool !== "browser") continue;
+      const usd = figureOf(data.usd);
+      browser.usd = browser.usd === null || usd === undefined ? null : browser.usd + usd;
+      browser.seconds += figureOf(data.seconds) ?? 0;
     }
     const tools = marks.size || charges.some((usd) => usd === undefined) ? null : (charges as number[]).reduce((sum, usd) => sum + usd, 0);
     const rest = rows.filter(({ conversation, entry }) => conversation === root && entry.kind !== TOOL_STARTED && entry.kind !== TOOL_COST).map(({ entry }) => entry);
     const usage = timelineOf(rest, { settled: true }).find((row) => row.kind === "usage");
-    return { tools, tokens: usage ? (usage.usage?.usd ?? null) : 0 };
+    const otherTools = marks.size || others.some((usd) => usd === undefined) ? null : (others as number[]).reduce((sum, usd) => sum + usd, 0);
+    return { tools, tokens: usage ? (usage.usage?.usd ?? null) : 0, browser, others: otherTools };
   } finally {
     db.close();
   }
@@ -376,6 +392,19 @@ const paidOpen = new Set<{ usd: number }>();
 /** What the paid calls under way are held at, together (0 when none is): the one figure every check of the run's cap
  *  adds to what the run has spent, a model request's (capModels, capBefore) and a paid call's (paidCall). */
 export const paidHolds = (): number => [...paidOpen].reduce((sum, { usd }) => sum + usd, 0);
+
+/** A paid hold that outlives the paidCall that took it (a browser session's, browser-cost.ts), counted in paidHolds as a
+ *  call's is until `drop`: its figure is `usd`, which its owner moves as charges use it. */
+export const keepHold = (usd: number): { usd: number; drop(): void } => {
+  const open = { usd, drop: () => void paidOpen.delete(open) };
+  paidOpen.add(open);
+  return open;
+};
+/** A charge booked outside any paidCall (a browser session's, booked in the commit that bills it) joins what the run's
+ *  process counts as spent, as a paid call's does; with no cap, nothing counts it. */
+export const addSpend = (usd: number | null): void => runSpend?.add(usd);
+/** The run's cap, when it has one. */
+export const runCap = (): number | undefined => runSpend?.cap;
 
 /** `call`, a paid tool's (`name`), under the run's cap, by the rule a model request keeps: refused, in words that name
  *  its price and the cap and never calling it, unless what the run has spent plus what the call is held at (`hold`: its
@@ -465,6 +494,14 @@ export function money(usd: number): string {
  *  which pi-ai's retry (isRetryableAssistantError, which reads only an error's text) takes as final whatever digits the
  *  words after it hold. The words after it are the ones a person reads. */
 export const CAP_REFUSAL_CODE = `${SPEND_CAP_REACHED} (out of budget): `;
+/** A refusal for room's figures, beside its words: what the cap counted as taken (spent, and held for requests still
+ *  answering) and the least the refused request needs. Kept on the refusal's own start mark (`spentUsd`, `needsUsd`), so a
+ *  run paused at its cap says them (runs.ts pending), and its cap's raise is checked against them. */
+export type RefusalFigures = { spentUsd: number; needsUsd: number };
+/** The words of a refusal for room (CAP_REFUSAL_CODE: what is left of the cap cannot buy the request's least), which a
+ *  higher cap would send; undefined for any other text, a refusal no cap could fix included (an unknown spend, no price,
+ *  no output ceiling, an input not measured: the bare `spend_cap_reached: ` code). The one reader of that difference. */
+export const roomRefusal = (text: string | undefined): string | undefined => (text?.startsWith(CAP_REFUSAL_CODE) ? text.slice(CAP_REFUSAL_CODE.length) : undefined);
 
 /** A model's name as the words say it: the catalog's, without a vendor's prefix ("Anthropic: Claude Sonnet 5.5" reads
  *  "Claude Sonnet 5.5"), else its id. */
@@ -513,7 +550,7 @@ export function leastOutput(model: Pick<Model<Api>, "api" | "reasoning">, thinki
  *  admitted with, and the model proxy each request's input bound (`inputTokensMax`, inputBound of its body; undefined
  *  when the body could not be measured), the output it asks for, and the least it may be limited to. */
 export interface CapGuard {
-  beforeRequest(request: GuardRequest): undefined | { refuse: string } | { outputTokensMax: number };
+  beforeRequest(request: GuardRequest): undefined | ({ refuse: string } & Partial<RefusalFigures>) | { outputTokensMax: number };
   /** The worst case a request this guard admitted is held at (its input bound, and the output limit it was admitted with
    *  or else its output ceiling, at the model's price): what the runner records for it, and counts it at when its own cost
    *  never comes in (cut short, or by a crash). */
@@ -557,11 +594,11 @@ export async function capBefore(cap: number | undefined, model: Model<Api> | und
       const left = cap - spentUsd - holding;
       const cost = (tokens: number) => price(inputTokensMax!, tokens);
       // A model whose output costs nothing and names no ceiling: nothing to limit, only its input to fit.
-      if (output === 0) return cost(0) <= left ? undefined : { refuse: capRefusal(cap, spentUsd, holding, name, cost(0)) };
+      if (output === 0) return cost(0) <= left ? undefined : { refuse: capRefusal(cap, spentUsd, holding, name, cost(0)), spentUsd: spentUsd + holding, needsUsd: cost(0) };
       const asked = Math.min(outputTokensAsked ?? output, output);
       const least = Math.min(outputTokensLeast ?? ANSWER_TOKENS_LEAST, asked);
       const most = mostOutput(cost, least, asked, left);
-      return most === undefined ? { refuse: capRefusal(cap, spentUsd, holding, name, cost(least)) } : { outputTokensMax: most };
+      return most === undefined ? { refuse: capRefusal(cap, spentUsd, holding, name, cost(least)), spentUsd: spentUsd + holding, needsUsd: cost(least) } : { outputTokensMax: most };
     },
     worstOf: (request) => (typeof request.inputTokensMax === "number" && Number.isFinite(request.inputTokensMax) ? held(request) : undefined),
     stoppedOf: (request, streamed) => (typeof request.inputTokensMax === "number" && Number.isFinite(request.inputTokensMax) && Number.isFinite(streamed) && streamed >= 0
@@ -591,7 +628,7 @@ export function requestParts(overhead: (model: Model<Api>, context: Context) => 
  *  `overhead(model, context)` (piOverhead), what its provider adds server-side; undefined is unmeasured, never 0. Each
  *  request sent carries its worst case (HELD_USD) to the marks below, and one stopped before its end counts at it.
  *  `refused` (markRequests') writes the start mark of a refused model request before pi writes its error entry. */
-export async function capModels<M extends Models>(models: M, cap: number, spent: number | null, { unpriced = new Set<string>(), overhead = piOverhead, refused: markRefused }: { unpriced?: ReadonlySet<string>; overhead?: (model: Model<Api>, context: Context) => number | undefined; refused?: () => Promise<void> } = {}): Promise<M> {
+export async function capModels<M extends Models>(models: M, cap: number, spent: number | null, { unpriced = new Set<string>(), overhead = piOverhead, refused: markRefused }: { unpriced?: ReadonlySet<string>; overhead?: (model: Model<Api>, context: Context) => number | undefined; refused?: (figures?: RefusalFigures) => Promise<void> } = {}): Promise<M> {
   const [{ calculateCost, createAssistantMessageEventStream }, simple] = await Promise.all([import("@earendil-works/pi-ai"), import("@earendil-works/pi-ai/api/simple-options")]);
   const partsOf = requestParts(overhead);
   let held = 0;
@@ -600,7 +637,7 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
    *  it asks for), or why the cap refuses it. `simpleCall`: through streamSimple or completeSimple, whose thinking pi-ai
    *  turns into a budget or an effort; a direct call sends its maxTokens as is. */
   type Judged = { worst: number; stopped: Stopped; options?: Options };
-  const judge = (model: Model<Api>, context: Context, options: Options | undefined, simpleCall: boolean): Judged | { why: string } => {
+  const judge = (model: Model<Api>, context: Context, options: Options | undefined, simpleCall: boolean): Judged | { why: string; figures?: RefusalFigures } => {
     if (unpriced.has(model.id)) return { why: noPrice(cap) };
     const ceiling = outputBound(model);
     if (ceiling === undefined) return { why: noCeiling(cap) };
@@ -615,19 +652,38 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
     const left = cap - spent - holding;
     const name = nameOf(model);
     // A model whose output costs nothing and names no ceiling: nothing to limit, only its input and fee to fit.
-    if (ceiling === 0) return cost(0) <= left ? { worst: cost(0), stopped: () => cost(0) } : { why: capRefusal(cap, spent, holding, name, cost(0)) };
+    if (ceiling === 0) return cost(0) <= left ? { worst: cost(0), stopped: () => cost(0) } : { why: capRefusal(cap, spent, holding, name, cost(0)), figures: { spentUsd: spent + holding, needsUsd: cost(0) } };
     // What the request would send as it stands, thinking included: pi-ai clamps its maxTokens (or the model's) to what its
     // context leaves, and on an API whose thinking takes a budget adds the budget to it.
     const transcript = context as unknown as Parameters<typeof simple.clampMaxTokensToContext>[1];
     const thinking = simpleCall && model.reasoning && options?.reasoning ? (options.reasoning as Parameters<typeof simple.thinkingBudgetForLevel>[0]) : undefined;
-    const budgeted = thinking !== undefined && BUDGET_APIS.has(model.api);
+    // Adaptive thinking (pi-ai's current Claude models on Anthropic's API) takes no budget: pi-ai sends the request's
+    // maxTokens as is, and the model thinks within them as it sees fit: at any level, none included, on a model with
+    // mid-conversation effort, else when given a level.
+    const compat = model.api === "anthropic-messages" && model.reasoning ? model.compat as { forceAdaptiveThinking?: boolean; supportsMidConvoEffort?: boolean } | undefined : undefined;
+    const adaptive = compat?.supportsMidConvoEffort === true || (compat?.forceAdaptiveThinking === true && thinking !== undefined);
+    const budgeted = thinking !== undefined && BUDGET_APIS.has(model.api) && !adaptive;
     const base = simple.clampMaxTokensToContext(model, transcript, options?.maxTokens ?? ceilingTokens(model));
     const asked = Math.min(ceiling, budgeted ? simple.clampMaxTokensToContext(model, transcript, simple.adjustMaxTokensForThinking(base, ceilingTokens(model), thinking, options?.thinkingBudgets).maxTokens) : base);
     const least = Math.min(leastOutput(model, thinking, (level) => simple.thinkingBudgetForLevel(level as never, options?.thinkingBudgets)), asked);
     const most = mostOutput(cost, least, asked, left);
-    if (most === undefined) return { why: capRefusal(cap, spent, holding, name, cost(least)) };
-    // Stopped before its end, at most the output it was sent with: what it streamed and the allowance, within its worst case.
-    const stoppedAt = (limit: number): Stopped => (message) => stoppedFigure(cost, limit, cost(limit), streamedBytes(message));
+    if (most === undefined) return { why: capRefusal(cap, spent, holding, name, cost(least)), figures: { spentUsd: spent + holding, needsUsd: cost(least) } };
+    // The reasoning a stop leaves unseen: a model's reasoning streams as a summary or not at all (the Responses API; Claude
+    // 4-class thinking), so a request that reasons counts its level's budget (the budget it was sent with, on a budget
+    // API), or its whole limit when it gives no level and its API reasons by default; none on a budget API with thinking
+    // off, or on a model that does not reason. Adaptive thinking is bounded only by the limit, so it counts the limit
+    // less the answer's 1,024 tokens. An estimate, as levels are not limits the provider keeps: within the hold.
+    const hiddenOf = (limit: number): number => {
+      if (adaptive) return Math.max(0, limit - ANSWER_TOKENS_LEAST);
+      if (!model.reasoning || (thinking as string | undefined) === "off") return 0;
+      if (thinking === undefined) return BUDGET_APIS.has(model.api) ? 0 : limit;
+      const budget = simple.thinkingBudgetForLevel(thinking, options?.thinkingBudgets);
+      return budgeted ? Math.max(0, Math.min(budget, limit - ANSWER_TOKENS_LEAST)) : budget;
+    };
+    // Stopped before its end, at most the output it was sent with: what it streamed, the part of its reasoning budget that
+    // did not stream (max(0, budget - the reasoning streamed), so thinking that streamed is not counted twice), and the
+    // allowance, within its worst case.
+    const stoppedAt = (limit: number): Stopped => (message) => stoppedFigure(cost, limit, cost(limit), streamedBytes(message) + Math.max(0, hiddenOf(limit) - reasoningBytes(message)));
     if (most === asked) return { worst: cost(asked), stopped: stoppedAt(asked) };
     // Limited: sent with `most` tokens at most, thinking included. On a budget API the budget is squeezed first, keeping
     // the answer's 1,024, and maxTokens is what is left of `most` beside it, so pi-ai's sum is `most`.
@@ -685,7 +741,7 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
       // Its own start mark first, so pi's error entry for it answers that mark, never an earlier request a stop or a crash
       // cut. A mark that cannot be written still ends the request: spentIn leaves refusals out either way.
       void Promise.resolve()
-        .then(() => markRefused?.())
+        .then(() => markRefused?.(judged.figures))
         .catch(() => undefined)
         .then(() => {
           refused.push({ type: "error", reason: "error", error: message });
