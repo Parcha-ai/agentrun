@@ -74,10 +74,10 @@ describe("RunDetail's Report tab before an answer", () => {
   });
 
   it("a run that waits on something this console doesn't know yet says it waits for you, never for an answer below or that it stopped", () => {
-    // A kind of `pending` a newer server may send (here "budget"): only its kind is read, nothing else of it.
+    // A kind of `pending` a newer server may send (here "approval"): only its kind is read, nothing else of it.
     for (const [name, state] of [["run.input_required.waiting.1", "waiting"], ["run.input_required.idle.1", "idle"]] as const) {
       const f = runFixture(name);
-      const run = { ...f.run, state, pending: { kind: "budget" } } as unknown as Run;
+      const run = { ...f.run, state, pending: { kind: "approval" } } as unknown as Run;
       const shown = report(run, f.page.rows);
       expect(shown, name).not.toContain(WRITING);
       expect(shown, name).toContain("Waiting for you");
@@ -86,6 +86,20 @@ describe("RunDetail's Report tab before an answer", () => {
       expect(shown, name).not.toContain("reply below");
       expect(shown, name).not.toContain("Stopped before it wrote an answer.");
     }
+  });
+
+  it("a run paused at its spend cap says so, with what it spent of its cap from the served figures, and points at the raise above", () => {
+    const f = runFixture("run.input_required.waiting.1");
+    const said = "Not sent: the run has spent $0.04 of its $0.05 cap.";
+    const paused = { ...f.run, pending: { kind: "budget", cap_usd: 0.05, spent_usd: 0.04, needs_usd: 0.1024, said, at: "2026-11-04T20:08:05.127Z" } } as Run;
+    const shown = report(paused, f.page.rows);
+    expect(shown).not.toContain(WRITING);
+    expect(shown).not.toContain("Waiting for you ");
+    expect(shown).toContain("Paused at its spend cap");
+    expect(shown).toContain("It has spent $0.04 of its $0.05 cap. Raise the cap above to continue.");
+    // A server that sends the cap without the figures: said without them, never a figure it lacks.
+    const bare = report({ ...paused, pending: { kind: "budget", cap_usd: 0.05, said, at: "2026-11-04T20:08:05.127Z" } } as Run, f.page.rows);
+    expect(bare).toContain("Its $0.05 cap is reached. Raise the cap above to continue.");
   });
 
   it("a question the server names as one (pending.kind question) reads as a question", () => {

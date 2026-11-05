@@ -64,6 +64,18 @@ describe("createClient", () => {
   });
 });
 
+describe("raiseCap", () => {
+  it("raises a run's spend cap with PATCH /v2/runs/{id} and only max_cost_usd, as same-origin JSON, and answers what the server says", async () => {
+    const answer = { run_id: "r 1", max_cost_usd: 1.03, resumed: true, message_id: "m1", status: "input_required", state: "waiting" };
+    const { fn, calls } = fakeFetch(() => json(200, answer));
+    const v2 = createClient({ fetch: fn });
+    expect(await v2.raiseCap("r 1", 1.03)).toEqual(answer);
+    expect([calls[0].init?.method, calls[0].url, JSON.parse(String(calls[0].init?.body))]).toEqual(["PATCH", "/v2/runs/r%201", { max_cost_usd: 1.03 }]);
+    expect(new Headers(calls[0].init?.headers).get("content-type")).toBe("application/json");
+    expect(calls[0].init?.credentials).toBe("same-origin");
+  });
+});
+
 describe("follow", () => {
   it("applies each page from the previous cursor until the server says final, and never duplicates a row", async () => {
     const first = running.body as unknown as TimelinePage;
