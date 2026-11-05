@@ -8,13 +8,24 @@ import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import { BOUND_TOOLS, TOOLS, toolsView } from "../dist/tools.js";
-import { CAPABILITIES, explainsView, LEGACY_NAMES, planeFor, PROVIDERS, recheckPlane, relaunchPlane, resolveCapability, settingsIssues, TABLE_TOOLS, ToolSettings } from "../dist/tool-plane.js";
+import { CAPABILITIES, explainCapability, explainsView, LEGACY_NAMES, planeFor, PROVIDERS, recheckPlane, relaunchPlane, resolveCapability, settingsIssues, TABLE_TOOLS, ToolSettings } from "../dist/tool-plane.js";
 import { CANARY } from "./fixtures/faux-parallel.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 import { agent, answerFlow, flowAgent, follow, scratch, serve, withEnv } from "./support.mjs";
 import { blockersOf } from "../dist/runnable.js";
 
 const base = { gateway: false, parallelKey: false };
+
+test("a vendor picked without its key: capabilities' why names Settings → Tool keys first, then the variable, as the reason does; the stored value is unchanged", () => {
+  const parallel = explainCapability("web_search", { ...base, harness: "pi", pick: "parallel" });
+  assert.equal(parallel.resolves, "unavailable: parallel picked, no PARALLEL_API_KEY", "the plane keeps its own value");
+  assert.equal(parallel.why, "Parallel is picked, and it needs a Parallel key: save one in Settings → Tool keys (or set PARALLEL_API_KEY where the server starts)");
+  const kernel = explainCapability("browser", { ...base, harness: "pi", pick: "kernel", browserKeys: { browserbase: false, kernel: false } });
+  assert.equal(kernel.resolves, "unavailable: kernel picked, no KERNEL_API_KEY");
+  assert.equal(kernel.why, "Kernel is picked, and it needs a Kernel key: save one in Settings → Tool keys (or set KERNEL_API_KEY where the server starts)");
+  const browserbase = explainCapability("browser", { ...base, harness: "pi", pick: "browserbase", browserKeys: { browserbase: false, kernel: true } });
+  assert.equal(browserbase.why, "Browserbase is picked, and it needs a Browserbase key: save one in Settings → Tool keys (or set BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID where the server starts)");
+});
 
 test("the capabilities a grant may name are tools the table binds, fetch_page and the call-only tools not among them; web_search and web_fetch each offer their providers, the default first", () => {
   assert.deepEqual([...CAPABILITIES], ["read", "write", "edit", "web_search", "web_fetch", "browser", "ask_person"]);
