@@ -123,6 +123,10 @@ test("a map item's label cut at 200 characters inside a held key, and a decision
   assert.equal(graph.decisions.length, 1, JSON.stringify(graph.decisions));
   assert.equal(graph.decisions[0].state.text, "Is [redacted] a question?");
   noKey(JSON.stringify(graph), "the graph");
+  // The label and the decision's state are read once per held key set, as every part is.
+  const read = refusal.answerPasses.count;
+  assert.deepEqual((await api("GET", `/runs/${runId}/graph`)).body.nodes, graph.nodes);
+  assert.equal(refusal.answerPasses.count, read, "a second read redacted no label or state again");
 });
 
 test("a graph read while the run's store is busy, from the last whole view: stale, and no part of a held key", { timeout: 60_000 }, async (t) => {
@@ -167,6 +171,10 @@ test("a call's error and a decision's state, each long enough to be cut, with th
   assert.equal(graph.decisions[0]?.state_truncated, true, JSON.stringify(graph.decisions.map((d) => [d.state_truncated, typeof d.state])));
   assert.ok(graph.effects.some((e) => e.status === "failed" && e.error), JSON.stringify(graph.effects.map((e) => [e.status, e.error?.length])));
   noKey(JSON.stringify(graph), "the graph");
+  // The error and the stored-cut state are read once per held key set, as every part is.
+  const read = refusal.answerPasses.count;
+  await api("GET", `/runs/${started.body.run_id}/graph`);
+  assert.equal(refusal.answerPasses.count, read, "a second read redacted no error or state again");
 });
 
 test("a key saved after the graph was kept: a busy read from the kept view shows no part of it, a label's cut inside it included", { timeout: 60_000 }, async (t) => {
