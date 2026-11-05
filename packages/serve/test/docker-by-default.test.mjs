@@ -21,6 +21,7 @@ const RUNNER = { mode: "runner" };
 const ON_BY_DEFAULT = "Boxes: docker (on by default; set AGENTRUN_BOXES to change).";
 const NO_DOCKER = "Docker isn't running on this machine (no docker command on PATH): install or start Docker, then restart AgentRun";
 const NO_DAEMON = "Docker isn't running on this machine, or this user may not use it (docker version failed: exit 1): start Docker, or add this user to the docker group, then restart AgentRun";
+const PREPARING = "Preparing the Docker box image (first start only, a few minutes); agents can be made now, and their first run waits for it.";
 const NOT_ENABLED = "not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker";
 
 /** A fake docker first on PATH, its state directory set, and AGENTRUN_BOXES as `boxes` says (undefined: not set at all). */
@@ -134,7 +135,7 @@ test("none stands alone: AGENTRUN_BOXES that names none and a box refuses the st
   assert.deepEqual([...enabledBoxes({ AGENTRUN_BOXES: "daytona" })], ["daytona"]);
 });
 
-test("fresh-HOME start of the built CLI with AGENTRUN_BOXES not set, a fake docker first on PATH: the banner says docker is on by default, capabilities show it, and a new agent lands in the box with bash", { timeout: 120_000 }, async (t) => {
+test("fresh-HOME start of the built CLI with AGENTRUN_BOXES not set, a fake docker first on PATH: the banner says docker is on by default, capabilities show it, a new agent lands in the box with bash, and the image's first build is said as it starts and ends", { timeout: 120_000 }, async (t) => {
   const docker = await fakeDocker(t, undefined);
   const home = await scratch(t);
   const token = "a-fresh-home-token-of-32-characters-or-more";
@@ -144,6 +145,8 @@ test("fresh-HOME start of the built CLI with AGENTRUN_BOXES not set, a fake dock
   t.after(() => {
     if (child.exitCode === null) process.kill(-child.pid, "SIGTERM");
   });
+  let all = "";
+  child.stdout.on("data", (chunk) => (all += chunk));
   const out = await printed(child, /^Boxes: /m);
   const line = out.split("\n").find((text) => text.startsWith("Boxes: "));
   assert.ok(line.startsWith(ON_BY_DEFAULT), line);
@@ -158,4 +161,10 @@ test("fresh-HOME start of the built CLI with AGENTRUN_BOXES not set, a fake dock
   assert.equal(made.status, 201, JSON.stringify(made.body));
   assert.deepEqual([made.body.definition.place, made.body.definition.tools], [DOCKER, ["bash"]]);
   assert.ok(docker.calls().some((args) => args[0] === "version"), "the CLI's start probed docker");
+  // The box image's first build, said as it starts and as it ends, after the banner.
+  await until(async () => /^The Docker box image is ready\.$/m.test(all), "the image's end line");
+  const said = all.split("\n");
+  const at = (text) => said.indexOf(text);
+  assert.ok(at(PREPARING) > said.findIndex((text) => text.startsWith("Boxes: ")), all);
+  assert.ok(at("The Docker box image is ready.") > at(PREPARING), all);
 });

@@ -196,6 +196,9 @@ export type ServeOptions = {
   settleRetryMs?: number;
   /** Where the log lines go (print.ts); none without it. AGENTRUN_LOG=quiet leaves out the request lines. */
   log?: (line: string) => void;
+  /** Told the Docker box image's state at the start, when this server has a Docker box, then each change (box-image.ts):
+   *  the CLI says a first build in words, as it starts and as it ends. */
+  onBoxImage?: (state: ImageState) => void;
   /** The lines a person reads about a stop on this data root: this server's, as its close begins and runs' processes are
    *  left to finish their turn, and this start's, when it waits for a server that is stopping (server-lock.ts). Default:
    *  standard error, after `agentrun-serve: `. */
@@ -748,12 +751,14 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       onChange: (state, ms) => {
         boxOffers = offersNow();
         imageLog(state, { ms });
+        options.onBoxImage?.(state);
         // The box's state is in caps alone, not in the offers: recomposed now, or, while the start's probe of the offers
         // has not ended, by that probe, which reads the box offers when it does.
         if (offers) recompose();
       },
     });
     stops.push(async () => void (await image?.close()));
+    options.onBoxImage?.(image.state());
   } else await clearImage(data);
   boxOffers = offersNow();
   const runBoxes = fauxBox ?? boxes.provider("docker");

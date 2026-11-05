@@ -23,23 +23,27 @@ export function openLineUrl(line) {
   return (url.protocol === "http:" || url.protocol === "https:") && url.hostname === HOST ? word : undefined;
 }
 
+/** The server's lines this command says too, as they come: its banner's boxes line (whether new agents get the Docker
+ *  box, or why not) and the Docker box image's first build, as it starts and ends. */
+export const SAID = /^(Boxes: |Preparing the Docker box image |The Docker box image )/;
+
 /** The address a person opens first, as the server says it: the URL of the first "Open " line of its output that names
  *  one (openLineUrl). That line is the server's interface for it (the plain address today, a single-use sign-in link
  *  once the server prints one), so this command never builds the address itself. Resolves undefined when the output ends
- *  without one; the rest of the output is read and dropped, so the server never blocks on a full pipe. */
-export function openUrl(stdout) {
+ *  without one. Every whole line after it goes to `onLine`; the rest of the output is read and dropped, so the server
+ *  never blocks on a full pipe. */
+export function openUrl(stdout, onLine = () => {}) {
   return new Promise((resolve) => {
     let pending = "";
     let found;
     stdout.setEncoding("utf8");
     stdout.on("data", (chunk) => {
-      if (found !== undefined) return;
       pending += chunk;
-      for (let end = pending.indexOf("\n"); end >= 0 && found === undefined; end = pending.indexOf("\n")) {
+      for (let end = pending.indexOf("\n"); end >= 0; end = pending.indexOf("\n")) {
         const line = pending.slice(0, end).replace(/\r$/, "");
         pending = pending.slice(end + 1);
-        const url = openLineUrl(line);
-        if (url !== undefined) resolve((found = url));
+        if (found !== undefined) onLine(line);
+        else if ((found = openLineUrl(line)) !== undefined) resolve(found);
       }
     });
     stdout.on("end", () => resolve(found));
@@ -115,7 +119,8 @@ export async function main(argv, env = process.env) {
     return new Promise((resolve) => spawn(launcher, [rest[0], ...data, ...rest.slice(1)], { stdio: "inherit", env: childEnv }).on("exit", (code) => resolve(code ?? 1)));
   }
   // The server's banner and request lines stay out of this terminal: one line here says where to go, the URL of the
-  // server's own "Open " line. What it prints on stderr (why it did not start) comes through as it is.
+  // server's own "Open " line, then the lines SAID names, after it. What it prints on stderr (why it did not start)
+  // comes through as it is.
   const child = spawn(launcher, serverArgs([...data, ...rest]), { stdio: ["ignore", "pipe", "inherit"], env: childEnv });
   const exited = new Promise((resolve) => child.on("exit", (code) => resolve(code ?? 1)));
   for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => child.kill(signal));
@@ -133,7 +138,10 @@ export async function main(argv, env = process.env) {
     child.on("exit", () => clearInterval(watch));
   }
   let timer;
-  const url = await Promise.race([openUrl(child.stdout), new Promise((resolve) => { timer = setTimeout(resolve, 60_000); })]);
+  let told = false;
+  const held = [];
+  const tell = (line) => SAID.test(line) && (told ? console.log(line) : held.push(line));
+  const url = await Promise.race([openUrl(child.stdout, tell), new Promise((resolve) => { timer = setTimeout(resolve, 60_000); })]);
   clearTimeout(timer);
   if (url === undefined) {
     child.kill("SIGTERM");
@@ -141,5 +149,7 @@ export async function main(argv, env = process.env) {
     return (await exited) || 1;
   }
   console.log(`AgentRun is running at ${url}`);
+  told = true;
+  for (const line of held.splice(0)) console.log(line);
   return exited;
 }

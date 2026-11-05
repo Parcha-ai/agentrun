@@ -10,7 +10,8 @@ import { spawn } from "node:child_process";
 import { defaultData } from "./files.js";
 import { canOpen } from "./host.js";
 import { resetPassword } from "./owner.js";
-import { banner } from "./print.js";
+import type { ImageState } from "./box-image.js";
+import { banner, boxImageLine } from "./print.js";
 import type { LearningMode } from "./learning.js";
 import { DEFAULT_PORT, type Serve, startServe } from "./server.js";
 
@@ -141,9 +142,22 @@ const given = secret("AGENTRUN_TOKEN") || undefined;
 // A stdout its reader closed (a pipe left behind) loses the log lines, never the server.
 process.stdout.on("error", () => undefined);
 const accounts = process.env.AGENTRUN_ACCOUNTS !== "0";
+// The Docker box image's first build said in words, as it starts and as it ends (print.ts boxImageLine); a line told
+// before the banner is printed waits for it.
+let imageSaid = false;
+let bannered = false;
+const early: string[] = [];
+const onBoxImage = (state: ImageState) => {
+  const line = boxImageLine(state, imageSaid);
+  if (line === undefined) return;
+  imageSaid = true;
+  if (bannered) console.log(line);
+  else early.push(line);
+};
 let serve: Serve;
 try {
   serve = await startServe({
+    onBoxImage,
     data, port, ...(values.port === undefined ? { nextFreePort: true } : {}), ...(values.listen ? { host: values.listen } : {}), ...(given ? { token: given } : {}), ...(values.faux ? { faux: values.faux } : {}), allowHosts: values["allow-host"],
     ...(values["max-runs"] !== undefined ? { maxRuns: Number(values["max-runs"]) } : {}),
     ...(values["drain-timeout"] ? { drainTimeout: values["drain-timeout"] } : {}), ...(values.documents ? { documents: values.documents } : {}), ...(values["allow-code-nodes"] ? { allowCodeNodes: true } : {}), ...(values.learning !== undefined ? { learning: values.learning as LearningMode } : {}), ...(values["grade-model"] ? { gradeModel: values["grade-model"] } : {}), ...(budget !== undefined ? { learningBudget: Number(budget) } : {}), log: (line) => void process.stdout.write(`${line}\n`),
@@ -158,6 +172,8 @@ const source = given ? "env" : serve.tokenMade ? "made" : "file";
 for (const line of banner({ url: serve.url, baseUrl: serve.baseUrl, data, token: serve.token, source, accounts, boxes: serve.boxesLine, ...(values.listen ? { listen: values.listen } : {}), ...(publicUrl ? { publicUrl } : {}) })) console.log(line);
 // With a public address the setup link and its code are printed as the code is made (owner.ts).
 if (serve.setupUrl && !publicUrl) console.log(`Set your password: ${serve.setupUrl} (the first visit sets it)`);
+bannered = true;
+for (const line of early.splice(0)) console.log(line);
 // The console's page, once the server listens: never its sign-in link, whose token would sit in the opener's arguments
 // and the browser's history.
 if (values.open && canOpen(process.env)) spawn(process.platform === "darwin" ? "open" : "xdg-open", [`${publicUrl ?? serve.url}/`], { stdio: "ignore", detached: true }).on("error", () => {}).unref();
