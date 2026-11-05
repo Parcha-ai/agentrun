@@ -180,14 +180,14 @@ test("a learned workflow whose later model node names a tool, though the agent w
 });
 
 /** Agent `id`'s learning folder with `files` on main, and its seed pinned for a run: the pin. */
-async function pinned(t, id, files, secrets = []) {
+async function pinned(t, id, files, secrets = [], extra = {}) {
   const data = join(await scratch(t), "agents");
   mkdirSync(data, { recursive: true });
   await folderWith(data, id, files);
   const runDir = join(await scratch(t), "run");
   mkdirSync(join(runDir, "work"), { recursive: true });
   const seed = await seedOf(data, id);
-  return { seed, pin: await learning.pinSeed(runDir, join(runDir, "work"), seed, { budget: 8000, read: false, shown: learning.secretsShown(secrets) }) };
+  return { seed, pin: await learning.pinSeed(runDir, join(runDir, "work"), seed, { budget: 8000, read: false, shown: learning.secretsShown(secrets), ...extra }) };
 }
 
 test("a learned workflow whose README's front matter does not read one way (not closed, or a key indented) is not the run's: never read as active", { timeout: 60_000 }, async (t) => {
@@ -295,4 +295,12 @@ test("a capped codex run's harness counts its learned workflow's cost: its next 
   // The second is limited to what is left of the cap after the first ($0.001) and the learned request, to the token.
   const left = cap - 0.001 - side[0];
   assert.ok(held[1] <= left + 1e-9 && held[1] > left - 0.0001 - 1e-9, `the harness's next request held at ${held[1]}, what is left after the learned workflow's $${side[0]} is ${left}`);
+});
+
+test("a run whose harness would send a learned workflow's requests around the operator's gateway is not offered its learned workflows: the pin leaves each out and names why", { timeout: 60_000 }, async (t) => {
+  const files = { ...flowFiles("answer", answerFlow()), ...flowFiles("other", answerFlow()) };
+  const why = "a learned workflow's requests would not go through the gateway";
+  const { pin } = await pinned(t, "gated", files, [], { workflowsOff: why });
+  assert.deepEqual([pin.workflows, pin.workflows_left_out, pin.workflows_off], [undefined, ["answer", "other"], why], JSON.stringify(pin));
+  assert.deepEqual(await learning.pinnedWorkflows(join(await scratch(t), "none"), pin), []);
 });

@@ -76,3 +76,14 @@ test("a codex run through a gateway at OpenRouter's URL (AGENT_MODEL_BASE_URL) k
   const prepared = { provider: "agent-model", modelId: "openai/gpt-6-sol" };
   assert.deepEqual(adapters.learnedRoute("codex", env, prepared), prepared);
 });
+
+test("claude-agent through the operator's own gateway (ANTHROPIC_BASE_URL) is not offered learned workflows, whose requests could not follow it; on Anthropic or OpenRouter it is", () => {
+  const model = "anthropic/claude-sonnet-5.5";
+  const gateway = { ANTHROPIC_BASE_URL: "http://127.0.0.1:9/anthropic", ANTHROPIC_API_KEY: ANTHROPIC };
+  assert.match(adapters.learnedWorkflowsOff("claude-agent", gateway, model) ?? "", /ANTHROPIC_BASE_URL/);
+  assert.equal(adapters.learnedWorkflowsOff("claude-agent", { ANTHROPIC_API_KEY: ANTHROPIC }, model), undefined);
+  assert.equal(adapters.learnedWorkflowsOff("claude-agent", { OPENROUTER_API_KEY: KEY }, model), undefined);
+  // codex goes through its gateway on the run's models (runModels), and pi through its own: neither is turned off.
+  assert.equal(adapters.learnedWorkflowsOff("codex", { AGENT_MODEL_BASE_URL: "http://127.0.0.1:9/v1", AGENT_MODEL_API_KEY: KEY }, "openai/gpt-6-sol"), undefined);
+  assert.equal(adapters.learnedWorkflowsOff("pi", gateway, model), undefined);
+});
