@@ -189,6 +189,14 @@ test("the relay takes a run's VM calls only for that run's own box, and never on
   const starts = await Promise.all(Array.from({ length: 70 }, () => call(a.run_id, `sandbox/${boxOf(a.run_id)}/exec`, { command: ["sleep", "1"] })));
   assert.deepEqual([starts.filter((r) => r.status === 200).length, starts.filter((r) => r.status === 429).length], [64, 6]);
   vm.execDelayMs = 0;
+  // A program that exits while its output is still on its way is held until that output is delivered whole: its exit
+  // read and its other stream done never cut the rest short.
+  const big = await (await call(b.run_id, `sandbox/${boxOf(b.run_id)}/exec`, { command: ["head", "-c", "4000000", "/dev/zero"] })).json();
+  const slow = await call(b.run_id, `exec/${big.exec}/stdout`);
+  assert.equal(await (await call(b.run_id, `exec/${big.exec}/stderr`)).text(), "");
+  assert.deepEqual(await (await call(b.run_id, `exec/${big.exec}/wait`)).json(), { code: 0 });
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal((await slow.arrayBuffer()).byteLength, 4_000_000, "the whole output, read after the exit");
   // A reader that goes away lets its program go: what it held is dropped, and the program is no longer the run's to ask.
   const started = await call(b.run_id, `sandbox/${boxOf(b.run_id)}/exec`, { command: ["yes"] });
   assert.equal(started.status, 200);

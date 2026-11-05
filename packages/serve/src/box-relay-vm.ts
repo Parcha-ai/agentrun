@@ -52,16 +52,15 @@ const failureOf = (error: unknown): Failure => {
 
 /** One output stream, read from the program as soon as it starts (the SDK's stream holds its output only while it is
  *  read), and held here until the run's process reads it, up to MAX_BUFFERED_BYTES ahead. */
-type Pump = { chunks: Uint8Array[]; bytes: number; done: boolean; failure?: unknown; wake?: () => void; space?: () => void; cancel(): void };
+type Pump = { chunks: Uint8Array[]; bytes: number; done: boolean; cancelled: boolean; failure?: unknown; wake?: () => void; space?: () => void; cancel(): void };
 function pump(source: AsyncIterable<Uint8Array>): Pump {
   const iterator = source[Symbol.asyncIterator]();
-  let cancelled = false;
   const state: Pump = {
-    chunks: [], bytes: 0, done: false,
+    chunks: [], bytes: 0, done: false, cancelled: false,
     // Let go: what it holds is dropped, the source's read is ended, and whoever waits on it is woken.
     cancel() {
-      if (cancelled) return;
-      cancelled = true;
+      if (state.cancelled) return;
+      state.cancelled = true;
       state.chunks.length = 0;
       state.bytes = 0;
       state.done = true;
@@ -74,14 +73,14 @@ function pump(source: AsyncIterable<Uint8Array>): Pump {
     try {
       for (;;) {
         const next = await iterator.next();
-        if (next.done || cancelled) break;
+        if (next.done || state.cancelled) break;
         state.chunks.push(next.value);
         state.bytes += next.value.length;
         state.wake?.();
-        while (state.bytes > MAX_BUFFERED_BYTES && !cancelled) await new Promise<void>((resolve) => (state.space = resolve));
+        while (state.bytes > MAX_BUFFERED_BYTES && !state.cancelled) await new Promise<void>((resolve) => (state.space = resolve));
       }
     } catch (error) {
-      if (!cancelled) state.failure = error ?? new Error("the stream failed");
+      if (!state.cancelled) state.failure = error ?? new Error("the stream failed");
     }
     state.done = true;
     state.wake?.();
@@ -89,7 +88,8 @@ function pump(source: AsyncIterable<Uint8Array>): Pump {
   return state;
 }
 
-type Held = { run: string; process: VmProcess; streams: Record<"stdout" | "stderr", Pump>; exited?: number; waited: boolean; read: Set<"stdout" | "stderr">; timer?: NodeJS.Timeout };
+/** `read`: the streams whose read began (each is read once); `delivered`: those whose reply ended whole. */
+type Held = { run: string; process: VmProcess; streams: Record<"stdout" | "stderr", Pump>; exited?: number; waited: boolean; read: Set<"stdout" | "stderr">; delivered: Set<"stdout" | "stderr">; timer?: NodeJS.Timeout };
 
 /** The relay's handler of a run's VM calls, over the server's client `sdk`: `handle(runId, path, req, res)` answers the
  *  call at `path` (what follows `/runs/<id>/vm/`), the caller's token already checked. `drop(runId)` lets go of the run's
@@ -126,11 +126,11 @@ export function vmRelay(sdk: VmSdk): { handle(runId: string, path: string, req: 
     held?.streams.stderr.cancel();
     execs.delete(id);
   };
-  /** A program is let go once its exit was read and both its streams were read through, or EXEC_KEEP_MS after its exit. */
+  /** A program is let go once its exit was read and both its streams were delivered whole, or EXEC_KEEP_MS after its exit. */
   const settle = (id: string) => {
     const held = execs.get(id);
     if (!held || held.exited === undefined) return;
-    if (held.waited && held.read.size === 2 && held.streams.stdout.done && held.streams.stderr.done) return forget(id);
+    if (held.waited && held.delivered.size === 2) return forget(id);
     held.timer ??= setTimeout(() => forget(id), EXEC_KEEP_MS);
     held.timer.unref?.();
   };
@@ -173,7 +173,7 @@ export function vmRelay(sdk: VmSdk): { handle(runId: string, path: string, req: 
               else starting.delete(runId);
             }
             const exec = randomUUID();
-            const held: Held = { run: runId, process, streams: { stdout: pump(process.stdout), stderr: pump(process.stderr) }, waited: false, read: new Set() };
+            const held: Held = { run: runId, process, streams: { stdout: pump(process.stdout), stderr: pump(process.stderr) }, waited: false, read: new Set(), delivered: new Set() };
             execs.set(exec, held);
             process.wait().then((code) => {
               held.exited = code;
@@ -241,10 +241,12 @@ export function vmRelay(sdk: VmSdk): { handle(runId: string, path: string, req: 
             if (stream.done || gone) break;
             await new Promise<void>((resolve) => (stream.wake = woke = resolve));
           }
-          // A stream that broke is a broken answer, never a short one: the caller sees its read fail.
           if (gone) return void forget(id);
-          if (stream.failure !== undefined) res.destroy();
-          else res.end();
+          // A stream that broke, or was let go before it was all sent (the run's end), is a broken answer, never a short
+          // one: the caller sees its read fail.
+          if (stream.failure !== undefined || stream.cancelled) return void res.destroy();
+          res.end();
+          held.delivered.add(name);
           settle(id);
           return;
         }
