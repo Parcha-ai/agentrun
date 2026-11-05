@@ -4,7 +4,7 @@
 // approval whose prefix has no executor fails closed, in words; a deny never calls it. The gate here runs on a real
 // pi-durable store in memory, with a fake executor in place of the MCP gateway.
 import assert from "node:assert/strict";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { test } from "node:test";
@@ -132,4 +132,36 @@ test("a denied MCP call never reaches the executor, and the resume carries the r
   assert.match(run.resumed[0].content, /The user denied this mcp:srv\/echo call\./);
   await sleep(300);
   assert.equal(executor.calls.length, 0);
+});
+
+test("an approved MCP call whose answer a stop overrides after the live gate read it never reaches the executor: the gate reads the answer again before it writes the call's intent", async (t) => {
+  const executor = fakeExecutor();
+  const harness = await Harness.open(new MemoryStorage(), { registry: createRegistry(), models: {} }, ctx);
+  await harness.root(ctx);
+  const requested = (id, tool, call) => ({ kind: APPROVAL_ENTRY, data: { phase: "requested", id, tool, call_id: call, args: ARGS, args_preview: "{}", requested_at: new Date().toISOString() } });
+  await harness.commit(async (tx) => {
+    await tx.appendEntry(ROOT_CONVERSATION_ID, requested("ap_first", TOOL, "c1"));
+    await tx.appendEntry(ROOT_CONVERSATION_ID, requested("ap_second", TOOL, "c2"));
+  }, ctx);
+  const where = { root: await scratch(t), work: await scratch(t), data: await scratch(t) };
+  const meta = join(where.root, "serve.json");
+  const given = (decision) => ({ decision, answered_at: new Date().toISOString(), args_shown: JSON.stringify(ARGS) });
+  await writeFile(meta, JSON.stringify({ approvals: { ap_first: given("deny"), ap_second: given("allow") } }));
+  const gate = new RunGate({ ...where, runId: "r1", harness: "claude-agent" });
+  gate.executor?.("mcp:", executor.run);
+  await gate.load({ harness }, ctx);
+  const resumed = [];
+  gate.start(async (id, _content, mark) => {
+    resumed.push(id);
+    // While the gate acts on the first, a stop overrides the second's allow, which the gate has read.
+    if (id === "ap_first") {
+      const now = JSON.parse(await readFile(meta, "utf8"));
+      now.approvals.ap_second = { decision: "withdrawn", answered_at: new Date().toISOString(), superseded: given("allow") };
+      await writeFile(meta, JSON.stringify(now));
+    }
+    await harness.commit(mark, ctx);
+  });
+  await until(() => !gate.waiting());
+  await sleep(300);
+  assert.deepEqual([resumed, executor.calls.length], [["ap_first"], 0], "the overridden allow ran nothing and resumed nothing");
 });
