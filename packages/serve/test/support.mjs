@@ -120,13 +120,14 @@ export function client(baseUrl, token) {
   };
 }
 
-/** A guard on every pause a test reads: a run paused at its cap with its figures carries `least_cap_usd`, the very cap its
- *  words name ("Raise the cap to at least $X to run it.", runs.ts budgetPending), so the figure and the sentence are never
- *  apart. A pause with no figures (a refusal an older server wrote) has neither. */
+/** A guard on every pause a test reads: a run paused at its cap that serves `least_cap_usd` serves the very cap its words
+ *  name ("Raise the cap to at least $X to run it.", runs.ts budgetPending), so the figure and the sentence are never apart.
+ *  A pause whose refusal an older server wrote has no least_cap_usd (its mark kept none), and is read as it is; that a
+ *  fresh refusal's pause serves it is least-cap.test.mjs's to pin. */
 function budgetSaysItsLeast(body, where) {
   const pendings = [body?.pending, ...(Array.isArray(body?.runs) ? body.runs.map((run) => run?.pending) : [])];
   for (const pending of pendings) {
-    if (pending?.kind !== "budget" || pending.spent_usd === undefined) continue;
+    if (pending?.kind !== "budget" || pending.least_cap_usd === undefined) continue;
     const named = Number(/Raise the cap to at least \$(\d+\.\d\d) to run it\.$/.exec(pending.said ?? "")?.[1]);
     assert.equal(pending.least_cap_usd, named, `${where}: least_cap_usd is the cap its words name: ${JSON.stringify(pending)}`);
   }
