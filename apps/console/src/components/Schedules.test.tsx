@@ -236,6 +236,31 @@ describe("one schedule", () => {
     expect(t.host.querySelector("[data-firing]")?.textContent).toContain("On schedule");
     expect(t.host.querySelector('[data-firing] a[href="#/runs/01a1a88f-5f5c-7ce4-a912-fb765b62e88b"]')).not.toBeNull();
   });
+  // As SWR's refreshInterval with refreshWhenHidden off: a hidden tab reads nothing, and reads once when it shows again.
+  it("reads nothing while the tab is hidden, and once when it shows again", async () => {
+    let hidden = true;
+    const visibility = Object.getOwnPropertyDescriptor(Document.prototype, "visibilityState")!;
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => (hidden ? "hidden" : "visible") });
+    try {
+      const firings: Record<string, Firing[]> = {};
+      const s = server({ firings });
+      const t = await open(s.v2, { schedule: "trg_1" }, undefined, 30);
+      const reads = () => s.calls.filter((c) => c.method === "GET" && c.path === "/v2/triggers/trg_1/firings").length;
+      expect(reads()).toBe(1);
+      firings.trg_1 = [firing({ key: "f9", status: "started", run_id: "r9" })];
+      await act(async () => { await new Promise((r) => setTimeout(r, 200)); });
+      expect(reads()).toBe(1);
+      expect(t.host.querySelector("[data-firing]")).toBeNull();
+      hidden = false;
+      await act(async () => { document.dispatchEvent(new Event("visibilitychange")); });
+      await t.settle();
+      expect(reads()).toBeGreaterThanOrEqual(2);
+      expect(t.host.querySelector("[data-firing]")?.textContent).toContain("On schedule");
+    } finally {
+      delete (document as unknown as Record<string, unknown>).visibilityState;
+      Object.defineProperty(Document.prototype, "visibilityState", visibility);
+    }
+  });
   it("pauses and resumes by enabled alone", async () => {
     const { v2, calls } = server();
     const t = await open(v2, { schedule: "trg_1" });
