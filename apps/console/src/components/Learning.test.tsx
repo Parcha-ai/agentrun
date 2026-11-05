@@ -16,7 +16,7 @@ const agent = (learning?: boolean, extra: Partial<Agent["definition"]> = {}): Ag
   definition: { version: 1, name: "Refund policy finder", instructions: "Find it.", harness: "pi", skills: [], tools: ["read", "write"], ...(learning === undefined ? {} : { learning }), ...extra },
 });
 const note = (file: string, name: string, extra: Partial<LearningNote> = {}): LearningNote => ({
-  file, name, description: `When ${name.toLowerCase()} applies`, type: "feedback", status: "active", superseded_by: null,
+  file, name, description: `When ${name.toLowerCase()} applies`, type: "feedback", status: "active", superseded_by: null, runs: { given: 0, read: 0 },
   text: `---\nname: ${name}\ndescription: When ${name.toLowerCase()} applies\ntype: feedback\n---\nThe body of ${name}.\n`, ...extra,
 });
 const FIRST = "try-policies-refund-policy-first.md";
@@ -38,10 +38,10 @@ const runOf = (id: string, title: string, learning: Run["learning"]): Run => ({
   created_at: "2026-11-03T16:52:00Z", ended_at: "2026-11-03T16:52:09Z", result: null, error: null, cost: null, archived_at: null, learning,
 });
 const RUNS: Run[] = [
-  runOf("run-e", "everlane.com", { state: "dropped", reason: "empty", used: [{ file: FIRST, name: "Try" }, { file: MINE, name: "Keep" }] }),
-  runOf("run-k", "kith.com", { state: "dropped", reason: "grader", detail: "Not kept: It's about one shop's returns portal.", used: [{ file: FIRST, name: "Try" }] }),
-  runOf("run-c", "allbirds.com", { state: "dropped", reason: "empty", used: [{ file: FIRST, name: "Try" }] }),
-  runOf("run-b", "brooklinen.com", { state: "merged", reason: null, used: [{ file: OLD, name: "Old" }] }),
+  runOf("run-e", "everlane.com", { state: "dropped", reason: "empty", read: [{ file: FIRST, name: "Try" }, { file: MINE, name: "Keep" }] }),
+  runOf("run-k", "kith.com", { state: "dropped", reason: "grader", detail: "Not kept: It's about one shop's returns portal.", read: [{ file: FIRST, name: "Try" }] }),
+  runOf("run-c", "allbirds.com", { state: "dropped", reason: "empty", read: [{ file: FIRST, name: "Try" }] }),
+  runOf("run-b", "brooklinen.com", { state: "merged", reason: null, read: [{ file: OLD, name: "Old" }] }),
   runOf("run-p", "patagonia.com", { state: "dropped", reason: "no_budget" }),
   runOf("run-a", "taylorstitch.com", { state: "merged", reason: null }),
 ];
@@ -98,10 +98,10 @@ describe("the Learning tab's notes", () => {
     expect(b).toMatch(/^run \S+$/);
     expect(a).not.toBe(b);
   });
-  it("shows each note in use with its type, its body, the run that learned it and how many runs used it", async () => {
+  it("shows each note in use with its type, its body, the run that learned it and how many runs it was given to and read in", async () => {
     // The server names the person's note's newest change (last_change): created by them.
     const v = view();
-    v.notes.items = v.notes.items.map((x) => (x.file === MINE ? { ...x, last_change: { kind: "created" as const, by: "person" as const, at: "2026-11-03T16:52:40Z" } } : x));
+    v.notes.items = v.notes.items.map((x) => (x.file === MINE ? { ...x, last_change: { kind: "created" as const, by: "person" as const, at: "2026-11-03T16:52:40Z" }, runs: { given: 2, read: 1 } } : x.file === FIRST ? { ...x, runs: { given: 3, read: 3 } } : x));
     const t = await open(agent(true), { learning: async () => v });
     expect(t.text()).toContain("What it has learned");
     expect(t.text()).toContain("2 notes in use. Every later run reads them before it starts.");
@@ -112,10 +112,12 @@ describe("the Learning tab's notes", () => {
     expect(first.textContent).toContain("The body of Try /policies/refund-policy first.");
     expect(first.textContent).toContain("Learned in");
     expect(first.querySelector('a[href="#/runs/run-b"]')?.textContent).toBe("brooklinen.com");
-    expect(first.textContent).toContain("Used in 3 runs");
+    expect(first.textContent).toContain("Given to 3 runs");
+    expect(first.textContent).toContain("Read in 3 runs");
     const mine = t.card("Keep it to three lines")!;
     expect(mine.textContent).toMatch(/Created by you · \S/);
-    expect(mine.textContent).toContain("Used in 1 run");
+    expect(mine.textContent).toContain("Given to 2 runs");
+    expect(mine.textContent).toContain("Read in 1 run");
   });
   it("one note in use is said as one: it, not them", async () => {
     const one = view();
@@ -125,9 +127,10 @@ describe("the Learning tab's notes", () => {
     expect(t.text()).toContain("1 note in use. Every later run reads it before it starts.");
     expect(t.text()).toContain("What the next run reads1 note");
   });
-  it("a server that does not say what runs read shows no use count", async () => {
-    const t = await open(agent(true), { runs: RUNS.map((r) => ({ ...r, learning: r.learning && { state: r.learning.state, reason: r.learning.reason } })) });
-    expect(t.text()).not.toContain("Used in");
+  it("a note no run has opened says only how many runs it was given to", async () => {
+    const t = await open(agent(true));
+    expect(t.card("Keep it to three lines")!.textContent).toContain("Given to 0 runs");
+    expect(t.text()).not.toContain("Read in");
   });
   it("keeps a replaced note out of the list, under Earlier notes, naming what replaced it", async () => {
     const t = await open(agent(true));
@@ -499,8 +502,8 @@ describe("notes that wait for the owner's OK", () => {
     expect(box.querySelector(`article[aria-label="Trust acme.com's refund page"]`)).not.toBeNull();
     expect(t.text()).toContain("2 notes in use.");
     expect(box.textContent).toContain("From you");
-    // A note with no history yet has no empty footer.
-    expect(box.querySelector("article footer")).toBeNull();
+    // A note that waits was given to no run yet, and its footer says so.
+    expect(box.querySelector("article footer")?.textContent).toContain("Given to 0 runs");
   });
   it("on a server that approves from the console, Approve is one click, on the card's own version; Retire is there too", async () => {
     const t = await open(agent(true), { learning: async () => waitingView(), caps: APPROVES });
@@ -611,10 +614,6 @@ describe("pages past the first", () => {
     expect(t.text()).not.toContain("More notes could not be read.");
     expect(t.calls.filter((c) => c.startsWith("notes after"))).toEqual(["notes after n1", "notes after n1", "notes after n2"]);
     expect(t.card("A deep note")!.className.split(/\s+/)).toContain("border-primary");
-  });
-  it("says how many of the latest runs used a note when there are more runs than it read", async () => {
-    const t = await open(agent(true), { runsNext: "r1" });
-    expect(t.card("Try /policies/refund-policy first")!.textContent).toContain("Used in 3 of the latest 6 runs");
   });
 });
 

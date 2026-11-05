@@ -9,7 +9,7 @@ import { type Client, ClientError } from "@/lib/client";
 import { markdown, runLabel, when } from "@/lib/format";
 import {
   type AgentLearning, bodyOf, type LearningChange, change, costsShown, dropKind, dropWords, fileFor, impactWords, learningCost, type LearningNote, money, type NoteParts, noteParts,
-  APPROVE_LATER, APPROVE_SIGN_IN, type Approval, approval, CHANGED, changeWords, HOST_RUNS, type LastChange, RESTORE_SIGN_IN, RESTORES, type Retired, isPending, NO_VERSION, type NoteProblem, originOf, WAITS_WHY, notes, noteText, NOTE_TYPES, provenance, runsWord, seenVersion, shortTitle, shownImpact, took, TYPE_HINT, typeLabel, usedBy,
+  APPROVE_LATER, APPROVE_SIGN_IN, type Approval, approval, CHANGED, changeWords, HOST_RUNS, type LastChange, RESTORE_SIGN_IN, RESTORES, type Retired, isPending, NO_VERSION, type NoteProblem, originOf, WAITS_WHY, notes, noteText, NOTE_TYPES, provenance, runsWord, seenVersion, shortTitle, shownImpact, took, TYPE_HINT, typeLabel,
   counted, type LearnedItem, learnedItems, statusFile,
 } from "@/lib/learning";
 import { placeOf } from "@/lib/place";
@@ -42,7 +42,6 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent }: Learning
   // The changes past the view's first page, read only while a note's source is not yet known.
   const [olderLog, setOlderLog] = useState<{ items: LearningChange[]; cursor: string | null; pages: number }>({ items: [], cursor: null, pages: 0 });
   // Whether the runs read are all the agent's (false: the latest page of them only).
-  const [allRuns, setAllRuns] = useState(true);
   const [adding, setAdding] = useState(false);
   const asked = useRef(0);
   const reading = useRef(false);
@@ -57,7 +56,7 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent }: Learning
       setView(r); setLater({ items: [], cursor: r.notes.next_cursor, pages: 0 }); setOlderLog({ items: [], cursor: r.log.next_cursor, pages: 0 });
     }, (e) => { if (n === asked.current) setError(e ?? new Error("unknown")); });
     // The agent's latest runs: what each read and kept, the titles a note's source is named by, and the drops.
-    v2.listAgentRuns(agent.agent_id, 50, null, !!agent.archived_at).then((r) => { if (n === asked.current) { setRuns(r.runs); setAllRuns(!r.next_cursor); } }, () => {});
+    v2.listAgentRuns(agent.agent_id, 50, null, !!agent.archived_at).then((r) => { if (n === asked.current) { setRuns(r.runs); } }, () => {});
     return learning;
   };
   useEffect(() => { void read(); }, [v2, agent.agent_id]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -109,12 +108,6 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent }: Learning
       () => { if (n === asked.current) setOlderLog((x) => ({ ...x, cursor: null })); },
     );
   }, [view, unknown, olderLog.cursor]); // eslint-disable-line react-hooks/exhaustive-deps
-  // How many of the runs read here used each note: shown only by a server that says what a run read.
-  const usedIn = useMemo(() => {
-    const out = new Map<string, number>();
-    for (const r of runs) for (const u of usedBy(r.learning)) out.set(u.file, (out.get(u.file) ?? 0) + 1);
-    return out;
-  }, [runs]);
   const lookedBack = runs.filter((r) => r.learning && (r.learning.state === "merged" || r.learning.state === "dropped")).length;
 
   if (error && !view) return <ProblemCard problem={problem(error, "what this agent learned")} onRetry={read} className="" />;
@@ -143,7 +136,7 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent }: Learning
           <ul className="space-y-3 p-4">
             {waiting.map((x) => (
               <li key={x.file}>
-                <NoteCard note={x} v2={v2} agentId={agent.agent_id} readOnly={readOnly} focused={focus.includes(x.file)} from={from.get(x.file)} runs={byRun} usedIn={usedIn.get(x.file)} usedOf={allRuns ? undefined : runs.length} onChanged={read} approves={approves} />
+                <NoteCard note={x} v2={v2} agentId={agent.agent_id} readOnly={readOnly} focused={focus.includes(x.file)} from={from.get(x.file)} runs={byRun} onChanged={read} approves={approves} />
               </li>
             ))}
           </ul>
@@ -166,7 +159,7 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent }: Learning
           <ul className="space-y-3">
             {active.map((x) => (
               <li key={x.file}>
-                <NoteCard note={x} v2={v2} agentId={agent.agent_id} readOnly={readOnly} focused={focus.includes(x.file)} from={from.get(x.file)} runs={byRun} usedIn={usedIn.get(x.file)} usedOf={allRuns ? undefined : runs.length} onChanged={read} />
+                <NoteCard note={x} v2={v2} agentId={agent.agent_id} readOnly={readOnly} focused={focus.includes(x.file)} from={from.get(x.file)} runs={byRun} onChanged={read} />
               </li>
             ))}
           </ul>
@@ -349,8 +342,8 @@ type From = { run?: { id: string; at: string; reason: string } } | undefined;
 
 /** One note: its name, type and description, its body, where it came from and how often runs used it; Edit and Retire. */
 /** `approves`: for a note that waits, whether this caller approves from the console (undefined while that is read).
- *  `usedOf`: how many runs `usedIn` counts over, when they are the agent's latest only (more runs than were read). */
-function NoteCard({ note, v2, agentId, readOnly, focused, from, runs, usedIn, usedOf, onChanged, approves }: { note: LearningNote; v2: Client; agentId: string; readOnly: boolean; focused: boolean; from: From; runs: Map<string, Run>; usedIn?: number; usedOf?: number; onChanged: () => void | Promise<void>; approves?: Approval }) {
+ */
+function NoteCard({ note, v2, agentId, readOnly, focused, from, runs, onChanged, approves }: { note: LearningNote; v2: Client; agentId: string; readOnly: boolean; focused: boolean; from: From; runs: Map<string, Run>; onChanged: () => void | Promise<void>; approves?: Approval }) {
   const [editing, setEditing] = useState(false);
   const [retiring, setRetiring] = useState(false);
   const [flash, setFlash] = useState(focused);
@@ -413,11 +406,13 @@ function NoteCard({ note, v2, agentId, readOnly, focused, from, runs, usedIn, us
       </header>
       {said && <div className="px-5 pt-3">{said}</div>}
       {body.trim() && <Body text={body} />}
-      {(from?.run || person || (usedIn ?? 0) > 0) && <footer className="flex flex-wrap items-center gap-x-5 gap-y-1.5 border-t px-5 py-2.5 font-mono text-[11px] text-muted-foreground">
+      <footer className="flex flex-wrap items-center gap-x-5 gap-y-1.5 border-t px-5 py-2.5 font-mono text-[11px] text-muted-foreground">
         {from?.run && <LearnedIn run={from.run.id} runs={runs} at={from.run.at} reason={from.run.reason} />}
         {person && <span className="flex items-center gap-1.5"><User className="size-3" aria-hidden />{person}</span>}
-        {usedIn !== undefined && usedIn > 0 && <span className="flex items-center gap-1.5"><BookOpen className="size-3" aria-hidden />Used in {usedOf ? `${usedIn} of the latest ${usedOf} runs` : runsWord(usedIn)}</span>}
-      </footer>}
+        {/* As the server counts them: the runs it was given to, and the runs that opened it (once one did). */}
+        <span className="flex items-center gap-1.5"><BookOpen className="size-3" aria-hidden />Given to {runsWord(note.runs.given)}</span>
+        {note.runs.read > 0 && <span className="flex items-center gap-1.5"><BookOpen className="size-3" aria-hidden />Read in {runsWord(note.runs.read)}</span>}
+      </footer>
       {retiring && <RetireConfirm name={note.name} kind="note" retire={async () => {
         const seen = await seenVersion(note, () => v2.readNote(agentId, note.file));
         if (seen.kind === "changed") return `${CHANGED} Reload the tab to see the newest version.`;

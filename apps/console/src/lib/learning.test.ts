@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { approval, bodyOf, change, dropKind, dropWords, fileFor, impactWords, isPending, learnedBy, learningHash, learningLabel, learningSteps, type LearningDiff, lookedBack, money, noteChanges, noteParts, noteText, originOf, pendingBy, provenance, type RunLearning, shortTitle, shownImpact, took, typeLabel, underWay, usedBy, waitsForOk, waitWords } from "./learning";
+import { approval, bodyOf, change, dropKind, dropWords, fileFor, impactWords, isPending, learnedBy, learningHash, learningLabel, learningSteps, type LearningDiff, lookedBack, money, noteChanges, noteParts, noteText, originOf, pendingBy, provenance, type RunLearning, shortTitle, shownImpact, took, typeLabel, underWay, givenBy, readBy, waitsForOk, waitWords } from "./learning";
 import { recorded } from "@/fixtures";
 import type { TimelineRow } from "./v2";
 
@@ -36,12 +36,14 @@ describe("a note's parts", () => {
 
 describe("a run's learning, read tolerantly", () => {
   it("what it read and kept come from a newer server; an older one's short form shows nothing", () => {
-    expect(usedBy({ state: "merged", reason: null })).toEqual([]);
+    expect(readBy({ state: "merged", reason: null })).toEqual([]);
     expect(learnedBy({ state: "merged", reason: null })).toEqual([]);
-    expect(usedBy(null)).toEqual([]);
-    expect(usedBy(undefined)).toEqual([]);
-    const l = { state: "merged" as const, reason: null, used: [{ file: "a.md", name: "A" }, { file: 3 } as never], learned: [{ file: "b.md", name: "B", supersedes: ["a.md"] }] };
-    expect(usedBy(l)).toEqual([{ file: "a.md", name: "A" }]);
+    expect(readBy(null)).toEqual([]);
+    expect(readBy(undefined)).toEqual([]);
+    const l = { state: "merged" as const, reason: null, given: [{ file: "a.md", name: "A" }], read: [{ file: "a.md", name: "A" }, { file: 3 } as never], learned: [{ file: "b.md", name: "B", supersedes: ["a.md"] }] };
+    expect(readBy(l)).toEqual([{ file: "a.md", name: "A" }]);
+    expect(givenBy(l)).toEqual([{ file: "a.md", name: "A" }]);
+    expect(givenBy({ state: "merged", reason: null })).toEqual([]);
     expect(learnedBy(l)).toEqual([{ file: "b.md", name: "B", supersedes: ["a.md"] }]);
   });
   it("only a run whose learning was kept has learned anything", () => {
