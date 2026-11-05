@@ -95,12 +95,17 @@ export function operationsOf(doc) {
 const commandOf = (op, map) => map.commands[op.operationId] ?? [op.tags[0] ?? 'api', kebab(op.operationId)];
 
 /** What is wrong with the map against the operations: a name used twice, a name inside another, a reserved word, an
- *  entry (a name, a secret body, an omitted operation) for an operation the document no longer has. */
+ *  entry (a name, a secret body, an omitted operation, a file path parameter) for an operation or a parameter the
+ *  document no longer has. */
 export function problemsOf(ops, map) {
   const ids = new Set(ops.map((op) => op.operationId));
   const problems = [];
-  for (const id of [...Object.keys(map.commands), ...map.secretBody, ...Object.keys(map.omit)]) {
+  for (const id of [...Object.keys(map.commands), ...map.secretBody, ...Object.keys(map.omit), ...Object.keys(map.multiSegment)]) {
     if (!ids.has(id)) problems.push(`${RESOURCES} names ${id}, which the document has no operation for`);
+  }
+  for (const [id, name] of Object.entries(map.multiSegment)) {
+    const op = ops.find((o) => o.operationId === id);
+    if (op && !op.path.includes(`{${name}}`)) problems.push(`${RESOURCES} names ${id}'s path parameter ${name}, which its route ${op.path} does not have`);
   }
   const byName = new Map();
   for (const op of ops) {
@@ -134,6 +139,8 @@ export function commandsOf(ops, map) {
     entries.push({
       command: commandOf(op, map), operationId: op.operationId, method: op.method, path: op.path,
       pathParams: [...op.path.matchAll(/\{([^}]+)\}/g)].map((match) => match[1]),
+      // The path parameters that are file paths, slashes kept: the rest are encoded whole.
+      multiSegment: map.multiSegment[op.operationId] ? [map.multiSegment[op.operationId]] : [],
       query, headers, bodyFlags, hasBody: op.body !== null, bodyRequired: op.body?.required === true, bodyTypes: op.body?.types ?? [], secretBody,
       // A download: its answer is the file's bytes, written as received.
       raw: op.answers.length > 0 && !op.answers.includes('application/json'),
@@ -156,7 +163,7 @@ export function tableText(ops, map) {
 async function main() {
   const { values } = parseArgs({ options: { check: { type: 'boolean' }, out: { type: 'string' }, resources: { type: 'string' }, document: { type: 'string' } } });
   const output = resolve(root, values.out ?? OUTPUT);
-  const map = { secretBody: [], omit: {}, ...JSON.parse(await readFile(resolve(root, values.resources ?? RESOURCES), 'utf8')) };
+  const map = { secretBody: [], omit: {}, multiSegment: {}, ...JSON.parse(await readFile(resolve(root, values.resources ?? RESOURCES), 'utf8')) };
   const doc = values.document ? JSON.parse(await readFile(resolve(values.document), 'utf8')) : await servedDocument();
   const ops = operationsOf(doc);
   const problems = problemsOf(ops, map);

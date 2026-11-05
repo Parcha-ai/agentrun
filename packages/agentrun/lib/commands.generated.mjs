@@ -12,6 +12,7 @@ export const COMMANDS = [
     "pathParams": [
       "agent_id"
     ],
+    "multiSegment": [],
     "query": [],
     "headers": [],
     "bodyFlags": [],
@@ -31,6 +32,7 @@ export const COMMANDS = [
     "method": "POST",
     "path": "/agents",
     "pathParams": [],
+    "multiSegment": [],
     "query": [],
     "headers": [
       {
@@ -69,6 +71,7 @@ export const COMMANDS = [
       "agent_id",
       "key"
     ],
+    "multiSegment": [],
     "query": [],
     "headers": [],
     "bodyFlags": [],
@@ -90,6 +93,7 @@ export const COMMANDS = [
     "pathParams": [
       "agent_id"
     ],
+    "multiSegment": [],
     "query": [],
     "headers": [],
     "bodyFlags": [],
@@ -109,6 +113,7 @@ export const COMMANDS = [
     "method": "GET",
     "path": "/agents",
     "pathParams": [],
+    "multiSegment": [],
     "query": [
       {
         "name": "limit",
@@ -143,6 +148,7 @@ export const COMMANDS = [
     "pathParams": [
       "agent_id"
     ],
+    "multiSegment": [],
     "query": [
       {
         "name": "limit",
@@ -192,6 +198,7 @@ export const COMMANDS = [
     "pathParams": [
       "agent_id"
     ],
+    "multiSegment": [],
     "query": [],
     "headers": [],
     "bodyFlags": [],
@@ -213,6 +220,7 @@ export const COMMANDS = [
     "pathParams": [
       "agent_id"
     ],
+    "multiSegment": [],
     "query": [],
     "headers": [
       {
@@ -241,6 +249,7 @@ export const COMMANDS = [
     "method": "POST",
     "path": "/files",
     "pathParams": [],
+    "multiSegment": [],
     "query": [
       {
         "name": "path",
@@ -299,6 +308,7 @@ export const COMMANDS = [
     "pathParams": [
       "file_id"
     ],
+    "multiSegment": [],
     "query": [],
     "headers": [],
     "bodyFlags": [],
@@ -320,6 +330,7 @@ export const COMMANDS = [
     "pathParams": [
       "file_id"
     ],
+    "multiSegment": [],
     "query": [],
     "headers": [],
     "bodyFlags": [],
@@ -339,6 +350,7 @@ export const COMMANDS = [
     "method": "GET",
     "path": "/files",
     "pathParams": [],
+    "multiSegment": [],
     "query": [
       {
         "name": "limit",
@@ -373,6 +385,7 @@ export const COMMANDS = [
     "pathParams": [
       "file_id"
     ],
+    "multiSegment": [],
     "query": [],
     "headers": [],
     "bodyFlags": [],
@@ -397,6 +410,9 @@ export const COMMANDS = [
       "agent_id",
       "path"
     ],
+    "multiSegment": [
+      "path"
+    ],
     "query": [],
     "headers": [],
     "bodyFlags": [],
@@ -418,6 +434,7 @@ export const COMMANDS = [
     "pathParams": [
       "agent_id"
     ],
+    "multiSegment": [],
     "query": [],
     "headers": [],
     "bodyFlags": [],
@@ -438,6 +455,9 @@ export const COMMANDS = [
     "path": "/agents/{agent_id}/home/files/{path}",
     "pathParams": [
       "agent_id",
+      "path"
+    ],
+    "multiSegment": [
       "path"
     ],
     "query": [
@@ -469,6 +489,9 @@ export const COMMANDS = [
       "agent_id",
       "path"
     ],
+    "multiSegment": [
+      "path"
+    ],
     "query": [],
     "headers": [],
     "bodyFlags": [],
@@ -493,6 +516,7 @@ export const COMMANDS = [
     "pathParams": [
       "agent_id"
     ],
+    "multiSegment": [],
     "query": [],
     "headers": [],
     "bodyFlags": [],
@@ -514,6 +538,7 @@ export const COMMANDS = [
     "pathParams": [
       "agent_id"
     ],
+    "multiSegment": [],
     "query": [
       {
         "name": "cursor",
@@ -548,6 +573,7 @@ export const COMMANDS = [
     "pathParams": [
       "agent_id"
     ],
+    "multiSegment": [],
     "query": [
       {
         "name": "cursor",
@@ -595,6 +621,7 @@ export const COMMANDS = [
       "agent_id",
       "file"
     ],
+    "multiSegment": [],
     "query": [],
     "headers": [],
     "bodyFlags": [],
@@ -617,6 +644,7 @@ export const COMMANDS = [
       "agent_id",
       "file"
     ],
+    "multiSegment": [],
     "query": [],
     "headers": [
       {
@@ -646,6 +674,7 @@ export const COMMANDS = [
       "agent_id",
       "file"
     ],
+    "multiSegment": [],
     "query": [],
     "headers": [
       {
@@ -691,6 +720,7 @@ export const COMMANDS = [
     "pathParams": [
       "name"
     ],
+    "multiSegment": [],
     "query": [],
     "headers": [],
     "bodyFlags": [],
@@ -712,6 +742,7 @@ export const COMMANDS = [
     "pathParams": [
       "name"
     ],
+    "multiSegment": [],
     "query": [],
     "headers": [],
     "bodyFlags": [],
@@ -731,6 +762,7 @@ export const COMMANDS = [
     "method": "GET",
     "path": "/settings/mcp-servers",
     "pathParams": [],
+    "multiSegment": [],
     "query": [],
     "headers": [],
     "bodyFlags": [],
@@ -750,6 +782,7 @@ export const COMMANDS = [
     "method": "POST",
     "path": "/settings/mcp-servers/preview",
     "pathParams": [],
+    "multiSegment": [],
     "query": [],
     "headers": [],
     "bodyFlags": [],
@@ -773,6 +806,7 @@ export const COMMANDS = [
     "pathParams": [
       "name"
     ],
+    "multiSegment": [],
     "query": [],
     "headers": [],
     "bodyFlags": [],
@@ -794,6 +828,7 @@ export const COMMANDS = [
     "pathParams": [
       "name"
     ],
+    "multiSegment": [],
     "query": [],
     "headers": [],
     "bodyFlags": [],
@@ -817,6 +852,7 @@ export const COMMANDS = [
     "pathParams": [
       "agent_id"
     ],
+    "multiSegment": [],
     "query": [
       {
         "name": "limit",
@@ -851,6 +887,7 @@ export const COMMANDS = [
     "pathParams": [
       "agent_id"
     ],
+    "multiSegment": [],
     "query": [],
     "headers": [],
     "bodyFlags": [
@@ -881,6 +918,7 @@ export const COMMANDS = [
     "pathParams": [
       "run_id"
     ],
+    "multiSegment": [],
     "query": [],
     "headers": [],
     "bodyFlags": [],
@@ -902,6 +940,7 @@ export const COMMANDS = [
     "pathParams": [
       "run_id"
     ],
+    "multiSegment": [],
     "query": [],
     "headers": [],
     "bodyFlags": [],
@@ -923,6 +962,7 @@ export const COMMANDS = [
     "pathParams": [
       "run_id"
     ],
+    "multiSegment": [],
     "query": [],
     "headers": [],
     "bodyFlags": [],
@@ -944,6 +984,7 @@ export const COMMANDS = [
     "pathParams": [
       "run_id"
     ],
+    "multiSegment": [],
     "query": [],
     "headers": [],
     "bodyFlags": [],
@@ -965,6 +1006,7 @@ export const COMMANDS = [
     "pathParams": [
       "run_id"
     ],
+    "multiSegment": [],
     "query": [],
     "headers": [],
     "bodyFlags": [],
@@ -986,6 +1028,7 @@ export const COMMANDS = [
     "pathParams": [
       "run_id"
     ],
+    "multiSegment": [],
     "query": [],
     "headers": [],
     "bodyFlags": [],
@@ -1007,6 +1050,7 @@ export const COMMANDS = [
     "pathParams": [
       "run_id"
     ],
+    "multiSegment": [],
     "query": [],
     "headers": [],
     "bodyFlags": [],
@@ -1026,6 +1070,7 @@ export const COMMANDS = [
     "method": "GET",
     "path": "/runs",
     "pathParams": [],
+    "multiSegment": [],
     "query": [
       {
         "name": "limit",
@@ -1093,6 +1138,7 @@ export const COMMANDS = [
     "pathParams": [
       "run_id"
     ],
+    "multiSegment": [],
     "query": [],
     "headers": [
       {
@@ -1130,6 +1176,7 @@ export const COMMANDS = [
     "pathParams": [
       "run_id"
     ],
+    "multiSegment": [],
     "query": [],
     "headers": [],
     "bodyFlags": [],
@@ -1150,6 +1197,9 @@ export const COMMANDS = [
     "path": "/runs/{run_id}/files/{path}",
     "pathParams": [
       "run_id",
+      "path"
+    ],
+    "multiSegment": [
       "path"
     ],
     "query": [
@@ -1187,6 +1237,7 @@ export const COMMANDS = [
     "pathParams": [
       "run_id"
     ],
+    "multiSegment": [],
     "query": [],
     "headers": [],
     "bodyFlags": [],
@@ -1208,6 +1259,7 @@ export const COMMANDS = [
     "pathParams": [
       "agent_id"
     ],
+    "multiSegment": [],
     "query": [],
     "headers": [
       {
@@ -1262,6 +1314,7 @@ export const COMMANDS = [
     "pathParams": [
       "run_id"
     ],
+    "multiSegment": [],
     "query": [],
     "headers": [],
     "bodyFlags": [],
@@ -1283,6 +1336,7 @@ export const COMMANDS = [
     "pathParams": [
       "run_id"
     ],
+    "multiSegment": [],
     "query": [
       {
         "name": "after",
@@ -1330,6 +1384,7 @@ export const COMMANDS = [
     "pathParams": [
       "run_id"
     ],
+    "multiSegment": [],
     "query": [],
     "headers": [],
     "bodyFlags": [],
@@ -1349,6 +1404,7 @@ export const COMMANDS = [
     "method": "GET",
     "path": "/capabilities",
     "pathParams": [],
+    "multiSegment": [],
     "query": [],
     "headers": [],
     "bodyFlags": [],
@@ -1368,6 +1424,7 @@ export const COMMANDS = [
     "method": "GET",
     "path": "/health",
     "pathParams": [],
+    "multiSegment": [],
     "query": [],
     "headers": [],
     "bodyFlags": [],
@@ -1387,6 +1444,7 @@ export const COMMANDS = [
     "method": "POST",
     "path": "/mcp",
     "pathParams": [],
+    "multiSegment": [],
     "query": [],
     "headers": [],
     "bodyFlags": [
@@ -1415,6 +1473,7 @@ export const COMMANDS = [
     "method": "GET",
     "path": "/openapi.json",
     "pathParams": [],
+    "multiSegment": [],
     "query": [],
     "headers": [],
     "bodyFlags": [],
@@ -1433,6 +1492,7 @@ export const COMMANDS = [
     "method": "GET",
     "path": "/stats",
     "pathParams": [],
+    "multiSegment": [],
     "query": [
       {
         "name": "from",
@@ -1473,6 +1533,7 @@ export const COMMANDS = [
     "pathParams": [
       "key_id"
     ],
+    "multiSegment": [],
     "query": [],
     "headers": [],
     "bodyFlags": [],
@@ -1492,6 +1553,7 @@ export const COMMANDS = [
     "method": "GET",
     "path": "/settings/tool-keys",
     "pathParams": [],
+    "multiSegment": [],
     "query": [],
     "headers": [],
     "bodyFlags": [],
@@ -1513,6 +1575,7 @@ export const COMMANDS = [
     "pathParams": [
       "key_id"
     ],
+    "multiSegment": [],
     "query": [],
     "headers": [],
     "bodyFlags": [],
@@ -1534,6 +1597,7 @@ export const COMMANDS = [
     "method": "GET",
     "path": "/settings/tools",
     "pathParams": [],
+    "multiSegment": [],
     "query": [],
     "headers": [],
     "bodyFlags": [],
@@ -1553,6 +1617,7 @@ export const COMMANDS = [
     "method": "PUT",
     "path": "/settings/tools",
     "pathParams": [],
+    "multiSegment": [],
     "query": [],
     "headers": [],
     "bodyFlags": [],
@@ -1574,6 +1639,7 @@ export const COMMANDS = [
     "method": "POST",
     "path": "/triggers",
     "pathParams": [],
+    "multiSegment": [],
     "query": [],
     "headers": [
       {
@@ -1623,6 +1689,7 @@ export const COMMANDS = [
     "pathParams": [
       "trigger_id"
     ],
+    "multiSegment": [],
     "query": [],
     "headers": [],
     "bodyFlags": [],
@@ -1644,6 +1711,7 @@ export const COMMANDS = [
     "pathParams": [
       "trigger_id"
     ],
+    "multiSegment": [],
     "query": [],
     "headers": [
       {
@@ -1672,6 +1740,7 @@ export const COMMANDS = [
     "pathParams": [
       "trigger_id"
     ],
+    "multiSegment": [],
     "query": [],
     "headers": [],
     "bodyFlags": [],
@@ -1693,6 +1762,7 @@ export const COMMANDS = [
     "pathParams": [
       "trigger_id"
     ],
+    "multiSegment": [],
     "query": [],
     "headers": [],
     "bodyFlags": [],
@@ -1712,6 +1782,7 @@ export const COMMANDS = [
     "method": "GET",
     "path": "/triggers",
     "pathParams": [],
+    "multiSegment": [],
     "query": [],
     "headers": [],
     "bodyFlags": [],
@@ -1733,6 +1804,7 @@ export const COMMANDS = [
     "pathParams": [
       "trigger_id"
     ],
+    "multiSegment": [],
     "query": [],
     "headers": [],
     "bodyFlags": [
@@ -1772,6 +1844,7 @@ export const COMMANDS = [
     "method": "GET",
     "path": "/usage",
     "pathParams": [],
+    "multiSegment": [],
     "query": [
       {
         "name": "from",
@@ -1817,6 +1890,7 @@ export const COMMANDS = [
     "method": "DELETE",
     "path": "/settings/webhook",
     "pathParams": [],
+    "multiSegment": [],
     "query": [],
     "headers": [],
     "bodyFlags": [],
@@ -1836,6 +1910,7 @@ export const COMMANDS = [
     "method": "GET",
     "path": "/settings/webhook/deliveries",
     "pathParams": [],
+    "multiSegment": [],
     "query": [],
     "headers": [],
     "bodyFlags": [],
@@ -1855,6 +1930,7 @@ export const COMMANDS = [
     "method": "GET",
     "path": "/settings/webhook",
     "pathParams": [],
+    "multiSegment": [],
     "query": [],
     "headers": [],
     "bodyFlags": [],
@@ -1876,6 +1952,7 @@ export const COMMANDS = [
     "pathParams": [
       "webhook_id"
     ],
+    "multiSegment": [],
     "query": [],
     "headers": [],
     "bodyFlags": [],
@@ -1895,6 +1972,7 @@ export const COMMANDS = [
     "method": "PUT",
     "path": "/settings/webhook",
     "pathParams": [],
+    "multiSegment": [],
     "query": [],
     "headers": [],
     "bodyFlags": [
@@ -1923,6 +2001,7 @@ export const COMMANDS = [
     "method": "POST",
     "path": "/settings/webhook/test",
     "pathParams": [],
+    "multiSegment": [],
     "query": [],
     "headers": [],
     "bodyFlags": [],
@@ -1942,6 +2021,7 @@ export const COMMANDS = [
     "method": "POST",
     "path": "/workflows/validate",
     "pathParams": [],
+    "multiSegment": [],
     "query": [],
     "headers": [],
     "bodyFlags": [],

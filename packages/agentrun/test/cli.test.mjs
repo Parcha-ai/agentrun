@@ -250,6 +250,14 @@ test("generate-clients --check passes on the committed table, and fails on a han
   assert.equal(goneOmit.status, 1);
   assert.match(goneOmit.stderr, /noSuchOperation/);
 
+  const segments = join(dir, "segments.json");
+  for (const multiSegment of [{ noSuchOperation: "path" }, { readRunFile: "no_such_parameter" }]) {
+    writeFileSync(segments, JSON.stringify({ ...resources, multiSegment }));
+    const wrong = check("--resources", segments);
+    assert.equal(wrong.status, 1, JSON.stringify(multiSegment));
+    assert.match(wrong.stderr, /noSuchOperation|no_such_parameter/);
+  }
+
   const goneOp = join(dir, "gone.json");
   writeFileSync(goneOp, JSON.stringify({ ...resources, commands: { ...resources.commands, noSuchOperation: ["runs", "nothing"] } }));
   const gone = check("--resources", goneOp);
@@ -446,4 +454,51 @@ test("generate-clients --check reads only what the table is made of: a response 
     assert.equal(result.status, 1, `${what}: ${result.stderr}`);
     assert.match(result.stderr, /run node scripts\/generate-clients\.mjs/, what);
   }
+});
+
+test("a learning file whose name holds a slash is one argument, and a home file in a subfolder is a path", { timeout: 120_000 }, async (t) => {
+  const { dir, env } = scratch(t);
+  const server = await serve(t, dir, env);
+  const cli = cliOf(env, []);
+  const data = ["--data", server.data];
+  writeFileSync(join(dir, "agent.json"), JSON.stringify({ definition: { id: "demo", version: 1, name: "demo", instructions: "Answer.", skills: [], tools: [], learning: true } }));
+  assert.equal(cli(["agents", "create", "--body", `@${join(dir, "agent.json")}`, ...data]).code, 0);
+  writeFileSync(join(dir, "SKILL.md"), "---\nname: find-policies\ndescription: Find the policies.\n---\nLook in policies/.\n");
+  // A person may not write a skill (a run's learning does), and this agent has none yet: both answers are the learning
+  // routes' own, past the route's match, where a name split on its slashes gets the server's "no route".
+  const wrote = cli(["learning", "write", "demo", "skills/find-policies/SKILL.md", "--if-none-match", "*", "--body-type", "text/markdown", "--body", `@${join(dir, "SKILL.md")}`, ...data]);
+  assert.equal(wrote.code, 1);
+  assert.match(JSON.parse(wrote.err).error.message, /a person edits and creates notes/);
+  const read = cli(["learning", "read", "demo", "skills/find-policies/SKILL.md", ...data]);
+  assert.equal(read.code, 1);
+  assert.match(JSON.parse(read.err).error.message, /no such file on main/);
+  writeFileSync(join(dir, "note.md"), "---\nname: policies\ndescription: Where the policies are.\n---\nLook in policies/.\n");
+  const note = cli(["learning", "write", "demo", "policies.md", "--if-none-match", "*", "--body-type", "text/markdown", "--body", `@${join(dir, "note.md")}`, ...data]);
+  assert.equal(note.code, 0, note.err);
+  assert.match(cli(["learning", "read", "demo", "policies.md", ...data]).out, /Look in policies\//);
+  writeFileSync(join(dir, "deep.txt"), "deep\n");
+  assert.equal(cli(["home", "write", "demo", "a/b/deep.txt", "--body", `@${join(dir, "deep.txt")}`, ...data]).code, 0);
+  assert.deepEqual([cli(["home", "read", "demo", "a/b/deep.txt", ...data]).out], ["deep\n"]);
+});
+
+test("a file path argument keeps its slashes and refuses a dot segment (plain or encoded), an encoded slash or an empty segment; any other argument is encoded whole and refuses . and ..", async (t) => {
+  const { env } = scratch(t);
+  const server = await listener(t);
+  const at = ["--base-url", server.base];
+  const extra = { AGENTRUN_API_KEY: "fake-test-key" };
+  for (const path of ["a/%2e%2e/b", "a/%2E%2e/b", "%2e", "a%2Fb", "a%2fb", "a/../b", "./b", "a//b", "a/"]) {
+    for (const command of [["runs", "read-file", "r1"], ["home", "read", "a"]]) {
+      const refused = await run(env, [...command, path, ...at], { extra });
+      assert.equal(refused.code, 2, `${command.join(" ")} ${path}: ${refused.err}`);
+    }
+  }
+  for (const value of [".", ".."]) {
+    assert.equal((await run(env, ["learning", "read", "a", value, ...at], { extra })).code, 2, value);
+    assert.equal((await run(env, ["runs", "get", value, ...at], { extra })).code, 2, value);
+  }
+  assert.equal(server.requests.length, 0, "nothing was sent");
+  assert.equal((await run(env, ["learning", "read", "a", "skills/find-policies/SKILL.md", ...at], { extra })).code, 0);
+  assert.equal((await run(env, ["home", "read", "a", "notes/a b.md", ...at], { extra })).code, 0);
+  const homeFile = ["", "v2", "agents", "a", "home", "files", "notes", "a%20b.md"].join("/");
+  assert.deepEqual(server.requests.map((r) => r.url), ["/v2/agents/a/learning/files/skills%2Ffind-policies%2FSKILL.md", homeFile]);
 });

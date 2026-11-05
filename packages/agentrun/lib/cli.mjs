@@ -258,7 +258,16 @@ async function command(entry, argv, env, io) {
   if (args.length !== entry.pathParams.length) throw usageError(`${commandHelp(entry)}\n\n${usageOf(entry)} takes ${entry.pathParams.length || "no"} argument${entry.pathParams.length === 1 ? "" : "s"}, given ${args.length}.`);
   // A `.` or `..` segment would take the request to another route once fetch normalizes the path.
   if (args.some((arg) => arg.split("/").some((segment) => segment === "." || segment === ".."))) throw usageError(`${usageOf(entry)}: an argument may not hold a . or .. path segment.`);
-  const path = entry.path.replace(/\{([^}]+)\}/g, (_, name) => args[entry.pathParams.indexOf(name)].split("/").map(encodeURIComponent).join("/"));
+  const path = entry.path.replace(/\{([^}]+)\}/g, (_, name) => {
+    const value = args[entry.pathParams.indexOf(name)];
+    if (!entry.multiSegment.includes(name)) return encodeURIComponent(value);
+    // A file path keeps its slashes, so no segment may be one fetch or the server would read otherwise.
+    const segments = value.split("/");
+    if (segments.some((segment) => segment === "" || /%2f/i.test(segment) || [".", ".."].includes(segment.replace(/%2e/gi, ".")))) {
+      throw usageError(`${usageOf(entry)}: ${name.toUpperCase()} may not hold an empty, . or .. segment (plain or encoded) or an encoded slash.`);
+    }
+    return segments.map(encodeURIComponent).join("/");
+  });
   const query = new URLSearchParams();
   for (const q of entry.query) {
     const value = values[flag(q.name)];
