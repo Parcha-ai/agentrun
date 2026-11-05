@@ -20,6 +20,7 @@
 // told a deny: its Plane resolves a denied capability as under ask, and the gate, which reads the permission at each
 // call, is the one place that refuses it, so a deny lifted mid-run is lifted at the next call.
 import { readFileSync } from "node:fs";
+import { isToolSettingsKey } from "@parcha/pi-durable-agent";
 import { join } from "node:path";
 import { decisionKeysOf, PARALLEL_KEY_ENV } from "./decisions.js";
 import type { InputIssue } from "./errors.js";
@@ -64,7 +65,7 @@ export const ASKABLE: readonly string[] = ["read", "write", "edit", "bash", "fet
 export const permissionsOf = (name: string): readonly Permission[] => (ASKABLE.includes(name) || isCatalogTool(name) ? PERMISSIONS : ["allow", "deny"]);
 /** A settings key: a tool of the table, a catalog tool (`monid.<tool>`, `mcp:<server>/<tool>`), or an MCP server's
  *  wildcard (`mcp:<server>/*`), which sets each of its tools. */
-const isSettingsKey = (name: string): boolean => (TABLE_TOOLS.includes(name) && !Object.hasOwn(LEGACY_NAMES, name)) || isCatalogTool(name) || /^mcp:[^/]+\/\*$/.test(name);
+const isSettingsKey = (name: string): boolean => isToolSettingsKey(name) && ((TABLE_TOOLS.includes(name) && !Object.hasOwn(LEGACY_NAMES, name)) || isCatalogTool(name) || /^mcp:[^/]+\/\*$/.test(name));
 /** One tool's settings: its provider (a capability that has a choice) and its permission. */
 export type ToolSetting = { provider?: string; permission?: Permission };
 /** The tools' settings, the server's (`/v2/settings/tools`) and an agent's own (`definition.tool_settings`), one shape:
