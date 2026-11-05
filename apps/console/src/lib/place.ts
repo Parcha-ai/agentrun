@@ -2,7 +2,9 @@
  *  (capabilities `places`). The server's words for a box it lacks (`reason`) are shown as it gives them. */
 export type Place = { mode: "runner" } | { mode: "sandbox"; box: string };
 export type BoxOffer = { id: string; available: boolean; reason?: string };
-export type Places = { modes: string[]; default: string; boxes: BoxOffer[] };
+/** `default`: where a revision that names no place runs (the runner). `defaultPlace`: the place a NEW agent is given,
+ *  as the server serves it (`default_place`); absent on an older server, whose form stays as it was. */
+export type Places = { modes: string[]; default: string; boxes: BoxOffer[]; defaultPlace?: Place };
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
@@ -20,8 +22,13 @@ export function placesOf(caps: unknown): Places | null {
   if (!isObject(p) || !Array.isArray(p.modes) || !Array.isArray(p.boxes)) return null;
   const boxes = p.boxes.filter(isObject).filter((b) => typeof b.id === "string")
     .map((b) => ({ id: b.id as string, available: b.available === true, ...(typeof b.reason === "string" ? { reason: b.reason } : {}) }));
-  return { modes: p.modes.filter((m): m is string => typeof m === "string"), default: typeof p.default === "string" ? p.default : "runner", boxes };
+  const defaultPlace = placeOf(p.default_place);
+  return { modes: p.modes.filter((m): m is string => typeof m === "string"), default: typeof p.default === "string" ? p.default : "runner", boxes, ...(defaultPlace ? { defaultPlace } : {}) };
 }
+
+/** The place a new agent's form starts on: the served default when it is a sandbox; else none, as before (the server
+ *  keeps no place for it, and it runs on the runner). */
+export const newAgentPlace = (places: Places | null | undefined): Place | undefined => (places?.defaultPlace?.mode === "sandbox" ? places.defaultPlace : undefined);
 
 /** Where a place runs, in words: "Runs in a docker box" or "Runs on the server". None is the server's default. */
 export function placeWords(place: Place | undefined, places: Places | null): string {
