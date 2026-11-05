@@ -21,6 +21,11 @@ export default function browser(env = process.env, vendor = "browserbase", signI
     const inEnv = [...values(process.env), ...values(env), kernelEnv].some((value) => value.includes(signIn.ref));
     appendFileSync(log, `${JSON.stringify({ op: "sign-in", provider: signIn.provider, ref: signIn.ref, save: signIn.save, ref_in_env: inEnv })}\n`);
   }
+  // A run's process that dies naming its sign-in's pointer in its last log line (what a run's failure message is made of).
+  if (signIn && process.env.FAUX_BROWSER_DIE_WITH_REF) {
+    process.stderr.write(`the browser died holding ${signIn.ref}\n`);
+    process.exit(3);
+  }
   const start = "https://example.test/";
   const backend = new FakeBackend({ start, caps: { profiles: true }, pages: { [start]: fixturePage(start, `The answer is forty-two. This browser is ${vendor}'s.`, "Example") }, ...(log ? { logFile: log } : {}) });
   const { downloads: _, ...withoutDownloads } = backend.provider;

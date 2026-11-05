@@ -18,7 +18,7 @@ import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
 
 const FAUX_BROWSER = new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname;
 const FAUX_BROWSERBASE = new URL("./fixtures/faux-browserbase-check.mjs", import.meta.url).pathname;
-const KEYS = ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "BROWSERBASE_BASE_URL", "BROWSERBASE_CONNECT_BASE_URL", "KERNEL_API_KEY", "AGENTRUN_SEAL_KEY", "FAUX_BROWSER_LOG"];
+const KEYS = ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "BROWSERBASE_BASE_URL", "BROWSERBASE_CONNECT_BASE_URL", "KERNEL_API_KEY", "AGENTRUN_SEAL_KEY", "FAUX_BROWSER_LOG", "FAUX_BROWSER_DIE_WITH_REF"];
 
 /** A store over `data` with fake vendors: each made object named in turn, each removal recorded (or refused). */
 function fakeStore(data, { key = randomBytes(32), running = new Set(), refuseRemove = false } = {}) {
@@ -306,4 +306,19 @@ test("a pointer to an object just made that cannot be kept here is deleted at th
   await chmod(dir, 0o700);
   assert.deepEqual(await store.forRun("alpha", "run-2", "browserbase"), { provider: "browserbase", ref: made[1], save: true });
   assert.deepEqual(removed.length, 1, "one kept is never removed");
+});
+
+test("a run whose process dies naming its sign-in's pointer in its log fails without showing the pointer", { timeout: 120_000 }, async (t) => {
+  const dir = await scratch(t);
+  const log = join(dir, "browser.jsonl");
+  withEnv(t, { BROWSERBASE_API_KEY: BB_KEY, BROWSERBASE_PROJECT_ID: "proj-1", AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), FAUX_BROWSER_LOG: log, FAUX_BROWSER_DIE_WITH_REF: "1" }, KEYS);
+  const { api, data } = await serve(t, { fauxBrowser: FAUX_BROWSER, fauxBrowserbase: FAUX_BROWSERBASE });
+  assert.equal((await api("POST", "/agents", agent("alpha", { instructions: "Browse.", tools: ["browser"] }))).status, 201);
+  const started = await api("POST", "/agents/alpha/runs", { input: { content: "Browse the example page." } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  await follow(api, started.body.run_id, ["failed"], { deadlineMs: 60_000 });
+  const { ref } = (await readFile(log, "utf8")).trim().split("\n").map((line) => JSON.parse(line)).find((op) => op.op === "sign-in");
+  const view = (await api("GET", `/runs/${started.body.run_id}`)).body;
+  assert.match(view.error.message, /the browser died holding \[redacted\]/);
+  for (const shown of [JSON.stringify(view), JSON.stringify((await api("GET", "/runs")).body), await readFile(join(data, "runs", started.body.run_id, "serve.json"), "utf8")]) assert.ok(!shown.includes(ref), shown);
 });

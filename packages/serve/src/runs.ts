@@ -962,6 +962,12 @@ export class Runs {
     return (text) => redacted(text, this.refusedValues(run));
   }
 
+  /** The last line of the run process's log (lastLogLine) for a failure's message, with every value its errors never
+   *  show cut out: its process may have written a secret or its sign-in's pointer there. */
+  private async lastLine(run: Run): Promise<string> {
+    return this.redactor(run)(await lastLogLine(run));
+  }
+
   /** Every secret value `run`'s errors never show, as learning's checker holds them (learning-run.ts refused): this
    *  server's secrets wherever its launcher put them and the keys saved on it, what each launch handed the run, and the
    *  server's own tokens. */
@@ -1380,7 +1386,7 @@ export class Runs {
           if (Date.now() > deadline) throw new ApiError("unavailable", "the run did not come up in time", { retry_after_ms: 1000 }, { "retry-after": "1" });
           continue;
         }
-        if (launched) throw new ApiError("internal", `the run's process exited before it served: ${await lastLogLine(run)}`);
+        if (launched) throw new ApiError("internal", `the run's process exited before it served: ${await this.lastLine(run)}`);
         const pid = holderPid(record);
         const fresh = record?.status === "running" && typeof record.heartbeatAt === "string" && Date.now() - Date.parse(record.heartbeatAt) < LEASE_MS && (pid === undefined || alive(pid));
         // A run already going is never refused a place, but one whose harness this host's memory never holds (after a
@@ -1472,6 +1478,8 @@ export class Runs {
     const browser = run.meta.tool_plane && recheckPlane(run.meta.tool_plane, withSecrets(process.env, "all", this.options.storedKeys)).browser;
     const signIns = this.options.signIns;
     run.signIn = browser && signIns ? ((await signIns.forRun(run.agentId, run.id, browser).catch((error: Error) => void warn(run.id, `its browser starts signed out: ${error.message}`))) ?? undefined) : undefined;
+    // Never shown in its errors, from now on: a server started since its launch has handed it nothing yet.
+    if (run.signIn && run.signIn.ref.length >= MIN_SECRET) (run.handed ??= new Set()).add(run.signIn.ref);
   }
 
   /** Lets go of the save lease the run holds on its agent's sign-in, if any. */
@@ -1685,7 +1693,7 @@ export class Runs {
       run.error = { code: "run_failed", message: "The server went down while it started the run's process, which never came up; it is not started again, since starting it may be what took the server down.", retryable: false, details: { reason: LAUNCH_LOST } };
       ended = { outcome: "failed" };
     } else if (exited && !released && code !== null && code !== 0) {
-      run.error = { code: "run_failed", message: `The run's process exited (${code}) without releasing the run: ${await lastLogLine(run)}`, retryable: false };
+      run.error = { code: "run_failed", message: `The run's process exited (${code}) without releasing the run: ${await this.lastLine(run)}`, retryable: false };
       ended = { outcome: "failed" };
     } else if (!gone && this.doorOf(record)) ended = undefined;
     else if (run.kind === "workflow") ended = await this.workflowEnd(run, workflowEnding(record));
@@ -1710,7 +1718,7 @@ export class Runs {
         await this.pinSignIn(run);
         return this.relaunch(run);
       }
-      run.error = { code: "run_failed", message: never ?? `The run's process went ${MAX_RELAUNCHES + 1} times before the run ended: ${await lastLogLine(run)}`, retryable: false };
+      run.error = { code: "run_failed", message: never ?? `The run's process went ${MAX_RELAUNCHES + 1} times before the run ended: ${await this.lastLine(run)}`, retryable: false };
       ended = { outcome: "failed" };
     }
     await this.carryBack(run, ended.outcome, ended.state, ended.summary);
