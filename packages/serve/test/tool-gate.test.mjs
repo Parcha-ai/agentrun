@@ -338,6 +338,25 @@ test("a deny lifted mid-run is lifted at the next call: a run launched with web_
   }
 });
 
+test("a workflow's call node calling fetch_page, web_fetch's legacy name, is held to web_fetch's permission: set to deny, its run is refused before it starts", { timeout: 60_000 }, async (t) => {
+  const { api } = await serve(t, GATE);
+  const flow = {
+    v: 2, name: "read-site-legacy",
+    schemas: {
+      In: { type: "object", required: ["website"], properties: { website: { type: "string" } } },
+      Page: { type: "object", required: ["ok"], properties: { ok: { type: "boolean" } } },
+    },
+    input: { schemaId: "In" },
+    output: { schemaId: "Page", path: "home" },
+    root: { node: "chain", steps: [{ node: "call", label: "Read the home page", via: "tool", tool: "fetch_page", args: { url: "{website}" }, out: "Page", as: "home", deadline_s: 60 }] },
+  };
+  assert.equal((await api("PUT", "/settings/tools", { web_fetch: { permission: "deny" } })).status, 200);
+  const saved = await api("POST", "/agents", { definition: { id: "legacy", name: "legacy", workflow: flow, tools: ["fetch_page"] } });
+  assert.deepEqual([saved.status, saved.body.warnings?.map((w) => w.message)], [201, ["This workflow's call node calls fetch_page (web_fetch), which is set to deny on this server."]]);
+  const refused = await api("POST", "/agents/legacy/runs", { input: { website: PAGE } });
+  assert.deepEqual([refused.status, refused.body.error?.code, refused.body.error?.details?.denied], [409, "agent_not_runnable", ["web_fetch"]]);
+});
+
 const NO_APPROVER = (tool) => `Permission denied: ${tool} needs the owner's approval, and this server has accounts off (AGENTRUN_ACCOUNTS=0), so no one can give it: set the tool to allow or deny in the agent's Tools.`;
 
 test("with accounts off no one can approve: an ask, a catalog tool's default or a setting, is refused with words saying so, never parked, and capabilities say an ask needs the password sign-in; with accounts on it parks", { timeout: 120_000 }, async (t) => {
