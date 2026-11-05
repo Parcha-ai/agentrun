@@ -196,12 +196,8 @@ export class Webhooks {
     // A new wait replaces the last; one after an end is a continued run's, past that end, which the store no longer holds.
     this.notices[run.run_id] = ends ? { ...seen, ended: marker } : { wait: marker };
     this.prune(config);
-    // Already in the outbox under this id: recorded, and not queued again.
-    if (this.messages.some((m) => m.id === id)) this.writeOutbox();
-    else {
-      const data = { run_id: run.run_id, agent_id: run.agent_id, status: run.status, title: run.title, url: `${this.base}/#/runs/${encodeURIComponent(run.run_id)}`, ...(run.pending ? { pending: run.pending } : {}) };
-      this.schedule(this.enqueue(id, type, data), 0);
-    }
+    const data = { run_id: run.run_id, agent_id: run.agent_id, status: run.status, title: run.title, url: `${this.base}/#/runs/${encodeURIComponent(run.run_id)}`, ...(run.pending ? { pending: run.pending } : {}) };
+    this.schedule(this.enqueue(id, type, data), 0);
     return this.unsaved ? "unsaved" : "queued";
   }
 
