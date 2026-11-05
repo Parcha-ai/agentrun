@@ -2,7 +2,7 @@
 // strands nothing, and edits that overlap keep each one's change.
 import assert from "node:assert/strict";
 import { mkdirSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -160,4 +160,68 @@ test("an interval with no start_at, made part way through a second, first fires 
     const trigger = await triggers.create(body({ every_s: 3600 }));
     assert.deepEqual([trigger.source.start_at, trigger.next_at], [made.replace(/\.\d{3}Z$/, "Z"), next], made);
   }
+});
+
+test("a trigger whose cron line or zone no longer reads is turned off with why, at start and when due, and every other schedule goes on firing; nothing is retried for it", async (t) => {
+  const first = await engine(t, {});
+  const good = await first.triggers.create(body({ cron: "*/5 * * * *" }));
+  const zoned = await first.triggers.create(body({ cron: "*/5 * * * *", timezone: "Europe/Madrid" }));
+  const later = await first.triggers.create(body({ cron: "0 9 * * *" }));
+  first.triggers.close();
+  // What a croner or an ICU that no longer reads them leaves: a zone and a cron line the file holds but nothing takes.
+  const file = join(first.data, "triggers.json");
+  const kept = JSON.parse(await readFile(file, "utf8"));
+  kept.triggers.find((x) => x.id === zoned.id).source.timezone = "Mars/Olympus_Mons";
+  kept.triggers.find((x) => x.id === later.id).source.cron = "61 * * * *";
+  await writeFile(file, JSON.stringify(kept));
+  const said = [];
+  const starts = [];
+  const second = await engine(t, { say: (fields) => said.push(fields), start: async (target, input, origin) => (starts.push(origin.id), { run_id: `run-${starts.length}` }) }, { data: first.data, at: "2026-06-01T00:05:00Z" });
+  await until(() => starts.length === 1, "the good schedule's run");
+  assert.deepEqual(starts, [good.id]);
+  for (const id of [zoned.id, later.id]) {
+    const off = second.triggers.get(id);
+    assert.deepEqual([off.enabled, off.next_at, off.disabled?.reason], [false, null, "source_unreadable"], id);
+    assert.equal(typeof off.disabled.detail, "string");
+  }
+  assert.deepEqual(said.filter((s) => s.condition === "triggers_unwritable"), [], "no write was to blame");
+  assert.deepEqual(said.filter((s) => s.condition === "trigger_source_unreadable").map((s) => s.trigger).sort(), [zoned.id, later.id].sort());
+  assert.equal(second.clock.timer?.at, Date.parse("2026-06-01T00:10:00Z"), "armed for the good one's next time alone");
+  const onDisk = JSON.parse(await readFile(file, "utf8")).triggers.find((x) => x.id === zoned.id);
+  assert.equal(onDisk.disabled.reason, "source_unreadable", "written down");
+  // On again with no new source is refused by field; with one it goes on.
+  await assert.rejects(second.triggers.update(zoned.id, { enabled: true }), (error) => error.code === "input_invalid");
+  const fixed = await second.triggers.update(zoned.id, { enabled: true, source: { kind: "schedule", cron: "*/5 * * * *", timezone: "Europe/Madrid" } });
+  assert.deepEqual([fixed.enabled, fixed.disabled, fixed.next_at], [true, null, "2026-06-01T00:10:00.000Z"]);
+});
+
+test("failures a server before trigger.failed recorded are taken as told at the first start that sends it, so none is sent late; a later one is sent", async (t) => {
+  const first = await engine(t, {});
+  const old = await first.triggers.create(body({ every_s: 600 }));
+  const recent = await first.triggers.create(body({ every_s: 600 }));
+  first.triggers.close();
+  const file = join(first.data, "triggers.json");
+  const kept = JSON.parse(await readFile(file, "utf8"));
+  const failedAt = (n) => ({ key: `fir_${String(n).repeat(32)}`, by: "schedule", nominal_at: "2026-05-31T23:50:00Z", status: "failed", at: "2026-05-31T23:50:00.000Z", error: { code: "agent_not_runnable", message: "archived" } });
+  // An earlier server's trigger: no failures_in_a_row, and a failure it never told of.
+  const before = kept.triggers.find((x) => x.id === old.id);
+  delete before.failures_in_a_row;
+  delete before.disabled;
+  delete before.catchup_window_s;
+  before.firings.push(failedAt(1));
+  // This server's: a failure whose notice had not been queued yet.
+  kept.triggers.find((x) => x.id === recent.id).firings.push(failedAt(2));
+  await writeFile(file, JSON.stringify(kept));
+  const told = [];
+  await engine(t, { notify: (failed, key) => (told.push(failed.trigger_id), "queued") }, { data: first.data });
+  assert.deepEqual(told, [recent.id]);
+});
+
+test("a firing's input is checked as its run is given it: the trigger's input with the line saying what fired it", async (t) => {
+  const checked = [];
+  const { triggers } = await engine(t, { targetIssues: async (target) => (checked.push(target.input), []) });
+  const made = await triggers.create(body({ every_s: 600 }));
+  await triggers.update(made.id, { target: { kind: "start_run", agent_id: "a", input: { content: "Again." }, max_cost_usd: 0.5 } });
+  assert.equal(checked.length, 2);
+  for (const [input, content] of [[checked[0], "Hello."], [checked[1], "Again."]]) assert.match(input.content, new RegExp(`^${content}\\n\\n\\(Started by hand from the schedule "nightly" at .+\\.\\)$`));
 });
