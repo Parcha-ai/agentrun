@@ -2,15 +2,6 @@
   "about": "Flaky tests skipped on CI: each a flake id, its owner lane and an expiry at most 24 h on, at most 3 at once. scripts/quarantine.mjs --add writes an entry and prints the test's skip; --check (and scripts/quarantine.test.mjs, on every pull request) fails once one expires.",
   "tests": [
     {
-      "id": "F37",
-      "file": "packages/serve/test/webhooks.test.mjs",
-      "name": "a notice and its record are one write: the outbox holds the end and the wait it queued of each run; the same moment again queues nothing, here or in the next server",
-      "owner": "tl-triggers",
-      "since": "2026-11-05T09:57Z",
-      "expires": "2026-11-06T09:57Z",
-      "why": "Timed out waiting for local webhook deliveries on two PRs that don't touch webhooks, 11-05: serve/runs-list-trigger (pi-1-2 1.2.0, 6, 04:57Z, 'waited for the new end sent') and #1601 (test 24.21.0, any-6, 20 s on hook.got.length === 3); 316 ms locally. Both after the day's webhook changes (#1640, #1611): the owner rules out a regression first, then fixes."
-    },
-    {
       "id": "F35",
       "file": "packages/serve/test/box-image.test.mjs",
       "name": "the default image is built on first use, once, from a private context directory holding the recipe alone, removed after; tagged with the recipe's hash and labelled with it; present with that hash, it is ready with no build",

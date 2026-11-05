@@ -72,6 +72,24 @@ async function served(disk: LocalDisk, hook: DoorHook, extra: { token?: string; 
   return { server, run, app, fenced };
 }
 
+/** What a test served, released and closed at its end whatever failed, so a failing test ends its file. */
+async function closing(body: (serve: (hook: DoorHook, extra?: Parameters<typeof served>[2]) => ReturnType<typeof served>) => Promise<void>, disk: LocalDisk): Promise<void> {
+  const open: Awaited<ReturnType<typeof served>>[] = [];
+  try {
+    await body(async (hook, extra) => {
+      const s = await served(disk, hook, extra);
+      open.push(s);
+      return s;
+    });
+  } finally {
+    for (const s of open) {
+      await s.run.release().catch(() => undefined);
+      await s.server.close().catch(() => undefined);
+    }
+    disk.remove();
+  }
+}
+
 const deferred = <T>() => {
   let resolve!: (value: T) => void;
   let reject!: (error: unknown) => void;
@@ -237,24 +255,21 @@ describe("the door hook: admission", () => {
 });
 
 describe("the door hook: outcomes", () => {
-  it("REJECTED_BUSY is 409 BUSY and terminal for its requestId; FAILED (the hook threw before taking it) is 500; each retry answers its record", async () => {
+  it("FAILED (the hook threw before taking it) is 500 and terminal for its requestId: each retry answers its record", async () => {
     const disk = new LocalDisk("door-states");
     try {
       const { hook, calls } = scripted({
-        submit: async (input) => {
-          if (input.requestId === "busy") return { accepted: false, reason: "busy" };
+        submit: async () => {
           throw new Error("the harness child is gone");
         },
       });
       const s = await served(disk, hook);
       for (let i = 0; i < 2; i++) {
-        const busy = await submit(s.server, "busy");
-        assert.deepEqual([busy.status, busy.body.error, busy.body.status], [409, "BUSY", "REJECTED_BUSY"]);
         const failed = await submit(s.server, "boom");
         assert.deepEqual([failed.status, failed.body.error, failed.body.status], [500, "FAILED", "FAILED"]);
         assert.match(failed.body.message, /the harness child is gone/);
       }
-      assert.deepEqual(calls.submit.map((c) => c.requestId), ["busy", "boom"]);
+      assert.deepEqual(calls.submit.map((c) => c.requestId), ["boom"]);
       await s.run.release();
       await s.server.close();
     } finally {
@@ -262,12 +277,85 @@ describe("the door hook: outcomes", () => {
     }
   });
 
-  it("at the bound: ctx.signal aborts, hook.abort is called, 504 UNKNOWN; a late outcome settles the same record and a retry never re-submits", async () => {
-    const disk = new LocalDisk("door-unknown");
-    try {
+  it("a busy refusal is kept by no one: a reject input to a busy hook is 409 BUSY with nothing written and no call; once the hook is idle, the same requestId reaches it and is taken", async () => {
+    await closing(async (serve) => {
+      const { hook, calls, state } = scripted();
+      const s = await serve(hook);
+      const reject = (id: string) => call(s.server, "POST", "/submit", { requestId: id, content: "news", whenBusy: "reject" });
+      state.busy = true;
+      for (let i = 0; i < 2; i++) {
+        const busy = await reject("event-1");
+        assert.deepEqual([busy.status, busy.body.error, busy.body.status], [409, "BUSY", "REJECTED_BUSY"]);
+      }
+      assert.equal(calls.submit.length, 0, "a busy hook is not called");
+      assert.deepEqual(await doorEntries(s.run), [], "nothing written for a refusal");
+      const { doorTook } = await import("../src/door-key.ts");
+      const root = (await s.run.harness.root(ctx)).id;
+      const statusAt = (key: string) => s.run.harness.commit(async (tx) => {
+        const at = await tx.submissionByRequest(root, key);
+        return at === undefined ? undefined : ((await tx.entry(at.entry!))!.data as { status: string }).status;
+      }, ctx);
+      assert.equal(await doorTook("event-1", statusAt), false, "a refused request is not one the door took");
+      state.busy = false;
+      const taken = await reject("event-1");
+      assert.deepEqual([taken.status, taken.body.status], [200, "ACCEPTED"]);
+      assert.deepEqual(calls.submit.map((c) => c.requestId), ["event-1"]);
+      assert.equal(await doorTook("event-1", statusAt), true);
+      assert.deepEqual([(await reject("event-1")).status, calls.submit.length], [200, 1], "taken once: a retry answers ACCEPTED");
+    }, new LocalDisk("door-busy"));
+  });
+
+  it("a hook that refuses as busy after the admission (it came to work in between) leaves the request open: a retry admits it again and reaches the hook, once", async () => {
+    await closing(async (serve) => {
+      let refuse = true;
+      const { hook, calls } = scripted({ submit: async () => (refuse ? { accepted: false, reason: "busy" } : { accepted: true }) });
+      const s = await serve(hook);
+      const reject = () => call(s.server, "POST", "/submit", { requestId: "event-2", content: "news", whenBusy: "reject" });
+      const busy = await reject();
+      assert.deepEqual([busy.status, busy.body.error, busy.body.status], [409, "BUSY", "REJECTED_BUSY"]);
+      const { doorTook } = await import("../src/door-key.ts");
+      const root = (await s.run.harness.root(ctx)).id;
+      const statusAt = (key: string) => s.run.harness.commit(async (tx) => {
+        const at = await tx.submissionByRequest(root, key);
+        return at === undefined ? undefined : ((await tx.entry(at.entry!))!.data as { status: string }).status;
+      }, ctx);
+      assert.equal(await doorTook("event-2", statusAt), false, "refused after its admission: still not taken");
+      refuse = false;
+      const taken = await reject();
+      assert.deepEqual([taken.status, taken.body.status], [200, "ACCEPTED"]);
+      assert.deepEqual([(await reject()).status, calls.submit.length], [200, 2], "the refusal's call and the take's; a retry after it answers ACCEPTED");
+      assert.equal(await doorTook("event-2", statusAt), true);
+      assert.deepEqual((await doorEntries(s.run)).map((e) => [e.kind, e.data.status]), [["door.input", "ADMITTED"], ["door.status", "REJECTED_BUSY"], ["door.input", "ADMITTED"], ["door.status", "ACCEPTED"]]);
+    }, new LocalDisk("door-busy-late"));
+  });
+
+  it("a request admitted again after a busy refusal, its process gone mid-call, answers UNKNOWN at the next open, and the hook is not called again", async () => {
+    await closing(async (serve) => {
+      let refuse = true;
+      const one = scripted({ submit: () => (refuse ? Promise.resolve({ accepted: false, reason: "busy" } as const) : new Promise(() => {})) });
+      const a = await serve(one.hook, { submitMs: 60_000 });
+      assert.equal((await submit(a.server, "again")).status, 409);
+      refuse = false;
+      const pending = submit(a.server, "again").catch(() => undefined);
+      await until("the second call", () => one.calls.submit.length === 2);
+      await a.run.release();
+      await a.server.close();
+      await pending;
+      const two = scripted();
+      const b = await serve(two.hook);
+      await until("the open's UNKNOWN in the store", async () => (await doorEntries(b.run)).filter((e) => e.data.requestId === "again").length === 4);
+      const after = await submit(b.server, "again");
+      assert.deepEqual([after.status, after.body.status], [504, "UNKNOWN"]);
+      assert.equal(two.calls.submit.length, 0);
+      assert.deepEqual((await doorEntries(b.run)).map((e) => [e.kind, e.data.status]), [["door.input", "ADMITTED"], ["door.status", "REJECTED_BUSY"], ["door.input", "ADMITTED"], ["door.status", "UNKNOWN"]]);
+    }, new LocalDisk("door-busy-restart"));
+  });
+
+  it("at the bound: ctx.signal aborts, hook.abort is called, 504 UNKNOWN; a late outcome settles the same record and a retry never re-submits one the hook took or failed; a late busy refusal leaves it open", async () => {
+    await closing(async (serve) => {
       const late: Record<string, ReturnType<typeof deferred<Outcome>>> = { acc: deferred(), busy: deferred(), boom: deferred() };
       const { hook, calls } = scripted({ submit: (input) => late[input.requestId]!.promise });
-      const s = await served(disk, hook, { submitMs: 100, abortMs: 100 });
+      const s = await serve(hook, { submitMs: 100, abortMs: 100 });
       for (const id of Object.keys(late)) {
         const r = await submit(s.server, id);
         assert.deepEqual([r.status, r.body.error, r.body.status], [504, "UNKNOWN", "UNKNOWN"], id);
@@ -280,17 +368,17 @@ describe("the door hook: outcomes", () => {
       late.busy!.resolve({ accepted: false, reason: "busy" });
       late.boom!.reject(new Error("late failure"));
       await until("the late outcomes", async () => (await doorEntries(s.run)).filter((e) => e.kind === "door.status").length === 6);
-      assert.deepEqual([(await submit(s.server, "acc")).status, (await submit(s.server, "busy")).status, (await submit(s.server, "boom")).status], [200, 409, 500]);
-      assert.deepEqual(calls.submit.map((c) => c.requestId), ["acc", "busy", "boom"], "no requestId was submitted twice");
+      assert.deepEqual([(await submit(s.server, "acc")).status, (await submit(s.server, "boom")).status], [200, 500]);
+      assert.deepEqual(calls.submit.map((c) => c.requestId), ["acc", "busy", "boom"], "no requestId the hook took or failed was submitted twice");
+      late.busy = deferred();
+      late.busy.resolve({ accepted: true });
+      assert.equal((await submit(s.server, "busy")).status, 200, "refused late as busy: admitted again, and taken");
+      assert.deepEqual(calls.submit.map((c) => c.requestId), ["acc", "busy", "boom", "busy"]);
       assert.deepEqual(
         (await doorEntries(s.run)).filter((e) => e.data.requestId === "acc").map((e) => e.data.status),
         ["ADMITTED", "UNKNOWN", "ACCEPTED"],
       );
-      await s.run.release();
-      await s.server.close();
-    } finally {
-      disk.remove();
-    }
+    }, new LocalDisk("door-unknown"));
   });
 
   it("an accept just after the bound (an abort that lost the race to delivery) ends ACCEPTED, with no second submit", async () => {

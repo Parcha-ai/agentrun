@@ -611,11 +611,13 @@ export const roomRefusal = (text: string | undefined): string | undefined => (te
 export const nameOf = (model: Pick<Model<Api>, "name" | "id">): string => (model.name || model.id).replace(/^[^:]{1,40}:\s+(?=\S)/, "");
 
 /** A least in words: rounded up to the cent, so that it is enough ($0.1024 is $0.11). */
-export const leastMoney = (usd: number): string => `$${(Math.ceil(usd * 100 - 1e-9) / 100).toFixed(2)}`;
+// Cents rounded up within the tail the fit check allows (FIT_TOLERANCE), no wider: a total past a cent by more than a
+// float's own tail rounds to the cent above, so the cap a refusal names admits what it refused.
+export const leastMoney = (usd: number): string => `$${(Math.ceil(usd * 100 - FIT_TOLERANCE * 100) / 100).toFixed(2)}`;
 /** The cap to raise to for a request past `cap` that needs `total` in all: a cent at least, and above the cap, never
  *  the cap itself, so a raise to it is one PATCH /runs/{id} takes. */
 export const raiseTo = (cap: number, total: number): string => {
-  const cents = Math.ceil(total * 100 - 1e-9);
+  const cents = Math.ceil(total * 100 - FIT_TOLERANCE * 100);
   return `$${((cents / 100 > cap + CAP_TOLERANCE ? cents : Math.floor((cap + CAP_TOLERANCE) * 100) + 1) / 100).toFixed(2)}`;
 };
 
