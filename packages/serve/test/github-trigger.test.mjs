@@ -9,7 +9,7 @@
 // ends, through a fake GitHub API on loopback, tried again until GitHub takes it.
 import assert from "node:assert/strict";
 import { createHmac, randomBytes } from "node:crypto";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, rmdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -312,4 +312,121 @@ test("each comment says how to go on by what the run waits on: a question by a m
   assert.equal(gitHubText("Thanks @octo-owner and @example-org/core: see #12, example-org/widgets#3 and GH-4. Mail a@b.example. </details><b>x</b>"), `Thanks @${J}octo-owner and @${J}example-org/core: see #${J}12, example-org/widgets#${J}3 and GH${J}-4. Mail a@${J}b.example. &lt;/details><b>x</b>`);
   assert.equal(gitHubText("# A heading\n\nnot #a ref, @ alone"), "# A heading\n\nnot #a ref, @ alone");
   assert.equal(gitHubText("x".repeat(ANSWER_POSTED_CHARS + 5)), `${"x".repeat(ANSWER_POSTED_CHARS)}…`);
+});
+
+/** The GitHub outbox a server keeps in `data` (its comments still to go, and what each run's issue was told). */
+const outboxOf = async (data) => JSON.parse(await readFile(join(data, "github-outbox.json"), "utf8"));
+const widgets = (extra = {}) => ({ name: "widgets", source: { kind: "github", repos: [REPO.full_name], ...extra }, target: { kind: "start_run", agent_id: "helper", input: { content: "Say hello." }, max_cost_usd: 0.5 } });
+
+test("the GitHub secrets are this server's own: a completed run's answer posted on its issue never shows the token or the webhook secret", { timeout: 180_000 }, async (t) => {
+  const { api, hook, github } = await gitHubServer(t);
+  const secret = `not-a-secret-${randomBytes(16).toString("hex")}`;
+  assert.equal((await api("PUT", "/settings/github", { ...settings, webhook_secret: secret })).status, 200);
+  await made(api, "helper");
+  const { body } = await api("POST", "/triggers", widgets({ post_answer: true }));
+  // The person pastes both; the agent's answer echoes its input.
+  assert.deepEqual((await hook(commented(41, `@${HANDLE} keep ${secret} and ${TOKEN} safe`), { secret })).body, { ok: "received" });
+  const [started] = await firings(api, body.id, 1);
+  await follow(api, started.run_id, ["completed"]);
+  const done = await until(() => github.comments.find((c) => c.body.startsWith("Done")), "the end posted");
+  assert.ok(done.body.includes("<details>"), "the answer is posted");
+  for (const value of [secret, TOKEN]) {
+    assert.ok(!done.body.includes(value), "not in the comment");
+    assert.ok(!JSON.stringify((await api("GET", `/runs/${started.run_id}`)).body.result).includes(value), "nor in the run's answer");
+  }
+});
+
+test("a token GitHub refuses during a slow comment never brings back settings deleted or saved again meanwhile", { timeout: 180_000 }, async (t) => {
+  const { api, hook, github } = await gitHubServer(t);
+  assert.equal((await api("PUT", "/settings/github", settings)).status, 200);
+  await made(api, "helper");
+  const { body } = await api("POST", "/triggers", widgets());
+  const slow = async (number, n, meanwhile, secret = SECRET) => {
+    let release;
+    github.answers.push({ hold: new Promise((resolve) => (release = resolve)), status: 401, body: { message: "Bad credentials" } });
+    const before = github.comments.length;
+    assert.deepEqual((await hook(commented(number, `@${HANDLE} say hello`), { secret })).body, { ok: "received" });
+    const [started] = await firings(api, body.id, n);
+    await follow(api, started.run_id, ["completed"]);
+    await until(() => github.comments.length > before, "the comment out, its answer held");
+    await meanwhile();
+    release();
+    await sleep(500);
+  };
+  // Deleted while the comment waits: still deleted after GitHub refuses the token, and the old secret opens nothing.
+  await slow(42, 1, async () => assert.equal((await api("DELETE", "/settings/github")).status, 204));
+  assert.deepEqual((await api("GET", "/settings/github")).body, { configured: false });
+  assert.equal((await hook(commented(43, `@${HANDLE} say hello`))).status, 401, "the deleted secret takes no request");
+  // Saved again while the comment waits: the new settings stay on.
+  assert.equal((await api("PUT", "/settings/github", settings)).status, 200);
+  await slow(44, 2, async () => assert.equal((await api("PUT", "/settings/github", { ...settings, webhook_secret: "not-a-secret-webhook-new" })).status, 200));
+  assert.equal((await api("GET", "/settings/github")).body.disabled, null, "the new settings stay on");
+  assert.deepEqual((await hook(commented(45, `@${HANDLE} say hello`), { secret: "not-a-secret-webhook-new" })).body, { ok: "received" });
+});
+
+test("a run a mention opened again, which ended again while its server went down before that end's notice was kept, has that end posted once by the next server", { timeout: 240_000 }, async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "github-reopen-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const data = join(dir, "agents");
+  const first = await gitHubServer(t, { data });
+  assert.equal((await first.api("PUT", "/settings/github", settings)).status, 200);
+  await made(first.api, "helper");
+  const { body } = await first.api("POST", "/triggers", widgets());
+  assert.deepEqual((await first.hook(commented(46, `@${HANDLE} say hello`))).body, { ok: "received" });
+  const [started] = await firings(first.api, body.id, 1);
+  await follow(first.api, started.run_id, ["completed"]);
+  await until(() => first.github.comments.length === 1, "the first end posted");
+  await until(async () => (await outboxOf(data)).posts.length === 0, "the first end's comment kept as done");
+  const firstEnd = (await outboxOf(data)).told[started.run_id].ended;
+  assert.deepEqual((await first.hook(commented(46, `@${HANDLE} once more`, { id: 7461 }))).body, { ok: "received" });
+  await firings(first.api, body.id, 2);
+  await until(async () => (await outboxOf(data)).told[started.run_id].ended !== firstEnd, "the second end told");
+  await until(() => first.github.comments.length === 2, "the second end posted");
+  await first.close();
+  // As the server would have left it had it gone down after the run's second end, before that end's notice was kept.
+  const outbox = await outboxOf(data);
+  await writeFile(join(data, "github-outbox.json"), `${JSON.stringify({ ...outbox, posts: [], told: { ...outbox.told, [started.run_id]: { ...outbox.told[started.run_id], ended: firstEnd } } })}\n`);
+  await gitHubServer(t, { data }, first.github);
+  await until(() => first.github.comments.length === 3, "the second end posted by the next server");
+  await sleep(500);
+  assert.equal(first.github.comments.length, 3, "once");
+  assert.equal(first.github.comments[2].body, `Done: ${runLink(started.run_id)}.`);
+});
+
+test("a comment GitHub took, whose removal from the outbox failed to write, is never posted again: the write is tried again until kept, and a stopping server writes what it holds", { timeout: 240_000 }, async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "github-unsaved-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const data = join(dir, "agents");
+  const blocked = join(data, "github-outbox.json.tmp");
+  const first = await gitHubServer(t, { data });
+  assert.equal((await first.api("PUT", "/settings/github", settings)).status, 200);
+  await made(first.api, "helper");
+  const { body } = await first.api("POST", "/triggers", widgets());
+  /** A run whose end GitHub takes while the outbox cannot be written (its temp file's path a directory). */
+  const taken = async (number, n) => {
+    let release;
+    first.github.answers.push({ hold: new Promise((resolve) => (release = resolve)), status: 201, body: { id: 1 } });
+    const before = first.github.comments.length;
+    assert.deepEqual((await first.hook(commented(number, `@${HANDLE} say hello`))).body, { ok: "received" });
+    const [started] = await firings(first.api, body.id, n);
+    await follow(first.api, started.run_id, ["completed"]);
+    await until(() => first.github.comments.length > before, "the comment out");
+    await mkdir(blocked);
+    release();
+    await sleep(500);
+    assert.equal((await outboxOf(data)).posts.length, 1, "the comment taken, still in the outbox on disk");
+  };
+  // The write comes back: the outbox is written again within its retry.
+  await taken(47, 1);
+  await rmdir(blocked);
+  await until(async () => (await outboxOf(data)).posts.length === 0, "the outbox written again");
+  // The write comes back only as the server stops: it writes what it holds then.
+  await taken(48, 2);
+  await rmdir(blocked);
+  await first.close();
+  assert.equal((await outboxOf(data)).posts.length, 0, "written as it stopped");
+  const posted = first.github.comments.length;
+  await gitHubServer(t, { data }, first.github);
+  await sleep(1_500);
+  assert.equal(first.github.comments.length, posted, "nothing posted again");
 });
