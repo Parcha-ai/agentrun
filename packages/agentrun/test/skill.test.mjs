@@ -7,6 +7,7 @@ import { randomBytes } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { createServer } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
 
@@ -174,6 +175,13 @@ test("SKILL.md: its front matter, its size, and each recipe block run in order a
       assert.match(refused.err, /not a valid header value; nothing was written|not a valid header value \(/);
     }
     assert.equal(existsSync(config), false);
+    // A base URL whose query or fragment would swallow the check's path, so a public route answers it: refused, exit 2.
+    for (const base of [`${server.base}/openapi.json#x`, `${server.base}/health?x=`, `${server.base}#`]) {
+      const swallowed = cli(["login", "--base-url", base], { input: `${server.token}\n` });
+      assert.equal(swallowed.code, 2, base);
+      assert.match(swallowed.err, /no query, fragment, user or password/);
+    }
+    assert.equal(existsSync(config), false, "nothing written for a base URL that swallows the check");
 
     const done = cli(["login", "--base-url", `${server.base}/`], { input: `${server.token}\n` });
     assert.equal(done.code, 0, done.err);
@@ -208,6 +216,95 @@ test("SKILL.md: its front matter, its size, and each recipe block run in order a
     }
     for (const text of outputs) assert.ok(!text.includes(server.token), "no output holds the token");
   });
+});
+
+/** A server on loopback that answers each request with `answer.status` and a body quoting `answer.secret` (raw in a
+ *  text body, or JSON-escaped and URL-encoded in a JSON error), as a careless or hostile server could. */
+async function echoServer(t) {
+  const answer = { status: 422, secret: "", form: "json" };
+  const server = createServer((req, res) => {
+    req.resume();
+    req.on("end", () => {
+      const { status, secret, form } = answer;
+      if (form === "shape") return res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: true }));
+      if (form === "raw") return res.writeHead(status, { "content-type": "text/plain" }).end(`refused ${secret}`);
+      res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify({ error: { code: "input_invalid", message: `refused ${secret} ${encodeURIComponent(secret)}` }, echo: { secret } }));
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => (server.closeAllConnections(), server.close()));
+  return { answer, base: `http://127.0.0.1:${server.address().port}/v2` };
+}
+
+/** The CLI, run without blocking this process (the echo server runs in it). */
+const cliAsync = (env) => (args, { input = "", extra = {} } = {}) => new Promise((resolve) => {
+  const child = spawn(process.execPath, [BIN, ...args], { env: { ...env, ...extra }, stdio: ["pipe", "pipe", "pipe"] });
+  let out = "";
+  let err = "";
+  child.stdout.on("data", (chunk) => (out += chunk));
+  child.stderr.on("data", (chunk) => (err += chunk));
+  child.once("close", (code) => resolve({ code, out, err }));
+  child.stdin.end(input);
+});
+
+const formsOf = (secret) => [secret, JSON.stringify(secret).slice(1, -1), encodeURIComponent(secret)];
+
+test("a secret-bearing command never prints a server's error body, and cuts the secret from what it prints, at any length and in any form", { timeout: 60_000 }, async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "agentrun-skill-echo-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const env = { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !DROPPED.includes(name))), HOME: dir, XDG_CONFIG_HOME: join(dir, ".config") };
+  const echo = await echoServer(t);
+  const cli = cliAsync(env);
+  const key = { extra: { AGENTRUN_API_KEY: "fake-test-key" } };
+  const base = ["--base-url", echo.base];
+  const clean = (ran, secret, what) => {
+    for (const form of formsOf(secret)) assert.ok(!`${ran.out}${ran.err}`.includes(form), `${what}: ${JSON.stringify(form)} is in its output: ${ran.out}${ran.err}`);
+  };
+  const config = join(dir, ".config", "agentrun", "config.json");
+
+  for (const secret of ['not"a\\secret-01', "Z", "fake-test-key-xyz"]) {
+    for (const form of ["json", "raw"]) {
+      Object.assign(echo.answer, { status: 422, secret, form });
+      const set = await cli(["tool-keys", "set", "parallel", "PARALLEL_API_KEY", ...base], { ...key, input: secret });
+      assert.equal(set.code, 1, set.err);
+      clean(set, secret, `tool-keys set, ${form}`);
+      if (form === "json") assert.match(set.err, /422 input_invalid/);
+
+      const save = await cli(["tool-keys", "save", "parallel", "--body", "-", ...base], { ...key, input: JSON.stringify({ values: { PARALLEL_API_KEY: secret } }) });
+      assert.equal(save.code, 1, save.err);
+      clean(save, secret, `tool-keys save, ${form}`);
+      const mcp = await cli(["mcp-servers", "save", "srv", "--body", "-", ...base], { ...key, input: JSON.stringify({ url: "https://mcp.example.com/mcp", auth: { type: "bearer", token: secret } }) });
+      assert.equal(mcp.code, 1, mcp.err);
+      clean(mcp, secret, `mcp-servers save, ${form}`);
+
+      Object.assign(echo.answer, { status: 401 });
+      const login = await cli(["login", ...base], { input: `${secret}\n` });
+      assert.equal(login.code, 4, login.err);
+      clean(login, secret, `login, ${form}`);
+      assert.equal(existsSync(config), false);
+    }
+    // A success that quotes it: printed, with every copy cut.
+    Object.assign(echo.answer, { status: 200, secret, form: "json" });
+    const ok = await cli(["tool-keys", "set", "parallel", "PARALLEL_API_KEY", ...base], { ...key, input: secret });
+    assert.equal(ok.code, 0, ok.err);
+    clean(ok, secret, "tool-keys set, a success");
+  }
+
+  // A 200 that is not the agents list: not the server it says it is, so nothing is written.
+  Object.assign(echo.answer, { form: "shape" });
+  const shape = await cli(["login", ...base], { input: "fake-test-key\n" });
+  assert.equal(shape.code, 1, shape.err);
+  assert.match(shape.err, /not an agents list; nothing was written/);
+  assert.equal(existsSync(config), false);
+
+  // Every command takes its base URL whole: no query, fragment, user or password, from a flag, the environment or the config file.
+  for (const bad of [`${echo.base}#x`, `${echo.base}?x=1`, "http://user:pw@127.0.0.1:9/v2", "ftp://127.0.0.1/v2", "not a url"]) {
+    const flagged = await cli(["agents", "list", "--base-url", bad], key);
+    assert.equal(flagged.code, 2, bad);
+    assert.ok(!flagged.err.includes("pw@"), "a URL's password is not echoed");
+    const fromEnv = await cli(["agents", "list"], { extra: { ...key.extra, AGENTRUN_BASE_URL: bad } });
+    assert.equal(fromEnv.code, 2, `AGENTRUN_BASE_URL ${bad}`);
+  }
 });
 
 test("generate-clients --check passes on the committed skill, and fails on a hand-edited SKILL.md or a recipe naming a command the CLI does not have", { timeout: 60_000 }, (t) => {
