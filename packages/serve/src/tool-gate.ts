@@ -62,7 +62,8 @@ export const isCatalogTool = (name: string): boolean => name.startsWith("monid."
 export const defaultPermission = (name: string): Permission => (isCatalogTool(name) ? "ask" : "allow");
 
 /** The tools that run a command in the run's box (background.ts SHELL_TOOLS), each held to bash's setting: bash: deny
- *  refuses bash_background as it refuses bash, and none of them is a settings key of its own. */
+ *  refuses bash_background as it refuses bash, and none of them is a settings key of its own. Under bash: ask the
+ *  watchers (SHELL_WATCHERS) run unasked. */
 export const SHELL_FAMILY: Readonly<Record<string, string>> = Object.freeze(Object.fromEntries(SHELL_TOOLS.map((name) => [name, "bash"])));
 /** The shell tool a call named `name` is, under claude-agent's host-tool name too (`mcp__hands__bash_background`), when
  *  it is one held to another's setting: its own name, which its request, its refusal and its approved call keep. */
@@ -70,6 +71,12 @@ const shellToolOf = (name: string): string | undefined => {
   const own = name.replace(/^mcp__hands__/, "");
   return Object.hasOwn(SHELL_FAMILY, own) && SHELL_FAMILY[own] !== own ? own : undefined;
 };
+/** The shell tools that only watch or end a process the run already started, by its own id (background.ts: an id is
+ *  digits under the run's own work/background/, and another's is "no background process"): under bash: ask they run
+ *  unasked, so watching an approved process costs no approval per page. bash: deny still refuses them. */
+export const SHELL_WATCHERS: ReadonlySet<string> = new Set(["bash_output", "bash_list", "bash_signal"]);
+/** Shell tool `name`'s permission, given bash's: a watcher's ask is allow; any other keeps bash's. */
+const shellPermission = (name: string, bash: Permission): Permission => (bash === "ask" && SHELL_WATCHERS.has(name) ? "allow" : bash);
 
 /** The settings keys that may set `name`'s permission, most specific first: the tool's own name, then, for an MCP
  *  tool, its server's wildcard `mcp:<server>/*`. */
@@ -121,8 +128,12 @@ export type PermissionSettings = Readonly<Record<string, { permission?: Permissi
  *  server wildcard, the server's exact key, the server's server wildcard, then the default. Rules over a call's
  *  arguments are not in V1. */
 export function permissionFrom(name: string, server: PermissionSettings, agent: PermissionSettings = {}): { permission: Permission; from: "agent" | "server" | "default" } {
-  // A shell tool's permission is bash's (SHELL_FAMILY), wherever it is read: the gate, capabilities, an agent's tools.
-  if (Object.hasOwn(SHELL_FAMILY, name) && SHELL_FAMILY[name] !== name) return permissionFrom(SHELL_FAMILY[name]!, server, agent);
+  // A shell tool's permission is bash's (SHELL_FAMILY), from bash's layer, wherever it is read: the gate, capabilities, an
+  // agent's tools. Under ask, a watcher (SHELL_WATCHERS) runs unasked. No key of its own is read, so none lifts bash's deny.
+  if (Object.hasOwn(SHELL_FAMILY, name) && SHELL_FAMILY[name] !== name) {
+    const bash = permissionFrom(SHELL_FAMILY[name]!, server, agent);
+    return { ...bash, permission: shellPermission(name, bash.permission) };
+  }
   for (const [from, layer] of [["agent", agent], ["server", server]] as const) {
     for (const key of permissionKeys(name)) {
       const set = layer[key]?.permission;
@@ -321,8 +332,10 @@ export class RunGate {
     if (key === undefined) return "ask";
     const server = this.serverSettings();
     // No settings ever read: every tool asks, or keeps the revision's own deny.
-    if (server === undefined) return permissionOf(key, {}, this.overrides) === "deny" ? "deny" : "ask";
-    return permissionOf(key, server, this.overrides);
+    const permission = server === undefined ? (permissionOf(key, {}, this.overrides) === "deny" ? "deny" : "ask") : permissionOf(key, server, this.overrides);
+    // A shell tool is read by bash's key; a watcher's ask is allow (shellPermission), under every harness's name for it.
+    const shell = shellToolOf(tool);
+    return shell ? shellPermission(shell, permission) : permission;
   };
 
   private lastGood?: PermissionSettings;

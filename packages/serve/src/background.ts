@@ -40,7 +40,8 @@ export const BACKGROUND_SIGNALS = ["TERM", "INT", "KILL"] as const;
 /** The tools, by name. */
 export const BACKGROUND_TOOLS = ["bash_background", "bash_output", "bash_input", "bash_signal", "bash_list"] as const;
 /** The tools that run a command in the box, never on this server: bash, and the background tools. The tool gate holds
- *  each to bash's setting (tool-gate.ts SHELL_FAMILY). */
+ *  each to bash's setting (tool-gate.ts SHELL_FAMILY); under bash: ask, bash_output, bash_list and bash_signal run unasked
+ *  (tool-gate.ts SHELL_WATCHERS), since an id reaches only this run's own processes (idOf, noSuch). */
 export const SHELL_TOOLS: readonly string[] = ["bash", ...BACKGROUND_TOOLS];
 
 const MIB = BACKGROUND_LOG_BYTES / (1024 * 1024);
