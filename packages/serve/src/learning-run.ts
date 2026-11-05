@@ -361,7 +361,9 @@ export class LearningRuns {
    *  ran is finishing with its job's outcome, and nothing opens it again; when its process lives, the turn is asked again
    *  under the same request id, which it takes once, and waited for. */
   onAdopt(run: Run, live: boolean): void {
-    if (!reflecting(run)) return;
+    // A run its server hid (its browser sign-in unreadable, runs.ts) ends failed, saying why: its turn is never asked
+    // again, and its job's outcome never stands in for that end.
+    if (!reflecting(run) || run.meta.unshown) return;
     run.finishing = run.meta.reflect!.outcome;
     if (run.meta.error) run.error = { ...run.meta.error, retryable: false };
     if (live) void this.reflectTurn(run);

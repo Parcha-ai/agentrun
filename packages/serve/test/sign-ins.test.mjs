@@ -609,9 +609,9 @@ test("a follow-up handed a sign-in starts signed in and saves, though its run's 
 });
 
 /** A server in a process of its own on `data` (fixtures/serve-signed-in.mjs), killed as a crash kills it: its client. */
-async function crashable(t, data) {
+async function crashable(t, data, { faux = FAUX, learning } = {}) {
   const fixture = new URL("./fixtures/serve-signed-in.mjs", import.meta.url).pathname;
-  const child = spawn(process.execPath, [fixture, data, FAUX, FAUX_BROWSER, FAUX_BROWSERBASE], { stdio: ["ignore", "pipe", "inherit"] });
+  const child = spawn(process.execPath, [fixture, data, faux, FAUX_BROWSER, FAUX_BROWSERBASE, ...(learning ? [learning] : [])], { stdio: ["ignore", "pipe", "inherit"] });
   t.after(() => child.kill("SIGKILL"));
   const base = await new Promise((resolve, reject) => {
     let out = "";
@@ -835,4 +835,26 @@ test("a hidden run stays hidden when its agent's sign-in opens again only becaus
   assert.equal(meta.unshown, true, "still hidden");
   assert.match(meta.sign_in_handed, /^[0-9a-f]{64}$/, "which sign-in it was handed, as a hash: never the pointer");
   assert.ok(!JSON.stringify(meta).includes(ref));
+});
+
+test("a hidden run interrupted in its end-of-run learning turn still ends failed, saying why: its learning never turns it completed", { timeout: 240_000 }, async (t) => {
+  const dir = await scratch(t);
+  const data = join(dir, "agents");
+  const log = join(dir, "browser.jsonl");
+  withEnv(t, { BROWSERBASE_API_KEY: BB_KEY, BROWSERBASE_PROJECT_ID: "proj-1", AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), FAUX_BROWSER_LOG: log }, KEYS);
+  const first = await crashable(t, data, { faux: LEARN, learning: "on" });
+  const hold = join(dir, "reflect");
+  await made(first.api, learner("alpha", { tools: ["browser"], instructions: `Answer the question.\nReflect once ${hold} exists.` }));
+  const runId = await started(first.api, "alpha");
+  await until(async () => (await first.api("GET", `/runs/${runId}`)).body.learning?.state, (state) => state === "reflecting");
+  first.child.kill("SIGKILL");
+  await new Promise((resolve) => first.child.once("exit", resolve));
+  const { holder } = JSON.parse(await readFile(join(data, "runs", runId, "run.json"), "utf8"));
+  process.kill(holder.pid, "SIGKILL");
+  await until(async () => { try { process.kill(holder.pid, 0); return false; } catch { return true; } }, (gone) => gone);
+  process.env.AGENTRUN_SEAL_KEY = randomBytes(32).toString("base64");
+  const { api } = await serve(t, { data, learning: "on", faux: LEARN, fauxBrowser: FAUX_BROWSER, fauxBrowserbase: FAUX_BROWSERBASE });
+  await follow(api, runId, ["failed", "completed"], { deadlineMs: 60_000 });
+  const view = (await api("GET", `/runs/${runId}`)).body;
+  assert.deepEqual([view.status, view.error?.message], ["failed", "This server can't read the run's browser sign-in (its seal key changed or is missing, or the sign-in is damaged): the run was stopped, so nothing it says can show it."]);
 });
