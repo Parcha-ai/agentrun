@@ -54,7 +54,8 @@ function capRecipe(commands) {
       'Only the person who set the cap raises it: ask them for the new cap (`pending.suggested_cap_usd` is one that lets it go on). Then the run goes on from where it stopped:', '',
       '```sh', `run=$(node -p 'require("./run.json").run_id')`, `${usage(raise).replace('RUN_ID', '"$run"')} ${field(1)}`, 'agentrun runs wait "$run" > run.json', '# exit 0 completed, as in recipe 2', '```', '');
   }
-  if (!approve) lines.push('A tool call waiting for approval is answered by the person in the console (the run\'s `console_url`) until this CLI has a command for it.');
+  // answerApproval is left out of the table (resources.json's omit): the server takes that answer from no token.
+  if (!approve) lines.push('A tool call waiting for approval (`pending.kind` `approval`) is answered by the person in the console (the run\'s `console_url`): the server takes that answer only from their own session there, never from a token, so the CLI has no command for it. Tell them, then `agentrun runs wait "$run"` once they have.');
   if (approve) lines.push(`A tool call waiting for approval (\`pending.id\` names it) is answered by the person: \`${usage(approve)}${approve.flags.find((f) => f.name === '--decision') ? ' --decision allow' : ''}\` (${approve.summary.toLowerCase()}). The server may take that answer only from the person's own session; a \`403\` means they answer it in the console.`);
   return lines;
 }
