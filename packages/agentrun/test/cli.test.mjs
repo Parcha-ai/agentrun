@@ -2,7 +2,7 @@
 // loopback. The CLI finds the server and its token through DIR/.server.json, prints the response's JSON, exits by what
 // happened, and never prints the token.
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
 import { createServer } from "node:net";
@@ -69,10 +69,11 @@ async function listener(t, answer = () => [200, "application/json", "{}"]) {
   return { base: `http://127.0.0.1:${server.address().port}/v2`, requests };
 }
 
-/** The CLI in a child process, without blocking this one (a listener here answers it). */
-function run(env, args, { input, extra = {} } = {}) {
+/** The CLI in a child process, without blocking this one (a listener here answers it); killed after `timeout` ms, its
+ *  code then null. */
+function run(env, args, { input, extra = {}, timeout } = {}) {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [BIN, ...args], { env: { ...env, ...extra }, stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn(process.execPath, [BIN, ...args], { env: { ...env, ...extra }, stdio: ["pipe", "pipe", "pipe"], timeout, killSignal: "SIGKILL" });
     const out = [];
     let err = "";
     child.stdout.on("data", (chunk) => out.push(chunk));
@@ -410,4 +411,51 @@ test("api refuses a PATH with a dot segment, raw or encoded, or an empty one, wh
     assert.equal(sent.code, 2, `${base} ${path}: ${sent.err}`);
   }
   assert.equal(server.requests.length, 0, "nothing was sent");
+});
+
+test("a FIFO at .server.json, .token or config.json is refused at once, exit 4, never waited on", { timeout: 60_000 }, async (t) => {
+  const { dir, env } = scratch(t);
+  const server = await listener(t);
+  const data = join(dir, "data");
+  mkdirSync(data, { mode: 0o700 });
+  const config = join(dir, ".config", "agentrun", "config.json");
+  mkdirSync(join(dir, ".config", "agentrun"), { recursive: true, mode: 0o700 });
+  for (const fifo of [join(data, ".server.json"), join(data, ".token"), config]) {
+    execFileSync("mkfifo", ["-m", "600", fifo]);
+    const sent = await run(env, ["agents", "list", "--data", data], { timeout: 10_000 });
+    assert.equal(sent.code, 4, `${fifo}: ${sent.err}`);
+    assert.match(sent.err, /not a private file of yours/);
+    rmSync(fifo);
+  }
+  assert.equal(server.requests.length, 0, "nothing was sent");
+});
+
+test("an inline secret body is refused whatever part of its route the base URL holds", async (t) => {
+  const { env } = scratch(t);
+  const server = await listener(t);
+  const extra = { AGENTRUN_API_KEY: "fake-test-key" };
+  const body = '{"values":{"EXA_API_KEY":"not-a-secret"}}';
+  for (const [base, method, path] of [[`${server.base}/settings`, "PUT", "/tool-keys/exa"], [`${server.base}/settings/tool-keys`, "PUT", "/exa"], [`${server.base}/settings`, "PUT", "/mcp-servers/docs"], [`${server.base}/settings/mcp-servers`, "POST", "/preview"]]) {
+    const sent = await run(env, ["api", method, path, "--body", body, "--base-url", base], { extra });
+    assert.equal(sent.code, 2, `${base} ${path}: ${sent.err}`);
+  }
+  assert.equal(server.requests.length, 0, "nothing was sent");
+  // A route that only ends like a secret one's name is not one.
+  assert.equal((await run(env, ["api", "PUT", "/agents/tool-keys/exa", "--body", body, "--base-url", server.base], { extra })).code, 0);
+});
+
+test("a .server.json whose base_url is not a string or whose pid is not a positive whole number is refused, exit 4, its contents never printed", async (t) => {
+  const { dir, env } = scratch(t);
+  const data = join(dir, "data");
+  mkdirSync(data, { mode: 0o700 });
+  writeFileSync(join(data, ".token"), "fake-test-key\n", { mode: 0o600 });
+  const record = join(data, ".server.json");
+  const base = "http://127.0.0.1:9/v2";
+  for (const fields of [{ base_url: 42, pid: process.pid }, { base_url: { fake: "fake-record-contents" }, pid: process.pid }, { base_url: null, pid: process.pid }, { pid: process.pid }, { base_url: base, pid: "fake-record-contents" }, { base_url: base, pid: -1 }, { base_url: base, pid: 1.5 }, { base_url: base }]) {
+    writeFileSync(record, JSON.stringify({ ...fields, token_file: join(data, ".token") }), { mode: 0o600 });
+    const read = await run(env, ["agents", "list", "--data", data]);
+    assert.equal(read.code, 4, `${JSON.stringify(fields)}: ${read.err}`);
+    assert.match(read.err, new RegExp(`^${record.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} `));
+    assert.ok(!read.err.includes("fake-record-contents") && !read.err.includes("TypeError"), read.err);
+  }
 });

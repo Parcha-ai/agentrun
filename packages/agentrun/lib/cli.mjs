@@ -97,7 +97,8 @@ function readJson(file, text) {
 function privateFile(file) {
   let fd;
   try {
-    fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+    // O_NONBLOCK: a FIFO planted there opens at once, and fstat refuses it, rather than the open waiting for a writer.
+    fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   } catch (error) {
     if (error.code === "ENOENT") return undefined;
     throw new Exit(4, `${file} ${error.code === "ELOOP" ? "is a link" : `cannot be read (${error.code})`}; refusing it.`);
@@ -131,6 +132,9 @@ function targetOf(values, env) {
   const config = readJson(configFile, privateFile(configFile)) ?? {};
   const recordFile = join(data, ".server.json");
   const record = readJson(recordFile, privateFile(recordFile));
+  if (record !== undefined && (typeof record?.base_url !== "string" || !Number.isInteger(record.pid) || record.pid <= 0)) {
+    throw new Exit(4, `${recordFile} is not a server record (base_url a string, pid a positive whole number); refusing it.`);
+  }
   const stale = record && `The server recorded in ${recordFile} (pid ${record.pid}) is not running; start it with \`npx @parcha/agentrun\` or set AGENTRUN_BASE_URL.`;
   const local = trim(record?.base_url ?? DEFAULT_BASE_URL);
   const base = trim(values["base-url"] ?? env.AGENTRUN_BASE_URL ?? config.base_url ?? local);
@@ -190,11 +194,13 @@ const refuseInline = (what, value) => {
   if (value !== undefined && value !== "-" && !value.startsWith("@")) throw usageError(`${what} carries a secret: pass the body on stdin (--body -) or in a file (--body @FILE), never on the command line.`);
 };
 
-/** The operation whose body carries a secret that `method` on `path` reaches, once the path is normalized as fetch
- *  normalizes it (`..`, `.`, their encoded forms, repeated slashes). */
-function secretAt(method, path) {
-  const pathname = new URL(`http://host/v2${path}`).pathname.replace(/\/{2,}/g, "/");
-  return COMMANDS.find((entry) => entry.secretBody && entry.method === method && new RegExp(`^/v2${entry.path.replace(/\{[^}]+\}/g, "[^/]+")}/?$`).test(pathname));
+/** The operation whose body carries a secret that `method` on `url` reaches, once its path is normalized as fetch
+ *  normalizes it (`..`, `.`, their encoded forms, repeated slashes): the operation's route at the end of the path,
+ *  whatever part of it the base URL holds. */
+function secretAt(method, url) {
+  const pathname = new URL(url).pathname.replace(/\/{2,}/g, "/");
+  const route = (entry) => new RegExp(`(?:^|/)${entry.path.slice(1).split(/\{[^}]+\}/).map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("[^/]+")}/?$`);
+  return COMMANDS.find((entry) => entry.secretBody && entry.method === method && route(entry).test(pathname));
 }
 
 /** Requests to the target, each with its token (follow.mjs makes its own through one): `fetch(path, init)`, exit 3 for
@@ -277,7 +283,7 @@ async function api(argv, env, io) {
   const segments = path.split(/[?#]/)[0].split("/").slice(1).map((segment) => segment.replace(/%2e/gi, "."));
   if (segments.some((segment, i) => segment === "." || segment === ".." || (segment === "" && i < segments.length - 1))) throw usageError("agentrun api: PATH may not hold a . or .. segment or an empty one (//).");
   const verb = method.toUpperCase();
-  const secret = secretAt(verb, path);
+  const secret = secretAt(verb, `http://host/v2${path}`);
   if (secret) refuseInline(`${verb} ${secret.path}`, values.body);
   const headers = {};
   for (const line of values.header ?? []) {
@@ -290,7 +296,11 @@ async function api(argv, env, io) {
   }
   const body = values.body === undefined ? undefined : await readBody(values.body, io.stdin);
   const type = headers["content-type"] ?? (body !== undefined && jsonOf(body) ? "application/json" : "application/octet-stream");
-  return send(clientOf(targetOf(values, env), io), { method: verb, path, headers, body, type });
+  const target = targetOf(values, env);
+  // The base URL's own path counts too: --base-url .../v2/settings with PUT /tool-keys/exa reaches the secret route.
+  const landed = secretAt(verb, `${target.base}${path}`);
+  if (landed) refuseInline(`${verb} ${landed.path}`, values.body);
+  return send(clientOf(target, io), { method: verb, path, headers, body, type });
 }
 
 async function command(entry, argv, env, io) {
@@ -333,7 +343,10 @@ async function command(entry, argv, env, io) {
   if (values.timeout !== undefined && !values.wait) throw usageError("--timeout goes with --wait.");
   const timeout = timeoutOf(values.timeout);
   const search = query.size ? `?${query}` : "";
-  const client = clientOf(targetOf(values, env), io);
+  const target = targetOf(values, env);
+  const landed = !entry.secretBody && secretAt(entry.method, `${target.base}${path}`);
+  if (landed) refuseInline(`${entry.command.join(" ")} (${landed.path} under the base URL)`, values.body);
+  const client = clientOf(target, io);
   const req = { method: entry.method, path: `${path}${search}`, headers, body, type, raw: entry.raw };
   if (values.follow) return followTimeline(client, req.path, headers);
   if (!values.wait) return send(client, req);
