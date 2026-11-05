@@ -13,8 +13,9 @@
 //   is booked: its idle time, its top-up and its release. Each call's charge is taken from the call's hold, which goes
 //   when the call returns. The release's charge is taken from the session's reserve, which goes with it.
 // So what the run spent plus what it holds stays within the cap through a create, calls, the idle time between them and
-// the release. A session kept across a restart of the run's process is held from the reopen (kept), at a stretch beside
-// what it ran since its last charge, and released an idle window after it unless a call uses it. A single call that runs
+// the release. A session still tracked across a restart of the run's process is held from the reopen (reopened), at a
+// stretch beside what it ran since its last charge; one reconcile kept is released an idle window after it unless a call
+// uses it. A single call that runs
 // longer than a stretch, a release that takes longer than its allowance to be confirmed, and the time a run's process
 // was down while it held a session (spent before any process could hold it) can pass the cap, by that much, booked and
 // shown.
@@ -104,13 +105,14 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
     }
   }
 
-  /** The sessions a reopened run kept (pi-browser's reconcile `report`): held from here as if opened in this process, each
-   *  at a stretch beside what it ran since its last charge, the time the process was down included; that is already
-   *  spent at the provider, so it is held, never refused. A session already billed in full is not held. */
-  async function kept(harness: Pick<Session, "snapshot">, docs: { Inventory: unknown; Sessions: unknown }, report: { kept: readonly string[] }, context: Context): Promise<void> {
+  /** At a reopen, after pi-browser's reconcile: every session its custody still tracks (each row of its inventory: kept,
+   *  unreached, still releasing, lost) is held from here as if opened in this process, at a stretch beside what it ran
+   *  since its last charge, the time the process was down included; that is already spent at the provider, so it is
+   *  held, never refused. Its final charge, or its leaving the inventory, lets it go. One billed in full is not held. */
+  async function reopened(harness: Pick<Session, "snapshot">, docs: { Inventory: unknown; Sessions: unknown }, context: Context): Promise<void> {
     if (rate === 0) return;
-    const rows = Object.values(((await harness.snapshot(docs.Inventory as never, context)) as { rows?: Record<string, { tag: string; conversationId: number }> } | undefined)?.rows ?? {});
-    for (const row of rows.filter((r) => report.kept.includes(r.tag) && !sessions.has(r.tag))) {
+    const rows = Object.values(((await harness.snapshot(docs.Inventory as never, context)) as { rows?: Record<string, Row> } | undefined)?.rows ?? {});
+    for (const row of rows.filter((r) => !sessions.has(r.tag))) {
       const record = ((await harness.snapshot(docs.Sessions as never, row.conversationId as never, context)) as { sessions?: { tag: string; spent: { chargedThrough: string; final?: true } }[] } | undefined)?.sessions?.find((s) => s.tag === row.tag);
       const at = Date.parse(record?.spent.chargedThrough ?? "");
       // Billed in full already (its release's charge landed since reconcile): nothing is left to hold, nor to drop it.
@@ -182,5 +184,5 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
     return forModel(JSON.stringify({ error: why }), { isError: true });
   }
 
-  return { onCharge, watch, kept, capped, stretch };
+  return { onCharge, watch, reopened, capped, stretch };
 }

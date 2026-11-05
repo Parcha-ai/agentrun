@@ -1645,8 +1645,10 @@ every hold, plus that must stay within the cap. Otherwise the call is not made: 
 A session's first charge moves one stretch of its call's hold to the session, held until its release is booked, which
 covers its idle time, its top-up and its release; each call's charge comes out of the call's hold, which goes when the
 call returns. So what the run spent plus what it holds stays within the cap through a session's create, its calls, the
-idle time between them and its release. A session kept across a restart of the run's process is held from the reopen,
-at a stretch beside what it ran since its last charge, and released an idle window later unless a call uses it. Three
+idle time between them and its release. A session a create's lost answer left to a release after the create deadline is
+held for that deadline and a stretch until its release is billed. Across a restart of the run's process, every session
+custody still tracks (kept, unreached, still releasing) is held from the reopen, at a stretch beside what it ran since
+its last charge, and one kept is released an idle window later unless a call uses it. Three
 things can still pass the cap, each by what it ran over, booked and shown: a single browser call that runs longer than a
 stretch, a release that takes longer than 30 s to be confirmed, and the time a run's process was down while it held a
 session (spent before any process could hold it). A session whose release is never confirmed is billed in full

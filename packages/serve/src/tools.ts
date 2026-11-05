@@ -195,8 +195,10 @@ const browserTool: ToolEntry = {
     host.beforeResume(async (harness) => {
       // Its charges move what the process counts once each is committed, reconcile's own among them.
       spend.watch(harness, (browser.docs.Inventory as unknown as { definition: { kind: string } }).definition.kind);
-      // A session kept across a restart is held from here, and released an idle window on unless a call uses it.
-      await spend.kept(harness, browser.docs, await browser.reconcile(harness as never, () => true, context), context);
+      // Every session custody still tracks across a restart is held from here; one kept is released an idle window on
+      // unless a call uses it.
+      await browser.reconcile(harness as never, () => true, context);
+      await spend.reopened(harness, browser.docs, context);
     });
     host.beforeRelease(async (harness) => {
       const held = await harness.snapshot(browser.docs.Inventory as never, context) as { rows?: Record<string, { conversationId: number; state: string }> } | undefined;

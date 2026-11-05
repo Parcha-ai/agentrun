@@ -211,9 +211,9 @@ test("after a reopen, a kept session's down time is held once: its first call fi
   const docs = { Inventory: "inventory", Sessions: "sessions" };
   const store = (final) => ({ snapshot: async (token) => (token === "inventory" ? { rows: { k: { tag: "ar-kept", conversationId: 1 } } } : { sessions: [{ tag: "ar-kept", spent: { chargedThrough: new Date(T0).toISOString(), ...(final ? { final: true } : {}) } }] }) });
   // A session whose final charge landed before `kept` read it: nothing to hold, and nothing would ever drop the hold.
-  await spend.kept(store(true), docs, { kept: ["ar-kept"] }, undefined);
+  await spend.reopened(store(true), docs, undefined);
   assert.equal(paidHolds(), base, "an already billed session is not held");
-  await spend.kept(store(false), docs, { kept: ["ar-kept"] }, undefined);
+  await spend.reopened(store(false), docs, undefined);
   assert.ok(Math.abs(paidHolds() - base - 0.039) < 1e-9, `the kept session: a stretch and its down time, ${paidHolds() - base}`);
   const held = [];
   const tool = spend.capped({ name: "snapshot", execute: async () => {
@@ -235,7 +235,9 @@ test("after a reopen, a kept session's down time is held once: its first call fi
 });
 
 // Last of this process's runs: its first process's reserve stays in this process's holds (a real one would be gone).
-test("capped, a session kept across a restart of the run's process is held from the reopen and released an idle window after it, its charge booked", { timeout: 60_000 }, async (t) => {
+/** A run whose first process opened one browser session and ended without letting the run go (the session still live at
+ *  the provider, as after a crash): `open()` starts its next process on the same store. */
+async function restarted(t) {
   const [{ BACKGROUND_CONTEXT: ctx }, { createModels }, faux, durable, { openNodeSqliteStorage }, { createBrowserExtension }, { FakeBackend, fakeDriver, fixturePage }] = await Promise.all([
     import("@earendil-works/chord/context"), import("@earendil-works/pi-ai/models"), import("@earendil-works/pi-ai/providers/faux"), import("@earendil-works/pi-durable"),
     import("@earendil-works/pi-durable/storage/sqlite/node"), import("@parcha/pi-browser/durable"), import("@parcha/pi-browser/testing"),
@@ -268,20 +270,44 @@ test("capped, a session kept across a restart of the run's process is held from 
   await first.browser.close();
   await first.harness.close(ctx);
   assert.equal(backend.liveCount(), 1);
+  return { ctx, backend, root, open, spent: () => spent };
+}
+
+test("capped, a session kept across a restart of the run's process is held from the reopen and released an idle window after it, its charge booked", { timeout: 60_000 }, async (t) => {
+  const { ctx, backend, root, open, spent: spentNow } = await restarted(t);
   const second = await open();
   // Its idle window is 1 s from here, so the reopened run's session goes once that passes with no call.
   await second.harness.commit(async (tx) => { (await tx.doc(second.browser.docs.Config, root.id)).policy.idleReleaseS = 1; }, ctx);
   // The first process's holds would be gone with it; here they stay in this one, so the second's are read beside them.
   const base = paidHolds();
-  await second.spend.kept(second.harness, second.browser.docs, await second.browser.reconcile(second.harness, () => true, ctx), ctx);
+  await second.browser.reconcile(second.harness, () => true, ctx);
+  await second.spend.reopened(second.harness, second.browser.docs, ctx);
   assert.ok(paidHolds() - base >= second.spend.stretch, `held from the reopen: ${paidHolds() - base}`);
   for (let i = 0; i < 200 && backend.liveCount() > 0; i += 1) await new Promise((resolve) => setTimeout(resolve, 25));
   await second.browser.drain(second.harness, ctx);
   assert.equal(backend.liveCount(), 0, "released an idle window after the reopen, with no call");
   const [record] = (await second.harness.snapshot(second.browser.docs.Sessions, root.id, ctx)).sessions;
   assert.deepEqual([record.state, record.spent.final], ["released", true]);
-  assert.equal(Math.round(spent * 1e12) / 1e12, record.spent.usd, "the process counted the whole bill: its first charge before the restart, the rest at the release");
+  assert.equal(Math.round(spentNow() * 1e12) / 1e12, record.spent.usd, "the process counted the whole bill: its first charge before the restart, the rest at the release");
   assert.equal(paidHolds(), base, "its reserve let go with its release");
+  await second.harness.close(ctx);
+});
+
+// After the restart test, for the same reason.
+test("capped, a reopened run holds every session its custody still tracks, not only those reconcile kept: one it could not reach", { timeout: 60_000 }, async (t) => {
+  const { ctx, backend, root, open } = await restarted(t);
+  const second = await open();
+  const base = paidHolds();
+  // The provider does not answer the reopen's status check: the session stays tracked, live and billing, unreached.
+  backend.fail("status", 1);
+  const report = await second.browser.reconcile(second.harness, () => true, ctx);
+  assert.equal(report.unreachable.length, 1, JSON.stringify(report));
+  await second.spend.reopened(second.harness, second.browser.docs, ctx);
+  assert.ok(paidHolds() - base >= second.spend.stretch, `held from the reopen: ${paidHolds() - base}`);
+  await second.browser.release(await second.harness.conversation(root.id, ctx), "close", ctx);
+  await second.browser.drain(second.harness, ctx);
+  assert.equal(backend.liveCount(), 0);
+  assert.equal(paidHolds(), base, "let go once its release is billed");
   await second.harness.close(ctx);
 });
 
