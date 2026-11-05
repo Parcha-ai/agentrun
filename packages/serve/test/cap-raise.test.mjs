@@ -237,3 +237,52 @@ test("the suggested raise is a whole dollar, always above the cap, and a float j
   assert.equal(suggestedCap(2.5, 0, 0), 3, "nothing needed: the next dollar above the cap");
   assert.equal(suggestedCap(0.05, 0.2, 0.28), 3, "0.2 + 10 × 0.28 is 3.0000000000000004 in a float: $3, not $4");
 });
+
+test("a paused run's figures, once its process is gone, are the store's spend: a hold its refusal counted that no request booked is not spent, and the suggested raise and a raise below the stale bar follow the store", { timeout: 120_000 }, async (t) => {
+  const data = join(await scratch(t), "agents");
+  let server = await startServe({ data, port: 0, faux: OUTPUT_PRICED, drainTimeout: "5s" });
+  t.after(() => server?.close());
+  const runId = await paused(client(server.baseUrl, server.token), "held");
+  await server.close();
+  // The refusal as the cap counted it with a $1.50 hold in flight (a request answering, its worst case held), which then
+  // settled with nothing booked: its mark says $1.50 taken, the store says $0 spent.
+  const db = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { timeout: 5_000 });
+  try {
+    const marks = db.prepare("SELECT rowid AS at, record FROM entries ORDER BY rowid").all().filter((row) => { const e = JSON.parse(row.record); return e.kind === REQUEST_STARTED && e.data?.capRefused === true; });
+    assert.equal(marks.length, 1, "one refusal mark");
+    const record = JSON.parse(marks[0].record);
+    db.prepare("UPDATE entries SET record = ? WHERE rowid = ?").run(JSON.stringify({ ...record, data: { ...record.data, spentUsd: 1.5 } }), marks[0].at);
+  } finally {
+    db.close();
+  }
+  assert.equal(spentIn(join(data, "runs", runId, "store", "run.sqlite")), 0, "the store's spend");
+  server = await startServe({ data, port: 0, faux: OUTPUT_PRICED, drainTimeout: "5s" });
+  const api = client(server.baseUrl, server.token);
+  const { pending } = await view(api, runId);
+  // The store's $0 and the least $0.1024: $1.024, up to $2. The mark's stale $1.50 would say $3.
+  assert.deepEqual([pending.spent_usd, pending.suggested_cap_usd], [0, 2], JSON.stringify(pending));
+  // $1 is above what the request needs on the store's figure ($0.1024), below the stale mark's ($1.6024): a raise.
+  const raised = await raise(api, runId, { max_cost_usd: 1 });
+  assert.deepEqual([raised.status, raised.body.resumed], [200, true], JSON.stringify(raised.body));
+  const { rows } = await follow(api, runId, ["completed", "failed", "cancelled"], { deadlineMs: 60_000 });
+  assert.deepEqual([(await view(api, runId)).status, said(rows)], ["completed", ["Write one.md", CONTINUE("$1")]]);
+});
+
+for (const harness of ["claude-agent", "codex"]) {
+  test(`${harness}: a run raised past its pause and gone on, then sent a message, ends that turn completed: the refusal is the paused turn's only`, { timeout: 120_000 }, async (t) => {
+    const { api } = await serve(t, { fauxHarness: FAUX_HARNESS, faux: OUTPUT_PRICED });
+    assert.equal((await api("POST", "/agents", agent(`after-${harness}`, { harness, instructions: "Make three requests." }))).status, 201);
+    const { run_id } = (await api("POST", `/agents/after-${harness}/runs`, { input: { content: "go" }, max_cost_usd: 0.05 })).body;
+    await follow(api, run_id, SETTLED, { deadlineMs: 60_000 });
+    assert.equal((await view(api, run_id)).pending?.kind, "budget", "paused at its cap");
+    assert.equal((await raise(api, run_id, { max_cost_usd: 1 })).status, 200);
+    await follow(api, run_id, ["completed", "failed", "cancelled"], { deadlineMs: 60_000 });
+    assert.equal((await view(api, run_id)).status, "completed", "gone on");
+    assert.equal((await api("POST", `/runs/${run_id}/messages`, { content: "Once more." })).status, 202);
+    const { rows } = await follow(api, run_id, ["completed", "failed", "cancelled"], { deadlineMs: 60_000 });
+    const run = await view(api, run_id);
+    assert.deepEqual([run.status, run.error, run.pending], ["completed", null, null], JSON.stringify(run));
+    assert.deepEqual(said(rows), ["go", CONTINUE("$1"), "Once more."]);
+    assert.equal(rows.filter((row) => row.kind === "error").length, 1, `one error row, the paused turn's refusal: ${JSON.stringify(rows.filter((row) => row.kind === "error"))}`);
+  });
+}
