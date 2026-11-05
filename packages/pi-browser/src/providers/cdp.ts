@@ -352,6 +352,11 @@ export function cdpProvider(options: CdpOptions, internals: { remove?: RemoveDir
       const { executablePath, profileRoot, headless = true, args = [] } = options.chrome;
       const sandbox = options.chrome.sandbox ?? process.env.PI_BROWSER_NO_SANDBOX !== "1";
       const dir = profileDir(profileRoot, spec.tag);
+      // The session's port and the host's arguments, before anything is made for it: a pick or a callback that fails leaves
+      // nothing behind. A port taken by something else between this pick and Chrome's start leaves Chrome without its
+      // socket: the wait below finds no DevToolsActivePort and the start fails, never attaching to what holds the port.
+      const debuggingPort = typeof args === "function" ? await freeLoopbackPort() : undefined;
+      const more = typeof args === "function" ? args({ debuggingPort: debuggingPort! }) : args;
       if (spec.profile) await prepareProfile(profileRoot, dir, spec.profile, spec.tag, `${spec.metadata.run}|${spec.metadata.label}`, signal, remove);
       try {
         signal?.throwIfAborted();
@@ -384,10 +389,6 @@ export function cdpProvider(options: CdpOptions, internals: { remove?: RemoveDir
             throw left ? new ProfileNotRemovedError(left.dirs, left.error, error) : error;
           }
         }
-        // A port taken by something else between this pick and Chrome's start leaves Chrome without its socket: the wait below
-        // finds no DevToolsActivePort and the start fails, never attaching to what holds the port.
-        const debuggingPort = typeof args === "function" ? await freeLoopbackPort() : undefined;
-        const more = typeof args === "function" ? args({ debuggingPort: debuggingPort! }) : args;
         const stderrFd = openChromeStderr(tmp);
         let child: ChildProcess;
         try {

@@ -77,3 +77,19 @@ test("a debugging port given to chromeArgs is the one the DevTools socket opens 
   assert.deepEqual(port(chromeArgs(base)), ["--remote-debugging-port=0"]);
   assert.deepEqual(port(chromeArgs({ ...base, debuggingPort: 45123 })), ["--remote-debugging-port=45123"]);
 });
+
+test("an args callback that throws starts nothing and leaves nothing made: no profile, no downloads folder, no private TMPDIR", async (t) => {
+  const { cdpProvider } = await import("../dist/providers/cdp.js");
+  const { scratch } = await import("./fixtures/scratch.mjs");
+  const root = await scratch(t, "chrome-args-throw-");
+  const privateTmps = () => fs.readdirSync(os.tmpdir()).filter((name) => /^pib-[A-Za-z0-9]{6}$/.test(name)).sort();
+  const before = privateTmps();
+  const told = [];
+  const provider = cdpProvider({ chrome: { executablePath: path.join(import.meta.dirname, "fixtures", "fake-chrome.mjs"), profileRoot: root, sandbox: false, args: ({ debuggingPort }) => { told.push(debuggingPort); throw new Error("no arguments for this session"); } } });
+  const spec = { tag: `args-throw-${process.pid}`, maxLifetimeS: 600, idleTimeoutS: 60, proxies: false, verified: false, captcha: false, viewport: { width: 1000, height: 700 }, metadata: {} };
+  await assert.rejects(provider.create(spec, new AbortController().signal), /no arguments for this session/);
+  assert.equal(told.length, 1, "the callback was asked, once");
+  assert.deepEqual(fs.readdirSync(root), [], "no profile and no downloads folder");
+  assert.deepEqual(privateTmps(), before, "no private TMPDIR or extension copy");
+  assert.equal(await provider.status({ id: `local:${process.pid}:${told[0]}:${spec.tag}`, tag: spec.tag }), "gone", "and nothing the provider holds names it as running");
+});
