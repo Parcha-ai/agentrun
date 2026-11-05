@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rmdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
@@ -173,8 +173,8 @@ for (const harness of ["claude-agent", "codex"]) {
 }
 
 /** The bin on `data`, as an operator starts it, in a process this test can kill. */
-async function serverProcess(data, env) {
-  const child = spawn(process.execPath, [CLI, "--data", data, "--port", "0", "--faux", SLOW_EXIT], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, AGENTRUN_ACCOUNTS: "0", ...env } });
+async function serverProcess(data, env, faux = SLOW_EXIT) {
+  const child = spawn(process.execPath, [CLI, "--data", data, "--port", "0", "--faux", faux], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, AGENTRUN_ACCOUNTS: "0", ...env } });
   let out = "";
   child.stdout.on("data", (chunk) => (out += chunk));
   for (let i = 0; !/AGENTRUN_BASE_URL=/.test(out); i++) {
@@ -286,3 +286,139 @@ for (const harness of ["claude-agent", "codex"]) {
     assert.equal(rows.filter((row) => row.kind === "error").length, 1, `one error row, the paused turn's refusal: ${JSON.stringify(rows.filter((row) => row.kind === "error"))}`);
   });
 }
+
+/** The output-priced faux model, whose run process, while the file LAUNCH_KILL names exists, kills its server as it comes up. */
+const LAUNCH_KILL_FAUX = new URL("./fixtures/faux-output-priced-launch-kill.mjs", import.meta.url).pathname;
+const ENDED = ["completed", "failed", "cancelled"];
+
+/** Rewrites the run's refusal mark's figures, its server stopped: as the cap counted them, say, with a hold in flight. */
+function rewriteMark(data, runId, figures) {
+  const db = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { timeout: 5_000 });
+  try {
+    const marks = db.prepare("SELECT rowid AS at, record FROM entries ORDER BY rowid").all().filter((row) => { const e = JSON.parse(row.record); return e.kind === REQUEST_STARTED && e.data?.capRefused === true; });
+    assert.equal(marks.length, 1, "one refusal mark");
+    const record = JSON.parse(marks[0].record);
+    db.prepare("UPDATE entries SET record = ? WHERE rowid = ?").run(JSON.stringify({ ...record, data: { ...record.data, ...figures } }), marks[0].at);
+  } finally {
+    db.close();
+  }
+}
+
+test("two raises of a paused run before its let-go process is gone resume it once, at the later cap: the second raise answers the same follow-up", { timeout: 120_000 }, async (t) => {
+  const gate = join(await scratch(t), "exit");
+  withEnv(t, { EXIT_GATE: gate });
+  const { api, data } = await serve(t, { faux: SLOW_EXIT });
+  const runId = await paused(api, "raised-twice");
+  assert.ok(processAlive(holderPid(data, runId)), "its process is being let go");
+  const first = await raise(api, runId, { max_cost_usd: 1 });
+  const second = await raise(api, runId, { max_cost_usd: 2 });
+  assert.deepEqual([first.status, first.body.resumed, second.status, second.body.resumed, second.body.message_id], [200, true, 200, true, first.body.message_id], JSON.stringify([first.body, second.body]));
+  await writeFile(gate, "");
+  const { rows } = await follow(api, runId, ENDED, { deadlineMs: 60_000 });
+  const run = await view(api, runId);
+  assert.deepEqual([run.status, run.cost.cap_usd, said(rows)], ["completed", 2, ["Write one.md", CONTINUE("$2")]], JSON.stringify(run));
+});
+
+test("a raise whose follow-up's process came up, then its server was killed before the follow-up went: the next server sends it to that process, once", { timeout: 150_000 }, async (t) => {
+  const data = join(await scratch(t), "agents");
+  const kill = join(await scratch(t), "kill");
+  const first = await serverProcess(data, { LAUNCH_KILL: kill }, LAUNCH_KILL_FAUX);
+  t.after(() => first.child.kill("SIGKILL"));
+  const runId = await paused(first.api, "launched");
+  await letGo(data, runId);
+  // The raise is kept and answered; the follow-up's process, as it comes up, kills the server before the follow-up goes.
+  await writeFile(kill, "");
+  const raised = await raise(first.api, runId, { max_cost_usd: 1 });
+  assert.deepEqual([raised.status, raised.body.resumed], [200, true], JSON.stringify(raised.body));
+  if (first.child.exitCode === null && first.child.signalCode === null) await new Promise((resolve) => first.child.once("exit", resolve));
+  for (let i = 0; !processAlive(holderPid(data, runId)); i++) {
+    assert.ok(i < 200, "the follow-up's process is up");
+    await sleep(50);
+  }
+  const next = await startServe({ data, port: 0, faux: LAUNCH_KILL_FAUX, drainTimeout: "5s" });
+  t.after(() => next.close());
+  const api = client(next.baseUrl, next.token);
+  const { rows } = await follow(api, runId, ENDED, { deadlineMs: 20_000 });
+  assert.deepEqual([(await view(api, runId)).status, said(rows)], ["completed", ["Write one.md", CONTINUE("$1")]]);
+});
+
+test("a raised run's follow-up that could not be sent is tried again, and the run goes on", { timeout: 120_000 }, async (t) => {
+  let failing = 1;
+  const beforeSubmit = (_runId, content) => {
+    if (content.startsWith("The cap was raised") && failing-- > 0) throw new Error("the door is away");
+  };
+  const { api } = await serve(t, { faux: OUTPUT_PRICED, beforeSubmit });
+  const runId = await paused(api, "retried");
+  const raised = await raise(api, runId, { max_cost_usd: 1 });
+  assert.deepEqual([raised.status, raised.body.resumed], [200, true], JSON.stringify(raised.body));
+  const { rows } = await follow(api, runId, ENDED, { deadlineMs: 20_000 });
+  assert.deepEqual([(await view(api, runId)).status, said(rows)], ["completed", ["Write one.md", CONTINUE("$1")]]);
+});
+
+test("a raised run's follow-up that can never be sent fails the run after its tries, saying why: never a pause stuck in silence", { timeout: 120_000 }, async (t) => {
+  const beforeSubmit = (_runId, content) => {
+    if (content.startsWith("The cap was raised")) throw new Error("the door is away");
+  };
+  const { api } = await serve(t, { faux: OUTPUT_PRICED, beforeSubmit });
+  const runId = await paused(api, "never-sent");
+  assert.equal((await raise(api, runId, { max_cost_usd: 1 })).status, 200);
+  await follow(api, runId, ENDED, { deadlineMs: 20_000 });
+  const run = await view(api, runId);
+  assert.deepEqual([run.status, run.error?.code], ["failed", "run_failed"], JSON.stringify(run));
+  assert.match(run.error.message, /^The run's cap was raised to \$1, but the run could not be sent on \(the door is away\)\./);
+});
+
+test("a raise its run's serve.json could not keep is not taken: the run keeps its cap and pause, and the same raise again is taken and kept, not answered as already raised", { timeout: 120_000 }, async (t) => {
+  const { api, data } = await serve(t, { faux: OUTPUT_PRICED });
+  const runId = await paused(api, "unsaved");
+  await letGo(data, runId);
+  const temp = join(data, "runs", runId, "serve.json.tmp");
+  await mkdir(temp);
+  const failed = await raise(api, runId, { max_cost_usd: 1 });
+  assert.ok(failed.status >= 500, `not kept: ${failed.status} ${JSON.stringify(failed.body)}`);
+  const kept = await view(api, runId);
+  assert.deepEqual([kept.cost.cap_usd, kept.pending?.kind], [0.05, "budget"], "not taken");
+  await rmdir(temp);
+  const again = await raise(api, runId, { max_cost_usd: 1 });
+  assert.deepEqual([again.status, again.body.resumed], [200, true], JSON.stringify(again.body));
+  assert.equal(JSON.parse(readFileSync(join(data, "runs", runId, "serve.json"), "utf8")).max_cost_usd, 1, "kept");
+  const { rows } = await follow(api, runId, ENDED, { deadlineMs: 60_000 });
+  assert.deepEqual([(await view(api, runId)).status, said(rows)], ["completed", ["Write one.md", CONTINUE("$1")]]);
+});
+
+test("a raise taken while the paused process is let go, then that process cut off before it releases the run (as at its drain's end): the raise is honoured, never lost on a failed run", { timeout: 120_000 }, async (t) => {
+  const gate = join(await scratch(t), "exit");
+  withEnv(t, { EXIT_GATE: gate, EXIT_CODE: "1" });
+  const { api, data } = await serve(t, { faux: SLOW_EXIT });
+  const runId = await paused(api, "cut-off");
+  assert.ok(processAlive(holderPid(data, runId)), "its process is being let go");
+  const raised = await raise(api, runId, { max_cost_usd: 1 });
+  assert.deepEqual([raised.status, raised.body.resumed], [200, true], JSON.stringify(raised.body));
+  await writeFile(gate, "");
+  const { rows } = await follow(api, runId, ENDED, { deadlineMs: 60_000 });
+  const run = await view(api, runId);
+  assert.deepEqual([run.status, run.error, said(rows)], ["completed", null, ["Write one.md", CONTINUE("$1")]], JSON.stringify(run));
+});
+
+test("a paused run's figures are shown as cost.usd is, to a millionth of a dollar", { timeout: 120_000 }, async (t) => {
+  const data = join(await scratch(t), "agents");
+  let server = await startServe({ data, port: 0, faux: OUTPUT_PRICED, drainTimeout: "5s" });
+  t.after(() => server?.close());
+  const runId = await paused(client(server.baseUrl, server.token), "rounded");
+  await server.close();
+  // The least as a sum of floats says it: $0.1024 and a float's tail.
+  rewriteMark(data, runId, { needsUsd: 0.10240000000000002 });
+  server = await startServe({ data, port: 0, faux: OUTPUT_PRICED, drainTimeout: "5s" });
+  const { pending } = await view(client(server.baseUrl, server.token), runId);
+  assert.deepEqual([pending.spent_usd, pending.needs_usd, pending.suggested_cap_usd], [0, 0.1024, 2], JSON.stringify(pending));
+});
+
+test("a raise is the same cap within a float's tail: a cap a hair above the run's is no raise, and a retry that differs by a float's tail answers as the first did", { timeout: 120_000 }, async (t) => {
+  const { api } = await serve(t, { faux: OUTPUT_PRICED });
+  const runId = await paused(api, "tolerant");
+  const hair = await raise(api, runId, { max_cost_usd: 0.05 + 1e-12 });
+  assert.deepEqual([hair.status, hair.body.error?.fields?.map((f) => [f.field, f.reason])], [422, [["max_cost_usd", "invalid"]]], JSON.stringify(hair.body));
+  const first = await raise(api, runId, { max_cost_usd: 0.1 + 0.2 });
+  const retry = await raise(api, runId, { max_cost_usd: 0.3 });
+  assert.deepEqual([first.status, retry.status, retry.body.resumed, retry.body.message_id], [200, 200, true, first.body.message_id], JSON.stringify([first.body, retry.body]));
+});
