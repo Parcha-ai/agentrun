@@ -366,7 +366,7 @@ async function create<D extends PageDriver>(c: Custody<D>, scope: Scope, overrid
       if (isRefusal(error)) {
         await scope.commit((tx) => c.store.move(tx, row, { state: "released", reason: "create_failed", at: now() }));
         await c.store.emitReleased(scope.cid, tag, scope.read, scope.context);
-        throw failure(error, scope, c.redact);
+        throw failure(error, scope, c.redact, c.options.words);
       }
       const found = await provider.findByTag(tag, scope.signal).catch(() => []);
       // The session found by its tag is the one kept (bindByTag releases the others first), and it is owned before it is
