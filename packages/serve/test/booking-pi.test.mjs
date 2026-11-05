@@ -14,7 +14,7 @@ import { test } from "node:test";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
-import { REQUEST_ENDED } from "@parcha/pi-durable-agent/timeline";
+import { REQUEST_COST, REQUEST_ENDED, REQUEST_STARTED } from "@parcha/pi-durable-agent/timeline";
 import { capModels, spentIn } from "../dist/cap.js";
 import { markRequests } from "../dist/request-start.js";
 
@@ -182,4 +182,23 @@ test("a guard: a 429 then an answer is the answer, priced once; an answer cut pa
   const refused = await bookedFirst([STEPS.refused("ECONNREFUSED")]);
   assert.equal(refused.first.stopReason, "error");
   assert.equal(refused.roomForAnother, true, "refused at connect: nothing, room for another");
+});
+
+/** pi's entry for an answer that cost `usd`. */
+const answer = (usd) => ({ kind: "pi.assistant", model: [{ role: "assistant", content: [{ type: "text", text: "42" }], stopReason: "stop", usage: { cost: { total: usd } }, timestamp: 0 }] });
+
+test("a later process pairs a lost mark with its own request's answer, never an earlier request's: a side request between the mark and the retry's answer moves nothing", (t) => {
+  // Two requests held at the same $0.001. The first answered at $0.0008; the second lost an attempt (its mark, at the
+  // hold) and a side request ran (its start and its $0.0002 cost) before the second's retry answered at $0.0001.
+  const file = storeOf(t, [
+    { kind: REQUEST_STARTED, data: { heldUsd: 0.001 } },
+    answer(0.0008),
+    { kind: REQUEST_STARTED, data: { heldUsd: 0.001 } },
+    { kind: REQUEST_ENDED, data: { lost: true, heldUsd: 0.001 } },
+    { kind: REQUEST_STARTED, data: { request: "summary", heldUsd: 0.0005 } },
+    { kind: REQUEST_COST, data: { request: "summary", usd: 0.0002 } },
+    answer(0.0001),
+  ]);
+  // The first at its own $0.0008, the second at its hold, the side request at its $0.0002: never the hold in the first's place.
+  assert.equal(Math.round(spentIn(file) * 1e9) / 1e9, 0.002, "the first's cost, the second's hold and the side request's cost");
 });
