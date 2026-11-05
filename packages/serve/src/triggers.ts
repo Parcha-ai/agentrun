@@ -24,8 +24,19 @@ import { EFFORTS } from "./model.js";
 import { ID, IDEMPOTENCY_TTL_S, isObject, type Json, unknownFields } from "./validate.js";
 
 export const TRIGGERS_FILE = "triggers.json";
-/** The firings each trigger keeps, newest last; a firing still due is never dropped. */
+/** The firings each trigger keeps, newest last; a firing still due is never dropped, nor a failure whose trigger.failed is
+ *  not queued yet (up to UNTOLD_KEPT). */
 export const HISTORY_KEPT = 200;
+/** The most firings a trigger holds due. A message_run firing to a working run stays due, tried every 5 s, until the
+ *  run takes it: one per idle point, so twenty is far past a sender's burst while the run works, and with up to 16 KiB of
+ *  payload each they add at most 320 KiB to the file every write rewrites. Past it a webhook event and a run now are
+ *  refused (429, retryable) before anything is written, and a schedule's time is skipped. */
+export const DUE_KEPT = 20;
+/** How long a refused event is told to wait (Retry-After). */
+const FULL_RETRY_S = 30;
+/** The most failures a trigger keeps past its history while their trigger.failed waits for the outbox. A schedule turns
+ *  itself off after FAILURES_TO_PAUSE in a row, but runs that start between failures, and run now, can add more. */
+const UNTOLD_KEPT = 50;
 /** The shortest every_s, and so the most often a schedule fires: a cron line has no seconds field. */
 export const MIN_EVERY_S = 60;
 /** The longest every_s: a year and a day. */
@@ -61,6 +72,7 @@ const MAX_NAME = 200;
 /** The most firings each trigger keeps past its history for their key's day: a bound on the file (commit()). */
 const KEPT_FIRINGS = 1_000;
 const ENDED = new Set(["completed", "failed", "cancelled"]);
+const dueOf = (trigger: { firings: readonly { status: string }[] }) => trigger.firings.filter((f) => f.status === "due").length;
 const LOST_AT_SETUP = "The server stopped while setting up the run.";
 
 type Schedule = { kind: "schedule"; cron: string; timezone: string } | { kind: "schedule"; at: string } | { kind: "schedule"; every_s: number; start_at: string };
@@ -120,7 +132,7 @@ type Trigger = {
    *  the history, which drops its oldest firings, while the thread is in use (THREAD_KEPT_MS, SLACK_THREADS_KEPT). */
   threads?: Record<string, Thread>;
   /** Why it is off, when a failure streak turned it off; null once it is on again. */
-  disabled?: { at: string; reason: "auto_paused" } | null;
+  disabled?: { at: string; reason: "auto_paused" } | { at: string; reason: "source_unreadable"; detail: string } | null;
 };
 /** What a trigger.failed webhook message says (webhooks.ts). */
 export type TriggerFailed = { trigger_id: string; name: string; firing_key: string; nominal_at: string; error: { code: string; message: string }; auto_paused: boolean };
@@ -204,7 +216,7 @@ function latestBy(source: Schedule, first: number, now: number, cron?: Cron): nu
 }
 
 /** A time in `zone` as a person reads it: "Nov 1, 2026, 1:30 AM PDT". */
-const local = (ms: number, zone: string) => new Intl.DateTimeFormat("en-US", { timeZone: zone, year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZoneName: "short" }).format(ms);
+const local = (ms: number, zone: string) => new Intl.DateTimeFormat("en-US", { timeZone: validZone(zone) ? zone : "UTC", year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZoneName: "short" }).format(ms);
 const zoneOf = (source: Source) => ("timezone" in source ? source.timezone : "UTC");
 /** A Slack channel's id: a public channel's (C...) or a private one's (G...). */
 const SLACK_CHANNEL = /^[CG][A-Z0-9]{2,20}$/;
@@ -216,6 +228,18 @@ const validZone = (zone: string) => {
     return false;
   }
 };
+/** Why a schedule kept in the file no longer reads (its zone or its cron line, which this croner or this ICU refuses):
+ *  a trigger with one is turned off with the reason, alone, and never stalls the others. */
+function sourceProblem(source: Source): string | undefined {
+  if (!("cron" in source)) return undefined;
+  if (!validZone(source.timezone)) return `the zone ${source.timezone} is not one this server knows`;
+  try {
+    cronOf(source).nextRun(new Date(0));
+    return undefined;
+  } catch (error) {
+    return `the cron line does not read: ${(error as Error).message}`;
+  }
+}
 
 function sourceOf(value: unknown, now: number, issues: InputIssue[]): Source | undefined {
   const bad = (field: string, reason: string, message: string) => void issues.push({ field: `source${field ? `.${field}` : ""}`, reason, message });
@@ -318,10 +342,14 @@ export class Triggers {
   /** Why triggers.json does not read: nothing fires and nothing is written over it until it does. */
   private readonly unreadable?: string;
   private timer?: { clear(): void };
-  /** The firings being driven, by key: a firing is driven once at a time. */
-  private readonly driving = new Set<string>();
+  /** The firings in their turn, queued or being driven, by key, with that turn: a firing is asked for once at a time,
+   *  and the timer arms for none of them until its turn ends. */
+  private readonly driving = new Map<string, Promise<void>>();
   /** Due firings whose last write failed, by key, and when to drive them again: on disk they may hold no retry time. */
   private readonly rewrite = new Map<string, number>();
+  /** Each trigger's firings, driven one after another in the order asked: a firing's overlap check reads what the one
+   *  before it settled to (a firing a crash left due settles to its run before the next start's own is checked). */
+  private readonly turns = new Map<string, Promise<void>>();
   private closed = false;
 
   constructor(data: string, private readonly deps: TriggerDeps) {
@@ -344,6 +372,9 @@ export class Triggers {
         if (t.run_now_kept) t.kept_firings = [...(t.kept_firings ?? []), ...t.run_now_kept];
         delete t.run_now_kept;
       }
+      // A trigger an earlier server wrote before trigger.failed existed has no failures_in_a_row: its failures were never
+      // to be told, so a first start that tells them does not send them late. The next write keeps the mark.
+      for (const t of this.triggers) if (t.failures_in_a_row === undefined) for (const f of t.firings) if (f.status === "failed") f.notified = true;
     } catch (error) {
       this.unreadable = (error as Error).message;
     }
@@ -354,9 +385,11 @@ export class Triggers {
    *  it already started the same run), the times missed while it was down recorded, the timer armed, and each failure's
    *  trigger.failed queued that is not yet. */
   start(): void {
-    this.tick();
-    // A trigger.failed an earlier server wrote the firing of but never queued.
+    this.offUnreadable(this.triggers.filter((t) => t.enabled && sourceProblem(t.source)), this.clock.now());
+    // A trigger.failed an earlier server wrote the firing of but never queued: queued before the first tick records
+    // anything, so no trim reaches it first.
     for (const t of this.unreadable ? [] : this.triggers) for (const f of t.firings) if (unmarked(f)) this.notifyFailed(t.id, f.key);
+    this.tick();
     this.arm();
   }
 
@@ -388,7 +421,8 @@ export class Triggers {
     if (body.name !== undefined && !(typeof body.name === "string" && body.name.trim() && body.name.length <= MAX_NAME)) issues.push({ field: "name", reason: "invalid", message: `name is a string of 1 to ${MAX_NAME} characters` });
     if (body.enabled !== undefined && typeof body.enabled !== "boolean") issues.push({ field: "enabled", reason: "wrong_type", message: "enabled is true or false" });
     if (source?.kind === "slack" && target && target.kind !== "start_run") issues.push({ field: "target.kind", reason: "not_allowed", message: "A Slack trigger starts a run for each new thread; a reply in the thread is a message to that run." });
-    if (target) issues.push(...(await this.deps.targetIssues(target)));
+    // Checked as its runs are given it: the input, then the line saying what fired it (a name the trigger may yet take).
+    if (target) issues.push(...(await this.deps.targetIssues(given(typeof body.name === "string" ? body.name.trim() : `trg_${"0".repeat(24)}`, source, target, now))));
     if (issues.length || !source || !target) throw invalid(issues);
     const id = `trg_${randomBytes(12).toString("hex")}`;
     if (source.kind === "slack") this.channelsFree(source.channels, id);
@@ -421,10 +455,11 @@ export class Triggers {
     const key = firingKey("webhook", id, webhookId);
     const known = this.known(trigger, key);
     if (known) return { created: false, firing: firingView(known) };
+    this.roomFor(trigger);
     const now = this.clock.now();
     const firing: Firing = { key, by: "webhook", nominal_at: second(now), status: "due", at: iso(now), payload: cut(payload) };
     this.commit(() => this.record(trigger, firing));
-    void this.drive(id, key);
+    void this.inTurn(id, key);
     return { created: true, firing: firingView(firing) };
   }
 
@@ -483,14 +518,14 @@ export class Triggers {
    *  paused range is skipped, never caught up. Only the fields named change, applied to the trigger as it stands once
    *  the target's check is done: an edit made meanwhile keeps its own. */
   async update(id: string, body: Json) {
-    this.need(id);
+    const was = this.need(id);
     const issues = unknownFields(body, WRITABLE);
     const source = body.source === undefined ? undefined : sourceOf(body.source, this.clock.now(), issues);
     const target = body.target === undefined ? undefined : targetOf(body.target, issues);
     const settings = settingsOf(body, issues);
     if (body.name !== undefined && !(typeof body.name === "string" && body.name.trim() && body.name.length <= MAX_NAME)) issues.push({ field: "name", reason: "invalid", message: `name is a string of 1 to ${MAX_NAME} characters` });
     if (body.enabled !== undefined && typeof body.enabled !== "boolean") issues.push({ field: "enabled", reason: "wrong_type", message: "enabled is true or false" });
-    if (target) issues.push(...(await this.deps.targetIssues(target)));
+    if (target) issues.push(...(await this.deps.targetIssues(given(typeof body.name === "string" ? body.name.trim() : was.name, source ?? was.source, target, this.clock.now()))));
     if (issues.length || (body.source !== undefined && !source) || (body.target !== undefined && !target)) throw invalid(issues);
     const trigger = this.need(id);
     if (source && source.kind !== trigger.source.kind) throw invalid([{ field: "source.kind", reason: "not_allowed", message: "A trigger's source kind is fixed: make a new trigger for another." }]);
@@ -498,6 +533,8 @@ export class Triggers {
     if (source?.kind === "slack") this.channelsFree(source.channels, id);
     const now = this.clock.now();
     const enabled = typeof body.enabled === "boolean" ? body.enabled : trigger.enabled;
+    const problem = enabled && !source ? sourceProblem(trigger.source) : undefined;
+    if (problem) throw invalid([{ field: "source", reason: "invalid", message: `This schedule no longer reads (${problem}): give it a new source.` }]);
     const next = !enabled ? null : source || !trigger.enabled ? nextIso(source ?? trigger.source, now) : trigger.next_at;
     if (enabled && next === null && trigger.source.kind === "schedule") throw invalid([{ field: "enabled", reason: "invalid", message: "This schedule has no time left to fire at: give it a new source." }]);
     // On again, a trigger starts a new streak: a failure streak that turned it off is behind it.
@@ -520,10 +557,11 @@ export class Triggers {
     const key = firingKey("manual", id, idempotencyKey);
     const known = this.known(trigger, key);
     if (known) return { created: false, firing: firingView(known) };
+    this.roomFor(trigger);
     const now = this.clock.now();
     const firing: Firing = { key, by: "manual", nominal_at: second(now), status: "due", at: iso(now) };
     this.commit(() => this.record(trigger, firing));
-    await this.drive(id, key);
+    await this.inTurn(id, key);
     return { created: true, firing: firingView(this.find(id, key)?.firing ?? firing) };
   }
 
@@ -537,15 +575,22 @@ export class Triggers {
     const now = this.clock.now();
     const due = this.triggers.filter((t) => t.enabled && t.next_at !== null && Date.parse(t.next_at) <= now);
     if (due.length) {
+      // One whose source no longer reads is turned off alone, before the write, so it neither stalls the others nor
+      // reads as a write that failed.
+      const unreadable = due.filter((t) => sourceProblem(t.source));
+      if (!this.offUnreadable(unreadable, now)) {
+        this.timer = this.clock.arm(() => this.tick(), WRITE_RETRY_MS);
+        return;
+      }
       try {
-        this.commit(() => { for (const trigger of due) this.advance(trigger, now); });
+        this.commit(() => { for (const trigger of due) if (!unreadable.includes(trigger)) this.advance(trigger, now); });
       } catch (error) {
         this.deps.say({ condition: "triggers_unwritable", file: this.file, error: (error as NodeJS.ErrnoException).code ?? (error as Error).message });
         this.timer = this.clock.arm(() => this.tick(), WRITE_RETRY_MS);
         return;
       }
     }
-    const drive = this.triggers.flatMap((t) => t.firings.filter((f) => f.status === "due" && (!f.retry_at || this.dueAt(f) <= now)).map((f) => [t.id, f.key] as const));
+    const drive = this.triggers.flatMap((t) => t.firings.filter((f) => f.status === "due" && ((!f.retry_at && !this.rewrite.has(f.key)) || this.dueAt(f) <= now)).map((f) => [t.id, f.key] as const));
     for (const [, key] of drive) this.rewrite.delete(key);
     const tell = this.triggers.flatMap((t) => t.firings.filter((f) => unmarked(f) && this.dueAt(f) <= now).map((f) => [t.id, f.key] as const));
     for (const [id, key] of tell) {
@@ -553,7 +598,40 @@ export class Triggers {
       this.notifyFailed(id, key);
     }
     this.arm();
-    for (const [id, key] of drive) void this.drive(id, key);
+    for (const [id, key] of drive) void this.inTurn(id, key);
+  }
+
+  /** `key`'s firing driven after every firing of its trigger asked before it. */
+  private inTurn(triggerId: string, key: string): Promise<void> {
+    const known = this.driving.get(key);
+    if (known) return known;
+    const turn = (this.turns.get(triggerId) ?? Promise.resolve()).then(() => this.drive(triggerId, key));
+    this.turns.set(triggerId, turn);
+    this.driving.set(key, turn);
+    void turn.finally(() => {
+      this.driving.delete(key);
+      if (this.turns.get(triggerId) === turn) this.turns.delete(triggerId);
+      // A firing still due after its turn (a retry) is armed for again.
+      this.arm();
+    });
+    return turn;
+  }
+
+  /** Each of `triggers` turned off, with why its source no longer reads, in one write, and said. False when the write
+   *  failed, which is said too: the caller tries again after WRITE_RETRY_MS. */
+  private offUnreadable(triggers: Trigger[], now: number): boolean {
+    if (!triggers.length) return true;
+    const why = new Map(triggers.map((t) => [t, sourceProblem(t.source)!]));
+    try {
+      this.commit(() => {
+        for (const [t, detail] of why) Object.assign(t, { enabled: false, next_at: null, disabled: { at: iso(now), reason: "source_unreadable", detail } });
+      });
+    } catch (error) {
+      this.deps.say({ condition: "triggers_unwritable", file: this.file, error: (error as NodeJS.ErrnoException).code ?? (error as Error).message });
+      return false;
+    }
+    for (const [t, detail] of why) this.deps.say({ condition: "trigger_source_unreadable", trigger: t.id, error: detail });
+    return true;
   }
 
   /** Records `trigger`'s firings up to now and moves its next time on from the last nominal one. Of the times that have
@@ -582,9 +660,12 @@ export class Triggers {
     const fires = late <= LATE_MS || late <= windowMs;
     // Capped, the times counted are all before the last: every one of them was missed, and more besides.
     const missed = capped || !fires ? count : count - 1;
-    if (missed > 0) this.record(trigger, { key: firingKey("schedule", trigger.id, `missed\n${second(first)}`), by: "schedule", nominal_at: second(first), status: "missed", at: iso(now), count: missed, reason: `The server was down or its timer late: ${missed === 1 && !capped ? "this time was" : `${missed}${capped ? " or more" : ""} times from this one were`} not fired.` });
-    if (fires) this.record(trigger, { key: firingKey("schedule", trigger.id, second(last)), by: "schedule", nominal_at: second(last), status: "due", at: iso(now), ...(late > LATE_MS ? { catch_up: true } : {}) });
+    // Every time reckoned before anything is written: a source that throws leaves the trigger as it was.
     const next = nextAfter(source, last, cron);
+    if (missed > 0) this.record(trigger, { key: firingKey("schedule", trigger.id, `missed\n${second(first)}`), by: "schedule", nominal_at: second(first), status: "missed", at: iso(now), count: missed, reason: `The server was down or its timer late: ${missed === 1 && !capped ? "this time was" : `${missed}${capped ? " or more" : ""} times from this one were`} not fired.` });
+    // A message_run firing has no overlap check, so a run that stays busy would hold one more due firing each time.
+    const full = dueOf(trigger) >= DUE_KEPT ? { status: "skipped" as const, reason: `${DUE_KEPT} earlier firings are still waiting to reach the run.` } : { status: "due" as const };
+    if (fires) this.record(trigger, { key: firingKey("schedule", trigger.id, second(last)), by: "schedule", nominal_at: second(last), ...full, at: iso(now), ...(late > LATE_MS ? { catch_up: true } : {}) });
     trigger.next_at = next === null ? null : iso(next);
     if (next === null) trigger.enabled = false;
   }
@@ -593,8 +674,6 @@ export class Triggers {
    *  server (429), or a last run that could not be read, keeps it due and tries again later. Nothing it holds across a wait is an object: the trigger may be edited or
    *  deleted meanwhile, so each step finds it again by id and key. */
   private async drive(triggerId: string, key: string): Promise<void> {
-    if (this.driving.has(key)) return;
-    this.driving.add(key);
     try {
       const found = this.find(triggerId, key);
       if (!found || found.firing.status !== "due") return;
@@ -631,12 +710,10 @@ export class Triggers {
       if (this.closed) return;
       this.started(triggerId, key, started.run_id);
     } catch (error) {
-      // Left due, it is driven again soon (arm), never left for the next start.
+      // A throw none of the answers above handles: whatever it left (still due, most likely) is driven again after the
+      // write retry's wait, never at once (its retry time may have passed).
       this.rewrite.set(key, this.clock.now() + WRITE_RETRY_MS);
       this.deps.say({ condition: "trigger_firing_failed", trigger: triggerId, firing: key, error: (error as Error).message });
-    } finally {
-      this.driving.delete(key);
-      this.arm();
     }
   }
 
@@ -757,11 +834,22 @@ export class Triggers {
     if (trigger.firings.some((f) => f.key === firing.key)) return;
     trigger.firings.push(firing);
     let over = trigger.firings.length - HISTORY_KEPT;
-    const gone = over > 0 ? trigger.firings.filter((f) => f.status !== "due" && over-- > 0) : [];
+    // Kept past the history: a firing still due, and a failure whose trigger.failed is not queued yet (the outbox's write,
+    // or this file's, keeps failing), the newest UNTOLD_KEPT of them; an older one's notice is dropped, and said.
+    const untold = new Set(trigger.firings.filter(unmarked).slice(-UNTOLD_KEPT));
+    const gone = over > 0 ? trigger.firings.filter((f) => f.status !== "due" && !untold.has(f) && over-- > 0) : [];
+    for (const f of gone) if (unmarked(f)) this.deps.say({ condition: "trigger_notice_dropped", trigger: trigger.id, firing: f.key });
     trigger.firings = trigger.firings.filter((f) => !gone.includes(f));
     const kept = [...(trigger.kept_firings ?? []), ...gone.filter((f) => f.by === "manual" || f.by === "webhook")].filter((f) => this.inDay(f)).slice(-KEPT_FIRINGS);
     if (kept.length) trigger.kept_firings = kept;
     else delete trigger.kept_firings;
+  }
+
+  /** A new firing's room: refused (429, retryable, nothing written) while the trigger holds DUE_KEPT firings due. */
+  private roomFor(trigger: Trigger): void {
+    if (dueOf(trigger) < DUE_KEPT) return;
+    this.deps.say({ condition: "trigger_firings_full", trigger: trigger.id, due: DUE_KEPT });
+    throw new ApiError("rate_limited", `${DUE_KEPT} firings are still due for this trigger, waiting on its run; send it again later.`, { retry_after_ms: FULL_RETRY_S * 1000, details: { due: DUE_KEPT } }, { "retry-after": String(FULL_RETRY_S) });
   }
 
   /** The firing `key` names, in the history or kept for its key's day after it left. */
@@ -788,17 +876,18 @@ export class Triggers {
     if (soonest !== Infinity) this.timer = this.clock.arm(() => this.tick(), Math.max(0, soonest - this.clock.now()));
   }
 
-  /** When a due firing is driven next: at its retry, or soon after a write of it failed; one with neither is driven by
-   *  whatever recorded it. */
+  /** When a due firing is driven next: after the write retry's wait when its write or its drive failed (that wait wins
+   *  over a retry time that may have passed), else at its retry; one with neither is driven by whatever recorded it. */
   private dueAt(firing: Firing): number {
-    return Math.min(firing.retry_at ? Date.parse(firing.retry_at) : Infinity, this.rewrite.get(firing.key) ?? Infinity);
+    return this.rewrite.get(firing.key) ?? (firing.retry_at ? Date.parse(firing.retry_at) : Infinity);
   }
 
   /** `change` applied and written whole, or, when the write fails, undone and thrown. Each change, a signed request's
    *  firing included, copies and rewrites the whole file and syncs it: one writer (server.lock), and a bounded file. A
    *  firing is about 170 bytes of JSON, a due webhook firing's payload at most 16 KiB more, and a trigger keeps at most
    *  HISTORY_KEPT (200) in its history and KEPT_FIRINGS (1,000) past it: about 230 KiB a trigger at its fullest, which
-   *  measured about 3 ms a write (copy, JSON and fsync) on an SSD. */
+   *  measured about 3 ms a write (copy, JSON and fsync) on an SSD. Its history runs past HISTORY_KEPT by at most
+   *  UNTOLD_KEPT (50) failures not yet told and DUE_KEPT (20) due firings, whose payloads add at most 320 KiB. */
   private commit<T>(change: () => T): T {
     if (this.closed) throw new ApiError("unavailable", "The server is stopping.");
     const before = structuredClone(this.triggers);
@@ -840,6 +929,12 @@ const DATE_MAX_MS = 8.64e15;
 
 function firingView(firing: Firing) {
   return { key: firing.key, by: firing.by, nominal_at: firing.nominal_at, status: firing.status, at: firing.at, run_id: firing.run_id ?? null, reason: firing.reason ?? null, error: firing.error ?? null, ...(firing.count !== undefined ? { count: firing.count } : {}), ...(firing.catch_up ? { catch_up: true } : {}), ...(firing.retry_at ? { attempts: firing.attempts ?? 0, retry_at: firing.retry_at } : {}) };
+}
+
+/** `target` with its input as a firing of a trigger named `name` would give it to its run: what create and PATCH check. */
+function given(name: string, source: Source | undefined, target: Target, now: number): Target {
+  const trigger = { name, source: source ?? { kind: "schedule", at: second(now) }, target } as Trigger;
+  return { ...target, input: inputOf(trigger, { key: "", by: "manual", nominal_at: second(now), status: "due", at: iso(now) }) };
 }
 
 /** The run's input: the trigger's, then a webhook's payload or a Slack message marked untrusted, then a line saying

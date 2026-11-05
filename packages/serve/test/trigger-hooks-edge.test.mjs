@@ -171,3 +171,53 @@ test(`a message a run already took (${harness}), its firing left due by a restar
   const { rows } = await follow(second.api, run.run_id, ["completed"]);
   assert.equal(rows.filter((row) => row.kind === "user_message").length, 2, "the message once");
 });
+
+const FAUX_WEB_HOLD = new URL("./fixtures/faux-web-hold.mjs", import.meta.url).pathname;
+
+/** A claude-agent run held on a fetch until `go` exists, and a message_run webhook trigger to it whose one event its
+ *  door has refused as busy (answers false: whenBusy reject): the firing is due, to be tried again. */
+async function refusedWhileBusy(api, baseUrl, go) {
+  await made(api, "held", { harness: "claude-agent", instructions: `Hold the answer until ${go}.`, tools: ["fetch_page"] });
+  const run = (await api("POST", "/agents/held/runs", { input: { content: "hi" }, max_cost_usd: 1 })).body;
+  await follow(api, run.run_id, ["working"], { deadlineMs: 30_000 });
+  const { id, secret } = (await api("POST", "/triggers", { name: "inbox", source: { kind: "webhook" }, target: { kind: "message_run", run_id: run.run_id, input: { content: "A new event came in." } } })).body;
+  const body = '{"ticket":8}';
+  assert.equal((await call(port(baseUrl), { method: "POST", path: `/v2/hooks/${id}`, headers: signed(secret, body), body })).status, 202);
+  for (const end = Date.now() + 30_000; ; await new Promise((resolve) => setTimeout(resolve, 50))) {
+    const [firing] = (await api("GET", `/triggers/${id}/firings`)).body.firings;
+    if (firing?.status === "due" && firing.retry_at && /working/.test(firing.reason ?? "")) return { run, id };
+    assert.ok(Date.now() < end, JSON.stringify(firing));
+  }
+}
+
+const userMessages = (rows) => rows.filter((row) => row.kind === "user_message").length;
+
+// A harness's door (claude-agent here; codex and opencode take the same door) refuses a firing's message while a turn
+// works. The refusal is not the request's outcome: the retry after the turn ends reaches the run.
+test("a busy claude-agent run refuses a firing's message and keeps no refusal: once its turn ends, the retried firing's message reaches it, once", { timeout: 180_000 }, async (t) => {
+  withEnv(t, SEAL);
+  const { api, baseUrl } = await serve(t, { fauxHarness: FAUX_HARNESS, fauxWeb: FAUX_WEB_HOLD });
+  const go = join(await scratch(t), "go");
+  const { run, id } = await refusedWhileBusy(api, baseUrl, go);
+  await writeFile(go, "");
+  const [sent] = await firings(api, id, 1);
+  assert.deepEqual([sent.status, sent.run_id, sent.error], ["sent", run.run_id, null], JSON.stringify(sent));
+  const { rows } = await follow(api, run.run_id, ["completed"], { deadlineMs: 55_000 });
+  assert.equal(userMessages(rows), 2, "its message, once, after the turn it waited for");
+  assert.ok(rows.some((row) => row.summary === "Answer 2."), "and answered");
+});
+
+test("a server that stops after a busy claude-agent run refused a firing's message sends it on its next start: a refusal is not a message the run took", { timeout: 240_000 }, async (t) => {
+  withEnv(t, SEAL);
+  const data = join(await scratch(t), "agents");
+  const go = join(await scratch(t), "go");
+  const first = await serve(t, { data, fauxHarness: FAUX_HARNESS, fauxWeb: FAUX_WEB_HOLD });
+  const { run, id } = await refusedWhileBusy(first.api, first.baseUrl, go);
+  await first.close();
+  await writeFile(go, "");
+  const second = await serve(t, { data, fauxHarness: FAUX_HARNESS, fauxWeb: FAUX_WEB_HOLD });
+  const [sent] = await firings(second.api, id, 1);
+  assert.deepEqual([sent.status, sent.run_id, sent.error], ["sent", run.run_id, null], JSON.stringify(sent));
+  const { rows } = await follow(second.api, run.run_id, ["completed"], { deadlineMs: 55_000 });
+  assert.equal(userMessages(rows), 2, "its message, once");
+});

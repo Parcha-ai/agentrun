@@ -195,7 +195,7 @@ test("a check never follows a redirect: a provider that answers 302 to another o
   }
 });
 
-const ROWS = { monid: "Monid", parallel: "Parallel", browserbase: "Browserbase", typesafe: "TypeSafe (Jev)", anthropic: "Anthropic", openai: "OpenAI", openrouter: "OpenRouter" };
+const ROWS = { monid: "Monid", parallel: "Parallel", browserbase: "Browserbase", kernel: "Kernel", typesafe: "TypeSafe (Jev)", anthropic: "Anthropic", openai: "OpenAI", openrouter: "OpenRouter" };
 
 test("each provider's check is one documented call that costs nothing, on the key, at the base this server sends that provider's calls to", async () => {
   const { KEY_CHECKS, checkKey } = await import("../dist/key-check.js");
@@ -205,6 +205,7 @@ test("each provider's check is one documented call that costs nothing, on the ke
     monid: ["POST", "https://api.monid.ai/v1/discover", { authorization: `Bearer ${key}` }],
     parallel: ["GET", "https://api.parallel.ai/v1/monitors?limit=1", { "x-api-key": key }],
     browserbase: ["GET", "https://api.browserbase.com/v1/projects", { "x-bb-api-key": key }],
+    kernel: ["GET", "https://api.onkernel.com/browsers?limit=1", { authorization: `Bearer ${key}` }],
     typesafe: ["GET", "https://api.typesafe.ai/v1/models", { authorization: `Bearer ${key}` }],
     anthropic: ["GET", "https://api.anthropic.com/v1/models?limit=1", { "x-api-key": key, "anthropic-version": "2023-06-01" }],
     openrouter: ["GET", "https://openrouter.ai/api/v1/key", { authorization: `Bearer ${key}` }],

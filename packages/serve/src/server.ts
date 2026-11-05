@@ -28,6 +28,7 @@ import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, type HarnessCapability, harnessOffer
 import { healthOf, hostMemory, maxRunsOf, MIN_FREE_MIB, runsThatFit } from "./host.js";
 import { IMPORT_ASKED } from "./import.js";
 import type { ImportAnswer, ImportTask } from "./import-worker.js";
+import type { MessageOrigin } from "@parcha/pi-durable-agent/timeline";
 import { gradeModelOf, learningBudgetOf, type LearningMode, learningOf } from "./learning.js";
 import { agentLearning, learningLog, learningNotes, noteBody, readNote, runDiff, runLearning, secretsShown, sendNote, writeNote } from "./learning-routes.js";
 import { answerLlms, MCP_PATH, mcpEndpoint } from "./mcp.js";
@@ -48,16 +49,17 @@ import { metersIn } from "./cap.js";
 import { blockersOf, CODE_NODES_ENV, issueOf, type RevisionShape } from "./runnable.js";
 import { hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from "./secrets.js";
 import { redactedOutput } from "./key-refusal.js";
-import { analyticsFilter, analyticsView, statsView } from "./stats.js";
+import { analyticsFilter, analyticsView, pendingOf, statsView } from "./stats.js";
 import { outcomes } from "./usage.js";
 import { keyOf, SEAL_KEY_ENV, sealKeyOf, TOOL_FIELDS, ToolKeys } from "./tool-keys.js";
+import { SIGN_INS_DIR, SignIns, vendorsOver } from "./sign-ins.js";
 import { MCP_AUTH_TYPES, McpServers } from "./mcp-servers.js";
 import { type RunNotice, WEBHOOK_EVENTS, Webhooks } from "./webhooks.js";
 import { NO_SLACK_SECRET, Slack, SLACK_TOLERANCE_S, slackMessageOf, slackRefusal } from "./slack.js";
 import { HOOK_TOLERANCE_S, hookHeadersRefusal, hookRefusal, TriggerSecrets } from "./trigger-secrets.js";
 import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, OVERLAP, PAYLOAD_KEPT_BYTES, type RunTrigger, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, ID, IDEMPOTENCY_TTL_S, inputIssues, isObject, type Json, stable, unknownFields } from "./validate.js";
-import { agentTools, settingsIssues, ToolSettings, type ToolSettingsMap, withDefaults } from "./tool-plane.js";
+import { agentTools, browserKeyRow, settingsIssues, ToolSettings, type ToolSettingsMap, withDefaults } from "./tool-plane.js";
 import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, Uploads, UPLOADS_DIR } from "./uploads.js";
 import { INLINE_TYPES, openWorkFile, removeWorkFile, typeOf, WALK_DEPTH, walkWork, WorkRefused, writesHeld, writeWorkFile } from "./workspace.js";
 import { markRunning, markStopping, type ServerLock, takeServerLockAfterStop } from "./server-lock.js";
@@ -132,8 +134,11 @@ export type ServeOptions = {
   /** A faux model module (no key, no network): see the README. */
   faux?: string;
   /** With `faux` only: a module whose default export gives the `browser` tool's `{ provider, driver }` (the tests' fake
-   *  backend), in place of Browserbase's. */
+   *  backend), in place of Browserbase's or Kernel's. */
   fauxBrowser?: string;
+  /** With `faux` only: a module whose default export is the fetch the check of a Kernel key goes through (the tests'
+   *  fake), in place of Kernel's API. */
+  fauxKernel?: string;
   /** With `faux` only: a module whose default export gives `fetch_page` its `{ lookup, fetchImpl }` (the tests' fake
    *  network), in place of the system's resolver and undici. */
   fauxWeb?: string;
@@ -200,6 +205,9 @@ export type ServeOptions = {
   beforeReopenLaunch?: (runId: string) => Promise<void> | void;
   /** A test's seam: awaited by a message before it goes to the run's door, so a test can act while it is in flight. */
   beforeSubmit?: (runId: string, content: string) => Promise<void> | void;
+  /** A test's seam: who wrote a message sent to a run through its messages route (`origin`, as a raised cap's follow-up
+   *  carries it), so a test sends a server-written message down the path a person's message takes. */
+  messageOrigin?: (runId: string, content: string) => MessageOrigin | undefined;
   /** How long a request waits for a run's door, its process coming up or a settle in progress (default 45 s). */
   readyTimeoutMs?: number;
   /** How long a run's end-of-run turn may take before it is aborted and the run finishes without it (default 5 min). */
@@ -292,6 +300,7 @@ export const ROUTES: readonly Route[] = [
   { method: "POST", pattern: /^\/agents\/([^/]+)\/current$/, name: "setCurrent" },
   { method: "POST", pattern: /^\/agents\/([^/]+)\/archive$/, name: "archiveAgent" },
   { method: "POST", pattern: /^\/agents\/([^/]+)\/unarchive$/, name: "unarchiveAgent" },
+  { method: "DELETE", pattern: /^\/agents\/([^/]+)\/sign-ins\/([^/]+)$/, name: "forgetSignIn" },
   { method: "POST", pattern: /^\/agents\/([^/]+)\/runs$/, name: "createRun" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/runs$/, name: "listRuns" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/home$/, name: "exportHome", capability: "home.export" },
@@ -369,8 +378,8 @@ export const ROUTES: readonly Route[] = [
 ];
 
 /** Where agent `agentId`'s host-owned path is read on this server: its route, when ROUTES has one (the learning API, for
- *  learning/). */
-const ownedReadAt = (agentId: string): OwnedReadAt => (owned) => (ROUTES.some((r) => r.method === "GET" && r.pattern.test(`/agents/${agentId}/${owned}`)) ? `/v2/agents/${agentId}/${owned}` : undefined);
+ *  learning/); sign-ins/ only as the agent's `sign_ins`, never a pointer. */
+const ownedReadAt = (agentId: string): OwnedReadAt => (owned) => (owned === SIGN_INS_DIR ? `/v2/agents/${agentId}` : ROUTES.some((r) => r.method === "GET" && r.pattern.test(`/agents/${agentId}/${owned}`)) ? `/v2/agents/${agentId}/${owned}` : undefined);
 
 /** Whether the request to `path` (under /v2) is a PUT of a route marked `raw`. */
 export const takesBytes = (method: string | undefined, path: string): boolean => (method === "PUT" || method === "POST") && ROUTES.some((r) => r.raw === true && r.method === method && r.pattern.test(path));
@@ -452,7 +461,10 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
   const models = { ...modelSource(env), ready: needs === null, needs };
   // Both limits apply: the cap on the count, and the memory each run reserves (host.ts).
   const memory = hostMemory();
-  const tools = toolsView(env, toolSettings, noBoxReason(boxes), refused).map((tool) => (keyOf(tool.name) ? { ...tool, key: keyOf(tool.name) } : tool));
+  // The browser's key is its vendor's row: Kernel's where Kernel is picked or resolved (tool-plane.ts browserKeyRow).
+  const keyFor = (tool: { name: string; provider?: string; resolves?: Record<string, string> }) => (tool.name === "browser" ? browserKeyRow(tool.provider, tool.resolves?.[DEFAULT_HARNESS]) : keyOf(tool.name));
+  const tools = toolsView(env, toolSettings, noBoxReason(boxes), refused).map((tool) => (keyFor(tool) ? { ...tool, key: keyFor(tool) } : tool));
+  const browser = tools.find((tool) => tool.name === "browser");
   return {
     backend: "local",
     contract: CONTRACT,
@@ -498,15 +510,18 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
       timeline: { long_poll: true, sse: true, live_rows: true, live_workflow_rows: false },
       files: { upload: true, read: true, range: false, during_run: true },
       quotes: false,
-      usage: { basis: "estimate", meters: ["tokens", "tools", "learning"] },
+      usage: { basis: "estimate", meters: ["tokens", "tools", "browser_time", "learning"] },
       efforts: [...EFFORTS],
       thinking: [...THINKING_LEVELS],
-      /** The browser a run's `browser` tool drives: Browserbase's when the tool is available here (tools[]), else none. */
-      browser: tools.some((tool) => tool.name === "browser" && tool.available) ? "browserbase" : "none",
+      /** The browser a run's `browser` tool drives: the vendor it resolves to under the server's settings when the tool is
+       *  available here (tools[]), Browserbase's or Kernel's, else none. */
+      browser: browser?.available ? ((browser as { resolves?: Record<string, string> }).resolves?.[DEFAULT_HARNESS] === "kernel" ? "kernel" : "browserbase") : "none",
       /** A tool setting's `permission` (definition.tool_settings, /v2/settings/tools): false until the tool gate lands,
        *  and a save that names one is refused. */
       tool_permissions: false,
-      sign_ins: false,
+      /** An agent's browser stays signed in between its runs (sign-ins.ts): with a seal key to keep each pointer under, and a
+       *  browser vendor here (Browserbase's or Kernel's; local Chrome keeps none). */
+      sign_ins: sealKeyOf(env[SEAL_KEY_ENV]) !== undefined && tools.some((tool) => tool.name === "browser" && tool.available),
       vault: false,
       query: false,
       /** GET, PUT and DELETE /settings/tool-keys: a tool's key saved by name, kept sealed under the launcher's seal key
@@ -638,7 +653,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const toolKeys = new ToolKeys(data, withSecrets(base, "own"), (fields) => (log ? log(logLine("tool_keys", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("tool_keys", fields)}\n`)));
   // A key's check as it is saved (key-check.ts) goes to its provider; under faux only to the tests' fake for that provider,
   // the one its runs are given (monid, Parallel, TypeSafe's Jev), never to the network: one with no fake is not checked.
-  const fakes: Record<string, string | undefined> = { monid: options.fauxMonid, parallel: options.fauxParallel, typesafe: options.fauxJev, browserbase: options.fauxBrowserbase };
+  const fakes: Record<string, string | undefined> = { monid: options.fauxMonid, parallel: options.fauxParallel, typesafe: options.fauxJev, browserbase: options.fauxBrowserbase, kernel: options.fauxKernel };
   const checkFetch = async (id: string): Promise<typeof fetch | undefined> => {
     if (!options.faux) return fetch;
     const fake = fakes[id];
@@ -750,6 +765,9 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const openapi = openapiDocument((operationId) => ROUTES.find((r) => r.name === operationId)?.capability);
   const agents = new Agents(data);
   triggerSecrets = new TriggerSecrets(data, env, (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`)));
+  // Each agent's saved sign-ins (sign-ins.ts), under the seal key the tool keys are kept under: its vendor's calls on the
+  // server's keys (under faux, the vendor's fake alone), and a lease held while the run it names has not ended.
+  const signIns = new SignIns(data, sealKeyOf(withSecrets(base, "own")[SEAL_KEY_ENV]), vendorsOver(() => env, checkFetch), async (runId) => (await agents.request(() => agents.store.readRun(runId)))?.state === "running");
   const webhooks = new Webhooks(data, env, (fields) => (log ? log(logLine("webhook", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("webhook", fields)}\n`)), options.webhookRetryMs);
   stops.push(() => webhooks.close());
   slack = new Slack(data, env, (fields) => (log ? log(logLine("slack", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("slack", fields)}\n`)), options.slackApiUrl, options.webhookRetryMs);
@@ -771,7 +789,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   if (swept > 0) log?.(logLine("uploads_swept", { removed: swept }));
   const documents = options.documents ?? process.env[DOCUMENTS_ENV];
   if (documents !== undefined && !(await stat(documents).then((info) => info.isDirectory(), () => false))) throw new Error(`the documents directory ${documents} is not a directory`);
-  const runs = new Runs({ dockerAllow: boxNetwork.allow, agents, token, storedKeys, doorTokenFile, doorToken, learning, learningBudget, ...(documents ? { documents: resolve(documents) } : {}), fauxEnv: fauxEnvOf(options), toolSettings: () => settings.get(), ...(runBoxes ? { runBoxes } : {}), ...(remoteBoxes ? { remoteBoxes } : {}), ...(remoteBoxes && daytonaApi(env) ? { remoteApi: daytonaApi(env)! } : {}), ...(remoteBoxes ? { boxAllow, onNoBoxList } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(options.reflectTimeoutMs ? { reflectTimeoutMs: options.reflectTimeoutMs } : {}), ...(options.gradeTimeoutMs ? { gradeTimeoutMs: options.gradeTimeoutMs } : {}), ...(options.gradeModel ? { gradeModel: options.gradeModel } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}), notify: (event, run, marker) => (tellSlack(event, run, marker), webhooks.emit(event, run, marker)), ownSecrets: () => triggerSecrets?.values() ?? [] });
+  const runs = new Runs({ dockerAllow: boxNetwork.allow, agents, token, storedKeys, doorTokenFile, doorToken, learning, learningBudget, ...(documents ? { documents: resolve(documents) } : {}), fauxEnv: fauxEnvOf(options), toolSettings: () => settings.get(), ...(runBoxes ? { runBoxes } : {}), ...(remoteBoxes ? { remoteBoxes } : {}), ...(remoteBoxes && daytonaApi(env) ? { remoteApi: daytonaApi(env)! } : {}), ...(remoteBoxes ? { boxAllow, onNoBoxList } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(options.reflectTimeoutMs ? { reflectTimeoutMs: options.reflectTimeoutMs } : {}), ...(options.gradeTimeoutMs ? { gradeTimeoutMs: options.gradeTimeoutMs } : {}), ...(options.gradeModel ? { gradeModel: options.gradeModel } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}), notify: (event, run, marker) => (tellSlack(event, run, marker), webhooks.emit(event, run, marker)), ownSecrets: () => triggerSecrets?.values() ?? [], signIns });
   const daytona = daytonaApi(env);
   const relay = remoteBoxes && daytona ? await startBoxRelay({ root: data, tokenOf: (id) => runs.relayToken(id), ...daytona, serves: (id) => runs.servesBox(id), ensure: (id) => runs.ensureBox(id) }) : undefined;
   if (relay) stops.push(() => relay.close());
@@ -779,6 +797,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   if (options.beforeAbort) runs.beforeAbort = options.beforeAbort;
   if (options.beforeReopenLaunch) runs.beforeReopenLaunch = options.beforeReopenLaunch;
   if (options.beforeSubmit) runs.beforeSubmit = options.beforeSubmit;
+  if (options.messageOrigin) runs.messageOrigin = options.messageOrigin;
   // Answered keys are kept in the data directory for the retention capabilities state, and written before the answer
   // is sent, so a client that retries after a restart gets the first answer back.
   type Kept = { fingerprint: string; at: number; answer?: { status: number; body: unknown; headers: Record<string, string> } };
@@ -801,9 +820,9 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   // is launched: each launch hands over what is saved then. One server in a process reads them: the last started.
   await probe("start");
   // Under faux, a key the server starts with is checked only against a check's own fake (fauxBrowserbase,
-  // fauxMonidCheck): the fakes the runs use (monid, Parallel, Jev) see the runs' calls alone, and a key with no check fake
+  // fauxMonidCheck, fauxKernel): the fakes the runs use (monid, Parallel, Jev) see the runs' calls alone, and a key with no check fake
   // is not checked.
-  const checkFakes: Record<string, string | undefined> = { browserbase: options.fauxBrowserbase, monid: options.fauxMonidCheck };
+  const checkFakes: Record<string, string | undefined> = { browserbase: options.fauxBrowserbase, monid: options.fauxMonidCheck, kernel: options.fauxKernel };
   const startFetch = async (id: string): Promise<typeof fetch | null> => {
     if (!options.faux) return fetch;
     const fake = checkFakes[id];
@@ -1355,7 +1374,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
 
   // Each ended run's meters, from its store (metersIn): kept, as its store no longer changes, keyed by its end, so a run
   // opened again and ended again is read again. A store that cannot be read leaves it all tokens.
-  const endedMeters = new Map<string, { tools: number | null; tokens: number | null }>();
+  const endedMeters = new Map<string, ReturnType<typeof metersIn>>();
   const metersOf = (row: { id: string; endedAt?: string | null }) => {
     const key = `${row.id} ${row.endedAt}`;
     let meters = endedMeters.get(key);
@@ -1363,7 +1382,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       try {
         meters = metersIn(agents.store.runStorePath(row.id));
       } catch {
-        meters = { tools: 0, tokens: null };
+        meters = { tools: 0, tokens: null, browser: { usd: 0, seconds: 0 }, others: 0 };
       }
       endedMeters.set(key, meters);
     }
@@ -1381,6 +1400,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     if (!["meter", "agent", "key", "day", "region"].includes(group)) throw new ApiError("bad_request", "group_by is meter, agent, key, day or region");
     const lines = new Map<string, { usd: number; unpriced: number }>();
     const total = { usd: 0, unpriced: 0 };
+    // The browser_time line's seconds: its ended runs' (their stores keep each charge's), none once a live run is in it.
+    let browserSeconds: number | null = 0;
     // A cost that is unknown adds no dollars, so no sum turns unknown; it is counted as unpriced instead, so it never
     // passes as $0.
     const add = (key: string, usd: number | null) => {
@@ -1398,12 +1419,16 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       const live = row.state === "running" ? await runs.get(row.id) : null;
       const usd = live ? runs.cost(live).usd : (row.costUsd ?? null);
       const key = group === "agent" ? row.agent : group === "day" ? row.startedAt.slice(0, 10) : group === "meter" ? "tokens" : "local";
-      // By meter, what a run's paid tools charged (monid's) is `tools`, the rest `tokens`, both from the same records: a
-      // live run's rows (a call still marked is no charge), else its store as it ended (a call a crash cut makes `tools`
-      // unknown, never `tokens`). An unknown meter counts the run as unpriced on it.
-      const meters = group !== "meter" || usd === 0 ? undefined : live ? { tools: toolCostOf(live.rows), tokens: null } : metersOf(row);
+      // By meter, what a run's paid tools charged (monid's) is `tools`, its browser session time `browser_time`, the rest
+      // `tokens`, all from the same records: a live run's rows (a call still marked is no charge), else its store as it
+      // ended (a call a crash cut makes `tools` unknown, never `tokens`). An unknown meter counts the run as unpriced on it.
+      const meters = group !== "meter" || usd === 0 ? undefined : live ? { tools: toolCostOf(live.rows), tokens: null, browser: { usd: toolCostOf(live.rows, "browser"), seconds: null }, others: toolCostOf(live.rows.filter((r) => r.tool_name !== "browser")) } : metersOf(row);
       const tokens = meters && (usd !== null && meters.tools !== null ? usd - meters.tools : usd === null && meters.tools === null ? meters.tokens : null);
-      const parts: [string, number | null][] = !meters ? [[key, usd]] : [[key, tokens ?? null], ...(meters.tools !== 0 ? [["tools", meters.tools] as [string, number | null]] : [])];
+      // Each apart, an unknown one unknown (unpriced on its own line), never $0 nor the other's.
+      const browser = meters ? meters.browser.usd : 0;
+      const tools = meters?.others;
+      const parts: [string, number | null][] = !meters ? [[key, usd]] : [[key, tokens ?? null], ...(tools !== 0 ? [["tools", tools ?? null] as [string, number | null]] : []), ...(browser !== 0 ? [["browser_time", browser] as [string, number | null]] : [])];
+      if (meters && browser !== 0) browserSeconds = browserSeconds === null || meters.browser.seconds === null ? null : browserSeconds + meters.browser.seconds;
       // A run whose cost is unknown adds no dollars, so no sum turns unknown; it is counted as unpriced instead, so it
       // never passes as $0.
       for (const [name, part] of parts) {
@@ -1422,7 +1447,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     const round = (v: number) => Math.round(v * 1e6) / 1e6;
     return {
       from: new Date(from).toISOString(), to: new Date(to).toISOString(), currency: "USD", basis: "estimate", group_by: group, total_usd: round(total.usd), unpriced_runs: total.unpriced,
-      lines: [...lines].map(([key, line]) => ({ group: key, ...(group === "meter" ? { meter: key } : {}), usd: round(line.usd), unpriced_runs: line.unpriced })),
+      lines: [...lines].map(([key, line]) => ({ group: key, ...(group === "meter" ? { meter: key } : {}), ...(key === "browser_time" && group === "meter" && browserSeconds !== null ? { quantity: round(browserSeconds), unit: "second" } : {}), usd: round(line.usd), unpriced_runs: line.unpriced })),
       account: null,
     };
   }
@@ -1558,7 +1583,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         const answer = await idempotent(req, "/agents", body, async () => {
           let warnings: InputIssue[] = [];
           const entry = await agents.create(checkDefinitionBody(body), async (revision) => void (warnings = await saveable(revision)));
-          return { status: 201, body: { ...agentView(entry), warnings }, headers: { location: `/v2/agents/${entry.agent.id}`, etag: etagOf(entry) } };
+          return { status: 201, body: { ...agentView(entry, await signIns.view(entry.agent.id)), warnings }, headers: { location: `/v2/agents/${entry.agent.id}`, etag: etagOf(entry) } };
         });
         return send(res, answer.status, answer.body, answer.headers);
       }
@@ -1567,13 +1592,13 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         const offset = cursorOf(url.searchParams.get("cursor"));
         const archived = archivedParam(url);
         const all = (await agents.list()).filter((entry) => Boolean(entry.agent.archivedAt) === archived);
-        return send(res, 200, { agents: all.slice(offset, offset + limit).map((entry) => agentView(entry)), next_cursor: nextCursor(offset + limit, all.length) });
+        return send(res, 200, { agents: await Promise.all(all.slice(offset, offset + limit).map(async (entry) => agentView(entry, await signIns.view(entry.agent.id)))), next_cursor: nextCursor(offset + limit, all.length) });
       }
       case "getAgent": {
         const entry = await needAgent(id);
         // The tools its current revision grants, as capabilities list them, each with its provider for this agent.
         const tools = entry.revision ? agentTools(env, settings.get(), await toolingOf(entry.revision), caps.tools.map((tool) => tool.name)) : [];
-        return send(res, 200, { ...agentView(entry), tools }, { etag: etagOf(entry) });
+        return send(res, 200, { ...agentView(entry, await signIns.view(entry.agent.id)), tools }, { etag: etagOf(entry) });
       }
       case "updateDefinition": {
         const entry = await needAgent(id);
@@ -1593,7 +1618,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         let warnings: InputIssue[] = [];
         const check = async (revision: NewRevision) => void (warnings = await saveable(revision));
         const edited = await agents.commit(entry, checkDefinitionBody(contract ? { definition: body } : body, { creating: false }), { check, contract, ...(match === undefined ? {} : { ifCurrent: entry.revision?.id ?? null }) });
-        return send(res, 200, { ...agentView(edited), warnings }, { etag: etagOf(edited) });
+        return send(res, 200, { ...agentView(edited, await signIns.view(edited.agent.id)), warnings }, { etag: etagOf(edited) });
       }
       case "listRevisions": {
         const entry = await needAgent(id);
@@ -1612,7 +1637,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         if (typeof revision !== "string" || !ID.test(revision)) throw invalid([{ field: "revision", reason: revision === undefined ? "missing" : "wrong_type", message: "revision is a revision id of this agent" }]);
         if (!(await agents.revision(id, revision))) throw invalid([{ field: "revision", reason: "not_an_option", message: `${revision} is not a revision of the agent ${id}` }]);
         const moved = await agents.setCurrent(entry, revision);
-        return send(res, 200, agentView(moved), { etag: etagOf(moved) });
+        return send(res, 200, agentView(moved, await signIns.view(moved.agent.id)), { etag: etagOf(moved) });
       }
       case "archiveAgent":
       case "unarchiveAgent": {
@@ -1620,7 +1645,17 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         await agents.setArchived("agent", id, found.name === "archiveAgent");
         if (found.name === "archiveAgent") await runs.archived();
         const entry = await needAgent(id);
-        return send(res, 200, agentView(entry), { etag: etagOf(entry) });
+        return send(res, 200, agentView(entry, await signIns.view(entry.agent.id)), { etag: etagOf(entry) });
+      }
+      case "forgetSignIn": {
+        await needAgent(id);
+        let key: string;
+        try {
+          key = decodeURIComponent(second!);
+        } catch {
+          throw new ApiError("bad_request", "the sign-in's key is not a valid path segment");
+        }
+        return send(res, 200, await signIns.forget(id, key));
       }
       case "createRun": {
         const answer = await createRun(req, id);
@@ -1790,9 +1825,15 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         return send(res, 200, await usage(url));
       case "getStats": {
         const filter = analyticsFilter(url);
-        const [stats, analytics, rows] = await agents.request(() => [agents.store.stats(), agents.store.analytics(filter), agents.store.listRuns()] as const);
+        // A run this server holds as ended whose end the store does not have yet is pending: counted as it ended, its
+        // metrics left out until the store has them (stats.ts pendingOf).
+        const [stats, analytics, rows, pending] = await agents.request(() => {
+          const stats = agents.store.stats();
+          const pending = pendingOf(stats.running, runs);
+          return [stats, agents.store.analytics({ ...filter, pending }), agents.store.listRuns(), pending] as const;
+        });
         // How the runs that tried to learn fared: a held run's learning from memory, any other's end from the ledger.
-        return send(res, 200, { ...statsView(stats, runs), analytics: analyticsView(analytics, filter), learning: await runs.learning.counts(rows, filter) });
+        return send(res, 200, { ...statsView(stats, runs, pending), analytics: analyticsView(analytics, filter), learning: await runs.learning.counts(rows, filter) });
       }
       case "listToolKeys":
         // The offers the server holds, not capabilities': a model key's row names the harnesses its key would run too.
