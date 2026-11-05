@@ -2,6 +2,8 @@ const SK_KEY = /(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{20,}/;
 const SLACK_TOKEN = /xox[abposre]-[A-Za-z0-9-]{10,}|xapp-[A-Za-z0-9-]{10,}/;
 const GITHUB_TOKEN = /gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{20,}/;
 const JWT = /eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/;
+/** A Standard Webhooks signing secret: `whsec_` and base64, this server's or any other's. */
+const WEBHOOK_SECRET = /whsec_[A-Za-z0-9+/]{24,}={0,2}/;
 
 /** Text shaped like a secret, by kind. The same shapes the Pi learning loop's guard refuses. */
 const SHAPES: readonly (readonly [string, RegExp])[] = [
@@ -12,6 +14,7 @@ const SHAPES: readonly (readonly [string, RegExp])[] = [
   ["sk- key", SK_KEY],
   ["Slack token", SLACK_TOKEN],
   ["JWT", JWT],
+  ["webhook signing secret", WEBHOOK_SECRET],
   ["URL with a password", /:\/\/[^\s/?#@:]+:[^\s/?#@]*@/],
 ];
 
@@ -49,6 +52,7 @@ const RESUME = new Map<RegExp, (m: RegExpExecArray) => number>([
   [SLACK_TOKEN, toEnd],
   [GITHUB_TOKEN, (m) => (m[0].startsWith("github_pat_") ? toEnd(m) : m.index + 1)],
   [JWT, (m) => m.index + m[0].indexOf(".") + 1],
+  [WEBHOOK_SECRET, toEnd],
 ]);
 
 function places(text: string, form: string): Span[] {

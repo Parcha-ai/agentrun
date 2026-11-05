@@ -146,7 +146,7 @@ Over a cap is refused, never cut.
   characters), private use, line and paragraph separators and control characters other than tab and newline. An
   emoji's joiners and variation selectors, and the joiners some scripts need between letters, are text.
 - Text shaped like a secret: well-known key prefixes such as AWS, Google, GitHub, Slack and `sk-` keys, JSON web
-  tokens, URLs with a password, and PEM private-key headers. A value the host holds counts as written, as JSON writes
+  tokens, Standard Webhooks signing secrets (`whsec_`), URLs with a password, and PEM private-key headers. A value the host holds counts as written, as JSON writes
   it, percent or form encoded, in base64 or in hex. A skill's or a draft's folder name is read as its file's name is.
 - Every problem is `{ rule, path?, detail }`, printable as it is: its path and detail are cut of the host's values and
   of secret shapes, and a field over 4096 bytes prints whole as `[redacted]`, never scanned.

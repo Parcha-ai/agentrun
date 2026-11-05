@@ -523,7 +523,8 @@ export class Triggers {
       if (busy) return this.retry(triggerId, key, busy.retry);
       const now = this.find(triggerId, key);
       if (!now) return;
-      if (now.trigger.target.kind !== "start_run") return;
+      // The target as it is now: an edit during the overlap check may have made it a message.
+      if (now.trigger.target.kind === "message_run") return await this.send(triggerId, key);
       let started: { run_id: string };
       try {
         started = await this.deps.start(now.trigger.target, inputOf(now.trigger, now.firing), { id: triggerId, firing_key: key });
@@ -537,6 +538,8 @@ export class Triggers {
       if (this.closed) return;
       this.started(triggerId, key, started.run_id);
     } catch (error) {
+      // Left due, it is driven again soon (arm), never left for the next start.
+      this.rewrite.set(key, this.clock.now() + WRITE_RETRY_MS);
       this.deps.say({ condition: "trigger_firing_failed", trigger: triggerId, firing: key, error: (error as Error).message });
     } finally {
       this.driving.delete(key);
