@@ -180,6 +180,45 @@ test("prices by provider: Browserbase, Kernel and local Chrome, each overridden 
   assert.deepEqual([refused.booked, refused.backend.tally().creates], [[], 0]);
 });
 
+test("after a reopen, a kept session's down time is held once: its first call fits where its true exposure does; a session already billed is not held", async (t) => {
+  // 15 min down at Browserbase's price ($0.03), with $0.02 spent under a $0.10 cap: the kept session holds a stretch and its
+  // down time ($0.039), the call two stretches ($0.018); $0.077 fits. Holding the down time on the call too ($0.048) would not.
+  t.mock.timers.enable({ apis: ["Date"], now: T0 + 900_000 });
+  const cap = 0.1;
+  let spent = 0.02;
+  useSpend({ cap, spent: () => spent, add: (usd) => void (spent += usd) });
+  t.after(() => useSpend(undefined));
+  const base = paidHolds();
+  const releases = [];
+  const spend = browserSpend("browserbase", BROWSERBASE, 180, async (conversation) => void releases.push(conversation.id));
+  let listener;
+  spend.watch({ subscribeCommits: (fn) => (listener = fn) });
+  const docs = { Inventory: "inventory", Sessions: "sessions" };
+  const store = (final) => ({ snapshot: async (token) => (token === "inventory" ? { rows: { k: { tag: "ar-kept", conversationId: 1 } } } : { sessions: [{ tag: "ar-kept", spent: { chargedThrough: new Date(T0).toISOString(), ...(final ? { final: true } : {}) } }] }) });
+  // A session whose final charge landed before `kept` read it: nothing to hold, and nothing would ever drop the hold.
+  await spend.kept(store(true), docs, { kept: ["ar-kept"] }, undefined);
+  assert.equal(paidHolds(), base, "an already billed session is not held");
+  await spend.kept(store(false), docs, { kept: ["ar-kept"] }, undefined);
+  assert.ok(Math.abs(paidHolds() - base - 0.039) < 1e-9, `the kept session: a stretch and its down time, ${paidHolds() - base}`);
+  const held = [];
+  const tool = spend.capped({ name: "snapshot", execute: async () => {
+    held.push(spent + paidHolds() - base);
+    t.mock.timers.tick(3_000);
+    // Its charge at the call's end: the down time and the call's 3 s, booked once its commit is in.
+    const entries = [];
+    await spend.onCharge({ conversationId: 1, tag: "ar-kept", provider: "browserbase", at: new Date(Date.now()).toISOString(), seconds: 903, usd: 903 * 0.12 / 3600, final: false, state: "priced" }, { appendEntry: async (_, entry) => void entries.push(entry) }, { callId: "c1" });
+    listener({ seq: 1, changes: entries.map((value) => ({ type: "entry", value })) });
+    held.push(spent + paidHolds() - base);
+    return { content: [{ type: "text", text: "seen" }] };
+  } });
+  const out = await tool.execute({}, { conversationId: 1, callId: "c1", commit: async () => undefined }, undefined);
+  assert.ok(!JSON.stringify(out).includes("spend_cap_reached"), JSON.stringify(out));
+  assert.deepEqual(releases, [], "the kept session was not released");
+  assert.ok(Math.abs(held[0] - 0.077) < 1e-6, `spent and held as the call runs: ${held[0]}`);
+  for (const figure of [...held, spent + paidHolds() - base]) assert.ok(figure <= cap, `${figure} is over the cap of ${cap}`);
+  assert.ok(Math.abs(paidHolds() - base - 0.009) < 1e-9, "after its charge the session holds one stretch again");
+});
+
 // Last of this process's runs: its first process's reserve stays in this process's holds (a real one would be gone).
 test("capped, a session kept across a restart of the run's process is held from the reopen and released an idle window after it, its charge booked", { timeout: 60_000 }, async (t) => {
   const [{ BACKGROUND_CONTEXT: ctx }, { createModels }, faux, durable, { openNodeSqliteStorage }, { createBrowserExtension }, { FakeBackend, fakeDriver, fixturePage }] = await Promise.all([
