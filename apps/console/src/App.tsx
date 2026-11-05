@@ -23,7 +23,7 @@ import { type AuthMode, authMode, signInProblem, takeSetupCode } from "@/lib/aut
 import { allPages, type Capabilities, ClientError, createClient, type ImportOffer, type ImportState, problemOf, type RunsFilter } from "@/lib/client";
 import { createConnection } from "@/lib/connection";
 import { appendRuns, keeper, keepersByRun, sendOnce, uuid } from "@/lib/idempotency";
-import { hasOwnRun, mergeNeeds, type Needs, pollSettled, rerunBody } from "@/lib/needs";
+import { asksPerson, hasOwnRun, mergeNeeds, type Needs, pollSettled, rerunBody } from "@/lib/needs";
 import { placesOf } from "@/lib/place";
 import { type Problem, problem } from "@/lib/problem";
 import { type Template, templateHarness, tryTemplate } from "@/lib/templates";
@@ -329,7 +329,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
         setNeedsProblem(mergeNeeds(null, reads).problem);
         setNeeds((prev) => {
           const { needs: next } = mergeNeeds(prev, reads);
-          return { asking: next.asking.filter((r) => r.pending), failed: next.failed.filter((r) => Date.parse(r.ended_at ?? r.created_at) > day), live: next.live };
+          return { asking: next.asking.filter(asksPerson), failed: next.failed.filter((r) => Date.parse(r.ended_at ?? r.created_at) > day), live: next.live };
         });
       });
     // Never two reads at once: the next starts 10 s after the last has settled, so an older one can't land last.
@@ -424,6 +424,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
             <div className="min-h-0 flex-1">
               <MissionControl view={mission} error={missionError} onRetry={() => setMissionTry((n) => n + 1)}
                 scope={{ range: statsRange, onRange: setStatsRange, agent: statsAgent, onAgent: setStatsAgent, refreshing: missionReading && mission !== null }}
+                asking={needs ? needs.asking.length : null}
                 needsYou={needs && <NeedsYouStrip asking={needs.asking} failed={needs.failed} live={needs.live} problem={needsProblem} agentName={agentName} onAnswer={answer} onRunAgain={runAgain} onStop={stop} />}
                 startHere={ownRun === false ? <StartHere harnesses={editorCaps.harnesses} tools={editorCaps.tools} onTry={tryIt} imported={importedRuns}
                   keyCard={keyCardSavesModel} /> : undefined} />
