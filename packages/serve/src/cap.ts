@@ -786,15 +786,17 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
    *  it asks for), or why the cap refuses it. `simpleCall`: through streamSimple or completeSimple, whose thinking pi-ai
    *  turns into a budget or an effort; a direct call sends its maxTokens as is. */
   type Judged = { worst: number; stopped: Stopped; options?: Options };
-  const judge = (model: Model<Api>, context: Context, options: Options | undefined, simpleCall: boolean): Judged | { why: string; figures?: RefusalFigures } => {
+  const judge = (model: Model<Api>, context: Context, options: Options | undefined, simpleCall: boolean, turn: boolean): Judged | { why: string; figures?: RefusalFigures } => {
     if (unpriced.has(model.id)) return { why: noPrice(cap) };
     const ceiling = outputBound(model);
     if (ceiling === undefined) return { why: noCeiling(cap) };
     if (spent === null) return { why: unknownSpend(cap) };
     // A paid call the cap just refused for room: the turn's next request, the one after its result, is refused in its
     // words, and the run pauses there. A request after a message of the person's instead (a stop came first, and the
-    // person moved on) is a new turn's: the refusal is let go, and this request is judged as any other.
-    const paid = takePaidRefusal(own);
+    // person moved on) is a new turn's: the refusal is let go, and this request is judged as any other. Only the turn's
+    // own requests (stream, streamSimple) take it: a side request through the run's models (completeSimple: a
+    // compaction's summary, native web_search's own, request-start.ts) is judged as any other and leaves it for them.
+    const paid = turn ? takePaidRefusal(own) : undefined;
     if (paid && context.messages.at(-1)?.role === "toolResult") return { why: `${CAP_REFUSAL_CODE}${paid.words}`, figures: paid.figures };
     const parts = partsOf(model, context);
     if (parts === undefined) return { why: unmeasured(cap) };
@@ -893,7 +895,7 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
   const attemptsFor = (model: Model<Api>): Attempt[] | undefined => (unwatched(model.api) ? undefined : []);
   const stream = (send: (model: Model<Api>, context: Context, options?: Options) => AssistantMessageEventStream, simpleCall: boolean) =>
     (model: Model<Api>, context: Context, options?: Options): AssistantMessageEventStream => {
-      const judged = judge(model, context, options, simpleCall);
+      const judged = judge(model, context, options, simpleCall, true);
       if ("worst" in judged) {
         let events: AssistantMessageEventStream | undefined;
         const attempts = attemptsFor(model);
@@ -915,7 +917,7 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
     };
   const complete = (send: (model: Model<Api>, context: Context, options?: Options) => Promise<AssistantMessage>, simpleCall: boolean) =>
     (model: Model<Api>, context: Context, options?: Options): Promise<AssistantMessage> => {
-      const judged = judge(model, context, options, simpleCall);
+      const judged = judge(model, context, options, simpleCall, false);
       if (!("worst" in judged)) return Promise.resolve(refusal(model, judged.why));
       const attempts = attemptsFor(model);
       return admit(judged.worst, judged.stopped, () => send(model, context, carrying(judged.options ?? options, judged, attempts)), attempts);
