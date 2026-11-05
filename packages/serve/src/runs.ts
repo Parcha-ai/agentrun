@@ -1886,6 +1886,7 @@ export class Runs {
     } catch (error) {
       // A granted tool that cannot be pinned refuses the launch in words, rather than a run without the tool.
       run.error = { code: "run_failed", message: (error as Error).message, retryable: false };
+      run.finishing = "failed";
       void this.settle(run, 1, true);
       return;
     }

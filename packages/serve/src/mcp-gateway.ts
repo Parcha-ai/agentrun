@@ -106,16 +106,20 @@ export function mcpHeaderProblem(inputSchema: unknown): string | undefined {
   return undefined;
 }
 
-/** The pin of a run granted `names`: each MCP tool among them that its server's snapshot holds. Keyed by server name
+/** The pin of a run granted `names`: each MCP tool among them, as its server's snapshot holds it. Keyed by server name
  *  with no prototype, as every map of names here is: a server named `constructor` is a server like any other. A granted
- *  tool whose header declaration cannot be sent throws, naming it and why: the run is refused, never started without it. */
+ *  tool that cannot be pinned (its server no longer saved, the tool gone since a refresh, a header declaration it cannot
+ *  send) throws, naming it and why: the run is refused, never started without it. */
 export function mcpPinOf(names: readonly string[], source: McpServerSource): McpPin {
   const pin: McpPin = Object.create(null);
   for (const name of names) {
     const parsed = mcpNameOf(name);
     const saved = parsed && source.server(parsed.server);
     const tool = saved?.tools.find((t) => t.name === parsed!.tool);
-    if (!parsed || !saved || !tool) continue;
+    if (!parsed) continue;
+    // Gone since the run's check (deleted, or a refresh removed the tool): the run is refused, never started without it.
+    if (!saved) throw new Error(`The MCP tool ${name} cannot be pinned: the MCP server ${parsed.server} is no longer saved.`);
+    if (!tool) throw new Error(`The MCP tool ${name} cannot be pinned: ${parsed.tool} is no longer one of its tools since the last refresh.`);
     const declared = mcpHeaderProblem(tool.inputSchema);
     if (declared) throw new Error(`The MCP tool ${name} declares a header it cannot send: ${declared}.`);
     if (!Object.hasOwn(pin, parsed.server)) pin[parsed.server] = { url: saved.url, tools: [] };
