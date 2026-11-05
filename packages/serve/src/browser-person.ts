@@ -184,6 +184,8 @@ const TAKE_ENDED: Record<Exclude<HoldEnd, "answered">, string> = {
 };
 const ASK_ENDED: Record<AskOutcome, string> = { done: GIVEN_BACK, cancelled: "You cancelled the agent's hand-over", expired: "The agent's hand-over expired before you answered it" };
 
+/** A take-over's share of its session's person time (an ask's is `ask:<id>`). */
+const TAKE_USER = "take";
 /** A root entry of the run's: a timeline row's source. */
 type Note = (kind: string, data: Record<string, string>) => Promise<void>;
 
@@ -203,6 +205,47 @@ export function personHands(options: {
   const settled = new Map<string, AskOutcome>();
   let poll: NodeJS.Timeout | undefined;
   const note = (kind: string, data: Record<string, string>): Promise<void> => options.note(kind, data).catch(() => undefined);
+
+  /** The person's time on each session, held once under the cap for everyone who needs it there (a take-over, an ask), and
+   *  dropped when the last of them is over: a take then an ask, or an ask then a take, holds it once. `ready` settles when
+   *  the first hold is taken, or refused. */
+  type Ledger = { holds: Array<{ drop(): void }>; users: Set<string>; ready: Promise<{ refused: string } | undefined> };
+  const ledgers = new Map<string, Ledger>();
+  /** `user`'s share of session `tag`'s person time: held now when nobody holds it (`what` names it in the cap's words). */
+  const acquire = async (tag: string, user: string, what: string): Promise<{ refused: string } | undefined> => {
+    for (;;) {
+      const known = ledgers.get(tag);
+      if (known) {
+        const refused = await known.ready.catch(() => ({ refused: "the person's time could not be held" }));
+        if (refused) return refused;
+        // Let go while this one waited: held again from the start.
+        if (ledgers.get(tag) !== known) continue;
+        known.users.add(user);
+        return undefined;
+      }
+      const ledger: Ledger = { holds: [], users: new Set([user]), ready: Promise.resolve(undefined) };
+      ledger.ready = options.personTime(what, holdMs / 1000).then(
+        (hold) => {
+          if (!("refused" in hold)) return void ledger.holds.push(hold);
+          if (ledgers.get(tag) === ledger) ledgers.delete(tag);
+          return { refused: hold.refused };
+        },
+        (error: unknown) => {
+          if (ledgers.get(tag) === ledger) ledgers.delete(tag);
+          throw error;
+        },
+      );
+      ledgers.set(tag, ledger);
+      return ledger.ready;
+    }
+  };
+  /** `user` is done with session `tag`: the last one out drops what was held. */
+  const release = (tag: string, user: string): void => {
+    const ledger = ledgers.get(tag);
+    if (!ledger || !ledger.users.delete(user) || ledger.users.size) return;
+    ledgers.delete(tag);
+    for (const hold of ledger.holds) hold.drop();
+  };
 
   /** Ask `id`'s answer, once there is one (the person's, or `expired` once it is due, written here): its hold dropped, any
    *  take-over of its session ended, and its row written, once. */
@@ -231,16 +274,15 @@ export function personHands(options: {
     /** The live view's take: the person's time held, unless an ask open on the same session holds it already (its answer
      *  ends the take); refused in the cap's words when there is no room. */
     async take(tag: string): Promise<{ refused: string } | { end(why: HoldEnd): void }> {
-      const shared = [...open.values()].some((ask) => ask.tag === tag);
-      const hold = shared ? { drop() {} } : await options.personTime("taking over the browser", holdMs / 1000);
-      if ("refused" in hold) return hold;
+      const refused = await acquire(tag, TAKE_USER, "taking over the browser");
+      if (refused) return refused;
       void note(HOST_PHASE, { summary: TAKEN });
       let ended = false;
       return {
         end: (why) => {
           if (ended) return;
           ended = true;
-          hold.drop();
+          release(tag, TAKE_USER);
           // An answered ask writes its own row.
           if (why !== "answered") void note(HOST_PHASE, { summary: TAKE_ENDED[why] });
         },
@@ -262,8 +304,11 @@ export function personHands(options: {
           return { interactionId: id };
         }
         if (!TAG.test(ask.sessionTag)) return { refused: "the session's tag is not one this server takes" };
-        const hold = await options.personTime("handing the browser to you", holdMs / 1000);
-        if ("refused" in hold) return { refused: hold.refused };
+        // A take-over of the same session holds the person's time already: the ask shares it.
+        const user = `ask:${id}`;
+        const refused = await acquire(ask.sessionTag, user, "handing the browser to you");
+        if (refused) return refused;
+        const hold = { drop: () => release(ask.sessionTag, user) };
         const at = Date.now();
         const record: PendingAsk = { id, tag: ask.sessionTag, instruction: ask.instruction.slice(0, MAX_TEXT), completion_condition: ask.completionCondition.slice(0, MAX_TEXT), asked_at: new Date(at).toISOString(), expires_at: new Date(at + holdMs).toISOString() };
         try {
@@ -288,6 +333,8 @@ export function personHands(options: {
       poll = undefined;
       for (const ask of open.values()) ask.drop();
       open.clear();
+      for (const ledger of ledgers.values()) for (const hold of ledger.holds) hold.drop();
+      ledgers.clear();
     },
   };
 }

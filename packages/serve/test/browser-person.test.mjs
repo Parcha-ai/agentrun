@@ -40,3 +40,29 @@ test("a hand-back answers the newest ask still waiting: with two asks (two conve
   assert.deepEqual(answerAsk(root, "done"), { outcome: "done", first: false }, "with none waiting, the newest's answer");
   assert.deepEqual(answerAsk(root, "cancelled"), { outcome: "done", first: false });
 });
+
+test("the person's time on one session is held once: a take then an ask shares the take's hold (and an ask then a take the ask's), dropped once both are over", async (t) => {
+  const root = await scratch(t);
+  const { person, held } = hands(root);
+  t.after(() => person.close());
+  const tag = "ar-run-3-1";
+  const take = await person.take(tag);
+  assert.ok("end" in take);
+  const asked = await person.handoff.request(ask(3, tag));
+  assert.equal(held.taken, 1, "take, then ask: one hold");
+  take.end("given");
+  assert.equal(held.dropped, 0, "the ask still holds the person's time after the take ends");
+  assert.deepEqual(answerAsk(root, "done"), { outcome: "done", first: true });
+  assert.equal(await person.handoff.outcome(asked.interactionId), "done");
+  assert.equal(held.dropped, 1, "dropped once, with the ask");
+
+  const other = "ar-run-4-1";
+  const second = await person.handoff.request(ask(4, other));
+  const again = await person.take(other);
+  assert.equal(held.taken, 2, "ask, then take: one more hold, not two");
+  assert.deepEqual(answerAsk(root, "done"), { outcome: "done", first: true });
+  assert.equal(await person.handoff.outcome(second.interactionId), "done");
+  assert.equal(held.dropped, 1, "the take still holds it");
+  again.end("answered");
+  assert.equal(held.dropped, 2);
+});
