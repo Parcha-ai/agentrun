@@ -88,3 +88,26 @@ test("a trigger with no max_cost_usd of its own caps each run with the agent's d
   assert.match(third.error.message, /max_cost_usd/);
   assert.equal((await api("GET", "/agents/nightly/runs")).body.runs.length, 2, "no uncapped run");
 });
+
+test("a definition whose default cap would keep every default run from running is refused at save, with the reason a run would get: claude-agent's or codex's own search, picked, under a cap", { timeout: 120_000 }, async (t) => {
+  const { api } = await serve(t);
+  for (const harness of ["claude-agent", "codex"]) {
+    const native = { harness, tools: ["web_search"], tool_settings: { web_search: { provider: "native" } } };
+    // Uncapped, its own search runs: saved.
+    const plain = await api("POST", "/agents", agent(`native-${harness}`, native));
+    assert.equal(plain.status, 201, `${harness}: ${JSON.stringify(plain.body)}`);
+    // With a default cap, every run started without its own would be agent_not_runnable: refused, saying why.
+    const capped = await api("POST", "/agents", agent(`capped-${harness}`, { ...native, max_cost_usd: 0.5 }));
+    assert.deepEqual([capped.status, ...fields(capped)], [422, ["definition.tools[0]", "not_an_option"]], `${harness}: ${JSON.stringify(capped.body)}`);
+    assert.match(capped.body.error.fields[0].message, /under a spend cap/);
+    assert.match(capped.body.error.fields[0].fix, /max_cost_usd/);
+    // So is the edit that sets one, and an edit that picks it on an agent that keeps one (left out, it is kept).
+    const { version: _, ...definition } = (await api("GET", `/agents/native-${harness}`)).body.definition;
+    const setting = await api("PUT", `/agents/native-${harness}/definition`, { definition: { ...definition, max_cost_usd: 0.5 } });
+    assert.deepEqual([setting.status, ...fields(setting)], [422, ["definition.tools[0]", "not_an_option"]], `${harness}: ${JSON.stringify(setting.body)}`);
+    assert.equal((await api("POST", "/agents", agent(`auto-${harness}`, { harness, tools: ["web_search"], max_cost_usd: 0.5 }))).status, 201, `${harness}: auto works under a cap`);
+    const { version: __, ...auto } = (await api("GET", `/agents/auto-${harness}`)).body.definition;
+    const picking = await api("PUT", `/agents/auto-${harness}/definition`, { definition: { ...auto, max_cost_usd: undefined, tool_settings: { web_search: { provider: "native" } } } });
+    assert.deepEqual([picking.status, ...fields(picking)], [422, ["definition.tools[0]", "not_an_option"]], `${harness}: ${JSON.stringify(picking.body)}`);
+  }
+});
