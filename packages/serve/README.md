@@ -972,7 +972,8 @@ gets a `trigger.failed` message for it (`data: {trigger_id, name, firing_key, no
 trigger off (`disabled: {reason: "auto_paused"}`); a firing that starts its run resets the count, and so does turning
 it on again. `PATCH /v2/triggers/{id}` changes it, and
 `{enabled: false}` pauses it: the time it was off is skipped, not caught up. `POST /v2/triggers/{id}/fire` runs it now,
-once per `Idempotency-Key` (required). `GET /v2/triggers/{id}/firings` lists its last 200 firings.
+once per `Idempotency-Key` (required): the same key within `limits.idempotency_ttl_s` answers its firing, after the
+firing has left the history too, and later it is a new firing that a run the key started still answers. `GET /v2/triggers/{id}/firings` lists its last 200 firings.
 
 ## What it serves
 

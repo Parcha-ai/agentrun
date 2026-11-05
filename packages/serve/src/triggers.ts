@@ -4,7 +4,7 @@
 // store.sqlite, which runs open.
 // A firing starts exactly once. Its key is fixed by what it fires for: the trigger and its nominal time (a schedule), or
 // the trigger and the caller's Idempotency-Key (run now). One write records it `due` and moves the trigger's next time
-// on; a key already in the history is not recorded again. Then its run is started with the key as its origin, which
+// on; a key already in the history is not recorded again, nor a run now's key within its day after it left the history. Then its run is started with the key as its origin, which
 // the agent store keeps in the run's own insert, so a firing driven again after a restart finds its run and starts no
 // second one. While the trigger's last run is active (working, or waiting on a person), a firing is `skipped`, never
 // queued: a firing queued behind a run parked on a person would wait for as long as the person does.
@@ -20,7 +20,7 @@ import { Cron } from "croner";
 import { ApiError, type InputIssue, invalid } from "./errors.js";
 import { writeDurableSync } from "./files.js";
 import { EFFORTS } from "./model.js";
-import { ID, isObject, type Json, unknownFields } from "./validate.js";
+import { ID, IDEMPOTENCY_TTL_S, isObject, type Json, unknownFields } from "./validate.js";
 
 export const TRIGGERS_FILE = "triggers.json";
 /** The firings each trigger keeps, newest last; a firing still due is never dropped. */
@@ -80,9 +80,12 @@ type Firing = {
  *  as their defaults (settled). */
 type Trigger = {
   id: string; name: string; enabled: boolean; source: Schedule; target: Target; created_at: string; updated_at: string; next_at: string | null; firings: Firing[];
-  /** The run its last firing that started one started, kept here and not only in the history, which drops its oldest
-   *  firings: overlap reads it. */
+  /** The latest run its firings started, kept here and not only in the history, which drops its oldest firings: overlap
+   *  reads it. */
   last_run_id?: string;
+  /** Run now's firings that left the history, kept for their key's day (IDEMPOTENCY_TTL_S) so a retry answers its
+   *  firing, never fires again. */
+  run_now_kept?: Firing[];
   catchup_window_s?: number; failures_in_a_row?: number;
   /** Why it is off, when a failure streak turned it off; null once it is on again. */
   disabled?: { at: string; reason: "auto_paused" } | null;
@@ -229,7 +232,8 @@ function wellFormed(t: unknown): t is Trigger {
   if (!isObject(source) || source.kind !== "schedule") return false;
   const timed = typeof source.cron === "string" ? typeof source.timezone === "string" : source.at !== undefined ? instantOf(source.at) !== undefined : Number.isSafeInteger(source.every_s) && instantOf(source.start_at) !== undefined;
   if (!timed || !isObject(target) || target.kind !== "start_run" || typeof target.agent_id !== "string" || !isObject(target.input) || typeof target.max_cost_usd !== "number") return false;
-  return Array.isArray(t.firings) && t.firings.every((f) => isObject(f) && typeof f.key === "string" && (FIRING_STATUSES as readonly unknown[]).includes(f.status) && (f.by === "schedule" || f.by === "manual") && instantOf(f.nominal_at) !== undefined && typeof f.at === "string");
+  const firing = (f: unknown) => isObject(f) && typeof f.key === "string" && (FIRING_STATUSES as readonly unknown[]).includes(f.status) && (f.by === "schedule" || f.by === "manual") && instantOf(f.nominal_at) !== undefined && typeof f.at === "string";
+  return Array.isArray(t.firings) && t.firings.every(firing) && (t.run_now_kept === undefined || (Array.isArray(t.run_now_kept) && t.run_now_kept.every(firing)));
 }
 
 export class Triggers {
@@ -348,7 +352,7 @@ export class Triggers {
   async fire(id: string, idempotencyKey: string): Promise<{ created: boolean; firing: ReturnType<typeof firingView> }> {
     const trigger = this.need(id);
     const key = firingKey("manual", id, idempotencyKey);
-    const known = trigger.firings.find((f) => f.key === key);
+    const known = trigger.firings.find((f) => f.key === key) ?? trigger.run_now_kept?.find((f) => f.key === key && this.inDay(f));
     if (known) return { created: false, firing: firingView(known) };
     const now = this.clock.now();
     const firing: Firing = { key, by: "manual", nominal_at: second(now), status: "due", at: iso(now) };
@@ -512,7 +516,10 @@ export class Triggers {
         if (!found) return;
         // Out of due, a firing keeps no retry, nor the reason the last try gave.
         Object.assign(found.firing, change.status === "due" || change.status === undefined ? change : { reason: undefined, attempts: undefined, retry_at: undefined, ...change });
-        if (change.run_id) found.trigger.last_run_id = change.run_id;
+        // Run ids are UUIDv7s, which sort by when the run started: a firing that finds an older run (a run now's key
+        // retried past its day) never takes the place of a later one.
+        const last = found.trigger.last_run_id;
+        if (change.run_id && !(last && last > change.run_id)) found.trigger.last_run_id = change.run_id;
         also?.(found.trigger, found.firing);
       });
     } catch (error) {
@@ -525,11 +532,17 @@ export class Triggers {
   private record(trigger: Trigger, firing: Firing): void {
     if (trigger.firings.some((f) => f.key === firing.key)) return;
     trigger.firings.push(firing);
-    const over = trigger.firings.length - HISTORY_KEPT;
-    if (over > 0) {
-      let drop = over;
-      trigger.firings = trigger.firings.filter((f) => f.status === "due" || drop-- <= 0);
-    }
+    let over = trigger.firings.length - HISTORY_KEPT;
+    const gone = over > 0 ? trigger.firings.filter((f) => f.status !== "due" && over-- > 0) : [];
+    trigger.firings = trigger.firings.filter((f) => !gone.includes(f));
+    const kept = [...(trigger.run_now_kept ?? []), ...gone.filter((f) => f.by === "manual")].filter((f) => this.inDay(f));
+    if (kept.length) trigger.run_now_kept = kept;
+    else delete trigger.run_now_kept;
+  }
+
+  /** Whether a firing is within its key's day, as an Idempotency-Key answers. */
+  private inDay(firing: Firing): boolean {
+    return this.clock.now() - Date.parse(firing.at) <= IDEMPOTENCY_TTL_S * 1000;
   }
 
   /** The timer, at the soonest next time of an enabled trigger or retry of a due firing. */
@@ -579,7 +592,7 @@ export class Triggers {
   }
 
   private view(trigger: Trigger) {
-    const { firings, ...rest } = trigger;
+    const { firings, run_now_kept: _, ...rest } = trigger;
     return { ...rest, last_run_id: trigger.last_run_id ?? null, ...settled(trigger), last_firing: firings.length ? firingView(firings.at(-1)!) : null };
   }
 }

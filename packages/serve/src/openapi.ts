@@ -1026,7 +1026,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/triggers/{trigger_id}/fire": {
     post: {
       operationId: "fireTrigger", tags: ["local"], summary: "Run it now: one firing per Idempotency-Key",
-      description: "A firing now, on or off, under the same overlap rule as a scheduled one; it is driven before the answer. The same key again answers its firing as it stands (200, `Idempotent-Replayed: true`), and starts no second run. 400 with no Idempotency-Key.",
+      description: "A firing now, on or off, under the same overlap rule as a scheduled one; it is driven before the answer. The same key again answers its firing as it stands (200, `Idempotent-Replayed: true`), and starts no second run, for `limits.idempotency_ttl_s` after it fired, even once the firing has left the history; past that it is a new firing, which a run the key started still answers. A firing never moves `last_run_id` back to an older run. 400 with no Idempotency-Key.",
       parameters: [TRIGGER_ID, { name: "Idempotency-Key", in: "header", required: true, description: "Required here: a retry with the same key fires once.", schema: { type: "string", minLength: 1, maxLength: 255 } }],
       responses: { "202": json(TRIGGER_FIRING, "Fired: its run started, or why not."), "200": json(TRIGGER_FIRING, "This key's firing, as it stands."), ...errors(400, 401, 404, 409, 429, 500) },
       ...TRIGGER_MARK,
