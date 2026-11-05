@@ -1,7 +1,7 @@
 // `runs start --wait`, `runs wait` and `runs timeline --follow`: wait for a run and follow it live. Hand-written on top of
 // the generated table (cli.mjs), from the timeline route's two forms: the long-polled JSON page and the event stream.
 // `client` is cli.mjs's: `fetch(path, init)` with the token, `refused(response, bytes)` (the error on stderr, its exit
-// code), `unreachable(error)` (exit 3) and `print(value)`.
+// code), `unreachable(error)` (exit 3, naming only the error's cause code, never its message) and `print(value)`.
 
 const TERMINAL = new Set(["completed", "failed", "cancelled"]);
 // What moves only once a person acts: input_required (a question, the spend cap, a stopped turn), and a workflow run's
@@ -40,32 +40,47 @@ export const WAIT = {
   help: [["--timeout SECONDS", "stop waiting after this long, exit 1 (the run goes on)"]],
 };
 
+/** An error for `client.unreachable` that names what happened by its code alone. */
+const failure = (code) => Object.assign(new Error(code), { cause: { code } });
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
-const backoff = (tries, floor = 0) => Math.min(MAX_BACKOFF_MS, Math.max(floor, BACKOFF_MS * 2 ** (tries - 1)));
+/** The wait before try `tries + 1`: the client's own delay, doubling up to its cap, and never under the server's `retry`
+ *  (`floor`), which may be above that cap. */
+export const backoff = (tries, floor = 0) => Math.max(floor, Math.min(MAX_BACKOFF_MS, BACKOFF_MS * 2 ** (tries - 1)));
+// The final read of a wait past its --timeout, which prints the run as it is: bounded too.
+const LAST_READ_MS = 1_000;
 
-/** GET `path` as JSON: `{ value }`, or `{ code }` once the server refused (its error on stderr). Once the server answered
- *  (`reached`), a dropped connection or a gateway's 502/503/504 is tried again a few times with backoff, then exit 3
- *  (a 5xx, 1); a server never reached is exit 3 at once. */
-async function getJson(client, path, reached) {
+/** GET `path` as JSON: `{ value }`, `{ code }` once the server refused (its error on stderr), or `{ late: true }` once
+ *  `deadline` passed: every try and every wait between tries ends by it. Once the server answered (`reached`), a dropped
+ *  connection or a gateway's 502/503/504 is tried again a few times with backoff, then exit 3 (a 5xx, 1); a server never
+ *  reached is exit 3 at once. */
+async function getJson(client, path, reached, deadline) {
   for (let tries = 1; ; tries++) {
+    const left = deadline - Date.now();
+    if (left <= 0) return { late: true };
     let response;
     let bytes;
     try {
       // A long poll answers within its wait_ms: one silent well past it is a connection gone.
-      response = await client.fetch(path, { signal: AbortSignal.timeout(MAX_WAIT_MS + IDLE_MS) });
+      response = await client.fetch(path, { signal: AbortSignal.timeout(Math.min(MAX_WAIT_MS + IDLE_MS, left)) });
       bytes = Buffer.from(await response.arrayBuffer());
       reached.yes = true;
     } catch (error) {
+      if (Date.now() >= deadline) return { late: true };
       if (!reached.yes || tries >= RETRIES) throw client.unreachable(error);
-      await pause(backoff(tries));
+      await pause(Math.min(backoff(tries), deadline - Date.now()));
       continue;
     }
     if (RETRIABLE.has(response.status) && tries < RETRIES) {
-      await pause(backoff(tries));
+      await pause(Math.min(backoff(tries), deadline - Date.now()));
       continue;
     }
     if (!response.ok) return { code: client.refused(response, bytes) };
-    return { value: JSON.parse(bytes.toString("utf8")) };
+    try {
+      return { value: JSON.parse(bytes.toString("utf8")) };
+    } catch {
+      client.io.stderr.write(`The server's answer to GET ${path.split("?")[0]} is not JSON.\n`);
+      return { code: 1 };
+    }
   }
 }
 
@@ -85,30 +100,37 @@ function settle(client, run, id) {
 
 /** Waits until the run ends (completed, failed or cancelled, with every row in) or waits on a person, and prints it: exit
  *  0 completed, 1 failed or cancelled, 8 waits on a person. It long-polls the timeline from change to change and reads
- *  the run when the page says it is there. Past `timeoutMs` it prints the run as it is and exits 1, the run going on. */
+ *  the run when the page says it is there. `timeoutMs` bounds every request and every wait between them; past it, it
+ *  prints the run as it is (read once more, briefly; else as last read, if it was) and exits 1, the run going on. */
 export async function waitRun(client, runId, timeoutMs) {
   const id = encodeURIComponent(runId);
   const deadline = timeoutMs === undefined ? Infinity : Date.now() + timeoutMs;
   const reached = { yes: false };
   let after = 0;
+  let last;
+  const late = async () => {
+    const run = await getJson(client, `/runs/${id}`, reached, Date.now() + LAST_READ_MS);
+    if (run.code !== undefined) return run.code;
+    const seen = run.value ?? last;
+    if (seen !== undefined) client.print(seen);
+    client.io.stderr.write(`Run ${runId} is still ${seen?.status ?? "going"} after ${timeoutMs / 1000} s; it goes on: wait again with \`agentrun runs wait ${runId}\`.\n`);
+    return 1;
+  };
   for (let first = true; ; first = false) {
     const left = deadline - Date.now();
-    if (left <= 0) {
-      const run = await getJson(client, `/runs/${id}`, reached);
-      if (run.code !== undefined) return run.code;
-      client.print(run.value);
-      client.io.stderr.write(`Run ${runId} is still ${run.value.status} after ${timeoutMs / 1000} s; it goes on: wait again with \`agentrun runs wait ${runId}\`.\n`);
-      return 1;
-    }
+    if (left <= 0) return late();
     const waitMs = first ? 0 : Math.min(MAX_WAIT_MS, Math.ceil(left));
-    const got = await getJson(client, `/runs/${id}/timeline?after=${after}&wait_ms=${waitMs}`, reached);
+    const got = await getJson(client, `/runs/${id}/timeline?after=${after}&wait_ms=${waitMs}`, reached, deadline);
+    if (got.late) return late();
     if (got.code !== undefined) return got.code;
     const page = got.value;
     after = page.next_after;
     const ended = (status) => (TERMINAL.has(status) && page.final) || PERSON.has(status);
     if (ended(page.status)) {
-      const run = await getJson(client, `/runs/${id}`, reached);
+      const run = await getJson(client, `/runs/${id}`, reached, deadline);
+      if (run.late) return late();
       if (run.code !== undefined) return run.code;
+      last = run.value;
       // A message can reopen the run between the two reads: then it is waited for again.
       if (ended(run.value.status)) return settle(client, run.value, runId);
     }
@@ -141,7 +163,8 @@ async function* events(body, heard) {
         const value = colon < 0 ? "" : line.slice(colon + 1).replace(/^ /, "");
         if (field === "event") event.event = value;
         else if (field === "data") event.data.push(value);
-        else if (field === "id" && !value.includes("\0")) id = value;
+        // The route's ids are change numbers; anything else is never sent back as a header.
+      else if (field === "id" && /^\d+$/.test(value)) id = value;
         else if (field === "retry" && /^\d+$/.test(value)) event.retry = Number(value);
       }
     }
@@ -154,10 +177,12 @@ async function* events(body, heard) {
  *  no change comes twice; tries that get no event back off (the server's `retry` the least wait) and give up after a few
  *  in a row, exit 3. It ends with the server's `end` with `reason: terminal`, which comes right after the first page with
  *  `final: true`: exit 0 when the run completed, 1 when it failed or was cancelled. A run that waits on a person keeps
- *  the stream open, as the server does. `path` is the route with its query (`after` is where it starts). */
-export async function followTimeline(client, path) {
+ *  the stream open, as the server does. `path` is the route with its query (`after` is where it starts), and `headers`
+ *  the command's (its `--last-event-id` wins over `after`, as the route says). */
+export async function followTimeline(client, path, headers = {}) {
+  const { "Last-Event-ID": from, ...rest } = headers;
   let reached = false;
-  let last;
+  let last = from;
   let retryMs = 0;
   let status;
   for (let tries = 0; ; ) {
@@ -166,12 +191,12 @@ export async function followTimeline(client, path) {
     let cause;
     const silent = new AbortController();
     let timer;
-    const heard = () => (clearTimeout(timer), (timer = setTimeout(() => silent.abort(new Error("the stream went silent")), IDLE_MS)));
+    const heard = () => (clearTimeout(timer), (timer = setTimeout(() => silent.abort(failure("stream_silent")), IDLE_MS)));
     heard();
     try {
-      const response = await client.fetch(path, { headers: { accept: "text/event-stream", ...(last !== undefined ? { "last-event-id": last } : {}) }, signal: silent.signal });
+      const response = await client.fetch(path, { headers: { ...rest, accept: "text/event-stream", ...(last !== undefined ? { "last-event-id": last } : {}) }, signal: silent.signal });
       reached = true;
-      if (RETRIABLE.has(response.status)) throw new Error(`${response.status} ${response.statusText}`);
+      if (RETRIABLE.has(response.status)) throw failure(`http_${response.status}`);
       if (!response.ok) return client.refused(response, Buffer.from(await response.arrayBuffer()));
       if (!/^text\/event-stream\b/.test(response.headers.get("content-type") ?? "")) {
         client.io.stderr.write(`The server answered ${response.headers.get("content-type") ?? "with no content type"}, not an event stream.\n`);
@@ -205,7 +230,7 @@ export async function followTimeline(client, path) {
     }
     // The stream ended with no `end`, or broke: the connection dropped.
     tries = progress ? 1 : tries + 1;
-    if (tries > RETRIES) throw client.unreachable(cause ?? new Error("the stream kept closing"));
+    if (tries > RETRIES) throw client.unreachable(cause ?? failure("stream_closed"));
     await pause(backoff(tries, retryMs));
   }
 }

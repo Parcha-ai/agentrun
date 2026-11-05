@@ -1,5 +1,14 @@
 {
   "secretBody": ["saveToolKey", "saveMcpServer", "previewMcpServer"],
+  "multiSegment": {
+    "readRunFile": "path",
+    "readHomeFile": "path",
+    "writeHomeFile": "path",
+    "deleteHomeFile": "path"
+  },
+  "omit": {
+    "approveLearningFile": "It takes the owner's password session in the console; the server refuses every token on it."
+  },
   "commands": {
     "getCapabilities": ["server", "capabilities"],
     "getHealth": ["server", "health"],
@@ -49,7 +58,6 @@
     "readLearningFile": ["learning", "read"],
     "writeLearningFile": ["learning", "write"],
     "retireLearningFile": ["learning", "retire"],
-    "approveLearningFile": ["learning", "approve"],
     "listTriggers": ["triggers", "list"],
     "createTrigger": ["triggers", "create"],
     "getTrigger": ["triggers", "get"],
