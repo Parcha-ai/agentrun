@@ -6,7 +6,7 @@ import { RunError } from "@/components/RunError";
 import { type GraphActions, GraphUnavailable, isPermanent, RunGraphView, useRunGraph } from "@/components/RunGraphView";
 import { RunSkeleton } from "@/components/Skeleton";
 import { type Capabilities, type Client, ClientError, follow } from "@/lib/client";
-import { approvalRefusal } from "@/lib/approval";
+import { APPROVAL_ROW, approvalRefusal } from "@/lib/approval";
 import { keeper, sendOnce } from "@/lib/idempotency";
 import { problem, refusalTitle } from "@/lib/problem";
 import { type HarnessRead, messageOffer, readHarness } from "@/lib/liveRun";
@@ -43,6 +43,9 @@ export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: str
   const fileReads = useRef(latest()).current;
   const messageKeys = useRef(keeper()).current;
   const toolResults = useRef(0);
+  // The approval rows as last seen (their ids and summaries): a run can wait on one call, then on the next, with its
+  // status and state the same, so a change here reads the run again (its `pending` names the call that waits now).
+  const approvals = useRef("");
   // The harness of the revision the run started from decides whether a message to a working run is a steer: until it
   // is known, no message is offered.
   const [harness, setHarness] = useState<HarnessRead>({ state: "loading" });
@@ -69,7 +72,7 @@ export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: str
       signal: ctl.signal,
       // A tool round can write files while the run stays working: re-read them when a call ends (its result row; with one
       // row per action, its own row stopping running).
-      onRows: (r) => { setRows(r); const n = r.filter((x) => x.kind === "tool_result" || (x.kind === "tool_use" && !!x.tool_status && x.tool_status !== "running")).length; if (n > toolResults.current) { toolResults.current = n; const k = fileReads.begin(); void v2.listFiles(runId).then((f) => { if (fileReads.current(k)) setFiles(f.files); }).catch(() => {}); } },
+      onRows: (r) => { setRows(r); const seen = r.filter((x) => x.kind === APPROVAL_ROW).map((x) => `${x.id}\u0000${x.summary}`).join("\u0001"); if (seen !== approvals.current) { approvals.current = seen; void refresh(); } const n = r.filter((x) => x.kind === "tool_result" || (x.kind === "tool_use" && !!x.tool_status && x.tool_status !== "running")).length; if (n > toolResults.current) { toolResults.current = n; const k = fileReads.begin(); void v2.listFiles(runId).then((f) => { if (fileReads.current(k)) setFiles(f.files); }).catch(() => {}); } },
       // A page names the run's status and state: when they move, the run record (result, error, cost) and files move too.
       onPage: (p) => { const s = `${p.status}/${p.state}`; if (s !== status.current) { status.current = s; void refresh(); } },
     }).catch((e) => { if (!ctl.signal.aborted) setError(failure(e)); });

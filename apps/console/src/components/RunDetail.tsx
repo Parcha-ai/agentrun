@@ -80,10 +80,12 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
   const approvalRow = approval ? rows.findLast((r) => r.kind === APPROVAL_ROW && r.tool_use_id === approval.call_id) : undefined;
   // A refused answer, in words. The run is read again after it, and when another answer, a stop or a cancel came first
   // the call no longer waits, so its card goes: the words stay here.
-  const [refused, setRefused] = useState<string | null>(null);
+  // It is said apart from the card unless that same approval's card still shows (the card says it then): the run may
+  // already wait on the next call, whose card is another.
+  const [refused, setRefused] = useState<{ id: string; text: string } | null>(null);
   const approve = async (id: string, decision: "allow" | "deny", note?: string) => {
     const said = onApprove ? await onApprove(id, decision, note) : "This page can't answer an approval.";
-    setRefused(said);
+    setRefused(said ? { id, text: said } : null);
     return said;
   };
   // Only the newest read lands: closing the viewer or opening another file retires a read still in flight.
@@ -125,7 +127,7 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
               <p className="mt-2 text-[14px]">{run.review.reason}</p>
               <p className="mt-1 font-mono text-[12px] text-muted-foreground">{[run.review.node && `Stopped at ${run.review.node}`, run.review.kind].filter(Boolean).join(" · ")}. A person takes it from here.</p></section>
           )}
-          {!approval && refused && <p className="border border-destructive/50 px-4 py-2.5 font-mono text-[12px] text-destructive-text" role="alert">Your answer wasn't taken: {refused}</p>}
+          {refused && refused.id !== approval?.id && <p className="border border-destructive/50 px-4 py-2.5 font-mono text-[12px] text-destructive-text" role="alert">Your answer wasn't taken: {refused.text}</p>}
           {approval ? <ApprovalCard key={approval.id} pending={approval} onAnswer={(decision, note) => approve(approval.id, decision, note)} />
             : view.needsYou && (budget ? <BudgetPaused pending={budget} /> : <NeedsYou waiting={waiting} />)}
           {tab === "report" && <RunResult run={run} rows={rows} files={files} onOpen={show} />}

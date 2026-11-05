@@ -46,11 +46,11 @@ export function NeedsYouStrip({ asking, failed, live, agentName, onAnswer, onApp
   }, [live.length]);
   // A refused answer to an approval, in words, by run: the strip reads again after it, and when another answer, a stop or
   // a cancel came first the run no longer waits, so its card goes; the words stay here until dismissed.
-  const [refused, setRefused] = useState<{ runId: string; title: string; text: string }[]>([]);
+  const [refused, setRefused] = useState<{ runId: string; approvalId: string; title: string; text: string }[]>([]);
   const approve = onApprove && (async (runId: string, approvalId: string, decision: "allow" | "deny", note?: string) => {
     const said = await onApprove(runId, approvalId, decision, note);
     const title = asking.find((r) => r.run_id === runId)?.title ?? runId;
-    setRefused((held) => [...held.filter((x) => x.runId !== runId), ...(said ? [{ runId, title, text: said }] : [])]);
+    setRefused((held) => [...held.filter((x) => x.runId !== runId), ...(said ? [{ runId, approvalId, title, text: said }] : [])]);
     return said;
   });
   const failures = groups.reduce((n, g) => n + g.runs.length, 0);
@@ -61,7 +61,8 @@ export function NeedsYouStrip({ asking, failed, live, agentName, onAnswer, onApp
     <section aria-label="Needs you" className="space-y-3">
       {needs > 0 && <h2 className="caps text-[12px] font-semibold">Needs you <span className="text-warning-text">· {needs}</span></h2>}
       {problem && <p className="border border-destructive/50 px-4 py-2.5 font-mono text-[12px] text-destructive-text" role="alert">{problem}</p>}
-      {refused.filter((x) => !asking.some((r) => r.run_id === x.runId && r.pending?.kind === "approval")).map((x) => (
+      {/* Said apart from the card unless that same approval's card still shows: the run may wait on its next call now. */}
+      {refused.filter((x) => !asking.some((r) => r.run_id === x.runId && r.pending?.kind === "approval" && r.pending.id === x.approvalId)).map((x) => (
         <p key={x.runId} className="flex items-start gap-3 border border-destructive/50 px-4 py-2.5 font-mono text-[12px] text-destructive-text" role="alert">
           <span className="min-w-0 flex-1"><a href={runHref(x.runId)} className="underline-offset-4 hover:underline">{x.title}</a>: your answer wasn't taken. {x.text}</span>
           <button type="button" className="caps shrink-0 text-[11px] text-muted-foreground hover:text-foreground" onClick={() => setRefused((held) => held.filter((y) => y.runId !== x.runId))}>Dismiss</button>

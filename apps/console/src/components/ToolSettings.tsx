@@ -166,7 +166,8 @@ export function AgentToolSettings({ agent, harness, model, tools, choices, gates
           // The server's word holds only for what it was read for: the agent's, for its saved provider, harness and model;
           // capabilities', for the server's provider on each harness with the server's default model. A change of any of
           // them resolves once saved.
-          const own = (value[t.name]?.provider ?? null) !== (saved[t.name]?.provider ?? null);
+          // A permission changes it too (deny: unavailable; ask: no search that can't wait for an approval).
+          const own = (value[t.name]?.provider ?? null) !== (saved[t.name]?.provider ?? null) || (value[t.name]?.permission ?? null) !== (saved[t.name]?.permission ?? null);
           // The agent's word holds only for the provider it was read for, the one the select shows: a server pick changed
           // since capabilities were read (another tab) leaves capabilities' word, which goes with the select.
           const read = agent?.tools?.find((x) => capabilityOf(x.name) === t.name);
