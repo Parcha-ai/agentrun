@@ -133,6 +133,19 @@ test("the reflect carve-out: under ask, a reflect turn's write or edit inside wo
   assert.deepEqual(await node.enter("write", { path: "notes.md" }, "c5", park), { text: "This write call needs a person's approval, which a workflow's model node cannot wait for; it was not run.", isError: true });
 });
 
+test("two ask calls entered at once, as pi runs a turn's calls in parallel: exactly one parks, and the other is refused in the usual words", async (t) => {
+  const [root, work, data] = [await scratch(t), await scratch(t), await scratch(t)];
+  const gate = new RunGate({ root, work, data, runId: "r1" }, { write: { permission: "ask" } });
+  const written = [];
+  // A commit answers after its own await, as the run's store does.
+  const park = { commit: async (change) => change({ appendEntry: async (_conversation, entry) => written.push(entry) }), parked: (id) => written.push({ parked: id }) };
+  const [first, second] = await Promise.all([gate.enter("write", { path: "a.md" }, "c1", park), gate.enter("write", { path: "b.md" }, "c2", park)]);
+  assert.deepEqual(first, { text: waitingText("write"), isError: false, parked: true }, "the first parks");
+  assert.equal(second.parked, undefined, "the second does not");
+  assert.match(second.text, /^This write call was not run: the write call c1 already waits for a person's approval\./);
+  assert.deepEqual(written.filter((entry) => entry.kind).map((entry) => entry.data.call_id), ["c1"], "one request in the run's store");
+});
+
 test("capabilities and an agent's tools show each tool's permission, its default and where it came from; a catalog tool asks by default; an MCP server's wildcard is kept; settings refuse a permission not offered", async (t) => {
   withEnv(t, { AGENT_MODEL: "anthropic/claude-sonnet-5-5" }, ["PARALLEL_API_KEY", "AGENT_MODEL_BASE_URL"]);
   const { api } = await serve(t);
