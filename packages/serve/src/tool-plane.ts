@@ -150,7 +150,7 @@ export function explainCapability(capability: Pickable, input: ResolveInput): { 
   const key = `your Parallel key (${input.parallelKeyFrom ?? "server"})`;
   if (input.permission === "deny") return { resolves: DENIED, why: "set to deny: the gate refuses each call" };
   if (chosen === "off") return { resolves: SEARCH_OFF, why: "turned off in settings" };
-  if (chosen === "parallel") return input.parallelKey ? { resolves: "parallel", why: `Parallel, ${picked}: ${key}` } : { resolves: NO_PARALLEL_KEY, why: "Parallel is picked, and no PARALLEL_API_KEY is set or saved" };
+  if (chosen === "parallel") return input.parallelKey ? { resolves: "parallel", why: `Parallel, ${picked}: ${key}` } : { resolves: NO_PARALLEL_KEY, why: `Parallel is picked, and it needs ${keyNeeded([PARALLEL_KEY_ENV])}` };
   if (capability === "web_fetch") return { resolves: "kernel", why: "the guarded direct fetch" };
   if (capability === "browser") return browserBy(chosen, picked, input.browserKeys);
   if (chosen === "exa-keyless") return { resolves: "exa-keyless", why: `keyless Exa, ${picked}: Exa's free search, no key` };
@@ -203,7 +203,7 @@ export const NO_CHROME: Resolution = "unavailable: a local Chrome is not set up 
  *  is unavailable by name. */
 function browserBy(chosen: string, picked: string, keys: Record<BrowserVendor, boolean> = { browserbase: false, kernel: false }): { resolves: Resolution; why: string } {
   if (chosen === "chrome") return { resolves: NO_CHROME, why: whyUnavailable(NO_CHROME) };
-  if (isVendor(chosen)) return keys[chosen] ? { resolves: chosen, why: `${LABELS[chosen]}, ${picked}` } : { resolves: noBrowserKey(chosen), why: `${LABELS[chosen]} is picked, and no ${BROWSER_KEYS[chosen].join(" and ")} is set or saved` };
+  if (isVendor(chosen)) return keys[chosen] ? { resolves: chosen, why: `${LABELS[chosen]}, ${picked}` } : { resolves: noBrowserKey(chosen), why: `${LABELS[chosen]} is picked, and it needs ${keyNeeded(BROWSER_KEYS[chosen])}` };
   if (keys.browserbase) return { resolves: "browserbase", why: "Browserbase: its key is set or saved" };
   if (keys.kernel) return { resolves: "kernel", why: "Kernel: its key is set or saved, and Browserbase's is not" };
   return { resolves: NO_BROWSER_KEY, why: whyUnavailable(NO_BROWSER_KEY) };
