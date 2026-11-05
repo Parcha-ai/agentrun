@@ -225,6 +225,9 @@ export function personHands(options: {
         if (refused) return refused;
         // Let go while this one waited: held again from the start.
         if (ledgers.get(tag) !== known) continue;
+        // The cap refused to hold more of the person's time here: a new take-over would drive unheld, so it is refused in
+        // the cap's words. An ask may still share what is held (it expires within it).
+        if (known.refused && user === TAKE_USER) return { refused: known.refused };
         known.users.add(user);
         return undefined;
       }

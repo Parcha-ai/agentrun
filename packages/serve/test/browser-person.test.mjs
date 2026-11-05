@@ -112,3 +112,26 @@ test("a take-over kept alive past its hold holds the person's time again each ho
   assert.equal(held.dropped, 2, "both holds dropped");
   assert.ok(held.notes.includes(`The browser went back to the agent at the run's spend cap: ${held.refuse}`), JSON.stringify(held.notes));
 });
+
+test("after a re-hold the cap refused, a new take-over on that session is refused in the cap's words, while the ask it was shared with goes on", async (t) => {
+  const { createDrivingGates } = await import("@parcha/pi-browser/live-view");
+  const root = await scratch(t);
+  const clock = fakeClock();
+  const holdMs = 15 * 60_000;
+  const gates = createDrivingGates({ timers: clock.timers, holdIdleMs: holdMs });
+  const { person, held } = hands(root, { gates, timers: clock.timers, holdMs });
+  t.after(() => person.close());
+  const tag = "ar-run-6-1";
+  gates(tag).setPresent(true);
+  const asked = await person.handoff.request(ask(6, tag));
+  const take = await person.take(tag);
+  const ends = [];
+  gates(tag).take((why) => { ends.push(why); take.end(why); });
+  held.refuse = "spend_cap_reached: Not sent: the run has spent $0.04 of its $0.05 cap, and more of your time in the browser could cost up to $0.03.";
+  for (let minute = 0; minute < 16; minute += 1) { gates(tag).input(); await clock.tick(60_000); }
+  assert.deepEqual(ends, ["cap"], "the re-hold was refused: the take-over ended cap");
+  assert.equal(await person.handoff.outcome(asked.interactionId), "pending", "the ask goes on");
+  held.refuse = null;
+  assert.deepEqual(await person.take(tag), { refused: "spend_cap_reached: Not sent: the run has spent $0.04 of its $0.05 cap, and more of your time in the browser could cost up to $0.03." }, "Take over again: refused in the cap's words, never driven unheld");
+  assert.equal(held.taken, 1, "nothing more was held");
+});
