@@ -38,12 +38,10 @@ describe("RunDetail, a run waiting on a tool call's approval", () => {
     expect(text(html).split("Which page, the old or the new?").length - 1).toBe(1);
   });
 
-  it("offers no message box while the call waits: Allow or Deny answers it, Stop or Cancel withdraws it", () => {
+  it("keeps the message box while the call waits: Allow or Deny answers it, and a message declines it", () => {
     const html = page(run);
-    expect(html).not.toContain("id=\"composer\"");
-    // The same run waiting on a question keeps its message box: that is how a question is answered.
-    expect(page({ ...run, pending: { kind: "question", question: "Which page, the old or the new?", asked_at: at(1) } })).toContain("id=\"composer\"");
-    expect(text(html)).toContain("Stop or Cancel withdraws it");
+    expect(html).toContain("id=\"composer\"");
+    expect(text(html)).toContain("or type what to do instead; sending it declines this call");
   });
 
   it("the timeline's approval row reads as yours, waiting, and points to the card above", () => {
