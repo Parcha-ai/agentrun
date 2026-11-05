@@ -45,6 +45,7 @@ import { BOX_WORK } from "./place.js";
 import type { TurnOrigin } from "./learning-run.js";
 import { forModel } from "./result.js";
 import { durableSessions } from "./sessions.js";
+import { SHELL_TOOLS } from "./background.js";
 import { LEGACY_NAMES, readToolSettings, TABLE_TOOLS } from "./tool-plane.js";
 
 /** What the gate does with a tool's calls. */
@@ -59,6 +60,16 @@ export const isMcpTool = (name: string): boolean => /^mcp:[^/]+\/.+$/.test(name)
 export const isCatalogTool = (name: string): boolean => name.startsWith("monid.") || isMcpTool(name);
 /** The owner's defaults (11-01): a built-in kernel tool allow; a third-party catalog tool ask. */
 export const defaultPermission = (name: string): Permission => (isCatalogTool(name) ? "ask" : "allow");
+
+/** The tools that run a command in the run's box (background.ts SHELL_TOOLS), each held to bash's setting: bash: deny
+ *  refuses bash_background as it refuses bash, and none of them is a settings key of its own. */
+export const SHELL_FAMILY: Readonly<Record<string, string>> = Object.freeze(Object.fromEntries(SHELL_TOOLS.map((name) => [name, "bash"])));
+/** The shell tool a call named `name` is, under claude-agent's host-tool name too (`mcp__hands__bash_background`), when
+ *  it is one held to another's setting: its own name, which its request, its refusal and its approved call keep. */
+const shellToolOf = (name: string): string | undefined => {
+  const own = name.replace(/^mcp__hands__/, "");
+  return Object.hasOwn(SHELL_FAMILY, own) && SHELL_FAMILY[own] !== own ? own : undefined;
+};
 
 /** The settings keys that may set `name`'s permission, most specific first: the tool's own name, then, for an MCP
  *  tool, its server's wildcard `mcp:<server>/*`. */
@@ -86,8 +97,10 @@ const HOST_TOOLS_SERVER = "hands";
  *  `mcpServers` (the run's configured MCP servers), never by its shape, since a host tool's name has the same shape.
  *  Undefined: nothing maps it, and the gate asks. The key only: an MCP call enters the gate once, in the MCP gateway. */
 export function settingsKeyOf(harness: string, name: string, mcpServers: readonly string[] = []): string | undefined {
-  // A legacy name the tool plane folds into a capability (fetch_page into web_fetch) is held to that capability's key.
+  // A legacy name the tool plane folds into a capability (fetch_page into web_fetch) is held to that capability's key,
+  // and a tool that runs a command in the box (bash_background and the rest) to bash's: before the table's own names.
   if (Object.hasOwn(LEGACY_NAMES, name)) return LEGACY_NAMES[name];
+  if (Object.hasOwn(SHELL_FAMILY, name)) return SHELL_FAMILY[name];
   if (TABLE_TOOLS.includes(name) || isCatalogTool(name)) return name;
   const native = NATIVE_TOOLS[harness]?.[name];
   if (native) return native;
@@ -108,6 +121,8 @@ export type PermissionSettings = Readonly<Record<string, { permission?: Permissi
  *  server wildcard, the server's exact key, the server's server wildcard, then the default. Rules over a call's
  *  arguments are not in V1. */
 export function permissionFrom(name: string, server: PermissionSettings, agent: PermissionSettings = {}): { permission: Permission; from: "agent" | "server" | "default" } {
+  // A shell tool's permission is bash's (SHELL_FAMILY), wherever it is read: the gate, capabilities, an agent's tools.
+  if (Object.hasOwn(SHELL_FAMILY, name) && SHELL_FAMILY[name] !== name) return permissionFrom(SHELL_FAMILY[name]!, server, agent);
   for (const [from, layer] of [["agent", agent], ["server", server]] as const) {
     for (const key of permissionKeys(name)) {
       const set = layer[key]?.permission;
@@ -169,8 +184,10 @@ export interface Gate {
   spill(callId: string, text: string): string;
 }
 
-/** The refusal of a call whose tool is set to deny. */
-export const deniedText = (tool: string): string => `Permission denied: ${tool} is set to deny on this server. Don't retry it.`;
+/** The refusal of a call whose tool is set to deny; of one held to another tool's setting (`heldTo`, a shell tool's
+ *  bash), naming the setting to change. */
+export const deniedText = (tool: string, heldTo?: string): string =>
+  heldTo && heldTo !== tool ? `Permission denied: ${tool} follows ${heldTo}'s setting, which is deny on this server. Don't retry it.` : `Permission denied: ${tool} is set to deny on this server. Don't retry it.`;
 /** The refusal of an ask where no one can approve it: a server with accounts off, whose answer route takes no token. */
 export const noApproverText = (tool: string): string => `Permission denied: ${tool} needs the owner's approval, and this server has accounts off (AGENTRUN_ACCOUNTS=0), so no one can give it: set the tool to allow or deny in the agent's Tools.`;
 /** Set by the server in a run's environment when no one can approve here (accounts off): the gate refuses each ask. */
@@ -318,14 +335,16 @@ export class RunGate {
   /** One model-initiated call at the gate: undefined when it may run; else its answer, refused at once (deny) or parked
    *  (ask). One call waits at a time: another asked meanwhile is answered so, not run. */
   async enter(name: string, args: unknown, callId: string, park: Park, options: EnterOptions = {}): Promise<Entered> {
-    // Held to its settings key (settingsKeyOf), the name its request, a refusal and the approved call give.
-    const tool = settingsKeyOf(this.where.harness ?? "pi", name, this.where.mcpServers) ?? name;
+    // Held to its settings key (settingsKeyOf), the name its request, a refusal and the approved call give; a shell tool
+    // held to bash's (SHELL_FAMILY) keeps its own name, so an approved bash_background runs bash_background, never bash.
+    const key = settingsKeyOf(this.where.harness ?? "pi", name, this.where.mcpServers) ?? name;
+    const tool = shellToolOf(name) ?? key;
     // The end-of-run turn writes no file under work/.learning/, whatever the tool's permission: its notes are kept only
     // from its answer (NOTE_ONLY_TEXT). Any other turn's write there follows its permission, as anywhere.
-    if ((tool === "write" || tool === "edit") && this.turnOrigin() === "reflect" && underLearning(this.where.work, args)) return { text: NOTE_ONLY_TEXT, isError: true };
+    if ((key === "write" || key === "edit") && this.turnOrigin() === "reflect" && underLearning(this.where.work, args)) return { text: NOTE_ONLY_TEXT, isError: true };
     const verdict = this.policy(name);
     if (verdict === "allow") return undefined;
-    if (verdict === "deny") return { text: deniedText(tool), isError: true };
+    if (verdict === "deny") return { text: deniedText(tool, key), isError: true };
     // No one can answer here: refused at once with why, never parked until a cancel.
     if (!this.approvers) return { text: noApproverText(tool), isError: true };
     if (!this.parks) return { text: `This ${tool} call needs a person's approval, which a workflow's model node cannot wait for; it was not run.`, isError: true };
@@ -458,7 +477,7 @@ export class RunGate {
           continue;
         }
         // An allow runs the call, unless its tool was set to deny since it asked.
-        const result = decision === "deny" ? { text: refusedText(held.tool, answer.note), isError: true } : this.policy(held.tool) === "deny" ? { text: deniedText(held.tool), isError: true } : await this.run(held);
+        const result = decision === "deny" ? { text: refusedText(held.tool, answer.note), isError: true } : this.policy(held.tool) === "deny" ? { text: deniedText(held.tool, settingsKeyOf(this.where.harness ?? "pi", held.tool, this.where.mcpServers)), isError: true } : await this.run(held);
         // And again once the call is done: a stop or a cancel while it ran drops its result, which never reaches the model.
         const after = ((await readJson(join(this.where.root, RUN_META)))?.approvals as Record<string, { decision?: string }> | undefined)?.[held.id];
         if (after?.decision === "canceled" || after?.decision === "withdrawn") {
