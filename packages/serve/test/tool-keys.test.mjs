@@ -327,7 +327,7 @@ test("a key saved is read by name with no restart: capabilities lose the tool's 
     return [res.status, res.body.error?.code, res.body.error?.details?.missing];
   };
   // The browser runs on either vendor's keys (tool-plane.ts): unavailable, its reason names both, and no one list is missing.
-  const reason = "no browser key: set or save Browserbase's (BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID) or Kernel's (KERNEL_API_KEY)";
+  const reason = "it needs a Browserbase key: save one in Settings → Tool keys (or set BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID where the server starts), or a Kernel key: save one in Settings → Tool keys (or set KERNEL_API_KEY where the server starts)";
   const unset = { name: "browser", nodes: true, calls: false, available: false, reason, harnesses: ["pi"], provider: "auto", default_provider: "auto", permission: "allow", default_permission: "allow", permissions: ["allow", "deny"], resolves: `unavailable: ${reason}`, key: "browserbase" };
   assert.deepEqual(await browser(), unset);
   assert.deepEqual((await api("GET", "/capabilities")).body.tools.filter((tool) => tool.key).map((tool) => [tool.name, tool.key]), [["web_fetch", "parallel"], ["web_search", "parallel"], ["browser", "browserbase"], ["monid.discover", "monid"], ["monid.inspect", "monid"], ["monid.run", "monid"]], "only a tool a key unlocks names one");

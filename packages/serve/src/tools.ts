@@ -29,6 +29,7 @@ import { searchFor, WEB_SEARCH_TOOL, webSearchTool } from "./web-search.js";
 import { browserNeeds, capabilityOf, explainsView, isUnavailable, NO_PARALLEL_KEY, permissionsOf, type Pickable, PICKABLE, planeOf, type Plane, PROVIDERS, type Tooling, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
 import { defaultPermission, permissionOf } from "./tool-gate.js";
 import { PARALLEL_KEY_ENV } from "./decisions.js";
+import { keyNeeded } from "./key-words.js";
 import { handedSignIn } from "./secrets.js";
 import { SIGN_IN_KEY, SIGN_IN_SAVED } from "./sign-ins.js";
 
@@ -408,8 +409,8 @@ export function toolRefusal(names: readonly string[], env: NodeJS.ProcessEnv, wh
   const missing = Object.fromEntries(names.map((name) => [name, missingEnv(toolOf(name)!, env)] as const).filter(([, vars]) => vars.length));
   const lacking = Object.entries(missing);
   if (!lacking.length) return undefined;
-  const said = lacking.map(([name, vars]) => `the tool ${name} needs ${vars.join(" and ")}`).join("; ");
-  return { message: `This server's environment does not set what the revision's tools need: ${said}.`, unbound: [], missing };
+  const said = lacking.map(([name, vars]) => `The tool ${name} needs ${keyNeeded(vars)}.`).join(" ");
+  return { message: `This server holds no key for what the revision's tools need. ${said}`, unbound: [], missing };
 }
 
 /** Every tool as capabilities show it, the server's one tool catalog: available here, or the variables it is missing
@@ -437,7 +438,7 @@ export const toolsView = (env: NodeJS.ProcessEnv, settings: ToolSettingsMap = {}
     const available = (plane ? Object.values(plane).some((resolution) => !isUnavailable(resolution)) : missing.length === 0) && boxless === undefined && refusal === undefined;
     // Unavailable says why: a sandbox-only tool no box here can run, why none can (`noBox`); on a tool a user picks a
     // provider for, the resolutions' own words (`web_search is turned off in settings`); else the variables it needs.
-    const reason = available ? undefined : refusal ?? boxless ?? (plane ? [...new Set(Object.values(plane).filter(isUnavailable).map(whyUnavailable))].join("; ") : `Needs ${missing.join(", ")}`);
+    const reason = available ? undefined : refusal ?? boxless ?? (plane ? [...new Set(Object.values(plane).filter(isUnavailable).map(whyUnavailable))].join("; ") : `Needs ${keyNeeded(missing)}`);
     return { name, summary: entry.summary, nodes: entry.nodes, calls: entry.effect !== undefined, ...(entry.callOnly ? { call_only: true } : {}), ...(entry.sandboxOnly ? { sandbox_only: true } : {}), available, ...(reason ? { reason } : {}), ...(missing.length ? { missing } : {}), harnesses: name in REPLAY ? [...HARNESSES] : [DEFAULT_HARNESS], permission: permissionOf(name, settings as never), default_permission: defaultPermission(name), permissions: [...permissionsOf(name)], ...(plane ? { providers: [...PROVIDERS[name as Pickable]], provider: picked[name as Pickable].provider, default_provider: PROVIDERS[name as Pickable][0], resolves: plane, why: view!.why } : {}) };
   });
 };

@@ -23,6 +23,7 @@ import { readFileSync } from "node:fs";
 import { isToolSettingsKey } from "@parcha/pi-durable-agent";
 import { join } from "node:path";
 import { decisionKeysOf, PARALLEL_KEY_ENV } from "./decisions.js";
+import { keyNeeded } from "./key-words.js";
 import type { InputIssue } from "./errors.js";
 import { writeDurableSync } from "./files.js";
 import { DEFAULT_HARNESS, HARNESSES, type HarnessId } from "./harness.js";
@@ -172,7 +173,14 @@ export const resolveCapability = (capability: Pickable, input: ResolveInput): Re
 
 export const isUnavailable = (resolution: Resolution | undefined): resolution is `unavailable: ${string}` => resolution?.startsWith("unavailable: ") === true;
 /** Why a resolution is unavailable: its words after "unavailable: " (any other resolution as it is). */
-export const whyUnavailable = (resolution: string): string => resolution.replace(/^unavailable: /, "");
+/** Why `resolution` is unavailable, in words. A vendor picked whose key this server does not hold (its value, kept in a
+ *  run's meta and read back, names the variables) names where to save the key first, then the variable to set. */
+export const whyUnavailable = (resolution: string): string => {
+  if (resolution === NO_BROWSER_KEY) return `it needs ${keyNeeded(BROWSER_KEYS.browserbase)}, or ${keyNeeded(BROWSER_KEYS.kernel)}`;
+  const why = resolution.replace(/^unavailable: /, "");
+  const picked = /^(\S+) picked, no (.+)$/.exec(why);
+  return picked ? `${picked[1]} is picked, and it needs ${keyNeeded(picked[2]!.split(" and "))}` : why;
+};
 
 /** The keys each of the browser's vendors needs, by name: a tool key's fields (tool-keys.ts), set or saved. Its plane
  *  value is the vendor's id: `kernel` on browser is Kernel's hosted browser, never the guarded fetch web_fetch calls so. */

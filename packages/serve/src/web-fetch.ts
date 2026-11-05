@@ -28,7 +28,7 @@ import { clip, fetchOptions, HTML_READ_CHARS, linksWithin, MAX_CHARS_MIN, PAGE_C
 import { FAUX_ENV } from "./model.js";
 import { PaidRefused, paidRequest, parallelFeeOf } from "./paid-calls.js";
 import { forModel } from "./result.js";
-import { isUnavailable, planeOf } from "./tool-plane.js";
+import { isUnavailable, planeOf, whyUnavailable } from "./tool-plane.js";
 
 export const WEB_FETCH_TOOL = "web_fetch";
 export const PARALLEL_EXTRACT_URL = "https://api.parallel.ai/v1/extract";
@@ -228,7 +228,7 @@ export async function fetchFor(env: NodeJS.ProcessEnv, url: unknown, options: Gu
   const problem = partProblem(options);
   if (problem) return { ok: false, url: typeof url === "string" ? clip(url, URL_MAX) : "", status: 0, title: "", text: "", links: [], error: problem };
   const resolved = planeOf(env).web_fetch;
-  if (isUnavailable(resolved)) return { ok: false, url: typeof url === "string" ? clip(url, URL_MAX) : "", status: 0, title: "", text: "", links: [], error: `web_fetch does not run here: ${resolved.slice("unavailable: ".length)}` };
+  if (isUnavailable(resolved)) return { ok: false, url: typeof url === "string" ? clip(url, URL_MAX) : "", status: 0, title: "", text: "", links: [], error: `web_fetch does not run here: ${whyUnavailable(resolved)}` };
   const extract = resolved === "parallel" ? parallelOf(env) : null;
   const page = await webFetch(url, { ...options, parallel: extract });
   return resolved === "parallel" && !extract ? { ...page, parallel: "not tried: this run holds no Parallel key" } : page;
