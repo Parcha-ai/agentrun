@@ -3,7 +3,7 @@ import type { AddressInfo } from "node:net";
 import type { Duplex } from "node:stream";
 import { drivingGates } from "../core/driving.js";
 import type { LiveView } from "../core/host.js";
-import { CLOSE_CODES, encodeFrame, LIMITS, parseClientMessage, type ClientMessage, type DrivingGate, type DrivingGates, type ServerMessage, type Stream, type StreamFactory, type ViewerAssets } from "./protocol.js";
+import { CLOSE_CODES, encodeFrame, LIMITS, parseClientMessage, type ClientMessage, type DrivingGate, type DrivingGates, type HoldEnd, type ServerMessage, type Stream, type StreamFactory, type ViewerAssets } from "./protocol.js";
 import { openStream } from "./stream.js";
 import { newToken, newViewerId, tokenMatches } from "./token.js";
 import { viewerAssets } from "./viewer.js";
@@ -32,6 +32,13 @@ export type LiveViewOptions = {
    *  only hidden by the page, and it is told so (`ready` carries `readOnly: true`). A watching viewer holds no turn and keeps no session from its idle
    *  release (it never sets `viewing`). */
   readOnly?: boolean;
+  /** The viewer drives only while it holds the browser. Its `take` asks the host first (`take`, which may refuse in its own words, a spend cap with
+   *  no room for the person's time, shown to the viewer as `take_refused`), then moves the session's driving gate into the person's sticky hold
+   *  (DrivingGate.take: until the viewer's `give`, the gate's idle window with no input, its away window with no viewer, or the session's end),
+   *  and the host's `end` is called once when the hold ends, with why. Outside a hold every input, navigation and dialog answer is dropped here,
+   *  before the browser (`held not_taken`), whatever the page does. A watching viewer keeps no session from its idle release, as a read-only one
+   *  does; a held one is kept by its hold. Ignored with `readOnly`. */
+  takeOver?: { take(tag: string): Promise<{ refused: string } | { end(why: HoldEnd): void }> };
   /** How long a connection may stay silent before its hello, and how many may wait for one. */
   helloTimeoutMs?: number;
   maxPending?: number;
@@ -72,11 +79,12 @@ const MAX_BAD_MESSAGES = 20;
 const BAD_WINDOW_MS = 10_000;
 
 /** A message waiting its turn behind the browser command that is running: `message` is replaced while it waits when a later message of the same kind supersedes it. */
-type Queued = { message: Exclude<ClientMessage, { type: "hello" }>; started: boolean };
+type Queued = { message: Exclude<ClientMessage, { type: "hello" | "take" | "give" }>; started: boolean };
 type Viewer = { conn: WsConn; stream: Stream; gate: DrivingGate; unsubscribe: () => void; chain: Promise<void>; bad: number[]; queued: number; tail: Queued | null };
-type Entry = { tag: string; id: string; token: string; cdpUrl: string; view: LiveView | null; released: boolean; viewer: Viewer | null; pending: Set<WsConn> };
+type Entry = { tag: string; id: string; token: string; cdpUrl: string; view: LiveView | null; released: boolean; viewer: Viewer | null; pending: Set<WsConn>; taking?: boolean };
 
 export function createLiveView(options: LiveViewOptions): LiveViewHost {
+  const takeOver = options.readOnly ? undefined : options.takeOver;
   const helloTimeoutMs = options.helloTimeoutMs ?? 5_000;
   const maxPending = options.maxPending ?? 8;
   const byTag = new Map<string, Entry>();
@@ -181,9 +189,10 @@ export function createLiveView(options: LiveViewOptions): LiveViewHost {
     } catch { conn.close(1011, "unavailable"); return; }
     entry.viewer = viewer;
     // A person who sits still with the viewer open is still using the session: custody does not release it on its own while this is set. A read-only viewer
-    // only watches, so it keeps nothing open.
-    if (!options.readOnly) viewer.gate.setViewing(true);
-    send(conn, { type: "ready", drive: viewer.gate.state(), ...(options.readOnly ? { readOnly: true as const } : {}) });
+    // only watches, so it keeps nothing open; a take-over viewer keeps it only by its hold, and its presence keeps the hold from its away window.
+    if (takeOver) viewer.gate.setPresent(true);
+    else if (!options.readOnly) viewer.gate.setViewing(true);
+    send(conn, { type: "ready", drive: viewer.gate.state(), ...(options.readOnly ? { readOnly: true as const } : takeOver ? { takeOver: true as const, held: viewer.gate.held() } : {}) });
   };
 
   const onViewerMessage = (entry: Entry, viewer: Viewer, data: string | Buffer, binary: boolean): void => {
@@ -198,6 +207,9 @@ export function createLiveView(options: LiveViewOptions): LiveViewHost {
     if (!message || message.type === "hello") { excess("bad_message"); return; }
     // A read-only viewer's input never reaches the browser, whatever its page does: dropped here, and one that keeps sending it is closed as any excess is.
     if (options.readOnly) { excess("read_only"); return; }
+    if (message.type === "take" || message.type === "give") { if (takeOver) hands(entry, viewer, message.type); else excess("bad_message"); return; }
+    // A take-over viewer drives only while it holds the browser: anything else is dropped here, before the browser. A hover is not worth a notice.
+    if (takeOver && !viewer.gate.held()) { if (!(message.type === "mouse" && message.action === "move")) send(viewer.conn, { type: "held", reason: "not_taken" }); return; }
     // While a model call is in flight the input is dropped, not queued: a keystroke replayed after the model moved the page is worse than a lost one.
     if (viewer.gate.input() === "agent_acting") { send(viewer.conn, { type: "held", reason: "agent_acting" }); return; }
     // Mouse moves and scrolls arrive once per animation frame, so a slow browser command is always followed by a run of them. A run is combined into its last waiting
@@ -225,6 +237,8 @@ export function createLiveView(options: LiveViewOptions): LiveViewHost {
       if (viewer.tail === item) viewer.tail = null;
       const message = item.message;
       if (entry.viewer !== viewer) { viewer.queued -= 1; return; }
+      // The hold may have ended while the message waited (handed back, idle, the agent's ask answered): it is not delivered.
+      if (takeOver && !viewer.gate.held()) { send(viewer.conn, { type: "held", reason: "not_taken" }); viewer.queued -= 1; return; }
       // Messages wait their turn behind a slow command, so the gate is asked again at delivery: the model may have taken the browser since the message arrived.
       if (viewer.gate.input() === "agent_acting") { send(viewer.conn, { type: "held", reason: "agent_acting" }); viewer.queued -= 1; return; }
       // The person's turn must not lapse while their own command runs (a navigation can take seconds, the window is 3 s): it is renewed until the command returns.
@@ -239,12 +253,37 @@ export function createLiveView(options: LiveViewOptions): LiveViewHost {
     });
   };
 
+  /** A take-over viewer's `take` or `give`. A take asks the host first (one at a time), and the hold then starts on the session's gate; however the
+   *  hold ends, the host's `end` is called and the viewer of the moment is told. */
+  const hands = (entry: Entry, viewer: Viewer, what: "take" | "give"): void => {
+    const gate = viewer.gate;
+    if (what === "give") { gate.give("given"); return; }
+    if (gate.held()) { send(viewer.conn, { type: "hold", held: true }); return; }
+    if (entry.taking) return;
+    entry.taking = true;
+    void takeOver!.take(entry.tag).then((answer) => {
+      entry.taking = false;
+      if ("refused" in answer) { if (entry.viewer === viewer) send(viewer.conn, { type: "take_refused", message: answer.refused }); return; }
+      const ended = (why: HoldEnd): void => {
+        try { answer.end(why); } catch { /* the host's own bookkeeping cannot keep the hold */ }
+        if (entry.viewer) send(entry.viewer.conn, { type: "hold", held: false, reason: why });
+      };
+      // A session released, or a viewer gone, while the host answered: no hold starts, and the host lets go of what it took for one.
+      if (entry.released || entry.viewer !== viewer || !(options.gates ?? drivingGates)(entry.tag).take(ended)) { answer.end("released"); return; }
+      send(viewer.conn, { type: "hold", held: true });
+    }, () => {
+      entry.taking = false;
+      if (entry.viewer === viewer) send(viewer.conn, { type: "take_refused", message: "The browser could not be handed to you. Try again." });
+    });
+  };
+
   const endViewer = (entry: Entry): void => {
     const viewer = entry.viewer;
     if (!viewer) return;
     entry.viewer = null;
     viewer.unsubscribe();
-    if (!options.readOnly) viewer.gate.setViewing(false);
+    if (takeOver) viewer.gate.setPresent(false);
+    else if (!options.readOnly) viewer.gate.setViewing(false);
     try { viewer.stream.close(); } catch { /* the stream is gone either way */ }
   };
 
@@ -305,7 +344,7 @@ export function createLiveView(options: LiveViewOptions): LiveViewHost {
       return entry.view;
     },
     known: (tag) => { const entry = byTag.get(tag); return entry && !entry.released ? entry.view : null; },
-    driving: (tag) => { const entry = byTag.get(tag); return !!entry?.viewer && (options.gates ?? drivingGates)(tag).state() === "person"; },
+    driving: (tag) => { const entry = byTag.get(tag); if (!entry) return false; const gate = (options.gates ?? drivingGates)(tag); return gate.held() || (!!entry.viewer && gate.state() === "person"); },
     tracked: () => ({ sessions: byTag.size, opening: [...opening.values()].reduce((n, marks) => n + marks.size, 0) }),
     release,
     async close() {

@@ -5,6 +5,9 @@
 // its first message; nothing else is sent before the server has answered. Frames arrive as binary [u16 w][u16 h][jpeg] and are drawn to the canvas; mouse, wheel, key and paste on the canvas go
 // back as protocol.ts messages in the page's own CSS pixels (the w and h of the latest frame), and the address bar and its back and reload buttons go back as `nav`. It writes no frame to
 // storage: a frame lives in the canvas and in the one decode in flight.
+//
+// A take-over viewer (`ready` with takeOver) shows Take over / Hand back in its own bar: it sends `take` and `give`, and nothing else until the host
+// says it holds the browser (`hold`); the host drops anything else it sends outside a hold anyway (held not_taken).
 
 const html = `<!doctype html>
 <html lang="en">
@@ -19,6 +22,7 @@ const html = `<!doctype html>
   <button id="back" type="button" title="Back" aria-label="Back">&#8592;</button>
   <button id="reload" type="button" title="Reload" aria-label="Reload">&#8635;</button>
   <form id="go" autocomplete="off"><input id="url" type="text" spellcheck="false" aria-label="Address" placeholder="https://"></form>
+  <button id="hands" type="button" hidden>Take over</button>
   <span id="drive" aria-live="polite"></span>
 </header>
 <div id="notice" role="status" hidden></div>
@@ -48,7 +52,10 @@ body { display: flex; flex-direction: column; }
 #drive { min-width: 9em; text-align: right; color: #aaa; }
 #drive.agent { color: #f0b429; }
 #drive.person { color: #6cc070; }
-.view-only #screen { cursor: not-allowed; }
+.view-only #screen, .not-held #screen { cursor: not-allowed; }
+#bar #hands { background: #1f4d2b; border-color: #2f6b3d; }
+#bar #hands.holding { background: #5a3b00; border-color: #7a5410; }
+#hands[hidden] { display: none; }
 #notice { padding: 6px 10px; background: #5a3b00; color: #ffe2a8; }
 #notice.fatal { background: #5a1a1a; color: #ffc4c4; }
 #stage { flex: 1; min-height: 0; display: flex; align-items: flex-start; justify-content: center; overflow: auto; }
@@ -100,7 +107,7 @@ const js = `"use strict";
   }
   function setDrive(state) {
     drive.className = state === "agent" || state === "person" ? state : "";
-    drive.textContent = readOnly ? "view only" : state === "agent" ? "the agent is acting" : state === "person" ? "you are driving" : "";
+    drive.textContent = readOnly ? "view only" : takeOver && holding ? "you have the browser" : takeOver && state === "person" ? "" : state === "agent" ? "the agent is acting" : state === "person" ? "you are driving" : "";
   }
 
   if (!token) { fatal = true; say("This link has no token. Open the live view from the link the host gave you.", true); return; }
@@ -123,8 +130,27 @@ const js = `"use strict";
     document.body.classList.add("view-only");
     ["back", "reload", "url"].forEach(function (id) { $(id).disabled = true; });
   }
+  // A take-over viewer drives only while it holds the browser: Take over asks for it, Hand back gives it back.
+  var takeOver = false;
+  var holding = false;
+  var handsEl = $("hands");
+  var NOT_TAKEN = "Take over to drive the browser: your input is not sent until you do.";
+  function showHands() {
+    handsEl.hidden = !takeOver;
+    handsEl.textContent = holding ? "Hand back" : "Take over";
+    handsEl.className = holding ? "holding" : "";
+    document.body.classList.toggle("not-held", takeOver && !holding);
+    // A view-only viewer's controls stay off (viewOnly); a take-over one's are on only while it holds the browser.
+    if (takeOver) ["back", "reload", "url"].forEach(function (id) { $(id).disabled = !holding; });
+  }
+  handsEl.addEventListener("click", function () {
+    if (!ready || !takeOver || ws.readyState !== 1) return;
+    ws.send(JSON.stringify({ type: holding ? "give" : "take" }));
+    if (!holding) say("Taking over the browser...");
+  });
   function send(message) {
     if (readOnly) return;
+    if (takeOver && !holding) { if (ready && !(message.type === "mouse" && message.action === "move")) say(NOT_TAKEN); return; }
     if (!ready) { if (!(message.type === "mouse" && message.action === "move")) stillConnecting(); return; }
     if (ws.readyState === 1) ws.send(JSON.stringify(message));
   }
@@ -170,7 +196,8 @@ const js = `"use strict";
   $("dialog-accept").addEventListener("click", function () { answer(true); });
   $("dialog-dismiss").addEventListener("click", function () { answer(false); });
 
-  var HELD = { agent_acting: "The agent is acting, so that input was held. Try again in a moment.", no_page: "There is no page to drive yet.", bad_message: "That input was not understood.", read_only: "This view is view-only: your input is not sent." };
+  var HELD = { agent_acting: "The agent is acting, so that input was held. Try again in a moment.", no_page: "There is no page to drive yet.", bad_message: "That input was not understood.", read_only: "This view is view-only: your input is not sent.", not_taken: NOT_TAKEN };
+  var HOLD_ENDED = { given: "You handed the browser back to the agent.", answered: "The agent's request was answered, so the browser went back to the agent.", idle: "The browser went back to the agent: no input came from you for a while.", away: "The browser went back to the agent while this view was closed.", released: "The browser's session ended." };
   var REFUSED = { unauthorized: "This link's token was not accepted.", viewer_in_use: "Another viewer already has this session.", released: "This session has been released.", bad_message: "The host did not understand this viewer." };
   ws.onmessage = function (event) {
     if (typeof event.data !== "string") {
@@ -181,10 +208,12 @@ const js = `"use strict";
     }
     var m;
     try { m = JSON.parse(event.data); } catch (e) { return; }
-    if (m.type === "ready") { ready = true; readOnly = m.readOnly === true; if (readOnly) viewOnly(); setDrive(m.drive); say(""); focusScreen(); expectPicture(); }
+    if (m.type === "ready") { ready = true; readOnly = m.readOnly === true; takeOver = !readOnly && m.takeOver === true; holding = takeOver && m.held === true; if (readOnly) viewOnly(); showHands(); setDrive(m.drive); say(""); focusScreen(); expectPicture(); }
+    else if (m.type === "hold") { holding = m.held === true; showHands(); setDrive(holding ? "person" : "idle"); say(holding ? "" : (HOLD_ENDED[m.reason] || "The browser went back to the agent.")); if (holding) focusScreen(); }
+    else if (m.type === "take_refused") say(typeof m.message === "string" && m.message ? m.message : "The browser could not be handed to you.");
     else if (m.type === "no_page") { noPage = true; stillEl.hidden = true; clearTimeout(stillTimer); say(NO_PAGE); }
     // "No page yet" stays until a page or a frame comes: who drives meanwhile changes nothing on a browser with no page.
-    else if (m.type === "status") { setDrive(m.drive); if (noPage) return; if (m.drive !== "agent") say(""); else say("The agent is acting. Your input is held until it is done."); }
+    else if (m.type === "status") { setDrive(m.drive); if (noPage || takeOver) return; if (m.drive !== "agent") say(""); else say("The agent is acting. Your input is held until it is done."); }
     else if (m.type === "page") { if (noPage) { noPage = false; say(""); } document.title = m.title ? m.title + " - Live view" : "Live view"; if (document.activeElement !== urlBox) urlBox.value = m.url; if (m.url !== shownUrl) { shownUrl = m.url; expectPicture(); } }
     else if (m.type === "dialog") showDialog(m);
     else if (m.type === "dialog_closed") hideDialog();
@@ -192,7 +221,7 @@ const js = `"use strict";
     else if (m.type === "refused") { fatal = true; ready = false; stillEl.hidden = true; say(REFUSED[m.reason] || "The host refused this viewer.", true); }
     else if (m.type === "ended") { fatal = true; ready = false; say("This session has ended: the browser was released.", true); }
   };
-  ws.onclose = function () { closed = true; ready = false; setDrive(""); if (!fatal) say("Disconnected. Open the live view link again.", true); };
+  ws.onclose = function () { closed = true; ready = false; holding = false; handsEl.disabled = true; setDrive(""); if (!fatal) say("Disconnected. Open the live view link again.", true); };
 
   // Input: the page's CSS pixels, from the canvas's own box and the latest frame's width and height.
   var lastPoint = null;

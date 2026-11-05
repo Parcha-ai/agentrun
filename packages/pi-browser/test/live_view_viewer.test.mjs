@@ -545,3 +545,63 @@ test("a view-only viewer: ready with readOnly shows 'view only', turns its contr
   web.send({ type: "page", url: "https://example.com/", title: "Example" });
   assert.ok(await until(async () => (await state()).notice === ""), "a page clears it");
 });
+
+test("a take-over viewer: Take over and Hand back in its own bar send take and give; nothing else is sent until the host says it holds the browser; a refusal is shown in the host's words, and the end of a hold says how", { skip: NO_CHROME, timeout: 100_000 }, async (t) => {
+  const TOKEN = randomBytes(32).toString("base64url");
+  const web = await viewerServer(TOKEN);
+  const root = await mkdtemp(path.join(tmpdir(), "lv-viewer-"));
+  const provider = cdpProvider({ chrome: { executablePath: CHROME, profileRoot: root } });
+  let ref = null;
+  const tabs = [];
+  t.after(async () => { for (const tab of tabs) tab.close(); if (ref) await within(20_000, provider.release(ref)); await within(5_000, web.close()); await within(5_000, rm(root, { recursive: true, force: true })); }, { timeout: 40_000 });
+  ref = await within(60_000, provider.create({ tag: "lv-viewer-take", maxLifetimeS: 600, idleTimeoutS: 60, proxies: false, verified: false, captcha: false, viewport: { width: 1000, height: 700 }, metadata: {} }, new AbortController().signal));
+  assert.ok(ref, "the browser started");
+  const attached = await within(30_000, provider.attach(ref));
+  const viewer = await openTab(attached.sdkCdpUrl, `${web.base}/v/${web.id}#t=${TOKEN}`);
+  tabs.push(viewer);
+  assert.ok(await until(() => web.received.length >= 1), "the viewer spoke");
+  web.send({ type: "ready", drive: "idle", takeOver: true, held: false });
+  const state = () => viewer.evaluate(`({ hands: document.getElementById("hands").hidden ? null : document.getElementById("hands").textContent, url: document.getElementById("url").disabled, drive: document.getElementById("drive").textContent, notice: document.getElementById("notice").hidden ? "" : document.getElementById("notice").textContent })`);
+  assert.ok(await until(async () => (await state()).hands === "Take over"), "Take over shows");
+  assert.equal((await state()).url, true, "the address bar is off until the browser is held");
+  // A frame, so the canvas maps a click to the page.
+  const jpeg = Buffer.from(await viewer.evaluate(`(async () => { const c = document.createElement("canvas"); c.width = 40; c.height = 30; c.getContext("2d").fillRect(0, 0, 40, 30); const b = await new Promise((r) => c.toBlob(r, "image/jpeg")); return Array.from(new Uint8Array(await b.arrayBuffer())); })()`));
+  web.sendFrame(jpeg, 40, 30);
+  const press = async (id) => {
+    const box = await viewer.evaluate(`(() => { const r = document.getElementById(${JSON.stringify(id)}).getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+    await viewer.send("Input.dispatchMouseEvent", { type: "mousePressed", x: box.x, y: box.y, button: "left", clickCount: 1 });
+    await viewer.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: box.x, y: box.y, button: "left", clickCount: 1 });
+  };
+  const key = async () => {
+    await viewer.evaluate(`document.getElementById("sink").focus()`);
+    await viewer.send("Input.dispatchKeyEvent", { type: "keyDown", key: "a", code: "KeyA", text: "a", windowsVirtualKeyCode: 65 });
+    await viewer.send("Input.dispatchKeyEvent", { type: "keyUp", key: "a", code: "KeyA", windowsVirtualKeyCode: 65 });
+  };
+  await key();
+  await press("screen");
+  await settle(300);
+  assert.deepEqual(web.received, [{ type: "hello", token: TOKEN }], "nothing but the hello before the browser is held");
+  assert.match((await state()).notice, /Take over to drive the browser/);
+
+  await press("hands");
+  assert.ok(await until(() => web.received.some((m) => m.type === "take")), "Take over sends take");
+  web.send({ type: "take_refused", message: "spend_cap_reached: Not sent: the run has spent $0.99 of its $1.00 cap." });
+  assert.ok(await until(async () => /spend_cap_reached: Not sent/.test((await state()).notice)), "a refusal is shown in the host's words");
+  assert.equal((await state()).hands, "Take over", "and nothing is held");
+
+  web.send({ type: "hold", held: true });
+  assert.ok(await until(async () => (await state()).hands === "Hand back"), "held: Hand back shows");
+  assert.deepEqual([(await state()).url, (await state()).drive], [false, "you have the browser"]);
+  const before = web.received.length;
+  await key();
+  assert.ok(await until(() => web.received.slice(before).some((m) => m.type === "key" && m.action === "down" && m.key === "a")), "a key is sent while held");
+  await press("hands");
+  assert.ok(await until(() => web.received.some((m) => m.type === "give")), "Hand back sends give");
+  web.send({ type: "hold", held: false, reason: "given" });
+  assert.ok(await until(async () => (await state()).hands === "Take over"));
+  assert.match((await state()).notice, /You handed the browser back to the agent/);
+  web.send({ type: "hold", held: true });
+  web.send({ type: "hold", held: false, reason: "away" });
+  assert.ok(await until(async () => /went back to the agent while this view was closed/.test((await state()).notice)), "an away end says so");
+  assert.deepEqual(web.received.filter((m) => !["hello", "take", "give", "key", "mouse"].includes(m.type)), [], "nothing else was sent");
+});

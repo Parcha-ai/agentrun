@@ -165,6 +165,19 @@ one that keeps sending is closed), its `ready` carries `readOnly: true` and the 
 keeps no session open. A browser with no page to show (a headless one that starts with none, or whose last page closed) sends `no_page`, and the page says "No page yet"
 until one opens.
 
+`takeOver: { take(tag) }` makes the view drive only once the person takes the browser. The page shows **Take over** and **Hand back** in its own bar and sends `take`
+and `give`; outside a hold every input, navigation and dialog answer is dropped on the server (`held not_taken`). A `take` asks the host's `take(tag)` first, which may
+refuse in its own words (a spend cap with no room for the person's time; the viewer shows `take_refused` with them), or answers `{ end(why) }`; the session's gate then
+holds the browser for the person (`drivingGates(tag).take()`) until their `give`, `holdIdleMs` with no input (15 minutes), `holdAwayMs` with no viewer connected
+(2 minutes), or the session's release, and `end` is called once with why (`given`, `answered`, `idle`, `away`, `released`). The viewer is told `hold` as it starts
+and ends; `ready` carries `takeOver: true` and whether it holds now, so a viewer that reconnects within the away window still holds it. While held, every model call
+waits inside its tool (it does not fail; an abort ends the wait with nothing done), then goes on with its old element ids dropped and told plainly that the person had
+the browser and the page may have changed. Each change of hands moves the gate's epoch (`drivingGates(tag).epoch()`), and a driver a call took before it is refused at
+its next act (a `FenceRefusal`), so an agent action from before the person took over never reaches the page. A host gives the browser back itself with
+`drivingGates(tag).give("answered")` (an agent's handoff that was answered). A watching take-over viewer keeps no session from its idle release; a held one is kept by
+its hold. `viewerAssets` (from `@parcha/pi-browser/live-view`) are the viewer's page, script and style, for a host that serves the page from its own origin and
+passes only the WebSocket to the live view.
+
 Limits: JS dialogs show with accept and dismiss. A file chooser and downloads are not supported.
 
 ## Saved sign-ins

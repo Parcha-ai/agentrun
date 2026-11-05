@@ -11,7 +11,8 @@
 //
 // A session's DevTools address (what the live view streams from) is a fake DevTools endpoint of this module's own, on
 // loopback in the run's process, never the backend's sentinel vendor address: it has one page, and sends one screencast
-// frame (FRAME, bytes no image decoder needs) once the page's screencast starts. It is started at the first attach.
+// frame (FRAME, bytes no image decoder needs) once the page's screencast starts. It is started at the first attach. Each
+// Input command it gets (the person's input, through the live view) is logged by its name alone.
 import { appendFileSync, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { createServer } from "node:http";
@@ -63,6 +64,8 @@ const devtoolsUrl = () => (devtools ??= new Promise((resolve) => {
     const page = { targetId: "PAGE1", type: "page", title: "Example", url: "https://example.test/", attached: false };
     socket.on("data", decoder((text) => {
       const { id, method, sessionId } = JSON.parse(text);
+      // What the person's input became, for a test to read: the command's name alone, never its text.
+      if (method.startsWith("Input.") && process.env.FAUX_BROWSER_LOG) appendFileSync(process.env.FAUX_BROWSER_LOG, `${JSON.stringify({ op: "devtools", method })}\n`);
       send({ id, ...(sessionId ? { sessionId } : {}), result: {} });
       if (method === "Target.setDiscoverTargets") send({ method: "Target.targetCreated", params: { targetInfo: page } });
       else if (method === "Target.attachToTarget") send({ method: "Target.attachedToTarget", params: { sessionId: "FLAT1", targetInfo: page, waitingForDebugger: false } });
