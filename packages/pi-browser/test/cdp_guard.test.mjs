@@ -18,7 +18,7 @@ test("navigations and new targets: the scheme rule; refused in words that name n
   for (const method of ["Page.navigate", "Target.createTarget"]) {
     assert.equal(cdpRefusal({ method, params: { url: "https://example.com/" } }, OWN), null);
     assert.equal(cdpRefusal({ method, params: { url: `${OWN}/blank.html` } }, OWN), null);
-    assert.equal(cdpRefusal({ method, params: { url: "file:///srv/data/secret" } }, OWN), GUARD_REFUSAL);
+    assert.equal(cdpRefusal({ method, params: { url: "file:///var/lib/app/secret" } }, OWN), GUARD_REFUSAL);
     assert.equal(cdpRefusal({ method, params: { url: "chrome://settings" } }, OWN), GUARD_REFUSAL);
   }
   assert.equal(cdpRefusal({ method: "Target.createTarget", params: {} }), null, "no url is about:blank");
