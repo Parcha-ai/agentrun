@@ -992,6 +992,36 @@ lists the last 50 attempts (`webhook_id`, type, status code, latency, error, whe
 410 turned off sends nothing, a test or a redelivery included (`409 webhook_off`), until a `PUT` sets it again.
 `DELETE /v2/settings/webhook` removes the webhook and drops its pending messages.
 
+## Schedules
+
+A schedule starts an agent's runs with no one there. `POST /v2/triggers` with a `source` and a `target`:
+
+```json
+{ "name": "nightly triage",
+  "source": { "kind": "schedule", "cron": "30 1 * * *", "timezone": "America/Los_Angeles" },
+  "target": { "kind": "start_run", "agent_id": "triage", "input": { "content": "Triage last night's issues." },
+              "max_cost_usd": 2 } }
+```
+
+A source is a cron line of five fields in an IANA zone (default UTC), `{at}` for one time (the trigger turns itself off
+after it fires), or `{every_s, start_at?}` for every N seconds, from 60 to a year and a day, on the grid from `start_at`. A time a clock
+change repeats fires once, at its first pass; one it skips fires at the first time after the gap. Each next time is
+reckoned from the last nominal one, so a timer that wakes late does not drift. `max_cost_usd` is required: every run a
+trigger starts is capped, and a workflow agent is refused, since a workflow run's spend is not capped here. Each run's
+input ends with a line naming the schedule and the time it fired for, in its zone, and the run's `trigger` names the
+trigger and the firing.
+
+A firing starts its run once. Its key comes from the trigger and its nominal time, it is recorded `due` in
+`DIR/triggers.json` (written whole and synced) before its run starts, and the run is started under that key, so a firing
+a restart drives again finds its run. A firing's key stays bound to that run: when the server stopped while setting the
+run up, the firing reads `failed` ("The server stopped while setting up the run.") with that run's id, it never fires
+again, the next firing goes ahead, and `POST /v2/triggers/{id}/fire` is how a person tries it again. While the trigger's last run is active (working, or waiting on a person), a firing
+is `skipped`, with why; a full server (`429`) keeps it due and tries again. Times missed while the server was down are
+one `missed` firing with their count, and the schedule goes on from now. `PATCH /v2/triggers/{id}` changes it, and
+`{enabled: false}` pauses it: the time it was off is skipped, not caught up. `POST /v2/triggers/{id}/fire` runs it now,
+once per `Idempotency-Key` (required): the same key within `limits.idempotency_ttl_s` answers its firing, after the
+firing has left the history too, and later it is a new firing that a run the key started still answers. `GET /v2/triggers/{id}/firings` lists its last 200 firings.
+
 ## What it serves
 
 | Route | Here |
@@ -1022,6 +1052,7 @@ lists the last 50 attempts (`webhook_id`, type, status code, latency, error, whe
 | `GET /settings/mcp-servers`, `POST /settings/mcp-servers/preview`, `GET`, `PUT` and `DELETE /settings/mcp-servers/{name}`, `POST .../{name}/refresh` | [MCP servers](#mcp-servers), this server's own routes (`x-agentrun-serve: "mcpservers/1"`): preview a remote MCP server's tools, save it with its credential sealed, read it back without the credential, refresh its tools, or forget it. |
 | `GET /settings/tools`, `PUT /settings/tools` | This server's own: the providers of `web_search` and `web_fetch` ([search and fetch](#search-and-fetch)). |
 | `GET`, `PUT` and `DELETE /settings/webhook`, `POST /settings/webhook/test`, `GET /settings/webhook/deliveries` and `POST .../deliveries/{webhook_id}/redeliver` | [Webhooks](#webhooks), this server's own routes (`x-agentrun-serve: "webhook/1"`): the URL run notices are POSTed to, signed by the Standard Webhooks spec; never its secret but once. |
+| `GET` and `POST /triggers`, `GET`, `PATCH` and `DELETE /triggers/{id}`, `POST /triggers/{id}/fire`, `GET /triggers/{id}/firings` | [Schedules](#schedules), this server's own routes (`x-agentrun-serve: "trigger/1"`): schedules that start an agent's capped runs, each firing once, and their history. |
 | `POST /mcp` | This server's own route (`x-agentrun-serve: "mcp/1"`): the [MCP endpoint](#for-coding-agents), Streamable HTTP with one JSON-RPC message per POST (`initialize`, `ping`, `tools/list`, `tools/call`), answered as JSON, stateless. Its ten tools call these routes in process with the caller's token. The Bearer token only, never the page's cookie; a browser `Origin` other than this server's own is `403`; any other method is `405`. |
 | `GET /usage` | The runs' cost estimates, by meter, agent, key, day or region (`key` and `region` are one line, `local`). A run of unknown cost adds no dollars, so no sum is ever null, and is counted in `unpriced_runs` (in the total and in each line) so it never passes as $0. |
 

@@ -12,6 +12,8 @@ export type Json = Record<string, unknown>;
 export const isObject = (value: unknown): value is Json => typeof value === "object" && value !== null && !Array.isArray(value);
 
 /** JSON with every object's keys sorted, so two equal values read the same. */
+/** How long an Idempotency-Key answers with its first answer (capabilities' limits.idempotency_ttl_s). */
+export const IDEMPOTENCY_TTL_S = 86_400;
 export const stable = (value: unknown): string =>
   Array.isArray(value) ? `[${value.map(stable).join(",")}]` : isObject(value) ? `{${Object.keys(value).sort().map((k) => `${JSON.stringify(k)}:${stable(value[k])}`).join(",")}}` : JSON.stringify(value);
 
