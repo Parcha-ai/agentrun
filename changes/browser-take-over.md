@@ -1,5 +1,5 @@
 ---
-packages: @parcha/agentrun-serve, @parcha/pi-browser
+packages: @parcha/agentrun-serve, @parcha/pi-browser, @parcha/pi-durable-agent
 kind: feature
 ---
 The owner takes over a run's browser from the live view and hands it back, and the agent can ask them to. Capabilities say so: `features.browser_live: {read_only: false, take_over: true, ask: true}`.
@@ -10,3 +10,4 @@ The owner takes over a run's browser from the live view and hands it back, and t
 - A browser session a restarted run's process keeps gets its viewer handed over again: the owner no longer reads `none` while it is live.
 - **The viewer's code is the server's own.** Serve now serves the viewer's page, script and style from the pi-browser it has installed, never from the run's port; only the viewer's WebSocket goes to the run.
 - `@parcha/pi-browser`'s live view takes `takeOver: { take(tag) }`, the driving gate gains `take`, `give`, `held`, `epoch`, `setPresent` and `untilFree` (with `holdIdleMs` and `holdAwayMs`), and `viewerAssets` is exported from `@parcha/pi-browser/live-view`.
+- The timeline's "Waiting for you" row for a browser hand-over (`agent.handover`) takes the host's redact, as a tool call's arguments do: a held value the model echoes in what it asks never shows; the run's `pending` for a browser ask is redacted the same way.
