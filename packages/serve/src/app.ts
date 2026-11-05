@@ -34,7 +34,7 @@ import { gated, liveView, nodeLog, readLiveView } from "./pause.js";
 import { remotePlace, storedPlace } from "./place.js";
 import { runBox, runBoxProvider } from "./run-box.js";
 import { ASK_TOOL, type ToolBinding, type ToolHost, toolOf, workflowTools } from "./tools.js";
-import { promptOf, systemOf } from "./skills.js";
+import { promptOf, readsFiles, systemOf } from "./skills.js";
 import { EnvironmentLine, environmentLine } from "./environment.js";
 import { effortGuidance } from "./effort-guidance.js";
 import { isObject } from "./validate.js";
@@ -77,11 +77,11 @@ async function claudeModels(env: NodeJS.ProcessEnv, ref: string | undefined) {
   return { models: builtinModels({ authContext: authContextOf(env) }), model: choice.model as ModelRef | undefined, byTier: new Map([["default", choice.model]]), unpriced: new Set<string>() };
 }
 
-/** codex's model and pi-ai's catalog that prices it, where codex reaches OpenAI only through OpenRouter (codexModel: no
+/** codex's model (or opencode's, `harness`, on codex's route) and pi-ai's catalog that prices it, where it reaches OpenAI only through OpenRouter (codexModel: no
  *  OpenAI key needed); anywhere else, the run's usual models (runModels). */
-async function codexModels(env: NodeJS.ProcessEnv, ref: string | undefined) {
-  if (env[FAUX_HARNESS_ENV] || !openRouterOnly("codex", env)) return runModels(env, ref, ["default"], "codex");
-  const choice = await codexModel(env, ref);
+async function codexModels(env: NodeJS.ProcessEnv, ref: string | undefined, harness: "codex" | "opencode" = "codex") {
+  if (env[FAUX_HARNESS_ENV] || !openRouterOnly(harness, env)) return runModels(env, ref, ["default"], harness);
+  const choice = await codexModel(env, ref, harness);
   if ("why" in choice) throw new Error(choice.why);
   const { builtinModels } = await import("@earendil-works/pi-ai/providers/all");
   return { models: builtinModels({ authContext: authContextOf(env) }), model: choice.model as ModelRef | undefined, byTier: new Map([["default", choice.model]]), unpriced: new Set<string>() };
@@ -106,7 +106,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   const env = withSecrets(process.env);
   const workflowNodeList = revision.kind === "workflow" ? workflowNodes(revision.body.workflow, (await import("@parcha/agentrun-dsl")).inspectWorkflow(revision.body.workflow)) : [];
   // codex's model as a save resolves it (codexModel): an OpenAI model it reaches through OpenRouter alone needs no OpenAI key.
-  const chosen = revision.kind === "agentic" && revision.body.harness === "claude-agent" && !env[FAUX_HARNESS_ENV] ? await claudeModels(env, revision.body.model) : revision.kind === "agentic" && revision.body.harness === "codex" ? await codexModels(env, revision.body.model) : revision.kind === "agentic" ? await runModels(env, revision.body.model, ["default"], revision.body.harness) : await runModels(env, undefined, llmTiers(workflowNodeList, nodeTiers(workflowNodeList)));
+  const chosen = revision.kind === "agentic" && revision.body.harness === "claude-agent" && !env[FAUX_HARNESS_ENV] ? await claudeModels(env, revision.body.model) : revision.kind === "agentic" && (revision.body.harness === "codex" || revision.body.harness === "opencode") ? await codexModels(env, revision.body.model, revision.body.harness) : revision.kind === "agentic" ? await runModels(env, revision.body.model, ["default"], revision.body.harness) : await runModels(env, undefined, llmTiers(workflowNodeList, nodeTiers(workflowNodeList)));
   const { model, byTier } = chosen;
   // Read before the run opens its store: what it spent in earlier processes counts against its cap.
   const cap = capOf(process.env);
@@ -138,9 +138,10 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   if (revision.kind === "agentic" && revision.body.harness && revision.body.harness !== DEFAULT_HARNESS) {
     const harness = revision.body.harness;
     // claude-agent loads the skills its adapter takes itself (its Skill tool), and its prompt keeps only the ones it would
-    // refuse; codex's prompt, and a faux harness's, keep every skill (skills.ts).
+    // refuse; codex's prompt, and a faux harness's, name each skill and its file when the run reads its files (it reads
+    // the SKILL.md when it fits), else keep every skill whole (skills.ts).
     const check = harness === "claude-agent" && !env[FAUX_HARNESS_ENV] ? await claudeSkillCheck() : undefined;
-    const { system: instructions, native } = await systemOf(learned.instructions, learned.skills, where.work, check);
+    const { system: instructions, native } = await systemOf(learned.instructions, learned.skills, where.work, check, { onDemand: readsFiles(revision.body.tools) });
     // The session's system prompt starts with the line, made as this process opens it: a run resumed on a later day is
     // opened with that day.
     const spec = { key: `run:${run.id}`, label: run.agent, system: [environmentLine(), instructions, guidance].filter((text): text is string => Boolean(text)), context: "fresh" as const, thinking: thinkingFor(harness, thinkingLevel) };
@@ -197,7 +198,8 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   };
   if (revision.kind === "agentic") {
     const tools = (await Promise.all(revision.body.tools.map((name) => bind(name)))).flatMap((binding) => binding.tools);
-    const instructions = [await promptOf(learned.instructions, learned.skills, where.work), guidance].filter(Boolean).join("\n\n");
+    // Each skill named with its file when the run reads its files (it reads the SKILL.md when it fits), else whole.
+    const instructions = [await promptOf(learned.instructions, learned.skills, where.work, { onDemand: readsFiles(revision.body.tools) }), guidance].filter(Boolean).join("\n\n");
     return { models, registry, ...hooks, ...(stops.length ? { wake } : {}), root: { agent: { model, thinkingLevel, instructions, tools } }, onOpen: async (durable: DurableRun) => (settleIn(rootRecordOf(durable.harness)), marked.open(durable)) } as unknown as AppOptions;
   }
   const input = isObject(meta?.input) ? meta.input : {};
@@ -244,7 +246,8 @@ export default async function app(where: AppContext): Promise<AppOptions> {
       return output;
     } catch (error) {
       const message = String((error as Error)?.message ?? error);
-      log({ t: "effect.end", ...at, status: "failed", error: message.slice(0, 2000), at: new Date().toISOString() });
+      // Whole up to 64 KB, so the server redacts it before it cuts it for the graph (graph-view.ts); a longer one is marked cut.
+      log({ t: "effect.end", ...at, status: "failed", error: message.slice(0, 65_536), ...(message.length > 65_536 ? { error_truncated: true } : {}), at: new Date().toISOString() });
       // An abort (a cancel, the node's deadline) stays a throw: the driver keeps its effect unknown. A tool that failed on
       // its own (an unreadable PDF, a model's refusal) answered: its failure is the effect's outcome, completed, and is
       // thrown past the driver as the call node's typed failure (`failing`), which a collecting map ends that item on.

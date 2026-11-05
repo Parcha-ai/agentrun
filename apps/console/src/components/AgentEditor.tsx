@@ -10,6 +10,7 @@ import { type Agent, type AgentFields, DECISION, defaultTools, harnessOptions, i
 import type { WorkflowCheck } from "@/lib/client";
 import { markdown, when } from "@/lib/format";
 import { harnessDefault, modelLabel, NO_DEFAULT } from "@/lib/models";
+import { newAgentPlace } from "@/lib/place";
 import type { Places } from "@/lib/place";
 import type { ToolChoice } from "@/lib/toolSettings";
 import { cn } from "@/lib/utils";
@@ -68,18 +69,26 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
   const creating = !agent;
   const d = agent?.definition;
   const [step, setStep] = useState<Step>(initialStep ?? (agent?.kind === "workflow" ? "workflow" : "context"));
-  // Tools are on by default: a new agent starts with every tool its harness runs here; an agent keeps its own.
-  const [f, setF] = useState<AgentFields>({ name: d?.name ?? "", description: d?.description ?? "", instructions: d?.instructions ?? "", harness: d?.harness ?? "pi", thinking: d?.thinking, model: d?.model, tools: creating ? defaultTools("pi", caps.tools) : d?.tools ?? [], ...(agent?.kind === "workflow" ? { workflowText: draft ?? JSON.stringify(d!.workflow, null, 2) } : {}) });
+  // Tools are on by default: a new agent starts with every tool its harness runs here; an agent keeps its own. A new
+  // agent starts on the place the server gives new agents (a sandbox where it has a box: bash ticked too); else none.
+  const startPlace = creating ? newAgentPlace(caps.places) : undefined;
+  const [f, setF] = useState<AgentFields>({ name: d?.name ?? "", description: d?.description ?? "", instructions: d?.instructions ?? "", harness: d?.harness ?? "pi", thinking: d?.thinking, model: d?.model, tools: creating ? defaultTools("pi", caps.tools, startPlace) : d?.tools ?? [], ...(startPlace ? { place: startPlace } : {}), ...(agent?.kind === "workflow" ? { workflowText: draft ?? JSON.stringify(d!.workflow, null, 2) } : {}) });
   // The form as it is now, for a save's answer to compare with what that save sent.
   const formNow = useRef(f);
   formNow.current = f;
   // On a new agent, picking another harness re-ticks that harness's tools, until a tool is changed by hand.
   const [toolsTouched, setToolsTouched] = useState(false);
   // The server's tools can arrive after the form opens (capabilities answer late): a new agent's untouched tools follow.
+  // So can its places: a new agent with no place yet takes the served default then; a place the person picked stays.
   const toolsKey = caps.tools.map((t) => `${t.name}:${t.available}:${(t.harnesses ?? []).join("+")}`).join(",");
+  const placeKey = JSON.stringify(newAgentPlace(caps.places) ?? null);
   useEffect(() => {
-    if (creating && !toolsTouched) setF((x) => ({ ...x, tools: defaultTools(x.harness ?? "pi", caps.tools) }));
-  }, [toolsKey]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (!creating) return;
+    setF((x) => {
+      const place = x.place ?? newAgentPlace(caps.places);
+      return { ...x, ...(place ? { place } : {}), ...(toolsTouched ? {} : { tools: defaultTools(x.harness ?? "pi", caps.tools, place) }) };
+    });
+  }, [toolsKey, placeKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const [note, setNote] = useState("");
   const [preview, setPreview] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -218,7 +227,8 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
           {step === "tools" && (
             <div className="max-w-3xl space-y-6">
               <Field label="Tools" note="On by default: the tools this agent's harness runs on this server. Untick one to take it away." error={fieldError("tools")} warning={fieldWarning("tools")}>
-                <ul className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                {/* Columns by a minimum width: as many as fit, one card a row in a narrow pane (a phone on its side). */}
+                <ul className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,18rem),1fr))] gap-2">
                   {caps.tools.filter((t) => workflow || !t.call_only || f.tools?.includes(t.name)).map((t) => {
                     // A call-only tool runs only in a workflow's call node, which needs it in its revision's tools: a
                     // workflow agent picks it like any other. An agentic agent is never offered one, and one it already
@@ -262,13 +272,33 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
             <div className="max-w-3xl space-y-8">
               {!workflow && (
                 <Field label="Harness" note="What runtime runs this agent." error={fieldError("harness")} warning={fieldWarning("harness")}>
-                  <div className={cn("grid grid-cols-1 gap-3", COLUMNS[choices.length] ?? "sm:grid-cols-3")} role="radiogroup" aria-label="Harness">
-                    {choices.map((h) => (
-                      <label key={h.id} title={h.reason} className={cn("flex items-start gap-3 border px-4 py-3", f.harness === h.id ? "border-foreground" : "border-border", h.available ? "cursor-pointer" : "cursor-not-allowed opacity-60")}>
-                        <input type="radio" name="harness" value={h.id} checked={f.harness === h.id} disabled={!h.available && f.harness !== h.id} onChange={() => set({ harness: h.id, ...(creating && !toolsTouched ? { tools: defaultTools(h.id, caps.tools) } : {}) })} className="mt-1 accent-[hsl(var(--primary))]" />
-                        <span><span className="block font-mono text-[13px] font-semibold">{h.label}</span><span className="mt-0.5 block font-mono text-[11px] text-muted-foreground">{h.available ? h.id : h.reason}</span></span>
-                      </label>
-                    ))}
+                  {/* Cards by a minimum width: they wrap to more rows in a narrow pane (a phone on its side), never squeezed. */}
+                  <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,9rem),1fr))] gap-3" role="radiogroup" aria-label="Harness">
+                    {/* A harness this server runs is one label, a click anywhere on the card picks it. One it doesn't run says so
+                        briefly (the served `available: false`), and the server's whole reason, an install command in it, is one
+                        tap away in a details line beside the label (so opening it never picks the card), wrapping inside it. */}
+                    {choices.map((h) => {
+                      const row = (
+                        <>
+                          <input type="radio" name="harness" value={h.id} checked={f.harness === h.id} disabled={!h.available && f.harness !== h.id} onChange={() => set({ harness: h.id, ...(creating && !toolsTouched ? { tools: defaultTools(h.id, caps.tools, f.place) } : {}) })} className="mt-1 accent-[hsl(var(--primary))]" />
+                          <span className="min-w-0"><span className="block break-words font-mono text-[13px] font-semibold">{h.label}</span><span className="mt-0.5 block font-mono text-[11px] text-muted-foreground">{h.available ? h.id : "Not available here"}</span></span>
+                        </>
+                      );
+                      const edge = cn("min-w-0 border px-4 py-3", f.harness === h.id ? "border-foreground" : "border-border");
+                      return h.available ? (
+                        <label key={h.id} className={cn(edge, "flex cursor-pointer items-start gap-3")}>{row}</label>
+                      ) : (
+                        <div key={h.id} className={cn(edge, "opacity-60")}>
+                          <label className="flex cursor-not-allowed items-start gap-3">{row}</label>
+                          {h.reason && (
+                            <details className="mt-2 font-mono text-[11px] text-muted-foreground">
+                              <summary className="cursor-pointer select-none hover:text-foreground">Why, and what to do</summary>
+                              <p className="mt-1 break-words leading-[1.6]">{h.reason}</p>
+                            </details>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
                 </Field>
               )}
@@ -333,8 +363,6 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
   );
 }
 
-/** The harness picker's columns on a wide screen, one per choice: literal class names, so Tailwind keeps them. */
-const COLUMNS: Record<number, string> = { 1: "sm:grid-cols-1", 2: "sm:grid-cols-2", 3: "sm:grid-cols-3", 4: "sm:grid-cols-4", 5: "sm:grid-cols-5" };
 
 const input = "w-full border bg-background px-3 py-2.5 font-mono text-[13px] outline-none placeholder:text-muted-foreground focus:border-border-strong";
 

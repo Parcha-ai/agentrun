@@ -5,7 +5,7 @@ import type { AgentTool, ToolSettings } from "./v2";
 import { decisionStarter, STARTER_PROVIDERS } from "./decisionStarter";
 import { workflowStarter } from "./workflowStarter";
 
-export type HarnessId = "pi" | "claude-agent" | "codex";
+export type HarnessId = "pi" | "claude-agent" | "codex" | "opencode";
 /** `learning`: whether the agent's runs learn (an agentic revision's switch; absent is off). */
 export type Definition = { version: number; name: string; description?: string; instructions?: string; workflow?: unknown; harness?: string; thinking?: string; model?: string; learning?: boolean; skills: string[]; tools: string[]; tool_settings?: ToolSettings; [field: string]: unknown };
 /** What a save's answer says this host lacks to run the revision (`reason` not_set_up_here, say): it saved, and a run of it
@@ -115,9 +115,14 @@ export function toolsFor(harness: string, offers: ToolOffer[]): ToolOffer[] {
 export const sandboxReason = (tool: ToolOffer, place: unknown): string | undefined =>
   tool.sandbox_only && (place as { mode?: unknown } | undefined)?.mode !== "sandbox" ? "Sandbox-only: it runs in a box, and this agent's place is the runner" : undefined;
 
-/** A new agent's tools: on by default, every tool its harness runs here that the server can run now, but a sandbox-only
- *  one (bash): a new agent's place is the runner, which has no shell. */
-export const defaultTools = (harness: string, offers: ToolOffer[]) => toolsFor(harness, offers).filter((t) => t.available && !t.sandbox_only).map((t) => t.name);
+/** The tools the server refuses in a sandbox place (serve's runnable.ts, `runnerOnly`): the browser, which files the run's
+ *  work/ from the server by path. The server's own rule, until its capabilities mark them. */
+const RUNNER_ONLY: ReadonlySet<string> = new Set(["browser"]);
+
+/** A new agent's tools: on by default, every tool its harness runs here that the server can run now. In a sandbox `place`
+ *  (the server's default for a new agent, where it has a box) a sandbox-only one (bash) too, and never a runner-only one
+ *  (browser); on the runner, no sandbox-only one, since the runner has no shell. */
+export const defaultTools = (harness: string, offers: ToolOffer[], place?: Place) => toolsFor(harness, offers).filter((t) => t.available && (place?.mode === "sandbox" ? !RUNNER_ONLY.has(t.name) : !t.sandbox_only)).map((t) => t.name);
 
 /** The tools that reach the web: a page read (fetch_page, web_fetch) or a search (web_search). The server's capabilities
  *  mark no tool as one, so they are named here. */
@@ -125,10 +130,10 @@ export const WEB_TOOLS: readonly string[] = ["fetch_page", "web_fetch", "web_sea
 /** Whether an agent with these tools can reach the web: through any of WEB_TOOLS. */
 export const reachesWeb = (tools: readonly string[]) => tools.some((t) => WEB_TOOLS.includes(t));
 
-const LABEL: Record<HarnessId, string> = { pi: "Pi", "claude-agent": "Claude", codex: "Codex" };
-const ORDER: HarnessId[] = ["pi", "claude-agent", "codex"];
+const LABEL: Record<HarnessId, string> = { pi: "Pi", "claude-agent": "Claude", codex: "Codex", opencode: "OpenCode" };
+const ORDER: HarnessId[] = ["pi", "claude-agent", "codex", "opencode"];
 
-/** The harness choices: pi, Claude and Codex as the server lists them (`GET /v2/capabilities` `harnesses`), each one the
+/** The harness choices: pi, Claude, Codex and OpenCode as the server lists them (`GET /v2/capabilities` `harnesses`), each one the
  *  server does not run shown disabled with its reason. A harness the server does not list is not offered. With
  *  `decision` (a new agent), the starters follow them: Decision, available when the server runs decision workflows,
  *  and Workflow, available on every server. */

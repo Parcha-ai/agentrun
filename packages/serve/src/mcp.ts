@@ -69,7 +69,7 @@ const AGENT_ID = { type: "string", description: "The agent's id." };
 const RUN_ID = { type: "string", description: "The run's id." };
 const DEFINITION = {
   instructions: { type: "string", description: "What the agent does and how: its system prompt." },
-  harness: { type: "string", enum: ["pi", "claude-agent", "codex"], description: "What runs it (default pi). whoami says which this server runs." },
+  harness: { type: "string", enum: ["pi", "claude-agent", "codex", "opencode"], description: "What runs it (default pi). whoami says which this server runs." },
   model: { type: ["string", "null"], description: "provider/model-id. Absent, this server's default (whoami names it)." },
   thinking: { type: ["string", "null"], description: "How hard the model thinks: one of whoami's thinking levels. Absent, the model's own." },
   tools: { type: "array", items: { type: "string" }, description: "The tools it may use, by name (whoami lists them); [] for none. It writes files only with a tool like write." },
@@ -160,7 +160,7 @@ export const TOOLS: Tool[] = [
   },
   {
     name: "runs_get", title: "Get a run", annotations: READ,
-    description: "A run's status and outcome (GET /v2/runs/{run_id}), and console_url (added here), the run's page. pending is what it waits on while its status is input_required, by kind: {kind: \"question\", question} for a question it asked, {kind: \"budget\", cap_usd, spent_usd, needs_usd, said, at} for a run paused at its spend cap (it waits for its cap to be raised; said is why), else null. status is queued, working, input_required, completed, failed, cancelled or paused. A completed run's answer is result.final_answer (agentic) or result.output (workflow); a failed run's reason is error; cost.usd is null while unknown, never $0.",
+    description: "A run's status and outcome (GET /v2/runs/{run_id}), and console_url (added here), the run's page. pending is what it waits on while its status is input_required, by kind: {kind: \"question\", question} for a question it asked, {kind: \"budget\", cap_usd, spent_usd, needs_usd, suggested_cap_usd, said, at} for a run paused at its spend cap (it waits for its cap to be raised, PATCH /v2/runs/{run_id} {max_cost_usd}, which a person decides; suggested_cap_usd is a raise that resumes it; said is why), else null. status is queued, working, input_required, completed, failed, cancelled or paused. A completed run's answer is result.final_answer (agentic) or result.output (workflow); a failed run's reason is error; cost.usd is null while unknown, never $0.",
     inputSchema: { type: "object", required: ["run_id"], properties: { run_id: RUN_ID } },
     run: async (args, context) => {
       const run = text(args, "run_id");

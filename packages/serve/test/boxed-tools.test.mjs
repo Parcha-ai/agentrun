@@ -87,7 +87,7 @@ async function noSecretIn(text, server) {
 test("demo (pi): in a Docker place bash runs in the run's box, and read, write and edit on this machine's work/ that the box binds; bash's out.txt shows in the run's files; the box's environment is the fixed one, with no key or token", { timeout: 120_000 }, async (t) => {
   const server = await boxed(t);
   const { api, data } = server;
-  assert.deepEqual((await api("GET", "/capabilities")).body.places.boxes.find((b) => b.id === "docker"), { id: "docker", available: true, state: "ready", reason: "a faux box (tests)" });
+  assert.deepEqual((await api("GET", "/capabilities")).body.places.boxes.find((b) => b.id === "docker"), { id: "docker", available: true, state: "ready", reason: "a faux box (tests)", network: "none", network_reason: "a faux box (tests)" });
   const made = await api("POST", "/agents", { definition: { id: "boxed", name: "boxed", instructions: "Probe.", place: SANDBOX, tools: ["read", "write", "edit", "bash"] } });
   assert.equal(made.status, 201, JSON.stringify(made.body));
   assert.deepEqual(made.body.warnings, []);
@@ -191,7 +191,7 @@ test("demo (claude-agent, codex): the faux harness's bash, write and read run in
 test("a run request names no place: a sandbox agent's run with place \"runner\" is refused as a field the body does not keep, as network is, and makes no run; without one, the sandbox agent's run is in its box and a runner agent's on the runner", { timeout: 90_000 }, async (t) => {
   const { api, data } = await boxed(t);
   assert.equal((await api("POST", "/agents", { definition: { id: "boxed", name: "boxed", instructions: "Probe.", place: SANDBOX, tools: ["read", "write", "bash"] } })).status, 201);
-  assert.equal((await api("POST", "/agents", { definition: { id: "plain", name: "plain", instructions: "Probe.", tools: ["read", "write"] } })).status, 201);
+  assert.equal((await api("POST", "/agents", { definition: { id: "plain", name: "plain", instructions: "Probe.", place: { mode: "runner" }, tools: ["read", "write"] } })).status, 201);
   const before = (await api("GET", "/runs")).body.runs;
   const network = await api("POST", "/agents/boxed/runs", { input: { content: "hi" }, network: "open" });
   assert.deepEqual([network.status, network.body.error?.code, network.body.error?.fields], [422, "input_invalid", [{ field: "network", reason: "not_allowed", message: "The body keeps no field network." }]]);
@@ -209,7 +209,7 @@ test("a run request names no place: a sandbox agent's run with place \"runner\" 
   assert.ok(specs(data).some((spec) => spec.labels["agentrun.run"] === inBox.run_id), "its box was made");
   assert.deepEqual((await api("GET", `/runs/${inBox.run_id}`)).body.place, SANDBOX);
   const onRunner = await probe(api, "plain", [{ tool: "write", args: { path: "a.txt", content: "a" } }]);
-  assert.deepEqual(onRunner.place, { mode: "runner" }, "no place: this host's default");
+  assert.deepEqual(onRunner.place, { mode: "runner" }, "the revision's place");
   await follow(api, onRunner.run_id, ["completed"]);
   assert.deepEqual(answers(data, onRunner.run_id).map((a) => [a.tool, a.error, a.text]), [["write", false, "Successfully wrote to a.txt"]]);
   assert.ok(!specs(data).some((spec) => spec.labels["agentrun.run"] === onRunner.run_id), "no box for a runner run");
@@ -217,13 +217,13 @@ test("a run request names no place: a sandbox agent's run with place \"runner\" 
   await until(() => liveBoxes(data).length === 0, "the box's destroy at the run's end");
 });
 
-test("bash is a 422 on an agent whose place is the runner (named or by default); a workflow whose place is a box, and the browser in one, are 422", async (t) => {
+test("bash is a 422 on an agent whose place is the runner; a new agent that names no place is given the box, so its bash saves; a workflow whose place is a box, and the browser in one, are 422", async (t) => {
   const { api } = await boxed(t);
-  for (const place of [undefined, { mode: "runner" }]) {
-    const made = await api("POST", "/agents", { definition: { id: "shell", name: "shell", instructions: "Probe.", tools: ["read", "bash"], ...(place ? { place } : {}) } });
-    assert.deepEqual([made.status, made.body.error.fields.map((f) => [f.field, f.reason])], [422, [["definition.tools[1]", "not_an_option"]]], JSON.stringify(place));
-    assert.match(made.body.error.fields[0].message, /bash runs only in a box/);
-  }
+  const made = await api("POST", "/agents", { definition: { id: "shell", name: "shell", instructions: "Probe.", tools: ["read", "bash"], place: { mode: "runner" } } });
+  assert.deepEqual([made.status, made.body.error.fields.map((f) => [f.field, f.reason])], [422, [["definition.tools[1]", "not_an_option"]]]);
+  assert.match(made.body.error.fields[0].message, /bash runs only in a box/);
+  const given = await api("POST", "/agents", { definition: { id: "shell", name: "shell", instructions: "Probe.", tools: ["read", "bash"] } });
+  assert.deepEqual([given.status, given.body.definition.place, given.body.definition.tools], [201, SANDBOX, ["read", "bash"]], JSON.stringify(given.body));
   const flow = await api("POST", "/agents", flowAgent("flow", undefined, { place: SANDBOX }));
   assert.deepEqual([flow.status, flow.body.error.fields.map((f) => f.field)], [422, ["definition.place"]]);
   // The browser writes work/ from this machine by path, which a box's command could turn through a link: runner only.

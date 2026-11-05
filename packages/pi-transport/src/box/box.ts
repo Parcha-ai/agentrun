@@ -110,10 +110,15 @@ export type BoxFacts = {
 	readonly workspace: string;
 	readonly maxLifetimeMs: number | null;
 	/**
-	 * What the box may reach: `open`, `none`, or `allowlist` (the list itself is not repeated here). Absent means
-	 * unknown: a caller that needs `none` or an allowlist must refuse the box.
+	 * What the box may reach: `open`, `none`, or `allowlist` (its hosts in `allow`, where the provider reads them back).
+	 * Absent means unknown: a caller that needs `none` or an allowlist must refuse the box.
 	 */
 	readonly network?: "open" | "none" | "allowlist";
+	/**
+	 * The hosts an `allowlist` box may reach, lower-cased, as the provider reads them back from the box (Daytona). Absent
+	 * means the provider does not say: a caller that must hold a box to a list refuses one without it.
+	 */
+	readonly allow?: readonly string[];
 	/**
 	 * The ports the spec asked to reach from outside, each with the kind of address `Box.endpoint` gives; `[]` when the
 	 * provider made the box with none. Absent means unknown, not none: a caller that must be sure no port is exposed
@@ -230,13 +235,19 @@ export interface Box {
 	 * Optional: a box that keeps a program alive natively (a fake box in a test). `launch`, `launchState` and `launchStop`
 	 * (`@parcha/pi-transport/launch`) use it when it is there, read on every call, and otherwise run the launcher in the box
 	 * with `exec`. A provider leaves it undefined.
+	 *
+	 * @deprecated Removed in 0.1.0-beta.31 with `@parcha/pi-transport/launch`. Run an agent in a box with `@parcha/agentrun-serve`, which uses `./hands` and `./sync`.
 	 */
 	readonly launcher?: BoxLauncher;
 	/** Where `facts().ports` reaches the box from outside. Only on boxes whose provider can expose a port. */
 	endpoint?(port: number, context: Context): Promise<Result<BoxEndpoint, BoxError>>;
 }
 
-/** The launcher's three calls, done natively by a box (`Box.launcher`), with the same answers as the launcher in a box. */
+/**
+ * The launcher's three calls, done natively by a box (`Box.launcher`), with the same answers as the launcher in a box.
+ *
+ * @deprecated Removed in 0.1.0-beta.31 with `@parcha/pi-transport/launch`. Run an agent in a box with `@parcha/agentrun-serve`, which uses `./hands` and `./sync`.
+ */
 export interface BoxLauncher {
 	launch(name: string, spec: LaunchSpec, context: Context): Promise<Result<LaunchState, LaunchError>>;
 	state(launch: Launch, context: Context): Promise<Result<LaunchState | undefined, LaunchError>>;

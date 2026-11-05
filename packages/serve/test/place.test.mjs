@@ -172,9 +172,10 @@ test("an edit without If-Match that another edit overtakes while it is checked i
 test("capabilities lists the place modes, this host's default, and each box: none is enabled on this server", async (t) => {
   const { api } = await serve(t);
   const { places } = (await api("GET", "/capabilities")).body;
-  assert.deepEqual(Object.keys(places), ["modes", "default", "boxes", "allow"]);
+  assert.deepEqual(Object.keys(places), ["modes", "default", "default_place", "default_reason", "boxes", "allow"]);
   assert.deepEqual(places.modes, ["runner", "sandbox"], "one boxed mode: no tool-box");
   assert.equal(places.default, "runner");
+  assert.deepEqual(places.default_place, { mode: "runner" }, "no docker here, so a new agent runs on the runner");
   assert.deepEqual(places.boxes.map((b) => [b.id, b.available]), [["bwrap", false], ["docker", false], ["modal", false], ["daytona", false]]);
   for (const box of places.boxes) assert.equal(box.reason, box.id === "bwrap" ? "the bwrap box is not in this release yet: use the docker box" : `not enabled on this server: start AgentRun with AGENTRUN_BOXES=${box.id}`);
 });

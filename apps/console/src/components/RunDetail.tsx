@@ -109,7 +109,7 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
           )}
           {view.needsYou && (budget ? <BudgetPaused pending={budget} /> : <NeedsYou waiting={waiting} />)}
           {view.needsYou && budget && actions?.onRaiseCap && <RaiseCap key={`${run.run_id}:${budget.at}`} cap={budget.cap_usd} suggested={suggestedCap(budget)} paused onRaise={actions.onRaiseCap} />}
-          {tab === "report" && <RunResult run={run} rows={rows} />}
+          {tab === "report" && <RunResult run={run} rows={rows} files={files} onOpen={show} />}
           {tab === "report" && !run.result && !view.final && <Working {...beforeAnswer(run, view)} />}
           {tab === "report" && view.final && !run.result?.final_answer && !run.result?.output && !rows.some((r) => r.kind === "final_answer") && run.status !== "failed" && run.status !== "cancelled" && !run.review && (
             <p className="font-mono text-[13px] text-muted-foreground">This run gave no answer.</p>
@@ -122,7 +122,7 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
       {view.canMessage && (
         <div className="border-t px-5 py-4 md:px-8"><div className="mx-auto max-w-4xl"><Composer mode={view.messageMode!} onSend={onMessage} /></div></div>
       )}
-      {open && <ArtifactViewer file={open.file} text={open.text} onClose={close} />}
+      {open && <ArtifactViewer file={open.file} text={open.text} onClose={close} files={files} onOpen={show} />}
     </div>
   );
 }

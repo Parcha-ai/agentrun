@@ -44,8 +44,9 @@ export function Wordmark() {
 /** The AgentRun shell: a 220px sidebar with the wordmark, the nav (the active item orange with a 2px inset bar),
  *  and sign out at its foot; under 700px a top bar with a menu that opens the nav. Settings shows only when `settings`
  *  (the server has a settings page to open). Above every page, the one banner on the link to the server, while it is
- *  away and as it comes back. */
-export function Shell({ active, settings = false, onNavigate, onSignOut, children }: { active: Section; settings?: boolean; onNavigate?: (s: Section) => void; onSignOut?: () => void; children: ReactNode }) {
+ *  away and as it comes back, then `banners` (the page's own: no model yet, an import, a failed sign-out). They sit
+ *  outside the page's scrolling main, so a full-height page fills what is left under them and keeps its footer in view. */
+export function Shell({ active, settings = false, onNavigate, onSignOut, banners, children }: { active: Section; settings?: boolean; onNavigate?: (s: Section) => void; onSignOut?: () => void; banners?: ReactNode; children: ReactNode }) {
   const [open, setOpen] = useState(false);
   return (
     <div className="flex h-dvh min-h-0 flex-col overflow-hidden bg-background text-foreground md:flex-row">
@@ -53,7 +54,8 @@ export function Shell({ active, settings = false, onNavigate, onSignOut, childre
         <Wordmark />
         <button type="button" className="border p-2" aria-label="Navigation" aria-expanded={open} onClick={() => setOpen((v) => !v)}><Menu className="size-[18px]" aria-hidden /></button>
       </header>
-      <aside className={cn("shrink-0 flex-col border-r bg-background px-3 pb-4 pt-6 md:flex md:h-dvh md:w-[220px]", open ? "flex max-h-[60dvh] overflow-y-auto border-b md:max-h-none" : "hidden")}>
+      {/* It scrolls at every width it shows at: on a short screen (a phone on its side) its foot, Sign out, stays reachable. */}
+      <aside className={cn("shrink-0 flex-col border-r bg-background px-3 pb-4 pt-6 md:flex md:h-dvh md:w-[220px] md:overflow-y-auto", open ? "flex max-h-[60dvh] overflow-y-auto border-b md:max-h-none" : "hidden")}>
         <div className="hidden px-3 pb-[30px] md:block"><Wordmark /></div>
         <nav aria-label="Navigation" className="flex flex-col gap-1">
           {NAV.filter((n) => n.id !== "settings" || settings).map(({ id, label, Icon }) => (
@@ -70,6 +72,7 @@ export function Shell({ active, settings = false, onNavigate, onSignOut, childre
       </aside>
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <ConnectionBanner />
+        {banners}
         <main className="min-h-0 min-w-0 flex-1 overflow-auto">{children}</main>
       </div>
     </div>

@@ -504,7 +504,7 @@ with it. The agents are rows in `store.sqlite`, not one home each; the beta.24 h
 turns a home into an agent.
 
 ```
-my-agents/store.sqlite       agents, revisions, skills, runs, archive_changes, run_imports, run_metrics, run_tool_metrics
+my-agents/store.sqlite       agents, revisions, skills, runs, archive_changes, run_imports, run_metrics, run_tool_metrics, run_origins
 my-agents/runs/<run id>/     each run's own store and work directory
 ```
 
@@ -525,6 +525,7 @@ CREATE TABLE run_metrics (run_id TEXT PRIMARY KEY REFERENCES runs(id), input INT
                         active_ms INTEGER, effort TEXT, model TEXT, models_json TEXT NOT NULL, cost_usd_est REAL, cost_basis TEXT, at TEXT NOT NULL);
 CREATE TABLE run_tool_metrics (run_id TEXT NOT NULL REFERENCES run_metrics(run_id), tool TEXT NOT NULL, calls INTEGER NOT NULL,
                         errors INTEGER NOT NULL, PRIMARY KEY (run_id, tool));
+CREATE TABLE run_origins (key TEXT PRIMARY KEY, run_id TEXT NOT NULL UNIQUE REFERENCES runs(id), fingerprint TEXT, at TEXT NOT NULL);
 ```
 
 ```js
@@ -558,6 +559,13 @@ have no known cost (running, or ended without one), and the ids of the running r
 number but `archivedAgents` and `archivedRuns`. Each number is an SQL aggregate over `store.sqlite` through its indexes
 (`runs_by_agent`, `runs_by_state`); nothing under `runs/` is opened. `runs_by_state` came, like `archive_changes`,
 without a new store version.
+
+A caller that may ask for the same run twice (a retry after a crash, a firing driven again) names its origin:
+`store.startRun({ agent, origin: { key, fingerprint? } })` writes the `run_origins` row in the transaction that writes the run's,
+and the same key never starts a second run. Asked again, or by two starts at once, it returns the run the key started, with
+`existing: { fingerprint? }` (the fingerprint recorded with it, for the caller to tell a retry from another request under the
+key), and writes nothing; a start that lost the race removes the directory it seeded. `store.runOfOrigin(key)` reads it without
+starting anything. An origin is written once, and, like `archive_changes`, the table came without a new store version.
 
 A session another harness ran on this machine comes in as a run that has already ended:
 `store.importRun({ agent, revision, state, startedAt, endedAt, costUsd?, summary?, source, session })` writes its `runs` row at the
@@ -593,7 +601,7 @@ Like `archive_changes`, the two tables came without a new store version: a store
 metrics and gains the tables from the first `openStore`, and an earlier version still opens a store that has them, ignores them
 and reads every run and `stats` as before (one that ends a run opened again leaves its metrics as they were).
 
-`store.analytics({ from?, to?, agent? })` sums the metrics in one read, over the runs not archived that started in
+`store.analytics({ from?, to?, agent?, pending? })` sums the metrics in one read, over the runs not archived that started in
 [`from`, `to`) (ISO times in UTC) and are `agent`'s, each bound optional: `totals` (the runs, how many completed, an
 escalated run among them, how many of those need review (`needsReview`, the escalated ones), how many failed, how
 many have metrics, their tokens and token kinds, requests and unmetered requests, and their cost as `stats` sums it),
@@ -602,8 +610,11 @@ many have metrics, their tokens and token kinds, requests and unmetered requests
 the metrics' effort, null when unset), `byDay` (the UTC date a run started), `bySource` (`live`, or the source an imported
 run came from) and `tools` (the 20 with the most calls, by name on a tie, with their errors). Each group has `runs` beside
 `runsWithMetrics`, so a run with no metrics counts as a run and never as 0 tokens; a running run's metrics are its last
-end's, so it counts as one without them. It reads `run_metrics`, `run_tool_metrics`, `runs` and `revisions` alone, in one
-snapshot; a store without the metrics tables answers its runs with no metrics.
+end's, so it counts as one without them. `pending` names the running runs whose end the caller holds and the store does
+not have yet, each by the state its end will have (`PendingEnd`: `completed`, `escalated`, `failed` or `stopped`): such a
+run counts at that state in `totals`' counts, at no cost (known or unknown), and in no group or metric until its end is
+written; a run the store has ended already is read as it is. It reads `run_metrics`, `run_tool_metrics`, `runs` and
+`revisions` alone, in one snapshot; a store without the metrics tables answers its runs with no metrics.
 
 A workflow revision whose call nodes name a tool that is not a `tool` call passes the commit check on purpose: whether it runs is the host's to decide. `openStoreReader(folder)` reads `store.sqlite` in place, read-only: it writes nothing and makes no copy. On a store a run was stopped in the middle of writing, it says so in one line and changes no file; open the store once with write access to roll the write back.
 
@@ -699,7 +710,7 @@ The types the package exports:
   `CapturedState`, `VaultCookie` and `VaultEntry`.
 - **Runs.** `RunPaths`, `RunStart`, `RunSeed` (plain data, so a host can carry it to the run's side), `CarryBack`,
   `ProfileStore` and `ProfileTarget` (the host's Harness, or any Session on the run store).
-- **Store.** `Agent`, `AgentRow`, `Revision`, `RevisionRow`, `RevisionKind`, `AgenticBody`, `WorkflowBody`, `RevisionPlace` (a body's optional `{mode, box?}`, ids its host knows), `NewRevision`, `StartedRun`, `RunRow`, `RunState`, `ArchiveKind` (`"agent" | "run"`), `StoreStats` (what `stats` answers), `StoreAnalytics` with `AnalyticsGroup` and `AnalyticsFilter` (what `analytics` answers and takes), `StoredMetrics` (a run's metrics as `carryBack`, `importRun` and `runMetrics` carry them), and for an imported run `ImportedRun`, `ImportedFrom` and `ImportSource` (`"claude-code" | "codex" | "pi"`).
+- **Store.** `Agent`, `AgentRow`, `Revision`, `RevisionRow`, `RevisionKind`, `AgenticBody`, `WorkflowBody`, `RevisionPlace` (a body's optional `{mode, box?}`, ids its host knows), `NewRevision`, `StartedRun`, `RunOrigin` (`store.startRun`'s `{ key, fingerprint? }`), `RunRow`, `RunState`, `ArchiveKind` (`"agent" | "run"`), `StoreStats` (what `stats` answers), `StoreAnalytics` with `AnalyticsGroup`, `AnalyticsFilter` and `PendingEnd` (what `analytics` answers and takes), `StoredMetrics` (a run's metrics as `carryBack`, `importRun` and `runMetrics` carry them), and for an imported run `ImportedRun`, `ImportedFrom` and `ImportSource` (`"claude-code" | "codex" | "pi"`).
 - **Packs.** `PackOptions`, `Skipped`, `HomeManifest` (the manifest's fields, in [Moving a home](#moving-a-home)),
   `ImportOptions`, `ImportReport`, and `HomeCheck` (`{ name, status, message, detail? }`, `status` being `ok`, `warn`
   or `fail`). `ImportStep` and `ImportOptions.inject` belong to this package's tests and are not part of its contract.
@@ -733,17 +744,23 @@ No dependency, no Node built-in, and no thrown error of its own: a page, a viewe
 | `runMetricsWithDecisions(records, decisions)` | `runMetricsOf`, with a workflow run's decision receipts (`DecisionLike`) beside its entries: each a request by `provider/model`, its `usage` (`input_tokens`, `output_tokens`) in the token sums, and one with none, or cancelled, in `unmetered`. serve passes a workflow run's receipts at its end; `runMetricsOf` keeps one parameter, so `.map(runMetricsOf)` stays safe |
 | `CAPS` | The caps a row's `summary`, `preview`, `text` and `thinking` are cut to: 500, 500, 2000 and 100 |
 | `RUN_RESUMED` | The entry kind a host writes on the root as a run's process opens to go on with a run its last process left unfinished (`data`: `after`, `crash` or `server_stop`; `generation`; `at`): a `phase` row of its own at `at`, "Resumed after a crash" or "Resumed after the server stopped", and no request. A reader from before it ignores it, as it does any kind it does not know |
+| `TURN_END` | The entry kind a host writes on the root as a turn on another harness (claude-agent, codex) ends (`data`: `key`, `status`, ...). No row. A message after it is the person's next message, never a `(steer)`, even when the turn's last entry was a tool's result: a stop that came after the result and before the next model request |
 | `scrubUrls(text)` | `text` with each http(s) URL in it kept to its origin, its path and its query keys: query values, the fragment and credentials are dropped, as on every row. A host that adds rows of its own cleans their strings with it |
 | `cut(text, max)` | `text` cut to `max` characters, the last three `...` when it was longer: how a row's strings are cut to `CAPS` |
 | `METRIC_NAMES` | How `runMetricsOf` keeps tool and model names: `max` 256 characters, the `kept` 100 busiest of each, and the names it sums the rest and a nameless tool under: `otherTools` (`…other tools`), `otherModels` (`…other models`), `unnamedTool` (`…unnamed tool`) |
 | `REQUEST_STARTED`, `REQUEST_ENDED`, `REQUEST_COST`, `REQUEST_REFUSED`, `REQUEST_COST_PENDING`, `REQUEST_COST_LATE`, `REQUEST_CONTINUED` | The entry kinds a host writes to mark a model request: as it leaves, and as it ends aborted; and the cost of a request with no `pi.assistant` entry of its own (a compaction summary, marked `request: "compaction"`). An answer written before its cost came in is followed by `REQUEST_COST_PENDING`, and its cost comes later as `REQUEST_COST_LATE` (`usd`): it adds to the cost and is not counted as a request; the cost reads unknown while one is pending. A call an answer asked for, written after that answer's own entry (a harness reports each call as it runs it), follows `REQUEST_CONTINUED` in a `pi.assistant` of its own: it shows under that answer and counts as a call, not as a request, a cost or tokens. The usage row counts each marked request and sums each cost; one with no entry or cost (cut before its answer) other than the latest still in flight makes the cost unknown. A request the host refused before it left (`REQUEST_REFUSED`) is not counted, and pi's error entry for it is not shown. A conversation with no marks reads as before |
 | `TOOL_STARTED`, `TOOL_COST` | `TOOL_STARTED` marks a paid tool's call before it is sent (`{tool, charged_by, call, heldUsd}`); the `TOOL_COST` of the same `call` settles it, and in a settled timeline one never settled (a crash) makes the cost unknown, as a cut model request does: its `heldUsd` is a host cap's bound, never a charge. `TOOL_COST` is the entry kind a host writes for what a paid tool's call charged (`{tool, charged_by, usd, call?}`, `usd` null when the call may have charged and did not say how much): it adds to the run's cost, which a null makes unknown, and shows as a `phase` row of its own (`Tool cost: monid charged $0.0030 for monid.run`, `tool_name` the tool, `tool_use_id` the call). It is not a request: the usage row names the paid tool calls apart (`... over 1 model request and 1 paid tool call`). The charge's `phase` row carries it as `usage` (`{usd, requests: 0}`), so a host can sum a run's paid tools from the same rows as its cost |
 | `HOST_PHASE` | The entry kind a host writes for a step of its own, in its words (`{summary}`), such as a box waiting for its image: one `phase` row with the summary's first line, cut at the summary cap, stored and live alike. It is no request and no cost; one with no summary shows nothing |
+| `MESSAGE_ORIGIN` | The entry kind (`agentrun.message_origin`, `{ origin, text }`) a host writes just before a message the server wrote, whose user entry carries no data of its own (pi's): it names the next user entry in its conversation whose text is exactly `text`, once. The model never reads it: it carries no model message |
+| `originOf(value)` | `value` as a `MessageOrigin`, or `undefined` when it is not one |
+| `messageOrigins(entries)` | The user entries the server wrote, each with its origin: its own `data.origin`, else the first open `MESSAGE_ORIGIN` marker with its exact text. The Timeline reads them with the same rule: such an entry is a `phase` row, "AgentRun: <its first line>", with `origin: "server"`, never a "You:" `user_message`; an `approval_declined` one is the person's words (`said`) as their own `user_message` row, beside the server's `phase` row |
+| `isMessageRow(row)` | Whether a row is a message its run took: a `user_message`, or a row with `origin: "server"`. A host that counts a run's messages (their arrival, where a stop stands) counts these |
 
-Its types: `TimelineEvent` (Grep's fields, plus the optional ones above) and `TimelineKind`, `TimelineOptions`, `OutcomeFn`,
+Its types: `TimelineEvent` (Grep's fields, plus the optional ones above, `origin` among them) and `TimelineKind`, `TimelineOptions`, `OutcomeFn`,
 `EntryLike` (a pi conversation entry as stored), `AgentEventLike` (a pi event), `Call`, `Fold`, `Group`, `LabelFn`,
 `FoldSpec`, `ToolResultView`, `RunMetrics` and `ToolMetrics` (what `runMetricsOf` returns), and `DecisionLike` (a
-workflow's decision receipt, as `runMetricsWithDecisions` reads it).
+workflow's decision receipt, as `runMetricsWithDecisions` reads it), and `MessageOrigin` (who wrote a message the person did
+not: `{ kind: "server", reason: "cap_raised" | "approval" }`, or `"approval_declined"` with `said`).
 
 ### `@parcha/pi-durable-agent/serve`
 

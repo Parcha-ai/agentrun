@@ -18,11 +18,12 @@ const fixture = (name) => new URL(`./fixtures/${name}`, import.meta.url).pathnam
 const FAUX = { fauxHarness: fixture("faux-harness.mjs"), fauxWeb: fixture("faux-web.mjs"), fauxParallel: fixture("faux-parallel.mjs"), fauxUpstream: fixture("faux-upstream.mjs"), fauxExa: fixture("faux-exa.mjs") };
 const PAGE = "http://public.example/";
 const ANTHROPIC_TOOL = { type: "web_search_20250305", name: "web_search", max_uses: 5 };
-const NATIVE = { pi: "native", "claude-agent": "native", codex: "native" };
+// OpenCode has no native search: picked, it is unavailable there; on auto it takes the server's Parallel key.
+const NATIVE = { pi: "native", "claude-agent": "native", codex: "native", opencode: "unavailable: no native search for opencode, whose model requests carry no provider-hosted tool" };
 /** On auto: native on pi (a direct Anthropic model) and codex; on claude-agent, whose own search is an explicit pick, the
  *  server's Parallel key. */
-const AUTO_KEYED = { pi: "native", "claude-agent": "parallel", codex: "native" };
-const each = (value) => ({ pi: value, "claude-agent": value, codex: value });
+const AUTO_KEYED = { pi: "native", "claude-agent": "parallel", codex: "native", opencode: "parallel" };
+const each = (value) => ({ pi: value, "claude-agent": value, codex: value, opencode: value });
 
 /** The environment of test `t` (model keys only, unless `extra` says more), and the lines each fake files. */
 async function setting(t, extra = {}) {
@@ -38,7 +39,8 @@ async function setting(t, extra = {}) {
   return { seen: async () => ({ upstream: await json(files.upstream), parallel: await json(files.parallel), exa: await json(files.exa), opened: await json(files.opened), dialled: await lines(files.web) }) };
 }
 
-const resolves = async (api) => Object.fromEntries((await api("GET", "/capabilities")).body.tools.filter((tool) => tool.resolves).map((tool) => [tool.name, tool.resolves]));
+// The web tools'; the browser's own pick is browser-pick.test.mjs'.
+const resolves = async (api) => Object.fromEntries((await api("GET", "/capabilities")).body.tools.filter((tool) => tool.resolves && tool.name !== "browser").map((tool) => [tool.name, tool.resolves]));
 
 /** Runs agent `id` (made from `definition`) to its end: its tool results, its usage row and its report.md. */
 async function research(api, id, definition, fields = {}) {
@@ -108,7 +110,7 @@ test("with only model keys: native search on pi, claude-agent and codex, and the
 
   // Parallel picked on the server: capabilities say so at once, and the next runs search and fetch through it.
   const put = await api("PUT", "/settings/tools", { web_search: { provider: "parallel" }, web_fetch: { provider: "parallel" } });
-  assert.deepEqual([put.status, put.body], [200, { web_search: { provider: "parallel" }, web_fetch: { provider: "parallel" } }]);
+  assert.deepEqual([put.status, put.body], [200, { web_search: { provider: "parallel" }, web_fetch: { provider: "parallel" }, browser: { provider: "auto" } }]);
   assert.deepEqual(await resolves(api), { web_search: each("parallel"), web_fetch: each("parallel") });
   const viaParallel = await research(api, "pi-parallel", {});
   assert.match(viaParallel.results.web_search, /^\{"provider":"parallel","query":"widgets","results":\[\{"url":"https:\/\/registry\.example\/widgets"/, "Parallel's results, in the one shape");
@@ -169,7 +171,7 @@ test("a capped pi run whose auto search is Parallel, under a cap just short of o
   assert.equal((await api("PUT", "/settings/tool-keys/parallel", { values: { PARALLEL_API_KEY: PARALLEL_CANARY } })).status, 204);
   const checked = (await seen()).parallel.length; // the save checks the key against Parallel first (#1508): the run's requests are the ones after
   const run = await research(api, "auto-capped", {}, { max_cost_usd: 0.0009 });
-  assert.equal(run.results.web_search, JSON.stringify({ error: "spend_cap_reached: Parallel's search was not sent. It could cost up to $0.001 (Parallel's list price for a fast search), and with $0.000000 spent the run would pass its cap of $0.0009: the run is out of budget." }));
+  assert.equal(run.results.web_search, JSON.stringify({ error: "spend_cap_reached: Not sent: the run has spent $0 of its $0.0009 cap, and Parallel's search could cost up to $0.001 (Parallel's list price for a fast search). Raise the cap to at least $0.01 to run it." }));
   const calls = await seen();
   assert.deepEqual([calls.parallel.slice(checked), calls.exa], [[], []], "nothing sent to Parallel, nor to Exa instead");
 });

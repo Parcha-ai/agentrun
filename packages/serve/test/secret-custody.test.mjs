@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { closeSync, constants, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, symlinkSync } from "node:fs";
+import { closeSync, constants, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
 import { rm } from "node:fs/promises";
@@ -41,9 +41,11 @@ const SERVER_ONLY = ["AGENTRUN_TOKEN", "AGENTRUN_API_KEY", "AGENTRUN_SEAL_KEY", 
  *  descriptor, for its decision provider (decisions.ts), never with the run's secrets. */
 const DECISION_KEYS = ["TYPESAFE_API_KEY", "PARALLEL_API_KEY"];
 /** The tool keys on the pipe: a run's process gets one only when its revision names a tool the key unlocks (the monid
- *  tools, `browser`). Browserbase's project id is a field of its key, and goes with it. */
+ *  tools, `browser`). Browserbase's project id is a field of its key, and goes with it; Kernel's key unlocks `browser`
+ *  too, the run's plane picking the vendor. */
 const BROWSERBASE = ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"];
-const TOOL_KEYS = ["MONID_API_KEY", ...BROWSERBASE];
+const BROWSER = [...BROWSERBASE, "KERNEL_API_KEY"];
+const TOOL_KEYS = ["MONID_API_KEY", ...BROWSER];
 /** The model keys: every key of pi-ai's providers and the gateway's. A run's process gets those its model needs and no
  *  other: a pi run its model's provider's (per tier), or the gateway's behind AGENT_MODEL_BASE_URL; codex OpenAI's, or
  *  the gateway's; claude-agent Anthropic's. TypeSafe's is a decision key, never on the pipe. */
@@ -280,7 +282,7 @@ test("under its launcher, a tool key saved through the settings API reaches the 
   assert.equal((await api("PUT", "/settings/tool-keys/monid", { values: { MONID_API_KEY: saved.MONID_API_KEY } })).status, 204);
   assert.equal((await api("PUT", "/settings/tool-keys/browserbase", { values: { BROWSERBASE_PROJECT_ID: saved.BROWSERBASE_PROJECT_ID } })).status, 204);
   const fields = Object.fromEntries((await api("GET", "/settings/tool-keys")).body.keys.flatMap((key) => key.fields.map((field) => [field.name, field.source])));
-  assert.deepEqual(fields, { PARALLEL_API_KEY: null, MONID_API_KEY: "stored", BROWSERBASE_API_KEY: "server", BROWSERBASE_PROJECT_ID: "stored", TYPESAFE_API_KEY: null, ANTHROPIC_API_KEY: null, OPENAI_API_KEY: null, OPENROUTER_API_KEY: null }, "the launcher's is the server's; the saved ones are stored, never the server's");
+  assert.deepEqual(fields, { PARALLEL_API_KEY: null, MONID_API_KEY: "stored", BROWSERBASE_API_KEY: "server", BROWSERBASE_PROJECT_ID: "stored", KERNEL_API_KEY: null, TYPESAFE_API_KEY: null, ANTHROPIC_API_KEY: null, OPENAI_API_KEY: null, OPENROUTER_API_KEY: null }, "the launcher's is the server's; the saved ones are stored, never the server's");
   const handed = async () => {
     const { body: run } = await api("POST", "/agents/custody/runs", { input: { content: "Report." } });
     await follow(api, run.run_id, ["completed"]);
@@ -372,7 +374,7 @@ process.on("SIGUSR2", async () => {
 });`;
   const { root, child, api } = await launched(t, secrets, (data) => ["--", process.execPath, "--input-type=module", "-e", script, data]);
   // Each agent's tools, and the tool keys its runs get.
-  const agents = { monid: [["monid.run"], ["MONID_API_KEY"]], browse: [["browser"], BROWSERBASE], reader: [["read"], []] };
+  const agents = { monid: [["monid.run"], ["MONID_API_KEY"]], browse: [["browser"], BROWSER], reader: [["read"], []] };
   // Each on an OpenAI model: OpenAI's key is the one model key each holds.
   const expected = (unlocked) => Object.fromEntries(SECRET_NAMES.map((name) => [name, [...unlocked, "OPENAI_API_KEY"].includes(name) ? digest(secrets[name]) : "none"]));
   const report = async (call, runId, after) => {
@@ -488,7 +490,7 @@ test("secretsFor: a tool key's fields only for a revision naming a tool its row 
   const without = (...names) => RUN_SECRETS.filter((name) => !names.includes(name) && !MODEL_KEYS.includes(name));
   for (const name of [...TOOL_KEYS, ...MODEL_KEYS]) assert.ok(RUN_SECRETS.includes(name), `${name} is among a run's secrets`);
 
-  assert.deepEqual(await secretsOf(agentic(["monid.run"])), without(...BROWSERBASE));
+  assert.deepEqual(await secretsOf(agentic(["monid.run"])), without(...BROWSER));
   assert.deepEqual(await secretsOf(agentic(["read", "browser"])), without("MONID_API_KEY"));
   assert.deepEqual(await secretsOf(agentic(["monid.discover", "browser"])), without());
   assert.deepEqual(await secretsOf(agentic(["read", "fetch_page", "ask_person"])), without(...TOOL_KEYS));
@@ -496,7 +498,7 @@ test("secretsFor: a tool key's fields only for a revision naming a tool its row 
   // Only a `tool` row's fields are scoped by the tools: a row of another kind (a model's) leaves its field to the model,
   // so a run on OpenAI's model gets OpenAI's key, unless the same row is a tool key's that unlocks none of its tools.
   const { TOOL_KEYS: ROWS } = await import("../dist/tool-keys.js");
-  assert.deepEqual(ROWS.map((row) => [row.id, row.kind]), [["parallel", "tool"], ["monid", "tool"], ["browserbase", "tool"], ["typesafe", "tool"], ["anthropic", "model"], ["openai", "model"], ["openrouter", "model"]]);
+  assert.deepEqual(ROWS.map((row) => [row.id, row.kind]), [["parallel", "tool"], ["monid", "tool"], ["browserbase", "tool"], ["kernel", "tool"], ["typesafe", "tool"], ["anthropic", "model"], ["openai", "model"], ["openrouter", "model"]]);
   const onOpenai = revision("agentic", { instructions: "Answer.", tools: [], model: "openai/gpt-4o" });
   assert.deepEqual(await secretsOf(onOpenai, ROWS), [...without(...TOOL_KEYS), "OPENAI_API_KEY"].sort((a, b) => RUN_SECRETS.indexOf(a) - RUN_SECRETS.indexOf(b)), "OPENAI_API_KEY with them, the tool keys still not");
   assert.deepEqual(await secretsOf(onOpenai, ROWS.map((row) => (row.id === "openai" ? { ...row, kind: "tool" } : row))), without(...TOOL_KEYS), "the same row as a tool key is scoped");
@@ -508,7 +510,7 @@ test("secretsFor: a tool key's fields only for a revision naming a tool its row 
   assert.deepEqual(await secretsOf(workflow(browsing, ["browser", "monid.run"])), without("MONID_API_KEY"));
   const calling = answerFlow();
   calling.root.steps.unshift({ node: "map", label: "each", itemsPath: "question", as: "found", resultPath: "found", maxConcurrency: 1, body: { node: "call", label: "find", via: "tool", tool: "monid.run", args: { q: "{item}" }, out: "Answer", as: "answer", deadline_s: 20 } });
-  assert.deepEqual(await secretsOf(workflow(calling)), without(...BROWSERBASE));
+  assert.deepEqual(await secretsOf(workflow(calling)), without(...BROWSER));
   const shaped = answerFlow();
   shaped.root.steps[0].state = { example: { node: "extract", tools: ["browser"] } };
   assert.deepEqual(await secretsOf(workflow(shaped, ["browser"])), without(...TOOL_KEYS));
@@ -659,8 +661,12 @@ test("under its launcher, with every secret set, a pi run is handed exactly its 
   for (const value of [foo, password, ...Object.values(more)]) onlyTheServerHolds(root, value);
 });
 
-/** Every file under `dir` (a run's directory: its store, process.log, harness/), and which holds any of `values`. */
-function filesHolding(dir, ...values) {
+/** Every file under `dir` (a run's directory: its store, process.log, harness/), and which holds any of `values`. The run is
+ *  live while this reads it, so a file can go between its listing and its read: the run's launch mark (`launching`, empty)
+ *  is removed once its process serves (F31, a queue ejection on 11-04). A file gone by its read holds nothing; any other read
+ *  error still fails. `read` is the file reader, for the test below. */
+function filesHolding(dir, ...values) { return filesHoldingWith(readFileSync, dir, ...values); }
+function filesHoldingWith(read, dir, ...values) {
   const files = [];
   const walk = (at) => {
     for (const entry of readdirSync(at, { withFileTypes: true })) {
@@ -670,8 +676,22 @@ function filesHolding(dir, ...values) {
     }
   };
   walk(dir);
-  return { files, holding: files.filter((path) => values.some((value) => readFileSync(path).includes(value))) };
+  const contents = (path) => { try { return read(path); } catch (error) { if (error.code === "ENOENT") return null; throw error; } };
+  return { files, holding: files.filter((path) => { const text = contents(path); return text !== null && values.some((value) => text.includes(value)); }) };
 }
+
+test("a run's file that goes between its listing and its read (its launch mark) holds nothing; a file that holds a key is still found, and another read error still fails", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "files-holding-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  mkdirSync(join(dir, "harness"));
+  for (const [name, text] of [["launching", ""], ["process.log", "started"], ["harness/config.toml", "key = nak-canary"]]) writeFileSync(join(dir, name), text);
+  const gone = (path) => { if (path.endsWith("/launching")) throw Object.assign(new Error(`ENOENT: no such file or directory, open '${path}'`), { code: "ENOENT" }); return readFileSync(path); };
+  const { files, holding } = filesHoldingWith(gone, dir, "nak-canary");
+  assert.equal(files.length, 3);
+  assert.deepEqual(holding, [join(dir, "harness/config.toml")]);
+  const denied = (path) => { throw Object.assign(new Error(`EACCES: permission denied, open '${path}'`), { code: "EACCES" }); };
+  assert.throws(() => filesHoldingWith(denied, dir, "nak-canary"), /EACCES/);
+});
 
 test("on codex, with every secret set and its turn held inside Codex's own process (a child of the run's), no process's environment holds a secret, Codex's included, which every command it starts inherits; key-shaped names no list names (FOO_API_KEY, FOO_PASSWORD) are in none under the server; and no file of the run's holds a key, its store, its log and Codex's own files included", { timeout: 120_000, skip: !CONFINED && "no setpriv" }, async (t) => {
   const { canary, secrets } = canaries();
