@@ -7,7 +7,8 @@ import { decisionRows } from "../dist/decision-rows.js";
 import { flowAgent, follow, serve, withEnv } from "./support.mjs";
 
 /** A held key, made at runtime: no credential-shaped literal for the source export. */
-const KEY = ["not-a-secret", "decision-row-key", "0123456789ab"].join("-");
+// No 8 characters of it may appear in a row's own words ("decision", its kind and id).
+const KEY = ["not-a-secret", "zqx-row-key", "0123456789ab"].join("-");
 const holdsRun = (text) => {
   for (let i = 0; i + 8 <= KEY.length; i++) if (text.includes(KEY.slice(i, i + 8))) return true;
   return false;
