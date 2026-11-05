@@ -17,7 +17,7 @@ const KEYS = { BROWSERBASE_API_KEY: "fake-test-key", BROWSERBASE_PROJECT_ID: "fa
 /** A pi run in this process whose model calls browser_read `reads` times, thinking `thinkS` between calls, each read
  *  taking `readS`, on a `provider` browser at `price`, under `cap` (none: no cap). `seen()` runs at every moment the
  *  run can spend: inside each call, before each model turn and after the release. */
-async function run(t, { provider = "browserbase", price = BROWSERBASE, reads, readS = 3, thinkS = 20, cap, idleS = 180, end = "close", setup = () => {}, pump = false, options = {}, seen = () => {} }) {
+async function run(t, { provider = "browserbase", price = BROWSERBASE, reads, readS = 3, thinkS = 20, cap, idleS = 180, end = "close", setup = () => {}, pump = false, options = {}, lastTurn = () => {}, after = async () => {}, cutRelease = false, seen = () => {} }) {
   t.mock.timers.enable({ apis: ["Date"], now: T0 });
   const [{ BACKGROUND_CONTEXT: ctx }, { createModels }, faux, durable, { createBrowserExtension }, { FakeBackend, fakeDriver, fixturePage }] = await Promise.all([
     import("@earendil-works/chord/context"), import("@earendil-works/pi-ai/models"), import("@earendil-works/pi-ai/providers/faux"),
@@ -28,11 +28,21 @@ async function run(t, { provider = "browserbase", price = BROWSERBASE, reads, re
   t.after(() => useSpend(undefined));
   const backend = new FakeBackend({ name: provider, start: START, pages: { [START]: fixturePage(START, "The start page.") } });
   setup(backend);
+  // `cutRelease`: the first release stops the session, then the conversation's tasks are aborted before it answers.
+  let root;
+  let cut = false;
+  const cutting = { ...backend.provider, release: async (ref, signal) => {
+    await backend.provider.release(ref, signal);
+    if (cut) return;
+    cut = true;
+    void root.abort(ctx, { background: true });
+    await new Promise((_, reject) => signal?.addEventListener("abort", () => reject(signal.reason), { once: true }));
+  } };
   const releases = [];
   // A refusal's release, waited for here so its charge is billed at the moment of the refusal.
   const spend = browserSpend(provider, price, idleS, async (conversation, context) => { releases.push(conversation.id); await browser.release(conversation, "close", context); await browser.drain(harness, context); });
   const browser = createBrowserExtension({ ...options,
-    provider: () => backend.provider, driver: fakeDriver(backend), evidence: { file: async () => null },
+    provider: () => (cutRelease ? cutting : backend.provider), driver: fakeDriver(backend), evidence: { file: async () => null },
     prices: { sessionUsdPerHour: price.usdPerHour, sessionMinimumS: price.minimumS }, onCharge: spend.onCharge,
     tools: { browser_read: async (_args, port) => { const s = await port.session(); await s.driver.page(); t.mock.timers.tick(readS * 1000); seen("call", spent); return { content: [{ type: "text", text: "read" }] }; } },
   });
@@ -41,6 +51,7 @@ async function run(t, { provider = "browserbase", price = BROWSERBASE, reads, re
   model.setResponses(Array.from({ length: reads + 1 }, () => (context) => {
     const results = context.messages.filter((m) => m.role === "toolResult");
     if (results.length > 0) t.mock.timers.tick(thinkS * 1000);
+    if (results.length >= reads) lastTurn(backend);
     seen("turn", spent);
     const refused = results.some((m) => m.content.some((c) => c.type === "text" && c.text.includes("spend_cap_reached")));
     return results.length < reads && !refused ? faux.fauxAssistantMessage([faux.fauxToolCall("browser_read", {})], { stopReason: "toolUse" }) : faux.fauxAssistantMessage([faux.fauxText("done")], { stopReason: "stop" });
@@ -53,7 +64,7 @@ async function run(t, { provider = "browserbase", price = BROWSERBASE, reads, re
   t.after(() => harness.close(ctx));
   spend.watch(harness);
   const policy = { proxies: false, verified: false, captcha: false, geolocation: null, region: null, contextId: null, sessionTimeoutS: 1800, idleReleaseS: idleS, batchTimeoutMs: 60_000 };
-  const root = await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" } }, init: async (tx, id) => { Object.assign(await tx.doc(browser.docs.Config, id), { label: "run", run: "run-cost", policy }); } });
+  root = await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" } }, init: async (tx, id) => { Object.assign(await tx.doc(browser.docs.Config, id), { label: "run", run: "run-cost", policy }); } });
   await browser.reconcile(harness, () => true, ctx);
   await (await root.submit({ type: "input", content: "go" }, ctx)).wait(ctx);
   t.mock.timers.tick(5_000);
@@ -61,9 +72,10 @@ async function run(t, { provider = "browserbase", price = BROWSERBASE, reads, re
   const sessions = async () => (await harness.snapshot(browser.docs.Sessions, root.id, ctx)).sessions;
   if (end === "idle") for (let i = 0; i < 200 && (await sessions())[0]?.state !== "released"; i += 1) await new Promise((resolve) => setTimeout(resolve, 25));
   else await browser.release(root, "close", ctx);
-  // `pump`: the mock clock moves on 2 s every 5 ms of real time, for the release task's backoffs to pass.
-  const pumping = pump ? setInterval(() => t.mock.timers.tick(2_000), 5) : undefined;
+  // `pump`: the mock clock moves on 2 s (or `pump` ms) every 5 ms of real time, for the release task's backoffs to pass.
+  const pumping = pump ? setInterval(() => t.mock.timers.tick(pump === true ? 2_000 : pump), 5) : undefined;
   await browser.drain(harness, ctx).finally(() => clearInterval(pumping));
+  await after({ browser, harness, backend, ctx });
   seen("released", spent);
   const [record] = await sessions();
   const entries = (await harness.commit((tx) => tx.scanEntries({ conversationId: durable.ROOT_CONVERSATION_ID, order: "ascending" }, 500), ctx)).items;
@@ -99,7 +111,9 @@ test("capped: what the run spent plus what it holds never passes the cap; the ca
   // Two calls fit: $0.018 held for the first, then the session's $0.009 reserve beside the second's $0.018 and the 20 s it
   // ran since. The third does not, and is refused before it runs.
   const refusal = results.find((text) => text.includes("spend_cap_reached"));
-  assert.match(refusal, /spend_cap_reached: This browser call was not sent\. It could cost up to \$0\.018667 \(browserbase's session time at \$0\.12 an hour: the 20 s its session ran since its last charge, and twice the next stretch of 270 s \(its 60 s minimum, the 180 s idle window and 30 s for its release\)\), and with \$0\.009867 spent the run would pass its cap of \$0\.028: the run is out of budget\./);
+  // One sentence, the call named mid-sentence in lower case: what the run spent and holds of its cap, what the call could
+  // cost and why, and the cap that would run it.
+  assert.match(refusal, /spend_cap_reached: Not sent: the run has spent \$0\.00086667 and holds \$0\.009 for calls still answering of its \$0\.028 cap, and this browser call could cost up to \$0\.018667 \(browserbase's session time at \$0\.12 an hour: the 20 s its session ran since its last charge, and twice the next stretch of 270 s \(its 60 s minimum, the 180 s idle window and 30 s for its release\)\)\. Raise the cap to at least \$0\.03 to run it\./);
   assert.equal(releases.length, 1, "its session was released");
   assert.deepEqual([backend.tally().creates, backend.tally().releases, backend.liveCount()], [1, 1, 0]);
   // 3 s, 23 s, and at the refusal 20 s more, topped up to the minute.
@@ -147,6 +161,46 @@ test("capped, a create whose answer is lost and whose session no lookup finds ye
   assert.deepEqual([record.state, record.spent.final], ["released", true]);
   assert.deepEqual(booked.map((row) => row.seconds), [60], "found by its tag and billed its minimum");
   assert.equal(paidHolds(), 0, "let go once billed");
+});
+
+test("capped, a session found by its tag stays billed when its release retries: the next attempt's lookup no longer finds the stopped session", { timeout: 60_000 }, async (t) => {
+  const { CONFIRM_POLLS } = await import("@parcha/pi-browser/durable");
+  const cap = 0.1;
+  // The create's answer is lost and its first lookup fails: the session is left to a release after the create deadline.
+  // That release finds it by its tag and stops it, but its confirm gets no answer through every poll, so the release is
+  // tried again, and the provider's tag lookup no longer lists the stopped session. The clock moves as real time does.
+  const { record, booked } = await run(t, { reads: 1, cap, pump: 5, options: { createDeadlineMs: 50 }, setup: (backend) => { backend.lose("create"); backend.fail("findByTag", 1); backend.fail("status", CONFIRM_POLLS); } });
+  assert.deepEqual([record.state, record.spent.final], ["released", true]);
+  assert.deepEqual(booked.map((row) => [row.seconds, row.usd]), [[60, 0.002]], "one charge, its minimum at list price");
+  assert.equal(paidHolds(), 0, "its hold let go once billed");
+});
+
+test("capped, a session found by its tag whose release stops it and then fails is billed on the next attempt, and its hold let go", { timeout: 60_000 }, async (t) => {
+  const { record, booked } = await run(t, { reads: 1, cap: 0.1, pump: 5, options: { createDeadlineMs: 50 }, setup: (backend) => { backend.lose("create"); backend.fail("findByTag", 1); }, lastTurn: (backend) => backend.lose("release") });
+  assert.deepEqual([record.state, record.spent.final], ["released", true]);
+  assert.deepEqual(booked.map((row) => [row.seconds, row.usd]), [[60, 0.002]]);
+  assert.equal(paidHolds(), 0, "its hold let go once billed");
+});
+
+test("capped, a lost session known only by its tag, stopped by a reopen's release that then fails, is billed by the next reconcile, and its hold let go", { timeout: 60_000 }, async (t) => {
+  const { RELEASE_ATTEMPTS } = await import("@parcha/pi-browser/durable");
+  const { record, booked } = await run(t, { reads: 1, cap: 0.1, pump: 5, options: { createDeadlineMs: 50 }, setup: (backend) => { backend.lose("create"); backend.fail("findByTag", 1 + RELEASE_ATTEMPTS); },
+    after: async ({ browser, harness, backend, ctx }) => {
+      assert.ok(paidHolds() > 0, "the lost session is still held: it may be running");
+      backend.lose("release");
+      assert.equal((await browser.reconcile(harness, () => true, ctx)).unreachable.length, 1);
+      assert.equal((await browser.reconcile(harness, () => true, ctx)).released.length, 1);
+    } });
+  assert.deepEqual([record.state, record.spent.final], ["lost", true]);
+  assert.deepEqual(booked.map((row) => [row.seconds, row.usd]), [[60, 0.002]]);
+  assert.equal(paidHolds(), 0, "its hold let go once billed");
+});
+
+test("capped, a session found by its tag whose release attempt is aborted between its stop and its next checkpoint is billed by the abort handler, and its hold let go", { timeout: 60_000 }, async (t) => {
+  const { record, booked } = await run(t, { reads: 1, cap: 0.1, pump: 5, cutRelease: true, options: { createDeadlineMs: 50 }, setup: (backend) => { backend.lose("create"); backend.fail("findByTag", 1); } });
+  assert.deepEqual([record.state, record.spent.final], ["released", true]);
+  assert.deepEqual(booked.map((row) => [row.seconds, row.usd]), [[60, 0.002]]);
+  assert.equal(paidHolds(), 0, "its hold let go once billed");
 });
 
 test("a charge joins the run's spend and moves its holds only once the commit that books it is in: one that fails leaves neither", async (t) => {
@@ -352,7 +406,7 @@ test("through the API: a capped run whose next browser call would pass its cap i
   assert.equal(started.status, 202, JSON.stringify(started.body));
   await follow(api, started.body.run_id, ["completed", "failed"]);
   const view = (await api("GET", `/runs/${started.body.run_id}`)).body;
-  assert.match(view.result?.final_answer ?? "", /spend_cap_reached: This browser call was not sent\. It could cost up to \$0\.018\d* .*the run would pass its cap of \$0\.02: the run is out of budget\./);
+  assert.match(view.result?.final_answer ?? "", /spend_cap_reached: Not sent: the run has spent \$[\d.]+( and holds \$[\d.]+ for calls still answering)? of its \$0\.02 cap, and this browser call could cost up to \$0\.018\d* \(.*\)\. Raise the cap to at least \$0\.03 to run it\./);
   const booked = toolCosts(data, started.body.run_id);
   assert.ok(booked.length >= 1 && booked.every((row) => row.tool === "browser"));
   assert.equal(pico(booked.reduce((sum, row) => sum + row.usd, 0)), 0.002, "one session, released at its one-minute minimum");
