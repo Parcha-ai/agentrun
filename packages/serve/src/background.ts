@@ -1,8 +1,9 @@
 // Background processes in a sandbox run's box: `bash_background` starts a command and answers at once with its id;
 // `bash_output` reads its output in pages, from a byte offset; `bash_input` writes to its stdin; `bash_signal` sends its
 // process group TERM, INT or KILL; `bash_list` lists them. Every call is one short command in the box, on the same
-// environment `bash` runs on (coding-tools.ts), so they work on every box that runs `bash`, and the permission gate that
-// wraps the coding source takes them as it takes `bash`. Nothing new runs on this server.
+// environment `bash` runs on (coding-tools.ts), so they work on every box that runs `bash`. The tool gate holds each call
+// to bash's setting (tool-gate.ts SHELL_FAMILY): bash: deny refuses them all, bash: ask parks each under its own name.
+// Nothing new runs on this server.
 //
 // In the box, a start makes `work/background/<id>/` (the run's files show it) with `command`, `started`, `output.log`
 // (stdout and stderr, the first BACKGROUND_LOG_BYTES of them), `pid` (the command's process group) and, once it ends,
@@ -11,7 +12,9 @@
 // is left, so a read that sees `exit` sees the whole log, and a child left running keeps the process running. What only the box knows lives in its TMPDIR (else /tmp), under `.agentrun-background/<id>/`, never in
 // work/: the fifo the command reads as its stdin (a pull of a remote box refuses a pipe in work/), the runner's pid, and
 // the pid of the `sleep` that holds the fifo's write end open, so the command reads no end of input until `bash_input`
-// closes it. A process whose runner is gone without an `exit` (its box was replaced) is `lost`.
+// closes it. A process whose runner is gone without an `exit` (its box was replaced, or the runner was killed) is
+// `lost`. A child that leaves the command's group (its own setsid, a daemon) is not tracked: no call counts or signals
+// it, and only the box's end, its process limit or its 24-hour lifetime ends it.
 //
 // The run's end ends them (endBackground, from the server's settle, before the box is pulled and destroyed): TERM to
 // each running group, KILL after 3 s, and an `ended` file beside each log, which stays in the run's files.
@@ -172,7 +175,7 @@ function stateOf(said: string): State {
 function stateWords(state: State, ended = false): string {
   const atEnd = ended ? ", at the run's end" : "";
   if (state.state === "running") return "is running";
-  if (state.state === "lost") return "is gone: its box was replaced before it ended, so its exit code is not known";
+  if (state.state === "lost") return "is gone: what ran it ended first (its box was replaced, or its runner was killed), so its exit code is not known";
   return state.signal ? `ended by signal ${state.signal} (exit code ${state.exit_code})${atEnd}` : `exited with code ${state.exit_code}${atEnd}`;
 }
 

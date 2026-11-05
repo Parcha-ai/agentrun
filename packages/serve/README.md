@@ -278,7 +278,9 @@ place keeps it, `runner` included. An edit that names no place keeps the agent's
 The box is a new agent's default machine. A new agentic agent whose definition names no place is saved in the Docker box
 (`{"mode": "sandbox", "box": "docker"}`) wherever this server has docker, ready or still preparing its image (its first
 run then waits for the image, with one timeline row). The place is written on the agent's first revision, so its answers
-show it. If that definition names no `tools` either, it gets `["bash"]`, so the agent has a shell. A definition that
+show it. If that definition names no `tools` either, it gets `["bash", "bash_background", "bash_output", "bash_input",
+"bash_signal", "bash_list"]`, so the agent has a shell and can run a command in the background
+([background processes](#background-processes)). A definition that
 names its tools keeps exactly those, an empty list included. Where docker is unavailable, a new agent is saved as before,
 with no place, and runs on the runner. So is one whose tools name one the box refuses (`browser`, runner-only for now). A
 workflow is never given a box.
@@ -399,7 +401,9 @@ go through `work/` by path.
 An agent whose place is a sandbox may also name `bash_background`, `bash_output`, `bash_input`, `bash_signal` and
 `bash_list`, to run a command that outlives one call: a dev server, a watcher, a long build, a program that reads its
 input as it goes. Each call is one short command in the run's box, on the same path as `bash`, so they work on every box
-`bash` runs on, the permission gate takes each call as it takes `bash`'s, and nothing new runs on this server.
+`bash` runs on, and nothing new runs on this server. The tool gate holds each of them to `bash`'s setting: `bash: deny`
+refuses all five, saying they follow `bash`'s setting, and `bash: ask` parks a call under its own name, so an approval
+runs that call. None of them is a setting of its own.
 
 - `bash_background {command}` starts the command from `work/`, in a fresh shell (`bash`, else `sh`) under a session of
   its own (`setsid`, its runner under `nohup`), and answers its id (`"1"`, then `"2"`, and on) at once. Its stdout and
@@ -409,6 +413,11 @@ input as it goes. Each call is one short command in the run's box, on the same p
 - A process runs until no live process of its group is left: a child the command starts with `&` (a server, its
   output sent elsewhere) keeps it running, counted against the cap, signalled with it and ended at the run's end; its
   exit code is the shell's.
+- A child that leaves the process group (one that calls `setsid`, a daemon that detaches) is not tracked: it is not
+  counted against the cap, no `bash_signal` reaches it, and the run's end does not end it. Only the box's end, its
+  process limit (`AGENTRUN_BOX_PIDS`) and its 24-hour lifetime do.
+- A process whose runner ended before it did (its box was replaced, or the runner was killed) reads as gone, its exit
+  code not known.
 - At most 8 run at once in a run's box: a ninth start is refused, saying so, until one ends. Each log keeps the first
   16 MiB of the output; later output is dropped while the process runs on, and `bash_output` says so.
 - `bash_output {id, offset?, max_bytes?}` reads the log from a byte offset (0 when absent), at most 48 KiB a call (the
