@@ -520,7 +520,7 @@ const TRIGGER = closed({
   overlap: { enum: [...OVERLAP], description: "What a firing does while the trigger's last run is active (working, or waiting on a person): `skip`, recorded as a skipped firing with why. Never queued: a firing queued behind a run parked on a person would wait as long as the person does." },
   catchup_window_s: { type: "integer", minimum: 0, maximum: MAX_EVERY_S, description: `How late a missed time may still fire, once: of the times that came while the server was down (or its timer was late), the latest fires if it is this recent, under its own key, and the rest are one \`missed\` firing. 0: a missed time never fires. Default ${CATCHUP_WINDOW_S}.` },
   failures_in_a_row: { type: "integer", minimum: 0, description: `Failed firings since the last that started a run; at ${FAILURES_TO_PAUSE} the trigger turns itself off (\`disabled\`). Turned on again, it counts from 0.` },
-  disabled: { oneOf: [closed({ at: DATE_TIME, reason: { const: "auto_paused" } }), { type: "null" }], description: `Set when ${FAILURES_TO_PAUSE} failed firings in a row turned it off; null once it is on again.` },
+  disabled: { oneOf: [closed({ at: DATE_TIME, reason: { const: "auto_paused" } }), closed({ at: DATE_TIME, reason: { const: "source_unreadable" }, detail: { type: "string", description: "Why the source no longer reads." } }), { type: "null" }], description: `Why it is off, when the server turned it off: \`auto_paused\`, ${FAILURES_TO_PAUSE} failed firings in a row; \`source_unreadable\`, its cron line or zone no longer reads here (a newer cron library or time zone data refuses it), found at a start or when it came due, and only this trigger is turned off. Null once it is on again, which for \`source_unreadable\` takes a new source.` },
   next_at: { type: ["string", "null"], format: "date-time", description: "When it fires next; null while it is off." },
   last_run_id: { type: ["string", "null"], description: "The run its last firing that started one started; while that run is active (working, or waiting on a person), each firing is skipped. Null until one starts." },
   created_at: DATE_TIME,
@@ -1345,7 +1345,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
           default_permission: { enum: [...PERMISSIONS], description: "The owner's default: allow for this server's tools, ask for a catalog tool.", "x-agentrun-serve": "approvals/1" },
           permissions: { type: "array", items: { enum: [...PERMISSIONS] }, description: "The permissions it may be set to.", "x-agentrun-serve": "approvals/1" },
           ask_needs: { const: "password", description: "Present on a server with accounts off (AGENTRUN_ACCOUNTS=0), on each tool ask is offered for: an approval takes the owner's password sign-in, which this server has none of, so an ask is refused at each call (`needs the owner's approval, and this server has accounts off`), never parked. Absent with accounts on.", "x-agentrun-serve": "approvals/1" },
-          key: { enum: TOOL_KEYS.map((row) => row.id), description: "The tool key that unlocks it (GET /settings/tool-keys' id): saved there, it is read by name like a secret the server is started with, and the tool's `missing` goes at once. Absent when no tool key does.", "x-agentrun-serve": "toolkeys/1" },
+          key: { enum: TOOL_KEYS.map((row) => row.id), description: "The tool key that unlocks it (GET /settings/tool-keys' id; the browser's, its vendor's: kernel where Kernel is picked or resolved, else browserbase): saved there, it is read by name like a secret the server is started with, and the tool's `missing` goes at once. Absent when no tool key does.", "x-agentrun-serve": "toolkeys/1" },
         },
       },
       "x-agentrun-serve": "serve/1",
@@ -1576,7 +1576,8 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
     fields.push(...sourcesAdded.map((value) => `Capabilities.models.source.${value}`));
   }
   // browser/1: the browser tool runs on Browserbase or Kernel, picked per server and per agent (tool-plane.ts), so
-  // capabilities' `features.browser` may name Kernel's, which the contract's enum (browserbase, chrome, none) lacks.
+  // capabilities' `features.browser` names Kernel's where the server's settings resolve to it, which the contract's enum
+  // (browserbase, chrome, none) lacks.
   const browser = ((schemas.Features as Json).properties as Record<string, Json>).browser as Json & { enum?: string[] };
   if (Array.isArray(browser.enum) && !browser.enum.includes("kernel")) {
     browser.enum = [...browser.enum, "kernel"];

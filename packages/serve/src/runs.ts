@@ -35,7 +35,7 @@ import { CAP_ENV, CAP_REFUSAL_PREFIX, CAP_REFUSED_FIELD, money, type RefusalFigu
 import { DEFAULT_MODEL_ENV, EFFORT_ENV, GATEWAY_KEY_ENV, hostModel, llmTiers, modelKeys, nodeTiers, PROVIDER_KEYS, thinkingOf, type Tier, withoutFaux, workflowNodes } from "./model.js";
 import { llmAnswers, pausedIn, readNodeLog, RUN_PAUSED } from "./pause.js";
 import { durationMs } from "./print.js";
-import { handsParallel, type Plane, planeFor, relaunchPlane, TOOL_PLANE_ENV, type Tooling, type ToolSettingsMap } from "./tool-plane.js";
+import { handsParallel, keptFromBefore, keptVendor, type Plane, planeFor, relaunchPlane, TOOL_PLANE_ENV, type Tooling, type ToolSettingsMap } from "./tool-plane.js";
 import { APPROVAL_ENTRY, APPROVAL_ROW, NO_APPROVER_ENV, type PendingApproval, permissionOf, previewOf, RESUME_PREFIX, TURN_ORIGIN_FILE } from "./tool-gate.js";
 import { ChangeClock, type Page, RowLog } from "./rows.js";
 import { TOOL_KEYS } from "./tool-keys.js";
@@ -1719,16 +1719,21 @@ export class Runs {
     // settings, and kept in its serve.json, so a later change of the settings never changes a run's tools; at a later
     // launch only checked again (a Parallel key gone makes Parallel unavailable, never another provider). A new run's are
     // in the serve.json its start writes (start); resolving here is for a run made before that, whose browser stays
-    // Browserbase (keptFromBefore), the vendor it had then. A description with no secret
+    // Browserbase (keptFromBefore), the vendor it had then, kept as its choice and checked again at each launch like the
+    // rest; a vendor's missing-key refusal an earlier server saved reads as that vendor again (keptVendor), saved back. A
+    // description with no secret
     // in it, read by the run's process, never by a request. A key saved through the settings API counts as the launcher's
     // does (secrets.ts), so a saved Parallel key makes Parallel available, and a deleted one unavailable at the next launch.
-    // A capability set to ask or deny since resolves again (a harness's own search cannot wait for a person).
-    // Its first launch, from its start, is told a deny as under ask; a later one is told it denied (relaunchPlane).
+    // A capability set to ask or deny since resolves again (a harness's own search cannot wait for a person). Its first
+    // launch, from its start, is told a deny as under ask; a later one is told it denied (relaunchPlane).
+    const settings = this.options.toolSettings?.() ?? {};
+    const capped = run.meta.max_cost_usd !== undefined;
     const first = run.firstLaunch === true;
     run.firstLaunch = undefined;
-    const plane = relaunchPlane(run.meta.tool_plane, served, run.tooling, this.options.toolSettings?.() ?? {}, { capped: run.meta.max_cost_usd !== undefined, first });
-    if (!run.meta.tool_plane && Object.keys(plane).length) {
-      run.meta.tool_plane = plane;
+    const kept = run.meta.tool_plane ? keptVendor(run.meta.tool_plane) : run.tooling ? keptFromBefore(planeFor(served, run.tooling, settings, { capped })) : {};
+    const plane = relaunchPlane(kept, served, run.tooling, settings, { capped, first });
+    if (kept !== run.meta.tool_plane && Object.keys(kept).length) {
+      run.meta.tool_plane = kept;
       void this.saveMeta(run).catch(() => undefined);
     }
     delete env[TOOL_PLANE_ENV];

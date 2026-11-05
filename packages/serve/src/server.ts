@@ -56,7 +56,7 @@ import { MCP_AUTH_TYPES, McpServers } from "./mcp-servers.js";
 import { WEBHOOK_EVENTS, Webhooks } from "./webhooks.js";
 import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, OVERLAP, type RunTrigger, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, ID, IDEMPOTENCY_TTL_S, inputIssues, isObject, type Json, stable, unknownFields } from "./validate.js";
-import { agentTools, settingsIssues, ToolSettings, type ToolSettingsMap, withDefaults } from "./tool-plane.js";
+import { agentTools, browserKeyRow, settingsIssues, ToolSettings, type ToolSettingsMap, withDefaults } from "./tool-plane.js";
 import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, Uploads, UPLOADS_DIR } from "./uploads.js";
 import { INLINE_TYPES, openWorkFile, removeWorkFile, typeOf, WALK_DEPTH, walkWork, WorkRefused, writesHeld, writeWorkFile } from "./workspace.js";
 import { markRunning, markStopping, type ServerLock, takeServerLockAfterStop } from "./server-lock.js";
@@ -441,7 +441,10 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
   const models = { ...modelSource(env), ready: needs === null, needs };
   // Both limits apply: the cap on the count, and the memory each run reserves (host.ts).
   const memory = hostMemory();
-  const tools = toolsView(env, toolSettings, noBoxReason(boxes), refused).map((tool) => (keyOf(tool.name) ? { ...tool, key: keyOf(tool.name) } : tool));
+  // The browser's key is its vendor's row: Kernel's where Kernel is picked or resolved (tool-plane.ts browserKeyRow).
+  const keyFor = (tool: { name: string; provider?: string; resolves?: Record<string, string> }) => (tool.name === "browser" ? browserKeyRow(tool.provider, tool.resolves?.[DEFAULT_HARNESS]) : keyOf(tool.name));
+  const tools = toolsView(env, toolSettings, noBoxReason(boxes), refused).map((tool) => (keyFor(tool) ? { ...tool, key: keyFor(tool) } : tool));
+  const browser = tools.find((tool) => tool.name === "browser");
   return {
     backend: "local",
     contract: CONTRACT,
@@ -490,8 +493,9 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
       usage: { basis: "estimate", meters: ["tokens", "tools", "browser_time", "learning"] },
       efforts: [...EFFORTS],
       thinking: [...THINKING_LEVELS],
-      /** The browser a run's `browser` tool drives: Browserbase's when the tool is available here (tools[]), else none. */
-      browser: tools.some((tool) => tool.name === "browser" && tool.available) ? "browserbase" : "none",
+      /** The browser a run's `browser` tool drives: the vendor it resolves to under the server's settings when the tool is
+       *  available here (tools[]), Browserbase's or Kernel's, else none. */
+      browser: browser?.available ? ((browser as { resolves?: Record<string, string> }).resolves?.[DEFAULT_HARNESS] === "kernel" ? "kernel" : "browserbase") : "none",
       /** A tool setting's `permission` (definition.tool_settings, /v2/settings/tools): allow, ask or deny, which the tool
        *  gate holds every tool call to (tool-gate.ts); an ask is answered at POST /runs/{id}/approvals/{approval_id}. */
       tool_permissions: true,

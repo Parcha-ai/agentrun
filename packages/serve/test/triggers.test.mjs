@@ -214,6 +214,33 @@ test("a firing left due by a server that went down mid-start is driven again at 
   assert.deepEqual(run.body.trigger, { id: body.id, firing_key: fired.key }, "its provenance read back from serve.json");
 });
 
+test("a firing left due by a server that went down, found started at the next start, does not hold back that start's own firing: it starts its run", { timeout: 180_000 }, async (t) => {
+  const dir = await scratch(t);
+  const data = join(dir, "agents");
+  const clock = fakeClock("2026-06-01T00:00:00Z");
+  const first = await serve(t, { data, triggerClock: clock });
+  await made(first.api, "resumed");
+  const { body } = await first.api("POST", "/triggers", schedule("resumed", { every_s: 600, start_at: "2026-06-01T00:10:00Z" }));
+  clock.to("2026-06-01T00:10:00Z");
+  const [fired] = await firings(first.api, body.id, 1);
+  await follow(first.api, fired.run_id, ["completed"]);
+  await first.close();
+  // The 00:10 run is in the store and ended, and triggers.json still says due: the server went down between them.
+  const file = join(data, "triggers.json");
+  const kept = JSON.parse(await readFile(file, "utf8"));
+  Object.assign(kept.triggers[0].firings[0], { status: "due" });
+  delete kept.triggers[0].firings[0].run_id;
+  delete kept.triggers[0].last_run_id;
+  await writeFile(file, JSON.stringify(kept));
+  clock.to("2026-06-01T00:20:00Z");
+  const second = await serve(t, { data, triggerClock: clock });
+  const [now, before] = await firings(second.api, body.id, 2);
+  assert.deepEqual([before.nominal_at, before.status, before.run_id], ["2026-06-01T00:10:00Z", "started", fired.run_id], "the run it had");
+  assert.deepEqual([now.nominal_at, now.status, now.reason], ["2026-06-01T00:20:00Z", "started", null], "this start's own firing starts its run");
+  assert.equal((await second.api("GET", "/agents/resumed/runs")).body.runs.length, 2);
+  await follow(second.api, now.run_id, ["completed"]);
+});
+
 // A run its server never set up: no serve.json, or one that holds no input (runs.ts load's notSetUp).
 for (const [left, meta] of [["no serve.json", undefined], ["a serve.json with no input", { title: "", created_at: "2026-06-01T00:10:00.000Z" }]])
 test(`a firing whose run the server lost while setting it up (${left}) is failed with why, keeps that run, never fires again, and the next firing starts a new run`, { timeout: 180_000 }, async (t) => {
