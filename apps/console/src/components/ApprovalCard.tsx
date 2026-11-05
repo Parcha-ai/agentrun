@@ -59,8 +59,8 @@ export function ApprovalCard({ pending, onAnswer, compact = false, heading }: Ap
             <Button type="button" variant="solid" size="sm" disabled={busy} onClick={() => void answer("allow")}>Allow</Button>
             <Button type="button" size="sm" disabled={busy} onClick={() => void answer("deny")}>Deny</Button>
             {busy && <span className="font-mono text-[12px] text-muted-foreground">Sending…</span>}
-            {!compact && <span className="text-[12px] text-muted-foreground sm:ml-auto">The run waits on this call. Stop or Cancel withdraws it.</span>}
           </div>
+          {!compact && <p className="text-[12px] text-muted-foreground">or type what to do instead; sending it declines this call</p>}
           {problem && <p className="font-mono text-[12px] text-destructive-text" role="alert">{problem}</p>}
         </div>
       )}

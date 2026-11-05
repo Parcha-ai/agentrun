@@ -28,7 +28,8 @@ export function argsShown(preview: string): string {
 
 const ALREADY: Record<string, string> = {
   allow: "This call was already allowed, in another tab or by another answer. The run shows what happened next.",
-  deny: "This call was already denied, in another tab or by another answer. The run shows what happened next.",
+  // A message sent while the call waited declines it too (as its reason): "deny" covers both.
+  deny: "This call was already declined, by a message or another answer. The run shows what happened next.",
   withdrawn: "The run was stopped while this call waited, so the call was withdrawn. It never ran.",
   canceled: "The run was cancelled while this call waited. The call never ran.",
 };

@@ -44,6 +44,9 @@ export type RunDetailProps = {
 };
 type Tab = "graph" | "report" | "timeline" | "files";
 
+/** The message box's words while a tool call waits on an approval: a message declines the call, and the agent reads it. */
+const DECLINES = { label: "Decline and say what to do instead", placeholder: "Tell the agent what to do instead...", does: "Sending it declines the waiting call; the agent reads your message." };
+
 /** The run page: Report / Timeline / Files tabs over AgentRun Server's run, timeline and files. */
 export function RunDetail({ run, agentName, messages, harnessSteers, rows, files, readFile, openFile = null, actions, onMessage, onApprove, tab: initial, graphView, costText, readLearningDiff }: RunDetailProps) {
   const view = runState(run.status, run.state, run.kind, messages, harnessSteers, run.error, run.review);
@@ -115,11 +118,10 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
           {tab === "files" && <RunFiles files={files} onOpen={show} />}
         </div>
       </div>}
-      {/* While a call waits on an approval, a message doesn't answer it: Allow or Deny does, and Stop or Cancel withdraws it. */}
-      {view.canMessage && !approval && (
-        <div className="border-t px-5 py-4 md:px-8"><div className="mx-auto max-w-4xl"><Composer mode={view.messageMode!} onSend={onMessage} /></div></div>
+      {/* While a call waits on an approval, a message declines it, as its reason: the box says so. */}
+      {view.canMessage && (
+        <div className="border-t px-5 py-4 md:px-8"><div className="mx-auto max-w-4xl"><Composer mode={view.messageMode!} onSend={onMessage} purpose={approval ? DECLINES : undefined} /></div></div>
       )}
-      {approval && <p className="border-t px-5 py-3 text-center font-mono text-[12px] text-muted-foreground md:px-8">Answer the approval above to continue.</p>}
       {open && <ArtifactViewer file={open.file} text={open.text} onClose={close} />}
     </div>
   );
