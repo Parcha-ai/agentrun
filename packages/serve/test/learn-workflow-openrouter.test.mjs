@@ -11,8 +11,10 @@ import { completer } from "../dist/llm.js";
 import { authContextOf } from "../dist/secrets.js";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
 
-/** A dummy key: not a real one. */
+/** Dummy keys: not real ones. */
 const KEY = "not-a-secret-openrouter";
+const ANTHROPIC = "not-a-secret-anthropic";
+const OPENAI = "not-a-secret-openai";
 
 /** While `t` runs, a request to openrouter.ai goes to `gateway` instead (same path and query), one to loopback goes as
  *  it is, and any other is refused before it is sent and listed. */
@@ -58,10 +60,10 @@ test("on OPENROUTER_API_KEY alone, a claude-agent or codex run's learned workflo
 });
 
 test("where the harness has its own key, a learned workflow's model is the run's model as it is", async () => {
-  const claudeEnv = { OPENROUTER_API_KEY: KEY, ANTHROPIC_API_KEY: "not-a-secret-anthropic" };
+  const claudeEnv = { OPENROUTER_API_KEY: KEY, ANTHROPIC_API_KEY: ANTHROPIC };
   const claude = adapters.claudeModel(claudeEnv, "anthropic/claude-sonnet-5.5");
   assert.deepEqual(adapters.learnedRoute("claude-agent", claudeEnv, claude.model), { provider: "anthropic", modelId: "claude-sonnet-5-5" });
-  const codexEnv = { OPENROUTER_API_KEY: KEY, OPENAI_API_KEY: "not-a-secret-openai" };
+  const codexEnv = { OPENROUTER_API_KEY: KEY, OPENAI_API_KEY: OPENAI };
   const codex = await adapters.codexModel(codexEnv, "openai/gpt-6-sol");
   assert.deepEqual(adapters.learnedRoute("codex", codexEnv, codex.model), codex.model);
   // A model the run names on OpenRouter (pi's name) is OpenRouter's already.
