@@ -7,7 +7,7 @@ import { test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import { BROWSER_PRICES, browserPrice, browserSpend } from "../dist/browser-cost.js";
 import { paidHolds, useSpend } from "../dist/cap.js";
-import { agent, follow, serve, withEnv } from "./support.mjs";
+import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
 
 const START = "https://example.test/start";
 const T0 = Date.UTC(2026, 10, 5, 12, 0, 0);
@@ -178,6 +178,57 @@ test("prices by provider: Browserbase, Kernel and local Chrome, each overridden 
   const refused = await run(t, { provider: "steel", price: browserPrice("steel", {}), reads: 1, cap: 5 });
   assert.match(refused.results.join("\n"), /spend_cap_reached: This browser call was not sent\. steel's session time has no price here \(AGENTRUN_BROWSER_USD_PER_HOUR_STEEL gives one\), so the run's cap of \$5 cannot be kept/);
   assert.deepEqual([refused.booked, refused.backend.tally().creates], [[], 0]);
+});
+
+// Last of this process's runs: its first process's reserve stays in this process's holds (a real one would be gone).
+test("capped, a session kept across a restart of the run's process is held from the reopen and released an idle window after it, its charge booked", { timeout: 60_000 }, async (t) => {
+  const [{ BACKGROUND_CONTEXT: ctx }, { createModels }, faux, durable, { openNodeSqliteStorage }, { createBrowserExtension }, { FakeBackend, fakeDriver, fixturePage }] = await Promise.all([
+    import("@earendil-works/chord/context"), import("@earendil-works/pi-ai/models"), import("@earendil-works/pi-ai/providers/faux"), import("@earendil-works/pi-durable"),
+    import("@earendil-works/pi-durable/storage/sqlite/node"), import("@parcha/pi-browser/durable"), import("@parcha/pi-browser/testing"),
+  ]);
+  const file = join(await scratch(t), "run.sqlite");
+  let spent = 0;
+  useSpend({ cap: 0.05, spent: () => spent, add: (usd) => void (spent += usd) });
+  t.after(() => useSpend(undefined));
+  const backend = new FakeBackend({ name: "browserbase", start: START, pages: { [START]: fixturePage(START, "The start page.") } });
+  /** One process of the run: its own extension, bookings and harness on the run's one store. */
+  const open = async () => {
+    const spend = browserSpend("browserbase", BROWSERBASE, 1, async () => undefined);
+    const browser = createBrowserExtension({ provider: () => backend.provider, driver: fakeDriver(backend), evidence: { file: async () => null }, prices: { sessionUsdPerHour: 0.12, sessionMinimumS: 60 }, onCharge: spend.onCharge });
+    const model = faux.fauxProvider({ models: [{ id: "faux-1" }] });
+    model.setResponses([faux.fauxAssistantMessage([faux.fauxToolCall("snapshot", {})], { stopReason: "toolUse" }), faux.fauxAssistantMessage([faux.fauxText("done")], { stopReason: "stop" })]);
+    const models = createModels();
+    models.setProvider(model.provider);
+    const registry = durable.createRegistry();
+    registry.install({ ...browser.extension, tools: browser.extension.tools.map(spend.capped) });
+    const harness = await durable.Harness.open(await openNodeSqliteStorage(file), { models, registry, onReport: () => {} }, ctx);
+    spend.watch(harness);
+    return { spend, browser, harness };
+  };
+  const first = await open();
+  const policy = { proxies: false, verified: false, captcha: false, geolocation: null, region: null, contextId: null, sessionTimeoutS: 1800, idleReleaseS: 600, batchTimeoutMs: 60_000 };
+  const root = await first.harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" } }, init: async (tx, id) => { Object.assign(await tx.doc(first.browser.docs.Config, id), { label: "run", run: "run-kept", policy }); } });
+  await first.browser.reconcile(first.harness, () => true, ctx);
+  await (await root.submit({ type: "input", content: "go" }, ctx)).wait(ctx);
+  // The process ends without letting the run go: the session stays live at the provider, as after a crash.
+  await first.browser.close();
+  await first.harness.close(ctx);
+  assert.equal(backend.liveCount(), 1);
+  const second = await open();
+  // Its idle window is 1 s from here, so the reopened run's session goes once that passes with no call.
+  await second.harness.commit(async (tx) => { (await tx.doc(second.browser.docs.Config, root.id)).policy.idleReleaseS = 1; }, ctx);
+  // The first process's holds would be gone with it; here they stay in this one, so the second's are read beside them.
+  const base = paidHolds();
+  await second.spend.kept(second.harness, second.browser.docs, await second.browser.reconcile(second.harness, () => true, ctx), ctx);
+  assert.ok(paidHolds() - base >= second.spend.stretch, `held from the reopen: ${paidHolds() - base}`);
+  for (let i = 0; i < 200 && backend.liveCount() > 0; i += 1) await new Promise((resolve) => setTimeout(resolve, 25));
+  await second.browser.drain(second.harness, ctx);
+  assert.equal(backend.liveCount(), 0, "released an idle window after the reopen, with no call");
+  const [record] = (await second.harness.snapshot(second.browser.docs.Sessions, root.id, ctx)).sessions;
+  assert.deepEqual([record.state, record.spent.final], ["released", true]);
+  assert.equal(Math.round(spent * 1e12) / 1e12, record.spent.usd, "the process counted the whole bill: its first charge before the restart, the rest at the release");
+  assert.equal(paidHolds(), base, "its reserve let go with its release");
+  await second.harness.close(ctx);
 });
 
 /** Every TOOL_COST in a run's store, as written. */

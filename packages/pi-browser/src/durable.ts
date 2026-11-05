@@ -948,7 +948,14 @@ export function createBrowserExtension<D extends PageDriver>(options: BrowserExt
     async reconcile(harness, isActive, context) {
       c.opened = { harness, context };
       c.ending = endingOf(harness);
-      return store.reconcileAll(harness, isActive, context);
+      const report = await store.reconcileAll(harness, isActive, context);
+      // A session kept across a reopen has had no call here to arm its idle release: armed now, so one the run no longer
+      // uses is released an idle window after the reopen, not at the provider's session timeout.
+      for (const row of Object.values((await harness.snapshot(store.Inventory, context))?.rows ?? {}).filter((r) => report.kept.includes(r.tag))) {
+        const cid = row.conversationId as ConversationId;
+        c.idle.activity(cid, 0, ((await harness.snapshot(Config, cid, context))?.policy.idleReleaseS ?? 0) * 1000);
+      }
+      return report;
     },
     drain: (harness, context, signal) => drainReleases(name, harness, context, signal),
     async close() {

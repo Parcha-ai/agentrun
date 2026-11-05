@@ -419,7 +419,8 @@ is still made at the provider, and the record is left for the next run's reconci
 `handle.close()` releases every session the process still holds, and over a healthy store it releases nothing. At run open,
 after the extensions are installed and
 before anything resumes, it calls `handle.reconcile(harness, isActive, ctx)`, and every session a dead process left is bound,
-kept or released. The host wraps the tools (`handle.tools`) with its own policy: pause, call records, a result cap, media for
+kept or released. A kept session's idle release is armed then, so one no call uses is released an idle window after the
+reopen. The host wraps the tools (`handle.tools`) with its own policy: pause, call records, a result cap, media for
 the route.
 
 A policy's `navigation` is a restriction the host relies on, so a session that would not hold to it is never started. No

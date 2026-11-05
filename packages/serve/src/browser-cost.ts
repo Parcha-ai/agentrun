@@ -13,9 +13,11 @@
 //   is booked: its idle time, its top-up and its release. Each call's charge is taken from the call's hold, which goes
 //   when the call returns. The release's charge is taken from the session's reserve, which goes with it.
 // So what the run spent plus what it holds stays within the cap through a create, calls, the idle time between them and
-// the release. A single call that runs longer than a stretch, a release that takes longer than its allowance to be
-// confirmed, and a session kept across a restart of the run's process (its down time, held by no process) can pass it,
-// by that excess, booked and shown.
+// the release. A session kept across a restart of the run's process is held from the reopen (kept), at a stretch beside
+// what it ran since its last charge, and released an idle window after it unless a call uses it. A single call that runs
+// longer than a stretch, a release that takes longer than its allowance to be confirmed, and the time a run's process
+// was down while it held a session (spent before any process could hold it) can pass the cap, by that much, booked and
+// shown.
 import type { Context } from "@earendil-works/chord";
 import { ROOT_CONVERSATION_ID, type Conversation, type Session, type ToolExecutionApi, type ToolRegistration, type Tx } from "@earendil-works/pi-durable";
 import type { SessionCharge } from "@parcha/pi-browser";
@@ -87,10 +89,26 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
       sessions.delete(data.tag);
     } else if (session) {
       take(data.call === null ? undefined : calls.get(data.call)?.hold, usd);
+      // Its reserve is one stretch again: a kept session's held what it ran before this charge, which booked it.
+      session.reserve.usd = stretch;
       Object.assign(session, { at: Date.parse(data.at), call: data.call ?? session.call });
     } else {
       take(data.call === null ? undefined : calls.get(data.call)?.hold, usd + stretch);
       sessions.set(data.tag, { cid: data.conversation, reserve: keepHold(stretch), at: Date.parse(data.at), call: data.call });
+    }
+  }
+
+  /** The sessions a reopened run kept (pi-browser's reconcile `report`): held from here as if opened in this process, each
+   *  at a stretch beside what it ran since its last charge, the time the process was down included; that is already
+   *  spent at the provider, so it is held, never refused. */
+  async function kept(harness: Pick<Session, "snapshot">, docs: { Inventory: unknown; Sessions: unknown }, report: { kept: readonly string[] }, context: Context): Promise<void> {
+    if (rate === 0) return;
+    const rows = Object.values(((await harness.snapshot(docs.Inventory as never, context)) as { rows?: Record<string, { tag: string; conversationId: number }> } | undefined)?.rows ?? {});
+    for (const row of rows.filter((r) => report.kept.includes(r.tag) && !sessions.has(r.tag))) {
+      const record = ((await harness.snapshot(docs.Sessions as never, row.conversationId as never, context)) as { sessions?: { tag: string; spent: { chargedThrough: string } }[] } | undefined)?.sessions?.find((s) => s.tag === row.tag);
+      const at = Date.parse(record?.spent.chargedThrough ?? "");
+      if (!Number.isFinite(at)) continue;
+      sessions.set(row.tag, { cid: row.conversationId, reserve: keepHold(stretch + usdOf(Math.max(0, Date.now() - at) / 1000)), at, call: null });
     }
   }
 
@@ -136,5 +154,5 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
     return forModel(JSON.stringify({ error: why }), { isError: true });
   }
 
-  return { onCharge, watch, capped, stretch };
+  return { onCharge, watch, kept, capped, stretch };
 }
