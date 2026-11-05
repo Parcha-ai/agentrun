@@ -21,7 +21,7 @@ import type { RunTrigger } from "./triggers.js";
 import { hostMemory, memoryFull, neverFits, runMibOf, runsMemoryMib } from "./host.js";
 import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from "./agents.js";
 import { dropHandover } from "./browser-live.js";
-import { dropAsks, HANDOFF_TOOL, openAsk, type PendingAsk, waitingAsk } from "./browser-person.js";
+import { askShown, dropAsks, type PendingAsk } from "./browser-person.js";
 import { FOLLOW_UP_OPEN_ENV, LAUNCH_LOST, readJson, RUN_CANCELLED, RUN_DOOR_TOKEN, RUN_LAUNCHING, RUN_META, runDoorToken, SETUP_LOST, writeWhole } from "./files.js";
 import { type DaytonaApi, KEPT_AUTOSTOP_MINUTES, keepWhenIdle, wakeBoxes } from "./daytona-api.js";
 import { type Learning, LEARNING_LABEL, type LearningMode, type LearningReason, type LearningState, shortOf } from "./learning.js";
@@ -414,23 +414,11 @@ const pendingOf = (rows: readonly TimelineEvent[]): Pending => {
   const last = meaningful(rows);
   return last?.kind === "waiting" ? { kind: "question", question: last.text ?? last.summary ?? "", asked_at: last.timestamp } : null;
 };
-/** The ask its agent made for the person in its browser (browser-person.ts) that the run waits on: open in its directory,
- *  and its waiting row in its rows (the run's process writes the record first, then commits the row), so the wait is read,
- *  and told, at that row: the session's newest waiting row, with no hand-off's result after it (an earlier ask's has one). */
-const browserAsk = (run: Run): PendingAsk | undefined => {
-  const ask = run.dir ? openAsk(run.dir) : undefined;
-  if (!ask) return undefined;
-  const at = run.rows.findLastIndex((row) => row.kind === "waiting" && row.session === ask.tag);
-  return at >= 0 && !run.rows.slice(at + 1).some((row) => row.kind === "tool_result" && row.tool_name === HANDOFF_TOOL) ? ask : undefined;
-};
-/** Whether the run's agent waits on an ask a process must still take up: unanswered, expired or not, its waiting row in
- *  the run's rows with no hand-off's result after it. */
-const askWaits = (run: Run): boolean => {
-  const ask = run.dir ? waitingAsk(run.dir) : undefined;
-  if (!ask) return false;
-  const at = run.rows.findLastIndex((row) => row.kind === "waiting" && row.session === ask.tag);
-  return at >= 0 && !run.rows.slice(at + 1).some((row) => row.kind === "tool_result" && row.tool_name === HANDOFF_TOOL);
-};
+/** The ask its agent made for the person in its browser (browser-person.ts) that the run waits on, once its waiting row
+ *  is in the run's rows. */
+const browserAsk = (run: Run): PendingAsk | undefined => (run.dir ? askShown(run.dir, run.rows) : undefined);
+/** Whether the run's agent waits on an ask a process must still take up: unanswered, expired or not. */
+const askWaits = (run: Run): boolean => run.dir !== undefined && askShown(run.dir, run.rows, "waiting") !== undefined;
 /** A run whose agent asked for the person in its browser waits on their hand-back: what it asked them to do, when it is
  *  done, and when the ask expires. Never the session's tag or the live view's link. */
 const browserPending = (run: Run): Pending | undefined => {

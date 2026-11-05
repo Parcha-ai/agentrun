@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { answerAsk, openAsk, personHands } from "../dist/browser-person.js";
+import { answerAsk, askShown, openAsk, personHands } from "../dist/browser-person.js";
 import { scratch } from "./support.mjs";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -158,4 +158,45 @@ test("a process that resumes polling an ask an earlier process made, without ask
   t.after(() => later.person.close());
   assert.equal(await later.person.handoff.outcome(first.interactionId), "expired");
   assert.deepEqual(answerAsk(root, "done"), { outcome: "done", first: false }, "nothing left waiting");
+});
+
+test("two conversations ask: answering the newer leaves the older shown and answerable, whatever rows came after it; answering it ends both", async (t) => {
+  const root = await scratch(t);
+  const { person } = hands(root);
+  t.after(() => person.close());
+  const older = await person.handoff.request(ask(9, "ar-run-9-1"));
+  await sleep(5);
+  const newer = await person.handoff.request(ask(10, "ar-run-10-1"));
+  const waiting = (tag) => ({ kind: "waiting", session: tag });
+  const answered = { kind: "tool_result", tool_name: "browser_request_handoff" };
+  const rows = [waiting("ar-run-9-1"), waiting("ar-run-10-1")];
+  assert.equal(askShown(root, rows)?.id, newer.interactionId, "the newer is shown first");
+  assert.deepEqual(answerAsk(root, "done"), { outcome: "done", first: true });
+  assert.equal(await person.handoff.outcome(newer.interactionId), "done");
+  // The newer ask's result comes after both waiting rows.
+  rows.push(answered);
+  assert.equal(askShown(root, rows)?.id, older.interactionId, "the older still waits, and is shown");
+  assert.equal(askShown(root, rows, "waiting")?.id, older.interactionId);
+  assert.deepEqual(answerAsk(root, "cancelled"), { outcome: "cancelled", first: true }, "and is answerable");
+  assert.equal(await person.handoff.outcome(older.interactionId), "cancelled");
+  rows.push(answered);
+  assert.equal(askShown(root, rows), undefined, "both done");
+});
+
+test("an ask whose waiting row has not come yet is not shown, though an earlier ask on the same session has one", async (t) => {
+  const root = await scratch(t);
+  const { person } = hands(root);
+  t.after(() => person.close());
+  const tag = "ar-run-11-1";
+  const first = await person.handoff.request(ask(11, tag));
+  const rows = [{ kind: "waiting", session: tag }];
+  assert.equal(askShown(root, rows)?.id, first.interactionId);
+  assert.deepEqual(answerAsk(root, "done"), { outcome: "done", first: true });
+  assert.equal(await person.handoff.outcome(first.interactionId), "done");
+  rows.push({ kind: "tool_result", tool_name: "browser_request_handoff" });
+  await sleep(5);
+  const second = await person.handoff.request(ask(12, tag));
+  assert.equal(askShown(root, rows), undefined, "its own row is not in yet");
+  rows.push({ kind: "waiting", session: tag });
+  assert.equal(askShown(root, rows)?.id, second.interactionId);
 });

@@ -150,6 +150,18 @@ export function waitingAsk(runDir: string): PendingAsk | undefined {
   }
 }
 
+/** The ask the run waits on (`which`: "open", unexpired, as its status reads it; "waiting", expired or not, as a process
+ *  must still take up) once its own waiting row is in `rows`: the run's process writes the record first, then commits the
+ *  row. Each ask on a session writes one waiting row, in the order asked, so the nth ask on a session is in once that
+ *  session has n waiting rows, whatever other asks (another conversation's, answered or not) wrote meanwhile. */
+export function askShown(runDir: string, rows: readonly { kind: string; session?: string }[], which: "open" | "waiting" = "open"): PendingAsk | undefined {
+  const ask = which === "open" ? openAsk(runDir) : waitingAsk(runDir);
+  if (!ask) return undefined;
+  const on = asksIn(runDir).map(({ ask: each }) => each).filter((each) => each.tag === ask.tag).reverse();
+  const nth = on.findIndex((each) => each.id === ask.id) + 1;
+  return rows.filter((row) => row.kind === "waiting" && row.session === ask.tag).length >= nth ? ask : undefined;
+}
+
 /** The answer to ask `id`, or the first answer written now: `outcome` unless one is there already. */
 function answerOnce(dir: string, id: string, outcome: AskOutcome): AskOutcome {
   if (writeOwn(dir, `${id}.answer.json`, { outcome, at: new Date().toISOString() }, true)) return outcome;
