@@ -7,7 +7,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { COMMANDS } from "./commands.generated.mjs";
-import { FLAGS, WAIT, followTimeline, waitRun } from "./follow.mjs";
+import { FLAGS, REQUEST_MS, WAIT, followTimeline, waitRun } from "./follow.mjs";
 import { SECRETS, guarded } from "./login.mjs";
 import { SKILL_INSTALL } from "./skill.mjs";
 
@@ -248,13 +248,15 @@ function clientOf(target, io) {
   };
 }
 
-/** One request: `{ response, bytes }`, or `{ code }` once it was refused (its error on stderr). */
-async function request(client, { method, path, headers, body, type }) {
+/** One request: `{ response, bytes }`, `{ code }` once it was refused (its error on stderr), or `{ late: true }` once
+ *  `signal`, when given, ended it first. */
+async function request(client, { method, path, headers, body, type, signal }) {
   try {
-    const response = await client.fetch(path, { method, headers: { ...headers, accept: "application/json, */*", ...(body !== undefined ? { "content-type": type } : {}) }, body });
+    const response = await client.fetch(path, { method, signal, headers: { ...headers, accept: "application/json, */*", ...(body !== undefined ? { "content-type": type } : {}) }, body });
     const bytes = Buffer.from(await response.arrayBuffer());
     return response.ok ? { response, bytes } : { code: client.refused(response, bytes) };
   } catch (error) {
+    if (signal?.aborted) return { late: true };
     throw client.unreachable(error);
   }
 }
@@ -396,11 +398,20 @@ async function command(entry, argv, env, io) {
   const req = { method: entry.method, path: `${path}${search}`, headers, body, type, raw: entry.raw };
   if (values.follow) return followTimeline(client, req.path, headers);
   if (!values.wait) return send(client, req);
-  const started = await request(client, req);
+  // The start is bounded as the wait is: by --timeout, which the wait then has what is left of, else as one of the
+  // wait's requests is.
+  const began = Date.now();
+  const bound = timeout ?? REQUEST_MS;
+  const started = await request(client, { ...req, signal: AbortSignal.timeout(Math.ceil(bound)) });
+  if (started.late) {
+    const said = `The server did not answer the start within ${bound / 1000} s; it may have started the run: look for it with \`agentrun runs list --agent ${args[0]}\`.`;
+    if (timeout === undefined) throw new Exit(3, said);
+    return io.stderr.write(`${said}\n`), 1;
+  }
   if (started.code !== undefined) return started.code;
   const run = jsonOf(started.bytes)?.value;
   if (!runIdOk(run?.run_id)) return io.stderr.write("The server's answer to the start names no usable run_id.\n"), 1;
-  return waitRun(client, run.run_id, timeout);
+  return waitRun(client, run.run_id, timeout === undefined ? undefined : Math.max(1, timeout - (Date.now() - began)));
 }
 
 /** A hand-written command of LOCAL: its flags and arguments checked, then its `run`, with this module's custody of the

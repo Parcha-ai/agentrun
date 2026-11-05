@@ -64,3 +64,16 @@ test("a body for a path that ends like a secret route is refused inline, and the
   assert.equal(piped.code, 0, piped.err);
   assert.deepEqual([server.requests[0].method, server.requests[0].url, server.requests[0].body.toString()], ["PUT", "/v2/agents/demo/home/files/settings/tool-keys/x", "hello"]);
 });
+
+test("runs start --wait --timeout bounds the start too: a server that never answers it is given up on in time, exit 1", async (t) => {
+  const { env } = scratch(t);
+  // Takes the start and never answers it.
+  const server = await listener(t, () => {});
+  const began = Date.now();
+  const started = await cli(env, ["runs", "start", "demo", "--body", '{"input":{"content":"hi"}}', "--wait", "--timeout", "1", "--base-url", server.base], { timeout: 15_000 });
+  assert.equal(started.code, 1, `${started.code} ${started.err}`);
+  assert.ok(Date.now() - began < 10_000, "given up on near its timeout");
+  assert.match(started.err, /did not answer the start within 1 s; it may have started the run: look for it with `agentrun runs list --agent demo`/);
+  assert.equal(started.out, "");
+  assert.equal(server.requests.length, 1);
+});

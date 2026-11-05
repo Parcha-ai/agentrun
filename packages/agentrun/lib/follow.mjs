@@ -15,6 +15,8 @@ const BACKOFF_MS = 500;
 const MAX_BACKOFF_MS = 30_000;
 const RETRIABLE = new Set([502, 503, 504]);
 const IDLE_MS = 45_000; // three of the stream's 15 s keepalives missed: the connection is gone
+/** The longest one request of a wait may take: a long poll's wait and the silence that means its connection is gone. */
+export const REQUEST_MS = MAX_WAIT_MS + IDLE_MS;
 
 /** The flags these add to a generated command (by its operationId), and their help lines. */
 export const FLAGS = {
@@ -63,7 +65,7 @@ async function getJson(client, path, reached, deadline) {
     let bytes;
     try {
       // A long poll answers within its wait_ms: one silent well past it is a connection gone.
-      response = await client.fetch(path, { signal: AbortSignal.timeout(wholeMs(Math.min(MAX_WAIT_MS + IDLE_MS, left))) });
+      response = await client.fetch(path, { signal: AbortSignal.timeout(wholeMs(Math.min(REQUEST_MS, left))) });
       bytes = Buffer.from(await response.arrayBuffer());
       reached.yes = true;
     } catch (error) {
