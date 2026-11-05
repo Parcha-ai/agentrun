@@ -1092,3 +1092,34 @@ test("a run still going whose serve.json the next server cannot read, of an agen
   const meta = await until(async () => JSON.parse(await readFile(join(data, "runs", runId, "serve.json"), "utf8").catch(() => "{}")), (kept) => kept.unshown === true);
   assert.equal(meta.error.message, view.error.message);
 });
+
+test("an ended run a list reads from its row alone has its error withheld while its agent's sign-in does not open here, and served cut once it opens again", { timeout: 240_000 }, async (t) => {
+  const dir = await scratch(t);
+  const log = join(dir, "browser.jsonl");
+  const seal = randomBytes(32).toString("base64");
+  withEnv(t, { BROWSERBASE_API_KEY: BB_KEY, BROWSERBASE_PROJECT_ID: "proj-1", AGENTRUN_SEAL_KEY: seal, FAUX_BROWSER_LOG: log, FAUX_BROWSER_DIE_WITH_REF: "1" }, KEYS);
+  const first = await serve(t, { fauxBrowser: FAUX_BROWSER, fauxBrowserbase: FAUX_BROWSERBASE });
+  assert.equal((await first.api("POST", "/agents", agent("alpha", { instructions: "Browse.", tools: ["browser"] }))).status, 201);
+  const runId = (await first.api("POST", "/agents/alpha/runs", { input: { content: "Browse the example page." } })).body.run_id;
+  await follow(first.api, runId, ["failed"], { deadlineMs: 60_000 });
+  const { ref } = (await readFile(log, "utf8")).trim().split("\n").map((line) => JSON.parse(line)).find((op) => op.op === "sign-in");
+  await first.close();
+  // Its error as a server that did not cut it kept it: the pointer in the clear.
+  const metaFile = join(first.data, "runs", runId, "serve.json");
+  const meta = JSON.parse(await readFile(metaFile, "utf8"));
+  await writeFile(metaFile, `${JSON.stringify({ ...meta, error: { code: "run_failed", message: `The browser died holding ${ref}.` } })}\n`);
+  const listed = async (api) => {
+    const bodies = [(await api("GET", "/runs")).body, (await api("GET", "/agents/alpha/runs")).body];
+    for (const body of bodies) assert.ok(!JSON.stringify(body).includes(ref), JSON.stringify(body));
+    return bodies.map((body) => body.runs.find((r) => r.run_id === runId).error);
+  };
+  // Another seal key: the sign-in does not open, so the pointer can't be cut: the error is withheld, saying why.
+  process.env.AGENTRUN_SEAL_KEY = randomBytes(32).toString("base64");
+  const rotated = await serve(t, { data: first.data, fauxBrowser: FAUX_BROWSER, fauxBrowserbase: FAUX_BROWSERBASE });
+  for (const error of await listed(rotated.api)) assert.deepEqual([error.code, /can't read the run's browser sign-in/.test(error.message)], ["run_failed", true], JSON.stringify(error));
+  await rotated.close();
+  // The right key back: the error is shown, cut.
+  process.env.AGENTRUN_SEAL_KEY = seal;
+  const { api } = await serve(t, { data: first.data, fauxBrowser: FAUX_BROWSER, fauxBrowserbase: FAUX_BROWSERBASE });
+  for (const error of await listed(api)) assert.equal(error.message, "The browser died holding [redacted].");
+});

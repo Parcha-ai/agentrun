@@ -99,6 +99,9 @@ export const UNREADABLE_SIGN_IN = "This server can't read the run's browser sign
 /** Why a run going when its server started was stopped: its serve.json is there but can't be read or parsed, and with it
  *  went which browser it ran on and whether it was handed its agent's sign-in, so its text can't be cut of the pointer. */
 export const UNREADABLE_RUN_META = "This server can't read the run's record (its serve.json is damaged or can't be read), so it can't tell whether the run was handed its agent's browser sign-in: the run was stopped, so nothing it says can show it.";
+/** What a list serves of an ended run's error or review that its server can't cut of its browser sign-in's pointer (its
+ *  agent's sign-in does not open here), in place of the words. */
+export const ROW_WITHHELD = "This server can't read the run's browser sign-in (its seal key changed or is missing, or the sign-in is damaged), so what the run said is withheld here: it could show the sign-in.";
 /** How often a run's end that the agent store refused is written again. */
 const SETTLE_RETRY_MS = 30_000;
 /** How a run ended in the store, as its status: the store's `stopped` is v2's `cancelled`, and an escalated workflow
@@ -1269,13 +1272,23 @@ export class Runs {
     return { ...error, message: this.shown(run, error.message) };
   }
 
-  /** shown() for a run this server holds no Run for (an ended one a list reads from its row and serve.json alone): this
-   *  server's secrets and tokens, and its agent's browser sign-in's pointer, read back as a load does (peekSignIn). */
-  private async rowShown(agentId: string, meta: Partial<RunMeta> | null, text: string): Promise<string> {
-    const browser = isObject(meta?.tool_plane) ? meta.tool_plane.browser : undefined;
-    const peeked = browser ? await this.options.signIns?.peek(agentId, browser).catch(() => undefined) : undefined;
+  /** A run's review as its view serves it: its reason (an escalation's own words) in shown()'s terms. */
+  private servedReview(run: Run, review: RunReview | null): RunReview | null {
+    return review && { ...review, reason: this.shown(run, review.reason) };
+  }
+
+  /** shown() for a run this server holds no Run for (an ended one a list reads from its row and serve.json alone): cut of
+   *  this server's secrets and tokens and of its agent's browser sign-in's pointer, read back as a load does
+   *  (peekSignIn). `withheld` when that pointer can't be read back to cut it, as a load would hide the run: its agent's
+   *  sign-in does not open here (or its sign-ins file can't be read), and its serve.json says it ran with a browser or
+   *  was handed a sign-in (one handed a sign-in with no browser kept beside it is withheld too: which one is not known). */
+  private async rowShown(agentId: string, meta: Partial<RunMeta> | null): Promise<((text: string) => string) | "withheld"> {
+    const browser = isObject(meta?.tool_plane) && typeof meta.tool_plane.browser === "string" ? meta.tool_plane.browser : undefined;
+    const peeked = browser ? await this.options.signIns?.peek(agentId, browser).catch(() => "unreadable" as const) : undefined;
+    if (peeked === "unreadable" || (meta?.sign_in_handed !== undefined && !browser)) return "withheld";
     const pointer = typeof peeked === "object" && peeked.ref.length >= MIN_SECRET ? [peeked.ref] : [];
-    return withoutLoopback(redacted(text, [...hostSecrets(process.env, this.options.storedKeys), ...pointer, this.options.token, this.options.doorToken]));
+    const values = [...hostSecrets(process.env, this.options.storedKeys), ...pointer, this.options.token, this.options.doorToken];
+    return (text) => withoutLoopback(redacted(text, values));
   }
 
   /** A run's answer as serve serves it: no held secret, never cut (redactedAnswer). Loopback addresses stay: an answer is
@@ -3100,7 +3113,7 @@ export class Runs {
       result: status === "completed" ? { output: run.kind === "workflow" ? (this.servedOutput(run, run.meta.output ?? null)) : null, final_answer: this.servedAnswer(run, finalAnswer) } : kept ? { output: null, final_answer: this.servedAnswer(run, kept) } : null,
       // Cut as its rows and answer are (shown): an error can quote what the run said, or a process's last line.
       error: status === "failed" ? this.servedRunError(run, run.error ?? { code: "run_failed", message: "The run failed.", retryable: false }) : null,
-      review: endedAt === null ? null : reviewAt(run.meta.review ?? (row ? reviewOfRow(row, run.meta) : null), endedAt),
+      review: endedAt === null ? null : this.servedReview(run, reviewAt(run.meta.review ?? (row ? reviewOfRow(row, run.meta) : null), endedAt)),
       pending: status === "input_required" && state === "waiting" ? (approvalOf(run, this.redactor(run)) ?? budgetPending(run, this.spentNow(run)) ?? pendingOf(run.rows)) : null,
       cost: this.cost(run),
       archived_at: stored?.archivedAt ?? null,
@@ -3132,13 +3145,18 @@ export class Runs {
     if (known) return this.summary(known);
     const meta = (await readJson(join(this.options.agents.dir, "runs", row.id, RUN_META))) as Partial<RunMeta> | null;
     const failed = STATUS_OF[row.state as Ended] === "failed" ? errorOfRow(row, meta) : null;
+    const review = reviewOfRow(row, meta);
+    // Its error and review are the run's words (its error can quote what it said; an escalation's reason is its own):
+    // cut as its view's are, or withheld when the pointer they could hold can't be read back here.
+    const shown = failed || review ? await this.rowShown(row.agent, meta) : undefined;
+    const say = (text: string) => (shown === "withheld" ? ROW_WITHHELD : shown!(text));
     return {
       run_id: row.id, agent_id: row.agent, agent_version: versions.get(row.revision) ?? 0, revision: row.revision, kind: row.kind, sha: null,
       status: STATUS_OF[row.state as Ended], state: "idle" as State, title: typeof meta?.title === "string" ? meta.title : "",
       ...(typeof meta?.effort === "string" ? { effort: meta.effort } : {}),
       created_at: typeof meta?.created_at === "string" ? meta.created_at : row.startedAt, ended_at: row.endedAt ?? null,
-      error: failed && { ...failed, message: await this.rowShown(row.agent, meta, failed.message) },
-      review: reviewAt(reviewOfRow(row, meta), row.endedAt ?? new Date(0).toISOString()),
+      error: failed && (shown === "withheld" ? { code: failed.code, message: ROW_WITHHELD, retryable: false } : { ...failed, message: say(failed.message) }),
+      review: reviewAt(review && { ...review, reason: say(review.reason) }, row.endedAt ?? new Date(0).toISOString()),
       cost: { usd: row.costUsd ?? null, basis: "estimate", charge_state: null, cap_usd: typeof meta?.max_cost_usd === "number" ? meta.max_cost_usd : null, ...(row.costUsd == null ? (soFarOfMeta(meta) ?? {}) : {}) },
       archived_at: row.archivedAt ?? null,
       // A run read from its row alone has ended: it waits on nothing.
