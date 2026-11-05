@@ -9,7 +9,7 @@ request ended (`Ended`). The rule is never to under-count.
 - **An error status before any event**, or a request refused at connect, books nothing.
 - **A failure once the request left, a gateway's 504 or 524, or an answer after an attempt that was lost** books the
   hold.
-- **A stop** books what streamed.
+- **A stop** books what streamed: its content, and the part of a hidden reasoning budget that did not stream.
 
 On pi, the cap now gives pi-ai a fetch that records each attempt pi-ai makes, so a reset before any response books the
 hold where it booked $0, and a 429 then an answer is priced once. An API whose transport that fetch cannot see (Codex's

@@ -825,8 +825,9 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       // What it streamed: its content where the policy reads it, never the provider's framing; else the bytes as sent.
       const streamed = policy.contentBytesOf ? sentOf.bytes("content") : sentBytes;
       const stopped = stoppedByClient && usd === null ? { stoppedAfterBytes: streamed, ...(hiddenTokens > 0 ? { stoppedHiddenTokens: hiddenTokens, stoppedReasoningBytes: sentOf.bytes("reasoning") } : {}) } : {};
-      // How it ended, for the runner to book it by (booking.ts).
-      const ended: Ended = stoppedByClient && usd === null ? { end: "stopped", streamedTokens: sentBytes }
+      // How it ended, for the runner to book it by (booking.ts). A stop counts what the stop fields above say of it: its
+      // content, and the part of its hidden reasoning budget that did not stream, max(0, budget - the reasoning sent).
+      const ended: Ended = stoppedByClient && usd === null ? { end: "stopped", streamedTokens: streamed + Math.max(0, hiddenTokens - sentOf.bytes("reasoning")) }
         : !seen ? (isConnectCode(failedCode) ? { end: "nothing", label: "never_left" } : { end: "lost", label: "error_before" })
         : !seen.ok ? (isGatewayTimeout(began?.status ?? 0) ? { end: "lost", label: "gateway_timeout" } : { end: "nothing", label: "status" })
         : !answered && usd === null ? { end: "lost", label: "error_after", began: true }

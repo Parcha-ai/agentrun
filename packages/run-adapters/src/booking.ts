@@ -9,8 +9,8 @@
  *   left (`isConnectCode`): 0;
  * - `lost`: anything that can have been billed and says no cost (a transport error once it left, a cut answer, a
  *   gateway's 504 or 524, an answer after an attempt that was lost, which can have been billed twice, a crash): the hold;
- * - `stopped`: our abort, its client gone part way: what streamed, priced by the path (`stoppedPrice`), never past the
- *   hold.
+ * - `stopped`: our abort, its client gone part way: what streamed (its content, and the part of a hidden reasoning
+ *   budget that did not stream), priced by the path (`stoppedPrice`), never past the hold.
  * With no hold (no cap), a figure no one knows is `null`, as it always was.
  */
 
