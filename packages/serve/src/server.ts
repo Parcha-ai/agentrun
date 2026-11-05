@@ -48,7 +48,7 @@ import { metersIn } from "./cap.js";
 import { blockersOf, CODE_NODES_ENV, issueOf, type RevisionShape } from "./runnable.js";
 import { hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from "./secrets.js";
 import { redactedOutput } from "./key-refusal.js";
-import { analyticsFilter, analyticsView, statsView } from "./stats.js";
+import { analyticsFilter, analyticsView, pendingOf, statsView } from "./stats.js";
 import { outcomes } from "./usage.js";
 import { keyOf, SEAL_KEY_ENV, sealKeyOf, TOOL_FIELDS, ToolKeys } from "./tool-keys.js";
 import { MCP_AUTH_TYPES, McpServers } from "./mcp-servers.js";
@@ -1666,9 +1666,15 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         return send(res, 200, await usage(url));
       case "getStats": {
         const filter = analyticsFilter(url);
-        const [stats, analytics, rows] = await agents.request(() => [agents.store.stats(), agents.store.analytics(filter), agents.store.listRuns()] as const);
+        // A run this server holds as ended whose end the store does not have yet is pending: counted as it ended, its
+        // metrics left out until the store has them (stats.ts pendingOf).
+        const [stats, analytics, rows, pending] = await agents.request(() => {
+          const stats = agents.store.stats();
+          const pending = pendingOf(stats.running, runs);
+          return [stats, agents.store.analytics({ ...filter, pending }), agents.store.listRuns(), pending] as const;
+        });
         // How the runs that tried to learn fared: a held run's learning from memory, any other's end from the ledger.
-        return send(res, 200, { ...statsView(stats, runs), analytics: analyticsView(analytics, filter), learning: await runs.learning.counts(rows, filter) });
+        return send(res, 200, { ...statsView(stats, runs, pending), analytics: analyticsView(analytics, filter), learning: await runs.learning.counts(rows, filter) });
       }
       case "listToolKeys":
         // The offers the server holds, not capabilities': a model key's row names the harnesses its key would run too.
