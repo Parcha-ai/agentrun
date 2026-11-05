@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-codex/test/fake-app-server.mjs at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, patches: 005-fake-app-server-script, 006-comments
+// Changed by Parcha, patches: 005-fake-app-server-script, 006-comments, 015-fake-app-server-sse-event-lines
 /**
  * A fake `codex app-server --stdio`, for the tests that need no network. It
  * speaks the subset of the protocol the harness uses and keeps a rollout
@@ -189,7 +189,8 @@ async function stream(text, onPiece) {
   for await (const chunk of res.body) {
     buffer += decoder.decode(chunk, { stream: true });
     for (let at = buffer.indexOf('\n\n'); at >= 0; at = buffer.indexOf('\n\n')) {
-      const data = buffer.slice(0, at).replace(/^data: /, '');
+      // An event's `data:` lines (the provider names each event on an `event:` line before them).
+      const data = buffer.slice(0, at).split('\n').filter((line) => line.startsWith('data:')).map((line) => line.replace(/^data: ?/, '')).join('\n');
       buffer = buffer.slice(at + 2);
       if (data === '[DONE]') return;
       if (data) onPiece(JSON.parse(data).delta);
