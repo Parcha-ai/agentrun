@@ -118,7 +118,7 @@ test("a box this server does not enable names the setting that enables it: in ca
   const bash = tools.find((tool) => tool.name === "bash");
   assert.deepEqual([bash.available, bash.reason, bash.sandbox_only], [false, NO_BOX, true], JSON.stringify(bash));
   assert.equal(bash.summary, "Run a bash command in the run's box, from its work/, never on this server itself: only an agent whose place is a sandbox names it. Its output's tail; 300 s unless the call names a timeout.");
-  assert.deepEqual(tools.filter((tool) => tool.reason?.startsWith("no box")).map((tool) => tool.name), ["bash"], "only a sandbox-only tool is unavailable for want of a box");
+  assert.deepEqual(tools.filter((tool) => tool.reason?.startsWith("no box")).map((tool) => tool.name), ["bash", "bash_background", "bash_output", "bash_input", "bash_signal", "bash_list"], "only the sandbox-only tools (bash and the background tools) are unavailable for want of a box");
   // The web tools keep how they resolve, and why, on a server with no box.
   const web = tools.filter((tool) => tool.resolves);
   assert.deepEqual(web.map((tool) => [tool.name, tool.available, Object.keys(tool.why ?? {}).sort()]), [["web_fetch", true, ["claude-agent", "codex", "opencode", "pi"]], ["web_search", true, ["claude-agent", "codex", "opencode", "pi"]], ["browser", false, ["claude-agent", "codex", "opencode", "pi"]]], JSON.stringify(web));
