@@ -979,9 +979,9 @@ once per `Idempotency-Key` (required). `GET /v2/triggers/{id}/firings` lists its
 A trigger with `source: {kind: "webhook"}` fires on each request to `POST /v2/hooks/{trigger_id}`: this server's one
 route with no token. The request is signed by the trigger's own secret under the
 [Standard Webhooks](https://www.standardwebhooks.com) spec, the one this server's outbound [webhooks](#webhooks) sign
-with, so a sender uses any of its libraries: `webhook-id`, `webhook-timestamp` (Unix seconds, within 5 minutes of this
+with, so a sender uses any of its libraries: `webhook-id` (1 to 255 printable ASCII characters, no space), `webhook-timestamp` (Unix seconds, within 5 minutes of this
 server's clock either way) and `webhook-signature: v1,<base64 HMAC-SHA256 of "{id}.{timestamp}.{body}">` under the
-secret's bytes (several, space-separated, and any one may match). The signature is checked on the raw body before
+secret's bytes (several, space-separated, and any one may match). The signature is checked on the raw body, as sent and whatever its content type, before
 anything else. A bad signature, a stale timestamp, an unknown trigger, one that is off and one that is not a webhook's all
 answer the same `401`, so no trigger id can be found by asking; a body past 256 KiB is `413`.
 
@@ -998,7 +998,8 @@ sender wrote is data, not an instruction.
 A trigger's target may also be `{kind: "message_run", run_id, input: {content}}`, with a webhook or a schedule source:
 each firing sends its input to that run as `POST /v2/runs/{id}/messages` would (a steer, an answer, or a follow-up that
 opens a completed run again), under its own cap. The firing's key is the message's id in the run's store, which takes
-one message per id, so a firing driven again after a restart sends it once.
+one message per id; a firing driven again after a restart first looks for it there, so it sends the message once and
+never opens a completed run again for one it already has.
 
 ## What it serves
 
