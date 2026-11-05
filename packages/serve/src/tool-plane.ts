@@ -271,6 +271,15 @@ export function recheckPlane(plane: Plane, env: NodeJS.ProcessEnv, now?: { fresh
 export const keptFromBefore = (plane: Plane, env: NodeJS.ProcessEnv): Plane =>
   plane.browser === undefined ? plane : { ...plane, browser: browserKeysOf(env).browserbase ? "browserbase" : noBrowserKey("browserbase") };
 
+/** The Plane a run's process is handed at a launch after its first, under the server's `settings` now: its kept Plane
+ *  checked again (recheckPlane) against the one it would get today; a run made before its plane was kept gets today's,
+ *  its browser kept (keptFromBefore). */
+export function relaunchPlane(kept: Plane | undefined, env: NodeJS.ProcessEnv, tooling: Tooling | undefined, settings: ToolSettingsMap, { capped = false }: { capped?: boolean } = {}): Plane {
+  const fresh = tooling ? planeFor(env, tooling, settings, { capped, run: true }) : {};
+  if (kept) return recheckPlane(kept, env, { fresh, permission: (name) => permissionOf(name, settings, tooling?.overrides ?? {}) });
+  return tooling ? keptFromBefore(fresh, env) : {};
+}
+
 /** The Plane the server handed this run's process; empty when it handed none. */
 export function planeOf(env: NodeJS.ProcessEnv): Plane {
   try {

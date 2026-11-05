@@ -10,6 +10,7 @@
 // never under deny. No socket leaves this machine and no real key is used.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
+import { existsSync } from "node:fs";
 import { mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -369,6 +370,38 @@ test("a workflow's call node calling fetch_page, web_fetch's legacy name, is hel
   assert.deepEqual([saved.status, saved.body.warnings?.map((w) => w.message)], [201, ["This workflow's call node calls fetch_page (web_fetch), which is set to deny on this server."]]);
   const refused = await api("POST", "/agents/legacy/runs", { input: { website: PAGE } });
   assert.deepEqual([refused.status, refused.body.error?.code, refused.body.error?.details?.denied], [409, "agent_not_runnable", ["web_fetch"]]);
+});
+
+test("a workflow's call node reads its tool's permission as it runs: set to deny while the first of two call nodes runs, the second is refused in the gate's words and never dials", { timeout: 90_000 }, async (t) => {
+  const dialled = await network(t);
+  const hold = join(await scratch(t), "go");
+  withEnv(t, { FAUX_WEB_HOLD: hold });
+  const { api } = await serve(t, GATE);
+  const Page = { type: "object", required: ["ok"], properties: { ok: { type: "boolean" } } };
+  const flow = {
+    v: 2, name: "read-twice",
+    schemas: { In: { type: "object", required: ["website"], properties: { website: { type: "string" } } }, Page },
+    input: { schemaId: "In" },
+    output: { schemaId: "Page", path: "second" },
+    root: { node: "chain", steps: [
+      { node: "call", label: "First read", via: "tool", tool: "web_fetch", args: { url: "http://public.example/?hold" }, out: "Page", as: "first", deadline_s: 60 },
+      { node: "call", label: "Second read", via: "tool", tool: "web_fetch", args: { url: "{website}" }, out: "Page", as: "second", deadline_s: 60 },
+    ] },
+  };
+  assert.equal((await api("POST", "/agents", { definition: { id: "twice", name: "twice", workflow: flow, tools: ["web_fetch"] } })).status, 201);
+  const started = await api("POST", "/agents/twice/runs", { input: { website: `${PAGE}notes.txt` } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  for (let i = 0; !existsSync(`${hold}.waiting`); i++) {
+    assert.ok(i < 600, "the first call node did not run");
+    await sleep(100);
+  }
+  assert.equal((await api("PUT", "/settings/tools", { web_fetch: { permission: "deny" } })).status, 200);
+  await writeFile(hold, "");
+  await follow(api, started.body.run_id, ["failed", "completed"], { deadlineMs: 60_000 });
+  const run = (await api("GET", `/runs/${started.body.run_id}`)).body;
+  assert.equal(run.status, "failed", "the second call node is refused");
+  assert.match(JSON.stringify(run.error ?? run), new RegExp(quoted(deniedText("web_fetch"))), "in the gate's words");
+  assert.deepEqual((await dialled()).filter((dial) => dial.endsWith("notes.txt")), [], "and never dials");
 });
 
 const NO_APPROVER = (tool) => `Permission denied: ${tool} needs the owner's approval, and this server has accounts off (AGENTRUN_ACCOUNTS=0), so no one can give it: set the tool to allow or deny in the agent's Tools.`;

@@ -35,7 +35,7 @@ import { CAP_ENV, CAP_REFUSAL_PREFIX, CAP_REFUSED_FIELD, money, type RefusalFigu
 import { DEFAULT_MODEL_ENV, EFFORT_ENV, GATEWAY_KEY_ENV, hostModel, llmTiers, modelKeys, nodeTiers, PROVIDER_KEYS, thinkingOf, type Tier, withoutFaux, workflowNodes } from "./model.js";
 import { llmAnswers, pausedIn, readNodeLog, RUN_PAUSED } from "./pause.js";
 import { durationMs } from "./print.js";
-import { handsParallel, keptFromBefore, type Plane, planeFor, recheckPlane, TOOL_PLANE_ENV, type Tooling, type ToolSettingsMap } from "./tool-plane.js";
+import { handsParallel, type Plane, planeFor, relaunchPlane, TOOL_PLANE_ENV, type Tooling, type ToolSettingsMap } from "./tool-plane.js";
 import { APPROVAL_ENTRY, APPROVAL_ROW, NO_APPROVER_ENV, type PendingApproval, permissionOf, previewOf, RESUME_PREFIX, TURN_ORIGIN_FILE } from "./tool-gate.js";
 import { ChangeClock, type Page, RowLog } from "./rows.js";
 import { TOOL_KEYS } from "./tool-keys.js";
@@ -1721,9 +1721,7 @@ export class Runs {
     // in it, read by the run's process, never by a request. A key saved through the settings API counts as the launcher's
     // does (secrets.ts), so a saved Parallel key makes Parallel available, and a deleted one unavailable at the next launch.
     // A capability set to ask or deny since resolves again (a harness's own search cannot wait for a person).
-    const settings = this.options.toolSettings?.() ?? {};
-    const fresh = run.tooling ? planeFor(served, run.tooling, settings, { capped: run.meta.max_cost_usd !== undefined, run: true }) : {};
-    const plane = run.meta.tool_plane ? recheckPlane(run.meta.tool_plane, served, { fresh, permission: (name) => permissionOf(name, settings as never, (run.tooling?.overrides ?? {}) as never) }) : run.tooling ? keptFromBefore(fresh, served) : {};
+    const plane = relaunchPlane(run.meta.tool_plane, served, run.tooling, this.options.toolSettings?.() ?? {}, { capped: run.meta.max_cost_usd !== undefined });
     if (!run.meta.tool_plane && Object.keys(plane).length) {
       run.meta.tool_plane = plane;
       void this.saveMeta(run).catch(() => undefined);

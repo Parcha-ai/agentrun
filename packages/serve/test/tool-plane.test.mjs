@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import { BOUND_TOOLS, TOOLS, toolsView } from "../dist/tools.js";
-import { CAPABILITIES, LEGACY_NAMES, planeFor, PROVIDERS, recheckPlane, resolveCapability, explainsView, settingsIssues, TABLE_TOOLS, ToolSettings } from "../dist/tool-plane.js";
+import { CAPABILITIES, explainsView, LEGACY_NAMES, planeFor, PROVIDERS, recheckPlane, relaunchPlane, resolveCapability, settingsIssues, TABLE_TOOLS, ToolSettings } from "../dist/tool-plane.js";
 import { CANARY } from "./fixtures/faux-parallel.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 import { agent, answerFlow, flowAgent, follow, scratch, serve, withEnv } from "./support.mjs";
@@ -352,4 +352,13 @@ test("the run check resolves search as the run does: a workflow picking native s
   assert.doesNotMatch(said(await blockersOf(env, claude, {})), /web_search/, "uncapped: Claude's own search");
   assert.match(said(await blockersOf(env, claude, {}, { capped: true })), /The tool web_search does not run here on claude-agent: no native search for claude-agent under a spend cap: Claude's own search has per-use fees a spend cap cannot reserve yet/, "capped: refused, its fees never let past the cap");
   assert.doesNotMatch(said(await blockersOf(env, { ...claude, toolSettings: {} }, {}, { capped: true })), /web_search/, "capped on auto: keyless Exa, nothing to refuse");
+});
+
+test("a run relaunched while a capability is set to deny is handed it denied; launched, it is handed the provider a held call would use, and the gate refuses each call", () => {
+  const tooling = { harness: "pi", tools: ["web_fetch"] };
+  const denied = { web_fetch: { permission: "deny" } };
+  assert.equal(planeFor({}, tooling, denied, { run: true }).web_fetch, "kernel", "at its launch: a deny lifted mid-run is lifted at the next call");
+  assert.equal(relaunchPlane({ web_fetch: "kernel" }, {}, tooling, denied).web_fetch, "unavailable: denied", "relaunched while denied: denied");
+  assert.equal(relaunchPlane(undefined, {}, tooling, denied).web_fetch, "unavailable: denied", "a run made before its plane was kept: denied too");
+  assert.equal(relaunchPlane({ web_fetch: "unavailable: denied" }, {}, tooling, {}).web_fetch, "kernel", "a deny lifted since is lifted");
 });
