@@ -1611,9 +1611,13 @@ its cap, what the cap counted as taken (spent, and held for requests still answe
 needs (a cap above their sum sends it), the raise it is offered, the refusal's words above, and when it came. The
 offered raise, `suggested_cap_usd`, is `spent_usd` + 10 × `needs_usd` rounded up to a whole dollar, and always above the
 cap, so a `PATCH` with it (below) resumes the run; it is absent with the other figures. The figures come from the refusal's own start mark, so a
-server started again says them too. Its timeline shows the refusal's row, then a waiting row: "Paused at the run's $0.05 cap: Not sent: …". The
+server started again says them too, except `spent_usd` once the paused process is gone: the refusal counted requests
+still answering at what it held for them, so then it is the store's spend, when that is lower, and `suggested_cap_usd`
+follows it. The refusal's words (`said`) keep its own figures. Its timeline shows the refusal's row, then a waiting row: "Paused at the run's $0.05 cap: Not sent: …". The
 webhook's `run.needs_input` says `pending.kind: "budget"`. Its process is let go while it waits (SIGTERM: it drains and
-releases the run), so a paused run holds no place; a server started again reads it paused from its store. A message to a
+releases the run), so a paused run holds no place; a server started again reads it paused from its store. A paused
+process that does not let go within the drain timeout (`--drain-timeout`, 30 s by default) is killed, and the run ends
+`failed`, as any run whose process is killed does. A message to a
 paused run is `409 budget_reached`; a stop does nothing more, and a cancel ends it `cancelled`. Only a refusal for room
 pauses a run: one no cap fixes (above) ends it `failed`, as does a cost found past the cap after a response.
 
