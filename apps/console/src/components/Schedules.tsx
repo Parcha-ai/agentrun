@@ -138,24 +138,30 @@ function ScheduleDetail({ v2, go, agentName, id, every }: PageProps & { id: stri
   // dropped if that agent's read fails: an amount read for one agent never shows for another.
   const [agentCap, setAgentCap] = useState<number | undefined>(undefined);
   const capAgent = useRef<string | null>(null);
-  // The one way the page takes a schedule, from a read or an action's answer (asked at generation `asked`): the schedule,
-  // then its agent's default when it has no cap of its own, with the amount dropped first when the agent changed.
-  const apply = async (t: Trigger, asked: number) => {
+  // Each read of the agent's default takes the next number; only the newest one asked may set the amount, whichever
+  // answers last.
+  const capAsked = useRef(0);
+  // The one way the page takes a schedule, from a read or an action's answer: the schedule at once, then its agent's
+  // default when it has no cap of its own, read on its own (nothing waits on it), with the amount dropped first when the
+  // agent changed. A read of the default that fails leaves it dropped.
+  const apply = (t: Trigger) => {
     setTrigger(t);
     const agent = isScheduleTrigger(t) && typeof t.target.max_cost_usd !== "number" ? t.target.agent_id : null;
     if (agent !== capAgent.current) { capAgent.current = agent; setAgentCap(undefined); }
     if (!agent) return;
-    const cap = await v2.getAgent(agent).then((r) => r.agent.definition.max_cost_usd, () => undefined);
-    if (asked === generation.current && capAgent.current === agent) setAgentCap(typeof cap === "number" ? cap : undefined);
+    const mine = ++capAsked.current;
+    void v2.getAgent(agent).then((r) => r.agent.definition.max_cost_usd, () => undefined).then((cap) => {
+      if (mine === capAsked.current && capAgent.current === agent) setAgentCap(typeof cap === "number" ? cap : undefined);
+    });
   };
   const read = () => {
     reading.current = true;
     const asked = generation.current;
     return Promise.all([v2.getTrigger(id), v2.triggerFirings(id)])
-      .then(async ([t, f]) => {
+      .then(([t, f]) => {
         if (asked !== generation.current) return;
         setFirings(f.firings); setError(null);
-        await apply(t, asked);
+        apply(t);
       })
       .finally(() => { reading.current = false; });
   };
@@ -174,7 +180,7 @@ function ScheduleDetail({ v2, go, agentName, id, every }: PageProps & { id: stri
     generation.current++;
     const answer = await v2.updateTrigger(id, { enabled: !trigger.enabled });
     generation.current++;
-    await apply(answer, generation.current);
+    apply(answer);
   }, trigger.enabled ? "the pause" : "the resume");
   const remove = () => act("delete", async () => { await v2.deleteTrigger(id); go("#/schedules"); }, "the delete");
   const runNow = async () => {
