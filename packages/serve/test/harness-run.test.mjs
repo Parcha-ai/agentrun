@@ -327,7 +327,7 @@ for (const harness of ["claude-agent", "codex"]) {
     const log = join(await scratch(t), "monid-calls.jsonl");
     withEnv(t, { MONID_API_KEY: MONID_KEY, AGENTRUN_TEST_FAUX_MONID_CALLS: log });
     const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS, fauxMonid: FAUX_MONID });
-    const saved = await api("POST", "/agents", agent(`monid-${harness}`, { harness, instructions: "Run monid's /person/enrich on Ada.", tools: ["monid.discover", "monid.inspect", "monid.run"] }));
+    const saved = await api("POST", "/agents", agent(`monid-${harness}`, { harness, instructions: "Run monid's /person/enrich on Ada.", tools: ["monid.discover", "monid.inspect", "monid.run"], tool_settings: { "monid.discover": { permission: "allow" }, "monid.inspect": { permission: "allow" }, "monid.run": { permission: "allow" } } }));
     assert.deepEqual([saved.status, saved.body.warnings], [201, []], JSON.stringify(saved.body));
     const run = await api("POST", `/agents/monid-${harness}/runs`, { input: { content: "hi" } });
     assert.equal(run.status, 202, JSON.stringify(run.body));

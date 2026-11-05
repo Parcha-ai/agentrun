@@ -12,7 +12,15 @@
 // launch, from its pinned revision and the settings then, keeps them for the run's life (runs.ts), and hands the run's
 // process the outcome as a non-secret description (TOOL_PLANE_ENV): the run reads its tools' providers there, never from
 // a request.
+//
+// Each tool also has a permission, the tool gate's (tool-gate.ts): allow, ask or deny, the agent's over the server's over
+// the owner's default (a built-in kernel tool allow, a third-party catalog tool ask, told apart by its name), read by
+// the gate's one rule, permissionOf. A capability set to deny resolves to no provider where it is shown; under ask, a
+// harness's own search (inside its CLI, where no call can wait for a person) gives way to the kernel's. A run is never
+// told a deny: its Plane resolves a denied capability as under ask, and the gate, which reads the permission at each
+// call, is the one place that refuses it, so a deny lifted mid-run is lifted at the next call.
 import { readFileSync } from "node:fs";
+import { isToolSettingsKey } from "@parcha/pi-durable-agent";
 import { join } from "node:path";
 import { decisionKeysOf, PARALLEL_KEY_ENV } from "./decisions.js";
 import type { InputIssue } from "./errors.js";
@@ -20,6 +28,7 @@ import { writeDurableSync } from "./files.js";
 import { DEFAULT_HARNESS, HARNESSES, type HarnessId } from "./harness.js";
 import { savedIn } from "./secrets.js";
 import { hostModel, viaOpenRouter } from "./model.js";
+import { defaultPermission, isCatalogTool, isMcpTool, type Permission, PERMISSIONS, permissionFrom, permissionOf } from "./tool-gate.js";
 
 /**
  * The capabilities a pack or a revision may grant, by name: the tools the kernel gives a run, bound from serve's closed
@@ -46,16 +55,31 @@ export const PICKABLE = Object.keys(PROVIDERS) as Pickable[];
 export const LEGACY_NAMES: Readonly<Record<string, Pickable>> = Object.freeze({ fetch_page: "web_fetch" });
 /** The capability a granted name runs: its legacy target, else itself. */
 export const capabilityOf = (name: string): string => LEGACY_NAMES[name] ?? name;
-/** One capability's settings: its provider. `permission` is reserved for the tool gate, and refused until it lands. */
-export type ToolSetting = { provider?: string };
-/** The settings of each capability that has a choice: the server's (`/v2/settings/tools`) and an agent's own
- *  (`definition.tool_settings`), one shape. */
-export type ToolSettingsMap = Partial<Record<Pickable, ToolSetting>>;
+/** Every tool of serve's table (tools.ts) and its legacy names, by name, so this module needs no import of it: a test
+ *  holds the two as one. */
+export const TABLE_TOOLS: readonly string[] = ["read", "write", "edit", "bash", "ask_person", "fetch_page", "web_fetch", "web_search", "browser", "pdf_pages", "llm"];
+/** The table's tools whose approved call the kernel runs itself, outside the model's turn (host-tools.ts's REPLAY): ask is
+ *  offered for these and for catalog tools. Any other (browser, ask_person, the call-only ones) is allow or deny. */
+export const ASKABLE: readonly string[] = ["read", "write", "edit", "bash", "fetch_page", "web_fetch", "web_search"];
+/** The permissions `name` may be set to. */
+export const permissionsOf = (name: string): readonly Permission[] => (ASKABLE.includes(name) || isCatalogTool(name) ? PERMISSIONS : ["allow", "deny"]);
+/** A settings key: a tool of the table, a catalog tool (`monid.<tool>`, `mcp:<server>/<tool>`), or an MCP server's
+ *  wildcard (`mcp:<server>/*`), which sets each of its tools. */
+const isSettingsKey = (name: string): boolean => isToolSettingsKey(name) && ((TABLE_TOOLS.includes(name) && !Object.hasOwn(LEGACY_NAMES, name)) || isCatalogTool(name) || /^mcp:[^/]+\/\*$/.test(name));
+/** One tool's settings: its provider (a capability that has a choice) and its permission. */
+export type ToolSetting = { provider?: string; permission?: Permission };
+/** The tools' settings, the server's (`/v2/settings/tools`) and an agent's own (`definition.tool_settings`), one shape:
+ *  by settings key. */
+export type ToolSettingsMap = Partial<Record<string, ToolSetting>>;
 /** What a capability resolves to on a run: the native tool, the kernel's own, keyless Exa, Parallel, or why not. */
 export type Resolution = "native" | "kernel" | "exa-keyless" | "parallel" | "browserbase" | `unavailable: ${string}`;
 export const NO_PARALLEL_KEY: Resolution = "unavailable: parallel picked, no PARALLEL_API_KEY";
 /** web_search with `off` picked: no search leaves the server. */
 export const SEARCH_OFF: Resolution = "unavailable: web_search is turned off in settings";
+/** A capability set to deny: no provider is asked, and the gate refuses each call, so its run still starts. */
+export const DENIED: Resolution = "unavailable: denied";
+/** `native` picked for a capability set to ask on a harness whose own search runs inside its CLI. */
+export const NATIVE_ASKS: Resolution = "unavailable: native search cannot wait for an approval";
 /** The model providers whose hosted web search pi's web_search asks (hosted-search.ts), by pi-ai's provider id. */
 export const HOSTED_SEARCH_PROVIDERS: readonly string[] = ["anthropic", "openai"];
 
@@ -79,6 +103,8 @@ export type ResolveInput = {
   capped?: boolean;
   /** The harness's model requests go through OpenRouter (model.ts' viaOpenRouter), where its own search does not run. */
   openRouter?: boolean;
+  /** Its permission in force (tool-gate.ts); absent, allow. */
+  permission?: Permission;
 };
 
 /** Why claude-agent has no native search under a spend cap, and what works there instead. */
@@ -116,12 +142,18 @@ export function explainCapability(capability: Pickable, input: ResolveInput): { 
   const chosen = input.override ?? input.pick ?? PROVIDERS[capability][0];
   const picked = input.override !== undefined ? "picked for this agent" : "picked in settings";
   const key = `your Parallel key (${input.parallelKeyFrom ?? "server"})`;
+  if (input.permission === "deny") return { resolves: DENIED, why: "set to deny: the gate refuses each call" };
   if (chosen === "off") return { resolves: SEARCH_OFF, why: "turned off in settings" };
   if (chosen === "parallel") return input.parallelKey ? { resolves: "parallel", why: `Parallel, ${picked}: ${key}` } : { resolves: NO_PARALLEL_KEY, why: "Parallel is picked, and no PARALLEL_API_KEY is set or saved" };
   if (capability === "web_fetch") return { resolves: "kernel", why: "the guarded direct fetch" };
   if (capability === "browser") return browserBy(chosen, picked, input.browserKeys);
   if (chosen === "exa-keyless") return { resolves: "exa-keyless", why: `keyless Exa, ${picked}: Exa's free search, no key` };
-  const none = noNative(input);
+  // Under ask, a harness's own search runs inside its CLI, where no call can wait for a person: none on claude-agent or
+  // codex then, and the kernel's search, which the gate holds, in its place. pi's is a tool of the run's, which it holds.
+  const asks = input.permission === "ask" && input.harness !== DEFAULT_HARNESS;
+  const without = noNative(input);
+  if (chosen === "native" && asks && without === undefined) return { resolves: NATIVE_ASKS, why: "native search cannot wait for an approval: it runs inside the harness's CLI" };
+  const none = without ?? (asks ? { id: input.harness, why: "under ask the harness's own search cannot wait for a person's approval" } : undefined);
   if (chosen === "native") return none === undefined ? { resolves: "native", why: nativeWhy(input) } : { resolves: `unavailable: no native search for ${none.id}`, why: `no native search for ${none.id}` };
   // On claude-agent `auto` skips Claude's own search, an explicit pick (`native`): Parallel on the server's key, else
   // keyless Exa.
@@ -187,6 +219,7 @@ export function explainsView(env: NodeJS.ProcessEnv, settings: ToolSettingsMap, 
 const picked = (name: Pickable, settings: ToolSettingsMap, overrides: ToolSettingsMap = {}) => ({
   ...(overrides[name]?.provider ? { override: overrides[name]!.provider } : {}),
   ...(settings[name]?.provider ? { pick: settings[name]!.provider } : {}),
+  permission: permissionOf(name, settings, overrides),
 });
 
 /** What a run is told: each pickable capability its revision names, resolved; with web_search native on pi, the model
@@ -198,8 +231,10 @@ export type Tooling = { harness?: string; tools: readonly string[]; model?: stri
 /** The run's process's description of its tools' providers: JSON of its Plane. */
 export const TOOL_PLANE_ENV = "AGENTRUN_SERVE_TOOL_PLANE";
 
-/** The Plane of a run of `tooling`, in the server's `env` (with its secrets) under its `settings`. */
-export function planeFor(env: NodeJS.ProcessEnv, tooling: Tooling, settings: ToolSettingsMap, { capped = false }: { capped?: boolean } = {}): Plane {
+/** The Plane of a run of `tooling`, in the server's `env` (with its secrets) under its `settings`. `run`: the Plane a
+ *  run's process is handed, where a capability set to deny resolves as under ask (the provider a held call would use),
+ *  since the gate refuses its calls while it is denied; else the one shown and checked, where it resolves denied. */
+export function planeFor(env: NodeJS.ProcessEnv, tooling: Tooling, settings: ToolSettingsMap, { capped = false, run = false }: { capped?: boolean; run?: boolean } = {}): Plane {
   const harness = tooling.harness ?? DEFAULT_HARNESS;
   // A workflow's model nodes may each run on another tier's model, and a native search asks one model's provider: a
   // workflow's search resolves with no model (keyless Exa, or Parallel where picked), never on a model a node may not use.
@@ -209,24 +244,57 @@ export function planeFor(env: NodeJS.ProcessEnv, tooling: Tooling, settings: Too
   const plane: Plane = {};
   const granted = tooling.tools.map(capabilityOf);
   for (const name of PICKABLE) {
-    if (granted.includes(name)) plane[name] = resolveCapability(name, { ...served(env), harness, capped, openRouter: viaOpenRouter(env, harness, model), ...(model ? { model } : {}), ...picked(name, settings, tooling.overrides) });
+    if (!granted.includes(name)) continue;
+    const chosen = picked(name, settings, tooling.overrides);
+    plane[name] = resolveCapability(name, { ...served(env), harness, capped, openRouter: viaOpenRouter(env, harness, model), ...(model ? { model } : {}), ...chosen, ...(run && chosen.permission === "deny" ? { permission: "ask" as const } : {}) });
   }
   if (plane.web_search === "native" && harness === DEFAULT_HARNESS && model) plane.model = model;
   return plane;
 }
 
 /** A run's kept Plane at a later launch: as it was, but Parallel, or the browser's vendor, where the server no longer
- *  holds its key, which is unavailable, never another provider. */
-export function recheckPlane(plane: Plane, env: NodeJS.ProcessEnv): Plane {
+ *  holds its key, which is unavailable, never another provider; and, given `now` (the Plane it would get today and each
+ *  capability's permission today), a capability set to ask or deny, or kept denied, as it resolves today: a harness's
+ *  own search cannot wait for a person, and a deny that was lifted is lifted. The browser keeps its vendor, whose
+ *  sessions it has: only a deny it was kept with is lifted. */
+export function recheckPlane(plane: Plane, env: NodeJS.ProcessEnv, now?: { fresh: Plane; permission: (name: Pickable) => Permission }): Plane {
   const keyed = served(env).parallelKey;
-  return Object.fromEntries(Object.entries(plane).map(([name, value]) => [name, name === "browser" && isVendor(value) && !browserKeysOf(env)[value] ? noBrowserKey(value) : value === "parallel" && !keyed ? NO_PARALLEL_KEY : value])) as Plane;
+  return Object.fromEntries(Object.entries(plane).map(([name, value]) => {
+    const fresh = name === "model" ? undefined : now?.fresh[name as Pickable];
+    if (fresh !== undefined && (value === DENIED || (name !== "browser" && now!.permission(name as Pickable) !== "allow"))) return [name, fresh];
+    return [name, name === "browser" && isVendor(value) && !browserKeysOf(env)[value] ? noBrowserKey(value) : value === "parallel" && !keyed ? NO_PARALLEL_KEY : value];
+  })) as Plane;
 }
 
-/** The Plane of a run made before its plane was kept, resolved at a later launch (runs.ts): its browser stays
- *  Browserbase, the one vendor there was then, never today's pick, which could check its sessions at another vendor;
- *  unavailable where Browserbase's keys are gone. */
-export const keptFromBefore = (plane: Plane, env: NodeJS.ProcessEnv): Plane =>
-  plane.browser === undefined ? plane : { ...plane, browser: browserKeysOf(env).browserbase ? "browserbase" : noBrowserKey("browserbase") };
+/** The Plane kept for a run made before its plane was kept, resolved at a later launch (runs.ts): its browser stays
+ *  Browserbase, the one vendor there was then, never today's pick, which could check its sessions at another vendor. It
+ *  keeps the vendor, never a refusal: the plane each launch hands over is checked again (recheckPlane), so Browserbase's
+ *  keys missing make it unavailable for that launch alone, and restored keys make the next one run. */
+export const keptFromBefore = (plane: Plane): Plane => (plane.browser === undefined ? plane : { ...plane, browser: "browserbase" });
+
+/** A run's saved Plane as a launch reads it: a vendor's missing-key refusal an earlier server saved (noBrowserKey's exact
+ *  words, Browserbase's or Kernel's) is that vendor again, which the launch checks again as usual (recheckPlane), so
+ *  restored keys make it run. Every other saved value stays as it is: `auto` with no key at a run's first launch
+ *  (NO_BROWSER_KEY) and `chrome` stay frozen. The same Plane where nothing changes. */
+export function keptVendor(plane: Plane): Plane {
+  const vendor = (Object.keys(BROWSER_KEYS) as BrowserVendor[]).find((name) => plane.browser === noBrowserKey(name));
+  return vendor ? { ...plane, browser: vendor } : plane;
+}
+
+/** The key row (tool-keys.ts) of the browser's vendor on `resolution` with `picked` the provider in force: Kernel's where
+ *  Kernel is picked or resolved, else Browserbase's, so a page links a missing key to the row it is saved on. */
+export const browserKeyRow = (picked: string | undefined, resolution: string | undefined): "kernel" | "browserbase" => (picked === "kernel" || resolution === "kernel" ? "kernel" : "browserbase");
+
+/** The Plane a run's process is handed at a launch, under the server's `settings` now: its kept Plane (as keptVendor
+ *  reads it) checked again (recheckPlane) against the one it would get today; with none kept, today's, its browser kept
+ *  (keptFromBefore). At a launch after its first (a relaunch, a follow-up's, one after a restart) a capability set
+ *  to deny is handed denied (planeFor without `run`), the tool's own refusal backing the gate's; at its `first`, as
+ *  under ask, so a deny lifted while that process lives is lifted at the next call. */
+export function relaunchPlane(kept: Plane | undefined, env: NodeJS.ProcessEnv, tooling: Tooling | undefined, settings: ToolSettingsMap, { capped = false, first = false }: { capped?: boolean; first?: boolean } = {}): Plane {
+  const fresh = tooling ? planeFor(env, tooling, settings, { capped, run: first }) : {};
+  if (kept) return recheckPlane(kept, env, { fresh, permission: (name) => permissionOf(name, settings, tooling?.overrides ?? {}) });
+  return tooling ? recheckPlane(keptFromBefore(fresh), env) : {};
+}
 
 /** The Plane the server handed this run's process; empty when it handed none. */
 export function planeOf(env: NodeJS.ProcessEnv): Plane {
@@ -241,76 +309,117 @@ export function planeOf(env: NodeJS.ProcessEnv): Plane {
 /** Whether a run is handed Parallel's key: one of its capabilities resolves to Parallel. */
 export const handsParallel = (plane: Plane): boolean => PICKABLE.some((name) => plane[name] === "parallel");
 
-/** What a save of `permission` answers until the tool gate lands, so no one keeps a deny that nothing enforces. */
-export const NOT_YET = "permissions arrive with the tool gate";
-
-/** The issues of `value` as a settings map, its fields under `at` (none: a body's own): each capability that has a
- *  choice to `{provider?}`, the provider one offered for it. */
+/** The issues of `value` as a settings map, its fields under `at` (none: a body's own): each settings key (a tool of the
+ *  table, a catalog tool, an MCP server's wildcard) to `{provider?, permission?}`, a provider only for a capability that
+ *  has a choice and one offered for it, a permission one offered for the tool. */
 export function settingsIssues(value: unknown, at = ""): InputIssue[] {
   const field = (...names: string[]) => [at, ...names].filter(Boolean).join(".");
   const isPlain = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
-  if (!isPlain(value)) return [{ field: at || "body", reason: "wrong_type", message: `${at || "the body"} is an object of ${PICKABLE.join(", ")} to their settings` }];
+  if (!isPlain(value)) return [{ field: at || "body", reason: "wrong_type", message: `${at || "the body"} is an object of tools to their settings` }];
   return Object.entries(value).flatMap(([name, setting]): InputIssue[] => {
-    if (!Object.hasOwn(PROVIDERS, name)) return [{ field: field(name), reason: "not_allowed", message: `Tool settings are kept for ${PICKABLE.join(" and ")}; ${name} is not one of them.` }];
-    if (!isPlain(setting)) return [{ field: field(name), reason: "wrong_type", message: `${field(name)} is an object, {provider}` }];
+    const pickable = Object.hasOwn(PROVIDERS, name);
+    if (!isSettingsKey(name)) return [{ field: field(name), reason: "not_allowed", message: `Tool settings are kept for this server's tools (${TABLE_TOOLS.join(", ")}), catalog tools (monid.<tool>, mcp:<server>/<tool>) and an MCP server's tools (mcp:<server>/*); ${name} is none of them.` }];
+    if (!isPlain(setting)) return [{ field: field(name), reason: "wrong_type", message: `${field(name)} is an object, {${pickable ? "provider, " : ""}permission}` }];
     return Object.entries(setting).flatMap(([key, given]): InputIssue[] => {
-      if (key === "permission") return [{ field: field(name, key), reason: "not_yet", message: NOT_YET }];
-      if (key !== "provider") return [{ field: field(name, key), reason: "not_allowed", message: `${field(name)} keeps no field ${key}.` }];
+      if (key === "permission") {
+        // A wildcard sets each tool of its server's: a catalog tool's permissions.
+        const offered = permissionsOf(isMcpTool(name) ? name : name.replace(/\/\*$/, "/_"));
+        return offered.includes(given as Permission) ? [] : [{ field: field(name, key), reason: "not_an_option", message: `${field(name, key)} is one of ${offered.join(", ")}` }];
+      }
+      if (key !== "provider" || !pickable) return [{ field: field(name, key), reason: "not_allowed", message: `${field(name)} keeps no field ${key}.` }];
       const offered: readonly string[] = PROVIDERS[name as Pickable];
       return offered.includes(given as string) ? [] : [{ field: field(name, key), reason: "not_an_option", message: `${field(name, key)} is one of ${offered.join(", ")}` }];
     });
   });
 }
 
-/** `map` with each capability's provider, its default where none is picked. */
-export const withDefaults = (map: ToolSettingsMap): Record<Pickable, { provider: string }> =>
-  Object.fromEntries(PICKABLE.map((name) => [name, { provider: map[name]?.provider ?? PROVIDERS[name][0] }])) as Record<Pickable, { provider: string }>;
+/** `map` with each capability's provider, its default where none is picked; a permission where one is set. */
+export const withDefaults = (map: ToolSettingsMap): ToolSettingsMap & Record<Pickable, { provider: string; permission?: Permission }> => ({
+  ...map,
+  ...(Object.fromEntries(PICKABLE.map((name) => [name, { provider: map[name]?.provider ?? PROVIDERS[name][0], ...(map[name]?.permission ? { permission: map[name]!.permission } : {}) }])) as Record<Pickable, { provider: string; permission?: Permission }>),
+});
 
 /** The server's tool settings, beside the agent store in its data directory: not a secret, and not in store.sqlite,
  *  which runs hold open. Read once at the start, written whole and durably (0600) at each PUT; a missing file is every
  *  default, and so is one it cannot read, which it says in one line. */
+/** The tool settings in `dir` as the server and the tool gate read them, failing closed: each entry that reads is kept;
+ *  one that does not is dropped, but a known tool keeps what of it reads, and its permission, when not one offered,
+ *  reads ask (deny where ask is not offered), never its allow default. `problems`: one line for each entry dropped or
+ *  changed, naming the file and the field, never a value. `unreadable`: the file as a whole does not read (none, a
+ *  missing file is every default). */
+export function readToolSettings(dir: string): { settings: ToolSettingsMap; problems: string[]; unreadable?: true } {
+  const file = join(dir, ToolSettings.FILE);
+  let read: unknown;
+  try {
+    read = JSON.parse(readFileSync(file, "utf8"));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { settings: {}, problems: [] };
+    return { settings: {}, problems: [`${file} does not read as JSON`], unreadable: true };
+  }
+  const isPlain = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+  if (!isPlain(read)) return { settings: {}, problems: [`${file} is not an object of tools to their settings`], unreadable: true };
+  const settings: ToolSettingsMap = {};
+  const problems: string[] = [];
+  for (const [name, setting] of Object.entries(read)) {
+    const issues = settingsIssues({ [name]: setting });
+    if (!issues.length) {
+      settings[name] = setting as ToolSetting;
+      continue;
+    }
+    problems.push(`${file}: ${issues.map((issue) => `${issue.field} ${issue.reason}`).join(", ")}`);
+    if (!isSettingsKey(name) || !isPlain(setting)) continue;
+    const kept: ToolSetting = {};
+    if (typeof setting.provider === "string" && !settingsIssues({ [name]: { provider: setting.provider } }).length) kept.provider = setting.provider;
+    if (setting.permission !== undefined) {
+      const offered = permissionsOf(isMcpTool(name) ? name : name.replace(/\/\*$/, "/_"));
+      kept.permission = offered.includes(setting.permission as Permission) ? (setting.permission as Permission) : offered.includes("ask") ? "ask" : "deny";
+    }
+    if (Object.keys(kept).length) settings[name] = kept;
+  }
+  return { settings, problems };
+}
+
 export class ToolSettings {
   static readonly FILE = "tool-settings.json";
   private current: ToolSettingsMap;
   constructor(private readonly dir: string, warn: (line: string) => void = (line) => void process.stderr.write(`${line}\n`)) {
-    const file = join(dir, ToolSettings.FILE);
-    let read: unknown = {};
-    try {
-      read = JSON.parse(readFileSync(file, "utf8"));
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") read = undefined;
-    }
-    const bad = read === undefined || settingsIssues(read).length > 0;
-    if (bad) warn(`agentrun-serve: ${file} is not tool settings this server reads; every tool takes its default provider until a PUT /v2/settings/tools`);
-    this.current = bad ? {} : (read as ToolSettingsMap);
+    const { settings, problems, unreadable } = readToolSettings(dir);
+    for (const line of problems) warn(`agentrun-serve: ${line}; ${unreadable ? "every tool takes its defaults" : "that entry is dropped (a permission that is not offered reads ask)"} until a PUT /v2/settings/tools`);
+    this.current = settings;
   }
 
   get(): ToolSettingsMap {
     return structuredClone(this.current);
   }
 
-  /** Replaces the settings: a capability `map` leaves out takes its default. Durable before it returns. */
+  /** Replaces the settings: a tool `map` leaves out takes its defaults. Durable before it returns. */
   put(map: ToolSettingsMap): ToolSettingsMap {
-    const kept = Object.fromEntries(PICKABLE.flatMap((name) => (map[name]?.provider ? [[name, { provider: map[name]!.provider }]] : []))) as ToolSettingsMap;
+    const kept: ToolSettingsMap = Object.fromEntries(Object.entries(map).flatMap(([name, setting]) => {
+      const set = { ...(setting?.provider ? { provider: setting.provider } : {}), ...(setting?.permission ? { permission: setting.permission } : {}) };
+      return Object.keys(set).length ? [[name, set]] : [];
+    }));
     writeDurableSync(join(this.dir, ToolSettings.FILE), `${JSON.stringify(kept)}\n`);
     this.current = kept;
     return this.get();
   }
 }
 
-/** GET /v2/agents/{id}'s `tools`: each tool its current revision grants, in `order` (capabilities.tools'), and for one
- *  with a provider choice the provider in force and where it came from (the agent's own settings, the server's, or the
- *  default), the one that applies when the agent sets none (the server's), and what it resolves to on the agent's
- *  harness and model. A tool with no choice is its name alone. */
+/** GET /v2/agents/{id}'s `tools`: each tool its current revision grants, in `order` (capabilities.tools'), with its
+ *  permission in force and where it came from (the agent's own settings, the server's, or the default), the one that
+ *  applies when the agent sets none (the server's, else the default) and those it may be set to; and for one with a
+ *  provider choice the provider in force and where it came from, the one that applies when the agent sets none, and what
+ *  it resolves to on the agent's harness and model. */
 export function agentTools(env: NodeJS.ProcessEnv, settings: ToolSettingsMap, agent: Tooling, order: readonly string[]) {
   const plane = planeFor(env, agent, settings);
   const rank = (name: string) => order.indexOf(capabilityOf(name)) + (name in LEGACY_NAMES ? 0.5 : 0);
   return [...new Set(agent.tools)].sort((a, b) => rank(a) - rank(b)).map((name) => {
     const capability = capabilityOf(name);
-    if (!Object.hasOwn(PROVIDERS, capability)) return { name };
+    const { permission, from } = permissionFrom(name, settings as never, (agent.overrides ?? {}) as never);
+    const gate = { permission, permission_from: from, default_permission: permissionOf(name, settings as never), permissions: [...permissionsOf(name)] };
+    if (!Object.hasOwn(PROVIDERS, capability)) return { name, ...gate };
     const pick = capability as Pickable;
     const own = agent.overrides?.[pick]?.provider;
     const server = settings[pick]?.provider;
-    return { name, provider: own ?? server ?? PROVIDERS[pick][0], provider_from: own ? "agent" : server ? "server" : "default", default_provider: server ?? PROVIDERS[pick][0], resolved: plane[pick]! };
+    return { name, ...gate, provider: own ?? server ?? PROVIDERS[pick][0], provider_from: own ? "agent" : server ? "server" : "default", default_provider: server ?? PROVIDERS[pick][0], resolved: plane[pick]! };
   });
 }

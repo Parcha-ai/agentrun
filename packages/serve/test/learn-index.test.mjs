@@ -13,7 +13,7 @@ import * as secrets from "../dist/learn/secrets.js";
 import * as skills from "../dist/learn/skills.js";
 
 const VALUES = {
-  check: ["CAPS", "checkNote", "checkProposal", "mergeProblems", "printable", "supersededBy"],
+  check: ["CAPS", "checkNote", "checkProposal", "mergeProblems", "printable", "supersededBy", "unstorable"],
   grade: ["GRADE_CAPS", "GRADE_RUBRIC", "gradedFiles", "gradedItems", "gradePrompt", "parseVerdict"],
   invisible: ["hiddenCharacter"],
   reflect: ["ANSWER_MAX", "NOTE_BLOCK", "parseReflection", "reflectPrompt", "SKILL_BLOCK", "WORKFLOW_BLOCK"],
