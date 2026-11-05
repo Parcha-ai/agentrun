@@ -3,7 +3,8 @@
 // never in shell history or `ps`, and never in any output or error. Each command is `{ command, pathParams, summary,
 // route?, help, options, run }`; cli.mjs runs it with `{ values, args, env, io, cli }`, where `cli` is its own
 // `{ fail, targetOf, clientOf, request, send, secretAt, BAD_HEADER }`: the token's custody and the requests are its.
-import { chmodSync, existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { chmodSync, closeSync, constants, existsSync, mkdirSync, openSync, renameSync, rmSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -139,15 +140,27 @@ export const LOGIN = {
       return 1;
     }
     const file = configFileOf(env);
-    mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
-    chmodSync(dirname(file), 0o700);
-    // Written whole beside it, then moved over it: a reader never sees half a file, and it is never wider than 0600.
-    const temp = `${file}.${process.pid}.tmp`;
+    // Written whole beside it under a name no one could have planted (random, opened only if it is new, through no
+    // link), then moved over it: a reader never sees half a file, and it is never wider than 0600. Any failure is said
+    // plainly, its code alone, and leaves nothing behind.
+    const temp = join(dirname(file), `.config.json.${randomBytes(8).toString("hex")}.tmp`);
+    let made = false;
     try {
-      writeFileSync(temp, `${JSON.stringify({ base_url: base, api_key: token }, null, 2)}\n`, { mode: 0o600, flag: "wx" });
+      mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+      chmodSync(dirname(file), 0o700);
+      const fd = openSync(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+      made = true;
+      try {
+        writeSync(fd, `${JSON.stringify({ base_url: base, api_key: token }, null, 2)}\n`);
+      } finally {
+        closeSync(fd);
+      }
       renameSync(temp, file);
+      made = false;
+    } catch (error) {
+      throw cli.fail(4, `Cannot write the config file ${file} (${/^E[A-Z]+$/.test(error?.code ?? "") ? error.code : "an error"}); nothing was written.`);
     } finally {
-      rmSync(temp, { force: true });
+      if (made) rmSync(temp, { force: true });
     }
     print(io, { base_url: base, config_file: file });
     return 0;

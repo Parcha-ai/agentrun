@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -103,4 +103,23 @@ test("a server record whose base_url is not a base URL is refused as a malformed
   writeFileSync(join(data, ".server.json"), JSON.stringify({ base_url: "http://127.0.0.1:9/v2", pid: process.pid, token_file: join(data, ".token") }), { mode: 0o600 });
   const usage = await cli(env, ["agents", "list", "--data", data, "--base-url", "ftp://127.0.0.1/v2"]);
   assert.equal(usage.code, 2, usage.err);
+});
+
+test("login: a config file it cannot write is said plainly, exit 4, with nothing left behind", async (t) => {
+  const { dir, env } = scratch(t);
+  const server = await listener(t, (request, res) => res.writeHead(200, { "content-type": "application/json" }).end('{"agents":[],"next_cursor":null}'));
+  const config = join(dir, ".config", "agentrun");
+  // Where its folder goes, a file; then, where the file goes, a folder.
+  mkdirSync(join(dir, ".config"));
+  writeFileSync(config, "not a folder\n");
+  const blocked = await cli(env, ["login", "--base-url", server.base], { input: "fake-test-key\n" });
+  assert.equal(blocked.code, 4, blocked.err);
+  assert.match(blocked.err, /^Cannot write the config file .*config\.json \(E[A-Z]+\); nothing was written\.\n$/);
+  rmSync(config);
+  mkdirSync(join(config, "config.json"), { recursive: true });
+  const taken = await cli(env, ["login", "--base-url", server.base], { input: "fake-test-key\n" });
+  assert.equal(taken.code, 4, taken.err);
+  assert.match(taken.err, /^Cannot write the config file .*config\.json \(E[A-Z]+\); nothing was written\.\n$/);
+  assert.deepEqual(readdirSync(config), ["config.json"], "no temporary file left");
+  for (const ran of [blocked, taken]) assert.ok(!ran.err.includes("fake-test-key") && !ran.out.includes("fake-test-key"));
 });
