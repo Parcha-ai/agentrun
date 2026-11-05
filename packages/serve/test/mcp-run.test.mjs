@@ -341,7 +341,7 @@ const codexConfigOf = async (data, runId) => (await filesUnder(join(data, "runs"
 test("codex: an agent granted mcp:fake/add calls it through the session's proxy; the timeline reads fake · add, the fake saw the bearer, no file holds it", { timeout: 90_000 }, async (t) => {
   const { api, data } = await codexServe(t);
   const fake = await addFake(t, api);
-  assert.equal((await api("POST", "/agents", agent("codex-adder", { harness: "codex", tools: ["mcp:fake/add"] }))).status, 201);
+  assert.equal((await api("POST", "/agents", agent("codex-adder", { harness: "codex", tools: ["mcp:fake/add"], tool_settings: ALLOW_FAKE }))).status, 201);
   const runId = await runOf(api, "codex-adder", 'mcp fake add {"a":2,"b":3}');
   const { rows, last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 60_000 });
   assert.equal(last.status, "completed", JSON.stringify(rows.filter((row) => row.kind === "error" || row.kind.startsWith("tool"))));
@@ -386,7 +386,7 @@ test("codex: a server that does not start fails the run, naming it, rather than 
 test("codex: a run killed mid-call resumes with the call answered interrupted, and the server saw the call once", { timeout: 120_000 }, async (t) => {
   const { api, data } = await codexServe(t);
   const fake = await addFake(t, api);
-  assert.equal((await api("POST", "/agents", agent("codex-writer", { harness: "codex", tools: ["mcp:fake/slow_write"] }))).status, 201);
+  assert.equal((await api("POST", "/agents", agent("codex-writer", { harness: "codex", tools: ["mcp:fake/slow_write"], tool_settings: ALLOW_FAKE }))).status, 201);
   const runId = await runOf(api, "codex-writer", 'mcp fake slow_write {"line":"once","seconds":30}');
   for (let i = 0; calls(fake, "slow_write").length === 0; i++) {
     assert.ok(i < 600, "the call reaches the server");
