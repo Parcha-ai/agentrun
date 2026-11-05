@@ -25,11 +25,26 @@ const at = (iso: string) => when(iso);
 const TONE: Record<Firing["status"], Tone | "plain"> = { started: "success", skipped: "muted", missed: "warning", failed: "error", due: "active" };
 
 /** Schedules (serve's trigger/1): each starts an agent's capped runs with no one there. */
-export function SchedulesPage({ v2, view, go, agentName, minEvery }: PageProps & { view: ScheduleView; minEvery?: number }) {
-  if (view.schedule === undefined) return <ScheduleList v2={v2} go={go} agentName={agentName} />;
+/** `refreshMs`: how often an open schedule's page reads it again, so a firing shows as it happens (the list, twice that). */
+export function SchedulesPage({ v2, view, go, agentName, minEvery, refreshMs = 15_000 }: PageProps & { view: ScheduleView; minEvery?: number; refreshMs?: number }) {
+  if (view.schedule === undefined) return <ScheduleList v2={v2} go={go} agentName={agentName} every={refreshMs * 2} />;
   if (view.schedule === null) return <ScheduleForm v2={v2} go={go} minEvery={minEvery} />;
   if (view.edit) return <ScheduleEdit key={view.schedule} v2={v2} go={go} id={view.schedule} minEvery={minEvery} />;
-  return <ScheduleDetail key={view.schedule} v2={v2} go={go} agentName={agentName} id={view.schedule} />;
+  return <ScheduleDetail key={view.schedule} v2={v2} go={go} agentName={agentName} id={view.schedule} every={refreshMs} />;
+}
+
+/** `read` again every `every` ms while the tab shows, and once when it shows again; nothing while it is hidden (SWR's
+ *  refreshInterval with refreshWhenHidden off). Stops when the page goes. */
+function useRereads(read: () => void, every: number, deps: unknown[]) {
+  const latest = useRef(read);
+  latest.current = read;
+  useEffect(() => {
+    const shown = () => document.visibilityState !== "hidden";
+    const timer = setInterval(() => { if (shown()) latest.current(); }, every);
+    const back = () => { if (shown()) latest.current(); };
+    document.addEventListener("visibilitychange", back);
+    return () => { clearInterval(timer); document.removeEventListener("visibilitychange", back); };
+  }, [every, ...deps]); // eslint-disable-line react-hooks/exhaustive-deps
 }
 
 /** A schedule that is off: "Turned off" when the server turned it off itself (a failure streak, a source it can't read),
@@ -41,15 +56,23 @@ function OffChip({ trigger }: { trigger: Trigger }) {
 /** How a schedule's last firing went, or that it has not fired. */
 const lastWords = (t: Trigger) => (t.last_firing ? `${firingWords(t.last_firing)} · ${at(t.last_firing.nominal_at)}` : "Not fired yet");
 
-function ScheduleList({ v2, go, agentName }: PageProps) {
+function ScheduleList({ v2, go, agentName, every }: PageProps & { every: number }) {
   const [triggers, setTriggers] = useState<Trigger[] | null>(null);
   const [error, setError] = useState<Problem | null>(null);
   const [tries, setTries] = useState(0);
-  useEffect(() => {
-    let live = true;
-    v2.listTriggers().then((r) => { if (live) { setTriggers(r.triggers); setError(null); } }, (e) => { if (live) setError(problem(e, "the schedules")); });
-    return () => { live = false; };
-  }, [v2, tries]);
+  // Read now, and again while the page is open (one read at a time), so a schedule's firings show.
+  const reading = useRef(false);
+  const live = useRef(true);
+  useEffect(() => { live.current = true; return () => { live.current = false; }; }, []);
+  const read = () => {
+    if (reading.current) return;
+    reading.current = true;
+    v2.listTriggers()
+      .then((r) => { if (live.current) { setTriggers(r.triggers); setError(null); } }, (e) => { if (live.current) setError(problem(e, "the schedules")); })
+      .finally(() => { reading.current = false; });
+  };
+  useEffect(read, [v2, tries]); // eslint-disable-line react-hooks/exhaustive-deps
+  useRereads(read, every, [v2]);
   return (
     <div className="p-5 md:p-8">
       <div className="mb-5 flex flex-wrap items-center gap-3">
@@ -84,7 +107,7 @@ function ScheduleList({ v2, go, agentName }: PageProps) {
   );
 }
 
-function ScheduleDetail({ v2, go, agentName, id }: PageProps & { id: string }) {
+function ScheduleDetail({ v2, go, agentName, id, every }: PageProps & { id: string; every: number }) {
   const [trigger, setTrigger] = useState<Trigger | null>(null);
   const [firings, setFirings] = useState<Firing[]>([]);
   const [error, setError] = useState<Problem | null>(null);
@@ -94,8 +117,18 @@ function ScheduleDetail({ v2, go, agentName, id }: PageProps & { id: string }) {
   const [tries, setTries] = useState(0);
   // A Run now out: a second click while it is waits for it, so a double click fires once.
   const firing = useRef(false);
-  const read = () => Promise.all([v2.getTrigger(id), v2.triggerFirings(id)]).then(([t, f]) => { setTrigger(t); setFirings(f.firings); setError(null); });
+  // One read of the schedule and its firings at a time.
+  const reading = useRef(false);
+  const read = () => {
+    reading.current = true;
+    return Promise.all([v2.getTrigger(id), v2.triggerFirings(id)])
+      .then(([t, f]) => { setTrigger(t); setFirings(f.firings); setError(null); })
+      .finally(() => { reading.current = false; });
+  };
   useEffect(() => { read().catch((e) => setError(problem(e, "the schedule"))); }, [v2, id, tries]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Read again while the page is open, so a timed firing, its run and the next time show with no reload; not while a
+  // read or a Run now is out. A read that fails here leaves the page as it was.
+  useRereads(() => { if (!reading.current && !firing.current) read().catch(() => {}); }, every, [v2, id]);
   if (!trigger) return error ? <ProblemCard problem={error} onRetry={() => setTries((n) => n + 1)} link={{ href: "#/schedules", label: "All schedules" }} /> : <ListSkeleton label="Loading the schedule" rows={4} />;
 
   const act = async (what: "pause" | "delete", work: () => Promise<unknown>, failed: string) => {
