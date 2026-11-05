@@ -143,7 +143,8 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
     if (!allows(CALL_TOOLS, tool)) out.push({ field: "definition.workflow", reason: "not_an_option", message: `A workflow's call nodes run the tools ${CALL_TOOLS.join(", ")} here; this workflow also calls ${tool}.`, host: false, tool });
     // A call node is the author's own step, which no gate asks about (ask does not apply to it); one that calls a tool
     // set to deny would be refused mid-run, so the run never starts.
-    else if (permissionOf(tool, settings as never, (revision.toolSettings ?? {}) as never) === "deny") out.push({ field: "definition.workflow", reason: NOT_SET_UP, message: `This workflow's call node calls ${tool}, which is set to deny on this server.`, host: true, denied: tool });
+    // Held to its settings key: a legacy name (fetch_page) takes its capability's permission (web_fetch's), as the gate does.
+    else if (permissionOf(capabilityOf(tool), settings as never, (revision.toolSettings ?? {}) as never) === "deny") out.push({ field: "definition.workflow", reason: NOT_SET_UP, message: `This workflow's call node calls ${capabilityOf(tool) === tool ? tool : `${tool} (${capabilityOf(tool)})`}, which is set to deny on this server.`, host: true, denied: capabilityOf(tool) });
   }
   const granted = await grantedTools(revision);
   for (const tool of new Set([...named.nodes.filter((name) => allows(NODE_TOOLS, name)), ...named.calls.filter((name) => allows(CALL_TOOLS, name))])) {
