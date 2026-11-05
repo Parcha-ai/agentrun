@@ -16,8 +16,10 @@ const apiError = (e: unknown): ApiError => (e instanceof ClientError ? e.toApiEr
 export function ToolsPage({ v2, choices, gates = [], onSaved, onOpen }: { v2: Client; choices: ToolChoice[]; gates?: ToolGate[]; onSaved: () => void; onOpen?: () => Promise<boolean> | void }) {
   const [answer, setAnswer] = useState<ToolSettings | null>(null);
   const [loadError, setLoadError] = useState<ApiError | null>(null);
-  const [problem, setProblem] = useState<{ fields: Record<string, string>; error: ApiError | null } | null>(null);
+  const [problem, setProblem] = useState<{ fields: Record<string, string>; error: ApiError | null; unread?: true } | null>(null);
   const [busy, setBusy] = useState(false);
+  // A change not saved because the map couldn't be read first: kept, shown in the table, and saved by Try again.
+  const [unsaved, setUnsaved] = useState<((current: ToolSettings) => ToolSettings) | null>(null);
   const asked = useRef(0);
   const load = () => {
     const n = ++asked.current;
@@ -39,21 +41,32 @@ export function ToolsPage({ v2, choices, gates = [], onSaved, onOpen }: { v2: Cl
       </div>
     )
     : <p className="p-8 text-center font-mono text-[13px] text-muted-foreground">Loading...</p>;
-  const own = ownSettings(answer, choices);
+  const read = ownSettings(answer, choices);
+  // What the table shows: the settings read, with a change not saved yet on top.
+  const own = unsaved ? unsaved(read) : read;
   const rows = toolRows(choices, gates);
   const { byTool, rest } = issuesFor(problem?.fields ?? {}, "", rows.map((t) => t.name));
   // Each save is the whole of the server's settings (a PUT replaces the map: a key the body leaves out takes its
   // defaults), so it is a read-modify-write: the map is read as it is now, the one field the person touched is changed,
   // and every other key and field (a permission, a provider, an MCP server's wildcard, one this console doesn't know)
   // goes back as it was.
+  // A map that can't be read now is never replaced by an older one: one read earlier would drop a key another tab set
+  // meanwhile. The save is refused, said so, and the change kept for Try again.
   const save = async (edit: (current: ToolSettings) => ToolSettings) => {
+    const change = unsaved ? (current: ToolSettings) => edit(unsaved(current)) : edit;
     setBusy(true); setProblem(null);
     // A save's answer is the newest settings: a read still out (a Retry's) is dropped, never put back over it.
     const n = ++asked.current;
+    let now: ToolSettings;
+    try { now = await v2.toolSettings(); } catch {
+      setUnsaved(() => change);
+      setProblem({ fields: {}, error: null, unread: true });
+      setBusy(false);
+      return;
+    }
     try {
-      // A read that fails here leaves the map last read, as before this re-read: the save still keeps every key it holds.
-      const now = await v2.toolSettings().catch(() => answer);
-      const saved = await v2.saveToolSettings(edit(ownSettings(now, choices)));
+      const saved = await v2.saveToolSettings(change(ownSettings(now, choices)));
+      setUnsaved(null);
       if (n === asked.current) { setAnswer(saved); setLoadError(null); }
       onSaved();
     } catch (e) {
@@ -81,6 +94,12 @@ export function ToolsPage({ v2, choices, gates = [], onSaved, onOpen }: { v2: Cl
           ) : <p className="border px-3 py-4 font-mono text-[13px] text-muted-foreground">This server offers no tool with a choice of provider.</p>}
           {rest.map((m) => <p key={m} className="mt-2 font-mono text-[12px] text-destructive-text" role="alert">{m}</p>)}
           {problem?.error && <div className="mt-3 border"><RunError error={problem.error} title="The change was not saved" /></div>}
+          {problem?.unread && (
+            <div className="mt-3 border p-3" role="alert">
+              <p className="font-mono text-[12px] text-destructive-text">Couldn't read the current settings, so nothing was saved. Try again.</p>
+              <button type="button" onClick={() => void save((current) => current)} disabled={busy} className="caps mt-2 border px-3 py-1.5 text-[11px] hover:bg-accent disabled:opacity-60">Try again</button>
+            </div>
+          )}
           {/* A settings read that failed once the page shows settings: the table keeps the last ones read and says so, with
               Try again. A save's answer is newer, so it clears this. */}
           {loadError && (
