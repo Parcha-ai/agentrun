@@ -185,6 +185,14 @@ describe("Settings → MCP servers, the saved ones", () => {
     expect(p.opened).toEqual(["http://127.0.0.1:4300/authorize?state=y"]);
   });
 
+  it("an expired sign-in says so beside its OAuth line, never the time its revoked token would have lasted to; a sealed one keeps its time", async () => {
+    const later = new Date(Date.now() + 3_600_000).toISOString();
+    const p = await open(server([[saved({ name: "docs", auth: { type: "oauth" }, credential: "expired", oauth: { expires_at: later, scopes: ["read"], client: "dynamic" } }), saved({ name: "live", auth: { type: "oauth" }, credential: "sealed", oauth: { expires_at: later, scopes: [], client: "dynamic" } })]]).v2);
+    expect(p.row("docs").textContent).toContain("Signed in with OAuth · read · sign-in expired: sign in again");
+    expect(p.row("docs").textContent).not.toContain("token until");
+    expect(p.row("live").textContent).toContain("token until");
+  });
+
   it("signs in again with the person's own client by its scopes alone: the server reuses the client it kept", async () => {
     const own = saved({ name: "crm", auth: { type: "oauth" }, credential: "expired", oauth: { scopes: ["read", "write"], client: "pre-registered", client_id: "owner-app" } });
     const s = server([[own]], (c) => (c.path.endsWith("/oauth/start") ? json(200, { authorization_url: "http://127.0.0.1:4300/authorize?state=z" }) : undefined));
