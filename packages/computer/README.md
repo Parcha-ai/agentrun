@@ -481,7 +481,8 @@ Nothing here has run against Modal. Once the lead OKs a key by name, `AGENTRUN_C
 - that Modal's builder takes `COPY --from=<registry image>@sha256:...` and keeps the file's mode 0755;
 - that `computerd init` starts as root and `--user` drops as it does under Docker; whether it is PID 1 on the VM runtime
   (init says so on stderr when it is not, and still reaps as a subreaper);
-- that a workdir other than `/work` exists before the command starts, and that `/run` is writable there;
+- that the layer's `ENV HOME=/work` reaches init, a workdir other than `/work` exists before the command starts, and
+  `/run` is writable there;
 - the tag value's longest length (the spec tag is JSON) and whether `getTags` answers for a terminated sandbox;
 - that `terminate` of a finished sandbox does not throw, and how long `list` keeps a terminated sandbox out;
 - the probe's view of `blockNetwork`, and the bypass cases before any allowlist is declared;
