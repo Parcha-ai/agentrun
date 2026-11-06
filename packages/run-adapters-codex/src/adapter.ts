@@ -95,7 +95,9 @@ export function kernelTool(tool: HostTool): KernelTool {
     async execute(input, io) {
       // The effect's step is `tool:<Codex call id>#<attempt>`: the host sees Codex's call id.
       const callId = (io.stepId ?? "").replace(/^tool:/, "").replace(/#\d+$/, "");
-      const result = await tool.call(input, { callId, signal: io.signal });
+      // The step's attempt: above 0 when a crash cut an earlier attempt and the kernel runs the call again.
+      const attempt = Number(/#(\d+)$/.exec(io.stepId ?? "")?.[1] ?? 0);
+      const result = await tool.call(input, { callId, signal: io.signal, attempt });
       // A call the host parked for a person's approval did not run: recorded so before its answer, the waiting text.
       if (result.parked) await markParked(io.ctx, callId);
       if (result.isError) throw new Error(result.text);

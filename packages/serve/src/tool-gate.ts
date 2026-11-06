@@ -189,6 +189,9 @@ export type Park = { commit<T>(change: (tx: unknown) => Promise<T>): Promise<T>;
 export type EnterOptions = {
   /** What the approval card shows the call costs. */
   price?: ApprovalPrice;
+  /** The call is a replay: a crash cut an earlier attempt that may have been sent (the kernel's attempt above 0). A
+   *  refusal then never says nothing was sent or charged. */
+  replayed?: true;
 };
 
 /** enter's answer. `undefined`: run the call. Otherwise the answer the model reads instead: a refusal
@@ -222,18 +225,21 @@ export interface Gate {
 export type SettingFrom = "agent" | "server" | "default";
 /** What every deny tells the model, plainly: the call never left, so nothing was charged for it. */
 export const NOT_RUN = "It was not run: nothing was sent and nothing was charged.";
+/** What a refusal says instead when an earlier attempt of the call may have been sent: an approved call cut mid-flight,
+ *  or a replay-safe call the kernel runs again after a crash. Never a claim that nothing was charged. */
+export const RAN_UNKNOWN = "It had started before the deny, and whether it took effect is not known.";
 /** Where a deny was set, in words: the place a person changes it. */
 export const denyPlace = (from: SettingFrom = "server"): string => (from === "agent" ? "for this agent" : from === "default" ? "by default" : "on this server");
 /** The refusal of a call whose tool is set to deny; of one held to another tool's setting (`heldTo`, a shell tool's
  *  bash), naming the setting to change and where it was set (`from`: this agent's settings or this server's). */
 export const deniedText = (tool: string, heldTo?: string, from: SettingFrom = "server", ran: "no" | "unknown" = "no"): string => {
-  // `ran`: "unknown" for an approved call whose intent is in the journal with no outcome (a crash cut it): it may have
-  // been sent, so the words never claim it wasn't.
-  const what = ran === "no" ? NOT_RUN : `It had started before the deny, and whether it took effect is not known.`;
+  // `ran`: "unknown" for a call an earlier attempt of which may have been sent (an approved call cut mid-flight, or a
+  // replay-safe call run again after a crash): the words never claim it wasn't.
+  const what = ran === "no" ? NOT_RUN : RAN_UNKNOWN;
   return heldTo && heldTo !== tool ? `Permission denied: ${tool} follows ${heldTo}'s setting, which is deny ${denyPlace(from)}. ${what} Don't retry it.` : `Permission denied: ${tool} is set to deny ${denyPlace(from)}. ${what} Don't retry it.`;
 };
 /** The refusal of an ask where no one can approve it: a server with accounts off, whose answer route takes no token. */
-export const noApproverText = (tool: string): string => `Permission denied: ${tool} needs the owner's approval, and this server has accounts off (AGENTRUN_ACCOUNTS=0), so no one can give it: set the tool to allow or deny in the agent's Tools. ${NOT_RUN}`;
+export const noApproverText = (tool: string, ran: "no" | "unknown" = "no"): string => `Permission denied: ${tool} needs the owner's approval, and this server has accounts off (AGENTRUN_ACCOUNTS=0), so no one can give it: set the tool to allow or deny in the agent's Tools. ${ran === "no" ? NOT_RUN : RAN_UNKNOWN}`;
 /** Set by the server in a run's environment when no one can approve here (accounts off): the gate refuses each ask. */
 export const NO_APPROVER_ENV = "AGENTRUN_SERVE_NO_APPROVER";
 /** A parked call's answer: the run pauses here. */
@@ -408,9 +414,10 @@ export class RunGate {
     if ((key === "write" || key === "edit") && this.turnOrigin() === "reflect" && underLearning(this.where.work, args)) return { text: NOTE_ONLY_TEXT, isError: true };
     const verdict = this.policy(name);
     if (verdict === "allow") return undefined;
-    if (verdict === "deny") return { text: deniedText(tool, key, this.denyFrom(name)), isError: true };
+    const ran = options.replayed ? "unknown" : "no";
+    if (verdict === "deny") return { text: deniedText(tool, key, this.denyFrom(name), ran), isError: true };
     // No one can answer here: refused at once with why, never parked until a cancel.
-    if (!this.approvers) return { text: noApproverText(tool), isError: true };
+    if (!this.approvers) return { text: noApproverText(tool, ran), isError: true };
     if (!this.parks) return { text: `This ${tool} call needs a person's approval, which a workflow's model node cannot wait for; it was not run.`, isError: true };
     // Named by the call, so a call run again after a crash parks as the same request.
     const id = `ap_${createHash("sha256").update(JSON.stringify([callId, tool, args ?? null])).digest("hex").slice(0, 16)}`;
