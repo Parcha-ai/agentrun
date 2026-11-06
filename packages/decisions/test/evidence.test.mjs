@@ -70,7 +70,8 @@ test('a kept URL is the parsed .href: an interior newline, a C0 or bidi characte
 
 test('one counting unit, the code point: non-BMP text fills the shared budget exactly, never past it and never short of it', () => {
   const cps = (s) => Array.from(s).length;
-  const items = Array.from({ length: 3 }, (_, i) => ({ url: `https://ok.example/${i}`, title: '😀'.repeat(300), excerpts: Array.from({ length: 5 }, () => '😀'.repeat(5000)) }));
+  // Ten items: OpenRouter carries one passage an item, so it takes eight of them to reach the budget; Parallel, two.
+  const items = Array.from({ length: 10 }, (_, i) => ({ url: `https://ok.example/${i}`, title: '😀'.repeat(300), excerpts: Array.from({ length: 5 }, () => '😀'.repeat(5000)) }));
   for (const [route, evidence] of both(items)) {
     const total = evidence.reduce((n, e) => n + cps(e.title ?? '') + e.excerpts.reduce((m, x) => m + cps(x), 0), 0);
     assert.equal(total, 32 * 1024, `${route}: ${total} code points`);
