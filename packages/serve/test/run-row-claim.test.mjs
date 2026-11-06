@@ -267,3 +267,40 @@ test("a launch whose process cannot be identified (the process listing fails rig
   const { last } = await follow(api, run.body.run_id, ["completed", "failed"], { deadlineMs: 60_000 });
   assert.equal(last.status, "completed", JSON.stringify(last));
 });
+
+test("a stop of an adopted run while the process listing fails is kept pending, never sent unidentified: once the listing reads again, the process gets it and the run ends cancelled", { skip: process.platform !== "linux" && "reads /proc", timeout: 120_000 }, async (t) => {
+  const { data, runId, pid } = await crashMidRun(t);
+  const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  t.after(() => next.close());
+  const api = client(next.baseUrl, next.token);
+  assert.equal((await api("GET", `/runs/${runId}`)).status, 200, "adopted");
+  runHolderTestHooks.table = failingTable;
+  t.after(() => delete runHolderTestHooks.table);
+  assert.equal((await api("POST", `/runs/${runId}/cancel`)).status, 202);
+  await sleep(1_500);
+  assert.ok(alive(pid), "no signal while its identity cannot be checked");
+  delete runHolderTestHooks.table;
+  for (let i = 0; alive(pid); i++) {
+    assert.ok(i < 300, "the stop kept pending reaches the process once the listing reads again");
+    await sleep(50);
+  }
+  const { last } = await follow(api, runId, ["cancelled"], { deadlineMs: 30_000 });
+  assert.equal(last.status, "cancelled");
+});
+
+test("close() leaves no stop pending: a stop kept waiting on an identity that cannot be checked is never sent after the server closed", { skip: process.platform !== "linux" && "reads /proc", timeout: 120_000 }, async (t) => {
+  const { data, runId, pid } = await crashMidRun(t);
+  const lines = stderrLines(t);
+  const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "1s" });
+  const api = client(next.baseUrl, next.token);
+  assert.equal((await api("GET", `/runs/${runId}`)).status, 200, "adopted");
+  runHolderTestHooks.table = failingTable;
+  t.after(() => delete runHolderTestHooks.table);
+  assert.equal((await api("POST", `/runs/${runId}/cancel`)).status, 202);
+  await sleep(2_500);
+  assert.equal(lines.filter((line) => line.includes(runId) && line.includes("its stop waits")).length, 1, "said once while it waits");
+  await next.close();
+  delete runHolderTestHooks.table;
+  await sleep(1_500);
+  assert.ok(alive(pid), "no stop sent after the close: its timer was cleared");
+});

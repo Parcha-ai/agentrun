@@ -273,6 +273,10 @@ export type Run = {
   orphan?: number;
   /** That process as its row names it (its pid, its start, this boot): what a signal to it is checked against. */
   orphanHolder?: RunHolder;
+  /** A stop of that process kept pending while its identity cannot be checked (terminate): tried again every second. */
+  stopPending?: NodeJS.Timeout;
+  /** That pending stop has been said in the log: once for as long as it waits. */
+  stopWaits?: boolean;
   /** Adopted with a saved stop: its first snapshot is checked once, and a turn still working is aborted. */
   finishStop?: boolean;
   /** A completed run opening again for a follow-up: every follow-up meanwhile waits for this one, never a second. */
@@ -1484,10 +1488,26 @@ export class Runs {
 
   /** SIGTERM to the run's process: it drains, releases the run and exits. */
   private terminate(run: Run): void {
-    if (run.child) run.child.kill("SIGTERM");
+    if (run.child) return void run.child.kill("SIGTERM");
     // An adopted process only once its identity is confirmed (its pid, of the same start, on this boot): a pid another
-    // process took over, or one that cannot be checked, gets no signal.
-    else if (run.orphanHolder && holderState(run.orphanHolder) === "alive") process.kill(run.orphanHolder.pid, "SIGTERM");
+    // process took over gets no signal, and one that cannot be checked keeps its stop pending, tried again every second
+    // until it can be (said once for each reason), never sent unidentified. The timer keeps no server up, and close()
+    // clears it.
+    const holder = run.orphanHolder;
+    if (holder === undefined) return;
+    const state = holderState(holder);
+    if (state === "alive") {
+      run.stopWaits = undefined;
+      return void process.kill(holder.pid, "SIGTERM");
+    }
+    if (state === "gone" || this.closed) return;
+    if (!run.stopWaits) warn(run.id, `its stop waits: its process ${holder.pid} cannot be identified (the process listing cannot be read); it is sent once it can be`);
+    run.stopWaits = true;
+    clearTimeout(run.stopPending);
+    run.stopPending = setTimeout(() => {
+      run.stopPending = undefined;
+      if (run.orphanHolder === holder && !this.closed) this.terminate(run);
+    }, 1_000).unref();
   }
 
   /** Supervise a run process an earlier server started, its row's holder: follow its door, and settle the run once the
@@ -3317,7 +3337,11 @@ export class Runs {
     await sleep(0);
     await Promise.all([...this.runs.values()].map((run) => run.settling));
     await this.learning.idle();
-    for (const run of this.runs.values()) run.feed?.abort();
+    for (const run of this.runs.values()) {
+      run.feed?.abort();
+      clearTimeout(run.stopPending);
+      run.stopPending = undefined;
+    }
     this.closed = true;
   }
 
