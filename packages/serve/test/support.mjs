@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { openStoreReader } from "@parcha/pi-durable-agent";
 import { startServe } from "../dist/index.js";
@@ -264,6 +264,23 @@ export const cookieOf = (res) => (res.headers["set-cookie"] ?? []).map((line) =>
 /** Once the process that held run `runId` (its run.json's holder) has exited: only then is the run's store free to read.
  *  A paused run's process marks the run released itself (sleeping) before it closes its store and exits, so run.json's
  *  status is not that signal; the process gone is, as it is for the server (runs.ts, a run no longer live). */
+/** Whether the server took run `runId` back: its row's claim is the server's, and its WAL is checkpointed. */
+function takenBack(data, runId) {
+  let holder;
+  try {
+    const db = new DatabaseSync(join(data, "store.sqlite"), { readOnly: true, timeout: 1_000 });
+    try {
+      holder = db.prepare("SELECT claim_holder FROM runs WHERE id = ?").get(runId)?.claim_holder;
+    } finally {
+      db.close();
+    }
+  } catch {
+    return false;
+  }
+  const wal = join(runDir(data, runId), "store", "run.sqlite-wal");
+  return holder === "server" && (!existsSync(wal) || statSync(wal).size === 0);
+}
+
 export async function letGo(data, runId, { deadlineMs = 20_000 } = {}) {
   const file = join(runDir(data, runId), "run.json");
   for (const end = Date.now() + deadlineMs; ; await new Promise((resolve) => setTimeout(resolve, 50))) {
@@ -274,8 +291,10 @@ export async function letGo(data, runId, { deadlineMs = 20_000 } = {}) {
       // Read while it was rewritten: read again.
     }
     const pid = record?.holder?.pid;
-    if (Number.isInteger(pid) && !processAlive(pid)) return;
-    assert.ok(Date.now() < end, `the run's process did not exit: ${JSON.stringify(record)}`);
+    // Its process gone, and the server's take-back done (the claim is the server's, its WAL checkpointed): a reader of
+    // its store meets no lock.
+    if (Number.isInteger(pid) && !processAlive(pid) && takenBack(data, runId)) return;
+    assert.ok(Date.now() < end, `the run's process did not exit, or the server did not take the run back: ${JSON.stringify(record)}`);
   }
 }
 

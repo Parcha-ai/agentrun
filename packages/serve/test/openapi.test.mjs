@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { isDeepStrictEqual } from "node:util";
 import { decisionRows } from "../dist/decision-rows.js";
-import { homeOf } from "../dist/files.js";
+import { agentFolderOf, homeOf } from "../dist/files.js";
 import { ROUTES } from "../dist/server.js";
 import { DEFINITION_FIELDS } from "../dist/validate.js";
 import { schemaProblems } from "./schema-support.mjs";
@@ -389,8 +389,8 @@ test("learning is this server's own addition, learning/1: the definition's switc
   assert.equal((await api("POST", "/agents", agent("learner", { learning: true }))).status, 201);
   assert.equal((await api("POST", "/agents", agent("blocked", { learning: true }))).status, 201);
   assert.equal((await api("POST", "/agents", agent("plain"))).status, 201);
-  await mkdir(homeOf(data, "blocked"), { recursive: true });
-  await writeFile(join(homeOf(data, "blocked"), "learning"), "not a folder");
+  await mkdir(agentFolderOf(data, "blocked"), { recursive: true });
+  await writeFile(join(agentFolderOf(data, "blocked"), "learning"), "not a folder");
   const want = { learner: ["dropped", "empty"], blocked: ["dropped", "seed_failed"], plain: null };
   for (const id of Object.keys(want)) {
     const started = await api("POST", `/agents/${id}/runs`, { input: { content: "hi" } });

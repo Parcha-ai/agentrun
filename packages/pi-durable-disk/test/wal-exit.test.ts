@@ -89,7 +89,7 @@ describe("the exclusive profile: a run's database", () => {
 import { openArchilStore } from ${JSON.stringify(new URL("../src/store.ts", import.meta.url).href)};
 import { createHash } from "node:crypto";
 import { readFileSync, statSync, writeFileSync } from "node:fs";
-const file = process.argv[1];
+const [file] = process.argv.slice(1);
 const store = await openArchilStore(file, "exclusive", { keepWal: true });
 await store.database.exec("CREATE TABLE t(id INTEGER PRIMARY KEY, b TEXT)");
 await store.database.exec("PRAGMA wal_checkpoint(TRUNCATE)");

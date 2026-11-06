@@ -335,6 +335,8 @@ export type Run = {
   pulling?: Promise<void>;
   /** Its launch waits on its claim, tried again later (launch): it keeps its place in the server's limits (takePlace). */
   claimWait?: boolean;
+  /** How many launches in a row its claim was refused: the next try comes sooner while it is few. */
+  claimTries?: number;
   /** The last of its database's reads and take-back checkpoint (runs.ts runDb): the next waits for it. */
   dbQueue?: Promise<void>;
   /** It stood waiting for the person when last marked: a turn's end is the change into that. */
@@ -2017,11 +2019,16 @@ export class Runs {
     const handsKey = Object.keys(decisionKeys).length > 0;
     // The run's claim, for its process: the epoch bumped and the holder named on its row, in one statement. A claim
     // that cannot be written (the agent store held, or not writable) launches nothing now, and is tried again, the
-    // launch whole, every settle retry until it is written: a run never stays without a process for want of one.
+    // launch whole, after each of the busy store's waits and then every settle retry, until it is written: a run never
+    // stays without a process for want of one.
     try {
       env[RUN_EPOCH_ENV] = String(this.store.claimRun(run.id, RUN_HOLDER));
+      run.claimTries = undefined;
     } catch (error) {
-      const every = this.options.settleRetryMs ?? SETTLE_RETRY_MS;
+      // Soon at first, as a busy store is waited on (busyDelays), then every settle retry.
+      const tries = run.claimTries ?? 0;
+      run.claimTries = tries + 1;
+      const every = this.busyDelays()[tries] ?? this.options.settleRetryMs ?? SETTLE_RETRY_MS;
       // What this launch took goes back, so the next one launches as this one would have.
       if (followUp) run.followUpOpen = true;
       if (first) run.firstLaunch = true;

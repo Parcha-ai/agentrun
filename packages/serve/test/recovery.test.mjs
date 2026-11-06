@@ -180,8 +180,8 @@ test("a run released but not carried back when its server stopped is carried bac
   assert.equal(storeRun(data, runId).state, "running", "released, and nobody carried it back yet");
   // Another holder keeps the run's store locked across the next server's start, as the run's own process does until it
   // exits: the server's reads are lock-free (run-db.ts), so they do not wait on it; its checkpoint, which needs the lock,
-  // is left to a later take-back.
-  const store = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { timeout: 0 });
+  // is left to a later take-back. Taken once a take-back's checkpoint that may be under way lets go of it.
+  const store = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { timeout: 10_000 });
   t.after(() => store.isOpen && store.close());
   store.exec("PRAGMA locking_mode = EXCLUSIVE");
   store.exec("BEGIN EXCLUSIVE");
