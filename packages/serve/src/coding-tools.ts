@@ -15,12 +15,13 @@
 import { posix } from "node:path";
 import type { Context } from "@earendil-works/chord";
 import { type Extension, ROOT_CONVERSATION_ID, type ToolRegistration } from "@earendil-works/pi-durable";
-import { FileError } from "@earendil-works/pi-durable/env";
+import { type ExecutionEnv, FileError } from "@earendil-works/pi-durable/env";
 import { HOST_PHASE } from "@parcha/pi-durable-agent/timeline";
 import { ArchilCodingTools } from "@parcha/pi-durable-disk";
 import { BACKGROUND_TOOLS, backgroundTools, SHELL_TOOLS } from "./background.js";
 import { boundFiles } from "./bound-files.js";
 import { BOX_WORK, type Place } from "./place.js";
+import { forModelBlocks } from "./result.js";
 import { asGivenRefusals, refuseOutsideWorkspace } from "./workspace-paths.js";
 import { writesHeld } from "./workspace.js";
 
@@ -100,8 +101,24 @@ function boundedBash(tool: ToolRegistration): ToolRegistration {
 
 /** The image types read opens, by extension; the bytes must say the same (imageTypeOf). */
 const IMAGE_EXTENSIONS: Readonly<Record<string, string>> = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp" };
-/** The largest image read hands the model, in bytes. */
-export const READ_IMAGE_MAX_BYTES = 5 * 1024 * 1024;
+/** The largest image read hands the model, in bytes: 3.75 MiB, whose base64 is the 5 MiB the strictest platform a
+ *  harness sends images to takes (the claude-agent adapter's CLAUDE_AGENT_MAX_IMAGE_BYTES, Amazon Bedrock's). */
+export const READ_IMAGE_MAX_BYTES = 3_932_160;
+/** The box's side of an image read: at most `$2` bytes of `$1`, as base64 (env.exec answers in text). A file over the
+ *  bound never leaves the box whole: the server holds one byte past it at most, and refuses it. */
+const READ_IMAGE_SCRIPT = '[ -f "$1" ] && [ -r "$1" ] || exit 6; head -c "$2" -- "$1" | base64';
+/** At most `limit` bytes of the box's `path`, read in the box, or undefined when it can't be read there. */
+async function boxBytes(env: ExecutionEnv, path: string, limit: number, context: Context): Promise<Uint8Array | undefined> {
+  let out = "";
+  const ran = await env.exec(["sh", "-c", READ_IMAGE_SCRIPT, "agentrun-read-image", path, String(limit)], {
+    timeout: 30,
+    onOutput: (text, _context, info) => {
+      if (info.stream === "stdout") out += text;
+    },
+  }, context);
+  if (!ran.ok || ran.value.exitCode !== 0) return undefined;
+  return new Uint8Array(Buffer.from(out.replace(/\s+/g, ""), "base64"));
+}
 const READ_IMAGE_SENTENCE = " It also opens an image (png, jpg, gif, webp) at any path in the run's box, such as one rendered to /tmp, and returns it as an image; any other file only inside work/.";
 /** The image type the bytes say they are, or undefined: the magic bytes of PNG, JPEG, GIF and WebP. */
 function imageTypeOf(bytes: Uint8Array): string | undefined {
@@ -136,12 +153,12 @@ export function codingSource(place: Place, box?: BoxedEnv): CodingSource {
       // and only when the bytes are an image's; anything else outside work/ is refused as before.
       if (tool.name === "read" && typeof path === "string" && inBox === undefined && boxImagePath(path)) {
         const note = (summary: string) => api.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: HOST_PHASE, data: { summary } })), context);
-        const env = (await box.env(context, note)) as { readBinaryFile?(path: string, context: Context): Promise<{ ok: true; value: Uint8Array } | { ok: false; error: { message?: string } }> };
-        const read = env.readBinaryFile ? await env.readBinaryFile(path, context) : undefined;
-        const mimeType = read?.ok ? imageTypeOf(read.value) : undefined;
-        if (!read?.ok || !mimeType) refuseOutsideWorkspace(path);
-        if (read.value.byteLength > READ_IMAGE_MAX_BYTES) throw new Error(`${path} is an image of ${read.value.byteLength} bytes, over read's ${READ_IMAGE_MAX_BYTES}: scale it down first (for example with ffmpeg in bash).`);
-        return { content: [{ type: "image", data: Buffer.from(read.value).toString("base64"), mimeType }] };
+        const bytes = await boxBytes((await box.env(context, note)) as ExecutionEnv, path, READ_IMAGE_MAX_BYTES + 1, context);
+        const mimeType = bytes ? imageTypeOf(bytes) : undefined;
+        if (!bytes || !mimeType) refuseOutsideWorkspace(path);
+        if (bytes.byteLength > READ_IMAGE_MAX_BYTES) throw new Error(`${path} is an image over read's ${READ_IMAGE_MAX_BYTES} bytes: scale it down first (for example with ffmpeg in bash).`);
+        // A line naming it, then the image: an answer is never an empty text, on pi or on another harness (host-tools.ts).
+        return forModelBlocks([{ type: "text", text: `${path}: ${mimeType}, ${bytes.byteLength} bytes` }, { type: "image", data: Buffer.from(bytes).toString("base64"), mimeType }]);
       }
       if (typeof path === "string" && inBox === undefined) refuseOutsideWorkspace(path);
       const given = inBox === undefined ? args : { ...(args as object), path: inBox };
