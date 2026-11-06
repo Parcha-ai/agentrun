@@ -1,10 +1,10 @@
 // A fake of the slice of Modal's JS SDK that ModalProvider takes (modal-client@64880502:js/src), for its unit tests. It
 // records every call and plays the SDK's documented behaviour: apps.fromName; images.fromRegistry and
-// dockerfileCommands, which build nothing; sandboxes.create, which keeps the tags it is given (sandbox.ts:808-859);
+// dockerfileCommands, which build nothing; sandboxes.create, which keeps the tags it is given (sandbox.ts:808-867);
 // fromId, which makes a handle with no call (sandbox.ts:960-962); list, of running sandboxes that carry every tag
 // asked for (sandbox.ts:1116-1139); a sandbox's getTags, poll (null while it runs), terminate (idempotent here; the
 // sandbox finishes with 137, guide/sandboxes "Return Codes") and exec, which throws ConflictError once the sandbox has
-// finished (sandbox.ts:2138-2141). exec of the daemon's stdio bridge answers hello, ping and exec.run of the probe as
+// finished (sandbox.ts:2149-2154). exec of the daemon's stdio bridge answers hello, ping and exec.run of the probe as
 // computerd would. No Modal client is ever constructed here, and nothing reaches the network.
 import { setTimeout as sleep } from "node:timers/promises";
 

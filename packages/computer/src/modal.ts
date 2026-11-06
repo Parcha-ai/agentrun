@@ -1,5 +1,11 @@
 // The Modal provisioner, VM runtime only: every call through the host's own Modal JS SDK client, of which this package
-// names only the slice it uses (ModalSdk) and imports nothing. Not built yet.
+// names only the slice it uses (ModalSdk) and imports nothing. Every SDK fact below is cited in the README's Modal
+// section, from modal-client@64880502 (js/src) and Modal's docs.
+import { randomBytes } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { Readable, Writable } from "node:stream";
+import { DaemonClient } from "./client.js";
+import { COMPUTER_LABEL, DAEMON_IN_COMPUTER, DEADLINE_LABEL, DEFAULT_CPUS, DEFAULT_MEMORY_MB, helloDrift, WORK } from "./drift.js";
 import type {
 	AttachedComputer,
 	CallContext,
@@ -13,14 +19,14 @@ import type {
 	NetworkSpec,
 	Refusal,
 } from "./provider.js";
-import { fail, type Result } from "./result.js";
+import { type ComputerErrorCode, fail, ok, type Result } from "./result.js";
 
 /** The App sandboxes are made in (modal-client@64880502:js/src/app.ts:32-61). */
 export interface ModalApp {
 	readonly appId: string;
 }
 
-/** An Image, built on Modal's side when a sandbox is created from it (js/src/image.ts:311-420). */
+/** An Image, built on Modal's side when a sandbox is created from it (js/src/image.ts:311-401). */
 export interface ModalImage {
 	dockerfileCommands(commands: string[]): ModalImage;
 }
@@ -45,7 +51,7 @@ export interface ModalByteSink {
 	close(): Promise<void>;
 }
 
-/** One program started by exec in binary mode: the part of the SDK's ContainerProcess read here (sandbox.ts:2774-2910). */
+/** One program started by exec in binary mode: the part of the SDK's ContainerProcess read here (sandbox.ts:2774-2914). */
 export interface ModalProcess {
 	readonly stdin: ModalByteSink;
 	readonly stdout: AsyncIterable<Uint8Array>;
@@ -102,43 +108,671 @@ export interface ModalProviderOptions {
 	probeTargets?: string[];
 }
 
-const NOT_BUILT = "the Modal provider is not built yet";
+const VERSION: string = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
+const NAME = /^computer-[0-9a-f]{12}$/;
+/** A sandbox id as the SDK takes one; ownership is decided by its tags, never by its shape. */
+const SANDBOX_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+const NAME_TAG = `${COMPUTER_LABEL}.name`;
+const SPEC_TAG = `${COMPUTER_LABEL}.spec`;
+/** "A Sandbox can carry up to 10 tags" (guide/sandboxes#tagging); the provider uses four. */
+const MAX_TAGS = 10;
+const OWN_TAGS = 4;
+/** "a timeout of up to 24 hours" (guide/sandboxes#timeouts). */
+const MAX_LIFETIME_MS = 24 * 60 * 60 * 1000;
+/** A registry reference pinned by digest. */
+const PINNED = /^[a-z0-9]+(?:[._-][a-z0-9]+)*(?::[0-9]{1,5})?(?:\/[a-z0-9]+(?:[._-][a-z0-9]+)*)*@sha256:[0-9a-f]{64}$/;
+/** A workdir becomes a Dockerfile WORKDIR line, so it holds no space, quote or variable. */
+const WORKDIR = /^\/[A-Za-z0-9._/-]*$/;
+const USER = /^(\d+)(?::(\d+))?$/;
+const MAX_ID = 4_294_967_294;
+const USER_FORM = "a uid or uid:gid in numbers, such as 1000:1000; a name is refused, since the image may not have it";
+const TARGET = /^(?:\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]+):[0-9]{1,5}$/;
+/** Modal's own default request (guide/sandbox-resources, "Pay for what you use"): a spec's sizes are limits, as in Docker. */
+const CPU_REQUEST = 0.125;
+const MEMORY_REQUEST_MIB = 128;
+/** "1 core = 2 vCPUs" (guide/sandbox-resources): a spec's cpus are CPUs, Modal's cpu is physical cores. */
+const CPUS_PER_CORE = 2;
+const DEFAULT_TIMEOUTS: ModalTimeouts = { createMs: 600_000, callMs: 60_000, helloMs: 30_000, probeMs: 30_000, listMs: 120_000 };
+/** Public anycast resolvers, by address: with no network, not even DNS works (guide/sandbox-networking). */
+const DEFAULT_PROBE_TARGETS = ["1.1.1.1:443", "8.8.8.8:443", "[2606:4700:4700::1111]:443"];
+/** How long close waits for the stdio bridge to exit once its stdin has ended. Modal has no kill for an exec. */
+const CLOSE_WAIT_MS = 5_000;
+const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "cpus", "memoryMb", "pids", "labels", "workdir", "user"]);
+const NUL = "a NUL byte cannot be passed to Modal";
+const ALLOWLIST =
+	"a Modal computer takes no allowlist yet: Modal's outbound CIDR allowlist (any protocol, every port) and its domain allowlist (beta: TLS on port 443 only, matched by SNI) cannot be read back, so an allowlist counts only once the live bypass cases pass (ruling 9); ask for network none or open";
+const FIXED =
+	"a Modal computer's network is fixed at create: Modal cannot update the policy of a sandbox made with blockNetwork, and updates only an allowlist set at create; create a new computer";
+const STOP =
+	"Modal has no stop that keeps a sandbox: terminate is a sandbox's only end, and a sandbox that has finished cannot run again; release it with delete";
 
+/** What create records of a computer in its spec tag, and attach reads back. */
+interface Recorded {
+	image: string;
+	user: string;
+	network: "none" | "open";
+	cpus: number;
+	memoryMb: number;
+	workdir: string;
+	runtime: "vm";
+}
+
+/** What `computerd probe` reports from inside the computer. */
+interface ProbeReport {
+	uid: number;
+	gid: number;
+	kernel: string;
+	reached: string[];
+}
+
+const isNumber = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
+const isWhole = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value);
+const show = (value: unknown) => (value === undefined ? "nothing" : JSON.stringify(value));
+const seconds = (ms: number) => `${ms / 1000} s`;
+const words = (error: unknown) => {
+	const name = (error as { name?: unknown } | null)?.name;
+	const message = error instanceof Error ? error.message : String(error);
+	return `${typeof name === "string" && name !== "Error" ? `${name}: ` : ""}${message}`.replace(/\s+/g, " ").slice(0, 300);
+};
+
+/** The SDK names its errors (js/src/errors.ts); a call that failed on the wire carries a gRPC status code. */
+function codeOf(error: unknown): ComputerErrorCode {
+	const { name, code } = (error ?? {}) as { name?: unknown; code?: unknown };
+	if (name === "NotFoundError" || code === 5) return "not_found";
+	if (name === "InvalidError" || code === 3) return "invalid";
+	return "modal";
+}
+
+/** Settles with the promise's result, or a timeout or abort in words once ms pass or signal aborts. */
+function race<T>(promise: Promise<T>, what: string, ms: number, signal?: AbortSignal): Promise<Result<T>> {
+	if (signal?.aborted) {
+		promise.catch(() => {});
+		return Promise.resolve(fail("aborted", `${what} was aborted`));
+	}
+	return new Promise((settle) => {
+		const timer = setTimeout(() => done(fail("timeout", `${what} did not answer within ${seconds(ms)}`)), ms);
+		const onAbort = () => done(fail("aborted", `${what} was aborted`));
+		signal?.addEventListener("abort", onAbort, { once: true });
+		let settled = false;
+		function done(result: Result<T>) {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timer);
+			signal?.removeEventListener("abort", onAbort);
+			settle(result);
+		}
+		promise.then(
+			(value) => done(ok(value)),
+			(error: unknown) => done(fail(codeOf(error), `${what} failed: ${words(error)}`)),
+		);
+	});
+}
+
+/** A signal that aborts after ms, or with signal. Its timer holds the event loop, as AbortSignal.timeout's does not. */
+function within(ms: number, signal?: AbortSignal): { signal: AbortSignal; clear(): void } {
+	const controller = new AbortController();
+	const timer = setTimeout(() => controller.abort(), ms);
+	const onAbort = () => controller.abort();
+	if (signal?.aborted) controller.abort();
+	else signal?.addEventListener("abort", onAbort, { once: true });
+	return {
+		signal: controller.signal,
+		clear: () => {
+			clearTimeout(timer);
+			signal?.removeEventListener("abort", onAbort);
+		},
+	};
+}
+
+/** Calls run and races it; a run that throws at once is an error like one that rejects. */
+function call<T>(what: string, run: () => Promise<T>, ms: number, signal?: AbortSignal): Promise<Result<T>> {
+	if (signal?.aborted) return Promise.resolve(fail("aborted", `${what} was aborted before it was called`));
+	let promise: Promise<T>;
+	try {
+		promise = Promise.resolve(run());
+	} catch (error) {
+		return Promise.resolve(fail(codeOf(error), `${what} failed: ${words(error)}`));
+	}
+	return race(promise, what, ms, signal);
+}
+
+/** Bytes as Buffers, which the daemon client reads lines from. */
+async function* buffers(source: AsyncIterable<Uint8Array>): AsyncGenerator<Buffer> {
+	for await (const chunk of source) yield Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+}
+
+function labelProblem(key: string, value: unknown): string | undefined {
+	if (typeof value !== "string") return `the label ${key} must be a string`;
+	if (key.includes("\0") || value.includes("\0")) return `the label ${JSON.stringify(key)}: ${NUL}`;
+	if (key === "") return "a label's name must be non-empty";
+	if (key === COMPUTER_LABEL || key.startsWith(`${COMPUTER_LABEL}.`)) return `the label ${key} is in the provider's own namespace (${COMPUTER_LABEL})`;
+	return undefined;
+}
+
+/** Why labels cannot be a tag filter, or undefined when they can. */
+function filterProblem(labels: unknown): string | undefined {
+	if (typeof labels !== "object" || labels === null || Array.isArray(labels)) return "labels must map names to strings";
+	for (const [key, value] of Object.entries(labels)) {
+		if (typeof value !== "string") return `the label ${key} must be a string`;
+		if (key === "" || key.includes("\0") || value.includes("\0")) return `the label ${JSON.stringify(key)} must be a non-empty name with no NUL byte`;
+	}
+	return undefined;
+}
+
+/** "uid:gid" for a user in numbers (a uid alone is its own gid), or undefined when it is not one. */
+function userOf(value: unknown): string | undefined {
+	const match = typeof value === "string" ? USER.exec(value) : null;
+	if (match === null) return undefined;
+	const [uid, gid] = [Number(match[1]), Number(match[2] ?? match[1])];
+	return uid <= MAX_ID && gid <= MAX_ID ? `${uid}:${gid}` : undefined;
+}
+
+/** Only a sandbox this provider made counts: its tag, a name of its making, and the name asked for when one is. */
+const ours = (tags: Record<string, string>, name?: string) =>
+	tags[COMPUTER_LABEL] === "1" && NAME.test(tags[NAME_TAG] ?? "") && (name === undefined || tags[NAME_TAG] === name);
+
+/** The deadline tag as create writes it, an ISO time, or undefined. */
+function deadlineOf(tags: Record<string, string>): Date | undefined {
+	const written = tags[DEADLINE_LABEL];
+	const at = written === undefined ? Number.NaN : Date.parse(written);
+	return Number.isNaN(at) || new Date(at).toISOString() !== written ? undefined : new Date(at);
+}
+
+/** The spec tag, parsed, or a sentence saying why it is not the one create writes. */
+function recordedOf(tags: Record<string, string>): Recorded | string {
+	try {
+		const value = JSON.parse(tags[SPEC_TAG] ?? "") as Partial<Recorded> | null;
+		if (typeof value === "object" && value !== null && !Array.isArray(value)) return value as Recorded;
+	} catch {
+		// Not JSON: said below.
+	}
+	return `spec: the tag ${SPEC_TAG} reads ${show(tags[SPEC_TAG])}, not the spec create writes`;
+}
+
+/** The network a computer was created with, as list reports it: a tag only the host's token writes. */
+function recordedNetwork(tags: Record<string, string>): NetworkPolicy {
+	const recorded = recordedOf(tags);
+	if (typeof recorded !== "string" && (recorded.network === "none" || recorded.network === "open")) return recorded.network;
+	return { other: `the tag ${SPEC_TAG} names no network this provider makes` };
+}
+
+function probeOf(stdout: string): ProbeReport | undefined {
+	try {
+		const value = JSON.parse(Buffer.from(stdout, "base64").toString("utf8")) as Partial<ProbeReport> | null;
+		if (isWhole(value?.uid) && isWhole(value?.gid) && typeof value?.kernel === "string" && Array.isArray(value?.reached) && value.reached.every((one) => typeof one === "string")) {
+			return value as ProbeReport;
+		}
+	} catch {
+		// Not the probe's JSON: undefined.
+	}
+	return undefined;
+}
+
+/** Every way the probe's report differs from what the computer should be. */
+function probeDrift(probe: ProbeReport, expected: { user?: string; network?: NetworkSpec }): string[] {
+	const found: string[] = [];
+	const user = `${probe.uid}:${probe.gid}`;
+	if (expected.user !== undefined && user !== expected.user) found.push(`user: declared ${expected.user}, read back ${user} (the uid:gid the daemon's programs run as)`);
+	if (/gvisor/i.test(probe.kernel)) found.push(`runtime: declared vm, read back gVisor (the kernel reports ${JSON.stringify(probe.kernel)})`);
+	if (expected.network === "none" && probe.reached.length > 0) found.push(`network: declared none, read back a connection to ${probe.reached.join(", ")}`);
+	return found;
+}
+
+/** Every way the tags read back differ from those create gave. */
+function tagDrift(given: Record<string, string>, read: Record<string, string>): string[] {
+	const found: string[] = [];
+	for (const [key, value] of Object.entries(given)) if (read[key] !== value) found.push(`tag ${key}: declared ${show(value)}, read back ${show(read[key])}`);
+	for (const [key, value] of Object.entries(read)) if (!(key in given)) found.push(`tag ${key}: none declared, read back ${show(value)}`);
+	return found;
+}
+
+/**
+ * Computers that are Modal sandboxes on the VM runtime. The daemon is the sandbox's command, from a layer the image
+ * gets at create (COPY --from the daemon's image); a connection is `computerd stdio` through exec, so a computer with
+ * network none is still reached. Modal ends each sandbox at its timeout, so the lifetime is the vendor's. Modal reads no
+ * network policy back, so the daemon's probe stands for one: network none is honoured only when the probe reaches none
+ * of its addresses, and an allowlist is refused until the live bypass cases pass.
+ */
 export class ModalProvider implements ComputerProvider {
 	readonly id = "modal";
-	readonly version = "0.0.0";
+	readonly version = VERSION;
+	readonly #sdk: ModalSdk;
+	readonly #appName: string;
+	readonly #daemonImage: string;
+	readonly #user: string;
+	readonly #timeouts: ModalTimeouts;
+	readonly #probeTargets: string[];
+	#app: ModalApp | undefined;
 
-	constructor(_options: ModalProviderOptions) {}
+	constructor({ sdk, app, daemonImage, user, timeouts = {}, probeTargets = DEFAULT_PROBE_TARGETS }: ModalProviderOptions) {
+		const lacks = [
+			["apps.fromName", sdk?.apps?.fromName],
+			["images.fromRegistry", sdk?.images?.fromRegistry],
+			["sandboxes.create", sdk?.sandboxes?.create],
+			["sandboxes.fromId", sdk?.sandboxes?.fromId],
+			["sandboxes.list", sdk?.sandboxes?.list],
+		].filter(([, fn]) => typeof fn !== "function");
+		if (lacks.length > 0) throw new Error(`options.sdk must be a Modal client; it lacks ${lacks.map(([name]) => name).join(", ")}`);
+		if (typeof app !== "string" || app.trim() === "") throw new Error("options.app, the Modal app's name, is required");
+		if (typeof daemonImage !== "string" || !PINNED.test(daemonImage)) {
+			throw new Error(`the daemon image ${JSON.stringify(daemonImage)} must be pinned by digest, such as ghcr.io/<owner>/computerd@sha256:<64 hex digits>`);
+		}
+		const given = user === undefined ? "1000:1000" : userOf(user);
+		if (given === undefined) throw new Error(`the provider's user ${JSON.stringify(user)} must be ${USER_FORM}`);
+		if (given.startsWith("0:")) throw new Error(`the provider's user ${user} is root; a computer runs as root only when its spec asks for user "0"`);
+		if (given.endsWith(":0")) throw new Error(`the provider's user ${user} is in root's group (gid 0); a computer is in group 0 only when its spec asks`);
+		const merged = { ...DEFAULT_TIMEOUTS, ...timeouts };
+		for (const [key, value] of Object.entries(merged)) {
+			if (!isNumber(value) || value <= 0) throw new Error(`timeouts.${key} must be a number of ms above 0`);
+		}
+		if (!Array.isArray(probeTargets) || probeTargets.length === 0) throw new Error("probeTargets must name at least one address for the probe");
+		const bad = probeTargets.find((target) => typeof target !== "string" || !TARGET.test(target));
+		if (bad !== undefined) throw new Error(`the probe target ${JSON.stringify(bad)} is not host:port`);
+		this.#sdk = sdk;
+		this.#appName = app;
+		this.#daemonImage = daemonImage;
+		this.#user = given;
+		this.#timeouts = merged;
+		this.#probeTargets = [...probeTargets];
+	}
 
 	capabilities(): ComputerCapabilities {
-		throw new Error(NOT_BUILT);
+		return {
+			lifetime: "vendor",
+			network: ["none", "open"],
+			networkReadBack: false,
+			isolation: "vm",
+			os: "linux",
+			daemon: ["exec", "files", "processes"],
+			user: ["root", "uid"],
+		};
 	}
 
-	check(_spec: ComputerSpec): Refusal[] {
-		throw new Error(NOT_BUILT);
+	check(spec: ComputerSpec): Refusal[] {
+		const refusals: Refusal[] = [];
+		const refuse = (field: string, message: string) => refusals.push({ field, message });
+		const given = (typeof spec === "object" && spec !== null ? spec : {}) as unknown as Record<string, unknown>;
+		const { image, lifetimeMs, network, cpus, memoryMb, pids, labels, workdir, user } = given;
+		if (typeof image !== "string" || image.trim() === "" || image.startsWith("-") || /\s/.test(image)) {
+			refuse("image", "an image is required: a registry tag for linux/amd64 that Modal can pull, such as debian:bookworm-slim");
+		} else if (image.includes("\0")) refuse("image", NUL);
+		if (!isWhole(lifetimeMs) || lifetimeMs <= 0) {
+			refuse("lifetimeMs", "lifetimeMs is required: a whole number of milliseconds above 0, after which Modal ends the computer");
+		} else if (lifetimeMs > MAX_LIFETIME_MS) {
+			refuse("lifetimeMs", `lifetimeMs is at most 24 hours (${MAX_LIFETIME_MS} ms), the longest timeout Modal gives a sandbox; ask for a new computer after that`);
+		}
+		if (typeof network === "object" && network !== null && "allow" in network) refuse("network", ALLOWLIST);
+		else if (network !== "none" && network !== "open") refuse("network", 'network is required: "none" or "open"');
+		if (cpus !== undefined && !(isNumber(cpus) && cpus >= CPU_REQUEST * CPUS_PER_CORE)) {
+			refuse("cpus", `cpus must be a number of CPUs of at least ${CPU_REQUEST * CPUS_PER_CORE}: Modal counts physical cores, 2 CPUs each, and requests ${CPU_REQUEST} of one by default`);
+		}
+		if (memoryMb !== undefined && !(isWhole(memoryMb) && memoryMb > 0)) refuse("memoryMb", "memoryMb must be a whole number of MiB above 0");
+		if (pids !== undefined) refuse("pids", "a Modal computer has no pids limit to set, since Modal offers none; leave pids unset");
+		if (labels !== undefined) {
+			const entries = typeof labels === "object" && labels !== null && !Array.isArray(labels) ? Object.entries(labels) : undefined;
+			const bad = entries === undefined ? "labels must map names to strings" : entries.map(([key, value]) => labelProblem(key, value)).find(Boolean);
+			if (bad) refuse("labels", bad);
+			else if ((entries?.length ?? 0) > MAX_TAGS - OWN_TAGS) {
+				refuse("labels", `a Modal sandbox carries at most ${MAX_TAGS} tags and this provider uses ${OWN_TAGS}, so a computer takes at most ${MAX_TAGS - OWN_TAGS} labels`);
+			}
+		}
+		if (workdir !== undefined && !(typeof workdir === "string" && WORKDIR.test(workdir))) {
+			refuse("workdir", "workdir must be an absolute path of letters, digits and . _ - / only: it becomes the image's WORKDIR");
+		}
+		if (user !== undefined && userOf(user) === undefined) refuse("user", `user must be ${USER_FORM}`);
+		for (const [field, value] of Object.entries(given)) {
+			if (SPEC_FIELDS.has(field) || value === undefined) continue;
+			if (field === "gpu") refuse(field, "this provider makes VM computers, and Modal offers GPUs on the gVisor runtime only");
+			else refuse(field, `a Modal computer does not support ${field}`);
+		}
+		return refusals;
 	}
 
-	async create(_spec: ComputerSpec, _context: CallContext = {}): Promise<Result<ComputerRef>> {
-		return fail("unsupported", NOT_BUILT);
+	async create(spec: ComputerSpec, { signal }: CallContext = {}): Promise<Result<ComputerRef>> {
+		const refusals = this.check(spec);
+		if (refusals.length > 0) return fail("refused", refusals.map(({ field, message }) => `${field}: ${message}`).join("; "));
+		if (signal?.aborted) return fail("aborted", "create was aborted before Modal was called");
+		const app = await this.#theApp(signal);
+		if (!app.ok) return app;
+		const name = `computer-${randomBytes(6).toString("hex")}`;
+		const deadline = new Date(Date.now() + spec.lifetimeMs).toISOString();
+		const user = userOf(spec.user) ?? this.#user;
+		const workdir = spec.workdir ?? WORK;
+		const cpus = spec.cpus ?? DEFAULT_CPUS;
+		const memoryMb = spec.memoryMb ?? DEFAULT_MEMORY_MB;
+		const recorded: Recorded = { image: spec.image, user, network: spec.network as "none" | "open", cpus, memoryMb, workdir, runtime: "vm" };
+		const tags = { ...spec.labels, [COMPUTER_LABEL]: "1", [NAME_TAG]: name, [DEADLINE_LABEL]: deadline, [SPEC_TAG]: JSON.stringify(recorded) };
+		// The daemon comes in as a layer of the computer's own image, so it is there before the command starts and the
+		// computer needs no network to get it. HOME is a directory init gives the computer's user.
+		const image = this.#sdk.images.fromRegistry(spec.image).dockerfileCommands([`COPY --from=${this.#daemonImage} /computerd ${DAEMON_IN_COMPUTER}`, `ENV HOME=${WORK}`, `WORKDIR ${workdir}`]);
+		const cpuLimit = cpus / CPUS_PER_CORE;
+		const params: ModalCreateParams = {
+			runtime: "vm",
+			command: [DAEMON_IN_COMPUTER, "init", "--deadline", deadline, "--user", user],
+			timeoutMs: Math.ceil(spec.lifetimeMs / 1000) * 1000,
+			workdir,
+			cpu: Math.min(CPU_REQUEST, cpuLimit),
+			cpuLimit,
+			memoryMiB: Math.min(MEMORY_REQUEST_MIB, memoryMb),
+			memoryLimitMiB: memoryMb,
+			...(spec.network === "none" ? { blockNetwork: true as const } : {}),
+			tags,
+		};
+		let creating: Promise<ModalSandbox>;
+		try {
+			creating = Promise.resolve(this.#sdk.sandboxes.create(app.value, image, params));
+		} catch (error) {
+			return fail(codeOf(error), `sandboxes.create failed: ${words(error)}`);
+		}
+		const created = await race(creating, "sandboxes.create", this.#timeouts.createMs, signal);
+		if (!created.ok) {
+			if (created.error.code === "timeout" || created.error.code === "aborted") {
+				// The SDK's create goes on without us: a sandbox it makes after this is terminated as it lands.
+				creating.then((sandbox) => sandbox.terminate()).catch(() => {});
+				return fail(created.error.code, `${created.error.message}; a sandbox it makes after this is terminated`);
+			}
+			return created;
+		}
+		const sandbox = created.value;
+		const ref = { id: sandbox.sandboxId, name };
+		// From here the computer exists: every step takes the caller's signal, and an abort or a mismatch terminates it.
+		const checked = await this.#checkCreated(sandbox, ref, tags, recorded, signal);
+		if (signal?.aborted) {
+			const after = await this.#terminate(sandbox);
+			return fail("aborted", `create was aborted after Modal made the sandbox; the computer ${name} ${after}`);
+		}
+		if (checked.ok) return ok(ref);
+		const after = await this.#terminate(sandbox);
+		return fail(checked.error.code, `the computer ${name} ${after}: ${checked.error.message}`);
 	}
 
-	async attach(_ref: { id: string } | { labels: Record<string, string> }, _context: CallContext = {}): Promise<Result<AttachedComputer>> {
-		return fail("unsupported", NOT_BUILT);
+	/** Terminates a sandbox create gives up on, and says how that went. */
+	async #terminate(sandbox: ModalSandbox): Promise<string> {
+		const ended = await call(`terminate of ${sandbox.sandboxId}`, () => sandbox.terminate(), this.#timeouts.callMs);
+		return ended.ok ? "was terminated" : `could not be terminated (${ended.error.message})`;
 	}
 
-	async list(_labels: Record<string, string>, _context: CallContext = {}): Promise<Result<ComputerInfo[]>> {
-		return fail("unsupported", NOT_BUILT);
+	/** The drift check after create: the sandbox runs, its tags read back as given, and the daemon and probe match. */
+	async #checkCreated(sandbox: ModalSandbox, ref: ComputerRef, tags: Record<string, string>, recorded: Recorded, signal?: AbortSignal): Promise<Result<void>> {
+		const polled = await call(`poll of ${ref.name}`, () => sandbox.poll(), this.#timeouts.callMs, signal);
+		if (!polled.ok) return polled;
+		if (polled.value !== null) return fail("refused", `it had finished, with exit code ${polled.value}, before its drift check`);
+		const read = await call(`getTags of ${ref.id}`, () => sandbox.getTags(), this.#timeouts.callMs, signal);
+		if (!read.ok) return read;
+		const inside = await this.#inside(sandbox, ref.name, signal);
+		if (!inside.ok) return inside;
+		const found = [
+			...tagDrift(tags, read.value),
+			...helloDrift(inside.value.hello, { version: VERSION, capabilities: this.capabilities().daemon, arch: "amd64" }),
+			...probeDrift(inside.value.probe, { user: recorded.user, network: recorded.network }),
+		];
+		return found.length === 0 ? ok(undefined) : fail("refused", `it did not match its spec: ${found.join("; ")}`);
 	}
 
-	async network(_ref: ComputerRef, _policy?: NetworkSpec, _context: CallContext = {}): Promise<Result<NetworkPolicy>> {
-		return fail("unsupported", NOT_BUILT);
+	/** One connection's hello and the probe through it, the connection closed after. */
+	async #inside(sandbox: ModalSandbox, name: string, signal?: AbortSignal): Promise<Result<{ hello: ComputerConnection["hello"]; probe: ProbeReport }>> {
+		const opened = await this.#open(sandbox, name, signal);
+		if (!opened.ok) return opened;
+		try {
+			const probe = await this.#probe(opened.value, name, signal);
+			return probe.ok ? ok({ hello: opened.value.hello, probe: probe.value }) : probe;
+		} finally {
+			await opened.value.close();
+		}
 	}
 
-	async connect(_ref: ComputerRef): Promise<Result<ComputerConnection>> {
-		return fail("unsupported", NOT_BUILT);
+	/** `computerd probe` through the daemon, so it runs as the computer's own user. */
+	async #probe(connection: ComputerConnection, name: string, signal?: AbortSignal): Promise<Result<ProbeReport>> {
+		const { probeMs } = this.#timeouts;
+		const bound = within(probeMs, signal);
+		const argv = [DAEMON_IN_COMPUTER, "probe", ...this.#probeTargets.flatMap((target) => ["--connect", target])];
+		const ran = await connection.client.call("exec.run", { argv, timeoutMs: probeMs }, { signal: bound.signal });
+		bound.clear();
+		if (!ran.ok) {
+			if (signal?.aborted) return fail("aborted", `the probe in ${name} was aborted`);
+			if (ran.error.code === "aborted") return fail("timeout", `the probe in ${name} did not answer within ${seconds(probeMs)}`);
+			return fail(ran.error.code, `the probe in ${name} failed: ${ran.error.message}`);
+		}
+		const { exitCode, stdout, stderr, timedOut } = ran.value;
+		if (timedOut) return fail("timeout", `the probe in ${name} did not end within ${seconds(probeMs)}`);
+		if (exitCode !== 0) {
+			return fail("refused", `the probe in ${name} exited with ${exitCode}: ${Buffer.from(stderr, "base64").toString("utf8").trim().slice(0, 300)}`);
+		}
+		const report = probeOf(stdout);
+		if (report === undefined) return fail("refused", `the probe in ${name} wrote what is not its report: ${Buffer.from(stdout, "base64").toString("utf8").slice(0, 200)}`);
+		return ok(report);
 	}
 
-	async release(_ref: ComputerRef, _how: "stop" | "delete", _context: CallContext = {}): Promise<Result<void>> {
-		return fail("unsupported", NOT_BUILT);
+	/** The app, looked up (and made when missing) once per provider; a failed lookup is tried again next time. */
+	async #theApp(signal?: AbortSignal): Promise<Result<ModalApp>> {
+		if (this.#app) return ok(this.#app);
+		const found = await call(`apps.fromName ${this.#appName}`, () => this.#sdk.apps.fromName(this.#appName, { createIfMissing: true }), this.#timeouts.callMs, signal);
+		if (found.ok) this.#app = found.value;
+		return found;
 	}
+
+	/** The sandbox with an id and the tags it carries; one Modal does not know is not_found. */
+	async #find(id: string, signal?: AbortSignal): Promise<Result<{ sandbox: ModalSandbox; tags: Record<string, string> }>> {
+		const sandbox = await call("sandboxes.fromId", () => this.#sdk.sandboxes.fromId(id), this.#timeouts.callMs, signal);
+		if (!sandbox.ok) return sandbox;
+		const tags = await call(`getTags of ${id}`, () => sandbox.value.getTags(), this.#timeouts.callMs, signal);
+		if (!tags.ok) return tags.error.code === "not_found" ? fail("not_found", `no Modal computer has the id ${id}`) : tags;
+		return ok({ sandbox: sandbox.value, tags: tags.value });
+	}
+
+	/** This provider's sandbox for ref, or why not. */
+	async #own(ref: ComputerRef, signal?: AbortSignal): Promise<Result<{ sandbox: ModalSandbox; tags: Record<string, string> }>> {
+		const found = await this.#find(ref.id, signal);
+		if (!found.ok) return found;
+		if (!ours(found.value.tags, ref.name)) return fail("not_found", `no Modal computer named ${ref.name} has the id ${ref.id}`);
+		return found;
+	}
+
+	async connect(ref: ComputerRef): Promise<Result<ComputerConnection>> {
+		const problem = refProblem(ref);
+		if (problem) return fail("invalid", problem);
+		const found = await this.#own(ref);
+		if (!found.ok) return found;
+		const opened = await this.#open(found.value.sandbox, ref.name);
+		if (!opened.ok) return opened;
+		const drift = helloDrift(opened.value.hello, { version: VERSION, capabilities: this.capabilities().daemon, arch: "amd64" });
+		if (drift.length === 0) return opened;
+		await opened.value.close();
+		return fail("refused", `the daemon in ${ref.name} does not match this provider: ${drift.join("; ")}`);
+	}
+
+	/** One connection to the computer's daemon over `computerd stdio` through exec, after hello, unchecked. */
+	async #open(sandbox: ModalSandbox, name: string, signal?: AbortSignal): Promise<Result<ComputerConnection>> {
+		const started = await call(`exec of the daemon's stdio bridge in ${name}`, () => sandbox.exec([DAEMON_IN_COMPUTER, "stdio"], { mode: "binary" }), this.#timeouts.callMs, signal);
+		if (!started.ok) return started;
+		const program = started.value;
+		let stderr = "";
+		const stderrRead = (async () => {
+			for await (const chunk of program.stderr) stderr = (stderr + Buffer.from(chunk).toString("utf8")).slice(-4096);
+		})().catch(() => {});
+		const readable = Readable.from(buffers(program.stdout), { objectMode: false });
+		const writable = new Writable({
+			write(chunk: Buffer, _encoding, done) {
+				program.stdin.writeBytes(new Uint8Array(chunk)).then(() => done(), done);
+			},
+			final(done) {
+				program.stdin.close().then(() => done(), done);
+			},
+		});
+		const client = new DaemonClient({ readable, writable });
+		let closing: Promise<void> | undefined;
+		// Modal has no kill for an exec: the bridge ends when its stdin does, which close gives it.
+		const close = () =>
+			(closing ??= (async () => {
+				client.close();
+				await race(program.wait(), "the stdio bridge's exit", CLOSE_WAIT_MS);
+			})());
+		const { helloMs } = this.#timeouts;
+		const bound = within(helloMs, signal);
+		const hello = await client.call("hello", { client: `@parcha/agentrun-computer ${VERSION}` }, { signal: bound.signal });
+		bound.clear();
+		if (!hello.ok) {
+			if (hello.error.code === "gone") await race(stderrRead, "the stdio bridge's stderr", 1000);
+			await close();
+			if (signal?.aborted) return fail("aborted", `hello to the daemon in ${name} was aborted`);
+			if (hello.error.code === "aborted") return fail("timeout", `the daemon in ${name} did not answer hello within ${seconds(helloMs)}`);
+			if (hello.error.code !== "gone") return hello;
+			return fail("modal", `cannot reach the daemon in ${name}: ${stderr.trim() || hello.error.message}`);
+		}
+		return ok({ client, hello: hello.value, close });
+	}
+
+	async attach(ref: { id: string } | { labels: Record<string, string> }, { signal }: CallContext = {}): Promise<Result<AttachedComputer>> {
+		const given = (typeof ref === "object" && ref !== null ? ref : {}) as { id?: unknown; labels?: unknown };
+		if ((given.id === undefined) === (given.labels === undefined)) return fail("invalid", "attach takes { id } or { labels }, one of them");
+		if (given.id !== undefined) {
+			const id = given.id;
+			if (typeof id !== "string" || !SANDBOX_ID.test(id)) return fail("invalid", `${String(id)} is not a Modal sandbox id`);
+			const found = await this.#find(id, signal);
+			if (!found.ok) return found;
+			if (!ours(found.value.tags)) return fail("not_found", `no Modal computer has the id ${id}`);
+			return this.#attached(found.value.sandbox, found.value.tags, signal);
+		}
+		const problem = filterProblem(given.labels);
+		if (problem) return fail("invalid", problem);
+		const labels = given.labels as Record<string, string>;
+		if (Object.keys(labels).length === 0) return fail("invalid", "attach by labels needs at least one label");
+		const listed = await this.list(labels, { signal });
+		if (!listed.ok) return listed;
+		const words = JSON.stringify(labels);
+		if (listed.value.length === 0) return fail("not_found", `no Modal computer has the labels ${words}`);
+		if (listed.value.length > 1) return fail("invalid", `${listed.value.length} computers match the labels ${words}: ${listed.value.map((info) => info.ref.name).join(", ")}`);
+		const match = (listed.value[0] as ComputerInfo).ref;
+		const found = await this.#own(match, signal);
+		if (!found.ok) return found;
+		return this.#attached(found.value.sandbox, found.value.tags, signal);
+	}
+
+	/**
+	 * The drift check of a computer attach did not make: the spec create recorded in its tags, held to what check()
+	 * allows, then hello and the probe, as at create. Modal reads back none of the spec, so the user, runtime and network
+	 * none are what the probe reports from inside; image and sizes are as recorded. A drifted computer is left running.
+	 */
+	async #attached(sandbox: ModalSandbox, tags: Record<string, string>, signal?: AbortSignal): Promise<Result<AttachedComputer>> {
+		const name = tags[NAME_TAG] as string;
+		const ref = { id: sandbox.sandboxId, name };
+		const polled = await call(`poll of ${name}`, () => sandbox.poll(), this.#timeouts.callMs, signal);
+		if (!polled.ok) return polled;
+		if (polled.value !== null) return fail("not_found", `the Modal computer ${name} has finished, with exit code ${polled.value}`);
+		const found: string[] = [];
+		const deadline = deadlineOf(tags);
+		if (deadline === undefined) found.push(`deadline: the tag ${DEADLINE_LABEL} reads ${show(tags[DEADLINE_LABEL])}, not the ISO time create writes`);
+		else if (deadline.getTime() > Date.now() + MAX_LIFETIME_MS + 60_000) found.push(`deadline: ${deadline.toISOString()} is past the 24 hours Modal allows`);
+		const recorded = recordedOf(tags);
+		if (typeof recorded === "string") found.push(recorded);
+		else {
+			if (recorded.runtime !== "vm") found.push(`runtime: the tag ${SPEC_TAG} says ${show(recorded.runtime)}; this provider makes vm computers`);
+			const { image, network, cpus, memoryMb, workdir, user } = recorded;
+			const refusals = this.check({ image, lifetimeMs: 1, network, cpus, memoryMb, workdir, user } as ComputerSpec);
+			found.push(...refusals.map(({ field, message }) => `${field}: ${message}, as recorded at create`));
+		}
+		const inside = await this.#inside(sandbox, name, signal);
+		if (!inside.ok) return inside;
+		const { hello, probe } = inside.value;
+		found.push(...helloDrift(hello, { version: VERSION, capabilities: this.capabilities().daemon, arch: "amd64" }));
+		if (typeof recorded !== "string") found.push(...probeDrift(probe, { user: recorded.user, network: recorded.network }));
+		if (found.length > 0 || typeof recorded === "string" || deadline === undefined) {
+			return fail("refused", `the computer ${name} does not match this provider, so attach refuses it and it is left as it is: ${found.join("; ")}`);
+		}
+		const { image, network, cpus, memoryMb, workdir } = recorded;
+		return ok({ ...ref, spec: { image, user: `${probe.uid}:${probe.gid}`, network, cpus, memoryMb, workdir, deadline } });
+	}
+
+	/** Every running computer this provider made that carries all of these labels. Modal lists running sandboxes only. */
+	async list(labels: Record<string, string>, { signal }: CallContext = {}): Promise<Result<ComputerInfo[]>> {
+		const problem = filterProblem(labels);
+		if (problem) return fail("invalid", problem);
+		const until = Date.now() + this.#timeouts.listMs;
+		const left = () => Math.max(1, until - Date.now());
+		const app = await this.#theApp(signal);
+		if (!app.ok) return app;
+		let iterator: AsyncIterator<ModalSandbox>;
+		try {
+			iterator = this.#sdk.sandboxes.list({ appId: app.value.appId, tags: { ...labels, [COMPUTER_LABEL]: "1" } })[Symbol.asyncIterator]();
+		} catch (error) {
+			return fail(codeOf(error), `sandboxes.list failed: ${words(error)}`);
+		}
+		const infos: ComputerInfo[] = [];
+		const stop = <T>(result: Result<T>) => {
+			Promise.resolve(iterator.return?.()).catch(() => {});
+			return result;
+		};
+		for (;;) {
+			const next = await race(iterator.next(), "sandboxes.list", left(), signal);
+			if (!next.ok) return stop(next);
+			if (next.value.done) break;
+			const sandbox = next.value.value;
+			const tags = await call(`getTags of ${sandbox.sandboxId}`, () => sandbox.getTags(), Math.min(this.#timeouts.callMs, left()), signal);
+			if (!tags.ok) {
+				// A sandbox that finished between the list and its tags is left out.
+				if (tags.error.code === "not_found") continue;
+				return stop(tags);
+			}
+			if (!ours(tags.value) || !Object.entries(labels).every(([key, value]) => tags.value[key] === value)) continue;
+			infos.push({
+				ref: { id: sandbox.sandboxId, name: tags.value[NAME_TAG] as string },
+				labels: { ...tags.value },
+				deadline: deadlineOf(tags.value),
+				state: "running",
+				network: recordedNetwork(tags.value),
+			});
+		}
+		return ok(infos);
+	}
+
+	/**
+	 * Modal reads no policy back. Open is open, nothing being wider; none is read back by the probe from inside, and is
+	 * another network in words when a connection reached any of its addresses. A change is refused: it is fixed at create.
+	 */
+	async network(ref: ComputerRef, policy?: NetworkSpec, { signal }: CallContext = {}): Promise<Result<NetworkPolicy>> {
+		const problem = refProblem(ref);
+		if (problem) return fail("invalid", problem);
+		if (policy !== undefined && policy !== "none" && policy !== "open") {
+			const allow = typeof policy === "object" && policy !== null && "allow" in policy;
+			return fail("refused", allow ? `${ALLOWLIST}; ${FIXED}` : `${FIXED}; a network is "none" or "open"`);
+		}
+		const found = await this.#own(ref, signal);
+		if (!found.ok) return found;
+		const recorded = recordedNetwork(found.value.tags);
+		if (typeof recorded !== "string") return fail("refused", `the computer ${ref.name}: ${"other" in recorded ? recorded.other : JSON.stringify(recorded)}`);
+		if (policy !== undefined && policy !== recorded) return fail("refused", `${FIXED}: ${ref.name} was created with network ${recorded}, not ${policy}`);
+		let read: NetworkPolicy = recorded;
+		if (recorded === "none") {
+			const inside = await this.#inside(found.value.sandbox, ref.name, signal);
+			if (!inside.ok) return inside;
+			const { reached } = inside.value.probe;
+			if (reached.length > 0) read = { other: `created with network none, yet a connection from inside reached ${reached.join(", ")}` };
+		}
+		if (policy === undefined || policy === read) return ok(read);
+		return fail("refused", `${ref.name} was asked to keep network ${policy}, and reads back: ${typeof read === "string" ? read : JSON.stringify(read)}`);
+	}
+
+	/** delete terminates, and is idempotent: a sandbox already finished, or one Modal no longer knows, is ok. */
+	async release(ref: ComputerRef, how: "stop" | "delete", { signal }: CallContext = {}): Promise<Result<void>> {
+		const problem = refProblem(ref);
+		if (problem) return fail("invalid", problem);
+		if (how !== "stop" && how !== "delete") return fail("invalid", `release is "stop" or "delete", not ${String(how)}`);
+		if (how === "stop") return fail("unsupported", STOP);
+		const found = await this.#find(ref.id, signal);
+		if (!found.ok) return found.error.code === "not_found" ? ok(undefined) : found;
+		if (!ours(found.value.tags, ref.name)) return fail("not_found", `no Modal computer named ${ref.name} has the id ${ref.id}`);
+		const { sandbox } = found.value;
+		const ended = await call(`terminate of ${ref.name}`, () => sandbox.terminate(), this.#timeouts.callMs, signal);
+		if (ended.ok || ended.error.code === "not_found") return ok(undefined);
+		if (ended.error.code === "timeout" || ended.error.code === "aborted") return ended;
+		const polled = await call(`poll of ${ref.name}`, () => sandbox.poll(), this.#timeouts.callMs, signal);
+		return polled.ok && polled.value !== null ? ok(undefined) : ended;
+	}
+}
+
+/** Why ref is not a Modal computer's ref, or undefined. */
+function refProblem(ref: ComputerRef): string | undefined {
+	if (typeof ref?.name !== "string" || !NAME.test(ref.name)) return `${String(ref?.name)} is not the name of a Modal computer (computer-<12 hex digits>)`;
+	if (typeof ref.id !== "string" || !SANDBOX_ID.test(ref.id)) return `${String(ref.id)} is not a Modal sandbox id`;
+	return undefined;
 }

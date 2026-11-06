@@ -91,7 +91,7 @@ test("capabilities: a VM whose lifetime Modal enforces, network none or open wit
 test("check() takes a spec it can make, with no SDK call", () => {
 	const { provider, fake } = setup();
 	assert.deepEqual(provider.check(SPEC), []);
-	assert.deepEqual(provider.check({ ...SPEC, network: "open", cpus: 0.5, memoryMb: 512, labels: { team: "a", run: "r1" }, workdir: "/srv/app", user: "0" }), []);
+	assert.deepEqual(provider.check({ ...SPEC, network: "open", cpus: 0.5, memoryMb: 512, labels: { team: "a", run: "r1" }, workdir: "/opt/app", user: "0" }), []);
 	assert.deepEqual(provider.check({ ...SPEC, lifetimeMs: DAY_MS, user: "65534:65534" }), []);
 	assert.deepEqual(fake.calls, []);
 });
@@ -111,7 +111,7 @@ test("check() refuses in words, field by field, with no SDK call", () => {
 	assert.match(words({ ...SPEC, network: { allow: ["8.8.8.0/24"] } }, "network"), /bypass/);
 	assert.match(words({ ...SPEC, network: { allow: ["example.com"] } }, "network"), /443/);
 	for (const network of [undefined, "wifi", {}, { allow: "x" }]) assert.deepEqual(refused({ ...SPEC, network }), ["network"], `network ${JSON.stringify(network)}`);
-	for (const cpus of [0, -1, "2", Number.NaN]) assert.deepEqual(refused({ ...SPEC, cpus }), ["cpus"], `cpus ${String(cpus)}`);
+	for (const cpus of [0, -1, 0.1, "2", Number.NaN]) assert.deepEqual(refused({ ...SPEC, cpus }), ["cpus"], `cpus ${String(cpus)}`);
 	for (const memoryMb of [0, 1.5, "512"]) assert.deepEqual(refused({ ...SPEC, memoryMb }), ["memoryMb"], `memoryMb ${String(memoryMb)}`);
 	assert.deepEqual(refused({ ...SPEC, pids: 64 }), ["pids"]);
 	assert.match(words({ ...SPEC, pids: 64 }, "pids"), /pids limit/);
@@ -181,15 +181,15 @@ test("create: one VM sandbox with the daemon as its command, its tags, the drift
 
 test("create: open is no network field at all; sizes, user and workdir map onto Modal's fields", async () => {
 	const { provider, fake } = setup({ user: "2000:3000" });
-	const created = await provider.create({ ...SPEC, network: "open", cpus: 4, memoryMb: 100, workdir: "/srv/app", lifetimeMs: 1500 });
+	const created = await provider.create({ ...SPEC, network: "open", cpus: 4, memoryMb: 100, workdir: "/opt/app", lifetimeMs: 1500 });
 	assert.equal(created.ok, true, JSON.stringify(created));
 	const params = createdParams(fake);
 	for (const key of ["blockNetwork", "outboundCidrAllowlist", "outboundDomainAllowlist"]) assert.equal(key in params, false, `${key} is not passed for open`);
 	assert.equal(params.timeoutMs, 2000, "Modal takes whole seconds: the lifetime rounds up");
 	assert.deepEqual([params.cpu, params.cpuLimit, params.memoryMiB, params.memoryLimitMiB], [0.125, 2, 100, 100]);
-	assert.equal(params.workdir, "/srv/app");
+	assert.equal(params.workdir, "/opt/app");
 	assert.deepEqual(params.command.slice(-2), ["--user", "2000:3000"]);
-	assert.deepEqual(fake.calls.find(([name]) => name === "image.dockerfileCommands")[1].at(-1), "WORKDIR /srv/app");
+	assert.deepEqual(fake.calls.find(([name]) => name === "image.dockerfileCommands")[1].at(-1), "WORKDIR /opt/app");
 });
 
 test("create: spec.user is the daemon's --user, root included", async () => {
@@ -408,14 +408,14 @@ test("list refuses labels that are not a filter, with no call, and is bounded an
 
 test("attach by id: the spec as recorded and as the daemon reads it back, the drift check passed", async () => {
 	const deadline = new Date(Date.now() + 600_000).toISOString();
-	const spec = { ...SPEC, cpus: 1, memoryMb: 2048, workdir: "/srv/app" };
+	const spec = { ...SPEC, cpus: 1, memoryMb: 2048, workdir: "/opt/app" };
 	const { provider, fake } = setup({}, { sandboxes: [seeded({ spec, deadline, user: "1000:1000" })] });
 	const ref = refOf(fake);
 	const attached = await provider.attach({ id: ref.id });
 	assert.equal(attached.ok, true, JSON.stringify(attached));
 	assert.deepEqual(attached.value, {
 		...ref,
-		spec: { image: SPEC.image, user: "1000:1000", network: "none", cpus: 1, memoryMb: 2048, workdir: "/srv/app", deadline: new Date(deadline) },
+		spec: { image: SPEC.image, user: "1000:1000", network: "none", cpus: 1, memoryMb: 2048, workdir: "/opt/app", deadline: new Date(deadline) },
 	});
 	assert.equal(fake.execRuns.length, 1, "the probe ran");
 	assert.equal(fake.stdinClosed, 1);
