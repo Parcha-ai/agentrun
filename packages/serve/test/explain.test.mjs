@@ -3,7 +3,7 @@
 // where it belongs. Replays the bodies a coding agent sent when it had only the help and the 422s to go by.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { agent, serve } from "./support.mjs";
+import { agent, flowAgent, serve } from "./support.mjs";
 
 const METHODS = ["get", "put", "post", "patch", "delete"];
 
@@ -125,4 +125,23 @@ test("a suggested value is one the server takes: a bad id gets the documented on
   assert.equal((await api("POST", "/agents", { definition: { ...good, id: "brief", tools: [] } })).status, 201);
   const input = (await api("POST", "/agents/brief/runs", { input: "Research." })).body.error.fields.find((f) => f.field === "input");
   assert.equal((await api("POST", "/agents/brief/runs", { input: input.example })).status, 202);
+});
+
+test("a workflow agent's run is told from its workflow's input schema: never the agentic {content}, and a suggested input starts the run", async (t) => {
+  const { api } = await serve(t);
+  assert.equal((await api("POST", "/agents", flowAgent("asks"))).status, 201, "its input requires question, a string");
+  for (const body of [{}, { input: "What is 2 + 2?" }, { input: { content: "What is 2 + 2?" } }, { input: { question: 4 } }]) {
+    const answer = await api("POST", "/agents/asks/runs", body);
+    assert.equal(answer.status, 422, `${JSON.stringify(body)}: ${JSON.stringify(answer.body)}`);
+    for (const issue of answer.body.error.fields) {
+      assert.ok(!JSON.stringify(issue).includes("content"), `${JSON.stringify(body)}: no agentic input for a workflow: ${JSON.stringify(issue)}`);
+      if (issue.example === undefined) {
+        assert.doesNotMatch(issue.message, /e\.g\./);
+        continue;
+      }
+      assert.equal(issue.field, "input", JSON.stringify(issue));
+      const sent = await api("POST", "/agents/asks/runs", { ...body, input: issue.example });
+      assert.equal(sent.status, 202, `${JSON.stringify(body)}: the suggested input ${JSON.stringify(issue.example)} starts the run: ${JSON.stringify(sent.body)}`);
+    }
+  }
 });
