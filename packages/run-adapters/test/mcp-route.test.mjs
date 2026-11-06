@@ -101,3 +101,22 @@ test("a server and a tool named like an object's own properties are served like 
   const { p: other } = await proxy(t, async () => ({ content: [] }));
   assert.equal((await send(other.url, { path: '/mcp/constructor', body: rpc('tools/list') })).status, 404, 'a session without that server has none of that name');
 });
+
+test("the proxy mounts /mcp/<server> itself from the session's MCP and its harness's client fact: the call id comes from the _meta key the harness declared, and from no other", async (t) => {
+  const meta = { 'claudecode/toolUseId': 'toolu_9', callId: 'call_9' };
+  const seen = {};
+  for (const [harness, client] of [['claude-agent', { callIdMeta: 'claudecode/toolUseId' }], ['codex', { callIdMeta: 'callId' }]]) {
+    const calls = [];
+    const session = { servers: [{ name: 'fake', tools: [ADD] }], call: async (server, tool, args, context) => (calls.push(context.callId), { content: [{ type: 'text', text: '5' }] }) };
+    const p = await startModelProxy({ policy, model: 'm', origin: 'https://provider.invalid', credential: () => 'c', hooks: { beforeRequest: async () => {}, afterRequest: async () => {} }, mcp: { session, client } }, KEY);
+    t.after(() => p.close());
+    const both = await send(p.url, { accept: 'application/json', body: rpc('tools/call', { name: 'add', arguments: { a: 2, b: 3 }, _meta: meta }) });
+    assert.equal(both.status, 200, both.text);
+    const own = client.callIdMeta === 'callId' ? { callId: 'call_1' } : { 'claudecode/toolUseId': 'toolu_1' };
+    const other = client.callIdMeta === 'callId' ? { 'claudecode/toolUseId': 'toolu_2' } : { callId: 'call_2' };
+    await send(p.url, { accept: 'application/json', body: rpc('tools/call', { name: 'add', arguments: { a: 1, b: 1 }, _meta: own }, 2) });
+    await send(p.url, { accept: 'application/json', body: rpc('tools/call', { name: 'add', arguments: { a: 1, b: 1 }, _meta: other }, 3) });
+    seen[harness] = calls;
+  }
+  assert.deepEqual(seen, { 'claude-agent': ['toolu_9', 'toolu_1', undefined], codex: ['call_9', 'call_1', undefined] });
+});
