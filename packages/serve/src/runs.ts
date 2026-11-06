@@ -2031,8 +2031,8 @@ export class Runs {
         // restart on a smaller one) is not started: said, never tried.
         const never = fresh ? undefined : neverFits(run.harness, this.memory);
         if (never) throw new ApiError("agent_not_runnable", never, { details: { unbound: [], missing: {}, harness: run.harness } });
-        // Only for a launch: its MCP OAuth tokens near expiry refreshed (when this path may: a message's, never a
-        // stop's) and its sign-in pinned; a run whose process still serves keeps what it was handed. Looked at again
+        // Only for a launch: its MCP OAuth tokens near expiry refreshed (when this path may: a message's, an approval's
+        // answer, never a stop's) and its sign-in pinned; a run whose process still serves keeps what it was handed. Looked at again
         // after the waits: they may have let another path launch it.
         if (!fresh) {
           if (!refreshed) {
@@ -3298,7 +3298,7 @@ export class Runs {
     await this.saveMeta(run);
     this.restate(run);
     this.refresh(run);
-    if (!run.outcome && !run.finishing && !run.cancel) void this.ensureLive(run).catch((error: Error) => warn(run.id, `its declined approval waits for its process: ${error.message}`));
+    if (!run.outcome && !run.finishing && !run.cancel) void this.ensureLive(run, undefined, true).catch((error: Error) => warn(run.id, `its declined approval waits for its process: ${error.message}`));
     return { mode: "answer", messageId: `m${Date.now().toString(36)}${randomBytes(4).toString("hex")}` };
   }
 
@@ -3380,7 +3380,7 @@ export class Runs {
     await this.saveMeta(run);
     this.restate(run);
     this.refresh(run);
-    if (!run.outcome && !run.finishing && !run.cancel) void this.ensureLive(run).catch((error: Error) => warn(run.id, `its answered approval waits for its process: ${error.message}`));
+    if (!run.outcome && !run.finishing && !run.cancel) void this.ensureLive(run, undefined, true).catch((error: Error) => warn(run.id, `its answered approval waits for its process: ${error.message}`));
   }
 
   /** Record the cancel and signal the run. An agentic run reads `cancelled` from here on (the first end a run comes to is

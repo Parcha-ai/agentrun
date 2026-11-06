@@ -271,7 +271,7 @@ export class McpServers {
   /** An OAuth server's token set refreshed when its access token expires within `margin`. A refusal (revoked, expired)
    *  marks the sign-in expired; an authorization server out of reach leaves it as it is. It runs on exactly these
    *  paths: before a run's process is spawned (runs.ts mcpFresh: a start, a reopen, a relaunch after a crash, a
-   *  message that brings the process up), and before a preview by name, a PUT that keeps the token set, and a POST
+   *  message that brings the process up, an approval's answer that does), and before a preview by name, a PUT that keeps the token set, and a POST
    *  refresh. Never on a stop or an abort, nor on a path that only reaches a live process. */
   private freshen(name: string, margin = REFRESH_MARGIN_MS): Promise<void> {
     const running = this.refreshing.get(name);
