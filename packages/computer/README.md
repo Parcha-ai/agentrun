@@ -58,8 +58,9 @@ if (connected.ok) {
 await docker.release(made.value, "delete");
 ```
 
-- `check(spec)` refuses in words, with no Docker call: no image, no or a bad `lifetimeMs`, a network allowlist (Docker
-  cannot enforce one yet: ask for `none` or `open`), and any field Docker does not support.
+- `check(spec)` refuses in words, with no Docker call: no image, no or a bad `lifetimeMs` (at most 30 days), a network
+  allowlist (Docker cannot enforce one yet: ask for `none` or `open`), a NUL byte in any string, and any field Docker
+  does not support. `create` never throws on a spec `check` passes.
 - `create` runs `docker run` with every capability dropped (`--cap-drop ALL`), `--security-opt no-new-privileges`, a
   pids limit (4096 unless `pids` says), `--network none` or `bridge`, and the daemon bind-mounted read-only at
   `/opt/agentrun/computerd` as the entrypoint, `computerd init`, which is PID 1 and reaps orphans. The label
