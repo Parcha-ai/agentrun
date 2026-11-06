@@ -49,6 +49,11 @@ func Become(uid, gid int, home, socket string) error {
 	return nil
 }
 
+// noNewPrivsOnEveryThread sets no_new_privs on every thread of this process: not built yet.
+func noNewPrivsOnEveryThread() error {
+	return nil
+}
+
 // prepareDir makes dir, with its parents, and makes it uid:gid's alone (0700). A dir that is a symbolic link or not a
 // directory is refused, and never followed.
 func prepareDir(dir string, uid, gid int) error {

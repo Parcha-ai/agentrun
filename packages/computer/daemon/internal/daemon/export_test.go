@@ -7,3 +7,6 @@ func SetAfterHalfClose(t *testing.T, fn func()) {
 	afterHalfClose = fn
 	t.Cleanup(func() { afterHalfClose = nil })
 }
+
+// NoNewPrivsChild is the child of TestNoNewPrivsHoldsOnEveryThread, run from TestMain.
+func NoNewPrivsChild() int { return noNewPrivsChild() }

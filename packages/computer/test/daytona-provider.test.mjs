@@ -177,15 +177,22 @@ test("create() makes the sandbox, pushes the daemon in, starts init, checks it, 
 	assert.deepEqual(upload.body.file, { size: DAEMON_BYTES.length, sha256: DAEMON_SHA }, "the daemon's own bytes");
 	const [install] = of(fake, "POST", /\/process\/execute$/).map((r) => scriptOf(r.body.command));
 	assert.equal(install.kind, "install");
-	assert.deepEqual(install.args, [upload.query.path, "/opt/agentrun/computerd", "1000", "1000", "/work", "/run/agentrun"]);
+	assert.deepEqual(install.args, [upload.query.path, "/opt/agentrun/computerd", "/work", "/run/agentrun"], "the install makes the directories; init gives them to the daemon's user");
 	const execs = of(fake, "POST", /\/process\/session\/[^/]+\/exec$/);
 	const init = execs.find((r) => scriptOf(r.body.command).kind === "init");
 	assert.match(init.path, /\/process\/session\/agentrun-computerd\/exec$/);
 	assert.equal(init.body.runAsync, true);
 	assert.equal(init.body.suppressInputEcho, true);
-	assert.deepEqual(scriptOf(init.body.command).args, ["/opt/agentrun/computerd", deadline, "1000", "1000", "/work", "/run/agentrun"]);
-	assert.match(init.body.command, /setpriv --reuid="\$u" --regid="\$g" --clear-groups --inh-caps=-all --bounding-set=-all --no-new-privs/);
+	assert.deepEqual(scriptOf(init.body.command).args, ["/opt/agentrun/computerd", deadline, "1000:1000", "/work", "/run/agentrun"]);
+	// The daemon drops to its user itself, started as root (through sudo -n when the session's user is not root): no
+	// privilege tool of the snapshot's is relied on.
+	assert.match(init.body.command, /"\$d" init --deadline "\$t" --user "\$w"/);
+	assert.match(init.body.command, /\[ "\$\(id -u\)" = 0 \] \|\| p="sudo -n"/);
 	const stdio = execs.find((r) => scriptOf(r.body.command).kind === "stdio");
+	assert.deepEqual(scriptOf(stdio.body.command).args, ["/opt/agentrun/computerd", "/run/agentrun"]);
+	const sent = fake.requests.filter((r) => typeof r.body?.command === "string");
+	assert.ok(sent.length >= 3, "the install, init and the bridge");
+	for (const r of sent) assert.doesNotMatch(r.body.command, /setpriv/, `${r.method} ${r.path} relies on the snapshot's setpriv`);
 	assert.equal(stdio.body.runAsync, true);
 	assert.equal(stdio.body.suppressInputEcho, true, "the toolbox would echo input into stdout");
 	const order = ["POST /api/sandbox", "upload-v2", "process/execute", "agentrun-computerd/exec", "agentrun-stdio-"].map((what) => fake.requests.findIndex((r) => `${r.method} ${r.path}`.includes(what)));
@@ -197,6 +204,15 @@ test("create() makes the sandbox, pushes the daemon in, starts init, checks it, 
 	assert.equal(of(fake, "DELETE", /agentrun-computerd$/).length, 0, "init's session is never deleted");
 	assert.equal(deleted(fake).length, 0);
 	allToTheFake(fake);
+});
+
+test("create() starts init with --user of the daemonUser option, and no command relies on setpriv", async () => {
+	const { provider, fake } = setup({ status: statusText({ uid: 2000, gid: 3000 }) }, { daemonUser: "2000:3000" });
+	const made = await provider.create(SPEC);
+	assert.equal(made.ok, true, JSON.stringify(made));
+	const init = of(fake, "POST", /\/process\/session\/[^/]+\/exec$/).find((r) => scriptOf(r.body.command).kind === "init");
+	assert.equal(scriptOf(init.body.command).args[2], "2000:3000");
+	for (const r of fake.requests.filter((r) => typeof r.body?.command === "string")) assert.doesNotMatch(r.body.command, /setpriv/);
 });
 
 test("create() asks Daytona for the network as declared", async () => {
@@ -382,7 +398,6 @@ test("a refused daemon upload deletes the sandbox and says so", async () => {
 test("an install the snapshot cannot do, and a daemon that reads back other bytes, are refused and deleted", async () => {
 	for (const [knobs, words] of [
 		[{ install: { exitCode: 3, result: "the sandbox user daytona is not root and has no passwordless sudo, so the daemon cannot be installed\n" } }, /installing the daemon failed \(exit 3\): the sandbox user daytona is not root/],
-		[{ install: { exitCode: 4, result: "the snapshot has no setpriv (util-linux), which starts the daemon with no capabilities\n" } }, /no setpriv/],
 		[{ installSha: "0".repeat(64) }, /daemon: uploaded sha256 [0-9a-f]{64}, the installed binary reads back "0{64}"/],
 	]) {
 		const { provider, fake } = setup(knobs);
