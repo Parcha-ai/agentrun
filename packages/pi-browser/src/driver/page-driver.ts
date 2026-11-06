@@ -91,6 +91,15 @@ export function pageDriver(stagehand: Stagehand, deadlines: { batchMs: number; s
   return {
     snapshot: (snapshotOptions) => reads.snapshot(snapshotOptions),
     run: (input) => input.actions !== undefined ? facade.runActions(input.actions) : facade.run(input.code ?? ""),
+    // As the facade's own batch checks a run's actions before it sends any (runActionsNow): the active page's snapshot,
+    // the page still at its address, and every id in it. Read from the facade's snapshots, as forgetSnapshots does.
+    checkActions: async (actions) => {
+      const page = await active();
+      const snapshot = (facade as unknown as { snapshotsByPage: Map<string, { url: string; xpathById: Record<string, string> }> }).snapshotsByPage.get(page.pageId);
+      if (!snapshot) throw new Error(NO_HYDRATED_SNAPSHOT_ERROR);
+      if ((await page.url()) !== snapshot.url) throw new Error(NAVIGATED_SNAPSHOT_ERROR);
+      for (const action of actions) if (!snapshot.xpathById[action.id]) throw new Error(staleSnapshotIdError(action.id));
+    },
     url: async () => documentUrl(stagehand, await active()),
     // The facade keeps each page's last snapshot's ids for its own actions; with none, an action by id fails NO_HYDRATED (a stale snapshot).
     forgetSnapshots: () => { (facade as unknown as { snapshotsByPage: Map<string, unknown> }).snapshotsByPage.clear(); },

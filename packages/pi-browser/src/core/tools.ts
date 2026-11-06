@@ -57,6 +57,9 @@ export type PageDriver = BrowserDriver & {
   /** Drops every snapshot's element ids, so an action by an old id fails as a stale snapshot (a person changed the page, whatever its URL). Optional:
    *  a driver without ids has none to drop. */
   forgetSnapshots?(): void;
+  /** Checks a run's actions against the page's latest snapshot (every id there, the page still its address) without
+   *  sending any, failing as `run` would. Optional: a driver without it sends a run's actions as one batch. */
+  checkActions?(actions: RunAction[]): Promise<void>;
   screenshot(options: ScreenshotOptions): Promise<{ data: string; mimeType: string }>;
   /** Where an element or the viewport is now (see clip.ts); an element is scrolled into view first. Absent: no region can be placed. */
   locate?: Locate;

@@ -178,9 +178,55 @@ test("a run of several actions: once the person takes over during one, the next 
   const out = await running;
   assert.equal(out.isError, true);
   const failure = JSON.parse(out.content[0].text);
-  assert.deepEqual([failure.name, failure.code, failure.effect], ["FenceRefusal", "refused", "possibly_effected"]);
+  assert.deepEqual([failure.name, failure.code, failure.effect, failure.completed], ["FenceRefusal", "refused", "partial", 1], "it says the first action ran");
+  assert.match(failure.message, /1 of the 2 actions ran/);
   assert.deepEqual(acts, ["a1"], "the second action never reached the page");
   gates(tag).give();
+});
+
+test("a run of several actions has every one checked against the page's snapshot before any is sent: a stale id in the second sends nothing", async () => {
+  const gates = createDrivingGates();
+  const tag = "ar-run-to-18-1";
+  const acts = [];
+  const STALE = 'Snapshot ID "9-9" is stale or not actionable; call snapshot again.';
+  const driver = {
+    checkActions: async (actions) => { for (const action of actions) if (action.id === "9-9") throw new Error(STALE); },
+    run: async (input) => { for (const action of input.actions) { if (action.id === "9-9") throw new Error(STALE); acts.push(action.id); } return { completed: input.actions.length, url: "https://example.test/" }; },
+    close: async () => {},
+  };
+  const port = { session: async () => ({ tag, driver, notice: null }), relaunch: async () => ({ tag, driver }), release: async () => ({ released: true, sessionId: null }) };
+  const tool = drivingGuard(async (_a, p) => {
+    const s = await p.session();
+    try { return { content: [{ type: "text", text: JSON.stringify(await s.driver.run({ actions: [{ op: "click", id: "1-1" }, { op: "click", id: "9-9" }] })) }] }; }
+    catch (error) { return { content: [{ type: "text", text: JSON.stringify({ message: error.message, ...(error.failure ?? {}) }) }], isError: true }; }
+  }, gates);
+  const out = await tool({}, port, {});
+  assert.equal(out.isError, true);
+  assert.equal(JSON.parse(out.content[0].text).message, STALE, "the stale id, as the facade's own batch says it");
+  assert.deepEqual(acts, [], "nothing was sent: the page is untouched");
+});
+
+test("a run of several actions whose later action fails after an earlier one ran says so: partial, with how many ran", async () => {
+  const gates = createDrivingGates();
+  const tag = "ar-run-to-19-1";
+  const acts = [];
+  const driver = {
+    checkActions: async () => {},
+    run: async (input) => { for (const action of input.actions) { if (action.id === "2-2") throw new Error("The active page navigated after its snapshot; call snapshot again."); acts.push(action.id); } return { completed: input.actions.length, url: "https://example.test/" }; },
+    close: async () => {},
+  };
+  const port = { session: async () => ({ tag, driver, notice: null }), relaunch: async () => ({ tag, driver }), release: async () => ({ released: true, sessionId: null }) };
+  const tool = drivingGuard(async (_a, p) => {
+    const s = await p.session();
+    try { return { content: [{ type: "text", text: JSON.stringify(await s.driver.run({ actions: [{ op: "click", id: "1-1" }, { op: "click", id: "2-2" }, { op: "click", id: "3-3" }] })) }] }; }
+    catch (error) { return { content: [{ type: "text", text: JSON.stringify(error.failure ?? { message: error.message }) }], isError: true }; }
+  }, gates);
+  const out = await tool({}, port, {});
+  const failure = JSON.parse(out.content[0].text);
+  assert.deepEqual([failure.effect, failure.completed], ["partial", 1]);
+  assert.match(failure.message, /1 of the 3 actions ran/);
+  assert.match(failure.message, /navigated after its snapshot/);
+  assert.deepEqual(acts, ["1-1"]);
 });
 
 test("a take while the agent's call runs goes live once that call returns: until then the person's input is held, and no other call starts", async () => {

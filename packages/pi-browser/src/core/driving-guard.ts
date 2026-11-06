@@ -1,6 +1,6 @@
 import { BrowserFailureError, FenceRefusal, type BrowserDriver, type CustodyPort, type ToolOutput } from "./custody.js";
 import { drivingGates, epochOf, isHeld, personDrivingFailure, PERSON_DRIVING, type DrivingGate, type DrivingGates } from "./driving.js";
-import { browserFailure } from "./failures.js";
+import { browserFailure, classifyBrowserError } from "./failures.js";
 import type { ToolCall, ToolImpl } from "./tools.js";
 
 /** Told to the model's next call once a person has driven the session through the live view: the page can change without its URL changing. */
@@ -9,9 +9,19 @@ export const PERSON_DROVE = "A person used this browser through the live view si
 export const PERSON_HAD = "This call waited while the person had the browser: they took it over through the live view and have handed it back.";
 
 /** What a model call that was under way when the person took the browser is told at its next act on it: nothing more of it reached the page. */
-export const personTookFailure = (acted: boolean) => browserFailure("refused",
-  "The person took over this browser through the live view while this call ran, so the rest of it was not done. Your next browser call waits until they hand the browser back; the page may have changed by then, so take a snapshot before you act.",
-  { retryable: true, effect: acted ? "possibly_effected" : "none" });
+export const personTookFailure = (acted: boolean, batch?: { completed: number; of: number }) => {
+  const failure = browserFailure("refused",
+    `The person took over this browser through the live view while this call ran, so the rest of it was not done${batch ? ` (${batch.completed} of the ${batch.of} actions ran)` : ""}. Your next browser call waits until they hand the browser back; the page may have changed by then, so take a snapshot before you act.`,
+    { retryable: true, effect: batch && batch.completed > 0 ? "partial" : acted ? "possibly_effected" : "none" });
+  return batch && batch.completed > 0 ? { ...failure, completed: batch.completed } : failure;
+};
+
+/** A run of several actions that failed at one after others ran: the failure it would have been, said to be partial, with
+ *  how many ran (the facade's batch, once sent, never said which). */
+function partway(error: unknown, completed: number, of: number): BrowserFailureError {
+  const failure = error instanceof BrowserFailureError ? error.failure : classifyBrowserError(error, true, {});
+  return new BrowserFailureError({ ...failure, effect: "partial", completed, message: `${completed} of the ${of} actions ran, then this one failed: ${failure.message}` });
+}
 
 /** The driver as a model call holds it: each of its acts is refused once the gate's epoch has moved past the one the call entered at (the
  *  person took the browser, or a hold ended, since). A refusal is a FenceRefusal, so an action none of whose acts got through is known not sent. */
@@ -34,12 +44,21 @@ function epochFenced<D extends BrowserDriver>(driver: D, gate: DrivingGate, epoc
           return value.apply(target, args);
         }
         return (async () => {
+          // Every action checked first, as the batch checked them before it sent any: a stale id anywhere sends none.
+          const check = (target as { checkActions?: (actions: unknown[]) => Promise<void> }).checkActions;
+          if (typeof check === "function") await check.call(target, list);
           let completed = 0;
           let url: unknown;
           for (const action of list) {
-            if (moved()) throw new FenceRefusal(personTookFailure(acted));
+            if (moved()) throw new FenceRefusal(personTookFailure(acted, { completed, of: list.length }));
             acted = true;
-            const answer = (await value.call(target, { actions: [action] })) as { completed?: unknown; url?: unknown } | undefined;
+            let answer: { completed?: unknown; url?: unknown } | undefined;
+            try {
+              answer = (await value.call(target, { actions: [action] })) as typeof answer;
+            } catch (error) {
+              if (completed > 0) throw partway(error, completed, list.length);
+              throw error;
+            }
             completed += typeof answer?.completed === "number" ? answer.completed : 1;
             url = answer?.url;
           }

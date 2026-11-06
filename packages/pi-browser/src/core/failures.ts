@@ -13,7 +13,10 @@ export type BrowserFailure = {
   ok: false;
   code: FailureCode;
   retryable: boolean;
-  effect: "none" | "possibly_effected";
+  /** `partial`: a run of several actions stopped partway, the first `completed` of them done. */
+  effect: "none" | "possibly_effected" | "partial";
+  /** With `partial`: how many of the run's actions ran before it stopped. */
+  completed?: number;
   message: string;
   /** Provider or page text, at most 2,000 characters; redacted before it reaches the model. */
   detail?: string;
