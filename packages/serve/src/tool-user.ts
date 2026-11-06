@@ -5,12 +5,26 @@
 // makes the user, in the group that shares the run's folder (archil.ts ARCHIL_GID_ENV), and one sudoers line that lets
 // the box's own user run commands as it; root (the Modal sandbox's exec) needs none. Every program a tool starts in the
 // box goes through it, the run's own file reads and writes too (pi-transport's box environment runs each as a program).
-import type { Box } from "@parcha/pi-transport";
+import type { Box, BoxProvider } from "@parcha/pi-transport";
 
 /** The user a remote box's tools run as. */
 export const TOOL_USER = "agentrun-tool";
 /** What every tool program in a remote box is started under: sudo to the tool user, never a password asked. */
 export const AS_TOOL: readonly string[] = Object.freeze(["sudo", "-n", "-u", TOOL_USER, "--"]);
+
+/** `boxes`, each box it attaches with its programs started as the tool user (asToolUser): for the server's own calls
+ *  that act on the tools' programs, such as ending their background processes. */
+export function asToolProvider(boxes: BoxProvider): BoxProvider {
+  return {
+    name: boxes.name,
+    create: (spec, context) => boxes.create(spec, context),
+    list: (labels, context) => boxes.list(labels, context),
+    attach: async (id, context) => {
+      const found = await boxes.attach(id, context);
+      return found.ok && found.value ? { ok: true, value: asToolUser(found.value) } : found;
+    },
+  };
+}
 
 /** `box`, its programs started as the tool user; every other call is the box's own. */
 export function asToolUser(box: Box): Box {

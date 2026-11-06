@@ -166,6 +166,10 @@ test("the Archil disk adapter: a box mounts its run's work/ alone, through the h
   const data = realpathSync(await scratch(t));
   const folder = "agents/a-0123456789abcdef/runs/r1/work";
   mkdirSync(join(data, "disk", folder), { recursive: true });
+  // What the server put in work/ before the box: an input, in a folder of its own, as the server's umask made them.
+  mkdirSync(join(data, "disk", folder, "inputs"), { mode: 0o755 });
+  writeFileSync(join(data, "disk", folder, "inputs", "brief.txt"), "brief", { mode: 0o644 });
+  symlinkSync("/nonexistent/elsewhere", join(data, "disk", folder, "inputs", "away"));
   const archil = { disk: "dsk-00000000000baf76", region: "aws-us-east-1", token: "planted-archil-token-0123456789", gid: process.getgid() };
   const disk = archilDisk(data, archil, { runClaim: () => ({ epoch: 4, holder: "launch" }) });
   const { box, ran } = notingBox();
@@ -174,6 +178,11 @@ test("the Archil disk adapter: a box mounts its run's work/ alone, through the h
   assert.equal(mounted.path, "/workspace");
   assert.deepEqual(ran.map((r) => [r.command, r.stdin]), [[["sudo", "-n", "/usr/local/sbin/agentrun-archil", "mount", archil.disk, archil.region, folder], `${archil.token}\n`]]);
   assert.equal(statSync(join(data, "disk", folder)).mode & 0o7777, 0o2770);
+  // The whole tree is the shared group's, so the box's tool user can edit what the server put there: folders 2770,
+  // files their owner's bits for the group too and none for others; a link is left as it is.
+  assert.equal(statSync(join(data, "disk", folder, "inputs")).mode & 0o7777, 0o2770);
+  assert.equal(statSync(join(data, "disk", folder, "inputs", "brief.txt")).mode & 0o7777, 0o660);
+  for (const above of ["..", "../..", "../../.."]) assert.equal(statSync(join(data, "disk", folder, above)).mode & 0o7777, 0o700, above);
   assert.equal(await disk.revoke("r1"), 4, "the run's claim is not bumped: its process holds it");
   await disk.mount(archil.disk, folder, target, "tools");
   assert.equal(ran[1].command[3], "revoke", "the mount after a revoke forces the hold off");

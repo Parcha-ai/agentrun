@@ -106,6 +106,12 @@ test("Archil set but the disk not mounted at the data directory: remote boxes ar
   assert.match(daytona.reason, /is not mounted at .*disk: mount it there with --conditional/);
 });
 
+test("with Archil but no image that ships the helper, a remote box is unavailable, saying which setting names one", async (t) => {
+  const { server } = await onArchil(t, { env: { AGENTRUN_DAYTONA_SNAPSHOT: "" } });
+  const daytona = (await server.api("GET", "/capabilities")).body.places.boxes.find((box) => box.id === "daytona");
+  assert.deepEqual(daytona, { id: "daytona", available: false, state: "unavailable", reason: "remote boxes need an image that ships the Archil helper: set AGENTRUN_DAYTONA_SNAPSHOT to a Daytona snapshot that has the archil client, the helper and the agentrun-tool user (see the README)" });
+});
+
 test("demo: a Daytona run mounts exactly its run's work/ through the helper; nothing is seeded, pulled or mirrored; its end syncs and checks the folder in, then destroys the box", { timeout: 180_000 }, async (t) => {
   const { server, fake, disk } = await onArchil(t);
   const { api, data } = server;

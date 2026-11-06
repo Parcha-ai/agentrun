@@ -29,6 +29,13 @@ export const ARCHIL_KEYS: readonly string[] = [ARCHIL_TOKEN_ENV];
 /** Why a box on another machine is unavailable when the disk is not configured: what to do, in capabilities, at a save
  *  and at a run. */
 export const NO_ARCHIL = `remote boxes keep their run folder on an Archil disk: configure ${ARCHIL_DISK_ENV}, ${ARCHIL_REGION_ENV} and ${ARCHIL_TOKEN_ENV}, or use the docker box`;
+/** The settings naming what a remote box starts from, which ships the archil client, the helper and the tool user:
+ *  Daytona's snapshot, and the VM box's registry image. */
+export const DAYTONA_SNAPSHOT_ENV = "AGENTRUN_DAYTONA_SNAPSHOT";
+export const VM_IMAGE_ENV = "AGENTRUN_VM_IMAGE";
+/** Why a remote box is unavailable with Archil but no image that ships the helper: the setting to name one. */
+export const noImage = (setting: string, what: string): string =>
+  `remote boxes need an image that ships the Archil helper: set ${setting} to ${what} that has the archil client, the helper and the agentrun-tool user (see the README)`;
 /** Where a box's image has the root helper, and the user its tools run as. */
 export const HELPER_PATH = "/usr/local/sbin/agentrun-archil";
 /** What Archil answers a mount of a folder another client holds. */

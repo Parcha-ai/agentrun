@@ -302,16 +302,35 @@ export function runBox(given: BoxSource | (() => Promise<RunBoxes>), run: { id: 
     },
     ...("relay" in source
       ? {
-          // Written in the box, which holds the folder: never here, where its hold refuses the write.
+          // Written in the box, which holds the folder: never here, where its hold refuses the write. As the tool user
+          // (the opened box's programs run as it), never the box's own: a link a tool planted at the path reaches only
+          // what the tool could write anyway.
           file: async (path: string, data: string | Uint8Array) => {
             const bytes = typeof data === "string" ? new TextEncoder().encode(data) : data;
             const { box } = await opened(BACKGROUND);
-            const sent = await box.upload([{ path: posix.join(BOX_WORK, path), bytes }], BACKGROUND);
-            if (!sent.ok) throw sent.error;
+            await written(box, posix.join(BOX_WORK, path), bytes);
           },
         }
       : {}),
   };
+}
+
+/** `bytes` written at `target` in `box` by one program of its own (its folders made, group-writable for the shared
+ *  group): its exit code, or what it said when it fails. */
+async function written(box: Box, target: string, bytes: Uint8Array): Promise<void> {
+  const started = await box.exec(["sh", "-c", 'umask 007 && mkdir -p -- "$(dirname -- "$1")" && cat > "$1"', "sh", target], { timeoutMs: 60_000 }, BACKGROUND);
+  if (!started.ok) throw started.error;
+  const program = started.value;
+  let said = "";
+  const drain = async (stream: AsyncIterable<Uint8Array>) => {
+    for await (const chunk of stream) if (said.length < 500) said += new TextDecoder().decode(chunk);
+  };
+  const reading = Promise.all([drain(program.stdout), drain(program.stderr)]);
+  await program.stdin.write(bytes);
+  await program.stdin.close();
+  const [ended] = await Promise.all([program.wait(), reading]);
+  if (!ended.ok) throw ended.error;
+  if (ended.value !== 0) throw new Error(`the file could not be written in the run's box (exit ${ended.value}): ${said.trim().slice(0, 300)}`);
 }
 
 /** Said in the run's process log: one of its egress proxy's decisions (the host, port, address and class). */
@@ -426,7 +445,8 @@ export const memoryMbOf = (memory: string): number => {
 /** The spec of a run's remote box: its work/ is the run's folder on the Archil disk, which the box mounts (FUSE, so the
  *  VM box asks for the VM runtime: gVisor cannot mount it); its network the hosts `allow` names, or none; its limits,
  *  where its provider takes them. */
-const remoteSpec = (runId: string, allow: readonly string[] | "none", limits: RemoteLimits = {}, vm = false): BoxSpec => ({
+const remoteSpec = (runId: string, allow: readonly string[] | "none", limits: RemoteLimits = {}, vm = false, from: { image?: string; snapshot?: string } = {}): BoxSpec => ({
+  ...(from.image ? { image: from.image } : {}), ...(from.snapshot ? { snapshot: from.snapshot } : {}),
   env: BOX_ENV, workspace: BOX_WORK, labels: { [RUN_LABEL]: runId, [KIND_LABEL]: "run" }, network: allow === "none" ? "none" : { allow }, maxLifetimeMs: BOX_LIFETIME_MS,
   ...(limits.cpus === undefined ? {} : { cpus: limits.cpus }), ...(limits.memoryMb ? { memoryMb: limits.memoryMb } : {}),
   ...(vm ? { isolation: "vm" as const, capabilities: ["fuse" as const] } : {}),
@@ -458,6 +478,10 @@ export type RemoteBoxOptions = {
   onNoList?: (code: string, message: string) => void;
   limits?: RemoteLimits;
   vm?: boolean;
+  /** What the box starts from, which ships the archil client, the helper and the tool user: the VM box's registry image,
+   *  or Daytona's snapshot. */
+  image?: string;
+  snapshot?: string;
 };
 
 /** The server's side of a remote box: run `run`'s box, found by its label or made, with the run's folder mounted at
@@ -471,6 +495,7 @@ export type RemoteBoxOptions = {
  *  when no other box of the run lives: a box of it that is gone left its hold. A made box whose mount fails is destroyed. */
 export async function ensureRemoteBox(boxes: BoxProvider, run: { id: string; dir: string }, context: Context, options: RemoteBoxOptions): Promise<{ id: string; made: boolean; replaced?: boolean }> {
   const { folder, wake, allow = "none", onNoList, limits, vm = false } = options;
+  const from = { ...(options.image ? { image: options.image } : {}), ...(options.snapshot ? { snapshot: options.snapshot } : {}) };
   let asked: "none" | "allowlist" = allow === "none" ? "none" : "allowlist";
   let box = await runningRunBox(boxes, run.id, context, wake);
   let made = false;
@@ -490,12 +515,12 @@ export async function ensureRemoteBox(boxes: BoxProvider, run: { id: string; dir
     replaced = true;
   }
   if (!box) {
-    let created = await boxes.create(remoteSpec(run.id, allow, limits, vm), context);
+    let created = await boxes.create(remoteSpec(run.id, allow, limits, vm, from), context);
     if (!created.ok && asked === "allowlist" && NO_LIST.has(created.error.code)) {
       asked = "none";
       onNoList?.(created.error.code, created.error.message);
       await destroyRunBoxes(boxes, run.id, context).catch(() => undefined);
-      created = await boxes.create(remoteSpec(run.id, "none", limits, vm), context);
+      created = await boxes.create(remoteSpec(run.id, "none", limits, vm, from), context);
     }
     if (!created.ok) {
       await destroyRunBoxes(boxes, run.id, context).catch(() => undefined);

@@ -628,7 +628,9 @@ of one saved before is refused 409 `agent_not_runnable`.
   server runs nothing as root and only checks the mount table. With systemd, or `/etc/fstab`:
   `<disk> <data>/disk archil _netdev,region=<region>,conditional,defaults 0 0`. With the settings set and no such mount,
   remote boxes are unavailable, saying to mount it.
-- **The box's image or snapshot** ships what the server does not install: the `archil` client at `/usr/bin/archil`;
+- **The box's image or snapshot**, named by `AGENTRUN_DAYTONA_SNAPSHOT` (a Daytona snapshot) and `AGENTRUN_VM_IMAGE` (a
+  registry image for the VM box). Without one, that box is unavailable, saying which setting names it. It ships what the
+  server does not install: the `archil` client at `/usr/bin/archil`;
   the root helper, this package's `box/agentrun-archil`, at `/usr/local/sbin/agentrun-archil`, `root:root 0755`; a user
   `agentrun-tool` in the shared group, with no sudo; and these sudoers lines for the box's own user (Daytona's
   `daytona`; the Modal sandbox runs as root and needs none), with no other grant:

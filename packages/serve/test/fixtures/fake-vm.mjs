@@ -184,6 +184,8 @@ class FakeClient {
         // Never reused within the process: a server a test left still finishing its end-of-run work can never reach the
         // next test's sandbox, or its directory, by a stale id.
         const sandbox = new FakeSandbox(`sb-${process.pid}-${++made}`, params);
+        // The image it was made from, as the SDK names it (images.fromRegistry's answer).
+        sandbox.image = _image;
         vm.sandboxes.push(sandbox);
         return sandbox;
       },

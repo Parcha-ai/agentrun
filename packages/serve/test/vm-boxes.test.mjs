@@ -107,6 +107,8 @@ test("demo: a VM place runs bash, write, edit and read in the run's VM box: work
   for (const sandbox of vm.sandboxes) for (const exec of sandbox.execs) assert.ok(!exec.command.some((part) => String(part).includes(DISK_TOKEN)), exec.command.join(" "));
   assert.ok(!said[5].text.includes(DISK_TOKEN), "the disk token reached the box's tools");
   assert.deepEqual(params.env, BOX_ENV);
+  // From the image the setting names, which ships the archil client, the helper and the tool user; on the VM runtime.
+  assert.deepEqual(vm.sandboxes[0].image, { registry: "registry.example/agentrun-archil-box:1" });
   assert.equal(params.tags["agentrun.run"], run.run_id);
   // The client was made with the server's token, which reached neither the box nor the run's process.
   assert.deepEqual(vm.clients.map((client) => client.params), [{ tokenId: TOKENS[VM_PROVIDER.keys[0]], tokenSecret: TOKENS[VM_PROVIDER.keys[1]] }]);

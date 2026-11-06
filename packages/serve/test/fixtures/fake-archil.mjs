@@ -18,6 +18,9 @@ export const REGION = "aws-us-east-1";
 /** A disk token as the server holds it: planted, so a test finds it wherever it leaks. */
 export const TOKEN = "planted-archil-mount-token-sentinel-0123456789";
 export const HELPER_PATH = "/usr/local/sbin/agentrun-archil";
+/** The Daytona snapshot and the VM box's image that ship the archil client, the helper and the tool user. */
+export const SNAPSHOT = "agentrun-archil-box";
+export const VM_IMAGE = "registry.example/agentrun-archil-box:1";
 export const TOOL_USER = "agentrun-tool";
 const HELPER = fileURLToPath(new URL("../../box/agentrun-archil", import.meta.url));
 const CLI = fileURLToPath(new URL("./fake-archil-cli.mjs", import.meta.url));
@@ -57,7 +60,7 @@ export async function fakeArchil(t, { data, token = TOKEN } = {}) {
     root,
     disk,
     serverMounts,
-    env: { AGENTRUN_ARCHIL_DISK: DISK, AGENTRUN_ARCHIL_REGION: REGION, AGENTRUN_ARCHIL_TOKEN: token, AGENTRUN_ARCHIL_GID: String(process.getgid()) },
+    env: { AGENTRUN_ARCHIL_DISK: DISK, AGENTRUN_ARCHIL_REGION: REGION, AGENTRUN_ARCHIL_TOKEN: token, AGENTRUN_ARCHIL_GID: String(process.getgid()), AGENTRUN_DAYTONA_SNAPSHOT: SNAPSHOT, AGENTRUN_VM_IMAGE: VM_IMAGE },
     /** Every call any box's client took, in order: {verb, box, folder, ...}. */
     calls: () => read().calls,
     /** The folders held now, each by the box that holds it. */

@@ -104,8 +104,7 @@ export function archilDisk(data: string, archil: Archil, claims: Pick<Claims, "r
       // The box's tool user and this server's share the group (Archil keeps ids as they are); no one else enters. Every
       // folder above it, up to the agent's, is this server's user's alone, so the shared group reaches work/ and nothing
       // beside it (the run's store, another run).
-      await chown(path, -1, archil.gid);
-      await chmod(path, 0o2770);
+      await shareTree(path, archil.gid);
       for (const above of [join(path, ".."), join(path, "..", ".."), join(path, "..", "..", "..")]) await chmod(above, 0o700);
       const run = runOf(subpath);
       const force = revoked.has(run);
@@ -128,6 +127,23 @@ export function archilDisk(data: string, archil: Archil, claims: Pick<Claims, "r
       return claims.runClaim(runId).epoch;
     },
   };
+}
+
+/** `dir` and everything in it given to group `gid` for the box's tool user, before a box holds it: each folder 2770
+ *  (setgid, so what is made in it stays the group's), each file its owner's bits for the group too and none for others
+ *  (an input the server copied in, 0644, becomes 0660). A link is never followed, and stays as it is. */
+async function shareTree(dir: string, gid: number): Promise<void> {
+  await chown(dir, -1, gid);
+  await chmod(dir, 0o2770);
+  for (const entry of await readdir(dir, { withFileTypes: true })) {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) await shareTree(path, gid);
+    else if (entry.isFile()) {
+      const { mode } = await lstat(path);
+      await chown(path, -1, gid);
+      await chmod(path, (mode & 0o700) | ((mode & 0o700) >> 3));
+    }
+  }
 }
 
 /** Every file and folder below `dir`, and `dir` itself, synced to the disk: each file's bytes, then each folder's

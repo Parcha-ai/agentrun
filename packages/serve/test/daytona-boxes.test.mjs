@@ -207,6 +207,14 @@ test("demo: a Daytona place runs read, write, edit and bash in the run's box: wo
   assert.equal(created[0].domainAllowList, DEFAULT_BOX_ALLOW.join(","));
   assert.equal(created[0].networkBlockAll, undefined);
   assert.deepEqual(created[0].env, BOX_ENV);
+  // From the snapshot the setting names, which ships the archil client, the helper and the tool user.
+  assert.equal(created[0].snapshot, "agentrun-archil-box");
+  // What the host tools filed (monid's answer) went in as the tool user, by a program of its own, never an upload as
+  // the box's own user; and the run's end ended its background processes as the tool user too.
+  const executed = fake.requests.filter((r) => r.path.endsWith("/process/execute")).map((r) => JSON.parse(r.body).command);
+  assert.deepEqual(fake.requests.filter((r) => r.path.endsWith("/files/upload-v2") && r.query.includes("evidence")).map((r) => r.query), []);
+  assert.ok(executed.some((c) => c.includes("agentrun-tool") && c.includes("evidence/monid")), "the answer written as the tool user");
+  assert.ok(executed.some((c) => c.includes("agentrun-tool") && c.includes("agentrun-background")), "background ended as the tool user");
   assert.equal(created[0].labels["agentrun.run"], run.run_id);
   assert.equal(fake.sandboxes.size, 0, "the box is destroyed");
   // Every provider call that reached Daytona came with the server's key: the run's process, which has none, reached it
