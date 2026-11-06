@@ -1180,6 +1180,13 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const mismatch = () => new ApiError("idempotency_mismatch", "this Idempotency-Key was used with another body");
   /** Replays the first answer to a create with the same key and body; another body is a mismatch. `work` gets the key's
    *  origin (its slot and the body, hashed) for a create the agent store records with the run it starts. */
+  /** A kept answer, replayed to `req`: its console page (a run's or an agent's console_url) at the address this request
+   *  reached (linkOrigin), not the first request's. */
+  const pageFor = (req: IncomingMessage, body: unknown): unknown => {
+    if (!isObject(body) || typeof body.console_url !== "string") return body;
+    const at = body.console_url.indexOf("/#/");
+    return at < 0 ? body : { ...body, console_url: `${linkOrigin(req)}${body.console_url.slice(at)}` };
+  };
   async function idempotent(req: IncomingMessage, path: string, body: Json, work: (origin?: RunOrigin) => Promise<{ status: number; body: unknown; headers?: Record<string, string> }>) {
     const key = req.headers["idempotency-key"];
     if (key === undefined) return work();
@@ -1192,7 +1199,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     if (known) {
       if (known.fingerprint !== fingerprint) throw mismatch();
       if (!known.answer) throw new ApiError("idempotency_in_progress", "the first request with this Idempotency-Key is still in flight", { retry_after_ms: 500 });
-      return { ...known.answer, headers: { ...known.answer.headers, "idempotent-replayed": "true" } };
+      return { ...known.answer, body: pageFor(req, known.answer.body), headers: { ...known.answer.headers, "idempotent-replayed": "true" } };
     }
     idempotency.set(slot, { fingerprint, at: now });
     let answer: { status: number; body: unknown; headers?: Record<string, string> };
@@ -1272,6 +1279,12 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     return checked.ok ? [] : checked.issues.map((i) => ({ field: `input${i.path ? ` at ${i.path}` : ""}`, reason: "invalid", message: `the workflow does not take this input: ${i.code}${i.path ? ` at ${i.path}` : ""}` }));
   }
 
+  /** Where a person opens a page an answer to `req` names (a run's or an agent's console_url, console-links.ts): the
+   *  server's public URL when it has one; else the address the request reached it at, which passed the Host check (a
+   *  tunnel's own port, say); else, with no Host, its own. Links made outside a request (the owner's, the webhooks') are
+   *  at the public URL or the server's own address. */
+  const linkOrigin = (req: IncomingMessage): string => (options.publicUrl ?? (req.headers.host ? ownOrigin(req) : url)).replace(/\/+$/, "");
+
   async function createRun(req: IncomingMessage, agentId: string) {
     const entry = await needAgent(agentId);
     if (entry.agent.archivedAt) throw new ApiError("agent_not_runnable", `The agent ${agentId} is archived: unarchive it to run it.`, { details: { archived_at: entry.agent.archivedAt } });
@@ -1282,12 +1295,12 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       if (first) {
         if (first.existing?.fingerprint !== origin.fingerprint) throw mismatch();
         const headers: Record<string, string> = { location: `/v2/runs/${first.runId}`, "idempotent-replayed": "true" };
-        return { status: 202, body: await runs.view(await needRun(first.runId)), headers };
+        return { status: 202, body: await runs.view(await needRun(first.runId), linkOrigin(req)), headers };
       }
       const run = await startRunOf(entry, body, { ...(origin ? { origin } : {}) });
       // Its view from the run itself: it is written, with its first message, so an answer read from the store, which a
       // busy store would turn into home_busy, would refuse a run that runs, and a retry would start a second one.
-      return { status: 202, body: await runs.view(run, { stored: null }), headers: { location: `/v2/runs/${run.id}` } };
+      return { status: 202, body: await runs.view(run, linkOrigin(req), { stored: null }), headers: { location: `/v2/runs/${run.id}` } };
     });
   }
 
@@ -1333,7 +1346,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     return value === "true";
   }
 
-  async function runsPage(url: URL, filter: { agent?: string; revision?: string }) {
+  async function runsPage(url: URL, filter: { agent?: string; revision?: string }, origin: string) {
     const limit = limitOf(url.searchParams.get("limit"));
     const offset = cursorOf(url.searchParams.get("cursor"));
     const status = url.searchParams.get("status");
@@ -1347,7 +1360,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     }
     const versions = new Map<string, number>();
     for (const agent of new Set(rows.slice(offset, offset + limit).map((row) => row.agent))) for (const r of await agents.revisions(agent)) versions.set(r.id, r.version);
-    const page = await Promise.all(rows.slice(offset, offset + limit).map((row) => runs.summaryOfRow(row, versions)));
+    const page = await Promise.all(rows.slice(offset, offset + limit).map((row) => runs.summaryOfRow(row, versions, origin)));
     return { runs: page, next_cursor: nextCursor(offset + limit, rows.length) };
   }
 
@@ -1737,7 +1750,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
           const named = Array.isArray(definition.definition.tools) ? definition.definition.tools : [];
           const fresh = named.some((tool) => typeof tool === "string" && toolOf(tool)?.runnerOnly) ? { reason: "" } : newAgentPlace(boxOffers);
           const entry = await agents.create(definition, async (revision) => void (warnings = await saveable(revision)), "place" in fresh ? { place: fresh.place, tools: NEW_AGENT_TOOLS } : undefined);
-          return { status: 201, body: { ...agentView(entry, await signIns.view(entry.agent.id), await learningOfAgent(entry)), warnings }, headers: { location: `/v2/agents/${entry.agent.id}`, etag: etagOf(entry) } };
+          return { status: 201, body: { ...agentView(entry, linkOrigin(req), await signIns.view(entry.agent.id), await learningOfAgent(entry)), warnings }, headers: { location: `/v2/agents/${entry.agent.id}`, etag: etagOf(entry) } };
         });
         return send(res, answer.status, answer.body, answer.headers);
       }
@@ -1746,13 +1759,13 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         const offset = cursorOf(url.searchParams.get("cursor"));
         const archived = archivedParam(url);
         const all = (await agents.list()).filter((entry) => Boolean(entry.agent.archivedAt) === archived);
-        return send(res, 200, { agents: await Promise.all(all.slice(offset, offset + limit).map(async (entry) => agentView(entry, await signIns.view(entry.agent.id), await learningOfAgent(entry)))), next_cursor: nextCursor(offset + limit, all.length) });
+        return send(res, 200, { agents: await Promise.all(all.slice(offset, offset + limit).map(async (entry) => agentView(entry, linkOrigin(req), await signIns.view(entry.agent.id), await learningOfAgent(entry)))), next_cursor: nextCursor(offset + limit, all.length) });
       }
       case "getAgent": {
         const entry = await needAgent(id);
         // The tools its current revision grants, as capabilities list them, each with its provider for this agent.
         const tools = entry.revision ? agentTools(env, settings.get(), await toolingOf(entry.revision), caps.tools.map((tool) => tool.name)) : [];
-        return send(res, 200, { ...agentView(entry, await signIns.view(entry.agent.id), await learningOfAgent(entry)), tools }, { etag: etagOf(entry) });
+        return send(res, 200, { ...agentView(entry, linkOrigin(req), await signIns.view(entry.agent.id), await learningOfAgent(entry)), tools }, { etag: etagOf(entry) });
       }
       case "updateDefinition": {
         const entry = await needAgent(id);
@@ -1772,7 +1785,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         let warnings: InputIssue[] = [];
         const check = async (revision: NewRevision) => void (warnings = await saveable(revision));
         const edited = await agents.commit(entry, checkDefinitionBody(contract ? { definition: body } : body, { creating: false }), { check, contract, ...(match === undefined ? {} : { ifCurrent: entry.revision?.id ?? null }) });
-        return send(res, 200, { ...agentView(edited, await signIns.view(edited.agent.id), await learningOfAgent(edited)), warnings }, { etag: etagOf(edited) });
+        return send(res, 200, { ...agentView(edited, linkOrigin(req), await signIns.view(edited.agent.id), await learningOfAgent(edited)), warnings }, { etag: etagOf(edited) });
       }
       case "listRevisions": {
         const entry = await needAgent(id);
@@ -1791,7 +1804,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         if (typeof revision !== "string" || !ID.test(revision)) throw invalid([{ field: "revision", reason: revision === undefined ? "missing" : "wrong_type", message: "revision is a revision id of this agent" }]);
         if (!(await agents.revision(id, revision))) throw invalid([{ field: "revision", reason: "not_an_option", message: `${revision} is not a revision of the agent ${id}` }]);
         const moved = await agents.setCurrent(entry, revision);
-        return send(res, 200, agentView(moved, await signIns.view(moved.agent.id), await learningOfAgent(moved)), { etag: etagOf(moved) });
+        return send(res, 200, agentView(moved, linkOrigin(req), await signIns.view(moved.agent.id), await learningOfAgent(moved)), { etag: etagOf(moved) });
       }
       case "archiveAgent":
       case "unarchiveAgent": {
@@ -1799,7 +1812,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         await agents.setArchived("agent", id, found.name === "archiveAgent");
         if (found.name === "archiveAgent") await runs.archived();
         const entry = await needAgent(id);
-        return send(res, 200, agentView(entry, await signIns.view(entry.agent.id), await learningOfAgent(entry)), { etag: etagOf(entry) });
+        return send(res, 200, agentView(entry, linkOrigin(req), await signIns.view(entry.agent.id), await learningOfAgent(entry)), { etag: etagOf(entry) });
       }
       case "forgetSignIn": {
         await needAgent(id);
@@ -1817,14 +1830,14 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       }
       case "listRuns":
         await needAgent(id);
-        return send(res, 200, await runsPage(url, { agent: id }));
+        return send(res, 200, await runsPage(url, { agent: id }, linkOrigin(req)));
       case "listAllRuns": {
         const agent = url.searchParams.get("agent") ?? undefined;
         const revision = url.searchParams.get("revision") ?? undefined;
-        return send(res, 200, await runsPage(url, { ...(agent ? { agent } : {}), ...(revision ? { revision } : {}) }));
+        return send(res, 200, await runsPage(url, { ...(agent ? { agent } : {}), ...(revision ? { revision } : {}) }, linkOrigin(req)));
       }
       case "getRun":
-        return send(res, 200, await runs.view(await needRun(id)));
+        return send(res, 200, await runs.view(await needRun(id), linkOrigin(req)));
       case "getTimeline":
         return timeline(req, res, url, await needRun(id));
       case "sendMessage": {
@@ -1888,7 +1901,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         const run = await needRun(id);
         await agents.setArchived("run", run.id, found.name === "archiveRun");
         if (found.name === "archiveRun") await runs.archived();
-        return send(res, 200, await runs.view(run));
+        return send(res, 200, await runs.view(run, linkOrigin(req)));
       }
       case "listRunFiles": {
         const run = await needRun(id);

@@ -17,6 +17,7 @@ import { RUN_STATUS_TABLE } from "@parcha/pi-durable-disk/internals";
 import { AgentHomeError, type Revision, runDirIn, type RevisionKind, type RunOrigin, type RunRow, type RunState, type StoredMetrics } from "@parcha/pi-durable-agent";
 import { chargedTool, isMessageRow, MESSAGE_ORIGIN, type MessageOrigin, registerLabel, registerTurnEnding, REQUEST_STARTED, type RunMetrics, runMetricsWithDecisions, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { HARNESS_LOG_EVENT, harnessModelKeys, thinkingFor } from "./adapters.js";
+import { runLink } from "./console-links.js";
 import { DEFAULT_HARNESS, harnessOfBody, steersMidTurn } from "./harness.js";
 import type { RUN_EVENTS, RunNotice } from "./webhooks.js";
 import type { RunTrigger } from "./triggers.js";
@@ -3475,10 +3476,11 @@ export class Runs {
     return { usd, basis: "estimate", charge_state: null, cap_usd: run.meta.max_cost_usd ?? null, ...(soFar ?? {}) };
   }
 
-  /** `Run`, as the contract shows it. `known`: its stored row as the caller already has it, so nothing is read; a run
-   *  just written has none worth reading (`{ stored: null }`: it is neither archived nor ended), and its start's answer
-   *  must not read the store once the run exists, since a busy store would then refuse a run that runs. */
-  async view(run: Run, known?: { stored: RunRow | null }) {
+  /** `Run`, as the contract shows it, its console page at `origin` (server.ts linkOrigin). `known`: its stored row as the
+   *  caller already has it, so nothing is read; a run just written has none worth reading (`{ stored: null }`: it is
+   *  neither archived nor ended), and its start's answer must not read the store once the run exists, since a busy store
+   *  would then refuse a run that runs. */
+  async view(run: Run, origin: string, known?: { stored: RunRow | null }) {
     const stored = known ? (known.stored ?? undefined) : await this.options.agents.request(() => this.store.readRun(run.id));
     // After the read: the run may have moved on while it waited, and every field below is of this one moment.
     const { status, state } = statusOf(run);
@@ -3495,6 +3497,7 @@ export class Runs {
       run_id: run.id,
       agent_id: run.agentId,
       agent_version: run.version,
+      console_url: runLink(origin, run.id),
       revision: run.revision,
       kind: run.kind,
       sha: null,
@@ -3522,9 +3525,9 @@ export class Runs {
     };
   }
 
-  async summary(run: Run) {
-    const { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, effort, created_at, ended_at, error, review, pending, cost, archived_at, imported_from, trigger, learning } = await this.view(run);
-    return { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, ...(effort ? { effort } : {}), created_at, ended_at, error, review, pending, cost, archived_at, imported_from, trigger, learning: learning && shortOf(learning) };
+  async summary(run: Run, origin: string) {
+    const { run_id, agent_id, agent_version, console_url, revision, kind, sha, status, state, title, effort, created_at, ended_at, error, review, pending, cost, archived_at, imported_from, trigger, learning } = await this.view(run, origin);
+    return { run_id, agent_id, agent_version, console_url, revision, kind, sha, status, state, title, ...(effort ? { effort } : {}), created_at, ended_at, error, review, pending, cost, archived_at, imported_from, trigger, learning: learning && shortOf(learning) };
   }
 
   /** A run's status for a list: an ended run's from its row, a running one's from the run itself. */
@@ -3536,12 +3539,12 @@ export class Runs {
 
   /** A run's summary for a list. An ended run this server holds no Run for is read from its row and its serve.json alone,
    *  not its store; `versions` numbers its agent's revisions. */
-  async summaryOfRow(row: RunRow, versions: Map<string, number>): Promise<Awaited<ReturnType<Runs["summary"]>>> {
+  async summaryOfRow(row: RunRow, versions: Map<string, number>, origin: string): Promise<Awaited<ReturnType<Runs["summary"]>>> {
     const known = this.runs.get(row.id) ?? (row.state === "running" ? await this.get(row.id) : null);
-    if (known) return this.summary(known);
+    if (known) return this.summary(known, origin);
     const meta = (await readJson(join(runDirIn(this.options.agents.dir, row.agent, row.id), RUN_META))) as Partial<RunMeta> | null;
     return {
-      run_id: row.id, agent_id: row.agent, agent_version: versions.get(row.revision) ?? 0, revision: row.revision, kind: row.kind, sha: null,
+      run_id: row.id, agent_id: row.agent, agent_version: versions.get(row.revision) ?? 0, console_url: runLink(origin, row.id), revision: row.revision, kind: row.kind, sha: null,
       status: STATUS_OF[row.state as Ended], state: "idle" as State, title: typeof meta?.title === "string" ? meta.title : "",
       ...(typeof meta?.effort === "string" ? { effort: meta.effort } : {}),
       created_at: typeof meta?.created_at === "string" ? meta.created_at : row.startedAt, ended_at: row.endedAt ?? null,
