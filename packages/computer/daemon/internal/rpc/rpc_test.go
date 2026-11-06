@@ -297,3 +297,38 @@ func TestCancellingServeReturnsWhileTheInputIsIdle(t *testing.T) {
 		})
 	}
 }
+
+func TestShutdownEndsWhenNoOneReadsTheReplies(t *testing.T) {
+	for _, how := range []string{"cancel", "end of input"} {
+		t.Run(how, func(t *testing.T) {
+			in, feed := io.Pipe()
+			_, out := io.Pipe() // nobody reads the replies
+			t.Cleanup(func() { _ = feed.Close() })
+			wrote := make(chan struct{}, 4)
+			server := rpc.NewServer(map[string]rpc.Handler{
+				"hi": func(context.Context, json.RawMessage) (any, error) {
+					wrote <- struct{}{}
+					return "hello", nil
+				},
+			}, log.New(io.Discard, "", 0))
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			done := make(chan error, 1)
+			go func() { done <- server.Serve(ctx, in, out) }()
+			if _, err := feed.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"hi"}` + "\n")); err != nil {
+				t.Fatal(err)
+			}
+			<-wrote
+			if how == "cancel" {
+				cancel()
+			} else {
+				_ = feed.Close()
+			}
+			select {
+			case <-done:
+			case <-time.After(30 * time.Second):
+				t.Fatal("Serve did not return while its reply could not be written")
+			}
+		})
+	}
+}
