@@ -119,9 +119,9 @@ describe("move files in and out of a Docker computer", { skip: LIVE ? false : "s
 		}
 	};
 	/** A tree of 8 MiB and more at /data/tree in the computer, made once. */
-	let tree;
+	let treeMade;
 	const bigTree = () =>
-		(tree ??= (async () => {
+		(treeMade ??= (async () => {
 			assert.equal((await writeFile(client, "/data/tree/a.bin", randomBytes(5 * 1024 * 1024), { parents: true })).ok, true);
 			assert.equal((await writeFile(client, "/data/tree/sub/b.bin", randomBytes(3 * 1024 * 1024 + 99), { parents: true })).ok, true);
 			assert.equal((await writeFile(client, "/data/tree/sub/run.sh", Buffer.from("#!/bin/sh\necho copied\n"), { mode: 0o755 })).ok, true);
