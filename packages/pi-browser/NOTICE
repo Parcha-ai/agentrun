@@ -1,12 +1,12 @@
 AgentRun
 Copyright 2026 Parcha Labs, Inc.
 
-This package contains two pieces of Stagehand 4.1.0 (https://github.com/browserbase/stagehand), both under its MIT license,
+This package contains two pieces of Stagehand (https://github.com/browserbase/stagehand), both under its MIT license,
 whose text follows:
 
-- The Chrome launch flags in src/providers/cdp.ts, copied from packages/sdk-ts/src/browser/localBrowser.ts
-  (DEFAULT_CHROME_FLAGS).
-- The files in src/vendor/stagehand-facade (compiled to dist/vendor/stagehand-facade), copied from
+- The Chrome launch flags in src/providers/chrome-args.ts, copied from Stagehand 4.4.0's
+  packages/sdk-ts/src/browser/localBrowser.ts (DEFAULT_CHROME_FLAGS).
+- The files in src/vendor/stagehand-facade (compiled to dist/vendor/stagehand-facade), copied from Stagehand 4.1.0's
   packages/integrations/core/src/facade at commit cd7b230778cf92269e4cb90e80d97f5113781c51. UPSTREAM.json, shipped
   beside them as src/vendor/stagehand-facade/UPSTREAM.json, records each file's upstream blob and SHA-256.
 
