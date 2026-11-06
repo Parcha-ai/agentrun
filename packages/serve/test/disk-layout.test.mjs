@@ -145,7 +145,7 @@ test("the local disk adapter: mount gives a runner the folder itself, below the 
 });
 
 /** A box whose programs are noted, each exiting `code(command)`, its stdin kept: a box that takes a real stdin. */
-function notingBox(code = () => 0) {
+function notingBox(code = () => 0, said = "sudo: a password is required") {
   const ran = [];
   return {
     ran,
@@ -156,7 +156,7 @@ function notingBox(code = () => 0) {
         const entry = { command: [...command], stdin: "" };
         ran.push(entry);
         const empty = (async function* () {})();
-        return { ok: true, value: { stdin: { write: async (bytes) => void (entry.stdin += new TextDecoder().decode(bytes)), close: async () => {} }, stdout: empty, stderr: (async function* () { if (code(command)) yield new TextEncoder().encode("sudo: a password is required"); })(), wait: async () => ({ ok: true, value: code(command) }) } };
+        return { ok: true, value: { stdin: { write: async (bytes) => void (entry.stdin += new TextDecoder().decode(bytes)), close: async () => {} }, stdout: empty, stderr: (async function* () { if (code(command)) yield new TextEncoder().encode(said); })(), wait: async () => ({ ok: true, value: code(command) }) } };
       },
     },
   };
@@ -189,6 +189,11 @@ test("the Archil disk adapter: a box mounts its run's work/ alone, through the h
   await assert.rejects(disk.mount(archil.disk, folder, "/workspace", "tools"), /in a box, not at a path of this machine/);
   await assert.rejects(disk.mount(archil.disk, folder, target, "loop"), /mounts its run's work\/ alone/);
   assert.equal(ran.length, before);
+  // A checkin by a box that holds no delegation (it checked in already, or a revoke forced it off) fails in archil with
+  // EROFS (measured live, client 0.10.1): it holds nothing, so it has let go.
+  const released = notingBox((command) => (command[3] === "checkin" ? 1 : 0), "'checkin' operation failed while 'running command ArchilCheckinInode' on '/workspace': Unexpected error (30)");
+  await disk.unmount({ ...mounted, box: released.box });
+  assert.deepEqual(released.ran.map((r) => r.command.slice(3)), [["sync"], ["checkin"]]);
   // A box whose image has no helper its user may run: said, with what to do.
   const bare = notingBox(() => 1);
   await assert.rejects(disk.mount(archil.disk, folder, { ...target, box: bare.box }, "tools"), /the box has no Archil helper its user may run as root at \/usr\/local\/sbin\/agentrun-archil: use an image or snapshot that ships it/);

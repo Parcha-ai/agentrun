@@ -86,9 +86,10 @@ if (verb === "mount") {
   state.calls.push({ verb, box: BOX, folder });
   if (!line) fail(`${mountpoint} is not mounted`);
   if (verb === "sync" && state.failSync) fail("sync failed: the disk did not answer");
-  // A checkin of a folder no one holds lets go of nothing, again; one another client holds is refused.
+  // A checkin by a client that holds no delegation on the folder (it checked in already, or another forced its hold
+  // off) fails as Archil's does, measured on client 0.10.1: EROFS, "Unexpected error (30)".
   if (verb === "checkin") {
-    if (state.holds[folder] !== undefined && state.holds[folder] !== BOX) fail(`${folder} is held by another client`);
+    if (state.holds[folder] !== BOX) fail(`'checkin' operation failed while 'running command ArchilCheckinInode' on '${mountpoint}': Unexpected error (30)`);
     delete state.holds[folder];
   }
   save();
