@@ -280,7 +280,9 @@ function fauxEnvOf(options: ServeOptions): NodeJS.ProcessEnv {
 /** `tokenFile` is null when `options.token` gave the token; `tokenMade` says this start made the token in it. */
 /** `setupUrl`: with accounts and no password yet, the page that sets it (with its code when setup needs one). */
 /** `boxesLine`: what the start's banner says of the boxes, in words (place.ts boxesLine). */
-export type Serve = { url: string; baseUrl: string; port: number; token: string; tokenFile: string | null; tokenMade: boolean; setupUrl?: string; boxesLine: string; close(): Promise<void> };
+export type Serve = { url: string; baseUrl: string; port: number; token: string; tokenFile: string | null; tokenMade: boolean; setupUrl?: string; boxesLine: string; close(): Promise<void>;
+  /** What a stop waits on: the runs whose processes still finish their turn, and the longest it waits on them. */
+  stopping(): { runs: number; boundMs: number } };
 
 const isLoopback = (host: string) => host === "localhost" || host === "::1" || /^127\./.test(host);
 
@@ -2351,5 +2353,6 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     // Once: a second call, at any time, is the first one's promise, so a close repeated after the next server started
     // never writes this data root's record again (the next server's, by then).
     close: () => (stopped ??= stop()),
+    stopping: () => runs.stopping(),
   };
 }
