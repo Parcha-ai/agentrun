@@ -383,7 +383,7 @@ const RETIRED = closed({
 }, "When and by whom it was retired; absent unless `status` is `retired`. POST .../restore makes it active again.");
 /** The newest change to a note, skill or draft, from the newest commit on its file. */
 const LAST_CHANGE = closed({
-  kind: { enum: ["approved", "edited", "created", "retired", "restored", "learned"], description: "What the change was: a person's approval, edit, creation, retire or restore (named by its commit), or `learned`, a run's merge." },
+  kind: { enum: ["approved", "edited", "created", "retired", "restored", "learned", "superseded"], description: "What the change was: a person's approval, edit, creation, retire or restore (named by its commit), `superseded`, a note a person's approval or restore of another superseded, or `learned`, a run's merge." },
   by: { enum: ["person", "run"], description: "`person`: its owner, in the console or through the API; `run`: a run's merge." },
   at: { type: "string", format: "date-time", description: "When: the commit's time." },
 }, "The item's last change: the newest commit on its file (a note's file, a skill's SKILL.md, a draft's README.md), a person's (named by its subject's fixed prefix, `learning: <kind> by a person: `) or a run's merge (its Run-Id: `learned`). Absent when that commit is neither (the folder's own first commit, or one made outside the server).");
