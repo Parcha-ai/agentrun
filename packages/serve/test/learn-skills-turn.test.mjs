@@ -83,6 +83,29 @@ test("an answer that gives one skill twice, first in a three-backtick block and 
   assert.deepEqual([stray.ok, stray.skills?.map(({ name }) => name)], [true, ["find-policies"]]);
 });
 
+test("one name, three versions: a skill or a draft given in three backticks, then the same in four, then other text in four is ambiguous and refused", () => {
+  for (const kind of ["skill", "workflow"]) {
+    const a = kind === "skill" ? SKILL : `{"v": 2}\n`;
+    const b = kind === "skill" ? `${SKILL}One more step.\n` : `{"v": 2, "name": "other"}\n`;
+    const parsed = parseReflection([block(kind, "x", a, "```"), block(kind, "x", a), block(kind, "x", b)].join("\n\n"));
+    assert.deepEqual([parsed.ok, parsed.reason, parsed.detail], [false, "unparsed", `two of the answer's ${kind}s have one name`], kind);
+  }
+});
+
+test("the whole skill first in three backticks, its own code example inside, then the four-backtick correction: the correction is read whole, and an ordinary fenced example or a stray unnamed fence is never read as learning", () => {
+  // A Claude Code run's answer shape: the skill in three backticks, cut short by the code block inside it, whose closing
+  // line then opens a stray unnamed fence; then the same skill again in the four backticks the format asks for.
+  const answer = [`\`\`\`skill find-policies\n${SKILL}\`\`\``, "Because a skill goes in a four-backtick block, here it is again in the required form:", block("skill", "find-policies", SKILL)].join("\n\n");
+  const parsed = parseReflection(answer);
+  assert.equal(parsed.ok, true, JSON.stringify(parsed));
+  assert.deepEqual(parsed.skills, [{ name: "find-policies", text: SKILL }]);
+  // A fenced example of the format in five backticks holds a four-backtick skill block: an example, never a skill.
+  const example = parseReflection(`\`\`\`\`\`markdown\n${block("skill", "shown-only", SKILL)}\n\`\`\`\`\`\n\nNo notes.`);
+  assert.deepEqual([example.ok, example.skills], [false, undefined], JSON.stringify(example));
+  // A stray unnamed fence that never closes, with no learning block after it, is prose.
+  assert.deepEqual(parseReflection(`${block("skill", "find-policies", SKILL)}\n\n\`\`\`\nstray`).skills, [{ name: "find-policies", text: SKILL }]);
+});
+
 test("the host writes a draft's README from the description its block gives, and the JSON after it is the workflow.json", () => {
   const draftFiles = fn(skills, "draftFiles");
   assert.deepEqual(draftFiles("find-policies", `---\ndescription: ${DESCRIPTION}\n---\n{"v": 2}\n`), { json: '{"v": 2}\n', readme: README });
