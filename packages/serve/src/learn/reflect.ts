@@ -172,8 +172,9 @@ const LOOSE_NOTE = /^---[ \t]*\n(?:[^\n]*\n){0,3}?[ \t]*name:/m;
 
 /** The notes in an end-of-run turn's answer (reflectPrompt's format): each ```note <file> block's file name and text,
  *  in order, and each ````skill <name> and ````workflow <name> block's name and text. Every other block, and every line
- *  outside one, is left alone. Such a block that is not closed, names nothing or more than one, or names what a block of
- *  its kind before it named, is `unparsed`; so is an answer with no such block that holds a note anyway (front matter
+ *  outside one, is left alone. A block that repeats one before it word for word is that one; a skill's or a draft's in four
+ *  backticks or more stands over one of the same name in three. Such a block that is not closed, names nothing or more
+ *  than one, or names what a block of its kind before it named with other words, is `unparsed`; so is an answer with no such block that holds a note anyway (front matter
  *  outside a block), and one over ANSWER_MAX. An answer with none is `empty`. What a block says, its name included, is
  *  the checker's to judge, never the parser's. */
 export function parseReflection(answer: unknown): Reflection {
@@ -181,7 +182,7 @@ export function parseReflection(answer: unknown): Reflection {
   if (answer.length > ANSWER_MAX) return { ok: false, reason: "unparsed", detail: `the answer is over ${ANSWER_MAX} characters` };
   const lines = answer.replace(/\r\n?/g, "\n").split("\n");
   const notes: { file: string; text: string }[] = [];
-  const learned: Record<string, { name: string; text: string }[]> = { [SKILL_BLOCK]: [], [WORKFLOW_BLOCK]: [] };
+  const learned: Record<string, { name: string; text: string; fence: number }[]> = { [SKILL_BLOCK]: [], [WORKFLOW_BLOCK]: [] };
   for (let i = 0; i < lines.length; i++) {
     const open = OPEN.exec(lines[i]!);
     if (!open) continue;
@@ -200,18 +201,30 @@ export function parseReflection(answer: unknown): Reflection {
     if (kind === NOTE_BLOCK) {
       if (words.length !== 2) return { ok: false, reason: "unparsed", detail: `a note's block names ${words.length === 1 ? "no file" : "more than one file"}` };
       const file = words[1]!;
-      if (notes.some((note) => note.file === file)) return { ok: false, reason: "unparsed", detail: "two of the answer's notes have one file name" };
-      notes.push({ file, text: `${lines.slice(i + 1, end).join("\n")}\n` });
+      const text = `${lines.slice(i + 1, end).join("\n")}\n`;
+      // The same note given again word for word is that note once; another under the same file name is ambiguous.
+      const given = notes.find((note) => note.file === file);
+      if (given && given.text !== text) return { ok: false, reason: "unparsed", detail: "two of the answer's notes have one file name" };
+      if (!given) notes.push({ file, text });
     } else if (kind !== undefined) {
       if (words.length !== 2) return { ok: false, reason: "unparsed", detail: `a ${kind}'s block names ${words.length === 1 ? "no name" : "more than one name"}` };
       const name = words[1]!;
-      if (learned[kind]!.some((block) => block.name === name)) return { ok: false, reason: "unparsed", detail: `two of the answer's ${kind}s have one name` };
-      learned[kind]!.push({ name, text: `${lines.slice(i + 1, end).join("\n")}\n` });
+      const text = `${lines.slice(i + 1, end).join("\n")}\n`;
+      // One name given twice: word for word, it is one; else the block in the format asked for (four backticks or
+      // more) stands over one in three, which a code block inside it can cut short; two otherwise is ambiguous.
+      const blocks = learned[kind]!;
+      const given = blocks.findIndex((block) => block.name === name);
+      const asked = (n: number) => n >= 4;
+      if (given < 0) blocks.push({ name, text, fence: fence.length });
+      else if (blocks[given]!.text !== text) {
+        if (asked(fence.length) && !asked(blocks[given]!.fence)) blocks[given] = { name, text, fence: fence.length };
+        else if (asked(fence.length) || !asked(blocks[given]!.fence)) return { ok: false, reason: "unparsed", detail: `two of the answer's ${kind}s have one name` };
+      }
     }
     i = end;
   }
-  const skills = learned[SKILL_BLOCK]!;
-  const workflows = learned[WORKFLOW_BLOCK]!;
+  const skills = learned[SKILL_BLOCK]!.map(({ name, text }) => ({ name, text }));
+  const workflows = learned[WORKFLOW_BLOCK]!.map(({ name, text }) => ({ name, text }));
   if (notes.length || skills.length || workflows.length) return { ok: true, notes, ...(skills.length ? { skills } : {}), ...(workflows.length ? { workflows } : {}) };
   return LOOSE_NOTE.test(lines.join("\n")) ? { ok: false, reason: "unparsed", detail: `the answer holds a note outside a \`\`\`${NOTE_BLOCK} block` } : { ok: false, reason: "empty" };
 }
