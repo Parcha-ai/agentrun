@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { after, before, test } from "node:test";
 import { REQUEST_STARTED } from "@parcha/pi-durable-agent/timeline";
+import { wrapUpWords } from "../dist/cap.js";
 import { grown } from "./fixtures/faux-harness.mjs";
 import { agent, follow, letGo, runDir, runRecordOf, scratch, serve } from "./support.mjs";
 
@@ -107,8 +108,13 @@ test("claude-agent: a restart mid-request reads the request in flight at the exp
   const go = join(await scratch(t), "go");
   // Request 1 is held at its expected input and the faux model's whole output ceiling; the cap leaves $0.10 after it,
   // less than request 2's input uncached (a new process has no previous request in hand), so the run pauses there.
-  const held = expectedInput(1) + CEILING * 10 / 1e6;
-  const cap = grown(0).usd + held + 0.1;
+  const plain = expectedInput(1) + CEILING * 10 / 1e6;
+  const cap = grown(0).usd + plain + 0.1;
+  // A cap this small is under 3 times request 0's hold, so the wrap-up's note is due for request 1 (none priced yet: the
+  // expected cost stands in), and its bytes are in the body request 1 is measured and held on: they grew the body since
+  // request 0, at the cache write's $2.50 a million, on its expected figure and its worst alike (its bound unchanged).
+  const note = wrapUpWords(cap - grown(0).usd);
+  const held = plain + Buffer.byteLength(note, "utf8") * 2.5 / 1e6;
   const runId = await started("restart", `Grow a cached context, cut at request 1 until ${go}.`, cap);
   for (let i = 0; usageOf((await api("GET", `/runs/${runId}/timeline`)).body.rows)?.requests !== 2; i++) {
     assert.ok(i < 600, "the second request is admitted and recorded");
@@ -122,6 +128,7 @@ test("claude-agent: a restart mid-request reads the request in flight at the exp
   const run = (await api("GET", `/runs/${runId}`)).body;
   assert.deepEqual([run.status, run.pending?.kind], ["input_required", "budget"], JSON.stringify(run));
   await letGo(data, runId);
+  assert.deepEqual(records(runId, "faux.note").map((r) => r.data.text), [note], "request 1 carried the note");
   const holds = records(runId, "runner.request").map((r) => r.data.heldUsd);
   assert.ok(Math.abs(holds[1] - held) < 1e-9, `the cut request's record holds its expected figure: ${JSON.stringify(holds)} vs ${held}`);
   assert.ok(Math.abs(run.pending.spent_usd - (grown(0).usd + held)) < 1e-6, `after the restart the spend reads the same: ${run.pending.spent_usd}`);

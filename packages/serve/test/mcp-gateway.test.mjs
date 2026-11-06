@@ -59,7 +59,7 @@ test("a refused credential says where to update it and never shows it; an answer
   const { gateway: refused } = await setup(t, { token: `not-a-secret-${"wrong-token-0123456"}` });
   const said = await refused.call("fake", "add", { a: 1, b: 1 }, { signal: signal() });
   assert.equal(said.isError, true);
-  assert.equal(textOf(said), "The MCP server fake refused its credential; update it in Settings → MCP servers.");
+  assert.equal(textOf(said), "The MCP server fake refused its credential (its sign-in expired or was revoked, or its key changed): sign in again in Settings → MCP servers, or update its credential there.");
   const { gateway, work } = await setup(t);
   const long = textOf(await gateway.call("fake", "long", {}, { signal: signal() }));
   const filed = /evidence\/mcp\/fake\/(\S+\.json)\]$/.exec(long)?.[1];

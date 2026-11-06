@@ -28,6 +28,7 @@ import { TOOL_COST, TOOL_STARTED, TOOL_UNMETERED } from "@parcha/pi-durable-agen
 import { paidCall } from "./cap.js";
 import { wireName } from "./catalog.js";
 import { metaToolOf } from "./mcp-meta.js";
+import { SIGN_IN_AGAIN } from "./mcp-oauth.js";
 import { type Gate, GATED_BY_GATEWAY, mcpToolName, type Park } from "./tool-gate.js";
 import { forModel } from "./result.js";
 import { writeInWork } from "./workspace.js";
@@ -55,6 +56,8 @@ export interface McpServerSource {
   /** The server's credential, opened now: its headers, or why it does not open, each under its own tag; undefined when
    *  it has none. */
   headers(name: string): { headers: Record<string, string> } | { unopened: string } | undefined;
+  /** Before a launch: an OAuth access token near its expiry refreshed (mcp-servers.ts headersForRun). Never throws. */
+  refresh?(name: string): Promise<void>;
 }
 
 /** `mcp:<server>/<tool>` read, or undefined for a name that is not one. */
@@ -290,7 +293,8 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
       // The next call connects again (a server that dropped its session, say); this one is never sent again.
       clients.delete(server);
       const status = statuses.get(server)?.last;
-      if (status === 401 || status === 403) return said(`The MCP server ${server} refused its credential; update it in Settings → MCP servers.`, true);
+      // An OAuth token that expired mid-run is not refreshed here (no channel to serve for it): the next launch does.
+      if (status === 401 || status === 403) return said(`The MCP server ${server} refused its credential (its sign-in expired or was revoked, or its key changed): ${SIGN_IN_AGAIN}, or update its credential there.`, true);
       const why = scrub(String((error as Error)?.message ?? error), headers).slice(0, 300);
       return said(`The MCP server ${server} failed${status && status >= 400 ? ` (HTTP ${status})` : ""}: ${why}`, true);
     }

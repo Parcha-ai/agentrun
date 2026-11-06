@@ -384,27 +384,13 @@ export async function runModels(env: NodeJS.ProcessEnv, ref: string | undefined,
   // <gw>/api and <gw>/api/v1 both reach <gw>/api/v1/responses, as OpenRouter serves it.
   const baseUrl = `${env.AGENT_MODEL_BASE_URL!.replace(/\/+$/, "").replace(/\/v1$/, "")}/v1`;
   const { openAIResponsesApi } = await import("@earendil-works/pi-ai/api/openai-responses.lazy");
-  // USD per million input, output, cache-read and cache-write tokens, so the run's usage has a price. A tier's own price
-  // (`AGENT_MODEL_FAST_PRICE`, `AGENT_MODEL_STRONG_PRICE`) goes with its model, else the default's; a model two tiers
-  // share takes the default's. With none set, pi-ai's catalog prices it (listedPrice), a $0 entry included; an id it does
-  // not list is unpriced: its answers carry no total (unpricedApi), so the run's cost reads unknown, never $0, and a cap
-  // refuses it.
-  const prices = new Map<string, { given: string | undefined; named: string | undefined }>();
-  for (const tier of ["default", "fast", "strong"] as const) {
-    const id = byTier.get(tier)?.modelId;
-    if (id !== undefined && !prices.has(id)) prices.set(id, { given: (tier !== "default" && env[`${TIER_ENV[tier]}_PRICE`]) || env.AGENT_MODEL_PRICE || undefined, named: namedBy.get(tier) });
-  }
-  const catalog = [...prices.values()].some((price) => price.given === undefined) ? await catalogPrices() : new Map<string, Listed[]>();
+  const priced = await gatewayPrices(env, byTier, namedBy);
   const priceOf = (id: string): ModelCost => {
-    const { given, named } = prices.get(id)!;
-    if (given === undefined) {
-      const listed = catalogPrice(catalog, id, named);
-      if (listed) return listed;
-      unpriced.add(id);
-      return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
-    }
-    const [input = 0, output = 0, cacheRead = 0, cacheWrite = input] = given.split(",").map(Number);
-    return { input, output, cacheRead, cacheWrite };
+    const cost = priced.get(id);
+    if (cost) return cost;
+    // No price: a placeholder pi-ai's model needs, which nothing books as known (unpricedApi; adapters.ts priceOf).
+    unpriced.add(id);
+    return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
   };
   // `models` is priced first, which fills `unpriced`, and `api` is chosen by it.
   models.setProvider(createProvider({
@@ -418,6 +404,51 @@ export async function runModels(env: NodeJS.ProcessEnv, ref: string | undefined,
     api: unpriced.size ? unpricedApi(openAIResponsesApi(), unpriced, ai) : openAIResponsesApi(),
   }));
   return { models, model, byTier, unpriced };
+}
+
+/** The price of each gateway model of `byTier` (its tiers' models, `namedBy` the provider a ref named), in USD per million
+ *  input, output, cache-read and cache-write tokens: a tier's own price (`AGENT_MODEL_FAST_PRICE`,
+ *  `AGENT_MODEL_STRONG_PRICE`) goes with its model, else the default's (`AGENT_MODEL_PRICE`); a model two tiers share
+ *  takes the default's. With none set, pi-ai's catalog prices it (catalogPrice), a $0 entry included. An id with no price
+ *  is absent: its answers carry no total (unpricedApi) and a harness books it unknown (adapters.ts priceOf), so the run's
+ *  cost reads unknown, never $0, and a cap refuses it (blockersOf refuses a capped run on it before it starts). */
+async function gatewayPrices(env: NodeJS.ProcessEnv, byTier: ReadonlyMap<Tier, ModelRef>, namedBy: ReadonlyMap<Tier, string>): Promise<Map<string, ModelCost>> {
+  const prices = new Map<string, { given: string | undefined; named: string | undefined }>();
+  for (const tier of ["default", "fast", "strong"] as const) {
+    const id = byTier.get(tier)?.modelId;
+    if (id !== undefined && !prices.has(id)) prices.set(id, { given: (tier !== "default" && env[`${TIER_ENV[tier]}_PRICE`]) || env.AGENT_MODEL_PRICE || undefined, named: namedBy.get(tier) });
+  }
+  const catalog = [...prices.values()].some((price) => price.given === undefined) ? await catalogPrices() : new Map<string, Listed[]>();
+  const out = new Map<string, ModelCost>();
+  for (const [id, { given, named }] of prices) {
+    if (given === undefined) {
+      const listed = catalogPrice(catalog, id, named);
+      if (listed) out.set(id, listed);
+      continue;
+    }
+    const [input = 0, output = 0, cacheRead = 0, cacheWrite = input] = given.split(",").map(Number);
+    out.set(id, { input, output, cacheRead, cacheWrite });
+  }
+  return out;
+}
+
+/** The models a run of `ref` (an agentic revision's own, else the host's) on `harness` would take, of `tiers`, that serve
+ *  has no price for here: a gateway's (AGENT_MODEL_BASE_URL) id with no price set and none in the catalog in any form
+ *  (gatewayPrices). None elsewhere: pi-ai's providers price their own models, a $0 entry included, and claude-agent prices
+ *  by its catalog entry. One a cap cannot be kept on: capabilities' `models.priced`, and blockersOf's refusal of a capped
+ *  run. A model chooseModel cannot give is not this one's to say (its own blocker says why). */
+export async function unpricedModels(env: NodeJS.ProcessEnv, ref: string | undefined, tiers: readonly Tier[] = ["default"], harness: string = DEFAULT_HARNESS): Promise<string[]> {
+  if (env[FAUX_ENV] || !env.AGENT_MODEL_BASE_URL || harness === "claude-agent") return [];
+  const byTier = new Map<Tier, ModelRef>();
+  const namedBy = new Map<Tier, string>();
+  for (const tier of new Set(tiers)) {
+    const chosen = await chooseModel(env, tier === "default" ? ref : undefined, tier, harness);
+    if ("why" in chosen) continue;
+    byTier.set(tier, chosen.model);
+    if (chosen.namedProvider) namedBy.set(tier, chosen.namedProvider);
+  }
+  const priced = await gatewayPrices(env, byTier, namedBy);
+  return [...new Set([...byTier.values()].map((model) => model.modelId))].filter((id) => !priced.has(id));
 }
 
 /** The requests a Models object sends, each with its options third. */

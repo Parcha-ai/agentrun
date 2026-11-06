@@ -189,6 +189,56 @@ test("the grader reads what the user said in the run, in order and cut of the se
   assert.ok(!proposal.includes(token));
 });
 
+/** A user message of `n` characters whose last words take back the rule it opened with, well past where a run's own
+ *  record of a message stops (2,000 characters). */
+const REVERSAL = " - actually no, never include those; use the ticket id only. Remember that.";
+const reversed = (n) => {
+  const start = "From now on, in every report, include the customer's full name and account number.";
+  let middle = " Context for the report: the API latency incident on Tuesday ran 40 minutes, root cause a bad deploy, rolled back by the on-call engineer.";
+  while (middle.length < n) middle += middle;
+  return `${start}${middle.slice(0, n - start.length - REVERSAL.length)}${REVERSAL}`;
+};
+
+test("a user message past 2,000 characters reaches the grader whole from the run's own record: its last words, which take back its rule, are in the prompt and the proposal, after the marker", { timeout: 150_000 }, async (t) => {
+  const calls = join(await scratch(t), "calls.jsonl");
+  withEnv(t, { AGENTRUN_TEST_FAUX_CALLS: calls }, ["AGENTRUN_TEST_FAUX_GRADE_HOLD", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_STRONG", "AGENTRUN_SERVE_GRADE_MODEL"]);
+  const { api, data } = await serve(t, { learning: "on", faux: LEARN });
+  await made(api, learner("long", { plan: PLAN }));
+  const message = reversed(2_500);
+  assert.ok(message.length === 2_500 && message.indexOf(REVERSAL) > 2_000);
+  const runId = await started(api, "long", message);
+  const { view, rows } = await ended(api, runId);
+  settled(view, rows, "merged");
+  const [call] = callsIn(calls);
+  const [asked] = JSON.parse(readFileSync(join(runDir(data, runId), "learning-proposal.json"), "utf8")).asked;
+  for (const shown of [asked, call.asked[0]]) {
+    assert.ok(shown.endsWith(REVERSAL.trim().slice(-40)) && shown.includes("actually no, never include those"), shown.slice(-120));
+    assert.match(shown, /\n\[\d+ characters left out in the middle\]\n/);
+  }
+});
+
+test("a follow-up sent while the run works, past 2,000 characters, reaches the grader whole too, after the run's first message", { timeout: 150_000 }, async (t) => {
+  const gate = join(await scratch(t), "answer");
+  const calls = join(await scratch(t), "calls.jsonl");
+  withEnv(t, { AGENTRUN_TEST_FAUX_CALLS: calls }, ["AGENTRUN_TEST_FAUX_GRADE_HOLD", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_STRONG", "AGENTRUN_SERVE_GRADE_MODEL"]);
+  const { api } = await serve(t, { learning: "on", faux: LEARN });
+  await made(api, learner("followed", { plan: PLAN, instructions: `Answer once ${gate} exists.` }));
+  const runId = await started(api, "followed", "Write today's report.");
+  for (let i = 0; (await api("GET", `/runs/${runId}`)).body.status !== "working"; i++) {
+    assert.ok(i < 1200, "the run works");
+    await sleep(50);
+  }
+  const sent = await api("POST", `/runs/${runId}/messages`, { content: reversed(2_500) });
+  assert.equal(sent.status, 202, JSON.stringify(sent.body));
+  writeFileSync(gate, "");
+  const { view, rows } = await ended(api, runId);
+  settled(view, rows, "merged");
+  const [call] = callsIn(calls);
+  assert.equal(call.asked.length, 2, JSON.stringify(call.asked).slice(0, 200));
+  assert.ok(call.asked[0].startsWith("1. Write today's report."));
+  assert.ok(call.asked[1].includes("actually no, never include those") && /\n\[\d+ characters left out in the middle\]\n/.test(call.asked[1]), call.asked[1].slice(-160));
+});
+
 test("a server secret the user's message holds across either point it is shortened at shows no part of itself: each message is cut of the server's secrets whole first, then shortened to its head and its tail, in the proposal and in the grader's prompt", { timeout: 150_000 }, async (t) => {
   const calls = join(await scratch(t), "calls.jsonl");
   withEnv(t, { AGENTRUN_TEST_FAUX_CALLS: calls }, ["AGENTRUN_TEST_FAUX_GRADE_HOLD", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_STRONG", "AGENTRUN_SERVE_GRADE_MODEL"]);

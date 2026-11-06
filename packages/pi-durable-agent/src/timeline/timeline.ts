@@ -101,6 +101,9 @@ export const BROWSER_CHARGE = "browser";
  *  undefined for any other row: another tool's call row, whatever it carries, and the usage row. */
 export const chargedTool = (row: TimelineEvent): string | undefined =>
   !row.usage ? undefined : row.kind === "phase" ? (row.tool_name ?? undefined) : row.kind === "tool_use" && row.tool_name !== null && BROWSER_STEPS.has(row.tool_name) ? BROWSER_CHARGE : undefined;
+/** The spend cap's wrap-up (serve's cap.ts): the run's model was told once, near its cap, to finish (`words`, what it was
+ *  told). A row of its own, the server's ("AgentRun: …"); no request, no cost. */
+export const CAP_WRAPUP = "agentrun.cap_wrapup";
 /** A tool call with no price, run outside the run's cost and its cap (an MCP tool its owner set no price for): `tool`,
  *  `charged_by` and `call` name it. It shows as a row of its own, "not metered", and the usage row counts it
  *  (`not_metered`); it is no charge and never makes the cost unknown. */
@@ -631,6 +634,12 @@ function createProjector(options: TimelineOptions) {
     const add = (row: TimelineEvent) => { rows.push(row); out.push(row); };
     const touch = (row: TimelineEvent) => { if (!out.includes(row)) out.push(row); };
 
+    if (entry.kind === CAP_WRAPUP) {
+      // What the run's model was told near its cap: the server's row, no request, no cost.
+      const words = str(obj(entry.data)?.words);
+      if (words) add(make("phase", conv, base, { summary: `AgentRun: ${words}`, text: words }));
+      return out;
+    }
     const metered = meter.push(entry);
     if (metered === "mark") {
       // A request's mark or cost, or pi's answer to a request that never left: counted, nothing to show.
