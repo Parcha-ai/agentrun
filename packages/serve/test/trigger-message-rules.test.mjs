@@ -137,6 +137,37 @@ test("a run that comes to wait on a person between the firing's check and its do
   assert.equal((await api("POST", `/runs/${run.run_id}/cancel`)).status, 202);
 });
 
+const GATE = { faux: new URL("./fixtures/faux-gate.mjs", import.meta.url).pathname, fauxWeb: new URL("./fixtures/faux-gate-web.mjs", import.meta.url).pathname, accounts: true, openSetup: true };
+
+test("a run that comes to wait on a tool call's approval between the firing's check and its door's admission is never messaged: the door refuses, the firing is skipped, the approval stands, unanswered", { timeout: 120_000 }, async (t) => {
+  withEnv(t, SEAL);
+  const gate = join(await scratch(t), "gate");
+  let api;
+  // The seam before a message reaches the run's door: the run is let call web_fetch (set to ask) here, and the message
+  // goes on only once the call is parked for its approval.
+  const beforeSubmit = async (runId, content) => {
+    if (!content.startsWith("A new event came in.")) return;
+    await writeFile(gate, "");
+    const parked = async () => (await api("GET", `/runs/${runId}/timeline`)).body.rows.some((row) => row.kind === "tool_approval_requested");
+    for (const end = Date.now() + 30_000; !(await parked()); await new Promise((resolve) => setTimeout(resolve, 50))) assert.ok(Date.now() < end, "the call parks");
+  };
+  const server = await serve(t, { ...GATE, beforeSubmit });
+  api = server.api;
+  assert.equal((await api("PUT", "/settings/tools", { web_fetch: { permission: "ask" } })).status, 200);
+  await made(api, "fetcher", { tools: ["web_fetch"] });
+  const run = (await api("POST", "/agents/fetcher/runs", { input: { content: `Fetch http://public.example/ once ${gate} exists.` }, max_cost_usd: 1 })).body;
+  await follow(api, run.run_id, ["working"]);
+  const { id, secret } = (await api("POST", "/triggers", messaging(run.run_id))).body;
+  assert.equal((await post(server.baseUrl, id, "eu", secret)).status, 202);
+  const [skipped] = await firings(api, id, 1);
+  assert.deepEqual([skipped.status, skipped.reason], ["skipped", "The run is waiting on a person."], JSON.stringify(skipped));
+  const read = (await api("GET", `/runs/${run.run_id}`)).body;
+  assert.deepEqual([read.status, read.state, read.pending?.kind, read.pending?.tool], ["input_required", "waiting", "approval", "web_fetch"], "the approval stands, unanswered");
+  const { rows } = await follow(api, run.run_id, ["input_required"]);
+  assert.equal(rows.filter((row) => row.kind === "user_message").length, 1, "no message reached it");
+  assert.equal((await api("POST", `/runs/${run.run_id}/cancel`)).status, 202);
+});
+
 test("a firing never reaches a run paused at its spend cap (pending budget): it is skipped with the same reason, and the run still waits for its cap to be raised", { timeout: 120_000 }, async (t) => {
   withEnv(t, SEAL);
   // The tests' faux model priced on output only: a $0.05 cap cannot buy a request's least, so the run pauses at once.

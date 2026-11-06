@@ -410,6 +410,64 @@ describe("docker boxes: mounts", () => {
 		}));
 });
 
+describe("docker boxes: named volumes", () => {
+	it("become --mount type=volume after the binds, read-only where asked, on every box", () =>
+		withScriptedDocker(
+			async (provider, directory, calls) => {
+				const run = join(directory, "run");
+				mkdirSync(run);
+				const made = await provider.create(
+					{ maxLifetimeMs: 60_000, network: "none", mounts: [{ source: run, target: "/workspace/run" }] },
+					context,
+				);
+				if (!made.ok) throw made.error;
+				const bare = await provider.create({ maxLifetimeMs: 60_000 }, context);
+				if (!bare.ok) throw bare.error;
+				for (const args of calls()) {
+					const mounts = args.flatMap((arg, n) => (args[n - 1] === "--mount" ? [arg] : []));
+					expect(mounts.at(-1)).toBe(
+						"type=volume,source=agentrun-egress-0123456789ab,target=/run/agentrun/egress,readonly",
+					);
+					expect(args.lastIndexOf("--mount")).toBeLessThan(args.indexOf("--entrypoint"));
+					for (const flag of ["-v", "--volume", "--volumes-from"]) expect(args).not.toContain(flag);
+				}
+				const [first = []] = calls();
+				expect(first.flatMap((arg, n) => (first[n - 1] === "--mount" ? [arg] : []))[0]).toBe(
+					`type=bind,source=${run},target=/workspace/run`,
+				);
+				expect(first[first.indexOf("--network") + 1]).toBe("none");
+			},
+			{ volumes: [{ name: "agentrun-egress-0123456789ab", target: "/run/agentrun/egress", readOnly: true }] },
+		));
+
+	it("refuse a name or target Docker's --mount cannot carry, at once, and a spec's bind on a volume's target", async () => {
+		for (const name of ["", "-x", "a,b", "a/b", "a b", "a=b"]) {
+			expect(() =>
+				dockerBoxes({ docker: "/nonexistent/pi-transport-docker", volumes: [{ name, target: "/x" }] }),
+			).toThrow(/^the docker volume name /);
+		}
+		for (const target of ["x", "/", "/a/../b", "/a,b", "/a/"]) {
+			expect(() =>
+				dockerBoxes({ docker: "/nonexistent/pi-transport-docker", volumes: [{ name: "v", target }] }),
+			).toThrow(/^the docker volume v's target /);
+		}
+		await withScriptedDocker(
+			async (provider, directory, calls) => {
+				const refused = await provider.create(
+					{ maxLifetimeMs: 60_000, mounts: [{ source: directory, target: "/x" }] },
+					context,
+				);
+				expect(!refused.ok && [refused.error.code, refused.error.message]).toEqual([
+					"invalid",
+					"the mount target /x is a volume's",
+				]);
+				expect(calls()).toEqual([]);
+			},
+			{ volumes: [{ name: "v", target: "/x" }] },
+		);
+	});
+});
+
 /** Each resource flag of `args` with its value, in order: `--cpus`, `--memory`, `--memory-swap`, `--pids-limit` and any other. */
 const limits = (args: readonly string[]) =>
 	args.flatMap((arg, n) => (/^--(cpu|memory|pids)/.test(arg) ? [[arg, args[n + 1]]] : []));
