@@ -208,7 +208,61 @@ export const LEARNED_WORKFLOWS_FILE = "learned-workflows.json";
  *  together: every harness sends the description with each request, so it never grows with what an agent learned. */
 export const LEARNED_WORKFLOWS_BUDGET = 8 * 1024;
 /** A learned workflow's line in the `learned_workflow` tool's description: its name, and what its README says it does. */
-export const workflowLine = ({ name, description }: Pick<LearnedWorkflow, "name" | "description">): string => `- ${name}: ${description || "(no description)"}`;
+export const workflowLine = ({ name, description, workflow }: Pick<LearnedWorkflow, "name" | "description"> & { workflow?: string }): string =>
+  [`- ${name}: ${description || "(no description)"}`, ...inputLine(workflow)].join("\n");
+
+/** The most of a field's description a workflow's input line carries. */
+const FIELD_DESCRIPTION = 60;
+
+/** A workflow's input as its line in learned_workflow's description says it: its input schema, compact (inputSchema), on
+ *  a line of its own, so a call names the fields the workflow takes; none for a workflow whose input names no schema. */
+function inputLine(workflow: string | undefined): string[] {
+  let doc: { schemas?: Record<string, unknown>; input?: { schemaId?: unknown } } | undefined;
+  try {
+    doc = workflow ? JSON.parse(workflow) : undefined;
+  } catch {
+    return [];
+  }
+  const id = doc?.input?.schemaId;
+  const schema = typeof id === "string" ? doc?.schemas?.[id] : undefined;
+  if (!schema) return [];
+  const shown = compactSchema(schema, doc?.schemas ?? {}, 0, definitionsOf(schema));
+  return [`  input: ${shown}${shown.includes("*") ? " (* required)" : ""}`];
+}
+
+/** A schema's own inline definitions (`definitions`, `$defs`), which its `#/definitions/` references read first. */
+const definitionsOf = (schema: unknown): Record<string, unknown> => {
+  const s = schema && typeof schema === "object" ? (schema as Record<string, unknown>) : {};
+  return { ...((s.$defs as Record<string, unknown> | undefined) ?? {}), ...((s.definitions as Record<string, unknown> | undefined) ?? {}) };
+};
+
+/** A JSON Schema in one line: an object's fields as `name type`, a required one marked `*`, each with its description cut
+ *  short; an array as `array of <items>`; a reference to another of the workflow's schemas followed, two levels deep. */
+function compactSchema(schema: unknown, schemas: Record<string, unknown>, depth = 0, defs: Record<string, unknown> = {}): string {
+  const s = schema && typeof schema === "object" ? (schema as Record<string, unknown>) : undefined;
+  if (!s) return "any";
+  if (typeof s.$ref === "string") {
+    // As the DSL resolves it: `#/definitions/` and `#/$defs/` in the schema's own inline definitions first, then the
+    // workflow's schemas by that name.
+    const inline = /^#\/(?:definitions|\$defs)\//.test(s.$ref);
+    const name = s.$ref.replace(/^#\/(?:schemas|definitions|\$defs)\//, "");
+    const target = (inline ? defs[name] : undefined) ?? schemas[name];
+    return depth > 2 || !target ? name : compactSchema(target, schemas, depth + 1, defs);
+  }
+  if (s.properties && typeof s.properties === "object") {
+    if (depth > 2) return "object";
+    const required = new Set(Array.isArray(s.required) ? s.required : []);
+    const fields = Object.entries(s.properties as Record<string, unknown>).map(([key, value]) => {
+      const said = value && typeof value === "object" ? (value as Record<string, unknown>).description : undefined;
+      const words = typeof said === "string" && said.trim() ? ` "${said.trim().length > FIELD_DESCRIPTION ? `${said.trim().slice(0, FIELD_DESCRIPTION - 1)}…` : said.trim()}"` : "";
+      return `${key}${required.has(key) ? "*" : ""} ${compactSchema(value, schemas, depth + 1, defs)}${words}`;
+    });
+    return `{${fields.join(", ")}}`;
+  }
+  if (s.type === "array") return `array of ${compactSchema(s.items, schemas, depth + 1, defs)}`;
+  if (Array.isArray(s.enum)) return s.enum.map((value) => JSON.stringify(value)).join("|");
+  return typeof s.type === "string" ? s.type : Array.isArray(s.type) ? s.type.join("|") : "any";
+}
 
 /** The most bytes of learned skills one run gets, every file of each together. They get no more than what the
  *  revision's own skills leave of the adapters' cap on a run's skills in all (SKILL_BYTES): over that cap an adapter
