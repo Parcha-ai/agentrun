@@ -22,6 +22,8 @@ import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { startFakeOAuth } from "./fixtures/fake-oauth-server.mjs";
 
 const TOOLS = ["add", "slow_write", "delete_thing", "paid"];
+/** The owner's sign-in phrase, made up for these tests. */
+const PHRASE = "the owner signs in with this phrase";
 const FAUX_MCP = new URL("./fixtures/faux-mcp.mjs", import.meta.url).pathname;
 const CALLBACK = "/v2/settings/mcp-servers/oauth/callback";
 const sealKey = () => randomBytes(32).toString("base64");
@@ -528,7 +530,7 @@ test("pi: an OAuth server's tool with no setting asks: the call parks, nothing r
   const { api } = server;
   const { mcp } = await fakes(t);
   const origin = `http://127.0.0.1:${server.port}`;
-  const owner = await call(server.port, { method: "POST", path: "/v2/setup", headers: { "content-type": "application/json", origin }, body: { password: "the owner signs in with this phrase" } });
+  const owner = await call(server.port, { method: "POST", path: "/v2/setup", headers: { "content-type": "application/json", origin }, body: { password: PHRASE } });
   assert.equal(owner.status, 201, owner.text);
   const started = await api("POST", "/settings/mcp-servers/docs/oauth/start", { url: mcp.url });
   assert.equal(started.status, 200, JSON.stringify(started.body));
@@ -615,7 +617,7 @@ test("pi: a run whose process went while its call was parked: the owner's allow 
   // Every access token is within the launch's refresh margin: each launch refreshes it.
   const { as, mcp } = await fakes(t, { expiresIn: 60 });
   const origin = `http://127.0.0.1:${server.port}`;
-  const owner = await call(server.port, { method: "POST", path: "/v2/setup", headers: { "content-type": "application/json", origin }, body: { password: "the owner signs in with this phrase" } });
+  const owner = await call(server.port, { method: "POST", path: "/v2/setup", headers: { "content-type": "application/json", origin }, body: { password: PHRASE } });
   assert.equal(owner.status, 201, owner.text);
   const started = await api("POST", "/settings/mcp-servers/docs/oauth/start", { url: mcp.url });
   assert.equal((await approve(started)).status, 302);
