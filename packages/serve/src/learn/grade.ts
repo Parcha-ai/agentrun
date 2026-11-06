@@ -92,7 +92,9 @@ export type VerdictItem = { readonly file: string; readonly keep: boolean; reado
 export type Verdict = { readonly merge: boolean; readonly reason: string; readonly items: readonly VerdictItem[] };
 
 /** The verdict when the grader's answer cannot be read: never a merge. */
-const UNREADABLE: Verdict = Object.freeze({ merge: false, reason: "the grader's verdict could not be read", items: Object.freeze([]) });
+/** Why a verdict is no merge when the grader's answer could not be read at all: the host asks once more on it. */
+export const UNREADABLE_REASON = "the grader's verdict could not be read";
+const UNREADABLE: Verdict = Object.freeze({ merge: false, reason: UNREADABLE_REASON, items: Object.freeze([]) });
 
 /** The longest reason, and the longest `why` or `question`, a verdict carries, in UTF-16 units. */
 const REASON_MAX = 500;
