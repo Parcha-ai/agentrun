@@ -28,7 +28,7 @@ const recordedRun = (id: string) => runNames.map(runFixture).find((f) => f.run.r
 // An agent's page over its recorded agent and runs, with the server's efforts, and stats carrying the sample analytics.
 const agentPage = (slug: string, { runs = true, tab }: { runs?: boolean; tab?: "workflow" | "analytics" } = {}) => {
   const v2 = {
-    getAgent: async () => ({ agent: agentFixture(slug), etag: null }),
+    getAgent: async () => ({ agent: { tools: [], ...agentFixture(slug) }, etag: null }),
     listAgentRuns: async () => (runs ? recorded<unknown>(`agent.${slug}.runs`).body : { runs: [], next_cursor: null }),
     statsOver: async () => statsWith(ANALYTICS),
     getTimeline: async (id: string) => recordedRun(id).page,

@@ -30,7 +30,7 @@ async function open(a: Agent, props: { tab?: string; learning?: "on" | "off" | n
   let reads = 0;
   let timelines = 0;
   const v2 = {
-    getAgent: async () => ({ agent: current, etag: '"r1"' }),
+    getAgent: async () => ({ agent: { tools: [], ...current }, etag: '"r1"' }),
     statsOver: async () => ({}),
     listAgentRuns: async () => ({ runs: [listed], next_cursor: null }),
     getTimeline: async () => { timelines++; return timeline(); },
