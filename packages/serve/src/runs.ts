@@ -225,7 +225,6 @@ const reviewOfRow = (row: Pick<RunRow, "state" | "summary">, meta: Partial<RunMe
 type Served = { keys: string; input: unknown; out: unknown };
 
 /** GET /runs/{id}/graph's view (graph-view.ts, loaded when a graph is first read). */
-type GraphView = Awaited<ReturnType<typeof import("./graph-view.js")["runGraph"]>>;
 
 
 /** A value's sha256, of its JSON. */
@@ -920,8 +919,7 @@ export class Runs {
   /** What decides the secrets each revision's runs are handed (needsOf), by revision id: read once, from the revision the
    *  run is pinned to, never from a request. The keys themselves are read at each launch (keysFor). */
   private readonly needs = new Map<string, RunNeeds>();
-  /** Every run's graph as served, part by part (servedGraph), and each workflow run's last graph read whole, which a
-   *  poll that met a busy store answers, marked stale: one LRU by bytes across runs (graph-served.ts PartCache). */
+  /** Every run's graph as served, part by part (servedGraph): one LRU by bytes across runs (graph-served.ts PartCache). */
   private readonly graphCache = new PartCache(GRAPH_CACHE_BYTES);
   private readonly adopting = new Map<string, Promise<Run>>();
   /** The hosts this server's next remote box asks for: the setting's, until the provider cannot keep a list here, then none. */
@@ -2293,10 +2291,11 @@ export class Runs {
     // A run's end waits for a busy store as long as its carry back does, not a request's 2 s.
     const revision = (await whenFree(() => this.store.readRevision(run.revision), this.busyDelays(), this.onBusy(run.id, "the agent store"))) as Extract<Revision, { kind: "workflow" }>;
     const at = { runId: run.id, storePath: this.storeFile(run), revision };
-    const { state, summary } = await workflowCarry(at, ending);
-    if (state === "completed") run.meta.output = (await readWorkflowRun(at)).output ?? null;
+    // Lock-free reads of its store, as every server read of a run's database (run-db.ts): nothing made beside it.
+    const { state, summary } = await workflowCarry(at, ending, { unlocked: true });
+    if (state === "completed") run.meta.output = (await readWorkflowRun(at, { unlocked: true })).output ?? null;
     else if (state === "escalated") {
-      const { escalation, escalatedAt } = await readWorkflowRun(at);
+      const { escalation, escalatedAt } = await readWorkflowRun(at, { unlocked: true });
       run.meta.review = { kind: escalation?.kind ?? null, node: escalation?.label ?? escalatedAt?.label ?? null, reason: escalation?.summary ?? summary };
     }
     else if (state === "failed") run.error = { code: "run_failed", message: `The workflow failed: ${summary}.`, retryable: false };
@@ -3109,18 +3108,8 @@ export class Runs {
       run: { id: run.id, agent: run.agentId, revision: run.revision, status, paused: status === "paused", startedAt: run.meta.created_at, endedAt: ended ? (run.endedAt ?? run.updatedAt) : null },
       ended, workflow, storeFile: this.storeFile(run), root: run.dir, input: run.meta.input ?? {}, modelCost: costOf(run.rows), llmRead: run.llmRead ?? 0,
     };
-    // A poll never answers home_busy: a store still held answers the live view, or the last whole one, marked stale.
-    try {
-      const view = await runGraph(given);
-      this.graphCache.set(`view:${run.id}`, view, Buffer.byteLength(JSON.stringify(view)));
-      return this.servedGraph(run, { ...view, stale: false });
-    } catch (error) {
-      if (!storeBusy(error)) throw error;
-      warn(run.id, "its store is busy; the graph answers its live view, stale");
-      const held = this.graphCache.get(`view:${run.id}`) as GraphView | undefined;
-      if (held) return this.servedGraph(run, { ...held, run: given.run, stale: true });
-      return this.servedGraph(run, { ...(await runGraph({ ...given, liveOnly: true })), stale: true });
-    }
+    // Every read of the run's database is lock-free (run-db.ts): a run's process holding it never makes a poll wait.
+    return this.servedGraph(run, await runGraph(given));
   }
 
   /** How long a run's process gets after SIGTERM before SIGKILL: its drain and a second to exit. */
