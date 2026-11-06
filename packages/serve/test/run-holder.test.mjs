@@ -7,7 +7,7 @@ import { test } from "node:test";
 import { processAlive as alive } from "@parcha/agentrun-kernel/host";
 import { psTable } from "../../pi-durable-disk/dist/process-table.js";
 import { localDisk } from "../dist/disk.js";
-import { fenceHolder, holderOfClaim, holderState, killHolder, LAUNCH_HOLDER, launchedProcesses, RUN_LAUNCH_ENV, runHolderTestHooks } from "../dist/run-holder.js";
+import { fenceHolder, holderOfClaim, holderOfProcess, holderState, killHolder, LAUNCH_HOLDER, launchedProcesses, RUN_LAUNCH_ENV, runHolderTestHooks } from "../dist/run-holder.js";
 import { scratch } from "./support.mjs";
 
 /** A process with `env` that starts a child with the same environment (a command of it, inheriting the mark), and says
@@ -62,4 +62,13 @@ test("unknown never turns into gone by time alone: a listing that keeps failing 
     assert.throws(() => killHolder(holder), /cannot be checked/);
   }
   assert.ok(alive(parent), "never killed");
+});
+
+test("a holder whose pid is another user's (a kill answers EPERM) is not this run's: no kill counts, none is tried again, and a fence over it returns at once", { skip: (process.getuid?.() === 0 && "root may signal any process") || (process.platform !== "linux" && "reads /proc"), timeout: 30_000 }, async () => {
+  const other = holderOfProcess(1);
+  assert.ok(other, "pid 1, which this user may not signal");
+  assert.equal(killHolder(other), false, "no kill counted on EPERM");
+  const began = Date.now();
+  await fenceHolder(other);
+  assert.ok(Date.now() - began < 1_000, `the fence returned at once: ${Date.now() - began} ms`);
 });

@@ -112,12 +112,20 @@ export function killHolder(holder: RunHolder): boolean {
   const state = holderState(holder);
   if (state === "gone") return false;
   if (state === "unknown") throw new Error(`the run's holder ${holder.pid} cannot be checked (the process listing failed): it is never killed unidentified, and nothing is claimed over it`);
+  return signal(holder.pid, "SIGKILL");
+}
+
+/** Sends `name` to `pid`: true when it was sent. ESRCH (it exited since the look) and EPERM (the pid is another user's
+ *  now, so not the holder's) are no error and send nothing: false, and no kill is tried again on either. */
+export function signal(pid: number, name: NodeJS.Signals): boolean {
   try {
-    process.kill(holder.pid, "SIGKILL");
-  } catch {
-    // Gone between the look and the kill.
+    process.kill(pid, name);
+    return true;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ESRCH" || code === "EPERM") return false;
+    throw error;
   }
-  return true;
 }
 
 /** Kills `holder`'s process when it lives and waits until it is gone (at most `waitMs`, else it throws): what a claim

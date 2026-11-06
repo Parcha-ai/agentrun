@@ -304,3 +304,29 @@ test("close() leaves no stop pending: a stop kept waiting on an identity that ca
   await sleep(1_500);
   assert.ok(alive(pid), "no stop sent after the close: its timer was cleared");
 });
+
+test("a stop whose process exits between its identity check and the signal is no error: the server stays up", { skip: process.platform !== "linux" && "reads /proc", timeout: 120_000 }, async (t) => {
+  const { data, runId, pid } = await crashMidRun(t);
+  const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  t.after(() => next.close());
+  const api = client(next.baseUrl, next.token);
+  assert.equal((await api("GET", `/runs/${runId}`)).status, 200, "adopted");
+  // From here the listing reads the process as alive (its pid and start, as the row names them) after it has exited.
+  const real = procTable();
+  const seen = real.snapshot().info(pid);
+  runHolderTestHooks.table = { ...real, snapshot: () => {
+    const look = real.snapshot();
+    return { ...look, info: (asked) => (asked === pid ? seen : look.info(asked)) };
+  } };
+  t.after(() => delete runHolderTestHooks.table);
+  await killed(pid);
+  const thrown = [];
+  const onError = (error) => thrown.push(String(error?.message ?? error));
+  process.on("uncaughtException", onError);
+  process.on("unhandledRejection", onError);
+  t.after(() => (process.off("uncaughtException", onError), process.off("unhandledRejection", onError)));
+  assert.equal((await api("POST", `/runs/${runId}/cancel`)).status, 202);
+  await sleep(1_500);
+  assert.deepEqual(thrown, [], "the signal to a process already gone threw nothing");
+  assert.equal((await api("GET", "/health")).status, 200, "the server answers");
+});

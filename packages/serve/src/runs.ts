@@ -58,7 +58,7 @@ import { destroyRunBoxes, ensureRemoteBox, PullIncomplete, pullRemoteBox, RUN_LA
 import { BACKGROUND_DIR, endBackground } from "./background.js";
 import { removeEgressDir, RUN_BOX_ALLOW_ENV } from "./box-egress.js";
 import { BehindReadError, checkpointRunDb, MonotonicReads, readRunDb } from "./run-db.js";
-import { holderLives, holderOfClaim, holderOfProcess, holderState, killHolder, LAUNCH_HOLDER, RUN_LAUNCH_ENV, type RunHolder } from "./run-holder.js";
+import { holderLives, holderOfClaim, holderOfProcess, holderState, killHolder, LAUNCH_HOLDER, RUN_LAUNCH_ENV, type RunHolder, signal } from "./run-holder.js";
 import { firstDoorLine, untilOpened, verifyDoor } from "./door-line.js";
 
 /** `holder` with this launch's door nonce, which the row keeps so a next server can prove the door too. */
@@ -1498,7 +1498,8 @@ export class Runs {
     const state = holderState(holder);
     if (state === "alive") {
       run.stopWaits = undefined;
-      return void process.kill(holder.pid, "SIGTERM");
+      // Already exited (ESRCH) or another user's pid now (EPERM): nothing to stop.
+      return void signal(holder.pid, "SIGTERM");
     }
     if (state === "gone" || this.closed) return;
     if (!run.stopWaits) warn(run.id, `its stop waits: its process ${holder.pid} cannot be identified (the process listing cannot be read); it is sent once it can be`);
@@ -1506,7 +1507,11 @@ export class Runs {
     clearTimeout(run.stopPending);
     run.stopPending = setTimeout(() => {
       run.stopPending = undefined;
-      if (run.orphanHolder === holder && !this.closed) this.terminate(run);
+      try {
+        if (run.orphanHolder === holder && !this.closed) this.terminate(run);
+      } catch (error) {
+        warn(run.id, `its stop is not sent: ${(error as Error).message}`);
+      }
     }, 1_000).unref();
   }
 
@@ -2214,7 +2219,14 @@ export class Runs {
       if (first) run.firstLaunch = true;
       run.claimWait = true;
       warn(run.id, `its process is not started: its claim was not written (${(error as Error).message}); trying again in ${every / 1000} s`);
-      setTimeout(() => void (this.closing ? undefined : this.launch(run)), every).unref();
+      setTimeout(() => {
+        if (this.closing) return;
+        try {
+          this.launch(run);
+        } catch (error) {
+          warn(run.id, `its process is not started: ${(error as Error).message}`);
+        }
+      }, every).unref();
       return;
     }
     this.markLaunching(run);
@@ -2312,7 +2324,13 @@ export class Runs {
       if (storeBusy(error)) {
         const every = CLAIM_RETRY_MS[naming.tries] ?? this.options.settleRetryMs ?? SETTLE_RETRY_MS;
         naming.tries++;
-        setTimeout(() => this.writeHolder(run), every).unref();
+        setTimeout(() => {
+          try {
+            this.writeHolder(run);
+          } catch (error) {
+            warn(run.id, `its holder is not named on its row: ${(error as Error).message}`);
+          }
+        }, every).unref();
         return;
       }
       if (!(error instanceof AgentHomeError && error.code === "stale")) warn(run.id, `its holder is not named on its row: ${(error as Error).message}`);
