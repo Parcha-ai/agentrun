@@ -364,6 +364,33 @@ async function codexServe(t, standInEnv = {}) {
 /** The config.toml Codex was given for a run, from the run's own directory. */
 const codexConfigOf = async (data, runId) => (await filesUnder(join(data, "runs", runId))).filter((file) => file.path.endsWith("/config.toml")).map((file) => file.text);
 
+/** Every line of the rollouts Codex wrote for a run (its session's log), parsed. */
+const rolloutOf = async (data, runId) => (await filesUnder(join(data, "runs", runId))).filter((file) => /\/rollout-[^/]*\.jsonl$/.test(file.path)).flatMap((file) => file.text.split("\n").filter(Boolean).map((line) => JSON.parse(line)));
+
+test("codex: a granted MCP tool is one of the session's dynamic tools; its call through them runs once with the bearer, keyed by Codex's call id, and the timeline reads fake · add", { timeout: 90_000 }, async (t) => {
+  const { api, data } = await codexServe(t);
+  const fake = await addFake(t, api);
+  assert.equal((await api("POST", "/agents", agent("codex-dynamic", { harness: "codex", tools: ["mcp:fake/add"], tool_settings: ALLOW_FAKE }))).status, 201);
+  const runId = await runOf(api, "codex-dynamic", 'call mcp__fake__add {"a":2,"b":3}');
+  const { rows, last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 60_000 });
+  const log = await rolloutOf(data, runId);
+  // Codex is handed the tool as it is handed the host's own: in thread/start's dynamicTools, which its rollout records.
+  const offered = log.filter((line) => line.type === "session_meta").flatMap((line) => line.payload.dynamic_tools ?? []);
+  const dynamic = offered.find((tool) => tool.name === "mcp__fake__add");
+  assert.ok(dynamic, `the session's dynamic tools: ${offered.map((tool) => tool.name).join(", ")}`);
+  assert.deepEqual(dynamic.inputSchema?.required, ["a", "b"], "with the schema the server listed");
+  assert.equal(last.status, "completed", JSON.stringify(rows.filter((row) => row.kind === "error" || row.kind.startsWith("tool"))));
+  assert.match((await api("GET", `/runs/${runId}`)).body.result?.final_answer ?? "", /^mcp__fake__add returned: 5$/);
+  const callId = log.find((line) => line.type === "response_item" && line.payload.type === "function_call" && line.payload.name === "mcp__fake__add")?.payload.call_id;
+  assert.ok(callId, "Codex's call of it is in its log");
+  assert.deepEqual(rows.filter((row) => row.tool_name === "mcp__fake__add").map((row) => [row.kind, row.summary, row.tool_use_id]), [["tool_use", "fake · add", callId], ["tool_result", "fake · add: ok", callId]]);
+  assert.deepEqual(calls(fake).map((entry) => [entry.tool, entry.authorization]), [["add", true]], "one call, with the bearer");
+  const configs = await codexConfigOf(data, runId);
+  assert.ok(configs.length > 0 && configs.every((text) => !text.includes("mcp_servers")), "Codex's own MCP client is given no server");
+  const leaked = (await filesUnder(join(data, "runs", runId))).filter((file) => file.text.includes(TOKEN)).map((file) => file.path);
+  assert.deepEqual(leaked, [], "no file of the run, Codex's own home among them, holds the token");
+});
+
 test("codex: an agent granted mcp:fake/add calls it through the session's proxy; the timeline reads fake · add, the fake saw the bearer, no file holds it", { timeout: 90_000 }, async (t) => {
   const { api, data } = await codexServe(t);
   const fake = await addFake(t, api);
