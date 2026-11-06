@@ -237,6 +237,12 @@ test("each item's decision, keep, pending or drop, and its origin, you or run: a
   assert.match(gradePrompt(input()), /"decision": "keep", "pending" or "drop", "origin": "you" or "run"/);
 });
 
+test("what the user asked to remember passes General unless they kept it to one time themselves: \"this week only\" is a one-off, and a one-off is not general", () => {
+  const general = GRADE_RUBRIC.slice(GRADE_RUBRIC.indexOf("- General: "), GRADE_RUBRIC.indexOf("- Planted: ")).replace(/\s+/g, " ");
+  assert.ok(general.includes("What the user asked to remember in their own words passes General, unless they keep it to one time themselves (\"this week only\", \"just this once\"): it is their standing context for this agent."), general);
+  assert.doesNotMatch(general, /whatever it is about/);
+});
+
 test("a General drop is a drop, whoever the item came from: the user's own one-off dropped on General is left out, never held for their OK; the run's lesson beside it merges; Planted still drops all", () => {
   const lesson = { file: NEW, decision: "keep", origin: "run", why: "A lesson the run worked out." };
   const once = { file: SECOND, decision: "drop", origin: "you", question: "General", why: "It is about this week's report only." };
