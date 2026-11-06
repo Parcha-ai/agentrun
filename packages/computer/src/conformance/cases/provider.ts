@@ -2,7 +2,7 @@
 // network reads back as asked and a change is refused or applied truthfully, a computer does not run past its deadline,
 // and the janitor ends only the expired, stopped or running.
 import { sweep } from "../../janitor.js";
-import type { NetworkSpec } from "../../provider.js";
+import type { ComputerSpec, NetworkSpec } from "../../provider.js";
 import type { Case, CaseContext } from "../types.js";
 import { CASE_LABEL, delay } from "./util.js";
 
@@ -15,6 +15,13 @@ const names = async (t: CaseContext, labels: Record<string, string>) =>
 		.sort();
 const kindOf = (policy: NetworkSpec) => (typeof policy === "string" ? policy : "allow");
 const POLICIES: NetworkSpec[] = ["none", "open", { allow: ["example.com"] }];
+
+/** Asserts create refuses spec; a computer it makes anyway is handed to the runner first, so it is deleted. */
+async function refusedCreate(t: CaseContext, spec: ComputerSpec, what: string) {
+	const created = await t.provider.create(spec);
+	if (created.ok) t.track(created.value);
+	t.refused(created, what, ["refused"]);
+}
 
 const provider = (name: string, run: Case["run"], extra: Partial<Case> = {}): Case => ({
 	id: `provider.${name}`,
@@ -40,12 +47,12 @@ export const providerCases: Case[] = [
 				refusals.some((r) => r.field === "lifetimeMs" && r.message !== ""),
 				`check of a spec with ${what} refuses lifetimeMs in words: ${JSON.stringify(refusals)}`,
 			);
-			t.refused(await t.provider.create(spec as never), `create of a spec with ${what}`, ["refused"]);
+			await refusedCreate(t, spec as ComputerSpec, `create of a spec with ${what}`);
 		}
 		for (const policy of POLICIES.filter((p) => !t.provider.capabilities().network.includes(kindOf(p)))) {
 			const refusals = t.provider.check(t.spec({ labels, network: policy }));
 			t.assert(refusals.some((r) => r.field === "network" && r.message !== ""), `check refuses network ${kindOf(policy)}, which the provider does not declare`);
-			t.refused(await t.provider.create(t.spec({ labels, network: policy })), `create with network ${kindOf(policy)}`, ["refused"]);
+			await refusedCreate(t, t.spec({ labels, network: policy }), `create with network ${kindOf(policy)}`);
 		}
 		t.deepEqual(await names(t, labels), [], "the computers the refused creates made");
 	}),

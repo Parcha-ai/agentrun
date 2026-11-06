@@ -89,7 +89,9 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 	const pending = new Set<Promise<unknown>>();
 	const keep = (promise: Promise<unknown>) => {
 		pending.add(promise);
-		void promise.finally(() => pending.delete(promise));
+		// Both branches handled: a rejection is the caller's to report, never an unhandled one here.
+		const done = () => pending.delete(promise);
+		void promise.then(done, done);
 	};
 
 	// Network none, never wider: a provider without it fails Core rather than being tested on an open network.

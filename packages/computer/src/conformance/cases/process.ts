@@ -137,8 +137,20 @@ export const processCases: Case[] = [
 		const running = listed[at(term.id)];
 		t.deepEqual([ended?.argv, ended?.running, ended?.exitCode, ended?.pty], [["echo", "listed"], false, 0, false], "the ended process");
 		t.deepEqual([running?.argv, running?.running, running?.pty, running?.pid], [["sleep", "304"], true, true, term.pid], "the running one, in a terminal");
-		const page = await t.call("process.list", {});
-		t.equal(page.truncated, false, "one page holds them all");
+		// Pages may be any size: follow next while truncated, then the page from the last next is empty.
+		let page = await t.call("process.list", {});
+		const paged = [...page.processes];
+		for (let pages = 1; page.truncated; pages++) {
+			t.assert(pages <= listed.length + 1, `process.list still truncated after ${pages} pages for ${listed.length} processes`);
+			t.assert(Number.isSafeInteger(page.next), `next is where the page after starts: ${JSON.stringify(page.next)}`);
+			page = await t.call("process.list", { from: page.next });
+			paged.push(...page.processes);
+		}
+		t.deepEqual(
+			paged.map((p) => p.id),
+			listed.map((p) => p.id),
+			"the processes paged by from and next, in start order",
+		);
 		t.assert(Number.isSafeInteger(page.next), `next is where a page after would start: ${JSON.stringify(page.next)}`);
 		t.deepEqual((await t.call("process.list", { from: page.next })).processes, [], "the page from next, after the last");
 		await kill(t, term.id);

@@ -10,9 +10,17 @@ import { formatReport } from "./report.js";
 import { runConformance } from "./runner.js";
 import type { Case, CaseResult } from "./types.js";
 
+/** A stream as main writes to it: done is called once the text is handed on, as Writable.write's callback is. */
+export interface Writer {
+	write(text: string, done?: (error?: Error | null) => void): unknown;
+}
+
+/** Writes text and settles once the stream has taken it, so an exit after it cuts nothing off. */
+const write = (stream: Writer, text: string) => new Promise<void>((resolve) => void stream.write(text, () => resolve()));
+
 export interface CliIo {
-	stdout?: { write(text: string): unknown };
-	stderr?: { write(text: string): unknown };
+	stdout?: Writer;
+	stderr?: Writer;
 	/** Where a module path is resolved from; default the directory npm was run in. */
 	cwd?: string;
 	cases?: Case[];
@@ -90,11 +98,11 @@ export async function main(argv: string[], io: CliIo = {}): Promise<number> {
 	try {
 		args = parse(argv, cases);
 	} catch (error) {
-		stderr.write(`${(error as Error).message}\n${USAGE}\n`);
+		await write(stderr, `${(error as Error).message}\n${USAGE}\n`);
 		return 2;
 	}
 	if (args.help) {
-		stdout.write(`${USAGE}\n`);
+		await write(stdout, `${USAGE}\n`);
 		return 0;
 	}
 	let close = () => {};
@@ -108,9 +116,9 @@ export async function main(argv: string[], io: CliIo = {}): Promise<number> {
 			target = await load(resolve(io.cwd ?? process.env.INIT_CWD ?? process.cwd(), args.provider));
 		}
 	} catch (error) {
-		stderr.write(`${(error as Error).message}\n`);
+		await write(stderr, `${(error as Error).message}\n`);
 		if (error instanceof Usage) {
-			stderr.write(`${USAGE}\n`);
+			await write(stderr, `${USAGE}\n`);
 			return 2;
 		}
 		return 1;
@@ -125,7 +133,7 @@ export async function main(argv: string[], io: CliIo = {}): Promise<number> {
 			...(target.drifted ? { drifted: target.drifted } : {}),
 			...(onResult ? { onResult } : {}),
 		});
-		stdout.write(args.json ? `${JSON.stringify(report, null, 2)}\n` : formatReport(report));
+		await write(stdout, args.json ? `${JSON.stringify(report, null, 2)}\n` : formatReport(report));
 		return report.core === "pass" ? 0 : 1;
 	} finally {
 		close();
@@ -137,7 +145,10 @@ if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(realpathS
 	const stop = () => controller.abort();
 	process.once("SIGINT", stop);
 	process.once("SIGTERM", stop);
-	const code = await main(process.argv.slice(2), { signal: controller.signal, progress: process.stderr.isTTY === true });
-	// A provider call the runner stopped waiting for may still hold the event loop: the report is out, so exit.
-	process.exit(code);
+	process.exitCode = await main(process.argv.slice(2), { signal: controller.signal, progress: process.stderr.isTTY === true });
+	process.off("SIGINT", stop);
+	process.off("SIGTERM", stop);
+	// The report is written. Node exits once nothing is left; a provider call the runner stopped waiting for may still
+	// hold the event loop, so this ends the process after a grace period, without holding it open itself.
+	setTimeout(() => process.exit(), 5000).unref();
 }
