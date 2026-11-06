@@ -275,7 +275,7 @@ test("while the cap refuses more of the person's time on a session, a new ask th
   assert.deepEqual(asked, ["taking over the browser", "handing the browser to you"]);
 });
 
-test("a process that takes up an earlier process's ask holds the person's time again; with no room the ask still waits, unheld, until its own expiry", async (t) => {
+test("a process that takes up an earlier process's ask holds the person's time again; with no room the ask ends at the cap, the agent told its words, and nobody drives unheld", async (t) => {
   const root = await scratch(t);
   const before = hands(root, { holdMs: 60_000 });
   const first = await before.person.handoff.request(ask(16, "ar-run-16-1"));
@@ -290,13 +290,13 @@ test("a process that takes up an earlier process's ask holds the person's time a
   assert.deepEqual(answerAsk(root, "done"), { outcome: "done", first: true });
   assert.equal(await after.person.handoff.outcome(second.interactionId), "done");
   assert.equal(after.held.dropped, 1, "and dropped with its answer");
-  // No room in the process that takes it up: the ask waits all the same, and its answer reaches the wait.
+  // No room in the process that takes it up: the ask ends at the cap, as everyone on a session the cap refused does.
   after.held.refuse = "spend_cap_reached: no room";
   assert.equal(await after.person.handoff.outcome(first.interactionId), "pending");
   await sleep(5);
   assert.equal(after.held.taken, 1, "nothing more held");
-  assert.deepEqual(answerAsk(root, "done"), { outcome: "done", first: true });
-  assert.equal(await after.person.handoff.outcome(first.interactionId), "done");
+  assert.deepEqual(await after.person.handoff.outcome(first.interactionId), { outcome: "expired", reason: "spend_cap_reached: no room" }, "expired, in the cap's words");
+  assert.equal(openAsk(root), undefined, "nothing is left waiting: it ended");
 });
 
 test("a take-over's row is written when its hold goes live, and a take whose hold never started is let go with no row", async (t) => {

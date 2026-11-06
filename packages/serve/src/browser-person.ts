@@ -364,12 +364,15 @@ export function personHands(options: {
     open.set(id, ask);
     watch();
     // Its time was held by the process that asked, which is gone: held again here, under the cap, as an ask's is. With no
-    // room it still waits, unheld, until its own expiry (within the hold's window of its asking): the person may be partway
-    // through it, and that time is spent at the vendor either way. A take-over of the session asks the cap itself.
+    // room it ends at the cap, as everyone on a session whose re-hold the cap refused does: a take-over of the session goes
+    // back to the agent (cap), and the ask expires, the agent told the cap's words. Nobody drives unheld.
     const user = `ask:${id}`;
     // Held through its own expiry, as its asking held it: joining a take-over's hold, the stretch past it.
     void acquire(kept.tag, user, "handing the browser to you", false, Date.parse(kept.expires_at)).then((refused) => {
-      if (refused) return;
+      if (refused) {
+        options.gates(kept.tag).give?.("cap", refused.refused);
+        return capAsk(id, refused.refused);
+      }
       if (settled.has(id) || open.get(id) !== ask) return release(kept.tag, user);
       ask.drop = () => release(kept.tag, user);
     }, () => undefined);
