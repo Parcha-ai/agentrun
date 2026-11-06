@@ -453,6 +453,58 @@ test("create: an abort during the upload terminates the sandbox", async () => {
 	assert.equal(only(fake).running, false);
 });
 
+// Modal ends a sandbox asynchronously: a create that refuses one waits, as release does, until poll reads it finished.
+const LINGERS = { lingers: { polls: 2, lists: 5 } };
+/** What provider.list reads, by name, right after create returned. */
+const listedNames = async (provider) => {
+	const listed = await provider.list({});
+	assert.equal(listed.ok, true, JSON.stringify(listed));
+	return listed.value.map((info) => info.ref.name);
+};
+
+test("create: a create refused for drift leaves nothing listed when it returns, though Modal ends the sandbox late", async () => {
+	const { provider, fake } = setup({ timeouts: { releasePollMs: 5 } }, { ...LINGERS, box: { hello: { ...HELLO, version: `${VERSION}-drift` } } });
+	const created = await provider.create(SPEC);
+	assert.equal(created.error?.code, "refused");
+	assert.match(created.error.message, /was terminated/);
+	assert.equal(only(fake).running, false, "create returned once poll read the sandbox finished");
+	assert.deepEqual(await listedNames(provider), []);
+});
+
+test("create: a create refused for a failed upload leaves nothing listed when it returns", async () => {
+	const { provider, fake } = uploadSetup({ timeouts: { releasePollMs: 5 } }, { ...LINGERS, upload: "exit" });
+	const created = await provider.create(SPEC);
+	assert.equal(created.error?.code, "refused");
+	assert.match(created.error.message, /was terminated/);
+	assert.equal(only(fake).running, false);
+	assert.deepEqual(await listedNames(provider), []);
+});
+
+test("create: an aborted create still waits for the sandbox it ends: the wait does not take the caller's signal", async () => {
+	const { provider, fake } = setup({ timeouts: { releasePollMs: 5 } }, { ...LINGERS, box: { silent: true } });
+	const controller = new AbortController();
+	const creating = provider.create(SPEC, { signal: controller.signal });
+	await new Promise((resolve) => setTimeout(resolve, 30));
+	controller.abort();
+	const created = await creating;
+	assert.equal(created.error?.code, "aborted");
+	assert.match(created.error.message, /was terminated/);
+	assert.equal(only(fake).running, false);
+	assert.deepEqual(await listedNames(provider), []);
+});
+
+test("create: a refused sandbox that does not finish within releaseMs is said to be still ending, with what poll last read", async () => {
+	const { provider } = setup({ timeouts: { releaseMs: 150, releasePollMs: 10 } }, { lingers: { polls: 1_000 }, box: { hello: { ...HELLO, version: `${VERSION}-drift` } } });
+	const started = Date.now();
+	const created = await provider.create(SPEC);
+	assert.equal(created.error?.code, "refused");
+	assert.match(created.error.message, /may still be ending/);
+	assert.match(created.error.message, /0\.15 s/);
+	assert.match(created.error.message, /poll read null/);
+	assert.match(created.error.message, /version/, "the drift is still said");
+	assert.ok(Date.now() - started < 5_000, "bounded by releaseMs");
+});
+
 test("create: a daemon binary that is not there is not_found in words, before any SDK call", async () => {
 	const { provider, fake } = uploadSetup({ daemonPath: join(UPLOAD_DIR, "absent") });
 	const created = await provider.create(SPEC);
