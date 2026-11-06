@@ -204,6 +204,30 @@ describe("Settings → MCP servers, the saved ones", () => {
     expect(p.opened).toEqual(["http://127.0.0.1:4300/authorize?state=z"]);
   });
 
+  it("a change keeps the tools' prices: a save sends the saved ones for the tools it still lists", async () => {
+    const priced = saved({ prices: { add: 0.05, gone: 1 } });
+    const s = server([[priced]], (c) => (c.method === "PUT" ? json(200, priced) : undefined));
+    const p = await open(s.v2);
+    await p.click(/^Change$/, p.row("fake"));
+    await p.click(/^Save$/);
+    expect(s.writes()).toEqual([{ method: "PUT", path: "/v2/settings/mcp-servers/fake", body: { url: VARS.url, auth: { type: "bearer" }, prices: { add: 0.05 } } }]);
+  });
+
+  it("a save that lands after its form was closed and another opened leaves the other form open, with what was typed", async () => {
+    let finish: (r: Response) => void = () => {};
+    const s = server([[saved(), saved({ name: "other" })]], (c) => (c.method === "PUT" ? new Promise<Response>((done) => { finish = done; }) : undefined));
+    const p = await open(s.v2);
+    await p.click(/^Change$/, p.row("fake"));
+    await p.click(/^Save$/);
+    await p.click(/^Cancel$/);
+    await p.click(/^Change$/, p.row("other"));
+    await p.type("mcp-url", "http://127.0.0.1:4999/mcp");
+    await act(async () => { finish(json(200, saved())); });
+    await p.settle();
+    expect(p.input("mcp-name")?.value).toBe("other");
+    expect(p.input("mcp-url")?.value).toBe("http://127.0.0.1:4999/mcp");
+  });
+
   it("changes one with its token kept: the field is empty and says saved", async () => {
     const s = server([[saved()]], (c) => (c.method === "PUT" ? json(200, saved()) : undefined));
     const p = await open(s.v2);
