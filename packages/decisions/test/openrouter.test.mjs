@@ -41,7 +41,9 @@ registerDecisionProviderConformance('openrouter', {
       if (reply.kind === 'status') return json({ error: { message: 'refused', code: reply.status } }, reply.status);
       if (reply.kind === 'malformed') return json('{"answers": [not json');
       if (reply.kind === 'lost') throw Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' }) });
-      return json({ id: 'gen-1', model: 'liquid/d1', answers: reply.answers, usage: { input_tokens: 120, output_tokens: 0, cost: 0.0000024 } });
+      // The sources a model that cites the web gives, as OpenRouter returns them: url_citation annotations.
+      const annotations = (reply.evidence ?? []).map(({ url, title, excerpts }) => ({ type: 'url_citation', url_citation: { url, title, content: excerpts?.[0] ?? '' } }));
+      return json({ id: 'gen-1', model: 'liquid/d1', answers: reply.answers, annotations, usage: { input_tokens: 120, output_tokens: 0, cost: 0.0000024 } });
     };
     return { provider: openrouterProvider({ ...settings, fetch }), calls: () => calls };
   },
