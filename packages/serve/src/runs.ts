@@ -2241,7 +2241,14 @@ export class Runs {
     // to be installed whole first (harnessReady), holding its place meanwhile (waitsInstall), and launches once it is:
     // never a process that would load a missing SDK.
     const installing = this.harnessReady(run);
-    if (installing) return void installing.then((installed) => installed && this.launch(run, followUp));
+    // After the install, its MCP OAuth tokens are refreshed again: the wait (up to the install's bound) may have outlived
+    // what the refresh before it gave (mcpFresh); launch() reads every check again.
+    if (installing) return void installing.then(async (installed) => {
+      if (!installed) return;
+      const refreshing = this.mcpFresh(run);
+      if (refreshing) await refreshing;
+      this.launch(run, followUp);
+    });
     run.waitsInstall = undefined;
     // Taken by this launch only: a later launch (a relaunch after its process went) opens the run as any other.
     run.followUpOpen = undefined;
@@ -2380,7 +2387,11 @@ export class Runs {
       run.claimWait = true;
       run.claimWaitWhy = storeBusy(error) ? "the agent store is busy (another writer holds it)" : /cannot be (checked|looked for)/.test((error as Error).message) ? "the process listing cannot be read, so its holder cannot be checked" : (error as Error).message;
       warn(run.id, `its process is not started: its claim was not written (${(error as Error).message}); trying again in ${every / 1000} s`);
-      setTimeout(() => {
+      setTimeout(async () => {
+        if (this.closing) return;
+        // Refreshed again before the retry, as after any wait (mcpFresh); launch() reads every check again.
+        const refreshing = this.mcpFresh(run);
+        if (refreshing) await refreshing.catch(() => undefined);
         if (this.closing) return;
         try {
           this.launch(run);
