@@ -6,7 +6,9 @@
 // whose body does not parse or match the questions is invalid_response, booked at list price too.
 import { setTimeout as sleep } from "node:timers/promises";
 import { checkCapabilities, DecisionProviderError } from "@parcha/agentrun-dsl";
-import type { DecisionCapabilities, DecisionContext, DecisionEvidence, DecisionOutcome, DecisionProvider, DecisionRequest, ProviderAnswer, SystemOneQuestion } from "@parcha/agentrun-dsl";
+import type { DecisionCapabilities, DecisionContext, DecisionOutcome, DecisionProvider, DecisionRequest, ProviderAnswer, SystemOneQuestion } from "@parcha/agentrun-dsl";
+import { parallelCitations } from "./evidence.js";
+import { openrouterProvider, type OpenRouterOptions } from "./openrouter.js";
 
 /** Parallel's list price for one `fast` decision request, up to 100 questions (docs.parallel.ai pricing, 2026-10-28). */
 export const PARALLEL_LIST_PRICE_USD = 0.001;
@@ -37,6 +39,10 @@ export interface ParallelOptions {
   retryMaxMs?: number;
   /** Whether citations carry their passages (default true). */
   includeExcerpts?: boolean;
+  /** Parallel's Decisions model through OpenRouter (`parallel/decisions-<mode>` on POST /api/v1/systemone) instead of
+   *  Parallel's API: the OpenRouter key (else OPENROUTER_API_KEY), its root and app attribution. The same provider: the same
+   *  questions and limits, the same evidence shape (OpenRouter's url_citation annotations), the cost OpenRouter reports. */
+  openrouter?: Pick<OpenRouterOptions, "apiKey" | "baseURL" | "app">;
 }
 
 const isRecord = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
@@ -90,10 +96,7 @@ function readResponse(body: unknown, questions: Record<string, SystemOneQuestion
     else throw invalid(`an answer of unknown type for "${id}"`);
   }
   if (body.citations !== undefined && !Array.isArray(body.citations)) throw invalid("citations that are not a list");
-  const evidence: DecisionEvidence[] = ((body.citations as unknown[] | undefined) ?? []).filter(isRecord).filter((c) => typeof c.url === "string").map((c) => ({
-    url: c.url as string, title: typeof c.title === "string" ? c.title : null,
-    excerpts: Array.isArray(c.excerpts) ? c.excerpts.filter((e): e is string => typeof e === "string") : [], scope: "call",
-  }));
+  const evidence = parallelCitations(body.citations);
   const usage = isRecord(body.usage) && Number.isSafeInteger(body.usage.input_tokens) && (body.usage.input_tokens as number) >= 0 ? { input_tokens: body.usage.input_tokens as number, output_tokens: 0 } : null;
   return {
     answers: { ...answers }, evidence, model: typeof body.mode === "string" ? `parallel-${body.mode}` : null, usage,
@@ -121,6 +124,20 @@ export function parallelProvider(options: ParallelOptions = {}): DecisionProvide
   const retryBaseMs = options.retryBaseMs ?? 500;
   const retryMaxMs = options.retryMaxMs ?? 5_000;
   const url = `${(options.baseURL ?? BASE_URL).replace(/\/+$/, "")}/v1/decisions`;
+  if (options.openrouter) {
+    // The OpenRouter route: OpenRouter's Decisions provider, asked for Parallel's model, after Parallel's own checks.
+    const routed = openrouterProvider({ ...options.openrouter, ...(options.fetch ? { fetch: options.fetch } : {}), timeoutMs, maxAttempts, retryBaseMs, retryMaxMs, takesImages: () => false });
+    return {
+      id: "parallel", needs: ["OPENROUTER_API_KEY"], capabilities,
+      async decide(request: DecisionRequest, ctx: DecisionContext): Promise<DecisionOutcome> {
+        checkCapabilities(capabilities, request);
+        checkLimits(request.questions);
+        const mode = request.model ? request.model.slice("parallel-".length) : modes[0];
+        const questions = Object.fromEntries(Object.entries(request.questions).map(([id, q]) => [id, wireQuestion(q)])) as DecisionRequest["questions"];
+        return routed.decide({ ...request, model: `parallel/decisions-${mode}`, questions }, ctx);
+      },
+    };
+  }
   return {
     id: "parallel", needs: [KEY_VARIABLE], capabilities,
     async decide(request: DecisionRequest, ctx: DecisionContext): Promise<DecisionOutcome> {
