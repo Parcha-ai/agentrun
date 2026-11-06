@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { unseal } from "@parcha/pi-durable-agent";
@@ -434,6 +434,38 @@ test("under its launcher the seal key is made once, outside the data directory, 
   assert.throws(() => holdsNone(`x${Buffer.from(values.BROWSERBASE_PROJECT_ID).toString("hex")}x`, forms, "a hex value"));
   for (const file of files) holdsNone(readFileSync(file), forms, file);
   holdsNone(said.join("\n"), forms, "the server's log and answers");
+});
+
+test("under its launcher, a config directory the person made with a plain mkdir (0755) and no key yet: the launcher tightens its own directory to 0700, makes the key 0600, and the server keeps tool keys", { timeout: 60_000 }, async (t) => {
+  const dir = await scratch(t);
+  const [data, config] = [join(dir, "agents"), join(dir, "config")];
+  const keys = join(config, "agentrun");
+  mkdirSync(keys, { recursive: true });
+  chmodSync(keys, 0o755);
+  const token = `not-a-secret-token-${randomBytes(16).toString("hex")}`;
+  const server = await launched(t, data, config, token);
+  assert.equal(statSync(keys).mode & 0o777, 0o700, "its own directory, tightened before the key was written");
+  assert.equal(statSync(join(keys, "seal.key")).mode & 0o777, 0o600);
+  assert.deepEqual((await server.api("GET", "/capabilities")).body.features.tool_keys, { routes: true, at_rest: "sealed" });
+  const out = await server.stop();
+  assert.ok(!out.includes("no seal key"), out);
+});
+
+test("under its launcher, a key that already exists in a directory another user can read is refused and never changed: nothing is chmod-ed, and the message names the exact fix", { timeout: 60_000 }, async (t) => {
+  const dir = await scratch(t);
+  const [data, config] = [join(dir, "agents"), join(dir, "config")];
+  const keys = join(config, "agentrun");
+  mkdirSync(keys, { recursive: true });
+  chmodSync(keys, 0o755);
+  const key = randomBytes(32).toString("base64");
+  writeFileSync(join(keys, "seal.key"), `${key}\n`, { mode: 0o600 });
+  const token = `not-a-secret-token-${randomBytes(16).toString("hex")}`;
+  const server = await launched(t, data, config, token);
+  assert.deepEqual((await server.api("GET", "/capabilities")).body.features.tool_keys, { routes: true, at_rest: "unavailable" });
+  const out = await server.stop();
+  assert.equal(statSync(keys).mode & 0o777, 0o755, "an existing key's directory is never changed");
+  assert.equal(readFileSync(join(keys, "seal.key"), "utf8").trim(), key, "the key is untouched");
+  assert.ok(out.includes(`no seal key in ${join(keys, "seal.key")}`) && out.includes(`chmod 700 ${keys}; chmod 600 ${join(keys, "seal.key")}`), out);
 });
 
 test("a key a harness reads, saved later, makes the harness available with no restart: the server's reading probes the harnesses' offers with it", async (t) => {
