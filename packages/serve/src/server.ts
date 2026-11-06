@@ -12,7 +12,7 @@ import { once } from "node:events";
 import { existsSync, readFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { homedir } from "node:os";
-import type { NewRevision, Revision, RunOrigin } from "@parcha/pi-durable-agent";
+import { type NewRevision, type Revision, runDirIn, type RunOrigin, STORE_FILE } from "@parcha/pi-durable-agent";
 import { agentView, Agents, etagOf, homeBusy, revisionView, storeBusy, type AgentEntry } from "./agents.js";
 import { WORKFLOW_ADAPTERS } from "./app.js";
 import { DECISION_ADAPTER, decisionsOf, FAUX_JEV_ENV, FAUX_OPENROUTER_ENV, FAUX_PARALLEL_ENV } from "./decisions.js";
@@ -24,7 +24,8 @@ import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
 import { DATA_ENV, DOOR_TOKEN_FILE, HOME_HOST_OWNED, HOMES_DIR, homeOf, readJson, RUN_META, SETUP_LOST, syncDir, TOKEN_FILE, writeDurable } from "./files.js";
 import { checkedPath, decodedPath, homePath, hostOwnedOf, hostOwnedRefusal, type OwnedReadAt, ownedByIdentity } from "./home-path.js";
 import { chooseModel, EFFORTS, FAUX_ENV, FAUX_UPSTREAM_ENV, MODEL_NODES, type ModelNeeds, modelSource, THINKING_LEVELS, withoutFaux } from "./model.js";
-import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, type HarnessCapability, harnessOffers } from "./harness.js";
+import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, type HarnessCapability, harnessOfBody, harnessOffers } from "./harness.js";
+import { ClaudeInstall, harnessesOf, npmInstall } from "./claude-sdk.js";
 import { healthOf, hostMemory, maxRunsOf, MIN_FREE_MIB, runsThatFit } from "./host.js";
 import { IMPORT_ASKED } from "./import.js";
 import type { ImportAnswer, ImportTask } from "./import-worker.js";
@@ -33,11 +34,11 @@ import { gradeModelOf, learningBudgetOf, type LearningMode, learningOf } from ".
 import { agentLearning, learningLog, learningNotes, noteBody, pendingCount, readNote, runDiff, runLearning, secretsShown, sendNote, writeNote } from "./learning-routes.js";
 import { answerLlms, MCP_PATH, mcpEndpoint } from "./mcp.js";
 import { openapiDocument, servedOpenapi, UNSUPPORTED } from "./openapi.js";
-import { boxesLine, NEW_AGENT_TOOLS, newAgentPlace, noBoxReason, type Place, placesOf, resolvePlace } from "./place.js";
+import { boxesLine, defaultPlaceOf, NEW_AGENT_TOOLS, newAgentPlace, noBoxReason, type Place, placesOf, resolvePlace } from "./place.js";
 import { BOX_ALLOW_ENV, boxAllowOf, boxLimitsOf, boxNetworkOf, FAUX_BOX_ENV, fauxBoxes } from "./run-box.js";
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
 import { answerPage, byOwnerSession, isJson, ownerCookie, ownOrigin, sendHostRefused, signedIn } from "./page.js";
-import { HOST_FIX, hostName, loopbackNames } from "./host-check.js";
+import { hostFix, hostName, loopbackNames } from "./host-check.js";
 import { durationMs, logLine } from "./print.js";
 import { type CarryBackRetry, knownToolCostOf, type Run, Runs, STATUSES, type Status, statusOf, toolCostOf, WAITS_ON_A_PERSON } from "./runs.js";
 import { runLines } from "./usage-lines.js";
@@ -181,6 +182,9 @@ export type ServeOptions = {
   /** Under `faux` only: a module that stands in for the VM provider's SDK (its client class, by the SDK's name for it),
    *  so the VM box runs on the tests' fake, never the provider. */
   fauxVm?: string;
+  /** For tests: the lock Claude Code's first use installs by (claude-sdk.ts), with the package.json it locks beside it, in
+   *  place of the one AgentRun ships, whose packages a test's own registry serves. */
+  claudeLock?: string;
   /** Under `faux`: a module whose default export gives a box's egress proxy its `lookup` and `dial` (box-egress.ts), the
    *  tests' fake network. */
   fauxEgress?: string;
@@ -602,6 +606,24 @@ async function oldHomes(data: string): Promise<string[]> {
   return found.sort();
 }
 
+/** Why the data directory is one an earlier version wrote, which keeps its runs outside the disk: a `runs/` folder at
+ *  its top (0.1.0-beta.27 to this version's last, `<data>/runs/<id>/`), or a store.sqlite of store version 1. This
+ *  version keeps every run on the disk (`<data>/disk/agents/<agent>/runs/<run>/`), and moves nothing: undefined when
+ *  neither is there. */
+async function oldLayout(data: string): Promise<string | undefined> {
+  if (await stat(join(data, "runs")).then((info) => info.isDirectory(), () => false)) return `${join(data, "runs")} holds runs in an earlier version's layout`;
+  const file = join(data, STORE_FILE);
+  if (!(await stat(file).then((info) => info.isFile(), () => false))) return undefined;
+  const { DatabaseSync } = await import("node:sqlite");
+  const db = new DatabaseSync(file, { readOnly: true });
+  try {
+    const version = Number((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version);
+    return version === 1 ? `${file} is an earlier version's store (store version 1)` : undefined;
+  } finally {
+    db.close();
+  }
+}
+
 export async function startServe(options: ServeOptions): Promise<Serve> {
   await mkdir(resolve(options.data), { recursive: true, mode: 0o700 });
   // Canonical once, here: a box's mount source below it must then be its own canonical path, through no link (run-box.ts).
@@ -612,6 +634,8 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
     const named = homes.length > 5 ? [...homes.slice(0, 5), `and ${homes.length - 5} more`] : homes;
     throw new Error(`this data directory holds agent homes from AgentRun Server 0.1.0-beta.26 or earlier (${named.join(", ")}), which this version does not read: started here, it would show none of their agents or runs. Keep them with the earlier version, or move those directories out of ${data} to start this one; see "Upgrading from 0.1.0-beta.26" in the serve README.`);
   }
+  const old = await oldLayout(data);
+  if (old) throw new Error(`this data directory was written by an earlier version of AgentRun Server, which kept its runs outside the disk (${old}): this version keeps every run under ${join(data, "disk")} and does not read or move the old ones. Keep this directory with the earlier version, or start this one on a new data directory (an empty folder, or a new volume).`);
   if (options.token !== undefined && (options.token.length < 32 || /\s/.test(options.token))) throw new Error("the token must be 32 characters or more, with no whitespace");
   if (options.drainTimeout !== undefined && durationMs(options.drainTimeout) === undefined) throw new Error(`the drain timeout ${options.drainTimeout} is not a duration such as 8s`);
   enabledBoxes(process.env);
@@ -832,6 +856,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     const egressLog = (state: ReturnType<EgressContainer["state"]>) => log?.(logLine("box_egress", { runtime: boxNetwork.vm!, state: state.state, ...("reason" in state ? { reason: state.reason } : {}) }));
     egress = await startEgressContainer({
       env, data, allow, uid: process.getuid?.() ?? 0, gid: process.getgid?.() ?? 0,
+      warn: (message) => (log ? log(logLine("box_egress", { runtime: boxNetwork.vm!, warning: message })) : void process.stderr.write(`agentrun-serve: ${message}\n`)),
       onChange: (state) => {
         egressLog(state);
         boxOffers = offersNow();
@@ -859,7 +884,14 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   if (swept > 0) log?.(logLine("uploads_swept", { removed: swept }));
   const documents = options.documents ?? process.env[DOCUMENTS_ENV];
   if (documents !== undefined && !(await stat(documents).then((info) => info.isDirectory(), () => false))) throw new Error(`the documents directory ${documents} is not a directory`);
-  const runs = new Runs({ dockerAllow: boxNetwork.allow, ...(egress?.volume ? { dockerVolume: egress.volume } : {}), agents, token, storedKeys, mcpServers: mcpSource, doorTokenFile, doorToken, learning, learningBudget, ...(documents ? { documents: resolve(documents) } : {}), fauxEnv: fauxEnvOf(options), toolSettings: () => settings.get(), ...(runBoxes ? { runBoxes } : {}), ...(remoteBoxes ? { remoteBoxes } : {}), ...(vmBoxes && vmRelayHalf ? { vmBoxes, vmLimits, vmRelay: vmRelayHalf } : {}), ...(remoteBoxes && daytonaApi(env) ? { remoteApi: daytonaApi(env)! } : {}), ...(remoteBoxes ? { boxAllow, onNoBoxList } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(options.reflectTimeoutMs ? { reflectTimeoutMs: options.reflectTimeoutMs } : {}), ...(options.gradeTimeoutMs ? { gradeTimeoutMs: options.gradeTimeoutMs } : {}), ...(options.gradeModel ? { gradeModel: options.gradeModel } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}), notify: (event, run, marker) => webhooks.emit(event, run, marker), ownSecrets: () => triggerSecrets?.values() ?? [], signIns, approvers: options.accounts === true });
+  // Claude Code, installed on first use into the data's harnesses directory (claude-sdk.ts): one install at a time, which
+  // every claude-agent run, and the save of an agent on claude-agent, waits for or starts; once it is in, the offers are
+  // probed again, so capabilities no longer say it installs on first use. A faux harness needs none.
+  const claudeInstall = options.fauxHarness ? undefined : new ClaudeInstall(harnessesOf(data), () => import("./adapters.js").then((adapters) => adapters.claudePins()), (dir, pins, signal) => npmInstall(dir, pins, { signal, ...(options.claudeLock ? { lock: options.claudeLock } : {}) }), (ms) => {
+    log?.(logLine("claude_installed", { ms, dir: harnessesOf(data) }));
+    void probe("claude_installed").catch(() => undefined);
+  });
+  const runs = new Runs({ ...(claudeInstall ? { claudeInstall } : {}), dockerAllow: boxNetwork.allow, ...(egress?.volume ? { dockerVolume: egress.volume } : {}), agents, token, storedKeys, mcpServers: mcpSource, doorTokenFile, doorToken, learning, learningBudget, ...(documents ? { documents: resolve(documents) } : {}), fauxEnv: fauxEnvOf(options), toolSettings: () => settings.get(), ...(runBoxes ? { runBoxes } : {}), ...(remoteBoxes ? { remoteBoxes } : {}), ...(vmBoxes && vmRelayHalf ? { vmBoxes, vmLimits, vmRelay: vmRelayHalf } : {}), ...(remoteBoxes && daytonaApi(env) ? { remoteApi: daytonaApi(env)! } : {}), ...(remoteBoxes ? { boxAllow, onNoBoxList } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(options.reflectTimeoutMs ? { reflectTimeoutMs: options.reflectTimeoutMs } : {}), ...(options.gradeTimeoutMs ? { gradeTimeoutMs: options.gradeTimeoutMs } : {}), ...(options.gradeModel ? { gradeModel: options.gradeModel } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}), notify: (event, run, marker) => webhooks.emit(event, run, marker), ownSecrets: () => triggerSecrets?.values() ?? [], signIns, approvers: options.accounts === true });
   const daytona = daytonaApi(env);
   const relay = (remoteBoxes && daytona) || vmRelayHalf ? await startBoxRelay({ root: data, tokenOf: (id) => runs.relayToken(id), ...(remoteBoxes && daytona ? daytona : {}), ...(vmRelayHalf ? { vm: vmRelayHalf } : {}), serves: (id) => runs.servesBox(id), ensure: (id) => runs.ensureBox(id) }) : undefined;
   if (relay) stops.push(() => relay.close());
@@ -915,7 +947,11 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       // ended run (summaryOfRow): never its own store, whose read can fail, so a busy store loses no end. The same body a
       // live end's notice has.
       await webhooks.catchUp(rows, async (id) => {
-        const meta = await readJson(join(agents.dir, "runs", id, RUN_META));
+        // Its folder on the disk by its row's agent, which a run never changes: the listed row's, or the store's for a run
+        // listed after the list.
+        const listed = rows.find((row) => row.id === id) ?? (await agents.request(() => agents.store.readRun(id)));
+        if (!listed) return null;
+        const meta = await readJson(join(runDirIn(agents.dir, listed.agent, id), RUN_META));
         // Read last, so nothing but this read stands between the run as it is now and its end's queuing.
         const row = await agents.request(() => agents.store.readRun(id));
         if (!row) return null;
@@ -1181,7 +1217,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
    *  starts with the checks a save makes (runnable.ts): one a save refused, or one a setting of this host fixes that it
    *  does not have yet. `capped`: the run has a spend cap, which a web tool's resolution reads (tool-plane.ts). */
   async function runnable(revision: Revision, place: Place, { capped = false }: { capped?: boolean } = {}): Promise<void> {
-    const shape = { ...shapeOf(revision), place };
+    const shape = { ...shapeOf(revision), place, ...(revision.body.place ? {} : { unnamed: true as const }) };
     const blockers = await blockersOf(env, shape, settings.get(), { capped, boxes: boxOffers, offers, mcp: mcpTools });
     if (!blockers.length) return;
     const message = blockers.map((b) => b.message).join(" ");
@@ -1198,9 +1234,18 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     throw new ApiError("agent_not_runnable", message, { details: { adapters: [...new Set(blockers.flatMap((b) => (b.adapter ? [b.adapter] : [])))], unbound, missing, code: blockers.some((b) => b.codeNodes || b.shell), ...(tier ? { tier } : {}), ...(Object.keys(decisions).length ? { decisions } : {}), ...(denied.length ? { denied } : {}), ...(asks.length ? { asks } : {}), ...named } });
   }
 
-  /** A definition being saved: refused (422 by field) when it can never run here; else what this host still lacks. */
+  /** Where a revision of `kind` naming `tools` and no place runs here: the place a new agent would be saved with. */
+  const fallbackPlace = (kind: "agentic" | "workflow", tools: readonly unknown[]): Place => defaultPlaceOf(kind, tools, boxOffers, (tool) => toolOf(tool)?.runnerOnly === true);
+
+  /** A definition being saved: refused (422 by field) when it can never run here; else what this host still lacks. A
+   *  revision that names no place is checked where it would run (fallbackPlace). */
   async function saveable(revision: NewRevision): Promise<InputIssue[]> {
-    const shape = revision.kind === "agentic" ? revision : workflowShape(revision);
+    // An agent on claude-agent starts Claude Code's install, if it is not in yet: its first run waits for less.
+    if (claudeInstall && revision.kind === "agentic" && harnessOfBody(revision) === "claude-agent") {
+      void claudeInstall.ensure().catch((error: Error) => log?.(logLine("claude_install_failed", { message: error.message })));
+    }
+    const named = revision.kind === "agentic" ? revision : workflowShape(revision);
+    const shape = named.place ? named : { ...named, place: fallbackPlace(named.kind, named.tools ?? []), unnamed: true as const };
     const blockers = await blockersOf(env, shape, settings.get(), { boxes: boxOffers, offers, mcp: mcpTools });
     // An agent's default cap caps each run started without one of its own, and a web tool resolves by the cap: what a cap
     // alone keeps from running under the definition's own picks, whatever this host's settings, would keep every such run
@@ -1268,7 +1313,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     // The run's own cap, else the agent's default (an agentic revision's): the caller chose its own.
     const cap = typeof body.max_cost_usd === "number" ? body.max_cost_usd : revision.kind === "agentic" ? revision.body.maxCostUsd : undefined;
     if (capped && cap === undefined) throw invalid([{ field: "max_cost_usd", reason: "missing", message: "Every run a trigger starts is capped: give the trigger's target a max_cost_usd or set the agent's." }]);
-    const place = resolvePlace(revision.body.place as Place | undefined);
+    const place = resolvePlace(revision.body.place as Place | undefined, fallbackPlace(revision.kind, revision.kind === "agentic" ? (revision.body.tools ?? []) : []));
     await runnable(revision, place, { capped: cap !== undefined });
     // The title shows on the run's page, the runs list and Mission Control: built from its input as shown, each held
     // value redacted before a long one is cut (a cut key could no longer be found), and the run gets its input as given.
@@ -2020,13 +2065,18 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         const rows = await agents.request(() => agents.store.listRuns({ agent: id }));
         // Counted as GET /stats counts (learning-run.ts counts): a held run from memory, any other's end from the ledger;
         // what learning changed, from the same rows and ledger (learningImpact).
-        const { counts, impact } = await runs.learning.ofAgent(rows, id);
-        return send(res, 200, await agentLearning(data, id, secretsShown(learningSecrets()), counts, impact));
+        const { counts, impact, notes } = await runs.learning.ofAgent(rows, id);
+        return send(res, 200, await agentLearning(data, id, secretsShown(learningSecrets()), counts, impact, notes));
       }
       case "listLearningNotes":
       case "listLearningLog":
         await needAgent(id);
-        return send(res, 200, await (found.name === "listLearningNotes" ? learningNotes : learningLog)(data, id, url.searchParams, secretsShown(learningSecrets())));
+        if (found.name === "listLearningNotes") {
+          // Each note's runs (given it, read it), counted as the agent's learning view counts them (learning-run.ts ofAgent).
+          const { notes } = await runs.learning.ofAgent(await agents.request(() => agents.store.listRuns({ agent: id })), id);
+          return send(res, 200, await learningNotes(data, id, url.searchParams, secretsShown(learningSecrets()), notes));
+        }
+        return send(res, 200, await learningLog(data, id, url.searchParams, secretsShown(learningSecrets())));
       case "readLearningFile":
         await needAgent(id);
         return sendNote(res, 200, await readNote(data, id, second!, secretsShown(learningSecrets())));
@@ -2136,7 +2186,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     // address. A browser is shown a page that says which names work; a script, the same in the error.
     if (names && !names.has(hostName(req.headers.host) ?? "")) {
       if (/\btext\/html\b/i.test(String(req.headers.accept ?? ""))) return sendHostRefused(req, res);
-      return fail(new ApiError("forbidden", `unexpected Host header: ${HOST_FIX}`));
+      return fail(new ApiError("forbidden", `unexpected Host header: ${hostFix(req.socket.localPort ?? 0)}`));
     }
     // Routed on the path as sent: a parsed URL folds `..` and `%2E%2E` segments away, and a file path must see them.
     const raw = (req.url ?? "/").split("?")[0]!;
@@ -2201,6 +2251,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     // count writes nothing (it lists and reads), so it is ended at once: its listing of a big home checks for no stop.
     closing = true;
     stopping.abort();
+    // An install of Claude Code under way stops with the server: its npm gets SIGTERM, and nothing half installed stays.
+    const installStopped = claudeInstall?.stop();
     triggers.close();
     for (const [worker, { task }] of workers) {
       if (task === "plan") void worker.terminate();
@@ -2210,6 +2262,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     await importing;
     // Runs that end while their processes stop still give their notices; then the deliveries stop, before the lock goes.
     await runs.close();
+    await installStopped;
     await relay?.close();
     // Before the lock goes: the image's last record lands first (box-image.ts), never after the next server's start.
     await image?.close();

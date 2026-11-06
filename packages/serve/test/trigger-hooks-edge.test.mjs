@@ -9,7 +9,7 @@ import { createRequire } from "node:module";
 import { join } from "node:path";
 import { test } from "node:test";
 import { ROUTES } from "../dist/server.js";
-import { call, follow, scratch, serve, withEnv } from "./support.mjs";
+import { call, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
 import { firings, made } from "./trigger-support.mjs";
 
 const { Webhook } = createRequire(import.meta.url)("standardwebhooks");
@@ -135,7 +135,7 @@ test("the signature covers the exact bytes: a body serialised again differently 
     assert.equal(answer.status, 202, `${type}: ${answer.text}`);
     const [firing] = await firings(api, id, n + 1);
     assert.equal(firing.status, "started", `${type}: ${JSON.stringify(firing)}`);
-    const { content } = JSON.parse(await readFile(join(data, "runs", firing.run_id, "serve.json"), "utf8")).input;
+    const { content } = JSON.parse(await readFile(join(runDir(data, firing.run_id), "serve.json"), "utf8")).input;
     assert.ok(content.includes(`<trigger-payload source="webhook" untrusted>\n${text}\n</trigger-payload>`), content);
     await follow(api, firing.run_id, ["completed"]);
   }

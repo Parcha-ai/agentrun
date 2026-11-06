@@ -14,7 +14,7 @@ import { judgeProposal } from "../dist/grade.js";
 import { CANARY } from "./fixtures/faux-jev.mjs";
 import { note } from "./fixtures/faux-learn.mjs";
 import { ended, git, LEARN, learner, ledgerOf, made, mergesOf, repoOf, savedOf, settled, sleep, started } from "./learn-support.mjs";
-import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
+import { agent, follow, runDir, runsFolders, scratch, serve, withEnv } from "./support.mjs";
 
 const FAUX_JEV = new URL("./fixtures/faux-jev.mjs", import.meta.url).pathname;
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
@@ -126,9 +126,9 @@ test("the grader runs on the model the server names for it, --grade-model (AGENT
   assert.deepEqual(named, [null, "faux-strong", "faux-grader", "faux-named"], "capabilities.learning.grade_model");
 });
 
-// A learning end an older server wrote, with a reason no run gets any more (an agent with no write tool, before the
-// end-of-run turn answered with its notes), still counts in /v2/stats, by its reason, read back from the ledger.
-test("a run's learning end an older server recorded as no_write_tool still counts in /v2/stats under its reason, from the ledger and from its serve.json", { timeout: 120_000 }, async (t) => {
+// A learning end an older server wrote, with a reason no server gives any more, is read as any reason this server does
+// not give: it is not counted in /v2/stats.
+test("a run's learning end with a reason this server does not give (an older server's tool_denied) is not counted in /v2/stats", { timeout: 120_000 }, async (t) => {
   withEnv(t, {}, ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENTRUN_TEST_FAUX_GRADE_HOLD", "AGENTRUN_TEST_FAUX_CALLS"]);
   const first = await serve(t, { learning: "on", faux: LEARN });
   const { data } = first;
@@ -138,16 +138,18 @@ test("a run's learning end an older server recorded as no_write_tool still count
   settled(view, rows, "dropped", "empty");
   await savedOf(data, runId);
   await first.close();
-  // As the older server left it: its serve.json and its ledger line say no_write_tool.
-  const meta = JSON.parse(readFileSync(join(data, "runs", runId, "serve.json"), "utf8"));
-  writeFileSync(join(data, "runs", runId, "serve.json"), JSON.stringify({ ...meta, learning: { ...meta.learning, reason: "no_write_tool", detail: "The agent has no write tool to add a note with." } }));
+  // Its serve.json and its ledger line say tool_denied, a reason no server gives now: read as any reason it does not know.
+  const meta = JSON.parse(readFileSync(join(runDir(data, runId), "serve.json"), "utf8"));
+  writeFileSync(join(runDir(data, runId), "serve.json"), JSON.stringify({ ...meta, learning: { ...meta.learning, reason: "tool_denied" } }));
   const ledger = join(data, "learning-usage.jsonl");
-  writeFileSync(ledger, readFileSync(ledger, "utf8").replaceAll('"reason":"empty"', '"reason":"no_write_tool"'));
-  assert.ok(readFileSync(ledger, "utf8").includes('"no_write_tool"'));
+  writeFileSync(ledger, readFileSync(ledger, "utf8").replaceAll('"reason":"empty"', '"reason":"tool_denied"'));
+  assert.ok(readFileSync(ledger, "utf8").includes('"tool_denied"'));
   const again = await serve(t, { learning: "on", faux: LEARN, data });
-  assert.deepEqual((await again.api("GET", "/stats?agent=older")).body.learning, { runs: 1, merged: 0, dropped: { no_write_tool: 1 }, in_progress: 0 }, "from the ledger");
-  const read = (await again.api("GET", `/runs/${runId}`)).body.learning;
-  assert.deepEqual([read.state, read.reason], ["dropped", "no_write_tool"], "from its serve.json");
+  const none = { runs: 0, merged: 0, dropped: {}, in_progress: 0 };
+  assert.deepEqual((await again.api("GET", "/stats?agent=older")).body.learning, none, "not counted from the ledger");
+  // Read, the run is held with its learning as stored, and still not counted.
+  assert.equal((await again.api("GET", `/runs/${runId}`)).body.learning.reason, "tool_denied", "shown as stored");
+  assert.deepEqual((await again.api("GET", "/stats?agent=older")).body.learning, none, "nor once the run is held");
 });
 
 test("the grader reads what the user said in the run, in order and cut of the server's secrets, and never the end-of-run turn's message", { timeout: 150_000 }, async (t) => {
@@ -162,7 +164,7 @@ test("the grader reads what the user said in the run, in order and cut of the se
   assert.deepEqual(call.asked, ["1. For next time: answer in tables. The server's token is [redacted]."]);
   assert.ok(!JSON.stringify(callsIn(calls)).includes(token), "the token never reached the grader");
   // The proposal keeps them as the grader read them, so a grade after a restart reads the same.
-  const proposal = readFileSync(join(data, "runs", runId, "learning-proposal.json"), "utf8");
+  const proposal = readFileSync(join(runDir(data, runId), "learning-proposal.json"), "utf8");
   assert.deepEqual(JSON.parse(proposal).asked, ["For next time: answer in tables. The server's token is [redacted]."]);
   assert.ok(!proposal.includes(token));
 });
@@ -178,7 +180,7 @@ test("a server secret the user's message holds across the point it is shortened 
   const runId = await started(api, "straddled", `${"Look at this. ".repeat(80).slice(0, before)}${token} and the rest of what the user said. ${"More. ".repeat(1_000)}`);
   const { view, rows } = await ended(api, runId);
   settled(view, rows, "merged");
-  const proposal = readFileSync(join(data, "runs", runId, "learning-proposal.json"), "utf8");
+  const proposal = readFileSync(join(runDir(data, runId), "learning-proposal.json"), "utf8");
   const shown = `${proposal}\n${JSON.stringify(callsIn(calls))}`;
   assert.equal(callsIn(calls).length, 1, "the grader was asked");
   for (let i = 0; i + 12 <= token.length; i++) assert.ok(!shown.includes(token.slice(i, i + 12)), `no 12 characters of the token, from its ${i}th: ${token.slice(i, i + 12)}`);
@@ -268,7 +270,7 @@ test("a server that goes mid-grade grades the run once at its next start; a run 
   }
   assert.equal((await first.api("GET", `/runs/${runId}`)).body.learning.state, "proposed");
   await first.close();
-  const saved = JSON.parse(readFileSync(join(data, "runs", runId, "serve.json"), "utf8"));
+  const saved = JSON.parse(readFileSync(join(runDir(data, runId), "serve.json"), "utf8"));
   assert.deepEqual([saved.learning.state, saved.learning.verdict], ["proposed", undefined], "nothing was decided");
   // The next start grades it, once.
   delete process.env.AGENTRUN_TEST_FAUX_GRADE_HOLD;
@@ -281,8 +283,8 @@ test("a server that goes mid-grade grades the run once at its next start; a run 
   assert.equal(mergesOf(repo, runId).length, 1);
   await second.close();
   // A server that went after the verdict was kept and before the merge was saved: the run reads proposed, verdict kept.
-  const merged = JSON.parse(readFileSync(join(data, "runs", runId, "serve.json"), "utf8"));
-  writeFileSync(join(data, "runs", runId, "serve.json"), JSON.stringify({ ...merged, learning: { ...merged.learning, state: "proposed", merged: undefined } }));
+  const merged = JSON.parse(readFileSync(join(runDir(data, runId), "serve.json"), "utf8"));
+  writeFileSync(join(runDir(data, runId), "serve.json"), JSON.stringify({ ...merged, learning: { ...merged.learning, state: "proposed", merged: undefined } }));
   const third = await serve(t, { learning: "on", faux: LEARN, data });
   const again = await ended(third.api, runId);
   settled(again.view, again.rows, "merged");
@@ -319,13 +321,13 @@ for (const at of ["proposed", "reflecting"]) {
       await sleep(50);
     }
     await first.close();
-    const saved = JSON.parse(readFileSync(join(data, "runs", runId, "serve.json"), "utf8"));
+    const saved = JSON.parse(readFileSync(join(runDir(data, runId), "serve.json"), "utf8"));
     assert.deepEqual([saved.learning.state, saved.learning.verdict], ["proposed", undefined], "nothing was decided");
     if (at === "reflecting") {
       // A server that went after the run settled and before its check: what the turn answered is kept, not yet checked.
-      writeFileSync(join(data, "runs", runId, "serve.json"), JSON.stringify({ ...saved, learning: { ...saved.learning, state: "reflecting", reason: null, detail: "Looking back on this run…" } }));
-      rmSync(join(data, "runs", runId, "learning-proposal.json"));
-      assert.match(JSON.parse(readFileSync(join(data, "runs", runId, "learning-turn.json"), "utf8")).answer, /^```note check-units\.md\n/, "the turn's answer is kept");
+      writeFileSync(join(runDir(data, runId), "serve.json"), JSON.stringify({ ...saved, learning: { ...saved.learning, state: "reflecting", reason: null, detail: "Looking back on this run…" } }));
+      rmSync(join(runDir(data, runId), "learning-proposal.json"));
+      assert.match(JSON.parse(readFileSync(join(runDir(data, runId), "learning-turn.json"), "utf8")).answer, /^```note check-units\.md\n/, "the turn's answer is kept");
     }
     // The next server: the follow-up answers, the run ends, and its learning goes on from where it was.
     delete process.env.AGENTRUN_TEST_FAUX_GRADE_HOLD;
@@ -439,13 +441,13 @@ test("GET /v2/usage books each grade under the meter learning, by agent and by d
   await first.close();
   const again = await serve(t, { learning: "on", faux: LEARN, data });
   // The restarted server holds none of these runs: it counts them from the ledger alone, and never opens runs/.
-  const runs = join(data, "runs");
-  chmodSync(runs, 0o000);
+  const runs = runsFolders(data);
+  for (const folder of runs) chmodSync(folder, 0o000);
   try {
     assert.deepEqual((await again.api("GET", "/stats")).body.learning, want, "read back from the ledger");
     assert.deepEqual((await again.api("GET", "/stats?agent=mute")).body.learning, { runs: 1, merged: 0, dropped: { unparsed: 1 }, in_progress: 0 });
   } finally {
-    chmodSync(runs, 0o700);
+    for (const folder of runs) chmodSync(folder, 0o700);
   }
   assert.equal((await again.api("GET", "/usage?group_by=meter")).body.lines.find((entry) => entry.meter === "learning").usd, line.usd, "counted once");
   assert.equal(ledgerOf(data).length, 3, "the restart wrote no line again");

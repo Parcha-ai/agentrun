@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { startServe } from "../dist/index.js";
-import { agent, client, FAUX, follow, printed, scratch, serve, withEnv } from "./support.mjs";
+import { agent, client, FAUX, follow, printed, runDir, runRecordOf, scratch, serve, withEnv } from "./support.mjs";
 import { KEY as MONID_KEY } from "./fixtures/faux-monid.mjs";
 import { CANARY as PARALLEL_CANARY } from "./fixtures/faux-parallel.mjs";
 import { LONG_ANSWER } from "./fixtures/faux-harness.mjs";
@@ -62,7 +62,7 @@ test("a run whose process dies mid-turn after a paid request resumes on the next
     assert.ok(i < 300, "the first request's tool row");
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  const { holder } = JSON.parse(await readFile(join(data, "runs", runId, "run.json"), "utf8"));
+  const { holder } = runRecordOf(data, runId);
   await writeFile(go, "");
   process.kill(holder.pid, "SIGKILL");
   const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
@@ -81,7 +81,7 @@ test("a run that the server stopped mid-turn goes on at the next start, and its 
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   await first.close();
-  const left = JSON.parse(await readFile(join(data, "runs", runId, "run.json"), "utf8"));
+  const left = runRecordOf(data, runId);
   assert.deepEqual([left.status, left.detail?.reason], ["sleeping", "drained"], "drained, not crashed");
   const next = await serve(t, { data, fauxHarness: FAUX_HARNESS });
   await writeFile(go, "");
@@ -145,7 +145,7 @@ test("a message to a run working on a harness that cannot steer answers follow_u
 function storeRecords(data, runId, kind) {
   // The run's process writes the store meanwhile: a read that finds it locked tries again.
   for (let tries = 0; ; tries++) {
-    const db = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
+    const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
     try {
       return db.prepare("SELECT record FROM entries").all().map((row) => JSON.parse(String(row.record))).filter((record) => record.kind === kind);
     } catch (error) {
@@ -158,7 +158,7 @@ function storeRecords(data, runId, kind) {
 const storeCount = (data, runId, kind) => storeRecords(data, runId, kind).length;
 
 const killRun = async (data, runId) => {
-  const { holder } = JSON.parse(await readFile(join(data, "runs", runId, "run.json"), "utf8"));
+  const { holder } = runRecordOf(data, runId);
   process.kill(holder.pid, "SIGKILL");
 };
 
@@ -250,7 +250,7 @@ test("a run opened again whose new opening has a request of unknown price reads 
 
 /** A run's paid tool records, from its store: each mark and charge, its tool and figure. */
 function paidOf(data, runId) {
-  const db = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
+  const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
   try {
     return db.prepare("SELECT record FROM entries").all().map((row) => JSON.parse(String(row.record))).filter((entry) => entry.kind.startsWith("agentrun.tool_")).map((entry) => [entry.kind, entry.data.tool, entry.data.heldUsd ?? entry.data.usd]);
   } finally {
@@ -263,7 +263,7 @@ test("a run on another harness gets pi's own file tools: a write then a read of 
   const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
   const runId = await started(api, "files", "Write then read.", "codex", ["read", "write"]);
   const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
-  assert.equal(await readFile(join(data, "runs", runId, "work", "note.txt"), "utf8"), "hello from the tool");
+  assert.equal(await readFile(join(runDir(data, runId), "work", "note.txt"), "utf8"), "hello from the tool");
   const results = toolResults(rows);
   assert.equal(results.length, 2, JSON.stringify(results));
   assert.match(results[1][0], /hello from the tool/, "the read returned what the write wrote");
@@ -364,7 +364,7 @@ test("pi's confinement holds for another harness's read: a link out of the works
     assert.ok(i < 300, "the first tool's row");
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  await symlink(secret, join(data, "runs", runId, "work", "out.txt"));
+  await symlink(secret, join(runDir(data, runId), "work", "out.txt"));
   await writeFile(go, "");
   await killRun(data, runId);
   const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
@@ -381,7 +381,7 @@ test("a turn that says something, then calls a tool, then answers: what it said 
   const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
   // decide() ends a run on its newest answer row once its turn is over: the row said first, an answer until the turn
   // went on, never ended it (the write ran after it), and the real answer did.
-  assert.equal(await readFile(join(data, "runs", runId, "work", "note.md"), "utf8"), "noted", "the write after the first row ran");
+  assert.equal(await readFile(join(runDir(data, runId), "work", "note.md"), "utf8"), "noted", "the write after the first row ran");
   assert.deepEqual(rows.filter((r) => ["text_block", "final_answer", "tool_use"].includes(r.kind)).map((r) => [r.kind, r.summary]), [["text_block", "I'll write note.md."], ["tool_use", "Wrote note.md"], ["final_answer", "Wrote note.md."]]);
   assert.equal(await answer(api, runId), "Wrote note.md.");
 });
@@ -391,7 +391,7 @@ test("a turn whose first answer is empty and that then calls a tool and answers:
   const runId = await started(api, "empty-first", "Say nothing, then write.", "codex", ["write"]);
   const { rows, last } = await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
   const shown = JSON.stringify(rows.map((r) => [r.kind, r.summary, r.text]));
-  assert.equal(await readFile(join(data, "runs", runId, "work", "note.md"), "utf8"), "noted", "the write after the empty answer ran");
+  assert.equal(await readFile(join(runDir(data, runId), "work", "note.md"), "utf8"), "noted", "the write after the empty answer ran");
   // An empty answer is an answer (it ended a request on purpose) until the same turn goes on: then it was only the turn's
   // first word, an empty one, and the answer that ends the turn is the run's one final_answer.
   assert.deepEqual(rows.filter((r) => ["text_block", "final_answer", "tool_use"].includes(r.kind)).map((r) => [r.kind, r.summary]), [["text_block", ""], ["tool_use", "Wrote note.md"], ["final_answer", "Wrote note.md."]], shown);
@@ -405,7 +405,7 @@ test("a turn that comments, then answers with nothing, then calls a tool and ans
   const runId = await started(api, "comment-empty", "Comment, say nothing, then write.", "codex", ["write"]);
   const { rows, last } = await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
   const shown = JSON.stringify(rows.map((r) => [r.kind, r.summary, r.text]));
-  assert.equal(await readFile(join(data, "runs", runId, "work", "note.md"), "utf8"), "noted", "the write after the empty answer ran");
+  assert.equal(await readFile(join(runDir(data, runId), "work", "note.md"), "utf8"), "noted", "the write after the empty answer ran");
   // The empty answer held the turn's place as its answer for a moment; the commentary before it never stays one either.
   assert.deepEqual(rows.filter((r) => ["text_block", "final_answer", "tool_use"].includes(r.kind)).map((r) => [r.kind, r.summary]), [["text_block", "I'll check first."], ["text_block", ""], ["tool_use", "Wrote note.md"], ["final_answer", "Wrote note.md."]], shown);
   assert.equal(rows.filter((r) => r.kind === "final_answer").length, 1, shown);
@@ -422,7 +422,7 @@ test("another harness's file tools name the workspace's paths relative to it: a 
   assert.match(results[0][2], /^\.\.\/escape\.md: outside the workspace(?: \(it resolves to \.\.\/escape\.md\))?$/, "the refusal names the path beside the workspace, not where it is");
   assert.match(results[1][2], /^ENOENT: no such file or directory, \w+ 'missing\.md'$/);
   assert.equal(results[2][2], "Successfully wrote to sub/ok.md");
-  assert.equal(await readFile(join(data, "runs", runId, "work", "sub", "ok.md"), "utf8"), "in");
+  assert.equal(await readFile(join(runDir(data, runId), "work", "sub", "ok.md"), "utf8"), "in");
   for (const root of new Set([data, realpathSync(data)])) assert.deepEqual(results.filter(([, , text]) => text.includes(root)), [], `no result names ${root}`);
 });
 
@@ -518,7 +518,7 @@ test("a run's answer is whole, past the 2,000 characters its summary keeps, on t
  *  finds it still held tries again. */
 function storeEntries(data, runId) {
   for (let tries = 0; ; tries++) {
-    const db = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
+    const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
     try {
       return db.prepare("SELECT record FROM entries ORDER BY id").all().map((row) => JSON.parse(String(row.record)));
     } catch (error) {
@@ -586,14 +586,14 @@ test("a write that names its file by an absolute path in the workspace reads by 
   const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
   const runId = await started(api, "absolute", "Write by the absolute path.", "claude-agent", ["write"]);
   const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
-  assert.equal(await readFile(join(data, "runs", runId, "work", "hello.md"), "utf8"), "hello");
+  assert.equal(await readFile(join(runDir(data, runId), "work", "hello.md"), "utf8"), "hello");
   const shown = rows.filter((r) => ["tool_use", "tool_result", "phase"].includes(r.kind) && !/^Released|session/.test(r.summary ?? "")).map((r) => [r.kind, r.summary]);
   assert.deepEqual(shown.slice(0, 4), [["tool_use", "Wrote hello.md"], ["tool_result", "Wrote hello.md: ok"], ["phase", "Saved hello.md"], ["tool_use", "Wrote /elsewhere/away.md"]], JSON.stringify(shown));
   assert.match(shown[4]?.[1] ?? "", /^Wrote \/elsewhere\/away\.md failed: /, "a path outside the run's directory stays as given");
   assert.equal(shown.length, 5, JSON.stringify(shown));
   assert.equal(rows.find((r) => r.kind === "phase" && /^Saved/.test(r.summary))?.path, "hello.md", "the Saved row's file, by its name in the workspace");
   // Display only: the call's own arguments, as the harness sent them, are the input preview.
-  assert.match(rows.find((r) => r.kind === "tool_use")?.tool_input_preview ?? "", new RegExp(`${join(data, "runs", runId, "work", "hello.md").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+  assert.match(rows.find((r) => r.kind === "tool_use")?.tool_input_preview ?? "", new RegExp(`${join(runDir(data, runId), "work", "hello.md").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
 });
 
 test("a codex or pi run whose write names a relative path reads the same as before: Wrote <name>, Saved <name>", { timeout: 60_000 }, async (t) => {
@@ -629,7 +629,7 @@ test("a capped run with a request cut by a crash goes on: the cut request counts
   assert.equal(ended.cost.usd, null, "the cut request's own price never came in: the shown cost is unknown");
   // What the cap held for each request, on its record: the model's $0 worst case, so the cut one counts at $0.
   for (let tries = 0; ; tries++) {
-    const db = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
+    const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
     try {
       const held = db.prepare("SELECT record FROM entries").all().map((row) => JSON.parse(String(row.record))).filter((entry) => entry.kind === "runner.request").map((entry) => entry.data.heldUsd);
       assert.deepEqual(held, [0, 0, 0], "the first, the cut one, and the one after it, each held at $0");
@@ -686,7 +686,7 @@ test("a read refused outside the run names the path it was given, as given, on p
   assert.equal((await api("POST", "/agents", agent("outside-pi", { tools: ["read"] }))).status, 201);
   const pi = await api("POST", "/agents/outside-pi/runs", { input: { content: `Read these paths once ${go} exists: ${JSON.stringify(given)}` } });
   assert.equal(pi.status, 202, JSON.stringify(pi.body));
-  const work = join(data, "runs", pi.body.run_id, "work");
+  const work = join(runDir(data, pi.body.run_id), "work");
   for (let i = 0; !existsSync(work); i++) {
     assert.ok(i < 300, "the run's workspace");
     await new Promise((resolve) => setTimeout(resolve, 100));

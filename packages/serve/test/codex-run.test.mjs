@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { fileURLToPath } from "node:url";
-import { agent, follow, scratch, serve } from "./support.mjs";
+import { agent, follow, runDir, runRecordOf, scratch, serve } from "./support.mjs";
 
 /** The gateway's key in these tests: no real one. */
 const GATEWAY_KEY = `not-a-secret-${"gateway"}`;
@@ -85,7 +85,7 @@ test("a codex run whose cap can't cover one request's least is refused before an
   await follow(api, run.body.run_id, ["input_required", "failed"], { deadlineMs: 60_000 });
   const ended = (await api("GET", `/runs/${run.body.run_id}`)).body;
   assert.deepEqual([ended.status, ended.state, ended.error, ended.pending?.kind], ["input_required", "waiting", null, "budget"], JSON.stringify(ended));
-  const words = /^Not sent: this run's cap of \$0\.001 can't cover one .+ request \(at least \$(\d+\.\d+)\)\. Raise the cap to at least \$(\d+\.\d+) to run it\.$/.exec(ended.pending.said);
+  const words = /^Not sent: the next step needs at least \$(\d+\.\d+), and this run's cap is \$0\.001\. Raise the cap to at least \$(\d+\.\d+) to continue\.$/.exec(ended.pending.said);
   assert.ok(words, ended.pending.said);
   assert.equal(words[2], words[1], "nothing spent or held: the cap to raise to is the least");
   assert.ok(Number(words[1]) >= 0.002048, `the least covers the answer's 1,024 tokens: $${words[1]}`);
@@ -110,7 +110,7 @@ test("a run on codex goes through the adapter's proxy to serve's gateway, priced
   assert.ok(child, "Codex's process runs");
   assert.equal(field(child.status, "NoNewPrivs"), "1", "under setpriv --no-new-privs, as pi's commands are");
   assert.equal(field(child.status, "Uid")?.split(/\s+/)[0], String(process.getuid()), "as the run's own user");
-  assert.equal(await readlink(`/proc/${child.pid}/cwd`), realpathSync(join(data, "runs", run.body.run_id, "work")), "in the run's workspace, where its file tools write");
+  assert.equal(await readlink(`/proc/${child.pid}/cwd`), realpathSync(join(runDir(data, run.body.run_id), "work")), "in the run's workspace, where its file tools write");
   gw.release();
   const { rows } = await follow(api, run.body.run_id, ["completed"], { deadlineMs: 60_000 });
   assert.equal(gw.seen[0].path, "/v1/responses");
@@ -166,7 +166,7 @@ test("a codex run whose process dies while its request is in flight leaves no Co
   const child = await processOf(standIn);
   assert.ok(child, "Codex's process runs");
   t.after(() => alive(child.pid) && process.kill(child.pid, "SIGKILL"));
-  const { holder } = JSON.parse(await readFile(join(data, "runs", run.body.run_id, "run.json"), "utf8"));
+  const { holder } = runRecordOf(data, run.body.run_id);
   process.kill(holder.pid, "SIGKILL");
   for (let i = 0; alive(child.pid); i++) {
     assert.ok(i < 20, `the dead process's Codex (pid ${child.pid}) is gone within 2 s`);
@@ -184,7 +184,7 @@ test("a codex run's model proxy reports a refusal in the run's log: one harness 
   const { api, data, standIn } = await codexServe(t, gw);
   const run = await api("POST", "/agents/coder/runs", { input: { content: "Say what you did." } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
-  const dir = join(data, "runs", run.body.run_id);
+  const dir = join(runDir(data, run.body.run_id));
   // Codex's own request, not another local process calling the gateway's port.
   for (let i = 0; !gw.seen.some((s) => s.path?.startsWith("/v1/")); i++) {
     assert.ok(i < 300, "the turn's model request reaches the gateway");

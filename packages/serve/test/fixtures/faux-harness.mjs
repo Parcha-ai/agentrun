@@ -81,9 +81,9 @@ export function script(spec) {
   const failWith = /^Fail with: (.*)$/m.exec(text)?.[1];
   if (failWith) return [{ fail: failWith }];
   // Calls each tool the line lists, in order, then says so: `Box calls: [{"call": "bash", "args": {...}}, ...]`. `{work}`
-  // in a call names the run's work directory on this machine, the harness's cwd (from AGENTRUN_TEST_DATA, the data root).
+  // in a call names the run's work directory on this machine, the harness's cwd (its run's folder, the --dir it was given).
   const boxed = /^Box calls: (\[.*\])$/m.exec(text)?.[1];
-  const work = `${process.env.AGENTRUN_TEST_DATA}/runs/${spec.key.slice("run:".length)}/work`;
+  const work = `${process.argv[process.argv.indexOf("--dir") + 1]}/work`;
   if (boxed) return [...JSON.parse(boxed.replaceAll("{work}", work)).map((step) => ({ ...step, usd: 0.001 })), { say: "Done in the box.", usd: 0.001 }];
   // monid's run called, then the turn holds with no request open (writing the signal) until it is stopped; the next
   // turn's request answers. A hold keeps its place in the script, so it holds once, and that place is the answer after.

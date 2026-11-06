@@ -16,7 +16,7 @@ import { memorySessionStore } from "@parcha/agentrun-kernel/testing";
 import { fakeAnthropic, fakeSdk } from "@parcha/agentrun-harness-claude/testing";
 // The module whole, so a function it does not export yet fails its own test, not the file.
 import * as adapters from "../dist/adapters.js";
-import { agent, scratch, serve, withEnv } from "./support.mjs";
+import { agent, claudeData, scratch, serve, withEnv } from "./support.mjs";
 
 /** OpenRouter's key in these tests: no real one. */
 const KEY = `not-a-secret-${"openrouter"}`;
@@ -82,15 +82,16 @@ test("or-3: the harness's own settings win over OpenRouter, as on a host without
   assert.throws(() => adapters.codexProvider({}, openai), refused(/OPENAI_API_KEY.*OPENROUTER_API_KEY/));
 });
 
-test("or-7: a claude-agent run through OpenRouter is priced by OpenRouter's catalog entry for the model, direct by Anthropic's, whichever pi-ai catalog is installed", async () => {
+test("or-7: a claude-agent run through OpenRouter is priced by OpenRouter's catalog entry for the model, direct by Anthropic's, whichever pi-ai catalog is installed", async (t) => {
   const { builtinModels } = await import("@earendil-works/pi-ai/providers/all");
   const real = await import("@parcha/agentrun-harness-claude");
   const catalog = builtinModels();
   // Every kind of token, each a different count, so a price names one entry's whole cost.
   const usage = { input: 1_000_000, output: 2_000_000, cacheRead: 3_000_000, cacheWrite: 4_000_000 };
+  const data = await claudeData(t);
   const priceOn = async (env, model) => {
     let price;
-    await adapters.claudeOf(env, { model, models: catalog }, async () => ({ ...real, claudeAgentAdapter: (options) => ((price = options.price), { id: "claude-agent" }) }));
+    await adapters.claudeOf({ ...env, AGENTRUN_SERVE_DATA: data }, { model, models: catalog }, async () => ({ ...real, claudeAgentAdapter: (options) => ((price = options.price), { id: "claude-agent" }) }));
     return price("any", usage);
   };
   const atEntry = (provider, id) => {
@@ -135,7 +136,7 @@ test("or-4: claude-agent on OpenRouter alone: each request through its proxy to 
   const load = async () => ({ ...real, claudeAgentAdapter: (options) => real.claudeAgentAdapter({ ...options, sdk, standIn: { command: process.execPath }, sessionsDir: sessions, fetch: upstream }) });
   const chosen = adapters.claudeModel(ONLY, "anthropic/claude-sonnet-5.5");
   assert.ok("model" in chosen, JSON.stringify(chosen));
-  const adapter = await adapters.claudeOf(ONLY, { model: chosen.model, models: { getModel: () => undefined } }, load);
+  const adapter = await adapters.claudeOf({ ...ONLY, AGENTRUN_SERVE_DATA: await claudeData(t) }, { model: chosen.model, models: { getModel: () => undefined } }, load);
   const result = await runWorkflow(doc, {}, { runNode: createHarnessRunner(adapter, { store: memorySessionStore(), tools: [] }) });
   assert.equal(result.status, "complete", JSON.stringify(result.error ?? null));
   assert.ok(seen.length >= 1, "a model request reached OpenRouter");
@@ -237,7 +238,7 @@ test("or-11: claude-agent on the host's OpenRouter model sends Anthropic's nativ
   const sdk = fakeSdk({ remoteModel: true, script: [SUBMIT] });
   const load = async () => ({ ...real, claudeAgentAdapter: (options) => real.claudeAgentAdapter({ ...options, sdk, standIn: { command: process.execPath }, sessionsDir: sessions, fetch: upstream }) });
   const chosen = adapters.claudeModel(host, undefined);
-  const adapter = await adapters.claudeOf(host, { model: chosen.model, models: { getModel: () => undefined } }, load);
+  const adapter = await adapters.claudeOf({ ...host, AGENTRUN_SERVE_DATA: await claudeData(t) }, { model: chosen.model, models: { getModel: () => undefined } }, load);
   const result = await runWorkflow(doc, {}, { runNode: createHarnessRunner(adapter, { store: memorySessionStore(), tools: [] }) });
   assert.equal(result.status, "complete", JSON.stringify(result.error ?? null));
   assert.ok(seen.length >= 1);

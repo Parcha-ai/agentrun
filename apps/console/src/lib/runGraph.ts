@@ -64,8 +64,6 @@ export type RunGraph = {
   decisions: Decision[];
   effects: Effect[];
   totals: { cost_usd: number | null; decisions: number; effects: number; elapsed_ms: number | null };
-  /** The server's last good view, given again while the run's store is busy; `read_at` is when that view was read. */
-  stale?: boolean;
   read_at?: string | null;
 };
 

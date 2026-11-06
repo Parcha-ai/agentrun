@@ -234,7 +234,7 @@ export class LocalCustody implements CustodyPort<PageDriver> {
     if (reason !== "idle") this.replacedBy = null;
     await this.captured(live);
     await this.sweepLeftovers();
-    // A close that never comes back (Stagehand after a reconnect) never holds up the provider's release.
+    // A close that never comes back never holds up the provider's release (closeDriver waits DRIVER_CLOSE_MS at most).
     if (live.driver) await closeDriver(live.driver);
     try { await (await this.d.provider()).release(live.ref); } catch (error) {
       if (!directoryLeft(error)) throw this.failure(error);
