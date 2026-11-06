@@ -15,7 +15,7 @@ import { processAlive } from "@parcha/agentrun-kernel/host";
 import { doorKey, doorTook } from "@parcha/pi-durable-disk";
 import { RUN_STATUS_TABLE } from "@parcha/pi-durable-disk/internals";
 import { AgentHomeError, type Revision, runDirIn, type RevisionKind, type RunOrigin, type RunRow, type RunState, type StoredMetrics } from "@parcha/pi-durable-agent";
-import { chargedTool, type EntryLike, isMessageRow, isUserEntry, MESSAGE_ORIGIN, type MessageOrigin, originMatcher, registerLabel, registerTurnEnding, REQUEST_STARTED, type RunMetrics, runMetricsWithDecisions, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
+import { chargedTool, type EntryLike, isMessageRow, isUserEntry, MESSAGE_ORIGIN, type MessageOrigin, originMatcher, registerLabel, registerTurnEnding, REQUEST_STARTED, type RunMetrics, runMetricsWithDecisions, scrubUrls, type TimelineEvent, timelineOf, timelineReducer } from "@parcha/pi-durable-agent/timeline";
 import { HARNESS_LOG_EVENT, harnessModelKeys, thinkingFor } from "./adapters.js";
 import { runLink } from "./console-links.js";
 import { DEFAULT_HARNESS, harnessOfBody, steersMidTurn } from "./harness.js";
@@ -42,7 +42,7 @@ import { DEFAULT_MODEL_ENV, EFFORT_ENV, GATEWAY_KEY_ENV, hostModel, llmTiers, mo
 import { llmAnswers, pausedIn, readNodeLog, RUN_PAUSED } from "./pause.js";
 import { durationMs } from "./print.js";
 import { handsParallel, keptFromBefore, keptVendor, type Plane, planeFor, recheckPlane, relaunchPlane, TOOL_PLANE_ENV, type Tooling, type ToolSettingsMap } from "./tool-plane.js";
-import { APPROVAL_ENTRY, APPROVAL_ROW, NO_APPROVER_ENV, type PendingApproval, permissionOf, previewOf, RESUME_PREFIX, TURN_ORIGIN_FILE } from "./tool-gate.js";
+import { APPROVAL_ENTRY, APPROVAL_ROW, NO_APPROVER_ENV, type PendingApproval, permissionOf, previewOf, RESUME_PREFIX, resumeHead, TURN_ORIGIN_FILE } from "./tool-gate.js";
 import { ChangeClock, type Page, RowLog } from "./rows.js";
 import { TOOL_KEYS } from "./tool-keys.js";
 import { isObject, type Json } from "./validate.js";
@@ -546,7 +546,7 @@ function withApprovals(rows: readonly TimelineEvent[], run: Pick<Run, "approvals
   return rows.flatMap((row) => {
     // The gate's resume, the server's row: it says what came of the answer, never the head the model reads.
     const resumed = row.kind === "phase" && row.text?.startsWith(RESUME_PREFIX) ? resumedBy(row.text, byCall) : undefined;
-    if (resumed) return [{ ...row, summary: resumeSays(resumed, run.meta.approvals?.[resumed.id], row.text!) }];
+    if (resumed) return [{ ...row, summary: resumeSays(resumed, run.meta.approvals?.[resumed.id], row.text!), text: resumeShows(resumed, run.meta.approvals?.[resumed.id], row.text!, redact) }];
     const own = (row.kind === "tool_use" || row.kind === "tool_result") && row.tool_use_id ? byCall.get(row.tool_use_id) : undefined;
     // The call's own rows: what it answered at the park is not what it did, so they say what came of the approval.
     const called = own ? { ...row, summary: parkedCallSays(own, run, waiting), tool_status: null } : row;
@@ -583,6 +583,22 @@ const resumedBy = (text: string, byCall: ReadonlyMap<string, Approval>): Approva
 function resumeSays(approval: Approval, given: { decision: string; by?: string } | undefined, text: string): string {
   if (given?.decision === "deny") return `AgentRun: ${approval.tool} was refused: ${given.by === "message" ? "your message declined it" : "you declined it"}`;
   return `AgentRun: ${approval.tool} ran once you allowed it${text.includes(" They allowed it, and it ran and failed.") ? ", and failed" : ""}`;
+}
+/** What a person reads when they open a resume's row: the outcome, then the call's result or the refusal's words, from the
+ *  model's message (already redacted whole, as the row's text is), with its head left out. The head is rebuilt exactly as
+ *  the gate wrote it (tool-gate.ts resumeHead, from the stored answer's arguments), never searched for, so arguments that
+ *  quote the gate's words can't move it; a row whose text doesn't start with it shows the outcome alone. The model's own
+ *  message is unchanged. */
+function resumeShows(approval: Approval, given: { decision: string; by?: string; args_shown?: string } | undefined, text: string, redact: (text: string) => string): string {
+  const said = resumeSays(approval, given, text).replace(/^AgentRun: /, "");
+  // The row's text is the message as the Timeline shows it: redacted whole (the run's redactor) and its links scrubbed
+  // (scrubUrls), so the gate's head is compared after the same two steps.
+  const written = resumeHead(approval, given?.args_shown ?? "(not shown)");
+  const head = [scrubUrls(redact(written)), redact(written), scrubUrls(written), written].find((h) => text.startsWith(h));
+  if (head === undefined) return `${said}.`;
+  const rest = text.slice(head.length);
+  if (given?.decision === "deny") return `${said}.${rest.trim() ? `\n${rest.trim()}` : ""}`;
+  return `${said}. Its result:\n${rest.replace(/^ They allowed it, and it ran(?: and failed)?\. Its result:\n?/, "")}`;
 }
 /** A dollar figure to a millionth, as the timeline's cost.usd is. */
 const micro = (usd: number): number => Math.round(usd * 1e6) / 1e6;
