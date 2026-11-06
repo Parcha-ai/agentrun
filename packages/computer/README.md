@@ -44,7 +44,8 @@ The daemon answers `hello`, `ping`, `exec.run`, the `files.*` methods and `tar.*
 ### Files
 
 Every path is absolute, and the daemon cleans it; a relative path is `invalid`. Files are read and written as the
-daemon's user, and data is base64.
+daemon's user, and data is base64. In a Docker computer that is the computer's user, non-root by default, so it writes
+in `/work` (its home) and `/tmp`; the image's root-owned directories are `denied`.
 
 | Method | Params | Result |
 | --- | --- | --- |
