@@ -16,7 +16,7 @@
 import { lstat, readFile } from "node:fs/promises";
 import { join, posix } from "node:path";
 import { ANSWER_MAX, INDEX_FILE, parseNoteFile, redactSecrets, type Verdict } from "./learn/index.js";
-import type { AnalyticsFilter, Revision, RunRow, StartedRun } from "@parcha/pi-durable-agent";
+import { type AnalyticsFilter, type Revision, runDirIn, type RunRow, type StartedRun } from "@parcha/pi-durable-agent";
 import type { TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { learnedWorkflowsOff } from "./adapters.js";
 import { CAP_REFUSAL_PREFIX, SPEND_CAP_REACHED } from "./cap.js";
@@ -474,7 +474,7 @@ export class LearningRuns {
       for (const row of rows) {
         if (this.closing) return;
         if (row.state === "running" || row.importedFrom || row.kind !== "agentic") continue;
-        const meta = (await readJson(join(this.options.agents.dir, "runs", row.id, RUN_META))) as Partial<Run["meta"]> | null;
+        const meta = (await readJson(join(runDirIn(this.options.agents.dir, row.agent, row.id), RUN_META))) as Partial<Run["meta"]> | null;
         const learning = isObject(meta?.learning) ? meta.learning : undefined;
         await this.onSaved({ id: row.id, agentId: row.agent }, learning);
         if (!awaitsPropose(meta) && learning?.state !== "proposed") continue;
@@ -741,14 +741,14 @@ export class LearningRuns {
    *  gate allows, under the server's tool settings and the agent's own (tools.ts learnedDraftTools); `gated`, those set to
    *  ask or deny, which a draft that calls one is refused for. None for a revision not found, so a draft that names one is
    *  refused. */
-  private async draftTools(run: Run): Promise<{ tools: string[]; gated: Record<string, string> }> {
+  private async draftTools(run: Run): Promise<{ tools: string[]; gated: Record<string, string>; deniedBy?: Record<string, "agent" | "server" | "default"> }> {
     const known = await this.options.agents.revision(run.agentId, run.revision);
     if (known?.revision.kind !== "agentic") return { tools: [], gated: {} };
-    const [{ learnedDraftTools }, { permissionOf }, { readToolSettings }] = await Promise.all([import("./tools.js"), import("./tool-gate.js"), import("./tool-plane.js")]);
+    const [{ learnedDraftTools }, { permissionFrom }, { readToolSettings }] = await Promise.all([import("./tools.js"), import("./tool-gate.js"), import("./tool-plane.js")]);
     // The server's settings, beside the agent store, as the run's gate reads them, and the agent's own.
     const server = readToolSettings(this.options.agents.dir).settings;
     const agent = (known.revision.body.toolSettings ?? {}) as never;
-    return learnedDraftTools(known.revision.body.tools, (name) => permissionOf(name, server as never, agent));
+    return learnedDraftTools(known.revision.body.tools, (name) => permissionFrom(name, server as never, agent).permission, undefined, (name) => permissionFrom(name, server as never, agent).from);
   }
 
   private async propose(run: Run): Promise<void> {

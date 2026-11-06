@@ -6,7 +6,7 @@ import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { flowAgent, follow, scratch, serve, withEnv } from "./support.mjs";
+import { flowAgent, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
 import * as refusal from "../dist/key-refusal.js";
 
 const CUT_KEY = `not-a-secret-${"cut-key-0123456789abcdef"}`;
@@ -106,7 +106,7 @@ async function judgedRun(t, item = CUT_KEY) {
 /** The run's store held by another connection with no reader allowed, so the graph's read of it is busy. The store is in
  *  WAL mode, where an exclusive transaction still lets readers in: the connection's exclusive locking mode does not. */
 function hold(t, data, runId) {
-  const store = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { timeout: 0 });
+  const store = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { timeout: 0 });
   store.exec("PRAGMA locking_mode=EXCLUSIVE; BEGIN EXCLUSIVE");
   store.prepare("SELECT count(*) FROM sqlite_master").get();
   const release = () => store.isOpen && (store.isTransaction && store.exec("ROLLBACK"), store.close());

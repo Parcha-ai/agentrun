@@ -123,7 +123,9 @@ export function pageDriver(stagehand: Stagehand, deadlines: { batchMs: number; s
     page: () => reads.page(),
     // An upload is effectful: past its deadline it fails as unanswered, and the page tools tell it as possibly applied.
     setInputFiles: async (selector, file) => { await withinDeadline((await active()).locator(selector).setInputFiles({ name: file.name, mimeType: file.mimeType, buffer: file.buffer }), uploadMs, "locator.setInputFiles"); },
-    // Stagehand's own close keeps the browser for another attach; the browser's close would end it.
-    close: () => stagehand.close(),
+    // Stagehand 4.4 lets one client attach to a browser at a time, and its close leaves this client attached: disconnect closes
+    // the instance (waiting 10 s at most), detaches the client and closes the socket, so the next attach is allowed. The
+    // browser keeps running; the browser's own close would end it.
+    close: () => stagehand.browser.disconnect(),
   };
 }

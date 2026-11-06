@@ -6,7 +6,7 @@
 // the owner's only. Read again, it imports only the sessions it has not.
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync, type Stats } from "node:fs";
-import { chmod, lstat, mkdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, lstat, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, sep } from "node:path";
 import { parseArgs } from "node:util";
@@ -28,6 +28,7 @@ import { SEAL_KEY_ENV, ToolKeys } from "./tool-keys.js";
 import { WEBHOOK_FILE, webhookSecretIn } from "./webhooks.js";
 import { triggerSecretsIn } from "./trigger-secrets.js";
 import { type RefusedReason, readWorkBytes, WorkRefused, walkWork } from "./workspace.js";
+import { readRunDbSync } from "./run-db.js";
 
 /** In the data directory while an import the owner asked for at setup has not ended: the server's next start goes on with it. */
 export const IMPORT_ASKED = ".import-at-setup";
@@ -205,7 +206,7 @@ async function filesIn(store: AgentStoreReader): Promise<Map<string, SourceFile 
   const out = new Map<string, SourceFile & { run: string }>();
   for (const run of store.listRuns()) {
     if (!run.importedFrom || !existsSync(store.runStorePath(run.id))) continue;
-    const meta = (await readJson(join(store.dir, "runs", run.id, RUN_META))) as { source_file?: SourceFile } | null;
+    const meta = (await readJson(join(store.runDir(run.id), RUN_META))) as { source_file?: SourceFile } | null;
     const seen = meta?.source_file;
     if (seen && typeof seen.path_sha256 === "string" && typeof seen.size === "number" && typeof seen.mtime_ms === "number") out.set(seen.path_sha256, { ...seen, run: run.id });
   }
@@ -476,16 +477,13 @@ async function seenIn(store: AgentStoreReader | undefined, agentId: string): Pro
   const { DatabaseSync } = await import("node:sqlite");
   for (const run of store.listRuns({ agent: agentId })) {
     if (run.importedFrom?.source !== "claude-code" || !existsSync(store.runStorePath(run.id))) continue;
-    const db = new DatabaseSync(store.runStorePath(run.id), { readOnly: true });
-    try {
+    readRunDbSync(store.runStorePath(run.id), false, (db) => {
       const rows = db.prepare("SELECT json_extract(record, '$.model[0].responseId') AS id, json_extract(record, '$.data.record_uuids') AS uuids FROM entries").all() as { id: unknown; uuids: unknown }[];
       for (const { id, uuids } of rows) {
         if (typeof id === "string" && id) seen("claude-code").add(`m:${id}`);
         if (typeof uuids === "string") for (const uuid of JSON.parse(uuids) as unknown[]) if (typeof uuid === "string") seen("claude-code").add(`u:${uuid}`);
       }
-    } finally {
-      db.close();
-    }
+    });
   }
   return seen;
 }
@@ -983,8 +981,8 @@ export async function runImport(store: AgentStore, plan: Plan, options: ImportOp
         const estimate = session.costUsd === undefined ? await estimateOf([...entries, ...subagents.flatMap(entriesOf)], catalog) : undefined;
         if (estimate !== undefined) Object.assign(metrics, { costUsdEst: estimate, costBasis: "catalog" });
         if (heldRun !== undefined) {
-          started = { runId: heldRun, dir: join(store.dir, "runs", heldRun), storePath: store.runStorePath(heldRun) };
-          if ((await mkdir(dirname(started.storePath), { recursive: true })) !== undefined) for (const made of [started.dir, dirname(started.storePath)]) await chmod(made, 0o700);
+          // Its folders as the store makes a run's: never through a link (a link there refuses the import).
+          started = store.runFolders(heldRun);
         } else {
           const answer = session.turns.findLast((t) => t.role === "assistant" && t.text)?.text;
           started = await store.importRun({

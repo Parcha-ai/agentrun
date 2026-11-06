@@ -61,7 +61,7 @@ An edit is a new revision: `PUT $AGENTRUN_BASE_URL/agents/calc/definition` with
 
 | Flag | Default | What |
 | --- | --- | --- |
-| `--data DIR` | `~/.local/share/agentrun/agents` | The agent store (`DIR/store.sqlite`) and its runs (`DIR/runs/<id>/`). The token is `DIR/.token`, mode 0600, made once and kept, unless `AGENTRUN_TOKEN` gives it. |
+| `--data DIR` | `~/.local/share/agentrun/agents` | The agent store (`DIR/store.sqlite`) and its runs (`DIR/disk/agents/<agent>/runs/<id>/`). The token is `DIR/.token`, mode 0600, made once and kept, unless `AGENTRUN_TOKEN` gives it. |
 | `--listen ADDR` | `127.0.0.1` | The address to listen on. On any other, every `Host` name is served and the token is the only lock: put TLS in front of it. |
 | `--port N` | the first free port from `7340` | The port. `0` is any free port. |
 | `--open` | off | Open the console in this machine's browser once the server listens; not in CI, nor on Linux with no display. |
@@ -205,9 +205,28 @@ the address people open before the first start; without it, whoever opens the co
 `AGENT_MODEL` and the provider's key there too. Render waits 30 s after SIGTERM, above the image's 6 s drain; it does not
 let a service with a disk change that.
 
+## The disk, and earlier data directories
+
+The data directory has two parts. Its own files, the control plane, hold the agent store (`DIR/store.sqlite`, where
+each run's row keeps its claim: an epoch and its holder), the token and the server's settings; only the server opens
+them. Everything the agents make is on the disk, `DIR/disk/`: one folder per agent, `DIR/disk/agents/<agent>/` (its id
+in lower case, a dash and 16 hex digits of its SHA-256), with its learning folder (`learning/`) and its runs
+(`runs/<id>/`, each with `store/run.sqlite`, its log, and `work/`, where its tools work). Nothing is copied in or out of
+a run's folder: where it works, it works in that folder.
+
+A run's own process writes its `run.sqlite` in WAL, under an exclusive lock, with no automatic checkpoint, and ends
+with its WAL in place. The server reads it with a fresh read-only open per read, never shows a read older than one
+before, and never opens it for writing while the run's process holds it. Once that process is gone the server takes
+the run back (its epoch bumped, the server its holder) and checkpoints its WAL into the database file.
+
+A data directory an earlier version wrote, with its runs under `DIR/runs/` (or a store of store version 1), is refused
+at start, saying so: this version neither reads nor moves it. Keep it with that version, or start this one on a new data
+directory (an empty folder, or a new volume).
+
 ## Upgrading from 0.1.0-beta.26
 
-0.1.0-beta.27 keeps every agent in one store, `DIR/store.sqlite`, with its revisions, and each run under `DIR/runs/<id>/`.
+0.1.0-beta.27 keeps every agent in one store, `DIR/store.sqlite`, with its revisions (and this version each run on the
+disk, above).
 0.1.0-beta.26 and earlier kept one agent home per agent, `DIR/<agent>/agent.sqlite`, and this version does not read
 those. So it refuses to start on a data directory that holds one, and names each home it found, instead of serving
 it as if it had no agents.
@@ -285,7 +304,9 @@ place keeps it, `runner` included. An edit that names no place keeps the agent's
 The box is a new agent's default machine. A new agentic agent whose definition names no place is saved in the Docker box
 (`{"mode": "sandbox", "box": "docker"}`) wherever this server has docker, ready or still preparing its image (its first
 run then waits for the image, with one timeline row). The place is written on the agent's first revision, so its answers
-show it. If that definition names no `tools` either, it gets `["bash"]`, so the agent has a shell. A definition that
+show it. If that definition names no `tools` either, it gets `["bash", "bash_background", "bash_output", "bash_input",
+"bash_signal", "bash_list"]`, so the agent has a shell and can run a command in the background
+([background processes](#background-processes)). A definition that
 names its tools keeps exactly those, an empty list included. Where docker is unavailable, a new agent is saved as before,
 with no place, and runs on the runner. So is one whose tools name one the box refuses (`browser`, runner-only for now). A
 workflow is never given a box.
@@ -467,16 +488,25 @@ where `bash`'s setting came from:
   console and the API show each log, during the run and after it.
 - Those files are for people to read: the run's own file tools can write anything in `work/`, so no call trusts one.
   The group a signal goes to, the exit code, the start time, the command and the run's-end mark are kept in the box's
-  own directory (its `TMPDIR`, else `/tmp`), out of `work/`; a copy in `work/` is written in that directory and moved
-  over its name from inside `work/background/<id>`, entered and checked by its real path, so a link planted at the name
-  or at the directory is never followed (a failed check skips the copy). `output.log` is opened first and then checked as opened
-  (through `/proc`: the file reached is `work/background/<id>/output.log` itself, by its real path, and a regular file),
-  and every read is of that open file, so a link swapped in after the check is never read. A link planted at it is
-  refused, saying so; so is any log in a box with no `/proc` to check it by. A directory made in `work/background/` that this box
-  did not start reads as gone, and is never signalled.
+  own directory (its `TMPDIR`, else `/tmp`), out of `work/`. A copy in `work/` is written from inside
+  `work/background/<id>`, entered and checked by its real path, to a new file of a name no one can guess, created and
+  written in one exclusive open, then renamed over its name; so a link planted at the name or at the directory is never
+  followed, and a real directory standing at the name skips that copy (as does a failed check). At the run's end every
+  copy (`command` and `started` among them) is written again, so a link planted at one since its start does not stay.
+  `output.log` is opened first and then checked as opened (through `/proc`: the file reached is
+  `work/background/<id>/output.log` itself, by its real path, and a regular file), and every read is of that open file,
+  so a link swapped in after the check is never read. A link planted at it is refused, saying so; a box with no `/proc`
+  to check by refuses every log, saying that instead. A directory made in `work/background/` that this box did not
+  start reads as "not started in this box", and is never signalled.
 - A process runs until no live process of its group is left: a child the command starts with `&` (a server, its
   output sent elsewhere) keeps it running, counted against the cap, signalled with it and ended at the run's end; its
   exit code is the shell's.
+- A child that leaves the process group (one that calls `setsid`, a daemon that detaches) is not tracked: it is not
+  counted against the cap, no `bash_signal` reaches it, and the run's end does not end it. Only the box's end (its
+  destroy at the run's end) or its 24-hour lifetime ends it; the box's process limit (`AGENTRUN_BOX_PIDS`) only bounds
+  how many processes there can be.
+- A process whose runner ended before it did (its box was replaced, or the runner was killed) reads as gone, its exit
+  code not known.
 - At most 8 run at once in a run's box: a ninth start is refused, saying so, until one ends. Each log keeps the first
   16 MiB of the output; later output is dropped while the process runs on, and `bash_output` says so.
 - `bash_background {command, tty: true}` runs the command on a terminal instead: `script -qfec` (util-linux) in the box
@@ -486,7 +516,8 @@ where `bash`'s setting came from:
   interactive shell's running command stops and the shell runs on; `TERM` and `KILL` go to every process group of the
   terminal's session. That session is tracked as the process: a child its command leaves running on the terminal keeps
   the process running, counted against the cap, reached by `bash_signal` and ended at the run's end, after `script`
-  itself is gone. A box with no `script` refuses `tty: true`, saying so, and starts nothing. `bash_list` marks such a
+  itself is gone. A box with no `script`, or with another `script` than util-linux's (busybox's takes no `-e`, and without it
+  always exits 0, so the command's exit code would be lost), refuses `tty: true`, saying so, and starts nothing. `bash_list` marks such a
   process `(tty)`.
 - `bash_output {id, offset?, max_bytes?}` reads the log from a byte offset (0 when absent), at most 48 KiB a call (the
   default), never splitting a character (a page too small for the character it starts at is refused, saying so): whether the process still runs, its exit code once it ended, the log's size,
@@ -510,7 +541,7 @@ since nothing binds `work/` there):
 
 - The key is this server's alone. The server makes, copies to and from, and destroys the sandbox itself. The run's
   process holds no key: it reaches its sandbox only through the server's box relay, on loopback, which takes a call for
-  a run only with that run's own door token (`DIR/runs/<id>/door-token`, handed to that run's process alone) and adds
+  a run only with that run's own door token (`DIR/disk/agents/<agent>/runs/<id>/door-token`, handed to that run's process alone) and adds
   the key to the calls a run's tools make of their own sandbox (a read of it, and its toolbox's programs and files). It
   refuses every other call (a create, a listing, a stop, a delete, another run's sandbox or token, any other host), and
   it never follows a redirect, nor does the server's own Daytona client: a redirect would carry the key.
@@ -1727,7 +1758,7 @@ left out: 2 sessions still being written: they come in next time
 ## A run's life
 
 1. `POST /agents/{id}/runs` starts the run in the store (`startRun`, which pins the revision and seeds
-   `DIR/runs/<id>/`), then its process: `pi-durable-disk run --dir DIR/runs/<id> --app <this package's app> --serve 0` on
+   `DIR/disk/agents/<agent>/runs/<id>/`), then its process: `pi-durable-disk run --dir DIR/disk/agents/<agent>/runs/<id> --app <this package's app> --serve 0` on
    loopback, behind a token of its own (`DIR/.door-token`), with its stderr in `runs/<id>/process.log`. The run's input
    is in `runs/<id>/serve.json`.
 2. The app reads the run's revision from the store.
@@ -1786,7 +1817,7 @@ definition that sets it keeps it on its revision, `false` included, and an edit 
 that never sets it stores nothing, so its revision id is the one it had before the switch. The server's `--learning off`
 turns learning off for every run it starts, whatever the agent says.
 
-An agent that learns has a learning folder, `learning/` in its home (`DATA/homes/<key>/learning/`), in Claude Code's
+An agent that learns has a learning folder, `learning/` in its folder on the disk (`DATA/disk/agents/<key>/learning/`), in Claude Code's
 auto-memory format:
 
 - `MEMORY.md`, the index a run reads, one line per active note: `- [name](file.md) — description`, built by the server;
@@ -2199,7 +2230,9 @@ next process opens under it, as does a server started again; a raise it could no
 and the same raise again is taken anew. A run paused at its cap goes on: the answer is `{run_id, max_cost_usd, resumed: true,
 message_id, status, state}` at once, and the pause gets one follow-up turn, "The cap was raised to $2; continue the
 task.", under that `message_id`, which the server sends once the process being let go is gone, and which runs under the
-new cap. A second raise before it goes raises the cap it names and answers the same `message_id`. It is sent once: a
+new cap. From the moment the raise is taken, the run reads `queued` (state `working`), in the answer's `status` and in
+every read after it, until the follow-up's turn runs: nothing waits on a person, so it is never `input_required` with no
+`pending` meanwhile. A second raise before it goes raises the cap it names and answers the same `message_id`. It is sent once: a
 server stopped before it went, or between starting its process and sending it, sends it when it starts again. One that
 cannot be sent is tried again (after 1 s, then 3 s); after 3 tries the run ends `failed`, saying the cap was raised but
 the run could not be sent on. The follow-up shows in the run's timeline as the server's, "AgentRun: The cap was raised…", never as the
@@ -2285,7 +2318,7 @@ carries no cost at all, as from a provider that does not price the model. The te
   browser's cookie under the rules of [the console](#the-console). The console's own files (its HTML, scripts, styles
   and fonts) hold no data; everything it shows comes through those routes. It loads nothing from the network, and its
   CSP allows this origin only.
-- Each run's door listens on loopback and takes only that run's own door token (`DIR/runs/<id>/door-token`, 0600, made
+- Each run's door listens on loopback and takes only that run's own door token (`DIR/disk/agents/<agent>/runs/<id>/door-token`, 0600, made
   at its first launch); a run's process an older server started keeps the server-wide one (`DIR/.door-token`).
 - A run's process gets the server's environment (the `AGENT_MODEL` variables among it) without the server's token or any
   key: no `AGENTRUN_TOKEN`, no `AGENTRUN_API_KEY`, no variable whose value is the token, and no variable named like a key

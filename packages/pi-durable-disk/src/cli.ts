@@ -299,6 +299,9 @@ async function runInstance(values: Record<string, unknown>): Promise<number> {
   let run: DurableRun;
   try {
     run = await openDurableRun(ref, {
+      // This process ends by process.exit (main, below), so its store's close checkpoints nothing: the WAL stays, and
+      // whoever takes the run back next checkpoints it.
+      keepWal: true,
       ...(boxMode === undefined ? {} : { boxMode: boxMode as BoxMode }),
       // A local directory is its own claim (no mount, no token); a disk's run is mounted with a token.
       ...(dir === undefined ? { mountToken: await readToken(values), mountRoot, host: { archil: str(values.archil) } } : localRun(dir)),

@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { metersIn } from "../dist/cap.js";
 import { startServe } from "../dist/index.js";
-import { agent, client, follow, scratch, serve, withEnv } from "./support.mjs";
+import { agent, client, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
 import { KEY as MONID_KEY } from "./fixtures/faux-monid.mjs";
 
 const OUTPUT_PRICED = new URL("./fixtures/faux-output-priced.mjs", import.meta.url).pathname;
@@ -110,10 +110,10 @@ test("a paid tool call a crash cut is a charge with no price: the run reads its 
   assert.equal((await api("POST", "/agents", agent("monid-cut", { tools: ["monid.run"], tool_settings: { "monid.run": { permission: "allow" } } }))).status, 201);
   const { body } = await api("POST", "/agents/monid-cut/runs", { input: { content: "Run monid's /slow." } });
   await until("the monid call is sent", () => existsSync(log) && readFileSync(log, "utf8").includes('"path":"/v1/run"'));
-  process.kill(JSON.parse(readFileSync(join(data, "runs", body.run_id, "run.json"), "utf8")).holder.pid, "SIGKILL");
+  process.kill(JSON.parse(readFileSync(join(runDir(data, body.run_id), "run.json"), "utf8")).holder.pid, "SIGKILL");
   await follow(api, body.run_id, ["completed"], { deadlineMs: 90_000 });
   const run = await view(api, body.run_id);
-  const { tokens } = metersIn(join(data, "runs", body.run_id, "store", "run.sqlite"));
+  const { tokens } = metersIn(join(runDir(data, body.run_id), "store", "run.sqlite"));
   assert.ok(tokens > 0, `the model requests are priced: ${tokens}`);
   assert.deepEqual([run.cost.usd, run.cost.so_far_usd, run.cost.unpriced], [null, round(tokens), 1], JSON.stringify(run.cost));
 });

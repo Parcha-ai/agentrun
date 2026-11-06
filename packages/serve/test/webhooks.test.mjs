@@ -15,7 +15,7 @@ import { openStore } from "@parcha/pi-durable-agent";
 import { startServe } from "../dist/index.js";
 import { ATTEMPTS_KEPT, signatureOf, Webhooks } from "../dist/webhooks.js";
 import { schemaProblems } from "./schema-support.mjs";
-import { client, FAUX, follow, printed, scratch, serve, startRun, withEnv } from "./support.mjs";
+import { client, FAUX, follow, printed, runDir, scratch, serve, startRun, withEnv } from "./support.mjs";
 
 // The spec's own library, in the lockfile through the Anthropic SDK: what a receiver would install.
 const { Webhook } = createRequire(import.meta.url)("standardwebhooks");
@@ -538,7 +538,7 @@ test("a run waiting for its person when its server dies gives no new notice from
   await until(() => ofType(hook.got, "run.needs_input").length === 1, "the wait's notice");
   first.child.kill("SIGKILL");
   await new Promise((resolve) => first.child.once("exit", resolve));
-  const { holder } = JSON.parse(readFileSync(join(data, "runs", run.run_id, "run.json"), "utf8"));
+  const { holder } = JSON.parse(readFileSync(join(runDir(data, run.run_id), "run.json"), "utf8"));
   t.after(() => processAlive(holder.pid) && process.kill(holder.pid, "SIGKILL"));
   assert.ok(processAlive(holder.pid), "its process outlived the server");
   const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
@@ -873,7 +873,7 @@ test("a run that comes to wait for its person while no server is up gives exactl
   const run = await startRun(first.api, "asks-late", `Pick a region once ${gate} exists.`, { tools: ["ask_person"] });
   await follow(first.api, run.run_id, ["working"]);
   await killed(first.child);
-  const { holder } = JSON.parse(readFileSync(join(data, "runs", run.run_id, "run.json"), "utf8"));
+  const { holder } = JSON.parse(readFileSync(join(runDir(data, run.run_id), "run.json"), "utf8"));
   t.after(() => processAlive(holder.pid) && process.kill(holder.pid, "SIGKILL"));
   assert.ok(processAlive(holder.pid), "its process outlived the server");
   // The run asks with no server up: the faux model says so by a file, as its store is its process's alone.
@@ -914,7 +914,7 @@ test("a run.needs_input whose outbox write failed is not recorded, so after a ki
   await until(() => ofType(hook.got, "run.needs_input").length === 1, "its try, from memory");
   assert.equal(waitNotice(data, run.run_id), undefined, "not recorded: the outbox never held it on disk");
   await killed(first.child);
-  const { holder } = JSON.parse(readFileSync(join(data, "runs", run.run_id, "run.json"), "utf8"));
+  const { holder } = JSON.parse(readFileSync(join(runDir(data, run.run_id), "run.json"), "utf8"));
   t.after(() => processAlive(holder.pid) && process.kill(holder.pid, "SIGKILL"));
   rmdirSync(blocked);
   const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
@@ -1266,7 +1266,7 @@ test("an end the start's catch-up finds while the run's own store is held busy i
   const at = await until(() => endedIn(data, run.run_id), "its end in the store");
   await killed(first.child);
   // The run's own store held by another connection, exclusively, while the next server starts: no read of it lands.
-  const held = new DatabaseSync(join(data, "runs", run.run_id, "store", "run.sqlite"), { timeout: 0 });
+  const held = new DatabaseSync(join(runDir(data, run.run_id), "store", "run.sqlite"), { timeout: 0 });
   held.exec("PRAGMA locking_mode=EXCLUSIVE");
   held.exec("BEGIN EXCLUSIVE");
   held.exec("CREATE TABLE IF NOT EXISTS held_by_the_test (x)");

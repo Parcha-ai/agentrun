@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import * as learning from "../dist/learning.js";
 import { outcomeOf, outcomes } from "../dist/usage.js";
+import { runDirIn } from "@parcha/pi-durable-agent";
 import { LearningRuns, noteRuns } from "../dist/learning-run.js";
 import { openapiDocument } from "../dist/openapi.js";
 import { note } from "./learn-format-support.mjs";
@@ -86,8 +87,8 @@ test("a run whose read grows after its ledger line is written (a follow-up read 
   await first.onSaved({ id: "r1", agentId: "a" }, grown);
   await first.onSaved({ id: "r1", agentId: "a" }, grown);
   // The next server: the run's serve.json holds the grown read, its pass reads it, and the ledger is all it counts from.
-  mkdirSync(join(data, "runs", "r1"), { recursive: true });
-  writeFileSync(join(data, "runs", "r1", "serve.json"), `${JSON.stringify({ learning: grown })}\n`);
+  mkdirSync(runDirIn(data, "a", "r1"), { recursive: true });
+  writeFileSync(join(runDirIn(data, "a", "r1"), "serve.json"), `${JSON.stringify({ learning: grown })}\n`);
   const second = new LearningRuns({ agents: { dir: data } }, kernel);
   await second.recover()([row]);
   const { counts, notes } = await second.ofAgent([row], "a");
