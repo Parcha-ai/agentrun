@@ -43,10 +43,10 @@ export type LearnedFileRef = { file: string; name: string; pending?: true };
  *  owner's OK or a person retired it (no later run is given it), the run that kept it, its size, and the version an
  *  approval or a retire names (`etag`). */
 export type LearnedItem = { name: string; file: string; readme?: string; description: string; status: "active" | "pending" | "retired"; run: string | null; bytes: number; etag: string; retired?: Retired; last_change?: LastChange };
-/** When a retired one was retired, and by whom (a newer server's; absent otherwise): its retire commit, kept across later
+/** When a retired one was retired, and by whom (absent on one not retired): its retire commit, kept across later
  *  changes. */
 export type Retired = { at: string; by: "person" | "run" };
-/** The newest change to an item's file, as the server names it (a newer server's; absent when it names none). */
+/** The newest change to an item's file, as the server names it (absent when it names none). */
 export type LastChange = { kind: "approved" | "edited" | "created" | "retired" | "restored" | "learned"; by: "person" | "run"; at: string };
 const VERBS: Record<LastChange["kind"], string> = { approved: "Approved", edited: "Edited", created: "Created", retired: "Retired", restored: "Restored", learned: "Learned" };
 /** A change in words: "Approved by you", "Retired by a run". */

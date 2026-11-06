@@ -970,8 +970,8 @@ describe("the Learning tab's retired notes and skills, opened", () => {
 });
 
 // What a card says of its newest change, as the server names it (last_change): approved, restored, retired, edited or
-// created by you, each with when; learned, by the run that kept it. An older server names none: the line the learning
-// log gives, as before. A retired one says who retired it and when (retired), else the log's line.
+// created by you, each with when; learned by a run, none (Learned in says it). A retired one says who retired it and
+// when (retired). With neither served, a card names no change.
 describe("the Learning tab's words for the newest change", () => {
   const AT = "2026-11-05T19:30:00Z";
   it("says Approved by you or Restored by you when the server names it, never Edited", async () => {
