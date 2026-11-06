@@ -51,7 +51,7 @@ import { startBoxRelay } from "./box-relay.js";
 import { vmRelay, type VmSdk } from "./box-relay-vm.js";
 import { memoryMbOf } from "./run-box.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
-import { meterFiguresIn } from "./cap.js";
+import { CAP_MODES, type CapMode, meterFiguresIn } from "./cap.js";
 import { type Blocker, blockersOf, CODE_NODES_ENV, issueOf, MCP_HARNESSES, type RevisionShape } from "./runnable.js";
 import { hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from "./secrets.js";
 import { redactedOutput } from "./key-refusal.js";
@@ -233,6 +233,9 @@ export type ServeOptions = {
   messageOrigin?: (runId: string, content: string) => MessageOrigin | undefined;
   /** How long a request waits for a run's door, its process coming up or a settle in progress (default 45 s). */
   readyTimeoutMs?: number;
+  /** How long a launched run's process has to open its run before it is stopped and the run opened again (default 45 s,
+   *  READY_TIMEOUT_MS: the wait of a run's first message). */
+  openTimeoutMs?: number;
   /** How long a run's end-of-run turn may take before it is aborted and the run finishes without it (default 5 min). */
   reflectTimeoutMs?: number;
   /** How long a run's grader may take before it is cut off and the run's learning dropped (default 3 min). */
@@ -891,7 +894,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     log?.(logLine("claude_installed", { ms, dir: harnessesOf(data) }));
     void probe("claude_installed").catch(() => undefined);
   });
-  const runs = new Runs({ ...(claudeInstall ? { claudeInstall } : {}), dockerAllow: boxNetwork.allow, ...(egress?.volume ? { dockerVolume: egress.volume } : {}), agents, token, storedKeys, mcpServers: mcpSource, doorTokenFile, doorToken, learning, learningBudget, ...(documents ? { documents: resolve(documents) } : {}), fauxEnv: fauxEnvOf(options), toolSettings: () => settings.get(), ...(runBoxes ? { runBoxes } : {}), ...(remoteBoxes ? { remoteBoxes } : {}), ...(vmBoxes && vmRelayHalf ? { vmBoxes, vmLimits, vmRelay: vmRelayHalf } : {}), ...(remoteBoxes && daytonaApi(env) ? { remoteApi: daytonaApi(env)! } : {}), ...(remoteBoxes ? { boxAllow, onNoBoxList } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(options.reflectTimeoutMs ? { reflectTimeoutMs: options.reflectTimeoutMs } : {}), ...(options.gradeTimeoutMs ? { gradeTimeoutMs: options.gradeTimeoutMs } : {}), ...(options.gradeModel ? { gradeModel: options.gradeModel } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}), notify: (event, run, marker) => webhooks.emit(event, run, marker), ownSecrets: () => triggerSecrets?.values() ?? [], signIns, approvers: options.accounts === true });
+  const runs = new Runs({ ...(claudeInstall ? { claudeInstall } : {}), dockerAllow: boxNetwork.allow, ...(egress?.volume ? { dockerVolume: egress.volume } : {}), agents, token, storedKeys, mcpServers: mcpSource, doorTokenFile, doorToken, learning, learningBudget, ...(documents ? { documents: resolve(documents) } : {}), fauxEnv: fauxEnvOf(options), toolSettings: () => settings.get(), ...(runBoxes ? { runBoxes } : {}), ...(remoteBoxes ? { remoteBoxes } : {}), ...(vmBoxes && vmRelayHalf ? { vmBoxes, vmLimits, vmRelay: vmRelayHalf } : {}), ...(remoteBoxes && daytonaApi(env) ? { remoteApi: daytonaApi(env)! } : {}), ...(remoteBoxes ? { boxAllow, onNoBoxList } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(options.openTimeoutMs ? { openTimeoutMs: options.openTimeoutMs } : {}), ...(options.reflectTimeoutMs ? { reflectTimeoutMs: options.reflectTimeoutMs } : {}), ...(options.gradeTimeoutMs ? { gradeTimeoutMs: options.gradeTimeoutMs } : {}), ...(options.gradeModel ? { gradeModel: options.gradeModel } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}), notify: (event, run, marker) => webhooks.emit(event, run, marker), ownSecrets: () => triggerSecrets?.values() ?? [], signIns, approvers: options.accounts === true });
   const daytona = daytonaApi(env);
   const relay = (remoteBoxes && daytona) || vmRelayHalf ? await startBoxRelay({ root: data, tokenOf: (id) => runs.relayToken(id), ...(remoteBoxes && daytona ? daytona : {}), ...(vmRelayHalf ? { vm: vmRelayHalf } : {}), serves: (id) => runs.servesBox(id), ensure: (id) => runs.ensureBox(id) }) : undefined;
   if (relay) stops.push(() => relay.close());
@@ -1177,6 +1180,13 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const mismatch = () => new ApiError("idempotency_mismatch", "this Idempotency-Key was used with another body");
   /** Replays the first answer to a create with the same key and body; another body is a mismatch. `work` gets the key's
    *  origin (its slot and the body, hashed) for a create the agent store records with the run it starts. */
+  /** A kept answer, replayed to `req`: its console page (a run's or an agent's console_url) at the address this request
+   *  reached (linkOrigin), not the first request's. */
+  const pageFor = (req: IncomingMessage, body: unknown): unknown => {
+    if (!isObject(body) || typeof body.console_url !== "string") return body;
+    const at = body.console_url.indexOf("/#/");
+    return at < 0 ? body : { ...body, console_url: `${linkOrigin(req)}${body.console_url.slice(at)}` };
+  };
   async function idempotent(req: IncomingMessage, path: string, body: Json, work: (origin?: RunOrigin) => Promise<{ status: number; body: unknown; headers?: Record<string, string> }>) {
     const key = req.headers["idempotency-key"];
     if (key === undefined) return work();
@@ -1189,7 +1199,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     if (known) {
       if (known.fingerprint !== fingerprint) throw mismatch();
       if (!known.answer) throw new ApiError("idempotency_in_progress", "the first request with this Idempotency-Key is still in flight", { retry_after_ms: 500 });
-      return { ...known.answer, headers: { ...known.answer.headers, "idempotent-replayed": "true" } };
+      return { ...known.answer, body: pageFor(req, known.answer.body), headers: { ...known.answer.headers, "idempotent-replayed": "true" } };
     }
     idempotency.set(slot, { fingerprint, at: now });
     let answer: { status: number; body: unknown; headers?: Record<string, string> };
@@ -1222,10 +1232,12 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     if (!blockers.length) return;
     const message = blockers.map((b) => b.message).join(" ");
     const unbound = blockers.flatMap((b) => (b.tool ? [b.tool] : []));
+    // A known MCP meta tool is no server or tool that is missing: it has a key of its own, with why it is not granted.
+    const notGrantable = blockers.flatMap((b) => (b.notGrantable ? [b.notGrantable] : []));
     const missing = Object.fromEntries(blockers.flatMap((b) => (b.missing ? [[b.missing.tool, b.missing.vars]] : [])));
     const harness = blockers.find((b) => b.harness)?.harness;
     const box = blockers.find((b) => b.box)?.box;
-    const named = { ...(harness ? { harness } : {}), ...(box ? { box } : {}) };
+    const named = { ...(harness ? { harness } : {}), ...(box ? { box } : {}), ...(notGrantable.length ? { not_grantable: notGrantable } : {}) };
     if (revision.kind === "agentic") throw new ApiError("agent_not_runnable", message, { details: { unbound, missing, ...named } });
     const tier = blockers.find((b) => b.tier)?.tier;
     const decisions = Object.fromEntries(blockers.flatMap((b) => (b.decision ? [[b.decision.provider, { reason: b.reason, needs: b.decision.needs }]] : [])));
@@ -1269,6 +1281,12 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     return checked.ok ? [] : checked.issues.map((i) => ({ field: `input${i.path ? ` at ${i.path}` : ""}`, reason: "invalid", message: `the workflow does not take this input: ${i.code}${i.path ? ` at ${i.path}` : ""}` }));
   }
 
+  /** Where a person opens a page an answer to `req` names (a run's or an agent's console_url, console-links.ts): the
+   *  server's public URL when it has one; else the address the request reached it at, which passed the Host check (a
+   *  tunnel's own port, say); else, with no Host, its own. Links made outside a request (the owner's, the webhooks') are
+   *  at the public URL or the server's own address. */
+  const linkOrigin = (req: IncomingMessage): string => (options.publicUrl ?? (req.headers.host ? ownOrigin(req) : url)).replace(/\/+$/, "");
+
   async function createRun(req: IncomingMessage, agentId: string) {
     const entry = await needAgent(agentId);
     if (entry.agent.archivedAt) throw new ApiError("agent_not_runnable", `The agent ${agentId} is archived: unarchive it to run it.`, { details: { archived_at: entry.agent.archivedAt } });
@@ -1279,12 +1297,12 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       if (first) {
         if (first.existing?.fingerprint !== origin.fingerprint) throw mismatch();
         const headers: Record<string, string> = { location: `/v2/runs/${first.runId}`, "idempotent-replayed": "true" };
-        return { status: 202, body: await runs.view(await needRun(first.runId)), headers };
+        return { status: 202, body: await runs.view(await needRun(first.runId), linkOrigin(req)), headers };
       }
       const run = await startRunOf(entry, body, { ...(origin ? { origin } : {}) });
       // Its view from the run itself: it is written, with its first message, so an answer read from the store, which a
       // busy store would turn into home_busy, would refuse a run that runs, and a retry would start a second one.
-      return { status: 202, body: await runs.view(run, { stored: null }), headers: { location: `/v2/runs/${run.id}` } };
+      return { status: 202, body: await runs.view(run, linkOrigin(req), { stored: null }), headers: { location: `/v2/runs/${run.id}` } };
     });
   }
 
@@ -1293,11 +1311,12 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
    *  gets that run (the agent store's run_origins). */
   /** `capped`: the run must have a cap (a trigger's), its own or else its agent's default. */
   async function startRunOf(entry: AgentEntry, body: Json, { trigger, origin, capped = false }: { trigger?: RunTrigger; origin?: RunOrigin; capped?: boolean } = {}): Promise<Run> {
-    const issues = unknownFields(body, ["input", "revision", "file_ids", "effort", "max_cost_usd", "quote_id"]);
+    const issues = unknownFields(body, ["input", "revision", "file_ids", "effort", "max_cost_usd", "cap_mode", "quote_id"]);
     if (!isObject(body.input)) issues.push({ field: "input", reason: body.input === undefined ? "missing" : "wrong_type", message: "input is an object" });
     if (body.revision !== undefined && (typeof body.revision !== "string" || !ID.test(body.revision))) issues.push({ field: "revision", reason: "wrong_type", message: "revision is a revision id of this agent" });
     if (body.effort !== undefined && !(EFFORTS as readonly unknown[]).includes(body.effort)) issues.push({ field: "effort", reason: "not_an_option", message: `effort is one of ${EFFORTS.join(", ")}` });
     if (body.max_cost_usd !== undefined && !(typeof body.max_cost_usd === "number" && body.max_cost_usd > 0 && Number.isFinite(body.max_cost_usd))) issues.push({ field: "max_cost_usd", reason: "wrong_type", message: "max_cost_usd is a number above 0" });
+    if (body.cap_mode !== undefined && !(CAP_MODES as readonly unknown[]).includes(body.cap_mode)) issues.push({ field: "cap_mode", reason: "not_an_option", message: `cap_mode is one of ${CAP_MODES.join(", ")}` });
     if (body.file_ids !== undefined && !Array.isArray(body.file_ids)) issues.push({ field: "file_ids", reason: "wrong_type", message: "file_ids is a list of file ids" });
     if (issues.length) throw invalid(issues);
     if (body.quote_id !== undefined) throw unsupported("quotes", "This server has no billing, so it takes no quotes.");
@@ -1313,13 +1332,16 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     // The run's own cap, else the agent's default (an agentic revision's): the caller chose its own.
     const cap = typeof body.max_cost_usd === "number" ? body.max_cost_usd : revision.kind === "agentic" ? revision.body.maxCostUsd : undefined;
     if (capped && cap === undefined) throw invalid([{ field: "max_cost_usd", reason: "missing", message: "Every run a trigger starts is capped: give the trigger's target a max_cost_usd or set the agent's." }]);
+    // How its cap prices a request: the run's own, else the agent's, else expected (cap.ts). Only a run with a cap has one.
+    if (body.cap_mode !== undefined && cap === undefined) throw invalid([{ field: "cap_mode", reason: "not_allowed", message: "cap_mode says how a run's cap prices its requests, and this run has no cap: give it a max_cost_usd, or set the agent's." }]);
+    const capMode = cap === undefined ? undefined : typeof body.cap_mode === "string" ? (body.cap_mode as CapMode) : revision.kind === "agentic" ? (revision.body.capMode as CapMode | undefined) : undefined;
     const place = resolvePlace(revision.body.place as Place | undefined, fallbackPlace(revision.kind, revision.kind === "agentic" ? (revision.body.tools ?? []) : []));
     await runnable(revision, place, { capped: cap !== undefined });
     // The title shows on the run's page, the runs list and Mission Control: built from its input as shown, each held
     // value redacted before a long one is cut (a cut key could no longer be found), and the run gets its input as given.
     const shown = redactedOutput(input, learningSecrets());
     const title = revision.kind === "workflow" ? workflowTitle(entry.agent.name || entry.agent.id, isObject(shown) ? shown : {}) : typeof input.content === "string" ? input.content : (Object.values(input).find((v): v is string => typeof v === "string") ?? JSON.stringify(input));
-    return runs.create(entry, revision, version, { input, title, place, ...(typeof body.effort === "string" ? { effort: body.effort } : {}), ...(cap !== undefined ? { maxCostUsd: cap } : {}), ...(trigger ? { trigger } : {}), ...(origin ? { origin } : {}), ...(files.length ? { inputs: (work: string) => uploads.copyInto(work, files) } : {}) });
+    return runs.create(entry, revision, version, { input, title, place, ...(typeof body.effort === "string" ? { effort: body.effort } : {}), ...(cap !== undefined ? { maxCostUsd: cap } : {}), ...(capMode !== undefined ? { capMode } : {}), ...(trigger ? { trigger } : {}), ...(origin ? { origin } : {}), ...(files.length ? { inputs: (work: string) => uploads.copyInto(work, files) } : {}) });
   }
 
   /** A page of runs from the store, newest first: `agent`, `revision` and `status` narrow it. */
@@ -1330,7 +1352,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     return value === "true";
   }
 
-  async function runsPage(url: URL, filter: { agent?: string; revision?: string }) {
+  async function runsPage(url: URL, filter: { agent?: string; revision?: string }, origin: string) {
     const limit = limitOf(url.searchParams.get("limit"));
     const offset = cursorOf(url.searchParams.get("cursor"));
     const status = url.searchParams.get("status");
@@ -1344,7 +1366,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     }
     const versions = new Map<string, number>();
     for (const agent of new Set(rows.slice(offset, offset + limit).map((row) => row.agent))) for (const r of await agents.revisions(agent)) versions.set(r.id, r.version);
-    const page = await Promise.all(rows.slice(offset, offset + limit).map((row) => runs.summaryOfRow(row, versions)));
+    const page = await Promise.all(rows.slice(offset, offset + limit).map((row) => runs.summaryOfRow(row, versions, origin)));
     return { runs: page, next_cursor: nextCursor(offset + limit, rows.length) };
   }
 
@@ -1734,7 +1756,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
           const named = Array.isArray(definition.definition.tools) ? definition.definition.tools : [];
           const fresh = named.some((tool) => typeof tool === "string" && toolOf(tool)?.runnerOnly) ? { reason: "" } : newAgentPlace(boxOffers);
           const entry = await agents.create(definition, async (revision) => void (warnings = await saveable(revision)), "place" in fresh ? { place: fresh.place, tools: NEW_AGENT_TOOLS } : undefined);
-          return { status: 201, body: { ...agentView(entry, await signIns.view(entry.agent.id), await learningOfAgent(entry)), warnings }, headers: { location: `/v2/agents/${entry.agent.id}`, etag: etagOf(entry) } };
+          return { status: 201, body: { ...agentView(entry, linkOrigin(req), await signIns.view(entry.agent.id), await learningOfAgent(entry)), warnings }, headers: { location: `/v2/agents/${entry.agent.id}`, etag: etagOf(entry) } };
         });
         return send(res, answer.status, answer.body, answer.headers);
       }
@@ -1743,13 +1765,13 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         const offset = cursorOf(url.searchParams.get("cursor"));
         const archived = archivedParam(url);
         const all = (await agents.list()).filter((entry) => Boolean(entry.agent.archivedAt) === archived);
-        return send(res, 200, { agents: await Promise.all(all.slice(offset, offset + limit).map(async (entry) => agentView(entry, await signIns.view(entry.agent.id), await learningOfAgent(entry)))), next_cursor: nextCursor(offset + limit, all.length) });
+        return send(res, 200, { agents: await Promise.all(all.slice(offset, offset + limit).map(async (entry) => agentView(entry, linkOrigin(req), await signIns.view(entry.agent.id), await learningOfAgent(entry)))), next_cursor: nextCursor(offset + limit, all.length) });
       }
       case "getAgent": {
         const entry = await needAgent(id);
         // The tools its current revision grants, as capabilities list them, each with its provider for this agent.
         const tools = entry.revision ? agentTools(env, settings.get(), await toolingOf(entry.revision), caps.tools.map((tool) => tool.name)) : [];
-        return send(res, 200, { ...agentView(entry, await signIns.view(entry.agent.id), await learningOfAgent(entry)), tools }, { etag: etagOf(entry) });
+        return send(res, 200, { ...agentView(entry, linkOrigin(req), await signIns.view(entry.agent.id), await learningOfAgent(entry)), tools }, { etag: etagOf(entry) });
       }
       case "updateDefinition": {
         const entry = await needAgent(id);
@@ -1769,7 +1791,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         let warnings: InputIssue[] = [];
         const check = async (revision: NewRevision) => void (warnings = await saveable(revision));
         const edited = await agents.commit(entry, checkDefinitionBody(contract ? { definition: body } : body, { creating: false }), { check, contract, ...(match === undefined ? {} : { ifCurrent: entry.revision?.id ?? null }) });
-        return send(res, 200, { ...agentView(edited, await signIns.view(edited.agent.id), await learningOfAgent(edited)), warnings }, { etag: etagOf(edited) });
+        return send(res, 200, { ...agentView(edited, linkOrigin(req), await signIns.view(edited.agent.id), await learningOfAgent(edited)), warnings }, { etag: etagOf(edited) });
       }
       case "listRevisions": {
         const entry = await needAgent(id);
@@ -1788,7 +1810,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         if (typeof revision !== "string" || !ID.test(revision)) throw invalid([{ field: "revision", reason: revision === undefined ? "missing" : "wrong_type", message: "revision is a revision id of this agent" }]);
         if (!(await agents.revision(id, revision))) throw invalid([{ field: "revision", reason: "not_an_option", message: `${revision} is not a revision of the agent ${id}` }]);
         const moved = await agents.setCurrent(entry, revision);
-        return send(res, 200, agentView(moved, await signIns.view(moved.agent.id), await learningOfAgent(moved)), { etag: etagOf(moved) });
+        return send(res, 200, agentView(moved, linkOrigin(req), await signIns.view(moved.agent.id), await learningOfAgent(moved)), { etag: etagOf(moved) });
       }
       case "archiveAgent":
       case "unarchiveAgent": {
@@ -1796,7 +1818,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         await agents.setArchived("agent", id, found.name === "archiveAgent");
         if (found.name === "archiveAgent") await runs.archived();
         const entry = await needAgent(id);
-        return send(res, 200, agentView(entry, await signIns.view(entry.agent.id), await learningOfAgent(entry)), { etag: etagOf(entry) });
+        return send(res, 200, agentView(entry, linkOrigin(req), await signIns.view(entry.agent.id), await learningOfAgent(entry)), { etag: etagOf(entry) });
       }
       case "forgetSignIn": {
         await needAgent(id);
@@ -1814,14 +1836,14 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       }
       case "listRuns":
         await needAgent(id);
-        return send(res, 200, await runsPage(url, { agent: id }));
+        return send(res, 200, await runsPage(url, { agent: id }, linkOrigin(req)));
       case "listAllRuns": {
         const agent = url.searchParams.get("agent") ?? undefined;
         const revision = url.searchParams.get("revision") ?? undefined;
-        return send(res, 200, await runsPage(url, { ...(agent ? { agent } : {}), ...(revision ? { revision } : {}) }));
+        return send(res, 200, await runsPage(url, { ...(agent ? { agent } : {}), ...(revision ? { revision } : {}) }, linkOrigin(req)));
       }
       case "getRun":
-        return send(res, 200, await runs.view(await needRun(id)));
+        return send(res, 200, await runs.view(await needRun(id), linkOrigin(req)));
       case "getTimeline":
         return timeline(req, res, url, await needRun(id));
       case "sendMessage": {
@@ -1885,7 +1907,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         const run = await needRun(id);
         await agents.setArchived("run", run.id, found.name === "archiveRun");
         if (found.name === "archiveRun") await runs.archived();
-        return send(res, 200, await runs.view(run));
+        return send(res, 200, await runs.view(run, linkOrigin(req)));
       }
       case "listRunFiles": {
         const run = await needRun(id);

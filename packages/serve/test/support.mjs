@@ -45,12 +45,18 @@ export async function scratch(t) {
   return dir;
 }
 
-/** Every directory under `dir` (no link followed) made writable by its owner, so the tree can be removed. */
-export async function writableTree(dir) {
-  const st = await lstat(dir).catch(() => undefined);
+/** Every directory under `dir` (no link followed) made writable by its owner, so the tree can be removed. A directory
+ *  that goes while the walk is in it (a server still closing, or a fake box's command, removes its own spool) is already
+ *  removed: it is passed over, never a failure. `fs`: the three calls it makes (a test's seam). */
+export async function writableTree(dir, fs = { lstat, chmod, readdir }) {
+  const gone = (error) => {
+    if (error.code !== "ENOENT") throw error;
+  };
+  const st = await fs.lstat(dir).catch(() => undefined);
   if (!st?.isDirectory()) return;
-  await chmod(dir, st.mode | 0o700);
-  for (const name of await readdir(dir)) await writableTree(join(dir, name));
+  if ((await fs.chmod(dir, st.mode | 0o700).then(() => true, gone)) !== true) return;
+  const names = await fs.readdir(dir).catch(gone);
+  for (const name of names ?? []) await writableTree(join(dir, name), fs);
 }
 
 /** Resolves once `child`, a server in a process of its own, has printed a whole line on stdout that `ready` matches (the
@@ -182,9 +188,22 @@ export function client(baseUrl, token) {
     try {
       json = JSON.parse(text);
     } catch {}
+    budgetSaysItsLeast(json, `${method} ${path}`);
     if (raiseCheck && method === "PATCH" && res.status === 200 && json?.resumed === true) await raisedReadsQueued(baseUrl, token, path);
     return { status: res.status, headers: res.headers, body: json ?? text };
   };
+}
+
+/** A guard on every pause a test reads: a run paused at its cap that serves its figures serves `least_cap_usd` with them,
+ *  the very cap its words name ("Raise the cap to at least $X", runs.ts budgetPending), so the figure and the sentence are
+ *  never apart. A pause serves its figures whole or not at all (no refusal mark: none). */
+function budgetSaysItsLeast(body, where) {
+  const pendings = [body?.pending, ...(Array.isArray(body?.runs) ? body.runs.map((run) => run?.pending) : [])];
+  for (const pending of pendings) {
+    if (pending?.kind !== "budget" || pending.spent_usd === undefined) continue;
+    const named = Number(/Raise the cap to at least \$(\d+\.\d\d)\b/.exec(pending.said ?? "")?.[1]);
+    assert.equal(pending.least_cap_usd, named, `${where}: least_cap_usd is the cap its words name: ${JSON.stringify(pending)}`);
+  }
 }
 
 /** A guard on every raise a test makes: a raise that resumed a paused run (PATCH /runs/{id}, `resumed: true`) leaves it

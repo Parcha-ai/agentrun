@@ -1241,7 +1241,10 @@ const LEARNING_SHORT = {
 
 /** What this server's run answers carry beyond the contract's Run and RunSummary: added before they were marked, so
  *  `serve/1`. */
+/** consoleurl/1: the console's page of a run or an agent, where a person opens it. */
+const CONSOLE_URL = (what: string): Json => ({ type: "string", format: "uri", description: `The ${what}'s page in this server's console, at the address people open it (the server's public URL when it has one, else the address this request reached it at): the link to give a person.`, "x-agentrun-serve": "consoleurl/1" });
 const RUN_FIELDS: Record<string, Json> = {
+  console_url: CONSOLE_URL("run"),
   revision: { type: "string", description: "The id of the agent revision the run runs.", "x-agentrun-serve": "serve/1" },
   kind: { enum: ["agentic", "workflow"], description: "The revision's kind: an agentic run, or a workflow run.", "x-agentrun-serve": "serve/1" },
   archived_at: { type: ["string", "null"], description: "When the run, or its agent, was archived, while it is; else null.", "x-agentrun-serve": "serve/1" },
@@ -1276,7 +1279,9 @@ const PENDING: Json = {
         cap_usd: { type: "number", exclusiveMinimum: 0, description: "The run's cap (`max_cost_usd`)." },
         spent_usd: { type: "number", minimum: 0, description: "What the cap counted as taken when it refused: spent, and held for requests still answering; once the paused process is gone, the store's spend when that is lower (those requests settled). Absent for a refusal written before the figures were kept." },
         needs_usd: { type: "number", minimum: 0, description: "The least the refused request needs. A cap above `spent_usd` + `needs_usd` sends it. Absent with `spent_usd`." },
+        least_cap_usd: { type: "number", exclusiveMinimum: 0, description: "The least cap that sends the refused request: the figure `said` names (\"Raise the cap to at least $X\"), carried from the refusal that wrote those words, so the two never differ. Whole cents, always above `cap_usd`. Absent with `spent_usd`." },
         suggested_cap_usd: { type: "number", exclusiveMinimum: 0, description: "The raise this run is offered: `spent_usd` + 10 × `needs_usd`, rounded up to a whole dollar, and always above `cap_usd`, so `PATCH /runs/{run_id}` with it as `max_cost_usd` is a raise that resumes the run. Absent with `spent_usd`." },
+        overshoot_bound_usd: { type: "number", minimum: 0, description: "The most a cache miss could make the refused request cost beyond `needs_usd` under the run's `cap_mode` expected (its input uncached less its input expected, rounded up to a millionth); 0 under strict, and for a request priced with nothing cached. Absent with `spent_usd`.", "x-agentrun-serve": "capmode/1" },
         said: { type: "string", description: "The cap's refusal, in its words: what was spent, what the refused request needs at the least, and the cap that would run it. At most 2000 characters." },
         at: { type: "string", format: "date-time", description: "When the request was refused." },
       },
@@ -1301,17 +1306,28 @@ const RUN_PLACE: Json = {
   description: "Where the run executes, as its start resolved it: its revision's place, else runner. In a sandbox place the agent's bash runs in the box, which binds only the run's work/ and has no network and no key; read, write and edit run in the box too, or on this server's copy of that work/ where the box binds it and this server holds directory handles (Docker on Linux), following no link. Its loop, its log and every key stay on the server. The Modal sandbox (box `modal`, Modal's default gVisor runtime, not a VM) never has a network: Modal takes a host list, but this server cannot read a sandbox's list back to check that it holds, so each is made blocked, and capabilities.places.boxes says so in its network_reason (unless AGENTRUN_BOX_ALLOW is none).",
   "x-agentrun-serve": "place/1",
 };
+/** capmode/1: how a run's cap prices a request's input. */
+const CAP_MODE: Json = {
+  enum: ["expected", "strict"],
+  description: "How the run's cap (`max_cost_usd`) prices each model request's input. `expected` (the default): the input the previous request of its conversation reported read from or written to the cache, at the cache-read price, when that request ended less than 4 minutes before; the rest of its input (the previous request's input after the cache, and what the conversation grew by since, a token a byte) at the input price, the cache write's when dearer. With no such request, all of it at that price. Output is limited to what the cap leaves, so output never passes it; a cache miss can, by at most the request's bound (its input uncached less its input expected), served as the run's `cost.overshoot_bound_usd` while it is in flight; its real cost is booked, and the timeline says so. `strict`: every input token at the input or cache-write price, the worst case: no request passes the cap, and a run pauses sooner. Only with a cap.",
+  "x-agentrun-serve": "capmode/1",
+};
 /** costsofar/1: a cost no one fully knows, said as what is known and how much is not, with no ceiling claimed. */
 const SO_FAR = {
   so_far_usd: { type: "number", minimum: 0, description: "Set only while `usd` is null: the sum of the charges whose cost is known (model requests, a workflow's decisions, paid tool calls). Never the cost: the charges counted in `unpriced` are not in it, and nothing bounds them.", "x-agentrun-serve": "costsofar/1" },
   unpriced: { type: "integer", minimum: 1, description: "Set only while `usd` is null: how many charges have no known cost (a model request cut, stopped, still pending or with no price; a decision whose cost is unknown; a paid tool call charged an unknown amount or cut).", "x-agentrun-serve": "costsofar/1" },
 };
 const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
-  Cost: SO_FAR,
+  Cost: {
+    ...SO_FAR,
+    overshoot_bound_usd: { type: "number", minimum: 0, description: "Set when the run has a cap: the most its model requests in flight could cost beyond what its cap holds them at, when one misses the cache (`cap_mode` expected: each one's input uncached less its input expected, rounded up to a millionth). 0 with none in flight, under strict, and for a request priced with nothing cached. The cap never lets output pass it, so this is all a run can go over its cap by.", "x-agentrun-serve": "capmode/1" },
+  },
+  RunCreate: { cap_mode: { ...CAP_MODE, description: `${CAP_MODE.description as string} Absent: the agent's (its definition's \`cap_mode\`), else expected. 422 not_allowed for a run with no cap.` } },
   TimelineUsage: { ...SO_FAR, not_metered: { type: "integer", minimum: 1, description: "Set when the run made tool calls with no price (an MCP tool its owner set none for): how many. They ran outside the run's cost and its cap, and never make `usd` unknown.", "x-agentrun-serve": "mcpservers/1" } },
   UsageLine: { unpriced_runs: { type: "integer", minimum: 0, description: "How many of the runs counted on this line have a cost no one knows on it: they add no dollars to `usd`, so no sum passes them off as $0.", "x-agentrun-serve": "costsofar/1" }, not_metered_calls: { type: "integer", minimum: 1, description: "On the `tools` meter's line, set when the runs counted made tool calls with no price (an MCP tool its owner set none for): how many. They are outside `usd`.", "x-agentrun-serve": "mcpservers/1" } },
   Run: {
     ...RUN_FIELDS,
+    cap_mode: { type: ["string", "null"], enum: ["expected", "strict", null], description: "How the run's cap prices each model request's input (`cap_mode` on its start, else its agent's, else expected; see RunCreate.cap_mode). Null for a run with no cap.", "x-agentrun-serve": "capmode/1" },
     last_progress_at: {
       type: ["string", "null"],
       format: "date-time",
@@ -1395,11 +1411,13 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     tool_settings: { ...TOOL_SETTINGS, description: "The agent's own tool settings (web_search's, web_fetch's and browser's provider, any tool's permission, an MCP server's wildcard mcp:<server>/*), over the server's (GET /settings/tools); absent, the server's. A grant in tools names the capability, never a provider.", "x-agentrun-serve": "providers/1" },
     learning: { type: "boolean", default: false, description: "Whether an agentic revision's runs learn: each starts from what its agent has learned, its notes in its instructions under `# Learned` (each whole within the server's learning budget, else the index and the notes changed last, whole) and in `.learning/` in its working directory, and once it answers or fails is asked one more turn to add notes there, which are checked, graded and merged. Kept when a definition says so, true or false; absent, off, and an answer shows none. An edit that leaves it out keeps the agent's. A workflow revision keeps none. On a server whose learning is off (`capabilities.features.learning`), no run learns, whatever this says.", "x-agentrun-serve": "learning/1" },
+    cap_mode: { ...CAP_MODE, description: `The cap mode of each run of this agent that has a cap and names none of its own. ${CAP_MODE.description as string} An edit that leaves it out keeps the agent's. An agentic definition only: on a workflow's it is 422 not_allowed.` },
   },
   AgentCreate: {
     note: { type: "string", maxLength: 2000, description: "What the revision changes, kept with it (GET /agents/{agent_id}/revisions).", "x-agentrun-serve": "definitionbody/1" },
   },
   Agent: {
+    console_url: CONSOLE_URL("agent"),
     tools: AGENT_TOOLS,
     kind: { enum: ["agentic", "workflow", null], description: "The current revision's kind; null before the agent has one.", "x-agentrun-serve": "serve/1" },
     revision: { type: ["string", "null"], description: "The current revision's id; null before the agent has one.", "x-agentrun-serve": "serve/1" },
@@ -1578,6 +1596,7 @@ const BLOCKED_DETAILS = {
     denied: { type: "array", items: { type: "string" }, description: "A workflow revision: the tools its call nodes call that are set to deny here." },
     asks: { type: "array", items: { type: "string" }, description: "A workflow revision: the tools its call nodes call that are set to ask here (a catalog tool's default among them). A call node cannot wait for an approval: set the tool to allow for the agent." },
     box: { enum: [...BOX_IDS], description: "The box of the revision's place, when this server does not have it (capabilities.places.boxes)." },
+    not_grantable: { type: "array", items: { type: "object", additionalProperties: false, required: ["tool", "reason"], properties: { tool: { type: "string" }, reason: { type: "string" } } }, description: "The MCP tools the revision grants that are never granted here (known meta tools, which run other actions by name), each with why. Not in `unbound`: no server setup makes one grantable; remove the grant and use the server's direct tools." },
     adapters: { type: "array", items: { type: "string" }, description: "A workflow revision: the adapters it needs that this server does not bind." },
     code: { type: "boolean", description: "A workflow revision: whether it needs code this server does not run." },
     tier: { type: "string", description: "A workflow revision: the model tier this host has no model for." },

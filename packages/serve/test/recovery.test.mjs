@@ -332,7 +332,12 @@ test("Idempotency-Key answers outlive a restart for the retention capabilities s
   t.after(() => two.close());
   const api = client(two.baseUrl, two.token);
   const replay = await api("POST", "/agents", agent("kept"), key);
-  assert.deepEqual([replay.status, replay.headers.get("idempotent-replayed"), replay.body], [201, "true", first.body]);
+  assert.deepEqual([replay.status, replay.headers.get("idempotent-replayed")], [201, "true"]);
+  // The kept answer, but for its console page, which is at the address this request reached (the new server's port).
+  const { console_url: _first, ...kept } = first.body;
+  const { console_url: page, ...replayed } = replay.body;
+  assert.deepEqual(replayed, kept);
+  assert.equal(page, `${new URL(two.baseUrl).origin}/#/agents/kept`);
   assert.equal((await api("POST", "/agents", agent("other"), key)).body.error.code, "idempotency_mismatch");
   assert.equal((await api("GET", "/capabilities")).body.limits.idempotency_ttl_s, 86_400);
 });
