@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -98,6 +98,39 @@ describe("find, check and sweep Docker computers", { skip: LIVE ? false : "set A
 		assert.equal(connected.value.hello.version, provider.version);
 		assert.deepEqual(await connected.value.client.call("ping", {}), { ok: true, value: {} });
 		await connected.value.close();
+	});
+
+	it("reads the Docker host's enforcement: every limit, and seccomp", async () => {
+		const host = await provider.host();
+		assert.equal(host.ok, true, JSON.stringify(host));
+		assert.deepEqual(host.value.problems, []);
+		assert.equal(host.value.arch, arch);
+		const options = JSON.parse(docker("info", "--format", "{{json .SecurityOptions}}"));
+		assert.equal(host.value.apparmor, options.some((option) => option.startsWith("name=apparmor")));
+		assert.equal(host.value.selinux, options.some((option) => option.startsWith("name=selinux")));
+	});
+
+	it("attach refuses a computer that drifts from this provider, by name and by labels, and leaves it running", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "computer-other-"));
+		dirs.push(dir);
+		chmodSync(dir, 0o755);
+		const other = join(dir, "computerd");
+		copyFileSync(daemonPath, other);
+		chmodSync(other, 0o755);
+		const created = await create({ image: "debian:bookworm-slim", network: "none", labels: { role: "other" } }, new DockerProvider({ daemonPath: other }));
+		assert.equal(created.ok, true, JSON.stringify(created));
+		const { name } = created.value;
+		for (const ref of [{ id: name }, { labels: { [RUN_LABEL]: run, role: "other" } }]) {
+			const attached = await provider.attach(ref);
+			assert.equal(attached.ok, false, JSON.stringify(attached));
+			assert.equal(attached.error.code, "refused");
+			assert.ok(attached.error.message.includes(name), attached.error.message);
+			assert.ok(attached.error.message.includes(`daemon mount: declared ${daemonPath}`), attached.error.message);
+			assert.ok(attached.error.message.includes(other), attached.error.message);
+		}
+		assert.equal(docker("inspect", "--format", "{{.State.Running}}", name).trim(), "true", "attach did not make it, so it leaves it");
+		docker("rm", "--force", "--volumes", name);
+		assert.deepEqual(ours(), [a.name, b.name].sort());
 	});
 
 	it("lists by label, with each computer's labels, deadline, state and network as read back", async () => {

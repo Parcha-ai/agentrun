@@ -89,7 +89,7 @@ test("create() runs a hardened container with the daemon as its first process an
 	const before = Date.now();
 	const result = await provider.create({ ...SPEC, labels: { team: "a" } });
 	assert.equal(result.ok, true, JSON.stringify(result));
-	const [run, inspect, info, exec, ...rest] = calls();
+	const [info, run, inspect, exec, ...rest] = calls();
 	assert.deepEqual(rest, []);
 	const name = valuesOf(run, "--name")[0];
 	assert.match(name, /^computer-[0-9a-f]{12}$/);
@@ -105,6 +105,8 @@ test("create() runs a hardened container with the daemon as its first process an
 	assert.ok(Math.abs(Date.parse(deadline) - (before + SPEC.lifetimeMs)) < 5000);
 	assert.deepEqual(valuesOf(run, "--cap-drop"), ["ALL"]);
 	assert.deepEqual(valuesOf(run, "--security-opt"), ["no-new-privileges"]);
+	assert.deepEqual(valuesOf(run, "--ipc"), ["private"], "never another daemon default, such as shareable");
+	assert.deepEqual(valuesOf(run, "--cgroupns"), ["private"], "never the host's, a cgroup v1 host's default");
 	assert.deepEqual(valuesOf(run, "--network"), ["none"]);
 	assert.deepEqual(valuesOf(run, "--mount"), [`type=bind,src=${daemonPath},dst=/opt/agentrun/computerd,readonly`]);
 	assert.deepEqual(valuesOf(run, "--entrypoint"), ["/opt/agentrun/computerd"]);
@@ -119,7 +121,10 @@ test("create() runs a hardened container with the daemon as its first process an
 	assert.deepEqual(valuesOf(run, "--env"), ["HOME=/work"]);
 	assert.deepEqual(inspect.slice(0, 1), ["inspect"]);
 	assert.equal(inspect.at(-1), name);
-	assert.deepEqual(info, ["info", "--format", "{{.Architecture}}"]);
+	assert.deepEqual(info.slice(0, 2), ["info", "--format"]);
+	for (const field of ["Architecture", "SecurityOptions", "MemoryLimit", "SwapLimit", "PidsLimit", "CPUCfsQuota", "CPUCfsPeriod"]) {
+		assert.ok(info[2].includes(`{{json .${field}}}`), `docker info reads ${field}`);
+	}
 	assert.deepEqual(exec, ["exec", "-i", name, "/opt/agentrun/computerd", "stdio"]);
 });
 
@@ -338,7 +343,7 @@ test("create() deletes a computer whose own report drifts from its spec, and say
 	assert.match(result.error.message, /PidsLimit/);
 	assert.match(result.error.message, /CapDrop/);
 	assert.match(result.error.message, /version 0\.0\.1/);
-	assert.deepEqual(calls().map((args) => args[0]), ["run", "inspect", "info", "exec", "rm"]);
+	assert.deepEqual(calls().map((args) => args[0]), ["info", "run", "inspect", "exec", "rm"]);
 	assert.deepEqual(calls().at(-1), ["rm", "--force", "--volumes", name]);
 	assert.deepEqual(names(), []);
 });
@@ -399,7 +404,7 @@ test("create() deletes a computer whose daemon does not answer hello", async () 
 	const result = await provider.create(SPEC);
 	assert.equal(result.ok, false);
 	assert.match(result.error.message, /OCI runtime exec failed/);
-	assert.deepEqual(calls().map((args) => args[0]), ["run", "inspect", "info", "exec", "rm"]);
+	assert.deepEqual(calls().map((args) => args[0]), ["info", "run", "inspect", "exec", "rm"]);
 	assert.deepEqual(names(), []);
 });
 
@@ -412,7 +417,7 @@ async function until(check, what) {
 	}
 }
 
-for (const [step, call] of [["inspect", "inspect"], ["info", "info"], ["hello", "exec"]]) {
+for (const [step, call] of [["inspect", "inspect"], ["hello", "exec"]]) {
 	test(`create() aborted while its ${step} after docker run is pending returns aborted and deletes the computer`, async () => {
 		const { provider, calls, names, proceed } = fakeDocker({ hold: [step] });
 		const controller = new AbortController();
@@ -429,3 +434,73 @@ for (const [step, call] of [["inspect", "inspect"], ["info", "info"], ["hello", 
 		assert.deepEqual(names(), [], "nothing is left running");
 	});
 }
+
+test("create() aborted while docker info is pending returns aborted and makes nothing", async () => {
+	const { provider, calls, names, proceed } = fakeDocker({ hold: ["info"] });
+	const controller = new AbortController();
+	const pending = provider.create(SPEC, { signal: controller.signal });
+	await until(() => calls().some((args) => args[0] === "info"), "docker info");
+	controller.abort();
+	proceed("info");
+	const result = await pending;
+	assert.equal(result.ok, false, JSON.stringify(result));
+	assert.equal(result.error.code, "aborted");
+	assert.deepEqual(calls().map((args) => args[0]), ["info"]);
+	assert.deepEqual(names(), []);
+});
+
+/** Each enforcement docker info can lack, and the words create and check() refuse with. */
+const UNENFORCED = [
+	[{ MemoryLimit: false }, "this Docker host does not enforce memory limits, so a computer's memory size is only configuration"],
+	[{ SwapLimit: false }, "this Docker host does not enforce swap limits"],
+	[{ PidsLimit: false }, "this Docker host does not enforce pids limits"],
+	[{ CPUCfsQuota: false }, "this Docker host does not enforce CPU quotas"],
+	[{ CPUCfsPeriod: false }, "this Docker host does not enforce CPU periods"],
+	[{ SecurityOptions: ["name=apparmor", "name=cgroupns"] }, "this Docker host has no seccomp"],
+	[{ SecurityOptions: ["name=seccomp,profile=unconfined"] }, "this Docker host's default seccomp profile is unconfined"],
+];
+
+for (const [info, words] of UNENFORCED) {
+	test(`create() refuses before making anything, and check() from then on: ${words}`, async () => {
+		const { provider, calls, names } = fakeDocker({ info });
+		const result = await provider.create(SPEC);
+		assert.equal(result.ok, false, JSON.stringify(result));
+		assert.equal(result.error.code, "refused");
+		assert.ok(result.error.message.includes(words), result.error.message);
+		assert.deepEqual(calls().map((args) => args[0]), ["info"], "no docker run");
+		assert.deepEqual(names(), []);
+		const refusals = provider.check(SPEC);
+		assert.equal(refusals.length, 1, JSON.stringify(refusals));
+		assert.equal(refusals[0].field, "host");
+		assert.ok(refusals[0].message.includes(words), refusals[0].message);
+		const again = await provider.create(SPEC);
+		assert.equal(again.ok, false);
+		assert.deepEqual(calls().map((args) => args[0]), ["info"], "the host is read once per provider");
+	});
+}
+
+test("the host's enforcement is read once per provider, and a docker info that fails is read again", async () => {
+	const { provider, calls, daemonPath } = fakeDocker();
+	assert.deepEqual(provider.check(SPEC), [], "before the host is read, check() has only the spec to go on");
+	assert.equal((await provider.create(SPEC)).ok, true);
+	assert.equal((await provider.create(SPEC)).ok, true);
+	assert.deepEqual(calls().map((args) => args[0]), ["info", "run", "inspect", "exec", "run", "inspect", "exec"]);
+	const host = await provider.host();
+	assert.deepEqual(host, { ok: true, value: { arch: "amd64", apparmor: false, selinux: false, problems: [] } });
+	const broken = new DockerProvider({ daemonPath, docker: join(tmpdir(), "no-such-docker-cli") });
+	const first = await broken.host();
+	assert.equal(first.ok, false);
+	assert.equal(first.error.code, "docker");
+	assert.equal((await broken.host()).ok, false);
+});
+
+test("create() on a host with AppArmor expects Docker's default profile", async () => {
+	const { provider } = fakeDocker({ info: { SecurityOptions: ["name=apparmor", "name=seccomp,profile=builtin"] } });
+	assert.equal((await provider.create(SPEC)).ok, true);
+	const drifted = fakeDocker({ info: { SecurityOptions: ["name=apparmor", "name=seccomp,profile=builtin"] }, patch: { AppArmorProfile: "unconfined", HostConfig: { PidMode: "host" } } });
+	const result = await drifted.provider.create(SPEC);
+	assert.equal(result.ok, false);
+	assert.match(result.error.message, /AppArmorProfile/);
+	assert.match(result.error.message, /PidMode/);
+	assert.deepEqual(drifted.names(), []);
+});
