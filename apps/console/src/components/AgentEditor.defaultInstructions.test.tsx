@@ -2,7 +2,7 @@ import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentEditor } from "./AgentEditor";
-import { toolOffers } from "@/lib/agentForm";
+import { DEFAULT_INSTRUCTIONS as SENT, toolOffers } from "@/lib/agentForm";
 
 // A new agent never dead-ends on Instructions: the form opens with a sensible one to edit, so Create works as soon as it
 // has a name. The field stays required: emptied, Create is blocked again. An agent's own instructions are its own.
@@ -35,6 +35,7 @@ describe("AgentEditor, a new agent's instructions", () => {
     const { host } = mount();
     const field = host.querySelector("#agent-instructions") as HTMLTextAreaElement;
     expect(field.value).toBe(DEFAULT_INSTRUCTIONS);
+    expect(SENT).toBe(DEFAULT_INSTRUCTIONS);
     const label = host.querySelector('label[for="agent-instructions"]')!;
     expect(label.textContent).toContain("Instructions");
     expect(label.textContent).toContain("*");
