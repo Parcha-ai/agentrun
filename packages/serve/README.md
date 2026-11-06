@@ -939,7 +939,7 @@ read 2026-11-03), an estimate: a `fast` search $0.001 for up to 10 results and $
 $0.001 a URL; on a 4xx other than a 408 nothing (Parallel refused it), and on a 408, a 5xx, a timeout or a lost
 connection its price (Parallel may have billed it). Under a [spend cap](#spend-cap) each is a paid call: sent only when
 what the run has spent and holds, plus its price, fits the cap. Otherwise nothing reaches Parallel: a search answers the
-cap's refusal (`spend_cap_reached: Not sent: the run has spent $0 of its $0.0009 cap, and Parallel's search could cost up to $0.001 …`) and a page is the
+cap's refusal (`spend_cap_reached: Not sent: this run has spent $0 of its $0.0009 cap, and the next step, Parallel's search, could cost up to $0.001 …`) and a page is the
 guarded direct fetch, with `parallel` giving the same words. One sent holds its price until Parallel answers: a model
 request checked meanwhile, from any branch, tool round or harness, counts it beside what the run has spent, so the two
 never pass the cap together. A workflow's `call` node naming either tool is booked the same way, under the node's own
@@ -1274,8 +1274,7 @@ each run it queued. A server that starts queues any end of the last day that the
 not, under the same `webhook-id` (one lost to a kill, or to a crash of the machine; one whose run's `serve.json` can't
 be read goes with an empty `title`), and a server that takes over a run
 queues a wait it stands at that the outbox does not name (one the run came to while no server was up), under its one
-`webhook-id`. The first start of a server that keeps this writes when it began (`DIR/end-notices-since`); an end before
-that time (an older server's) or before the webhook was set is never sent. A run is continued only once its end's
+`webhook-id`. An end before the webhook was set is never sent. A run is continued only once its end's
 `run.ended` is in the outbox on disk (`503` meanwhile), so a continued run's next end is its own, under its own id.
 
 ```json
@@ -1301,7 +1300,8 @@ spec's schedule, with jitter: after about 5 s, 5 min, 30 min, 2 h, 5 h and 10 h,
 (`event=webhook condition=delivery_failed`). Each message goes on its own tries, so two queued close together can
 arrive in either order: a receiver orders them by `webhook-timestamp`, or reads the run (`GET /v2/runs/{id}`). A
 `410 Gone` turns the webhook off (`disabled` in `GET`, and the log says why) until a `PUT` sets it again. Pending messages are kept in `DIR/webhook-outbox.json`, so the next server goes on with
-them after a restart; a message can then come twice, under the same `webhook-id`. `GET /v2/settings/webhook/deliveries`
+them after a restart; a message can then come twice, under the same `webhook-id`. An outbox file of another version
+is not read: the server starts with none, and the log says so (`condition=outbox_not_read`). `GET /v2/settings/webhook/deliveries`
 lists the last 50 attempts (`webhook_id`, type, status code, latency, error, when, and the next try's time), and
 `POST /v2/settings/webhook/deliveries/{webhook_id}/redeliver` sends one of those messages again, once, under the same
 `webhook-id`. `POST /v2/settings/webhook/test` sends a `webhook.test` message once and answers how it went. A webhook a
@@ -2088,7 +2088,7 @@ it up to), pi-browser's idle window before it releases a session nobody calls (1
 confirmed at the provider; at Browserbase's price, 270 s or $0.009. Before each browser call, the call is held at what its
 session ran since its last charge plus two stretches (one for the call's own time, one for a session it opens): spent, plus
 every hold, plus that must stay within the cap. Otherwise the call is not made: the model gets the cap's words
-(`spend_cap_reached: Not sent: the run has spent $X of its $C cap, and this browser call could cost up to $0.018 ...`), and
+(`spend_cap_reached: Not sent: this run has spent $X of its $C cap, and the next step, this browser call, could cost up to $0.018 ...`), and
 the run's session is released.
 A session's first charge moves one stretch of its call's hold to the session, held until its release is booked, which
 covers its idle time, its top-up and its release; each call's charge comes out of the call's hold, which goes when the
@@ -2159,12 +2159,14 @@ the same: a capped run stopped and sent another message, or opened again after i
 allows. A cut request from a store written before serve kept the figure has none, and is a spend no one knows.
 
 A refusal says so in plain words, with the numbers, on its timeline row and on the run's `pending` (or, for a refusal
-no cap fixes, its error): "Not sent: this run's
-cap of $0.01 can't cover one Claude Sonnet 5.5 request (at least $0.03). Raise the cap to at least $0.03 to run it.", and
-once a run has spent: "Not sent: the run has spent $0.45 of its $0.50 cap, and its next Claude Sonnet 5.5 request needs at
-least $0.03. Raise the cap to at least $0.48 to run it." The cap that would run it is what was spent, what requests still
-answering hold, and the request's least, rounded up to the cent so that it is enough; the model is named as its catalog
-names it, without a vendor's prefix. The error's code is `spend_cap_reached (out of budget): ` before those words: pi-ai's
+no cap fixes, its error), as a person who has never seen a model request reads them: "Not sent: the next step needs at
+least $0.03, and this run's cap is $0.01. Raise the cap to at least $0.03 to continue.", and once a run has spent:
+"Not sent: this run has spent $0.45 of its $0.50 cap, and the next step needs at least $0.03. Raise the cap to at least
+$0.48 to continue." What was spent, and what steps still running hold (named when it is a cent or more), read to the
+nearest cent ($0.0237416 reads $0.02); the exact amounts are `pending.spent_usd`. The cap to raise to is what was
+spent, what steps still running hold, and the next step's least, rounded up to the cent so that it is enough. The words
+name no model. The refusal's timeline row is an `error` row with
+`paused: true`: the request was not sent and the run waits on a raise, so it reads as a pause, never as a failure. The error's code is `spend_cap_reached (out of budget): ` before those words: pi-ai's
 retry reads only an error's text, and takes "out of budget" as final whatever digits the words hold. A request the cap
 refused was never sent: the run's usage counts no request for it, and a run whose only request was refused says "no model
 request sent". A reply the limit cut short says so on the run's timeline: "The reply stopped at 1,500 tokens: all that
@@ -2181,7 +2183,8 @@ offered raise, `suggested_cap_usd`, is `spent_usd` + 10 × `needs_usd` rounded u
 cap, so a `PATCH` with it (below) resumes the run; it is absent with the other figures. The figures come from the refusal's own start mark, so a
 server started again says them too, shown as `cost.usd` is (to a millionth of a dollar), except `spent_usd` once the paused process is gone: the refusal counted requests
 still answering at what it held for them, so then it is the store's spend, when that is lower, and `suggested_cap_usd`
-follows it. The refusal's words (`said`) keep its own figures. Its timeline shows the refusal's row, then a waiting row: "Paused at the run's $0.05 cap: Not sent: …". The
+follows it. The refusal's words (`said`) keep its own figures. Its timeline shows the refusal's row, then a waiting row: "Waiting for you to raise the cap", and no more: the words are
+`pending.said`'s, which a client shows once. The
 webhook's `run.needs_input` says `pending.kind: "budget"`. Its process is let go while it waits (SIGTERM: it drains and
 releases the run), so a paused run holds no place; a server started again reads it paused from its store. A paused
 process that does not let go within the drain timeout (`--drain-timeout`, 30 s by default) is killed, and the run ends
@@ -2207,7 +2210,9 @@ next process opens under it, as does a server started again; a raise it could no
 and the same raise again is taken anew. A run paused at its cap goes on: the answer is `{run_id, max_cost_usd, resumed: true,
 message_id, status, state}` at once, and the pause gets one follow-up turn, "The cap was raised to $2; continue the
 task.", under that `message_id`, which the server sends once the process being let go is gone, and which runs under the
-new cap. A second raise before it goes raises the cap it names and answers the same `message_id`. It is sent once: a
+new cap. From the moment the raise is taken, the run reads `queued` (state `working`), in the answer's `status` and in
+every read after it, until the follow-up's turn runs: nothing waits on a person, so it is never `input_required` with no
+`pending` meanwhile. A second raise before it goes raises the cap it names and answers the same `message_id`. It is sent once: a
 server stopped before it went, or between starting its process and sending it, sends it when it starts again. One that
 cannot be sent is tried again (after 1 s, then 3 s); after 3 tries the run ends `failed`, saying the cap was raised but
 the run could not be sent on. The follow-up shows in the run's timeline as the server's, "AgentRun: The cap was raised…", never as the

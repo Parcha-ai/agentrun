@@ -197,7 +197,7 @@ test("a run whose cap can't cover one request's least pauses at its cap, in plai
   assert.deepEqual([run.status, run.state, run.error, run.pending?.kind], ["input_required", "waiting", null, "budget"], JSON.stringify(run));
   // faux-1 at $1 a token: the least, its answer's 1,024 tokens and its input, is past $1,024; nothing spent, so the cap to
   // raise to is the least.
-  const words = /^Not sent: this run's cap of \$0\.01 can't cover one faux-1 request \(at least \$(\d+\.\d\d)\)\. Raise the cap to at least \$(\d+\.\d\d) to run it\.$/.exec(run.pending.said);
+  const words = /^Not sent: the next step needs at least \$(\d+\.\d\d), and this run's cap is \$0\.01\. Raise the cap to at least \$(\d+\.\d\d) to continue\.$/.exec(run.pending.said);
   assert.ok(words, run.pending.said);
   assert.equal(words[2], words[1]);
   assert.ok(Number(words[1]) > 1024, `the least covers the answer's 1,024 tokens: $${words[1]}`);

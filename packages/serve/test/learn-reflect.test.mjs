@@ -97,7 +97,7 @@ test("no_budget: a turn whose request the run's cap refuses; a run whose cap sto
   assert.deepEqual([tight.view.status, tight.view.error], ["completed", null]);
   settled(tight.view, tight.rows, "dropped", "no_budget");
   assert.equal(tight.view.cost.usd, spent, "only the job was paid for");
-  assert.match(reflectRows(tight.rows).find((row) => row.kind === "error")?.text ?? "", /^spend_cap_reached \(out of budget\): Not sent: the run has spent \$[\d.]+ of its \$[\d.]+ cap, and its next faux-1 request needs at least \$[\d.]+\. Raise the cap to at least \$[\d.]+ to run it\.$/);
+  assert.match(reflectRows(tight.rows).find((row) => row.kind === "error")?.text ?? "", /^spend_cap_reached \(out of budget\): Not sent: this run has spent \$[\d.]+ of its \$[\d.]+ cap, and the next step needs at least \$[\d.]+\. Raise the cap to at least \$[\d.]+ to continue\.$/);
   await made(api, learner("broke"));
   // Half a request's least: the job's first request is refused, so no turn is sent. The run pauses at its cap and its
   // learning waits with it: it ends with the run (a raise that lets it answer, or a cancel).
