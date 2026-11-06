@@ -105,7 +105,7 @@ test("run code beside the locked worker gets no navigation, request rule or wind
     // The worker's own realm, the one run code shares, reached on the browser's own socket (the provider's, not the guard).
     const raw = new WebSocket(`ws://127.0.0.1:${told[0].debuggingPort}${new URL(target.sdkCdpUrl).pathname}`);
     await new Promise((ok, fail) => (raw.addEventListener("open", ok), raw.addEventListener("error", fail)));
-    t.after(() => raw.close());
+    t.after(() => raw.close(), { timeout: 30_000 });
     let id = 0;
     const waiting = new Map();
     raw.addEventListener("message", (event) => { const m = JSON.parse(event.data); waiting.get(m.id)?.(m); });
