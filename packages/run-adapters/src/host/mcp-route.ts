@@ -92,9 +92,7 @@ export function mcpRoute(mcp: SessionMcp, options: McpRouteOptions = {}): McpHan
   async function call(server: string, id: Id, params: Record<string, unknown>, req: IncomingMessage, res: ServerResponse): Promise<void> {
     const meta = isPlain(params._meta) ? params._meta : {};
     const progressToken = isId(meta.progressToken) ? meta.progressToken : undefined;
-    // The harness's own id for the call, where its client sends one: Claude Code's tool use id, Codex's call id.
-    const own = meta["claudecode/toolUseId"] ?? meta.callId;
-    const callId = typeof own === "string" ? own : undefined;
+    const callId = typeof meta["claudecode/toolUseId"] === "string" ? meta["claudecode/toolUseId"] : undefined;
     const stream = String(req.headers.accept ?? "").includes("text/event-stream");
     const controller = new AbortController();
     const key = keyOf(server, id);

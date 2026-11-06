@@ -4,8 +4,9 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { closeSync, constants, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, symlinkSync, writeFileSync } from "node:fs";
+import { closeSync, constants, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
+import { fileURLToPath } from "node:url";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -21,7 +22,6 @@ import { agent, answerFlow, client, FAUX, flowAgent, follow, printed, responsesE
 import { CANARY as JEV_CANARY } from "./fixtures/faux-jev.mjs";
 import { CANARY as PARALLEL_CANARY } from "./fixtures/faux-parallel.mjs";
 import { reported } from "./fixtures/custody-report.mjs";
-import { copyStandInSync } from "../../run-adapters-codex/test/stand-in.mjs";
 // A run's served answer has no held secret in it, so what a custody run's process reported is read as it wrote it
 // (fixtures/custody-report.mjs), never from the answer.
 process.env.CUSTODY_REPORT_DIR ??= mkdtempSync(join(tmpdir(), "custody-reports-"));
@@ -31,6 +31,7 @@ const CUSTODY = new URL("./fixtures/faux-custody.mjs", import.meta.url).pathname
 const FAUX_BROWSER = new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname;
 const FAUX_JEV = new URL("./fixtures/faux-jev.mjs", import.meta.url).pathname;
 const FAUX_PARALLEL = new URL("./fixtures/faux-parallel.mjs", import.meta.url).pathname;
+const STAND_IN = fileURLToPath(new URL("../../run-adapters-codex/test/fake-app-server.mjs", import.meta.url));
 const CONFINED = existsSync("/usr/bin/setpriv");
 /** The server's own: its token, the seal key its tool keys are kept under, and the boxes' keys, which only its box
  *  providers read (boxes.ts). */
@@ -699,7 +700,7 @@ test("on codex, with every secret set and its turn held inside Codex's own proce
   const password = `${unlisted}-FOO_PASSWORD`;
   const gw = await heldGateway(t);
   const standIn = join(await scratch(t), "codex-stand-in.mjs");
-  copyStandInSync(standIn);
+  copyFileSync(STAND_IN, standIn);
   const { root, api, data } = await launched(t, {
     ...secrets,
     FOO_API_KEY: foo,
@@ -872,7 +873,7 @@ test("on codex, with its turn held inside Codex's own process, no process of the
   const { canary, secrets } = canaries();
   const gw = await heldGateway(t);
   const standIn = join(await scratch(t), "codex-stand-in.mjs");
-  copyStandInSync(standIn);
+  copyFileSync(STAND_IN, standIn);
   const { root, api } = await launched(t, {
     ...secrets,
     AGENTRUN_CODEX_STANDIN: "1",

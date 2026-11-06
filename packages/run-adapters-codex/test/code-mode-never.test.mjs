@@ -600,39 +600,3 @@ test("code mode: an answer that could not be read to its end, a crash, the turn 
   assert.doesNotMatch(text, /it ran none/);
   assert.equal(looked, 1, 'nothing was run again');
 });
-
-test("code mode: a crash after a nested MCP write completed, before the exec's reply; the script rewritten under new ids gets the log's answer, and the server saw one write", { skip, timeout: 180_000 }, async () => {
-  let writes = 0;
-  let holding;
-  const held = new Promise((resolve) => { holding = resolve; });
-  // The session's MCP server, as a host's gateway gives it: Codex's own MCP client reaches it at the session proxy.
-  const mcp = {
-    servers: [{ name: 'fake', tools: [{ name: 'write', description: 'Write a line once.', inputSchema: { type: 'object', properties: { line: { type: 'string' } }, required: ['line'] } }] }],
-    call: async () => { writes += 1; return { content: [{ type: 'text', text: 'wrote' }] }; },
-  };
-  const hold = { name: 'hold', description: 'Wait.', inputSchema: { type: 'object' }, replay: 'safe', call: (_args, { signal }) => { holding(); return new Promise((_, reject) => signal.addEventListener('abort', () => reject(new Error('cut')), { once: true })); } };
-  const spec = { key: 'step:code-mcp-never', label: 'write', system: [], tools: [hold], mcp, context: 'fresh' };
-  const store = memorySessionStore();
-  const write = `text('write: ' + JSON.stringify(await tools.mcp__fake__write({ line: 'once' })));`;
-  // The recovered turn's model writes the script again, under a new exec and so new nested ids.
-  const { seen, fetch } = provider([[exec('call_js', `${write}\nawait tools.hold({});\ntext('held');`)], [exec('call_js2', write)]]);
-
-  const died = new AbortController();
-  const a = await adapter(fetch).open(spec, { writer: await store.open(spec.key), models: MODELS, signal: died.signal, onEvent: () => {} });
-  await a.send('write');
-  await held;
-  assert.equal(writes, 1, 'the write completed before the crash');
-  died.abort(new Error('the process died'));
-  assert.equal((await a.turnEnd()).status, 'interrupted');
-  await a.close();
-  const before = seen.length;
-
-  const b = await adapter(fetch).open(spec, { writer: await store.open(spec.key), models: MODELS, signal: new AbortController().signal, onEvent: () => {} });
-  assert.equal(b.state, 'open_turn');
-  await b.recover();
-  assert.equal((await b.turnEnd()).status, 'completed');
-  await b.close();
-
-  assert.equal(writes, 1, 'the rewritten script did not send the write again');
-  assert.match(toldAbout(seen.slice(before), 'call_js2').join('\n'), /Recorded earlier in this turn, not run again: wrote/);
-});

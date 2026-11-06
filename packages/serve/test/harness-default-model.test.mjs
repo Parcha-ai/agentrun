@@ -4,18 +4,20 @@
 // gateway's model: it takes its own key's default (model.ts hostModel). A save agrees: a claude-agent agent naming no
 // model saves with no warning on its model.
 import assert from "node:assert/strict";
+import { copyFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
 import { agent, scratch, serve } from "./support.mjs";
-import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
 
+const STAND_IN = fileURLToPath(new URL("../../run-adapters-codex/test/fake-app-server.mjs", import.meta.url));
 
 test("on a gateway server, codex shows the gateway's default model and claude-agent its own key's default; a save says the same", { timeout: 60_000 }, async (t) => {
   const anthropic = await fakeAnthropic({ reply: () => ({ text: "unused" }) });
   t.after(() => anthropic.close());
   const standIn = join(await scratch(t), "codex-stand-in.mjs");
-  await copyStandIn(standIn);
+  await copyFile(STAND_IN, standIn);
   const saved = { ...process.env };
   t.after(() => {
     for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];

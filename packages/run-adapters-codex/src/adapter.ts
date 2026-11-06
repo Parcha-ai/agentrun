@@ -214,8 +214,6 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
             ...(options.confine ? { confine: options.confine } : {}),
             ...(seed ? { seed } : {}),
             ...(options.webSearch ? { webSearch: options.webSearch } : {}),
-            // A granted MCP server's tools: Codex's own MCP client calls them at the proxy (mcp.ts).
-            ...(spec.mcp?.servers.length ? { mcp: spec.mcp } : {}),
             proxy: {
               hooks: io.models,
               tools: tools.map((t) => t.name),

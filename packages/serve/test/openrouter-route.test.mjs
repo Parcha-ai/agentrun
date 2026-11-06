@@ -6,7 +6,7 @@
 // OpenRouter. The requests go through each adapter's real model proxy to a fake upstream (a fetch standing in for
 // openrouter.ai); nothing leaves this machine and no real key is used.
 import assert from "node:assert/strict";
-import { writeFile } from "node:fs/promises";
+import { copyFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -17,7 +17,6 @@ import { fakeAnthropic, fakeSdk } from "@parcha/agentrun-harness-claude/testing"
 // The module whole, so a function it does not export yet fails its own test, not the file.
 import * as adapters from "../dist/adapters.js";
 import { agent, scratch, serve, withEnv } from "./support.mjs";
-import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
 
 /** OpenRouter's key in these tests: no real one. */
 const KEY = `not-a-secret-${"openrouter"}`;
@@ -169,7 +168,7 @@ test("or-5: codex on OpenRouter alone: each request through its proxy to https:/
 
 test("or-6: a server with only OPENROUTER_API_KEY runs every harness, each with its default model on OpenRouter, and a definition naming Anthropic's or OpenAI's model saves with no warning", { timeout: 60_000 }, async (t) => {
   const standIn = join(await scratch(t), "codex-stand-in.mjs");
-  await copyStandIn(standIn);
+  await copyFile(STAND_IN, standIn);
   // No request leaves the test: capabilities and saves check the harnesses, they never call a model.
   withEnv(t, { ...ONLY, AGENTRUN_CODEX_STANDIN: "1", AGENTRUN_SERVE_CODEX_STANDIN: JSON.stringify({ command: process.execPath, args: [standIn] }) }, SOURCES);
   const { api } = await serve(t, { faux: undefined });
@@ -209,7 +208,7 @@ test("or-9: on OpenRouter's key alone, the host's AGENT_MODEL named on OpenRoute
 
 test("or-10: a server on OpenRouter's key alone names the host's OpenRouter model as each harness's default, and a revision naming one there saves clean and runs it", { timeout: 60_000 }, async (t) => {
   const standIn = join(await scratch(t), "codex-stand-in.mjs");
-  await copyStandIn(standIn);
+  await copyFile(STAND_IN, standIn);
   withEnv(t, { ...ONLY, AGENT_MODEL: "openrouter/anthropic/claude-haiku-5.5", AGENTRUN_CODEX_STANDIN: "1", AGENTRUN_SERVE_CODEX_STANDIN: JSON.stringify({ command: process.execPath, args: [standIn] }) }, SOURCES);
   const { api } = await serve(t, { faux: undefined });
   const harnesses = (await api("GET", "/capabilities")).body.harnesses;

@@ -3,12 +3,14 @@
 // (agentrun-harness-codex's fake-app-server) echoes what it is sent and starts slowly (FAKE_CODEX_START_MS), so the stop
 // lands before the prompt is placed every time.
 import assert from "node:assert/strict";
+import { copyFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import { agent, follow, scratch, serve } from "./support.mjs";
-import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
 
+const STAND_IN = fileURLToPath(new URL("../../run-adapters-codex/test/fake-app-server.mjs", import.meta.url));
 
 /** serve's gateway, on loopback: each Responses request answered at once, with its usage. */
 async function gateway(t) {
@@ -26,7 +28,7 @@ async function gateway(t) {
 
 test("codex: a run stopped before its first step, then 'Go on.': the follow-up's turn has the task, and the stopped prompt never runs on its own", { timeout: 120_000 }, async (t) => {
   const standIn = join(await scratch(t), "codex-stand-in.mjs");
-  await copyStandIn(standIn);
+  await copyFile(STAND_IN, standIn);
   const saved = { ...process.env };
   t.after(() => {
     for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
@@ -57,7 +59,7 @@ test("codex: a run stopped before its first step, then 'Go on.': the follow-up's
 
 test("codex: a run stopped right after a tool result, then 'Go on.': the follow-up shows as the person's next message, not a steer", { timeout: 120_000 }, async (t) => {
   const standIn = join(await scratch(t), "codex-stand-in.mjs");
-  await copyStandIn(standIn);
+  await copyFile(STAND_IN, standIn);
   const saved = { ...process.env };
   t.after(() => {
     for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];

@@ -11,7 +11,6 @@ import { test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import { agent, follow, scratch, serve } from "./support.mjs";
-import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
 
 const GATEWAY_KEY = `not-a-secret-${"gateway"}`;
 const STAND_INS = {
@@ -62,7 +61,7 @@ for (const harness of ["opencode", "codex"]) {
     const gw = await gateway(t, (i) => (i === 0 ? "Before the drain." : "After the drain."));
     const dir = await scratch(t);
     const standIn = join(dir, `${harness}-stand-in.mjs`);
-    await (harness === "codex" ? copyStandIn(standIn) : copyFile(STAND_INS[harness].file, standIn));
+    await copyFile(STAND_INS[harness].file, standIn);
     const saved = { ...process.env };
     t.after(() => {
       for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
