@@ -258,7 +258,7 @@ for (const name of ["docs", "constructor"]) test(`a run (server ${name}): its la
   const sent = mcp.log.filter((entry) => entry.method === "tools/call").length;
   const said = await run();
   // The refused refresh marks the sign-in expired: the call is refused unsent, never sent with no credential.
-  assert.ok(said.includes(`The MCP server ${name}'s credential can't be opened on this server (its sign-in expired or was revoked: sign in again in Settings → MCP servers)`), said);
+  assert.ok(said.endsWith(`The MCP server ${name}'s credential can't be used right now: its sign-in expired or was revoked: sign in again in Settings → MCP servers.`), said);
   assert.equal(mcp.log.filter((entry) => entry.method === "tools/call").length, sent, "nothing more was sent");
   assert.equal((await api("GET", `/settings/mcp-servers/${name}`)).body.credential, "expired");
 });
@@ -608,7 +608,7 @@ for (const harness of ["pi", ...(existsSync("/usr/bin/setpriv") ? ["claude-agent
     // Nothing reached the MCP server: no call, with or without a credential, and no handshake for one.
     assert.deepEqual(mcp.log.slice(before).filter((entry) => ["tools/call", "initialize", "server/discover"].includes(entry.method)), [], "the MCP server saw nothing of the run");
     assert.equal(last.status, "completed", JSON.stringify(view.error ?? view.result));
-    assert.match(view.result?.final_answer ?? "", /The MCP server docs's credential can't be opened on this server \(its sign-in expired or was revoked: sign in again in Settings → MCP servers\)/);
+    assert.match(view.result?.final_answer ?? "", /The MCP server docs's credential can't be used right now: its sign-in expired or was revoked: sign in again in Settings → MCP servers\./);
   });
 }
 
@@ -754,7 +754,9 @@ for (const down of ["503", "timeout"]) {
     const calls = () => mcp.log.filter((entry) => entry.method === "tools/call").length;
     const tries = () => as.log.filter((entry) => entry.form.grant_type === "refresh_token").length;
     const said = await run();
-    assert.equal(said, "The tool said: The MCP server docs's credential can't be opened on this server (the sign-in server didn't answer; try again); update it in Settings → MCP servers.");
+    // Its own remedy, and none other: the credential is fine, so no one is told to update it or to sign in again.
+    assert.equal(said, "The tool said: The MCP server docs's credential can't be used right now: the sign-in server didn't answer; try again.");
+    assert.doesNotMatch(said, /update it|sign in again/);
     assert.equal(calls(), 0, "nothing was sent with the expired token");
     assert.equal(tries(), 2, "the refresh was tried twice");
     assert.equal((await api("GET", "/settings/mcp-servers/docs")).body.credential, "sealed", "the sign-in stands: no one is asked to sign in again");
