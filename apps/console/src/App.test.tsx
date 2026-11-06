@@ -358,7 +358,7 @@ describe("App, an agent's address", () => {
       if (path === "/v2/auth/session") return json(200, { password_set: true, signed_in: true });
       if (path === "/v2/capabilities") return json(200, { harnesses: [{ id: "pi", available: true }], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } });
       if (path === "/v2/agents") return json(200, { agents: [calc], next_cursor: null });
-      if (path === "/v2/agents/calc") return json(200, calc);
+      if (path === "/v2/agents/calc") return json(200, { tools: [], ...calc });
       if (path === "/v2/agents/calc/runs" || path === "/v2/agents/calc/revisions") return json(200, { runs: [], revisions: [], next_cursor: null });
       return json(404, { error: { code: "not_found", message: path, retryable: false } });
     });
@@ -397,7 +397,7 @@ describe("App, the agents' names", () => {
       if (what === "agents" && !id && method === "POST") { active.push(made); return json(201, made); }
       if (what === "agents" && !id && u.searchParams.get("archived") && archivedFails) return json(503, { error: { code: "store_busy", message: "the store is busy", retryable: true } });
       if (what === "agents" && !id) return json(200, { agents: u.searchParams.get("archived") ? archived : active, next_cursor: null });
-      if (what === "agents" && !sub) return json(200, [...active, ...archived].find((a) => a.agent_id === id), { etag: `"${made.revision}"` });
+      if (what === "agents" && !sub) return json(200, { tools: [], ...[...active, ...archived].find((a) => a.agent_id === id) }, { etag: `"${made.revision}"` });
       if (what === "agents" && sub === "runs" && method === "POST") { runs.unshift(started); return json(202, started); }
       if (what === "agents" && sub === "runs") return json(200, { runs: runs.filter((r) => r.agent_id === id), next_cursor: null });
       if (what === "runs" && !id) return json(200, { runs, next_cursor: null });

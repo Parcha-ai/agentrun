@@ -60,7 +60,8 @@ three runs have nothing new. Then, in order: the agent, its learning, its runs a
 opened is refused (`learning.note-stale`, 412), the newest version (`learning.note-newest`), a save with a hidden
 character the checks refuse (`learning.note-refused`, 400 with `problems`), the clean save (`learning.note-saved`) and the
 learning after it; the person's own note read and retired, and the learning after that. `learning.off-*` are an agent with
-no notes and learning off: its learning, its runs, the definition saved with learning on, and its learning after.
+no notes and learning off: its learning, its runs, the definition saved with learning on, the agent read again after it
+(`learning.off-agent-after`, as its page reads it), and its learning after.
 They are recorded from a server that says what each run read and kept (`used`, `learned`, on a run and in every list)
 and the agent's before and after (`impact`): two Brooklinen and Allbirds runs, the agent's runs and its learning carry
 them. Each note in the learning carries its `etag`, the same value as `learning.note`'s ETag, so the console edits and

@@ -16,6 +16,9 @@ export type SaveWarning = { field: string; reason: string; message: string };
 /** `warnings`: on a create's or an edit's answer only (never on a read of the agent); the console keeps a create's for
  *  the agent's page that opens after it (client.ts). */
 export type Agent = { agent_id: string; kind: "agentic" | "workflow"; revision: string; revisions: number; definition: Definition; archived_at: string | null; runs?: { count: number; live: number }; warnings?: SaveWarning[]; tools?: AgentTool[] };
+/** An agent as GET /v2/agents/{id} serves it: always with `tools` (serve's agentTools), which a list, a create and a
+ *  definition save do not carry. */
+export type ServedAgent = Agent & { tools: AgentTool[] };
 export type AgentFields = Partial<Pick<Definition, "name" | "description" | "instructions" | "harness" | "thinking" | "model" | "tools" | "workflow" | "learning" | "tool_settings" | "max_cost_usd">> & { workflowText?: string; maxCostText?: string; place?: Place };
 
 /** The body of a definition edit: the current definition with the edited fields; name and

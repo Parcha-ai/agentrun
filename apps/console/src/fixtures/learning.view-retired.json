@@ -9,7 +9,7 @@
   },
   "body": {
     "agent": "refund-finder",
-    "main": "4d26bad6e6a338361a6dd1f54289c1bbfbbe46f0",
+    "main": "b706ae73adb6728223ab6c9e3dc4756b8fbc286d",
     "index": "- [Try /policies/refund-policy first](try-policies-refund-policy-first.md) — Open /policies/refund-policy before any other page; fall back to /pages/returns\n",
     "notes": {
       "items": [
@@ -30,7 +30,7 @@
           "last_change": {
             "kind": "edited",
             "by": "person",
-            "at": "2026-11-05T22:36:58+00:00"
+            "at": "2026-11-06T16:05:10+00:00"
           }
         },
         {
@@ -50,10 +50,10 @@
           "last_change": {
             "kind": "retired",
             "by": "person",
-            "at": "2026-11-05T22:36:58+00:00"
+            "at": "2026-11-06T16:05:10+00:00"
           },
           "retired": {
-            "at": "2026-11-05T22:36:58+00:00",
+            "at": "2026-11-06T16:05:10+00:00",
             "by": "person"
           }
         },
@@ -74,7 +74,7 @@
           "last_change": {
             "kind": "learned",
             "by": "run",
-            "at": "2026-11-05T22:36:41+00:00"
+            "at": "2026-11-06T16:04:56+00:00"
           }
         }
       ],
@@ -89,8 +89,8 @@
           "by": {
             "user": true
           },
-          "commit": "4d26bad6e6a338361a6dd1f54289c1bbfbbe46f0",
-          "at": "2026-11-05T22:36:58.000Z",
+          "commit": "b706ae73adb6728223ab6c9e3dc4756b8fbc286d",
+          "at": "2026-11-06T16:05:10.000Z",
           "reason": "retired by a person: keep-it-to-three-lines.md",
           "files": [
             "MEMORY.md",
@@ -101,8 +101,8 @@
           "by": {
             "user": true
           },
-          "commit": "5602f6a4043b933a3b7b3dcd01cbce7102490f51",
-          "at": "2026-11-05T22:36:58.000Z",
+          "commit": "7c8abbbf046a80bd1d731a147bd731a059f7bf9e",
+          "at": "2026-11-06T16:05:10.000Z",
           "reason": "edited by a person: try-policies-refund-policy-first.md",
           "files": [
             "try-policies-refund-policy-first.md"
@@ -112,8 +112,8 @@
           "by": {
             "user": true
           },
-          "commit": "20cb8f7caeb7f6247872aa5d25da5e05f994d250",
-          "at": "2026-11-05T22:36:57.000Z",
+          "commit": "9274ffb26cdb7381cb427847f877c73f59a3ffc2",
+          "at": "2026-11-06T16:05:10.000Z",
           "reason": "edited by a person: try-policies-refund-policy-first.md",
           "files": [
             "try-policies-refund-policy-first.md"
@@ -123,8 +123,8 @@
           "by": {
             "user": true
           },
-          "commit": "55faa877708a3bf74f863c99f014e800905827cf",
-          "at": "2026-11-05T22:36:41.000Z",
+          "commit": "afa6b0f9457b874ec6385e9e66eea9ec0cee0825",
+          "at": "2026-11-06T16:04:56.000Z",
           "reason": "created by a person: keep-it-to-three-lines.md",
           "files": [
             "MEMORY.md",
@@ -133,10 +133,10 @@
         },
         {
           "by": {
-            "run": "01a1addb-61d4-7bef-9908-3be8d605a371"
+            "run": "01a1b19b-14d5-75bf-988d-4cf03a301271"
           },
-          "commit": "7b7fd8a56793f28fdbfa3e234149b17855c5e98f",
-          "at": "2026-11-05T22:36:41.000Z",
+          "commit": "bf685e112d43961e8d179eec9349f30e9d06eb46",
+          "at": "2026-11-06T16:04:56.000Z",
           "reason": "General and new: it holds for other shops too, and no note says it yet.",
           "files": [
             "MEMORY.md",
@@ -146,10 +146,10 @@
         },
         {
           "by": {
-            "run": "01a1addb-3581-7b75-97f6-f1e7066e7ac7"
+            "run": "01a1b19a-e4dd-7295-b5e5-ac396adc7df4"
           },
-          "commit": "a9319410191fe03b0540088e8ee19ebdd14c6fe4",
-          "at": "2026-11-05T22:36:37.000Z",
+          "commit": "5d6294df2e31f18bd7bcdcf0ed6487fa91d3a8f5",
+          "at": "2026-11-06T16:04:52.000Z",
           "reason": "General and new: it holds for other shops too, and no note says it yet.",
           "files": [
             "MEMORY.md",
@@ -171,17 +171,17 @@
     "impact": {
       "before": {
         "runs": 2,
-        "median_duration_s": 9.6,
-        "median_cost_usd": 0.049761,
+        "median_duration_s": 10.2,
+        "median_cost_usd": 0.049983,
         "cost_runs": 2,
-        "median_learning_usd": 0.013632
+        "median_learning_usd": 0.01404
       },
       "after": {
         "runs": 4,
-        "median_duration_s": 2,
-        "median_cost_usd": 0.007684,
+        "median_duration_s": 2.3,
+        "median_cost_usd": 0.007879,
         "cost_runs": 4,
-        "median_learning_usd": 0.01302
+        "median_learning_usd": 0.01343
       }
     }
   }

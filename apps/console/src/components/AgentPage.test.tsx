@@ -56,7 +56,7 @@ async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = nul
       const r = recorded<{ error: { code: string; message: string; fields?: FieldIssue[] } }>(answer.refused);
       throw Object.assign(new ClientError(r.status, r.body.error.code, r.body.error.message), r.body.error.fields ? { fields: r.body.error.fields } : {});
     },
-    getAgent: async (id: string) => { asked.push(`agent ${id}`); if (agentError) throw agentError; return { agent, etag: null }; },
+    getAgent: async (id: string) => { asked.push(`agent ${id}`); if (agentError) throw agentError; return { agent: { tools: [], ...agent }, etag: null }; },
     listAgentRuns: async (id: string, _limit: number, cursor?: string | null, archived?: boolean) => {
       asked.push(`runs ${id}${cursor ? ` after ${cursor}` : ""}${archived ? " archived" : ""}`);
       return cursor && more ? more() : { runs, next_cursor: next };

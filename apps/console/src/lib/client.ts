@@ -1,5 +1,5 @@
 import type { Stats } from "./mission";
-import type { Agent, Definition, SaveWarning } from "./agentForm";
+import type { Agent, Definition, SaveWarning, ServedAgent } from "./agentForm";
 import type { AgentLearning, LearningChange, LearningDiff, LearningNote, NoteProblem, NoteText, Page } from "./learning";
 import type { RunGraph } from "./runGraph";
 import { applyPage } from "./timeline";
@@ -130,7 +130,7 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
       return call<{ agents: Agent[]; next_cursor: string | null }>("GET", `/agents${q.size ? `?${q}` : ""}`);
     },
     getAgent: async (id: string) => {
-      const r = await callTagged<Agent>("GET", agent(id));
+      const r = await callTagged<ServedAgent>("GET", agent(id));
       const kept = created.get(id);
       return { agent: kept && kept.revision === r.body.revision && !r.body.warnings ? { ...r.body, warnings: kept.warnings } : r.body, etag: r.etag };
     },
