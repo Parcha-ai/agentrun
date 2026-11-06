@@ -310,7 +310,6 @@ const rowLearning = (row: TimelineRow | undefined): RunLearning | undefined => {
   return l && typeof l === "object" && typeof (l as { state?: unknown }).state === "string" ? (l as NonNullable<RunLearning>) : undefined;
 };
 const lowerFirst = (s: string) => s.charAt(0).toLowerCase() + s.slice(1);
-const upperFirst = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
 /** The look-back's one step, in words, from where the run's learning stands: under way, what it kept by name, what
  *  waits for the OK (a merge that holds notes for it names them too), nothing new, or why nothing was kept. Never a
@@ -330,7 +329,8 @@ export function lookedBack(l: RunLearning | undefined): string {
     return `Looked back: ${lowerFirst(waitWords(waits.length))}${waits.length ? ` (${names(waits)})` : ""}`;
   }
   if (dropKind(l.reason) === "nothing") return "Looked back: nothing new to keep";
-  return `Looked back: kept nothing. ${upperFirst(dropWords(l).replace(/^Not kept:\s*/, ""))}`;
+  // The server's sentence as it is (its own words say what was not kept, a skill or a draft with it): never trimmed.
+  return `Looked back: ${dropWords(l)}`;
 }
 
 /** One row of the look-back as the step's lines: its line, marked when it failed, then what it opens to, indented,

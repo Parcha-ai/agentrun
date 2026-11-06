@@ -567,3 +567,13 @@ test("the served TimelineKind holds every kind pi-durable-agent's timeline decla
   const [row] = decisionRows([{ id: "d1", at: "2026-10-29T23:00:00.000Z", node: "sift_docs", kind: "sift", request: { index: 0, count: 1 }, status: "answered", answers, evidence, cost_usd: null }]);
   assert.deepEqual(schemaProblems(doc, { $ref: "#/components/schemas/TimelineRow" }, { ...row, seq: 0 }), []);
 });
+
+test("the not-metered counts are this server's own fields: TimelineUsage.not_metered and UsageLine.not_metered_calls, marked and listed; UsageLine.unpriced_runs is documented", async (t) => {
+  const { baseUrl } = await serve(t);
+  const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
+  for (const [schema, field] of [["TimelineUsage", "not_metered"], ["UsageLine", "not_metered_calls"]]) {
+    assert.deepEqual([doc.components.schemas[schema].properties[field]?.type, doc.components.schemas[schema].properties[field]?.["x-agentrun-serve"]], ["integer", "mcpservers/1"], `${schema}.${field}`);
+    assert.ok(doc.info["x-agentrun-serve"].fields.includes(`${schema}.${field}`), `info lists ${schema}.${field}`);
+  }
+  assert.equal(doc.components.schemas.UsageLine.properties.unpriced_runs?.type, "integer");
+});

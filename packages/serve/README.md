@@ -31,9 +31,16 @@ agentrun-serve on http://127.0.0.1:7340/v2 (agent store in ~/.local/share/agentr
 AGENTRUN_BASE_URL=http://127.0.0.1:7340/v2
 AGENTRUN_API_KEY=ar_local_...
 Open http://127.0.0.1:7340/
-Boxes: none is ready, so sandbox agents do not run here. docker: not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker.
+Boxes: docker (on by default; set AGENTRUN_BOXES to change).
 Set your password: http://127.0.0.1:7340/setup (the first visit sets it)
 ```
+
+When the box image is not built yet, a line after the banner says its first build is under way (`Preparing the Docker
+box image (first start only, a few minutes); agents can be made now, and their first run waits for it.`), and another
+when it ends (`The Docker box image is ready.`, or why it failed). `npx @parcha/agentrun` prints the `Boxes:` line and
+these two on stderr, after its own line on stdout. On a machine where Docker is not running, the `Boxes:` line says so instead (`Boxes: none, so new agents run on the
+runner. Docker isn't running on this machine (no docker command on PATH): install or start Docker, then restart
+AgentRun.`); see [Boxes](#boxes).
 
 `Open` is [the console](#the-console), which takes [your password](#your-password). For a client, export the two lines before
 it, then make an agent, start a run, and read its timeline until a page says `final`:
@@ -59,7 +66,7 @@ An edit is a new revision: `PUT $AGENTRUN_BASE_URL/agents/calc/definition` with
 | `--port N` | the first free port from `7340` | The port. `0` is any free port. |
 | `--open` | off | Open the console in this machine's browser once the server listens; not in CI, nor on Linux with no display. |
 | `--faux MODULE` | none | Answer every model request from the module's default export (below). |
-| `--allow-host NAME` | none | Another `Host` name to accept. Repeat it. |
+| `--allow-host NAME` | none | Another `Host` name to accept on a loopback address, on any port. Repeat it. |
 | `--max-runs N` | `AGENTRUN_MAX_RUNS`, else as many pi runs as fit | The most runs at once, beside the memory each run's harness reserves ([capacity](#capacity-and-health)). Over either, a new run is `429 rate_limited`. |
 | `--documents DIR` | `AGENTRUN_SERVE_DOCUMENTS` | A read-only directory of documents a workflow's `pdf_pages` calls read by file name, confined to it. |
 | `--allow-code-nodes` | off (`AGENTRUN_SERVE_CODE_NODES=1` turns it on) | Run workflows' `code` nodes. They run in the run's process through the DSL's `new Function` transform, which is no sandbox, so only turn it on for workflows you wrote. Off, a workflow with a code node saves with a `not_set_up_here` warning and its runs are `409 agent_not_runnable` with `details.code: true`. A call `via: "shell"` or `"executor"` is refused either way. |
@@ -78,15 +85,15 @@ use it.
 ## Sandbox in 60 seconds
 
 An agent with a shell, in a Docker container of its own: on a machine with Docker, in a checkout built as above, with
-a model key. Start the server with the Docker box on:
+a model key. Start the server; the Docker box is on by default wherever Docker answers:
 
 ```sh
 export AGENT_MODEL=openrouter/anthropic/claude-sonnet-5.5 OPENROUTER_API_KEY=...
-AGENTRUN_BOXES=docker node packages/serve/dist/cli.js
+node packages/serve/dist/cli.js
 ```
 
-Its log says `event=boxes available=docker`, and its banner's last line `Boxes: docker is ready, so sandbox agents run
-their tools there. docker boxes reach only pypi.org, files.pythonhosted.org, registry.npmjs.org, registry.yarnpkg.com,
+Its log says `event=boxes available=docker`, and its banner's last line `Boxes: docker (on by default; set
+AGENTRUN_BOXES to change). docker boxes reach only pypi.org, files.pythonhosted.org, registry.npmjs.org, registry.yarnpkg.com,
 github.com, and codeload.github.com.` (on Linux; elsewhere it says why the box has no
 network: [Sandbox](#sandbox)). The first start builds [the box's image](#the-boxs-image) (python 3.12, git, curl, node, npm and rg,
 about 300 MB, a minute or two, the build alone on the network): its banner then says `Boxes: docker is preparing
@@ -116,7 +123,7 @@ cat > box.mjs <<'JS'
 export default (context, faux) => context.messages.some((m) => m.role === "toolResult") ? faux.message("Saved out.txt.")
   : faux.message(faux.toolCall("bash", { command: "cat /etc/os-release | tee out.txt" }), { stopReason: "toolUse" });
 JS
-AGENTRUN_BOXES=docker node packages/serve/dist/cli.js --faux box.mjs
+node packages/serve/dist/cli.js --faux box.mjs
 ```
 
 The box has python 3.12, git, curl, node, npm and rg. On Linux it reaches Python's and npm's package registries and
@@ -285,7 +292,8 @@ workflow is never given a box.
 
 `capabilities.places` says both sides. `default_place` is the place a new agent gets here. When that is the runner,
 `default_reason` says why in docker's own words, such as `new agents run on the runner, because the docker box is
-unavailable here: not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker`. `default` stays `runner`,
+unavailable here: Docker isn't running on this machine (no docker command on PATH): install or start Docker, then
+restart AgentRun`. The console's new-agent form says docker's reason too, under its place picker. `default` stays `runner`,
 because it means where a revision that names no place runs. An agent saved with no place (before this, where docker was
 unavailable, or a workflow) keeps running on the runner, whatever the server has now. The default is never worked out
 again at run time. The console's new-agent form starts on `default_place`, with bash ticked when that place is a sandbox.
@@ -309,7 +317,8 @@ A definition naming a box this server does not have saves with a warning on `def
 
 ### A run in a Docker box
 
-With `AGENTRUN_BOXES=docker` and a Docker daemon this server's user may use, a run whose place is
+With docker on (by default, when `AGENTRUN_BOXES` is not set; or listed in it) and a Docker daemon this server's user
+may use, a run whose place is
 `{"mode": "sandbox", "box": "docker"}` gets one container, made on its first `bash` call (a run with none gets no
 container). Those four tools are pi's own, on every harness. `bash` runs in the container. `read`, `write` and `edit`
 run on this server, on the `work/` the container binds, because a `docker exec` costs half a second or more per call:
@@ -362,6 +371,42 @@ go through `work/` by path.
     runs in a VM (its kernel is "6.15.11-orbstack-…", this machine's "6.1.0-…") that can't reach this server's egress
     proxy yet`. At each start the server removes the proxy directories of runs that are gone (a socket that refuses a
     connect, over a minute old); a live run's, of any server of this user's, stays.
+  - On a Mac, where Docker runs in a VM, a socket bound in from the Mac does not connect, so the proxy runs inside the
+    VM instead: one container per server, `agentrun-egress-<12 hex of the data root>`, labelled `agentrun.egress`. It
+    is `node:22-bookworm-slim` pinned by digest, with the kernel's two proxy files and a short entry bound read-only from
+    `<data>/egress/`, the list as its one variable, a read-only root, no capability, the server's uid:gid, 256 MiB and
+    256 processes. It listens on a Unix socket in a tmpfs volume of the same name, owned by the server's uid, and the
+    box mounts that volume read-only at `/run/agentrun/egress/`. The box keeps `--network none`, its `socat` and its
+    proxy variables; the proxy container is the only container with a network (Docker's default), and it publishes no
+    port. The server turns this on only when `docker info` names a VM runtime it knows, on a kernel that is not the
+    Mac's: `Operating System: Docker Desktop` (Docker Desktop), `OrbStack` (OrbStack), or a host name of `colima` or
+    `colima-<profile>` (colima). Anything else on a Mac (Rancher Desktop, a Podman machine, a colima whose host name
+    was changed, a daemon elsewhere) has no network, and `network_reason` says what was seen. At each start, before any
+    run gets the volume's name, the server makes the volume if it is missing; a volume named exactly this server's
+    `agentrun-egress-<12 hex>` that lacks its label (Docker made it with its defaults when a box mounted it first) is
+    replaced, and no other volume is touched. It removes every container of its own label, pulls the image once if
+    Docker lacks it, starts the proxy and waits up to 10 s for it to say it is ready; until then, and if it never does,
+    the box's network is `none` with why. Docker restarts a proxy that dies (`--restart unless-stopped`); the server
+    starts one that is gone again within about 10 s; its stop removes it, by the id Docker gave it, never by its name.
+    Linux keeps the path above, unchanged.
+    - The proxy's code is bound from the data directory (`<data>/egress/`), so Docker Desktop must share that path with its
+      VM. The default data directory, under your home in `/Users`, is shared. One elsewhere (`XDG_DATA_HOME` or `--data`
+      outside Docker Desktop's shared paths) makes the bind fail: the box's network is then `none`, and `network_reason`
+      says the proxy did not start. Add the path under Docker Desktop's Settings > Resources > File sharing, or keep the
+      data directory under `/Users`.
+  - The proxy container's own threat model, on a Mac. It has a network: Docker's bridge, the VM's NAT, then the Mac, its
+    LAN and the internet. Nothing reaches it but through the socket in the volume: no TCP listener, no published port,
+    no Docker socket, no key, and a variable that is the list alone; its entry refuses to start with no list, since a
+    proxy with none would reach every public host. The host list comes first, so an unlisted name is never looked up
+    and an address is never dialled: `host.docker.internal`, `gateway.docker.internal`, `host.orb.internal`,
+    `host.lima.internal` and the VM's own addresses cannot even be asked for. A listed name that resolves to the VM or
+    the Mac is refused by the same address rule as on Linux: OrbStack's Mac host and gateway (seen at addresses in
+    `0.0.0.0/8`, which the rule refuses as unspecified; OrbStack's docs do not name them), Docker Desktop's VM network
+    and colima's host address (both in RFC 1918 private space), the Docker bridge, a home LAN, a Tailscale address,
+    cloud metadata and IPv6 unique local. What stays: the rule checks the container's own interfaces, not the Mac's, so
+    a listed name that DNS points at the Mac's public address, or at the router through hairpin NAT, would be dialled;
+    and the cap of 256 connections open at once is the server's, shared by all its runs, not each run's, so one run that
+    holds many open can starve the others until its connections close.
   - Capabilities give the list as `places.allow`, and each box's `network`: `allowlist` or `none`, with
     `network_reason` when an available box has none. An image with no `socat` gets no network, and the run's timeline
     says so once.
@@ -553,7 +598,7 @@ never runs; the box's first process is a `sleep` of its lifetime.
 ### In the published image
 
 The published image, `ghcr.io/parcha-ai/agentrun-server`, cannot host boxes yet. It has no `docker` command and no
-Docker daemon, so with `AGENTRUN_BOXES=docker` capabilities and the start's `event=boxes` line say docker is
+Docker daemon, so capabilities and the start's `event=boxes` line say docker is
 unavailable, and a sandbox agent's runs are `409 agent_not_runnable`. Runner agents work as before. Do not mount the
 host's Docker socket into the container to get around it: whatever can reach that socket is root on the host, and a
 box's bind of `work/` names a path in the server's container, which the host's daemon does not have. For sandboxes, run
@@ -563,18 +608,29 @@ inside the image itself (bwrap, on Linux) comes in a later release.
 ### Boxes
 
 A box is a machine apart from this one where a run's tools run. Runs execute in `docker`, `daytona` and `modal` boxes
-([place](#place)); the others are set up and probed, and say runs in them are not available yet. `AGENTRUN_BOXES` lists the boxes to set up, as a comma list of the ids below
-(`AGENTRUN_BOXES=docker,daytona`). The server never probes a box the list does not name, and a name that is no box
+([place](#place)); the others are set up and probed, and say runs in them are not available yet.
+
+Docker is on by default. With `AGENTRUN_BOXES` not set at all (a plain `npx @parcha/agentrun`), the server probes
+`docker` as if it were listed, and offers it when Docker answers (`ready`, or `preparing` while its image comes), so a
+new agent lands in the Docker box with a shell. When Docker does not answer, new agents run on the runner, and the
+banner, `capabilities.places.default_reason`, docker's own `reason` and the console's new-agent form say why. Every
+other box is yours to list.
+
+`AGENTRUN_BOXES`, when set, wins: it lists the boxes to set up, as a comma list of the ids below
+(`AGENTRUN_BOXES=docker,daytona`), and the server never probes a box the list does not name, Docker included. An empty
+value (`AGENTRUN_BOXES=`) or `AGENTRUN_BOXES=none` sets up no box. `none` stands alone, and a name that is no box
 refuses the start. At start the server probes each listed box once. The probes run at once, each within 5 s. Then one
 log line says what the server found:
 
     event=boxes available=<ids or none> unavailable=<ids> <id>="<why>" ...
 
 The line gives a reason for each listed box that is unavailable, and the banner says the same in words
-(`Boxes: docker is ready, so sandbox agents run their tools there.`). Each reason says what to do next: a box the list
+(`Boxes: docker is ready, so sandbox agents run their tools there.` with a list; `Boxes: docker (on by default; set
+AGENTRUN_BOXES to change).` without one). Each reason says what to do next: a box the list
 does not name says `not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker` (keeping the boxes it already
-lists), and a `docker` whose daemon does not answer says to start Docker or add this server's user to the `docker`
-group, then restart the server, since the probe runs once. A reason never holds a key, a command's output or a
+lists), a missing `docker` command says `Docker isn't running on this machine (no docker command on PATH): install or
+start Docker, then restart AgentRun`, and a `docker` whose daemon does not answer says to start Docker or add this
+user to the `docker` group, then restart AgentRun, since the probe runs once. A reason never holds a key, a command's output or a
 provider's answer.
 
 - `docker`: the `docker` command on PATH, with a daemon that answers `docker version` for this server's user. It needs no key.
@@ -599,7 +655,8 @@ provider's answer.
   and the token is set. It asks nothing of the provider. Runs execute in it: [a run in a Modal sandbox](#a-run-in-a-modal-sandbox).
 - `bwrap` is not in this release yet.
 
-The boxes come from `@parcha/pi-transport`, an optional peer of this package; install it beside the server to use any.
+The boxes come from `@parcha/pi-transport`, a dependency of this package, so every install of the server, `npx
+@parcha/agentrun`'s included, has the Docker box's provider.
 The keys belong to the server alone. The launcher hands them over with the server's other secrets, and no run's process
 gets them, in its environment or on its pipe.
 
@@ -1061,8 +1118,8 @@ not known, so not cut, and the import says so.
 
 ## MCP servers
 
-Add a remote MCP server once, with its credential, and see its tools before you keep it. Agents granting its tools
-come in a later version; this is the API that saves the server.
+Add a remote MCP server once, with its credential, and see its tools before you keep it. An agent that grants one of
+its tools calls it on pi and on claude-agent ([below](#agents-call-a-servers-tools)).
 
 ```sh
 curl -X POST "$BASE/v2/settings/mcp-servers/preview" -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
@@ -1115,6 +1172,66 @@ says `transports: ["streamable-http"]`, the `auth` types and `at_rest` (`sealed`
 `test/fixtures/fake-mcp-server.mjs` is a loopback MCP server for trying this: `startFakeMcp({era, token, oauth})`
 answers `{url, log, tools, close}`; it serves `add`, `slow_write`, `delete_thing` and `paid`, and logs each request's
 method, tool and whether an `Authorization` header came, never its value.
+
+### Agents call a server's tools
+
+An agent grants a saved server's tool by its catalog name, `mcp:<server>/<tool>`, in `definition.tools`
+(`"tools": ["mcp:github/list_issues"]`). A save checks each one against the server's saved tools: a server that is not
+saved, or a tool it did not list, is `422` naming the server's tools, and so is a name whose wire name,
+`mcp__<server>__<tool>`, is over 52 characters, or a tool whose `x-mcp-header` declaration cannot be sent (on a
+property not reached through `properties` alone, not a string, integer or boolean, not a header name, or declared twice). pi and claude-agent run them (`features.mcp_client.harnesses`); on
+another harness the save warns that they are not bound there yet, and a run is refused.
+
+A known **meta tool**, one that runs other actions by name, is never granted: Composio's `COMPOSIO_MULTI_EXECUTE_TOOL`,
+`COMPOSIO_REMOTE_WORKBENCH`, `COMPOSIO_REMOTE_BASH_TOOL` and `COMPOSIO_PROXY_EXECUTE`, Klavis Strata's `execute_action`
+(on `klavis.ai`), Zapier's `execute_zapier_read_action`, `execute_zapier_write_action` and `write_code_action` (on
+`mcp.zapier.com`), Arcade's `Arcade_UseTool`, Docker's `mcp-exec` and generated `code-mode-*` tools, and Cloudflare's
+`portal_execute` and `portal_codemode_execute`. A grant of one couldn't name the real action, so allow would cover every
+action it runs and deny could target none. Reads mark it `grantable: false` with its `reason`, a save that grants it is
+`422` in those words, and a run that pinned one before is refused at its launch. Use the server's direct tools instead:
+each of these providers has a direct mode. The list is closed: a meta tool it doesn't know is an MCP tool like any other,
+asked by default.
+
+- **Pinned.** A run's first launch keeps each granted tool as the server listed it when you saved it (its description
+  and schema) and the server's URL then, in the run's directory (`mcp-tools.json`). A refresh or a new save never
+  changes a running agent's tools. If the server's URL has changed since, that run's calls answer "the server's
+  address changed since this run started" and nothing is sent, the new credential least of all.
+- **The credential.** A run whose revision grants a server's tool is handed that server's credential at each launch
+  (so a new one counts at the next), over its secrets pipe, never its environment; a run that grants none of a
+  server's tools gets none of it. It stays in the run's process: no harness's CLI, file or log holds it, and a run
+  that writes it into a learned note is refused by the secret scan.
+- **pi** binds each granted tool in the run's process as `mcp__<server>__<tool>`, with the pinned description and
+  schema, and calls the server from there.
+- **claude-agent** uses the Claude CLI's own MCP client: one HTTP server entry per granted server at the session's
+  model proxy, `/mcp/<server>`, behind the session's key, sent over the CLI's stdin (never its arguments), with only
+  those servers (`strictMcpConfig`) and only the granted tools allowed. The proxy answers the MCP exchange itself and
+  makes the call with the credential. The CLI's tool search is off in such a session, so the granted tools are
+  offered whole. A server the CLI cannot connect to fails the turn, never a turn without its tools.
+- **A call** goes to the pinned URL alone, the 2026-07-28 revision first and a 2025-era server through its
+  `initialize`; on 2026-07-28 each `x-mcp-header` parameter of the pinned tool is sent as its `Mcp-Param-*` header. No
+  redirect is followed, at most 4 MiB is read, and it may take 120 s. The
+  model reads the text blocks joined; past 60,000 characters, or with blocks that are not text, the whole answer is
+  filed under the run's `evidence/mcp/<server>/` and the text says where. A tool's own error (`isError`) reaches the
+  model as its error. A refused credential (401, 403) reads "the MCP server <name> refused its credential; update it
+  in Settings → MCP servers"; another failure names the server and the HTTP status, never a header. A stop, or a
+  client that goes away, cancels the call at the server. A call a crash cut off is answered interrupted on the
+  resumed run and never sent again.
+- **The gate.** Every call passes the run's one tool gate as `mcp:<server>/<tool>`, on every harness. Set
+  `mcp:<server>/<tool>` or, for all of a server's tools, `mcp:<server>/*` to `allow`, `ask` or `deny` in
+  `PUT /v2/settings/tools` or an agent's `definition.tool_settings` (the agent's exact key, then its server-wide key,
+  then the server's two, then the default). An MCP tool with no setting asks. A denied call is refused and the model
+  reads why; nothing is sent. An asked call parks, as any tool's does: its turn ends, nothing is sent, and the run
+  reads `input_required` with `pending.kind: "approval"`, the tool, its arguments and its price (or "not metered"),
+  until the owner answers `POST /v2/runs/{id}/approvals/{approval_id}` from their password session. Allowed, the run
+  sends the call once and resumes with its result; denied, it resumes with the refusal. A restart while a call is
+  parked loses nothing.
+- **Prices.** `PUT /v2/settings/mcp-servers/{name}` takes `prices`, each tool's price in USD a call
+  (`{"prices": {"search": 0.01}}`; a finite number, 0 or more, for a tool the server lists; else `422`). A priced call
+  is held at its price under the run's `max_cost_usd`, refused unsent when the cap cannot take it, and booked as the
+  run's tool cost (a `Tool cost` row, the `tools` meter of `GET /usage`). A tool with no price runs "not metered": a
+  row says so, the run's usage row counts it (`not_metered`), and `GET /usage`'s `tools` line counts the calls
+  (`not_metered_calls`); it is outside the run's cost and its cap. A run keeps the prices its first launch saw.
+- **The timeline** shows each call as `<server> · <tool>`.
 
 ## Webhooks
 
@@ -1859,6 +1976,16 @@ with the token, an archived agent's too:
   `learning: <edited, created or retired> by a person: <file>` with a `Changed-By: user` trailer, with `MEMORY.md`
   rebuilt, `main` moved only from the commit it was made on, and the folder's files brought in line; it answers the
   note as it now is, with its new `ETag`. `MEMORY.md` itself is never written (400).
+- `POST .../learning/files/{file}/restore` under `If-Match` makes a retired note active again, and gives a retired skill
+  (its `SKILL.md`) or workflow draft (its `README.md`) to every later run again: one commit, `learning: restored by a
+  person: <file>`, with `MEMORY.md` rebuilt and the notes it supersedes marked superseded, as an approval marks them.
+  Unlike a retire, a restore checks the text again as a new note or skill is checked (secret shapes, the server's
+  values, hidden characters, its format, and every file of a skill's or a draft's folder): a refusal is 400 with
+  `problems`, and the item stays retired. Only a retired item is restored (else 400). It takes the owner's password
+  session alone, as an approval does; one that waited for its owner's OK before its retire is recorded as their approval
+  too (`Approved-Via: console`). The learning view gives each item `last_change` (`{kind, by, at}`: `approved`,
+  `edited`, `created`, `retired` or `restored` by a `person`, or `learned` by a `run`) and each retired one `retired`
+  (`{at, by}`, the time of its retire, which an edit since moves not).
 - `GET /runs/{run_id}/learning`: the run's learning whole (its `used` and `learned` as on its read, its seed, its merge, the grader's verdict with its item for
   each new note, `{file, keep, question, why}`, `question` the rubric's question a dropped note failed, the checker's
   problems, what the grade cost), `null` for a run that does not learn; `verdict` is `null` until a grade ran.
@@ -1878,7 +2005,7 @@ followed: a read or a write there answers `500`, and nothing is written.
 
 Who can approve: the owner, signed in with their password. No token approves, the server's own included, so a run that reaches this server only through its API (its MCP tools, a sandbox run) can't approve its own notes. Runs that use bash on the host run as you: they can read this server's files, its session key among them, so no route keeps them from approving. For untrusted tasks, use the sandbox.
 
-`POST .../learning/files/{file}/approve` takes the console's password session, sent from this server's own origin with
+`POST .../learning/files/{file}/approve` (and `.../restore`, which puts a retired item back into every run) takes the console's password session, sent from this server's own origin with
 a JSON body as every page write is. Any token is 403: the server's own (what scripts and the MCP endpoint's tools
 carry), a run's door token, and a token sent beside the session. So is every request on a server with accounts off
 (`AGENTRUN_ACCOUNTS=0`), whose page cookie any token holder can mint. With no credential it is 401, as every route.
@@ -2115,8 +2242,11 @@ carries no cost at all, as from a provider that does not price the model. The te
   in the run's `work/`. An agent's saved sign-in stays at the vendor; this server keeps a sealed pointer to it, which a
   run's process gets over its pipe and its tools and model never see. Anyone holding the vendor's key can open that
   context or profile there.
-- It binds 127.0.0.1 by default, and there refuses a request whose `Host` is not a loopback name (DNS rebinding). On
-  another address (`--listen`, the container's `0.0.0.0`) it serves every `Host` name, and the token is its only lock.
+- It binds 127.0.0.1 by default, and there refuses a request whose `Host` names something other than this machine
+  (DNS rebinding): `localhost`, `127.0.0.1`, `[::1]`, the `AGENTRUN_PUBLIC_URL` name and each `--allow-host` name are
+  served, on any port, so a tunnel (`ssh -L 8080:localhost:7340`) or a proxy in front works; any other name is `403`, a
+  page in a browser and a JSON error for a script, each saying which names work. On another address (`--listen`, the
+  container's `0.0.0.0`) it serves every `Host` name, and the token is its only lock.
   It sends no CORS headers, so a page on another origin cannot read an answer.
 - Every route but `GET /capabilities` needs `Authorization: Bearer <the token>`, compared in constant time, or the
   browser's cookie under the rules of [the console](#the-console). The console's own files (its HTML, scripts, styles
