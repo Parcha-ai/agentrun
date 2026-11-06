@@ -22,8 +22,11 @@ export function sudoStandIn(dir) {
     // A command that names a sudo by its absolute path would pass the stand-in by: it is refused whole, never run, and
     // noted as a call.
     refuses: (command) => {
-      if (!ABSOLUTE_SUDO.test(command)) return false;
-      appendFileSync(calls, `refused, by its absolute path: ${command.replace(/\s+/g, " ").slice(0, 200)}\n`);
+      const at = command.search(ABSOLUTE_SUDO);
+      if (at < 0) return false;
+      // The command around the sudo it names, on one line.
+      const around = command.slice(Math.max(0, command.lastIndexOf("\n", at) + 1, at - 120), at + 80).replace(/\s+/g, " ").trim();
+      appendFileSync(calls, `refused, by its absolute path: ${around}\n`);
       return true;
     },
   };

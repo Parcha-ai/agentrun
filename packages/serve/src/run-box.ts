@@ -246,7 +246,11 @@ export function runBox(given: BoxSource | (() => Promise<RunBoxes>), run: { id: 
   const filed = new Map<string, Uint8Array>();
   const open = async (context: Context, note: (summary: string) => Promise<void> | void): Promise<{ env: ExecutionEnv; box: Box }> => {
     const { boxEnv, endLeftCommands } = await import("@parcha/pi-transport/hands");
-    const { box, made } = "relay" in source ? await relayedRunBox(source.relay, run, context) : await localRunBox(await source.provider(), run, context, note, fenced);
+    const opened = "relay" in source ? await relayedRunBox(source.relay, run, context) : await localRunBox(await source.provider(), run, context, note, fenced);
+    const { box, made } = opened;
+    // A remote box the server made in place of the run's (another list, or its files at an older place): told as a
+    // Docker box an earlier process left is.
+    if ("replaced" in opened && opened.replaced) fenced(1);
     if (!made) {
       // A process before this one left it: what it still runs is killed first, since its calls were answered interrupted.
       const ended = await endLeftCommands(box, context);
@@ -405,12 +409,17 @@ async function localRunBox(boxes: RunBoxes, run: { id: string; root: string; dir
     mounts: [...(await boxMounts(run.root, run.dir, run.place)), ...(egress?.mount ? [egress.mount] : [])],
     labels: { [RUN_LABEL]: run.id, [KIND_LABEL]: "run", [EPOCH_LABEL]: String(run.epoch), ...(boxes.net ? { [NET_LABEL]: boxes.net } : {}) }, network: "none", maxLifetimeMs: BOX_LIFETIME_MS,
   };
+  // Of the run's boxes, the ones this process may destroy: its own epoch's and lower ones, never a later process's.
+  const notLater = (labels: Readonly<Record<string, string>>) => !(Number(labels[EPOCH_LABEL]) > run.epoch);
   const made = await boxes.create(spec, context);
   if (!made.ok) {
     // A create that failed may still have left a box (a client cut off while the daemon made it): it carries the label.
-    await destroyRunBoxes(boxes, run.id, context).catch(() => undefined);
+    await destroyListed(boxes, { [RUN_LABEL]: run.id }, notLater, context).catch(() => undefined);
     throw new Error(`the run's box could not be made: ${made.error.message}`);
   }
+  // The fence and the create are not one step: an earlier process's own create, still in flight when it was killed, may
+  // have landed since. Its box goes now, not at the end of its lifetime.
+  await destroyListed(boxes, { [RUN_LABEL]: run.id }, (labels) => !(Number(labels[EPOCH_LABEL]) >= run.epoch), context);
   if (egress) await startRelay(made.value, egress.socket, context, note);
   return { box: made.value, made: true };
 }
@@ -433,14 +442,14 @@ async function startRelay(box: Box, socket: string, context: Context, note: (sum
 /** A remote box, which the server finds or makes and seeds (ensureRemoteBox), reached through its relay: this process's
  *  provider holds no key, and every call it makes goes to the relay, which sends it on with the server's (Daytona's key;
  *  the VM box's client, box-relay-vm.ts). */
-async function relayedRunBox(root: string, run: { id: string; dir: string; place: Place }, context: Context): Promise<{ box: Box; made: boolean }> {
+async function relayedRunBox(root: string, run: { id: string; dir: string; place: Place }, context: Context): Promise<{ box: Box; made: boolean; replaced?: boolean }> {
   const { id: runId, dir: runDir } = run;
   const given = await relayedBox(root, runDir, runId, context.abortSignal);
   const boxes = run.place.mode === "sandbox" && run.place.box === VM_PROVIDER.id ? await relayedVmBoxes(root, runDir, runId) : await relayedDaytona(root, runDir, runId, given.apiUrl);
   const attached = await boxes.attach(given.id, context);
   if (!attached.ok) throw new Error(`the run's box could not be reached: ${attached.error.message}`);
   if (!attached.value) throw new Error(`the run's box ${given.id} is not running`);
-  return { box: attached.value, made: given.made };
+  return { box: attached.value, made: given.made, ...(given.replaced ? { replaced: true } : {}) };
 }
 
 /** The run's process's Daytona provider: its calls go to the relay, which adds the key. */
@@ -511,11 +520,12 @@ export type RemoteBoxOptions = {
   limits?: RemoteLimits;
 };
 
-export async function ensureRemoteBox(boxes: BoxProvider, run: { id: string; dir: string }, context: Context, options: RemoteBoxOptions = {}): Promise<{ id: string; made: boolean }> {
+export async function ensureRemoteBox(boxes: BoxProvider, run: { id: string; dir: string }, context: Context, options: RemoteBoxOptions = {}): Promise<{ id: string; made: boolean; replaced?: boolean }> {
   const { wake, allow = "none", onNoList, pull = pullRemoteBox, limits } = options;
   let asked: "none" | "allowlist" = allow === "none" ? "none" : "allowlist";
   let box = await runningRunBox(boxes, run.id, context, wake);
   let made = false;
+  let replaced = false;
   const facts = box?.facts();
   // Kept with its network as asked, and its work/ where every box has it now (BOX_WORK): one made when boxes had it
   // elsewhere is pulled from there, whole, and made again.
@@ -530,6 +540,7 @@ export async function ensureRemoteBox(boxes: BoxProvider, run: { id: string; dir
     }
     await destroyRunBoxes(boxes, run.id, context);
     box = undefined;
+    replaced = true;
   }
   if (!box) {
     let created = await boxes.create(remoteSpec(run.id, allow, limits), context);
@@ -560,7 +571,8 @@ export async function ensureRemoteBox(boxes: BoxProvider, run: { id: string; dir
     }
     await keepMark(run.dir, { box: box.id, mark: seeded.value.mark });
   }
-  return { id: box.id, made };
+  // `replaced`: a box the run had was destroyed for this one, and what it held outside the run's files with it.
+  return { id: box.id, made, ...(replaced ? { replaced } : {}) };
 }
 
 /** What a pull of a remote box brought back; undefined when the run has no box (none made, or it is gone). */

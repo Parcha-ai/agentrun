@@ -135,6 +135,27 @@ test("the absolute-sudo guard reads a command as a shell would: a quoted, chaine
   for (const command of ["sudo -n mkdir -p -- /x", "command -v sudo", "cat /tmp/a/sudo.calls", "ls /tmp/a/sudo-bin", "/opt/pseudo/bin/x", "printf %s /tmp/sudoers.d"]) assert.equal(refuses(command), false, command);
 });
 
+test("a run whose Daytona box the server replaces (one made when boxes had work/ at /run/agentrun/run/work) is told once that its box was replaced, on its next box tool's answer", { timeout: 120_000 }, async (t) => {
+  const fake = await daytonaSandboxes(t, { key: KEY });
+  const server = await onDaytona(t, fake);
+  const { api, data } = server;
+  assert.equal((await api("POST", "/agents", { definition: { id: "remote", name: "remote", instructions: "Probe.", place: DAYTONA, tools: ["bash"] } })).status, 201);
+  const go = join(await scratch(t), "go");
+  const started = await api("POST", "/agents/remote/runs", { input: { content: JSON.stringify({ probe: [{ wait: go }, { tool: "bash", args: { command: "printf one > one.txt" } }, { tool: "bash", args: { command: "printf two > two.txt" } }] }) } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  const runId = started.body.run_id;
+  // The run's box as an older server made it: no network, its work/ at the old place.
+  const old = await (await fetch(`${fake.url}/sandbox`, { method: "POST", headers: { authorization: `Bearer ${KEY}`, "content-type": "application/json" }, body: JSON.stringify({ labels: { "agentrun.run": runId, "agentrun.box": "run", "pi-transport": "1", "pi-transport.workspace": "/run/agentrun/run/work" }, networkBlockAll: true }) })).json();
+  mkdirSync(fake.pathOf(old.id, "run/agentrun/run/work"), { recursive: true });
+  await writeFile(go, "");
+  await follow(api, runId, ["completed"], { deadlineMs: 90_000 });
+  const said = answers(data, runId);
+  assert.deepEqual(said.map((a) => [a.tool, a.error]), [["bash", false], ["bash", false]], JSON.stringify(said));
+  assert.ok(said[0].text.startsWith("this run's box was replaced after a restart: /workspace is kept; packages installed outside it and /tmp are gone; reinstall what you need"), said[0].text);
+  assert.ok(!said[1].text.includes("box was replaced"), "told once");
+  assert.ok(!fake.sandboxes.has(old.id) || fake.sandboxes.get(old.id).state !== "started", "the old box is gone");
+});
+
 test("demo: a Daytona place runs read, write, edit and bash in the run's box: work/ seeded in, bash's out.txt in the run's files, its network the package registries' domain list, no key in the box, the box destroyed at the end", { timeout: 180_000 }, async (t) => {
   const fake = await daytonaSandboxes(t, { key: KEY });
   withEnv(t, { MONID_API_KEY: MONID_KEY });

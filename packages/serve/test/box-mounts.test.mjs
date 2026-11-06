@@ -11,6 +11,7 @@ import { join, relative, sep } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { BOX_REPLACED_NOTE, EPOCH_LABEL, fenceRunBoxes, RUN_LABEL } from "../dist/run-box.js";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { follow, jsonLines, runDir, scratch, serve, withEnv } from "./support.mjs";
 
 const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;
@@ -264,4 +265,67 @@ test("the note goes before both of an answer's model fields, content and output 
   assert.deepEqual(seen, [`${NOTE}\n`], "and in the output stream, for an answer that gives neither");
   const second = await withBoxNote(box, () => {}, async () => ({ content: blocks, output: blocks }));
   assert.deepEqual(second.output.map((b) => b.text), ["No background processes."], "told once");
+});
+
+test("fake docker: a box command's sudo meets the stand-in first on its PATH, never this machine's; one named by its absolute path is refused whole; each is noted, which fails a test (support.mjs serve)", { timeout: 120_000 }, async (t) => {
+  const docker = await fakeDocker(t);
+  const { api, data } = await serve(t, { faux: PROBE });
+  const runId = await boxedRun(api, [
+    { tool: "bash", args: { command: "sudo -n true; echo exit=$?" } },
+    { tool: "bash", args: { command: 'touch ran.txt; "/nonexistent/bin/sudo" -n true' } },
+  ]);
+  await follow(api, runId, ["completed"], { deadlineMs: 60_000 });
+  const [bare, absolute] = answers(realpathSync(data), runId);
+  assert.match(bare.text, /exit=97/, "the stand-in answered, refusing");
+  assert.equal(absolute.error, true, "refused whole");
+  assert.ok(!existsSync(join(runDir(realpathSync(data), runId), "work", "ran.txt")), "no part of it ran");
+  const calls = join(docker.state, "sudo.calls");
+  const noted = readFileSync(calls, "utf8").trim().split("\n");
+  assert.equal(noted.length, 2, JSON.stringify(noted));
+  assert.equal(noted[0], "-n true");
+  assert.ok(noted[1].startsWith("refused, by its absolute path: ") && noted[1].includes('"/nonexistent/bin/sudo" -n true'), noted[1]);
+  // Noted, as every other test would fail on; this one meant it, so the note goes before the server's end reads it.
+  await rm(calls);
+});
+
+/** An in-memory Docker for runBox: its boxes by id with their labels; `onCreate` may land other boxes as a create runs
+ *  (a killed process's `docker run` still in flight), and `fails` makes the create fail after it left its own box. */
+function memoryBoxes({ onCreate = () => {}, fails = false } = {}) {
+  const live = new Map();
+  const destroyed = [];
+  const boxOf = (id) => ({ id, facts: () => ({ provider: "docker", workspace: "/workspace", network: "none" }), exec: async () => ({ ok: false, error: new Error("not here") }), destroy: async () => (live.delete(id), destroyed.push(id), { ok: true, value: undefined }) });
+  let n = 0;
+  const provider = {
+    mounts: true,
+    list: async (labels) => ({ ok: true, value: [...live].filter(([, l]) => Object.entries(labels).every(([k, v]) => l[k] === v)).map(([id, l]) => ({ id, labels: l })) }),
+    attach: async (id) => ({ ok: true, value: live.has(id) ? boxOf(id) : undefined }),
+    create: async (spec) => {
+      const id = `made-${++n}`;
+      live.set(id, spec.labels);
+      onCreate(live);
+      return fails ? { ok: false, error: new Error("the daemon went away") } : { ok: true, value: boxOf(id) };
+    },
+  };
+  return { provider, live, destroyed };
+}
+
+test("a box an earlier epoch's docker run lands after the fence, while this process makes its own, is destroyed once the create is done; a failed create's cleanup destroys this process's own and lower, never a later epoch's", async (t) => {
+  const { runBox } = await import("../dist/run-box.js");
+  const root = realpathSync(await scratch(t));
+  const dir = join(root, "disk", "agents", "a-0", "runs", "r");
+  await mkdir(join(dir, "work"), { recursive: true });
+  const place = { mode: "sandbox", box: "docker" };
+  // A lower epoch's box lands during this process's create.
+  const late = memoryBoxes({ onCreate: (live) => live.set("late", { [RUN_LABEL]: "r", "agentrun.box": "run", [EPOCH_LABEL]: "1" }) });
+  await runBox(() => Promise.resolve(late.provider), { id: "r", root, dir, place, epoch: 2 }).env(BACKGROUND_CONTEXT);
+  assert.deepEqual([...late.live.keys()], ["made-1"], "the late lower-epoch box is gone; this process's stays");
+  assert.deepEqual(late.destroyed, ["late"]);
+  // A failed create: its own leftover and a lower one go; a later epoch's (a newer process's) stays.
+  const failed = memoryBoxes({ fails: true, onCreate: (live) => {
+    live.set("lower", { [RUN_LABEL]: "r", "agentrun.box": "run", [EPOCH_LABEL]: "1" });
+    live.set("later", { [RUN_LABEL]: "r", "agentrun.box": "run", [EPOCH_LABEL]: "3" });
+  } });
+  await assert.rejects(runBox(() => Promise.resolve(failed.provider), { id: "r", root, dir, place, epoch: 2 }).env(BACKGROUND_CONTEXT), /could not be made: the daemon went away/);
+  assert.deepEqual(failed.destroyed.sort(), ["lower", "made-1"]);
+  assert.deepEqual([...failed.live.keys()], ["later"]);
 });

@@ -354,7 +354,7 @@ export type Run = {
    *  the server-wide one. */
   doorToken?: string;
   /** A remote box's making and seed, asked by the run's process through the relay: one at a time. */
-  boxing?: Promise<{ id: string; made: boolean }>;
+  boxing?: Promise<{ id: string; made: boolean; replaced?: boolean }>;
   /** Its remote box's newest pull: a read of its files waits for it. */
   pulling?: Promise<void>;
   /** Its launch waits on its claim, tried again later (launch): it keeps its place in the server's limits (takePlace). */
@@ -1750,7 +1750,7 @@ export class Runs {
   }
 
   /** Run `id`'s remote box, found or made and seeded: what its process asks the relay for at its first tool call. */
-  ensureBox(id: string): Promise<{ id: string; made: boolean }> {
+  ensureBox(id: string): Promise<{ id: string; made: boolean; replaced?: boolean }> {
     const run = this.runs.get(id);
     const place = run?.meta.place;
     const boxes = place && this.remoteOf(place);

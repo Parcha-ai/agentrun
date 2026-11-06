@@ -281,11 +281,11 @@ test("a remote box found at its run's next call: one with no network is kept whe
   // Destroyed: a list when none is asked, and an open or unknown network whatever is asked.
   found = box("listed", "allowlist");
   await writeFile(join(runDir, BOX_SYNC_FILE), JSON.stringify({ box: "listed", mark: { entries: [] } }));
-  assert.deepEqual(await ensureRemoteBox(boxes, { id: "r", dir: runDir }, BACKGROUND_CONTEXT, { allow: "none", pull }), { id: "made-1", made: true });
+  assert.deepEqual(await ensureRemoteBox(boxes, { id: "r", dir: runDir }, BACKGROUND_CONTEXT, { allow: "none", pull }), { id: "made-1", made: true, replaced: true });
   assert.deepEqual([made, destroyed], [["none"], ["listed"]]);
   found = box("open", "open");
   await writeFile(join(runDir, BOX_SYNC_FILE), JSON.stringify({ box: "open", mark: { entries: [] } }));
-  assert.deepEqual(await ensureRemoteBox(boxes, { id: "r", dir: runDir }, BACKGROUND_CONTEXT, { allow: ["pypi.org"], pull }), { id: "made-2", made: true });
+  assert.deepEqual(await ensureRemoteBox(boxes, { id: "r", dir: runDir }, BACKGROUND_CONTEXT, { allow: ["pypi.org"], pull }), { id: "made-2", made: true, replaced: true });
   assert.deepEqual([made, destroyed], [["none", { allow: ["pypi.org"] }], ["listed", "open"]]);
 });
 
@@ -311,7 +311,7 @@ test("a remote box made when boxes had the run's work/ at /run/agentrun/run/work
   };
   found = box("old", "/run/agentrun/run/work");
   await writeFile(join(runDir, BOX_SYNC_FILE), JSON.stringify({ box: "old", mark: { entries: [] } }));
-  assert.deepEqual(await ensureRemoteBox(boxes, { id: "r", dir: runDir }, BACKGROUND_CONTEXT, { allow: "none", pull }), { id: "new", made: true });
+  assert.deepEqual(await ensureRemoteBox(boxes, { id: "r", dir: runDir }, BACKGROUND_CONTEXT, { allow: "none", pull }), { id: "new", made: true, replaced: true }, "replaced: its model is told so (run-box.ts BOX_REPLACED_NOTE)");
   assert.deepEqual(pulled, [["old", "/run/agentrun/run/work"]], "copied back from the old box, before it went");
   assert.deepEqual(destroyed, ["old"]);
   assert.equal(specs[0].workspace, "/workspace");
@@ -349,9 +349,9 @@ test("a remote box found with a host list is kept only when its list is the one 
   await finding("same", { network: "allowlist", allow: ["github.com", "pypi.org"] });
   assert.deepEqual(await ensureRemoteBox(boxes, { id: "r", dir: runDir }, BACKGROUND_CONTEXT, { allow: asked, pull }), { id: "same", made: false });
   await finding("wider", { network: "allowlist", allow: ["pypi.org", "github.com", "example.com"] });
-  assert.deepEqual(await ensureRemoteBox(boxes, { id: "r", dir: runDir }, BACKGROUND_CONTEXT, { allow: asked, pull }), { id: "made-1", made: true });
+  assert.deepEqual(await ensureRemoteBox(boxes, { id: "r", dir: runDir }, BACKGROUND_CONTEXT, { allow: asked, pull }), { id: "made-1", made: true, replaced: true });
   await finding("unsaid", { network: "allowlist" });
-  assert.deepEqual(await ensureRemoteBox(boxes, { id: "r", dir: runDir }, BACKGROUND_CONTEXT, { allow: asked, pull }), { id: "made-2", made: true });
+  assert.deepEqual(await ensureRemoteBox(boxes, { id: "r", dir: runDir }, BACKGROUND_CONTEXT, { allow: asked, pull }), { id: "made-2", made: true, replaced: true });
   assert.deepEqual(destroyed, ["wider", "unsaid"]);
   assert.deepEqual(made, [{ allow: asked }, { allow: asked }]);
   assert.equal(pulls.length, 2, "each replaced box was copied back first");
