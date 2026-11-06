@@ -17,7 +17,7 @@ const sorted = (entries: TarEntry[]) =>
 
 /** A tree of more than 8 MiB, pushed once per run and shared by the cases that pull and push it. */
 async function bigTree(t: CaseContext): Promise<string> {
-	const path = `/tmp/agentrun-conformance-${Object.values(t.runLabels).join("-")}/big-tree`;
+	const path = `${await t.home()}/agentrun-conformance-${Object.values(t.runLabels).join("-")}/big-tree`;
 	if ((await t.client.call("files.stat", { path })).ok) return path;
 	const archive = tarOf([
 		{ name: "a.bin", type: "file", mode: 0o644, body: randomBytes(5 * 1024 * 1024) },
@@ -54,6 +54,26 @@ function eightAtOnce(client: DaemonClient, dir: string, archive: Uint8Array) {
 }
 
 export const filesCases: Case[] = [
+	files(
+		"home",
+		async (t) => {
+			const home = await t.home();
+			const uid = (await t.exec(["id", "-u"])).out.trim();
+			const stat = await t.call("files.stat", { path: home, follow: true });
+			t.deepEqual([stat.type, String(stat.uid)], ["dir", uid], `HOME, ${home}: a directory the computer's user owns`);
+			const path = `${home}/agentrun-conformance-home-${Object.values(t.runLabels).join("-")}.txt`;
+			t.deepEqual(await t.call("files.write", { path, data: b64("mine\n") }), { size: 5 }, "a write in HOME");
+			t.equal((await t.exec(["cat", path])).out, "mine\n", "the file, read by a program");
+			await t.call("files.remove", { path });
+			if (uid !== "0") {
+				const outside = `/agentrun-conformance-${Object.values(t.runLabels).join("-")}.txt`;
+				const refused = await t.client.call("files.write", { path: outside, data: b64("x") });
+				if (refused.ok) await t.client.call("files.remove", { path: outside });
+				t.refused(refused, "a write by a user other than root into /, which root owns", ["denied"]);
+			}
+		},
+		["files", "exec"],
+	),
 	files("write-read", async (t) => {
 		const dir = await t.dir();
 		t.deepEqual(await t.call("files.write", { path: `${dir}/a.txt`, data: b64("alpha\n"), mode: 0o640 }), { size: 6 }, "files.write");
@@ -75,6 +95,7 @@ export const filesCases: Case[] = [
 			t.equal(stat.size, 6, "size");
 			t.equal(stat.mode, 0o640, "mode");
 			t.equal(String(stat.uid), (await t.exec(["id", "-u"])).out.trim(), "uid: the daemon's user owns what it writes");
+			t.equal(String(stat.gid), (await t.exec(["id", "-g"])).out.trim(), "gid: the daemon's group");
 			t.equal((await t.call("files.stat", { path: dir })).type, "dir", "a directory's type");
 		},
 		["files", "exec"],
@@ -171,7 +192,9 @@ export const filesCases: Case[] = [
 			const target = `${dir}/pushed`;
 			t.ok(await pushTar(t.client, target, tarOf(pushed)), "pushTar");
 			t.equal((await t.exec([`${target}/run.sh`])).out, "ran from a pushed tar\n", "a pushed script runs");
-			t.equal((await t.call("files.stat", { path: `${target}/nested/data.bin` })).mode, 0o600, "a pushed file's mode");
+			const data = await t.call("files.stat", { path: `${target}/nested/data.bin` });
+			t.equal(data.mode, 0o600, "a pushed file's mode");
+			t.equal(String(data.uid), (await t.exec(["id", "-u"])).out.trim(), "a pushed file's owner: the computer's user, never the archive's uid 0");
 			t.equal((await t.call("files.stat", { path: `${target}/nested` })).mode, 0o750, "a pushed directory's mode");
 			const link = await t.call("files.stat", { path: `${target}/leaf-link` });
 			t.deepEqual([link.type, link.target], ["symlink", "nested/deeper/leaf.txt"], "a pushed symlink");
@@ -216,6 +239,20 @@ export const filesCases: Case[] = [
 		},
 		["files", "exec"],
 	),
+	files("push-refused", async (t) => {
+		const src = await bigTree(t);
+		const target = `${await t.dir()}/read-only-dir`;
+		await t.call("files.mkdir", { path: target, mode: 0o555 });
+		const one = await t.connect();
+		const { chunks, done } = pullTarStream(one.client, src);
+		t.refused(await pushTar(one.client, target, chunks), "a copy into a directory that refuses its writes", ["denied"]);
+		t.refused(await done, "the source pull of the refused copy");
+		const eight = Array.from({ length: 8 }, () => pullTarStream(one.client, src).chunks[Symbol.asyncIterator]());
+		const firsts = await Promise.all(eight.map((it) => it.next().then((step) => step.done, (error: Error) => error.message)));
+		t.deepEqual(firsts, Array(8).fill(false), "8 pulls at once after it, on the same connection: each gave its first chunk");
+		await Promise.all(eight.map((it) => it.return?.()));
+		t.deepEqual((await t.call("files.list", { path: target })).entries, [], "what the refused copy left in the directory");
+	}),
 	files("pull-unread", async (t) => {
 		const src = await bigTree(t);
 		const one = await t.connect();

@@ -10,9 +10,16 @@ export type Group = "health" | "exec" | "files" | "process" | "provider" | "drif
 
 /**
  * What a case needs: a daemon capability (declared by both the provider's capabilities().daemon and the daemon's
- * hello), a network the provider declares, or the janitor as the keeper of deadlines.
+ * hello), a network the provider declares, the janitor as the keeper of deadlines, or a spec.user the provider takes.
  */
-export type Capability = DaemonCapability | "network:none" | "network:open" | "network:allow" | "lifetime:janitor";
+export type Capability =
+	| DaemonCapability
+	| "network:none"
+	| "network:open"
+	| "network:allow"
+	| "lifetime:janitor"
+	| "user:root"
+	| "user:uid";
 
 /** What every computer must declare: a provider without one of these cannot pass Core. */
 export const CORE_CAPABILITIES: readonly Capability[] = ["exec", "files", "processes", "network:none"];
@@ -48,7 +55,9 @@ export interface CaseContext {
 	create(extra?: Partial<ComputerSpec>): Promise<ComputerRef>;
 	/** A further connection, to the case's computer or another; fails the case when connect refuses. */
 	connect(ref?: ComputerRef): Promise<ComputerConnection>;
-	/** A new directory for this case in the computer, writable by the computer's user. */
+	/** The computer's HOME, which its user can write: the suite works under it. */
+	home(): Promise<string>;
+	/** A new directory for this case under HOME. */
 	dir(): Promise<string>;
 	/** The same provider with a daemon that reports another version; skips the case when none was given. */
 	drifted(): Promise<ComputerProvider>;
@@ -64,8 +73,8 @@ export interface CaseContext {
 	assert(condition: unknown, what: string): void;
 	/** The value, or the case fails with what when it is undefined or null. */
 	present<T>(value: T | undefined | null, what: string): T;
-	/** Calls fn until it returns a value other than undefined or false, for up to patience. */
-	until<T>(fn: () => Promise<T | undefined | false>, what: string): Promise<T>;
+	/** Calls fn until it returns a value other than undefined or false, for up to ms (default patience). */
+	until<T>(fn: () => Promise<T | undefined | false>, what: string, ms?: number): Promise<T>;
 	/** Ends the case as a skip, with the reason. */
 	skip(reason: string): never;
 }

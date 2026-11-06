@@ -1,6 +1,7 @@
-// The host's own tar against a Docker computer (AGENTRUN_COMPUTER_LIVE_DOCKER=1 only): a tree archived by this machine's
-// tar is pushed, and the pull is extracted by it, the same. What every provider must do with files is in the
-// conformance suite (conformance.docker.test.mjs), with archives the suite writes itself. Needs `npm run build` and
+// Files in a Docker computer as only Docker shows them (AGENTRUN_COMPUTER_LIVE_DOCKER=1 only): /work is the default
+// user's own, mode 700, and a tree archived by this machine's tar is pushed under it, owned by that user, and the pull
+// is extracted by the host's tar the same. What every provider must do with files is in the conformance suite
+// (conformance.docker.test.mjs), with archives the suite writes itself. Needs `npm run build` and
 // `npm run build:daemon` first, debian:bookworm-slim pulled, and tar on this machine. Every container this file makes
 // is removed by its exact name in the after hook, pass or fail.
 import assert from "node:assert/strict";
@@ -17,6 +18,8 @@ const LIVE = process.env.AGENTRUN_COMPUTER_LIVE_DOCKER === "1";
 const IMAGE = "debian:bookworm-slim";
 const docker = (...args) => execFileSync("docker", args, { encoding: "utf8" });
 const decode = (base64) => Buffer.from(base64, "base64").toString("utf8");
+/** The provider's default user, which the daemon and so every file it writes has: this process's, or 1000:1000 as root. */
+const [UID, GID] = (process.getuid() !== 0 ? `${process.getuid()}:${process.getgid()}` : "1000:1000").split(":").map(Number);
 
 /** Every entry below root: its type, mode, and content hash or link target. */
 function tree(root, dir = "") {
@@ -68,6 +71,12 @@ describe("the host's tar and a Docker computer", { skip: LIVE ? false : "set AGE
 		for (const dir of local) rmSync(dir, { recursive: true, force: true });
 	});
 
+	it("has /work, the default user's own with mode 700", async () => {
+		const home = await connection.client.call("files.stat", { path: "/work" });
+		assert.equal(home.ok, true, JSON.stringify(home));
+		assert.deepEqual([home.value.type, home.value.mode, home.value.uid, home.value.gid], ["dir", 0o700, UID, GID]);
+	});
+
 	it("pushes a tree the host's tar archived, and the host's tar extracts the pull the same", async () => {
 		const src = scratch();
 		mkdirSync(join(src, "nested", "deeper"), { recursive: true });
@@ -78,11 +87,16 @@ describe("the host's tar and a Docker computer", { skip: LIVE ? false : "set AGE
 		chmodSync(join(src, "nested", "data.bin"), 0o600);
 		symlinkSync("nested/deeper/leaf.txt", join(src, "leaf-link"));
 		const archive = execFileSync("tar", ["-C", src, "-cf", "-", "."], { maxBuffer: 64 * 1024 * 1024 });
-		const pushed = await pushTar(connection.client, "/tmp/pushed", archive);
+		const pushed = await pushTar(connection.client, "/work/data/pushed", archive);
 		assert.equal(pushed.ok, true, JSON.stringify(pushed.error));
-		const ran = await connection.client.call("exec.run", { argv: ["/tmp/pushed/run.sh"], timeoutMs: 20_000 });
+		const ran = await connection.client.call("exec.run", { argv: ["/work/data/pushed/run.sh"], timeoutMs: 20_000 });
 		assert.equal(ran.ok && decode(ran.value.stdout), "ran from a pushed tar\n");
-		const pulled = await pullTar(connection.client, "/tmp/pushed");
+		const owners = await connection.client.call("exec.run", {
+			argv: ["stat", "-c", "%a %u:%g", "/work/data/pushed/run.sh", "/work/data/pushed/nested/data.bin"],
+			timeoutMs: 20_000,
+		});
+		assert.equal(owners.ok && decode(owners.value.stdout), `755 ${UID}:${GID}\n600 ${UID}:${GID}\n`);
+		const pulled = await pullTar(connection.client, "/work/data/pushed");
 		assert.equal(pulled.ok, true, JSON.stringify(pulled.error));
 		const back = scratch();
 		execFileSync("tar", ["-C", back, "-xpf", "-"], { input: pulled.value });

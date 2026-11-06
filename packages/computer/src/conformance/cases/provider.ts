@@ -1,9 +1,10 @@
 // The provider: check refuses in words and makes nothing, create, attach, list and release do what they say, the
-// network reads back as asked and a change is refused or applied truthfully, and the janitor ends only the expired.
+// network reads back as asked and a change is refused or applied truthfully, a computer does not run past its deadline,
+// and the janitor ends only the expired, stopped or running.
 import { sweep } from "../../janitor.js";
 import type { NetworkSpec } from "../../provider.js";
 import type { Case, CaseContext } from "../types.js";
-import { CASE_LABEL } from "./util.js";
+import { CASE_LABEL, delay } from "./util.js";
 
 /** Labels for one case's computers: the run's, and the case's own. */
 const own = (t: CaseContext, name: string) => ({ ...t.runLabels, [CASE_LABEL]: name });
@@ -154,13 +155,40 @@ export const providerCases: Case[] = [
 		{ level: "full", needs: ["network:allow"] },
 	),
 	provider(
+		"deadline",
+		async (t) => {
+			const labels = own(t, "deadline");
+			const lifetimeMs = 15_000;
+			const ref = await t.create({ lifetimeMs, labels });
+			const created = Date.now();
+			const connected = await t.connect(ref);
+			t.ok(await connected.client.call("process.start", { argv: ["sh", "-c", "trap '' TERM; sleep 600"] }), "a process that ignores TERM");
+			await connected.close();
+			await delay(Math.max(0, created + lifetimeMs + 1000 - Date.now()));
+			if (t.provider.capabilities().lifetime === "janitor") t.ok(await sweep(t.provider, { labels }), "the janitor's sweep after the deadline");
+			await t.until(
+				async () => t.ok(await t.provider.list(labels), "list").every((info) => info.state !== "running"),
+				"the computer past its deadline, with a process that ignores TERM, stopped or gone",
+				120_000,
+			);
+			t.refused(await t.provider.connect(ref), "connect to a computer past its deadline");
+		},
+		{ needs: ["processes"], timeoutMs: 300_000 },
+	),
+	provider(
 		"janitor",
 		async (t) => {
 			const labels = own(t, "janitor");
-			const short = await t.create({ lifetimeMs: 1000, labels: { ...labels, role: "short" } });
+			const stopped = await t.create({ lifetimeMs: 60_000, labels: { ...labels, role: "stopped" } });
+			const running = await t.create({ lifetimeMs: 5 * 60_000, labels: { ...labels, role: "running" } });
 			const long = await t.create({ labels: { ...labels, role: "long" } });
-			const swept = t.ok(await sweep(t.provider, { labels, now: new Date(Date.now() + 60_000) }), "sweep");
-			t.deepEqual(swept, { deleted: [short.name], kept: 1 }, "the sweep a minute after the short lifetime");
+			t.ok(await t.provider.release(stopped, "stop"), "release stop");
+			const swept = t.ok(await sweep(t.provider, { labels, now: new Date(Date.now() + 6 * 60_000) }), "sweep");
+			t.deepEqual(
+				[[...swept.deleted].sort(), swept.kept],
+				[[stopped.name, running.name].sort(), 1],
+				"a sweep past two deadlines: the stopped and the running computer deleted, the third kept",
+			);
 			t.deepEqual(await names(t, labels), [long.name], "left after the sweep");
 			t.deepEqual(t.ok(await t.provider.attach({ id: t.ref.id }), "attach to the run's computer"), t.ref, "a computer outside the swept labels");
 			t.deepEqual(t.ok(await sweep(t.provider, { labels }), "a second sweep"), { deleted: [], kept: 1 }, "a second sweep, now");

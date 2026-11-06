@@ -118,6 +118,8 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 				if (!capabilities.network.includes(need.slice("network:".length) as "none")) return `the provider does not declare ${need}`;
 			} else if (need === "lifetime:janitor" && capabilities.lifetime !== "janitor") {
 				return `the provider declares lifetime "${capabilities.lifetime}", not ${need}`;
+			} else if (need.startsWith("user:") && !capabilities.user?.includes(need.slice("user:".length) as "root")) {
+				return `the provider does not declare ${need}`;
 			}
 		}
 		return undefined;
@@ -196,8 +198,14 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 				spec,
 				create,
 				connect: (ref) => connect(ref ?? needComputer().ref),
+				async home() {
+					const env = await t.exec(["env"]);
+					const home = /^HOME=(.*)$/m.exec(env.out)?.[1];
+					if (home === undefined || !home.startsWith("/")) throw new Error(`HOME in the computer is ${show(home)}, not an absolute path`);
+					return home.replace(/\/+$/, "") || "/";
+				},
 				async dir() {
-					const path = `/tmp/agentrun-conformance-${run}/${c.id.replace(/[^a-z0-9-]/gi, "-")}-${++dirs}`;
+					const path = `${await t.home()}/agentrun-conformance-${run}/${c.id.replace(/[^a-z0-9-]/gi, "-")}-${++dirs}`;
 					await t.call("files.mkdir", { path, parents: true });
 					return path;
 				},
@@ -244,12 +252,12 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 					if (value === undefined || value === null) throw new Error(what);
 					return value;
 				},
-				async until(fn, what) {
-					const end = Date.now() + patience;
+				async until(fn, what, ms = patience) {
+					const end = Date.now() + ms;
 					for (;;) {
 						const value = await fn();
 						if (value !== undefined && value !== false) return value;
-						if (Date.now() > end) throw new Error(`${what}: still not so after ${patience / 1000} s`);
+						if (Date.now() > end) throw new Error(`${what}: still not so after ${ms / 1000} s`);
 						if (caseSignal.aborted) throw caseSignal.reason;
 						await sleep(200);
 					}

@@ -13,6 +13,8 @@ export interface PulledTar {
 	done: Promise<Result<{ bytes: number }>>;
 }
 
+const STOPPED = Symbol("stopped");
+
 const base64 = (bytes: Uint8Array) => Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64");
 
 /** Reads a whole file, MAX_CHUNK_BYTES per call. */
@@ -59,10 +61,10 @@ export async function writeFile(
 /**
  * Extracts a tar archive into dir in the computer (made when missing), sent in chunks of MAX_CHUNK_BYTES, each after
  * the last one's reply. An entry outside dir is refused (`denied`) and ends the push; what was written before it stays.
- * A push that begins is always ended, aborted or not, so it never holds one of the connection's 8 pushes.
+ * A push that begins is always ended, aborted or not, so it never holds one of the connection's 8 pushes. The source is
+ * the push's: unless it is read to its end, it is let go (its iterator's `return()`) however the push ends, so a pull
+ * piped in is ended too.
  */
-const STOPPED = Symbol("stopped");
-
 export async function pushTar(
 	client: DaemonClient,
 	dir: string,
@@ -70,19 +72,6 @@ export async function pushTar(
 	options: { signal?: AbortSignal } = {},
 ): Promise<Result<TarPushEndResult>> {
 	const { signal } = options;
-	if (signal?.aborted) return fail("aborted", `the push into ${dir} was aborted`);
-	const begun = await client.call("tar.push.begin", { path: dir });
-	if (!begun.ok) return begun;
-	const { id } = begun.value;
-	if (signal?.aborted) return abandon(client, id, fail("aborted", `the push into ${dir} was aborted`));
-	const pending = Buffer.alloc(MAX_CHUNK_BYTES);
-	let filled = 0;
-	const send = async (): Promise<Result<unknown>> => {
-		const wrote = await client.call("tar.push.write", { id, data: base64(pending.subarray(0, filled)) }, options);
-		filled = 0;
-		// A refused write ended the push in the daemon; an aborted one did not.
-		return !wrote.ok && wrote.error.code === "aborted" ? abandon(client, id, wrote) : wrote;
-	};
 	const source: AsyncIterable<Uint8Array> =
 		tar instanceof Uint8Array
 			? (async function* () {
@@ -90,6 +79,18 @@ export async function pushTar(
 				})()
 			: tar;
 	const iterator = source[Symbol.asyncIterator]();
+	let open = true;
+	const next = () =>
+		iterator.next().then(
+			(step) => {
+				if (step.done) open = false;
+				return step;
+			},
+			(error: unknown) => {
+				open = false;
+				throw error;
+			},
+		);
 	// A source that stalls must not hold the push open past an abort: each piece races the signal.
 	let onAbort = () => {};
 	const stopped = new Promise<typeof STOPPED>((resolve) => {
@@ -97,36 +98,58 @@ export async function pushTar(
 		signal?.addEventListener("abort", onAbort, { once: true });
 	});
 	try {
-		for (;;) {
-			const next = signal ? await Promise.race([iterator.next(), stopped]) : await iterator.next();
-			if (next === STOPPED) {
-				void Promise.resolve(iterator.return?.()).catch(() => {});
-				return abandon(client, id, fail("aborted", `the push into ${dir} was aborted`));
-			}
-			if (next.done) break;
-			const piece = next.value;
-			for (let at = 0; at < piece.length; ) {
-				const take = Math.min(MAX_CHUNK_BYTES - filled, piece.length - at);
-				pending.set(piece.subarray(at, at + take), filled);
-				filled += take;
-				at += take;
-				if (filled === MAX_CHUNK_BYTES) {
-					const wrote = await send();
-					if (!wrote.ok) return wrote;
+		if (signal?.aborted) return fail("aborted", `the push into ${dir} was aborted`);
+		const begun = await client.call("tar.push.begin", { path: dir });
+		if (!begun.ok) return begun;
+		const { id } = begun.value;
+		if (signal?.aborted) return abandon(client, id, fail("aborted", `the push into ${dir} was aborted`));
+		const pending = Buffer.alloc(MAX_CHUNK_BYTES);
+		let filled = 0;
+		const send = async (): Promise<Result<unknown>> => {
+			const wrote = await client.call("tar.push.write", { id, data: base64(pending.subarray(0, filled)) }, options);
+			filled = 0;
+			// A refused write ended the push in the daemon; an aborted one did not.
+			return !wrote.ok && wrote.error.code === "aborted" ? abandon(client, id, wrote) : wrote;
+		};
+		try {
+			for (;;) {
+				const step = signal ? await Promise.race([next(), stopped]) : await next();
+				if (step === STOPPED) return abandon(client, id, fail("aborted", `the push into ${dir} was aborted`));
+				if (step.done) break;
+				const piece = step.value;
+				for (let at = 0; at < piece.length; ) {
+					const take = Math.min(MAX_CHUNK_BYTES - filled, piece.length - at);
+					pending.set(piece.subarray(at, at + take), filled);
+					filled += take;
+					at += take;
+					if (filled === MAX_CHUNK_BYTES) {
+						const wrote = await send();
+						if (!wrote.ok) return wrote;
+					}
 				}
 			}
+		} catch (error) {
+			return abandon(client, id, fail("invalid", `the tar source failed: ${error instanceof Error ? error.message : String(error)}`));
 		}
-	} catch (error) {
-		return abandon(client, id, fail("invalid", `the tar source failed: ${error instanceof Error ? error.message : String(error)}`));
+		if (filled > 0) {
+			const wrote = await send();
+			if (!wrote.ok) return wrote;
+		}
+		if (signal?.aborted) return abandon(client, id, fail("aborted", `the push into ${dir} was aborted`));
+		return client.call("tar.push.end", { id }, options);
 	} finally {
 		signal?.removeEventListener("abort", onAbort);
+		if (open) letGo(iterator);
 	}
-	if (filled > 0) {
-		const wrote = await send();
-		if (!wrote.ok) return wrote;
+}
+
+/** Calls a source's return() once, without waiting on it (a stalled source may never answer); its errors are dropped. */
+function letGo(iterator: AsyncIterator<unknown>): void {
+	try {
+		void Promise.resolve(iterator.return?.()).catch(() => {});
+	} catch {
+		// A return() that throws at once has nothing more to let go.
 	}
-	if (signal?.aborted) return abandon(client, id, fail("aborted", `the push into ${dir} was aborted`));
-	return client.call("tar.push.end", { id }, options);
 }
 
 /** Ends a push this side gave up on, then returns why. */

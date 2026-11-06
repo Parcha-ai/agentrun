@@ -16,7 +16,7 @@ function fakeProvider(computers, { lifetime = "janitor", failRelease = [], liste
 		async list(labels, context) {
 			calls.push(["list", labels, context?.signal instanceof AbortSignal]);
 			if (listed) return listed;
-			const infos = computers.map(({ name, deadline }) => ({ ref: { id: `id-${name}`, name }, labels: {}, deadline, state: "running", network: "none" }));
+			const infos = computers.map(({ name, deadline, state = "running" }) => ({ ref: { id: `id-${name}`, name }, labels: {}, deadline, state, network: "none" }));
 			return { ok: true, value: infos };
 		},
 		async release(ref, how) {
@@ -42,6 +42,24 @@ test("sweep() deletes every computer whose deadline has passed and keeps the res
 		["release", "past", "delete"],
 		["release", "now", "delete"],
 	]);
+});
+
+test("sweep() deletes a stopped computer past its deadline as it does a running one: a computer stops itself then", async () => {
+	const { provider, calls } = fakeProvider([
+		{ name: "stopped-past", deadline: at(-1), state: "stopped" },
+		{ name: "running-past", deadline: at(-1), state: "running" },
+		{ name: "stopped-future", deadline: at(60_000), state: "stopped" },
+		{ name: "stopped-missing", deadline: undefined, state: "stopped" },
+	]);
+	assert.deepEqual(await sweep(provider, { now: NOW }), { ok: true, value: { deleted: ["stopped-past", "running-past", "stopped-missing"], kept: 1 } });
+	assert.deepEqual(
+		calls.filter(([what]) => what === "release"),
+		[
+			["release", "stopped-past", "delete"],
+			["release", "running-past", "delete"],
+			["release", "stopped-missing", "delete"],
+		],
+	);
 });
 
 test("sweep() deletes a computer whose deadline is missing or unreadable: it fails closed", async () => {

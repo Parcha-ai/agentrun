@@ -5,7 +5,21 @@ import { randomBytes } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import { DaemonClient } from "./client.js";
-import { COMPUTER_LABEL, DAEMON_IN_COMPUTER, DEADLINE_LABEL, DEFAULT_PIDS, type DockerInspect, drift, helloDrift, networkOf } from "./drift.js";
+import {
+	COMPUTER_LABEL,
+	CPU_PERIOD_US,
+	DAEMON_IN_COMPUTER,
+	DEADLINE_LABEL,
+	DEFAULT_CPUS,
+	DEFAULT_MEMORY_MB,
+	DEFAULT_PIDS,
+	type DockerInspect,
+	drift,
+	helloDrift,
+	networkOf,
+	tmpfsOf,
+	WORK,
+} from "./drift.js";
 import type {
 	CallContext,
 	ComputerCapabilities,
@@ -25,12 +39,19 @@ export interface DockerProviderOptions {
 	daemonPath: string;
 	/** The docker CLI. */
 	docker?: string;
+	/** Who a computer runs as when its spec does not say: uid or uid:gid, in numbers. Default: this process's uid:gid, or
+	 *  1000:1000 when this process is root. Root is refused here: a computer runs as root only when its spec asks. */
+	user?: string;
 }
 
 const VERSION: string = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 const NAME = /^computer-[0-9a-f]{12}$/;
 /** A container id, whole or its first 12 or more hex digits. */
 const ID = /^[0-9a-f]{12,64}$/;
+/** A user in numbers, uid or uid:gid; (uid_t)-1 is no user. */
+const USER = /^(\d+)(?::(\d+))?$/;
+const MAX_ID = 4_294_967_294;
+const USER_FORM = "a uid or uid:gid in numbers, such as 1000:1000; a name is refused, since the image may not have it";
 /** The kernel's PID_MAX_LIMIT: a larger --pids-limit fails the create. */
 const MAX_PIDS = 4_194_304;
 /** Docker's least --memory. */
@@ -38,7 +59,7 @@ const MIN_MEMORY_MB = 6;
 const HELLO_TIMEOUT_MS = 30_000;
 /** The longest lifetime: 30 days. A computer meant to live longer is asked for again. */
 const MAX_LIFETIME_MS = 30 * 24 * 60 * 60 * 1000;
-const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "cpus", "memoryMb", "pids", "labels", "workdir"]);
+const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "cpus", "memoryMb", "pids", "labels", "workdir", "user"]);
 const NUL = "a NUL byte cannot be passed to docker run";
 const ALLOWLIST = "a Docker computer cannot enforce an allowlist yet; ask for network none or open";
 /** Docker cannot move a container with no network onto one, nor take one off a network without a restart. */
@@ -65,21 +86,26 @@ export class DockerProvider implements ComputerProvider {
 	readonly version = VERSION;
 	readonly #daemonPath: string;
 	readonly #docker: string;
+	readonly #user: string;
 
-	constructor({ daemonPath, docker = "docker" }: DockerProviderOptions) {
+	constructor({ daemonPath, docker = "docker", user }: DockerProviderOptions) {
 		this.#daemonPath = resolve(daemonPath);
 		this.#docker = docker;
+		const given = user === undefined ? defaultUser() : userOf(user);
+		if (given === undefined) throw new Error(`the provider's user ${JSON.stringify(user)} must be ${USER_FORM}`);
+		if (given.startsWith("0:")) throw new Error(`the provider's user ${user} is root; a computer runs as root only when its spec asks for user "0"`);
+		this.#user = given;
 	}
 
 	capabilities(): ComputerCapabilities {
-		return { lifetime: "janitor", network: ["none", "open"], isolation: "container", os: "linux", daemon: ["exec", "files", "processes"] };
+		return { lifetime: "janitor", network: ["none", "open"], isolation: "container", os: "linux", daemon: ["exec", "files", "processes"], user: ["root", "uid"] };
 	}
 
 	check(spec: ComputerSpec): Refusal[] {
 		const refusals: Refusal[] = [];
 		const refuse = (field: string, message: string) => refusals.push({ field, message });
 		const given = spec as unknown as Record<string, unknown>;
-		const { image, lifetimeMs, network, cpus, memoryMb, pids, labels, workdir } = given;
+		const { image, lifetimeMs, network, cpus, memoryMb, pids, labels, workdir, user } = given;
 		if (typeof image !== "string" || image.trim() === "" || image.startsWith("-")) {
 			refuse("image", "an image is required, such as debian:bookworm-slim");
 		} else if (image.includes("\0")) refuse("image", NUL);
@@ -105,6 +131,7 @@ export class DockerProvider implements ComputerProvider {
 		if (workdir !== undefined && !(typeof workdir === "string" && workdir.startsWith("/"))) {
 			refuse("workdir", "workdir must be an absolute path in the computer");
 		} else if (workdir?.includes("\0")) refuse("workdir", NUL);
+		if (user !== undefined && userOf(user) === undefined) refuse("user", `user must be ${USER_FORM}`);
 		for (const [field, value] of Object.entries(given)) {
 			if (!SPEC_FIELDS.has(field) && value !== undefined) refuse(field, `a Docker computer does not support ${field}`);
 		}
@@ -118,9 +145,9 @@ export class DockerProvider implements ComputerProvider {
 		if (mode === undefined) {
 			return fail("not_found", `no daemon binary at ${this.#daemonPath}: run npm run build:daemon -w @parcha/agentrun-computer`);
 		}
-		// A computer drops every capability, so its root runs the mounted daemon only if every user may.
+		// A computer's user, root or not, has no capabilities, so it runs the mounted daemon only if every user may.
 		if ((mode & 0o005) !== 0o005) {
-			return fail("invalid", `the daemon at ${this.#daemonPath} has mode ${(mode & 0o777).toString(8)}; a computer's root, with no capabilities, cannot run it: chmod 755 it`);
+			return fail("invalid", `the daemon at ${this.#daemonPath} has mode ${(mode & 0o777).toString(8)}; a computer's user, with no capabilities, cannot run it: chmod 755 it`);
 		}
 		if (this.#daemonPath.includes(",")) return fail("invalid", `the daemon path ${this.#daemonPath} has a comma, which a Docker mount cannot hold`);
 		if (signal?.aborted) return fail("aborted", "create was aborted before Docker was called");
@@ -128,14 +155,19 @@ export class DockerProvider implements ComputerProvider {
 		const deadline = new Date(Date.now() + spec.lifetimeMs).toISOString();
 		const args = ["run", "--detach", "--name", name, "--label", `${COMPUTER_LABEL}=1`, "--label", `${DEADLINE_LABEL}=${deadline}`];
 		for (const [key, value] of Object.entries(spec.labels ?? {})) args.push("--label", `${key}=${value}`);
+		const user = userOf(spec.user) ?? this.#user;
+		args.push("--user", user, "--env", `HOME=${WORK}`);
+		for (const [path, options] of Object.entries(tmpfsOf(user))) args.push("--tmpfs", `${path}:${options}`);
 		args.push("--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", String(spec.pids ?? DEFAULT_PIDS));
 		args.push("--network", spec.network === "none" ? "none" : "bridge");
-		if (spec.cpus !== undefined) args.push("--cpus", String(spec.cpus));
+		args.push("--cpu-period", String(CPU_PERIOD_US), "--cpu-quota", String(Math.round((spec.cpus ?? DEFAULT_CPUS) * CPU_PERIOD_US)));
 		// Memory and swap together are the memory: swap never adds to it.
-		if (spec.memoryMb !== undefined) args.push("--memory", `${spec.memoryMb}m`, "--memory-swap", `${spec.memoryMb}m`);
+		const memory = `${spec.memoryMb ?? DEFAULT_MEMORY_MB}m`;
+		args.push("--memory", memory, "--memory-swap", memory);
 		args.push("--mount", `type=bind,src=${this.#daemonPath},dst=${DAEMON_IN_COMPUTER},readonly`, "--entrypoint", DAEMON_IN_COMPUTER);
-		if (spec.workdir !== undefined) args.push("--workdir", spec.workdir);
-		args.push(spec.image, "init");
+		args.push("--workdir", spec.workdir ?? WORK);
+		// PID 1 ends the computer at the deadline the label holds, so a computer the janitor misses still stops.
+		args.push(spec.image, "init", "--deadline", deadline);
 
 		const started = await this.#run(args, signal);
 		if (!started.ok || started.value.exitCode !== 0) {
@@ -152,7 +184,7 @@ export class DockerProvider implements ComputerProvider {
 			return fail("docker", `the computer ${name} was not running after its start (${why}), so it was removed`);
 		}
 		const ref = { id: started.value.stdout.trim(), name };
-		const checked = await this.#check(spec, ref, report as DockerInspect, deadline);
+		const checked = await this.#check(spec, ref, report as DockerInspect, deadline, user);
 		if (checked.ok) return ok(ref);
 		// Fail closed: a computer that is not what was declared, or that cannot show it is, does not outlive create.
 		const removed = await this.release(ref, "delete");
@@ -161,13 +193,13 @@ export class DockerProvider implements ComputerProvider {
 	}
 
 	/** The drift check: the computer's own report, from inspect and from its daemon's hello, against the spec. */
-	async #check(spec: ComputerSpec, ref: ComputerRef, report: DockerInspect, deadline: string): Promise<Result<void>> {
+	async #check(spec: ComputerSpec, ref: ComputerRef, report: DockerInspect, deadline: string, user: string): Promise<Result<void>> {
 		const arch = await this.#hostArch();
 		if (!arch.ok) return arch;
 		const opened = await this.#open(ref);
 		if (!opened.ok) return opened;
 		await opened.value.close();
-		const expected = { version: VERSION, capabilities: this.capabilities().daemon, arch: arch.value, daemonPath: this.#daemonPath, deadline };
+		const expected = { version: VERSION, capabilities: this.capabilities().daemon, arch: arch.value, daemonPath: this.#daemonPath, deadline, user };
 		const found = drift(spec, report, opened.value.hello, expected);
 		return found.length === 0 ? ok(undefined) : fail("refused", `it did not match its spec: ${found.join("; ")}`);
 	}
@@ -347,6 +379,20 @@ function infoOf(report: DockerInspect): ComputerInfo {
 	const deadline = Number.isNaN(at) || new Date(at).toISOString() !== written ? undefined : new Date(at);
 	const state = report.State?.Running === true ? "running" : "stopped";
 	return { ref: { id: report.Id ?? "", name: nameOf(report) }, labels, deadline, state, network: networkOf(report) };
+}
+
+/** "uid:gid" for a user in numbers (a uid alone is its own gid, never root's group 0), or undefined when it is not one. */
+function userOf(value: unknown): string | undefined {
+	const match = typeof value === "string" ? USER.exec(value) : null;
+	if (match === null) return undefined;
+	const [uid, gid] = [Number(match[1]), Number(match[2] ?? match[1])];
+	return uid <= MAX_ID && gid <= MAX_ID ? `${uid}:${gid}` : undefined;
+}
+
+/** This process's uid:gid, or 1000:1000 when it is root or has no uid. */
+function defaultUser(): string {
+	const uid = process.getuid?.();
+	return uid === undefined || uid === 0 ? "1000:1000" : `${uid}:${process.getgid?.() ?? uid}`;
 }
 
 /** The mode of a regular file, or undefined when there is none. */

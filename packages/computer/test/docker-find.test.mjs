@@ -1,6 +1,7 @@
 // DockerProvider's attach, list and network against the fake docker in test/fake-docker.mjs: no Docker needed.
 import assert from "node:assert/strict";
 import test from "node:test";
+import { sweep } from "../dist/index.js";
 import { container, fakeDocker, idOf, valuesOf } from "./fake-docker.mjs";
 
 const A = "computer-0000000000aa";
@@ -176,4 +177,12 @@ test("network() refuses a name this provider does not make, and is not_found for
 		assert.equal(missing.ok, false);
 		assert.equal(missing.error.code, "not_found", name);
 	}
+});
+
+test("sweep() on Docker deletes the stopped computer past its deadline, since list() lists stopped computers too", async () => {
+	const { provider, calls, names } = seeded();
+	const swept = await sweep(provider, { labels: { run: "1" }, now: new Date("2026-06-01T00:00:00.000Z") });
+	assert.deepEqual(swept, { ok: true, value: { deleted: [B], kept: 1 } });
+	assert.ok(calls().some((args) => args[0] === "rm" && args.at(-1) === B));
+	assert.deepEqual(names().sort(), [A, "computer-0000000000cc", "postgres"].sort(), "only the expired computer is gone");
 });

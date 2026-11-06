@@ -12,7 +12,7 @@ const IMAGE = "debian:bookworm-slim";
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 const CLI = fileURLToPath(new URL("../dist/conformance/cli.js", import.meta.url));
 const GROUPS = ["health", "exec", "files", "process", "provider", "drift"];
-const CAPABILITIES = ["exec", "files", "processes", "network:none", "network:open", "network:allow", "lifetime:janitor"];
+const CAPABILITIES = ["exec", "files", "processes", "network:none", "network:open", "network:allow", "lifetime:janitor", "user:root", "user:uid"];
 
 const pass = (id, extra = {}) => ({ id, level: "core", group: id.split(".")[0], needs: [], run: async () => {}, ...extra });
 const statuses = (report) => Object.fromEntries(report.results.map((r) => [r.id, r.status]));
@@ -68,6 +68,7 @@ test("a case whose needs the provider or the daemon does not declare is skip wit
 			pass("provider.open", { level: "full", needs: ["network:open"], run: count }),
 			pass("provider.allow", { level: "full", needs: ["network:allow"], run: count }),
 			pass("provider.janitor", { level: "full", needs: ["lifetime:janitor"], run: count }),
+			pass("exec.root", { level: "full", needs: ["exec", "user:root"], run: count }),
 		],
 	});
 	assert.equal(ran, 2);
@@ -78,15 +79,17 @@ test("a case whose needs the provider or the daemon does not declare is skip wit
 		"provider.open": "pass",
 		"provider.allow": "skip",
 		"provider.janitor": "skip",
+		"exec.root": "skip",
 	});
 	assert.deepEqual(reasons(report), {
 		"files.read": "the daemon's hello does not declare files",
 		"process.start": "the provider does not declare processes",
 		"provider.allow": "the provider does not declare network:allow",
 		"provider.janitor": 'the provider declares lifetime "vendor", not lifetime:janitor',
+		"exec.root": "the provider does not declare user:root",
 	});
 	assert.equal(report.core, "fail", "a Core case that could not run is not a Core pass");
-	assert.deepEqual(report.undeclared, ["network:allow", "lifetime:janitor"]);
+	assert.deepEqual(report.undeclared, ["network:allow", "lifetime:janitor", "user:root"]);
 });
 
 test("Core passes when every Core case passes, whatever Full skips", async () => {

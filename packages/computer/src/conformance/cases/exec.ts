@@ -1,8 +1,15 @@
 // exec.run: argv not a shell, split streams, the exit code, a timeout and an abort that end the whole tree, truncation,
-// cwd and a minimal environment, a user that is not root with no capabilities, and a user switch honoured or refused,
-// never ignored.
-import type { Case } from "../types.js";
+// cwd and a minimal environment, a user that is not root with no capabilities, a user switch honoured or refused, never
+// ignored; Full: root or another uid when the spec asks, still with no capabilities.
+import type { Case, CaseContext } from "../types.js";
 import { alive } from "./util.js";
+
+const NONE = "0000000000000000";
+function noCapabilities(t: CaseContext, status: string) {
+	for (const set of ["CapEff", "CapPrm"]) {
+		t.equal(new RegExp(`^${set}:\\s*([0-9a-f]+)$`, "m").exec(status)?.[1], NONE, `${set} in /proc/self/status: no capabilities`);
+	}
+}
 
 const exec = (name: string, run: Case["run"]): Case => ({ id: `exec.${name}`, level: "core", group: "exec", needs: ["exec"], run });
 
@@ -36,7 +43,10 @@ export const execCases: Case[] = [
 				.map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]),
 		);
 		t.equal(vars.GREETING, "hello there", "a variable the call adds");
-		t.deepEqual(Object.keys(vars).sort(), ["GREETING", "HOME", "LOGNAME", "PATH", "USER"], "the environment: the minimal default and env, nothing else");
+		// USER and LOGNAME name the account, so a uid with no name has neither.
+		const named = "USER" in vars ? ["LOGNAME", "USER"] : [];
+		t.deepEqual(Object.keys(vars).sort(), ["GREETING", "HOME", "PATH", ...named].sort(), "the environment: PATH, HOME, USER and LOGNAME when the user has a name, and env; nothing else");
+		t.equal(vars.LOGNAME, vars.USER, "LOGNAME and USER");
 	}),
 	exec("timeout", async (t) => {
 		const ran = await t.exec(["sh", "-c", "sleep 300 & echo $!; wait"], { timeoutMs: 1000 });
@@ -61,19 +71,18 @@ export const execCases: Case[] = [
 		t.equal(ran.exitCode, 0, "the program's exit code: the rest was read and dropped, not cut off");
 	}),
 	exec("setsid-escapee", async (t) => {
-		const script = `p=$(mktemp -u); mkfifo "$p"; setsid sh -c 'echo $$ > "$0"; exec sleep 302' "$p" >/dev/null 2>&1 </dev/null & read pid < "$p"; echo $pid`;
+		const script = `p="$HOME/agentrun-conformance-fifo-$$"; mkfifo "$p"; setsid sh -c 'echo $$ > "$0"; exec sleep 302' "$p" >/dev/null 2>&1 </dev/null & read pid < "$p"; rm -f "$p"; echo $pid`;
 		const ran = await t.exec(["sh", "-c", script]);
 		t.equal(ran.exitCode, 0, `the script's exit code (stderr ${JSON.stringify(ran.err)})`);
 		const pid = Number(ran.out.trim());
 		t.assert(pid > 1, `the escapee's pid, from ${JSON.stringify(ran.out)}`);
 		t.equal((await t.exec(["sh", "-c", alive([pid])])).out, "", "a child that left the program's session, after the program ended: gone");
 	}),
-	// The suite's specs never ask for root, so a computer's programs run as another user with no capabilities.
+	// The run's spec asks for no user, so a computer's programs run as the provider's non-root default.
 	exec("unprivileged", async (t) => {
 		const uid = (await t.exec(["id", "-u"])).out.trim();
 		t.assert(uid !== "" && uid !== "0", `id -u: the computer's user is ${uid === "0" ? "root" : JSON.stringify(uid)}, though the spec did not ask for root`);
-		const status = (await t.exec(["cat", "/proc/self/status"])).out;
-		t.equal(/^CapEff:\s*([0-9a-f]+)$/m.exec(status)?.[1], "0000000000000000", "CapEff in /proc/self/status: no effective capabilities");
+		noCapabilities(t, (await t.exec(["cat", "/proc/self/status"])).out);
 	}),
 	exec("user", async (t) => {
 		const own = (await t.exec(["id", "-u"])).out.trim();
@@ -87,4 +96,31 @@ export const execCases: Case[] = [
 			t.assert(error.message !== "", "the refusal is in words");
 		}
 	}),
+	{
+		id: "exec.root-on-request",
+		level: "full",
+		group: "exec",
+		needs: ["exec", "user:root"],
+		computer: "none",
+		async run(t) {
+			const connected = await t.connect(await t.create({ user: "0" }));
+			const ran = (argv: string[]) => t.exec(argv, {}, connected.client);
+			t.equal((await ran(["id", "-u"])).out.trim(), "0", "id -u in a computer whose spec asked for user 0");
+			noCapabilities(t, (await ran(["cat", "/proc/self/status"])).out);
+		},
+	},
+	{
+		id: "exec.user-uid",
+		level: "full",
+		group: "exec",
+		needs: ["exec", "user:uid"],
+		computer: "none",
+		async run(t) {
+			const connected = await t.connect(await t.create({ user: "65534" }));
+			const ran = (argv: string[]) => t.exec(argv, {}, connected.client);
+			t.equal((await ran(["id", "-u"])).out.trim(), "65534", "id -u in a computer whose spec asked for user 65534");
+			const home = await ran(["sh", "-c", 'echo ok > "$HOME/x" && cat "$HOME/x"']);
+			t.equal(home.out, "ok\n", `a write in HOME, as user 65534 (stderr ${JSON.stringify(home.err)})`);
+		},
+	},
 ];

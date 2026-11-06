@@ -27,8 +27,12 @@ export function container({ name, labels = {}, network = "none", running = true,
 		Id: idOf(name),
 		Name: `/${name}`,
 		State: { Running: running, Status: running ? "running" : "exited", ExitCode: 0, Error: "" },
-		Config: { Entrypoint: ["/opt/agentrun/computerd"], Cmd: ["init"], Labels: all },
-		HostConfig: { NetworkMode: network, CapDrop: ["ALL"], CapAdd: null, Privileged: false, SecurityOpt: ["no-new-privileges"], PidsLimit: 4096, Memory: 0, MemorySwap: 0, NanoCpus: 0 },
+		Config: { User: "1000:1000", Entrypoint: ["/opt/agentrun/computerd"], Cmd: ["init", "--deadline", deadline ?? ""], Labels: all },
+		HostConfig: {
+			NetworkMode: network, CapDrop: ["ALL"], CapAdd: null, Privileged: false, SecurityOpt: ["no-new-privileges"], PidsLimit: 1024,
+			Memory: 4096 * 1024 * 1024, MemorySwap: 4096 * 1024 * 1024, CpuPeriod: 100_000, CpuQuota: 200_000,
+			Tmpfs: { "/work": "rw,nosuid,nodev,exec,uid=1000,gid=1000,mode=0700", "/run/agentrun": "rw,noexec,nosuid,nodev,uid=1000,gid=1000,mode=0700" },
+		},
 		Mounts: [{ Type: "bind", Source: "/data/computerd", Destination: "/opt/agentrun/computerd", RW: false }],
 		NetworkSettings: { Networks: { [network]: {} } },
 	};
@@ -38,9 +42,9 @@ export function container({ name, labels = {}, network = "none", running = true,
  * Options: `running` is what a new container's inspect reports; `gone` makes stop and rm answer "No such container";
  * `containers` are there from the start; `patch` is merged over each new container (to make drift); `hello` over the
  * daemon's hello; `arch` is what docker info reports; `vanish` names are listed by ps but gone by inspect; `noDaemon`
- * makes exec fail as when the daemon is missing.
+ * makes exec fail as when the daemon is missing; `user` is the provider's user option.
  */
-export function fakeDocker({ running = true, gone = false, containers = [], patch = {}, hello = {}, arch = "x86_64", vanish = [], noDaemon = false } = {}) {
+export function fakeDocker({ running = true, gone = false, containers = [], patch = {}, hello = {}, arch = "x86_64", vanish = [], noDaemon = false, user } = {}) {
 	const dir = mkdtempSync(join(tmpdir(), "computer-fake-docker-"));
 	dirs.push(dir);
 	const log = join(dir, "calls.jsonl");
@@ -84,10 +88,12 @@ switch (args[0]) {
 			Id: createHash("sha256").update(name).digest("hex"),
 			Name: "/" + name,
 			State: { Running: config.running, Status: config.running ? "running" : "exited", ExitCode: config.running ? 0 : 127, Error: config.running ? "" : "exec format error" },
-			Config: { Entrypoint: flags["--entrypoint"], Cmd: args.slice(i + 1), Labels: labels },
+			Config: { User: flags["--user"]?.[0] ?? "", Entrypoint: flags["--entrypoint"], Cmd: args.slice(i + 1), Labels: labels },
 			HostConfig: {
 				NetworkMode: network, CapDrop: flags["--cap-drop"], CapAdd: null, Privileged: false, SecurityOpt: flags["--security-opt"],
 				PidsLimit: Number(flags["--pids-limit"][0]), Memory: memory, MemorySwap: swap, NanoCpus: flags["--cpus"] ? Math.round(Number(flags["--cpus"][0]) * 1e9) : 0,
+				CpuPeriod: Number(flags["--cpu-period"]?.[0] ?? 0), CpuQuota: Number(flags["--cpu-quota"]?.[0] ?? 0),
+				Tmpfs: Object.fromEntries((flags["--tmpfs"] ?? []).map((t) => [t.slice(0, t.indexOf(":")), t.slice(t.indexOf(":") + 1)])),
 			},
 			Mounts: [{ Type: mount.type, Source: mount.src, Destination: mount.dst, RW: !("readonly" in mount) }],
 			NetworkSettings: { Networks: { [network]: {} } },
@@ -148,7 +154,7 @@ switch (args[0]) {
 	);
 	const calls = () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)) : []);
 	const names = () => JSON.parse(readFileSync(state, "utf8")).map((c) => c.Name.slice(1));
-	return { provider: new DockerProvider({ daemonPath, docker: program }), calls, names, daemonPath };
+	return { provider: new DockerProvider({ daemonPath, docker: program, ...(user === undefined ? {} : { user }) }), calls, names, daemonPath };
 }
 
 /** The value after each occurrence of a flag. */

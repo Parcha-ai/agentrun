@@ -6,7 +6,8 @@ import { drift, helloDrift } from "../dist/index.js";
 const DEADLINE = "2026-11-06T12:00:00.000Z";
 const SPEC = { image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none", labels: { team: "a" } };
 const SIZED = { ...SPEC, network: "open", cpus: 1.5, memoryMb: 512, pids: 64 };
-const EXPECTED = { version: "1.2.3", capabilities: ["exec", "files", "processes"], arch: "amd64", daemonPath: "/data/computerd", deadline: DEADLINE };
+const EXPECTED = { version: "1.2.3", capabilities: ["exec", "files", "processes"], arch: "amd64", daemonPath: "/data/computerd", deadline: DEADLINE, user: "1000:1000" };
+const MIB = 1024 * 1024;
 const HELLO = { version: "1.2.3", os: "linux", arch: "amd64", capabilities: ["exec", "files", "processes"] };
 
 /** What docker inspect reports for SPEC (or SIZED), as create makes it. */
@@ -16,8 +17,9 @@ function inspected(sized = false) {
 		Name: "/computer-0123456789ab",
 		State: { Running: true, Status: "running" },
 		Config: {
+			User: "1000:1000",
 			Entrypoint: ["/opt/agentrun/computerd"],
-			Cmd: ["init"],
+			Cmd: ["init", "--deadline", DEADLINE],
 			Labels: { team: "a", "agentrun.computer": "1", "agentrun.computer.deadline": DEADLINE },
 		},
 		HostConfig: {
@@ -26,10 +28,13 @@ function inspected(sized = false) {
 			CapAdd: null,
 			Privileged: false,
 			SecurityOpt: ["no-new-privileges"],
-			PidsLimit: sized ? 64 : 4096,
-			Memory: sized ? 512 * 1024 * 1024 : 0,
-			MemorySwap: sized ? 512 * 1024 * 1024 : 0,
-			NanoCpus: sized ? 1_500_000_000 : 0,
+			PidsLimit: sized ? 64 : 1024,
+			Memory: (sized ? 512 : 4096) * MIB,
+			MemorySwap: (sized ? 512 : 4096) * MIB,
+			NanoCpus: 0,
+			CpuPeriod: 100_000,
+			CpuQuota: sized ? 150_000 : 200_000,
+			Tmpfs: { "/run/agentrun": "rw,noexec,nosuid,nodev,uid=1000,gid=1000,mode=0700", "/work": "rw,nosuid,nodev,exec,uid=1000,gid=1000,mode=0700" },
 		},
 		Mounts: [{ Type: "bind", Source: "/data/computerd", Destination: "/opt/agentrun/computerd", RW: false, Mode: "", Propagation: "rprivate" }],
 		NetworkSettings: { Networks: { [sized ? "bridge" : "none"]: { EndpointID: "e" } } },
@@ -57,6 +62,8 @@ test("a computer made as declared has no drift", () => {
 	assert.deepEqual(after((i) => (i.Config.Labels.extra = "x")), [], "labels Docker or the image adds are no drift");
 	assert.deepEqual(after((i) => i.Mounts.push({ Type: "volume", Source: "", Destination: "/var/lib/data", RW: true })), [], "a volume the image declares");
 	assert.deepEqual(drift(SPEC, inspected(), { ...HELLO, capabilities: [...HELLO.capabilities, "display"] }, EXPECTED), [], "a daemon may offer more");
+	assert.deepEqual(after((i) => (i.HostConfig.Tmpfs["/work"] = "mode=0700,gid=1000,uid=1000,exec,nodev,nosuid,rw")), [], "a tmpfs's options in another order");
+	assert.deepEqual(after((i) => (i.HostConfig.Tmpfs["/tmp"] = "rw")), [], "a tmpfs the computer was not given is no widening");
 });
 
 test("network: none must read back as none, open as the bridge, and nothing else", () => {
@@ -80,23 +87,54 @@ test("no-new-privileges must be set", () => {
 	one(after((i) => (i.HostConfig.SecurityOpt = ["seccomp=unconfined"])), /no-new-privileges/);
 });
 
-test("PidsLimit must be the spec's, or 4096; none or unlimited is drift", () => {
-	one(after((i) => (i.HostConfig.PidsLimit = 4095)), /PidsLimit: declared 4096, read back 4095/);
+test("PidsLimit must be the spec's, or 1024; none or unlimited is drift", () => {
+	one(after((i) => (i.HostConfig.PidsLimit = 1023)), /PidsLimit: declared 1024, read back 1023/);
+	one(after((i) => (i.HostConfig.PidsLimit = 4096)), /PidsLimit: declared 1024, read back 4096/);
 	one(after((i) => (i.HostConfig.PidsLimit = null)), /PidsLimit/);
 	one(after((i) => (i.HostConfig.PidsLimit = -1)), /PidsLimit/);
-	one(after((i) => (i.HostConfig.PidsLimit = 4096), { spec: SIZED }), /PidsLimit: declared 64, read back 4096/);
+	one(after((i) => (i.HostConfig.PidsLimit = 1024), { spec: SIZED }), /PidsLimit: declared 64, read back 1024/);
 });
 
-test("Memory and MemorySwap when memoryMb is asked: both the memory, so swap never adds to it", () => {
-	one(after((i) => (i.HostConfig.Memory = 1024 * 1024 * 1024), { spec: SIZED }), /Memory: declared 536870912/);
+test("Memory and MemorySwap: both the spec's memoryMb, or 4096 MiB, so swap never adds to it", () => {
+	one(after((i) => (i.HostConfig.Memory = 1024 * MIB), { spec: SIZED }), /Memory: declared 536870912/);
 	one(after((i) => (i.HostConfig.MemorySwap = -1), { spec: SIZED }), /MemorySwap: declared 536870912, read back -1/);
-	assert.deepEqual(after((i) => (i.HostConfig.Memory = 1024)), [], "not asked, not checked");
+	one(after((i) => (i.HostConfig.Memory = 0)), /Memory: declared 4294967296, read back 0/);
+	one(after((i) => (i.HostConfig.MemorySwap = 8192 * MIB)), /MemorySwap: declared 4294967296, read back 8589934592/);
 });
 
-test("NanoCpus when cpus is asked", () => {
-	one(after((i) => (i.HostConfig.NanoCpus = 2_000_000_000), { spec: SIZED }), /NanoCpus: declared 1500000000, read back 2000000000/);
-	one(after((i) => (i.HostConfig.NanoCpus = 0), { spec: SIZED }), /NanoCpus/);
-	assert.deepEqual(after((i) => (i.HostConfig.NanoCpus = 1)), [], "not asked, not checked");
+test("CpuPeriod and CpuQuota: a quota of the spec's cpus, or 2, of each 100 ms", () => {
+	one(after((i) => (i.HostConfig.CpuQuota = 0)), /CpuQuota: declared 200000, read back 0/);
+	one(after((i) => (i.HostConfig.CpuQuota = -1)), /CpuQuota: declared 200000, read back -1/);
+	one(after((i) => (i.HostConfig.CpuQuota = 200_000), { spec: SIZED }), /CpuQuota: declared 150000, read back 200000/);
+	one(after((i) => (i.HostConfig.CpuPeriod = 50_000)), /CpuPeriod: declared 100000, read back 50000/);
+	one(after((i) => (i.HostConfig.CpuPeriod = 0)), /CpuPeriod: declared 100000, read back 0/);
+	one(after((i) => (i.HostConfig.CpuQuota = 300), { spec: { ...SPEC, cpus: 0.01 } }), /CpuQuota: declared 1000, read back 300/);
+});
+
+test("User: the uid:gid asked for, never another or none", () => {
+	one(after((i) => (i.Config.User = "")), /User: declared "1000:1000", read back ""/);
+	one(after((i) => delete i.Config.User), /User: declared "1000:1000", read back nothing/);
+	one(after((i) => (i.Config.User = "0:0")), /User: declared "1000:1000", read back "0:0"/);
+	one(after((i) => (i.Config.User = "1000")), /User/);
+	one(after((i) => (i.Config.User = "1000:0")), /User/);
+	const root = { ...EXPECTED, user: "0:0" };
+	const rooted = structuredClone(inspected());
+	rooted.Config.User = "0:0";
+	rooted.HostConfig.Tmpfs = { "/work": "rw,nosuid,nodev,exec,uid=0,gid=0,mode=0700", "/run/agentrun": "rw,noexec,nosuid,nodev,uid=0,gid=0,mode=0700" };
+	assert.deepEqual(drift({ ...SPEC, user: "0" }, rooted, HELLO, root), [], "root, when asked, is no drift");
+});
+
+test("the tmpfs mounts: /work and /run/agentrun, the asked user's, mode 0700, /run/agentrun noexec", () => {
+	one(after((i) => delete i.HostConfig.Tmpfs["/work"]), /tmpfs \/work: declared "rw,nosuid,nodev,exec,uid=1000,gid=1000,mode=0700", read back nothing/);
+	one(after((i) => delete i.HostConfig.Tmpfs["/run/agentrun"]), /tmpfs \/run\/agentrun: declared .*read back nothing/);
+	assert.equal(after((i) => (i.HostConfig.Tmpfs = null)).filter((m) => m.startsWith("tmpfs ")).length, 2);
+	one(after((i) => (i.HostConfig.Tmpfs["/work"] = "rw,nosuid,nodev,exec,uid=0,gid=1000,mode=0700")), /tmpfs \/work: .*uid=0/);
+	one(after((i) => (i.HostConfig.Tmpfs["/work"] = "rw,nosuid,nodev,exec,uid=1000,gid=0,mode=0700")), /tmpfs \/work: .*gid=0/);
+	one(after((i) => (i.HostConfig.Tmpfs["/work"] = "rw,nosuid,nodev,exec,uid=1000,gid=1000,mode=0777")), /tmpfs \/work: .*mode=0777/);
+	one(after((i) => (i.HostConfig.Tmpfs["/run/agentrun"] = "rw,noexec,nosuid,nodev,uid=1000,gid=1000,mode=0755")), /tmpfs \/run\/agentrun: .*mode=0755/);
+	one(after((i) => (i.HostConfig.Tmpfs["/run/agentrun"] = "rw,nosuid,nodev,uid=1000,gid=1000,mode=0700")), /tmpfs \/run\/agentrun/);
+	one(after((i) => (i.HostConfig.Tmpfs["/run/agentrun"] = "rw,noexec,nosuid,nodev,uid=2000,gid=2000,mode=0700")), /tmpfs \/run\/agentrun: .*uid=2000/);
+	one(after((i) => (i.HostConfig.Tmpfs["/work"] = "")), /tmpfs \/work/);
 });
 
 test("the daemon is the declared binary, bind-mounted read-only at /opt/agentrun/computerd, and no other bind mount", () => {
@@ -108,11 +146,14 @@ test("the daemon is the declared binary, bind-mounted read-only at /opt/agentrun
 	one(after((i) => i.Mounts.push({ ...i.Mounts[0] })), /daemon mount/);
 });
 
-test("the entrypoint is the daemon and the command is init", () => {
+test("the entrypoint is the daemon and the command is init with the label's deadline", () => {
 	one(after((i) => (i.Config.Entrypoint = ["/bin/sh"])), /Entrypoint/);
 	one(after((i) => (i.Config.Entrypoint = null)), /Entrypoint/);
 	one(after((i) => (i.Config.Cmd = ["stdio"])), /Cmd/);
-	one(after((i) => (i.Config.Cmd = ["init", "extra"])), /Cmd/);
+	one(after((i) => (i.Config.Cmd = ["init"])), /Cmd: declared \["init","--deadline","2026-11-06T12:00:00.000Z"\], read back \["init"\]/);
+	one(after((i) => (i.Config.Cmd = ["init", "--deadline", "2099-01-01T00:00:00.000Z"])), /Cmd: .*2099/);
+	one(after((i) => (i.Config.Cmd = ["init", "--deadline", DEADLINE, "extra"])), /Cmd/);
+	one(after((i) => (i.Config.Cmd = null)), /Cmd/);
 });
 
 test("the labels: agentrun.computer=1, the deadline as set, and every label the spec asked for", () => {
