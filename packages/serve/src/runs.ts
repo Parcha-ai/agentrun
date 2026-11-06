@@ -501,7 +501,7 @@ function withApprovals(rows: readonly TimelineEvent[], run: Pick<Run, "approvals
   return rows.flatMap((row) => {
     // The gate's resume, the server's row: it says what came of the answer, never the head the model reads.
     const resumed = row.kind === "phase" && row.text?.startsWith(RESUME_PREFIX) ? resumedBy(row.text, byCall) : undefined;
-    if (resumed) return [{ ...row, summary: resumeSays(resumed, run.meta.approvals?.[resumed.id], row.text!) }];
+    if (resumed) return [{ ...row, summary: resumeSays(resumed, run.meta.approvals?.[resumed.id], row.text!), text: resumeShows(resumed, run.meta.approvals?.[resumed.id], row.text!) }];
     const own = (row.kind === "tool_use" || row.kind === "tool_result") && row.tool_use_id ? byCall.get(row.tool_use_id) : undefined;
     // The call's own rows: what it answered at the park is not what it did, so they say what came of the approval.
     const called = own ? { ...row, summary: parkedCallSays(own, run, waiting), tool_status: null } : row;
@@ -538,6 +538,17 @@ const resumedBy = (text: string, byCall: ReadonlyMap<string, Approval>): Approva
 function resumeSays(approval: Approval, given: { decision: string; by?: string } | undefined, text: string): string {
   if (given?.decision === "deny") return `AgentRun: ${approval.tool} was refused: ${given.by === "message" ? "your message declined it" : "you declined it"}`;
   return `AgentRun: ${approval.tool} ran once you allowed it${text.includes(" They allowed it, and it ran and failed.") ? ", and failed" : ""}`;
+}
+/** What a person reads when they open a resume's row: the outcome, then the call's result or the refusal's words, from the
+ *  model's message (already redacted whole, as the row's text is), with its head (the call's id, its arguments, the words to
+ *  the model) left out. The model's own message is unchanged. */
+function resumeShows(approval: Approval, given: { decision: string; by?: string } | undefined, text: string): string {
+  const said = resumeSays(approval, given, text).replace(/^AgentRun: /, "");
+  const marker = "which waited for a person's approval; it is not a new message from them.";
+  const at = text.indexOf(marker);
+  const rest = at < 0 ? "" : text.slice(at + marker.length);
+  if (given?.decision === "deny") return `${said}.${rest.trim() ? `\n${rest.trim()}` : ""}`;
+  return `${said}. Its result:\n${rest.replace(/^ They allowed it, and it ran(?: and failed)?\. Its result:\n?/, "")}`;
 }
 /** A dollar figure to a millionth, as the timeline's cost.usd is. */
 const micro = (usd: number): number => Math.round(usd * 1e6) / 1e6;
