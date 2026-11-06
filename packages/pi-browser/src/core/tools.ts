@@ -3,7 +3,7 @@ import { BrowserFailureError, FenceRefusal, refusedError, loadedNoPage, passedTh
 import { defaultInline, type EvidenceRecord, type EvidenceSink } from "./evidence.js";
 import type { Decisions, PageVerdict } from "./decisions.js";
 import { fetchDownloads } from "./downloads.js";
-import { browserFailure, classifyBrowserError, transportFactOf, type BrowserFailure } from "./failures.js";
+import { asPartial, browserFailure, classifyBrowserError, partialOf, transportFactOf, type BrowserFailure, type PartialRun } from "./failures.js";
 import type { WorkspaceFiles } from "./host.js";
 import { createRepeatGuard, type RepeatGuard } from "./guard.js";
 import { regionOf, type Locate } from "./clip.js";
@@ -287,7 +287,9 @@ export function pageTools({ guards = new Map<number, RepeatGuard>(), reconnect: 
     const tell = (out: ToolOutput): ToolOutput => (facts || previous ? { ...out, details: { ...(out.details as object | undefined), ...(facts ? { pendingEffect: facts } : {}), ...(previous ? { previous_session: previous } : {}) } } : out);
     const done = (out: ToolOutput) => { guard.note(tool, args, null); return tell(out); };
     // The notice leads a failure, never after its own keys: a call told nothing else first reads it.
-    const fail = (failure: BrowserFailure) => { guard.note(tool, args, failure); return tell(text(news ? { notice: news, ...(previous ? { previous_session: previous } : {}), ...failure } : failure, true)); };
+    // A run of several actions that dropped partway (driving-guard's partway): its failure says how many ran.
+    let partial: PartialRun | undefined;
+    const fail = (given: BrowserFailure) => { const failure = partial ? asPartial(given, partial) : given; guard.note(tool, args, failure); return tell(text(news ? { notice: news, ...(previous ? { previous_session: previous } : {}), ...failure } : failure, true)); };
     let cuts: Cut[] = [];
     // A look after a refusal settles every refused cut in the chain whose warning a saved answer had already told; one this call is
     // telling stays until a later look, so a process that dies before this answer is saved tells it again.
@@ -331,6 +333,7 @@ export function pageTools({ guards = new Map<number, RepeatGuard>(), reconnect: 
       }
       return await looked(effect === null ? await body(s, news) : await dispatched(tool, port, call, s, effect, () => body(s, news)));
     } catch (error) {
+      partial = partialOf(error);
       const failure = await failureOf(error, effectful, port, call, action);
       if (failure.code !== "browser_unavailable" || error instanceof BrowserFailureError) return fail(failure);
       // A dropped CDP connection to a session the provider still runs: a read reconnects and runs once more; a run, which

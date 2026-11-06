@@ -1,6 +1,6 @@
 import { BrowserFailureError, FenceRefusal, type BrowserDriver, type CustodyPort, type ToolOutput } from "./custody.js";
 import { drivingGates, epochOf, isHeld, personDrivingFailure, PERSON_DRIVING, type DrivingGate, type DrivingGates } from "./driving.js";
-import { browserFailure, classifyBrowserError } from "./failures.js";
+import { asPartial, browserFailure, classifyBrowserError, PARTIAL } from "./failures.js";
 import type { ToolCall, ToolImpl } from "./tools.js";
 
 /** Told to the model's next call once a person has driven the session through the live view: the page can change without its URL changing. */
@@ -18,9 +18,14 @@ export const personTookFailure = (acted: boolean, batch?: { completed: number; o
 
 /** A run of several actions that failed at one after others ran: the failure it would have been, said to be partial, with
  *  how many ran (the facade's batch, once sent, never said which). */
-function partway(error: unknown, completed: number, of: number): BrowserFailureError {
+function partway(error: unknown, completed: number, of: number): unknown {
+  // A dropped connection stays the error it is, marked: the call's own handling lets its driver go (port.dropped), so the next
+  // call reconnects, and says the run was partial.
+  if (!(error instanceof BrowserFailureError) && error !== null && typeof error === "object" && classifyBrowserError(error, true, {}).code === "browser_unavailable") {
+    return Object.assign(error, { [PARTIAL]: { completed, of } });
+  }
   const failure = error instanceof BrowserFailureError ? error.failure : classifyBrowserError(error, true, {});
-  return new BrowserFailureError({ ...failure, effect: "partial", completed, message: `${completed} of the ${of} actions ran, then this one failed: ${failure.message}` });
+  return new BrowserFailureError(asPartial(failure, { completed, of }));
 }
 
 /** The driver as a model call holds it: each of its acts is refused once the gate's epoch has moved past the one the call entered at (the
