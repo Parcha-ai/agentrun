@@ -1486,6 +1486,7 @@ export class Runs {
     this.connect(run);
     let releasedAt: number | undefined;
     let reading = false;
+    let failedWith: string | undefined;
     // A holder that never says where it serves within the ready time is fenced: killed, then taken over.
     const doorBy = Date.now() + (this.options.readyTimeoutMs ?? READY_TIMEOUT_MS);
     const done = (released: boolean) => {
@@ -1525,6 +1526,13 @@ export class Runs {
           if (Date.now() - releasedAt < EXIT_AFTER_RELEASE_MS) return;
           warn(run.id, `its process ${pid} released the run ${EXIT_AFTER_RELEASE_MS / 1000} s ago and has not exited; reading its store anyway`);
           done(true);
+        })
+        // A poll that fails (the agent store held by another writer, a listing that cannot be read) changes nothing: the
+        // run stays watched, and the next tick looks again.
+        .catch((error: Error) => {
+          // Said once for each reason, not at every tick.
+          if (error.message !== failedWith) warn(run.id, `its watch of process ${pid} looks again: ${error.message}`);
+          failedWith = error.message;
         })
         .finally(() => void (reading = false));
     }, 500);

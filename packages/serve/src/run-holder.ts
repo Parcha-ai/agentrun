@@ -76,22 +76,37 @@ export function holderOfClaim(runId: string, claim: { epoch: number; holder: str
   return launchedProcesses(runId, claim.epoch)[0];
 }
 
-/** Whether `holder`'s process lives: its pid names a process of the same start, on this boot. */
-export function holderLives(holder: RunHolder): boolean {
+/** What can be told of `holder`'s process: `alive` (its pid names a process of the same start, on this boot), `gone`, or
+ *  `unknown` (the process listing, or this boot's id, cannot be read). Unknown is never taken for gone, nor for a
+ *  process that may be killed, however long it lasts. */
+export type HolderState = "alive" | "gone" | "unknown";
+
+export function holderState(holder: RunHolder): HolderState {
   const table = tableOf();
-  const boot = table.bootId() ?? null;
-  if (holder.boot !== null && boot !== null && holder.boot !== boot) return false;
+  let boot: string | null;
+  let start: number | undefined;
   try {
-    return table.snapshot().info(holder.pid)?.start === holder.start;
+    boot = table.bootId() ?? null;
+    if (holder.boot !== null && boot !== null && holder.boot !== boot) return "gone";
+    start = table.snapshot().info(holder.pid)?.start;
   } catch {
-    // A listing that cannot be had is never taken for a gone process.
-    return true;
+    return "unknown";
   }
+  return start === holder.start ? "alive" : "gone";
 }
 
-/** Kills `holder`'s process with SIGKILL when it lives, without waiting: true when it was alive. Never this process. */
+/** Whether `holder`'s process may live: alive, or unknown (never taken over on a look that failed). */
+export function holderLives(holder: RunHolder): boolean {
+  return holderState(holder) !== "gone";
+}
+
+/** Kills `holder`'s process with SIGKILL when it is confirmed alive, without waiting: true when it was. Never this
+ *  process. An identity that cannot be checked throws: nothing is killed unidentified, and its caller claims nothing. */
 export function killHolder(holder: RunHolder): boolean {
-  if (holder.pid === process.pid || !holderLives(holder)) return false;
+  if (holder.pid === process.pid) return false;
+  const state = holderState(holder);
+  if (state === "gone") return false;
+  if (state === "unknown") throw new Error(`the run's holder ${holder.pid} cannot be checked (the process listing failed): it is never killed unidentified, and nothing is claimed over it`);
   try {
     process.kill(holder.pid, "SIGKILL");
   } catch {
@@ -104,7 +119,7 @@ export function killHolder(holder: RunHolder): boolean {
  *  over a holder does first. */
 export async function fenceHolder(holder: RunHolder | undefined, waitMs = 10_000): Promise<void> {
   if (holder === undefined || !killHolder(holder)) return;
-  for (const end = Date.now() + waitMs; holderLives(holder); await new Promise((resolve) => setTimeout(resolve, 20))) {
+  for (const end = Date.now() + waitMs; holderState(holder) !== "gone"; await new Promise((resolve) => setTimeout(resolve, 20))) {
     if (Date.now() > end) throw new Error(`the run's holder ${holder.pid} still lives ${waitMs / 1000} s after SIGKILL`);
   }
 }

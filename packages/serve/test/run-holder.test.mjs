@@ -7,7 +7,7 @@ import { test } from "node:test";
 import { processAlive as alive } from "@parcha/agentrun-kernel/host";
 import { psTable } from "../../pi-durable-disk/dist/process-table.js";
 import { localDisk } from "../dist/disk.js";
-import { holderOfClaim, LAUNCH_HOLDER, launchedProcesses, RUN_LAUNCH_ENV, runHolderTestHooks } from "../dist/run-holder.js";
+import { fenceHolder, holderOfClaim, holderState, killHolder, LAUNCH_HOLDER, launchedProcesses, RUN_LAUNCH_ENV, runHolderTestHooks } from "../dist/run-holder.js";
 import { scratch } from "./support.mjs";
 
 /** A process with `env` that starts a child with the same environment (a command of it, inheriting the mark), and says
@@ -40,4 +40,26 @@ test("a launch that cannot be looked for is never killed: the take-back refuses,
   await assert.rejects(disk.revoke("run-2"), /cannot be looked for .* never killed unidentified/);
   assert.deepEqual(claimed, [], "nothing claimed");
   assert.ok(alive(parent), "nothing killed");
+});
+
+test("a holder whose identity cannot be checked (the process listing fails) is never killed: the kill and the fence refuse, and the process lives", { timeout: 30_000 }, async (t) => {
+  const { parent } = await markedTree(t, {});
+  runHolderTestHooks.table = { snapshot: () => { throw new Error("ps cannot be read"); }, bootId: () => undefined, walkMs: 0 };
+  t.after(() => delete runHolderTestHooks.table);
+  const holder = { pid: parent, start: 1, boot: null };
+  assert.throws(() => killHolder(holder), /cannot be checked/);
+  await assert.rejects(fenceHolder(holder), /cannot be checked/);
+  assert.ok(alive(parent), "nothing killed");
+});
+
+test("unknown never turns into gone by time alone: a listing that keeps failing never leads to a kill, however long", { timeout: 30_000 }, async (t) => {
+  const { parent } = await markedTree(t, {});
+  runHolderTestHooks.table = { snapshot: () => { throw new Error("ps cannot be read"); }, bootId: () => undefined, walkMs: 0 };
+  t.after(() => delete runHolderTestHooks.table);
+  const holder = { pid: parent, start: 1, boot: null };
+  for (const end = Date.now() + 1_500; Date.now() < end; await new Promise((resolve) => setTimeout(resolve, 100))) {
+    assert.equal(holderState(holder), "unknown");
+    assert.throws(() => killHolder(holder), /cannot be checked/);
+  }
+  assert.ok(alive(parent), "never killed");
 });

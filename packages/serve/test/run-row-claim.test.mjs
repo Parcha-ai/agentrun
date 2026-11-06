@@ -169,3 +169,33 @@ for (const named of ["its pid", "a launch not yet named"]) test(`a takeover kill
   assert.ok(claimOf(data, runId).claim_epoch > before, "taken over: its epoch bumped");
   assert.equal(storeRun(data, runId).state, "completed");
 });
+
+test("a watch of an adopted run whose poll fails (the agent store held by another writer) keeps watching: the server stays up, and the run is taken over once the store is free", { skip: process.platform !== "linux" && "reads /proc", timeout: 120_000 }, async (t) => {
+  const { data, runId, pid } = await crashMidRun(t);
+  await killed(pid);
+  // A holder that lives and serves no door: the next server adopts it and polls its row while it waits for a door.
+  const holder = standIn(t, undefined);
+  const start = readFileSync(`/proc/${holder.pid}/stat`, "utf8").split(") ")[1].split(" ")[19];
+  const boot = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+  const control = new DatabaseSync(join(data, "store.sqlite"));
+  control.prepare("UPDATE runs SET claim_holder = ? WHERE id = ?").run(JSON.stringify({ pid: holder.pid, start: Number(start), boot }), runId);
+  control.close();
+  const unhandled = [];
+  const onUnhandled = (reason) => unhandled.push(String(reason?.message ?? reason));
+  process.on("unhandledRejection", onUnhandled);
+  t.after(() => process.off("unhandledRejection", onUnhandled));
+  const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", readyTimeoutMs: 3_000 });
+  t.after(() => next.close());
+  const api = client(next.baseUrl, next.token);
+  assert.equal((await api("GET", `/runs/${runId}`)).status, 200, "adopted");
+  // Another writer holds the agent store for a while: the watch's reads of the run's row fail.
+  const held = new DatabaseSync(join(data, "store.sqlite"), { timeout: 0 });
+  held.exec("PRAGMA locking_mode = EXCLUSIVE; BEGIN EXCLUSIVE");
+  await sleep(2_500);
+  held.exec("COMMIT");
+  held.close();
+  const { last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 40_000 });
+  assert.deepEqual(unhandled, [], "no failed poll went unhandled");
+  assert.equal(last.status, "completed", JSON.stringify(last));
+  assert.equal(alive(holder.pid), false, "taken over: the holder that named no door was killed");
+});
