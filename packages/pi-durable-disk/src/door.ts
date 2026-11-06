@@ -12,7 +12,7 @@ import { processTable } from "./process-table.ts";
 import type { DurableRun } from "./run.ts";
 import { doorKey } from "./door-key.ts";
 
-export type DoorStatus = "ADMITTED" | "ACCEPTED" | "REJECTED_BUSY" | "FAILED" | "UNKNOWN";
+export type DoorStatus = "ADMITTED" | "ACCEPTED" | "REJECTED_BUSY" | "REJECTED_WAITING" | "FAILED" | "UNKNOWN";
 
 export interface DoorInput {
   readonly requestId: string;
@@ -86,6 +86,8 @@ async function recordOf(tx: Tx, root: ConversationId, requestId: string): Promis
   return message === undefined ? { status, next: n } : { status, message, next: n };
 }
 
+/** An input `waits` refuses (it may not answer, and its conversation waits on a person): not written either. */
+const WAITING: DoorRecord = { status: "REJECTED_WAITING", message: "the conversation waits on a person: this input may not answer it" };
 /** A reject input's answer while the hook is busy, or about to be: not written, so the requestId stays free. */
 const BUSY: DoorRecord = { status: "REJECTED_BUSY", message: "the harness is busy" };
 
@@ -139,8 +141,9 @@ export async function killGroup(pid: number, start: number | undefined): Promise
 }
 
 export interface Door {
-  /** Admit `input` in the root conversation and hand it to the hook once; the record's status, now. */
-  submit(root: ConversationId, input: DoorInput, context: Context): Promise<DoorRecord>;
+  /** Admit `input` in the root conversation and hand it to the hook once; the record's status, now. `waits`, read in the
+   *  admission's commit after the requestId's own record: true refuses a new admission (REJECTED_WAITING, not written). */
+  submit(root: ConversationId, input: DoorInput, context: Context, waits?: (tx: Tx) => Promise<boolean>): Promise<DoorRecord>;
   abort(): Promise<"aborted" | "idle" | typeof TIMEOUT>;
   busy(): boolean;
   /** A hook call in flight or a busy hook: keeps the instance up. */
@@ -290,7 +293,7 @@ export function openDoor(hook: DoorHook, run: DurableRun, base: Context, timeout
   void recover().catch(() => undefined);
 
   return {
-    async submit(root, input, context) {
+    async submit(root, input, context, waits) {
       const { requestId } = input;
       let admitting = false;
       let at = 0;
@@ -300,6 +303,8 @@ export function openDoor(hook: DoorHook, run: DurableRun, base: Context, timeout
           const record = await recordOf(tx, root, requestId);
           // A busy refusal is no outcome: the request is admitted again, unless a call here still carries it.
           if (record && (record.status !== "REJECTED_BUSY" || live.has(requestId))) return record.message === undefined ? { status: record.status } : { status: record.status, message: record.message };
+          // Read in this commit, so nothing it looks for is written between the read and the admission.
+          if (waits && (await waits(tx))) return WAITING;
           // A reject input is refused while the hook works or a call here is about to make it: nothing is written.
           if (input.whenBusy === "reject" && (hook.busy() || pending > 0 || live.size > 0)) return BUSY;
           at = record?.next ?? 0;

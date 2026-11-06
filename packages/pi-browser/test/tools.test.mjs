@@ -392,11 +392,10 @@ test("a dropped connection the provider still runs is retried on a 1 s then 3 s 
   assert.deepEqual(done.seen[2].details?.previous_session, { released: true, reason: "lost", at: old.endedAt });
 });
 
-/** A driver factory whose reconnect meets an earlier init still running in the extension and waits for it, as
- *  stagehandDriver does (up to its 60 s in-flight wait, here `waitMs`), honouring the attach's signal; a wait that ends
- *  starts a second init. */
-function initStillRunning(base, waitMs) {
-  const seen = { attaches: 0, secondInits: 0, waitAborted: false };
+/** A driver factory whose reconnect waits on the browser (its connection held on the way: Stagehand's connect waits up to its
+ *  60 s init deadline, here `waitMs`), honouring the attach's signal, as stagehandDriver does; a wait that ends attaches. */
+function attachHeld(base, waitMs) {
+  const seen = { attaches: 0, lateAttaches: 0, waitAborted: false };
   const factory = async (target, signal, options) => {
     seen.attaches += 1;
     if (seen.attaches === 1) return base(target, signal, options);
@@ -404,16 +403,16 @@ function initStillRunning(base, waitMs) {
       const timer = setTimeout(resolve, waitMs);
       signal?.addEventListener("abort", () => { clearTimeout(timer); seen.waitAborted = true; reject(signal.reason ?? new Error("aborted")); }, { once: true });
     });
-    seen.secondInits += 1;
+    seen.lateAttaches += 1;
     return base(target, signal, options);
   };
   return { factory, seen };
 }
 
-test("a reconnect whose attach waits on an earlier init ends at the budget: no second init starts, and the session is released as lost", { timeout: 30_000 }, async (t) => {
+test("a reconnect whose attach waits on the browser ends at the budget: nothing attaches late, and the session is released as lost", { timeout: 30_000 }, async (t) => {
   const backend = new FakeBackend({ start: START, pages: { [START]: ARTICLE } });
   const net = droppingOnce(backend);
-  const stuck = initStillRunning(fakeDriver(backend), 3_000);
+  const stuck = attachHeld(fakeDriver(backend), 3_000);
   // The adapter's own port and guard; only the reconnect timings are the test's: a 400 ms budget, one try.
   const snapshot = pageToolsOf({ reconnect: { budgetMs: 400, tryMs: 50, backoffMs: [] } }).snapshot;
   const at = {};
@@ -421,15 +420,15 @@ test("a reconnect whose attach waits on an earlier init ends at the budget: no s
     1: () => { net.drop(); at.start = Date.now(); },
     2: async (_b, { harness }) => { at.end = Date.now(); await releaseTasksDone(harness); },
   } });
-  assert.equal(stuck.seen.secondInits, 0, "the attach stopped waiting at the budget, so no second init started");
+  assert.equal(stuck.seen.lateAttaches, 0, "the attach stopped waiting at the budget, so nothing attached late");
   assert.equal(done.seen[1].isError, true, `the reconnect ran out of its budget, so the read fails (${done.texts[1].slice(0, 80)})`);
   const answer = failure(done.texts[1]);
   assert.equal(answer.code, "browser_unavailable", done.texts[1]);
-  assert.equal(stuck.seen.secondInits, 0, "the attach stopped waiting at the budget, so no second init started");
-  assert.ok(stuck.seen.waitAborted, "the attach's wait for the earlier init was cut by the deadline");
+  assert.equal(stuck.seen.lateAttaches, 0, "the attach stopped waiting at the budget, so nothing attached late");
+  assert.ok(stuck.seen.waitAborted, "the attach's wait was cut by the deadline");
   assert.ok(at.end - at.start < 400 + 1_000, `the call ended near its budget, not after the attach's wait (${at.end - at.start} ms)`);
   const [old] = done.sessions.sessions;
-  assert.deepEqual([old.state, old.releaseReason], ["released", "lost"], "released as lost: the provider stops the browser, and the earlier init in its extension with it");
+  assert.deepEqual([old.state, old.releaseReason], ["released", "lost"], "released as lost: the provider stops the browser");
   assert.equal(backend.tally().releases, 1, "the provider released it once: nothing keeps billing");
 });
 

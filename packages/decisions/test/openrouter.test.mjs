@@ -41,7 +41,9 @@ registerDecisionProviderConformance('openrouter', {
       if (reply.kind === 'status') return json({ error: { message: 'refused', code: reply.status } }, reply.status);
       if (reply.kind === 'malformed') return json('{"answers": [not json');
       if (reply.kind === 'lost') throw Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' }) });
-      return json({ id: 'gen-1', model: 'liquid/d1', answers: reply.answers, usage: { input_tokens: 120, output_tokens: 0, cost: 0.0000024 } });
+      // The sources a model that cites the web gives, as OpenRouter returns them: url_citation annotations.
+      const annotations = (reply.evidence ?? []).map(({ url, title, excerpts }) => ({ type: 'url_citation', url_citation: { url, title, content: excerpts?.[0] ?? '' } }));
+      return json({ id: 'gen-1', model: 'liquid/d1', answers: reply.answers, annotations, usage: { input_tokens: 120, output_tokens: 0, cost: 0.0000024 } });
     };
     return { provider: openrouterProvider({ ...settings, fetch }), calls: () => calls };
   },
@@ -257,4 +259,28 @@ test("through judgeFromProviders, a node's timeoutMs that cuts the image check i
   assert.equal(await within(1500, judge({ ...ask, signal: cancel.signal }).catch((error) => { caught = error; throw error; })), 'rejected aborted');
   assert.equal(caught.unsent, true);
   assert.deepEqual(posts, [], 'nothing was sent');
+});
+
+test('url_citation annotations are the evidence, in the shape Parallel citations take', async () => {
+  const annotations = [
+    { type: 'url_citation', url_citation: { url: 'https://example.test/a', title: 'Page A', content: 'Line from A.' } },
+    { type: 'url_citation', url_citation: { url: 'https://example.test/b', title: 'Page B', content: 'Line from B.' } },
+    { type: 'other', note: 'not a citation' },
+  ];
+  const { fetch } = fakeFetch([answered({ annotations })]);
+  const outcome = await openrouterProvider({ ...settings, fetch }).decide({ questions: QUESTIONS, state: {} }, ctx());
+  assert.deepEqual(outcome.evidence, [
+    { url: 'https://example.test/a', title: 'Page A', excerpts: ['Line from A.'], scope: 'call' },
+    { url: 'https://example.test/b', title: 'Page B', excerpts: ['Line from B.'], scope: 'call' },
+  ]);
+  assert.equal(openrouterProvider(settings).capabilities.evidence, 'citations', 'the provider now gives citations where its model does');
+});
+
+test('a reported usage.cost above 0 is booked as reported; a cost of 0 is unpriced: unknown, never a known $0', async () => {
+  const { fetch } = fakeFetch([answered({ usage: { input_tokens: 10, output_tokens: 0, cost: 0.0004 } })]);
+  const priced = await openrouterProvider({ ...settings, fetch }).decide({ questions: QUESTIONS, state: {} }, ctx());
+  assert.deepEqual([priced.cost_usd, priced.cost_basis], [0.0004, 'reported']);
+  const { fetch: zero } = fakeFetch([answered({ usage: { input_tokens: 10, output_tokens: 0, cost: 0 } })]);
+  const free = await openrouterProvider({ ...settings, fetch: zero }).decide({ questions: QUESTIONS, state: {} }, ctx());
+  assert.deepEqual([free.cost_usd, free.cost_basis], [null, 'unknown'], 'a $0 report (a model the catalog prices at 0) is no price');
 });

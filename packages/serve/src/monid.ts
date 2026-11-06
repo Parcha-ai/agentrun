@@ -236,7 +236,7 @@ export function monidRegistration(kind: Kind, env: NodeJS.ProcessEnv, work: () =
       // What the run is held at, under the cap and on its mark: the price an inspect quoted, else the allowance.
       const quote = quoted.get(quoteKey(args));
       const held = quote ?? MONID_RUN_ALLOWANCE_USD;
-      const basis = quote !== undefined ? `the price ${INSPECT} quoted` : `no ${INSPECT} in this run quoted its price, so it is held at the $${MONID_RUN_ALLOWANCE_USD} allowance; ${INSPECT} gives its quote`;
+      const basis = quote !== undefined ? `the price ${INSPECT} quoted` : `no price was quoted for it in this run, so it counts at the $${MONID_RUN_ALLOWANCE_USD} allowance; ${INSPECT} gives its price`;
       const send = async (): Promise<MonidAnswer> => {
         try {
           await record(api, TOOL_STARTED, { ...label, heldUsd: held }, context);
