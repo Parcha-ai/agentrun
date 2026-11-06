@@ -126,10 +126,13 @@ test("a door that never serves its run (GET /status answers 503 OPENING for good
   const deadline = Date.now() + 800;
   const ended = await Promise.race([untilOpened(door, {}, () => false, deadline, 50), new Promise((resolve) => setTimeout(() => resolve("still waiting"), 5_000))]);
   assert.deepEqual(ended, { opened: false, why: "deadline", last: "503 OPENING" });
-  const count = asked.length;
+  // A poll sent just before the deadline may reach this server (on the same event loop) after the wait ended: once those
+  // are in, no more come.
   await new Promise((resolve) => setTimeout(resolve, 500));
+  const count = asked.length;
+  await new Promise((resolve) => setTimeout(resolve, 1_000));
   assert.equal(asked.length, count, "no poll after the wait ended");
-  assert.ok(asked.every((at) => at <= deadline + 100), "none past the deadline");
+  assert.ok(count <= 800 / 50 + 2, `polled about once each 50 ms until the deadline, not more: ${count}`);
 });
 
 test("through a run whose process never opens it: one line naming the cause, its process stopped at the ready time, and a request's 503 says why", { timeout: 120_000 }, async (t) => {
