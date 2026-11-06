@@ -185,16 +185,18 @@ describe("App, Settings", () => {
     expect(row).not.toContain("pi: native");
   });
 
-  it("has no Settings in the nav when the server has no features.tool_keys", async () => {
+  it("has Settings in the nav on a server with no features.tool_keys too: every server has MCP servers", async () => {
     const page = await open({}, "#/runs");
     expect(page.nav()).toContain("Runs");
-    expect(page.nav()).not.toContain("Settings");
+    expect(page.nav()).toContain("Settings");
+    await act(async () => { [...page.host.querySelectorAll<HTMLButtonElement>('nav[aria-label="Navigation"] button')].find((b) => b.textContent?.trim() === "Settings")!.click(); });
+    expect(location.hash).toBe("#/settings/mcp");
   });
 
   it("#/settings/tools opens Tools, with a tab for each settings page, when the server offers a choice of provider", async () => {
     const page = await open({ tool_keys: { routes: true, at_rest: "sealed" } }, "#/settings/tools", choiceTools);
     expect(page.host.querySelector("h1")?.textContent).toBe("Tools");
-    expect([...page.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => [a.textContent, a.getAttribute("aria-current")])).toEqual([["Tool keys", null], ["Tools", "page"]]);
+    expect([...page.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => [a.textContent, a.getAttribute("aria-current")])).toEqual([["Tool keys", null], ["Tools", "page"], ["MCP servers", null]]);
     expect(page.host.querySelector('tr[data-tool="web_search"] select')).toBeTruthy();
     expect(page.asked).toContain("GET /v2/settings/tools");
   });
@@ -206,7 +208,7 @@ describe("App, Settings", () => {
     for (let i = 0; i < 20; i++) await act(async () => { await new Promise((r) => setTimeout(r, 10)); });
     expect(location.hash).toBe("#/settings/tools");
     expect(page.host.querySelector("h1")?.textContent).toBe("Tools");
-    expect(page.host.querySelector('nav[aria-label="Settings"]')).toBeNull();
+    expect([...page.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => a.textContent?.trim())).toEqual(["Tools", "MCP servers"]);
   });
 
   it("shows Settings when the server has the routes, and #/settings/keys opens Tool keys", async () => {
