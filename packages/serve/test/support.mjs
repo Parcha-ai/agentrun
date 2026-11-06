@@ -7,6 +7,7 @@ import { basename, dirname, join } from "node:path";
 import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { after } from "node:test";
 import { fileURLToPath } from "node:url";
 import { claudeAgentExecutable } from "@parcha/agentrun-harness-claude";
 import { processAlive } from "@parcha/agentrun-kernel/host";
@@ -37,11 +38,17 @@ export function jsonLines(file) {
   return text.slice(0, text.lastIndexOf("\n") + 1).split("\n").filter(Boolean).map((line) => JSON.parse(line));
 }
 
-export async function scratch(t) {
+/** Scratch directories, removed once this file's tests are done. node:test runs a test's after-hooks in the order they
+ *  were added, so a removal added as a directory is made would run before the stop of a server or child started in it
+ *  afterwards, while that process still writes there (ENOTEMPTY). At the file's end every test's stops have run. */
+const scratchDirs = new Set();
+// Added as this module loads, so it is the file's own hook (one added inside a test would be that test's).
+after(() => Promise.all([...scratchDirs].map((dir) => writableTree(dir).then(() => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })))));
+
+export async function scratch(_t) {
   const dir = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "agentrun-serve-"));
-  // Retried: a server that is still closing can write into it during the rm (ENOTEMPTY). Writable first: a first use
-  // leaves Claude Code read-only (claude-sdk.ts).
-  t.after(() => writableTree(dir).then(() => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })));
+  // Writable first, when it goes: a first use leaves Claude Code read-only (claude-sdk.ts).
+  scratchDirs.add(dir);
   return dir;
 }
 

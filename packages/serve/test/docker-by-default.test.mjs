@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { boxRegistry, enabledBoxes, VM_PROVIDER } from "../dist/boxes.js";
 import { client, follow, jsonLines, printed, scratch, serve, withEnv } from "./support.mjs";
@@ -22,6 +22,8 @@ const RUNNER = { mode: "runner" };
 const ON_BY_DEFAULT = "Boxes: docker (on by default; set AGENTRUN_BOXES to change).";
 const NO_DOCKER = "Docker isn't running on this machine (no docker command on PATH): install or start Docker, then restart AgentRun";
 const NO_DAEMON = "Docker isn't running on this machine, or this user may not use it (docker version failed: exit 1): start Docker, or add this user to the docker group, then restart AgentRun";
+const NOT_IN_GROUP = "This server's process isn't in the docker group: restart your user manager with `sudo systemctl restart user@$(id -u)`, or log in again if linger is off";
+const JOIN_GROUP = "This server's process isn't in the docker group: add this user to it with `sudo usermod -aG docker $USER`, then restart your user manager with `sudo systemctl restart user@$(id -u)`, or log in again if linger is off";
 const PREPARING = "Preparing the Docker box image (first start only, a few minutes); agents can be made now, and their first run waits for it.";
 const NOT_ENABLED = "not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker";
 
@@ -103,6 +105,55 @@ test("with AGENTRUN_BOXES not set and a Docker daemon that does not answer, the 
   await writeFile(join(bin, "docker"), "#!/bin/sh\necho 'Cannot connect to the Docker daemon' >&2\nexit 1\n", { mode: 0o755 });
   const registry = await boxRegistry({ PATH: bin });
   assert.deepEqual(registry.offers().find((offer) => offer.id === "docker"), { id: "docker", available: false, reason: NO_DAEMON });
+});
+
+/** Docker's words for a socket that refused this process: the CLI's, and a bare connect's EACCES. */
+const CLI_DENIED = "permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock: Get \\\"http://%2Fvar%2Frun%2Fdocker.sock/v1.47/version\\\": EOF";
+const CONNECT_DENIED = "error during connect: Get http://%2Fvar%2Frun%2Fdocker.sock/v1.47/version: dial unix /var/run/docker.sock: connect: permission denied";
+
+/** A docker on PATH that answers `words` on stderr and fails. */
+async function deniedDocker(t, words) {
+  const bin = join(await scratch(t), "bin");
+  await mkdir(bin);
+  await writeFile(join(bin, "docker"), `#!/bin/sh\necho "${words}" >&2\nexit 1\n`, { mode: 0o755 });
+  return bin;
+}
+
+/** A group file whose docker group (gid 999) lists `members`. */
+async function groupFile(t, members) {
+  const file = join(await scratch(t), "group");
+  await writeFile(file, `root:x:0:\ndocker:x:999:${members.join(",")}\nusers:x:100:\n`);
+  return file;
+}
+
+test("a docker socket that refuses this process: the group file lists the user, so a restart of the user manager is the fix; it does not, so joining comes first; either of docker's wordings", async (t) => {
+  const joined = await groupFile(t, ["someone", "manuel"]);
+  const never = await groupFile(t, ["someone"]);
+  for (const words of [CLI_DENIED, CONNECT_DENIED]) {
+    const bin = await deniedDocker(t, words);
+    const reasonOf = async (groups) => (await boxRegistry({ PATH: bin }, { groups })).offers().find((offer) => offer.id === "docker");
+    assert.deepEqual(await reasonOf({ file: joined, user: "manuel", ids: [100] }), { id: "docker", available: false, reason: NOT_IN_GROUP }, words);
+    assert.deepEqual(await reasonOf({ file: never, user: "manuel", ids: [100] }), { id: "docker", available: false, reason: JOIN_GROUP }, words);
+    // In the group and holding it, yet refused: no restart would help, so the reason says to join (the full fix).
+    assert.deepEqual(await reasonOf({ file: joined, user: "manuel", ids: [100, 999] }), { id: "docker", available: false, reason: JOIN_GROUP }, words);
+    assert.deepEqual(await reasonOf({ file: join(await scratch(t), "none"), user: "manuel", ids: [100] }), { id: "docker", available: false, reason: JOIN_GROUP }, "no group file: it cannot say");
+    // A process whose uid has no name (no passwd entry) cannot be looked up: the guidance stays, never a failed probe.
+    assert.deepEqual(await reasonOf({ file: await groupFile(t, ["", "manuel"]), user: "", ids: [100] }), { id: "docker", available: false, reason: JOIN_GROUP }, "no user name");
+  }
+});
+
+test("a refused docker socket's reason is the one capabilities, the default reason and the banner say, default or listed", { timeout: 60_000 }, async (t) => {
+  const bin = await deniedDocker(t, CLI_DENIED);
+  withEnv(t, { PATH: `${bin}:${dirname(process.execPath)}` }, ["AGENTRUN_BOXES", "AGENTRUN_DOCKER_IMAGE", "AGENTRUN_BOX_ALLOW"]);
+  const server = await serve(t, { faux: PROBE });
+  const places = await placesOf(server.api);
+  const reason = dockerOf(places).reason;
+  assert.ok([NOT_IN_GROUP, JOIN_GROUP].includes(reason), reason);
+  assert.equal(places.default_reason, `new agents run on the runner, because the docker box is unavailable here: ${reason}`);
+  assert.equal(server.boxesLine, `Boxes: none, so new agents run on the runner. ${reason}.`);
+  withEnv(t, { AGENTRUN_BOXES: "docker" });
+  const listed = await serve(t, { faux: PROBE });
+  assert.ok(listed.boxesLine.includes(`docker: ${reason}.`), listed.boxesLine);
 });
 
 test("an explicit AGENTRUN_BOXES wins: a list probes only what it names, so daytona alone asks Docker nothing", { timeout: 60_000 }, async (t) => {
