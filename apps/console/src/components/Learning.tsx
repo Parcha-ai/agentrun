@@ -831,7 +831,7 @@ function EarlierLearned({ kind, items, v2, agentId, runs, readOnly, onChanged }:
             {restoring === x.file && <div className="-mx-4 mt-2"><RestoreConfirm name={x.name} kind={kind} restore={() => v2.restoreNote(agentId, statusFile(x), x.etag)} onChanged={onChanged} onDone={() => setRestoring(null)} /></div>}
             {shown.has(x.file) && (
               <div className="-mx-4 mt-2 border-t pt-1">
-                <FileText v2={v2} agentId={agentId} file={x.file} kind={kind} label={`the ${kind} ${x.name}`} />
+                <FileText v2={v2} agentId={agentId} file={x.file} etag={x.etag} kind={kind} label={`the ${kind} ${x.name}`} />
                 {x.run && <p className="mt-3 flex px-5 font-mono text-[11px] text-muted-foreground"><LearnedIn run={x.run} runs={runs} /></p>}
               </div>
             )}
@@ -848,15 +848,15 @@ function ShowButton({ open, label, onClick }: { open: boolean; label: string; on
 }
 
 /** A learned file's text, read when shown (GET …/learning/files/{file}, retired ones too): a skill's as its body, a
- *  workflow's JSON as it is. */
-function FileText({ v2, agentId, file, kind, label }: { v2: Client; agentId: string; file: string; kind: "skill" | "workflow"; label: string }) {
+ *  workflow's JSON as it is. Read again when the list moves to another version of it (`etag`), as LearnedCard does. */
+function FileText({ v2, agentId, file, etag, kind, label }: { v2: Client; agentId: string; file: string; etag: string; kind: "skill" | "workflow"; label: string }) {
   const [text, setText] = useState<string | null>(null);
   const [error, setError] = useState<unknown>(null);
   const load = async () => {
     setError(null); setText(null);
     try { setText((await v2.readNote(agentId, file)).note); } catch (e) { setError(e ?? new Error("unknown")); }
   };
-  useEffect(() => { void load(); }, [file]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { void load(); }, [file, etag]); // eslint-disable-line react-hooks/exhaustive-deps
   if (error !== null) return <div className="px-5 pt-3"><ProblemCard problem={problem(error, label)} onRetry={() => void load()} className="" /></div>;
   if (text === null) return <div className="px-5 pt-3" role="status" aria-label={`Loading ${label}`}><div aria-hidden className="h-16 bg-muted motion-safe:animate-pulse" /></div>;
   return kind === "skill" ? <Body text={bodyOf(text)} /> : <pre className="mx-5 mt-3 max-h-80 overflow-auto border bg-background p-3 font-mono text-[12px]">{text}</pre>;

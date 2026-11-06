@@ -966,6 +966,29 @@ describe("the Learning tab's retired notes and skills, opened", () => {
     expect(t.button(/^Retire find-policies$/)).toBeUndefined();
     expect(t.button(/^Approve find-policies$/)).toBeUndefined();
   });
+
+  it("an open retired skill reads its text again when the list moves to another version (a restore made on an old one)", async () => {
+    const SKILL_FILE = "skills/find-policies/SKILL.md";
+    const text = (step: string) => `---\nname: find-policies\ndescription: Find a store's policies\n---\n# Find policies\n\n1. ${step}\n`;
+    const listed = (etag: string) => view({ skills: [{ name: "find-policies", file: SKILL_FILE, description: "Find a store's policies", status: "retired", run: "run-b", bytes: 92, etag }], workflows: [] } as Partial<AgentLearning>);
+    let version = '"skill-v1"';
+    const t = await open(agent(true), {
+      learning: async () => listed(version),
+      read: async () => ({ note: text(version === '"skill-v1"' ? "The old step." : "The newer step."), etag: version }),
+      // Someone restored it, a run changed it, and it was retired again: the restore on v1 is refused, and the list moves.
+      restore: async () => { version = '"skill-v3"'; throw new ClientError(412, "precondition_failed", "changed"); },
+    });
+    await t.click(/^Earlier skills/);
+    const earlier = t.host.querySelector('section[aria-label="Earlier skills"]') as HTMLElement;
+    await t.click(/^Show the skill find-policies$/);
+    expect(earlier.textContent).toContain("The old step.");
+    await t.click(/^Restore find-policies$/);
+    await t.click(/^Yes, restore$/);
+    expect(t.text()).toContain("It changed since you opened it.");
+    const shown = t.host.querySelector('section[aria-label="Earlier skills"]') as HTMLElement;
+    expect(shown.textContent).toContain("The newer step.");
+    expect(shown.textContent).not.toContain("The old step.");
+  });
 });
 
 // What a card says of its newest change, as the server names it (last_change): approved, restored, retired, edited or
