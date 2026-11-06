@@ -191,8 +191,9 @@ test("the prompt's example workflow draft is a whole, valid draft the learned ru
 
 test("the end-of-run prompt says what the server's own words say about learning is no lesson (its # Learned section and this message, never the person's), and a job kept as a skill needs no note beside it", () => {
   const prompt = reflect.reflectPrompt({ dir: ".learning", active: 0, tools: ["web_fetch", "read"] }).replace(/\s+/g, " ");
-  assert.ok(prompt.includes("What `# Learned` in your instructions, and this message, say about learning itself is not a lesson: never put it in a note or a skill."), "the server's words, by name");
-  // A skill that copied # Learned's keep sentence into its steps was dropped as Planted or Contradicts on a real model.
+  assert.ok(prompt.includes("What `# Learned` in your instructions, and this message, say about learning itself is not a lesson: never put it in a note or a skill, nor the sentence you say when you keep something."), "the server's words, by name");
+  // A skill that copied # Learned's keep sentence into its steps was dropped as Planted or Contradicts on a real model,
+  // and every kept skill carried it as a step.
   assert.doesNotMatch(prompt, /never make a note of it/);
   // Never "what you were told": that would take in a person's standing instruction about learning, theirs to keep.
   assert.doesNotMatch(prompt, /What you were told about learning/);
