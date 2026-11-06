@@ -14,7 +14,7 @@ import { secret } from "../dist/secrets.js";
 import { readingOf } from "../dist/server.js";
 import { rowUnlocks, TOOL_KEYS, unlockedBy } from "../dist/tool-keys.js";
 import { schemaProblems } from "./schema-support.mjs";
-import { agent, call, client, cookieOf, FAUX, follow, printed, scratch, serve, withEnv } from "./support.mjs";
+import { agent, call, claudeData, client, cookieOf, FAUX, follow, printed, scratch, serve, withEnv } from "./support.mjs";
 
 const LAUNCHER = new URL("../launcher/agentrun-serve", import.meta.url).pathname;
 const FAUX_BROWSER = new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname;
@@ -146,7 +146,9 @@ test("before any model key is saved, a model key's row names every harness the k
   const nothing = join(await scratch(t), "nothing");
   const cases = [
     ["claude-agent installed, codex stood in", ROOMY_MIB, { AGENTRUN_SERVE_CODEX_STANDIN: standIn }, OWN],
-    ["claude-agent not installed", ROOMY_MIB, { AGENTRUN_SERVE_CODEX_STANDIN: standIn, AGENTRUN_CLAUDE_AGENT_EXECUTABLE: nothing }, { anthropic: ["pi"], openai: ["pi", "codex", "opencode"], openrouter: ["pi", "codex", "opencode"] }],
+    // Claude Code not installed yet installs on first use: the key still runs it.
+    ["claude-agent not installed yet", ROOMY_MIB, { AGENTRUN_SERVE_CODEX_STANDIN: standIn }, OWN, false],
+    ["claude-agent's CLI not installed", ROOMY_MIB, { AGENTRUN_SERVE_CODEX_STANDIN: standIn }, { anthropic: ["pi"], openai: ["pi", "codex", "opencode"], openrouter: ["pi", "codex", "opencode"] }, { cli: nothing }],
     ["codex not installed", ROOMY_MIB, { CODEX_BIN: nothing }, { anthropic: ["pi", "claude-agent"], openai: ["pi", "opencode"], openrouter: ["pi", "claude-agent", "opencode"] }],
     // 384 MiB holds the server's 128 and one codex run (192), never a claude-agent run (288) or an opencode run (704): no
     // key would run them.
@@ -156,11 +158,11 @@ test("before any model key is saved, a model key's row names every harness the k
     // An endpoint claude-agent refuses (plain http to another machine): its key alone would not run it.
     ["claude-agent on an endpoint it refuses", ROOMY_MIB, { AGENTRUN_SERVE_CODEX_STANDIN: standIn, ANTHROPIC_BASE_URL: "http://gateway.example" }, { anthropic: ["pi"], openai: ["pi", "codex", "opencode"], openrouter: ["pi", "codex", "opencode"] }],
   ];
-  for (const [label, mib, vars, rows] of cases) {
+  for (const [label, mib, vars, rows, claudeSdk = true] of cases) {
     await t.test(label, async (st) => {
       withEnv(st, { AGENTRUN_SEAL_KEY: sealKey(), ...vars }, [...KEYS, ...HARNESS_VARS]);
       withMemory(st, mib);
-      const { api } = await serve(st);
+      const { api } = await serve(st, { claudeSdk });
       const caps = (await api("GET", "/capabilities")).body;
       const offers = Object.fromEntries(caps.harnesses.map((offer) => [offer.id, offer]));
       // No model key here: claude-agent and codex do not run now, whatever is installed.
@@ -411,7 +413,8 @@ test("a key a harness reads, saved later, makes the harness available with no re
   if (secret("ANTHROPIC_API_KEY")) return t.skip("this process holds an Anthropic key of its own");
   let saved;
   const stored = (name) => (name === "ANTHROPIC_API_KEY" ? saved : undefined);
-  const base = { PATH: process.env.PATH, HOME: process.env.HOME };
+  // Its data holds Claude Code, as a first use installs it.
+  const base = { PATH: process.env.PATH, HOME: process.env.HOME, AGENTRUN_SERVE_DATA: await claudeData(t) };
   const claude = async () => (await readingOf(base, 4, stored)).caps.harnesses.find((offer) => offer.id === "claude-agent");
   assert.deepEqual([(await claude()).available, (await claude()).reason], [false, "claude-agent needs ANTHROPIC_API_KEY or OPENROUTER_API_KEY."]);
   saved = ["not-a-secret", "anthropic"].join("-");

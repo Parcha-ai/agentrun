@@ -3,13 +3,15 @@
 // faux model. Otherwise codex runs on @parcha/agentrun-harness-codex, opencode on this server's own OpenCode adapter
 // (src/harness-opencode) and claude-agent on @parcha/agentrun-harness-claude, each with serve's own model, price and
 // endpoint, under the run's confinement, and claude-agent with its own web search where the run's web_search resolves
-// native, and codex with its own; a package or a pinned CLI that is missing says so with the one line that installs it:
-// an npm install beside serve, or, when serve runs from npx, the npx line that runs it with the missing package
-// (claude-agent's SDK, Codex, OpenCode).
+// native, and codex with its own. claude-agent's Claude Agent SDK is installed on first use into the data's harnesses
+// directory and loaded from there alone (claude-sdk.ts); codex's or opencode's package or pinned CLI that is missing says
+// so with the one line that installs it: an npm install beside serve, or, when serve runs from npx, the npx line that
+// runs it with the missing package (Codex, OpenCode).
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { AgentAdapter, SessionSpec } from "@parcha/agentrun-kernel";
+import { CLAUDE_SDK, harnessesOf, installedSdk, installLine, loadSdk, type LoadedSdk } from "./claude-sdk.js";
 import { DATA_ENV, defaultData } from "./files.js";
 import { FAUX_HARNESS_ENV } from "./harness.js";
 import { chooseModel, FAUX_ENV, hostModel, type ModelRef, openRouterOnly } from "./model.js";
@@ -19,9 +21,8 @@ import type { SkillCheck, SkillFiles } from "./skills.js";
 import { planeOf } from "./tool-plane.js";
 import { NATIVE_SEARCH_ALLOWANCE_TOKENS } from "./cap.js";
 
-/** The one line that installs each harness beside serve. */
+/** The one line that installs each harness beside serve (claude-agent's installs itself: claude-sdk.ts). */
 export const INSTALL: Record<string, string> = {
-  "claude-agent": "npm install @parcha/agentrun-harness-claude @anthropic-ai/claude-agent-sdk@0.3.286 zod",
   codex: "npm install @parcha/agentrun-harness-codex @openai/codex@0.164.0",
   // The server is named first, as the other lines name a package beside it: OpenCode's CLI is an optional peer of the
   // server's own.
@@ -42,7 +43,7 @@ export const startedByNpx = (file: string = fileURLToPath(import.meta.url)): boo
 export const NPX_PACKAGE_ENV = "AGENTRUN_NPX_PACKAGE";
 
 /** The package each harness needs beside the server, as an npx line adds it. */
-const HARNESS_PACKAGES = ["@anthropic-ai/claude-agent-sdk", "@openai/codex", "opencode-ai"];
+const HARNESS_PACKAGES = ["@openai/codex", "opencode-ai"];
 
 /** The version of `name` installed where Node would look for it from `from`, or undefined. */
 export function installedHere(name: string, from: string = fileURLToPath(import.meta.url)): string | undefined {
@@ -443,10 +444,27 @@ export function claudeModel(env: NodeJS.ProcessEnv, ref: string | undefined): { 
   return { model: { provider, modelId: claudeModelId({ provider, modelId }) } };
 }
 
-/** The package that runs claude-agent, imported by a name the build does not resolve: it is installed beside serve
- *  only by the person who wants it (its SDK is an optional peer). */
+/** The package that runs claude-agent, imported by a name the build does not resolve (a test gives its own). Its Agent
+ *  SDK is not beside it: a first use installs it into the data's harnesses directory (claude-sdk.ts). */
 const CLAUDE_PACKAGE = "@parcha/agentrun-harness-claude";
 const loadClaude = (): Promise<unknown> => import(CLAUDE_PACKAGE);
+
+/** What serve reads of the claude-agent package: the adapter, the SDK version it pins and the SDK's install line it
+ *  names, and this platform's suffix for the SDK's CLI package. */
+type ClaudePackage = { claudeAgentAdapter(options: Record<string, unknown>): AgentAdapter; CLAUDE_AGENT_SDK_VERSION: string; CLAUDE_AGENT_SDK_INSTALL: string; claudeAgentPlatform(): string };
+
+/** This server's data, as `env` names it (the server sets it for itself and its runs). */
+const dataOf = (env: NodeJS.ProcessEnv): string => env[DATA_ENV] || defaultData(env);
+
+/** The SDK version claude-agent pins: the one constant, the package's own (CLAUDE_AGENT_SDK_VERSION). */
+export async function claudeSdkVersion(load: () => Promise<unknown> = loadClaude): Promise<string> {
+  return ((await load()) as ClaudePackage).CLAUDE_AGENT_SDK_VERSION;
+}
+
+/** Whether Claude Code is installed in this server's data (claude-sdk.ts installedSdk, at the pin). */
+export async function claudeInstalled(env: NodeJS.ProcessEnv): Promise<boolean> {
+  return Boolean(installedSdk(harnessesOf(dataOf(env)), await claudeSdkVersion()));
+}
 
 /** The installed claude-agent adapter's own check of the skills it would load (its skillProblems), from `load` (a test
  *  gives its own): what it refuses stays in the run's prompt (skills.ts), so claudeOf never hands it a skill it throws
@@ -467,11 +485,16 @@ export function nativeOptions(harness: string, env: NodeJS.ProcessEnv): { webSea
   return {};
 }
 
-/** claude-agent's adapter, from `load` (the installed package; a test gives its own). */
-export async function claudeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, load: () => Promise<unknown> = loadClaude, npx = startedByNpx()): Promise<AgentAdapter> {
-  const claude = (await load().catch(() => {
-    throw new HarnessUnavailable(`claude-agent is not installed here: ${INSTALL["claude-agent"]}`, "install");
-  })) as { claudeAgentAdapter(options: Record<string, unknown>): AgentAdapter; CLAUDE_AGENT_SDK_INSTALL?: string; CLAUDE_AGENT_SDK_VERSION?: string };
+/** claude-agent's adapter, from `load` (the package; a test gives its own), on the Agent SDK, its CLI and the MCP library
+ *  `sdkOf` loads (by default from the data's harnesses directory, where a first use installed them, and from nowhere
+ *  else: claude-sdk.ts). Not installed there, it says the command that installs it by hand. */
+export async function claudeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, load: () => Promise<unknown> = loadClaude, sdkOf: (version: string, platform: string) => Promise<LoadedSdk> = (version, platform) => loadSdk(harnessesOf(dataOf(env)), version, platform)): Promise<AgentAdapter> {
+  const claude = (await load()) as ClaudePackage;
+  const dir = harnessesOf(dataOf(env));
+  const version = claude.CLAUDE_AGENT_SDK_VERSION;
+  const sdk = await sdkOf(version, claude.claudeAgentPlatform()).catch((error: Error) => {
+    throw new HarnessUnavailable(error.message, "install");
+  });
   // What no key fixes is said first: the adapter is built before the provider's refusal is thrown, and its construction
   // checks the SDK's version, zod and the pinned CLI (claude --version, once). The provider is read only when a session
   // opens, so an adapter built with an unusable one is never returned.
@@ -491,10 +514,11 @@ export async function claudeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, load
     const endpoint = provider ? { origin: provider.origin, credential: provider.credential, auth: provider.auth } : { origin: "", credential: () => "" };
     const priced = provider ? { ...needs, model: { provider: provider.priceModel.provider, modelId: provider.priceModel.id } } : native;
     // The skills only when there are some: with none, the adapter keeps its Skill tool off.
-    adapter = claude.claudeAgentAdapter({ model: { default: provider?.modelId ?? native.model.modelId }, provider: endpoint, price: priceOf(priced), log: harnessLog("claude-agent", env), ...(needs.confine ? { confine: needs.confine } : {}), ...(needs.skills?.length ? { skills: needs.skills } : {}), ...nativeOptions("claude-agent", env) });
+    adapter = claude.claudeAgentAdapter({ model: { default: provider?.modelId ?? native.model.modelId }, provider: endpoint, price: priceOf(priced), log: harnessLog("claude-agent", env), sdk: sdk.sdk, sdkVersion: sdk.sdkVersion, cliPath: sdk.cliPath, mcp: sdk.mcp, ...(needs.confine ? { confine: needs.confine } : {}), ...(needs.skills?.length ? { skills: needs.skills } : {}), ...nativeOptions("claude-agent", env) });
   } catch (error) {
-    const pinned = claude.CLAUDE_AGENT_SDK_INSTALL && claude.CLAUDE_AGENT_SDK_VERSION ? { npmLine: claude.CLAUDE_AGENT_SDK_INSTALL, spec: `@anthropic-ai/claude-agent-sdk@${claude.CLAUDE_AGENT_SDK_VERSION}` } : undefined;
-    throw unavailable("claude-agent", error, pinned, npx, env);
+    // The adapter's own install line is a project's; here Claude Code is installed into the data's harnesses directory.
+    const message = (error as Error).message.split(claude.CLAUDE_AGENT_SDK_INSTALL).join(installLine(dir, version));
+    throw new HarnessUnavailable(message.includes(installLine(dir, version)) ? message : `${message.replace(/\.$/, "")}. Install ${CLAUDE_SDK}@${version} again with: ${installLine(dir, version)}`, fixOf(error));
   }
   if (refused !== undefined) throw refused;
   return adapter;
@@ -578,6 +602,9 @@ export async function harnessRefusal(harness: string, env: NodeJS.ProcessEnv, gi
   if (env[FAUX_HARNESS_ENV]) return undefined;
   const needs = given ?? { model: { provider: harness === "claude-agent" ? "anthropic" : "openai", modelId: "default" }, models: { getModel: () => undefined } };
   try {
+    // Claude Code not installed yet installs on first use (claude-sdk.ts): until then the provider decides, as it would
+    // for a session.
+    if (harness === "claude-agent" && !(await claudeInstalled(env))) return void claudeProvider(env, needs.model);
     const adapter = await adapterFor(harness, env, needs);
     const problems = adapter.check({ key: "capabilities", label: "capabilities", system: [], tools: [], context: "fresh" });
     return problems.length ? { reason: problems.join(" ") } : undefined;

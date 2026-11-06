@@ -7,7 +7,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { closeSync, existsSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { open as openFile, rm, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
@@ -21,7 +21,8 @@ import type { RUN_EVENTS, RunNotice } from "./webhooks.js";
 import type { RunTrigger } from "./triggers.js";
 import { hostMemory, memoryFull, neverFits, runMibOf, runsMemoryMib } from "./host.js";
 import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from "./agents.js";
-import { FOLLOW_UP_OPEN_ENV, LAUNCH_LOST, readJson, RUN_CANCELLED, RUN_DOOR_TOKEN, RUN_LAUNCHING, RUN_META, runDoorToken, SETUP_LOST, writeDurableSync, writeWhole } from "./files.js";
+import { INSTALLING_CLAUDE } from "./claude-sdk.js";
+import { DATA_ENV, FOLLOW_UP_OPEN_ENV, LAUNCH_LOST, readJson, RUN_CANCELLED, RUN_DOOR_TOKEN, RUN_LAUNCHING, RUN_META, runDoorToken, SETUP_LOST, writeDurableSync, writeWhole } from "./files.js";
 import { MCP_PIN, mcpCredentialsOf, type McpPin, mcpPinOf, type McpServerSource } from "./mcp-gateway.js";
 import { type DaytonaApi, KEPT_AUTOSTOP_MINUTES, keepWhenIdle, wakeBoxes } from "./daytona-api.js";
 import { type Learning, LEARNING_LABEL, type LearningMode, type LearningReason, type LearningState, shortOf } from "./learning.js";
@@ -313,6 +314,12 @@ export type Run = {
   /** Its files being copied into its work/ before its first launch, until they are: nothing launches it meanwhile (a
    *  request that would waits for it), and nothing but a cancel settles it. */
   preparing?: Promise<void>;
+  /** Its harness being installed before its first launch (claude-agent's Claude Code, on first use: claude-sdk.ts): true
+   *  once it is, false when the install failed and the run ended so. Nothing launches it meanwhile, and a request that
+   *  would waits for it. */
+  installing?: Promise<boolean>;
+  /** It shows the install's row (INSTALLING_CLAUDE) while it waits for an install that runs. */
+  installRow?: string;
   settled: boolean;
   settling?: Promise<void>;
   /** The newest write of its serve.json: one at a time, in order. */
@@ -500,6 +507,9 @@ const budgetPending = (run: Run, spentNow?: number): Pending | undefined => {
   const figures = r && spent !== undefined ? { spent_usd: micro(spent), needs_usd: micro(r.needsUsd), suggested_cap_usd: suggestedCap(cap, spent, r.needsUsd) } : {};
   return { kind: "budget", cap_usd: cap, ...figures, said, at: meaningful(run.rows)?.timestamp ?? run.updatedAt };
 };
+/** The row a run shows while Claude Code installs for it (claude-sdk.ts), since `at`. */
+const installRow = (at: string): TimelineEvent => ({ id: "harness:installing", timestamp: at, created_at: at, kind: "phase", summary: INSTALLING_CLAUDE, agent_label: null, tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null, text: null });
+
 /** The waiting row of a run paused at its cap, after the refusal's error row: "Paused at the run's $1 cap: Not sent: …". */
 function withPaused(rows: readonly TimelineEvent[], said: string, cap: number): TimelineEvent[] {
   const at = rows.findLastIndex((row) => row.kind === "error");
@@ -699,7 +709,7 @@ export type StartOptions = { input: Json; title: string; place: Place; effort?: 
 /** `maxRuns`: the most runs with a live process at once; `settleRetryMs`: how often a carry back the store refused is
  *  tried again; `readyTimeoutMs`: how long a request to a run waits for its door (a run's first message, sent by its
  *  start, always waits READY_TIMEOUT_MS); `log` takes a run's start and end (print.ts). */
-export type RunsOptions = { /** What a run's Docker box reaches, as the server resolved it (run-box.ts boxNetworkOf): the list, or none. Absent, none. */ dockerAllow?: readonly string[] | "none"; agents: Agents; token: string; /** The server's saved tool keys, read by name for its runs alone (secrets.ts). */ storedKeys?: StoredKeys; /** The server's saved MCP servers (mcp-servers.ts): a run's pin and its credentials come from them at each launch. */ mcpServers?: McpServerSource; documents?: string; doorTokenFile: string; doorToken: string; /** The test switches a run's process gets (server.ts fauxEnvOf): empty outside tests. */ fauxEnv?: NodeJS.ProcessEnv; runBoxes?: BoxProvider; /** The server's Daytona provider, with its key: remote boxes are made, seeded, pulled and destroyed with it, here alone (box-relay.ts). */ remoteBoxes?: BoxProvider; /** Daytona's API and the same key, for what the provider does not do: a kept box's idle stop, and its wake at a start (daytona-api.ts). */ remoteApi?: DaytonaApi; /** The server's VM box provider, with its client: a VM run's box is made, seeded, pulled and ended with it, here alone, as a Daytona one is (box-relay-vm.ts); it has no network. */ vmBoxes?: BoxProvider; /** A VM box's limits (run-box.ts RemoteLimits), from the box settings. */ vmLimits?: RemoteLimits; /** The relay's VM half, which lets go of a run's programs at its end. */ vmRelay?: { drop(runId: string): void }; /** The hosts a remote box may reach (run-box.ts boxAllowOf); `none`, or absent, for none. */ boxAllow?: readonly string[] | "none"; /** Called once, with the provider's refusal's code and words, when it cannot keep that list here: from then on each remote box is made with no network. */ onNoBoxList?: (code: string, message: string) => void; toolSettings?: () => ToolSettingsMap; /** Whether anyone can answer a tool call's approval here (accounts on); false, the run's gate refuses each ask (tool-gate.ts). */ approvers?: boolean; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; reflectTimeoutMs?: number; gradeTimeoutMs?: number; /** The grader's model (`--grade-model`), before AGENTRUN_SERVE_GRADE_MODEL and the strong tier (grade.ts gradeModelOf). */ gradeModel?: string; /** How much of what a run learned its instructions hold, in bytes (`--learning-budget`, learning.ts learnedOf). */ learningBudget?: number; log?: (event: string, fields: Record<string, string | number>) => void; notify?: RunNotify; learning?: LearningMode; /** Each agent's saved sign-ins (sign-ins.ts): absent, no run gets one. */ signIns?: SignIns; /** The secrets this server makes and keeps sealed while it runs (each webhook trigger's), read at each check, so a rotation is seen at once: what a run's learning refuses and cuts, as it does the saved keys. */ ownSecrets?: () => readonly string[] };
+export type RunsOptions = { /** claude-agent's install of Claude Code (claude-sdk.ts ClaudeInstall): a run on claude-agent waits for it before it launches. Absent, none is waited for. */ claudeInstall?: { readonly installed: boolean; needed(): Promise<boolean>; ensure(): Promise<void> }; /** What a run's Docker box reaches, as the server resolved it (run-box.ts boxNetworkOf): the list, or none. Absent, none. */ dockerAllow?: readonly string[] | "none"; agents: Agents; token: string; /** The server's saved tool keys, read by name for its runs alone (secrets.ts). */ storedKeys?: StoredKeys; /** The server's saved MCP servers (mcp-servers.ts): a run's pin and its credentials come from them at each launch. */ mcpServers?: McpServerSource; documents?: string; doorTokenFile: string; doorToken: string; /** The test switches a run's process gets (server.ts fauxEnvOf): empty outside tests. */ fauxEnv?: NodeJS.ProcessEnv; runBoxes?: BoxProvider; /** The server's Daytona provider, with its key: remote boxes are made, seeded, pulled and destroyed with it, here alone (box-relay.ts). */ remoteBoxes?: BoxProvider; /** Daytona's API and the same key, for what the provider does not do: a kept box's idle stop, and its wake at a start (daytona-api.ts). */ remoteApi?: DaytonaApi; /** The server's VM box provider, with its client: a VM run's box is made, seeded, pulled and ended with it, here alone, as a Daytona one is (box-relay-vm.ts); it has no network. */ vmBoxes?: BoxProvider; /** A VM box's limits (run-box.ts RemoteLimits), from the box settings. */ vmLimits?: RemoteLimits; /** The relay's VM half, which lets go of a run's programs at its end. */ vmRelay?: { drop(runId: string): void }; /** The hosts a remote box may reach (run-box.ts boxAllowOf); `none`, or absent, for none. */ boxAllow?: readonly string[] | "none"; /** Called once, with the provider's refusal's code and words, when it cannot keep that list here: from then on each remote box is made with no network. */ onNoBoxList?: (code: string, message: string) => void; toolSettings?: () => ToolSettingsMap; /** Whether anyone can answer a tool call's approval here (accounts on); false, the run's gate refuses each ask (tool-gate.ts). */ approvers?: boolean; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; reflectTimeoutMs?: number; gradeTimeoutMs?: number; /** The grader's model (`--grade-model`), before AGENTRUN_SERVE_GRADE_MODEL and the strong tier (grade.ts gradeModelOf). */ gradeModel?: string; /** How much of what a run learned its instructions hold, in bytes (`--learning-budget`, learning.ts learnedOf). */ learningBudget?: number; log?: (event: string, fields: Record<string, string | number>) => void; notify?: RunNotify; learning?: LearningMode; /** Each agent's saved sign-ins (sign-ins.ts): absent, no run gets one. */ signIns?: SignIns; /** The secrets this server makes and keeps sealed while it runs (each webhook trigger's), read at each check, so a rotation is seen at once: what a run's learning refuses and cuts, as it does the saved keys. */ ownSecrets?: () => readonly string[] };
 /** Told of a run's moment each time it is seen (webhooks.ts' emit, which queues each one once): a wait it reached, and an
  *  end once the agent store has it. `marker` names the moment (the person's turn it waits at, the end's time), the same
  *  when another server sees it again. It says what came of it: `unsaved`, not in the outbox on disk yet. */
@@ -1132,7 +1142,9 @@ export class Runs {
     // A run paused at its cap says so after the refusal, as the row its status reads.
     const said = pausedAt(run);
     const rows = said === undefined || run.meta.max_cost_usd === undefined ? served : withPaused(served, said, run.meta.max_cost_usd);
-    if (run.log.sync(withLearning(rows, run.meta.learning, this.learning.shown()), run.keep)) run.updatedAt = new Date().toISOString();
+    // While its harness installs, the run says so (a phase row of the server's, gone once it is installed).
+    const installing = run.installRow ? [...rows, installRow(run.installRow)] : rows;
+    if (run.log.sync(withLearning(installing, run.meta.learning, this.learning.shown()), run.keep)) run.updatedAt = new Date().toISOString();
   }
 
   /** A live process: the child this server started, or one an earlier server started that still serves the run. */
@@ -1723,9 +1735,41 @@ export class Runs {
     }
   }
 
+  /** The install `run`'s harness waits for before it launches (claude-agent's Claude Code, claude-sdk.ts), or undefined
+   *  when it waits for none. One per run at a time, every run's on the server's one install: while that runs the run
+   *  shows it (installRow). A failed install ends the run failed, with the install's words, which name the command that
+   *  installs it by hand. */
+  private harnessReady(run: Run): Promise<boolean> | undefined {
+    const install = this.options.claudeInstall;
+    if (run.harness !== "claude-agent" || !install || install.installed) return undefined;
+    if (run.installing) return run.installing;
+    const installing = (async () => {
+      if (!(await install.needed())) return true;
+      run.installRow = new Date().toISOString();
+      this.show(run);
+      try {
+        await install.ensure();
+        return true;
+      } catch (error) {
+        run.submitted = 0;
+        if (!(run.outcome || run.finishing || run.cancel)) {
+          run.error = { code: "run_failed", message: (error as Error).message, retryable: false };
+          run.finishing = "failed";
+          void this.settle(run, 1, true);
+        }
+        return false;
+      } finally {
+        run.installRow = undefined;
+        this.show(run);
+      }
+    })().finally(() => void (run.installing = undefined));
+    run.installing = installing;
+    return installing;
+  }
+
   /** The door of a run that is not finished, starting or waking its process when it is not live. */
   private async ensureLive(run: Run, timeoutMs = this.options.readyTimeoutMs ?? READY_TIMEOUT_MS): Promise<string> {
-    const deadline = Date.now() + timeoutMs;
+    let deadline = Date.now() + timeoutMs;
     // A run brought up by a request (a message before the start's recovery reached it) waits for the sweep as well.
     await this.sweepOnce();
     await this.pinNeeds(run);
@@ -1734,6 +1778,13 @@ export class Runs {
     if (copying) {
       await untilDeadline(copying, deadline);
       if (run.preparing === copying) throw new ApiError("unavailable", "the run's files are still being copied into its workspace", { retry_after_ms: 1000 }, { "retry-after": "1" });
+    }
+    // And for its harness, installed on first use (claude-sdk.ts): its own time, bounded by the install's, before the
+    // ready time starts. A failed install ended the run, which the loop says.
+    const installing = this.harnessReady(run);
+    if (installing) {
+      await installing;
+      deadline = Date.now() + timeoutMs;
     }
     for (let launched = false; ; await sleep(100)) {
       const record = await this.record(run);
@@ -1867,7 +1918,7 @@ export class Runs {
   }
 
   private launch(run: Run, followUp = run.followUpOpen === true): void {
-    if (run.child || this.closing || run.cancel || run.outcome || run.finishing || run.preparing) return;
+    if (run.child || this.closing || run.cancel || run.outcome || run.finishing || run.preparing || run.installing) return;
     // Taken by this launch only: a later launch (a relaunch after its process went) opens the run as any other.
     run.followUpOpen = undefined;
     // Its secrets go over fd 3, written whole and closed as it starts; it reads them first (secrets.ts). Each launch path
@@ -1909,6 +1960,8 @@ export class Runs {
       [RUN_BOX_ALLOW_ENV]: this.options.dockerAllow === undefined || this.options.dockerAllow === "none" ? "none" : this.options.dockerAllow.join(","),
       [SECRETS_FD_ENV]: "3",
       [SECRETS_LEN_ENV]: String(secrets.length),
+      // The server's data (a run's directory is <data>/runs/<id>): claude-agent loads Claude Code from its harnesses.
+      [DATA_ENV]: resolve(run.dir, "..", ".."),
       ...this.fauxEnv(),
       ...(run.meta.effort ? { [EFFORT_ENV]: run.meta.effort } : {}),
       ...(this.options.documents ? { [DOCUMENTS_ENV]: this.options.documents } : {}),
@@ -2413,7 +2466,11 @@ export class Runs {
       if (!(await prepared)) return run;
     }
     run.firstLaunch = true;
-    this.launch(run);
+    // A harness installed on first use (claude-agent's Claude Code) is installed first, in the background: the start
+    // answers now, and the run shows the install while it waits.
+    const installing = this.harnessReady(run);
+    if (installing) void installing.then((installed) => installed && this.launch(run));
+    else this.launch(run);
     if (revision.kind === "workflow") return run;
     // The first message names the files given to the run (run-manifest.ts), on every harness.
     void firstMessage(options.input.content as string, started.workspace).then((content) => this.submit(run, content, "followUp", `first-${run.id}`, READY_TIMEOUT_MS)).catch((error: Error) => {

@@ -1473,7 +1473,14 @@ model). A definition naming a
 harness this server does not run yet saves with a warning on `definition.harness`, and a run of it is
 `409 agent_not_runnable` with `details.harness`; it never runs on pi instead. This server runs pi always, and
 `claude-agent`, `codex` and `opencode` when each adapter's package, pins and provider endpoint check out; the harness's
-`reason` says what is missing. `opencode` needs `opencode-ai@1.19.5` installed beside the server (an exact optional peer of
+`reason` says what is missing. `claude-agent` installs Claude Code on first use: AgentRun never ships the Claude Agent
+SDK, and the first run on claude-agent (or the first agent saved on it) installs the version AgentRun pins
+(`@anthropic-ai/claude-agent-sdk@0.3.286`) from npm into `<data>/harnesses`, with the npm that runs the server, once:
+every run that needs it waits for that one install, its ready time counted from the install's end, and shows a `phase`
+row, `Installing Claude Code (first use)…`, while it does. Each run then loads the SDK, its CLI and the MCP library from
+there and nowhere else. Until it is installed, capabilities list claude-agent with `installs: "on_first_use"`. When npm
+fails, the run fails and its error names the command that installs it by hand, `npm install --prefix <data>/harnesses
+@anthropic-ai/claude-agent-sdk@0.3.286`. `opencode` needs `opencode-ai@1.19.5` installed beside the server (an exact optional peer of
 it), and its model goes where codex's does: the gateway at `AGENT_MODEL_BASE_URL`, or
 OpenAI with `OPENAI_API_KEY`, on the Responses API. The packages and pins are checked once, at the start
 (`event=harness_offers why=start`): a harness
