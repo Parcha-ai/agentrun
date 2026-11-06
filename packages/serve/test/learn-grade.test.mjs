@@ -126,8 +126,8 @@ test("the grader runs on the model the server names for it, --grade-model (AGENT
   assert.deepEqual(named, [null, "faux-strong", "faux-grader", "faux-named"], "capabilities.learning.grade_model");
 });
 
-// A learning end an older server wrote, with a reason no run gets any more (an agent with no write tool, before the
-// end-of-run turn answered with its notes), still counts in /v2/stats, by its reason, read back from the ledger.
+// A learning end an older server wrote, with a reason no server gives any more, is read as any reason this server does
+// not give: it is not counted in /v2/stats.
 test("a run's learning end with a reason this server does not give (an older server's tool_denied) is not counted in /v2/stats", { timeout: 120_000 }, async (t) => {
   withEnv(t, {}, ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENTRUN_TEST_FAUX_GRADE_HOLD", "AGENTRUN_TEST_FAUX_CALLS"]);
   const first = await serve(t, { learning: "on", faux: LEARN });
