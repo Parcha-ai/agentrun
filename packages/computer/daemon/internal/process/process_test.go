@@ -7,8 +7,11 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
+	"syscall"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/execrun"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/process"
@@ -30,8 +33,7 @@ func table(t *testing.T, opts process.Options) *process.Table {
 	t.Helper()
 	tbl := process.NewTable(opts)
 	t.Cleanup(func() {
-		list, _ := tbl.List(process.ListParams{})
-		for _, p := range list.Processes {
+		for _, p := range listAll(t, tbl) {
 			if p.Running {
 				_, _ = tbl.Signal(process.SignalParams{ID: p.ID, Signal: "KILL"})
 				_, _ = tbl.Wait(context.Background(), process.WaitParams{ID: p.ID, TimeoutMs: ms(patience)})
@@ -39,6 +41,27 @@ func table(t *testing.T, opts process.Options) *process.Table {
 		}
 	})
 	return tbl
+}
+
+// listAll pages a listing from its start until a page is not truncated.
+func listAll(t *testing.T, tbl *process.Table) []process.Info {
+	t.Helper()
+	var all []process.Info
+	params := process.ListParams{}
+	for range 1000 {
+		page, err := tbl.List(params)
+		if err != nil {
+			t.Fatalf("list from %v: %v", params.From, err)
+		}
+		all = append(all, page.Processes...)
+		if !page.Truncated {
+			return all
+		}
+		next := page.Next
+		params.From = &next
+	}
+	t.Fatal("a listing that never ends")
+	return nil
 }
 
 func ms(d time.Duration) *int64 {
@@ -531,5 +554,239 @@ func TestEnvAndCwd(t *testing.T) {
 	wait(t, tbl, p.ID)
 	if got := readAll(t, tbl, p.ID, "stdout"); got != dir+" hola" {
 		t.Fatalf("stdout %q", got)
+	}
+}
+
+// A start that is refused, whatever the reason, leaves a full table as it was: no ended process is dropped for it.
+func TestARefusedStartIntoAFullTableKeepsEveryEntryAndItsOutput(t *testing.T) {
+	tbl := table(t, process.Options{MaxEntries: 2})
+	first := start(t, tbl, process.StartParams{Argv: []string{"printf", "first"}})
+	wait(t, tbl, first.ID)
+	second := start(t, tbl, process.StartParams{Argv: []string{"printf", "second"}})
+	wait(t, tbl, second.ID)
+	for name, params := range map[string]process.StartParams{
+		"no argv":    {Argv: []string{}},
+		"no program": {Argv: []string{"no-such-program-here"}},
+		"no cwd":     {Argv: []string{"true"}, Cwd: "/no/such/dir"},
+		"no user":    {Argv: []string{"true"}, User: "no-such-user-here"},
+		"bad pty":    {Argv: []string{"true"}, Pty: &process.Size{Cols: 0, Rows: 24}},
+	} {
+		if _, err := tbl.Start(params); err == nil {
+			t.Fatalf("%s: started", name)
+		}
+		if got := readAll(t, tbl, first.ID, "stdout"); got != "first" {
+			t.Fatalf("after a refused start (%s), the first process's stdout is %q", name, got)
+		}
+		if got := readAll(t, tbl, second.ID, "stdout"); got != "second" {
+			t.Fatalf("after a refused start (%s), the second process's stdout is %q", name, got)
+		}
+	}
+	third := start(t, tbl, process.StartParams{Argv: []string{"true"}})
+	if _, err := tbl.Read(context.Background(), process.ReadParams{ID: first.ID, Stream: "stdout", Offset: off(0)}); err == nil || kindOf(t, err) != rpc.KindNotFound {
+		t.Fatalf("a start that runs drops the process that ended first: %v", err)
+	}
+	if list := listAll(t, tbl); len(list) != 2 || list[0].ID != second.ID || list[1].ID != third.ID {
+		t.Fatalf("list %+v", list)
+	}
+}
+
+// filler makes a listing entry about 40 KiB, so a few dozen processes take more than one page.
+var filler = strings.Repeat("x", 40<<10)
+
+// startShort starts a program that ends at once, with an argv as large as a long-running one's, and waits for its end.
+func startShort(t *testing.T, tbl *process.Table) string {
+	t.Helper()
+	p := start(t, tbl, process.StartParams{Argv: []string{"sh", "-c", "exit 0", "sh", filler}})
+	wait(t, tbl, p.ID)
+	return p.ID
+}
+
+// missing is every id in want that list does not hold.
+func missing(want []string, list []process.Info) []string {
+	listed := map[string]bool{}
+	for _, p := range list {
+		listed[p.ID] = true
+	}
+	var gone []string
+	for _, id := range want {
+		if !listed[id] {
+			gone = append(gone, id)
+		}
+	}
+	return gone
+}
+
+// A listing pages by when a process started, not by where it sits in the table: entries dropped between two pages never
+// make the next page skip a process that runs.
+func TestPagingNeverSkipsARunningProcessWhenEntriesAreDroppedBetweenPages(t *testing.T) {
+	tbl := table(t, process.Options{MaxEntries: 40})
+	var running []string
+	for range 20 {
+		startShort(t, tbl)
+		running = append(running, start(t, tbl, process.StartParams{Argv: []string{"sh", "-c", "sleep 300", "sh", filler}}).ID)
+	}
+	var seen []process.Info
+	params := process.ListParams{}
+	pages := 0
+	for {
+		page, err := tbl.List(params)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pages++
+		seen = append(seen, page.Processes...)
+		if !page.Truncated {
+			break
+		}
+		// Two starts into the full table drop the two processes that ended first, both listed already.
+		startShort(t, tbl)
+		startShort(t, tbl)
+		next := page.Next
+		params.From = &next
+	}
+	if pages < 2 {
+		t.Fatalf("one page: the test needs more")
+	}
+	if gone := missing(running, seen); len(gone) > 0 {
+		t.Fatalf("the listing skipped running processes %v", gone)
+	}
+	for i := 1; i < len(seen); i++ {
+		a, _ := strconv.Atoi(strings.TrimPrefix(seen[i-1].ID, "p"))
+		b, _ := strconv.Atoi(strings.TrimPrefix(seen[i].ID, "p"))
+		if a >= b {
+			t.Fatalf("the listing is not in start order, or lists one twice: %s then %s", seen[i-1].ID, seen[i].ID)
+		}
+	}
+}
+
+// The same while another goroutine starts processes into the full table and so drops ended ones, as it pleases.
+func TestPagingWhileAnotherGoroutineStartsNeverSkipsARunningProcess(t *testing.T) {
+	tbl := table(t, process.Options{MaxEntries: 40})
+	var running []string
+	for range 20 {
+		startShort(t, tbl)
+		running = append(running, start(t, tbl, process.StartParams{Argv: []string{"sh", "-c", "sleep 300", "sh", filler}}).ID)
+	}
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		defer close(done)
+		for range 30 {
+			p, err := tbl.Start(process.StartParams{Argv: []string{"sh", "-c", "exit 0", "sh", filler}})
+			if err != nil {
+				t.Errorf("start: %v", err)
+				return
+			}
+			if _, err := tbl.Wait(context.Background(), process.WaitParams{ID: p.ID, TimeoutMs: ms(patience)}); err != nil {
+				t.Errorf("wait: %v", err)
+				return
+			}
+		}
+	}()
+	listings := 0
+	for {
+		select {
+		case <-done:
+		default:
+			listings++
+			if gone := missing(running, listAll(t, tbl)); len(gone) > 0 {
+				<-done
+				t.Fatalf("listing %d skipped running processes %v", listings, gone)
+			}
+			continue
+		}
+		break
+	}
+	wg.Wait()
+	if gone := missing(running, listAll(t, tbl)); len(gone) > 0 {
+		t.Fatalf("the last listing skipped running processes %v", gone)
+	}
+}
+
+// writeTimeout is process.write's bound, as the README gives it.
+const writeTimeout = 10 * time.Second
+
+// buffered is how many bytes wait in the pipe that is pid's stdin: through a second reader of it that reads nothing.
+func buffered(t *testing.T, pid int) int {
+	t.Helper()
+	f, err := os.OpenFile("/proc/"+strconv.Itoa(pid)+"/fd/0", os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		t.Fatalf("open the stdin of %d: %v", pid, err)
+	}
+	defer f.Close()
+	var n int32
+	if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, f.Fd(), syscall.TIOCINQ, uintptr(unsafe.Pointer(&n))); errno != 0 {
+		t.Fatalf("FIONREAD on the stdin of %d: %v", pid, errno)
+	}
+	return int(n)
+}
+
+type writeDone struct {
+	err  error
+	took time.Duration
+}
+
+func writeIn(tbl *process.Table, ctx context.Context, id string, data []byte) <-chan writeDone {
+	done := make(chan writeDone, 1)
+	go func() {
+		began := time.Now()
+		_, err := tbl.Write(ctx, process.WriteParams{ID: id, Data: data})
+		done <- writeDone{err, time.Since(began)}
+	}()
+	return done
+}
+
+// A write queued behind one blocked on a program that does not read is cancelled while it waits its turn, and its wait
+// for the turn counts toward its own bound.
+func TestAQueuedWriteIsCancelledAndBoundedWhileAnotherBlocks(t *testing.T) {
+	tbl := table(t, process.Options{})
+	p := start(t, tbl, process.StartParams{Argv: []string{"sleep", "300"}, Stdin: true})
+	big := make([]byte, 4<<20)
+	first := writeIn(tbl, context.Background(), p.ID, big)
+	deadline := time.Now().Add(patience)
+	for buffered(t, p.Pid) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the first write never began")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	// The first write holds the input now, and cannot end before its bound: the pipe is full and nothing reads it.
+	queued := writeIn(tbl, context.Background(), p.ID, []byte("queued"))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancelled := writeIn(tbl, ctx, p.ID, []byte("cancelled"))
+	cancel()
+	res := <-cancelled
+	if res.err == nil || kindOf(t, res.err) != rpc.KindAborted {
+		t.Fatalf("a queued write that is cancelled: %v", res.err)
+	}
+	select {
+	case r := <-first:
+		t.Fatalf("the cancelled write returned only once the first had (%v after %v)", r.err, r.took)
+	default:
+	}
+	if r := <-first; r.err == nil || kindOf(t, r.err) != rpc.KindTimeout {
+		t.Fatalf("the first write: %v", r.err)
+	}
+	// Without the wait for its turn counted, the queued write would take its whole bound after the first's.
+	if r := <-queued; r.err == nil || kindOf(t, r.err) != rpc.KindTimeout || r.took >= 2*writeTimeout {
+		t.Fatalf("the queued write: %v after %v", r.err, r.took)
+	}
+}
+
+// A cancel that comes as a write completes never sets the deadline of the write after it.
+func TestACancelRacingAWriteNeverBreaksTheNextWrite(t *testing.T) {
+	tbl := table(t, process.Options{})
+	p := start(t, tbl, process.StartParams{Argv: []string{"sh", "-c", "cat >/dev/null"}, Stdin: true})
+	for i := range 2000 {
+		ctx, cancel := context.WithCancel(context.Background())
+		go cancel()
+		if _, err := tbl.Write(ctx, process.WriteParams{ID: p.ID, Data: []byte("x")}); err != nil && kindOf(t, err) != rpc.KindAborted {
+			t.Fatalf("round %d, the raced write: %v", i, err)
+		}
+		if _, err := tbl.Write(context.Background(), process.WriteParams{ID: p.ID, Data: []byte("y")}); err != nil {
+			t.Fatalf("round %d, the write after a cancelled one: %v", i, err)
+		}
 	}
 }
