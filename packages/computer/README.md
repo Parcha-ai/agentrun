@@ -87,7 +87,7 @@ Its whole tree ends when the program ends or is signalled to its end. Ids are `p
   offset past the end is `invalid`. `exited` is true once the process has ended and nothing is left past `nextOffset`.
 - `waitMs` (at most 30 000) makes a read wait, when nothing past `offset` has come yet, until bytes come, the process
   ends, or the time is up. So a client follows a process with one call in flight and no busy loop.
-- A process whose guard was killed reports the guard's end.
+- A process whose guard was killed reports the guard's end; one whose guard init's shutdown reaped first reports `KILL`.
 - A listing holds at most 64 KiB of each argv, in JSON. A longer one is listed by its first arguments that fit, with
   `argvClipped` set; the caller that started it has the whole of it.
 - With `pty`, stdout and stderr are one `pty` stream, and the program runs in a session of its own with the terminal
@@ -101,6 +101,10 @@ Its whole tree ends when the program ends or is signalled to its end. Ids are `p
 - The table holds at most 256 processes, running or ended. A start into a full table drops the process that ended
   first (its output with it) once the new program runs; a start that is refused drops nothing. When all 256 run, the
   start is refused as `limit`.
+- The rings hold at most 256 MiB of output together (256 full rings would be 4 GiB). Past that, the daemon lets go
+  of the rings of the processes that ended first until it is back under, never a running process's ring. Such a
+  process stays listed with its exit status; a read of its streams returns no data, `dropped` counts every byte from
+  `offset` on, and `exited` is true. Running processes alone can pass the bound (32 of them with full rings).
 
 `src/processes.ts` has `readAll(client, id, stream, {offset?, waitMs?, signal?})`, which pages a stream by offset
 until the process ends and returns its bytes, where it ended and what the ring dropped, and `listProcesses(client)`,

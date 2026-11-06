@@ -146,7 +146,9 @@ export const processCases: Case[] = [
 	processCase(
 		"guard-killed",
 		async (t) => {
-			const rogue = await t.call("process.start", { argv: ["sh", "-c", "sleep 305 & echo $$ $!; kill -9 $PPID; wait"] });
+			// It kills its guard only once the start has returned: a guard killed before it reports the pid fails the start.
+			const rogue = await t.call("process.start", { argv: ["sh", "-c", "read go; sleep 305 & echo $$ $!; kill -9 $PPID; wait"], stdin: true });
+			await t.call("process.write", { id: rogue.id, data: b64("go\n") });
 			const { text } = await readUntil(t, t.client, rogue.id, "stdout", 0, "\n");
 			const pids = text.trim().split(/\s+/).map(Number);
 			t.equal(pids.length, 2, `two pids from ${JSON.stringify(text)}`);

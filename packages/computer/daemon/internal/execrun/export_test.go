@@ -19,3 +19,13 @@ func SetEndHooks(t *testing.T, began, termed func()) {
 		admission.Unlock()
 	})
 }
+
+// SetGuardHooks runs forked in Start right after a guard's fork, with the registry's lock held, and reaping in follow
+// right before it reaps the guard, for the test's duration.
+func SetGuardHooks(t *testing.T, forked, reaping func(guardPid int)) {
+	afterGuardFork, beforeGuardWait = forked, reaping
+	t.Cleanup(func() { afterGuardFork, beforeGuardWait = nil, nil })
+}
+
+// GuardPid is the pid of g's guard.
+func GuardPid(g *Guarded) int { return g.guard.Process.Pid }

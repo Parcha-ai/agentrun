@@ -161,7 +161,7 @@ describe("a Docker computer, as Docker shows it", { skip: LIVE ? false : "set AG
 	});
 
 	it("ends itself at its deadline: PID 1 exits 0 with no janitor", async () => {
-		// Long enough for create's checks on a loaded host; the test asserts the end, not its timing.
+		// Long enough for create's checks while other files make computers on a loaded host; the test asserts the end.
 		const created = await provider.create({ image: IMAGE, lifetimeMs: 45_000, network: "none", labels: { "agentrun.test": "run-command" } });
 		assert.equal(created.ok, true, JSON.stringify(created));
 		made.push(created.value.name);
