@@ -492,6 +492,22 @@ describe("notes that wait for the owner's OK", () => {
     const runner = await open(agent(true, { place: { mode: "runner" } } as never), { learning: async () => waitingView(), caps: APPROVES });
     expect(runner.host.querySelector('section[aria-label="Waiting for your OK"]')!.textContent).toContain(HOST);
   });
+  // An agent that names no place runs where the server's default place is (#1790): in its box, no word of the host's bash;
+  // on the runner (the default, or a runner-only tool), the word stays.
+  it("say the host's bash runs as you for an agent with no place only where the server's default runs it on the host", async () => {
+    const HOST = "Runs that use bash on the host run as you.";
+    const places = (defaultPlace: NonNullable<LearningProps["places"]>["defaultPlace"]) => ({ modes: ["runner", "sandbox"], boxes: [{ id: "docker", available: true }], defaultPlace });
+    const waiting = () => document.querySelector('section[aria-label="Waiting for your OK"]')!.textContent;
+    await open(agent(true), { learning: async () => waitingView(), caps: APPROVES }, { places: places({ mode: "sandbox", box: "docker" }) });
+    expect(waiting()).toContain("It changes what this agent trusts or skips");
+    expect(waiting()).not.toContain(HOST);
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    await open(agent(true), { learning: async () => waitingView(), caps: APPROVES }, { places: places({ mode: "runner" }) });
+    expect(waiting()).toContain(HOST);
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    await open(agent(true, { tools: ["browser"] } as never), { learning: async () => waitingView(), caps: APPROVES }, { places: places({ mode: "sandbox", box: "docker" }) });
+    expect(waiting()).toContain(HOST);
+  });
   it("sit at the top of the tab, under why they wait, and out of the notes in use", async () => {
     const t = await open(agent(true), { learning: async () => waitingView(), caps: APPROVES });
     const box = t.host.querySelector('section[aria-label="Waiting for your OK"]')!;
