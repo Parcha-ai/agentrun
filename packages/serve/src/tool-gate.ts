@@ -245,7 +245,7 @@ export const NO_APPROVER_ENV = "AGENTRUN_SERVE_NO_APPROVER";
 /** A parked call's answer: the run pauses here. */
 export const waitingText = (tool: string): string => `This ${tool} call waits for a person's approval; the run pauses here and continues with the result when they answer.`;
 /** A call a person denied, with their reason when they gave one. */
-export const refusedText = (tool: string, note?: string): string => `The user denied this ${tool} call. ${NOT_RUN}${note ? ` Reason: ${note}` : ""}`;
+export const refusedText = (tool: string, note?: string, ran: "no" | "unknown" = "no"): string => `The user denied this ${tool} call. ${ran === "no" ? NOT_RUN : RAN_UNKNOWN}${note ? ` Reason: ${note}` : ""}`;
 
 /** The Timeline row of a call that waits for an approval. */
 export const APPROVAL_ROW = "tool_approval_requested" as const;
@@ -297,7 +297,7 @@ export function underLearning(work: string, args: unknown): boolean {
 }
 
 /** One call that waits for approval, as the run's store keeps it. */
-export type ApprovalRequest = { id: string; tool: string; call_id: string; args: unknown; args_preview: string; requested_at: string; /** The message the turn that parked it took: a reopen settles that turn, answered or not. */ turn?: string; price?: ApprovalPrice };
+export type ApprovalRequest = { id: string; tool: string; call_id: string; args: unknown; args_preview: string; requested_at: string; /** The message the turn that parked it took: a reopen settles that turn, answered or not. */ turn?: string; price?: ApprovalPrice; /** Parked on a replay: a crash cut an earlier attempt that may have been sent, so a refusal never says nothing was charged. Kept in the store, so a restart keeps it. */ replayed?: true };
 /** Resumes the session with `content` as one message of its own (`approval-<id>`), writing `mark` with it or after it. */
 export type Resume = (id: string, content: string, mark: (tx: Tx) => Promise<unknown>, origin?: ResumeOrigin) => Promise<void>;
 /** Who wrote a resume, for the Timeline (pi-durable-agent's MessageOrigin): the server, carrying an answer, so it never
@@ -425,7 +425,7 @@ export class RunGate {
     if (other) return { text: `This ${tool} call was not run: the ${other.tool} call ${other.call_id} already waits for a person's approval. Call it again once that one is answered.`, isError: true };
     if (!this.requests.has(id)) {
       const turn = park.turn?.();
-      const request: ApprovalRequest = { id, tool, call_id: callId, args: args ?? null, args_preview: argsPreview(args), requested_at: new Date().toISOString(), ...(turn !== undefined ? { turn } : {}), ...(options.price !== undefined ? { price: options.price } : {}) };
+      const request: ApprovalRequest = { id, tool, call_id: callId, args: args ?? null, args_preview: argsPreview(args), requested_at: new Date().toISOString(), ...(turn !== undefined ? { turn } : {}), ...(options.price !== undefined ? { price: options.price } : {}), ...(options.replayed ? { replayed: true as const } : {}) };
       // Held before the commit's await, in the tick of the look above: pi runs a turn's calls in parallel, and an ask
       // entered meanwhile finds this one and is refused. A commit that fails lets it go.
       this.requests.set(id, request);
@@ -558,7 +558,8 @@ export class RunGate {
           continue;
         }
         // An allow runs the call, unless its tool was set to deny since it asked.
-        const result = decision === "deny" ? { text: refusedText(held.tool, answer.note), isError: true } : this.policy(held.tool) === "deny" ? await this.ranOrDenied(held) : await this.run(held);
+        // A request parked on a replay may follow an attempt that was sent: its refusal makes no "nothing was charged" claim.
+        const result = decision === "deny" ? { text: refusedText(held.tool, answer.note, held.replayed ? "unknown" : "no"), isError: true } : this.policy(held.tool) === "deny" ? await this.ranOrDenied(held) : await this.run(held);
         // A test's seam, unset in a server (AGENTRUN_SERVE_TEST_CRASH_AFTER_CALL, a file that marks it once): an approved
         // call that ran and whose outcome is in the journal, then the process goes before its resume, once the test says go
         // (<file>.go), as a crash between the two would leave the run.
@@ -628,7 +629,7 @@ export class RunGate {
     const key = `approval:${held.id}`;
     if (drive.isMemoized(key)) return this.run(held);
     const heldTo = settingsKeyOf(this.where.harness ?? "pi", held.tool, this.where.mcpServers);
-    return { text: deniedText(held.tool, heldTo, this.denyFrom(held.tool), drive.state().effects.has(key) ? "unknown" : "no"), isError: true };
+    return { text: deniedText(held.tool, heldTo, this.denyFrom(held.tool), held.replayed || drive.state().effects.has(key) ? "unknown" : "no"), isError: true };
   }
 
   /** The approved call, run once by the kernel through the journal any host tool's call goes through, as an effect of
