@@ -6,9 +6,11 @@
 //  - ties each nested call to the one live script (scripts.ts) and holds a `never` tool's call until that script's `exec` line is in
 //    the log, declining it while two scripts are live;
 //  - writes the tie to the session's records before the call runs;
+//  - holds a call Codex runs itself (a remote MCP server's tool, mcp.ts) until its line, or its script's, is in the log;
 //  - answers, after a recovery, a `never` call the log already holds a completed outcome for from the log, one re-issue for each;
 //  - answers a cut-off `exec` with a custom tool call output built from the nested calls the log holds for it, and runs nothing;
-//  - gives the model the harness's note about an interrupted turn as a developer message, once per interrupted turn.
+//  - gives the model the harness's note about an interrupted turn as a developer message, once per interrupted turn;
+//  - accepts Codex's ask to run a remote MCP server's tool (mcp.ts), the one elicitation the harness does not decline.
 import type { DriveContext, SessionState } from "./host/kernel.js";
 import type { SessionMachine } from "./host/process.js";
 import { boundResult, openTurn, recoveryNote, recoverySystemNote, recoveryUserTurn, toolKey, transcriptOf } from "./host/process.js";
@@ -109,6 +111,26 @@ export function codeMode(deps: CodeModeDeps) {
   /** The script a nested call is tied to now, as the log and the proxy's latest answer have it. */
   const tieNow = () => scripts.tie(machine.announcedExec?.(), (id) => logged.has(id));
 
+  /** A call Codex runs without the harness (a remote MCP server's tool, mcp.ts): the barrier it passes before its intent (its
+   *  own line in the log, as the harness's barrier has it; a script's nested call, its script's, tied to it by `admit`), and
+   *  after a recovery the log's answer for a `never` call the interrupted turn completed, re-issued under a new id. */
+  machine.onCalls?.({ recovered: (tool, args) => answeredAgain(tool, args), barrier: async (callId) => {
+    if (NESTED_CALL.test(callId)) {
+      if (!(await admit(callId))) return false;
+      const exec = execOf.get(callId);
+      journal.append(NESTED_STREAM, { callId, exec: exec === undefined || exec === UNWATCHED ? null : exec, since: openTurn(ctx.state())?.since ?? -1 });
+      await journal.flush();
+      return true;
+    }
+    for (let i = 0; i < deps.tries; i++) {
+      if (i) await sleep(50 * 2 ** (i - 1));
+      await synced();
+      if (logged.has(callId)) return journal.flush().then(() => true);
+    }
+    deps.log("codex: declined a call whose function_call line is not in the log", { callId });
+    return false;
+  } });
+
   /** A `never` nested call: wait for its script's line, as the harness's barrier waits for a call's own. True: admitted. */
   const admit = async (callId: string): Promise<boolean> => {
     for (let i = 0; ; i++) {
@@ -151,6 +173,15 @@ export function codeMode(deps: CodeModeDeps) {
     }
   };
 
+  /** A `never` call the log holds a completed outcome for, re-issued after a recovery: its answer from the log, taken once. Held
+   *  to the host's bound as the bridge holds a call's result (`boundResult`): the log keeps the result whole. */
+  function answeredAgain(tool: string, args: unknown, callId?: string): string | undefined {
+    const again = recovered.get(callKey(tool, args))?.shift();
+    if (!again) return undefined;
+    deps.log("codex: answered a never call from the log: it completed before the interruption", { ...(callId ? { callId } : {}), tool: again.tool });
+    return boundResult(`Recorded earlier in this turn, not run again: ${again.text}`).text;
+  }
+
   /** The cell a dangling call waited on, when it is code mode's `wait` (a function call named `wait` with a `cell_id`, and no host tool of
    *  that name); otherwise `undefined`. */
   const waitedCell = (c: Dangling): string | undefined => {
@@ -169,18 +200,19 @@ export function codeMode(deps: CodeModeDeps) {
     /** The app-server's request handler, with a code-mode host tool call handled before the harness's own. */
     request<R extends { method: string; params?: Record<string, unknown> }>(next: (req: R) => Promise<unknown>) {
       return async (req: R): Promise<unknown> => {
+        // Codex asking to run a remote MCP server's tool, should it ask (approve mode asks nothing): the session's only MCP
+        // servers are its own, at its model proxy, which serves only the granted tools and records each call before it
+        // sends it (mcp.ts). Any other elicitation is the harness's to decline.
+        const meta = req.params?._meta as { codex_approval_kind?: unknown } | undefined;
+        if (req.method === "mcpServer/elicitation/request" && meta?.codex_approval_kind === "mcp_tool_call") return { action: "accept", content: {}, _meta: null };
         if (req.method === "item/tool/call") {
           const p = req.params ?? {};
           const callId = String(p.callId ?? "");
           const tool = deps.bridge.get(String(p.tool));
           // After a recovery, a `never` call the log already holds a completed outcome for, called again (a script that was cut short and
           // written again re-issues every call it made): answered from the log, run no more.
-          const again = tool?.replay === "never" ? recovered.get(callKey(tool.name, p.arguments))?.shift() : undefined;
-          if (again) {
-            deps.log("codex: answered a never call from the log: it completed before the interruption", { callId, tool: again.tool });
-            // Held to the host's bound as the bridge holds a call's result (`boundResult`): the log keeps the result whole.
-            return { contentItems: [{ type: "inputText", text: boundResult(`Recorded earlier in this turn, not run again: ${again.text}`).text }], success: true };
-          }
+          const again = tool?.replay === "never" ? answeredAgain(tool.name, p.arguments, callId) : undefined;
+          if (again !== undefined) return { contentItems: [{ type: "inputText", text: again }], success: true };
           if (NESTED_CALL.test(callId)) {
             if (tool?.replay === "never" && !ctx.isMemoized(toolKey(callId)) && !(await admit(callId))) return declined;
             const tie = tieNow();

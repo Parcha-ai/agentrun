@@ -8,7 +8,7 @@ import { randomBytes } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { firstSentence, notKept, said, STOPPED, wordsOf } from "../dist/learning-words.js";
+import { firstSentence, notKept, said, short, STOPPED, wordsOf } from "../dist/learning-words.js";
 import { note } from "./fixtures/faux-learn.mjs";
 import { ended, LEARN, learner, learningRows, made, settled, sleep, started, UNSAID } from "./learn-support.mjs";
 import { follow, scratch, serve, withEnv } from "./support.mjs";
@@ -45,7 +45,7 @@ test("the words: notes counted as a person counts them, what was learned by name
   const all = [
     said.seeded(0), said.seeded(2), said.reflecting, said.proposed(2), said.merged([{ name: "A", supersedes: ["b.md"] }]), said.merged([{ name: "A", supersedes: [] }], [{ name: "B" }]), said.merged([], [{ name: "B" }]), said.empty, said.unparsed, said.grader("Too narrow."),
     ...["secret_value", "secret_shape", "invisible_unicode", "too_many_files", "outside", "file_name", "file_mode", "encoding", "edited", "deleted", "exists", "too_large", "too_many_notes", "note", "status", "supersedes", "index_full"].flatMap((rule) => [said.checker([{ rule }]), said.stale([{ rule }])]),
-    said.noWriteTool, said.noBudget, said.unknownCost, said.screen, ...Object.values(STOPPED).map(said.stopped),
+    said.noBudget, said.unknownCost, ...Object.values(STOPPED).map(said.stopped),
   ];
   // A read says a name and a reason again from their parts, each cut first: a value inside them is found whole.
   const cut = (text) => text.replaceAll("SECRET-VALUE", "[redacted]");
@@ -190,4 +190,70 @@ test("a note's name and a grader's reason holding a long value that becomes a se
   }
   const shown = JSON.stringify(reads);
   for (const part of parts) assert.ok(!shown.includes(part), `no part of the value is shown: ${part}`);
+});
+
+test("a verdict that keeps nothing names first the skill or workflow draft the run proposed, lost with it, so a lost skill is never silent nor cut off", () => {
+  const lost = [{ file: "skills/weekly-summary/SKILL.md", name: "weekly-summary" }, { file: "workflows/price-report/workflow.json", name: "price-report" }];
+  const verdict = { reason: "r", items: [
+    { file: "confirmation-line.md", keep: false, why: "It adds an acknowledgement line the user never asked for." },
+    { file: "skills/weekly-summary/SKILL.md", keep: true, why: "The skill restates the user's format." },
+    { file: "workflows/price-report/workflow.json", keep: true, why: "ok" },
+  ] };
+  assert.equal(notKept(verdict, lost), "Not kept, with the skill weekly-summary and the workflow price-report: It adds an acknowledgement line the user never asked for.");
+  assert.equal(notKept({ reason: "r", items: [{ file: "a.md", keep: false, why: "Too specific." }] }), "Not kept: Too specific.", "a run that proposed no skill or draft says no more");
+  // The why's own subject is the skill: named as such, never as lost "with" it or "either".
+  const own = { reason: "r", items: [{ file: "skills/find-policies/SKILL.md", keep: false, why: "It singles out one store." }] };
+  assert.equal(notKept(own, [{ file: "skills/find-policies/SKILL.md", name: "find-policies" }]), "Not kept, the skill find-policies: It singles out one store.");
+  assert.equal(notKept(own, [{ file: "skills/find-policies/SKILL.md", name: "find-policies" }, lost[1]]), "Not kept, the skill find-policies with the workflow price-report: It singles out one store.");
+  assert.doesNotMatch(notKept(own, [{ file: "skills/find-policies/SKILL.md", name: "find-policies" }]), /either|with the skill/);
+  // Named from what the run proposed, not the grader's answer: an answer the host refused (an item missing) has no items.
+  assert.equal(notKept({ reason: "the grader's verdict gives no item for a new note", items: [] }, lost.slice(0, 1)), `Not kept, with the skill weekly-summary: ${said.stopped(STOPPED.unread).replace(/^Not kept: /, "")}`);
+  // A read says them again from the run's learning (`lost`), each name cut of the host's secrets as they are now, before
+  // the words are cut short: first, so a 500-character why never cuts them off.
+  const why = `It is about ${"one shop's own page ".repeat(25)}alone, which no later run can use.`;
+  const learning = { state: "dropped", reason: "grader", detail: "stored", verdict: { merge: false, reason: why, items: [{ file: "a.md", keep: false, why }] }, lost: lost.slice(0, 1) };
+  for (const max of [300, 140]) assert.match(short(wordsOf(learning, (text) => text), max), /^Not kept, with the skill weekly-summary: It is about/, `cut at ${max}`);
+  const cut = (text) => text.split("weekly-summary").join("[redacted]");
+  assert.equal(wordsOf({ ...learning, verdict: { merge: false, reason: "r", items: [{ file: "a.md", keep: false, why: "Too specific." }] } }, cut), "Not kept, with the skill [redacted]: Too specific.");
+  // serve.json is read as untrusted: an entry of `lost` out of shape is left out.
+  assert.equal(wordsOf({ ...learning, lost: [{ file: 3 }, null, { file: "a.md", name: "a" }], verdict: { merge: false, reason: "r", items: [{ file: "a.md", keep: false, why: "Too specific." }] } }, (text) => text), "Not kept: Too specific.");
+});
+
+test("a run whose learning the grader dropped names the skill it proposed, first and from its proposal, in every read: beside an answer the host refused, beside a why longer than any cut, and cut whole once its name is saved as a secret", { timeout: 180_000 }, async (t) => {
+  // A skill's name the run chose, built at the run (no file of this repository holds it), saved as a tool key only after.
+  const value = `zq${process.pid}${Date.now().toString(36)}${randomBytes(16).toString("hex")}`.slice(0, 64);
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, ["AGENTRUN_SEAL_KEY", "PARALLEL_API_KEY", "MONID_API_KEY", "BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENTRUN_TEST_FAUX_GRADE_HOLD"]);
+  const { api } = await serve(t, { learning: "on", faux: LEARN });
+  const skill = (name) => `---\nname: ${name}\ndescription: Write the weekly summary in the team's format; use when asked for it\n---\n# Weekly summary\n\nThree lines: wins, risks, asks.\n`;
+  const answer = (name) => [`\`\`\`note narrow.md\n${note("Narrow", "One shop's page")}\`\`\``, `\`\`\`\`skill ${name}\n${skill(name)}\`\`\`\``, "Reflected."].join("\n\n");
+  const answering = (id, name, rule) => learner(id, { instructions: ["Answer the question.", `Answer: ${JSON.stringify(answer(name))}`, rule].join("\n") });
+  const long = "longpage".repeat(50);
+  const cases = [
+    ["secret", value, "Grade: drop.", `Not kept, with the skill ${value}: It is about one case.`],
+    ["refused", "weekly-summary", "Grade: omit skills/weekly-summary/SKILL.md.", `Not kept, with the skill weekly-summary: ${said.stopped(STOPPED.unread).replace(/^Not kept: /, "")}`],
+  ];
+  const views = {};
+  for (const [id, name, rule, detail] of [...cases, ["long", "weekly-summary", `Grade: drop saying ${long}.`]]) {
+    await made(api, answering(id, name, rule));
+    const { view, rows } = await ended(api, await started(api, id));
+    settled(view, rows, "dropped", "grader");
+    if (detail) assert.equal(view.learning.detail, detail, id);
+    views[id] = view;
+  }
+  // A why of over 400 characters: the run's view (300) and a list's row (140) still name the skill, before the why.
+  const longRun = views.long.run_id;
+  assert.match((await api("GET", `/runs/${longRun}`)).body.learning.detail, /^Not kept, with the skill weekly-summary: It is about longpage/);
+  const listed = (await api("GET", `/agents/long/runs`)).body.runs.find((one) => one.run_id === longRun).learning.detail;
+  assert.ok(listed.length <= 140 && listed.startsWith("Not kept, with the skill weekly-summary: "), listed);
+
+  // Saved as a key, the server running on: every read of the run cuts the skill's name whole.
+  assert.equal((await api("PUT", "/settings/tool-keys/parallel", { values: { PARALLEL_API_KEY: value } })).status, 204);
+  const runId = views.secret.run_id;
+  const read = (await api("GET", `/runs/${runId}`)).body.learning;
+  const row = (await follow(api, runId, ["completed"])).rows.find((one) => one.kind === "learning");
+  const whole = (await api("GET", `/runs/${runId}/learning`)).body;
+  const lists = [(await api("GET", "/runs")).body.runs, (await api("GET", "/agents/secret/runs")).body.runs].map((runs) => runs.find((one) => one.run_id === runId).learning);
+  assert.equal(read.detail, "Not kept, with the skill [redacted]: It is about one case.");
+  const shown = JSON.stringify([read.detail, row.summary, row.text, row.learning.detail, whole.detail, ...lists.map((one) => one.detail)]);
+  assert.ok(!shown.includes(value.slice(0, 24)) && !shown.includes(value.slice(-24)), shown);
 });

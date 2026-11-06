@@ -21,8 +21,10 @@ import { findClaudeExecutable, platformSuffix } from "./binary.js";
 import { CLAUDE_AGENT_PACKAGE, ClaudeAgentNotInstalled, ClaudeAgentPinMismatch, ClaudeAgentThinkingOff } from "./errors.js";
 import { type ClaudeAgentSdk, claudeCodeHarness, lostPrompts } from "./harness.js";
 import { JournalSessionStore } from "./store.js";
-import { type ConfineChild, localMachine } from "./host/machine.js";
+import { CLAUDE_MCP_CLIENT, type ConfineChild, localMachine } from "./host/machine.js";
 import { serialWriter } from "./serial.js";
+import { MCP_SERVER } from "./transcript.js";
+import type { ToolServerModules } from "./host/tool-server.js";
 import { CLAUDE_AGENT_SDK_INSTALL, CLAUDE_AGENT_SDK_VERSION, CLAUDE_CODE_VERSION, installedVersion } from "./versions.js";
 export { CLAUDE_AGENT_CLI_SKILL_NAMES } from "./cli-names.js";
 
@@ -121,6 +123,10 @@ export interface ClaudeAgentAdapterOptions {
   sdk?: ClaudeAgentSdk;
   /** The injected module's version, as its package.json says: checked when the adapter is made. */
   sdkVersion?: string;
+  /** The MCP library the session's tools are served with (`@modelcontextprotocol/sdk`'s `server/mcp.js` and
+   *  `types.js`), loaded by the host from where it installed the SDK, its peer. Default: imported by name, beside this
+   *  package. */
+  mcp?: ToolServerModules;
   /** The CLI to run (the SDK's platform package's `claude`). Default: found beside the SDK. Its sha256 and version are
    *  checked against the pins when the adapter is made. */
   cliPath?: string;
@@ -216,13 +222,13 @@ function checkCli(path: string, pins: { sha256?: string; version: string }): { p
 
 /** What the adapter runs with, or the typed reason it cannot: the SDK (injected or installed) and its CLI, each the
  *  pinned build. `installed` looks a package's version up (default: where Node would import it from here). */
-export function verifyClaudeAgent(options: Pick<ClaudeAgentAdapterOptions, "sdk" | "sdkVersion" | "cliPath">, installed: (name: string) => string | undefined = installedVersion): { cliPath: string } {
+export function verifyClaudeAgent(options: Pick<ClaudeAgentAdapterOptions, "sdk" | "sdkVersion" | "cliPath" | "mcp">, installed: (name: string) => string | undefined = installedVersion): { cliPath: string } {
   const sdkVersion = options.sdk ? options.sdkVersion : installed("@anthropic-ai/claude-agent-sdk");
   if (!options.sdk && sdkVersion === undefined) throw new ClaudeAgentNotInstalled(`@anthropic-ai/claude-agent-sdk ${CLAUDE_AGENT_SDK_VERSION} is not installed beside ${CLAUDE_AGENT_PACKAGE}, and no module was given (sdk)`, CLAUDE_AGENT_SDK_INSTALL);
   if (sdkVersion !== undefined && sdkVersion !== CLAUDE_AGENT_SDK_VERSION) throw new ClaudeAgentPinMismatch("sdk_version", CLAUDE_AGENT_SDK_VERSION, sdkVersion);
   // The session's tools are served by an MCP server built here (host/tool-server.ts), whichever SDK runs: an injected
   // SDK does not bring the MCP library, so a missing one is refused now, not at the first turn.
-  if (installed("@modelcontextprotocol/sdk") === undefined) throw new ClaudeAgentNotInstalled(`@modelcontextprotocol/sdk is not installed beside ${CLAUDE_AGENT_PACKAGE} (the Agent SDK's peer, which serves the session's tools; npm installs it with the SDK)`, CLAUDE_AGENT_SDK_INSTALL);
+  if (!options.mcp && installed("@modelcontextprotocol/sdk") === undefined) throw new ClaudeAgentNotInstalled(`@modelcontextprotocol/sdk is not installed beside ${CLAUDE_AGENT_PACKAGE} (the Agent SDK's peer, which serves the session's tools; npm installs it with the SDK)`, CLAUDE_AGENT_SDK_INSTALL);
   const cli = verifyClaudeAgentCli(options.cliPath ?? findClaudeExecutable());
   if (cli instanceof Error) throw cli;
   return { cliPath: cli.path };
@@ -353,7 +359,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
   return {
     id: CLAUDE_AGENT_ID,
     version: CLAUDE_AGENT_SDK_VERSION,
-    capabilities: () => ({ fork: false }),
+    capabilities: () => ({ fork: false, mcpClient: CLAUDE_MCP_CLIENT }),
     check(spec) {
       const problems: string[] = [];
       if (spec.context === "fork") problems.push("Claude Agent sessions cannot fork another session's transcript; declare context: \"fresh\"");
@@ -367,6 +373,16 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
         const common = toolSchemaProblems(tool.name, tool.inputSchema);
         problems.push(...common, ...(common.length ? [] : claudeSchemaProblems(tool.name, tool.inputSchema)));
       }
+      for (const server of spec.mcp?.servers ?? []) {
+        if (server.name === MCP_SERVER) problems.push(`the MCP server name ${MCP_SERVER} is the adapter's own`);
+        for (const tool of server.tools) {
+          const name = `mcp__${server.name}__${tool.name}`;
+          if (!TOOL_NAME.test(name)) problems.push(`the MCP tool ${name.slice(0, 80)} is not a name the Claude Agent CLI takes (letters, digits, _ and -, at most 64)`);
+          // A remote tool's schema meets the same checks as the host's: the CLI would drop it without a word.
+          const common = toolSchemaProblems(name, tool.inputSchema);
+          problems.push(...common, ...(common.length ? [] : claudeSchemaProblems(name, tool.inputSchema)));
+        }
+      }
       return problems;
     },
     async open(spec, io) {
@@ -378,6 +394,9 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
       const tools: HostTool[] = skills.length ? [...spec.tools, readSkillFileTool(join(dir, "plugin", "skills"), skills.map((skill) => ({ name: skill.name, files: Object.keys(skill.files) })))] : spec.tools;
 
       const calls = new CallsInFlight();
+      // The remote MCP servers' granted tools, as the CLI names them: its own MCP client calls them at the proxy.
+      const mcpServers = spec.mcp?.servers ?? [];
+      const mcpNames = new Set(mcpServers.flatMap((server) => server.tools.map((tool) => `mcp__${server.name}__${tool.name}`)));
       // The CLI's own tools offered to the model: Skill only when the session has skills, WebSearch only when it is on.
       const builtins = [...(skills.length ? ["Skill"] : []), ...(webSearch ? ["WebSearch"] : [])];
       const acquire = localMachine({
@@ -396,6 +415,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
           ...(options.provider.headers ? { headers: options.provider.headers } : {}),
           ...(options.log ? { log: options.log } : {}),
           ...(options.fetch ? { fetch: options.fetch } : {}),
+          ...(spec.mcp ? { mcp: { session: spec.mcp, tools: [...mcpNames] } } : {}),
         },
       });
       // The SDK this session runs on (the host's, or the one installed beside this package, checked above), thinking at
@@ -417,6 +437,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
         // decide (test/tool-off.test.mjs pins the CLI's whole tool set against these lists), but WebSearch when it is on.
         disallowedTools: CLAUDE_AGENT_ALSO_OFF.filter((name) => !(webSearch && name === "WebSearch")),
         ...(webSearch ? { providerTools: ["web_search" as const] } : {}),
+        ...(mcpServers.length ? { mcpServers: mcpServers.map((server) => ({ name: server.name, tools: server.tools.map((tool) => tool.name) })) } : {}),
         model: modelFor(spec),
         ...(skills.length ? { skills: { plugin: join(dir, "plugin"), names: writeSkillsPlugin(join(dir, "plugin"), skills) } } : {}),
         ...(options.smallModel ? { smallModel: options.smallModel } : {}),
@@ -425,12 +446,18 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
         gatewayUrl: options.provider.origin,
         executable,
         sdk,
+        ...(options.mcp ? { toolServerModules: options.mcp } : {}),
         ...(options.log ? { log: options.log } : {}),
       });
 
       const live = (event: unknown) => {
         const e = event as { type?: string; delta?: unknown; callId?: unknown; name?: unknown; isError?: unknown; result?: unknown; truncated?: unknown; args?: unknown; reason?: unknown };
         if (e?.type === "text" && typeof e.delta === "string") io.onEvent({ type: "text", delta: e.delta });
+        // An MCP call, recorded as a built-in's: the host hears of it once its intent is in the session's records.
+        if (e?.type === "tool_start" && typeof e.callId === "string" && typeof e.name === "string" && mcpNames.has(e.name)) {
+          calls.begin(e.callId);
+          io.onEvent({ type: "tool_start", callId: e.callId, name: e.name, args: e.args ?? {} });
+        }
         // The tool bridge's `tool_end` comes once the call's outcome is in the session's records: only then does the host
         // hear the call ended, with the text recorded.
         if (e?.type === "tool_end" && typeof e.callId === "string" && typeof e.name === "string") {

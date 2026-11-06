@@ -9,7 +9,7 @@ import { test } from "node:test";
 import { note } from "./fixtures/faux-learn.mjs";
 import { CAPS } from "../dist/learn/check.js";
 import { ended, git, learner, LEARN, made, mergesOf, reflectRows, repoOf, savedOf, sleep, started } from "./learn-support.mjs";
-import { scratch, serve, withEnv } from "./support.mjs";
+import { runDir, scratch, serve, withEnv } from "./support.mjs";
 
 /** A SKILL.md whose steps hold a fenced code block: a ``` line inside its four-backtick block closes nothing. */
 const SKILL = "---\nname: find-policies\ndescription: Find a store's refund and shipping policies; use when a case asks what they say\n---\n# Find policies\n\n1. Open the policies page first:\n\n```sh\ncurl -s https://shop.example/policies/\n```\n\n2. Then the footer links.\n";
@@ -82,11 +82,20 @@ test("a skill from a run whose job failed is left out by the checks as skill_out
   assert.ok(tree.includes("check-units.md") && !tree.includes("skills/find-policies/SKILL.md"), tree.join(","));
 });
 
-test("a draft may name only the agent's own tools: with read granted a draft that names it merges, and without it the checks leave the draft out and the rest merges", { timeout: 120_000 }, async (t) => {
+/** A draft whose call node fetches the store's page with `tool`. */
+const callDraft = (tool) => {
+  const doc = JSON.parse(draft());
+  doc.schemas.Page = { type: "object" };
+  doc.output = { schemaId: "Page", path: "page" };
+  doc.root = { node: "call", label: "fetch", via: "tool", tool, args: { url: "{url}" }, out: "Page", as: "page", deadline_s: 30 };
+  return JSON.stringify(doc, null, 2);
+};
+
+test("a draft may name only the agent's own tools, on a call node: with web_fetch granted a draft that runs it merges, and without it the checks leave the draft out and the rest merges; a model node that names a tool is left out though the agent was granted it", { timeout: 120_000 }, async (t) => {
   const { api, data } = await server(t);
-  const text = answer({ json: draft(["read"]) });
-  await made(api, answering("reader", text, [], { tools: ["read"] }));
-  const granted = await ended(api, await started(api, "reader"));
+  const text = answer({ json: callDraft("web_fetch") });
+  await made(api, answering("fetcher", text, [], { tools: ["web_fetch"] }));
+  const granted = await ended(api, await started(api, "fetcher"));
   assert.equal(granted.view.learning?.state, "merged", JSON.stringify(granted.view.learning));
   await made(api, answering("bare", text));
   const bare = await ended(api, await started(api, "bare"));
@@ -94,7 +103,15 @@ test("a draft may name only the agent's own tools: with read granted a draft tha
   assert.ok(!git(repoOf(data, "bare"), ["ls-tree", "-r", "--name-only", "main"]).includes("workflows/"), "the draft is not on main");
   const saved = await savedOf(data, bare.view.run_id);
   assert.deepEqual(saved.learning.problems.map((problem) => problem.rule), ["workflow"]);
-  assert.match(saved.learning.problems[0].detail, /tool "read" is not one of the host's tools/);
+  assert.match(saved.learning.problems[0].detail, /tool "web_fetch" is not one of the host's tools/);
+  // A learned model node runs without tools: one that names web_fetch is refused at learn time, though it is granted.
+  await made(api, answering("tooled", answer({ json: draft(["web_fetch"]) }), [], { tools: ["web_fetch"] }));
+  const tooled = await ended(api, await started(api, "tooled"));
+  assert.deepEqual([tooled.view.learning?.state, tooled.view.learning?.reason], ["merged", null], JSON.stringify(tooled.view.learning));
+  assert.ok(!git(repoOf(data, "tooled"), ["ls-tree", "-r", "--name-only", "main"]).includes("workflows/"), "the tooled draft is not on main");
+  const refused = await savedOf(data, tooled.view.run_id);
+  assert.deepEqual(refused.learning.problems.map((problem) => problem.rule), ["workflow"]);
+  assert.match(refused.learning.problems[0].detail, /model node at \/root names a tool \(web_fetch\): a learned workflow's model node runs without tools/);
 });
 
 test("the grader drops a draft that singles out one case: the draft (its workflow.json and README) is left out, and the note and the skill it kept merge", { timeout: 120_000 }, async (t) => {
@@ -199,7 +216,7 @@ test("a skill is laid into a run with its name and description alone in its fron
   git(repo, ["commit", "-q", "-m", "a hand edit"]);
   const runId = await started(api, "laid");
   await ended(api, runId);
-  const given = readFileSync(join(data, "runs", runId, "work", ".agents", "skills", "find-policies", "SKILL.md"), "utf8");
+  const given = readFileSync(join(runDir(data, runId), "work", ".agents", "skills", "find-policies", "SKILL.md"), "utf8");
   assert.ok(!given.includes("hooks:") && !given.includes("touch /tmp/never"), given);
   assert.match(given, /^---\nname: find-policies\ndescription: [^\n]+\n---\n/);
 });
@@ -215,4 +232,22 @@ test("a skill left out unread for its size that hides a secret's shape refuses t
   assert.ok(saved.learning.problems.some((problem) => problem.rule === "secret_shape"), JSON.stringify(saved.learning.problems));
   assert.equal(grades(), 0, "nothing graded");
   assert.deepEqual(mergesOf(repoOf(data, "hider"), view.run_id), []);
+});
+
+test("a draft whose call node calls a tool the agent sets to ask is left out by the checks in #1601's words; the run's other learning stands", { timeout: 120_000 }, async (t) => {
+  const { api, data } = await server(t);
+  const json = JSON.stringify({
+    v: 2,
+    name: "find-policies",
+    schemas: { Store: { type: "object", properties: { url: { type: "string" } }, required: ["url"] }, Page: { type: "object" } },
+    input: { schemaId: "Store" },
+    output: { schemaId: "Page", path: "page" },
+    root: { node: "call", label: "fetch", via: "tool", tool: "web_fetch", args: { url: "{url}" }, out: "Page", as: "page", deadline_s: 30 },
+  });
+  await made(api, answering("asking", answer({ json }), [], { tools: ["web_fetch"], tool_settings: { web_fetch: { permission: "ask" } } }));
+  const asked = await ended(api, await started(api, "asking"));
+  const saved = await savedOf(data, asked.view.run_id);
+  assert.match((saved.learning.problems ?? []).map((problem) => problem.detail).join("\n"), /This workflow's call node calls web_fetch, which is set to ask, and a workflow's call node can't wait for an approval: set it to allow for this agent/, JSON.stringify(saved.learning));
+  const onMain = git(repoOf(data, "asking"), ["ls-tree", "-r", "--name-only", "main"]);
+  assert.ok(!onMain.includes("workflows/"), `no draft merged: ${onMain}`);
 });

@@ -29,6 +29,7 @@ import * as pages from "../dist/fetch-page.js";
 import * as background from "../dist/background.js";
 import * as hosts from "../dist/host-tools.js";
 import { CLIP, monidText } from "../dist/monid.js";
+import { LEARNED_CLIP, learnedText, learnedWorkflowTool } from "../dist/learned-workflow.js";
 import * as web from "../dist/web-fetch.js";
 import * as search from "../dist/web-search.js";
 
@@ -78,6 +79,9 @@ test("every host tool's largest result is within the host's result bound, which 
   const monid = [await monidText({ runId: "r".repeat(80), output: '"'.repeat(3 * CLIP) }, work, "run"), await monidText({ runId: "w".repeat(80), output: wide.repeat(3 * CLIP) }, work, "run")];
   for (const name of ["monid.discover", "monid.inspect", "monid.run"]) keep(name, ...monid);
 
+  // learned_workflow: a workflow's output far past LEARNED_CLIP, as JSON (quotes escaped), and in three-byte text.
+  keep("learned_workflow", learnedText(JSON.stringify({ out: '"'.repeat(3 * LEARNED_CLIP) })), learnedText(JSON.stringify({ out: wide.repeat(3 * LEARNED_CLIP) })));
+
   // pi's read, write and edit on the runner, and bash in a box, through the host tools' own call: past pi's limits.
   const env = new NodeExecutionEnv({ cwd: work });
   const run = { env: async () => env };
@@ -101,33 +105,47 @@ test("every host tool's largest result is within the host's result bound, which 
   assert.ok(shell.text.length > hosts.MAX_BYTES - 100, "bash's tail at pi's limit");
   keep("bash", shell.text);
   // The background tools (background.ts): a page at BACKGROUND_PAGE_BYTES, of quotes and of three-byte text, and a list
-  // at BACKGROUND_LIST_MAX with every command at the 200 bytes a list reads of it (the logs and their state written
-  // here, as a box's runners leave them).
-  const [start, output, input, signalTool, list] = hosts.hostTools(run, background.BACKGROUND_TOOLS, ctx, new Map(), box.tools);
+  // at BACKGROUND_LIST_MAX with every command at the 200 bytes a list reads of it. Their trusted state is written where a
+  // box's runners leave it, in the box-only directory: here a TMPDIR of the test's own, which the tools' commands get.
+  const boxTmp = join(dir, "box-tmp");
+  const trusted = join(boxTmp, ".agentrun-background");
+  const boxed = new NodeExecutionEnv({ cwd: work });
+  const bgEnv = { cwd: work, exec: (command, options, context) => boxed.exec(command, { ...options, env: { ...(options?.env ?? {}), TMPDIR: boxTmp } }, context) };
+  const bgBox = codingSource({ mode: "sandbox", box: "docker" }, { env: async () => bgEnv });
+  const [start, output, input, signalTool, list] = hosts.hostTools(run, background.BACKGROUND_TOOLS, ctx, new Map(), bgBox.tools);
   const pageBytes = background.BACKGROUND_PAGE_BYTES;
+  const trust = async (i, files) => {
+    await mkdir(join(trusted, String(i)), { recursive: true });
+    for (const [name, text] of Object.entries(files)) await writeFile(join(trusted, String(i), name), text);
+  };
   for (const [i, text] of [[1, '"'.repeat(4 * pageBytes)], [2, wide.repeat(4 * pageBytes)]]) {
     await mkdir(join(work, "background", String(i)), { recursive: true });
     await writeFile(join(work, "background", String(i), "output.log"), text);
-    await writeFile(join(work, "background", String(i), "exit"), "0\n");
+    await trust(i, { exit: "0\n" });
   }
   const ended = 3 + 2 * background.BACKGROUND_LIST_MAX;
+  const longCommand = `"\\${wide.repeat(200)}`;
   for (let i = 3; i < ended; i++) {
     await mkdir(join(work, "background", String(i)), { recursive: true });
-    await writeFile(join(work, "background", String(i), "command"), `"\\${wide.repeat(200)}`);
-    await writeFile(join(work, "background", String(i), "exit"), "137\n");
-    await writeFile(join(work, "background", String(i), "started"), "2026-11-05T00:00:00Z\n");
+    await trust(i, { command: longCommand, exit: "137\n", started: "2026-11-05T00:00:00Z\n" });
   }
   const outputs = [await output.call({ id: "1" }, { callId: "o1", signal }), await output.call({ id: "2", offset: 1 }, { callId: "o2", signal })];
   assert.ok(outputs.every((answer) => !answer.isError && Buffer.byteLength(answer.text) > pageBytes - 10), `each page at its cap: ${outputs.map((answer) => answer.text.slice(0, 200)).join("; ")}`);
   keep("bash_output", ...outputs.map((answer) => answer.text));
   const listing = await list.call({}, { callId: "l", signal });
   assert.equal(listing.text.split("\n").length, 1 + background.BACKGROUND_LIST_MAX + 1, listing.text.slice(0, 300));
+  // Each row carries its command's first 200 bytes (as many whole three-byte characters as fit, cut for the line) and
+  // its start time: the largest list there is.
+  const rows = listing.text.split("\n").slice(1, 1 + background.BACKGROUND_LIST_MAX);
+  assert.ok(rows.every((row) => row.includes("started 2026-11-05T00:00:00Z") && row.includes(wide.repeat(20))), rows.slice(0, 2).join("\n"));
   keep("bash_list", listing.text);
   const started = await start.call({ command: `${'"'.repeat(1000)}; sleep 30` }, { callId: "s", signal });
-  assert.match(started.text, new RegExp(`^Started background process ${ended} `));
+  // The next free id: past every one in work/ and in the box-only directory (this machine's TMPDIR, here).
+  const startedId = /^Started background process (\d+) /.exec(started.text)?.[1];
+  assert.ok(Number(startedId) >= ended, started.text);
   keep("bash_background", started.text);
   keep("bash_input", (await input.call({ id: "999999999", text: "x" }, { callId: "i", signal })).text, (await input.call({ id: "1", text: '"'.repeat(background.BACKGROUND_INPUT_BYTES + 1) }, { callId: "i2", signal })).text);
-  const killed = await signalTool.call({ id: String(ended), signal: "KILL" }, { callId: "k", signal });
+  const killed = await signalTool.call({ id: startedId, signal: "KILL" }, { callId: "k", signal });
   assert.match(killed.text, /ended by signal KILL/);
   keep("bash_signal", killed.text, (await signalTool.call({ id: "3", signal: "KILL" }, { callId: "k2", signal })).text);
 
@@ -143,7 +161,9 @@ test("every host tool's largest result is within the host's result bound, which 
 
   // Every host tool, as the Claude Agent adapter lists it to its CLI (its tool server's tools/list, read by an MCP
   // client), carries the bound as its result size; the CLI takes one up to 500,000.
-  const all = hosts.hostTools({ ...run, claim: { work } }, Object.keys(hosts.REPLAY), ctx, new Map(), box.tools);
+  // learned_workflow is the run's own tool, given beside the table's when its pin names a learned workflow (app.ts).
+  const learned = learnedWorkflowTool({ workflows: [{ name: "answer", description: "Answers a question", workflow: "{}" }], granted: [], env: {}, work, models: { getModel: () => undefined, getModels: () => [], completeSimple: async () => ({}) } });
+  const all = hosts.hostTools({ ...run, claim: { work } }, Object.keys(hosts.REPLAY), ctx, new Map(), box.tools, undefined, [learned]);
   assert.deepEqual(all.map((tool) => tool.name).sort(), Object.keys(hosts.REPLAY).map((name) => name.replace(".", "_")).sort(), "every host tool, under its wire name");
   const server = await claude.toolServer("hands", all.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })), async () => ({ content: [] }));
   const [near, far] = InMemoryTransport.createLinkedPair();
