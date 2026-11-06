@@ -203,7 +203,7 @@ func prepareCapabilities(how string) error {
 }
 
 // becomeChild holds threads of its own, then calls Become(uid:gid, home, socket) with args uid:gid, home, socket and how
-// to prepare the capabilities first (see prepareCapabilities). It prints "refused <error>" and exits 3 when Become
+// to prepare the capabilities first (see prepareCapabilities); with "none" for uid:gid it calls Unprivileged. It prints "refused <error>" and exits 3 when Become
 // refuses; otherwise "thread <tid> <fields>" for each of its threads and "program <fields>" for a program it starts.
 func becomeChild(args []string) int {
 	if len(args) != 4 {
@@ -211,7 +211,7 @@ func becomeChild(args []string) int {
 		return 2
 	}
 	var uid, gid int
-	if _, err := fmt.Sscanf(args[0], "%d:%d", &uid, &gid); err != nil {
+	if _, err := fmt.Sscanf(args[0], "%d:%d", &uid, &gid); err != nil && args[0] != "none" {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
@@ -231,7 +231,11 @@ func becomeChild(args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	if err := Become(uid, gid, args[1], args[2]); err != nil {
+	drop := func() error { return Become(uid, gid, args[1], args[2]) }
+	if args[0] == "none" {
+		drop = Unprivileged
+	}
+	if err := drop(); err != nil {
 		fmt.Println("refused", err)
 		return 3
 	}
@@ -311,6 +315,31 @@ func runBecomeChild(t *testing.T, user, how string) (string, int) {
 	return string(out), 0
 }
 
+// checkNothingLeft checks the child's lines: every thread and the program it started are uid:gid, hold no capability in
+// any set and have no_new_privs set.
+func checkNothingLeft(t *testing.T, what, uid, gid, out string) {
+	t.Helper()
+	want := fmt.Sprintf("Uid=%[1]s,%[1]s,%[1]s,%[1]s Gid=%[2]s,%[2]s,%[2]s,%[2]s CapInh=%[3]s CapPrm=%[3]s CapEff=%[3]s CapBnd=%[3]s CapAmb=%[3]s NoNewPrivs=1", uid, gid, noCapabilities)
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	threads, wrong := 0, []string{}
+	for _, line := range lines {
+		kind, rest, _ := strings.Cut(line, " ")
+		if kind == "thread" {
+			threads++
+			_, rest, _ = strings.Cut(rest, " ")
+		}
+		if rest != want {
+			wrong = append(wrong, line)
+		}
+	}
+	if len(wrong) > 0 {
+		t.Errorf("%s: %d of %d lines hold more than they should; the first:\n  %s\n  want %s", what, len(wrong), len(lines), wrong[0], want)
+	}
+	if threads < 5 || !strings.HasPrefix(lines[len(lines)-1], "program ") {
+		t.Errorf("%s: %d threads and no program line in %q; want its own thread, the 4 it holds and the program it started", what, threads, out)
+	}
+}
+
 func TestBecomeLeavesNoCapabilityOnAnyThreadRootIncluded(t *testing.T) {
 	needsRootWithCapabilities(t)
 	for _, user := range []string{"0:0", "1000:1000"} {
@@ -321,26 +350,40 @@ func TestBecomeLeavesNoCapabilityOnAnyThreadRootIncluded(t *testing.T) {
 				continue
 			}
 			uid, gid, _ := strings.Cut(user, ":")
-			want := fmt.Sprintf("Uid=%[1]s,%[1]s,%[1]s,%[1]s Gid=%[2]s,%[2]s,%[2]s,%[2]s CapInh=%[3]s CapPrm=%[3]s CapEff=%[3]s CapBnd=%[3]s CapAmb=%[3]s NoNewPrivs=1", uid, gid, noCapabilities)
-			lines := strings.Split(strings.TrimSpace(out), "\n")
-			threads, wrong := 0, []string{}
-			for _, line := range lines {
-				kind, rest, _ := strings.Cut(line, " ")
-				if kind == "thread" {
-					threads++
-					_, rest, _ = strings.Cut(rest, " ")
-				}
-				if rest != want {
-					wrong = append(wrong, line)
-				}
-			}
-			if len(wrong) > 0 {
-				t.Errorf("Become(%s), %s: %d of %d lines hold more than they should; the first:\n  %s\n  want %s", user, how, len(wrong), len(lines), wrong[0], want)
-			}
-			if threads < 5 || !strings.HasPrefix(lines[len(lines)-1], "program ") {
-				t.Errorf("Become(%s), %s: %d threads and no program line in %q; want its own thread, the 4 it holds and the program it started", user, how, threads, out)
-			}
+			checkNothingLeft(t, fmt.Sprintf("Become(%s), %s", user, how), uid, gid, out)
 		}
+	}
+}
+
+func TestUnprivilegedLeavesRootNoCapabilityOnAnyThread(t *testing.T) {
+	needsRootWithCapabilities(t)
+	for _, how := range []string{"plain", "ambient"} {
+		out, code := runBecomeChild(t, "none", how)
+		if code != 0 {
+			t.Errorf("Unprivileged, %s: refused: %s", how, out)
+			continue
+		}
+		checkNothingLeft(t, "Unprivileged as root, "+how, "0", "0", out)
+	}
+	out, code := runBecomeChild(t, "none", "no-setpcap")
+	if code != 3 || !strings.Contains(out, "bounding set") || !strings.Contains(out, "operation not permitted") {
+		first, _, _ := strings.Cut(out, "\n")
+		t.Errorf("Unprivileged as root without CAP_SETPCAP: exit %d, %q; want a refusal that names the bounding set and EPERM", code, first)
+	}
+}
+
+// As a user with a bounding set and no CAP_SETPCAP, as go test runs on a host: the drop cannot be done, so it is refused.
+func TestUnprivilegedRefusesABoundingSetItCannotEmpty(t *testing.T) {
+	if cgoBuild {
+		t.Skip("this test binary links cgo, where Go cannot make one call on every thread; CGO_ENABLED=0 go test runs this")
+	}
+	effective, bounding := capabilitiesOfThisProcess(t)
+	if effective&(1<<capSetpcap) != 0 || bounding == 0 {
+		t.Skipf("CapEff %016x, CapBnd %016x: this process can empty its bounding set", effective, bounding)
+	}
+	out, code := runBecomeChild(t, "none", "plain")
+	if code != 3 || !strings.Contains(out, "bounding set") || !strings.Contains(out, "operation not permitted") {
+		t.Fatalf("Unprivileged with CapBnd %016x and no CAP_SETPCAP: exit %d, %q; want a refusal that names the bounding set and EPERM", bounding, code, out)
 	}
 }
 
