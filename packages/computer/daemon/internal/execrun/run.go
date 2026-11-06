@@ -69,7 +69,7 @@ func Run(ctx context.Context, spec Spec) (Result, error) {
 		return Result{}, err
 	}
 	env := environment(acct, spec.Env)
-	path, err := lookPath(spec.Argv[0], env)
+	path, err := lookPath(spec.Argv[0], env, dir)
 	if err != nil {
 		return Result{}, err
 	}
