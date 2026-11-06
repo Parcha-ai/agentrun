@@ -1087,28 +1087,6 @@ export const COMMANDS = [
   {
     "command": [
       "runs",
-      "get-run-browser"
-    ],
-    "operationId": "getRunBrowser",
-    "method": "GET",
-    "path": "/runs/{run_id}/browser",
-    "pathParams": [
-      "run_id"
-    ],
-    "multiSegment": [],
-    "query": [],
-    "headers": [],
-    "bodyFlags": [],
-    "hasBody": false,
-    "bodyRequired": false,
-    "bodyTypes": [],
-    "secretBody": false,
-    "raw": false,
-    "summary": "Watch the run's browser live and take it over: its viewer link, for the owner"
-  },
-  {
-    "command": [
-      "runs",
       "graph"
     ],
     "operationId": "getRunGraph",
