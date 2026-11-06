@@ -78,6 +78,13 @@ async function probe(api, agentId, plan) {
   assert.equal(run.status, 202, JSON.stringify(run.body));
   return run.body;
 }
+/** A run of a revision with the browser that did not start: refused (409 agent_not_runnable) for the browser's keys,
+ *  which these tests do not hold, and never for its place. */
+function refusedNotForPlace(answer) {
+  assert.equal(answer.status, 409, JSON.stringify(answer.body));
+  assert.equal(answer.body.error.code, "agent_not_runnable", JSON.stringify(answer.body));
+  assert.ok(!/sandbox|box/.test(answer.body.error.message), JSON.stringify(answer.body));
+}
 /** A definition as a person writes one first: a name and instructions, no place and no tools. */
 const fresh = (id) => ({ definition: { id, name: id, instructions: "Probe." } });
 
@@ -172,6 +179,7 @@ test("a revision that names no place runs where default_place says, as a new age
   withEnv(t, { AGENTRUN_BOXES: "none" });
   const data = join(await scratch(t), "agents");
   const first = await startServe({ data, port: 0, faux: PROBE, drainTimeout: "5s" });
+  t.after(() => first.close());
   const before = client(first.baseUrl, first.token);
   const made = await before("POST", "/agents", fresh("old"));
   assert.equal(made.status, 201, JSON.stringify(made.body));
@@ -202,7 +210,7 @@ test("a revision that names no place runs where default_place says, as a new age
   // (Its run may still be refused for the browser's keys, which this test does not hold: never for its place.)
   const browsing = await api("POST", "/agents/browsing/runs", { input: { content: JSON.stringify({ probe: [] }) } });
   if (browsing.status === 202) assert.deepEqual(browsing.body.place, RUNNER);
-  else assert.ok(!/sandbox|box/.test(browsing.body.error?.message ?? ""), JSON.stringify(browsing.body));
+  else refusedNotForPlace(browsing);
   const flow = await api("POST", "/agents/flow/runs", { input: { question: "q" } });
   assert.equal(flow.status, 202, JSON.stringify(flow.body));
   assert.deepEqual(flow.body.place, RUNNER);
@@ -212,6 +220,7 @@ test("a revision with no place and bash, saved while docker was there, is refuse
   withEnv(t, { AGENTRUN_BOXES: "none" });
   const data = join(await scratch(t), "agents");
   const first = await startServe({ data, port: 0, faux: PROBE, drainTimeout: "5s" });
+  t.after(() => first.close());
   const none = client(first.baseUrl, first.token);
   assert.equal((await none("POST", "/agents", fresh("shell"))).status, 201);
   assert.equal((await none("POST", "/agents", agent("browsing", { tools: ["read", "browser"] }))).status, 201);
@@ -219,6 +228,7 @@ test("a revision with no place and bash, saved while docker was there, is refuse
   // Docker is there: an edit naming bash and no place saves, its place resolving to the box.
   const docker = await fakeDocker(t);
   const second = await startServe({ data, port: 0, faux: PROBE, drainTimeout: "5s" });
+  t.after(() => second.close());
   const boxed = client(second.baseUrl, second.token);
   const edited = await boxed("PUT", "/agents/shell/definition", { definition: { instructions: "Probe.", tools: ["bash"] } });
   assert.equal(edited.status, 200, JSON.stringify(edited.body));
@@ -226,7 +236,7 @@ test("a revision with no place and bash, saved while docker was there, is refuse
   // The browser keeps the runner, docker or not: a revision with a tool the box refuses never resolves to it.
   const browsing = await boxed("POST", "/agents/browsing/runs", { input: { content: JSON.stringify({ probe: [] }) } });
   if (browsing.status === 202) assert.deepEqual(browsing.body.place, RUNNER);
-  else assert.ok(!/sandbox|box/.test(browsing.body.error?.message ?? ""), JSON.stringify(browsing.body));
+  else refusedNotForPlace(browsing);
   await second.close();
   // Docker is gone: default_place is the runner, and the revision with bash is refused, saying why, before anything runs.
   withEnv(t, { AGENTRUN_BOXES: "none" });

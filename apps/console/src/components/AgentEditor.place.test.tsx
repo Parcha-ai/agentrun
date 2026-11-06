@@ -37,6 +37,17 @@ describe("AgentEditor, where the agent runs", () => {
     expect(renderToStaticMarkup(createElement(AgentEditor, { agent: agent(), caps: { ...caps, places: null }, step: "settings" }))).not.toContain("Where it runs");
   });
 
+  it("an agent that names no place, on a server whose default_place is docker, has bash open, as its runs are in the box; with the browser it is on the runner", () => {
+    const boxed = placesOf({ places: { modes: ["runner", "sandbox"], default_place: { mode: "sandbox", box: "docker" }, boxes: [{ id: "docker", available: true }] } });
+    const shell = mount({ agent: agent(), caps: { ...caps, places: boxed }, step: "settings" });
+    expect(shell.input('input[name="place"][value="sandbox"]')!.checked).toBe(true);
+    shell.step(/Tools/);
+    expect(shell.input('input[type="checkbox"][value="bash"]')!.disabled).toBe(false);
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    const browsing = mount({ agent: agent(undefined, ["read", "browser"]), caps: { ...caps, places: boxed, tools: toolOffers([{ name: "read", available: true }, { name: "browser", available: true }, { name: "bash", available: true, sandbox_only: true }]) }, step: "settings" });
+    expect(browsing.input('input[name="place"][value="runner"]')!.checked).toBe(true);
+  });
+
   it("picking Sandbox opens bash's tick at once; it's saved with the place", async () => {
     const { click, step, input, saved } = mount({ agent: agent(), caps, step: "settings" });
     click(input('input[name="place"][value="sandbox"]'));

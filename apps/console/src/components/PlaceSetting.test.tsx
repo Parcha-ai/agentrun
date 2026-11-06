@@ -14,11 +14,11 @@ afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 const PLACES: Places = { modes: ["runner", "sandbox"], default: "runner", boxes: [{ id: "bwrap", available: false, reason: "fixture: bwrap is not here" }, { id: "docker", available: true }] };
 const TOOLS: ToolOffer[] = [{ name: "read", available: true }, { name: "bash", available: true, sandbox_only: true }];
 
-function mount(props: { value?: Place; saved?: unknown; picked?: string[] }) {
+function mount(props: { value?: Place; saved?: unknown; picked?: string[]; places?: Places }) {
   const changes: { place: Place; tools?: string[] }[] = [];
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
-  const render = (value?: Place) => act(() => root!.render(createElement(PlaceSetting, { value, saved: props.saved, places: PLACES, tools: TOOLS, picked: props.picked ?? ["read"], onChange: (p) => { changes.push(p); render(p.place); } })));
+  const render = (value?: Place) => act(() => root!.render(createElement(PlaceSetting, { value, saved: props.saved, places: props.places ?? PLACES, tools: TOOLS, picked: props.picked ?? ["read"], onChange: (p) => { changes.push(p); render(p.place); } })));
   render(props.value);
   const radio = (name: string, value: string) => host.querySelector(`input[name="${name}"][value="${value}"]`) as HTMLInputElement | null;
   return { host, changes, radio };
@@ -29,6 +29,16 @@ describe("PlaceSetting", () => {
     const { radio } = mount({});
     expect(radio("place", "runner")!.checked).toBe(true);
     expect(radio("box", "docker")).toBeNull();
+  });
+
+  it("opens an agent that names no place where the server runs it: default_place, or the runner for the browser, which runs only there", () => {
+    const docker: Places = { ...PLACES, default: "sandbox", defaultPlace: { mode: "sandbox", box: "docker" } };
+    const boxed = mount({ places: docker });
+    expect(boxed.radio("place", "sandbox")!.checked).toBe(true);
+    expect(boxed.radio("box", "docker")!.checked).toBe(true);
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    const browsing = mount({ places: docker, picked: ["read", "browser"] });
+    expect(browsing.radio("place", "runner")!.checked).toBe(true);
   });
 
   it("Sandbox picks the first box this server has; a box it lacks is greyed with the server's reason as given", () => {
