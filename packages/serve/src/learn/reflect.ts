@@ -173,8 +173,8 @@ const LOOSE_NOTE = /^---[ \t]*\n(?:[^\n]*\n){0,3}?[ \t]*name:/m;
 /** The notes in an end-of-run turn's answer (reflectPrompt's format): each ```note <file> block's file name and text,
  *  in order, and each ````skill <name> and ````workflow <name> block's name and text. Every other block, and every line
  *  outside one, is left alone. A block that repeats one before it word for word is that one; a skill's or a draft's in four
- *  backticks or more stands over one of the same name in three, and a fence that is no learning block ends where such
- *  a block in a longer fence opens. Such a block that is not closed, names nothing or more
+ *  backticks or more stands over one of the same name in three, and the first fence after one, no learning block, ends
+ *  where that same skill or draft opens again in a longer fence. Such a block that is not closed, names nothing or more
  *  than one, or names what a block of its kind before it named with other words, is `unparsed`; so is an answer with no such block that holds a note anyway (front matter
  *  outside a block), and one over ANSWER_MAX. An answer with none is `empty`. What a block says, its name included, is
  *  the checker's to judge, never the parser's. */
@@ -184,9 +184,14 @@ export function parseReflection(answer: unknown): Reflection {
   const lines = answer.replace(/\r\n?/g, "\n").split("\n");
   const notes: { file: string; text: string }[] = [];
   const learned: Record<string, { name: string; text: string; fence: number }[]> = { [SKILL_BLOCK]: [], [WORKFLOW_BLOCK]: [] };
+  // The skill or draft block parsed last, until the next fence opens: the one a three-backtick block cut short by its
+  // own code example leaves a stray fence after.
+  let cut: { kind: string; name: string } | undefined;
   for (let i = 0; i < lines.length; i++) {
     const open = OPEN.exec(lines[i]!);
     if (!open) continue;
+    const after = cut;
+    cut = undefined;
     const [, fence, info] = open as unknown as [string, string, string];
     // A backtick fence's info string holds no backtick (CommonMark): such a line opens nothing.
     if (fence[0] === "`" && info.includes("`")) continue;
@@ -194,13 +199,13 @@ export function parseReflection(answer: unknown): Reflection {
     const kind = words[0] === NOTE_BLOCK || words[0] === SKILL_BLOCK || words[0] === WORKFLOW_BLOCK ? words[0] : undefined;
     const close = new RegExp(`^ {0,3}${fence[0] === "`" ? "`" : "~"}{${fence.length},}[ \\t]*$`);
     let end = i + 1;
-    // A fence that is no learning block ends where a named skill or draft block in a longer fence opens: a longer fence
-    // is never inside a shorter one, and a three-backtick skill cut short by its own code example leaves such a stray
-    // fence before the four-backtick block that gives it again.
+    // The first fence after a skill or draft block, no learning block itself, ends where that same skill or draft opens
+    // again in a longer fence: a three-backtick block cut short by its own code example leaves such a stray fence
+    // before the four-backtick block that gives it again. Any other fence holds what is inside it.
     const learningOpens = (line: string) => {
-      const opened = kind === undefined ? OPEN.exec(line) : null;
+      const opened = kind === undefined && after ? OPEN.exec(line) : null;
       const said = opened?.[2]?.trim().split(/\s+/) ?? [];
-      return !!opened && opened[1]![0] === fence[0] && opened[1]!.length > fence.length && said.length === 2 && (said[0] === SKILL_BLOCK || said[0] === WORKFLOW_BLOCK);
+      return !!opened && opened[1]![0] === fence[0] && opened[1]!.length > fence.length && said.length === 2 && said[0] === after!.kind && said[1] === after!.name;
     };
     while (end < lines.length && !close.test(lines[end]!) && !learningOpens(lines[end]!)) end++;
     if (end < lines.length && learningOpens(lines[end]!)) {
@@ -226,6 +231,7 @@ export function parseReflection(answer: unknown): Reflection {
       // One name given twice: word for word, it is one; else the block in the format asked for (four backticks or
       // more) stands over one in three, which a code block inside it can cut short; two otherwise is ambiguous.
       const blocks = learned[kind]!;
+      cut = { kind, name };
       const given = blocks.findIndex((block) => block.name === name);
       const asked = (n: number) => n >= 4;
       if (given < 0) blocks.push({ name, text, fence: fence.length });
