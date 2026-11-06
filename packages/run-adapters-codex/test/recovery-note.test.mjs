@@ -19,8 +19,8 @@ async function cutOff() {
   const first = await openDrive({ writer: await store.open('cut'), signal: new AbortController().signal });
   await first.submit({ id: 's1', kind: 'prompt', text: 'Look it up, then pay.' });
   await placeSubmissions(first, [first.pending()[0]]);
-  const bridge = toolBridge(first, [tool('fetch_page', 'safe', hang), tool('pay', 'never', hang)], { live: false, serial: false });
-  void bridge.call('fetch_page', {}, 'c1').catch(() => {});
+  const bridge = toolBridge(first, [tool('read_page', 'safe', hang), tool('pay', 'never', hang)], { live: false, serial: false });
+  void bridge.call('read_page', {}, 'c1').catch(() => {});
   await pause(30);
   void bridge.call('pay', {}, 'c2').catch(() => {});
   await pause(30);
@@ -36,7 +36,7 @@ test("a host tool's call a crash cut off is told by its own replay policy: a saf
   assert.equal(state.effects.get('tool:c1')?.replay, 'safe', "the log recorded the safe tool's policy when its call started");
   assert.equal(state.effects.get('tool:c2')?.replay, 'never', "the log recorded the never tool's policy when its call started");
   // The output Codex gets for each call it has no output for.
-  assert.equal(repairOutput(state, call('c1', 'fetch_page')), 'Interrupted before it reported a result. It is safe to repeat.');
+  assert.equal(repairOutput(state, call('c1', 'read_page')), 'Interrupted before it reported a result. It is safe to repeat.');
   assert.equal(repairOutput(state, call('c2', 'pay')), INTERRUPTED_TEXT);
   assert.match(INTERRUPTED_TEXT, /may or may not have taken effect/);
 });
@@ -46,7 +46,7 @@ test("a cut-off call's output says what the recovery note of the same turn says 
   const state = await cutOff();
   const told = Object.fromEntries(recoveryNote(state).calls.map((c) => [c.callId, c.status]));
   assert.deepEqual(told, { c1: 'retryable', c2: 'interrupted' });
-  assert.match(repairOutput(state, call('c1', 'fetch_page')), /It is safe to repeat\./);
+  assert.match(repairOutput(state, call('c1', 'read_page')), /It is safe to repeat\./);
   assert.doesNotMatch(repairOutput(state, call('c2', 'pay')), /safe to repeat/);
 });
 
@@ -56,10 +56,10 @@ test("a call still running in the drive that holds the session is never told it 
   const drive = await openDrive({ writer: await store.open('live'), signal: new AbortController().signal });
   await drive.submit({ id: 's1', kind: 'prompt', text: 'Look it up.' });
   await placeSubmissions(drive, [drive.pending()[0]]);
-  void toolBridge(drive, [tool('fetch_page', 'safe', hang)], { live: false }).call('fetch_page', {}, 'c3').catch(() => {});
+  void toolBridge(drive, [tool('read_page', 'safe', hang)], { live: false }).call('read_page', {}, 'c3').catch(() => {});
   await pause(30);
   const state = drive.state();
   assert.deepEqual([state.effects.get('tool:c3')?.status, state.effects.get('tool:c3')?.replay], ['running', 'safe']);
   assert.equal(recoveryNote(state).calls.find((c) => c.callId === 'c3')?.status, 'running');
-  assert.equal(repairOutput(state, call('c3', 'fetch_page')), 'Interrupted: the session stopped while this call ran. It may have taken effect: check before repeating it.');
+  assert.equal(repairOutput(state, call('c3', 'read_page')), 'Interrupted: the session stopped while this call ran. It may have taken effect: check before repeating it.');
 });
