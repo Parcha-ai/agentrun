@@ -11,7 +11,8 @@ import { FAUX, flowAgent, follow, letGo, runDir, serve } from "./support.mjs";
 /** The run's process, as it leaves its database: a commit in its WAL, kept by process.exit. */
 const WRITER = `
 import { DatabaseSync } from "node:sqlite";
-const db = new DatabaseSync(process.argv[1]);
+const [file] = process.argv.slice(1);
+const db = new DatabaseSync(file);
 db.exec("PRAGMA locking_mode=EXCLUSIVE; PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE IF NOT EXISTS later(n INTEGER); INSERT INTO later VALUES (1)");
 process.exit(0);
 `;
