@@ -57,7 +57,9 @@ then says `Preparing the Docker box image (first start only, a few minutes)...` 
 
 ## 3. On a Linux server or VM
 
-Run it as a systemd user service instead of step 2's background process. Ask before each file you write.
+Run it as a systemd user service instead of step 2's background process. Ask before each file you write. The unit and
+the env file below are also in the repository, with these steps as a page for a person:
+https://github.com/Parcha-ai/agentrun/tree/main/examples/getting-started/linux-server
 
 1. Write `~/.config/agentrun/agentrun.env` with mode 600, holding one line, `ANTHROPIC_API_KEY=` (or the variable their
    harness needs, step 5). Then stop and ask the person to paste the key into that file themselves, with `nano`, say.

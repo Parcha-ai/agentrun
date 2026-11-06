@@ -1,0 +1,10 @@
+{
+  "definition": {
+    "id": "engineer",
+    "name": "Engineer",
+    "harness": "claude-agent",
+    "learning": true,
+    "instructions": "You are an engineering agent. Do the task in your shell and report what you found."
+  },
+  "skills": {}
+}

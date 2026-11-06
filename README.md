@@ -56,6 +56,8 @@ That starts AgentRun on `127.0.0.1:7340`, keeps everything in `~/.agentrun` and 
 Linux). Where Docker answers, every new agent gets a shell in a Docker box of its own. The first start builds the box
 image, 5 to 10 minutes; you can make agents while it does, and a run started early waits for it.
 
+Step-by-step setups and example agents: [examples/getting-started/](examples/getting-started/).
+
 **Claude Code and Codex agents.** They need their harness beside the server. On what npm serves today (`@parcha/agentrun`
 0.3.6, server 0.1.0-beta.31) start with it named:
 
@@ -275,9 +277,10 @@ Mission Control is the console's first page: live runs, what needs you, and answ
 
 A Linux VM with Node 22 and Docker, your user in the `docker` group (`docker ps` works without sudo). Run the `npx` line
 from the Quickstart as a systemd user service: the unit's `PATH` holds node's bin directory, the model key lives in an
-`EnvironmentFile` with mode 600, and `loginctl enable-linger` keeps it up after you log out. The unit, with the exact
-steps for a coding agent, is in [docs/SKILL.md](docs/SKILL.md#3-on-a-linux-server-or-vm). The first start builds the
-box image, 5 to 10 minutes.
+`EnvironmentFile` with mode 600, and `loginctl enable-linger` keeps it up after you log out. The unit and its env file
+are in [examples/getting-started/linux-server/](examples/getting-started/linux-server/), and the exact steps for a
+coding agent in [docs/SKILL.md](docs/SKILL.md#3-on-a-linux-server-or-vm). The first start builds the box image, 5 to
+10 minutes.
 
 Open the console from your laptop over `ssh -L 7340:localhost:7340 <vm>` and set the owner password before the first
 run: only the signed-in owner approves a learned note the grader holds. For HTTPS, put Caddy in front
