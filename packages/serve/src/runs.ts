@@ -459,7 +459,10 @@ function noteTurns(run: Run, entries: readonly unknown[], submissions: readonly 
     const data = value.kind === REQUEST_STARTED && isObject(value.data) && value.data[CAP_REFUSED_FIELD] === true ? value.data : undefined;
     if (data) run.capMark = value.id;
     if (data) run.capRefusal = typeof data.spentUsd === "number" && typeof data.needsUsd === "number" && typeof data.leastCapUsd === "number" ? { spentUsd: data.spentUsd, needsUsd: data.needsUsd, leastCapUsd: data.leastCapUsd, ...(typeof data.boundUsd === "number" && data.boundUsd > 0 ? { boundUsd: data.boundUsd } : {}) } : undefined;
-    (run.hearing ??= new Hearing()).note(value);
+    // What was said to the run, whole, by entry (heard.ts): kept only while its learning has yet to keep it (seeded or
+    // reflecting), so a run that does not learn holds none, and learning-run.ts beforeSettle lets it go once kept.
+    const learning = run.meta.learning?.state;
+    if (learning === "seeded" || learning === "reflecting") (run.hearing ??= new Hearing()).note(value);
     // The end-of-run turn's assistant messages, whole, by entry: what the turn answered, whose notes learning reads
     // (learning-run.ts). The ledger skips them; this is their only reader here.
     if (value.kind === "pi.assistant" && reflects(run.meta.reflect, value.id) && Array.isArray(value.model) && isObject(value.model[0])) {

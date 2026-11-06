@@ -425,12 +425,15 @@ export class LearningRuns {
    *  so a follow-up that opens it again never changes what is checked. */
   async beforeSettle(run: Run, outcome: Status): Promise<void> {
     this.closeLearning(run, outcome);
-    if (awaitsPropose(run.meta)) {
+    const keeping = awaitsPropose(run.meta);
+    if (keeping) {
       await keepTurn(run.dir, turnOf(run)).catch((error: Error) => {
         warn(run.id, `what its end-of-run turn answered could not be kept: ${error.message}`);
         this.setLearning(run, "dropped", "propose_failed", said.stopped(STOPPED.notSetAside));
       });
     }
+    // Kept now, or never to be: the person's words, whole, are let go (a finished run is held for the server's life).
+    if (keeping || (run.meta.learning?.state !== "seeded" && run.meta.learning?.state !== "reflecting")) run.hearing = undefined;
     await this.noteRead(run);
   }
 
