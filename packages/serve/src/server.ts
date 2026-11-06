@@ -25,7 +25,7 @@ import { DATA_ENV, DOOR_TOKEN_FILE, HOME_HOST_OWNED, HOMES_DIR, homeOf, readJson
 import { checkedPath, decodedPath, homePath, hostOwnedOf, hostOwnedRefusal, type OwnedReadAt, ownedByIdentity } from "./home-path.js";
 import { chooseModel, EFFORTS, FAUX_ENV, FAUX_UPSTREAM_ENV, MODEL_NODES, type ModelNeeds, modelSource, THINKING_LEVELS, withoutFaux } from "./model.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, type HarnessCapability, harnessOfBody, harnessOffers } from "./harness.js";
-import { ClaudeInstall, harnessesOf } from "./claude-sdk.js";
+import { ClaudeInstall, harnessesOf, npmInstall } from "./claude-sdk.js";
 import { healthOf, hostMemory, maxRunsOf, MIN_FREE_MIB, runsThatFit } from "./host.js";
 import { IMPORT_ASKED } from "./import.js";
 import type { ImportAnswer, ImportTask } from "./import-worker.js";
@@ -182,6 +182,9 @@ export type ServeOptions = {
   /** Under `faux` only: a module that stands in for the VM provider's SDK (its client class, by the SDK's name for it),
    *  so the VM box runs on the tests' fake, never the provider. */
   fauxVm?: string;
+  /** For tests: the lock Claude Code's first use installs by (claude-sdk.ts), in place of the one AgentRun ships, whose
+   *  packages a test's own registry serves. */
+  claudeLock?: string;
   /** Under `faux`: a module whose default export gives a box's egress proxy its `lookup` and `dial` (box-egress.ts), the
    *  tests' fake network. */
   fauxEgress?: string;
@@ -863,7 +866,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   // Claude Code, installed on first use into the data's harnesses directory (claude-sdk.ts): one install at a time, which
   // every claude-agent run, and the save of an agent on claude-agent, waits for or starts; once it is in, the offers are
   // probed again, so capabilities no longer say it installs on first use. A faux harness needs none.
-  const claudeInstall = options.fauxHarness ? undefined : new ClaudeInstall(harnessesOf(data), () => import("./adapters.js").then((adapters) => adapters.claudeSdkVersion()), undefined, (ms) => {
+  const claudeInstall = options.fauxHarness ? undefined : new ClaudeInstall(harnessesOf(data), () => import("./adapters.js").then((adapters) => adapters.claudePins()), (dir, pins) => npmInstall(dir, pins, options.claudeLock ? { lock: options.claudeLock } : {}), (ms) => {
     log?.(logLine("claude_installed", { ms, dir: harnessesOf(data) }));
     void probe("claude_installed").catch(() => undefined);
   });

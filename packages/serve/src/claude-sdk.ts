@@ -6,14 +6,22 @@
 // for AgentRun; the shape follows OpenMA's ACP harness releases (pinned, installed into a cache of the host's own the
 // first time a session needs it, no fallback to another version, the installer handed no provider key).
 //
+// The install is pinned by the lock AgentRun ships (harnesses/claude-agent.lock.json: the SDK at the pin, and every package
+// of its tree, its CLI's platform packages and its peers' dependencies included, each by sha512), which `npm ci` holds every
+// tarball to, from whichever registry the person's npm config names: a mirror can serve those bytes or fail, never others.
+// No package's install script runs. The lock is metadata; the SDK itself still comes from npm, never from us.
+//
 // One install at a time: the server holds its data root alone (server-lock.ts), and an install in flight is the one every
-// run and save that needs it waits for. An install is checked before it counts (the SDK's package.json says the pin, and
-// its entry resolves from that directory); one a crash cut short reads as not installed, and the next install mends it.
+// run and save that needs it waits for. An install lands whole or not at all: npm writes into a fresh directory beside
+// `<data>/harnesses`, the result is checked there (the SDK at the pin, its entry, this platform's CLI and the MCP library),
+// and only then is it renamed into place. A crash or a kill part way leaves that directory, never a half
+// `<data>/harnesses`, and the next install removes it.
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
+import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { dirname, join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { basename, dirname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { withoutSecrets } from "./secrets.js";
 
 /** The SDK's package. */
@@ -25,6 +33,10 @@ export const INSTALLING_CLAUDE = "Installing Claude Code (first use)…";
 /** The most an install may take: the SDK and its CLI are about 120 MB from npm. Past it npm is stopped, and the runs waiting
  *  on it fail with the command that installs it by hand. */
 export const INSTALL_TIMEOUT_MS = 10 * 60_000;
+
+/** The lock AgentRun ships for the install: npm's own (lockfileVersion 3), for a package.json that names the SDK at the
+ *  pin alone. A release that moves the pin makes it again (`npm install --package-lock-only` of that package.json). */
+export const CLAUDE_LOCK = fileURLToPath(new URL("../harnesses/claude-agent.lock.json", import.meta.url));
 
 /** The data's harnesses directory. */
 export const harnessesOf = (data: string): string => join(data, HARNESSES_DIR);
@@ -59,8 +71,26 @@ export async function loadSdk(dir: string, version: string, platform: string): P
   const from = createRequire(join(dir, "package.json"));
   const load = (specifier: string) => import(pathToFileURL(from.resolve(specifier)).href) as Promise<unknown>;
   const [sdk, server, types] = await Promise.all([import(pathToFileURL(found.entry).href) as Promise<unknown>, load("@modelcontextprotocol/sdk/server/mcp.js"), load("@modelcontextprotocol/sdk/types.js")]);
-  const cliPath = join(dir, "node_modules", "@anthropic-ai", `claude-agent-sdk-${platform}`, process.platform === "win32" ? "claude.exe" : "claude");
-  return { sdk, sdkVersion: version, cliPath, mcp: { server, types } };
+  return { sdk, sdkVersion: version, cliPath: cliIn(dir, platform), mcp: { server, types } };
+}
+
+/** The CLI an install in `dir` holds for `platform` (its platform package's). */
+const cliIn = (dir: string, platform: string): string => join(dir, "node_modules", "@anthropic-ai", `claude-agent-sdk-${platform}`, process.platform === "win32" ? "claude.exe" : "claude");
+
+/** What an install in `dir` lacks of a whole one, or undefined: the SDK at `version` and its entry, this platform's CLI,
+ *  and the MCP library (its server and its types), each resolved from `dir`. */
+export function lacking(dir: string, version: string, platform: string): string | undefined {
+  if (!installedSdk(dir, version)) return `${CLAUDE_SDK}@${version}`;
+  if (!existsSync(cliIn(dir, platform))) return `its CLI for ${platform}`;
+  const from = createRequire(join(dir, "package.json"));
+  for (const part of ["@modelcontextprotocol/sdk/server/mcp.js", "@modelcontextprotocol/sdk/types.js"]) {
+    try {
+      from.resolve(part);
+    } catch {
+      return part;
+    }
+  }
+  return undefined;
 }
 
 /** Claude Code is not installed in `dir` (no SDK at the pin there): its message names the command that installs it. */
@@ -81,28 +111,76 @@ function npmCommand(env: NodeJS.ProcessEnv): { command: string; args: string[] }
   return { command: process.platform === "win32" ? "npm.cmd" : "npm", args: [] };
 }
 
-/** Runs npm to install the SDK at `version` into `dir`, with no key of this server's in its environment and no package's
- *  install script (the SDK and its CLI have none). Resolves once the install is checked; rejects with ClaudeNotInstalled
- *  naming npm's last words. */
-export function npmInstall(dir: string, version: string, { env = process.env, timeoutMs = INSTALL_TIMEOUT_MS }: { env?: NodeJS.ProcessEnv; timeoutMs?: number } = {}): Promise<void> {
+/** What an install needs to know: the SDK version pinned, and this platform's suffix for its CLI's package. */
+export type ClaudePins = { version: string; platform: string };
+
+/** Installs the SDK at `pins.version` into `dir` by `lock` (default the one AgentRun ships): `npm ci` in a fresh directory
+ *  beside `dir`, with no key of this server's in its environment and no package's install script; checked whole there
+ *  (lacking), then renamed into place. Resolves once it is in; rejects with ClaudeNotInstalled naming why, and leaves
+ *  `dir` as it was. */
+export async function npmInstall(dir: string, pins: ClaudePins, { lock = CLAUDE_LOCK, env = process.env, timeoutMs = INSTALL_TIMEOUT_MS }: { lock?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number } = {}): Promise<void> {
+  const { version, platform } = pins;
+  const fail = (why: string) => new ClaudeNotInstalled(dir, version, `Couldn't install Claude Code (${CLAUDE_SDK}@${version}) from npm: ${why}`);
+  const text = await readFile(lock, "utf8");
+  const root = (JSON.parse(text) as { name?: string; packages?: Record<string, { name?: string; dependencies?: Record<string, string> }> }).packages?.[""];
+  if (root?.dependencies?.[CLAUDE_SDK] !== version || Object.keys(root.dependencies).length !== 1) throw fail(`its lock (${lock}) is not for ${CLAUDE_SDK}@${version} alone`);
+  const parent = dirname(dir);
+  const prefix = `.${basename(dir)}-`;
+  await mkdir(parent, { recursive: true });
+  // What an earlier install left part way: never read, removed now.
+  for (const name of await readdir(parent)) if (name.startsWith(prefix)) await writable(join(parent, name), true).then(() => rm(join(parent, name), { recursive: true, force: true }));
+  const staging = await mkdtemp(join(parent, prefix));
+  try {
+    await writeFile(join(staging, "package.json"), `${JSON.stringify({ name: root.name ?? "agentrun-claude-code", private: true, dependencies: root.dependencies }, null, 2)}\n`);
+    await writeFile(join(staging, "package-lock.json"), text);
+    await runNpm(["ci", "--prefix", staging, "--ignore-scripts", "--no-audit", "--no-fund", "--loglevel=error"], env, timeoutMs).catch((why: Error) => Promise.reject(fail(why.message)));
+    const missing = lacking(staging, version, platform);
+    if (missing) throw fail(`npm ended, and the install lacks ${missing}`);
+    // Into place whole: what was there (an install by hand, say) goes aside first, then away.
+    const old = existsSync(dir) ? `${staging}-old` : undefined;
+    if (old) await rename(dir, old);
+    await rename(staging, dir);
+    // Read-only once in place: a write into it by mistake fails. (The server's own uid could change that back; the CLI's
+    // sha256 is checked at every run.)
+    await writable(dir, false);
+    if (old) await writable(old, true).then(() => rm(old, { recursive: true, force: true }));
+  } catch (error) {
+    await rm(staging, { recursive: true, force: true });
+    throw error instanceof ClaudeNotInstalled ? error : fail((error as Error).message);
+  }
+}
+
+/** Every file and directory under `dir` (no link followed) made writable by its owner, or read-only for everyone. */
+async function writable(dir: string, on: boolean): Promise<void> {
+  const walk = async (path: string): Promise<void> => {
+    const st = await lstat(path).catch(() => undefined);
+    if (!st || st.isSymbolicLink()) return;
+    if (on) await chmod(path, st.mode | 0o200);
+    if (st.isDirectory()) for (const name of await readdir(path)) await walk(join(path, name));
+    if (!on) await chmod(path, st.mode & ~0o222);
+  };
+  await walk(dir);
+}
+
+/** Runs npm with `args`, with no key of this server's in its environment; rejects with npm's last words. */
+function runNpm(args: string[], env: NodeJS.ProcessEnv, timeoutMs: number): Promise<void> {
   const npm = npmCommand(env);
-  const args = [...npm.args, "install", "--prefix", dir, "--save-exact", "--ignore-scripts", "--no-audit", "--no-fund", "--loglevel=error", `${CLAUDE_SDK}@${version}`];
   return new Promise((resolve, reject) => {
     let said = "";
-    const child = spawn(npm.command, args, { env: withoutSecrets(env), stdio: ["ignore", "pipe", "pipe"], shell: npm.command.endsWith(".cmd") });
+    const child = spawn(npm.command, [...npm.args, ...args], { env: withoutSecrets(env), stdio: ["ignore", "pipe", "pipe"], shell: npm.command.endsWith(".cmd") });
     const hear = (chunk: Buffer) => void (said = (said + chunk.toString("utf8")).slice(-4_000));
     child.stdout.on("data", hear);
     child.stderr.on("data", hear);
-    const timer = setTimeout(() => child.kill("SIGTERM"), timeoutMs);
+    let timedOut = false;
+    const timer = setTimeout(() => ((timedOut = true), child.kill("SIGTERM")), timeoutMs);
     timer.unref();
-    const fail = (why: string) => reject(new ClaudeNotInstalled(dir, version, `Couldn't install Claude Code (${CLAUDE_SDK}@${version}) from npm: ${why}`));
-    child.once("error", (error) => (clearTimeout(timer), fail(`npm did not start (${error.message})`)));
+    child.once("error", (error) => (clearTimeout(timer), reject(new Error(`npm did not start (${error.message})`))));
     child.once("close", (code, signal) => {
       clearTimeout(timer);
       const last = said.trim().split("\n").filter((line) => line.trim()).slice(-3).join(" ").replace(/\s+/g, " ").slice(0, 600);
-      if (signal) return fail(`npm took more than ${Math.round(timeoutMs / 60_000)} minutes and was stopped`);
-      if (code !== 0) return fail(last ? `npm exited ${code}: ${last}` : `npm exited ${code}`);
-      if (!installedSdk(dir, version)) return fail(`npm ended, and ${dir} holds no ${CLAUDE_SDK}@${version}`);
+      if (timedOut) return reject(new Error(`npm took more than ${Math.round(timeoutMs / 60_000)} minutes and was stopped`));
+      if (signal) return reject(new Error(`npm was stopped (${signal})`));
+      if (code !== 0) return reject(new Error(last ? `npm exited ${code}: ${last}` : `npm exited ${code}`));
       resolve();
     });
   });
@@ -119,23 +197,23 @@ export class ClaudeInstall {
   get installed(): boolean {
     return this.done;
   }
-  constructor(readonly dir: string, private readonly version: () => Promise<string>, private readonly install: (dir: string, version: string) => Promise<void> = (dir, version) => npmInstall(dir, version), private readonly onInstalled?: (ms: number) => void) {}
+  constructor(readonly dir: string, private readonly pins: () => Promise<ClaudePins>, private readonly install: (dir: string, pins: ClaudePins) => Promise<void> = (dir, pins) => npmInstall(dir, pins), private readonly onInstalled?: (ms: number) => void) {}
 
   /** Whether a run must wait for an install: false once Claude Code is installed (read once, then kept). */
   async needed(): Promise<boolean> {
     if (this.done) return false;
     if (this.running) return true;
-    this.done = Boolean(installedSdk(this.dir, await this.version()));
+    this.done = Boolean(installedSdk(this.dir, (await this.pins()).version));
     return !this.done;
   }
 
   ensure(): Promise<void> {
     if (this.done) return Promise.resolve();
     this.running ??= (async () => {
-      const version = await this.version();
-      if (installedSdk(this.dir, version)) return void (this.done = true);
+      const pins = await this.pins();
+      if (installedSdk(this.dir, pins.version)) return void (this.done = true);
       const started = performance.now();
-      await this.install(this.dir, version);
+      await this.install(this.dir, pins);
       this.done = true;
       this.onInstalled?.(Math.round(performance.now() - started));
     })().finally(() => (this.running = undefined));

@@ -1547,7 +1547,13 @@ harness this server does not run yet saves with a warning on `definition.harness
 `claude-agent`, `codex` and `opencode` when each adapter's package, pins and provider endpoint check out; the harness's
 `reason` says what is missing. `claude-agent` installs Claude Code on first use: AgentRun never ships the Claude Agent
 SDK, and the first run on claude-agent (or the first agent saved on it) installs the version AgentRun pins
-(`@anthropic-ai/claude-agent-sdk@0.3.286`) from npm into `<data>/harnesses`, with the npm that runs the server, once:
+(`@anthropic-ai/claude-agent-sdk@0.3.286`) from npm into `<data>/harnesses`, with the npm that runs the server, once.
+The install is pinned by the lock the server ships, `harnesses/claude-agent.lock.json` (every package of the tree, its
+CLI's platform packages and its peers' dependencies included, by sha512), which `npm ci --ignore-scripts` holds every
+tarball to, from whichever registry the person's npm config names. It lands whole or not at all: npm writes into a fresh
+directory beside `<data>/harnesses`, the result is checked there (the SDK at the pin, its entry, this platform's CLI and
+the MCP library), then it is renamed into place and made read-only. `node scripts/claude-lock.mjs` makes the lock again
+when the pin moves (`--check` checks it):
 every run that needs it waits for that one install, its ready time counted from the install's end, and shows a `phase`
 row, `Installing Claude Code (first use)…`, while it does. Each run then loads the SDK, its CLI and the MCP library from
 there and nowhere else. Until it is installed, capabilities list claude-agent with `installs: "on_first_use"`. When npm

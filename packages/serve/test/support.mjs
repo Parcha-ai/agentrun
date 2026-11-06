@@ -1,6 +1,6 @@
 // A server on a fresh data directory with the faux model, and a client for its /v2 routes. No key, no network.
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer, request } from "node:http";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -30,9 +30,18 @@ export function jsonLines(file) {
 
 export async function scratch(t) {
   const dir = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "agentrun-serve-"));
-  // Retried: a server that is still closing can write into it during the rm (ENOTEMPTY).
-  t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+  // Retried: a server that is still closing can write into it during the rm (ENOTEMPTY). Writable first: a first use
+  // leaves Claude Code read-only (claude-sdk.ts).
+  t.after(() => writableTree(dir).then(() => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })));
   return dir;
+}
+
+/** Every directory under `dir` (no link followed) made writable by its owner, so the tree can be removed. */
+export async function writableTree(dir) {
+  const st = await lstat(dir).catch(() => undefined);
+  if (!st?.isDirectory()) return;
+  await chmod(dir, st.mode | 0o700);
+  for (const name of await readdir(dir)) await writableTree(join(dir, name));
 }
 
 /** Resolves once `child`, a server in a process of its own, has printed a whole line on stdout that `ready` matches (the
@@ -128,7 +137,7 @@ export async function serve(t, { claudeSdk: asked, ...options } = {}) {
   const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", ...options });
   t.after(async () => {
     await server.close();
-    if (dir) await rm(dir, { recursive: true, force: true });
+    if (dir) await writableTree(dir).then(() => rm(dir, { recursive: true, force: true }));
   });
   return { ...server, data, api: client(server.baseUrl, server.token) };
 }

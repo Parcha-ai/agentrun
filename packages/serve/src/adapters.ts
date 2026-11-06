@@ -461,6 +461,12 @@ export async function claudeSdkVersion(load: () => Promise<unknown> = loadClaude
   return ((await load()) as ClaudePackage).CLAUDE_AGENT_SDK_VERSION;
 }
 
+/** What claude-agent's install needs (claude-sdk.ts ClaudePins): the pinned SDK version, and this platform's CLI package. */
+export async function claudePins(load: () => Promise<unknown> = loadClaude): Promise<{ version: string; platform: string }> {
+  const claude = (await load()) as ClaudePackage;
+  return { version: claude.CLAUDE_AGENT_SDK_VERSION, platform: claude.claudeAgentPlatform() };
+}
+
 /** Whether Claude Code is installed in this server's data (claude-sdk.ts installedSdk, at the pin). */
 export async function claudeInstalled(env: NodeJS.ProcessEnv): Promise<boolean> {
   return Boolean(installedSdk(harnessesOf(dataOf(env)), await claudeSdkVersion()));
