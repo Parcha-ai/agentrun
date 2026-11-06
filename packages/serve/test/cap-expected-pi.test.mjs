@@ -3,6 +3,8 @@
 // so it passes the $0.50 cap: its real cost is booked, never clipped, by no more than the bound its start mark carries,
 // one row says so in cents, and the run is not failed: its next request is refused and it pauses at its cap.
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
@@ -13,8 +15,12 @@ const CACHE = new URL("./fixtures/faux-sonnet-cache.mjs", import.meta.url).pathn
 /** An amount in a row's words: up to the cent above. */
 const centsUp = (usd) => `$${(Math.ceil(usd * 100 - 1e-9) / 100).toFixed(2)}`;
 
-test("pi: a cache miss passes the cap by no more than the bound it was sent with; its real cost is booked, one row says so in cents, and the run pauses at its cap", { timeout: 180_000 }, async (t) => {
-  const { api, data } = await serve(t, { faux: CACHE });
+test("pi: a cache miss passes the cap by no more than the bound it was sent with; its real cost is booked, one row says so in cents, the run pauses at its cap, and a server started again says the same", { timeout: 240_000 }, async (t) => {
+  // The run's data outlives its first server: a second one reads it whole, as after a restart.
+  const dir = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "cap-expected-pi-"));
+  const data = join(dir, "agents");
+  let stopFirst;
+  const { api } = await serve({ after: (stop) => void (stopFirst = stop) }, { faux: CACHE, data });
   assert.equal((await api("POST", "/agents", agent("pi-miss", { instructions: "Write the pages.", tools: ["write"] }))).status, 201);
   const started = await api("POST", "/agents/pi-miss/runs", { input: { content: "go" }, max_cost_usd: 0.5 });
   assert.equal(started.status, 202, JSON.stringify(started.body));
@@ -33,5 +39,14 @@ test("pi: a cache miss passes the cap by no more than the bound it was sent with
   const bound = starts.at(-1)?.data?.boundUsd;
   assert.ok(bound > 0 && over <= bound + 1e-9, `over by $${over}, its bound $${bound}`);
   const rows = (await api("GET", `/runs/${runId}/timeline`)).body.rows.filter((row) => row.id.endsWith(":over_cap"));
-  assert.deepEqual(rows.map((row) => row.summary), [`Went ${centsUp(over)} over its cap on a cache miss (at most ${centsUp(bound)}).`]);
+  const words = `Went ${centsUp(over)} over its cap on a cache miss (at most ${centsUp(bound)}).`;
+  assert.deepEqual(rows.map((row) => row.summary), [words]);
+  // A server started again reads the run's store whole: its row names the same bound, never every bound the run had.
+  await stopFirst();
+  const again = await serve(t, { faux: CACHE, data });
+  t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+  const reread = (await again.api("GET", `/runs/${runId}/timeline`)).body.rows.filter((row) => row.id.endsWith(":over_cap"));
+  assert.deepEqual(reread.map((row) => row.summary), [words], "after a restart");
+  const view = (await again.api("GET", `/runs/${runId}`)).body;
+  assert.deepEqual([view.status, view.pending?.kind, view.cost.overshoot_bound_usd], ["input_required", "budget", 0], "still paused, nothing in flight");
 });

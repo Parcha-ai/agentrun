@@ -85,3 +85,20 @@ test("pi side requests (a hosted search's, a learned workflow's model node, a su
   assert.equal(bounds.inFlight(), 0);
   assert.ok(close(bounds.ended(), 0.11));
 });
+
+test("a full read after a restart keeps only the bounds since the run's cost last fit its cap, as the live read does: never the sum of every bound the run ever had", () => {
+  const cap = 0.5;
+  /** pi requests answered under the cap, then one whose cache miss takes the run past it. */
+  const answered = (usd) => ({ id: next(), kind: "pi.assistant", model: [{ role: "assistant", stopReason: "toolUse", usage: { cost: { total: usd } } }] });
+  const entries = [];
+  for (let k = 0; k < 5; k++) entries.push(piStart(0.2), answered(0.09));
+  entries.push(piStart(0.3), answered(0.12));
+  // Live: the entries one at a time.
+  const live = new RequestBounds();
+  for (const entry of entries) live.note([entry], cap);
+  // A new server: the whole store at once.
+  const replay = new RequestBounds();
+  replay.note(entries, cap);
+  assert.ok(close(live.ended(), 0.3), `live: the crossing request's bound alone: ${live.ended()}`);
+  assert.ok(close(replay.ended(), live.ended()), `after a restart, the same: ${replay.ended()} vs ${live.ended()}`);
+});
