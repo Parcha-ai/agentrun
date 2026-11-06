@@ -13,7 +13,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { mcpGateway, mcpPinOf } from "../dist/mcp-gateway.js";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
-import { agent, flowAgent, follow, serve as serveOf, withEnv } from "./support.mjs";
+import { agent, answerFlow, flowAgent, follow, serve as serveOf, withEnv } from "./support.mjs";
 
 const TOKEN = `not-a-secret-${"mcp-meta-bearer-0123"}`;
 const REASON = "it runs other actions by name, so a grant can't name the real action. Use the server's direct tools instead.";
@@ -114,4 +114,14 @@ test("a workflow's own grants are held to the rule too: one that lists a meta to
   assert.ok(JSON.stringify(refused.body).includes(`mcp:composio/COMPOSIO_MULTI_EXECUTE_TOOL can't be granted: ${REASON}`), JSON.stringify(refused.body));
   const ordinary = await api("POST", "/agents", flowAgent("flow-direct", undefined, { tools: ["mcp:composio/GMAIL_SEND_EMAIL"] }));
   assert.ok(![422].includes(ordinary.status), `a workflow that lists a direct MCP tool saves: ${JSON.stringify(ordinary.body)}`);
+});
+
+test("the workflow check agrees with the save: a workflow that lists a meta tool reads not ok, with the same words", async (t) => {
+  const { api } = await serve(t);
+  await saved(t, api, "composio", ["COMPOSIO_MULTI_EXECUTE_TOOL", "GMAIL_SEND_EMAIL"]);
+  const checked = (await api("POST", "/workflows/validate", { workflow: answerFlow(), tools: ["mcp:composio/COMPOSIO_MULTI_EXECUTE_TOOL"] })).body;
+  assert.equal(checked.ok, false, JSON.stringify(checked));
+  assert.ok(checked.issues.some((issue) => issue.message === `mcp:composio/COMPOSIO_MULTI_EXECUTE_TOOL can't be granted: ${REASON}`), JSON.stringify(checked.issues));
+  const direct = (await api("POST", "/workflows/validate", { workflow: answerFlow(), tools: ["mcp:composio/GMAIL_SEND_EMAIL"] })).body;
+  assert.ok(!direct.issues.some((issue) => /can't be granted/.test(issue.message)), JSON.stringify(direct.issues));
 });
