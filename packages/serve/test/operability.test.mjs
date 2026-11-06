@@ -178,3 +178,19 @@ test("a run whose process crashes at its start fails with the crash in words, ne
   assert.match(error.message, /has no default export function/);
   assert.doesNotMatch(error.message, /[{}]|"at":|"event":/, error.message);
 });
+
+test("compose: every command the docs give works in a fresh shell (DOCKER_GID goes to .env once, before the first), and another port takes AGENTRUN_PUBLIC_URL with it", async () => {
+  const compose = await readFile(new URL("compose.yaml", ROOT), "utf8");
+  // The link's default names the default port (a loopback address with a variable port is refused by the key gate's
+  // loopback rule), so the README says to set AGENTRUN_PUBLIC_URL with AGENTRUN_PORT.
+  assert.match(compose, /AGENTRUN_PUBLIC_URL: "\$\{AGENTRUN_PUBLIC_URL:-http:\/\/127\.0\.0\.1:7340\/\}"/);
+  assert.match(await readFile(new URL("packages/serve/README.md", ROOT), "utf8"), /`AGENTRUN_PORT`; set `AGENTRUN_PUBLIC_URL` with it, so the printed link names that port/);
+  // compose.yaml needs DOCKER_GID to be read at all (group_add's ${DOCKER_GID:?}): a value given to one command alone
+  // leaves every later one, `docker compose logs` included, unable to read it.
+  for (const [name, text] of [["compose.yaml", compose], ["README.md", await readFile(new URL("README.md", ROOT), "utf8")], ["packages/serve/README.md", await readFile(new URL("packages/serve/README.md", ROOT), "utf8")]]) {
+    const commands = text.split("\n").map((line) => line.replace(/^[#\s]*/, "")).filter((line) => /^(echo .*DOCKER_GID|DOCKER_GID=|docker compose )/.test(line));
+    assert.ok(commands.length >= 2, `${name} gives its compose commands: ${JSON.stringify(commands)}`);
+    assert.ok(!commands.some((line) => /^DOCKER_GID=.* docker compose/.test(line)), `${name}: no DOCKER_GID given to one command alone`);
+    assert.match(commands[0], /^echo "DOCKER_GID=\$\(stat -c %g \/var\/run\/docker\.sock\)" >> \.env$/, `${name}: the first writes DOCKER_GID to .env`);
+  }
+});

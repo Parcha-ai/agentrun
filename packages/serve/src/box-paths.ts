@@ -64,6 +64,8 @@ export function pathsOf(mounts: readonly ContainerMount[], data: string, api: st
   const holds = (at: string) => data === at || data.startsWith(`${at}/`);
   const mount = mounts.filter((m) => typeof m.Destination === "string" && holds(m.Destination)).sort((a, b) => b.Destination!.length - a.Destination!.length)[0];
   if (mount?.Type !== "volume" || !mount.Name || mount.RW !== true) return { reason: IN_COMPOSE };
+  // A mount below the data directory hides part of it from that volume: a box would get the volume's files there.
+  if (mounts.some((m) => typeof m.Destination === "string" && m.Destination.startsWith(`${data}/`))) return { reason: IN_COMPOSE };
   const version = /^(\d+)\.(\d+)$/.exec(api.trim());
   if (!version || Number(version[1]) < 1 || (Number(version[1]) === 1 && Number(version[2]) < 45)) return { reason: OLD_ENGINE };
   return { paths: { at: mount.Destination!, volume: mount.Name } };

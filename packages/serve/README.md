@@ -171,9 +171,13 @@ On a Linux host with Docker Engine 26 or later, with no checkout:
 ```sh
 curl -fsSLO https://raw.githubusercontent.com/Parcha-ai/agentrun/main/compose.yaml
 export AGENT_MODEL=openrouter/anthropic/claude-sonnet-5.5 OPENROUTER_API_KEY=...
-DOCKER_GID=$(stat -c %g /var/run/docker.sock) docker compose up -d
+echo "DOCKER_GID=$(stat -c %g /var/run/docker.sock)" >> .env
+docker compose up -d
 docker compose logs agentrun | grep Open
 ```
+
+The `.env` beside `compose.yaml` keeps the socket's group (`DOCKER_GID`) for every later `docker compose` command, in any
+shell: compose reads it each time, and `compose.yaml` needs it to be read at all.
 
 From a checkout, the same command in its root, with `--build` to build the image from it.
 `packages/serve/docker/Dockerfile` builds that image: the server and the open packages it runs, on Node 22 and Debian 13

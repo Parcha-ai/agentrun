@@ -44,7 +44,7 @@ import { type CarryBackRetry, knownToolCostOf, type Run, Runs, STATUSES, type St
 import { runLines } from "./usage-lines.js";
 import { BOX_QUARANTINE, type BoxHost, Quarantine } from "./box/sweep.js";
 import { type BoxOffer, boxesByDefault, boxesLog, boxRegistry, daytonaApi, enabledBoxes, VM_NO_LIST, VM_PROVIDER } from "./boxes.js";
-import { type DockerNetwork, FAUX_EGRESS_ENV, MAX_EGRESS_PARENT, sweepEgressDirs } from "./box-egress.js";
+import { type DockerNetwork, egressParentTooLong, FAUX_EGRESS_ENV, MAX_EGRESS_PARENT, sweepEgressDirs } from "./box-egress.js";
 import { type EgressContainer, startEgressContainer } from "./box-egress-vm.js";
 import { type DockerPaths, dockerPathsOf, egressParentOf, FAUX_MOUNTINFO_ENV } from "./box-paths.js";
 import { boxImageOf, clearImage, type DockerImage, dockerImage, type ImageState, withImage } from "./box-image.js";
@@ -806,7 +806,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const boxPaths = "paths" in dockerPaths ? dockerPaths.paths : undefined;
   const egressParent = boxPaths ? egressParentOf(data) : undefined;
   if ("reason" in dockerPaths) log?.(logLine("box_paths", { reason: dockerPaths.reason }));
-  const boxNetwork: DockerNetwork = fauxBox ? { allow: "none", reason: "a faux box (tests)" } : !boxes.provider("docker") ? { allow: "none", reason: "no Docker box on this server" } : "reason" in dockerPaths ? { allow: "none", reason: dockerPaths.reason } : egressParent && egressParent.length > MAX_EGRESS_PARENT ? { allow: "none", reason: `the data directory's path is too long for a box's network socket (${egressParent} is over ${MAX_EGRESS_PARENT} bytes): give the server a shorter --data` } : await boxNetworkOf(env, { ...(boxPaths ? { mapped: true } : {}), ...(options.faux && options.fauxPlatform ? { platform: options.fauxPlatform } : {}) });
+  const boxNetwork: DockerNetwork = fauxBox ? { allow: "none", reason: "a faux box (tests)" } : !boxes.provider("docker") ? { allow: "none", reason: "no Docker box on this server" } : "reason" in dockerPaths ? { allow: "none", reason: dockerPaths.reason } : egressParent && egressParentTooLong(egressParent) ? { allow: "none", reason: `the data directory's path is too long for a box's network socket (${egressParent} is over ${MAX_EGRESS_PARENT} bytes): give the server a shorter --data` } : await boxNetworkOf(env, { ...(boxPaths ? { mapped: true } : {}), ...(options.faux && options.fauxPlatform ? { platform: options.fauxPlatform } : {}) });
   // The proxy directories runs that are gone left in /tmp, or, in a container, on the data directory's mount
   // (box-egress.ts): a live run's, any server's, stays.
   if (!fauxBox && boxes.provider("docker")) await sweepEgressDirs(undefined, undefined, egressParent).catch(() => 0);

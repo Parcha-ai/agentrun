@@ -82,8 +82,13 @@ export function egressDir(runId: string, uid: number = process.getuid?.() ?? 0, 
   return join(parent, createHash("sha256").update(runId).digest("hex").slice(0, 16));
 }
 
-/** The longest a parent of the proxy directories may be: its socket's path then fits a Unix socket's 107 bytes. */
-export const MAX_EGRESS_PARENT = 107 - "/0123456789abcdef/egress.sock".length;
+/** The longest a parent of the proxy directories may be, in bytes: its longest socket path then fits a Unix socket's 107
+ *  bytes. That is the temporary one the proxy listens on first (run-adapters egress-proxy.ts, `.egress-<12 hex>.sock`)
+ *  before it links it to egress.sock; Node cuts a longer path without a word, so the link would miss it. */
+export const MAX_EGRESS_PARENT = 107 - Buffer.byteLength("/0123456789abcdef/.egress-0123456789ab.sock");
+
+/** Whether `parent` is too long, in bytes, for a run's proxy directories (MAX_EGRESS_PARENT). */
+export const egressParentTooLong = (parent: string): boolean => Buffer.byteLength(parent) > MAX_EGRESS_PARENT;
 
 /** Removes a run's proxy directory once its box is gone. */
 export const removeEgressDir = (runId: string, parent?: string): Promise<void> => rm(egressDir(runId, undefined, parent), { recursive: true, force: true });
