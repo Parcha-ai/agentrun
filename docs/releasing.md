@@ -85,7 +85,7 @@ See npm's [trusted publishing](https://docs.npmjs.com/trusted-publishers/), [pro
 
 ## Check a published server
 
-`npx @parcha/agentrun-serve` starts AgentRun Server from npm with nothing else installed: pi runs, the Claude Agent SDK and Codex are optional peers a person installs beside it (the server's capabilities say which line), and the console is served. In an empty directory, with no model key in the environment, save this as `check.mjs` and run `node check.mjs`; it prints one line that starts with `ok:`. The stranger test (`scripts/stranger/agentrun-serve.json`) runs the same file against this tree's packed server.
+`npx @parcha/agentrun-serve` starts AgentRun Server from npm with nothing else installed: pi runs, claude-agent installs Claude Code on first use (capabilities say `installs: "on_first_use"` until then), Codex is an optional peer a person installs beside it (the server's capabilities say which line), and the console is served. In an empty directory, with no model key in the environment, save this as `check.mjs` and run `node check.mjs`; it prints one line that starts with `ok:`. The stranger test (`scripts/stranger/agentrun-serve.json`) runs the same file against this tree's packed server.
 
 ```js
 import { spawn } from "node:child_process";
@@ -113,15 +113,15 @@ async function check(base) {
   const caps = await (await fetch(`${base}/v2/capabilities`, { headers })).json();
   const harness = (id) => caps.harnesses.find((offer) => offer.id === id) ?? fail(`capabilities list no ${id}`);
   if (!harness("pi").available) fail("pi is not available");
-  for (const id of ["claude-agent", "codex"]) {
-    const { available, reason = "" } = harness(id);
-    // The install line fits how the server was started: `npm install …` beside an installed one, `npx -p …` under npx.
-    if (available || !/not installed/i.test(reason) || !/(?:npm install |npx -p )/.test(reason)) fail(`${id} does not say it is not installed and how to install it: ${reason}`);
-  }
+  // Claude Code installs itself on first use: until then claude-agent says so.
+  if (harness("claude-agent").installs !== "on_first_use") fail(`claude-agent does not say it installs on first use: ${JSON.stringify(harness("claude-agent"))}`);
+  const { available, reason = "" } = harness("codex");
+  // The install line fits how the server was started: `npm install …` beside an installed one, `npx -p …` under npx.
+  if (available || !/not installed/i.test(reason) || !/(?:npm install |npx -p )/.test(reason)) fail(`codex does not say it is not installed and how to install it: ${reason}`);
   const page = await fetch(`${base}/`);
   const html = await page.text();
   if (page.status !== 200 || !/src="\.\/assets\/[^"]+\.js"/.test(html)) fail(`the console is not served (${page.status})`);
-  console.log(`ok: pi runs; claude-agent and codex say how to install them; the console is served`);
+  console.log(`ok: pi runs; claude-agent installs on first use; codex says how to install it; the console is served`);
   stop(0);
 }
 server.on("exit", (code) => fail(`the server exited (${code}) before the check`));

@@ -7,7 +7,9 @@ import { secret } from "./secrets.js";
 import "./quiet-sqlite-warning.js";
 import { parseArgs } from "node:util";
 import { spawn } from "node:child_process";
-import { defaultData } from "./files.js";
+import { chmodSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { defaultData, removeOwnRecord, SERVER_FILE, writeDurableSync } from "./files.js";
 import { canOpen } from "./host.js";
 import { resetPassword } from "./owner.js";
 import type { ImageState } from "./box-image.js";
@@ -179,6 +181,15 @@ for (const line of early.splice(0)) console.log(line);
 // The console's page, once the server listens: never its sign-in link, whose token would sit in the opener's arguments
 // and the browser's history.
 if (values.open && canOpen(process.env)) spawn(process.platform === "darwin" ? "open" : "xdg-open", [`${publicUrl ?? serve.url}/`], { stdio: "ignore", detached: true }).on("error", () => {}).unref();
-const stop = () => void serve.close().then(() => process.exit(0));
+const record = join(resolve(data), SERVER_FILE);
+// The record goes before close() releases the data directory's lock, and only while it is this server's: a server that
+// takes the lock next writes its own, which this stop must not remove.
+const stop = () => (removeOwnRecord(record), void serve.close().then(() => process.exit(0)));
+// The stop is in place before the record is written: a SIGTERM sent the moment the record appears is a clean stop that
+// removes it, never the default end by signal that leaves it behind. Its handler runs after this synchronous write.
 process.once("SIGINT", stop);
 process.once("SIGTERM", stop);
+// Written whole under a name of its own, then renamed into place: a reader in another process (the npx command, a test
+// waiting for this server) that finds the record reads all of it, never a file made but not yet filled.
+writeDurableSync(record, `${JSON.stringify({ base_url: serve.baseUrl, pid: process.pid, ...(serve.tokenFile ? { token_file: serve.tokenFile } : {}) })}\n`);
+chmodSync(record, 0o600);
