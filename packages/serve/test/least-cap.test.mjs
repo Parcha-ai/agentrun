@@ -9,7 +9,7 @@ import { REQUEST_STARTED } from "@parcha/pi-durable-agent/timeline";
 import { capBefore, paidCall, useSpend } from "../dist/cap.js";
 import { startServe } from "../dist/index.js";
 import { KEY } from "./fixtures/faux-monid.mjs";
-import { agent, client, follow, scratch, serve, withEnv } from "./support.mjs";
+import { agent, client, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
 
 /** The tests' faux model priced on output only, $100 a million: a request's least (1,024 tokens) is $0.1024. */
 const OUTPUT_PRICED = new URL("./fixtures/faux-output-priced.mjs", import.meta.url).pathname;
@@ -80,7 +80,7 @@ test("a refusal's mark without its least cap is no figures: the pause serves its
   await server.close();
   // The refusal's mark with spentUsd and needsUsd and no leastCapUsd: no server writes one (every refusal for room keeps
   // all three), and the figures are read whole or not at all.
-  const db = new DatabaseSync(join(data, "runs", run_id, "store", "run.sqlite"), { timeout: 5_000 });
+  const db = new DatabaseSync(join(runDir(data, run_id), "store", "run.sqlite"), { timeout: 5_000 });
   try {
     const marks = db.prepare("SELECT rowid AS at, record FROM entries ORDER BY rowid").all().filter((row) => { const e = JSON.parse(row.record); return e.kind === REQUEST_STARTED && e.data?.capRefused === true; });
     assert.equal(marks.length, 1, "one refusal mark");
