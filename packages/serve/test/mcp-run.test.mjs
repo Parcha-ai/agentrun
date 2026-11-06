@@ -440,7 +440,7 @@ test("codex: a run that grants nothing from the server gets no MCP server and th
   assert.deepEqual(fake.log.slice(before).filter((entry) => ["tools/call", "initialize", "server/discover"].includes(entry.method)), [], "the server saw nothing of the run");
 });
 
-test("codex: a server that does not start fails the run, naming it, rather than running it without its tools", { timeout: 90_000 }, async (t) => {
+test("codex: a door Codex's client can't reach fails the run, naming the server, rather than running it without its tools (an unreachable upstream shows at the first call instead)", { timeout: 90_000 }, async (t) => {
   const { api } = await codexServe(t, { FAKE_CODEX_MCP_START: "fail" });
   await addFake(t, api);
   assert.equal((await api("POST", "/agents", agent("codex-down", { harness: "codex", tools: ["mcp:fake/add"] }))).status, 201);
