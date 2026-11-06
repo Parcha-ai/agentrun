@@ -331,11 +331,9 @@ export type Run = {
   installing?: Promise<boolean>;
   /** It shows the install's row (INSTALLING_CLAUDE) while it waits for an install that runs. */
   installRow?: string;
-  /** Its first launch, once its harness is installed (start): its place is held until it is done. */
-  afterInstall?: Promise<void>;
-  /** Gives back the place create() held for it while it waited for that install: once, at that launch or at its end
-   *  (a cancel, a failure), whichever comes first. */
-  givePlaceBack?: () => void;
+  /** It waits for its harness's install before a launch (harnessReady): takePlace counts it as holding a place until
+   *  that launch, so nothing takes its place meanwhile. A cancel or an end lets the place go. */
+  waitsInstall?: boolean;
   settled: boolean;
   settling?: Promise<void>;
   /** The newest write of its serve.json: one at a time, in order. */
@@ -1852,6 +1850,8 @@ export class Runs {
     const install = this.options.claudeInstall;
     if (run.harness !== "claude-agent" || !install || install.installed) return undefined;
     if (run.installing) return run.installing;
+    // Counted as holding its place until its launch (takePlace); a run whose process lives holds one already.
+    if (!this.live(run)) run.waitsInstall = true;
     const installing = (async () => {
       if (!(await install.needed())) return true;
       run.installRow = new Date().toISOString();
@@ -1860,6 +1860,8 @@ export class Runs {
         await install.ensure();
         return true;
       } catch (error) {
+        // A server that stops mid-install leaves the run as it is, for the next server to install and launch.
+        if (this.closing) return false;
         run.submitted = 0;
         if (!(run.outcome || run.finishing || run.cancel)) {
           run.error = { code: "run_failed", message: (error as Error).message, retryable: false };
@@ -2045,6 +2047,12 @@ export class Runs {
     // run again, or not one at all.
     run.claimWait = undefined;
     if (run.child || this.closing || run.cancel || run.outcome || run.finishing || run.preparing || run.installing) return;
+    // Every launch of a claude-agent run (its start, a recovery after a restart, a relaunch, a wake) waits for Claude Code
+    // to be installed whole first (harnessReady), holding its place meanwhile (waitsInstall), and launches once it is:
+    // never a process that would load a missing SDK.
+    const installing = this.harnessReady(run);
+    if (installing) return void installing.then((installed) => installed && this.launch(run, followUp));
+    run.waitsInstall = undefined;
     // Taken by this launch only: a later launch (a relaunch after its process went) opens the run as any other.
     run.followUpOpen = undefined;
     // Its secrets go over fd 3, written whole and closed as it starts; it reads them first (secrets.ts). Each launch path
@@ -2271,8 +2279,6 @@ export class Runs {
     // A run whose files are still being copied has had no process yet: its start launches it, and only a cancel ends it
     // first (a recovery that lists it meanwhile must not fail it for its launch mark).
     if (run.preparing && !run.cancel) return;
-    // Its end gives back a place it held while it waited for its harness's install (a failed install ends it here).
-    run.givePlaceBack?.();
     run.feed?.abort();
     run.feed = undefined;
     run.working = false;
@@ -2529,7 +2535,8 @@ export class Runs {
     for (const deadline = Date.now() + this.killAfterMs() + 1_000; ; await sleep(50)) {
       // A run whose launch waits on its claim (launch) keeps the place it had, nothing else taking it meanwhile, until it is
       // cancelled or ends.
-      const holding = [...this.runs.values()].filter((run) => this.live(run) || (run.claimWait === true && !run.cancel && !run.outcome));
+      // So does one that waits for its harness's install (waitsInstall), until that launch, a cancel or its end.
+      const holding = [...this.runs.values()].filter((run) => this.live(run) || ((run.claimWait === true || run.waitsInstall === true) && !run.cancel && !run.outcome && !run.finishing));
       const counted = max === undefined || holding.length + this.starting < max;
       const held = holding.reduce((sum, run) => sum + runMibOf(run.harness), this.startingMib);
       // With nothing held, a run that fits at all starts: pi's one place on a host smaller than a pi run (host.ts).
@@ -2553,28 +2560,14 @@ export class Runs {
   async create(entry: AgentEntry, revision: Revision, version: number, options: StartOptions): Promise<Run> {
     await this.sweepOnce();
     const release = await this.takePlace(harnessOfBody(revision.body));
-    let held = false;
     try {
       // Read again: the place may have been waited for, and the agent archived meanwhile.
       const now = await this.options.agents.get(entry.agent.id);
       if (now?.agent.archivedAt) throw new ApiError("agent_not_runnable", `The agent ${entry.agent.id} is archived: unarchive it to run it.`, { details: { archived_at: now.agent.archivedAt } });
-      const run = await this.start(entry, revision, version, options);
-      // A run waiting for its harness's install has no process yet: it keeps its place until its launch (start's
-      // `afterInstall`), so no other start takes it meanwhile and no two launch past the limit once the install is in.
-      if (run.afterInstall) {
-        held = true;
-        let given = false;
-        run.givePlaceBack = () => {
-          if (given) return;
-          given = true;
-          run.givePlaceBack = undefined;
-          release();
-        };
-        void run.afterInstall.finally(() => run.givePlaceBack?.());
-      }
-      return run;
+      // A run that waits for its harness's install from here holds its place itself (waitsInstall).
+      return await this.start(entry, revision, version, options);
     } finally {
-      if (!held) release();
+      release();
     }
   }
 
@@ -2640,11 +2633,9 @@ export class Runs {
       if (!(await prepared)) return run;
     }
     run.firstLaunch = true;
-    // A harness installed on first use (claude-agent's Claude Code) is installed first, in the background: the start
-    // answers now, and the run shows the install while it waits.
-    const installing = this.harnessReady(run);
-    if (installing) run.afterInstall = installing.then((installed) => void (installed && this.launch(run)), () => undefined).finally(() => void (run.afterInstall = undefined));
-    else this.launch(run);
+    // A harness installed on first use (claude-agent's Claude Code) is installed first, in the background (launch): the
+    // start answers now, and the run shows the install while it waits.
+    this.launch(run);
     if (revision.kind === "workflow") return run;
     // The first message names the files given to the run (run-manifest.ts), on every harness.
     void firstMessage(options.input.content as string, started.workspace).then((content) => this.submit(run, content, "followUp", `first-${run.id}`, READY_TIMEOUT_MS)).catch((error: Error) => {
@@ -3129,8 +3120,6 @@ export class Runs {
     // Finishing is already ending with its outcome (an answer, a failure, the cap): a run's first end is its last.
     if (run.outcome || run.finishing) return false;
     run.cancel = true;
-    // A run cancelled while it waits for its harness's install gives its place back now, not when the install ends.
-    run.givePlaceBack?.();
     // A tool call that waits for approval is canceled with its run: an answer after this one is refused.
     const waiting = waitingApproval(run);
     if (waiting) {

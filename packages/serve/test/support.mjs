@@ -24,6 +24,8 @@ process.env.AGENTRUN_BOXES = "none";
 // from the registry npm is configured for. A test that installs names its own fake (claude-first-use.test.mjs); any other
 // such install fails at once on this closed port rather than downloading Claude Code.
 for (const name of ["npm_config_registry", "NPM_CONFIG_REGISTRY"]) process.env[name] = "http://127.0.0.1:9/";
+// And gives up there at once: no retry with npm's backoff, a short timeout, so a test can never wait on such an install.
+for (const [name, value] of [["fetch_retries", "0"], ["fetch_timeout", "5000"]]) for (const spelling of [`npm_config_${name}`, `NPM_CONFIG_${name.toUpperCase()}`]) process.env[spelling] = value;
 
 /** The records of a log another process appends to (a line of JSON each, as the fake docker's): only its whole lines,
  *  each ended by its newline. A file just made and still empty, or a last line still being written, is read as the
