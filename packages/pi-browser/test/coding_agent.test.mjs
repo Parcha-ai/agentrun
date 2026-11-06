@@ -686,8 +686,8 @@ test("web_fetch falls back to the host's fetchers when the provider cannot fetch
   assert.match(fetched.text, /# From https:\/\/example\.test\/x/);
 });
 
-test("a driver whose close never comes back does not hold the release: the provider still releases", { timeout: 30_000 }, async (t) => {
-  // A Stagehand close after its connection dropped and was reconnected can wait forever.
+test("a driver whose close never comes back does not hold the release: the provider still releases", { timeout: 60_000 }, async (t) => {
+  // Any DriverFactory may be passed; custody waits DRIVER_CLOSE_MS (25 s) at most for its close.
   const backend = fake();
   const hanging = async (target, signal, options) => ({ ...(await fakeDriver(backend)(target, signal, options)), close: () => new Promise(() => {}) });
   const agent = await startAgent(t, { extension: extensionOf(backend, { driver: hanging }) });
