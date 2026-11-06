@@ -49,35 +49,33 @@ test("an answer's skill and workflow blocks are read beside its notes, by name a
   assert.deepEqual(parsed.skills, [{ name: "find-policies", text: SKILL }]);
   assert.deepEqual(parsed.workflows, [{ name: "find-policies", text: `---\ndescription: ${DESCRIPTION}\n---\n${workflow({ tools: [] })}\n` }]);
   assert.deepEqual(parseReflection(block("skill", "find-policies", SKILL)), { ok: true, notes: [], skills: [{ name: "find-policies", text: SKILL }] }, "a skill alone is an answer");
-  // Three backticks close at the first ``` inside: the skill is cut there, as CommonMark reads it.
-  assert.notEqual(parseReflection(block("skill", "find-policies", SKILL, "```")).skills?.[0]?.text, SKILL);
+  // A skill's fence is four backticks: in three it is no skill's block, just text.
+  assert.equal(parseReflection(block("skill", "find-policies", SKILL, "```")).skills, undefined);
 });
 
-test("a skill's or a draft's block out of format is unparsed: not closed, no name or two, two different ones under one name", () => {
+test("a skill's or a draft's block out of format is unparsed: no name or two, two different ones under one name", () => {
   const detail = (answer) => {
     const parsed = parseReflection(answer);
     assert.deepEqual([parsed.ok, parsed.reason], [false, "unparsed"], answer.slice(0, 60));
     return parsed.detail;
   };
-  assert.match(detail(`\`\`\`\`skill find-policies\n${SKILL}`), /skill's block is not closed/);
   assert.match(detail(block("skill", "", SKILL).replace("skill ", "skill")), /skill's block names no name/);
   assert.match(detail(block("workflow", "a b", "{}")), /workflow's block names more than one name/);
   assert.match(detail(`${block("skill", "x", SKILL)}\n${block("skill", "x", `${SKILL}One more step.\n`)}`), /two of the answer's skills have one name/, "two different skills under one name are ambiguous");
   assert.ok(reflect.ANSWER_MAX >= 8 * CAPS.runNote + 2 * CAPS.file + CAPS.readme, "room for every note, a skill and a draft at their caps");
 });
 
-test("an answer that gives one skill twice, first in a three-backtick block and then in the four-backtick block the prompt asks for, is read as that skill once (a Claude Code run's own answer); a stray fenced block of another kind is left alone", () => {
+test("only the asked fence opens a skill: a skill given first in three backticks, cut short by one code example or two, then in the four-backtick block the format asks for, is read whole from the four (a Claude Code run's own answer)", () => {
   const answer = readFileSync(new URL("./fixtures/answer-skill-twice.txt", import.meta.url), "utf8");
   const parsed = parseReflection(answer);
   assert.equal(parsed.ok, true, JSON.stringify(parsed));
   assert.deepEqual(parsed.skills.map(({ name }) => name), ["ops-status-report"]);
   assert.match(parsed.skills[0].text, /^---\nname: ops-status-report\n[\s\S]*Add no preamble or closing remarks outside these lines\.\n$/);
-  // The four-backtick block is the one the format asks for: a three-backtick one under the same name that differs (cut
-  // short by a code block inside it) gives way to it.
-  const cutShort = `\`\`\`skill find-policies\n${SKILL.split("```sh")[0]}\`\`\`\n\n${block("skill", "find-policies", SKILL)}`;
-  const kept = parseReflection(cutShort);
-  assert.equal(kept.ok, true, JSON.stringify(kept));
-  assert.deepEqual(kept.skills, [{ name: "find-policies", text: SKILL }]);
+  const TWO = `${SKILL}\nThen the shipping page:\n\n\`\`\`sh\ncurl -s https://shop.example/shipping/\n\`\`\`\n`;
+  for (const text of [SKILL, TWO]) {
+    const whole = parseReflection([block("skill", "find-policies", text, "```"), "Here it is again in the required form:", block("skill", "find-policies", text)].join("\n\n"));
+    assert.deepEqual(whole.skills, [{ name: "find-policies", text }], text === TWO ? "two code examples" : "one code example");
+  }
   // A fenced block that is no learning block, beside the skill, is prose.
   const stray = parseReflection(`\`\`\`text\nSTATUS: OK\n\`\`\`\n\n${block("skill", "find-policies", SKILL)}`);
   assert.deepEqual([stray.ok, stray.skills?.map(({ name }) => name)], [true, ["find-policies"]]);
@@ -92,24 +90,19 @@ test("one name, three versions: a skill or a draft given in three backticks, the
   }
 });
 
-test("the whole skill first in three backticks, its own code example inside, then the four-backtick correction: the correction is read whole, and an ordinary fenced example or a stray unnamed fence is never read as learning", () => {
-  // A Claude Code run's answer shape: the skill in three backticks, cut short by the code block inside it, whose closing
-  // line then opens a stray unnamed fence; then the same skill again in the four backticks the format asks for.
-  const answer = [`\`\`\`skill find-policies\n${SKILL}\`\`\``, "Because a skill goes in a four-backtick block, here it is again in the required form:", block("skill", "find-policies", SKILL)].join("\n\n");
-  const parsed = parseReflection(answer);
-  assert.equal(parsed.ok, true, JSON.stringify(parsed));
-  assert.deepEqual(parsed.skills, [{ name: "find-policies", text: SKILL }]);
-  // A fenced example of the format in five backticks holds a four-backtick skill block: an example, never a skill.
-  const example = parseReflection(`\`\`\`\`\`markdown\n${block("skill", "shown-only", SKILL)}\n\`\`\`\`\`\n\nNo notes.`);
-  assert.deepEqual([example.ok, example.skills], [false, undefined], JSON.stringify(example));
-  // A three-backtick example after a note that shows a four-backtick skill's opening line: an example, as it always was.
-  // Only the first fence after a skill, holding that skill's own name, gives way to it.
+test("an opening never closed, or that reaches another opening first, is no block: that opening alone is left out and the rest is read; an example in a longer fence is never learning", () => {
+  // A three-backtick example after a note that shows a four-backtick skill's opening line: the note is kept.
   const shown = parseReflection([`\`\`\`note a.md\n${note()}\`\`\``, "The format for a skill looks like this:", "```markdown\n````skill x\nThe steps.\n```", "Nothing else."].join("\n\n"));
   assert.deepEqual([shown.ok, shown.notes?.map(({ file }) => file), shown.skills], [true, ["a.md"], undefined], JSON.stringify(shown));
-  const other = parseReflection([`\`\`\`skill find-policies\n${SKILL}\`\`\``, "```markdown\n````skill x\nThe steps.\n```"].join("\n\n"));
-  assert.deepEqual([other.ok, other.skills?.map(({ name }) => name)], [true, ["find-policies"]], "another name inside the stray fence is part of it");
-  // A stray unnamed fence that never closes, with no learning block after it, is prose.
+  // A stray four-backtick opening after a skill, never closed: the skill is kept.
+  assert.deepEqual(parseReflection(`${block("skill", "find-policies", SKILL)}\n\n\`\`\`\`skill other\nhalf a skill`).skills, [{ name: "find-policies", text: SKILL }]);
+  // An opening that reaches another opening before its close: the second is read.
+  assert.deepEqual(parseReflection(`\`\`\`\`skill other\nhalf a skill\n\n${block("skill", "find-policies", SKILL)}`).skills, [{ name: "find-policies", text: SKILL }]);
+  // A stray unnamed fence that never closes is prose.
   assert.deepEqual(parseReflection(`${block("skill", "find-policies", SKILL)}\n\n\`\`\`\nstray`).skills, [{ name: "find-policies", text: SKILL }]);
+  // A fenced example of the format in five backticks holds a four-backtick skill block: an example, never a skill.
+  const example = parseReflection(`\`\`\`\`\`markdown\n${block("skill", "shown-only", SKILL)}\n\`\`\`\`\`\n\nNo notes.`);
+  assert.equal(example.skills, undefined, JSON.stringify(example));
 });
 
 test("the host writes a draft's README from the description its block gives, and the JSON after it is the workflow.json", () => {
