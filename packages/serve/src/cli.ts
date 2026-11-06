@@ -10,6 +10,7 @@ import { spawn } from "node:child_process";
 import { chmodSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { defaultData, SERVER_FILE } from "./files.js";
+import { stopOnSignals } from "./stop-signals.js";
 import { canOpen } from "./host.js";
 import { resetPassword } from "./owner.js";
 import type { ImageState } from "./box-image.js";
@@ -184,24 +185,12 @@ if (values.open && canOpen(process.env)) spawn(process.platform === "darwin" ? "
 const record = join(resolve(data), SERVER_FILE);
 writeFileSync(record, `${JSON.stringify({ base_url: serve.baseUrl, pid: process.pid, ...(serve.tokenFile ? { token_file: serve.tokenFile } : {}) })}\n`, { mode: 0o600 });
 chmodSync(record, 0o600);
-// One stop. A terminal's Ctrl-C reaches this server twice within milliseconds (its process group, and the npx command
-// passing it on), as a process manager's stop can (systemd signals every process of the unit): a repeat within
-// REPEAT_MS is that same stop. A later one is a person who wants out now: it stops at once, as does a stop that runs past
-// its deadline (its runs' drain and a margin), and the cut runs resume on the next start.
-const REPEAT_MS = 1_000;
-const DEADLINE_MARGIN_MS = 15_000;
-let stopAt: number | undefined;
-const now = (why: string) => {
-  const { runs } = serve.stopping();
-  console.error(`${why}; runs resume on the next start${runs > 0 ? ` (${runs} ${runs === 1 ? "was" : "were"} running)` : ""}`);
-  rmSync(record, { force: true });
-  process.exit(130);
-};
-const stop = () => {
-  if (stopAt !== undefined) return void (Date.now() - stopAt >= REPEAT_MS && now("stopping now"));
-  stopAt = Date.now();
-  setTimeout(() => now("the stop passed its deadline, stopping now"), serve.stopping().boundMs + DEADLINE_MARGIN_MS).unref();
-  void serve.close().then(() => (rmSync(record, { force: true }), process.exit(0)));
-};
+// One stop per press or process-manager stop; a later signal, or a stop past its deadline, stops at once (stop-signals.ts).
+const stop = stopOnSignals({
+  close: () => serve.close(),
+  stopping: () => serve.stopping(),
+  done: (code) => (rmSync(record, { force: true }), process.exit(code)),
+  say: (line) => console.error(line),
+});
 process.on("SIGINT", stop);
 process.on("SIGTERM", stop);
