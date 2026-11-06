@@ -250,3 +250,18 @@ function processOf(dir) {
   const pids = lines.filter((line) => line.includes(" run --dir ") && line.includes(`--dir ${dir} `)).map((line) => Number(line.trim().split(/\s+/)[0]));
   return pids.length === 1 ? pids[0] : undefined;
 }
+
+test("the note goes before both of an answer's model fields, content and output (pi 1.2 reads output), once: a background tool's answer carries it too", async () => {
+  const { withBoxNote } = await import("../dist/coding-tools.js");
+  let told = false;
+  const box = { replaced: () => (told ? undefined : ((told = true), NOTE)) };
+  const blocks = [{ type: "text", text: "No background processes." }];
+  const seen = [];
+  const first = await withBoxNote(box, (chunk) => seen.push(chunk), async () => ({ content: blocks, output: blocks, details: { n: 0 } }));
+  assert.deepEqual(first.content.map((b) => b.text), [NOTE, "No background processes."]);
+  assert.deepEqual(first.output.map((b) => b.text), [NOTE, "No background processes."]);
+  assert.deepEqual(first.details, { n: 0 });
+  assert.deepEqual(seen, [`${NOTE}\n`], "and in the output stream, for an answer that gives neither");
+  const second = await withBoxNote(box, () => {}, async () => ({ content: blocks, output: blocks }));
+  assert.deepEqual(second.output.map((b) => b.text), ["No background processes."], "told once");
+});
