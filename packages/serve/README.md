@@ -1927,6 +1927,16 @@ with the token, an archived agent's too:
   `learning: <edited, created or retired> by a person: <file>` with a `Changed-By: user` trailer, with `MEMORY.md`
   rebuilt, `main` moved only from the commit it was made on, and the folder's files brought in line; it answers the
   note as it now is, with its new `ETag`. `MEMORY.md` itself is never written (400).
+- `POST .../learning/files/{file}/restore` under `If-Match` makes a retired note active again, and gives a retired skill
+  (its `SKILL.md`) or workflow draft (its `README.md`) to every later run again: one commit, `learning: restored by a
+  person: <file>`, with `MEMORY.md` rebuilt and the notes it supersedes marked superseded, as an approval marks them.
+  Unlike a retire, a restore checks the text again as a new note or skill is checked (secret shapes, the server's
+  values, hidden characters, its format, and every file of a skill's or a draft's folder): a refusal is 400 with
+  `problems`, and the item stays retired. Only a retired item is restored (else 400). It takes the owner's password
+  session alone, as an approval does; one that waited for its owner's OK before its retire is recorded as their approval
+  too (`Approved-Via: console`). The learning view gives each item `last_change` (`{kind, by, at}`: `approved`,
+  `edited`, `created`, `retired` or `restored` by a `person`, or `learned` by a `run`) and each retired one `retired`
+  (`{at, by}`, the time of its retire, which an edit since moves not).
 - `GET /runs/{run_id}/learning`: the run's learning whole (its `used` and `learned` as on its read, its seed, its merge, the grader's verdict with its item for
   each new note, `{file, keep, question, why}`, `question` the rubric's question a dropped note failed, the checker's
   problems, what the grade cost), `null` for a run that does not learn; `verdict` is `null` until a grade ran.
@@ -1946,7 +1956,7 @@ followed: a read or a write there answers `500`, and nothing is written.
 
 Who can approve: the owner, signed in with their password. No token approves, the server's own included, so a run that reaches this server only through its API (its MCP tools, a sandbox run) can't approve its own notes. Runs that use bash on the host run as you: they can read this server's files, its session key among them, so no route keeps them from approving. For untrusted tasks, use the sandbox.
 
-`POST .../learning/files/{file}/approve` takes the console's password session, sent from this server's own origin with
+`POST .../learning/files/{file}/approve` (and `.../restore`, which puts a retired item back into every run) takes the console's password session, sent from this server's own origin with
 a JSON body as every page write is. Any token is 403: the server's own (what scripts and the MCP endpoint's tools
 carry), a run's door token, and a token sent beside the session. So is every request on a server with accounts off
 (`AGENTRUN_ACCOUNTS=0`), whose page cookie any token holder can mint. With no credential it is 401, as every route.
