@@ -1,18 +1,6 @@
-// The steps of attaching a sealed Stagehand that can fail on their own: naming where a failed step went, stopping a
-// cancelled attach, and creating the instance once more when the extension is still running an earlier attach's init.
-import { BrowserFailureError } from "../core/custody.js";
-import { AttachFailureError, browserFailure } from "../core/failures.js";
-
-/** What Stagehand's extension answers an init while another is still running in it. */
-export const INIT_IN_PROGRESS = "Stagehand initialization is already in progress";
-/** Stagehand's own init deadline: an init the extension is still running has ended by then. */
-export const IN_FLIGHT_INIT_MS = 60_000;
-
-/** The extension refused an init because another is still running in it (its JSON-RPC error, as Stagehand's cause). */
-export const initInProgress = (error: unknown): boolean => {
-  const cause = (error as { cause?: unknown } | null)?.cause as { code?: unknown; message?: unknown } | undefined;
-  return !!cause && typeof cause === "object" && typeof cause.code === "number" && cause.message === INIT_IN_PROGRESS;
-};
+// The steps of attaching a sealed Stagehand that can fail on their own: saying what failed (never where), and stopping a
+// cancelled attach without leaving anything attached to the browser.
+import { AttachFailureError } from "../core/failures.js";
 
 /** A failed attach step says what failed, never where: the host it went to (a local browser's loopback port, a vendor's
  *  connect host) goes to the operator's log and stays in the cause (failures.ts AttachFailureError). Stagehand reports a
@@ -21,29 +9,29 @@ export const attachStep = (host: string) => <T>(step: Promise<T>): Promise<T> =>
   throw new AttachFailureError(error, host);
 });
 
-/** A cancelled call never starts an init of its own, however the wait ended. */
+const cancelled = (signal: AbortSignal): Error =>
+  signal.reason instanceof Error ? signal.reason : Object.assign(new Error("the attach was cancelled"), { name: "AbortError" });
+
+/** A cancelled call never starts a step of its own, however the wait ended. */
 export function throwIfCancelled(signal?: AbortSignal): void {
-  if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : Object.assign(new Error("the attach was cancelled"), { name: "AbortError" });
+  if (signal?.aborted) throw cancelled(signal);
 }
 
-/** The sealed Stagehand, created once more when the extension is still running an earlier attach's init: an attach that
- *  gave up (a dropped connection, a deadline) left its init running there, and `waitForThatInit` (a close, which queues
- *  behind that init, so its reply means the init has ended) waits it out first. A second refusal is the browser still
- *  busy, retryable. */
-export async function createSealed<S>(create: () => Promise<S>, waitForThatInit: () => Promise<unknown>, host: string, signal?: AbortSignal): Promise<S> {
-  try {
-    return await create();
-  } catch (error) {
-    if (!initInProgress(error)) throw error;
+/** `step`, or the cancel when `signal` ends first: the call stops at once, and a step that still succeeds later is handed to
+ *  `release` (Stagehand's own steps take no signal, and one left attached would refuse the next attach). */
+export function untilCancelled<T>(step: Promise<T>, signal: AbortSignal | undefined, release: (late: T) => unknown): Promise<T> {
+  if (!signal) return step;
+  if (signal.aborted) {
+    step.then((late) => release(late), () => undefined).catch(() => undefined);
+    return Promise.reject(cancelled(signal));
   }
-  throwIfCancelled(signal);
-  await waitForThatInit();
-  throwIfCancelled(signal);
-  try {
-    return await create();
-  } catch (again) {
-    if (!initInProgress(again)) throw again;
-    process.emitWarning(`pi-browser: the browser at ${host} is still finishing an earlier connection after ${IN_FLIGHT_INIT_MS / 1_000} s`, { code: "PI_BROWSER_ATTACH" });
-    throw new BrowserFailureError(browserFailure("browser_unavailable", `The browser is still finishing an earlier connection after ${IN_FLIGHT_INIT_MS / 1_000} s. Call again in a moment, or call browser_relaunch for a fresh session.`, { retryable: true }));
-  }
+  return new Promise<T>((resolve, reject) => {
+    let over = false;
+    const onAbort = () => { over = true; reject(cancelled(signal)); };
+    signal.addEventListener("abort", onAbort, { once: true });
+    step.then(
+      (value) => { signal.removeEventListener("abort", onAbort); if (over) Promise.resolve().then(() => release(value)).catch(() => undefined); else resolve(value); },
+      (error) => { signal.removeEventListener("abort", onAbort); if (!over) reject(error); },
+    );
+  });
 }

@@ -26,6 +26,11 @@ export const SECRET_NAMES: readonly string[] = (() => {
   return list.split(" ").filter(Boolean);
 })();
 
+/** A run's remote MCP servers' credentials, the one entry its pipe holds that is not on the launcher's list: JSON, each
+ *  server the run's revision grants a tool of with its URL now and, when that is the run's pinned one, its headers
+ *  (mcp-gateway.ts McpCredentials). A run that grants none gets no entry. */
+export const MCP_AUTH = "AGENTRUN_MCP_AUTH";
+
 /** The decision keys among them: a run's process gets them only on its decision descriptor (decisions.ts), never with
  *  the secrets on its pipe, which are its tools' environment. */
 export const DECISION_KEYS: readonly string[] = ["TYPESAFE_API_KEY", "PARALLEL_API_KEY"];
@@ -43,7 +48,7 @@ const encode = (pairs: Iterable<readonly [string, string]>): Buffer => Buffer.co
 function decode(bytes: Buffer): void {
   for (const pair of bytes.toString("utf8").split("\0")) {
     const at = pair.indexOf("=");
-    if (at > 0 && SECRET_NAMES.includes(pair.slice(0, at))) held.set(pair.slice(0, at), pair.slice(at + 1));
+    if (at > 0 && (SECRET_NAMES.includes(pair.slice(0, at)) || pair.slice(0, at) === MCP_AUTH)) held.set(pair.slice(0, at), pair.slice(at + 1));
     else if (pair.slice(0, at) === SIGN_IN_PAIR) signIn = pair.slice(at + 1);
   }
 }
@@ -98,7 +103,7 @@ const SECRET_NAME = /(?:^|_)(?:KEY|TOKEN|SECRET|PASSWORD)$/i;
  *  every other key, token, secret or password `env` names. One shorter than the checker's MIN_SECRET,
  *  whitespace aside, matches too much text by chance to be refused, and is left out. */
 export const hostSecrets = (env: NodeJS.ProcessEnv, stored?: StoredKeys): string[] => {
-  const held = SECRET_NAMES.flatMap((name) => [secret(name) ?? "", stored?.(name) ?? ""]);
+  const held = [...SECRET_NAMES.flatMap((name) => [secret(name) ?? "", stored?.(name) ?? ""]), ...mcpSecretValues(mcpCredentials())];
   const named = Object.entries(env).filter(([name]) => SECRET_NAME.test(name) && !SECRET_NAMES.includes(name)).map(([, value]) => value ?? "");
   return [...new Set([...held, ...named])].filter((value) => value.replace(/\s+/g, "").length >= MIN_SECRET);
 };
@@ -151,6 +156,23 @@ export function handover(names: readonly string[], stored?: StoredKeys): Buffer 
     return value === undefined ? [] : [[name, value] as const];
   }));
 }
+
+/** The MCP credentials this process was handed (MCP_AUTH), by server; none when it was handed none. */
+export function mcpCredentials(): Record<string, { url: string; headers?: Record<string, string>; unopened?: string }> {
+  try {
+    const parsed: unknown = JSON.parse(held.get(MCP_AUTH) ?? "{}");
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as never) : {};
+  } catch {
+    return {};
+  }
+}
+
+/** Every header value of `credentials`: what a secret scan refuses. */
+export const mcpSecretValues = (credentials: Record<string, { headers?: Record<string, string> }>): string[] =>
+  Object.values(credentials).flatMap((server) => Object.values(server.headers ?? {})).flatMap((value) => [value, value.replace(/^Bearer\s+/i, "")]);
+
+/** The pipe's MCP entry for `credentials`, to follow the secrets `handover` encodes. */
+export const mcpHandover = (credentials: Record<string, unknown>): Buffer => encode([[MCP_AUTH, JSON.stringify(credentials)]]);
 
 /** A run's saved sign-in as its pipe carries it, after its secrets (handover). */
 export const handoverSignIn = (value: { provider: string; ref: string; save: boolean }): Buffer => encode([[SIGN_IN_PAIR, JSON.stringify(value)]]);

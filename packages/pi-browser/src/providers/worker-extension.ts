@@ -9,6 +9,8 @@ import { cdpCall } from "./cdp-call.js";
 import { extensionDirectory, extensionOrigin } from "./chrome-args.js";
 
 export const COPY = "stagehand-extension";
+/** The name Stagehand's extension carries, which is how Stagehand finds it in a browser. */
+export const STAGEHAND_EXTENSION = "Stagehand Runtime";
 const LOAD_MS = 20_000;
 
 /** `<into>/stagehand-extension`, a copy of Stagehand's extension directory. */
@@ -97,11 +99,23 @@ export async function loadConfined(copy: string, devtoolsUrl: string, policyUrl:
   } finally { session.close(); }
 }
 
+type Installed = { id: string; name: string; enabled: boolean };
+const installed = async (devtoolsUrl: string): Promise<Installed[]> => {
+  const session = await cdpCall(devtoolsUrl, "Extensions.getExtensions", {}, LOAD_MS);
+  try { return (session.result?.extensions ?? []) as Installed[]; } finally { session.close(); }
+};
+
 /** Whether the browser already holds, enabled, the extension with this id: the one a copy's path implies, never another that
  *  merely carries Stagehand's name (an earlier, unconfined copy would be taken for the lease's own). */
 export async function isLoaded(devtoolsUrl: string, id: string): Promise<boolean> {
-  const session = await cdpCall(devtoolsUrl, "Extensions.getExtensions", {}, LOAD_MS);
-  try {
-    return ((session.result?.extensions ?? []) as Array<{ id: string; enabled: boolean }>).some((e) => e.id === id && e.enabled);
-  } finally { session.close(); }
+  return (await installed(devtoolsUrl)).some((e) => e.id === id && e.enabled);
+}
+
+/** Stagehand finds its extension by name and refuses a browser that holds two enabled, so every other extension carrying that
+ *  name (an earlier, unconfined copy) is uninstalled: the one Stagehand finds is then the lease's own copy, `id`. Disabled ones
+ *  go too, so none can be enabled again beside it. */
+export async function soleStagehand(devtoolsUrl: string, id: string): Promise<void> {
+  for (const other of (await installed(devtoolsUrl)).filter((e) => e.name === STAGEHAND_EXTENSION && e.id !== id)) {
+    (await cdpCall(devtoolsUrl, "Extensions.uninstall", { id: other.id }, LOAD_MS)).close();
+  }
 }

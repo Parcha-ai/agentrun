@@ -35,16 +35,17 @@ import type { DoorContext, DoorEvent, DoorHook, DurableRun } from "@parcha/pi-du
 import { type ConfineChild, confineOf } from "./adapters.js";
 import { hostTools, type ToolResults } from "./host-tools.js";
 import { endsTurn, type Park, type ParkedCall, type Resume, type RunGate } from "./tool-gate.js";
-import { CAP_REFUSAL_CODE, CAP_REFUSED_FIELD, type CapGuard, capToolSpend, holdsInFlight, type RefusalFigures, type RunSpend, sideSpend, takePaidRefusal, useSpend } from "./cap.js";
+import type { McpGateway } from "./mcp-gateway.js";
+import { BOUND_FIELD, CAP_REFUSAL_CODE, CAP_REFUSED_FIELD, type CapGuard, capToolSpend, holdsInFlight, type Previous, previousOf, type RefusalFigures, refusalFields, type RunSpend, sideSpend, takePaidRefusal, useSpend } from "./cap.js";
 import { durableSessions } from "./sessions.js";
 import { handsParallel, planeOf } from "./tool-plane.js";
 import { parallelOf } from "./web-fetch.js";
 import { WEB_SEARCH_TOOL } from "./web-search.js";
-import { ADAPTER_API, MESSAGE, MESSAGE_END, TURN_END, type TurnEndData } from "./turn-end.js";
+import { ADAPTER_API, BOOKED, MESSAGE, MESSAGE_END, TURN_END, type TurnEndData } from "./turn-end.js";
 import { originOf, REQUEST_CONTINUED, REQUEST_COST_LATE, REQUEST_COST_PENDING, REQUEST_STARTED, TOOL_COST, TOOL_STARTED } from "@parcha/pi-durable-agent/timeline";
 
-/** The root's marker of a paid request already written as a pi.assistant entry. */
-export const BOOKED = "adapter.request";
+/** The root's marker of a paid request already written as a pi.assistant entry (turn-end.ts). */
+export { BOOKED } from "./turn-end.js";
 /** The cost of a request whose answer was written at unknown cost, and its tokens, written once it came in: the timeline
  *  adds it to the run's cost without counting a request, and a later open reads it as that request's cost being in. */
 export const PRICED_LATE = REQUEST_COST_LATE;
@@ -158,8 +159,14 @@ export function adapterRun(
   const CANCELLED = "the run was cancelled: the model request was not sent";
   // What the run's paid tools charged, in earlier processes (read at the open) and this one: null once one is unknown.
   let charged: number | null = 0;
-  // Each admitted request's worst case until its cost is booked: the booking's spend counts it only then.
+  // Each admitted request's hold until its cost is booked: the booking's spend counts it only then.
   const inFlight = holdsInFlight();
+  // The session's previous request on each model, as the cap prices the next one by it (cap.ts Previous): each admitted
+  // request's input bound and bound, from the guard (one slot: admissions run one at a time) to its start, by turn, until
+  // it answers with its usage. In this process only: a new process prices its first request with nothing cached.
+  let admittedNext: { model: string; inputTokensMax?: number; boundUsd: number } | undefined;
+  const sentOf = new Map<number, { model: string; inputTokensMax?: number }>();
+  const previous = new Map<string, Previous>();
   // The run's spend as a paid tool's check reads it (useSpend, set at the open): a paid call refused under it pauses the
   // run at this run's next request (guard).
   let spend: RunSpend | undefined;
@@ -171,24 +178,22 @@ export function adapterRun(
     // A paid call the cap just refused for room (cap.ts takePaidRefusal): this request is refused in its words, so the
     // turn ends there and the run waits on a raise, as at a model request's refusal. A refusal no cap fixes comes first.
     const paid = byCancel || !cap || request.spentUsd === null ? undefined : takePaidRefusal(spend);
-    const answer = byCancel ? { refuse: CANCELLED } : paid ? { refuse: `${CAP_REFUSAL_CODE}${paid.words}`, spentUsd: paid.figures.spentUsd, needsUsd: paid.figures.needsUsd } : cap?.beforeRequest({ ...request, spentUsd: plus(plus(request.spentUsd, charged), sideSpend()) });
+    const model = (request as { model?: unknown }).model;
+    const before = typeof model === "string" ? previous.get(model) : undefined;
+    const answer = byCancel ? { refuse: CANCELLED } : paid ? { refuse: `${CAP_REFUSAL_CODE}${paid.words}`, spentUsd: paid.figures.spentUsd, needsUsd: paid.figures.needsUsd, leastCapUsd: paid.figures.leastCapUsd } : cap?.beforeRequest({ ...request, spentUsd: plus(plus(request.spentUsd, charged), sideSpend()), ...(before ? { previous: before } : {}) });
     if (answer && "refuse" in answer) {
       refused = answer.refuse;
       capRefused = !byCancel;
-      refusedFigures = !byCancel && "needsUsd" in answer && typeof answer.needsUsd === "number" && typeof answer.spentUsd === "number" ? { spentUsd: answer.spentUsd, needsUsd: answer.needsUsd } : undefined;
+      refusedFigures = !byCancel && "needsUsd" in answer && typeof answer.needsUsd === "number" && typeof answer.spentUsd === "number" && typeof answer.leastCapUsd === "number" ? { spentUsd: answer.spentUsd, needsUsd: answer.needsUsd, leastCapUsd: answer.leastCapUsd, ...("boundUsd" in answer && typeof answer.boundUsd === "number" && answer.boundUsd > 0 ? { boundUsd: answer.boundUsd } : {}) } : undefined;
       return answer;
     }
-    // Admitted, limited to the output what is left of the cap buys (which the runner hands the model proxy, and holds it
-    // at): the worst case the cap holds for it, which the runner records, and counts it at if its cost never comes in.
-    const limit = answer?.outputTokensMax;
-    const admitted = { ...request, ...(limit === undefined ? {} : { outputTokensMax: limit }) };
-    const hold = cap?.worstOf?.(admitted);
-    inFlight.admitted(hold);
-    if (hold === undefined && limit === undefined) return undefined;
-    // Stopped part way by its client, it counts by what streamed (cap.ts stoppedOf), never more than its hold (the runner).
-    const stoppedOf = cap?.stoppedOf;
-    const stopped = hold !== undefined && stoppedOf ? { stoppedUsd: (streamed: number) => stoppedOf(admitted, streamed) ?? hold } : {};
-    return { ...(hold === undefined ? {} : { holdUsd: hold }), ...(limit === undefined ? {} : { outputTokensMax: limit }), ...stopped };
+    inFlight.admitted(answer?.holdUsd);
+    admittedNext = typeof model === "string" ? { model, ...(request.inputTokensMax === undefined ? {} : { inputTokensMax: request.inputTokensMax }), boundUsd: answer?.boundUsd ?? 0 } : undefined;
+    if (!answer) return undefined;
+    // Admitted, limited to the output what is left of the cap buys (which the runner hands the model proxy): what the cap
+    // holds it at, which the runner records, and counts it at if its cost never comes in; stopped part way by its client,
+    // what streamed (cap.ts Admitted), never more than its hold (the runner).
+    return { holdUsd: answer.holdUsd, ...(answer.outputTokensMax === undefined ? {} : { outputTokensMax: answer.outputTokensMax }), stoppedUsd: answer.stoppedUsd };
   };
   /** The cancel, as the booking's stop: read again after this check and after the request's record is written, so a
    *  cancel that lands between them still keeps the request from leaving. */
@@ -326,6 +331,11 @@ export function adapterRun(
   const onModel = (event: ModelPortEvent) => {
     if (event.type === "request_start") {
       inFlight.started(event.turn);
+      // Its bound, on its start mark: the run's cost serves it while it is in flight (runs.ts).
+      const admitted = admittedNext;
+      admittedNext = undefined;
+      if (admitted) sentOf.set(event.turn, admitted);
+      const bound: Record<string, number> = admitted && admitted.boundUsd > 0 ? { [BOUND_FIELD]: admitted.boundUsd } : {};
       current = event.turn;
       open.add(event.turn);
       models.set(event.turn, event.model);
@@ -333,10 +343,16 @@ export function adapterRun(
       // Marked on the root as it leaves, as a pi run's request is (request-start.ts): one never answered, a run that ends
       // without opening again (cancelled, or failed) reads as cut, its cost unknown, never as the sum without it.
       // A store that refuses it has refused a write already, and the process ends on that.
-      later(() => commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: REQUEST_STARTED, data: { key: spec.key, request: event.turn } })))).catch(() => undefined);
+      later(() => commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: REQUEST_STARTED, data: { key: spec.key, request: event.turn, ...bound } })))).catch(() => undefined);
     } else {
       open.delete(event.turn);
       inFlight.ended(event.turn);
+      // The previous request on its model, now: its usage, as the cap reads it (none when its cost or usage is unknown,
+      // or it was cut: nothing cached to count on).
+      const sent = sentOf.get(event.turn);
+      sentOf.delete(event.turn);
+      const last = sent && event.usage.usd !== null && !event.usage.cut ? previousOf(event.usage, sent.inputTokensMax, now()) : undefined;
+      if (sent) last ? previous.set(sent.model, last) : previous.delete(sent.model);
       costed.push({ request: event.turn, usage: event.usage });
       booked();
       // A cost that came in after its answer was written goes in now, not at some later flush, and so does one that came
@@ -477,7 +493,7 @@ export function adapterRun(
           await flush(true, cut ? undefined : async (tx) => {
             if (why !== undefined) {
               // A refusal of the cap's: a start mark of its own first, as pi's is, so the run's usage counts no request for it.
-              if (unsent) await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: REQUEST_STARTED, data: { [CAP_REFUSED_FIELD]: true, ...(figures ? { spentUsd: figures.spentUsd, needsUsd: figures.needsUsd } : {}) } });
+              if (unsent) await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: REQUEST_STARTED, data: { [CAP_REFUSED_FIELD]: true, ...refusalFields(figures) } });
               await tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [assistantMessage(harness, undefined, undefined, "", [], why) as never] });
             }
             const data: TurnEndData = {
@@ -509,10 +525,11 @@ export function adapterRun(
   const CRASH_SEAM = process.env.AGENTRUN_SERVE_TEST_CRASH_AFTER_ANSWER;
   let answerRecorded: (() => void) | undefined;
   const answerIn = new Promise<void>((resolve) => (answerRecorded = resolve));
-  const resume: Resume = async (id, content, mark) => {
+  const resume: Resume = async (id, content, mark, origin) => {
     await opened;
-    const message: Message = { id: `approval-${id}`, content, recorded: commit(async (tx) => {
-      await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: MESSAGE, data: { key: spec.key, id: `approval-${id}`, content } });
+    // The server's message: its origin is written on its user entry, so the Timeline never shows it as the person's.
+    const message: Message = { id: `approval-${id}`, content, ...(origin ? { origin } : {}), recorded: commit(async (tx) => {
+      await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: MESSAGE, data: { key: spec.key, id: `approval-${id}`, content, ...(origin ? { origin } : {}) } });
       await mark(tx);
     }) };
     await message.recorded;
@@ -658,7 +675,15 @@ export function adapterRun(
       // The park every gated call of the run's takes, built once: the host tools' here, and the MCP gateway's, which takes
       // the same object beside them (`{ gate, park }`). A call parked by its id or by its tool and arguments ends its turn.
       const park: Park = { commit: (change) => commit(change as never) as never, parked: (callId) => void (parked = { callId }), parkedBy: (match) => void (parked = match), turn: () => taking };
-      session = await adapter.open({ ...spec, tools: hostTools(durable, tools, context, results, coding, gate ? { gate, park } : undefined, extra) }, { writer, models: booking.models, signal: stop.signal, onEvent, ...(dir ? { dir } : {}), ...(cwd ? { cwd } : {}) });
+      // An MCP call from the harness's own client takes the same park, and its result is kept by its call id too, for the
+      // root's record of it, as a host tool's is.
+      const gateway = spec.mcp as McpGateway | undefined;
+      const mcp = gateway && { ...gateway, call: async (...[server, tool, args, call]: Parameters<McpGateway["call"]>) => {
+        const result = await gateway.call(server, tool, args, { ...call, ...(gate ? { park } : {}) });
+        if (call.callId) results.set(call.callId, { text: result.content.map((block) => block.text).join("\n\n"), isError: result.isError === true });
+        return result;
+      } };
+      session = await adapter.open({ ...spec, ...(mcp ? { mcp } : {}), tools: hostTools(durable, tools, context, results, coding, gate ? { gate, park } : undefined, extra) }, { writer, models: booking.models, signal: stop.signal, onEvent, ...(dir ? { dir } : {}), ...(cwd ? { cwd } : {}) });
       // A turn the person stopped is still open in the session (an interrupt writes no end there), and it is not resumed.
       // The run's stop record names the person's newest message when they stopped: with no message on the root newer than
       // it, the open turn is the stopped one. The session settles it, ended interrupted, and the next message is a turn of

@@ -131,6 +131,8 @@ jobs:
         run: node scripts/check-undici.mjs
       - if: matrix.shard == 'checks'
         run: node scripts/generate-schema.mjs --check
+      - if: matrix.shard == 'checks'
+        run: node scripts/generate-clients.mjs --check
       # The source export: checked here, and the archive the downloaded source's consumer installs.
       - if: matrix.shard == 'checks' || matrix.shard == 'source'
         run: npm run export:source

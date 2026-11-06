@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { BROWSER_TOOLS, WEB_TOOLS, browserSection, listedFor, type ToolContract } from "./core/contract.js";
+import { BROWSER_TOOLS, WEB_TOOLS, browserSection, browserToolsFor, listedFor, type ToolContract } from "./core/contract.js";
 import {
   BrowserFailureError, closeDriver, custodyTools, FIXED_SESSION_RELAUNCH, fenced, HANDED_BACK, loadedNoPage, moveRecord, newSessionRecord, notices, NOTHING_TO_HOLD, navigationRefusal, profileRefusal, relaunchRefusal, sessionSpec, waitingForHuman, backoffMs, NO_HANDOFF,
   type AttachedSession, type CustodyPort, type DriverFactory, type FenceMark, type Overrides, type ToolOutput,
@@ -237,7 +237,7 @@ export class LocalCustody implements CustodyPort<PageDriver> {
     if (reason !== "idle") this.replacedBy = null;
     await this.captured(live);
     await this.sweepLeftovers();
-    // A close that never comes back (Stagehand after a reconnect) never holds up the provider's release.
+    // A close that never comes back never holds up the provider's release (closeDriver waits DRIVER_CLOSE_MS at most).
     if (live.driver) await closeDriver(live.driver);
     try { await (await this.d.provider()).release(live.ref); } catch (error) {
       if (!directoryLeft(error)) throw this.failure(error);
@@ -649,7 +649,8 @@ export function createBrowserExtension(options: CodingAgentOptions = {}): (pi: E
       });
     }
 
-    for (const contract of BROWSER_TOOLS) if (listedFor(contract, { downloads: fileTools, upload: fileTools, handoff: !!options.handoff })) registerTool(pi, contract, runtimeOf);
+    // A session vault keeps sign-ins, and run says so; without one it claims cookies across pages only.
+    for (const contract of browserToolsFor(!!options.sessionVault)) if (listedFor(contract, { downloads: fileTools, upload: fileTools, handoff: !!options.handoff })) registerTool(pi, contract, runtimeOf);
     registerTool(pi, WEB_TOOLS.find((tool) => tool.name === "web_fetch")!, runtimeOf);
   };
 }

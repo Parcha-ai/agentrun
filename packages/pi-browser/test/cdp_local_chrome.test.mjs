@@ -8,7 +8,7 @@ import test from "node:test";
 import { setDownloadBehavior } from "../dist/providers/browserbase.js";
 import { cdpProvider } from "../dist/providers/cdp.js";
 import { stopWatchingChromeStderr, watchedChromeStderr } from "../dist/providers/chrome-stderr.js";
-import { CHROME, commandLine, isRunning, LOCAL_TELEMETRY, NO_CHROME, skipIncapable } from "./fixtures/local-chrome.mjs";
+import { CHROME, commandLine, isRunning, NO_CHROME, skipIncapable } from "./fixtures/local-chrome.mjs";
 import { CHROME_SINGLETON, scratch, scratchShort } from "./fixtures/scratch.mjs";
 
 const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
@@ -33,8 +33,8 @@ test("a local Chrome is created, driven through Stagehand's extension over the p
     await assert.rejects(setDownloadBehavior(target.sdkCdpUrl.replace(/devtools\/browser\/.*/, "devtools/browser/nope"), { timeoutMs: 2_000 }));
     let browser;
     try {
-      browser = await localBrowser.connect({ cdpUrl: target.sdkCdpUrl, ...(target.extensionId ? { extensionId: target.extensionId } : {}) });
-      stagehand = await Stagehand.create({ browser, logging: { level: "off" }, telemetry: LOCAL_TELEMETRY });
+      browser = await localBrowser.connect({ cdpUrl: target.sdkCdpUrl });
+      stagehand = await Stagehand.create({ browser, logging: { level: "off" } });
     } catch (error) { if (skipIncapable(t, error)) return; throw error; }
     const [page] = await browser.context.pages();
     await page.goto(`http://127.0.0.1:${server.address().port}/`);
@@ -154,11 +154,10 @@ test("an endpoint provider attaches to a browser the host runs and release leave
   const started = await owner.create(spec("cdp-test-2"), signal);
   try {
     const port = /^local:\d+:(\d+):/.exec(started.id)[1];
-    const endpoint = cdpProvider({ endpoint: `http://127.0.0.1:${port}`, extensionId: "abc" });
+    const endpoint = cdpProvider({ endpoint: `http://127.0.0.1:${port}` });
     const ref = await endpoint.create(spec("cdp-test-3"), signal);
     const target = await endpoint.attach(ref);
     assert.match(target.sdkCdpUrl, /^ws:\/\/127\.0\.0\.1:\d+\/devtools\//);
-    assert.equal(target.extensionId, "abc");
     await endpoint.release(ref);
     assert.equal(alive(pidOf(started)), true, "release of a borrowed browser closes nothing");
     // A lease whose pid now belongs to some other process (a recycled pid) is not signalled.
@@ -190,8 +189,8 @@ test("Browser.setDownloadBehavior lasts as long as the socket that sent it: a do
     assert.equal(setting.open, true);
     let browser;
     try {
-      browser = await localBrowser.connect({ cdpUrl: target.sdkCdpUrl, ...(target.extensionId ? { extensionId: target.extensionId } : {}) });
-      stagehand = await Stagehand.create({ browser, logging: { level: "off" }, telemetry: LOCAL_TELEMETRY });
+      browser = await localBrowser.connect({ cdpUrl: target.sdkCdpUrl });
+      stagehand = await Stagehand.create({ browser, logging: { level: "off" } });
     } catch (error) { if (skipIncapable(t, error)) return; throw error; }
     const [page] = await browser.context.pages();
     await page.goto(`http://127.0.0.1:${server.address().port}/`);

@@ -57,7 +57,10 @@ export type AttachTarget = {
   sdkCdpUrl: string;
   /** `expiresAt` (epoch ms): the dial's credential ends then, so a socket opened on it is closed at that moment. */
   dial?: { url: string; headers?: Record<string, string>; expiresAt?: number };
-  extensionId?: string;
+  /** The browser's own DevTools URL, which Stagehand's extension inside the browser dials for its own connection; absent, it
+   *  dials `sdkCdpUrl`. A proxy in front of the driver then carries both, and a drop that cuts both leaves the extension
+   *  holding a client it can no longer see leave: Stagehand 4.4 then refuses every attach until its worker restarts. */
+  extensionCdpUrl?: string;
 };
 
 export type ProviderCaps = {
