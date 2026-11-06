@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { after, before, describe, it } from "node:test";
-import { DockerProvider, pullTar, pushTar, readFile, writeFile } from "../../dist/index.js";
+import { DockerProvider, pullTar, pullTarStream, pushTar, readFile, writeFile } from "../../dist/index.js";
 
 const LIVE = process.env.AGENTRUN_COMPUTER_LIVE_DOCKER === "1";
 const IMAGE = "debian:bookworm-slim";
@@ -54,6 +54,42 @@ function tarEntry(name, { type = "0", body = Buffer.alloc(0), link = "" } = {}) 
 
 const tarOf = (...entries) => Buffer.concat([...entries, Buffer.alloc(1024)]);
 
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Settles as promise does, or rejects once ms pass: a hang becomes a failure that says what hung. */
+function within(promise, ms, what) {
+	let timer;
+	const late = new Promise((_, reject) => {
+		timer = setTimeout(() => reject(new Error(`${what} did not settle within ${ms / 1000} s`)), ms);
+	});
+	return Promise.race([promise, late]).finally(() => clearTimeout(timer));
+}
+
+/**
+ * Runs 8 pushes of `archive` on one client, all open at once: no source gives its bytes until every push has begun
+ * (or ended without beginning).
+ */
+function eightAtOnce(client, dir, archive) {
+	let arrived = 0;
+	let release;
+	const gate = new Promise((resolve) => (release = resolve));
+	const one = (i) => {
+		let here = false;
+		const arrive = () => {
+			if (here) return;
+			here = true;
+			if (++arrived === 8) release();
+		};
+		async function* source() {
+			arrive();
+			await gate;
+			yield archive;
+		}
+		return pushTar(client, `${dir}/${i}`, source()).finally(arrive);
+	};
+	return Promise.all(Array.from({ length: 8 }, (_, i) => one(i)));
+}
+
 describe("move files in and out of a Docker computer", { skip: LIVE ? false : "set AGENTRUN_COMPUTER_LIVE_DOCKER=1 to run on real Docker" }, () => {
 	const made = [];
 	const local = [];
@@ -72,6 +108,28 @@ describe("move files in and out of a Docker computer", { skip: LIVE ? false : "s
 		assert.equal(result.ok, true, `${method}: ${JSON.stringify(result)}`);
 		return result.value;
 	};
+	/** Runs fn on a connection of its own, closed after, so a connection fn wedges fails only its own test. */
+	const onItsOwnConnection = async (fn) => {
+		const connected = await provider.connect(ref);
+		assert.equal(connected.ok, true, JSON.stringify(connected));
+		try {
+			return await fn(connected.value.client);
+		} finally {
+			await connected.value.close();
+		}
+	};
+	/** A tree of 8 MiB and more at /data/tree in the computer, made once. */
+	let treeMade;
+	const bigTree = () =>
+		(treeMade ??= (async () => {
+			assert.equal((await writeFile(client, "/data/tree/a.bin", randomBytes(5 * 1024 * 1024), { parents: true })).ok, true);
+			assert.equal((await writeFile(client, "/data/tree/sub/b.bin", randomBytes(3 * 1024 * 1024 + 99), { parents: true })).ok, true);
+			assert.equal((await writeFile(client, "/data/tree/sub/run.sh", Buffer.from("#!/bin/sh\necho copied\n"), { mode: 0o755 })).ok, true);
+			await run(["ln", "-s", "sub/run.sh", "/data/tree/run"]);
+			return "/data/tree";
+		})());
+	const listing = async (dir) =>
+		(await run(["sh", "-c", `cd ${dir} && find . -mindepth 1 -printf '%y %m %p %l\\n' | sort && find . -type f -exec sha256sum {} + | sort -k2`])).out;
 	const scratch = () => {
 		const dir = mkdtempSync(join(tmpdir(), "computer-files-"));
 		local.push(dir);
@@ -193,5 +251,81 @@ describe("move files in and out of a Docker computer", { skip: LIVE ? false : "s
 		}
 		const found = await run(["sh", "-c", "ls /data /data/slip; ls /data/slip/target"]);
 		assert.doesNotMatch(found.out, /escaped/, found.out);
+	});
+
+	it("writes a read-only file over 512 KiB, then sets its mode", async () => {
+		const bytes = randomBytes(1536 * 1024);
+		const wrote = await writeFile(client, "/data/read-only.bin", bytes, { mode: 0o400 });
+		assert.deepEqual(wrote, { ok: true, value: { size: bytes.length } });
+		const back = await readFile(client, "/data/read-only.bin");
+		assert.equal(back.ok, true, JSON.stringify(back.error));
+		assert.ok(Buffer.from(back.value).equals(bytes), "the bytes read back differ");
+		assert.equal((await call("files.stat", { path: "/data/read-only.bin" })).mode, 0o400);
+	});
+
+	it("copies a tree in the computer by piping a pull into a push on the same connection", async () => {
+		const src = await bigTree();
+		await onItsOwnConnection(async (one) => {
+			const copied = await within(pushTar(one, "/data/tree-copy", pullTarStream(one, src).chunks), 120_000, "the pull piped into the push");
+			assert.equal(copied.ok, true, JSON.stringify(copied.error));
+		});
+		assert.equal(await listing("/data/tree-copy"), await listing(src));
+		assert.equal((await run(["/data/tree-copy/run"])).out, "copied\n");
+	});
+
+	it("answers other calls while a pull's chunks go unread", async () => {
+		const src = await bigTree();
+		await onItsOwnConnection(async (one) => {
+			const { chunks, done } = pullTarStream(one, src);
+			const iterator = chunks[Symbol.asyncIterator]();
+			assert.equal((await within(iterator.next(), 60_000, "the first chunk")).done, false);
+			await delay(1000);
+			assert.deepEqual(await within(one.call("ping", {}), 60_000, "a ping beside an unread pull"), { ok: true, value: {} });
+			const stat = await within(one.call("files.stat", { path: src }), 60_000, "a stat beside an unread pull");
+			assert.equal(stat.ok && stat.value.type, "dir");
+			await within(iterator.return(), 60_000, "leaving the pull");
+			assert.equal((await done).ok, false);
+		});
+	});
+
+	it("an aborted pull ends at once, and the connection takes 8 pulls after it", async () => {
+		const src = await bigTree();
+		await onItsOwnConnection(async (one) => {
+			const controller = new AbortController();
+			const { chunks, done } = pullTarStream(one, src, { signal: controller.signal });
+			const iterator = chunks[Symbol.asyncIterator]();
+			assert.equal((await within(iterator.next(), 60_000, "the first chunk")).done, false);
+			await delay(1000);
+			controller.abort();
+			const ended = await within(done, 60_000, "done after the abort");
+			assert.equal(ended.ok, false);
+			assert.equal(ended.error.code, "aborted");
+			assert.deepEqual(await within(one.call("ping", {}), 60_000, "a ping after the abort"), { ok: true, value: {} });
+			const eight = Array.from({ length: 8 }, () => pullTarStream(one, src).chunks[Symbol.asyncIterator]());
+			const firsts = await within(Promise.all(eight.map((it) => it.next())), 60_000, "8 pulls at once");
+			assert.deepEqual(
+				firsts.map((step) => step.done),
+				Array(8).fill(false),
+			);
+			await within(Promise.all(eight.map((it) => it.return())), 60_000, "leaving the 8 pulls");
+		});
+	});
+
+	it("a push aborted after its source ends still ends, and 8 pushes at once follow on the same connection", async () => {
+		await onItsOwnConnection(async (one) => {
+			const controller = new AbortController();
+			async function* source() {
+				yield tarOf(tarEntry("big.bin", { body: randomBytes(512 * 1024 - 1536) }));
+				controller.abort();
+			}
+			const aborted = await within(pushTar(one, "/data/aborted", source(), { signal: controller.signal }), 60_000, "the aborted push");
+			assert.equal(aborted.ok, false);
+			assert.equal(aborted.error.code, "aborted");
+			const eight = await within(eightAtOnce(one, "/data/eight", tarOf(tarEntry("one.txt", { body: Buffer.from("1") }))), 60_000, "8 pushes at once");
+			assert.deepEqual(
+				eight.map((r) => (r.ok ? "ok" : `${r.error.code}: ${r.error.message}`)),
+				Array(8).fill("ok"),
+			);
+		});
 	});
 });

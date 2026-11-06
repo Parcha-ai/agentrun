@@ -7,13 +7,11 @@ export const MAX_LINE_BYTES = 1024 * 1024;
 export const MAX_OUTPUT_BYTES = 360 * 1024;
 /** The notification that cancels a request by id (as in LSP). */
 export const CANCEL_METHOD = "$/cancelRequest";
-/** The most bytes one files.read returns and one tar.data carries: in base64, it fits a line. */
+/** The most bytes one files.read or tar.pull.read returns: in base64, it fits a line. */
 export const MAX_CHUNK_BYTES = 512 * 1024;
 /** The deepest files.list walks, and the most entries one reply holds. */
 export const MAX_LIST_DEPTH = 16;
 export const MAX_LIST_ENTRIES = 1000;
-/** The server notification that carries a tar.pull's bytes. */
-export const TAR_DATA_METHOD = "tar.data";
 /** How much of each stream a process keeps: the last 8 MiB, read by byte offset. */
 export const PROCESS_RING_BYTES = 8 * 1024 * 1024;
 /** How many processes a daemon holds, running or ended; the oldest ended ones are dropped first. */
@@ -161,21 +159,30 @@ export interface FilesRemoveParams {
 	recursive?: boolean;
 }
 
-export interface TarPullParams {
+export interface TarPullBeginParams {
 	/** A file (one entry, its name) or a directory (entries relative to it). */
 	path: string;
 }
 
-export interface TarPullResult {
-	/** The archive's length: every tar.data before this reply, added up. */
-	bytes: number;
+export interface TarPullBeginResult {
+	id: string;
 }
 
-/** A server notification that belongs to a call names the call's id in `request`. */
-export interface TarDataParams {
-	request: number;
-	/** base64, at most MAX_CHUNK_BYTES. */
+export interface TarPullReadParams {
+	id: string;
+	/** Default and most MAX_CHUNK_BYTES; more is refused as `limit`. */
+	maxBytes?: number;
+}
+
+export interface TarPullReadResult {
+	/** base64: maxBytes of the archive, fewer only at its end. */
 	data: string;
+	eof: boolean;
+}
+
+export interface TarPullEndParams {
+	/** Ending a pull that is not open is fine. */
+	id: string;
 }
 
 export interface TarPushBeginParams {
@@ -324,7 +331,9 @@ export interface DaemonMethods {
 	"files.mkdir": { params: FilesMkdirParams; result: Empty };
 	"files.move": { params: FilesMoveParams; result: Empty };
 	"files.remove": { params: FilesRemoveParams; result: Empty };
-	"tar.pull": { params: TarPullParams; result: TarPullResult };
+	"tar.pull.begin": { params: TarPullBeginParams; result: TarPullBeginResult };
+	"tar.pull.read": { params: TarPullReadParams; result: TarPullReadResult };
+	"tar.pull.end": { params: TarPullEndParams; result: Empty };
 	"tar.push.begin": { params: TarPushBeginParams; result: TarPushBeginResult };
 	"tar.push.write": { params: TarPushWriteParams; result: Empty };
 	"tar.push.end": { params: TarPushEndParams; result: TarPushEndResult };
@@ -335,16 +344,6 @@ export interface DaemonMethods {
 	"process.resize": { params: ProcessResizeParams; result: Empty };
 	"process.list": { params: ProcessListParams; result: ProcessListResult };
 	"process.wait": { params: ProcessWaitParams; result: ProcessExit };
-}
-
-/** Every notification the daemon sends. */
-export interface DaemonNotifications {
-	"tar.data": TarDataParams;
-}
-
-export interface DaemonNotification {
-	method: string;
-	params: unknown;
 }
 
 export type DaemonMethod = keyof DaemonMethods;

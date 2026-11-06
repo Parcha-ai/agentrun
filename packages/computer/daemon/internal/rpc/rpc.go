@@ -11,10 +11,14 @@ import (
 	"io"
 	"log"
 	"sync"
+	"time"
 )
 
 // MaxLine is the longest line, in bytes without its newline, read or written.
 const MaxLine = 1 << 20
+
+// shutdownGrace is how long Serve waits for its handlers after it cancels them, before it closes w.
+const shutdownGrace = 2 * time.Second
 
 // CancelMethod is the notification that cancels a request by id.
 const CancelMethod = "$/cancelRequest"
@@ -121,7 +125,8 @@ type session struct {
 // Serve reads requests from r and writes replies to w until r ends or ctx is done, then cancels what still runs and
 // returns once every handler has. It returns nil at the end of r or on ctx; a read error otherwise. On ctx it closes r
 // when r is an io.Closer, which ends the read; the read of an r that cannot be closed ends when its input does, and any
-// line it reads after Serve returned is dropped.
+// line it reads after Serve returned is dropped. A handler still writing a reply after a short grace (no one reads w)
+// is ended by closing w, when w is an io.Closer.
 func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -156,7 +161,21 @@ loop:
 		}
 	}
 	cancel()
-	sess.wg.Wait()
+	// A handler can be stuck writing a reply no one reads. After a grace, closing w (when it can be closed) fails that
+	// write, so shutdown cannot hang on it.
+	handled := make(chan struct{})
+	go func() {
+		sess.wg.Wait()
+		close(handled)
+	}()
+	select {
+	case <-handled:
+	case <-time.After(shutdownGrace):
+		if closer, ok := w.(io.Closer); ok {
+			_ = closer.Close()
+		}
+		<-handled
+	}
 	sess.closeLocals()
 	if errors.Is(err, io.EOF) {
 		return nil
@@ -258,7 +277,7 @@ func (sess *session) handleLine(line []byte, oversized bool) {
 		return
 	}
 	key := canonical(req.ID)
-	ctx, cancel := context.WithCancel(context.WithValue(sess.ctx, callKey{}, &call{sess: sess, id: req.ID}))
+	ctx, cancel := context.WithCancel(context.WithValue(sess.ctx, callKey{}, &call{sess: sess}))
 	sess.mu.Lock()
 	if _, busy := sess.inFlight[key]; busy {
 		sess.mu.Unlock()
@@ -353,43 +372,11 @@ func (sess *session) writeLine(data []byte) error {
 	return err
 }
 
-type notification struct {
-	JSONRPC string `json:"jsonrpc"`
-	Method  string `json:"method"`
-	Params  any    `json:"params"`
-}
-
 type callKey struct{}
 
 // call is what a handler's context knows of its request.
 type call struct {
 	sess *session
-	id   json.RawMessage
-}
-
-// Notify sends a notification on the connection of the request ctx belongs to. The handler's own goroutine writes it,
-// so its notifications leave in order and before its reply. It waits while the client does not read.
-func Notify(ctx context.Context, method string, params any) error {
-	c, ok := ctx.Value(callKey{}).(*call)
-	if !ok {
-		return errors.New("rpc: Notify outside a request")
-	}
-	data, err := json.Marshal(notification{JSONRPC: "2.0", Method: method, Params: params})
-	if err != nil {
-		return err
-	}
-	if len(data) > MaxLine {
-		return Errorf(KindLimit, "the %s notification is %d bytes, over the %d-byte line limit", method, len(data), MaxLine)
-	}
-	return c.sess.writeLine(data)
-}
-
-// RequestID is the id of the request ctx belongs to.
-func RequestID(ctx context.Context) json.RawMessage {
-	if c, ok := ctx.Value(callKey{}).(*call); ok {
-		return c.id
-	}
-	return nullID
 }
 
 // Local returns the value the connection of ctx keeps under key, made by create on its first use. When the connection

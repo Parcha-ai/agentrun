@@ -254,50 +254,6 @@ func TestHandlerErrorsKeepTheirKind(t *testing.T) {
 	}
 }
 
-func TestNotificationsLeaveBeforeTheReplyAndNameTheRequest(t *testing.T) {
-	c := start(t, map[string]rpc.Handler{
-		"count": func(ctx context.Context, _ json.RawMessage) (any, error) {
-			for i := range 3 {
-				if err := rpc.Notify(ctx, "count.tick", map[string]any{"request": rpc.RequestID(ctx), "n": i}); err != nil {
-					return nil, err
-				}
-			}
-			return "done", nil
-		},
-	})
-	c.send(`{"jsonrpc":"2.0","id":"c1","method":"count"}` + "\n")
-	for i := range 3 {
-		line := <-c.lines
-		var note struct {
-			JSONRPC string          `json:"jsonrpc"`
-			ID      json.RawMessage `json:"id"`
-			Method  string          `json:"method"`
-			Params  struct {
-				Request json.RawMessage `json:"request"`
-				N       int             `json:"n"`
-			} `json:"params"`
-		}
-		if err := json.Unmarshal(line, &note); err != nil || note.JSONRPC != "2.0" || note.ID != nil || note.Method != "count.tick" || string(note.Params.Request) != `"c1"` || note.Params.N != i {
-			t.Fatalf("want notification %d for c1, got %s", i, line)
-		}
-	}
-	if r := c.next(); string(r.ID) != `"c1"` || string(r.Result) != `"done"` {
-		t.Fatalf("want the reply after the notifications, got %+v", r)
-	}
-}
-
-func TestANotificationOverTheLineLimitIsRefused(t *testing.T) {
-	c := start(t, map[string]rpc.Handler{
-		"big": func(ctx context.Context, _ json.RawMessage) (any, error) {
-			return nil, rpc.Notify(ctx, "big.data", strings.Repeat("z", rpc.MaxLine))
-		},
-	})
-	c.send(`{"jsonrpc":"2.0","id":1,"method":"big"}` + "\n")
-	if r := c.next(); string(r.ID) != "1" || r.Error == nil || r.Error.Data.Kind != "limit" {
-		t.Fatalf("want a limit error and no notification, got %+v", r)
-	}
-}
-
 type closer struct{ closed chan struct{} }
 
 func (c *closer) Close() error { close(c.closed); return nil }
@@ -379,6 +335,41 @@ func TestCancellingServeReturnsWhileTheInputIsIdle(t *testing.T) {
 			case <-ended:
 			default:
 				t.Fatal("Serve returned before the request in flight ended")
+			}
+		})
+	}
+}
+
+func TestShutdownEndsWhenNoOneReadsTheReplies(t *testing.T) {
+	for _, how := range []string{"cancel", "end of input"} {
+		t.Run(how, func(t *testing.T) {
+			in, feed := io.Pipe()
+			_, out := io.Pipe() // nobody reads the replies
+			t.Cleanup(func() { _ = feed.Close() })
+			wrote := make(chan struct{}, 4)
+			server := rpc.NewServer(map[string]rpc.Handler{
+				"hi": func(context.Context, json.RawMessage) (any, error) {
+					wrote <- struct{}{}
+					return "hello", nil
+				},
+			}, log.New(io.Discard, "", 0))
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			done := make(chan error, 1)
+			go func() { done <- server.Serve(ctx, in, out) }()
+			if _, err := feed.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"hi"}` + "\n")); err != nil {
+				t.Fatal(err)
+			}
+			<-wrote
+			if how == "cancel" {
+				cancel()
+			} else {
+				_ = feed.Close()
+			}
+			select {
+			case <-done:
+			case <-time.After(30 * time.Second):
+				t.Fatal("Serve did not return while its reply could not be written")
 			}
 		})
 	}

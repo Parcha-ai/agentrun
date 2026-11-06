@@ -17,7 +17,8 @@
 // dirPrefix). Changed for the open platform: the target directory is the root entries are confined to; an entry that is
 // absolute or has a ".." part is refused before it is cleaned; a dangling symlink on the way to an entry is refused
 // instead of resolved lexically; no gzip and no entry or byte cap (the disk is the limit); no fsync per file; the
-// count of entries written is returned; errors are the protocol's kinds, naming the entry.
+// count of entries written is returned; directory modes are applied once the archive ends; errors are the protocol's
+// kinds, naming the entry.
 
 package files
 
@@ -27,6 +28,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -39,10 +41,16 @@ import (
 const tmpPattern = ".computerd-tmp-*"
 
 // extractTar writes the entries of the tar stream src below dir, which is absolute and resolved, and returns how many
-// it wrote. It is not atomic: on an error, the entries written so far stay.
-func extractTar(src io.Reader, dir string) (int, error) {
+// it wrote. It is not atomic: on an error, the entries written so far stay. Directories keep owner access until the
+// end, then get their archived modes, deepest first, so a read-only directory never blocks what goes in it.
+func extractTar(src io.Reader, dir string) (entries int, err error) {
+	dirs := map[string]os.FileMode{}
+	defer func() {
+		if modeErr := applyDirModes(dirs); err == nil {
+			err = modeErr
+		}
+	}()
 	tr := tar.NewReader(src)
-	entries := 0
 	for {
 		hdr, err := tr.Next()
 		if errors.Is(err, io.EOF) {
@@ -51,7 +59,7 @@ func extractTar(src io.Reader, dir string) (int, error) {
 		if err != nil {
 			return entries, rpc.Errorf(rpc.KindInvalid, "the archive cannot be read after %d entries: %v", entries, err)
 		}
-		wrote, err := extractEntry(tr, hdr, dir)
+		wrote, err := extractEntry(tr, hdr, dir, dirs)
 		if err != nil {
 			return entries, err
 		}
@@ -61,9 +69,22 @@ func extractTar(src io.Reader, dir string) (int, error) {
 	}
 }
 
+func applyDirModes(dirs map[string]os.FileMode) error {
+	paths := slices.Collect(maps.Keys(dirs))
+	slices.SortFunc(paths, func(a, b string) int {
+		return strings.Count(b, string(filepath.Separator)) - strings.Count(a, string(filepath.Separator))
+	})
+	for _, path := range paths {
+		if err := os.Chmod(path, dirs[path]); err != nil {
+			return fsError(err)
+		}
+	}
+	return nil
+}
+
 // extractEntry writes one entry below dir: a regular file, a directory or a symlink. Hard links, which could alias a
-// file outside dir, and devices and pipes are refused.
-func extractEntry(body io.Reader, hdr *tar.Header, dir string) (bool, error) {
+// file outside dir, and devices and pipes are refused. A directory is left with owner access, its mode put in dirs.
+func extractEntry(body io.Reader, hdr *tar.Header, dir string, dirs map[string]os.FileMode) (bool, error) {
 	if hdr.Typeflag == tar.TypeXGlobalHeader {
 		return false, nil // git archive writes one that carries the commit id.
 	}
@@ -96,7 +117,14 @@ func extractEntry(body io.Reader, hdr *tar.Header, dir string) (bool, error) {
 	perm := hdr.FileInfo().Mode().Perm()
 	switch hdr.Typeflag {
 	case tar.TypeDir:
-		return true, makeDirectory(leaf, perm|0o700, true)
+		if err := makeDirectory(leaf, perm|0o700, true); err != nil {
+			return false, err
+		}
+		if err := os.Chmod(leaf, perm|0o700); err != nil {
+			return false, fsError(err)
+		}
+		dirs[leaf] = perm
+		return true, nil
 	case tar.TypeReg:
 		return true, writeViaTemp(leaf, body, perm)
 	default:

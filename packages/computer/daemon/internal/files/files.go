@@ -13,14 +13,15 @@ import (
 )
 
 const (
-	// MaxChunk is the most bytes one files.read returns and one tar.data carries: in base64, it fits a line.
+	// MaxChunk is the most bytes one files.read or tar.pull.read returns: in base64, it fits a line.
 	MaxChunk = 512 << 10
 	// MaxListDepth is the deepest files.list walks.
 	MaxListDepth = 16
 	// MaxListEntries is the most entries one files.list returns.
 	MaxListEntries = 1000
-	// MaxPushes is how many tar pushes one connection may have open.
+	// MaxPushes and MaxPulls are how many tar pushes and pulls one connection may have open.
 	MaxPushes = 8
+	MaxPulls  = 8
 	// maxListBytes keeps a files.list reply, in JSON, well inside a line.
 	maxListBytes = 768 << 10
 )
@@ -155,17 +156,22 @@ func Write(spec WriteParams) (WriteResult, error) {
 	if info, err := os.Stat(path); err == nil && !info.Mode().IsRegular() && !info.IsDir() {
 		return WriteResult{}, rpc.Errorf(rpc.KindInvalid, "%s is not a regular file", path)
 	}
-	flags := os.O_WRONLY | os.O_CREATE
+	flags := os.O_WRONLY
 	switch {
 	case spec.Append:
 		flags |= os.O_APPEND
 	case spec.Offset == nil:
 		flags |= os.O_TRUNC
 	}
-	f, err := os.OpenFile(path, flags|os.O_EXCL, perm)
+	f, err := os.OpenFile(path, flags|os.O_CREATE|os.O_EXCL, perm)
 	created := err == nil
 	if errors.Is(err, os.ErrExist) {
 		f, err = os.OpenFile(path, flags, 0)
+		if errors.Is(err, os.ErrNotExist) {
+			// A dangling symlink (O_EXCL never follows one): make the file it names, as a new file.
+			f, err = os.OpenFile(path, flags|os.O_CREATE, perm)
+			created = err == nil
+		}
 	}
 	if err != nil {
 		return WriteResult{}, fsError(err)
