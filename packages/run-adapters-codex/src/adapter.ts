@@ -217,6 +217,9 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
             ...(io.cwd ? { cwd: io.cwd } : {}),
             ...(options.confine ? { confine: options.confine } : {}),
             ...(seed ? { seed } : {}),
+            // The built-ins are off: Codex's own apply_patch, with no environment to run in, is offered to no model
+            // (catalog.ts). A stand-in runs no Codex, so it has no catalog to read.
+            ...(checked !== undefined ? { catalog: { command: checked, ...(options.log ? { log: options.log } : {}) } } : {}),
             ...(options.webSearch ? { webSearch: options.webSearch } : {}),
             // A granted MCP server's tools: Codex's own MCP client calls them at the proxy (mcp.ts).
             ...(spec.mcp?.servers.length ? { mcp: spec.mcp } : {}),

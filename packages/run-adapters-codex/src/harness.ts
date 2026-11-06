@@ -1,6 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-codex/src/harness.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, imports rewritten for AgentRun; patches: 002-standin-guard, 004-names, 006-comments, 007-code-mode-nested, 008-recovery-note-developer, 010-repair-without-a-note, 011-web-search-live, 012-cut-off-safe-call, 018-apply-patch-off
+// Changed by Parcha, imports rewritten for AgentRun; patches: 002-standin-guard, 004-names, 006-comments, 007-code-mode-nested, 008-recovery-note-developer, 010-repair-without-a-note, 011-web-search-live, 012-cut-off-safe-call
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { dirname } from 'node:path';
 import { type DriveContext, type EffectRecord, type Harness, type HostTool, type ReplayPolicy, type SessionState, type Submission, Unavailable, UNAVAILABLE_STEP } from './host/kernel.js';
@@ -34,7 +34,7 @@ import {
 import { acknowledgeInDrive, attachInDrive, cliPath, CODEX_CLI, DriveFiles, SANDBOX_DOC } from './host/sandbox.js';
 import { AppServer, type RpcNotification, type RpcServerRequest } from './app-server.js';
 import { codeMode } from './code-mode.js';
-import { BUILTINS_ON, checkConfig, codexConfig, MODEL_CATALOG_FILE, type TomlValue, toToml, withoutApplyPatch } from './config.js';
+import { BUILTINS_ON, checkConfig, codexConfig, type TomlValue, toToml } from './config.js';
 import {
   callIdOf,
   endsTurn,
@@ -497,8 +497,6 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
       await machine.files.wipe();
       let sandboxMode: NonNullable<CodexHarnessOptions['sandboxMode']> = 'read-only';
       if (builtinsOn) sandboxMode = options.sandboxMode ?? (await sandboxVerdict(ctx, spec, machine, journal));
-      // With the built-ins off, Codex's own apply_patch is offered to no model: it has no environment to run in.
-      const catalog = builtinsOn ? undefined : await patchlessCatalog(ctx, spec, machine);
       const config = codexConfig({
         model,
         baseUrl: `${machine.modelUrl}/v1`,
@@ -506,7 +504,6 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
         contextWindow: options.contextWindow ?? 272_000,
         cwd,
         ...(spec.env ? { commandEnv: spec.env } : {}),
-        ...(catalog ? { modelCatalog: `${codexHome}/${MODEL_CATALOG_FILE}` } : {}),
         extra: {
           sandbox_mode: sandboxMode,
           ...(sandboxMode === 'workspace-write' ? { sandbox_workspace_write: { network_access: true, writable_roots: [cwd, home] } } : {}),
@@ -517,7 +514,6 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
       machine.configure?.(config);
       await machine.files.upload('codex-home', [
         { path: 'config.toml', bytes: new TextEncoder().encode(toToml(config)) },
-        ...(catalog ? [{ path: MODEL_CATALOG_FILE, bytes: catalog }] : []),
         ...(resume ? [{ path: resume.path, bytes: rolloutBytes }] : []),
       ]);
       proc = await machine.spawn({
@@ -1144,57 +1140,6 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
       // stopped drive's are left to the kernel.
       if (builtins?.size) await builtins.interruptAll('the command was still running when its drive ended: it may or may not have taken effect');
     }
-  }
-
-  /** The catalog `patchlessCatalog` read, kept for the harness's later drives (one binary, one catalog). */
-  let catalogBytes: Uint8Array | undefined;
-
-  /**
-   * Codex's bundled model catalog without apply_patch (`withoutApplyPatch`),
-   * read from the binary the session runs (`codex debug models --bundled`, in
-   * a CODEX_HOME of its own under the cache dir), so nothing in it is ours but
-   * that one field. Undefined, and Codex's own catalog kept, when it can't be
-   * read: the session runs as before, with a dead apply_patch listed.
-   */
-  async function patchlessCatalog(ctx: DriveContext, spec: CodexMachine, machine: SessionMachine): Promise<Uint8Array | undefined> {
-    if (catalogBytes) return catalogBytes;
-    const own = 'codex-catalog';
-    await machine.files.upload('cache', [{ path: `${own}/.keep`, bytes: new Uint8Array() }]);
-    const dir = `${machine.dirs.cache}/${own}`;
-    let dump: SessionProcess;
-    try {
-      dump = await machine.spawn({
-        command: codex.command,
-        args: [...codex.args, 'debug', 'models', '--bundled'],
-        cwd: dir,
-        signal: ctx.signal,
-        env: { ...(spec.env ?? {}), HOME: machine.dirs.home, CODEX_HOME: dir, TMPDIR: machine.dirs.tmp, NO_COLOR: '1' },
-        isolatedCommands: true,
-      });
-    } catch (err) {
-      if (ctx.signal.aborted || machine.signal.aborted) throw err;
-      log("codex: its bundled model catalog could not be read: apply_patch stays listed", { why: String((err as Error)?.message ?? err).slice(0, 120) });
-      return undefined;
-    }
-    dump.end();
-    const out: string[] = [];
-    const read = (async () => {
-      for await (const line of dump.lines()) out.push(line);
-    })().catch(() => {});
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const exit = await Promise.race([dump.exited, new Promise<undefined>((r) => (timer = setTimeout(r, 20_000, undefined)))]);
-    clearTimeout(timer);
-    if (!exit) {
-      dump.kill('SIGKILL');
-      await dump.exited;
-    }
-    await read;
-    const catalog = exit?.code === 0 ? withoutApplyPatch(out.join('\n')) : undefined;
-    if (!catalog) {
-      log("codex: its bundled model catalog could not be read: apply_patch stays listed", { exit: exit ?? 'no exit in 20 s', stderr: dump.stderrTail().slice(-300) });
-      return undefined;
-    }
-    return (catalogBytes = new TextEncoder().encode(catalog));
   }
 
   /**

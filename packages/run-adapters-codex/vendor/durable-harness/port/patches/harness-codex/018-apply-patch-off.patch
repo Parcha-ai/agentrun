@@ -1,12 +1,10 @@
 Patch: 018-apply-patch-off
-Reason: with the built-ins off, code mode (code_mode_host) still listed Codex's own apply_patch as a nested tool of exec though it has no environment to run in, so every call failed "No usable execution environment is available" (15 dead calls in 7 of 29 benchmark runs). Codex 0.164 has no feature that removes it (apply_patch_freeform is removed); its model catalog's apply_patch_tool_type does. The harness reads the binary's own bundled catalog (codex debug models --bundled), sets that one field null on every model (withoutApplyPatch), uploads it to CODEX_HOME and names it in model_catalog_json, a key an app may not set. With the built-ins on, apply_patch stays.
+Reason: with the built-ins off, code mode (code_mode_host) still listed Codex's own apply_patch as a nested tool of exec though it has no environment to run in, so every call failed "No usable execution environment is available" (15 dead calls in 7 of 29 benchmark runs). Codex 0.164 has no feature that removes it; its model catalog's apply_patch_tool_type does. The session's machine (host/machine.ts, catalog.ts, written for AgentRun) hands Codex its own bundled catalog with that field null and names it in model_catalog_json; this patch reserves that key, so an app cannot point Codex at another catalog, and corrects the comment that listed apply_patch among code mode's nested tools.
 Upstream: ours
-Pins: Codex's bundled catalog without apply_patch: that one field null on every model, everything else as Codex ships it
-Pins: the config names the catalog Codex reads (model_catalog_json) when given one, and an app may not set it
-Pins: with the built-ins off, a code-mode model (luna, sol) is offered no apply_patch of Codex's own: exec lists none, and config.toml names the catalog that turns it off
+Pins: the catalog is read from the session's own binary, in a CODEX_HOME of its own, once per binary; the config key is the harness's
 ---
 diff --git a/packages/harness-codex/src/config.ts b/packages/harness-codex/src/config.ts
-index 224e581..750bd4e 100644
+index 224e581..2dd8db6 100644
 --- a/packages/harness-codex/src/config.ts
 +++ b/packages/harness-codex/src/config.ts
 @@ -28,8 +28,9 @@ export const BUILTINS_OFF: Record<string, boolean> = {
@@ -16,62 +14,12 @@ index 224e581..750bd4e 100644
 -  // calls a tool. Its nested tools are the dynamic tools plus Codex's own apply_patch and MCP resource readers, which
 -  // run nothing here (read-only, approvals declined, no MCP server); its sub-agent tools are removed by agents.enabled.
 +  // calls a tool. Its nested tools are the dynamic tools plus Codex's own MCP resource readers, which run nothing here
-+  // (read-only, approvals declined, no MCP server); its sub-agent tools are removed by agents.enabled, and its apply_patch
-+  // (no environment to run in) by the harness's model catalog (withoutApplyPatch).
++  // (read-only, approvals declined, no MCP server); its sub-agent tools are removed by agents.enabled, its apply_patch by
++  // the harness's model catalog (catalog.ts).
    code_mode_host: true,
    tool_suggest: false,
    skill_search: false,
-@@ -83,10 +84,41 @@ export interface CodexConfigOptions {
-    * else), less any name the policy excludes.
-    */
-   commandEnv?: Readonly<Record<string, string>>;
-+  /**
-+   * The model catalog Codex reads instead of its bundled one
-+   * (`model_catalog_json`, a path): the bundled one without `apply_patch`
-+   * (`withoutApplyPatch`), with the built-ins off.
-+   */
-+  modelCatalog?: string;
-   /** Merged over the generated config, last. */
-   extra?: Record<string, TomlValue>;
- }
- 
-+/** The harness's model catalog in `CODEX_HOME` (`model_catalog_json`). */
-+export const MODEL_CATALOG_FILE = 'model-catalog.json';
-+
-+/**
-+ * Codex's bundled model catalog (`codex debug models --bundled`) with Codex's
-+ * own `apply_patch` off for every model (`apply_patch_tool_type` null), every
-+ * other field as Codex ships it; undefined when the text is not a catalog.
-+ * With the built-ins off, code mode still lists `apply_patch` as a nested tool
-+ * of `exec` though it has no environment to run in (each call fails "No usable
-+ * execution environment is available"), and 0.164 has no feature that removes
-+ * it: the catalog's field is the one switch.
-+ */
-+export function withoutApplyPatch(bundled: string): string | undefined {
-+  let catalog: unknown;
-+  try {
-+    catalog = JSON.parse(bundled);
-+  } catch {
-+    return undefined;
-+  }
-+  if (!isTable(catalog as TomlValue)) return undefined;
-+  const models = (catalog as { models?: unknown }).models;
-+  if (!Array.isArray(models) || models.length === 0 || !models.every((m) => isTable(m) && typeof m.slug === 'string')) return undefined;
-+  return JSON.stringify({ ...(catalog as object), models: models.map((m) => ({ ...m, apply_patch_tool_type: null })) });
-+}
-+
- /**
-  * What a command Codex runs inherits: the core variables only (`HOME`,
-  * `LOGNAME`, `PATH`, `SHELL`, `USER`, `USERNAME`, `TMPDIR`, `TEMP`, `TMP`),
-@@ -108,6 +140,7 @@ export function codexConfig(options: CodexConfigOptions): Record<string, TomlVal
-     model: options.model,
-     model_provider: 'gateway',
-     model_context_window: options.contextWindow,
-+    ...(options.modelCatalog ? { model_catalog_json: options.modelCatalog } : {}),
-     sandbox_mode: 'read-only',
-     web_search: 'disabled',
-     check_for_update_on_startup: false,
-@@ -144,10 +177,11 @@ export function codexConfig(options: CodexConfigOptions): Record<string, TomlVal
+@@ -144,10 +145,11 @@ export function codexConfig(options: CodexConfigOptions): Record<string, TomlVal
   * the model (`model`). Also what would swap the binary or shell that does the
   * sandboxing, send traffic outside the log (`otel`, `chatgpt_base_url`), grant
   * permission profiles, keep history or snapshots outside the rollout, or read
@@ -84,99 +32,3 @@ index 224e581..750bd4e 100644
    'model_provider',
    'model_providers',
    'base_url',
-diff --git a/packages/harness-codex/src/harness.ts b/packages/harness-codex/src/harness.ts
-index f3ab557..cf07cec 100644
---- a/packages/harness-codex/src/harness.ts
-+++ b/packages/harness-codex/src/harness.ts
-@@ -31,7 +31,7 @@ import {
- import { acknowledgeInDrive, attachInDrive, cliPath, CODEX_CLI, DriveFiles, SANDBOX_DOC } from 'harness-world-sandbox/cli';
- import { AppServer, type RpcNotification, type RpcServerRequest } from './app-server.ts';
- import { codeMode } from './code-mode.ts';
--import { BUILTINS_ON, checkConfig, codexConfig, type TomlValue, toToml } from './config.ts';
-+import { BUILTINS_ON, checkConfig, codexConfig, MODEL_CATALOG_FILE, type TomlValue, toToml, withoutApplyPatch } from './config.ts';
- import {
-   callIdOf,
-   endsTurn,
-@@ -494,6 +494,8 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
-       await machine.files.wipe();
-       let sandboxMode: NonNullable<CodexHarnessOptions['sandboxMode']> = 'read-only';
-       if (builtinsOn) sandboxMode = options.sandboxMode ?? (await sandboxVerdict(ctx, spec, machine, journal));
-+      // With the built-ins off, Codex's own apply_patch is offered to no model: it has no environment to run in.
-+      const catalog = builtinsOn ? undefined : await patchlessCatalog(ctx, spec, machine);
-       const config = codexConfig({
-         model,
-         baseUrl: `${machine.modelUrl}/v1`,
-@@ -501,6 +503,7 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
-         contextWindow: options.contextWindow ?? 272_000,
-         cwd,
-         ...(spec.env ? { commandEnv: spec.env } : {}),
-+        ...(catalog ? { modelCatalog: `${codexHome}/${MODEL_CATALOG_FILE}` } : {}),
-         extra: {
-           sandbox_mode: sandboxMode,
-           ...(sandboxMode === 'workspace-write' ? { sandbox_workspace_write: { network_access: true, writable_roots: [cwd, home] } } : {}),
-@@ -511,6 +514,7 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
-       machine.configure?.(config);
-       await machine.files.upload('codex-home', [
-         { path: 'config.toml', bytes: new TextEncoder().encode(toToml(config)) },
-+        ...(catalog ? [{ path: MODEL_CATALOG_FILE, bytes: catalog }] : []),
-         ...(resume ? [{ path: resume.path, bytes: rolloutBytes }] : []),
-       ]);
-       proc = await machine.spawn({
-@@ -1139,6 +1143,57 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
-     }
-   }
- 
-+  /** The catalog `patchlessCatalog` read, kept for the harness's later drives (one binary, one catalog). */
-+  let catalogBytes: Uint8Array | undefined;
-+
-+  /**
-+   * Codex's bundled model catalog without apply_patch (`withoutApplyPatch`),
-+   * read from the binary the session runs (`codex debug models --bundled`, in
-+   * a CODEX_HOME of its own under the cache dir), so nothing in it is ours but
-+   * that one field. Undefined, and Codex's own catalog kept, when it can't be
-+   * read: the session runs as before, with a dead apply_patch listed.
-+   */
-+  async function patchlessCatalog(ctx: DriveContext, spec: CodexMachine, machine: SessionMachine): Promise<Uint8Array | undefined> {
-+    if (catalogBytes) return catalogBytes;
-+    const own = 'codex-catalog';
-+    await machine.files.upload('cache', [{ path: `${own}/.keep`, bytes: new Uint8Array() }]);
-+    const dir = `${machine.dirs.cache}/${own}`;
-+    let dump: SessionProcess;
-+    try {
-+      dump = await machine.spawn({
-+        command: codex.command,
-+        args: [...codex.args, 'debug', 'models', '--bundled'],
-+        cwd: dir,
-+        signal: ctx.signal,
-+        env: { ...(spec.env ?? {}), HOME: machine.dirs.home, CODEX_HOME: dir, TMPDIR: machine.dirs.tmp, NO_COLOR: '1' },
-+        isolatedCommands: true,
-+      });
-+    } catch (err) {
-+      if (ctx.signal.aborted || machine.signal.aborted) throw err;
-+      log("codex: its bundled model catalog could not be read: apply_patch stays listed", { why: String((err as Error)?.message ?? err).slice(0, 120) });
-+      return undefined;
-+    }
-+    dump.end();
-+    const out: string[] = [];
-+    const read = (async () => {
-+      for await (const line of dump.lines()) out.push(line);
-+    })().catch(() => {});
-+    let timer: ReturnType<typeof setTimeout> | undefined;
-+    const exit = await Promise.race([dump.exited, new Promise<undefined>((r) => (timer = setTimeout(r, 20_000, undefined)))]);
-+    clearTimeout(timer);
-+    if (!exit) {
-+      dump.kill('SIGKILL');
-+      await dump.exited;
-+    }
-+    await read;
-+    const catalog = exit?.code === 0 ? withoutApplyPatch(out.join('\n')) : undefined;
-+    if (!catalog) {
-+      log("codex: its bundled model catalog could not be read: apply_patch stays listed", { exit: exit ?? 'no exit in 20 s', stderr: dump.stderrTail().slice(-300) });
-+      return undefined;
-+    }
-+    return (catalogBytes = new TextEncoder().encode(catalog));
-+  }
-+
-   /**
-    * Codex's sandbox for its commands, decided once per session: the first
-    * drive with the built-ins runs bubblewrap's self-test in the VM and

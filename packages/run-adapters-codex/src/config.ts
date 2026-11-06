@@ -32,8 +32,8 @@ export const BUILTINS_OFF: Record<string, boolean> = {
   in_app_browser: false,
   // Code mode's JavaScript runtime (no Node, no file system, no network): the only way a code-mode model such as luna
   // calls a tool. Its nested tools are the dynamic tools plus Codex's own MCP resource readers, which run nothing here
-  // (read-only, approvals declined, no MCP server); its sub-agent tools are removed by agents.enabled, and its apply_patch
-  // (no environment to run in) by the harness's model catalog (withoutApplyPatch).
+  // (read-only, approvals declined, no MCP server); its sub-agent tools are removed by agents.enabled, its apply_patch by
+  // the harness's model catalog (catalog.ts).
   code_mode_host: true,
   tool_suggest: false,
   skill_search: false,
@@ -87,39 +87,8 @@ export interface CodexConfigOptions {
    * else), less any name the policy excludes.
    */
   commandEnv?: Readonly<Record<string, string>>;
-  /**
-   * The model catalog Codex reads instead of its bundled one
-   * (`model_catalog_json`, a path): the bundled one without `apply_patch`
-   * (`withoutApplyPatch`), with the built-ins off.
-   */
-  modelCatalog?: string;
   /** Merged over the generated config, last. */
   extra?: Record<string, TomlValue>;
-}
-
-/** The harness's model catalog in `CODEX_HOME` (`model_catalog_json`). */
-export const MODEL_CATALOG_FILE = 'model-catalog.json';
-
-/**
- * Codex's bundled model catalog (`codex debug models --bundled`) with Codex's
- * own `apply_patch` off for every model (`apply_patch_tool_type` null), every
- * other field as Codex ships it; undefined when the text is not a catalog.
- * With the built-ins off, code mode still lists `apply_patch` as a nested tool
- * of `exec` though it has no environment to run in (each call fails "No usable
- * execution environment is available"), and 0.164 has no feature that removes
- * it: the catalog's field is the one switch.
- */
-export function withoutApplyPatch(bundled: string): string | undefined {
-  let catalog: unknown;
-  try {
-    catalog = JSON.parse(bundled);
-  } catch {
-    return undefined;
-  }
-  if (!isTable(catalog as TomlValue)) return undefined;
-  const models = (catalog as { models?: unknown }).models;
-  if (!Array.isArray(models) || models.length === 0 || !models.every((m) => isTable(m) && typeof m.slug === 'string')) return undefined;
-  return JSON.stringify({ ...(catalog as object), models: models.map((m) => ({ ...m, apply_patch_tool_type: null })) });
 }
 
 /**
@@ -143,7 +112,6 @@ export function codexConfig(options: CodexConfigOptions): Record<string, TomlVal
     model: options.model,
     model_provider: 'gateway',
     model_context_window: options.contextWindow,
-    ...(options.modelCatalog ? { model_catalog_json: options.modelCatalog } : {}),
     sandbox_mode: 'read-only',
     web_search: 'disabled',
     check_for_update_on_startup: false,
