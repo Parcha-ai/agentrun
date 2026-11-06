@@ -1,5 +1,5 @@
 // The take-back's checkpoint of a run's database (run-db.ts checkpointRunDb) against the server's lock-free readers,
-// which do not wait on it: every reader path (run-db.ts openRunReader: readStore, tookMessage, cap.ts, import-summary,
+// which do not wait on it: every reader path (run-db.ts readRunDbSync: readStore, tookMessage, cap.ts, import-summary,
 // import.ts; and agentrun-pi's `unlocked` read: durableDecisions) reads in other processes, over and over, while runs'
 // processes write and exit with their WAL kept and the server checkpoints after each. No read fails, and none sees
 // fewer rows than one before it: the checkpoint copies into the database file only pages the WAL also holds, and lets
@@ -10,8 +10,9 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { checkpointRunDb, openRunReader } from "../dist/run-db.js";
+import { checkpointRunDb, observeRunDbOpens, readRunDbSync, runDbTestHooks } from "../dist/run-db.js";
 import { scratch } from "./support.mjs";
 
 const READER = new URL("./fixtures/run-db-reader.mjs", import.meta.url).pathname;
@@ -56,12 +57,7 @@ test("the take-back's checkpoint never tears a lock-free read: readers of every 
   await checkpointRunDb(file, false);
   const results = await reading;
   // No write was lost: no reader removed a WAL a run's process was writing.
-  const db = openRunReader(file);
-  try {
-    assert.equal(Number(db.prepare("SELECT count(*) AS n FROM t").get().n), 13 * 300, "every round's rows are in the database");
-  } finally {
-    db.close();
-  }
+  assert.equal(readRunDbSync(file, false, (db) => Number(db.prepare("SELECT count(*) AS n FROM t").get().n)), 13 * 300, "every round's rows are in the database");
   for (const [i, result] of results.entries()) {
     assert.ok(result.reads > 50, `reader ${i} read (${JSON.stringify(result)})`);
     assert.equal(result.errors, 0, `reader ${i} never failed: ${JSON.stringify(result)}`);
@@ -73,19 +69,40 @@ test("a lock-free reader of a run database with no WAL makes none, and removes n
   const file = join(await scratch(t), "run.sqlite");
   const wrote = spawnSync(process.execPath, ["--no-warnings=ExperimentalWarning", "--input-type=module", "-e", WRITER, file, "10"], { encoding: "utf8" });
   assert.equal(wrote.status, 0, wrote.stderr);
-  const count = () => {
-    const db = openRunReader(file);
-    try {
-      return [Number(db.prepare("SELECT count(*) AS n FROM t").get().n), existsSync(`${file}-wal`)];
-    } finally {
-      db.close();
-    }
-  };
+  const count = () => readRunDbSync(file, false, (db) => [Number(db.prepare("SELECT count(*) AS n FROM t").get().n), existsSync(`${file}-wal`)]);
   assert.deepEqual(count(), [10, true], "the WAL's frames are read, and it stays");
   assert.ok(existsSync(`${file}-wal`), "a read-only close removes no WAL with frames in it");
   await checkpointRunDb(file, false);
   assert.equal(existsSync(`${file}-wal`), false);
   assert.deepEqual(count(), [10, false], "no WAL, so none is made: the database file alone");
   assert.equal(existsSync(`${file}-wal`), false);
+});
+
+test("a read of the database file alone that a run's write and the take-back's checkpoint overlap is dropped and made again: the read shown is the whole file after them", async (t) => {
+  const file = join(await scratch(t), "run.sqlite");
+  const write = (rows) => {
+    const wrote = spawnSync(process.execPath, ["--no-warnings=ExperimentalWarning", "--input-type=module", "-e", WRITER, file, String(rows)], { encoding: "utf8" });
+    assert.equal(wrote.status, 0, wrote.stderr);
+  };
+  write(100);
+  await checkpointRunDb(file, false);
+  assert.equal(existsSync(`${file}-wal`), false, "no WAL: the next read is of the file alone");
+  // Between the read's look (no WAL) and its open: a run's process writes and exits, and the server checkpoints, so the
+  // file the read opens is not the one it looked at.
+  let overlapped = 0;
+  runDbTestHooks.afterPlan = () => {
+    if (overlapped++ > 0) return;
+    write(50);
+    const db = new DatabaseSync(file);
+    db.exec("PRAGMA locking_mode = EXCLUSIVE; PRAGMA journal_mode = WAL");
+    db.prepare("SELECT count(*) FROM t").get();
+    db.close();
+  };
+  t.after(() => void (runDbTestHooks.afterPlan = undefined));
+  const opens = [];
+  t.after(observeRunDbOpens((open) => opens.push(open.mode)));
+  const n = readRunDbSync(file, false, (db) => Number(db.prepare("SELECT count(*) AS n FROM t").get().n));
+  assert.deepEqual(opens, ["read", "dropped", "read"], "the overlapped read is dropped, and one more is made");
+  assert.equal(n, 150, "the read shown is the whole file after the write and the checkpoint");
 });
 

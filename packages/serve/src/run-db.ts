@@ -5,11 +5,12 @@
 // locking mode (the WAL index in heap, no -shm), kept for that read alone, since a connection kept open falls behind
 // the WAL; and a read whose last entry is below one already seen for that run is refused, never shown (the monotonic
 // guard). The one read-write open is the checkpoint when the server takes the run back (runs.ts), with no process left.
-import { statSync } from "node:fs";
+import { closeSync, openSync, readSync, statSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 
 /** One open of a run's database, as observeRunDbOpens reports it: `held`, whether a process held the run at the open. */
-export type RunDbOpen = { file: string; mode: "read" | "checkpoint"; held: boolean };
+/** `dropped`: a read of the file alone whose file changed during it, made again (readRunDbSync). */
+export type RunDbOpen = { file: string; mode: "read" | "checkpoint" | "dropped"; held: boolean };
 const observers = new Set<(open: RunDbOpen) => void>();
 /** Tells `observer` of every open of a run's database from here on (tests); the returned call stops it. */
 export function observeRunDbOpens(observer: (open: RunDbOpen) => void): () => void {
@@ -24,45 +25,77 @@ const uriPath = (file: string): string => file.split("/").map(encodeURIComponent
  *  512 bytes. */
 const ONE_FRAME = 32 + 24 + 512;
 
-/**
- * How a lock-free reader opens run database `file`. A WAL with a frame in it: read-only with no locking
- * (`vfs=unix-none`), the WAL read too. No WAL, or one with no frame yet: as an immutable file, the database file alone,
- * which is whole then. SQLite's reader of a WAL-mode database makes a WAL file when there is none, and removes an empty
- * one at its close: a run's process that opened that same file meanwhile would write its frames into a file the reader
- * then removes. A reader that never opens an empty WAL never does either; one with frames in it is never removed by a
- * read-only close.
- */
-export function runReaderUri(file: string): string {
-  let wal = 0;
+/** Whether run database `file`'s WAL holds a frame. */
+function walHasFrame(file: string): boolean {
   try {
-    wal = statSync(`${file}-wal`).size;
-  } catch {}
-  return wal >= ONE_FRAME ? `file:${uriPath(file)}?mode=ro&vfs=unix-none` : `file:${uriPath(file)}?mode=ro&immutable=1`;
+    return statSync(`${file}-wal`).size >= ONE_FRAME;
+  } catch {
+    return false;
+  }
 }
 
-/** A fresh read-only, lock-free connection to the run database at `file`, for one read: `read(db)`, then closed. A
- *  read-only close checkpoints nothing. `held`: whether a process holds the run now (reported to observers). */
-export async function readRunDb<T>(file: string, held: boolean, read: (db: DatabaseSync) => T): Promise<T> {
-  const db = openRunReader(file, held);
+/** What says run database `file` changed: its inode, size and modification time, and its header's file change counter and
+ *  page count (bytes 24 to 31). In WAL mode SQLite does not bump the counter at each commit, but a checkpoint writes the
+ *  database file, so its time and size move; a reader of the file alone compares this before and after its read. */
+function fileMark(file: string): string {
+  const at = statSync(file, { bigint: true });
+  const header = Buffer.alloc(8);
+  const fd = openSync(file, "r");
   try {
-    return read(db);
+    readSync(fd, header, 0, 8, 24);
   } finally {
-    db.close();
+    closeSync(fd);
+  }
+  return `${at.ino}:${at.size}:${at.mtimeNs}:${header.toString("hex")}`;
+}
+
+/** Tests' seam: called between a read's choice of how to open the file and its open. */
+export const runDbTestHooks: { afterPlan?: (file: string) => void } = {};
+
+/** A read of a run's database file alone whose file changed during it (a run's process wrote and a take-back checkpointed
+ *  meanwhile), every try: none of them is shown. */
+export class ChangedReadError extends Error {
+  constructor(file: string, tries: number) {
+    super(`the run's database ${file} changed during each of ${tries} reads`);
   }
 }
 
-/** A fresh read-only, lock-free connection to the run database at `file` (as readRunDb's), for a synchronous reader that
- *  closes it itself: `held` as readRunDb's. */
-export function openRunReader(file: string, held = false): DatabaseSync {
-  for (const observer of observers) observer({ file, mode: "read", held });
-  const db = new DatabaseSync(runReaderUri(file), { readOnly: true });
-  try {
-    db.exec("PRAGMA locking_mode = EXCLUSIVE");
-  } catch (error) {
-    db.close();
-    throw error;
+/** How many times a read whose file changed during it is made again before ChangedReadError. */
+const READ_TRIES = 3;
+
+/**
+ * One read of run database `file`: `read(db)` on a fresh read-only, lock-free connection, closed after it. A WAL with a
+ * frame in it: opened with no locking (`vfs=unix-none`), the WAL read too. No WAL, or one with no frame yet: the
+ * database file alone, as an immutable file, which is whole then; its read is kept only when the file did not change
+ * during it (fileMark), else it is dropped and made again. SQLite's reader of a WAL-mode database makes a WAL file when
+ * there is none and removes an empty one at its close: a run's process that opened that same file meanwhile would write
+ * its frames into a file the reader then removes. A reader that never opens an empty WAL never does either, and a
+ * read-only close removes no WAL with frames in it. A read-only close checkpoints nothing. `held`: whether a process
+ * holds the run now (reported to observers).
+ */
+export function readRunDbSync<T>(file: string, held: boolean, read: (db: DatabaseSync) => T): T {
+  for (let attempt = 1; ; attempt++) {
+    for (const observer of observers) observer({ file, mode: "read", held });
+    const immutable = !walHasFrame(file);
+    const before = immutable ? fileMark(file) : undefined;
+    runDbTestHooks.afterPlan?.(file);
+    const db = new DatabaseSync(immutable ? `file:${uriPath(file)}?mode=ro&immutable=1` : `file:${uriPath(file)}?mode=ro&vfs=unix-none`, { readOnly: true });
+    let result: T;
+    try {
+      db.exec("PRAGMA locking_mode = EXCLUSIVE");
+      result = read(db);
+    } finally {
+      db.close();
+    }
+    if (!immutable || fileMark(file) === before) return result;
+    for (const observer of observers) observer({ file, mode: "dropped", held });
+    if (attempt >= READ_TRIES) throw new ChangedReadError(file, attempt);
   }
-  return db;
+}
+
+/** readRunDbSync, for an async caller. */
+export async function readRunDb<T>(file: string, held: boolean, read: (db: DatabaseSync) => T): Promise<T> {
+  return readRunDbSync(file, held, read);
 }
 
 /** A read of a run's database whose last entry is below one already seen for that run: an older view of the file, which a

@@ -32,16 +32,35 @@ export type DurableReadOptions = { immutable?: boolean; unlocked?: boolean };
 export function withDurableFile<T>(file: string, read: (db: Database) => T, options: DurableReadOptions = {}): T | null {
   if (!fs.existsSync(file)) return null;
   const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite") as typeof import("node:sqlite");
-  // Unlocked, a WAL with no frame yet is never opened: SQLite's reader makes one where there is none and removes an empty
-  // one at its close, under a writer that may have opened it meanwhile. With none, the database file is whole: immutable.
-  const walFrames = options.unlocked && (() => { try { return fs.statSync(`${file}-wal`).size >= 32 + 24 + 512; } catch { return false; } })();
-  const at = options.immutable || (options.unlocked && !walFrames) ? `${pathToFileURL(file).href}?mode=ro&immutable=1` : options.unlocked ? `${pathToFileURL(file).href}?mode=ro&vfs=unix-none` : file;
-  const db = new DatabaseSync(at, { readOnly: true, timeout: 5000 });
-  try {
-    if (options.unlocked && walFrames) db.exec("PRAGMA locking_mode = EXCLUSIVE");
-    db.exec("BEGIN");
-    return read(db);
-  } finally { db.close(); }
+  for (let attempt = 1; ; attempt++) {
+    // Unlocked, a WAL with no frame yet is never opened: SQLite's reader makes one where there is none and removes an
+    // empty one at its close, under a writer that may have opened it meanwhile. With none, the database file is whole:
+    // immutable, and its read kept only when the file did not change during it (a run's process wrote and its
+    // checkpoint landed meanwhile), else dropped and made again.
+    const walFrames = options.unlocked && (() => { try { return fs.statSync(`${file}-wal`).size >= 32 + 24 + 512; } catch { return false; } })();
+    const alone = options.unlocked && !walFrames;
+    const before = alone ? fileMark(file) : undefined;
+    const at = options.immutable || alone ? `${pathToFileURL(file).href}?mode=ro&immutable=1` : options.unlocked ? `${pathToFileURL(file).href}?mode=ro&vfs=unix-none` : file;
+    const db = new DatabaseSync(at, { readOnly: true, timeout: 5000 });
+    let result: T;
+    try {
+      if (options.unlocked && walFrames) db.exec("PRAGMA locking_mode = EXCLUSIVE");
+      db.exec("BEGIN");
+      result = read(db);
+    } finally { db.close(); }
+    if (!alone || fileMark(file) === before) return result;
+    if (attempt >= 3) throw new Error(`the run's store ${file} changed during each of ${attempt} reads`);
+  }
+}
+
+/** What says store `file` changed: its inode, size and modification time, and its header's file change counter and page
+ *  count (bytes 24 to 31). A checkpoint writes the file, so its time and size move even where WAL mode leaves the counter. */
+function fileMark(file: string): string {
+  const at = fs.statSync(file, { bigint: true });
+  const header = Buffer.alloc(8);
+  const fd = fs.openSync(file, "r");
+  try { fs.readSync(fd, header, 0, 8, 24); } finally { fs.closeSync(fd); }
+  return `${at.ino}:${at.size}:${at.mtimeNs}:${header.toString("hex")}`;
 }
 
 /** A document's value: its latest base with every later delta applied, as the storage materializes it. */

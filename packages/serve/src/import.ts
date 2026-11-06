@@ -28,7 +28,7 @@ import { SEAL_KEY_ENV, ToolKeys } from "./tool-keys.js";
 import { WEBHOOK_FILE, webhookSecretIn } from "./webhooks.js";
 import { triggerSecretsIn } from "./trigger-secrets.js";
 import { type RefusedReason, readWorkBytes, WorkRefused, walkWork } from "./workspace.js";
-import { openRunReader } from "./run-db.js";
+import { readRunDbSync } from "./run-db.js";
 
 /** In the data directory while an import the owner asked for at setup has not ended: the server's next start goes on with it. */
 export const IMPORT_ASKED = ".import-at-setup";
@@ -477,16 +477,13 @@ async function seenIn(store: AgentStoreReader | undefined, agentId: string): Pro
   const { DatabaseSync } = await import("node:sqlite");
   for (const run of store.listRuns({ agent: agentId })) {
     if (run.importedFrom?.source !== "claude-code" || !existsSync(store.runStorePath(run.id))) continue;
-    const db = openRunReader(store.runStorePath(run.id));
-    try {
+    readRunDbSync(store.runStorePath(run.id), false, (db) => {
       const rows = db.prepare("SELECT json_extract(record, '$.model[0].responseId') AS id, json_extract(record, '$.data.record_uuids') AS uuids FROM entries").all() as { id: unknown; uuids: unknown }[];
       for (const { id, uuids } of rows) {
         if (typeof id === "string" && id) seen("claude-code").add(`m:${id}`);
         if (typeof uuids === "string") for (const uuid of JSON.parse(uuids) as unknown[]) if (typeof uuid === "string") seen("claude-code").add(`u:${uuid}`);
       }
-    } finally {
-      db.close();
-    }
+    });
   }
   return seen;
 }

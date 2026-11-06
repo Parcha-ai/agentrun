@@ -1091,6 +1091,9 @@ export class Runs {
     const submissions: Json[] = [];
     // A fresh read-only, lock-free read (run-db.ts), after any take-back's checkpoint of this run: one at a time.
     const last = await this.runDb(run, () => readRunDb(file, this.live(run), (db) => {
+      // A read made again (its file changed during it, run-db.ts) starts from none.
+      read.length = 0;
+      submissions.length = 0;
       const rows = run.kind === "workflow" || atEnd
         ? db.prepare("SELECT conversation_id, record FROM entries ORDER BY id").iterate()
         : db.prepare("SELECT conversation_id, record FROM entries WHERE conversation_id = (SELECT MIN(conversation_id) FROM entries) ORDER BY id").iterate();
