@@ -37,7 +37,7 @@ import { openapiDocument, servedOpenapi, UNSUPPORTED } from "./openapi.js";
 import { boxesLine, defaultPlaceOf, NEW_AGENT_TOOLS, newAgentPlace, noBoxReason, type Place, placesOf, resolvePlace } from "./place.js";
 import { BOX_ALLOW_ENV, boxAllowOf, boxLimitsOf, boxNetworkOf, FAUX_BOX_ENV, fauxBoxes } from "./run-box.js";
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
-import { answerPage, byOwnerSession, isJson, ownerCookie, ownOrigin, sendHostRefused, signedIn } from "./page.js";
+import { answerPage, byOwnerSession, isJson, overHttps, ownerCookie, ownOrigin, sendHostRefused, signedIn } from "./page.js";
 import { hostFix, hostName, loopbackNames } from "./host-check.js";
 import { durationMs, logLine } from "./print.js";
 import { type CarryBackRetry, knownToolCostOf, type Run, Runs, STATUSES, type Status, statusOf, toolCostOf, WAITS_ON_A_PERSON } from "./runs.js";
@@ -61,6 +61,7 @@ import { keyOf, SEAL_KEY_ENV, sealKeyOf, TOOL_FIELDS, ToolKeys } from "./tool-ke
 import { SIGN_INS_DIR, SignIns, vendorsOver } from "./sign-ins.js";
 import { MCP_AUTH_TYPES, McpServers } from "./mcp-servers.js";
 import { metaToolOf } from "./mcp-meta.js";
+import { MCP_SETTINGS_PAGE, signInCookie, startedHere } from "./mcp-oauth.js";
 import type { McpServerSource } from "./mcp-gateway.js";
 import { WEBHOOK_EVENTS, Webhooks } from "./webhooks.js";
 import { HOOK_TOLERANCE_S, hookHeadersRefusal, hookRefusal, TriggerSecrets } from "./trigger-secrets.js";
@@ -369,6 +370,9 @@ export const ROUTES: readonly Route[] = [
   { method: "PUT", pattern: /^\/settings\/mcp-servers\/([^/]+)$/, name: "saveMcpServer" },
   { method: "DELETE", pattern: /^\/settings\/mcp-servers\/([^/]+)$/, name: "deleteMcpServer" },
   { method: "POST", pattern: /^\/settings\/mcp-servers\/([^/]+)\/refresh$/, name: "refreshMcpServer" },
+  { method: "POST", pattern: /^\/settings\/mcp-servers\/([^/]+)\/oauth\/start$/, name: "startMcpOAuth" },
+  { method: "GET", pattern: /^\/settings\/mcp-servers\/oauth\/callback$/, name: "mcpOAuthCallback" },
+  { method: "GET", pattern: /^\/settings\/mcp-servers\/oauth\/client\.json$/, name: "mcpOAuthClient" },
   { method: "GET", pattern: /^\/settings\/tools$/, name: "getToolSettings" },
   { method: "PUT", pattern: /^\/settings\/tools$/, name: "putToolSettings" },
   { method: "GET", pattern: /^\/settings\/webhook$/, name: "getWebhook" },
@@ -727,6 +731,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       }
     },
     headers: (name) => mcpServers.headers(name),
+    refresh: (name) => mcpServers.headersForRun(name).then(() => undefined, () => undefined),
   };
   // Each with whether it can be granted: a known meta tool can't (mcp-meta.ts).
   const mcpTools = (server: string) => {
@@ -1717,6 +1722,17 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     if (found.name === "getOpenapi") return send(res, 200, servedOpenapi(openapi, req.socket.localPort));
     // The one route with no token: a webhook trigger's request, checked by its signature before anything else is read.
     if (found.name === "receiveHook") return hook(req, res, path);
+    // An MCP server's OAuth sign-in: the browser coming back from its authorization server carries no token (the state
+    // it brings is the check, mcp-oauth.ts), and the client metadata document is for that server to fetch.
+    if (found.name === "mcpOAuthCallback") {
+      // Its state's start set a cookie in the browser that started it: no other browser finishes that sign-in.
+      const state = url.searchParams.get("state");
+      if (!startedHere(req.headers.cookie, req.socket.localPort, state)) throw new ApiError("forbidden", "This sign-in was started in another browser, or its 10 minutes are over: start it again in Settings → MCP servers, in this browser.");
+      const location = await mcpServers.oauthCallback(url.searchParams, stopping.signal);
+      // Its sign-in is over: its cookie goes.
+      return void res.writeHead(302, { location, "cache-control": "no-store", "set-cookie": signInCookie(req.socket.localPort, state!, overHttps(req), 0) }).end();
+    }
+    if (found.name === "mcpOAuthClient") return send(res, 200, mcpServers.clientDocument(), { "cache-control": "public, max-age=3600" });
     if (found.name === "getHealth") {
       const health = await healthOf(data, minFreeBytes);
       return send(res, health.status === "ok" ? 200 : 503, health);
@@ -2067,6 +2083,16 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         return send(res, 200, await mcpServers.save(id, await bodyOf(req), stopping.signal));
       case "refreshMcpServer":
         return send(res, 200, await mcpServers.refresh(id, stopping.signal));
+      case "startMcpOAuth": {
+        // The cookie is set on the address the request came to, and the authorization server sends the browser back
+        // to the callback's: they must be the one origin, or the callback never sees the cookie. The redirect URI
+        // stays that one address (a registered client names it), and a start from another answers where to go.
+        const origin = mcpServers.callbackOrigin;
+        if (ownOrigin(req) !== origin) throw new ApiError("wrong_origin", `This server's sign-in comes back to ${origin}, and finishes only in a browser that started it there: open the console at ${origin}${MCP_SETTINGS_PAGE} and sign in from it.`, { details: { open: `${origin}${MCP_SETTINGS_PAGE}` } });
+        const started = await mcpServers.oauthStart(id, await bodyOf(req));
+        const state = new URL(started.authorization_url).searchParams.get("state") ?? "";
+        return send(res, 200, started, { "set-cookie": signInCookie(req.socket.localPort, state, overHttps(req)) });
+      }
       case "deleteMcpServer":
         mcpServers.remove(id);
         return void res.writeHead(204, { "cache-control": "no-store" }).end();
@@ -2257,6 +2283,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const url = `http://${shown.includes(":") ? `[${shown}]` : shown}:${address.port}`;
   owner?.attach(options.publicUrl ?? url);
   webhooks.attach(options.publicUrl ?? url);
+  mcpServers.attach(options.publicUrl ?? url);
   const setupUrl = owner && !owner.hasPassword() ? owner.setupLink() : undefined;
   /** The server's stop: once (`close` keeps its promise). */
   let stopped: Promise<void> | undefined;
@@ -2278,6 +2305,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     stopping.abort();
     // An install of Claude Code under way stops with the server: its npm gets SIGTERM, and nothing half installed stays.
     const installStopped = claudeInstall?.stop();
+    // Aborted now, so nothing it writes races the next server on the same refresh token; drained before the lock goes.
+    const mcpStopped = mcpServers.close();
     triggers.close();
     for (const [worker, { task }] of workers) {
       if (task === "plan") void worker.terminate();
@@ -2296,6 +2325,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     await webhooks.close();
     await new Promise((done) => (server.close(done), server.closeAllConnections()));
     agents.close();
+    await mcpStopped;
     // The record stays: the next server rewrites it as it starts, and a stopped one whose time has passed is no stop.
     lock.release();
   }
