@@ -306,3 +306,99 @@ test("each case of the suite is data: a unique id in its group, a level, and nee
 	}
 	for (const group of GROUPS) assert.ok(conformanceCases.some((c) => c.group === group && c.level === "core"), `a Core case in ${group}`);
 });
+
+const byId = (...ids) => conformanceCases.filter((c) => ids.includes(c.id));
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+/** The run's report, or a failure in words when it has not ended within 10 s. */
+async function ends(run) {
+	let timer;
+	const late = new Promise((_, reject) => (timer = setTimeout(() => reject(new Error("the run did not end within 10 s")), 10_000)));
+	try {
+		return await Promise.race([run, late]);
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
+test("a provider whose create never answers gives a failed report in bounded time", async () => {
+	const fake = fakeComputers({ createHangs: true });
+	const report = await ends(
+		runConformance(fake.provider, {
+			image: IMAGE,
+			caseTimeoutMs: 300,
+			cleanupTimeoutMs: 300,
+			cases: [pass("health.ping"), pass("exec.argv", { needs: ["exec"] })],
+		}),
+	);
+	assert.deepEqual(statuses(report), { "health.ping": "fail", "exec.argv": "fail" });
+	assert.match(reasons(report)["health.ping"], /no computer: create did not answer within 0\.3 s/);
+	assert.equal(report.core, "fail");
+});
+
+test("a provider whose release never answers gives a failed report naming it, and the run ends", async () => {
+	const fake = fakeComputers({ releaseHangs: true });
+	const report = await ends(runConformance(fake.provider, { image: IMAGE, caseTimeoutMs: 300, cleanupTimeoutMs: 300, cases: [pass("health.ping")] }));
+	assert.equal(statuses(report)["health.ping"], "pass");
+	assert.ok(report.cleanup.errors.some((error) => /release fake-1 did not answer within 0\.3 s/.test(error)), JSON.stringify(report.cleanup.errors));
+	assert.deepEqual(report.cleanup.left, ["fake-1"]);
+	assert.equal(report.core, "fail");
+});
+
+test("a computer whose create answers after its case ended is deleted, and the report names it", async () => {
+	const fake = fakeComputers({ createDelays: [0, 600] });
+	const report = await runConformance(fake.provider, {
+		image: IMAGE,
+		caseTimeoutMs: 300,
+		cleanupTimeoutMs: 5000,
+		cases: [pass("provider.slow", { run: async (t) => void (await t.create()) })],
+	});
+	assert.match(reasons(report)["provider.slow"], /did not finish within 0\.3 s/);
+	await sleep(800);
+	assert.deepEqual(fake.alive(), [], "the late computer was deleted");
+	assert.deepEqual(report.cleanup.late, ["fake-2"]);
+});
+
+test("Core needs network none: a provider that offers only open fails Core in words, and nothing is made wider", async () => {
+	const fake = fakeComputers({ network: ["open"] });
+	const report = await runConformance(fake.provider, {
+		image: IMAGE,
+		cases: [pass("health.ping"), ...byId("drift.network")],
+	});
+	assert.deepEqual(statuses(report), { "health.ping": "fail", "drift.network": "skip" });
+	assert.match(reasons(report)["health.ping"], /create was refused: network none is not offered/);
+	assert.equal(reasons(report)["drift.network"], "the provider does not declare network:none");
+	assert.deepEqual(fake.made, [], "no computer was made with a wider network");
+	assert.equal(report.core, "fail");
+});
+
+test("exec.user passes for a computer whose own user is already 65534 (nobody)", async () => {
+	const fake = fakeComputers({ uid: 65534, users: { nobody: 65534 } });
+	const report = await runConformance(fake.provider, { image: IMAGE, cases: byId("exec.user") });
+	assert.equal(statuses(report)["exec.user"], "pass", reasons(report)["exec.user"]);
+});
+
+test("drift.version deletes the drifted computer even when connect throws", async () => {
+	const fake = fakeComputers();
+	const other = fakeComputers({ connectThrows: "the socket closed" });
+	const report = await runConformance(fake.provider, { image: IMAGE, cases: byId("drift.version"), drifted: () => other.provider });
+	assert.equal(statuses(report)["drift.version"], "fail");
+	assert.match(reasons(report)["drift.version"], /the socket closed/);
+	assert.deepEqual(other.alive(), [], "the drifted computer was deleted");
+});
+
+test("exec.user-uid fails a computer whose requested user has capabilities", async () => {
+	const granting = fakeComputers({ user: ["uid"], capsForUser: true });
+	const report = await runConformance(granting.provider, { image: IMAGE, cases: byId("exec.user-uid") });
+	assert.equal(statuses(report)["exec.user-uid"], "fail");
+	assert.match(reasons(report)["exec.user-uid"], /CapEff in \/proc\/self\/status: no capabilities/);
+	const clean = fakeComputers({ user: ["uid"] });
+	assert.equal(statuses(await runConformance(clean.provider, { image: IMAGE, cases: byId("exec.user-uid") }))["exec.user-uid"], "pass");
+});
+
+test("a files case that makes a directory needs exec too: a daemon with files and no exec skips it in words", async () => {
+	const fake = fakeComputers({ daemon: ["files"] });
+	const report = await runConformance(fake.provider, { image: IMAGE, cases: conformanceCases.filter((c) => c.group === "files") });
+	for (const result of report.results.filter((r) => r.id !== "files.relative-path")) {
+		assert.deepEqual([result.id, result.status, result.reason], [result.id, "skip", "the provider does not declare exec"]);
+	}
+});

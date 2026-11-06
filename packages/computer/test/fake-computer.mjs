@@ -1,5 +1,6 @@
 // A fake provider whose computers are records in memory, each with a fake daemon on an in-memory stream: hello, ping,
-// exec.run (which echoes its arguments) and files.mkdir. Every other method is unsupported. No Docker, no daemon.
+// files.mkdir, and exec.run, which answers id -u, cat /proc/self/status, env and a write to $HOME as a computer would
+// and echoes any other argv. Every other method is unsupported. No Docker, no daemon.
 import { PassThrough } from "node:stream";
 import { DaemonClient } from "../dist/index.js";
 
@@ -7,8 +8,21 @@ const fail = (code, message) => ({ ok: false, error: { code, message } });
 const ok = (value) => ({ ok: true, value });
 const b64 = (text) => Buffer.from(text).toString("base64");
 
+const ALL_CAPABILITIES = "000001ffffffffff";
+const NO_CAPABILITIES = "0000000000000000";
+
+/** What exec.run of argv prints in a computer whose user is uid, as `user` (a name in users, or a uid) when given. */
+function output(argv, { uid, caps, users, user }) {
+	const who = user === undefined ? uid : String(users[user] ?? user);
+	if (argv[0] === "id" && argv[1] === "-u") return `${who}\n`;
+	if (argv[0] === "cat" && argv[1] === "/proc/self/status") return `Uid:\t${who}\nCapEff:\t${caps}\nCapPrm:\t${caps}\n`;
+	if (argv[0] === "env") return "PATH=/usr/bin:/bin\nHOME=/home/fake\n";
+	if (argv[0] === "sh" && argv[2]?.includes('echo ok > "$HOME/x"')) return "ok\n";
+	return `${argv.slice(1).join(" ")}\n`;
+}
+
 /** A daemon's end of a connection: answers each request line. */
-function fakeDaemon(hello) {
+function fakeDaemon(hello, computer) {
 	const toDaemon = new PassThrough();
 	const fromDaemon = new PassThrough();
 	let buffered = "";
@@ -23,7 +37,8 @@ function fakeDaemon(hello) {
 			if (request.method === "hello") reply({ result: hello });
 			else if (request.method === "ping") reply({ result: {} });
 			else if (request.method === "exec.run") {
-				reply({ result: { exitCode: 0, stdout: b64(`${request.params.argv.slice(1).join(" ")}\n`), stderr: "", timedOut: false, truncated: false } });
+				const stdout = output(request.params.argv, { ...computer, user: request.params.user });
+				reply({ result: { exitCode: 0, stdout: b64(stdout), stderr: "", timedOut: false, truncated: false } });
 			} else if (request.method === "files.mkdir") reply({ result: {} });
 			else reply({ error: { code: -32601, message: `${request.method} is not a method` } });
 		}
@@ -34,6 +49,9 @@ function fakeDaemon(hello) {
 /**
  * The provider, and what it saw: `made` (every computer's name and labels), `alive()` (names not yet deleted),
  * `calls` (list and release calls), `open()` (connections not yet closed).
+ * - `createHangs`, `releaseHangs`: those calls never answer. `createDelays`: ms before each create answers, by call.
+ * - `connectThrows`: connect throws that message. `uid`: the default user's uid; `users`: names to uids.
+ * - `capsForUser`: a computer whose spec asked for a user has every capability.
  */
 export function fakeComputers({
 	id = "fake",
@@ -44,6 +62,14 @@ export function fakeComputers({
 	lifetime = "janitor",
 	failCreate,
 	keepOnRelease = false,
+	user,
+	createHangs = false,
+	releaseHangs = false,
+	createDelays = [],
+	connectThrows,
+	uid = 1000,
+	users = {},
+	capsForUser = false,
 } = {}) {
 	const computers = new Map();
 	const made = [];
@@ -53,7 +79,7 @@ export function fakeComputers({
 	const provider = {
 		id,
 		version,
-		capabilities: () => ({ lifetime, network, isolation: "container", os: "linux", daemon }),
+		capabilities: () => ({ lifetime, network, isolation: "container", os: "linux", daemon, ...(user ? { user } : {}) }),
 		check(spec) {
 			const refusals = [];
 			if (!(Number.isSafeInteger(spec.lifetimeMs) && spec.lifetimeMs > 0)) refusals.push({ field: "lifetimeMs", message: "lifetimeMs is required" });
@@ -62,11 +88,21 @@ export function fakeComputers({
 			return refusals;
 		},
 		async create(spec) {
+			if (createHangs) return new Promise(() => {});
+			const wait = createDelays[next] ?? 0;
+			if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
 			if (failCreate) return fail("refused", failCreate);
 			const refusals = provider.check(spec);
 			if (refusals.length > 0) return fail("refused", refusals.map((r) => r.message).join("; "));
 			const name = `fake-${++next}`;
-			const record = { ref: { id: `id-${next}`, name }, labels: { ...spec.labels }, network: spec.network, deadline: new Date(Date.now() + spec.lifetimeMs), state: "running" };
+			const record = {
+				ref: { id: `id-${next}`, name },
+				labels: { ...spec.labels },
+				network: spec.network,
+				deadline: new Date(Date.now() + spec.lifetimeMs),
+				state: "running",
+				daemon: { uid: spec.user ?? String(uid), caps: capsForUser && spec.user !== undefined ? ALL_CAPABILITIES : NO_CAPABILITIES, users },
+			};
 			computers.set(name, record);
 			made.push({ name, labels: record.labels });
 			return ok(record.ref);
@@ -91,11 +127,12 @@ export function fakeComputers({
 			return ok(record.network);
 		},
 		async connect(ref) {
+			if (connectThrows) throw new Error(connectThrows);
 			if (!computers.has(ref.name)) return fail("not_found", `no computer ${ref.name}`);
 			const value = { version, os: "linux", arch: "amd64", capabilities: daemon, ...hello };
 			connections++;
 			let closed = false;
-			const client = new DaemonClient(fakeDaemon(value));
+			const client = new DaemonClient(fakeDaemon(value, computers.get(ref.name).daemon));
 			const close = async () => {
 				client.close();
 				if (!closed) connections--;
@@ -105,6 +142,7 @@ export function fakeComputers({
 		},
 		async release(ref, how) {
 			calls.push(["release", ref.name, how]);
+			if (releaseHangs) return new Promise(() => {});
 			const record = computers.get(ref.name);
 			if (record && how === "stop") record.state = "stopped";
 			if (record && how === "delete" && !keepOnRelease) computers.delete(ref.name);
