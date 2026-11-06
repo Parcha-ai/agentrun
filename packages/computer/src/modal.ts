@@ -1,9 +1,10 @@
 // The Modal provisioner, VM runtime only: every call through the host's own Modal JS SDK client, of which this package
 // names only the slice it uses (ModalSdk) and imports nothing. Every SDK fact below is cited in the README's Modal
 // section, from modal-client@64880502 (js/src) and Modal's docs.
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { Readable, Writable } from "node:stream";
+import { fileURLToPath } from "node:url";
 import { DaemonClient } from "./client.js";
 import { COMPUTER_LABEL, DAEMON_IN_COMPUTER, DEADLINE_LABEL, DEFAULT_CPUS, DEFAULT_MEMORY_MB, helloDrift, WORK } from "./drift.js";
 import type {
@@ -92,6 +93,8 @@ export interface ModalTimeouts {
 	probeMs: number;
 	/** One whole list, every page and every sandbox's tags. */
 	listMs: number;
+	/** The daemon's upload, from the exec's start to its exit. The entrypoint waits this long and one call more. */
+	uploadMs: number;
 }
 
 export interface ModalProviderOptions {
@@ -99,8 +102,18 @@ export interface ModalProviderOptions {
 	sdk: ModalSdk;
 	/** The Modal App the sandboxes live in; made when missing. */
 	app: string;
-	/** A registry image holding the daemon for linux/amd64 at /computerd, pinned by digest (name@sha256:<64 hex>). */
-	daemonImage: string;
+	/**
+	 * A registry image holding the daemon for linux/amd64 at /computerd, pinned by digest (name@sha256:<64 hex>), copied
+	 * into each computer's image with COPY --from. Without it the daemon is uploaded (daemonPath).
+	 */
+	daemonImage?: string;
+	/**
+	 * The daemon binary for linux/amd64 on this machine, streamed into each computer right after create when no
+	 * daemonImage is given. Default this package's dist/computerd-linux-amd64 (npm run build:daemon).
+	 */
+	daemonPath?: string;
+	/** The longest lifetime check takes, in ms: at most 24 hours, Modal's longest timeout, which is the default. */
+	maxLifetimeMs?: number;
 	/** Who a computer runs as when its spec does not say: uid:gid in numbers, never root or root's group. Default 1000:1000. */
 	user?: string;
 	timeouts?: Partial<ModalTimeouts>;
@@ -132,7 +145,65 @@ const CPU_REQUEST = 0.125;
 const MEMORY_REQUEST_MIB = 128;
 /** "1 core = 2 vCPUs" (guide/sandbox-resources): a spec's cpus are CPUs, Modal's cpu is physical cores. */
 const CPUS_PER_CORE = 2;
-const DEFAULT_TIMEOUTS: ModalTimeouts = { createMs: 600_000, callMs: 60_000, helloMs: 30_000, probeMs: 30_000, listMs: 120_000 };
+const DEFAULT_TIMEOUTS: ModalTimeouts = { createMs: 600_000, callMs: 60_000, helloMs: 30_000, probeMs: 30_000, listMs: 120_000, uploadMs: 300_000 };
+/** The daemon this package builds for Modal's architecture: images must be linux/amd64 (guide/existing-images). */
+const DEFAULT_DAEMON_PATH = fileURLToPath(new URL("./computerd-linux-amd64", import.meta.url));
+/** The SDK's own bytes per stdin message when it streams (task_command_router_client.ts:193): each writeBytes is one call. */
+const UPLOAD_CHUNK = 256 * 1024;
+/** The pause before the bridge is tried again while init is not yet listening. */
+const LISTEN_RETRY_MS = 250;
+
+/**
+ * The sandbox's command when the daemon is uploaded: wait, bounded, for the daemon to be moved into place executable,
+ * then become it with exec, so init is the sandbox's main process and the sandbox ends when init does. POSIX sh and
+ * tools in BusyBox and coreutils alike; `date +%s` bounds the wait however long a sleep takes, and in whole seconds it
+ * ends after more than w seconds and less than w + 3.
+ */
+const ENTRYPOINT_SCRIPT = [
+	"# agentrun-computer: entrypoint",
+	"d=$1; w=$2; h=$3; shift 3",
+	"end=$(( $(date +%s) + $w ))",
+	'until [ -f "$d" ] && [ -x "$d" ]; do',
+	'\tif [ "$(date +%s)" -gt "$end" ]; then echo "agentrun-computer: the daemon did not arrive at $d within $w s, so this computer ends" >&2; exit 3; fi',
+	"\tsleep 0.2 2>/dev/null || sleep 1",
+	"done",
+	'export HOME="$h"',
+	'exec "$d" "$@"',
+].join("\n");
+
+/**
+ * The upload, run through exec as root (Modal containers always run as root): stdin to a part file beside the daemon's
+ * path, its sha256 printed, and the part moved into place last, only when it is the one named. The rename is what the
+ * entrypoint waits for, so it never starts a daemon half written or not the one uploaded.
+ */
+const UPLOAD_SCRIPT = [
+	"# agentrun-computer: upload",
+	'd=$1; s=$2; p="${d%/*}/.computerd.part"',
+	'mkdir -p "${d%/*}" && cat > "$p" && chmod 0755 "$p" || { echo "writing the daemon to $p failed"; exit 4; }',
+	'r=$(sha256sum "$p" | cut -c1-64)',
+	'echo "sha256 $r"',
+	'[ "$r" = "$s" ] || { echo "the daemon written to $p reads sha256 $r, not $s, so it is not moved into place"; exit 5; }',
+	'mv -f "$p" "$d" || { echo "moving the daemon into $d failed"; exit 6; }',
+].join("\n");
+
+/**
+ * The commands the provider sends into a sandbox when it uploads the daemon, exactly: the sandbox's command
+ * (entrypoint), the upload, and a connection's bridge (stdio). Exported so a test can run them where Modal would.
+ */
+export function modalCommands({
+	deadline = "",
+	user = "1000:1000",
+	waitSeconds = 360,
+	sha256 = "",
+	daemon = DAEMON_IN_COMPUTER,
+	home = WORK,
+}: { deadline?: string; user?: string; waitSeconds?: number; sha256?: string; daemon?: string; home?: string } = {}) {
+	return {
+		entrypoint: ["sh", "-c", ENTRYPOINT_SCRIPT, "sh", daemon, String(waitSeconds), home, "init", "--deadline", deadline, "--user", user],
+		upload: ["sh", "-c", UPLOAD_SCRIPT, "sh", daemon, sha256],
+		stdio: [daemon, "stdio"],
+	};
+}
 /** Public anycast resolvers, by address: with no network, not even DNS works (guide/sandbox-networking). */
 const DEFAULT_PROBE_TARGETS = ["1.1.1.1:443", "8.8.8.8:443", "[2606:4700:4700::1111]:443"];
 /** How long close waits for the stdio bridge to exit once its stdin has ended. Modal has no kill for an exec. */
@@ -169,6 +240,28 @@ const isNumber = (value: unknown): value is number => typeof value === "number" 
 const isWhole = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value);
 const show = (value: unknown) => (value === undefined ? "nothing" : JSON.stringify(value));
 const seconds = (ms: number) => `${ms / 1000} s`;
+const plural = (n: number, unit: string) => `${n} ${unit}${n === 1 ? "" : "s"}`;
+const minutes = (ms: number) => (ms % 3_600_000 === 0 ? plural(ms / 3_600_000, "hour") : ms % 60_000 === 0 ? plural(ms / 60_000, "minute") : seconds(ms));
+const pause = (ms: number, signal?: AbortSignal) =>
+	new Promise<void>((resolve) => {
+		const timer = setTimeout(done, ms);
+		signal?.addEventListener("abort", done, { once: true });
+		function done() {
+			clearTimeout(timer);
+			signal?.removeEventListener("abort", done);
+			resolve();
+		}
+	});
+/** Everything a stream gives, as text; what it gave before an error, if it errs. */
+async function textOf(source: AsyncIterable<Uint8Array>): Promise<string> {
+	let text = "";
+	try {
+		for await (const chunk of source) text = (text + Buffer.from(chunk).toString("utf8")).slice(-8192);
+	} catch {
+		// What was read is what there is.
+	}
+	return text;
+}
 const words = (error: unknown) => {
 	const name = (error as { name?: unknown } | null)?.name;
 	const message = error instanceof Error ? error.message : String(error);
@@ -327,9 +420,11 @@ function tagDrift(given: Record<string, string>, read: Record<string, string>): 
 }
 
 /**
- * Computers that are Modal sandboxes on the VM runtime. The daemon is the sandbox's command, from a layer the image
- * gets at create (COPY --from the daemon's image); a connection is `computerd stdio` through exec, so a computer with
- * network none is still reached. Modal ends each sandbox at its timeout, so the lifetime is the vendor's. Modal reads no
+ * Computers that are Modal sandboxes on the VM runtime. The daemon is uploaded right after create, streamed through an
+ * exec's stdin, while the sandbox's command, a small sh entrypoint, waits for it and then becomes `computerd init`; or,
+ * with daemonImage, it comes in as a layer of the computer's image (COPY --from) and is the command itself. A
+ * connection is `computerd stdio` through exec, so a computer with network none is still reached, and needs no network
+ * to get its daemon either way. Modal ends each sandbox at its timeout, so the lifetime is the vendor's. Modal reads no
  * network policy back, so the daemon's probe stands for one: network none is honoured only when the probe reaches none
  * of its addresses, and an allowlist is refused until the live bypass cases pass.
  */
@@ -338,13 +433,15 @@ export class ModalProvider implements ComputerProvider {
 	readonly version = VERSION;
 	readonly #sdk: ModalSdk;
 	readonly #appName: string;
-	readonly #daemonImage: string;
+	readonly #daemonImage: string | undefined;
+	readonly #daemonPath: string;
+	readonly #maxLifetimeMs: number;
 	readonly #user: string;
 	readonly #timeouts: ModalTimeouts;
 	readonly #probeTargets: string[];
 	#app: ModalApp | undefined;
 
-	constructor({ sdk, app, daemonImage, user, timeouts = {}, probeTargets = DEFAULT_PROBE_TARGETS }: ModalProviderOptions) {
+	constructor({ sdk, app, daemonImage, daemonPath, maxLifetimeMs = MAX_LIFETIME_MS, user, timeouts = {}, probeTargets = DEFAULT_PROBE_TARGETS }: ModalProviderOptions) {
 		const lacks = [
 			["apps.fromName", sdk?.apps?.fromName],
 			["images.fromRegistry", sdk?.images?.fromRegistry],
@@ -354,8 +451,15 @@ export class ModalProvider implements ComputerProvider {
 		].filter(([, fn]) => typeof fn !== "function");
 		if (lacks.length > 0) throw new Error(`options.sdk must be a Modal client; it lacks ${lacks.map(([name]) => name).join(", ")}`);
 		if (typeof app !== "string" || app.trim() === "") throw new Error("options.app, the Modal app's name, is required");
-		if (typeof daemonImage !== "string" || !PINNED.test(daemonImage)) {
+		if (daemonImage !== undefined && daemonPath !== undefined) {
+			throw new Error("give daemonImage or daemonPath, not both: the daemon is copied from an image or uploaded, one of them");
+		}
+		if (daemonImage !== undefined && (typeof daemonImage !== "string" || !PINNED.test(daemonImage))) {
 			throw new Error(`the daemon image ${JSON.stringify(daemonImage)} must be pinned by digest, such as ghcr.io/<owner>/computerd@sha256:<64 hex digits>`);
+		}
+		if (daemonPath !== undefined && (typeof daemonPath !== "string" || daemonPath === "")) throw new Error("daemonPath must be the path of the daemon binary");
+		if (!isWhole(maxLifetimeMs) || maxLifetimeMs <= 0 || maxLifetimeMs > MAX_LIFETIME_MS) {
+			throw new Error(`maxLifetimeMs must be a whole number of ms above 0 and at most 24 hours (${MAX_LIFETIME_MS} ms), Modal's longest timeout`);
 		}
 		const given = user === undefined ? "1000:1000" : userOf(user);
 		if (given === undefined) throw new Error(`the provider's user ${JSON.stringify(user)} must be ${USER_FORM}`);
@@ -371,6 +475,8 @@ export class ModalProvider implements ComputerProvider {
 		this.#sdk = sdk;
 		this.#appName = app;
 		this.#daemonImage = daemonImage;
+		this.#daemonPath = daemonPath ?? DEFAULT_DAEMON_PATH;
+		this.#maxLifetimeMs = maxLifetimeMs;
 		this.#user = given;
 		this.#timeouts = merged;
 		this.#probeTargets = [...probeTargets];
@@ -399,8 +505,13 @@ export class ModalProvider implements ComputerProvider {
 		} else if (image.includes("\0")) refuse("image", NUL);
 		if (!isWhole(lifetimeMs) || lifetimeMs <= 0) {
 			refuse("lifetimeMs", "lifetimeMs is required: a whole number of milliseconds above 0, after which Modal ends the computer");
-		} else if (lifetimeMs > MAX_LIFETIME_MS) {
-			refuse("lifetimeMs", `lifetimeMs is at most 24 hours (${MAX_LIFETIME_MS} ms), the longest timeout Modal gives a sandbox; ask for a new computer after that`);
+		} else if (lifetimeMs > this.#maxLifetimeMs) {
+			refuse(
+				"lifetimeMs",
+				this.#maxLifetimeMs === MAX_LIFETIME_MS
+					? `lifetimeMs is at most 24 hours (${MAX_LIFETIME_MS} ms), the longest timeout Modal gives a sandbox; ask for a new computer after that`
+					: `lifetimeMs is at most ${minutes(this.#maxLifetimeMs)} (${this.#maxLifetimeMs} ms): this provider was made with that maxLifetimeMs, so none of its sandboxes outlives it (Modal itself allows 24 hours)`,
+			);
 		}
 		if (typeof network === "object" && network !== null && "allow" in network) refuse("network", ALLOWLIST);
 		else if (network !== "none" && network !== "open") refuse("network", 'network is required: "none" or "open"');
@@ -432,6 +543,16 @@ export class ModalProvider implements ComputerProvider {
 	async create(spec: ComputerSpec, { signal }: CallContext = {}): Promise<Result<ComputerRef>> {
 		const refusals = this.check(spec);
 		if (refusals.length > 0) return fail("refused", refusals.map(({ field, message }) => `${field}: ${message}`).join("; "));
+		let daemon: { bytes: Buffer; sha256: string } | undefined;
+		if (this.#daemonImage === undefined) {
+			let bytes: Buffer;
+			try {
+				bytes = readFileSync(this.#daemonPath);
+			} catch {
+				return fail("not_found", `no daemon binary at ${this.#daemonPath}: run npm run build:daemon -w @parcha/agentrun-computer, or give daemonImage`);
+			}
+			daemon = { bytes, sha256: createHash("sha256").update(bytes).digest("hex") };
+		}
 		if (signal?.aborted) return fail("aborted", "create was aborted before Modal was called");
 		const app = await this.#theApp(signal);
 		if (!app.ok) return app;
@@ -443,13 +564,21 @@ export class ModalProvider implements ComputerProvider {
 		const memoryMb = spec.memoryMb ?? DEFAULT_MEMORY_MB;
 		const recorded: Recorded = { image: spec.image, user, network: spec.network as "none" | "open", cpus, memoryMb, workdir, runtime: "vm" };
 		const tags = { ...spec.labels, [COMPUTER_LABEL]: "1", [NAME_TAG]: name, [DEADLINE_LABEL]: deadline, [SPEC_TAG]: JSON.stringify(recorded) };
-		// The daemon comes in as a layer of the computer's own image, so it is there before the command starts and the
-		// computer needs no network to get it. HOME is a directory init gives the computer's user.
-		const image = this.#sdk.images.fromRegistry(spec.image).dockerfileCommands([`COPY --from=${this.#daemonImage} /computerd ${DAEMON_IN_COMPUTER}`, `ENV HOME=${WORK}`, `WORKDIR ${workdir}`]);
+		// With daemonImage the daemon comes in as a layer of the computer's own image, there before the command starts.
+		// Without, the command is the entrypoint, which waits for the upload below. Either way the computer needs no
+		// network to get it. HOME is a directory init gives the computer's user.
+		const copy = this.#daemonImage === undefined ? [] : [`COPY --from=${this.#daemonImage} /computerd ${DAEMON_IN_COMPUTER}`];
+		const image = this.#sdk.images.fromRegistry(spec.image).dockerfileCommands([...copy, `ENV HOME=${WORK}`, `WORKDIR ${workdir}`]);
+		const { uploadMs, callMs } = this.#timeouts;
+		const command =
+			daemon === undefined
+				? [DAEMON_IN_COMPUTER, "init", "--deadline", deadline, "--user", user]
+				: modalCommands({ deadline, user, waitSeconds: Math.ceil((uploadMs + callMs) / 1000), home: WORK }).entrypoint;
 		const cpuLimit = cpus / CPUS_PER_CORE;
 		const params: ModalCreateParams = {
 			runtime: "vm",
-			command: [DAEMON_IN_COMPUTER, "init", "--deadline", deadline, "--user", user],
+			command,
+			// Modal ends the sandbox at its timeout: the lifetime, in the whole seconds the SDK takes.
 			timeoutMs: Math.ceil(spec.lifetimeMs / 1000) * 1000,
 			workdir,
 			cpu: Math.min(CPU_REQUEST, cpuLimit),
@@ -477,7 +606,8 @@ export class ModalProvider implements ComputerProvider {
 		const sandbox = created.value;
 		const ref = { id: sandbox.sandboxId, name };
 		// From here the computer exists: every step takes the caller's signal, and an abort or a mismatch terminates it.
-		const checked = await this.#checkCreated(sandbox, ref, tags, recorded, signal);
+		const uploaded = daemon === undefined ? ok(undefined) : await this.#upload(sandbox, name, daemon, signal);
+		const checked = uploaded.ok ? await this.#checkCreated(sandbox, ref, tags, recorded, signal) : uploaded;
 		if (signal?.aborted) {
 			const after = await this.#terminate(sandbox);
 			return fail("aborted", `create was aborted after Modal made the sandbox; the computer ${name} ${after}`);
@@ -485,6 +615,41 @@ export class ModalProvider implements ComputerProvider {
 		if (checked.ok) return ok(ref);
 		const after = await this.#terminate(sandbox);
 		return fail(checked.error.code, `the computer ${name} ${after}: ${checked.error.message}`);
+	}
+
+	/**
+	 * Streams the daemon into the sandbox through one exec's stdin, in binary mode, and checks the sha256 the upload
+	 * prints against the one sent. Bounded by uploadMs as a whole: the exec's start, every write, and its exit.
+	 */
+	async #upload(sandbox: ModalSandbox, name: string, daemon: { bytes: Buffer; sha256: string }, signal?: AbortSignal): Promise<Result<void>> {
+		const what = `the daemon's upload into ${name}`;
+		const { upload } = modalCommands({ sha256: daemon.sha256 });
+		const run = async () => {
+			const program = await sandbox.exec(upload, { mode: "binary" });
+			const stdout = textOf(program.stdout);
+			const stderr = textOf(program.stderr);
+			let streaming: unknown;
+			try {
+				for (let at = 0; at < daemon.bytes.length; at += UPLOAD_CHUNK) await program.stdin.writeBytes(new Uint8Array(daemon.bytes.subarray(at, at + UPLOAD_CHUNK)));
+				await program.stdin.close();
+			} catch (error) {
+				// The script may have stopped reading (it says why); an end of input lets cat end, and the sha256 check fail.
+				streaming = error;
+				await program.stdin.close().catch(() => {});
+			}
+			const exitCode = await program.wait();
+			return { exitCode, stdout: await stdout, stderr: await stderr, streaming };
+		};
+		const done = await call(what, run, this.#timeouts.uploadMs, signal);
+		if (!done.ok) return done;
+		const { exitCode, stdout, stderr, streaming } = done.value;
+		if (exitCode !== 0) return fail("refused", `the daemon's upload exited with ${exitCode}: ${`${stdout} ${stderr}`.replace(/\s+/g, " ").trim().slice(0, 500)}`);
+		if (streaming !== undefined) return fail(codeOf(streaming), `${what} failed while streaming: ${words(streaming)}`);
+		const read = /^sha256 ([0-9a-f]{64})$/m.exec(stdout)?.[1];
+		if (read !== daemon.sha256) {
+			return fail("refused", `it did not match its spec: daemon: uploaded sha256 ${daemon.sha256}, the file in the computer reads back ${show(read)}`);
+		}
+		return ok(undefined);
 	}
 
 	/** Terminates a sandbox create gives up on, and says how that went. */
@@ -500,7 +665,8 @@ export class ModalProvider implements ComputerProvider {
 		if (polled.value !== null) return fail("refused", `it had finished, with exit code ${polled.value}, before its drift check`);
 		const read = await call(`getTags of ${ref.id}`, () => sandbox.getTags(), this.#timeouts.callMs, signal);
 		if (!read.ok) return read;
-		const inside = await this.#inside(sandbox, ref.name, signal);
+		// Init may not be listening yet when create's answer, or the upload, comes back: the bridge is tried until hello.
+		const inside = await this.#inside(sandbox, ref.name, signal, true);
 		if (!inside.ok) return inside;
 		const found = [
 			...tagDrift(tags, read.value),
@@ -511,8 +677,8 @@ export class ModalProvider implements ComputerProvider {
 	}
 
 	/** One connection's hello and the probe through it, the connection closed after. */
-	async #inside(sandbox: ModalSandbox, name: string, signal?: AbortSignal): Promise<Result<{ hello: ComputerConnection["hello"]; probe: ProbeReport }>> {
-		const opened = await this.#open(sandbox, name, signal);
+	async #inside(sandbox: ModalSandbox, name: string, signal?: AbortSignal, patient = false): Promise<Result<{ hello: ComputerConnection["hello"]; probe: ProbeReport }>> {
+		const opened = patient ? await this.#openWhenListening(sandbox, name, signal) : await this.#open(sandbox, name, signal);
 		if (!opened.ok) return opened;
 		try {
 			const probe = await this.#probe(opened.value, name, signal);
@@ -582,8 +748,21 @@ export class ModalProvider implements ComputerProvider {
 		return fail("refused", `the daemon in ${ref.name} does not match this provider: ${drift.join("; ")}`);
 	}
 
+	/**
+	 * #open, tried again while the bridge finds no daemon listening, until hello or helloMs in all. For a computer just
+	 * made, whose init may not have made its socket yet.
+	 */
+	async #openWhenListening(sandbox: ModalSandbox, name: string, signal?: AbortSignal): Promise<Result<ComputerConnection>> {
+		const until = Date.now() + this.#timeouts.helloMs;
+		for (;;) {
+			const opened = await this.#open(sandbox, name, signal, Math.max(1, until - Date.now()));
+			if (opened.ok || !opened.notListening || signal?.aborted || Date.now() + LISTEN_RETRY_MS >= until) return opened;
+			await pause(LISTEN_RETRY_MS, signal);
+		}
+	}
+
 	/** One connection to the computer's daemon over `computerd stdio` through exec, after hello, unchecked. */
-	async #open(sandbox: ModalSandbox, name: string, signal?: AbortSignal): Promise<Result<ComputerConnection>> {
+	async #open(sandbox: ModalSandbox, name: string, signal?: AbortSignal, helloMs = this.#timeouts.helloMs): Promise<Result<ComputerConnection> & { notListening?: true }> {
 		const started = await call(`exec of the daemon's stdio bridge in ${name}`, () => sandbox.exec([DAEMON_IN_COMPUTER, "stdio"], { mode: "binary" }), this.#timeouts.callMs, signal);
 		if (!started.ok) return started;
 		const program = started.value;
@@ -608,7 +787,6 @@ export class ModalProvider implements ComputerProvider {
 				client.close();
 				await race(program.wait(), "the stdio bridge's exit", CLOSE_WAIT_MS);
 			})());
-		const { helloMs } = this.#timeouts;
 		const bound = within(helloMs, signal);
 		const hello = await client.call("hello", { client: `@parcha/agentrun-computer ${VERSION}` }, { signal: bound.signal });
 		bound.clear();
@@ -618,7 +796,7 @@ export class ModalProvider implements ComputerProvider {
 			if (signal?.aborted) return fail("aborted", `hello to the daemon in ${name} was aborted`);
 			if (hello.error.code === "aborted") return fail("timeout", `the daemon in ${name} did not answer hello within ${seconds(helloMs)}`);
 			if (hello.error.code !== "gone") return hello;
-			return fail("modal", `cannot reach the daemon in ${name}: ${stderr.trim() || hello.error.message}`);
+			return { ...fail("modal", `cannot reach the daemon in ${name}: ${stderr.trim() || hello.error.message}`), notListening: true };
 		}
 		return ok({ client, hello: hello.value, close });
 	}

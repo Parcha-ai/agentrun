@@ -374,7 +374,7 @@ import { ModalProvider } from "@parcha/agentrun-computer";
 const modal = new ModalProvider({
 	sdk: new ModalClient(),
 	app: "computers",
-	daemonImage: "ghcr.io/<owner>/computerd@sha256:<64 hex digits>",
+	// daemonPath: the daemon to upload; default this package's dist/computerd-linux-amd64 (npm run build:daemon)
 });
 const made = await modal.create({ image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none" });
 ```
@@ -383,26 +383,47 @@ const made = await modal.create({ image: "debian:bookworm-slim", lifetimeMs: 600
 (apps, images, sandboxes and five methods of a sandbox). It has not yet run against real Modal: every test uses a fake
 of that slice, and the live conformance file waits for a key (below).
 
-- **The daemon gets in as an image layer.** `create` gives the spec's image one layer, `COPY --from=<daemonImage>
-  /computerd /opt/agentrun/computerd`, `ENV HOME=/work` and `WORKDIR <workdir>`, and makes the sandbox's command
-  `computerd init --deadline <iso> --user <uid:gid>`. The binary is there before the command starts, so a computer
-  with network none needs no network to get it. The JS SDK refuses a COPY from local files but takes `COPY --from` an
-  image, so `daemonImage` is a registry image holding this version's daemon for linux/amd64 at `/computerd`, pinned by
-  digest (the constructor refuses a tag). One is two lines:
+- **The daemon is uploaded at create.** The sandbox's command is a small POSIX sh entrypoint (BusyBox and coreutils
+  alike): it waits for `/opt/agentrun/computerd` to be there and executable, then `exec`s `computerd init --deadline
+  <iso> --user <uid:gid>` with `HOME=/work`. Modal runs the command as the sandbox's main process and finishes the
+  sandbox when it exits, so after the `exec`, init is that process and the sandbox lives as long as init does. Whether
+  that process is PID 1 is not documented; init reaps as a subreaper either way. The wait is bounded (`uploadMs` plus
+  one call, 360 s by default): if no daemon arrives by then, the entrypoint says so on stderr and exits 3, which ends
+  the sandbox.
+
+  Right after create the provider runs `sh -c '<upload>' sh /opt/agentrun/computerd <sha256>` through
+  `sandbox.exec([...], { mode: "binary" })` and streams `dist/computerd-linux-amd64` into its stdin, in the SDK's own
+  256 KiB stdin chunks, then closes it. The script `cat`s stdin to `/opt/agentrun/.computerd.part`, makes it 0755,
+  prints `sha256 <hex>` (`sha256sum`, BusyBox's is fine), and only when that is the sha256 it was given moves the part
+  into place with `mv -f`. The rename is what the entrypoint waits for, so it never starts a half-written daemon or the
+  wrong one. The provider compares the printed sha256 with its own, as the Daytona provider does. A failed, aborted,
+  nonzero or mismatched upload, or one past `uploadMs` (5 min), terminates the sandbox and refuses in words. Then the
+  drift check connects as below, trying the bridge again until init listens, within `helloMs`. Exec's stdin goes
+  through Modal's command router, not the sandbox's network, so network none still works. The binary cannot go as an
+  argument: the SDK refuses more than 64 KiB of argv. `modalCommands()` (in `dist/modal.js`) returns the entrypoint,
+  upload and bridge exactly as sent. A Docker-gated test runs them in a root container with no network.
+- **Or as an image layer**, with `daemonImage`: `create` gives the spec's image `COPY --from=<daemonImage> /computerd
+  /opt/agentrun/computerd`, and the command is `computerd init` itself. The JS SDK refuses a COPY from local files but
+  takes `COPY --from` an image, so `daemonImage` is a registry image holding this version's daemon for linux/amd64 at
+  `/computerd`, pinned by digest (the constructor refuses a tag, and `daemonImage` with `daemonPath`). One is two
+  lines:
 
   ```dockerfile
   FROM scratch
   COPY dist/computerd-linux-amd64 /computerd
   ```
 
+  Either way the image also gets `ENV HOME=/work` and `WORKDIR <workdir>`, and the computer needs no network to get
+  its daemon.
 - **The daemon becomes the computer's user.** Modal containers always run as root and ignore an image's `USER`, so
   `--user` is how a Modal computer gets the non-root default the protocol asks for (`1000:1000`, or the `user` option),
   or root when the spec asks for `"0"`.
 - **The stream** is `computerd stdio` through `sandbox.exec([...], { mode: "binary" })`: its stdin and stdout are the
   `DaemonClient`'s stream. Modal has no kill for an exec, so `close()` ends the bridge's stdin and waits up to 5 s for
   it to exit.
-- **Lifetime is Modal's.** The sandbox's `timeoutMs` is the lifetime rounded up to whole seconds, at most 24 hours;
-  `check` refuses a longer one in words. The daemon's deadline ends it first. `sweep` refuses a Modal provider.
+- **Lifetime is Modal's.** Every sandbox's `timeoutMs` is its lifetime, rounded up to whole seconds, so Modal ends it
+  then whatever runs in it. The longest is 24 hours, or less with the `maxLifetimeMs` option; `check` refuses a longer
+  one in words. The daemon's deadline ends it first. `sweep` refuses a Modal provider.
 - **Network.** `none` is `blockNetwork: true`; `open` passes no network field. Modal has no read-back of a sandbox's
   policy, so `networkReadBack` is false and the daemon's probe stands for one: `create`, `attach` and `network(ref)` run
   `computerd probe` through `exec.run`, as the computer's user, against public addresses (`1.1.1.1:443`,
@@ -430,8 +451,8 @@ of that slice, and the live conformance file waits for a key (below).
   `capabilities().release` is `["delete"]`, so `stop` is refused as `unsupported`, in words, and the sandbox runs on:
   terminate is a sandbox's only end, and Modal has no stopped state. `release`, `connect` and
   `network` act only on a sandbox whose tags name it as this provider's, with the ref's name.
-- **Every call is bounded** (`timeouts`: create 10 min, which covers the layer's build and scheduling; other calls
-  60 s; hello and the probe 30 s; a whole list 120 s) and takes the caller's signal. A create that gives up has its
+- **Every call is bounded** (`timeouts`: create 10 min, which covers the layer's build and scheduling; the upload 5
+  min; other calls 60 s; hello and the probe 30 s; a whole list 120 s) and takes the caller's signal. A create that gives up has its
   sandbox terminated if one lands later.
 - **GPU** is refused: this provider makes VM sandboxes, and Modal offers GPUs on gVisor only.
 
@@ -444,23 +465,29 @@ unless they start with `modal_proto/`. Docs: modal.com, read 2026-11-05.
 | --- | --- |
 | `sandboxes.create(app, image, params)`; `runtime`, `command`, `timeoutMs` (default 5 min), `workdir`, `cpu`, `cpuLimit`, `memoryMiB`, `memoryLimitMiB`, `blockNetwork`, `tags` | `sandbox.ts:356-474`, `808-867` |
 | `timeoutMs` must be a whole number of seconds; `cpuLimit` needs `cpu` and is at least it; the same for memory | `sandbox.ts:534-542`, `654-698` |
+| `timeoutMs` is the sandbox's maximum lifetime, sent as `timeoutSecs` (300 when unset) | `sandbox.ts:375-376`, `730-733` |
 | Runtime `"gvisor" \| "vm"`; unset lets Modal choose, so it is always sent | `sandbox.ts:242-258`; [guide/sandboxes#runtimes](https://modal.com/docs/guide/sandboxes#runtimes) |
 | VM: its own Linux kernel under KVM | [guide/sandbox-networking#security-model](https://modal.com/docs/guide/sandbox-networking#security-model) |
 | GPU sandboxes only with `runtime="gvisor"` | [guide/sandboxes#runtimes](https://modal.com/docs/guide/sandboxes#runtimes); [guide/sandbox-resources#gpu-sandboxes](https://modal.com/docs/guide/sandbox-resources#gpu-sandboxes) |
 | gVisor reports kernel `4.19.0-gvisor`; a VM's `uname -srn` reads `Linux modal 7.2.6` | [guide/troubleshooting](https://modal.com/docs/guide/troubleshooting); [guide/sandboxes#runtimes](https://modal.com/docs/guide/sandboxes#runtimes) |
 | Lifetime: default 5 minutes, up to 24 hours | [guide/sandboxes#timeouts](https://modal.com/docs/guide/sandboxes#timeouts) |
 | A sandbox finishes when its entrypoint exits, on terminate, at its timeout or idle timeout, or out of memory; no command runs after | [guide/sandboxes#lifecycle](https://modal.com/docs/guide/sandboxes#lifecycle) |
-| The command is the sandbox's entrypoint (default `sleep 48h`) | `sandbox.ts:384-388`; [guide/sandboxes#running-a-sandbox-with-an-entrypoint](https://modal.com/docs/guide/sandboxes#running-a-sandbox-with-an-entrypoint) |
+| The command is the sandbox's entrypoint, "the main process" (default `sleep 48h`), sent as `entrypointArgs` | `sandbox.ts:384-388`, `730`; [guide/sandboxes#running-a-sandbox-with-an-entrypoint](https://modal.com/docs/guide/sandboxes#running-a-sandbox-with-an-entrypoint) |
+| Whether the main process is PID 1 | not documented (searched `modal-docs`, `js/src`, `modal-libmodal`: none) |
 | Modal containers always run as root; `USER` is ignored | [guide/existing-images#user](https://modal.com/docs/guide/existing-images#user) |
 | Images must be `linux/amd64` | [guide/existing-images](https://modal.com/docs/guide/existing-images) |
 | `images.fromRegistry(tag)`; `dockerfileCommands(commands)` adds a layer; a COPY from local context is refused, `COPY --from=` is not | `image.ts:196-210`, `351-401` |
 | Modal's Dockerfile lacks only `EXPOSE`, `HEALTHCHECK`, `LABEL`, `ONBUILD`, `STOPSIGNAL`, `VOLUME` | [guide/existing-images](https://modal.com/docs/guide/existing-images) |
 | `sandbox.exec(argv, { mode: "binary" })` gives `stdin` (`writeBytes`, `close`), `stdout`, `stderr` and `wait()` | `sandbox.ts:1272-1290`, `1881-1949`, `2774-2914`; `streams.ts:13-39`, `114-140` |
+| exec starts through the task command router; each stdin write is one `TaskExecStdinWrite` at the running offset, and close sends EOF | `sandbox.ts:1915-1926`, `3126-3154`; `modal_proto/task_command_router.proto:420-421` |
+| The SDK's own stdin chunk when it streams: 256 KiB | `task_command_router_client.ts:187-193` |
+| exec refuses more than 2^16 bytes of argv (ARG_MAX) | `sandbox.ts:1440-1458` |
 | No kill or signal for an exec | `modal_proto/task_command_router.proto:397-448` (no kill or signal RPC; exit status fields only) |
 | exec on a finished sandbox throws `ConflictError` ("has already finished") | `sandbox.ts:2062-2064`, `2149-2154` |
 | `sandboxes.fromId(id)` makes a handle with no call | `sandbox.ts:960-962` |
 | `sandboxes.list({ appId, tags })`: running sandboxes only (`includeFinished: false`), with at least those tags | `sandbox.ts:1116-1159`, `1223-1230` |
-| `getTags()`, `poll()` (null while running), `terminate()` | `sandbox.ts:1813-1838`, `2766-2772`, `2238-2252` |
+| `getTags()`, `poll()` (null while running, else the exit code), `terminate()` | `sandbox.ts:1813-1838`, `2761-2772`, `2238-2252` |
+| terminate sends SIGKILL: a terminated sandbox's code is 137 | [guide/sandboxes#return-codes](https://modal.com/docs/guide/sandboxes#return-codes) |
 | A sandbox carries up to 10 tags | [guide/sandboxes#tagging](https://modal.com/docs/guide/sandboxes#tagging) |
 | `apps.fromName(name, { createIfMissing })` | `app.ts:32-61` |
 | SDK errors are named (`NotFoundError`, `InvalidError`, `ConflictError`) | `errors.ts:94-123` |
@@ -483,11 +510,13 @@ unless they start with `modal_proto/`. Docs: modal.com, read 2026-11-05.
 Nothing here has run against Modal. Once the lead OKs a key by name, `AGENTRUN_COMPUTER_LIVE_MODAL=1 npm run test:modal
 -w @parcha/agentrun-computer` runs the conformance suite (`test/modal/`), and should settle:
 
-- that Modal's builder takes `COPY --from=<registry image>@sha256:...` and keeps the file's mode 0755;
+- that the image's `sh` runs the entrypoint as the main process, and the upload streams in through exec's stdin with
+  network none, within `uploadMs`, and its sha256 reads back;
+- with `COMPUTER_MODAL_DAEMON_IMAGE` only: that Modal's builder takes `COPY --from=<registry image>@sha256:...` and
+  keeps the file's mode 0755;
 - that `computerd init` starts as root and `--user` drops as it does under Docker; whether it is PID 1 on the VM runtime
   (init says so on stderr when it is not, and still reaps as a subreaper);
-- that the layer's `ENV HOME=/work` reaches init, a workdir other than `/work` exists before the command starts, and
-  `/run` is writable there;
+- that a workdir other than `/work` exists before the command starts, and `/run` is writable there;
 - the tag value's longest length (the spec tag is JSON) and whether `getTags` answers for a terminated sandbox;
 - that `terminate` of a finished sandbox does not throw, and how long `list` keeps a terminated sandbox out;
 - the probe's view of `blockNetwork`, and the bypass cases before any allowlist is declared.
@@ -502,8 +531,29 @@ only them set it refuses, naming the `COMPUTER_MODAL_` pair. The key goes only t
 the SDK's default `https://api.modal.com:443`: since the client cannot take a server, the module refuses while
 `MODAL_SERVER_URL` is set, and sets it to its choice only while it constructs the client, so neither `MODAL_PROFILE`
 nor a profile in `MODAL_CONFIG_PATH` or `~/.modal.toml` can redirect the key. It also reads `COMPUTER_MODAL_APP`,
-`COMPUTER_MODAL_DAEMON_IMAGE` and, for `createDriftedProvider()`, `COMPUTER_MODAL_DRIFTED_DAEMON_IMAGE` (the daemon
-built as version `<version>-drift`). The modal package is the host's; it is imported only when a provider is made.
+and, if set, `COMPUTER_MODAL_DAEMON_IMAGE`; without it the daemon is uploaded from `dist/computerd-linux-amd64`, so a run
+publishes nothing. `createDriftedProvider()` uploads a daemon it builds with Go as version `<version>-drift` into a
+temporary directory, so Go must be on PATH. Every computer of a run gets `maxLifetimeMs` 30 minutes: Modal's timeout
+is its lifetime, and a longer one is refused in words. The modal package is the host's; it is imported only when a
+provider is made.
+
+A live run is wrapped in the sweep, `dist/conformance/modal-sweep.js`. It reads only `COMPUTER_MODAL_TOKEN_ID`,
+`COMPUTER_MODAL_TOKEN_SECRET`, `COMPUTER_MODAL_APP` and `COMPUTER_MODAL_SERVER_URL`, and makes its client the same
+pinned way (an ambient `MODAL_SERVER_URL` is refused; it needs no live switch, since it makes nothing):
+
+```sh
+node packages/computer/dist/conformance/modal-sweep.js --before /tmp/modal-before.json
+AGENTRUN_COMPUTER_LIVE_MODAL=1 npm run test:modal -w @parcha/agentrun-computer
+node packages/computer/dist/conformance/modal-sweep.js --after /tmp/modal-before.json
+```
+
+`--before` records the id of every sandbox in the app carrying `agentrun.computer=1` (`sandboxes.list({ appId, tags
+})`, which lists running sandboxes only, so a finished one needs no sweep). `--after` terminates every such sandbox
+not in that file, reads each back through `sandboxes.fromId` and `poll()` until it reports an exit code or Modal no
+longer knows it (up to 60 s each), and prints one line, `{"swept":n,"gone":m,"stillThere":[ids]}`. It exits 0 when
+every swept sandbox has finished, 1 when one still runs, and 2 on a usage error, an unreadable before file, a
+missing token or app, or a listing Modal refused, having terminated nothing. A sandbox in the before file is never
+named by any call.
 
 ## Conformance
 
@@ -615,7 +665,10 @@ them check what only Docker shows (the user, sizes, tmpfs mounts and hardening f
 mount, the socket directory, hello's arch against Docker's, `/work` as the user's home, the daemon's exit 0 on `docker
 stop` and at its deadline, attach by a container's name). They need Docker, `debian:bookworm-slim`
 and `alpine:3.20` pulled, both builds, and Go on PATH (the drift case builds a daemon of another version). They use
-the daemon for Docker's own architecture, and remove every container they make by its exact name, pass or fail.
+the daemon for Docker's own architecture, and remove every container they make by its exact name, pass or fail. One of
+them, `test/docker/modal-commands.docker.test.mjs`, runs the Modal provider's entrypoint and upload exactly as sent, in
+a Debian and an Alpine root container with no network, and checks that init comes up as uid 1000 with no capabilities
+and `no_new_privs`, and answers hello over `computerd stdio`.
 
 ## Acknowledgements
 

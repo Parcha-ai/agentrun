@@ -71,7 +71,7 @@ describe("the Modal provider's upload commands in a root container with no netwo
 
 	for (const image of IMAGES) {
 		it(`${image}: the entrypoint waits, the upload streams the daemon in and checks its sha256, init runs as 1000 with no capabilities, and hello answers`, async () => {
-			const { name } = sandbox(image);
+			const { name, deadline } = sandbox(image);
 			const { arch, bytes, sha } = daemon();
 			assert.equal(docker("inspect", "--format", "{{.State.Running}}", name).trim(), "true", "the entrypoint waits for the daemon");
 			assert.equal(docker("exec", name, "sh", "-c", "test -e /opt/agentrun/computerd && echo there || echo absent").trim(), "absent");
@@ -87,7 +87,9 @@ describe("the Modal provider's upload commands in a root container with no netwo
 			assert.equal(fields.Gid, "1000\t1000\t1000\t1000");
 			assert.equal(fields.CapEff, ZERO);
 			assert.equal(fields.NoNewPrivs, "1");
-			assert.equal(docker("exec", name, "readlink", "/proc/1/exe").trim(), "/opt/agentrun/computerd", "the entrypoint exec'd the daemon: it is PID 1");
+			// /proc/1/exe needs ptrace access to a process that changed its uid; its command line does not.
+			const argv = docker("exec", name, "cat", "/proc/1/cmdline").split("\0").filter(Boolean);
+			assert.deepEqual(argv, ["/opt/agentrun/computerd", "init", "--deadline", deadline, "--user", "1000:1000"], "the entrypoint exec'd the daemon: it is PID 1");
 
 			const child = spawn("docker", ["exec", "-i", name, ...modalCommands().stdio], { stdio: ["pipe", "pipe", "pipe"] });
 			children.push(child);

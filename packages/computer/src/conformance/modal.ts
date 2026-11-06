@@ -13,6 +13,16 @@
 // or the active one in MODAL_CONFIG_PATH or ~/.modal.toml (config.ts:76-82, 126-137). So an ambient MODAL_SERVER_URL is
 // refused, and the module sets MODAL_SERVER_URL to its choice only while it constructs the client, so no profile can
 // redirect it. The modal package is the host's: it is imported only when a provider is made.
+//
+// The daemon is uploaded into each sandbox (dist/computerd-linux-amd64, `npm run build:daemon`) unless
+// COMPUTER_MODAL_DAEMON_IMAGE names an image to copy it from, so a run publishes nothing. The drifted provider uploads
+// a daemon built with Go as version <version>-drift. Every computer of a run lives at most 30 minutes: Modal's timeout
+// is its lifetime, and a longer one is refused in words.
+import { execFile } from "node:child_process";
+import { chmodSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { ModalProvider, type ModalSdk } from "../modal.js";
 import type { ComputerProvider } from "../provider.js";
 
@@ -22,12 +32,16 @@ export const MODAL_ENV = {
 	tokenId: "COMPUTER_MODAL_TOKEN_ID",
 	tokenSecret: "COMPUTER_MODAL_TOKEN_SECRET",
 	app: "COMPUTER_MODAL_APP",
+	/** Optional: an image holding the daemon, pinned by digest, to COPY --from instead of uploading it. */
 	daemonImage: "COMPUTER_MODAL_DAEMON_IMAGE",
-	/** The same daemon built as version <version>-drift, for the drift.version case. */
-	driftedDaemonImage: "COMPUTER_MODAL_DRIFTED_DAEMON_IMAGE",
 	/** The server the key goes to; the SDK's default when unset. */
 	serverUrl: "COMPUTER_MODAL_SERVER_URL",
 } as const;
+
+/** The longest lifetime a computer of a run may ask for: Modal ends each sandbox at its timeout, the lifetime. */
+export const CONFORMANCE_MAX_LIFETIME_MS = 30 * 60_000;
+
+const VERSION: string = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")).version;
 
 /** The SDK's default server (modal-client@64880502:js/src/config.ts:143). */
 const MODAL_DEFAULT_SERVER_URL = "https://api.modal.com:443";
@@ -43,6 +57,10 @@ export interface ModalModuleOptions {
 	env?: Record<string, string | undefined>;
 	/** The SDK's ModalClient; imported from the host's modal package by default. */
 	ModalClient?: new (params: ModalClientParams) => unknown;
+	/** The daemon to upload; default this package's dist/computerd-linux-amd64. */
+	daemonPath?: string;
+	/** Builds this package's daemon for linux/amd64 stamped with version, and gives its path; default go build. */
+	buildDaemon?: (version: string) => Promise<string>;
 }
 
 /** Not a literal, so no type checker or bundler resolves the SDK from this package. */
@@ -55,10 +73,18 @@ function setting(env: Record<string, string | undefined>, name: string): string 
 	return value;
 }
 
-async function client({ env = process.env, ModalClient }: ModalModuleOptions): Promise<ModalSdk> {
-	if (env[MODAL_ENV.live] !== "1") {
+async function client(options: ModalModuleOptions): Promise<ModalSdk> {
+	if ((options.env ?? process.env)[MODAL_ENV.live] !== "1") {
 		throw new Error(`the Modal conformance module makes real sandboxes: set ${MODAL_ENV.live}=1, with a key the lead has OKed, to run it`);
 	}
+	return modalClient(options);
+}
+
+/**
+ * A Modal client given the COMPUTER_MODAL_ token explicitly, its server pinned as above, and nothing else of the
+ * environment. The sweep uses it as the module does, without the live switch: it only lists and terminates.
+ */
+export async function modalClient({ env = process.env, ModalClient }: Pick<ModalModuleOptions, "env" | "ModalClient">): Promise<ModalSdk> {
 	const tokenId = env[MODAL_ENV.tokenId];
 	const tokenSecret = env[MODAL_ENV.tokenSecret];
 	if (!tokenId || !tokenSecret) {
@@ -87,16 +113,51 @@ async function client({ env = process.env, ModalClient }: ModalModuleOptions): P
 	}
 }
 
+/** Go's own settings and the target, and nothing else of this process's environment: never the key. */
+function goEnv(): Record<string, string> {
+	const kept = ["PATH", "HOME", "TMPDIR", "GOPATH", "GOCACHE", "GOMODCACHE", "GOFLAGS", "GOPROXY", "GOTOOLCHAIN"];
+	const env: Record<string, string> = { CGO_ENABLED: "0", GOOS: "linux", GOARCH: "amd64" };
+	for (const name of kept) {
+		const value = process.env[name];
+		if (value !== undefined) env[name] = value;
+	}
+	return env;
+}
+
+/** The daemon for linux/amd64 stamped with version, built with Go into a directory of its own, removed at exit. */
+async function goBuild(version: string): Promise<string> {
+	const dir = mkdtempSync(join(tmpdir(), "computer-drift-"));
+	process.once("exit", () => rmSync(dir, { recursive: true, force: true }));
+	const out = join(dir, "computerd");
+	await new Promise<void>((resolve, reject) => {
+		execFile(
+			"go",
+			["build", "-trimpath", "-ldflags", `-s -w -X main.version=${version}`, "-o", out, "./cmd/computerd"],
+			{ cwd: fileURLToPath(new URL("../../daemon", import.meta.url)), env: goEnv() },
+			(error, _stdout, stderr) => {
+				if (!error) return resolve();
+				const why = (error as NodeJS.ErrnoException).code === "ENOENT" ? "go was not found on PATH" : stderr.trim() || error.message;
+				reject(new Error(`building a daemon of another version for the drift case: ${why}`));
+			},
+		);
+	});
+	chmodSync(out, 0o755);
+	return out;
+}
+
 export async function createProvider(options: ModalModuleOptions = {}): Promise<ComputerProvider> {
 	const env = options.env ?? process.env;
 	const app = setting(env, MODAL_ENV.app);
-	const daemonImage = setting(env, MODAL_ENV.daemonImage);
-	return new ModalProvider({ sdk: await client(options), app, daemonImage });
+	const daemonImage = env[MODAL_ENV.daemonImage] || undefined;
+	const daemon = daemonImage === undefined ? (options.daemonPath === undefined ? {} : { daemonPath: options.daemonPath }) : { daemonImage };
+	return new ModalProvider({ sdk: await client(options), app, ...daemon, maxLifetimeMs: CONFORMANCE_MAX_LIFETIME_MS });
 }
 
+/** The same provider uploading a daemon that reports version <version>-drift, for the drift.version case. */
 export async function createDriftedProvider(options: ModalModuleOptions = {}): Promise<ComputerProvider> {
 	const env = options.env ?? process.env;
 	const app = setting(env, MODAL_ENV.app);
-	const daemonImage = setting(env, MODAL_ENV.driftedDaemonImage);
-	return new ModalProvider({ sdk: await client(options), app, daemonImage });
+	const sdk = await client(options);
+	const daemonPath = await (options.buildDaemon ?? goBuild)(`${VERSION}-drift`);
+	return new ModalProvider({ sdk, app, daemonPath, maxLifetimeMs: CONFORMANCE_MAX_LIFETIME_MS });
 }
