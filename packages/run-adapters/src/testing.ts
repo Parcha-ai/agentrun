@@ -63,7 +63,9 @@ export type FauxAction =
    *  streamed) is still booked, as a provider bills a response cut short. */
   | { cutBooked: true; usd?: number | null };
 
-export const FAUX_RECORDS = { request: "faux.request", user: "faux.user", turn: "faux.turn", turnEnd: "faux.turn_end", call: "faux.call", result: "faux.result" } as const;
+/** `note`: a note its host had for the request (ModelPort.note, the spend cap's wrap-up), as a real adapter's model proxy
+ *  would add it to the body: filed with its text, for a test to see. */
+export const FAUX_RECORDS = { request: "faux.request", user: "faux.user", turn: "faux.turn", turnEnd: "faux.turn_end", call: "faux.call", result: "faux.result", note: "faux.note" } as const;
 
 export interface FauxOptions {
   /** The session's model replies, in order, by its spec: one action per paid request. */
@@ -151,6 +153,9 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
             if ("halt" in action) { turnSignal!.abort(new Error(action.halt)); return await hang(signal); }
             // Measured as a real adapter's proxy measures its body: the prompt's UTF-8 bytes, with nothing a provider adds.
             const measured = "inputTokensMax" in action && typeof action.inputTokensMax === "number" ? action.inputTokensMax : Buffer.byteLength(JSON.stringify({ system: spec.system, user: prompt }), "utf8");
+            // A note its host has for this request, taken before it is measured, as the model proxy takes it.
+            const note = io.models.note?.("faux");
+            if (note) await append(FAUX_RECORDS.note, { text: note });
             const ticket = await io.models.beforeRequest({ model: "faux", inputTokensMax: measured });
             if ("cut" in action) { stats.requests += 1; return await hang(signal); }
             if ("cutBooked" in action) {
