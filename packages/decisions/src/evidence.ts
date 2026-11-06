@@ -37,9 +37,13 @@ function webUrl(url: unknown): string | undefined {
   return url;
 }
 
+/** What a caller keeps of each citation: `excerpts: false` keeps none of its passages (Parallel's `includeExcerpts`). */
+export type EvidenceOptions = { excerpts?: boolean };
+
 /** Raw citations as a decision's evidence: the one function both routes call. Items in order, each kept or dropped by
- *  its URL, its text plain and cut, until the item count or the text total is reached. */
-export function evidenceOf(raw: readonly { url: unknown; title: unknown; excerpts: readonly unknown[] }[]): DecisionEvidence[] {
+ *  its URL, its text plain and cut, until the item count or the text total is reached. With `excerpts: false` no item
+ *  keeps a passage, whatever the provider sent. */
+export function evidenceOf(raw: readonly { url: unknown; title: unknown; excerpts: readonly unknown[] }[], { excerpts: withExcerpts = true }: EvidenceOptions = {}): DecisionEvidence[] {
   const kept: DecisionEvidence[] = [];
   let left = EVIDENCE_TEXT_MAX;
   for (const item of raw) {
@@ -49,7 +53,7 @@ export function evidenceOf(raw: readonly { url: unknown; title: unknown; excerpt
     const title = typeof item.title === "string" ? plain(item.title, Math.min(EVIDENCE_TITLE_MAX, left)) : null;
     left -= title?.length ?? 0;
     const excerpts: string[] = [];
-    for (const excerpt of item.excerpts) {
+    for (const excerpt of withExcerpts ? item.excerpts : []) {
       if (excerpts.length >= EVIDENCE_EXCERPTS_PER_ITEM || left <= 0) break;
       if (typeof excerpt !== "string") continue;
       const text = plain(excerpt, Math.min(EVIDENCE_EXCERPT_MAX, left));
@@ -62,10 +66,10 @@ export function evidenceOf(raw: readonly { url: unknown; title: unknown; excerpt
 }
 
 /** Parallel's `citations` as evidence. */
-export const parallelCitations = (list: unknown): DecisionEvidence[] =>
-  evidenceOf((Array.isArray(list) ? list : []).filter(isRecord).map((c) => ({ url: c.url, title: c.title, excerpts: Array.isArray(c.excerpts) ? c.excerpts : [] })));
+export const parallelCitations = (list: unknown, options: EvidenceOptions = {}): DecisionEvidence[] =>
+  evidenceOf((Array.isArray(list) ? list : []).filter(isRecord).map((c) => ({ url: c.url, title: c.title, excerpts: Array.isArray(c.excerpts) ? c.excerpts : [] })), options);
 
 /** OpenRouter's `annotations` as evidence: each url_citation, its non-empty content its one passage. */
-export const urlCitations = (list: unknown): DecisionEvidence[] =>
+export const urlCitations = (list: unknown, options: EvidenceOptions = {}): DecisionEvidence[] =>
   evidenceOf((Array.isArray(list) ? list : []).filter(isRecord).filter((a) => a.type === "url_citation" && isRecord(a.url_citation))
-    .map((a) => { const c = a.url_citation as Record<string, unknown>; return { url: c.url, title: c.title, excerpts: typeof c.content === "string" && c.content ? [c.content] : [] }; }));
+    .map((a) => { const c = a.url_citation as Record<string, unknown>; return { url: c.url, title: c.title, excerpts: typeof c.content === "string" && c.content ? [c.content] : [] }; }), options);
