@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { seal, unseal } from "@parcha/pi-durable-agent";
 import { ApiError, invalid, type InputIssue } from "./errors.js";
 import { writeDurableSync } from "./files.js";
+import { metaToolOf } from "./mcp-meta.js";
 import { SEAL_KEY_ENV, sealKeyOf } from "./tool-keys.js";
 import { isObject, unknownFields } from "./validate.js";
 
@@ -79,11 +80,11 @@ export class McpServers {
       if (issues.length) throw invalid(issues);
       const name = String(body.name);
       const kept = this.need(name);
-      return listServer(new URL(kept.url), this.opened(name, kept, "name"), this.version, stop);
+      return marked(kept.url, await listServer(new URL(kept.url), this.opened(name, kept, "name"), this.version, stop));
     }
     const { url, auth } = this.admit(body);
     if (auth.type !== "none" && !auth.headers) throw invalid([credentialMissing(auth.type, "A preview needs the credential it is to connect with.")]);
-    return listServer(url, auth.headers ?? {}, this.version, stop);
+    return marked(url.href, await listServer(url, auth.headers ?? {}, this.version, stop));
   }
 
   /** PUT: preview, then keep the server with the tools listed. A body with no credential keeps the sealed one, while
@@ -166,7 +167,7 @@ export class McpServers {
     const opened = auth.type === "none" ? null : this.open(name, kept);
     return {
       name,
-      ...rest,
+      ...marked(kept.url, rest),
       auth: { type: auth.type, ...(auth.type === "headers" ? { headers: Object.keys(auth.sealed ?? {}) } : {}) },
       credential: opened === null ? null : "headers" in opened ? ("sealed" as const) : opened.unreadable,
     };
@@ -221,6 +222,15 @@ export class McpServers {
   private write(servers: Record<string, Kept>): void {
     writeDurableSync(this.file, `${JSON.stringify({ format: FORMAT, servers }, null, 2)}\n`);
   }
+}
+
+/** `listed` with each known meta tool (mcp-meta.ts) marked `grantable: false` with its reason: the snapshot keeps what
+ *  the server listed, and every read says which of its tools can't be granted. */
+function marked<T extends { tools: McpTool[] }>(url: string, listed: T): T & { tools: (McpTool & { grantable?: false; reason?: string })[] } {
+  return { ...listed, tools: listed.tools.map((tool) => {
+    const meta = metaToolOf(url, tool.name);
+    return meta ? { ...tool, grantable: false as const, reason: meta.reason } : tool;
+  }) };
 }
 
 const aad = (name: string, header: string) => `mcp:${name}:${header}`;

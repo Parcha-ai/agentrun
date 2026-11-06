@@ -1,0 +1,11 @@
+---
+packages: @parcha/agentrun-serve
+kind: feature
+---
+**Under `bash: ask`, only the background calls that start or feed a process ask: `bash_output`, `bash_list` and `bash_signal` run unasked**
+- With `bash` set to `ask`, `bash_background` and `bash_input` (and `bash`) still park the run for the owner's approval, each under its own name. `bash_output`, `bash_list` and `bash_signal` now run without asking, so watching one approved process no longer costs an approval per page. They reach only the processes the run itself started, by its own ids: another run's id, or one never started, is answered "there is no background process <id> in this run".
+- `bash: deny` still refuses all five, and `bash: allow` runs them. None is a settings key of its own, so no setting of one lifts `bash`'s.
+- `capabilities.tools` and `GET /v2/agents/{id}`'s `tools` show the split: under `bash: ask`, the three watchers read `allow`, with `permission_from` where `bash`'s setting came from.
+- On a server with accounts off, the three watchers run under `bash: ask`, where an asked call is refused.
+- Only an `ask` set as written lets them run unasked. Where `bash` asks as a stand-in (its setting is a value not offered, or the settings file never read), they ask too. An agent's own setting that is no permission at all now reads `ask` in `capabilities` and its tools, as it already did at the gate, never the value as written.
+- That stand-in survives a save: `PUT /v2/settings/tools` with the map as `GET` served it (as the console saves every change) keeps it a stand-in and leaves the value as written in `tool-settings.json`, so neither the save nor a restart lets the watchers run unasked. The same `ask` sent again counts as no choice, since on the wire it can't be told from the stand-in; a different permission is a choice and is written as given.
