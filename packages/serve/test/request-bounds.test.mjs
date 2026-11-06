@@ -70,3 +70,18 @@ test("pi: a request stopped (its end mark, then pi's aborted entry) closes once;
   bounds.note([piStart(0.2), piStart(0.03)]);
   assert.ok(close(bounds.inFlight(), 0.03), `only the new process's request is in flight: ${bounds.inFlight()}`);
 });
+
+test("pi side requests (a hosted search's, a learned workflow's model node, a summary) run inside tool calls, which pi runs side by side: each closes its own bound, by its request id, in whatever order they answer", () => {
+  const bounds = new RequestBounds();
+  const sideStart = (requestId, bound) => ({ id: next(), kind: REQUEST_STARTED, data: { request: "web_search", requestId, heldUsd: 0.1, boundUsd: bound } });
+  const sideCost = (requestId, usd) => ({ id: next(), kind: "agentrun.request_cost", data: { request: "web_search", requestId, usd } });
+  bounds.note([sideStart("s1", 0.01), sideStart("s2", 0.1)]);
+  assert.ok(close(bounds.inFlight(), 0.11), `both in flight: ${bounds.inFlight()}`);
+  // The second missed the cache and answers first.
+  bounds.note([sideCost("s2", 0.3)]);
+  assert.ok(close(bounds.inFlight(), 0.01), `the first still in flight: ${bounds.inFlight()}`);
+  assert.ok(close(bounds.ended(), 0.1), `the second's own bound ended: ${bounds.ended()}`);
+  bounds.note([{ id: next(), kind: REQUEST_ENDED, data: { request: "web_search", requestId: "s1", heldUsd: 0.1 } }]);
+  assert.equal(bounds.inFlight(), 0);
+  assert.ok(close(bounds.ended(), 0.11));
+});

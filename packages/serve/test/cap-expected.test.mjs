@@ -261,3 +261,27 @@ test("another harness: the guard's admission carries what the request is held at
   const strict = (await capBefore(1, SONNET, { mode: "strict", now: () => at })).beforeRequest(request);
   assert.deepEqual([strict.holdUsd, strict.boundUsd], [cold.holdUsd, 0], "strict: the worst case, no bound");
 });
+
+test("pi: side requests sent side by side (completeSimple, inside tool calls pi runs in parallel) each mark their own request id and bound on their start", async (t) => {
+  t.after(() => useSpend(undefined));
+  const marks = [];
+  const { models, sent } = sonnetModels({ hold: (k) => k >= 1 });
+  const marked = await markRequests(models);
+  const capped = await capModels(marked.models, 5, 0);
+  marked.open({ harness: { commit: async (change) => change({ appendEntry: async (_conversation, entry) => void marks.push(entry) }) } });
+  const context = conversation();
+  const first = await capped.streamSimple(SONNET, context).result();
+  await settle();
+  context.messages.push(first, resultOf(0));
+  // Two side requests on the warm conversation, in flight together.
+  void capped.completeSimple(SONNET, context);
+  void capped.completeSimple(SONNET, { messages: [...context.messages] });
+  for (let i = 0; marks.filter((m) => m.kind === "agentrun.request_started" && typeof m.data?.request === "string").length < 2; i++) {
+    assert.ok(i < 100, "both side requests are marked");
+    await settle();
+  }
+  const starts = marks.filter((m) => m.kind === "agentrun.request_started" && typeof m.data?.request === "string").map((m) => m.data);
+  assert.equal(new Set(starts.map((data) => data.requestId)).size, 2, `each its own request id: ${JSON.stringify(starts)}`);
+  assert.ok(starts.every((data) => typeof data.requestId === "string" && data.boundUsd > 0), `each with its bound: ${JSON.stringify(starts)}`);
+  assert.equal(sent.length, 3);
+});
