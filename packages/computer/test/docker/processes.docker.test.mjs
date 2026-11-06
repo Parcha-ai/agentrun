@@ -192,7 +192,9 @@ describe("keep a process running across calls and connections in a Docker comput
 	});
 
 	it("leaves no survivor when a process SIGKILLs its own guard", async () => {
-		const rogue = await call(b, "process.start", { argv: ["sh", "-c", "sleep 305 & echo $$ $!; kill -9 $PPID; wait"] });
+		// It kills its guard only once the start has returned: a guard killed before it reports the pid fails the start.
+		const rogue = await call(b, "process.start", { argv: ["sh", "-c", "read go; sleep 305 & echo $$ $!; kill -9 $PPID; wait"], stdin: true });
+		await call(b, "process.write", { id: rogue.id, data: b64("go\n") });
 		const { text } = await readUntil(b, rogue.id, "stdout", 0, "\n");
 		const pids = text.trim().split(/\s+/).map(Number);
 		assert.equal(pids.length, 2, text);

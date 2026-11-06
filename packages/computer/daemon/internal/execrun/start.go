@@ -212,7 +212,7 @@ func Start(p Program, stdin, stdout, stderr *os.File) (*Guarded, error) {
 		return nil, startError(p.Argv[0], g.final.StartErrno, g.final.StartError)
 	}
 	code, signal := exitStatus(cmd.ProcessState)
-	return nil, fmt.Errorf("the guard for %s ended before it started the program (exit code %v, signal %q)", p.Argv[0], code, signal)
+	return nil, fmt.Errorf("the guard for %s ended before it reported the program's start (exit code %v, signal %q): the program may have killed it", p.Argv[0], code, signal)
 }
 
 // follow reads the guard's status lines, the program's pid and then how it ended, then reaps the guard.
