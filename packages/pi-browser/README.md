@@ -418,8 +418,8 @@ region, a raw context id, the session timeout, the idle release and the batch ti
 package's defaults to spread and override) in the conversation's creating commit,
 selects the extensions for it, and calls `handle.release(conversation, "close", ctx)` when the conversation ends. Releases run
 as background tasks, which `waitForIdle` skips and closing the harness aborts: before it closes, a host calls
-`handle.drain(harness, ctx, signal?)`, which resolves once none is live. A host that closes with no drain gets its `close`
-releases at the provider all the same: `handle.close()` then waits, 30 s at most, for them. A release the store cannot record (a storage error)
+`handle.drain(harness, ctx, signal?)`, which resolves once none is live. A host that closes with no drain after its `close`
+releases gets them at the provider all the same: `handle.close()` waits, 30 s at most, for every one no drain since covered. A release the store cannot record (a storage error)
 is still made at the provider, and the record is left for the next run's reconcile; once the store has failed,
 `handle.close()` releases every session the process still holds, and over a healthy store it releases nothing. At run open,
 after the extensions are installed and
