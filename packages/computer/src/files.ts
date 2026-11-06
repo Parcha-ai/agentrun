@@ -61,6 +61,8 @@ export async function writeFile(
  * the last one's reply. An entry outside dir is refused (`denied`) and ends the push; what was written before it stays.
  * A push that begins is always ended, aborted or not, so it never holds one of the connection's 8 pushes.
  */
+const STOPPED = Symbol("stopped");
+
 export async function pushTar(
 	client: DaemonClient,
 	dir: string,
@@ -81,8 +83,28 @@ export async function pushTar(
 		// A refused write ended the push in the daemon; an aborted one did not.
 		return !wrote.ok && wrote.error.code === "aborted" ? abandon(client, id, wrote) : wrote;
 	};
+	const source: AsyncIterable<Uint8Array> =
+		tar instanceof Uint8Array
+			? (async function* () {
+					yield tar;
+				})()
+			: tar;
+	const iterator = source[Symbol.asyncIterator]();
+	// A source that stalls must not hold the push open past an abort: each piece races the signal.
+	let onAbort = () => {};
+	const stopped = new Promise<typeof STOPPED>((resolve) => {
+		onAbort = () => resolve(STOPPED);
+		signal?.addEventListener("abort", onAbort, { once: true });
+	});
 	try {
-		for await (const piece of tar instanceof Uint8Array ? [tar] : tar) {
+		for (;;) {
+			const next = signal ? await Promise.race([iterator.next(), stopped]) : await iterator.next();
+			if (next === STOPPED) {
+				void Promise.resolve(iterator.return?.()).catch(() => {});
+				return abandon(client, id, fail("aborted", `the push into ${dir} was aborted`));
+			}
+			if (next.done) break;
+			const piece = next.value;
 			for (let at = 0; at < piece.length; ) {
 				const take = Math.min(MAX_CHUNK_BYTES - filled, piece.length - at);
 				pending.set(piece.subarray(at, at + take), filled);
@@ -96,6 +118,8 @@ export async function pushTar(
 		}
 	} catch (error) {
 		return abandon(client, id, fail("invalid", `the tar source failed: ${error instanceof Error ? error.message : String(error)}`));
+	} finally {
+		signal?.removeEventListener("abort", onAbort);
 	}
 	if (filled > 0) {
 		const wrote = await send();
