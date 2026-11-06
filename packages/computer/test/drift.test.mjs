@@ -107,7 +107,7 @@ const BAD = [
 	["HostConfig.VolumeDriver", "convoy"],
 	["HostConfig.VolumesFrom", ["other"]],
 	["HostConfig.CgroupnsMode", "host"],
-	["HostConfig.Dns", ["192.0.2.1"]],
+	["HostConfig.Dns", ["1.1.1.1"]],
 	["HostConfig.DnsOptions", ["ndots:1"]],
 	["HostConfig.DnsSearch", ["example.com"]],
 	["HostConfig.ExtraHosts", ["host.docker.internal:host-gateway"]],
