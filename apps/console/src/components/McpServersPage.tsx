@@ -91,7 +91,7 @@ function ServerRow({ v2, server: s, signIn, onChange, onChanged }: { v2: Client;
         <div className="min-w-0 flex-1">
           <p className="flex flex-wrap items-center gap-2"><span className="font-mono text-[15px] font-semibold">{s.name}</span><Chip tone={tone}>{said}</Chip></p>
           <p className="mt-1.5 break-all font-mono text-[12px] text-muted-foreground">{s.url}</p>
-          {oauth && s.oauth && <p className="mt-1 font-mono text-[12px] text-muted-foreground">Signed in with OAuth{s.oauth.scopes.length ? ` · ${s.oauth.scopes.join(" ")}` : ""}{s.oauth.client === "pre-registered" && s.oauth.client_id ? ` · client ${s.oauth.client_id}` : ""}{s.oauth.expires_at ? ` · token until ${when(s.oauth.expires_at)}` : ""}</p>}
+          {oauth && s.oauth && <p className="mt-1 font-mono text-[12px] text-muted-foreground">Signed in with OAuth{s.oauth.scopes.length ? ` · ${s.oauth.scopes.join(" ")}` : ""}{s.oauth.client === "pre-registered" && s.oauth.client_id ? ` · client ${s.oauth.client_id}` : ""}{s.credential === "expired" ? " · sign-in expired: sign in again" : s.oauth.expires_at ? ` · token until ${when(s.oauth.expires_at)}` : ""}</p>}
           <details className="mt-2">
             <summary className="cursor-pointer font-mono text-[12px]">{s.tools.length} tool{s.tools.length === 1 ? "" : "s"}</summary>
             <ul className="mt-1 space-y-0.5">{s.tools.map((t) => <li key={t.name} className="font-mono text-[12px]">{t.name}{s.prices?.[t.name] !== undefined && <span className="text-muted-foreground"> · ${s.prices[t.name]} a call</span>}</li>)}</ul>
