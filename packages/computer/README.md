@@ -59,9 +59,12 @@ capabilities are `["exec", "files", "processes"]`.
   once a second: a child of its own that is not one of its guards can only be an orphan whose guard died (a program can
   kill its own guard, since both run as the same user), so it is killed with everything under it. A process orphaned by
   something run with `docker exec`, outside the daemon, is ended the same way.
-- On SIGTERM or SIGINT (`docker stop`), and at its deadline, init sends SIGTERM to every guard, each of which ends its
+- On SIGTERM or SIGINT (`docker stop`), and at its deadline, init first stops taking new programs: from then on
+  `process.start` and `exec.run` are refused as `unsupported` ("the computer is shutting down"). It waits (up to 3 s)
+  for the starts already under way to start their program, then sends SIGTERM to every guard, each of which ends its
   program's group and descendants with SIGKILL 2 s later; whatever is still under init 5 s after the SIGTERM is killed,
-  and init exits 0. One shutdown serves all three.
+  and init exits 0. So every program that started gets SIGTERM before any SIGKILL. Connections stay open until init
+  exits, so reads, waits and lists still answer. One shutdown serves all three.
 - A guard also ends its program when its control pipe from the daemon closes, so no program outlives the daemon.
 
 ### Processes
@@ -92,6 +95,9 @@ Its whole tree ends when the program ends or is signalled to its end. Ids are `p
   for the end of input, or signal `HUP`.
 - Writes to one process take turns. A write waits at most 10 s, its turn included, for the program to read; the rest is
   a `timeout` error that says how much was written. A cancelled write, waiting for its turn or writing, is `aborted`.
+- The guard keeps no copy of a program's stdin, stdout or stderr pipes once the program runs. So when the program, and
+  everything it started, have closed stdin (`exec 0<&-`), a write fails at once as `invalid`, while the program runs
+  on. A terminal is kept open by the guard until the program ends.
 - The table holds at most 256 processes, running or ended. A start into a full table drops the process that ended
   first (its output with it) once the new program runs; a start that is refused drops nothing. When all 256 run, the
   start is refused as `limit`.
@@ -151,8 +157,9 @@ read to its end, the push calls its `return()` however it ends, so a pull piped 
   for a symlink between two steps refuses the entry instead of redirecting it.
 - `files.write`, `files.mkdir`, `files.move` and `files.remove` act on the absolute path the caller chose and make no
   promise to confine it: they resolve it by name, as any program in the computer would, and follow a symlink on the
-  way. The computer is their boundary. A caller that needs a write held inside one directory against a concurrent
-  actor pushes a tar into that directory.
+  way. The daemon does not confine them: the container is the only boundary. A provider that runs the daemon as root
+  and programs as a lesser user must confine these calls first. A caller that needs a write held inside one directory
+  against a concurrent actor pushes a tar into that directory.
 - `files.read`, `files.write` and a pull open a file first and then check what they opened (`fstat` on the
   descriptor), never a path checked and then opened by name. The open carries `O_NONBLOCK`, so a FIFO or a device,
   there from the start or swapped in by another program, never makes it wait: `files.read` and `files.write` refuse

@@ -406,7 +406,7 @@ func (t *Table) Write(ctx context.Context, params WriteParams) (Empty, error) {
 		case errors.Is(err, os.ErrDeadlineExceeded):
 			return Empty{}, rpc.Errorf(rpc.KindTimeout, "process %s did not read its input: %d of %d bytes were written in %v", p.id, n, len(params.Data), writeTimeout)
 		case errors.Is(err, syscall.EPIPE), errors.Is(err, syscall.EIO), errors.Is(err, os.ErrClosed):
-			return Empty{}, rpc.Errorf(rpc.KindInvalid, "process %s no longer reads its input (%d of %d bytes were written)", p.id, n, len(params.Data))
+			return Empty{}, rpc.Errorf(rpc.KindInvalid, "process %s no longer reads its input: it closed its stdin, or ended (%d of %d bytes were written)", p.id, n, len(params.Data))
 		default:
 			return Empty{}, fmt.Errorf("cannot write to process %s: %w", p.id, err)
 		}

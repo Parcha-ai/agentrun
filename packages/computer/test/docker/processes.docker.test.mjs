@@ -154,6 +154,17 @@ describe("keep a process running across calls and connections in a Docker comput
 		assert.equal(Buffer.from(read.value.data).toString(), "hello from B\nbye\n");
 	});
 
+	it("fails a write to a program that closed its stdin, and the program runs on", async () => {
+		const closed = await call(b, "process.start", { argv: ["sh", "-c", "exec 0<&-; echo closed; exec sleep 300"], stdin: true });
+		await readUntil(b, closed.id, "stdout", 0, "closed\n");
+		const wrote = await b.client.call("process.write", { id: closed.id, data: b64("x\n") });
+		assert.equal(wrote.ok, false, JSON.stringify(wrote));
+		assert.equal(wrote.error.code, "invalid", JSON.stringify(wrote));
+		assert.deepEqual(await call(b, "process.wait", { id: closed.id, timeoutMs: 0 }), { running: true, exitCode: null, signal: null });
+		await call(b, "process.signal", { id: closed.id, signal: "KILL" });
+		assert.deepEqual(await call(b, "process.wait", { id: closed.id, timeoutMs: PATIENCE_MS }), { running: false, exitCode: null, signal: "KILL" });
+	});
+
 	it("runs sh in a pty: it echoes a command, and stty size follows a resize", async () => {
 		const sh = await call(b, "process.start", { argv: ["sh"], pty: { cols: 80, rows: 24 } });
 		let offset = 0;
