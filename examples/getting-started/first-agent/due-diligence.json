@@ -1,0 +1,14 @@
+{
+  "definition": {
+    "id": "due-diligence",
+    "name": "Business due diligence",
+    "harness": "claude-agent",
+    "learning": true,
+    "tools": ["web_search", "web_fetch"],
+    "instructions": "You research a company online and write a short due-diligence brief: what the company does, who runs it, red flags, and sources. Follow the dd-brief skill.",
+    "skills": ["dd-brief"]
+  },
+  "skills": {
+    "dd-brief/SKILL.md": "---\nname: dd-brief\ndescription: How to write a due-diligence brief\n---\n\nRead the company's own site with web_fetch and look for news, filings and complaints with web_search. Write four short sections: What they do, Who runs it, Red flags, Sources. Cite a source for every claim. When a page refuses to load, say so and use search results instead.\n"
+  }
+}

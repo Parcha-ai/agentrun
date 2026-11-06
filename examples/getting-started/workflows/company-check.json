@@ -1,0 +1,112 @@
+{
+  "definition": {
+    "id": "company-check",
+    "name": "Does this company exist?",
+    "workflow": {
+      "v": 2,
+      "name": "company-check",
+      "schemas": {
+        "Input": {
+          "type": "object",
+          "required": ["company", "state", "business"],
+          "properties": {
+            "company": { "type": "string", "minLength": 1, "description": "The legal name the applicant gave." },
+            "state": { "type": "string", "minLength": 1, "description": "The US state the applicant says the company is registered in." },
+            "business": { "type": "string", "minLength": 1, "description": "What the applicant says the company does." }
+          },
+          "examples": [
+            { "company": "Brisklow Marine Coatings, Inc.", "state": "Delaware", "business": "anti-fouling coatings for ship hulls" }
+          ]
+        },
+        "WebChecks": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["registry_status", "does_this_business", "adverse_news"],
+          "properties": {
+            "registry_status": {
+              "type": "string",
+              "enum": ["active", "inactive", "not_found"],
+              "description": "Is a company named `company` registered with the state filing office of `state`, and in good standing?",
+              "criteria": {
+                "active": "The state's registry lists the company, and it is active or in good standing.",
+                "inactive": "The state's registry lists the company, but it is dissolved, forfeited, revoked or otherwise not in good standing.",
+                "not_found": "Public sources do not establish that a company with this name is registered in that state."
+              }
+            },
+            "does_this_business": { "type": "boolean", "description": "Do public sources (its own website, directories, news) show `company` doing the business described in `business`?" },
+            "adverse_news": { "type": "boolean", "description": "Is there credible reporting of fraud, regulatory enforcement or sanctions involving `company`?" }
+          }
+        },
+        "Decision": {
+          "type": "object",
+          "required": ["company", "decision", "reasons", "probabilities", "evidence"],
+          "properties": {
+            "company": { "type": "string" },
+            "decision": { "type": "string", "enum": ["approve", "reject"] },
+            "reasons": { "type": "array", "items": { "type": "string" } },
+            "probabilities": { "type": "object" },
+            "evidence": { "type": "array", "items": { "type": "string" } }
+          }
+        }
+      },
+      "input": { "schemaId": "Input" },
+      "output": { "schemaId": "Decision", "path": "decision" },
+      "root": {
+        "node": "chain",
+        "steps": [
+          {
+            "node": "judge",
+            "label": "search_the_web",
+            "provider": "openrouter",
+            "model": "parallel/decisions-fast",
+            "evidence": "if_supported",
+            "timeoutMs": 120000,
+            "state": { "company": "{company}", "state": "{state}", "business": "{business}" },
+            "out": "WebChecks",
+            "as": "checks"
+          },
+          {
+            "node": "code",
+            "label": "apply_rules",
+            "as": "screen",
+            "code": "(s) => {\n  const a = s[\"checks$answers\"].answers;\n  const p = {\n    registry: a.registry_status.choice, registry_confidence: a.registry_status.confidence,\n    does_this_business: a.does_this_business.noul, adverse_news: a.adverse_news.noul\n  };\n  const reject = [], review = [];\n  if (p.registry === \"not_found\" && p.registry_confidence >= 0.7) reject.push(\"no registry record in \" + s.state + \" (confidence \" + p.registry_confidence.toFixed(2) + \")\");\n  else if (p.registry !== \"active\" || p.registry_confidence < 0.7) review.push(\"registry status \" + p.registry + \" (confidence \" + p.registry_confidence.toFixed(2) + \")\");\n  if (p.adverse_news >= 0.7) reject.push(\"adverse news (P(yes) \" + p.adverse_news.toFixed(2) + \")\");\n  else if (p.adverse_news >= 0.3) review.push(\"possible adverse news (P(yes) \" + p.adverse_news.toFixed(2) + \")\");\n  if (p.does_this_business < 0.7) review.push(\"the business is not confirmed (P(yes) \" + p.does_this_business.toFixed(2) + \")\");\n  const evidence = (s[\"checks$answers\"].evidence || []).map((e) => e.url);\n  const reasons = reject.concat(review);\n  return { action: reject.length ? \"reject\" : review.length ? \"review\" : \"approve\", reasons, reasons_text: reasons.join(\"; \"), probabilities: p, evidence };\n}"
+          },
+          {
+            "node": "route",
+            "label": "decision",
+            "valuePath": "screen.action",
+            "as": "decision_taken",
+            "branches": {
+              "approve": {
+                "body": {
+                  "node": "code",
+                  "label": "approve",
+                  "as": "decision",
+                  "code": "(s) => ({ company: s.company, decision: \"approve\", reasons: [], probabilities: s.screen.probabilities, evidence: s.screen.evidence })"
+                }
+              },
+              "reject": {
+                "body": {
+                  "node": "code",
+                  "label": "reject",
+                  "as": "decision",
+                  "code": "(s) => ({ company: s.company, decision: \"reject\", reasons: s.screen.reasons, probabilities: s.screen.probabilities, evidence: s.screen.evidence })"
+                }
+              },
+              "review": {
+                "body": {
+                  "node": "escalate",
+                  "label": "send_to_review",
+                  "when": { "predicate": "field_equals", "path": "screen.action", "value": "review" },
+                  "kind": "company_review",
+                  "stage": "company-check",
+                  "summary": "A person reviews {company}: {screen.reasons_text}."
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}

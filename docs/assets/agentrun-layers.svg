@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="392" viewBox="0 0 880 392" role="img" aria-labelledby="title desc">
+<title id="title">AgentRun architecture</title>
+<desc id="desc">Five harnesses side by side, pi, Claude Code, Codex, OpenCode and Workflows, inside the kernel, inside the meta harness. Around them the layers: triggers, browser, tools and MCP, sandbox, workspace, self-learning, spend and analytics.</desc>
+<g font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" text-anchor="middle">
+
+<g fill="#ffffff" stroke="#6d28d9" stroke-width="1.5">
+<rect x="20" y="16" width="201" height="56"/>
+<rect x="233" y="16" width="201" height="56"/>
+<rect x="446" y="16" width="201" height="56"/>
+<rect x="659" y="16" width="201" height="56"/>
+<rect x="20" y="320" width="272" height="56"/>
+<rect x="304" y="320" width="272" height="56"/>
+<rect x="588" y="320" width="272" height="56"/>
+</g>
+<g font-size="16" font-weight="600" fill="#111827">
+<text x="120.5" y="50">Triggers</text>
+<text x="333.5" y="50">Browser</text>
+<text x="546.5" y="50">Tools &amp; MCP</text>
+<text x="759.5" y="50">Sandbox</text>
+<text x="156" y="354">Workspace</text>
+<text x="440" y="354">Self-learning</text>
+<text x="724" y="354">Spend &amp; analytics</text>
+</g>
+
+<rect x="20" y="92" width="840" height="208" fill="#f5f3ff" stroke="#6d28d9" stroke-width="2"/>
+<text x="440" y="120" font-size="15" font-weight="700" fill="#4c1d95">Meta harness</text>
+
+<rect x="52" y="136" width="776" height="148" fill="#ede9fe" stroke="#6d28d9" stroke-width="1.5"/>
+<text x="440" y="162" font-size="15" font-weight="700" fill="#4c1d95">Kernel</text>
+
+<g fill="#6d28d9" stroke="#6d28d9" stroke-width="1.5">
+<rect x="76" y="180" width="132" height="84"/>
+<rect x="225" y="180" width="132" height="84"/>
+<rect x="374" y="180" width="132" height="84"/>
+<rect x="523" y="180" width="132" height="84"/>
+<rect x="672" y="180" width="132" height="84"/>
+</g>
+<g font-size="17" font-weight="700" fill="#ffffff">
+<text x="142" y="228">pi</text>
+<text x="291" y="228">Claude Code</text>
+<text x="440" y="228">Codex</text>
+<text x="589" y="228">OpenCode</text>
+<text x="738" y="228">Workflows</text>
+</g>
+
+</g>
+</svg>

@@ -1,0 +1,130 @@
+{
+  "definition": {
+    "id": "certificate-valid",
+    "name": "Is this certificate valid?",
+    "tools": ["pdf_pages"],
+    "workflow": {
+      "v": 2,
+      "name": "certificate-valid",
+      "schemas": {
+        "Input": {
+          "type": "object",
+          "required": ["document", "as_of"],
+          "properties": {
+            "document": { "type": "string", "minLength": 1, "description": "A certificate of incorporation: a PDF's file name under the server's --documents directory." },
+            "as_of": { "type": "string", "description": "The review date (YYYY-MM-DD). A filing date after it is in the future." }
+          },
+          "examples": [
+            { "document": "coi-bramblewick-tidal-instruments.pdf", "as_of": "2026-10-30" }
+          ]
+        },
+        "PdfPages": {
+          "type": "object",
+          "required": ["name", "pageCount", "pages", "text"],
+          "properties": {
+            "name": { "type": "string" },
+            "pageCount": { "type": "integer" },
+            "text": { "type": "string" },
+            "pages": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["page", "image"],
+                "properties": { "page": { "type": "integer" }, "image": { "type": "string" } }
+              }
+            }
+          }
+        },
+        "Checks": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["is_certificate", "looks_altered", "signature_present", "date_not_future"],
+          "properties": {
+            "is_certificate": { "type": "boolean", "description": "Is the document in <page> a certificate of incorporation or articles of incorporation filed with a US state's filing office (not an IRS letter, a bank letter or another kind of document)?" },
+            "looks_altered": { "type": "boolean", "description": "Does <page> show signs that someone edited the document after it was issued: a field covered over or pasted on, a date typed over another, a box with a visible edge or shadow, or a value misaligned or in a different typeface from the text around it?" },
+            "signature_present": { "type": "boolean", "description": "Is there a signature (handwritten or script) on every signature line in <page>?" },
+            "date_not_future": { "type": "boolean", "description": "Is every filing, notice or execution date shown in <page> on or before the date in `as_of`?" }
+          }
+        },
+        "Decision": {
+          "type": "object",
+          "required": ["document", "verdict", "reasons", "probabilities"],
+          "properties": {
+            "document": { "type": "string" },
+            "verdict": { "type": "string", "enum": ["valid", "invalid"] },
+            "reasons": { "type": "array", "items": { "type": "string" } },
+            "probabilities": { "type": "object" }
+          }
+        }
+      },
+      "input": { "schemaId": "Input" },
+      "output": { "schemaId": "Decision", "path": "decision" },
+      "root": {
+        "node": "chain",
+        "steps": [
+          {
+            "node": "call",
+            "label": "render_page",
+            "via": "tool",
+            "tool": "pdf_pages",
+            "args": { "path": "{document}", "maxPages": 1, "dpi": 110 },
+            "out": "PdfPages",
+            "as": "pages",
+            "deadline_s": 60
+          },
+          {
+            "node": "judge",
+            "label": "inspect_page",
+            "provider": "openrouter",
+            "model": "typesafe/jev-1.14",
+            "timeoutMs": 60000,
+            "images": { "<page>": "{pages.pages.0.image}" },
+            "state": { "file": "{pages.name}", "page_image": "<page>", "as_of": "{as_of}" },
+            "out": "Checks",
+            "as": "checks"
+          },
+          {
+            "node": "code",
+            "label": "apply_thresholds",
+            "as": "triage",
+            "code": "(s) => {\n  // One line per question: pass above it (or below, for a question that should be no), fail past the other, unsure between.\n  const T = {\n    is_certificate:    { want: true,  pass: 0.8, fail: 0.2,  reason: \"not a certificate of incorporation\" },\n    looks_altered:     { want: false, pass: 0.6, fail: 0.8,  reason: \"looks altered\" },\n    signature_present: { want: true,  pass: 0.7, fail: 0.25, reason: \"a signature is missing\" },\n    date_not_future:   { want: true,  pass: 0.7, fail: 0.3,  reason: \"a date is in the future\" }\n  };\n  const raw = s[\"checks$answers\"].answers;\n  const p = {}, failed = [], unsure = [];\n  for (const q of Object.keys(T)) {\n    const t = T[q], v = raw[q].noul;\n    p[q] = v;\n    const good = t.want ? v >= t.pass : v < t.pass;\n    const bad = t.want ? v < t.fail : v >= t.fail;\n    if (bad) failed.push(t.reason + \" (P(yes) \" + v.toFixed(2) + \")\");\n    else if (!good) unsure.push(q + \" (P(yes) \" + v.toFixed(2) + \")\");\n  }\n  return { action: failed.length ? \"fail\" : unsure.length ? \"unsure\" : \"pass\", failed, unsure, unsure_text: unsure.join(\"; \"), p };\n}"
+          },
+          {
+            "node": "route",
+            "label": "verdict",
+            "valuePath": "triage.action",
+            "as": "verdict_taken",
+            "branches": {
+              "pass": {
+                "body": {
+                  "node": "code",
+                  "label": "valid",
+                  "as": "decision",
+                  "code": "(s) => ({ document: s.pages.name, verdict: \"valid\", reasons: [], probabilities: s.triage.p })"
+                }
+              },
+              "fail": {
+                "body": {
+                  "node": "code",
+                  "label": "invalid",
+                  "as": "decision",
+                  "code": "(s) => ({ document: s.pages.name, verdict: \"invalid\", reasons: s.triage.failed, probabilities: s.triage.p })"
+                }
+              },
+              "unsure": {
+                "body": {
+                  "node": "escalate",
+                  "label": "send_to_review",
+                  "when": { "predicate": "field_equals", "path": "triage.action", "value": "unsure" },
+                  "kind": "document_review",
+                  "stage": "certificate-valid",
+                  "summary": "A person reviews {pages.name}: {triage.unsure_text}."
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}

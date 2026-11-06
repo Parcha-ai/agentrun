@@ -263,7 +263,7 @@ test('the publish set is the explicit release map minus the held packages, and a
 });
 
 test('the root README\'s status column says published exactly for the packages a release publishes', () => {
-  const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
+  const readme = readFileSync(new URL('../docs/packages.md', import.meta.url), 'utf8');
   const table = readme.split(/^### Use one piece$/m)[1].split(/^#/m)[0];
   const directories = new Map(listedPackages.map(directory => [releasePackageNames[directory], directory]));
   const rows = [...table.matchAll(/^\| \[`(@parcha\/[a-z-]+)`\].*\| ([^|]+) \|$/gm)];

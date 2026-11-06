@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="440" height="568" viewBox="0 0 440 568" role="img" aria-labelledby="title desc">
+<title id="title">The life of a request</title>
+<desc id="desc">Top to bottom: request, run starts, agent loop, tool call, gate and spend cap, sandbox, disk, learning. A return arrow from disk to the agent loop shows the loop repeating.</desc>
+<g font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+
+<g fill="#ffffff" stroke="#6d28d9" stroke-width="1.5">
+<rect x="70" y="16" width="300" height="46"/>
+<rect x="70" y="86" width="300" height="46"/>
+<rect x="70" y="156" width="300" height="46"/>
+<rect x="70" y="226" width="300" height="46"/>
+<rect x="70" y="296" width="300" height="46"/>
+<rect x="70" y="366" width="300" height="46"/>
+<rect x="70" y="436" width="300" height="46"/>
+<rect x="70" y="506" width="300" height="46"/>
+</g>
+<g fill="#6d28d9">
+<rect x="70" y="16" width="46" height="46"/>
+<rect x="70" y="86" width="46" height="46"/>
+<rect x="70" y="156" width="46" height="46"/>
+<rect x="70" y="226" width="46" height="46"/>
+<rect x="70" y="296" width="46" height="46"/>
+<rect x="70" y="366" width="46" height="46"/>
+<rect x="70" y="436" width="46" height="46"/>
+<rect x="70" y="506" width="46" height="46"/>
+</g>
+<g font-size="17" font-weight="700" fill="#ffffff" text-anchor="middle">
+<text x="93" y="45">1</text>
+<text x="93" y="115">2</text>
+<text x="93" y="185">3</text>
+<text x="93" y="255">4</text>
+<text x="93" y="325">5</text>
+<text x="93" y="395">6</text>
+<text x="93" y="465">7</text>
+<text x="93" y="535">8</text>
+</g>
+<g font-size="17" font-weight="600" fill="#111827">
+<text x="134" y="45">Request</text>
+<text x="134" y="115">Run starts</text>
+<text x="134" y="185">Agent loop</text>
+<text x="134" y="255">Tool call</text>
+<text x="134" y="325">Gate &amp; spend cap</text>
+<text x="134" y="395">Sandbox</text>
+<text x="134" y="465">Disk</text>
+<text x="134" y="535">Learning</text>
+</g>
+
+<g stroke="#6d28d9" stroke-width="2.5">
+<line x1="220" y1="62" x2="220" y2="78"/>
+<line x1="220" y1="132" x2="220" y2="148"/>
+<line x1="220" y1="202" x2="220" y2="218"/>
+<line x1="220" y1="272" x2="220" y2="288"/>
+<line x1="220" y1="342" x2="220" y2="358"/>
+<line x1="220" y1="412" x2="220" y2="428"/>
+<line x1="220" y1="482" x2="220" y2="498"/>
+</g>
+<g fill="#6d28d9">
+<polygon points="213,76 227,76 220,85"/>
+<polygon points="213,146 227,146 220,155"/>
+<polygon points="213,216 227,216 220,225"/>
+<polygon points="213,286 227,286 220,295"/>
+<polygon points="213,356 227,356 220,365"/>
+<polygon points="213,426 227,426 220,435"/>
+<polygon points="213,496 227,496 220,505"/>
+</g>
+
+<polyline points="370,459 410,459 410,179 382,179" fill="none" stroke="#6d28d9" stroke-width="2.5" stroke-dasharray="6 5"/>
+<polygon points="384,172 384,186 372,179" fill="#6d28d9"/>
+
+</g>
+</svg>

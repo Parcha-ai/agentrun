@@ -1,0 +1,19 @@
+[Unit]
+Description=AgentRun
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+# <node bin> is the directory `which node` prints, written out in full. systemd does not load nvm or expand ~,
+# so with nvm it reads like /home/<you>/.nvm/versions/node/v22.19.0/bin.
+Environment=PATH=<node bin>:/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=%h/.config/agentrun/agentrun.env
+# Codex agents: -p @openai/codex@0.164.0 in place of the SDK; both -p flags run all three harnesses.
+# pi agents only: /usr/bin/env npx -y @parcha/agentrun --no-open --data %h/.agentrun
+ExecStart=/usr/bin/env npx -y -p @parcha/agentrun@0.3.6 -p @parcha/agentrun-serve@0.1.0-beta.31 -p @anthropic-ai/claude-agent-sdk@0.3.286 agentrun --no-open --data %h/.agentrun
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=45
+
+[Install]
+WantedBy=default.target

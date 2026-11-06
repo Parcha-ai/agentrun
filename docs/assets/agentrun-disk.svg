@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="560" viewBox="0 0 880 560" role="img" aria-labelledby="title desc">
+<title id="title">Where your agent lives</title>
+<desc id="desc">The control plane holds store.sqlite with every agent, run and cost, and reads each run's database live off the disk. One disk per owner holds, per agent, its learning repo and a folder per run with run.sqlite and work. A box running tools mounts the run's work folder; a box running the loop and tools mounts the whole run folder.</desc>
+<g font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" text-anchor="middle">
+
+<rect x="20" y="16" width="840" height="84" fill="#6d28d9" stroke="#6d28d9" stroke-width="2"/>
+<text x="440" y="48" font-size="17" font-weight="700" fill="#ffffff">Control plane</text>
+<rect x="300" y="60" width="280" height="30" fill="#ffffff" stroke="#ffffff" stroke-width="1.5"/>
+<text x="440" y="81" font-size="14" fill="#111827"><tspan font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-weight="700">store.sqlite</tspan>  agents · runs · costs</text>
+
+<g stroke="#6d28d9" stroke-width="2.5">
+<line x1="440" y1="100" x2="440" y2="142"/>
+</g>
+<polygon points="433,140 447,140 440,150" fill="#6d28d9"/>
+<text x="452" y="128" font-size="13" fill="#6d28d9" text-anchor="start">reads live</text>
+
+<rect x="20" y="152" width="840" height="236" fill="#f5f3ff" stroke="#6d28d9" stroke-width="2"/>
+<text x="40" y="180" font-size="15" font-weight="700" fill="#4c1d95" text-anchor="start">Your disk · one per owner</text>
+
+<rect x="44" y="196" width="792" height="172" fill="#ffffff" stroke="#6d28d9" stroke-width="1.5"/>
+<text x="440" y="226" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="16" font-weight="700" fill="#111827">agents/&lt;agent&gt;/</text>
+
+<rect x="72" y="248" width="240" height="96" fill="#f5f3ff" stroke="#6d28d9" stroke-width="1.25"/>
+<text x="192" y="304" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" fill="#111827">learning/</text>
+
+<rect x="336" y="248" width="472" height="96" fill="#f5f3ff" stroke="#6d28d9" stroke-width="1.25"/>
+<text x="572" y="272" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" font-weight="700" fill="#111827">runs/&lt;run&gt;/</text>
+<g fill="#ffffff" stroke="#6d28d9" stroke-width="1.25">
+<rect x="356" y="286" width="208" height="44"/>
+<rect x="580" y="286" width="208" height="44"/>
+</g>
+<g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" fill="#111827">
+<text x="460" y="313">run.sqlite</text>
+<text x="684" y="313">work/</text>
+</g>
+
+<g stroke="#6d28d9" stroke-width="2.5">
+<line x1="684" y1="388" x2="684" y2="452"/>
+<line x1="300" y1="388" x2="300" y2="452"/>
+</g>
+<g fill="#6d28d9">
+<polygon points="677,398 691,398 684,388"/>
+<polygon points="293,398 307,398 300,388"/>
+</g>
+<g font-size="13" fill="#6d28d9">
+<text x="696" y="428" text-anchor="start">mounts work/</text>
+<text x="312" y="428" text-anchor="start">mounts runs/&lt;run&gt;/</text>
+</g>
+
+<rect x="540" y="452" width="288" height="64" fill="#6d28d9" stroke="#6d28d9" stroke-width="2"/>
+<text x="684" y="482" font-size="16" font-weight="700" fill="#ffffff">Box</text>
+<text x="684" y="503" font-size="13" fill="#ede9fe">tools</text>
+<rect x="156" y="452" width="288" height="64" fill="#6d28d9" stroke="#6d28d9" stroke-width="2"/>
+<text x="300" y="482" font-size="16" font-weight="700" fill="#ffffff">Box</text>
+<text x="300" y="503" font-size="13" fill="#ede9fe">loop + tools</text>
+
+</g>
+</svg>

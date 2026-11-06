@@ -1,5 +1,7 @@
 # Runnable examples
 
+To start AgentRun itself, on a laptop or a server, and make a first agent: [getting started](../examples/getting-started/README.md).
+
 Start with the [support quickstart](../README.md#quickstart). Every example below runs on scripted models by default, with no key: it exercises the workflow and its plumbing, not model quality. The workflow examples use fictional inputs; the vision examples use real public files (public-domain films and photographs, and pages of a public filing).
 
 After `npm ci --ignore-scripts` and `npm run build`:

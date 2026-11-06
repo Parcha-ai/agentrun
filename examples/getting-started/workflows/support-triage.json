@@ -1,0 +1,41 @@
+{
+  "definition": {
+    "id": "support-triage",
+    "name": "Support triage",
+    "workflow": {
+      "v": 2,
+      "name": "support-triage",
+      "schemas": {
+        "Input": {
+          "type": "object",
+          "required": ["message"],
+          "properties": {
+            "message": { "type": "string", "minLength": 1, "description": "One support message, as the customer wrote it." }
+          },
+          "examples": [
+            { "message": "Hi, I was charged twice for my Pellucid Harbor subscription this month (invoice 8812 and 8813). Please refund one of them, I need this sorted before payroll runs on Friday." }
+          ]
+        },
+        "Triage": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["is_billing", "is_urgent", "is_spam"],
+          "properties": {
+            "is_billing": { "type": "boolean", "description": "Is `message` about a charge, an invoice, a refund or a subscription payment?" },
+            "is_urgent": { "type": "boolean", "description": "Does the writer of `message` say or show that they need an answer within a day: a deadline, a blocked payment, a service that is down?" },
+            "is_spam": { "type": "boolean", "description": "Is `message` unsolicited advertising, a scam or otherwise not a real request from a customer?" }
+          }
+        }
+      },
+      "input": { "schemaId": "Input" },
+      "output": { "schemaId": "Triage", "path": "triage" },
+      "root": {
+        "node": "judge",
+        "label": "triage",
+        "state": { "message": "{message}" },
+        "out": "Triage",
+        "as": "triage"
+      }
+    }
+  }
+}
