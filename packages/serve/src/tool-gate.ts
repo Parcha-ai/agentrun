@@ -625,13 +625,13 @@ export class RunGate {
   private async run(held: ApprovalRequest): Promise<ToolAnswer> {
     const runner = await this.runnerOf(held);
     if ("refused" in runner) return { text: runner.refused, isError: true };
-    this.journal();
+    const drive = this.journal();
     try {
       // Its own abort beside the drive's: a stop or a cancel of the run cuts this call, which runs outside any turn.
       const cut = new AbortController();
       this.inFlight = { id: held.id, cut };
       try {
-        return await (await this.drive).effect(`approval:${held.id}`, { name: held.tool, replay: runner.replay, input: held.args }, async ({ signal }) => {
+        return await (await drive).effect(`approval:${held.id}`, { name: held.tool, replay: runner.replay, input: held.args }, async ({ signal }) => {
           try {
             const answer = await runner.call(AbortSignal.any([signal, cut.signal]));
             // A host tool answers its own abort as an error result: still the stop's cut.
