@@ -7,7 +7,7 @@ import { DECISION_ADAPTER, providerMissing, providersNamed } from "./decisions.j
 import { REPLAY } from "./host-tools.js";
 import { type InputIssue, sentence } from "./errors.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, type HarnessCapability, harnessOffers } from "./harness.js";
-import { chooseModel, llmTiers, type ModelRef, nodeTiers, workflowNodes } from "./model.js";
+import { chooseModel, llmTiers, type ModelRef, nodeTiers, unpricedModels, workflowNodes } from "./model.js";
 import type { BoxOffer } from "./boxes.js";
 import { boxAvailability, newAgentPlace, placeFix, RUN_BOXES } from "./place.js";
 import { allows, BOUND_TOOLS, CALL_TOOLS, grantedTools, missingEnv, NODE_TOOLS, toolOf, workflowTools } from "./tools.js";
@@ -162,6 +162,9 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
     if (!resolved) return out;
     if ("why" in resolved) out.push({ field: "definition.model", reason: resolved.host ? NOT_SET_UP : "not_an_option", message: resolved.why, host: resolved.host });
     else if ("refused" in resolved) out.push({ field: revision.model ? "definition.model" : "definition.harness", reason: NOT_SET_UP, message: resolved.refused, host: true, harness });
+    // Under a cap, a model serve has no price for (unpricedModels: a gateway id no price names and the catalog does not
+    // list) cannot be kept to it: the run is refused now, never started and refused at its first request.
+    else if (capped) for (const id of await unpricedModels(env, revision.model, ["default"], harness)) out.push({ field: "definition.model", reason: NOT_SET_UP, message: `The model ${id} has no price here, so a run's spend cap cannot be kept on it.`, fix: "Set AGENT_MODEL_PRICE (USD per million input,output,cacheRead tokens) where AgentRun starts, or start the run without max_cost_usd.", host: true });
     return out;
   }
   // A workflow's own grants hold a known MCP meta tool to the same rule (mcp-meta.ts): refused at the save, never a
