@@ -427,20 +427,30 @@ test("the manual command the error names installs as the server does: the lock's
   assert.equal(installedIn(data), PIN);
 });
 
-test("a server that closes while it installs stops npm, and leaves nothing installed", { timeout: 300_000, skip }, async (t) => {
+test("a server that closes while it installs stops npm and waits for it before it lets go of its data; nothing is left installed, and the next server installs whole", { timeout: 300_000, skip }, async (t) => {
   let letGo;
   const holdMcp = new Promise((resolve) => (letGo = resolve));
   t.after(() => letGo());
   const registry = await fakeRegistry(t, { holdMcp });
   const anthropic = await anthropicEndpoint(t);
   await firstUseEnv(t, registry, anthropic.fake);
-  const { data, close } = await firstUseServe(t, registry);
+  const data = join(await scratch(t), "agents");
+  const { close } = await firstUseServe(t, registry, data);
   await until("npm runs on the data", async () => (await npmOn(data)).length > 0, 120_000);
   await close();
-  await until("npm is stopped with the server", async () => (await npmOn(data)).length === 0, 10_000);
-  letGo();
+  // Gone before the server let go of its data: no npm of the first server's writes beside the next one.
+  assert.deepEqual(await npmOn(data), [], "npm has exited before close() returned");
   assert.equal(installedIn(data), undefined);
   assert.equal(await sdkAnywhere(data), undefined, "nothing left beside the harnesses either");
+  letGo();
+  // The next server on the same data installs Claude Code whole, alone.
+  const next = await serve(t, { faux: undefined, claudeSdk: false, claudeLock: registry.lock, data });
+  t.after(() => next.close());
+  const run = await next.api("POST", "/agents/claude/runs", { input: { content: "Say hello." } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  assert.equal((await follow(next.api, run.body.run_id, ["completed", "failed"], { deadlineMs: 240_000 })).last.status, "completed");
+  assert.equal(installedIn(data), PIN);
+  await next.close();
 });
 
 test("a partial tree is not Claude Code: one whose MCP library would resolve from above it (the data's own node_modules) is installed again whole, and the run starts on that", { timeout: 300_000, skip }, async (t) => {
@@ -462,4 +472,22 @@ test("a partial tree is not Claude Code: one whose MCP library would resolve fro
   assert.equal(registry.tarballs().length, 1, "installed again: the SDK's tarball asked");
   assert.equal(last.status, "completed", JSON.stringify(rows.slice(-3)));
   assert.ok(existsSync(join(data, "harnesses", "node_modules", ...MCP.split("/"), "package.json")), "the MCP library is in the harnesses now");
+});
+
+test("runs that wait for the install keep their places: at max_concurrent_runs 1, a second run during the install is refused, so no two run at once after it", { timeout: 300_000, skip }, async (t) => {
+  let letGo;
+  const hold = new Promise((resolve) => (letGo = resolve));
+  t.after(() => letGo());
+  const registry = await fakeRegistry(t, { hold });
+  const anthropic = await anthropicEndpoint(t);
+  await firstUseEnv(t, registry, anthropic.fake);
+  const { api } = await serve(t, { faux: undefined, claudeSdk: false, claudeLock: registry.lock, maxRuns: 1 });
+  assert.equal((await api("POST", "/agents", agent("claude", { harness: "claude-agent", model: `anthropic/${MODEL}` }))).status, 201);
+  const first = await api("POST", "/agents/claude/runs", { input: { content: "Say hello." } });
+  assert.equal(first.status, 202, JSON.stringify(first.body));
+  await until("the run waits for the install", async () => (await api("GET", `/runs/${first.body.run_id}/timeline`)).body.rows?.some((r) => r.kind === "phase" && r.summary === INSTALLING), 60_000);
+  const second = await api("POST", "/agents/claude/runs", { input: { content: "Say hello too." } });
+  assert.deepEqual([second.status, second.body.error?.code], [429, "rate_limited"], `the waiting run holds the one place: ${JSON.stringify(second.body)}`);
+  letGo();
+  assert.equal((await follow(api, first.body.run_id, ["completed", "failed"], { deadlineMs: 240_000 })).last.status, "completed");
 });
