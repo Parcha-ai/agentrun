@@ -482,10 +482,17 @@ export function runsFolders(data) {
 }
 
 /** What a faux process noted in `file` as JSON (a held process's pid and where it held): null while the file does not
- *  exist. `read`: how the file is read (a test's stub). */
+ *  exist, and while its JSON is not all in (an empty or partial read: a note being written), so a poll goes on. The faux
+ *  processes write each note whole (writeWhole); this is the test's side of the same race. `read`: how the file is read
+ *  (a test's stub). */
 export async function jsonIn(file, read = (path) => readFile(path, "utf8")) {
   const text = await read(file).catch(() => null);
-  return text === null ? null : JSON.parse(text);
+  if (text === null || !text.trim()) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
 }
 
 /** `file`'s JSON once a faux process has noted it (jsonIn), polled every 50 ms; fails saying `reaching` after `ms`. */
