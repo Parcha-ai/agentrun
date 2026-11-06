@@ -2040,10 +2040,17 @@ export class Runs {
           if (!refreshed) {
             refreshed = true;
             const refreshing = this.mcpFresh(run);
-            if (refreshing) await refreshing;
+            // A wait here lets the rest of the server go on: a recovery may start settling the run (recover's settle of
+            // a process an earlier server left), or another path launch it. Every check above is read again first.
+            if (refreshing) {
+              await refreshing;
+              continue;
+            }
           }
           await this.pinSignIn(run);
-          if (run.outcome || run.finishing || run.cancel || this.live(run)) continue;
+          // A settle that began during a wait owns the run until it ends: launching under it would start a process the
+          // settle then ends, so it is waited for (the top of the loop), as one under way before the waits is.
+          if (run.outcome || run.finishing || run.cancel || this.live(run) || run.settles > 0) continue;
           this.launch(run);
           launched = true;
         }
