@@ -197,14 +197,18 @@ await docker.release(made.value, "delete");
   PID 1 included. Storage that lasts is the agent disk's job, not this package's.
 - `create` ends with the drift check (below): a computer that is not what was declared is deleted, and `create`
   refuses with every mismatch in words.
+- `create(spec, { signal })` passes the signal to every step: `docker run`, and after it inspect, `docker info` and
+  hello (hello also has its own 30 s limit). An abort at any step after `docker run` deletes the computer and returns
+  `aborted`; `create` never returns ok once its signal has aborted.
 - `connect` runs `docker exec -i <name> /opt/agentrun/computerd stdio`, the bridge to init's socket, and says hello.
   Each `connect` is a connection of its own; processes are shared by all of them. A daemon whose version is not the
   provider's, or that lacks a capability the provider declares, is refused (`refused`) and the stream closed.
 - `attach({ id })` finds a computer by its name (`computer-<12 hex digits>`) or its container id (12 to 64 hex digits);
   `attach({ labels })` by labels, which must match exactly one computer: none is `not_found`, more is `invalid`
   ("2 computers match ...").
-- `list(labels)` runs `docker ps -a --filter label=agentrun.computer=1 --filter label=k=v ...`, then inspect, and
-  returns each computer's `ref`, `labels`, `deadline` (a `Date`, or `undefined` when the label is missing or is not
+- `list(labels)` runs `docker ps -a --filter label=agentrun.computer=1 --filter label=k=v ...`, then inspects the
+  matches 50 at a time, reading only the fields it reports, so any number of computers is listed (a computer gone
+  between the two is left out). It returns each computer's `ref`, `labels`, `deadline` (a `Date`, or `undefined` when the label is missing or is not
   the ISO time the provider writes), `state` (`running` or `stopped`) and `network` as read back.
 - `network(ref)` reads the network back: `none` (network mode none, on no network but Docker's own `none`), `open`
   (the default bridge alone), or `{ other: "<words>" }` for anything else, which is never reported as a policy.

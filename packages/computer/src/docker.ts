@@ -58,6 +58,13 @@ const MAX_PIDS = 4_194_304;
 /** Docker's least --memory. */
 const MIN_MEMORY_MB = 6;
 const HELLO_TIMEOUT_MS = 30_000;
+/** Ids a list() inspect takes at once, so its argv and output stay bounded however many computers match. */
+const INSPECT_BATCH = 50;
+/** Only the fields list() reads, in inspect's own shape: a whole inspect is kilobytes a container, and execFile's
+ *  output is capped. */
+const LIST_FORMAT =
+	'{"Id":{{json .Id}},"Name":{{json .Name}},"State":{"Running":{{json .State.Running}}},"Config":{"Labels":{{json .Config.Labels}}},' +
+	'"HostConfig":{"NetworkMode":{{json .HostConfig.NetworkMode}}},"NetworkSettings":{"Networks":{{json .NetworkSettings.Networks}}}}';
 /** The longest lifetime: 30 days. A computer meant to live longer is asked for again. */
 const MAX_LIFETIME_MS = 30 * 24 * 60 * 60 * 1000;
 const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "cpus", "memoryMb", "pids", "labels", "workdir", "user"]);
@@ -180,7 +187,10 @@ export class DockerProvider implements ComputerProvider {
 			await this.#run(["rm", "--force", "--volumes", name]);
 			return started.ok ? fail("docker", `docker run failed: ${started.value.stderr.trim()}`) : started;
 		}
-		const inspected = await this.#inspect([name]);
+		const ref = { id: started.value.stdout.trim(), name };
+		// From here the computer exists: every step takes the caller's signal, and an abort deletes the computer.
+		const inspected = await this.#inspect([name], signal);
+		if (signal?.aborted) return this.#abandon(ref);
 		const report = inspected.ok ? inspected.value[0] : undefined;
 		const state = report?.State;
 		if (state?.Running !== true) {
@@ -188,8 +198,9 @@ export class DockerProvider implements ComputerProvider {
 			const why = state ? `status ${state.Status}, exit code ${state.ExitCode}${state.Error ? `: ${state.Error}` : ""}` : "it could not be inspected";
 			return fail("docker", `the computer ${name} was not running after its start (${why}), so it was removed`);
 		}
-		const ref = { id: started.value.stdout.trim(), name };
-		const checked = await this.#check(spec, ref, report as DockerInspect, deadline, user);
+		const checked = await this.#check(spec, ref, report as DockerInspect, deadline, user, signal);
+		// Fail closed: no create returns ok once its signal has aborted.
+		if (signal?.aborted) return this.#abandon(ref);
 		if (checked.ok) return ok(ref);
 		// Fail closed: a computer that is not what was declared, or that cannot show it is, does not outlive create.
 		const removed = await this.release(ref, "delete");
@@ -197,11 +208,18 @@ export class DockerProvider implements ComputerProvider {
 		return fail(checked.error.code, `the computer ${name} ${after}: ${checked.error.message}`);
 	}
 
+	/** Deletes a computer whose create was aborted after docker run; the delete itself is not signalled. */
+	async #abandon(ref: ComputerRef): Promise<Result<never>> {
+		const removed = await this.release(ref, "delete");
+		const after = removed.ok ? "was deleted" : `could not be deleted (${removed.error.message})`;
+		return fail("aborted", `create was aborted after docker run; the computer ${ref.name} ${after}`);
+	}
+
 	/** The drift check: the computer's own report, from inspect and from its daemon's hello, against the spec. */
-	async #check(spec: ComputerSpec, ref: ComputerRef, report: DockerInspect, deadline: string, user: string): Promise<Result<void>> {
-		const arch = await this.#hostArch();
+	async #check(spec: ComputerSpec, ref: ComputerRef, report: DockerInspect, deadline: string, user: string, signal?: AbortSignal): Promise<Result<void>> {
+		const arch = await this.#hostArch(signal);
 		if (!arch.ok) return arch;
-		const opened = await this.#open(ref);
+		const opened = await this.#open(ref, signal);
 		if (!opened.ok) return opened;
 		await opened.value.close();
 		const expected = { version: VERSION, capabilities: this.capabilities().daemon, arch: arch.value, daemonPath: this.#daemonPath, deadline, user };
@@ -209,8 +227,8 @@ export class DockerProvider implements ComputerProvider {
 		return found.length === 0 ? ok(undefined) : fail("refused", `it did not match its spec: ${found.join("; ")}`);
 	}
 
-	async #hostArch(): Promise<Result<string>> {
-		const ran = await this.#run(["info", "--format", "{{.Architecture}}"]);
+	async #hostArch(signal?: AbortSignal): Promise<Result<string>> {
+		const ran = await this.#run(["info", "--format", "{{.Architecture}}"], signal);
 		if (!ran.ok) return ran;
 		if (ran.value.exitCode !== 0) return fail("docker", `docker info failed: ${ran.value.stderr.trim()}`);
 		const machine = ran.value.stdout.trim();
@@ -228,7 +246,7 @@ export class DockerProvider implements ComputerProvider {
 	}
 
 	/** One connection to the computer's daemon, after hello, unchecked. */
-	async #open(ref: ComputerRef): Promise<Result<ComputerConnection>> {
+	async #open(ref: ComputerRef, signal?: AbortSignal): Promise<Result<ComputerConnection>> {
 		const child = spawn(this.#docker, ["exec", "-i", ref.name, DAEMON_IN_COMPUTER, "stdio"], { stdio: ["pipe", "pipe", "pipe"] });
 		let stderr = "";
 		child.stderr.on("data", (chunk: Buffer) => {
@@ -245,9 +263,12 @@ export class DockerProvider implements ComputerProvider {
 			await exited;
 			clearTimeout(timer);
 		};
-		const hello = await client.call("hello", { client: `@parcha/agentrun-computer ${VERSION}` }, { signal: AbortSignal.timeout(HELLO_TIMEOUT_MS) });
+		const timeout = AbortSignal.timeout(HELLO_TIMEOUT_MS);
+		const either = signal ? AbortSignal.any([signal, timeout]) : timeout;
+		const hello = await client.call("hello", { client: `@parcha/agentrun-computer ${VERSION}` }, { signal: either });
 		if (!hello.ok) {
 			await close();
+			if (signal?.aborted) return fail("aborted", `hello to the daemon in ${ref.name} was aborted`);
 			if (hello.error.code === "aborted") return fail("timeout", `the daemon in ${ref.name} did not answer hello within ${HELLO_TIMEOUT_MS / 1000} s`);
 			if (hello.error.code !== "gone") return hello;
 			const words = stderr.trim() || hello.error.message;
@@ -294,11 +315,14 @@ export class DockerProvider implements ComputerProvider {
 		if (!ran.ok) return ran;
 		if (ran.value.exitCode !== 0) return fail("docker", `docker ps failed: ${ran.value.stderr.trim()}`);
 		const ids = ran.value.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
-		if (ids.length === 0) return ok([]);
-		// A computer removed between ps and inspect is left out.
-		const found = await this.#inspect(ids, signal);
-		if (!found.ok) return found;
-		return ok(found.value.filter(ours).map(infoOf));
+		const infos: ComputerInfo[] = [];
+		for (let at = 0; at < ids.length; at += INSPECT_BATCH) {
+			// A computer removed between ps and inspect is left out.
+			const found = await this.#inspect(ids.slice(at, at + INSPECT_BATCH), signal, LIST_FORMAT);
+			if (!found.ok) return found;
+			infos.push(...found.value.filter(ours).map(infoOf));
+		}
+		return ok(infos);
 	}
 
 	async network(ref: ComputerRef, policy?: NetworkSpec, { signal }: CallContext = {}): Promise<Result<NetworkPolicy>> {
@@ -326,9 +350,9 @@ export class DockerProvider implements ComputerProvider {
 		return fail("docker", `docker ${args[0]} ${ref.name} failed: ${ran.value.stderr.trim()}`);
 	}
 
-	/** Inspects containers by name or id; one that is gone is left out. */
-	async #inspect(keys: string[], signal?: AbortSignal): Promise<Result<DockerInspect[]>> {
-		const ran = await this.#run(["inspect", "--type", "container", "--format", "{{json .}}", ...keys], signal);
+	/** Inspects containers by name or id, whole or only the fields a format names; one that is gone is left out. */
+	async #inspect(keys: string[], signal?: AbortSignal, format = "{{json .}}"): Promise<Result<DockerInspect[]>> {
+		const ran = await this.#run(["inspect", "--type", "container", "--format", format, ...keys], signal);
 		if (!ran.ok) return ran;
 		const { exitCode, stdout, stderr } = ran.value;
 		const errors = stderr.split("\n").filter((line) => line.trim() !== "" && !noSuchContainer(line));
