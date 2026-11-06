@@ -60,3 +60,20 @@ test('both routes give the same evidence for the same citations', () => {
   const [[, parallel], [, openrouter]] = both(items);
   assert.deepEqual(parallel, openrouter);
 });
+
+test('a kept URL is the parsed .href: an interior newline, a C0 or bidi character, a space or an upper-case host come out normalized', () => {
+  const odd = ['https://ok.example/a\nb', 'https://ok.example/p\u0001q', 'https://ok.example/‮x', 'HTTPS://OK.Example/x', 'https://ok.example/a b'];
+  for (const [route, evidence] of both(odd.map((url) => ({ url, title: 'T', excerpts: ['x'] })))) {
+    assert.deepEqual(evidence.map((e) => e.url), odd.map((u) => new URL(u).href), route);
+  }
+});
+
+test('one counting unit, the code point: non-BMP text fills the shared budget exactly, never past it and never short of it', () => {
+  const cps = (s) => Array.from(s).length;
+  const items = Array.from({ length: 3 }, (_, i) => ({ url: `https://ok.example/${i}`, title: '😀'.repeat(300), excerpts: Array.from({ length: 5 }, () => '😀'.repeat(5000)) }));
+  for (const [route, evidence] of both(items)) {
+    const total = evidence.reduce((n, e) => n + cps(e.title ?? '') + e.excerpts.reduce((m, x) => m + cps(x), 0), 0);
+    assert.equal(total, 32 * 1024, `${route}: ${total} code points`);
+    assert.ok(evidence.every((e) => cps(e.title ?? '') <= 300 && e.excerpts.every((x) => cps(x) <= 4096)), `${route}: each cap in code points`);
+  }
+});
