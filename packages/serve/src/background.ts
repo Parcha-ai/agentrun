@@ -1,8 +1,10 @@
 // Background processes in a sandbox run's box: `bash_background` starts a command and answers at once with its id;
 // `bash_output` reads its output in pages, from a byte offset; `bash_input` writes to its stdin; `bash_signal` sends its
 // process group TERM, INT or KILL; `bash_list` lists them. Every call is one short command in the box, on the same
-// environment `bash` runs on (coding-tools.ts), so they work on every box that runs `bash`, and the permission gate that
-// wraps the coding source takes them as it takes `bash`. Nothing new runs on this server.
+// environment `bash` runs on (coding-tools.ts), so they work on every box that runs `bash`. The tool gate holds each call
+// to bash's setting (tool-gate.ts SHELL_FAMILY): bash: deny refuses them all; bash: ask parks bash_background and
+// bash_input under their own names, while bash_output, bash_list and bash_signal on this run's own processes run.
+// Nothing new runs on this server.
 //
 // In the box, a start makes `work/background/<id>/` (the run's files show it) with `output.log` (stdout and stderr, the
 // first BACKGROUND_LOG_BYTES of them) and display copies of `command`, `started`, `pid` (the command's process group)
@@ -17,6 +19,8 @@
 // the `sleep` that holds the fifo's write end open (so the command reads no end of input until `bash_input` closes it),
 // and the copies every call trusts. A process with no box-only directory (a box before this one's, or a directory
 // made in work/), or whose runner is gone without an exit code, is `lost`, and is never signalled.
+// A child that leaves the command's group (its own setsid, a daemon) is not tracked: no call counts or signals it.
+// Only the box's end or its 24-hour lifetime ends it; the box's process limit only bounds how many there can be.
 //
 // The run's end ends them (endBackground, from the server's settle, before the box is pulled and destroyed): TERM to
 // each running group, KILL after 3 s, and an `ended` mark (with its display copy beside the log, in the run's files).
@@ -70,7 +74,7 @@ const RUNNER = [
   // directory stands there (mv -T; else that link is removed first), so a link planted at the name, or at the
   // directory, is never followed. A check that fails skips the copy; the temporary file (hidden, a dot name) is removed
   // on every path; no call reads a copy back.
-  `put() { [ -n "$rw" ] || return 0; ( cd -P "$L" 2>/dev/null && [ "$(pwd -P)" = "$rw/background/\${L##*/}" ] || exit 0; t=$(mktemp ./.put.XXXXXX) || exit 0; printf '%s\\n' "$2" > "$t" && { mv -fT "$t" "./$1" 2>/dev/null || { [ -L "./$1" ] && rm -f "./$1"; mv -f "$t" "./$1"; }; } || rm -f "$t" ) 2>/dev/null; return 0; }`,
+  `put() { [ -n "$rw" ] || return 0; ( cd -P "$L" 2>/dev/null && [ "$(pwd -P)" = "$rw/background/\${L##*/}" ] || exit 0; r=$(od -An -N4 -tu4 /dev/urandom 2>/dev/null | tr -d ' '); [ -n "$r" ] || exit 0; t=./.put.$$.$r; ( set -C; printf '%s\\n' "$2" > "$t" ) || { rm -f "$t"; exit 0; }; { mv -fT "$t" "./$1" 2>/dev/null || { [ -d "./$1" ] && [ ! -L "./$1" ] && { rm -f "$t"; exit 0; }; [ -L "./$1" ] && rm -f "./$1"; mv -f "$t" "./$1"; }; } || rm -f "$t" ) 2>/dev/null; return 0; }`,
   // The log is opened once, here, where start has just made it a regular file, then checked as opened: the file the
   // open reached must be work/background/<id>/output.log itself (by its real path, so through no link) and a regular
   // file, else nothing is kept. What later stands at its name is never written through.
@@ -88,7 +92,9 @@ const RUNNER = [
   // is left.
   `g=$(cat "$C/pgid" 2>/dev/null); live() { [ -n "$g" ] || return 1; s=$(cat "$C/tsid" 2>/dev/null); if [ -r /proc/self/stat ]; then cat /proc/[0-9]*/stat 2>/dev/null | awk -v g="$g" -v s="$s" '{ sub(/^[0-9]+ \\(.*\\) /, ""); if ($1 != "Z" && ($3 == g || (s != "" && $4 == s))) n++ } END { exit n > 0 ? 0 : 1 }'; else kill -0 "-$g" 2>/dev/null; fi; }; while live; do sleep 0.5; done`,
   'kill "$h" 2>/dev/null; code=$(cat "$C/code" 2>/dev/null); [ -n "$code" ] || code=255',
-  'printf \'%s\\n\' "$code" > "$C/.exit" && mv -f "$C/.exit" "$C/exit"; put exit "$code"; rm -f "$C/in"',
+  // The display copy first, then the trusted exit code: a reader that sees the process ended (the run's end among them,
+  // which then destroys the box) finds its display copy in work/ already, never cut off by the box's end.
+  'put exit "$code"; printf \'%s\\n\' "$code" > "$C/.exit" && mv -f "$C/.exit" "$C/exit"; rm -f "$C/in"',
 ].join("\n");
 
 /**
@@ -100,7 +106,7 @@ const RUNNER = [
 const SCRIPT = [
   'w=$1; op=$2; shift 2; d=$w/background; c=${TMPDIR:-/tmp}/.agentrun-background; rw=$(cd "$w" 2>/dev/null && pwd -P)',
   `alive() { [ -n "$1" ] || return 1; if [ -r /proc/self/stat ]; then s=$(sed 's/^.*) //' "/proc/$1/stat" 2>/dev/null | cut -d' ' -f1); [ -n "$s" ] && [ "$s" != Z ] && [ "$s" != X ]; else kill -0 "$1" 2>/dev/null; fi; }`,
-  'state() { if [ -f "$c/$1/exit" ]; then echo "exited $(cat "$c/$1/exit")"; elif alive "$(cat "$c/$1/runner" 2>/dev/null)"; then echo running; else echo lost; fi; }',
+  'state() { [ -d "$c/$1" ] || { echo unstarted; return; }; if [ -f "$c/$1/exit" ]; then echo "exited $(cat "$c/$1/exit")"; elif alive "$(cat "$c/$1/runner" 2>/dev/null)"; then echo running; else echo lost; fi; }',
   // The ids this box started (c), and with them, for the list alone, those of work/ (a box before this one's).
   'cids() { for p in "$c"/*; do i=${p##*/}; case $i in ""|*[!0-9]*) continue;; esac; [ -d "$p" ] && echo "$i"; done; }',
   'ids() { { cids; [ -L "$d" ] || for p in "$d"/*; do i=${p##*/}; case $i in ""|*[!0-9]*) continue;; esac; echo "$i"; done; } | sort -un; }',
@@ -108,12 +114,15 @@ const SCRIPT = [
   // $1's log, opened first and then checked as opened (fd 3): the file the open reached is work/background/<id>/output.log
   // itself, by its real path (so through no link), and a regular file. Every read after is of that open file
   // (/proc/self/fd/3), so a link swapped in at its name after the check is never read. 0: open; 1: there is no log;
-  // 2: it is not to be read (a link, not a regular file, or a box with no /proc to check it by).
-  'openlog() { exec 3<&-; f="$d/$1/output.log"; [ -e "$f" ] || [ -L "$f" ] || return 1; [ -f "$f" ] && [ ! -L "$f" ] && [ -n "$rw" ] || return 2; exec 3< "$f" 2>/dev/null || return 2; [ "$(readlink /proc/self/fd/3 2>/dev/null)" = "$rw/background/$1/output.log" ] && [ -f /proc/self/fd/3 ] || { exec 3<&-; return 2; }; }',
+  // 2: it is not to be read (a link, or not a regular file); 3: this box has no /proc to check it by.
+  'openlog() { exec 3<&-; f="$d/$1/output.log"; [ -e "$f" ] || [ -L "$f" ] || return 1; [ -f "$f" ] && [ ! -L "$f" ] && [ -n "$rw" ] || return 2; exec 3< "$f" 2>/dev/null || return 2; [ -e /proc/self/fd/3 ] || { exec 3<&-; return 3; }; [ "$(readlink /proc/self/fd/3 2>/dev/null)" = "$rw/background/$1/output.log" ] && [ -f /proc/self/fd/3 ] || { exec 3<&-; return 2; }; }',
   'size() { if openlog "$1"; then echo $(($(wc -c < /proc/self/fd/3))); exec 3<&-; else echo 0; fi; }',
   // A display copy in work/ (the runner's put, by id): from inside work/background/<id>, entered with cd -P and checked
   // by its real path, an exclusive new file there renamed over its name on the same filesystem; a failed check skips it.
-  `put() { [ -n "$rw" ] || return 0; ( cd -P "$d/$1" 2>/dev/null && [ "$(pwd -P)" = "$rw/background/$1" ] || exit 0; t=$(mktemp ./.put.XXXXXX) || exit 0; if [ "$4" = n ]; then printf '%s\\n' "$3"; else printf '%s' "$3"; fi > "$t" && { mv -fT "$t" "./$2" 2>/dev/null || { [ -L "./$2" ] && rm -f "./$2"; mv -f "$t" "./$2"; }; } || rm -f "$t" ) 2>/dev/null; return 0; }`,
+  `put() { [ -n "$rw" ] || return 0; ( cd -P "$d/$1" 2>/dev/null && [ "$(pwd -P)" = "$rw/background/$1" ] || exit 0; r=$(od -An -N4 -tu4 /dev/urandom 2>/dev/null | tr -d ' '); [ -n "$r" ] || exit 0; t=./.put.$$.$r; ( set -C; if [ "$4" = n ]; then printf '%s\\n' "$3"; else printf '%s' "$3"; fi > "$t" ) || { rm -f "$t"; exit 0; }; { mv -fT "$t" "./$2" 2>/dev/null || { [ -d "./$2" ] && [ ! -L "./$2" ] && { rm -f "$t"; exit 0; }; [ -L "./$2" ] && rm -f "./$2"; mv -f "$t" "./$2"; }; } || rm -f "$t" ) 2>/dev/null; return 0; }`,
+  // A display name the process has no box-only copy for (a tty or capped mark planted in work/), removed from inside the
+  // checked directory, as put enters it: a link goes, never what it names.
+  `drop() { [ -n "$rw" ] || return 0; ( cd -P "$d/$1" 2>/dev/null && [ "$(pwd -P)" = "$rw/background/$1" ] || exit 0; rm -f "./$2" ) 2>/dev/null; return 0; }`,
   'known() { [ -d "$c/$1" ] || { [ ! -L "$d" ] && [ -d "$d/$1" ]; }; }',
   // A tty process's command runs in the pty's own session (tsid: script's command, its leader), whose processes may
   // outlive script: the groups of that session (sgs), and its terminal's foreground group (fgs, the tpgid its processes
@@ -130,6 +139,9 @@ const SCRIPT = [
   'case $op in',
   'start)',
   '  if [ "$5" = 1 ] && ! command -v script >/dev/null 2>&1; then echo noscript; exit 0; fi',
+  // util-linux's script alone takes -e (the command's exit code as script's own); busybox's refuses it, and always exits
+  // 0 without it, so its terminal process would read as succeeded whatever the command did.
+  '  if [ "$5" = 1 ] && ! script --version 2>&1 | grep -q util-linux; then echo notutil; exit 0; fi',
   '  mkdir -p "$c" || exit 1; [ -L "$d" ] && { echo linkdir; exit 0; }; mkdir -p "$d" || exit 1',
   '  k=0; until mkdir "$c/.lock" 2>/dev/null; do k=$((k+1)); if [ $k -ge 100 ]; then rmdir "$c/.lock" 2>/dev/null; k=0; fi; sleep 0.05; done',
   '  trap \'rmdir "$c/.lock" 2>/dev/null\' EXIT',
@@ -146,7 +158,7 @@ const SCRIPT = [
   'output)',
   '  known "$1" || { echo none; exit 0; }',
   '  st=$(state "$1"); echo "state $st"',
-  '  openlog "$1"; r=$?; [ $r = 2 ] && { echo notlog; exit 0; }; n=0; [ $r = 0 ] && n=$(($(wc -c < /proc/self/fd/3))); echo "size $n"',
+  '  openlog "$1"; r=$?; [ $r = 2 ] && { echo notlog; exit 0; }; [ $r = 3 ] && { echo noproc; exit 0; }; n=0; [ $r = 0 ] && n=$(($(wc -c < /proc/self/fd/3))); echo "size $n"',
   '  [ -f "$c/$1/capped" ] && echo capped; [ -f "$c/$1/ended" ] && echo ended; echo --',
   '  m=$((n - $2)); [ $m -gt "$3" ] && m=$3',
   '  if [ $m -gt 0 ] && [ $r = 0 ]; then tail -c +$(($2 + 1)) /proc/self/fd/3 | head -c $m | base64; fi;;',
@@ -175,6 +187,9 @@ const SCRIPT = [
   '  for i in $(running); do hit "$i" KILL; done',
   '  k=0; while [ $k -lt 40 ] && [ -n "$(running)" ]; do sleep 0.05; k=$((k+1)); done',
   '  for i in $(running); do r=$(cat "$c/$i/runner" 2>/dev/null); [ -n "$r" ] && kill -KILL -"$r" 2>/dev/null; done',
+  // Every display copy rewritten from the box-only copies, by the checked rename, so a link planted at one since its start
+  // does not stay in the run's files after the box is gone.
+  '  for i in $(cids); do put "$i" command "$(cat "$c/$i/command" 2>/dev/null)"; put "$i" started "$(cat "$c/$i/started" 2>/dev/null)" n; [ -s "$c/$i/pgid" ] && put "$i" pid "$(cat "$c/$i/pgid")" n; if [ -f "$c/$i/tty" ]; then put "$i" tty ""; else drop "$i" tty; fi; if [ -f "$c/$i/capped" ]; then put "$i" capped "" n; else drop "$i" capped; fi; done',
   '  echo "ended $n";;',
   'esac',
 ].join("\n");
@@ -205,11 +220,12 @@ function idOf(value: unknown): string {
   return id;
 }
 
-type State = { state: "running" } | { state: "exited"; exit_code: number; signal?: string } | { state: "lost" };
+type State = { state: "running" } | { state: "exited"; exit_code: number; signal?: string } | { state: "lost" } | { state: "unstarted" };
 
 /** A state as the script says it. */
 function stateOf(said: string): State {
   if (said === "running") return { state: "running" };
+  if (said === "unstarted") return { state: "unstarted" };
   const exited = /^exited (\d+)$/.exec(said);
   if (!exited) return { state: "lost" };
   const code = Number(exited[1]);
@@ -221,7 +237,8 @@ function stateOf(said: string): State {
 function stateWords(state: State, ended = false): string {
   const atEnd = ended ? ", at the run's end" : "";
   if (state.state === "running") return "is running";
-  if (state.state === "lost") return "is gone: its box was replaced before it ended, so its exit code is not known";
+  if (state.state === "unstarted") return "was not started in this box (only its files in work/ remain)";
+  if (state.state === "lost") return "is gone: what ran it ended first (its box was replaced, or its runner was killed), so its exit code is not known";
   return state.signal ? `ended by signal ${state.signal} (exit code ${state.exit_code})${atEnd}` : `exited with code ${state.exit_code}${atEnd}`;
 }
 
@@ -262,6 +279,7 @@ const bashBackground = defineTool({
     if (!command.trim()) throw new Error("command is the shell command to start");
     const said = (await inBox(api.env, "start", [command, String(BACKGROUND_MAX), String(BACKGROUND_LOG_BYTES), RUNNER, tty ? "1" : "0"], context)).trim();
     if (said === "noscript") throw new Error("this box has no `script` program (util-linux), so tty: true cannot run here: start the command without tty");
+    if (said === "notutil") throw new Error("this box's `script` is not util-linux's (it takes no -e, so the command's exit code would be lost), so tty: true cannot run here: start the command without tty");
     if (said === "linkdir") throw new Error("work/background is a link, so no background process starts: remove it, and its logs go in a directory of their own again");
     const full = /^full (\d+)/.exec(said);
     if (full) throw new Error(`${full[1]} background processes already run in this run's box, the most at once (${BACKGROUND_MAX}): end one with bash_signal (bash_list shows them), or wait for one to exit, then start this again.`);
@@ -289,7 +307,8 @@ const bashOutput = defineTool({
     const max = intArg(given.max_bytes, "max_bytes", 1, BACKGROUND_PAGE_BYTES, BACKGROUND_PAGE_BYTES);
     const said = await inBox(api.env, "output", [id, String(offset), String(max)], context);
     if (said.trim() === "none") throw noSuch(id);
-    if (said.split("\n").includes("notlog")) throw new Error(`background process ${id}'s log is not read: ${BACKGROUND_DIR}/${id}/output.log (or a directory on its way) is a link or not a regular file, so it could name another file (or this box has no /proc to check it by)`);
+    if (said.split("\n").includes("notlog")) throw new Error(`background process ${id}'s log is not read: ${BACKGROUND_DIR}/${id}/output.log (or a directory on its way) is a link or not a regular file, so it could name another file`);
+    if (said.split("\n").includes("noproc")) throw new Error(`background process ${id}'s log is not read: this box has no /proc, by which a log is checked to be its own file before it is read`);
     const at = said.indexOf("\n--\n");
     const head = (at < 0 ? said : said.slice(0, at)).split("\n");
     const fact = (key: string) => head.find((line) => line === key || line.startsWith(`${key} `))?.slice(key.length + 1);

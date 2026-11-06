@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { type Agent, AgentHomeError, type AgentStore, type NewRevision, openStore, type Revision, type RevisionPlace, type RevisionRow, type RunRow, STORE_FILE } from "@parcha/pi-durable-agent";
+import { agentLink } from "./console-links.js";
 import { ApiError, invalid } from "./errors.js";
 import { DEFAULT_HARNESS, harnessOfBody } from "./harness.js";
 import { type DefinitionBody, isObject, type Json, skillIssues, skillNames, stable } from "./validate.js";
@@ -285,8 +286,9 @@ export function definitionOf(agent: Agent, revision: Revision, version: number):
   return { id: agent.id, version, name: agent.name, ...(agent.description !== undefined ? { description: agent.description } : {}), ...body, harness: harnessOfBody(revision.body), ...(revision.body.place ? { place: revision.body.place } : {}), skills: skillNames(Object.keys(revision.body.skills)), tools: revision.body.tools, ...(revision.body.toolSettings ? { tool_settings: revision.body.toolSettings } : {}) };
 }
 
-/** `Agent` as the contract shows it, with its current revision and its saved sign-ins (sign-ins.ts view: never a ref). */
-export function agentView(entry: AgentEntry, signIns: readonly SignInView[] = [], learning?: { pending: number }) {
+/** `Agent` as the contract shows it, with its current revision and its saved sign-ins (sign-ins.ts view: never a ref).
+ *  `origin`: where its console page is (console-links.ts). */
+export function agentView(entry: AgentEntry, origin: string, signIns: readonly SignInView[] = [], learning?: { pending: number }) {
   const { agent, revision } = entry;
   return {
     agent_id: agent.id,
@@ -301,6 +303,7 @@ export function agentView(entry: AgentEntry, signIns: readonly SignInView[] = []
     region: "local",
     home_etag: etagOf(entry),
     archived_at: agent.archivedAt ?? null,
+    console_url: agentLink(origin, agent.id),
     // How many of its learned items wait for its owner's OK (learning-routes.ts pendingCount): only for an agent that
     // learns on a server whose learning is on.
     ...(learning ? { learning } : {}),

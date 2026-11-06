@@ -130,6 +130,17 @@ export const RUN_STORE_FILE = "run.sqlite";
 /** A run directory's store, in pi-durable-disk's run layout. */
 export const runStoreIn = (runDir: string): string => path.join(runDir, "store", RUN_STORE_FILE);
 
+/** The disk, under a server's data directory: everything its agents make, one folder per agent. The data directory's
+ *  own files (store.sqlite, the server's) are its control plane, and never on the disk. */
+export const DISK_DIR = "disk";
+/** An agent's folder's name on the disk: its id in lower case, then 16 hex digits of the id's SHA-256. Ids that differ
+ *  only in case get names that differ in any case, so on a disk that folds case (macOS's, by default) they never share one. */
+export const agentDirName = (agentId: string): string => `${agentId.toLowerCase()}-${createHash("sha256").update(agentId, "utf8").digest("hex").slice(0, 16)}`;
+/** Agent `agentId`'s folder on the disk of data directory `data`: `<data>/disk/agents/<name>`, its runs and learning below. */
+export const agentDiskDir = (data: string, agentId: string): string => path.join(data, DISK_DIR, "agents", agentDirName(agentId));
+/** Run `runId`'s folder: `<data>/disk/agents/<agent>/runs/<run>`, its `store/` and `work/` below. */
+export const runDirIn = (data: string, agentId: string, runId: string): string => path.join(agentDiskDir(data, agentId), "runs", runId);
+
 /**
  * How a host reaches an agent home's own files. `claim(fn)` runs `fn` with the directory that holds `agent.sqlite`
  * while the host holds it alone (a local directory; on a disk, a claim of the home's `agent/`); the package takes

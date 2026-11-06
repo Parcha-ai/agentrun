@@ -16,7 +16,7 @@ const agent = (learning?: boolean, extra: Partial<Agent["definition"]> = {}): Ag
   definition: { version: 1, name: "Refund policy finder", instructions: "Find it.", harness: "pi", skills: [], tools: ["read", "write"], ...(learning === undefined ? {} : { learning }), ...extra },
 });
 const note = (file: string, name: string, extra: Partial<LearningNote> = {}): LearningNote => ({
-  file, name, description: `When ${name.toLowerCase()} applies`, type: "feedback", status: "active", superseded_by: null,
+  file, name, description: `When ${name.toLowerCase()} applies`, type: "feedback", status: "active", superseded_by: null, runs: { given: 0, read: 0 },
   text: `---\nname: ${name}\ndescription: When ${name.toLowerCase()} applies\ntype: feedback\n---\nThe body of ${name}.\n`, ...extra,
 });
 const FIRST = "try-policies-refund-policy-first.md";
@@ -38,10 +38,10 @@ const runOf = (id: string, title: string, learning: Run["learning"]): Run => ({
   created_at: "2026-11-03T16:52:00Z", ended_at: "2026-11-03T16:52:09Z", result: null, error: null, cost: null, archived_at: null, learning,
 });
 const RUNS: Run[] = [
-  runOf("run-e", "everlane.com", { state: "dropped", reason: "empty", used: [{ file: FIRST, name: "Try" }, { file: MINE, name: "Keep" }] }),
-  runOf("run-k", "kith.com", { state: "dropped", reason: "grader", detail: "Not kept: It's about one shop's returns portal.", used: [{ file: FIRST, name: "Try" }] }),
-  runOf("run-c", "allbirds.com", { state: "dropped", reason: "empty", used: [{ file: FIRST, name: "Try" }] }),
-  runOf("run-b", "brooklinen.com", { state: "merged", reason: null, used: [{ file: OLD, name: "Old" }] }),
+  runOf("run-e", "everlane.com", { state: "dropped", reason: "empty", read: [{ file: FIRST, name: "Try" }, { file: MINE, name: "Keep" }] }),
+  runOf("run-k", "kith.com", { state: "dropped", reason: "grader", detail: "Not kept: It's about one shop's returns portal.", read: [{ file: FIRST, name: "Try" }] }),
+  runOf("run-c", "allbirds.com", { state: "dropped", reason: "empty", read: [{ file: FIRST, name: "Try" }] }),
+  runOf("run-b", "brooklinen.com", { state: "merged", reason: null, read: [{ file: OLD, name: "Old" }] }),
   runOf("run-p", "patagonia.com", { state: "dropped", reason: "no_budget" }),
   runOf("run-a", "taylorstitch.com", { state: "merged", reason: null }),
 ];
@@ -50,7 +50,7 @@ let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 const settle = async () => { for (let i = 0; i < 8; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
 
-type Fake = { learning?: () => Promise<AgentLearning>; runs?: Run[]; read?: (file: string) => Promise<{ note: string; etag: string | null }>; write?: (file: string, text: string, on: unknown) => Promise<unknown>; retire?: (file: string, etag: string) => Promise<unknown>; approve?: (file: string, etag: string) => Promise<unknown>; caps?: unknown; notes?: (cursor: string) => Promise<{ items: LearningNote[]; total: number; next_cursor: string | null }>; log?: (cursor: string) => Promise<AgentLearning["log"]>; runsNext?: string | null; update?: (body: unknown, etag: string | null) => Promise<{ agent: Agent; etag: string }> };
+type Fake = { learning?: () => Promise<AgentLearning>; runs?: Run[]; read?: (file: string) => Promise<{ note: string; etag: string | null }>; write?: (file: string, text: string, on: unknown) => Promise<unknown>; retire?: (file: string, etag: string) => Promise<unknown>; approve?: (file: string, etag: string) => Promise<unknown>; restore?: (file: string, etag: string) => Promise<unknown>; caps?: unknown; notes?: (cursor: string) => Promise<{ items: LearningNote[]; total: number; next_cursor: string | null }>; log?: (cursor: string) => Promise<AgentLearning["log"]>; runsNext?: string | null; update?: (body: unknown, etag: string | null) => Promise<{ agent: Agent; etag: string }> };
 async function open(a: Agent, fake: Fake = {}, props: Partial<LearningProps> = {}) {
   const calls: string[] = [];
   const agents: Agent[] = [];
@@ -61,6 +61,7 @@ async function open(a: Agent, fake: Fake = {}, props: Partial<LearningProps> = {
     writeNote: async (_id: string, file: string, text: string, on: unknown) => { calls.push(`write ${file} ${JSON.stringify(on)}`); return (fake.write ?? (async () => ({ text, etag: '"v2"' })))(file, text, on); },
     retireNote: async (_id: string, file: string, etag: string) => { calls.push(`retire ${file} ${etag}`); return (fake.retire ?? (async () => ({ text: "", etag: '"v3"' })))(file, etag); },
     approveNote: async (_id: string, file: string, etag: string) => { calls.push(`approve ${file} ${etag}`); return (fake.approve ?? (async () => ({ note: "", etag: '"v4"' })))(file, etag); },
+    restoreNote: async (_id: string, file: string, etag: string) => { calls.push(`restore ${file} ${etag}`); return (fake.restore ?? (async () => ({ note: "", etag: '"v5"' })))(file, etag); },
     getAgent: async () => { calls.push("agent"); return { agent: a, etag: '"rv1"' }; },
     updateDefinition: async (_id: string, body: unknown, etag: string | null) => { calls.push(`put ${JSON.stringify(body)} ${etag}`); return (fake.update ?? (async () => ({ agent: { ...a, revision: "rv2", revisions: 2, definition: { ...a.definition, ...(body as { definition: object }).definition } }, etag: '"rv2"' })))(body, etag); },
     learningNotes: async (_id: string, cursor: string) => { calls.push(`notes after ${cursor}`); return (fake.notes ?? (async () => ({ items: [], total: 0, next_cursor: null })))(cursor); },
@@ -97,8 +98,11 @@ describe("the Learning tab's notes", () => {
     expect(b).toMatch(/^run \S+$/);
     expect(a).not.toBe(b);
   });
-  it("shows each note in use with its type, its body, the run that learned it and how many runs used it", async () => {
-    const t = await open(agent(true));
+  it("shows each note in use with its type, its body, the run that learned it and how many runs it was given to and read in", async () => {
+    // The server names the person's note's newest change (last_change): created by them.
+    const v = view();
+    v.notes.items = v.notes.items.map((x) => (x.file === MINE ? { ...x, last_change: { kind: "created" as const, by: "person" as const, at: "2026-11-03T16:52:40Z" }, runs: { given: 2, read: 1 } } : x.file === FIRST ? { ...x, runs: { given: 3, read: 3 } } : x));
+    const t = await open(agent(true), { learning: async () => v });
     expect(t.text()).toContain("What it has learned");
     expect(t.text()).toContain("2 notes in use. Every later run reads them before it starts.");
     const first = t.card("Try /policies/refund-policy first")!;
@@ -108,10 +112,12 @@ describe("the Learning tab's notes", () => {
     expect(first.textContent).toContain("The body of Try /policies/refund-policy first.");
     expect(first.textContent).toContain("Learned in");
     expect(first.querySelector('a[href="#/runs/run-b"]')?.textContent).toBe("brooklinen.com");
-    expect(first.textContent).toContain("Used in 3 runs");
+    expect(first.textContent).toContain("Given to 3 runs");
+    expect(first.textContent).toContain("Read in 3 runs");
     const mine = t.card("Keep it to three lines")!;
-    expect(mine.textContent).toContain("Written by you");
-    expect(mine.textContent).toContain("Used in 1 run");
+    expect(mine.textContent).toMatch(/Created by you · \S/);
+    expect(mine.textContent).toContain("Given to 2 runs");
+    expect(mine.textContent).toContain("Read in 1 run");
   });
   it("one note in use is said as one: it, not them", async () => {
     const one = view();
@@ -121,9 +127,10 @@ describe("the Learning tab's notes", () => {
     expect(t.text()).toContain("1 note in use. Every later run reads it before it starts.");
     expect(t.text()).toContain("What the next run reads1 note");
   });
-  it("a server that does not say what runs read shows no use count", async () => {
-    const t = await open(agent(true), { runs: RUNS.map((r) => ({ ...r, learning: r.learning && { state: r.learning.state, reason: r.learning.reason } })) });
-    expect(t.text()).not.toContain("Used in");
+  it("a note no run has opened says only how many runs it was given to", async () => {
+    const t = await open(agent(true));
+    expect(t.card("Keep it to three lines")!.textContent).toContain("Given to 0 runs");
+    expect(t.text()).not.toContain("Read in");
   });
   it("keeps a replaced note out of the list, under Earlier notes, naming what replaced it", async () => {
     const t = await open(agent(true));
@@ -476,6 +483,15 @@ describe("notes that wait for the owner's OK", () => {
     return v;
   };
   const APPROVES = { learning: { pending: true, approve: true } };
+  // The host's bash runs as you only off the sandbox: an agent whose definition places it in a box is told nothing of it.
+  it("say a run's bash on the host runs as you only for an agent that runs on the host, not one in the sandbox", async () => {
+    const HOST = "Runs that use bash on the host run as you.";
+    const boxed = await open(agent(true, { place: { mode: "sandbox", box: "docker" } } as never), { learning: async () => waitingView(), caps: APPROVES });
+    expect(boxed.host.querySelector('section[aria-label="Waiting for your OK"]')!.textContent).not.toContain(HOST);
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    const runner = await open(agent(true, { place: { mode: "runner" } } as never), { learning: async () => waitingView(), caps: APPROVES });
+    expect(runner.host.querySelector('section[aria-label="Waiting for your OK"]')!.textContent).toContain(HOST);
+  });
   it("sit at the top of the tab, under why they wait, and out of the notes in use", async () => {
     const t = await open(agent(true), { learning: async () => waitingView(), caps: APPROVES });
     const box = t.host.querySelector('section[aria-label="Waiting for your OK"]')!;
@@ -486,8 +502,8 @@ describe("notes that wait for the owner's OK", () => {
     expect(box.querySelector(`article[aria-label="Trust acme.com's refund page"]`)).not.toBeNull();
     expect(t.text()).toContain("2 notes in use.");
     expect(box.textContent).toContain("From you");
-    // A note with no history yet has no empty footer.
-    expect(box.querySelector("article footer")).toBeNull();
+    // A note that waits was given to no run yet, and its footer says so.
+    expect(box.querySelector("article footer")?.textContent).toContain("Given to 0 runs");
   });
   it("on a server that approves from the console, Approve is one click, on the card's own version; Retire is there too", async () => {
     const t = await open(agent(true), { learning: async () => waitingView(), caps: APPROVES });
@@ -598,10 +614,6 @@ describe("pages past the first", () => {
     expect(t.text()).not.toContain("More notes could not be read.");
     expect(t.calls.filter((c) => c.startsWith("notes after"))).toEqual(["notes after n1", "notes after n1", "notes after n2"]);
     expect(t.card("A deep note")!.className.split(/\s+/)).toContain("border-primary");
-  });
-  it("says how many of the latest runs used a note when there are more runs than it read", async () => {
-    const t = await open(agent(true), { runsNext: "r1" });
-    expect(t.card("Try /policies/refund-policy first")!.textContent).toContain("Used in 3 of the latest 6 runs");
   });
 });
 
@@ -805,7 +817,7 @@ describe("the Learning tab's skills and workflows", () => {
     it("one the server lists retired has no Retire and no Approve, is not counted, and says who retired it and when", async () => {
       const v = learned({ skill: "retired", workflow: "retired" });
       v.skills = [...v.skills!, { name: "read-receipts", file: "skills/read-receipts/SKILL.md", description: "Read a receipt", status: "pending", run: "run-b", bytes: 40, etag: '"rr-v1"' }];
-      v.log = { ...v.log, items: [{ by: { user: true }, commit: "c4", at: "2026-11-04T10:00:00Z", reason: "retired by a person", files: [SKILL_FILE] }, ...v.log.items] };
+      v.skills = v.skills!.map((x) => (x.file === SKILL_FILE ? { ...x, retired: { at: "2026-11-04T10:00:00Z", by: "person" as const } } : x));
       const t = await open(agent(true), { learning: async () => v, read: reads, caps: { learning: { pending: true, approve: true } } });
       const skills = t.host.querySelector('section[aria-label="Skills it learned"]') as HTMLElement;
       expect(skills.textContent).toContain("1 skill: how to do a job it does again");
@@ -819,17 +831,6 @@ describe("the Learning tab's skills and workflows", () => {
       // One that waits has Approve and Retire, as a note that waits does.
       expect(t.button(/^Approve read-receipts$/)).toBeTruthy();
       expect(t.button(/^Retire read-receipts$/)).toBeTruthy();
-    });
-
-    it("says who retired one and when even when that change is past the first page of changes: the next pages are read for it", async () => {
-      const v = learned({ skill: "retired", workflow: "retired" });
-      v.log = { ...v.log, next_cursor: "l1" };
-      const t = await open(agent(true), { learning: async () => v, read: reads, log: async () => ({ items: [{ by: { user: true }, commit: "c0", at: "2026-11-04T10:00:00Z", reason: "retired by a person", files: [SKILL_FILE, README_FILE] }], total: 4, next_cursor: null }) });
-      expect(t.calls).toContain("log after l1");
-      await t.click(/^Earlier skills/);
-      await t.click(/^Earlier workflows/);
-      expect(t.host.querySelector('section[aria-label="Earlier skills"]')!.textContent).toContain("Retired by you ·");
-      expect(t.host.querySelector('section[aria-label="Earlier workflows"]')!.textContent).toContain("Retired by you ·");
     });
 
     it("an archived agent's skills have no Retire", async () => {
@@ -922,6 +923,235 @@ describe("text in angle brackets in what it learned", () => {
   });
 });
 
+// A retired note or skill opens as one in use does, read-only: what it says, when it applies, the run that learned it, and
+// who retired it when. Nothing to edit or retire on it: no later run reads it.
+describe("the Learning tab's retired notes and skills, opened", () => {
+  const retiredView = () => view({
+    notes: { items: [note(FIRST, "Try /policies/refund-policy first"), note(MINE, "Keep it to three lines", { status: "retired", retired: { at: "2026-11-04T09:10:00Z", by: "person" } })], total: 2, next_cursor: null },
+    log: { items: [
+      { by: { user: true }, commit: "c4", at: "2026-11-04T09:10:00Z", reason: "retired by a person", files: [MINE, "MEMORY.md"] },
+      { by: { run: "run-a" }, commit: "c1", at: "2026-11-03T16:52:10Z", reason: "Short answers read better.", files: [MINE, FIRST, "MEMORY.md"] },
+    ], total: 2, next_cursor: null },
+  });
+
+  it("a retired note opens to its text, when it applies, the run that learned it and when you retired it, with no Edit or Retire", async () => {
+    const t = await open(agent(true), { learning: async () => retiredView() });
+    await t.click(/^Earlier notes/);
+    const earlier = t.host.querySelector('section[aria-label="Earlier notes"]') as HTMLElement;
+    expect(earlier.textContent).not.toContain("The body of Keep it to three lines.");
+    await t.click(/^Show the note Keep it to three lines$/);
+    expect(earlier.textContent).toContain("The body of Keep it to three lines.");
+    expect(earlier.textContent).toContain("When keep it to three lines applies");
+    expect(earlier.textContent).toContain("Learned in");
+    expect(earlier.querySelector('a[href="#/runs/run-a"]')?.textContent).toBe("taylorstitch.com");
+    expect(earlier.textContent).toMatch(/Retired by you · \S/);
+    expect(t.button(/^Edit Keep it to three lines$/)).toBeUndefined();
+    expect(t.button(/^Retire Keep it to three lines$/)).toBeUndefined();
+    await t.click(/^Hide the note Keep it to three lines$/);
+    expect(earlier.textContent).not.toContain("The body of Keep it to three lines.");
+  });
+
+  it("a retired skill opens to its text, read from its file, and the run that learned it, with no Approve or Retire", async () => {
+    const SKILL_FILE = "skills/find-policies/SKILL.md";
+    const SKILL_TEXT = "---\nname: find-policies\ndescription: Find a store's policies\n---\n# Find policies\n\n1. Open the policies page first.\n";
+    const learned = view({ skills: [{ name: "find-policies", file: SKILL_FILE, description: "Find a store's policies", status: "retired", run: "run-b", bytes: 92, etag: '"skill-v1"' }], workflows: [] } as Partial<AgentLearning>);
+    const t = await open(agent(true), { learning: async () => learned, read: async () => ({ note: SKILL_TEXT, etag: '"skill-v1"' }) });
+    await t.click(/^Earlier skills/);
+    const earlier = t.host.querySelector('section[aria-label="Earlier skills"]') as HTMLElement;
+    await t.click(/^Show the skill find-policies$/);
+    expect(t.calls).toContain(`read ${SKILL_FILE}`);
+    expect(earlier.textContent).toContain("Open the policies page first.");
+    expect(earlier.querySelector('a[href="#/runs/run-b"]')?.textContent).toBe("brooklinen.com");
+    expect(earlier.textContent).toContain("Retired");
+    expect(t.button(/^Retire find-policies$/)).toBeUndefined();
+    expect(t.button(/^Approve find-policies$/)).toBeUndefined();
+  });
+
+  it("an open retired skill reads its text again when the list moves to another version (a restore made on an old one)", async () => {
+    const SKILL_FILE = "skills/find-policies/SKILL.md";
+    const text = (step: string) => `---\nname: find-policies\ndescription: Find a store's policies\n---\n# Find policies\n\n1. ${step}\n`;
+    const listed = (etag: string) => view({ skills: [{ name: "find-policies", file: SKILL_FILE, description: "Find a store's policies", status: "retired", run: "run-b", bytes: 92, etag }], workflows: [] } as Partial<AgentLearning>);
+    let version = '"skill-v1"';
+    const t = await open(agent(true), {
+      learning: async () => listed(version),
+      read: async () => ({ note: text(version === '"skill-v1"' ? "The old step." : "The newer step."), etag: version }),
+      // Someone restored it, a run changed it, and it was retired again: the restore on v1 is refused, and the list moves.
+      restore: async () => { version = '"skill-v3"'; throw new ClientError(412, "precondition_failed", "changed"); },
+    });
+    await t.click(/^Earlier skills/);
+    const earlier = t.host.querySelector('section[aria-label="Earlier skills"]') as HTMLElement;
+    await t.click(/^Show the skill find-policies$/);
+    expect(earlier.textContent).toContain("The old step.");
+    await t.click(/^Restore find-policies$/);
+    await t.click(/^Yes, restore$/);
+    expect(t.text()).toContain("It changed since you opened it.");
+    const shown = t.host.querySelector('section[aria-label="Earlier skills"]') as HTMLElement;
+    expect(shown.textContent).toContain("The newer step.");
+    expect(shown.textContent).not.toContain("The old step.");
+  });
+
+  it("a read of the old version that answers late never replaces the newer text", async () => {
+    const SKILL_FILE = "skills/find-policies/SKILL.md";
+    const text = (step: string) => `---\nname: find-policies\ndescription: Find a store's policies\n---\n# Find policies\n\n1. ${step}\n`;
+    const listed = (etag: string) => view({ skills: [{ name: "find-policies", file: SKILL_FILE, description: "Find a store's policies", status: "retired", run: "run-b", bytes: 92, etag }], workflows: [] } as Partial<AgentLearning>);
+    let version = '"skill-v1"';
+    let release: () => void = () => {};
+    let reads = 0;
+    const t = await open(agent(true), {
+      learning: async () => listed(version),
+      // The first read (of v1) is held until released; the one after the list moves answers at once.
+      read: async () => {
+        if (reads++ === 0) return new Promise((done) => { release = () => done({ note: text("The old step."), etag: '"skill-v1"' }); });
+        return { note: text("The newer step."), etag: version };
+      },
+      restore: async () => { version = '"skill-v3"'; throw new ClientError(412, "precondition_failed", "changed"); },
+    });
+    await t.click(/^Earlier skills/);
+    await t.click(/^Show the skill find-policies$/);
+    await t.click(/^Restore find-policies$/);
+    await t.click(/^Yes, restore$/);
+    const earlier = () => t.host.querySelector('section[aria-label="Earlier skills"]')?.textContent ?? "";
+    expect(earlier()).toContain("The newer step.");
+    await act(async () => { release(); });
+    await settle();
+    expect(earlier()).toContain("The newer step.");
+    expect(earlier()).not.toContain("The old step.");
+  });
+});
+
+// What a card says of its newest change, as the server names it (last_change): approved, restored, retired, edited or
+// created by you, each with when; learned by a run, none (Learned in says it). A retired one says who retired it and
+// when (retired). With neither served, a card names no change.
+describe("the Learning tab's words for the newest change", () => {
+  const AT = "2026-11-05T19:30:00Z";
+  it("says Approved by you or Restored by you when the server names it, never Edited", async () => {
+    const v = view();
+    v.notes.items = v.notes.items.map((x) => (x.file === MINE ? { ...x, last_change: { kind: "approved" as const, by: "person" as const, at: AT } } : x.file === FIRST ? { ...x, last_change: { kind: "restored" as const, by: "person" as const, at: AT } } : x));
+    const t = await open(agent(true), { learning: async () => v });
+    expect(t.card("Keep it to three lines")!.textContent).toMatch(/Approved by you · \S/);
+    expect(t.card("Keep it to three lines")!.textContent).not.toContain("Edited by you");
+    expect(t.card("Try /policies/refund-policy first")!.textContent).toMatch(/Restored by you · \S/);
+    // The run that learned it is still named.
+    expect(t.card("Try /policies/refund-policy first")!.querySelector('a[href="#/runs/run-b"]')).not.toBeNull();
+  });
+  it("names who retired one from the served retired field: you, or a run", async () => {
+    const v = view();
+    v.notes.items = [note(FIRST, "Try /policies/refund-policy first"), note(MINE, "Keep it to three lines", { status: "retired", retired: { at: AT, by: "person" } }), note(OLD, "Shopify refund policy path", { status: "retired", retired: { at: AT, by: "run" } })];
+    const t = await open(agent(true), { learning: async () => v });
+    await t.click(/^Earlier notes/);
+    const earlier = t.host.querySelector('section[aria-label="Earlier notes"]')!.textContent ?? "";
+    expect(earlier).toMatch(/Retired by you · \S/);
+    expect(earlier).toMatch(/Retired by a run · \S/);
+  });
+});
+
+// A retired note, skill or draft can be restored: after a confirm, on the version its card shows (If-Match), then the tab
+// reads it again. A refusal says why in plain words, and it stays retired.
+describe("restoring a retired note, skill or draft", () => {
+  const retiredView = () => {
+    const v = view();
+    v.notes.items = [note(FIRST, "Try /policies/refund-policy first", { etag: '"v-first"' }), note(MINE, "Keep it to three lines", { status: "retired", etag: '"v-mine"' })];
+    return v;
+  };
+  const restoreOf = async (t: Awaited<ReturnType<typeof open>>) => {
+    await t.click(/^Earlier notes/);
+    await t.click(/^Restore Keep it to three lines$/);
+  };
+
+  it("asks first, then restores on the version the card shows, and reads the tab again", async () => {
+    let reads = 0;
+    const t = await open(agent(true), { learning: async () => { reads++; return retiredView(); } });
+    await restoreOf(t);
+    const ask = t.host.querySelector('[role="alertdialog"]');
+    expect(ask?.textContent).toContain("It becomes active again for the next run.");
+    expect(t.calls.some((c) => c.startsWith("restore "))).toBe(false);
+    const before = reads;
+    await t.click(/^Yes, restore$/);
+    expect(t.calls).toContain(`restore ${MINE} "v-mine"`);
+    expect(reads).toBeGreaterThan(before);
+  });
+
+  it("a version changed since says so and reads the tab again", async () => {
+    let reads = 0;
+    const t = await open(agent(true), { learning: async () => { reads++; return retiredView(); }, restore: async () => { throw new ClientError(412, "precondition_failed", "changed"); } });
+    await restoreOf(t);
+    const before = reads;
+    await t.click(/^Yes, restore$/);
+    expect(t.text()).toContain("It changed since you opened it.");
+    expect(reads).toBeGreaterThan(before);
+  });
+
+  it("a refusal by the checks shows the server's words, and it stays retired", async () => {
+    const refusal = Object.assign(new ClientError(400, "bad_request", "The note does not pass the checks: secret_shape."), { problems: [{ rule: "secret_shape", path: MINE, detail: "It holds something shaped like a key (sk-…)." }] });
+    const t = await open(agent(true), { learning: async () => retiredView(), restore: async () => { throw refusal; } });
+    await restoreOf(t);
+    await t.click(/^Yes, restore$/);
+    expect(t.text()).toContain("It holds something shaped like a key (sk-…).");
+    expect(t.host.querySelector('section[aria-label="Earlier notes"]')!.textContent).toContain("Keep it to three lines");
+  });
+
+  it("a token, not the owner's sign-in, is told restoring takes the password sign-in", async () => {
+    const t = await open(agent(true), { learning: async () => retiredView(), restore: async () => { throw new ClientError(403, "forbidden", "Restoring a retired note takes the owner's password sign-in in the console, never a token."); } });
+    await restoreOf(t);
+    await t.click(/^Yes, restore$/);
+    expect(t.text()).toContain("Restoring takes your password sign-in in the console.");
+  });
+
+  it("one no longer retired (restored elsewhere) reads the tab again", async () => {
+    let reads = 0;
+    const t = await open(agent(true), { learning: async () => { reads++; return retiredView(); }, restore: async () => { throw new ClientError(400, "bad_request", "The note is not retired: it is active."); } });
+    await restoreOf(t);
+    const before = reads;
+    await t.click(/^Yes, restore$/);
+    expect(reads).toBeGreaterThan(before);
+  });
+
+  it("a skill is restored by its SKILL.md and a draft by its README, on the listed versions", async () => {
+    const SKILL_FILE = "skills/find-policies/SKILL.md";
+    const README_FILE = "workflows/check-refunds/README.md";
+    const v = view({
+      skills: [{ name: "find-policies", file: SKILL_FILE, description: "Find a store's policies", status: "retired", run: "run-b", bytes: 92, etag: '"skill-v1"' }],
+      workflows: [{ name: "check-refunds", file: "workflows/check-refunds/workflow.json", readme: README_FILE, description: "Checks a store's refund window", status: "retired", run: "run-a", bytes: 640, etag: '"readme-v1"' }],
+    } as Partial<AgentLearning>);
+    const t = await open(agent(true), { learning: async () => v });
+    await t.click(/^Earlier skills/);
+    await t.click(/^Restore find-policies$/);
+    await t.click(/^Yes, restore$/);
+    expect(t.calls).toContain(`restore ${SKILL_FILE} "skill-v1"`);
+    await t.click(/^Earlier workflows/);
+    await t.click(/^Restore check-refunds$/);
+    await t.click(/^Yes, restore$/);
+    expect(t.calls).toContain(`restore ${README_FILE} "readme-v1"`);
+  });
+
+  it("an archived agent's retired notes have no Restore", async () => {
+    const t = await open({ ...agent(true), archived_at: "2026-11-05T00:00:00Z" }, { learning: async () => retiredView() });
+    await t.click(/^Earlier notes/);
+    expect(t.button(/^Restore Keep it to three lines$/)).toBeUndefined();
+  });
+});
+
+// Who changed it comes only from what the server names (last_change, retired): a person's commit in the learning log
+// alone names no one, and nothing more of the log is read to find one.
+describe("the Learning tab's lines name only what the server serves", () => {
+  it("a person's change in the log alone gives a card no by-line", async () => {
+    const t = await open(agent(true), { learning: async () => view() });
+    const mine = t.card("Keep it to three lines")!;
+    expect(mine.textContent).not.toMatch(/(Written|Edited|Created) by you/);
+  });
+  it("a retired skill the server names no retirement of says just Retired, and no more of the log is read for it", async () => {
+    const SKILL_FILE = "skills/find-policies/SKILL.md";
+    const v = view({ skills: [{ name: "find-policies", file: SKILL_FILE, description: "Find a store's policies", status: "retired", run: "run-b", bytes: 92, etag: '"skill-v1"' }], workflows: [] } as Partial<AgentLearning>);
+    v.log = { ...v.log, items: [{ by: { user: true }, commit: "c9", at: "2026-11-04T10:00:00Z", reason: "retired by a person", files: [SKILL_FILE] }, ...v.log.items], next_cursor: "l1" };
+    const t = await open(agent(true), { learning: async () => v });
+    expect(t.calls).not.toContain("log after l1");
+    await t.click(/^Earlier skills/);
+    const earlier = t.host.querySelector('section[aria-label="Earlier skills"]')!.textContent ?? "";
+    expect(earlier).toContain("Retired");
+    expect(earlier).not.toContain("by you");
+  });
+});
+
 // The panel of runs that kept nothing shows each run's sentence as the server says it, under a title that does not say
 // "Not kept" again: whatever shape the sentence takes, "Not kept" appears once a row.
 describe("the Learning tab's runs that kept nothing", () => {
@@ -939,5 +1169,32 @@ describe("the Learning tab's runs that kept nothing", () => {
     const rows = [...panel.querySelectorAll("li")].map((li) => li.querySelector("span")!.textContent ?? "");
     expect(rows).toEqual(SHAPES);
     for (const row of rows) expect(row.match(/Not kept/g)).toHaveLength(1);
+  });
+});
+
+// How many runs a note was given to, and read in, as the server counts them (each note's `runs`): "Given to N runs", and
+// "Read in N runs" once one read it. Never counted here from the runs the tab read.
+describe("the Learning tab's per-note run counts", () => {
+  it("says how many runs each note was given to and read in, from the server's counts", async () => {
+    const v = view();
+    v.notes.items = v.notes.items.map((x) => (x.file === FIRST ? { ...x, runs: { given: 3, read: 1 } } : x.file === MINE ? { ...x, runs: { given: 2, read: 0 } } : { ...x, runs: { given: 0, read: 0 } }) as never);
+    const t = await open(agent(true), { learning: async () => v });
+    const first = t.card("Try /policies/refund-policy first")!.textContent ?? "";
+    expect(first).toContain("Given to 3 runs");
+    expect(first).toContain("Read in 1 run");
+    const mine = t.card("Keep it to three lines")!.textContent ?? "";
+    expect(mine).toContain("Given to 2 runs");
+    expect(mine).not.toContain("Read in");
+  });
+  it("counts nothing itself: runs that say they read a note leave its card as the server counts it", async () => {
+    const v = view();
+    v.notes.items = v.notes.items.map((x) => ({ ...x, runs: { given: 0, read: 0 } }) as never);
+    const read = [{ file: FIRST, name: "Try" }];
+    const runs = RUNS.map((r) => ({ ...r, learning: r.learning ? { ...r.learning, given: read, read } : r.learning }) as Run);
+    const t = await open(agent(true), { learning: async () => v, runs });
+    const first = t.card("Try /policies/refund-policy first")!.textContent ?? "";
+    expect(first).toContain("Given to 0 runs");
+    expect(first).not.toContain("Read in");
+    expect(first).not.toContain("Used in");
   });
 });

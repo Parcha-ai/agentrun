@@ -4,9 +4,9 @@ export { CLAUDE_AGENT_PACKAGE, ClaudeAgentNotInstalled, ClaudeAgentPinMismatch, 
 export type { ClaudeAgentPin } from "./errors.js";
 export type { ClaudeAgentAdapterOptions, ClaudeAgentProvider, ClaudeAgentSkill, ClaudeAgentThinking } from "./adapter.js";
 export { CLAUDE_AGENT_SDK_INSTALL, CLAUDE_AGENT_SDK_VERSION, CLAUDE_CODE_VERSION as CLAUDE_AGENT_CLI_VERSION } from "./versions.js";
-export { findClaudeExecutable as claudeAgentExecutable } from "./binary.js";
+export { findClaudeExecutable as claudeAgentExecutable, platformSuffix as claudeAgentPlatform } from "./binary.js";
 export { anthropicPolicy, CLAUDE_WEB_SEARCH_TOOL, CLAUDE_WEB_SEARCH_USD, OWN_TOOL_PREFIX, thinks } from "./host/policy.js";
 export type { AnthropicPolicyOptions, AnthropicUsage } from "./host/policy.js";
 export type { ChildCommand, ConfineChild } from "./host/machine.js";
-export { listedTools, MCP_OUTPUT_TOKENS, RESULT_SIZE_KEY, toolServer } from "./host/tool-server.js";
+export { listedTools, MCP_OUTPUT_TOKENS, RESULT_SIZE_KEY, toolServer, type ToolServerModules } from "./host/tool-server.js";
 export type { ServedTool } from "./host/tool-server.js";

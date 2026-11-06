@@ -13,7 +13,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { mcpGateway, mcpPinOf } from "../dist/mcp-gateway.js";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
-import { agent, answerFlow, flowAgent, follow, serve as serveOf, withEnv } from "./support.mjs";
+import { agent, answerFlow, flowAgent, follow, runDir, serve as serveOf, withEnv } from "./support.mjs";
 
 const TOKEN = `not-a-secret-${"mcp-meta-bearer-0123"}`;
 const REASON = "it runs other actions by name, so a grant can't name the real action. Use the server's direct tools instead.";
@@ -86,7 +86,7 @@ test("a meta tool granted before the rule is refused at the launch, when the run
 test("a grant of a meta tool is 422 on a harness that doesn't bind MCP tools too, never a setup warning", async (t) => {
   const { api } = await serve(t);
   await saved(t, api, "composio", ["COMPOSIO_MULTI_EXECUTE_TOOL"]);
-  const refused = await api("POST", "/agents", agent("codex-meta", { harness: "codex", tools: ["mcp:composio/COMPOSIO_MULTI_EXECUTE_TOOL"] }));
+  const refused = await api("POST", "/agents", agent("opencode-meta", { harness: "opencode", tools: ["mcp:composio/COMPOSIO_MULTI_EXECUTE_TOOL"] }));
   assert.equal(refused.status, 422, JSON.stringify(refused.body));
   assert.ok(JSON.stringify(refused.body).includes(`can't be granted: ${REASON}`), JSON.stringify(refused.body));
 });
@@ -112,6 +112,23 @@ test("a run of a revision saved granting what is now a meta tool is 409 naming i
   assert.ok(blocked, "the served document names details.not_grantable");
 });
 
+test("a grant of a meta tool is 422 in the same words on every harness that binds MCP tools: pi, claude-agent and codex", async (t) => {
+  const { api } = await serve(t);
+  await saved(t, api, "composio", ["COMPOSIO_MULTI_EXECUTE_TOOL", "GMAIL_SEND_EMAIL"]);
+  const words = [];
+  for (const harness of ["pi", "claude-agent", "codex"]) {
+    const refused = await api("POST", "/agents", agent(`meta-${harness}`, { harness, tools: ["mcp:composio/COMPOSIO_MULTI_EXECUTE_TOOL"] }));
+    assert.equal(refused.status, 422, `${harness}: ${JSON.stringify(refused.body)}`);
+    const field = refused.body.error.fields.find((one) => one.field === "definition.tools[0]");
+    assert.deepEqual([field?.reason, field?.message], ["not_an_option", `mcp:composio/COMPOSIO_MULTI_EXECUTE_TOOL can't be granted: ${REASON}`], `${harness}: ${JSON.stringify(refused.body)}`);
+    words.push(field.message);
+    // The same server's direct tool is no meta tool on this harness either.
+    const direct = await api("POST", "/agents", agent(`direct-${harness}`, { harness, tools: ["mcp:composio/GMAIL_SEND_EMAIL"] }));
+    assert.ok(!JSON.stringify(direct.body).includes("can't be granted"), `${harness}: ${JSON.stringify(direct.body)}`);
+  }
+  assert.equal(new Set(words).size, 1, "one refusal, word for word, on every harness");
+});
+
 test("a run's pin made before the rule, holding a meta tool, refuses its next launch in words; the gateway never sends a pinned meta tool", { timeout: 120_000 }, async (t) => {
   const { api, data } = await serve(t);
   await saved(t, api, "composio", ["COMPOSIO_MULTI_EXECUTE_TOOL", "GMAIL_SEND_EMAIL"]);
@@ -121,7 +138,7 @@ test("a run's pin made before the rule, holding a meta tool, refuses its next la
   const runId = run.body.run_id;
   await follow(api, runId, ["completed"], { deadlineMs: 60_000 });
   // The pin as one made before the rule would be: the meta tool beside the direct one.
-  const file = join(data, "runs", runId, "mcp-tools.json");
+  const file = join(runDir(data, runId), "mcp-tools.json");
   const pin = JSON.parse(await readFile(file, "utf8"));
   pin.composio.tools.push({ name: "COMPOSIO_MULTI_EXECUTE_TOOL", inputSchema: object });
   await writeFile(file, JSON.stringify(pin));

@@ -10,7 +10,7 @@ import { createRequire, syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
 import { test } from "node:test";
 import { BOX_QUARANTINE, Quarantine, settleBox, startTimeOf, sweepBoxes } from "../dist/box/sweep.js";
-import { agent, follow, serve } from "./support.mjs";
+import { agent, follow, runDir, runRecordOf, serve } from "./support.mjs";
 
 const linux = { skip: process.platform !== "linux" && "reads start times from /proc" };
 /** This process: a writer that is alive. */
@@ -163,10 +163,10 @@ async function servedWithRecord(t, record, box) {
   const id = (await first.api("POST", "/agents/plain/runs", { input: { content: "What is 2 + 2?" } })).body.run_id;
   await follow(first.api, id, ["completed"]);
   await first.close();
-  const runDir = join(first.data, "runs", id);
-  await writeFile(join(runDir, "box.json"), `${JSON.stringify({ id: `box-${id}`, ...record })}\n`);
+  const dir = runDir(first.data, id);
+  await writeFile(join(dir, "box.json"), `${JSON.stringify({ id: `box-${id}`, ...record })}\n`);
   const second = await serve(t, { data: first.data, box });
-  return { ...second, id, runDir };
+  return { ...second, id, runDir: dir };
 }
 
 /** Until `order` holds `entry`: a point the server reached, never a time. */
@@ -307,7 +307,7 @@ test("a follow-up that opens an ended run again waits for the start sweep, when 
   const id = (await first.api("POST", "/agents/plain/runs", { input: { content: "What is 2 + 2?" } })).body.run_id;
   await follow(first.api, id, ["completed"]);
   await first.close();
-  await writeFile(join(first.data, "runs", id, "box.json"), JSON.stringify({ id: "box-old", pid: 4242, startTime: "9", writer: await goneWriter() }));
+  await writeFile(join(runDir(first.data, id), "box.json"), JSON.stringify({ id: "box-old", pid: 4242, startTime: "9", writer: await goneWriter() }));
   const order = [];
   const { release, box } = heldReap(order);
   const spawned = spawnsInto(t, order);
@@ -328,10 +328,10 @@ test("a run the server finds left running is opened again only after the start s
   const id = (await first.api("POST", "/agents/asks/runs", { input: { content: "Pick a region." } })).body.run_id;
   await follow(first.api, id, ["input_required"]);
   // Its process killed with the server's: the run is left running, for the next start to open again.
-  const pid = JSON.parse(await readFile(join(data, "runs", id, "run.json"), "utf8")).holder.pid;
+  const pid = runRecordOf(data, id).holder.pid;
   process.kill(pid, "SIGKILL");
   await first.close();
-  await writeFile(join(data, "runs", id, "box.json"), JSON.stringify({ id: "box-left", pid: 4242, startTime: "9", writer: await goneWriter() }));
+  await writeFile(join(runDir(data, id), "box.json"), JSON.stringify({ id: "box-left", pid: 4242, startTime: "9", writer: await goneWriter() }));
   const order = [];
   const { release, box } = heldReap(order);
   const spawned = spawnsInto(t, order);
@@ -360,11 +360,11 @@ test("archiving one run lets go of that run's box only: another run's record and
   const [a, b] = ids;
   for (const id of ids) {
     cgroups.add(`/cg/${id}`);
-    await writeFile(join(data, "runs", id, "box.json"), JSON.stringify({ id: `box-${id}`, cgroup: `/cg/${id}`, pid: 4242, startTime: "9", writer: await goneWriter() }));
+    await writeFile(join(runDir(data, id), "box.json"), JSON.stringify({ id: `box-${id}`, cgroup: `/cg/${id}`, pid: 4242, startTime: "9", writer: await goneWriter() }));
   }
   assert.equal((await api("POST", `/runs/${a}/archive`)).status, 200);
   assert.deepEqual(reaped, [`box-${a}`], "only the archived run's box");
-  assert.equal(JSON.parse(await readFile(join(data, "runs", b, "box.json"), "utf8")).reaped, undefined, "the other's record is unmarked");
+  assert.equal(JSON.parse(await readFile(join(runDir(data, b), "box.json"), "utf8")).reaped, undefined, "the other's record is unmarked");
   assert.ok(cgroups.has(`/cg/${b}`) && !cgroups.has(`/cg/${a}`), "and its cgroup in place");
   // Its agent archived: every one of its runs' boxes goes, the other run's too.
   assert.equal((await api("POST", "/agents/plain/archive")).status, 200);
@@ -380,17 +380,17 @@ test("an archived run that is still live has its box let go when its process exi
   const go = join(data, "go-live");
   const id = (await api("POST", "/agents/busy/runs", { input: { content: `Answer once ${go} exists.` } })).body.run_id;
   for (const deadline = Date.now() + 10_000; ; await new Promise((resolve) => setTimeout(resolve, 50))) {
-    const record = JSON.parse(await readFile(join(data, "runs", id, "run.json"), "utf8").catch(() => "null"));
+    const record = runRecordOf(data, id);
     if (record?.holder?.pid) break;
     assert.ok(Date.now() < deadline, "the run's process came up");
   }
   // The record its box would leave; its writer stands in for the run process, gone once that exits.
-  await writeFile(join(data, "runs", id, "box.json"), JSON.stringify({ id: "box-live", pid: 4242, startTime: "9", writer: await goneWriter() }));
+  await writeFile(join(runDir(data, id), "box.json"), JSON.stringify({ id: "box-live", pid: 4242, startTime: "9", writer: await goneWriter() }));
   assert.equal((await api("POST", `/runs/${id}/archive`)).status, 200);
   assert.deepEqual(reaped, [], "a live run's box is its process's while it lives");
   await writeFile(go, "");
   await follow(api, id, ["completed"]);
-  const mark = async () => JSON.parse(await readFile(join(data, "runs", id, "box.json"), "utf8")).reaped;
+  const mark = async () => JSON.parse(await readFile(join(runDir(data, id), "box.json"), "utf8")).reaped;
   for (const deadline = Date.now() + 10_000; !(await mark()); await new Promise((resolve) => setTimeout(resolve, 50))) assert.ok(Date.now() < deadline, `let go when its process exited: ${reaped}`);
   assert.deepEqual(reaped, ["box-live"]);
   assert.equal((await mark()).by, "pidns");
@@ -487,12 +487,12 @@ test("an archived run whose process dies while it waits for the person has its b
   assert.equal((await api("POST", "/agents", agent("asks", { tools: ["ask_person"] }))).status, 201);
   const id = (await api("POST", "/agents/asks/runs", { input: { content: "Pick a region." } })).body.run_id;
   await follow(api, id, ["input_required"]);
-  const pid = JSON.parse(await readFile(join(data, "runs", id, "run.json"), "utf8")).holder.pid;
-  await writeFile(join(data, "runs", id, "box.json"), JSON.stringify({ id: "box-waiting", pid: 4242, startTime: "9", writer: await goneWriter() }));
+  const pid = runRecordOf(data, id).holder.pid;
+  await writeFile(join(runDir(data, id), "box.json"), JSON.stringify({ id: "box-waiting", pid: 4242, startTime: "9", writer: await goneWriter() }));
   assert.equal((await api("POST", `/runs/${id}/archive`)).status, 200);
   assert.deepEqual(reaped, [], "its process lives, so its box is its own");
   process.kill(pid, "SIGKILL");
-  const mark = async () => JSON.parse(await readFile(join(data, "runs", id, "box.json"), "utf8")).reaped;
+  const mark = async () => JSON.parse(await readFile(join(runDir(data, id), "box.json"), "utf8")).reaped;
   for (const deadline = Date.now() + 15_000; !(await mark()); await new Promise((resolve) => setTimeout(resolve, 100))) assert.ok(Date.now() < deadline, `let go once its process died: ${reaped}`);
   assert.deepEqual(reaped, ["box-waiting"]);
 });
@@ -509,17 +509,17 @@ test("a box that cannot be let go never holds up its run's end: an archived run 
   const go = join(data, "go-stuck");
   const id = (await api("POST", "/agents/busy/runs", { input: { content: `Answer once ${go} exists.` } })).body.run_id;
   for (const deadline = Date.now() + 10_000; ; await new Promise((resolve) => setTimeout(resolve, 50))) {
-    const record = JSON.parse(await readFile(join(data, "runs", id, "run.json"), "utf8").catch(() => "null"));
+    const record = runRecordOf(data, id);
     if (record?.holder?.pid) break;
     assert.ok(Date.now() < deadline, "the run's process came up");
   }
-  await writeFile(join(data, "runs", id, "box.json"), JSON.stringify({ id: "box-stuck", cgroup: "/cg/stuck", writer: await goneWriter() }));
+  await writeFile(join(runDir(data, id), "box.json"), JSON.stringify({ id: "box-stuck", cgroup: "/cg/stuck", writer: await goneWriter() }));
   assert.equal((await api("POST", `/runs/${id}/archive`)).status, 200);
   await writeFile(go, "");
   const { last } = await follow(api, id, ["completed"], { deadlineMs: 20_000 });
   assert.equal(last.status, "completed", "carried back, whatever its box's cleanup did");
   assert.ok(reaped.includes("box-stuck"), "its box was reaped");
-  assert.equal(JSON.parse(await readFile(join(data, "runs", id, "box.json"), "utf8")).reaped, undefined, "its record left unmarked, for the next start to try again");
+  assert.equal(JSON.parse(await readFile(join(runDir(data, id), "box.json"), "utf8")).reaped, undefined, "its record left unmarked, for the next start to try again");
 });
 
 test("an archived run that is then cancelled has its box let go once the cancel settles", linux, async (t) => {
@@ -529,12 +529,12 @@ test("an archived run that is then cancelled has its box let go once the cancel 
   assert.equal((await api("POST", "/agents", agent("asks", { tools: ["ask_person"] }))).status, 201);
   const id = (await api("POST", "/agents/asks/runs", { input: { content: "Pick a region." } })).body.run_id;
   await follow(api, id, ["input_required"]);
-  await writeFile(join(data, "runs", id, "box.json"), JSON.stringify({ id: "box-cancelled", pid: 4242, startTime: "9", writer: await goneWriter() }));
+  await writeFile(join(runDir(data, id), "box.json"), JSON.stringify({ id: "box-cancelled", pid: 4242, startTime: "9", writer: await goneWriter() }));
   assert.equal((await api("POST", `/runs/${id}/archive`)).status, 200);
   assert.deepEqual(reaped, [], "its process lives, so its box is its own");
   assert.equal((await api("POST", `/runs/${id}/cancel`)).status, 202);
   await follow(api, id, ["cancelled"]);
-  const mark = async () => JSON.parse(await readFile(join(data, "runs", id, "box.json"), "utf8")).reaped;
+  const mark = async () => JSON.parse(await readFile(join(runDir(data, id), "box.json"), "utf8")).reaped;
   for (const deadline = Date.now() + 15_000; !(await mark()); await new Promise((resolve) => setTimeout(resolve, 100))) assert.ok(Date.now() < deadline, `let go once the cancel settled: ${reaped}`);
   assert.deepEqual(reaped, ["box-cancelled"]);
 });
