@@ -1203,7 +1203,9 @@ An agent grants a saved server's tool by its catalog name, `mcp:<server>/<tool>`
 saved, or a tool it did not list, is `422` naming the server's tools, and so is a name whose wire name,
 `mcp__<server>__<tool>`, is over 52 characters, or a tool whose `x-mcp-header` declaration cannot be sent (on a
 property not reached through `properties` alone, not a string, integer or boolean, not a header name, or declared twice). pi and claude-agent run them (`features.mcp_client.harnesses`); on
-another harness the save warns that they are not bound there yet, and a run is refused.
+another harness the save warns that they are not bound there yet, and a run is refused. A workflow's nodes bind no MCP
+tool yet: a workflow that grants one, in its `tools` or on a node, is `422` ("a workflow's nodes don't bind MCP tools
+here yet; grant it to an agentic agent").
 
 A known **meta tool**, one that runs other actions by name, is never granted: Composio's `COMPOSIO_MULTI_EXECUTE_TOOL`,
 `COMPOSIO_REMOTE_WORKBENCH`, `COMPOSIO_REMOTE_BASH_TOOL` and `COMPOSIO_PROXY_EXECUTE`, Klavis Strata's `execute_action`
@@ -1211,7 +1213,8 @@ A known **meta tool**, one that runs other actions by name, is never granted: Co
 `mcp.zapier.com`), Arcade's `Arcade_UseTool`, Docker's `mcp-exec` and generated `code-mode-*` tools, and Cloudflare's
 `portal_execute` and `portal_codemode_execute`. A grant of one couldn't name the real action, so allow would cover every
 action it runs and deny could target none. Reads mark it `grantable: false` with its `reason`, a save that grants it is
-`422` in those words, and a run that pinned one before is refused at its launch. Use the server's direct tools instead:
+`422` in those words, a run of a revision saved granting one is `409 agent_not_runnable` naming it under
+`details.not_grantable` (each with its `tool` and `reason`), and a run that pinned one before is refused at its launch. Use the server's direct tools instead:
 each of these providers has a direct mode. The list is closed: a meta tool it doesn't know is an MCP tool like any other,
 asked by default.
 
