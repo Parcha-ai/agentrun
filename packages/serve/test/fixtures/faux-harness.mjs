@@ -190,6 +190,15 @@ export function script(spec) {
     if (cutUntil) return [grown(0), ...(existsSync(cutUntil) ? [] : [{ ...grown(1), cut: true }]), { say: "After the cut.", inputTokensMax: grown(2).inputTokensMax, tokens: grown(2).tokens, usd: grown(2).usd }];
     return Array.from({ length: 80 }, (_, k) => (missAt !== undefined && k === Number(missAt) ? { ...grown(k, { miss: true }), until: missUntil } : grown(k)));
   }
+  // Request 2 answers before its cost is booked (only once the file exists: a provider whose usage comes after its
+  // answer, and a process gone before it did), then a next turn's request.
+  const bookWhen = /Grow, then answer with its cost booked when (\S+) exists\./.exec(text)?.[1];
+  if (bookWhen) {
+    const second = grown(1);
+    // The next turn's request only in a process opened once `<file>.next` exists (the script is read at each open).
+    const next = existsSync(`${bookWhen}.next`) ? [{ say: "Second turn.", inputTokensMax: grown(2).inputTokensMax, tokens: grown(2).tokens, usd: grown(2).usd }] : [];
+    return [grown(0), { say: "Answered.", inputTokensMax: second.inputTokensMax, tokens: second.tokens, usd: second.usd, bookWhen }, ...next];
+  }
   // A chat: each turn says its answer and ends.
   return Array.from({ length: 10 }, (_, i) => [{ say: `Answer ${i + 1}.`, usd: 0.001 }, { end: true, usd: 0.001 }]).flat();
 }

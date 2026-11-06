@@ -35,8 +35,9 @@ export function memorySessionStore(): SessionStore & { keys(): string[] } {
 /** What a scripted request reports beside its cost, as a real adapter's proxy reads a response, and how it is measured:
  *  its tokens (`tokens`, in pi's shape: `input` excludes the cache's reads and writes; default 10 in, 5 out), the input
  *  bound its body was measured at (`inputTokensMax`; default the prompt's UTF-8 bytes), and a file it waits for once it
- *  is admitted, before it answers (`until`): a request held in flight until a test lets it go. */
-export type FauxRequest = { tokens?: { input: number; output: number; cacheRead?: number; cacheWrite?: number }; inputTokensMax?: number; until?: string };
+ *  is admitted, before it answers (`until`): a request held in flight until a test lets it go. `bookWhen`: its reply is
+ *  shown at once and its cost booked only once that file exists, as a provider's usage can come after its answer. */
+export type FauxRequest = { tokens?: { input: number; output: number; cacheRead?: number; cacheWrite?: number }; inputTokensMax?: number; until?: string; bookWhen?: string };
 
 /** One model request of the faux harness, and what its reply does. */
 export type FauxAction =
@@ -169,7 +170,8 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
             const tokens = "tokens" in action && action.tokens ? action.tokens : { input: 10, output: 5 };
             const book = () => io.models.afterRequest({ ...tokens, usd: action.usd === undefined ? 0.001 : action.usd });
             const bookAfter = "calls" in action && action.bookAfter === true;
-            if (!bookAfter) await book();
+            if ("bookWhen" in action && typeof action.bookWhen === "string") void untilExists(action.bookWhen, signal).then(book).catch(() => undefined);
+            else if (!bookAfter) await book();
             if ("say" in action) io.onEvent({ type: "text", delta: action.say });
             else if ("end" in action) return await end(action.turn ?? "completed");
             else {
