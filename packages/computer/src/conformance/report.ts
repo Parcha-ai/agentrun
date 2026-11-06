@@ -36,6 +36,7 @@ export function formatReport(report: ConformanceReport): string {
 			for (const r of here) if (r.status !== "pass") lines.push(`  ${r.status === "fail" ? "✗" : "-"} ${r.id}: ${r.reason ?? ""}`);
 		}
 	}
+	if (cleanup.late.length > 0) lines.push(`cleanup - deleted after their case ended: ${cleanup.late.join(", ")}`);
 	if (cleanup.left.length > 0 || cleanup.errors.length > 0) {
 		lines.push(`cleanup ✗ ${cleanup.left.length > 0 ? `left ${cleanup.left.join(", ")}` : "could not show nothing was left"}`);
 		for (const error of cleanup.errors) lines.push(`  ✗ ${error}`);

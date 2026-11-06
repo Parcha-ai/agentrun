@@ -387,7 +387,8 @@ Core and Full follow the Kubernetes agent-sandbox conformance levels (KEP-539.2)
 
 - **Core** is what every computer does: hello and ping, `exec.run` as a user other than root with no effective or
   permitted capabilities (the run's spec asks for no user), a HOME that user owns and writes while `/` refuses it, the
-  `files.*` and `tar.*` methods, the `process.*` methods, a computer with network `none`, `check`, `create`, `attach`,
+  `files.*` and `tar.*` methods, the `process.*` methods, a computer with network `none` (`network:none`: a provider
+  that cannot make one fails Core, and the suite never asks for a wider network instead), `check`, `create`, `attach`,
   `list`, `network` read-back and `release`, a computer that does not run past its deadline (after a sweep, for a
   janitor provider), and the drift checks. Core passes when every Core case passes and the run leaves no computer
   behind.
@@ -403,12 +404,15 @@ the provider lacks something every computer must have, so Core does not pass.
 The suite makes every computer with the label `agentrun.conformance=<run id>`, image `--image`, a 30-minute lifetime
 and network `none`. It deletes each computer a case made when the case ends, and the shared one at the end; for a
 provider with lifetime `"janitor"` it then sweeps that label, and it lists the label to show nothing is left. A case
-that runs past 3 minutes fails and its computers are deleted. Cases do not assume root: the suite assumes only that the
+that runs past 3 minutes fails and its computers are deleted. Every provider call is bounded: a create or connect for
+the shared computer that does not answer within 3 minutes fails the cases that need it, a release, sweep or list
+that does not answer within a minute is named in `cleanup.errors`, and a computer or connection that arrives after
+its case ended is deleted or closed as it arrives and named in `cleanup.late`. The CLI exits once the report is out. Cases do not assume root: the suite assumes only that the
 computer's `HOME`, which the provider sets, is a directory its user can write, and works under
 `$HOME/agentrun-conformance-<run id>`.
 
-From code: `runConformance(provider, { image, only?, signal?, drifted? })` returns the report, and
-`formatReport(report)` the text above.
+From code: `runConformance(provider, { image, only?, signal?, drifted?, caseTimeoutMs?, cleanupTimeoutMs? })` returns
+the report, and `formatReport(report)` the text above.
 
 ## Build
 

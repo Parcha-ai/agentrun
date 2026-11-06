@@ -53,6 +53,8 @@ export interface CaseContext {
 	spec(extra?: Partial<ComputerSpec>): ComputerSpec;
 	/** Makes a computer for this case; fails the case when create refuses. */
 	create(extra?: Partial<ComputerSpec>): Promise<ComputerRef>;
+	/** A computer the case made through another provider (the drifted one): deleted through it when the case ends. */
+	track(ref: ComputerRef, by?: ComputerProvider): void;
 	/** A further connection, to the case's computer or another; fails the case when connect refuses. */
 	connect(ref?: ComputerRef): Promise<ComputerConnection>;
 	/** The computer's HOME, which its user can write: the suite works under it. */
@@ -114,8 +116,11 @@ export interface ConformanceReport {
 	core: "pass" | "fail";
 	/** Capabilities Full cases needed that the provider or the daemon does not declare. */
 	undeclared: Capability[];
-	/** The computers of this run deleted at its end, those still there after it, and what went wrong. */
-	cleanup: { deleted: string[]; left: string[]; errors: string[] };
+	/**
+	 * The computers of this run deleted, those still there after it, what went wrong, and the computers a provider gave
+	 * after their case had ended (each deleted as it came).
+	 */
+	cleanup: { deleted: string[]; left: string[]; errors: string[]; late: string[] };
 }
 
 export interface ConformanceOptions {
@@ -134,4 +139,6 @@ export interface ConformanceOptions {
 	caseTimeoutMs?: number;
 	/** How long a case waits on a program; default 30 s. */
 	patience?: number;
+	/** The longest each cleanup call (release, the sweep, list) may take; default 60 s. */
+	cleanupTimeoutMs?: number;
 }

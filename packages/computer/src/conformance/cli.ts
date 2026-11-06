@@ -137,7 +137,7 @@ if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(realpathS
 	const stop = () => controller.abort();
 	process.once("SIGINT", stop);
 	process.once("SIGTERM", stop);
-	process.exitCode = await main(process.argv.slice(2), { signal: controller.signal, progress: process.stderr.isTTY === true });
-	process.off("SIGINT", stop);
-	process.off("SIGTERM", stop);
+	const code = await main(process.argv.slice(2), { signal: controller.signal, progress: process.stderr.isTTY === true });
+	// A provider call the runner stopped waiting for may still hold the event loop: the report is out, so exit.
+	process.exit(code);
 }

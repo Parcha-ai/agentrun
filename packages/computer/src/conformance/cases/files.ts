@@ -7,7 +7,8 @@ import { describeEntry, type TarEntry, tarOf, untar } from "../tar.js";
 import type { Capability, Case, CaseContext } from "../types.js";
 import { b64, decode, delay } from "./util.js";
 
-const files = (name: string, run: Case["run"], needs: Capability[] = ["files"]): Case => ({ id: `files.${name}`, level: "core", group: "files", needs, run });
+// Most cases work in t.dir(), which finds HOME through exec.run: they need exec as well as files.
+const files = (name: string, run: Case["run"], needs: Capability[] = ["files", "exec"]): Case => ({ id: `files.${name}`, level: "core", group: "files", needs, run });
 const sha256 = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 const sorted = (entries: TarEntry[]) =>
 	entries
@@ -156,7 +157,7 @@ export const filesCases: Case[] = [
 	files("relative-path", async (t) => {
 		t.refused(await t.client.call("files.read", { path: "tmp/a.txt" }), "a relative path", ["invalid"]);
 		t.refused(await t.client.call("files.read", { path: "/tmp/agentrun-conformance-none/nothing" }), "a missing file", ["not_found"]);
-	}),
+	}, ["files"]),
 	files(
 		"large-file",
 		async (t) => {

@@ -86,13 +86,14 @@ export const execCases: Case[] = [
 	}),
 	exec("user", async (t) => {
 		const own = (await t.exec(["id", "-u"])).out.trim();
-		const other = await t.client.call("exec.run", { argv: ["id", "-u"], user: "nobody", timeoutMs: t.patience });
+		// A uid other than the computer's own, so a run that ignored user cannot pass for one that honoured it.
+		const target = own === "65534" ? "65533" : "65534";
+		const other = await t.client.call("exec.run", { argv: ["id", "-u"], user: target, timeoutMs: t.patience });
 		if (other.ok) {
 			const uid = Buffer.from(other.value.stdout, "base64").toString("utf8").trim();
-			t.assert(uid !== own, `a run as nobody runs as nobody, not as the daemon's user (uid ${own})`);
-			t.equal((await t.exec(["id", "-un"], { user: "nobody" })).out, "nobody\n", "the user name of a run as nobody");
+			t.equal(uid, target, `id -u in a run as uid ${target}, from a computer whose user is uid ${own}`);
 		} else {
-			const error = t.refused(other, "a user the daemon cannot switch to", ["denied"]);
+			const error = t.refused(other, `a run as uid ${target}, which the daemon cannot switch to`, ["denied"]);
 			t.assert(error.message !== "", "the refusal is in words");
 		}
 	}),
@@ -119,6 +120,7 @@ export const execCases: Case[] = [
 			const connected = await t.connect(await t.create({ user: "65534" }));
 			const ran = (argv: string[]) => t.exec(argv, {}, connected.client);
 			t.equal((await ran(["id", "-u"])).out.trim(), "65534", "id -u in a computer whose spec asked for user 65534");
+			noCapabilities(t, (await ran(["cat", "/proc/self/status"])).out);
 			const home = await ran(["sh", "-c", 'echo ok > "$HOME/x" && cat "$HOME/x"']);
 			t.equal(home.out, "ok\n", `a write in HOME, as user 65534 (stderr ${JSON.stringify(home.err)})`);
 		},

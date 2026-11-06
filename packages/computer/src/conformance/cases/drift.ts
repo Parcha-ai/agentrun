@@ -39,7 +39,7 @@ export const driftCases: Case[] = [
 			`${t.ref.name} is listed by the run's label`,
 		);
 		t.deepEqual(info.network, declared, "the network list reads back");
-	}),
+	}, { needs: ["network:none"] }),
 	drift(
 		"version",
 		async (t) => {
@@ -47,9 +47,14 @@ export const driftCases: Case[] = [
 			const labels = { ...t.runLabels, [CASE_LABEL]: "drift" };
 			const created = await drifted.create(t.spec({ labels }));
 			if (created.ok) {
-				const connected = await drifted.connect(created.value);
-				if (connected.ok) await connected.value.close();
-				await drifted.release(created.value, "delete");
+				t.track(created.value, drifted);
+				let connected: Awaited<ReturnType<typeof drifted.connect>>;
+				try {
+					connected = await drifted.connect(created.value);
+					if (connected.ok) await connected.value.close();
+				} finally {
+					await drifted.release(created.value, "delete");
+				}
 				t.refused(connected, "connect to a computer whose daemon reports another version", ["refused"]);
 			} else {
 				const error = t.refused(created, "create of a computer whose daemon reports another version", ["refused"]);

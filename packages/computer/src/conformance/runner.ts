@@ -6,7 +6,7 @@ import type { DaemonClient } from "../client.js";
 import { sweep } from "../janitor.js";
 import type { DaemonCapability, ExecRunParams, HelloResult } from "../protocol.js";
 import type { ComputerConnection, ComputerProvider, ComputerRef, ComputerSpec } from "../provider.js";
-import type { ComputerErrorCode, Result } from "../result.js";
+import { type ComputerErrorCode, fail, ok, type Result } from "../result.js";
 import { conformanceCases } from "./cases/index.js";
 import type { Capability, Case, CaseContext, CaseResult, ConformanceOptions, ConformanceReport, Ran } from "./types.js";
 
@@ -37,6 +37,21 @@ async function bounded<T>(promise: Promise<T>, ms: number): Promise<T | undefine
 	}
 }
 
+/** Settles with promise, or rejects in words when it has not answered within ms. */
+async function within<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
+	const stop = new AbortController();
+	try {
+		return await Promise.race([
+			promise,
+			sleep(ms, undefined, { signal: stop.signal }).then(() => {
+				throw new Error(`${what} did not answer within ${ms / 1000} s`);
+			}),
+		]);
+	} finally {
+		stop.abort();
+	}
+}
+
 /** Rejects when the signal aborts, with the abort's reason. */
 function whenAborted(signal: AbortSignal): Promise<never> {
 	return new Promise((_, reject) => {
@@ -49,10 +64,11 @@ function whenAborted(signal: AbortSignal): Promise<never> {
 /**
  * Runs the cases against the provider and reports each one. Every computer carries the run's label; each one a case
  * makes is deleted when the case ends, the shared one when the run ends, then a janitor provider is swept by the label
- * and the label is listed to show nothing is left.
+ * and the label is listed to show nothing is left. Every provider call is bounded: one that never answers fails its case
+ * or is named in the cleanup, and a computer that arrives after its case ended is deleted when it arrives.
  */
 export async function runConformance(provider: ComputerProvider, options: ConformanceOptions): Promise<ConformanceReport> {
-	const { image, only, signal, cases = conformanceCases, drifted, onResult, caseTimeoutMs = 180_000, patience = 30_000 } = options;
+	const { image, only, signal, cases = conformanceCases, drifted, onResult, caseTimeoutMs = 180_000, patience = 30_000, cleanupTimeoutMs = 60_000 } = options;
 	const run = randomBytes(6).toString("hex");
 	const runLabels = { [RUN_LABEL]: run };
 	const capabilities = provider.capabilities();
@@ -66,26 +82,45 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 		results: [],
 		core: "fail",
 		undeclared: [],
-		cleanup: { deleted: [], left: [], errors: [] },
+		cleanup: { deleted: [], left: [], errors: [], late: [] },
 	};
 	const deleted = new Set<string>();
+	/** Provider calls a run stopped waiting for; the cleanup waits for them, bounded, so what they make is deleted. */
+	const pending = new Set<Promise<unknown>>();
+	const keep = (promise: Promise<unknown>) => {
+		pending.add(promise);
+		void promise.finally(() => pending.delete(promise));
+	};
 
+	// Network none, never wider: a provider without it fails Core rather than being tested on an open network.
 	const spec = (extra: Partial<ComputerSpec> = {}): ComputerSpec => ({
 		image,
 		lifetimeMs: LIFETIME_MS,
-		network: capabilities.network.includes("none") ? "none" : capabilities.network[0] === "allow" ? { allow: [] } : (capabilities.network[0] ?? "none"),
+		network: "none",
 		...extra,
 		labels: { ...extra.labels, ...runLabels },
 	});
-	const release = async (ref: ComputerRef) => {
+	const release = async (ref: ComputerRef, by: ComputerProvider = provider) => {
 		try {
-			const released = await provider.release(ref, "delete");
+			const released = await within(by.release(ref, "delete"), cleanupTimeoutMs, `release ${ref.name}`);
 			if (released.ok) deleted.add(ref.name);
 			else report.cleanup.errors.push(`release ${ref.name}: ${released.error.code}: ${released.error.message}`);
 		} catch (error) {
-			report.cleanup.errors.push(`release ${ref.name} threw: ${words(error)}`);
+			report.cleanup.errors.push(words(error).startsWith(`release ${ref.name}`) ? words(error) : `release ${ref.name} threw: ${words(error)}`);
 		}
 	};
+	/** Deletes the computer a create gives after nobody waits for it any more, and names it in the report. */
+	const lateCreate = (creating: Promise<Result<ComputerRef>>, by: ComputerProvider = provider) =>
+		keep(
+			creating.then(
+				async (created) => {
+					if (!created.ok) return;
+					report.cleanup.late.push(created.value.name);
+					await release(created.value, by);
+				},
+				() => {},
+			),
+		);
 	const createError = (result: Result<unknown>) =>
 		result.ok ? "" : `create ${result.error.code === "refused" ? "was refused" : `failed (${result.error.code})`}: ${result.error.message}`;
 	const sawHello = (hello: HelloResult) => {
@@ -97,10 +132,26 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 	let sharedRef: ComputerRef | undefined;
 	const getShared = () =>
 		(shared ??= (async () => {
-			const created = await provider.create(spec());
+			const stop = new AbortController();
+			const creating = provider.create(spec(), { signal: stop.signal });
+			let created: Result<ComputerRef>;
+			try {
+				created = await within(creating, caseTimeoutMs, "create");
+			} catch (error) {
+				stop.abort();
+				lateCreate(creating);
+				return { error: words(error) };
+			}
 			if (!created.ok) return { error: createError(created) };
 			sharedRef = created.value;
-			const connected = await provider.connect(created.value);
+			const connecting = provider.connect(created.value);
+			let connected: Result<ComputerConnection>;
+			try {
+				connected = await within(connecting, caseTimeoutMs, "connect");
+			} catch (error) {
+				keep(connecting.then((late) => (late.ok ? bounded(late.value.close(), CLOSE_MS) : undefined), () => {}));
+				return { error: words(error) };
+			}
 			if (!connected.ok) return { error: `connect: ${connected.error.code}: ${connected.error.message}` };
 			await bounded(connected.value.close(), CLOSE_MS);
 			sawHello(connected.value.hello);
@@ -141,33 +192,54 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 			}
 			return result("skip", why);
 		}
+		// The shared computer is made, bounded on its own, before the case's time starts.
+		const sharedComputer = (c.computer ?? "shared") === "shared" ? await getShared() : undefined;
 		const timeoutMs = c.timeoutMs ?? caseTimeoutMs;
 		const timer = new AbortController();
 		const timeout = setTimeout(() => timer.abort(new Error(`${c.id} did not finish within ${timeoutMs / 1000} s`)), timeoutMs);
 		const caseSignal = signal ? AbortSignal.any([signal, timer.signal]) : timer.signal;
-		const refs: ComputerRef[] = [];
+		const refs: Array<{ ref: ComputerRef; by: ComputerProvider }> = [];
 		const connections: ComputerConnection[] = [];
 		let dirs = 0;
+		// Set when the case ends: what a provider call gives after that is ended at once, not left to the case.
+		let ended = false;
 
+		const track = (ref: ComputerRef, by: ComputerProvider = provider) => {
+			if (!ended) refs.push({ ref, by });
+			else {
+				report.cleanup.late.push(ref.name);
+				keep(release(ref, by));
+			}
+		};
 		const connect = async (ref: ComputerRef) => {
-			const connected = unwrap(await provider.connect(ref), `connect to ${ref.name}`);
-			let closing: Promise<void> | undefined;
-			const once: ComputerConnection = { ...connected, close: () => (closing ??= connected.close()) };
-			connections.push(once);
-			sawHello(connected.hello);
+			const connecting = provider.connect(ref).then((connected) => {
+				if (!connected.ok) return connected;
+				let closing: Promise<void> | undefined;
+				const once: ComputerConnection = { ...connected.value, close: () => (closing ??= connected.value.close()) };
+				if (ended) keep(bounded(once.close(), CLOSE_MS));
+				else connections.push(once);
+				return ok(once);
+			});
+			keep(connecting);
+			const once = unwrap(await connecting, `connect to ${ref.name}`);
+			sawHello(once.hello);
 			return once;
 		};
 		const create = async (extra?: Partial<ComputerSpec>) => {
-			const created = await provider.create(spec(extra), { signal: caseSignal });
+			const creating = provider.create(spec(extra), { signal: caseSignal }).then((created) => {
+				if (created.ok) track(created.value);
+				return created;
+			});
+			keep(creating);
+			const created = await creating;
 			if (!created.ok) throw new Error(createError(created));
-			refs.push(created.value);
 			return created.value;
 		};
 
 		const prepareAndRun = async () => {
 			let computer: { ref: ComputerRef; connection: ComputerConnection } | undefined;
-			if ((c.computer ?? "shared") === "shared") {
-				const got = await getShared();
+			if (sharedComputer !== undefined) {
+				const got = sharedComputer;
 				if ("error" in got) throw new Error(`no computer: ${got.error}`);
 				computer = { ref: got.ref, connection: await connect(got.ref) };
 			} else if (c.computer === "fresh") {
@@ -197,6 +269,7 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 				},
 				spec,
 				create,
+				track,
 				connect: (ref) => connect(ref ?? needComputer().ref),
 				async home() {
 					const env = await t.exec(["env"]);
@@ -277,9 +350,10 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 			if (signal?.aborted && !timer.signal.aborted) return result("fail", "the run was aborted");
 			return result("fail", words(error));
 		} finally {
+			ended = true;
 			clearTimeout(timeout);
 			for (const connection of connections) await bounded(connection.close().catch(() => {}), CLOSE_MS);
-			for (const ref of refs) await release(ref);
+			for (const { ref, by } of refs) await release(ref, by);
 		}
 	};
 
@@ -292,7 +366,8 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 	} finally {
 		if (shared !== undefined) await shared;
 		if (sharedRef !== undefined) await release(sharedRef);
-		await cleanup(provider, capabilities.lifetime, runLabels, report, deleted);
+		await bounded(Promise.allSettled([...pending]), cleanupTimeoutMs);
+		await cleanup(provider, capabilities.lifetime, runLabels, report, deleted, cleanupTimeoutMs);
 	}
 	const core = report.results.filter((r) => r.level === "core");
 	const clean = report.cleanup.left.length === 0 && report.cleanup.errors.length === 0;
@@ -307,18 +382,25 @@ async function cleanup(
 	labels: Record<string, string>,
 	report: ConformanceReport,
 	deleted: Set<string>,
+	ms: number,
 ) {
 	try {
 		if (lifetime === "janitor") {
-			const swept = await sweep(provider, { labels, now: new Date(Date.now() + 366 * 24 * 60 * 60_000) });
+			const stop = new AbortController();
+			const swept = await within(sweep(provider, { labels, now: new Date(Date.now() + 366 * 24 * 60 * 60_000), signal: stop.signal }), ms, "the sweep").catch(
+				(error: unknown) => {
+					stop.abort();
+					return fail("timeout", words(error));
+				},
+			);
 			if (swept.ok) for (const name of swept.value.deleted) deleted.add(name);
 			else report.cleanup.errors.push(`sweep: ${swept.error.code}: ${swept.error.message}`);
 		}
-		const listed = await provider.list(labels);
+		const listed = await within(provider.list(labels), ms, `list ${JSON.stringify(labels)}`);
 		if (listed.ok) report.cleanup.left = listed.value.map((info) => info.ref.name).sort();
 		else report.cleanup.errors.push(`list ${JSON.stringify(labels)}: ${listed.error.code}: ${listed.error.message}`);
 	} catch (error) {
-		report.cleanup.errors.push(`cleanup threw: ${words(error)}`);
+		report.cleanup.errors.push(words(error));
 	}
 	report.cleanup.deleted = [...deleted];
 }
