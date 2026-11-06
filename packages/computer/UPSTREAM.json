@@ -6,7 +6,7 @@
       "from": "kubernetes-sigs/agent-sandbox@bfc85052f8dbc3414c366a1bc86621ea19d0779b:packages/sandboxd/pkg/server/process.go",
       "lines": "845-853",
       "license": "Apache-2.0",
-      "changes": "exitStatus, reporting the signal by name instead of 128+n. Its process-tree kill (killProcessTree, killDescendants, readProcChildren, lines 760-829) is not used: each run's subreaper guard (guard.go, our own code) ends every descendant."
+      "changes": "exitStatus, reporting the signal by its name without SIG (\"TERM\") instead of 128+n. Its process-tree kill (killProcessTree, killDescendants, readProcChildren, lines 760-829) is not used: each run's subreaper guard (guard.go, our own code) ends every descendant."
     },
     {
       "path": "daemon/internal/execrun/stream.go",

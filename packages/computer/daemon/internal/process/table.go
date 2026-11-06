@@ -24,11 +24,11 @@ package process
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"strconv"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -41,6 +41,13 @@ import (
 const writeTimeout = 10 * time.Second
 
 const maxWaitTimeoutMs = 24 * 60 * 60 * 1000
+
+const (
+	// maxListBytes keeps a process.list reply, in JSON, well inside a line.
+	maxListBytes = 768 << 10
+	// maxListedArgv is the most of one argv, in JSON, a listing holds, so every entry fits a page.
+	maxListedArgv = 64 << 10
+)
 
 var signals = map[string]syscall.Signal{"TERM": syscall.SIGTERM, "INT": syscall.SIGINT, "KILL": syscall.SIGKILL, "HUP": syscall.SIGHUP}
 
@@ -235,7 +242,7 @@ func (p *proc) watch() {
 	}
 	p.writeMu.Unlock()
 	p.mu.Lock()
-	p.exitCode, p.signal, p.endedAt = code, strings.TrimPrefix(signal, "SIG"), time.Now()
+	p.exitCode, p.signal, p.endedAt = code, signal, time.Now()
 	close(p.ended)
 	p.notify()
 	p.mu.Unlock()
@@ -401,23 +408,53 @@ func (t *Table) Resize(params ResizeParams) (Empty, error) {
 	return Empty{}, setSize(p.terminal, size)
 }
 
-func (t *Table) List(ListParams) (ListResult, error) {
+// List answers the processes in start order from offset, as many as fit maxListBytes of JSON; truncated says more
+// follow. An argv over maxListedArgv of JSON is listed by its first arguments that fit, with ArgvClipped set.
+func (t *Table) List(params ListParams) (ListResult, error) {
+	offset := 0
+	if params.Offset != nil {
+		if offset = *params.Offset; offset < 0 {
+			return ListResult{}, rpc.Errorf(rpc.KindInvalid, "offset must be 0 or more")
+		}
+	}
 	t.mu.Lock()
-	procs := append([]*proc(nil), t.procs...)
+	procs := append([]*proc(nil), t.procs[min(offset, len(t.procs)):]...)
 	t.mu.Unlock()
-	infos := make([]Info, 0, len(procs))
+	res := ListResult{Processes: []Info{}}
+	size := 0
 	for _, p := range procs {
 		p.mu.Lock()
 		exit := p.exit()
-		info := Info{ID: p.id, Pid: p.pid, Argv: p.argv, Pty: p.pty, Running: exit.Running, ExitCode: exit.ExitCode, Signal: exit.Signal, StartedAt: p.started.UnixMilli()}
+		info := Info{ID: p.id, Pid: p.pid, Pty: p.pty, Running: exit.Running, ExitCode: exit.ExitCode, Signal: exit.Signal, StartedAt: p.started.UnixMilli()}
 		if !exit.Running {
 			ended := p.endedAt.UnixMilli()
 			info.EndedAt = &ended
 		}
 		p.mu.Unlock()
-		infos = append(infos, info)
+		info.Argv, info.ArgvClipped = clipArgv(p.argv)
+		data, err := json.Marshal(info)
+		if err != nil {
+			return ListResult{}, err
+		}
+		if size += len(data) + 1; size > maxListBytes {
+			res.Truncated = true
+			break
+		}
+		res.Processes = append(res.Processes, info)
 	}
-	return ListResult{Processes: infos}, nil
+	return res, nil
+}
+
+// clipArgv keeps the first arguments of argv that fit maxListedArgv of JSON.
+func clipArgv(argv []string) ([]string, bool) {
+	size := 2
+	for i, arg := range argv {
+		data, _ := json.Marshal(arg)
+		if size += len(data) + 1; size > maxListedArgv {
+			return argv[:i], true
+		}
+	}
+	return argv, false
 }
 
 // exit is how p ended, or that it runs. Hold p.mu.

@@ -1,7 +1,7 @@
 // Processes past one call: a stream read whole, page by page, until the process ends.
 import type { DaemonClient } from "./client.js";
 import { MAX_CHUNK_BYTES, type ProcessInfo, type ProcessStream } from "./protocol.js";
-import { fail, ok, type Result } from "./result.js";
+import { ok, type Result } from "./result.js";
 
 export interface ReadAllResult {
 	/** Every byte of the stream from offset on that the daemon still held. */
@@ -40,6 +40,13 @@ export async function readAll(
 	}
 }
 
-export async function listProcesses(_client: DaemonClient, _options: { signal?: AbortSignal } = {}): Promise<Result<ProcessInfo[]>> {
-	return fail("unsupported", "listProcesses is not built yet");
+/** Lists every process the daemon holds, in start order, page by page. */
+export async function listProcesses(client: DaemonClient, options: { signal?: AbortSignal } = {}): Promise<Result<ProcessInfo[]>> {
+	const processes: ProcessInfo[] = [];
+	for (;;) {
+		const page = await client.call("process.list", { offset: processes.length }, options);
+		if (!page.ok) return page;
+		processes.push(...page.value.processes);
+		if (!page.value.truncated) return ok(processes);
+	}
 }

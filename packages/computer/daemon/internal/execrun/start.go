@@ -168,7 +168,7 @@ func (g *Guarded) follow(status *os.File, started chan<- struct{}) {
 // Done is closed once the program and everything under it have ended and the guard is reaped.
 func (g *Guarded) Done() <-chan struct{} { return g.done }
 
-// Exit is how the program ended, once Done: an exit code, or the name of the signal that ended it ("SIGTERM"). When the
+// Exit is how the program ended, once Done: an exit code, or the name of the signal that ended it, without SIG ("TERM"). When the
 // guard was killed before it could report, it is the guard's own end, and reported is false.
 func (g *Guarded) Exit() (code *int, signal string, reported bool) {
 	if !g.reported {

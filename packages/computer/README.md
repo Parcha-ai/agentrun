@@ -27,6 +27,8 @@ capabilities are `["exec", "files", "processes"]`.
   the guard starts the program in a process group of its own. Whatever the program starts stays under the guard, even
   a child that calls `setsid` or double-forks, since the kernel hands an orphan to its nearest subreaper. When the
   program ends, the guard kills and reaps every process left under it, then reports the program's exit code or signal.
+  A signal is named without `SIG`, here and in `process.wait` and `process.list`: `"TERM"`, `"KILL"` (a signal with no
+  name is its number, `"63"`).
   On timeout, or when the call is cancelled with `$/cancelRequest {id}`, the guard sends SIGTERM to the group and
   every process under it, then SIGKILL 2 s later. A timeout is a result with `timedOut: true`; a cancel is an
   `aborted` error. Nothing a run starts outlives it.
@@ -70,7 +72,7 @@ Its whole tree ends when the program ends or is signalled to its end. Ids are `p
 | `process.write` | `id, data?, close?` | `{}`: to stdin, or the terminal; `close` closes stdin after the data |
 | `process.signal` | `id, signal` | `{}`: `TERM`, `INT`, `KILL` or `HUP`, to the program's process group; to a process that has ended it does nothing |
 | `process.resize` | `id, cols, rows` | `{}`: the terminal's new size; the program gets SIGWINCH |
-| `process.list` | `{}` | `[{id, pid, argv, pty, running, exitCode, signal, startedAt, endedAt}]`, in start order; times are milliseconds since the epoch |
+| `process.list` | `offset?` | `{processes, truncated}`: `processes` are `{id, pid, argv, argvClipped, pty, running, exitCode, signal, startedAt, endedAt}` in start order, times in milliseconds since the epoch; at most 768 KiB a reply: when `truncated`, list again with `offset` plus the processes read |
 | `process.wait` | `id, timeoutMs` | `{running, exitCode, signal}`: waits up to `timeoutMs` (0 to a day) for the end; `running` is true on timeout |
 
 - Each stream keeps its last 8 MiB in a ring. Offsets count bytes since the process started; `nextOffset` is where the
@@ -78,8 +80,9 @@ Its whole tree ends when the program ends or is signalled to its end. Ids are `p
   offset past the end is `invalid`. `exited` is true once the process has ended and nothing is left past `nextOffset`.
 - `waitMs` (at most 30 000) makes a read wait, when nothing past `offset` has come yet, until bytes come, the process
   ends, or the time is up. So a client follows a process with one call in flight and no busy loop.
-- A signal's name in `wait` and `list` has no `SIG`: `"TERM"`, `"KILL"`. A process whose guard was killed reports the
-  guard's end.
+- A process whose guard was killed reports the guard's end.
+- A listing holds at most 64 KiB of each argv, in JSON. A longer one is listed by its first arguments that fit, with
+  `argvClipped` set; the caller that started it has the whole of it.
 - With `pty`, stdout and stderr are one `pty` stream, and the program runs in a session of its own with the terminal
   as its controlling terminal (setsid and TIOCSCTTY in the guard). A terminal has no stdin to close: write `"\x04"`
   for the end of input, or signal `HUP`.
@@ -88,7 +91,8 @@ Its whole tree ends when the program ends or is signalled to its end. Ids are `p
   first (its output with it); when all 256 run, the start is refused as `limit`.
 
 `src/processes.ts` has `readAll(client, id, stream, {offset?, waitMs?, signal?})`, which pages a stream by offset
-until the process ends and returns its bytes, where it ended and what the ring dropped.
+until the process ends and returns its bytes, where it ended and what the ring dropped, and `listProcesses(client)`,
+which pages `process.list` and returns every process.
 
 ### Files
 
