@@ -511,3 +511,21 @@ test("through the API: a provider with no price books its time as an unknown cos
   assert.ok(browser.quantity > 0, "its seconds");
   assert.equal(lines.find((line) => line.meter === "tools"), undefined, "no other tool charged anything");
 });
+
+test("through the API: a browser call counts once among the run's paid tool calls, its release's charge included: one call is 1, two are 2", { timeout: 120_000 }, async (t) => {
+  withEnv(t, KEYS, ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "FAUX_BROWSER_PROVIDER"]);
+  const { api, data } = await serve(t, { faux: new URL("./fixtures/faux-browse-many.mjs", import.meta.url).pathname, fauxBrowser: new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname });
+  assert.equal((await api("POST", "/agents", agent("browse", { tools: ["browser"] }))).status, 201);
+  for (const [times, said] of [[1, "1 paid tool call"], [2, "2 paid tool calls"]]) {
+    const started = await api("POST", "/agents/browse/runs", { input: { content: `Browse the example page ${times} times.` } });
+    assert.equal(started.status, 202, JSON.stringify(started.body));
+    const { rows } = await follow(api, started.body.run_id, ["completed"]);
+    const booked = toolCosts(data, started.body.run_id);
+    // Each call's own charge, and the release's under the last call: one charge more than calls, never a call more.
+    assert.equal(booked.length, times + 1, JSON.stringify(booked));
+    assert.equal(new Set(booked.map((charge) => charge.call)).size, times);
+    const usage = rows.find((row) => row.kind === "usage");
+    assert.ok(usage.summary.endsWith(` and ${said}`), usage.summary);
+    assert.deepEqual(usage.usage, { usd: 0.002, requests: times + 1 }, "the charges still count in full: the session's 60 s minimum");
+  }
+});
