@@ -9,7 +9,7 @@ import { pipeline } from "node:stream/promises";
 import { pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
 import { once } from "node:events";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import type { NewRevision, Revision, RunOrigin } from "@parcha/pi-durable-agent";
@@ -36,9 +36,11 @@ import { openapiDocument, servedOpenapi, UNSUPPORTED } from "./openapi.js";
 import { boxesLine, NEW_AGENT_TOOLS, newAgentPlace, noBoxReason, type Place, placesOf, resolvePlace } from "./place.js";
 import { BOX_ALLOW_ENV, boxAllowOf, boxLimitsOf, boxNetworkOf, FAUX_BOX_ENV, fauxBoxes } from "./run-box.js";
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
-import { answerPage, byOwnerSession, isJson, ownerCookie, ownOrigin, signedIn } from "./page.js";
+import { answerPage, byOwnerSession, isJson, ownerCookie, ownOrigin, sendHostRefused, signedIn } from "./page.js";
+import { HOST_FIX, hostName, loopbackNames } from "./host-check.js";
 import { durationMs, logLine } from "./print.js";
-import { type CarryBackRetry, type Run, Runs, STATUSES, type Status, statusOf, toolCostOf, WAITS_ON_A_PERSON } from "./runs.js";
+import { type CarryBackRetry, knownToolCostOf, type Run, Runs, STATUSES, type Status, statusOf, toolCostOf, WAITS_ON_A_PERSON } from "./runs.js";
+import { runLines } from "./usage-lines.js";
 import { BOX_QUARANTINE, type BoxHost, Quarantine } from "./box/sweep.js";
 import { type BoxOffer, boxesLog, boxRegistry, daytonaApi, enabledBoxes, VM_NO_LIST, VM_PROVIDER } from "./boxes.js";
 import { type DockerNetwork, FAUX_EGRESS_ENV, sweepEgressDirs } from "./box-egress.js";
@@ -47,8 +49,8 @@ import { startBoxRelay } from "./box-relay.js";
 import { vmRelay, type VmSdk } from "./box-relay-vm.js";
 import { memoryMbOf } from "./run-box.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
-import { metersIn } from "./cap.js";
-import { type Blocker, blockersOf, CODE_NODES_ENV, issueOf, type RevisionShape } from "./runnable.js";
+import { meterFiguresIn } from "./cap.js";
+import { type Blocker, blockersOf, CODE_NODES_ENV, issueOf, MCP_HARNESSES, type RevisionShape } from "./runnable.js";
 import { hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from "./secrets.js";
 import { redactedOutput } from "./key-refusal.js";
 import { analyticsFilter, analyticsView, pendingOf, statsView } from "./stats.js";
@@ -56,6 +58,7 @@ import { outcomes } from "./usage.js";
 import { keyOf, SEAL_KEY_ENV, sealKeyOf, TOOL_FIELDS, ToolKeys } from "./tool-keys.js";
 import { SIGN_INS_DIR, SignIns, vendorsOver } from "./sign-ins.js";
 import { MCP_AUTH_TYPES, McpServers } from "./mcp-servers.js";
+import type { McpServerSource } from "./mcp-gateway.js";
 import { WEBHOOK_EVENTS, Webhooks } from "./webhooks.js";
 import { HOOK_TOLERANCE_S, hookHeadersRefusal, hookRefusal, TriggerSecrets } from "./trigger-secrets.js";
 import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, OVERLAP, PAYLOAD_KEPT_BYTES, type RunTrigger, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
@@ -179,7 +182,7 @@ export type ServeOptions = {
   /** Under `faux`: a module whose default export gives a box's egress proxy its `lookup` and `dial` (box-egress.ts), the
    *  tests' fake network. */
   fauxEgress?: string;
-  /** Extra `Host` names to accept besides the loopback ones. */
+  /** Extra `Host` names to accept besides the loopback ones, on any port (host-check.ts). */
   allowHosts?: string[];
   /** The console's built files, answered at / (default dist/console beside the server, which this package's build copies
    *  from apps/console/dist). */
@@ -209,6 +212,8 @@ export type ServeOptions = {
   beforeReopenLaunch?: (runId: string) => Promise<void> | void;
   /** A test's seam: awaited by a message before it goes to the run's door, so a test can act while it is in flight. */
   beforeSubmit?: (runId: string, content: string) => Promise<void> | void;
+  /** A test's seam: told each run read in from its store (runs.ts onRunLoad). */
+  onRunLoad?: (runId: string) => void;
   /** A test's seam: awaited before a run's serve.json is written (runs.ts beforeMetaSave). */
   beforeMetaSave?: (runId: string, meta: Readonly<Record<string, unknown>>) => Promise<void> | void;
   /** A test's seam: who wrote a message sent to a run through its messages route (`origin`, as a raised cap's follow-up
@@ -529,7 +534,7 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
       tool_keys: { routes: true, at_rest: sealKeyOf(env[SEAL_KEY_ENV]) ? "sealed" : "unavailable" },
       /** /settings/mcp-servers: remote MCP servers previewed and saved, each credential sealed under the same seal key
        *  (mcp-servers.ts); with none, only servers that take no credential are kept. */
-      mcp_client: { routes: true, transports: ["streamable-http"], auth: [...MCP_AUTH_TYPES], at_rest: sealKeyOf(env[SEAL_KEY_ENV]) ? "sealed" : "unavailable" },
+      mcp_client: { routes: true, transports: ["streamable-http"], auth: [...MCP_AUTH_TYPES], at_rest: sealKeyOf(env[SEAL_KEY_ENV]) ? "sealed" : "unavailable", harnesses: [...MCP_HARNESSES] },
       /** This server's learning switch (`--learning`): on, a run learns when its agent says `learning: true`; off, none does. */
       learning,
       /** /settings/webhook: one URL POSTed, signed by the Standard Webhooks spec, when a run needs its person and when it
@@ -664,6 +669,19 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   // A stored key that does not open is said once at the start, never a refusal to start.
   toolKeys.view();
   const mcpServers = new McpServers(data, withSecrets(base, "own"), VERSION);
+  // What a run's grants are checked against, its pin made from and its credentials read from (runs.ts, runnable.ts).
+  const mcpSource: McpServerSource = {
+    server: (name) => {
+      try {
+        const saved = mcpServers.get(name);
+        return { url: saved.url, tools: saved.tools.map(({ name: tool, title, description, input_schema, annotations }) => ({ name: tool, ...(title ? { title } : {}), ...(description ? { description } : {}), inputSchema: input_schema as Record<string, unknown>, ...(annotations ? { annotations: annotations as Record<string, unknown> } : {}) })), ...(saved.prices ? { prices: saved.prices } : {}) };
+      } catch {
+        return undefined;
+      }
+    },
+    headers: (name) => mcpServers.headers(name),
+  };
+  const mcpTools = (server: string) => mcpSource.server(server)?.tools;
   // The server's tool settings, beside the agent store: capabilities say what they resolve to, again after a PUT.
   const settings = new ToolSettings(data);
   // The server's reading, in parts: `env`, its environment with its secrets, saved keys among them (storedKeys);
@@ -793,7 +811,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   if (swept > 0) log?.(logLine("uploads_swept", { removed: swept }));
   const documents = options.documents ?? process.env[DOCUMENTS_ENV];
   if (documents !== undefined && !(await stat(documents).then((info) => info.isDirectory(), () => false))) throw new Error(`the documents directory ${documents} is not a directory`);
-  const runs = new Runs({ dockerAllow: boxNetwork.allow, agents, token, storedKeys, doorTokenFile, doorToken, learning, learningBudget, ...(documents ? { documents: resolve(documents) } : {}), fauxEnv: fauxEnvOf(options), toolSettings: () => settings.get(), ...(runBoxes ? { runBoxes } : {}), ...(remoteBoxes ? { remoteBoxes } : {}), ...(vmBoxes && vmRelayHalf ? { vmBoxes, vmLimits, vmRelay: vmRelayHalf } : {}), ...(remoteBoxes && daytonaApi(env) ? { remoteApi: daytonaApi(env)! } : {}), ...(remoteBoxes ? { boxAllow, onNoBoxList } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(options.reflectTimeoutMs ? { reflectTimeoutMs: options.reflectTimeoutMs } : {}), ...(options.gradeTimeoutMs ? { gradeTimeoutMs: options.gradeTimeoutMs } : {}), ...(options.gradeModel ? { gradeModel: options.gradeModel } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}), notify: (event, run, marker) => webhooks.emit(event, run, marker), ownSecrets: () => triggerSecrets?.values() ?? [], signIns, approvers: options.accounts === true });
+  const runs = new Runs({ dockerAllow: boxNetwork.allow, agents, token, storedKeys, mcpServers: mcpSource, doorTokenFile, doorToken, learning, learningBudget, ...(documents ? { documents: resolve(documents) } : {}), fauxEnv: fauxEnvOf(options), toolSettings: () => settings.get(), ...(runBoxes ? { runBoxes } : {}), ...(remoteBoxes ? { remoteBoxes } : {}), ...(vmBoxes && vmRelayHalf ? { vmBoxes, vmLimits, vmRelay: vmRelayHalf } : {}), ...(remoteBoxes && daytonaApi(env) ? { remoteApi: daytonaApi(env)! } : {}), ...(remoteBoxes ? { boxAllow, onNoBoxList } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(options.reflectTimeoutMs ? { reflectTimeoutMs: options.reflectTimeoutMs } : {}), ...(options.gradeTimeoutMs ? { gradeTimeoutMs: options.gradeTimeoutMs } : {}), ...(options.gradeModel ? { gradeModel: options.gradeModel } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}), notify: (event, run, marker) => webhooks.emit(event, run, marker), ownSecrets: () => triggerSecrets?.values() ?? [], signIns, approvers: options.accounts === true });
   const daytona = daytonaApi(env);
   const relay = (remoteBoxes && daytona) || vmRelayHalf ? await startBoxRelay({ root: data, tokenOf: (id) => runs.relayToken(id), ...(remoteBoxes && daytona ? daytona : {}), ...(vmRelayHalf ? { vm: vmRelayHalf } : {}), serves: (id) => runs.servesBox(id), ensure: (id) => runs.ensureBox(id) }) : undefined;
   if (relay) stops.push(() => relay.close());
@@ -802,6 +820,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   if (options.beforeReopenLaunch) runs.beforeReopenLaunch = options.beforeReopenLaunch;
   if (options.beforeSubmit) runs.beforeSubmit = options.beforeSubmit;
   if (options.beforeMetaSave) runs.beforeMetaSave = options.beforeMetaSave;
+  if (options.onRunLoad) runs.onRunLoad = options.onRunLoad;
   if (options.messageOrigin) runs.messageOrigin = options.messageOrigin;
   // Answered keys are kept in the data directory for the retention capabilities state, and written before the answer
   // is sent, so a client that retries after a restart gets the first answer back.
@@ -1104,7 +1123,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
    *  does not have yet. `capped`: the run has a spend cap, which a web tool's resolution reads (tool-plane.ts). */
   async function runnable(revision: Revision, place: Place, { capped = false }: { capped?: boolean } = {}): Promise<void> {
     const shape = { ...shapeOf(revision), place };
-    const blockers = await blockersOf(env, shape, settings.get(), { capped, boxes: boxOffers, offers });
+    const blockers = await blockersOf(env, shape, settings.get(), { capped, boxes: boxOffers, offers, mcp: mcpTools });
     if (!blockers.length) return;
     const message = blockers.map((b) => b.message).join(" ");
     const unbound = blockers.flatMap((b) => (b.tool ? [b.tool] : []));
@@ -1123,14 +1142,14 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   /** A definition being saved: refused (422 by field) when it can never run here; else what this host still lacks. */
   async function saveable(revision: NewRevision): Promise<InputIssue[]> {
     const shape = revision.kind === "agentic" ? revision : workflowShape(revision);
-    const blockers = await blockersOf(env, shape, settings.get(), { boxes: boxOffers, offers });
+    const blockers = await blockersOf(env, shape, settings.get(), { boxes: boxOffers, offers, mcp: mcpTools });
     // An agent's default cap caps each run started without one of its own, and a web tool resolves by the cap: what a cap
     // alone keeps from running under the definition's own picks, whatever this host's settings, would keep every such run
     // from running, so the save is refused, not each run (claude-agent's or codex's own search, picked, under a cap).
     if (revision.kind === "agentic" && (revision.maxCostUsd ?? 0) > 0) {
       const key = (b: Blocker) => `${b.field}\n${b.message}`;
-      const plain = new Set((await blockersOf(env, shape, {}, { boxes: boxOffers, offers })).map(key));
-      const capped = await blockersOf(env, shape, {}, { capped: true, boxes: boxOffers, offers });
+      const plain = new Set((await blockersOf(env, shape, {}, { boxes: boxOffers, offers, mcp: mcpTools })).map(key));
+      const capped = await blockersOf(env, shape, {}, { capped: true, boxes: boxOffers, offers, mcp: mcpTools });
       blockers.push(...capped.filter((b) => !plain.has(key(b))).map((b) => ({ ...b, reason: "not_an_option", fix: "Pick another provider for this tool in definition.tool_settings, or clear the agent's default cap (max_cost_usd: 0).", host: false })));
     }
     const never = blockers.filter((b) => !b.host);
@@ -1359,17 +1378,35 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
 
   // ---- usage ----------------------------------------------------------------------------------------------------------
 
-  // Each ended run's meters, from its store (metersIn): kept, as its store no longer changes, keyed by its end, so a run
+  // Each ended run's meters, from its store (meterFiguresIn): kept, as its store no longer changes, keyed by its end, so a run
   // opened again and ended again is read again. A store that cannot be read leaves it all tokens.
-  const endedMeters = new Map<string, ReturnType<typeof metersIn>>();
+  const endedMeters = new Map<string, ReturnType<typeof meterFiguresIn>>();
+  // Each ended run's spend so far as it saved it at its end (serve.json's cost_so_far: every conversation's charges and
+  // its decisions' receipts, which its root store alone does not hold), kept as its meters are; undefined when it saved
+  // none (a run whose cost is known, or one ended before the figure was kept).
+  const endedSoFar = new Map<string, number | undefined>();
+  const savedSoFarOf = (row: { id: string; endedAt?: string | null }) => {
+    const key = `${row.id} ${row.endedAt}`;
+    if (!endedSoFar.has(key)) {
+      let usd: number | undefined;
+      try {
+        const kept = (JSON.parse(readFileSync(join(dirname(dirname(agents.store.runStorePath(row.id))), RUN_META), "utf8")) as { cost_so_far?: { so_far_usd?: unknown } }).cost_so_far?.so_far_usd;
+        usd = typeof kept === "number" && Number.isFinite(kept) ? kept : undefined;
+      } catch {
+        usd = undefined;
+      }
+      endedSoFar.set(key, usd);
+    }
+    return endedSoFar.get(key);
+  };
   const metersOf = (row: { id: string; endedAt?: string | null }) => {
     const key = `${row.id} ${row.endedAt}`;
     let meters = endedMeters.get(key);
     if (!meters) {
       try {
-        meters = metersIn(agents.store.runStorePath(row.id));
+        meters = meterFiguresIn(agents.store.runStorePath(row.id));
       } catch {
-        meters = { tools: 0, tokens: null, browser: { usd: 0, seconds: 0 }, others: 0 };
+        meters = { tools: 0, tokens: null, browser: { usd: 0, seconds: 0 }, others: 0, known: { tokens: 0, browser: 0, others: 0 } };
       }
       endedMeters.set(key, meters);
     }
@@ -1386,6 +1423,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     const group = url.searchParams.get("group_by") ?? "meter";
     if (!["meter", "agent", "key", "day", "region"].includes(group)) throw new ApiError("bad_request", "group_by is meter, agent, key, day or region");
     const lines = new Map<string, { usd: number; unpriced: number }>();
+    // Tool calls run with no price (an MCP tool its owner set none for): outside every cost, counted on `tools`.
+    let notMetered = 0;
     const total = { usd: 0, unpriced: 0 };
     // The browser_time line's seconds: its ended runs' (their stores keep each charge's), none once a live run is in it.
     let browserSeconds: number | null = 0;
@@ -1409,22 +1448,28 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       // By meter, what a run's paid tools charged (monid's) is `tools`, its browser session time `browser_time`, the rest
       // `tokens`, all from the same records: a live run's rows (a call still marked is no charge), else its store as it
       // ended (a call a crash cut makes `tools` unknown, never `tokens`). An unknown meter counts the run as unpriced on it.
-      const meters = group !== "meter" || usd === 0 ? undefined : live ? { tools: toolCostOf(live.rows), tokens: null, browser: { usd: toolCostOf(live.rows, "browser"), seconds: null }, others: toolCostOf(live.rows.filter((r) => r.tool_name !== "browser")) } : metersOf(row);
-      const tokens = meters && (usd !== null && meters.tools !== null ? usd - meters.tools : usd === null && meters.tools === null ? meters.tokens : null);
-      // Each apart, an unknown one unknown (unpriced on its own line), never $0 nor the other's.
-      const browser = meters ? meters.browser.usd : 0;
-      const tools = meters?.others;
-      const parts: [string, number | null][] = !meters ? [[key, usd]] : [[key, tokens ?? null], ...(tools !== 0 ? [["tools", tools ?? null] as [string, number | null]] : []), ...(browser !== 0 ? [["browser_time", browser] as [string, number | null]] : [])];
-      if (meters && browser !== 0) browserSeconds = browserSeconds === null || meters.browser.seconds === null ? null : browserSeconds + meters.browser.seconds;
-      // A run whose cost is unknown adds no dollars, so no sum turns unknown; it is counted as unpriced instead, so it
-      // never passes as $0.
-      for (const [name, part] of parts) {
-        const line = lines.get(name) ?? lines.set(name, { usd: 0, unpriced: 0 }).get(name)!;
-        if (part === null) line.unpriced++;
-        else line.usd += part;
+      // An ended run's are its store's figures (metersOf keeps them, never its timeline), read for its lines by meter and,
+      // by any group, for what a run of unknown cost is known to have spent.
+      const read = (group === "meter" && usd !== 0) || usd === null ? (live ? { tools: toolCostOf(live.rows), tokens: null, browser: { usd: toolCostOf(live.rows, "browser"), seconds: null }, others: toolCostOf(live.rows.filter((r) => r.tool_name !== "browser")), known: { tokens: 0, browser: knownToolCostOf(live.rows, "browser"), others: knownToolCostOf(live.rows, "browser", true) } } : metersOf(row)) : undefined;
+      // A run whose cost is unknown still spent what is known of it (so_far: each meter's known dollars): that is in the
+      // total and its lines, and the run is counted unpriced, so a total is never below a line of its own and reads as
+      // the lower bound unpriced_runs says it is.
+      const soFar = usd !== null || !read ? 0 : live ? (runs.cost(live).so_far_usd ?? 0) : (savedSoFarOf(row) ?? read.known.tokens + read.known.browser + read.known.others);
+      const meters = group === "meter" && usd !== 0 ? read : undefined;
+      if (meters && meters.browser.usd !== 0) browserSeconds = browserSeconds === null || meters.browser.seconds === null ? null : browserSeconds + meters.browser.seconds;
+      // Its parts of the lines (usage-lines.ts): an unknown one counts the run unpriced there and adds what is known of it.
+      // An unpriced MCP call is in none of them: counted apart as not metered on the tools line, which a $0 run shows only
+      // when it made one.
+      const unmetered = group !== "meter" ? 0 : ((live ? live.rows.find((one) => one.kind === "usage")?.usage?.not_metered : metersOf(row).notMetered) ?? 0);
+      notMetered += unmetered;
+      if (unmetered && !lines.has("tools")) lines.set("tools", { usd: 0, unpriced: 0 });
+      for (const part of runLines({ usd, soFar, key, meters })) {
+        const line = lines.get(part.name) ?? lines.set(part.name, { usd: 0, unpriced: 0 }).get(part.name)!;
+        line.usd += part.usd;
+        if (part.unpriced) line.unpriced++;
       }
       if (usd === null) total.unpriced++;
-      else total.usd += usd;
+      total.usd += usd ?? soFar;
     }
     // What learning spent on this server, outside any run (usage.ts): each run's grade, on the day its learning ended.
     for (const entry of (await outcomes(data)).values()) {
@@ -1434,7 +1479,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     const round = (v: number) => Math.round(v * 1e6) / 1e6;
     return {
       from: new Date(from).toISOString(), to: new Date(to).toISOString(), currency: "USD", basis: "estimate", group_by: group, total_usd: round(total.usd), unpriced_runs: total.unpriced,
-      lines: [...lines].map(([key, line]) => ({ group: key, ...(group === "meter" ? { meter: key } : {}), ...(key === "browser_time" && group === "meter" && browserSeconds !== null ? { quantity: round(browserSeconds), unit: "second" } : {}), usd: round(line.usd), unpriced_runs: line.unpriced })),
+      lines: [...lines].map(([key, line]) => ({ group: key, ...(group === "meter" ? { meter: key } : {}), ...(key === "browser_time" && group === "meter" && browserSeconds !== null ? { quantity: round(browserSeconds), unit: "second" } : {}), usd: round(line.usd), unpriced_runs: line.unpriced, ...(group === "meter" && key === "tools" && notMetered ? { not_metered_calls: notMetered } : {}) })),
       account: null,
     };
   }
@@ -2022,8 +2067,12 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     } catch {
       return fail(new ApiError("bad_request", "the request target is not a URL"));
     }
-    // On loopback, a Host that is not a loopback name is a page that rebound a name of its own to this address.
-    if (names && !names.has(String(req.headers.host ?? "").toLowerCase())) return fail(new ApiError("forbidden", "unexpected Host header"));
+    // On loopback, a Host that is not one of its names (host-check.ts) is a page that rebound a name of its own to this
+    // address. A browser is shown a page that says which names work; a script, the same in the error.
+    if (names && !names.has(hostName(req.headers.host) ?? "")) {
+      if (/\btext\/html\b/i.test(String(req.headers.accept ?? ""))) return sendHostRefused(req, res);
+      return fail(new ApiError("forbidden", `unexpected Host header: ${HOST_FIX}`));
+    }
     // Routed on the path as sent: a parsed URL folds `..` and `%2E%2E` segments away, and a file path must see them.
     const raw = (req.url ?? "/").split("?")[0]!;
     // Before the page: its cookie must not stand in for the token on the owner's own routes, nor on the MCP endpoint.
@@ -2062,7 +2111,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   if (offersImport && existsSync(importAsked)) void importAtSetup();
   else if (offersImport && options.countSessions && owner && !owner.hasPassword()) countSessions();
   const address = server.address() as AddressInfo;
-  if (isLoopback(host)) names = new Set(["localhost", "127.0.0.1", "[::1]", host, ...(options.allowHosts ?? [])].map((h) => `${h.toLowerCase()}:${address.port}`));
+  if (isLoopback(host)) names = loopbackNames(host, options.allowHosts, options.publicUrl);
   // An address of every interface is reached on this machine at its loopback one.
   const shown = host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host;
   const url = `http://${shown.includes(":") ? `[${shown}]` : shown}:${address.port}`;

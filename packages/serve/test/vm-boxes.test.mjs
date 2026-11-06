@@ -23,7 +23,7 @@ const VM = VM_PROVIDER.id;
 const PLACE = { mode: "sandbox", box: VM };
 const planted = (name) => `planted-${name}-sentinel`;
 const TOKENS = Object.fromEntries(VM_PROVIDER.keys.map((name, i) => [name, planted(`vm-token-${i}`)]));
-const NO_LIST = "the VM box takes a host list, but this server cannot read a box's list back to check that it holds, so the VM box has no network";
+const NO_LIST = "the Modal sandbox takes a host list, but this server cannot read a sandbox's list back to check that it holds, so the Modal sandbox has no network";
 const ENV_PROBE = "env; cat /proc/self/environ 2>/dev/null | tr '\\0' '\\n'";
 
 function answers(data, runId) {

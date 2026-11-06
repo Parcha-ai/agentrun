@@ -26,7 +26,14 @@ export default function reply(context, faux) {
   const browse = first.includes("Browse the example page");
   // Files the page as evidence with browser_read, then delivers the record.
   const read = first.includes("Read the example page");
-  if (context.messages.some((m) => m.role === "system" && m.toolsAdded?.some((tool) => tool.name === "submit"))) {
+  // "Use the learned workflow <name> on <question>.": the run's learned_workflow, then its answer as the tool said it.
+  const learned = /Use the learned workflow (\S+) on (.+?)\.$/.exec(first);
+  if (learned && !context.messages.some((m) => m.role === "system" && m.toolsAdded?.some((tool) => tool.name === "submit")) && !context.tools?.some((tool) => tool.name === "submit")) {
+    return results === 0 ? faux.message(faux.toolCall("learned_workflow", { name: learned[1], input: { question: learned[2] } }), { stopReason: "toolUse" }) : faux.message(`Ran: ${textOf(context.messages.at(-1))}`);
+  }
+  // A workflow's model node on pi-durable (its submit tool added by a system message), or in a session of its own (a
+  // learned workflow's: agentrun-pi's host runner, its tools in the context).
+  if (context.messages.some((m) => m.role === "system" && m.toolsAdded?.some((tool) => tool.name === "submit")) || context.tools?.some((tool) => tool.name === "submit")) {
     // A node that says whether anything it can reach holds a decision key (Jev's or Parallel's): this process's
     // environment (as its tools get it), the environment the kernel shows, the descriptor the server hands the keys on,
     // and a program it starts.
@@ -99,7 +106,11 @@ export default function reply(context, faux) {
     if ((browse || read) && results === 0) return faux.message(faux.toolCall(read ? "browser_read" : "snapshot", {}), { stopReason: "toolUse" });
     if ((browse || read) && results === 1) return faux.message(faux.toolCall("submit", { answer: 42 }), { stopReason: "toolUse" });
     if (answered) return faux.message("Submitted.");
-    const submit = faux.message(faux.toolCall("submit", { answer: 42 }), { stopReason: "toolUse" });
+    // In a session of its own (agentrun-pi's host runner), submit takes the DSL's envelope: the record under `value`.
+    const submitTool = [...context.messages.flatMap((m) => m.toolsAdded ?? []), ...(context.tools ?? [])].find((tool) => tool.name === "submit");
+    const params = submitTool?.parameters;
+    const enveloped = Boolean(params?.properties?.value && Object.keys(params.properties).length === 1 && params.required?.includes("value"));
+    const submit = faux.message(faux.toolCall("submit", enveloped ? { value: { answer: 42 } } : { answer: 42 }), { stopReason: "toolUse" });
     // "Answer once <file> exists.": the node submits when the test has made that file.
     const gate = /Answer once (\S+?) exists\./.exec(first)?.[1];
     if (gate) return untilExists(gate).then(() => submit);
@@ -153,6 +164,11 @@ export default function reply(context, faux) {
     const key = process.getBuiltinModule("node:fs").readFileSync(quote[1], "utf8").trim();
     if (results === 0) return faux.message([faux.thinking(`I hold ${key} now.`), faux.text(`The key is ${Buffer.from(key).toString("base64")}.`), faux.toolCall("read", { path: `notes/${key}.txt` })], { stopReason: "toolUse" });
     return faux.message(`Done with ${key}.`);
+  }
+  // Runs monid's /person/enrich (priced at once), then /slow (held until stopped, or cut by a crash), then answers.
+  if (first.includes("Run monid's /person/enrich, then its slow endpoint.")) {
+    const steps = [["monid_run", { provider: "faux", endpoint: "/person/enrich", input: { name: "Ada" } }], ["monid_run", { provider: "faux", endpoint: "/slow", input: {} }]];
+    return results < steps.length ? faux.message(faux.toolCall(...steps[results]), { stopReason: "toolUse" }) : faux.message("Ran.");
   }
   // Runs monid's /person/enrich with no inspect first (held at the run allowance): one call in the first turn, then, in
   // each turn after it (a raised cap's follow-up), one more call, or two with "twice"; then answers with the last result.
