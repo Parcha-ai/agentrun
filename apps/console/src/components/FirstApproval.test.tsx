@@ -56,16 +56,16 @@ describe("a tool's description in the agent editor", () => {
   const LONG = "Read one public web page from a public host through the guarded direct fetch, or through Parallel's extract where Parallel is picked (falling back to the direct fetch, saying why, when Parallel answers no page), a part at a time.";
   const agent: Agent = { agent_id: "a1", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "A", instructions: "x", harness: "pi", skills: [], tools: [] } };
   const caps = { harnesses: [{ id: "pi", available: true }], tools: [{ name: "web_fetch", available: true, summary: LONG }], thinking: [] };
-  it("is clamped to two lines (no display override), with more to show it whole", async () => {
+  it("is clamped to two lines (no display override) where no blurb is served, with Details to show it whole", async () => {
     const host = mount(createElement(AgentEditor, { agent, caps, step: "tools", onSave: async () => null }));
     await settle();
     const text = [...host.querySelectorAll("span")].find((s) => s.textContent === LONG)!;
     expect(text.classList.contains("line-clamp-2")).toBe(true);
     expect(text.classList.contains("block")).toBe(false);
-    const more = [...host.querySelectorAll("button")].find((b) => b.textContent === "more")!;
-    expect(more).toBeTruthy();
-    await act(async () => { more.click(); });
-    expect(text.classList.contains("line-clamp-2")).toBe(false);
+    const details = [...host.querySelectorAll("button")].find((b) => b.textContent === "Details")!;
+    expect(details).toBeTruthy();
+    await act(async () => { details.click(); });
+    expect([...host.querySelectorAll("p, span")].some((el) => el.textContent === LONG && !el.classList.contains("line-clamp-2"))).toBe(true);
     // Asking for more never ticks the tool.
     expect(host.querySelector<HTMLInputElement>("input[value='web_fetch']")!.checked).toBe(false);
   });

@@ -245,7 +245,8 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
             <div className="max-w-3xl space-y-6">
               <Field label="Tools" note="On by default: the tools this agent's harness runs on this server. Untick one to take it away." error={fieldError("tools")} warning={fieldWarning("tools")}>
                 {/* Columns by a minimum width: as many as fit, one card a row in a narrow pane (a phone on its side). */}
-                <ul className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,18rem),1fr))] gap-2">
+                {/* Every collapsed card one height, top-aligned: one card's Details grows it alone, never its row. */}
+                <ul className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,18rem),1fr))] items-start gap-2">
                   {caps.tools.filter((t) => workflow || !t.call_only || f.tools?.includes(t.name)).map((t) => {
                     // A call-only tool runs only in a workflow's call node, which needs it in its revision's tools: a
                     // workflow agent picks it like any other. An agentic agent is never offered one, and one it already
@@ -257,12 +258,12 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                     const ownPick = (f.tool_settings ?? d?.tool_settings ?? {})[t.name]?.provider;
                     const pickedOver = !!choice && ownPick !== undefined && ownPick !== choice.provider;
                     const why = t.call_only && !workflow ? "Workflow-only: a workflow's call node runs it, not an agent" : !runs ? `Not on ${f.harness ?? "pi"} on this server` : sandboxReason(t, f.place ?? placeOf(d?.place) ?? defaultPlaceOf(workflow, f.tools ?? [], caps.places)) ?? (!t.available && !pickedOver ? (choice?.reason ?? t.reason ?? `Needs ${(t.missing ?? []).join(", ")}`) : undefined);
+                    // The state, as a one-line tag: "Workflow only" or "Sandbox-only" for those two states, else the reason
+                    // itself (cut to one line by CSS); the reason in full is its title, and in Details.
+                    const tag = !why ? undefined : t.call_only && !workflow ? "Workflow only" : sandboxReason(t, f.place ?? placeOf(d?.place) ?? defaultPlaceOf(workflow, f.tools ?? [], caps.places)) && runs ? "Sandbox-only" : why;
                     return (
-                      <li key={t.name}><label title={why} className={cn("flex items-center gap-3 border px-3 py-2.5 font-mono text-[13px]", on && "border-foreground", why && !on ? "cursor-not-allowed opacity-60" : "cursor-pointer")}>
-                        <input type="checkbox" value={t.name} checked={on} disabled={!!why && !on} onChange={() => { setToolsTouched(true); set({ tools: on ? f.tools!.filter((x) => x !== t.name) : [...(f.tools ?? []), t.name] }); }} className="accent-[hsl(var(--primary))]" />
-                        <span className="min-w-0">{t.name}{why && <span className="ml-2 text-[11px] text-muted-foreground">{why}</span>}
-                          {t.summary && <Summary text={t.summary} />}</span>
-                      </label></li>
+                      <li key={t.name}><ToolCard name={t.name} blurb={t.blurb} summary={t.summary} why={why} tag={tag} on={on} disabled={!!why && !on}
+                        onToggle={() => { setToolsTouched(true); set({ tools: on ? f.tools!.filter((x) => x !== t.name) : [...(f.tools ?? []), t.name] }); }} /></li>
                     );
                   })}
                 </ul>
@@ -408,16 +409,33 @@ function Field({ label, id, required, optional, note, error, warning, aside, chi
   );
 }
 
-/** A tool's description in its card: two lines, and "more" for the rest when it is longer (a tool's summary is written for
- *  the model, often a paragraph). A <div>-free span pair, so the clamp's own display holds. "more" never ticks the tool. */
-function Summary({ text }: { text: string }) {
+/** One tool in the editor's grid. Collapsed, every card is one height (h-32): its name, ONE human line (the served
+ *  `blurb`; an MCP server's tool has none, so its description, clamped to two lines), its state as a short tag (the full reason its title), and Details.
+ *  Details shows the model-facing description, the reason and the whole name in place, and that card grows; Details never
+ *  ticks it. */
+function ToolCard({ name, blurb, summary, why, tag, on, disabled, onToggle }: { name: string; blurb?: string; summary?: string; why?: string; tag?: string; on: boolean; disabled: boolean; onToggle: () => void }) {
   const [open, setOpen] = useState(false);
+  const toggle = (e: React.MouseEvent) => { e.preventDefault(); e.stopPropagation(); setOpen((v) => !v); };
   return (
-    <span className="mt-0.5 block font-sans text-[11px] text-muted-foreground">
-      <span className={open ? undefined : "line-clamp-2"} title={text}>{text}</span>
-      {text.length > 120 && (
-        <button type="button" className="underline underline-offset-2 hover:text-foreground" onClick={(e) => { e.preventDefault(); e.stopPropagation(); setOpen((v) => !v); }}>{open ? "less" : "more"}</button>
+    <label title={why} className={cn("flex flex-col border px-3 py-2.5 font-mono text-[13px]", open ? "min-h-32" : "h-32 overflow-hidden", on && "border-foreground", disabled ? "cursor-not-allowed opacity-60" : "cursor-pointer")}>
+      <span className="flex min-w-0 items-center gap-3">
+        <input type="checkbox" value={name} checked={on} disabled={disabled} onChange={onToggle} className="shrink-0 accent-[hsl(var(--primary))]" />
+        {/* Cut to one line on the card, whole in its title; whole, wrapping, once Details opens (an MCP tool's id has no
+            spaces, and tools from one server share a long prefix). */}
+        <span title={name} className={cn("min-w-0", open ? "break-all" : "truncate")}>{name}</span>
+      </span>
+      {blurb ? <span className="mt-1 truncate font-sans text-[12px] text-muted-foreground">{blurb}</span>
+        : summary && !open ? <span className="mt-1 line-clamp-2 font-sans text-[11px] text-muted-foreground" title={summary}>{summary}</span> : null}
+      {tag && <span data-tag title={why} className="mt-1 max-w-full self-start truncate border px-1.5 text-[10px] text-muted-foreground">{tag}</span>}
+      {open && (
+        <span className="mt-2 space-y-1 font-sans text-[11px] text-muted-foreground">
+          {summary && <p className="whitespace-pre-wrap break-words">{summary}</p>}
+          {why && <p className="break-words">{why}</p>}
+        </span>
       )}
-    </span>
+      {(summary || why) && (
+        <button type="button" onClick={toggle} className="mt-auto self-start pt-1 font-sans text-[11px] underline underline-offset-2 hover:text-foreground">{open ? "Hide details" : "Details"}</button>
+      )}
+    </label>
   );
 }
