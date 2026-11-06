@@ -155,6 +155,8 @@ export async function seedRun(dir: { storePath: string; workDir: string }, seed:
     await writeFile(target, content);
   }
   await mkdir(path.dirname(dir.storePath), { recursive: true });
+  // The store's folder is its owner's alone, whatever the umask.
+  await chmod(path.dirname(dir.storePath), 0o700);
   for (const suffix of ["", "-wal", "-shm", "-journal"]) await rm(`${dir.storePath}${suffix}`, { force: true });
   const next = `${dir.storePath}.seed-${randomBytes(4).toString("hex")}`;
   try {

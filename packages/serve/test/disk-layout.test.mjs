@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { startServe } from "../dist/index.js";
@@ -38,12 +38,17 @@ async function probeRun(api, plan, id = "writer") {
 }
 
 test("demo through the API: a run's folder is on the disk, its file tools write into its work/ there, nothing is under <data>/runs, and its row's claim went from its process (epoch 1) to the server, which checkpointed its database", { timeout: 120_000 }, async (t) => {
+  // A common umask, which leaves a folder 0755 unless the code says otherwise.
+  const umask = process.umask(0o022);
+  t.after(() => process.umask(umask));
   const { api, data } = await serve(t, { faux: PROBE });
   const runId = await probeRun(api, [{ tool: "write", args: { path: "out.txt", content: "on the disk" } }]);
   await follow(api, runId, ["completed"], { deadlineMs: 60_000 });
   const root = realpathSync(data);
   const folder = join(root, "disk", "agents", folderOf("writer"), "runs", runId);
   assert.equal(readFileSync(join(folder, "work", "out.txt"), "utf8"), "on the disk");
+  // The agent's folder, its runs/, the run's folder and its store/ are this server's user's alone, whatever the umask.
+  for (const at of [join(folder, "..", ".."), join(folder, ".."), folder, join(folder, "store")]) assert.equal(statSync(at).mode & 0o777, 0o700, relative(root, at));
   assert.ok(existsSync(join(folder, "store", "run.sqlite")));
   assert.equal(existsSync(join(root, "runs")), false, "no run under the data directory's own files");
   const claim = claimOf(root, runId);
