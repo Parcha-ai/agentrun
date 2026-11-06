@@ -117,9 +117,10 @@ export function AgentPage({ v2, agentId, defaultModel, modelSource, routePrefix,
             <Button size="sm" onClick={() => go(agentHash(agent.agent_id, "edit"))} title="Edit" className="max-sm:w-8 max-sm:shrink-0 max-sm:px-0"><Pencil aria-hidden /> <span className="max-sm:sr-only">Edit</span></Button>
           </div>
         </div>
-        {d.description && <p className="mt-2 max-w-3xl text-[14px] text-muted-foreground max-sm:line-clamp-2">{d.description}</p>}
+        {/* On a phone a long description is cut at two lines until the facts' line is opened, which shows it whole. */}
+        {d.description && <p id="agent-description" className={cn("mt-2 max-w-3xl text-[14px] text-muted-foreground", !factsOpen && "max-sm:line-clamp-2")}>{d.description}</p>}
         {/* On a phone the facts fold into one line, which opens them; 640 px and up show the list. */}
-        <button type="button" aria-expanded={factsOpen} aria-controls="agent-facts" onClick={() => setFactsOpen((o) => !o)}
+        <button type="button" aria-expanded={factsOpen} aria-controls={d.description ? "agent-description agent-facts" : "agent-facts"} onClick={() => setFactsOpen((o) => !o)}
           className="mt-1.5 flex w-full min-w-0 items-center gap-1.5 text-left font-mono text-[12px] text-muted-foreground sm:hidden">
           <ChevronRight className={cn("size-3.5 shrink-0 transition-transform", factsOpen && "rotate-90")} aria-hidden />
           <span className="truncate">{facts.map(([, v]) => v).join(" · ")}</span>
