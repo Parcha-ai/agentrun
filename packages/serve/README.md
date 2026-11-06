@@ -31,9 +31,16 @@ agentrun-serve on http://127.0.0.1:7340/v2 (agent store in ~/.local/share/agentr
 AGENTRUN_BASE_URL=http://127.0.0.1:7340/v2
 AGENTRUN_API_KEY=ar_local_...
 Open http://127.0.0.1:7340/
-Boxes: none is ready, so sandbox agents do not run here. docker: not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker.
+Boxes: docker (on by default; set AGENTRUN_BOXES to change).
 Set your password: http://127.0.0.1:7340/setup (the first visit sets it)
 ```
+
+When the box image is not built yet, a line after the banner says its first build is under way (`Preparing the Docker
+box image (first start only, a few minutes); agents can be made now, and their first run waits for it.`), and another
+when it ends (`The Docker box image is ready.`, or why it failed). `npx @parcha/agentrun` prints the `Boxes:` line and
+these two on stderr, after its own line on stdout. On a machine where Docker is not running, the `Boxes:` line says so instead (`Boxes: none, so new agents run on the
+runner. Docker isn't running on this machine (no docker command on PATH): install or start Docker, then restart
+AgentRun.`); see [Boxes](#boxes).
 
 `Open` is [the console](#the-console), which takes [your password](#your-password). For a client, export the two lines before
 it, then make an agent, start a run, and read its timeline until a page says `final`:
@@ -78,15 +85,15 @@ use it.
 ## Sandbox in 60 seconds
 
 An agent with a shell, in a Docker container of its own: on a machine with Docker, in a checkout built as above, with
-a model key. Start the server with the Docker box on:
+a model key. Start the server; the Docker box is on by default wherever Docker answers:
 
 ```sh
 export AGENT_MODEL=openrouter/anthropic/claude-sonnet-5.5 OPENROUTER_API_KEY=...
-AGENTRUN_BOXES=docker node packages/serve/dist/cli.js
+node packages/serve/dist/cli.js
 ```
 
-Its log says `event=boxes available=docker`, and its banner's last line `Boxes: docker is ready, so sandbox agents run
-their tools there. docker boxes reach only pypi.org, files.pythonhosted.org, registry.npmjs.org, registry.yarnpkg.com,
+Its log says `event=boxes available=docker`, and its banner's last line `Boxes: docker (on by default; set
+AGENTRUN_BOXES to change). docker boxes reach only pypi.org, files.pythonhosted.org, registry.npmjs.org, registry.yarnpkg.com,
 github.com, and codeload.github.com.` (on Linux; elsewhere it says why the box has no
 network: [Sandbox](#sandbox)). The first start builds [the box's image](#the-boxs-image) (python 3.12, git, curl, node, npm and rg,
 about 300 MB, a minute or two, the build alone on the network): its banner then says `Boxes: docker is preparing
@@ -116,7 +123,7 @@ cat > box.mjs <<'JS'
 export default (context, faux) => context.messages.some((m) => m.role === "toolResult") ? faux.message("Saved out.txt.")
   : faux.message(faux.toolCall("bash", { command: "cat /etc/os-release | tee out.txt" }), { stopReason: "toolUse" });
 JS
-AGENTRUN_BOXES=docker node packages/serve/dist/cli.js --faux box.mjs
+node packages/serve/dist/cli.js --faux box.mjs
 ```
 
 The box has python 3.12, git, curl, node, npm and rg. On Linux it reaches Python's and npm's package registries and
@@ -285,7 +292,8 @@ workflow is never given a box.
 
 `capabilities.places` says both sides. `default_place` is the place a new agent gets here. When that is the runner,
 `default_reason` says why in docker's own words, such as `new agents run on the runner, because the docker box is
-unavailable here: not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker`. `default` stays `runner`,
+unavailable here: Docker isn't running on this machine (no docker command on PATH): install or start Docker, then
+restart AgentRun`. The console's new-agent form says docker's reason too, under its place picker. `default` stays `runner`,
 because it means where a revision that names no place runs. An agent saved with no place (before this, where docker was
 unavailable, or a workflow) keeps running on the runner, whatever the server has now. The default is never worked out
 again at run time. The console's new-agent form starts on `default_place`, with bash ticked when that place is a sandbox.
@@ -309,7 +317,8 @@ A definition naming a box this server does not have saves with a warning on `def
 
 ### A run in a Docker box
 
-With `AGENTRUN_BOXES=docker` and a Docker daemon this server's user may use, a run whose place is
+With docker on (by default, when `AGENTRUN_BOXES` is not set; or listed in it) and a Docker daemon this server's user
+may use, a run whose place is
 `{"mode": "sandbox", "box": "docker"}` gets one container, made on its first `bash` call (a run with none gets no
 container). Those four tools are pi's own, on every harness. `bash` runs in the container. `read`, `write` and `edit`
 run on this server, on the `work/` the container binds, because a `docker exec` costs half a second or more per call:
@@ -553,7 +562,7 @@ never runs; the box's first process is a `sleep` of its lifetime.
 ### In the published image
 
 The published image, `ghcr.io/parcha-ai/agentrun-server`, cannot host boxes yet. It has no `docker` command and no
-Docker daemon, so with `AGENTRUN_BOXES=docker` capabilities and the start's `event=boxes` line say docker is
+Docker daemon, so capabilities and the start's `event=boxes` line say docker is
 unavailable, and a sandbox agent's runs are `409 agent_not_runnable`. Runner agents work as before. Do not mount the
 host's Docker socket into the container to get around it: whatever can reach that socket is root on the host, and a
 box's bind of `work/` names a path in the server's container, which the host's daemon does not have. For sandboxes, run
@@ -563,18 +572,29 @@ inside the image itself (bwrap, on Linux) comes in a later release.
 ### Boxes
 
 A box is a machine apart from this one where a run's tools run. Runs execute in `docker`, `daytona` and `modal` boxes
-([place](#place)); the others are set up and probed, and say runs in them are not available yet. `AGENTRUN_BOXES` lists the boxes to set up, as a comma list of the ids below
-(`AGENTRUN_BOXES=docker,daytona`). The server never probes a box the list does not name, and a name that is no box
+([place](#place)); the others are set up and probed, and say runs in them are not available yet.
+
+Docker is on by default. With `AGENTRUN_BOXES` not set at all (a plain `npx @parcha/agentrun`), the server probes
+`docker` as if it were listed, and offers it when Docker answers (`ready`, or `preparing` while its image comes), so a
+new agent lands in the Docker box with a shell. When Docker does not answer, new agents run on the runner, and the
+banner, `capabilities.places.default_reason`, docker's own `reason` and the console's new-agent form say why. Every
+other box is yours to list.
+
+`AGENTRUN_BOXES`, when set, wins: it lists the boxes to set up, as a comma list of the ids below
+(`AGENTRUN_BOXES=docker,daytona`), and the server never probes a box the list does not name, Docker included. An empty
+value (`AGENTRUN_BOXES=`) or `AGENTRUN_BOXES=none` sets up no box. `none` stands alone, and a name that is no box
 refuses the start. At start the server probes each listed box once. The probes run at once, each within 5 s. Then one
 log line says what the server found:
 
     event=boxes available=<ids or none> unavailable=<ids> <id>="<why>" ...
 
 The line gives a reason for each listed box that is unavailable, and the banner says the same in words
-(`Boxes: docker is ready, so sandbox agents run their tools there.`). Each reason says what to do next: a box the list
+(`Boxes: docker is ready, so sandbox agents run their tools there.` with a list; `Boxes: docker (on by default; set
+AGENTRUN_BOXES to change).` without one). Each reason says what to do next: a box the list
 does not name says `not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker` (keeping the boxes it already
-lists), and a `docker` whose daemon does not answer says to start Docker or add this server's user to the `docker`
-group, then restart the server, since the probe runs once. A reason never holds a key, a command's output or a
+lists), a missing `docker` command says `Docker isn't running on this machine (no docker command on PATH): install or
+start Docker, then restart AgentRun`, and a `docker` whose daemon does not answer says to start Docker or add this
+user to the `docker` group, then restart AgentRun, since the probe runs once. A reason never holds a key, a command's output or a
 provider's answer.
 
 - `docker`: the `docker` command on PATH, with a daemon that answers `docker version` for this server's user. It needs no key.
@@ -599,7 +619,8 @@ provider's answer.
   and the token is set. It asks nothing of the provider. Runs execute in it: [a run in a Modal sandbox](#a-run-in-a-modal-sandbox).
 - `bwrap` is not in this release yet.
 
-The boxes come from `@parcha/pi-transport`, an optional peer of this package; install it beside the server to use any.
+The boxes come from `@parcha/pi-transport`, a dependency of this package, so every install of the server, `npx
+@parcha/agentrun`'s included, has the Docker box's provider.
 The keys belong to the server alone. The launcher hands them over with the server's other secrets, and no run's process
 gets them, in its environment or on its pipe.
 

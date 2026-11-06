@@ -42,7 +42,7 @@ import { durationMs, logLine } from "./print.js";
 import { type CarryBackRetry, knownToolCostOf, type Run, Runs, STATUSES, type Status, statusOf, toolCostOf, WAITS_ON_A_PERSON } from "./runs.js";
 import { runLines } from "./usage-lines.js";
 import { BOX_QUARANTINE, type BoxHost, Quarantine } from "./box/sweep.js";
-import { type BoxOffer, boxesLog, boxRegistry, daytonaApi, enabledBoxes, VM_NO_LIST, VM_PROVIDER } from "./boxes.js";
+import { type BoxOffer, boxesByDefault, boxesLog, boxRegistry, daytonaApi, enabledBoxes, VM_NO_LIST, VM_PROVIDER } from "./boxes.js";
 import { type DockerNetwork, FAUX_EGRESS_ENV, sweepEgressDirs } from "./box-egress.js";
 import { boxImageOf, clearImage, type DockerImage, dockerImage, type ImageState, withImage } from "./box-image.js";
 import { startBoxRelay } from "./box-relay.js";
@@ -198,6 +198,9 @@ export type ServeOptions = {
   settleRetryMs?: number;
   /** Where the log lines go (print.ts); none without it. AGENTRUN_LOG=quiet leaves out the request lines. */
   log?: (line: string) => void;
+  /** Told the Docker box image's state at the start, when this server has a Docker box, then each change (box-image.ts):
+   *  the CLI says a first build in words, as it starts and as it ends. */
+  onBoxImage?: (state: ImageState) => void;
   /** The lines a person reads about a stop on this data root: this server's, as its close begins and runs' processes are
    *  left to finish their turn, and this start's, when it waits for a server that is stopping (server-lock.ts). Default:
    *  standard error, after `agentrun-serve: `. */
@@ -729,7 +732,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     if (offersFrom && inputs.length === offersFrom.length && inputs.every((value, i) => value === offersFrom![i])) recompose();
     else await probe("key");
   };
-  // The boxes AGENTRUN_BOXES lists, each probed once (boxes.ts); runs execute in Docker's (place.ts). Under --faux, a faux
+  // The boxes AGENTRUN_BOXES lists, docker when it is not set, each probed once (boxes.ts); runs execute in Docker's (place.ts). Under --faux, a faux
   // box stands in for Docker, and nothing asks Docker.
   // Under --faux, the tests' fake stands in for the VM provider's SDK (startServe's `fauxVm`), never the provider.
   const boxes = await boxRegistry(env, options.faux && options.fauxVm ? { vmSdk: () => import(pathToFileURL(resolve(options.fauxVm!)).href) as Promise<Record<string, unknown>> } : {});
@@ -763,12 +766,14 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       onChange: (state, ms) => {
         boxOffers = offersNow();
         imageLog(state, { ms });
+        options.onBoxImage?.(state);
         // The box's state is in caps alone, not in the offers: recomposed now, or, while the start's probe of the offers
         // has not ended, by that probe, which reads the box offers when it does.
         if (offers) recompose();
       },
     });
     stops.push(async () => void (await image?.close()));
+    options.onBoxImage?.(image.state());
   } else await clearImage(data);
   boxOffers = offersNow();
   const runBoxes = fauxBox ?? boxes.provider("docker");
@@ -2162,7 +2167,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     tokenFile,
     tokenMade: stored?.made ?? false,
     ...(setupUrl ? { setupUrl } : {}),
-    boxesLine: boxesLine(boxOffers, enabledBoxes(env), boxAllow),
+    boxesLine: boxesLine(boxOffers, enabledBoxes(env), boxAllow, boxesByDefault(env)),
     // Once: a second call, at any time, is the first one's promise, so a close repeated after the next server started
     // never writes this data root's record again (the next server's, by then).
     close: () => (stopped ??= stop()),
