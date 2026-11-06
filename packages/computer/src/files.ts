@@ -29,7 +29,11 @@ export async function readFile(client: DaemonClient, path: string, options: { si
 	}
 }
 
-/** Writes a whole file: the first call replaces it (with mode and parents), the rest write at their offsets. */
+/**
+ * Writes a whole file: the first call replaces it (with parents), the rest write at their offsets. A mode is set with
+ * the last chunk; until then the file also has owner write, so a read-only mode does not refuse the chunks after the
+ * first.
+ */
 export async function writeFile(
 	client: DaemonClient,
 	path: string,
@@ -41,7 +45,10 @@ export async function writeFile(
 	let size = 0;
 	do {
 		const data = base64(bytes.subarray(offset, offset + MAX_CHUNK_BYTES));
-		const wrote = await client.call("files.write", offset === 0 ? { path, data, mode, parents } : { path, data, offset }, { signal });
+		const last = offset + MAX_CHUNK_BYTES >= bytes.length;
+		const firstMode = mode === undefined || last ? mode : mode | 0o200;
+		const params = offset === 0 ? { path, data, mode: firstMode, parents } : { path, data, offset, mode: last ? mode : undefined };
+		const wrote = await client.call("files.write", params, { signal });
 		if (!wrote.ok) return wrote;
 		size = wrote.value.size;
 		offset += MAX_CHUNK_BYTES;
