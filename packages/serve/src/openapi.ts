@@ -4,6 +4,7 @@
 // own routes are added as operations marked `x-agentrun-serve` (true, or the addition that made it, as `stats/1`), listed
 // in `info.x-agentrun-serve`.
 import { readFileSync } from "node:fs";
+import { TRIGGER_SOURCES } from "@parcha/pi-durable-agent/timeline";
 import { NOTE_ORIGINS, NOTE_STATUSES, NOTE_TYPES } from "./learn/index.js";
 import { ERROR_STATUS } from "./errors.js";
 import { LAUNCH_LOST, SETUP_LOST } from "./files.js";
@@ -1425,6 +1426,11 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     origin: {
       enum: ["server", "trigger"],
       description: "On the row of a message the person did not write: `server`, one the server wrote into the run (a raised cap's follow-up, an approval's resume), a `phase` row \"AgentRun: <its first line>\"; `trigger`, a trigger's input (a started run's first message, or a firing's message), a `phase` row \"Trigger <trigger id>: <its first line>\". Either is where a person's message would be a `user_message` row, and counts, as a person's does, as the message its turn took. Absent on every other row.",
+      "x-agentrun-serve": "origin/1",
+    },
+    trigger: {
+      ...closed({ id: { type: "string", description: "The trigger's id." }, source: { enum: [...TRIGGER_SOURCES], description: "What fired it, by the trigger's definition." }, owner: { type: "boolean", description: "True when the words are its owner's (a schedule's), false when they came from outside (a webhook's)." } }),
+      description: "On a trigger's row (`origin` `trigger`) alone: the trigger whose input the row is, so a client labels it by its source without reading its summary. Absent on every other row.",
       "x-agentrun-serve": "origin/1",
     },
     learning: {
