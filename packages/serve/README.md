@@ -803,7 +803,7 @@ agent_not_runnable`, with `details.unbound` and `details.missing`).
 
 | Tool | What it does | Needs | A workflow's model node may name it, a call node run it |
 | --- | --- | --- | --- |
-| `read` | Read a file in the run's `work/` | nothing | yes, no |
+| `read` | Read a file in the run's `work/`; in a box, also an image (png, jpg, gif, webp, by its bytes) at any absolute path in the box, such as one rendered to `/tmp`, read through the box and never from the host | nothing | yes, no |
 | `write` | Write a file in the run's `work/` | nothing | yes, no |
 | `edit` | Edit a file in the run's `work/` | nothing | yes, no |
 | `bash` | Run a shell command in the run's box, from its `work/`: pi's `{command, timeout?}`, 120 s when the call names no timeout and at most 600 s (a longer one runs at 600 s and says so; longer work is `bash_background`) | an agentic definition whose place is a sandbox ([Sandbox](#sandbox)) | no, no |

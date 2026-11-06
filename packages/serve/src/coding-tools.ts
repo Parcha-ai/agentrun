@@ -98,6 +98,24 @@ function boundedBash(tool: ToolRegistration): ToolRegistration {
   };
 }
 
+/** The image types read opens, by extension; the bytes must say the same (imageTypeOf). */
+const IMAGE_EXTENSIONS: Readonly<Record<string, string>> = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp" };
+/** The largest image read hands the model, in bytes. */
+export const READ_IMAGE_MAX_BYTES = 5 * 1024 * 1024;
+const READ_IMAGE_SENTENCE = " It also opens an image (png, jpg, gif, webp) at any path in the run's box, such as one rendered to /tmp, and returns it as an image; any other file only inside work/.";
+/** The image type the bytes say they are, or undefined: the magic bytes of PNG, JPEG, GIF and WebP. */
+function imageTypeOf(bytes: Uint8Array): string | undefined {
+  const at = (offset: number, ...values: number[]) => values.every((value, index) => bytes[offset + index] === value);
+  if (at(0, 0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a)) return "image/png";
+  if (at(0, 0xff, 0xd8, 0xff)) return "image/jpeg";
+  if (at(0, 0x47, 0x49, 0x46, 0x38)) return "image/gif";
+  if (at(0, 0x52, 0x49, 0x46, 0x46) && at(8, 0x57, 0x45, 0x42, 0x50)) return "image/webp";
+  return undefined;
+}
+/** A path read may open as an image anywhere in the box: an absolute box path (not `~`, not a URL) whose extension is an
+ *  image's. */
+const boxImagePath = (path: string): boolean => path.startsWith("/") && !path.startsWith("//") && IMAGE_EXTENSIONS[posix.extname(path).slice(1).toLowerCase()] !== undefined;
+
 /** A run's coding tools by its place: on the runner, CodingTools (no bash); in a box, pi's read, write, edit and bash,
  *  each with its arguments, output and replay as pi ships it and its environment the box's, and the background tools
  *  (background.ts), each call a command in the box. A file tool's path stays in the box's work dir; bash's command is
@@ -106,7 +124,7 @@ export function codingSource(place: Place, box?: BoxedEnv): CodingSource {
   if (place.mode === "runner") return { extension: CodingTools, tools: CodingTools.tools ?? [] };
   if (!box) throw new Error("a run whose place is a box needs its box for its coding tools");
   const here = box.hostWork && writesHeld() ? boundFiles(box.hostWork) : undefined;
-  const boxed = (pis.tools ?? []).filter((tool) => PI_BOXED.includes(tool.name)).map((tool) => (tool.name === "bash" ? boundedBash(tool) : tool));
+  const boxed = (pis.tools ?? []).filter((tool) => PI_BOXED.includes(tool.name)).map((tool) => (tool.name === "bash" ? boundedBash(tool) : tool.name === "read" ? { ...tool, description: `${tool.description}${READ_IMAGE_SENTENCE}` } : tool));
   const tools = asGivenRefusals([...boxed, ...backgroundTools()].map((tool): ToolRegistration => ({
     ...tool,
     execute: async (args, api, context) => {
@@ -114,6 +132,17 @@ export function codingSource(place: Place, box?: BoxedEnv): CodingSource {
       // by the path the call gave and no other, the box's work dir included.
       const path = (args as { path?: unknown } | null)?.path;
       const inBox = typeof path === "string" ? boxPath(path, box.hostWork) : undefined;
+      // read opens an image anywhere in the box (a render in /tmp): read through the box itself, never on this machine,
+      // and only when the bytes are an image's; anything else outside work/ is refused as before.
+      if (tool.name === "read" && typeof path === "string" && inBox === undefined && boxImagePath(path)) {
+        const note = (summary: string) => api.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: HOST_PHASE, data: { summary } })), context);
+        const env = (await box.env(context, note)) as { readBinaryFile?(path: string, context: Context): Promise<{ ok: true; value: Uint8Array } | { ok: false; error: { message?: string } }> };
+        const read = env.readBinaryFile ? await env.readBinaryFile(path, context) : undefined;
+        const mimeType = read?.ok ? imageTypeOf(read.value) : undefined;
+        if (!read?.ok || !mimeType) refuseOutsideWorkspace(path);
+        if (read.value.byteLength > READ_IMAGE_MAX_BYTES) throw new Error(`${path} is an image of ${read.value.byteLength} bytes, over read's ${READ_IMAGE_MAX_BYTES}: scale it down first (for example with ffmpeg in bash).`);
+        return { content: [{ type: "image", data: Buffer.from(read.value).toString("base64"), mimeType }] };
+      }
       if (typeof path === "string" && inBox === undefined) refuseOutsideWorkspace(path);
       const given = inBox === undefined ? args : { ...(args as object), path: inBox };
       // read, write and edit on this machine's work/, where the box binds it; no box is made for them. A box an earlier
