@@ -33,7 +33,7 @@
 //   run: a stop, unlike a cancel, leaves no mark the resume is held to.
 
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join, posix, resolve, sep } from "node:path";
 import type { Context } from "@earendil-works/chord";
 import { type Cursor, defineExtension, type Extension, ROOT_CONVERSATION_ID, type ToolRegistration, type Tx, wrapTool } from "@earendil-works/pi-durable";
@@ -543,6 +543,15 @@ export class RunGate {
         }
         // An allow runs the call, unless its tool was set to deny since it asked.
         const result = decision === "deny" ? { text: refusedText(held.tool, answer.note), isError: true } : this.policy(held.tool) === "deny" ? { text: deniedText(held.tool, settingsKeyOf(this.where.harness ?? "pi", held.tool, this.where.mcpServers), this.denyFrom(held.tool)), isError: true } : await this.run(held);
+        // A test's seam, unset in a server (AGENTRUN_SERVE_TEST_CRASH_AFTER_CALL, a file that marks it once): an approved
+        // call that ran and whose outcome is in the journal, then the process goes before its resume, once the test says go
+        // (<file>.go), as a crash between the two would leave the run.
+        const seam = process.env.AGENTRUN_SERVE_TEST_CRASH_AFTER_CALL;
+        if (seam && decision === "allow" && !existsSync(seam)) {
+          while (!existsSync(`${seam}.go`)) await new Promise((done) => setTimeout(done, 50));
+          writeFileSync(seam, "");
+          process.kill(process.pid, "SIGKILL");
+        }
         // And again once the call is done: a stop or a cancel while it ran drops its result, which never reaches the model.
         const after = ((await readJson(join(this.where.root, RUN_META)))?.approvals as Record<string, { decision?: string }> | undefined)?.[held.id];
         if (after?.decision === "canceled" || after?.decision === "withdrawn") {

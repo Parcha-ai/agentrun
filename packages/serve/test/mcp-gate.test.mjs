@@ -9,7 +9,8 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
@@ -167,6 +168,32 @@ test("pi: the run's process killed while a call is parked loses nothing: the sam
   await follow(api, runId, ["completed"], { deadlineMs: 90_000 });
   assert.equal(await answerOf(api, runId), "Resumed: 5");
   assert.equal(calls(fake, "add").length, 1, "run once");
+});
+
+test("pi: a paid call that ran before a crash keeps its result when its tool is set to deny before the run reopens: the model gets the saved result, never that nothing was charged, and it is booked once", { timeout: 240_000 }, async (t) => {
+  const crashed = join(await mkdtemp(join(tmpdir(), "gate-crash-")), "crashed");
+  withEnv(t, { AGENTRUN_SERVE_TEST_CRASH_AFTER_CALL: crashed });
+  const server = await serve(t);
+  const { api } = server;
+  const answer = await owner(server);
+  const fake = await addFake(t, api, { paid: 0.05 });
+  const runId = await started(api, "ran-then-deny", ["mcp:fake/paid"], PAID);
+  const pending = await parked(api, runId);
+  assert.equal(await answer(runId, pending.id, { decision: "allow" }), 204);
+  for (let i = 0; calls(fake, "paid").length === 0; i++) {
+    assert.ok(i < 600, "the approved call reaches the server");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  // The call ran and its outcome is in the journal; its tool is set to deny before the process goes and the run reopens.
+  assert.equal((await api("PUT", "/settings/tools", { "mcp:fake/paid": { permission: "deny" } })).status, 200);
+  await writeFile(`${crashed}.go`, "");
+  const { rows } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 150_000 });
+  assert.ok(existsSync(crashed), "the process went between the call and its resume");
+  const said = (await answerOf(api, runId)) ?? "";
+  assert.equal(said, "Resumed: paid for ada", "the model gets the call's saved result");
+  assert.ok(!said.includes("nothing was charged"), said);
+  assert.equal(rows.filter((row) => /^Tool cost:/.test(row.summary ?? "")).length, 1, "booked once");
+  assert.equal(calls(fake, "paid").length, 1, "never run again");
 });
 
 test("pi: a priced MCP call is never sent or charged on any deny, and the model reads so plainly: the owner's deny, a deny setting, and a declining message", { timeout: 180_000 }, async (t) => {
