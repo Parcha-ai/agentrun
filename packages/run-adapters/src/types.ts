@@ -246,6 +246,9 @@ export interface AdapterSession {
 export interface AdapterCapabilities {
   /** Whether the adapter can start a session from another's transcript. */
   fork: boolean;
+  /** Whether its harness calls `spec.mcp`'s servers with an MCP client of its own. Without one, a host that runs MCP
+   *  tools gives them to the session as host tools (`spec.tools`), and never sets `spec.mcp`. */
+  mcpClient?: boolean;
 }
 
 export interface AgentAdapter {

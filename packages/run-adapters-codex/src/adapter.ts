@@ -100,6 +100,24 @@ function kernelTool(tool: HostTool): KernelTool {
   };
 }
 
+/** What keeps Codex from taking a tool named `name` with `inputSchema`, one problem each, `<name>: <pointer>: <why>`: what no
+ *  harness takes (an object root, valid 2020-12, no remote $ref), then what Codex would drop or retype in the schema. A
+ *  place the first already refused is not refused again by the second. The adapter refuses such a tool at the open, and a
+ *  host may refuse it sooner (an MCP tool's grant, at its save). Nothing in it throws: a schema that cannot be checked is a
+ *  problem at "/", naming the tool. */
+export function codexToolProblems(name: string, inputSchema: unknown): string[] {
+  try {
+    const shared = toolSchemaProblems(name, inputSchema);
+    // A schema the shared check refuses as a whole (its root, or that it is not JSON: a cycle only code can build) is not
+    // walked again: Codex's rules would never reach the end of a cycle.
+    const wholly = shared.some((problem) => problem.startsWith(`${name}: /:`));
+    const refusedAt = new Set(shared.map((problem) => /^[^:]*: (\S+):/.exec(problem)?.[1]));
+    return [...shared, ...(wholly ? [] : codexSchemaProblems(name, inputSchema).filter((problem) => !refusedAt.has(/^[^:]*: (\S+):/.exec(problem)?.[1])))];
+  } catch (error) {
+    return [`${name}: /: the tool's schema could not be checked (${String((error as Error)?.message ?? error).slice(0, 120)})`];
+  }
+}
+
 /** The adapter's event for a harness live event, if it has one. */
 function adapterEvent(event: unknown): AdapterEvent | undefined {
   const e = event as { type?: string; delta?: unknown; name?: unknown; callId?: unknown; args?: unknown; isError?: unknown; truncated?: unknown };
@@ -154,26 +172,15 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
     check(spec) {
       const problems: string[] = [];
       if (spec.context === "fork") problems.push("Codex sessions cannot fork another session's transcript; declare context: \"fresh\"");
+      // Codex's own MCP client is not used: a host gives a remote server's tools as host tools, through its own gate.
+      if (spec.mcp?.servers.length) problems.push("Codex sessions take no MCP servers (spec.mcp): give their tools as host tools");
       const seen = new Set<string>();
       for (const tool of spec.tools) {
         if (!TOOL_NAME.test(tool.name)) problems.push(`the tool name ${JSON.stringify(tool.name.slice(0, 80))} is not one Codex accepts (letters, digits, _ and -, at most 64)`);
         if (seen.has(tool.name)) problems.push(`the tool ${tool.name} is given twice`);
         if (skills.length && tool.name === READ_SKILL_FILE) problems.push(`the tool name ${READ_SKILL_FILE} is the adapter's own when it has skills`);
         seen.add(tool.name);
-        // What no harness takes (an object root, valid 2020-12, no remote $ref), then what Codex would drop or retype in
-        // the tool's schema: refused here, by name, not found out mid-turn. A place the first already refused is not
-        // refused again by the second.
-        // Nothing in it may throw: a tool whose schema cannot be checked is a problem at "/", naming the tool.
-        try {
-          const shared = toolSchemaProblems(tool.name, tool.inputSchema);
-          // A schema the shared check refuses as a whole (its root, or that it is not JSON: a cycle only code can build)
-          // is not walked again: Codex's rules would never reach the end of a cycle.
-          const wholly = shared.some((problem) => problem.startsWith(`${tool.name}: /:`));
-          const refusedAt = new Set(shared.map((problem) => /^[^:]*: (\S+):/.exec(problem)?.[1]));
-          problems.push(...shared, ...(wholly ? [] : codexSchemaProblems(tool.name, tool.inputSchema).filter((problem) => !refusedAt.has(/^[^:]*: (\S+):/.exec(problem)?.[1]))));
-        } catch (error) {
-          problems.push(`${tool.name}: /: the tool's schema could not be checked (${String((error as Error)?.message ?? error).slice(0, 120)})`);
-        }
+        problems.push(...codexToolProblems(tool.name, tool.inputSchema));
       }
       return problems;
     },

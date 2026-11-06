@@ -354,7 +354,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
   return {
     id: CLAUDE_AGENT_ID,
     version: CLAUDE_AGENT_SDK_VERSION,
-    capabilities: () => ({ fork: false }),
+    capabilities: () => ({ fork: false, mcpClient: true }),
     check(spec) {
       const problems: string[] = [];
       if (spec.context === "fork") problems.push("Claude Agent sessions cannot fork another session's transcript; declare context: \"fresh\"");

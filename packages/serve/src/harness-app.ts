@@ -35,7 +35,7 @@ import type { DoorContext, DoorEvent, DoorHook, DurableRun } from "@parcha/pi-du
 import { type ConfineChild, confineOf } from "./adapters.js";
 import { hostTools, type ToolResults } from "./host-tools.js";
 import { endsTurn, type Park, type ParkedCall, type Resume, type RunGate } from "./tool-gate.js";
-import type { McpGateway } from "./mcp-gateway.js";
+import { type McpGateway, mcpHostTools } from "./mcp-gateway.js";
 import { CAP_REFUSAL_CODE, CAP_REFUSED_FIELD, type CapGuard, capToolSpend, holdsInFlight, type RefusalFigures, type RunSpend, sideSpend, takePaidRefusal, useSpend } from "./cap.js";
 import { durableSessions } from "./sessions.js";
 import { handsParallel, planeOf } from "./tool-plane.js";
@@ -659,15 +659,19 @@ export function adapterRun(
       // The park every gated call of the run's takes, built once: the host tools' here, and the MCP gateway's, which takes
       // the same object beside them (`{ gate, park }`). A call parked by its id or by its tool and arguments ends its turn.
       const park: Park = { commit: (change) => commit(change as never) as never, parked: (callId) => void (parked = { callId }), parkedBy: (match) => void (parked = match), turn: () => taking };
-      // An MCP call from the harness's own client takes the same park, and its result is kept by its call id too, for the
-      // root's record of it, as a host tool's is.
+      // An MCP call takes the same park, and its result is kept by its call id too, for the root's record of it, as a host
+      // tool's is. It enters the run's gate in the gateway, once: from the harness's own MCP client (claude-agent), or,
+      // for a harness with none (codex), from a host tool of the gateway's (mcpHostTools), never through hostTools' gate.
       const gateway = spec.mcp as McpGateway | undefined;
       const mcp = gateway && { ...gateway, call: async (...[server, tool, args, call]: Parameters<McpGateway["call"]>) => {
         const result = await gateway.call(server, tool, args, { ...call, ...(gate ? { park } : {}) });
         if (call.callId) results.set(call.callId, { text: result.content.map((block) => block.text).join("\n\n"), isError: result.isError === true });
         return result;
       } };
-      session = await adapter.open({ ...spec, ...(mcp ? { mcp } : {}), tools: hostTools(durable, tools, context, results, coding, gate ? { gate, park } : undefined, extra) }, { writer, models: booking.models, signal: stop.signal, onEvent, ...(dir ? { dir } : {}), ...(cwd ? { cwd } : {}) });
+      const client = adapter.capabilities().mcpClient === true;
+      const { mcp: _given, ...rest } = spec;
+      const own = hostTools(durable, tools, context, results, coding, gate ? { gate, park } : undefined, extra);
+      session = await adapter.open({ ...rest, ...(mcp && client ? { mcp } : {}), tools: mcp && !client ? [...own, ...mcpHostTools(mcp)] : own }, { writer, models: booking.models, signal: stop.signal, onEvent, ...(dir ? { dir } : {}), ...(cwd ? { cwd } : {}) });
       // A turn the person stopped is still open in the session (an interrupt writes no end there), and it is not resumed.
       // The run's stop record names the person's newest message when they stopped: with no message on the root newer than
       // it, the open turn is the stopped one. The session settles it, ended interrupted, and the next message is a turn of
