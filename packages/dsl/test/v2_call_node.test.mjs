@@ -226,3 +226,23 @@ test("dry run: effects are synthesized, never executed", async () => {
   assert.equal(result.ok, true, JSON.stringify(result));
 });
 
+
+test("runner: a call the host holds (deps.held) is not cut for the time held: its deadline moves back by every millisecond held, and only for that call's path", async () => {
+  const paths = [];
+  let heldFrom;
+  const holding = async ({ signal }) => {
+    heldFrom = Date.now();
+    await new Promise((resolve, reject) => { const timer = setTimeout(resolve, 1_500); signal.addEventListener("abort", () => (clearTimeout(timer), reject(new Error("aborted by signal")))); });
+    return { request_id: "r1", status: "ok" };
+  };
+  const held = (path) => (paths.push(path), heldFrom === undefined ? 0 : Date.now() - heldFrom);
+  const ran = await runWorkflow(wf([planNode, submitCall({ deadline_s: 1 }), assemble]), { question: "q" }, { runNode: async () => ({ prompt: "p", seconds: 5 }), held, runEffect: holding });
+  assert.equal(ran.status, "complete", "held 1.5 s of a 1 s deadline, the call was not cut");
+  assert.ok(paths.length > 0 && paths.every((path) => typeof path === "string" && path === paths[0]), JSON.stringify(paths));
+  // Held at another path only: this call's deadline is its own, and cuts it.
+  heldFrom = undefined;
+  await assert.rejects(
+    runWorkflow(wf([planNode, submitCall({ deadline_s: 1 }), assemble]), { question: "q" }, { runNode: async () => ({ prompt: "p", seconds: 5 }), held: (path) => (path === paths[0] ? 0 : held(path)), runEffect: holding }),
+    /exceeded its 1s deadline/,
+  );
+});

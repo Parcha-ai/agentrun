@@ -258,3 +258,12 @@ test("through judgeFromProviders, a node's timeoutMs that cuts the image check i
   assert.equal(caught.unsent, true);
   assert.deepEqual(posts, [], 'nothing was sent');
 });
+
+test("priceOf: a Decisions model's price as the public catalog lists it, read with the catalog; null for a model it lists no price for", async () => {
+  const { default: faux } = await import("../dist/testing/faux-system-one.js");
+  const seen = [];
+  const provider = openrouterProvider({ apiKey: `not-a-secret-${"openrouter"}`, fetch: (url, init) => (seen.push(new URL(String(url)).pathname), faux(url, init)) });
+  assert.deepEqual(await provider.priceOf("liquid/d1"), { promptUsd: 0.00000002, completionUsd: 0, requestUsd: 0, imageUsd: 0, maxCompletionTokens: null });
+  assert.equal(await provider.priceOf("acme/unlisted-decider"), null);
+  assert.deepEqual(seen, ["/api/v1/models"], "the catalog is read once");
+});

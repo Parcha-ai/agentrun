@@ -34,16 +34,17 @@ test("a workflow run executes its model node and completes with the workflow's o
   assert.deepEqual((await api("GET", "/runs?agent=flow")).body.runs.map((r) => [r.kind, r.status]), [["workflow", "completed"]]);
 });
 
-test("a workflow run's input is checked against the workflow's input schema (422), and a workflow run takes no max_cost_usd", async (t) => {
+test("a workflow run's input is checked against the workflow's input schema (422), and a workflow run takes a max_cost_usd, as an agentic run does", async (t) => {
   const { api } = await serve(t);
   assert.equal((await api("POST", "/agents", flowAgent("flow"))).status, 201);
   const wrong = await api("POST", "/agents/flow/runs", { input: { content: "no question" } });
   assert.equal(wrong.status, 422);
   assert.equal(wrong.body.error.code, "input_invalid");
   assert.match(wrong.body.error.fields[0].field, /^input/);
-  const capped = await api("POST", "/agents/flow/runs", { input: { question: "x" }, max_cost_usd: 1 });
-  assert.deepEqual(capped.body.error.fields.map((f) => [f.field, f.reason]), [["max_cost_usd", "not_allowed"]]);
   assert.deepEqual((await api("GET", "/runs")).body.runs, []);
+  const capped = await api("POST", "/agents/flow/runs", { input: { question: "x" }, max_cost_usd: 1 });
+  assert.equal(capped.status, 202, JSON.stringify(capped.body));
+  assert.equal((await api("GET", `/runs/${capped.body.run_id}`)).body.cost.cap_usd, 1);
 });
 
 test("a workflow run takes no message (501), stops nothing, and a cancel ends it cancelled and carried back stopped", async (t) => {

@@ -138,11 +138,11 @@ describe("a 422, by field", () => {
     const e = new ClientError(422, "input_invalid", "max_cost_usd is required");
     e.fields = [
       { field: "target.max_cost_usd", reason: "missing", message: "max_cost_usd is required: every run a trigger starts is capped" },
-      { field: "target.agent_id", reason: "not_allowed", message: "A trigger's runs are capped, and a workflow run's spend is not capped here: name an agent that is not a workflow." },
+      { field: "target.agent_id", reason: "invalid", message: "the agent flow has no current revision" },
       { field: "source.kind", reason: "not_an_option", message: "source.kind is schedule" },
     ];
     expect(issuesOf(e)).toEqual({
-      fields: { "target.max_cost_usd": "max_cost_usd is required: every run a trigger starts is capped", "target.agent_id": "A trigger's runs are capped, and a workflow run's spend is not capped here: name an agent that is not a workflow." },
+      fields: { "target.max_cost_usd": "max_cost_usd is required: every run a trigger starts is capped", "target.agent_id": "the agent flow has no current revision" },
       rest: ["source.kind is schedule"],
     });
   });
