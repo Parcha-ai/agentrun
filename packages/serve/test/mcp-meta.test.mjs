@@ -13,7 +13,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { mcpGateway, mcpPinOf } from "../dist/mcp-gateway.js";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
-import { agent, follow, serve as serveOf, withEnv } from "./support.mjs";
+import { agent, flowAgent, follow, serve as serveOf, withEnv } from "./support.mjs";
 
 const TOKEN = `not-a-secret-${"mcp-meta-bearer-0123"}`;
 const REASON = "it runs other actions by name, so a grant can't name the real action. Use the server's direct tools instead.";
@@ -58,6 +58,9 @@ test("a generic name is a meta tool only on its provider's host: Klavis's execut
   assert.equal(metaToolOf("https://strata.klavis.ai/mcp/?strata_id=x", "execute_action")?.reason, REASON);
   assert.equal(metaToolOf("https://klavis.ai.example.com/mcp", "execute_action"), undefined, "a host that only looks like Klavis's");
   assert.equal(metaToolOf("https://mcp.zapier.com/api/mcp/s/x/mcp", "write_code_action")?.reason, REASON);
+  // A host written with its final dot is the same host.
+  assert.equal(metaToolOf("https://strata.klavis.ai./mcp/?strata_id=x", "execute_action")?.reason, REASON, "klavis.ai. is klavis.ai");
+  assert.equal(metaToolOf("https://mcp.zapier.com./api/mcp/s/x/mcp", "write_code_action")?.reason, REASON, "mcp.zapier.com. is mcp.zapier.com");
   assert.equal(metaToolOf("http://127.0.0.1:9/mcp", "write_code_action"), undefined);
   for (const name of ["COMPOSIO_MULTI_EXECUTE_TOOL", "COMPOSIO_REMOTE_WORKBENCH", "execute_zapier_write_action", "Arcade_UseTool", "mcp-exec", "portal_execute", "portal_codemode_execute"]) {
     assert.equal(metaToolOf("http://127.0.0.1:9/mcp", name)?.reason, REASON, name);
@@ -101,4 +104,12 @@ test("a run's pin made before the rule, holding a meta tool, refuses its next la
   const gateway = mcpGateway({ pin: { composio: { url: "http://127.0.0.1:9/mcp", tools: [{ name: "COMPOSIO_MULTI_EXECUTE_TOOL", inputSchema: object }] } }, credentials: { composio: { url: "http://127.0.0.1:9/mcp" } }, work: () => data });
   const said = await gateway.call("composio", "COMPOSIO_MULTI_EXECUTE_TOOL", {}, { signal: new AbortController().signal });
   assert.deepEqual([said.isError, said.content[0].text], [true, `mcp:composio/COMPOSIO_MULTI_EXECUTE_TOOL can't be granted: ${REASON} Nothing was sent.`]);
+});
+
+test("a workflow's own grants are held to the rule too: one that lists a meta tool is 422 at the save, never saved to fail its launches", async (t) => {
+  const { api } = await serve(t);
+  await saved(t, api, "composio", ["COMPOSIO_MULTI_EXECUTE_TOOL", "GMAIL_SEND_EMAIL"]);
+  const refused = await api("POST", "/agents", flowAgent("flow-meta", undefined, { tools: ["mcp:composio/COMPOSIO_MULTI_EXECUTE_TOOL"] }));
+  assert.equal(refused.status, 422, JSON.stringify(refused.body));
+  assert.ok(JSON.stringify(refused.body).includes(`mcp:composio/COMPOSIO_MULTI_EXECUTE_TOOL can't be granted: ${REASON}`), JSON.stringify(refused.body));
 });
