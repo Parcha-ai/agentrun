@@ -8,7 +8,7 @@ import { mkdtemp } from "node:fs/promises";
 import { join, relative } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { DISK, fakeArchil, HELPER_PATH, REGION, TOKEN } from "./fixtures/fake-archil.mjs";
+import { DISK, fakeArchil, HELPER_PATH, REGION, TOKEN, TOOL_USER } from "./fixtures/fake-archil.mjs";
 import { daytonaSandboxes } from "./fixtures/fake-daytona.mjs";
 import { follow, runDir, scratch, serve, withEnv } from "./support.mjs";
 
@@ -194,4 +194,25 @@ test("takeover: a box lost while it held the folder is replaced, and the new box
   assert.deepEqual(second.map((c) => [c.verb, c.refused ?? c.revoked]), [["mount", "held"], ["revoke", boxes[0]]]);
   assert.ok(second.every((c) => c.folder === folder));
   assert.deepEqual(disk.holds(), {});
+});
+
+test("two users: every tool command runs as the tool user, which has no sudo, and the helper is the only root the box's own user runs", { timeout: 180_000 }, async (t) => {
+  const { server, fake } = await onArchil(t, { daytona: { sudoProbe: true } });
+  const { api, data } = server;
+  await agent(api, "remote");
+  const plan = [
+    { tool: "bash", args: { command: "sudo -n true; echo sudo=$?" } },
+    { tool: "bash", args: { command: `sudo -n ${HELPER_PATH} checkin; echo helper=$?` } },
+    { tool: "bash", args: { command: "touch made-by-tool && echo writable" } },
+  ];
+  const run = (await api("POST", "/agents/remote/runs", { input: { content: JSON.stringify({ probe: plan }) } })).body;
+  await follow(api, run.run_id, ["completed"], { deadlineMs: 120_000 });
+  const said = answers(data, run.run_id);
+  assert.match(said[0].text, /sudo=97/, "a tool's sudo is refused");
+  assert.match(said[1].text, /helper=97/, "a tool cannot run the helper");
+  assert.match(said[2].text, /writable/, "/workspace stays writable for the tool user");
+  assert.deepEqual(fake.sudoCalls(), ["-n true", `-n ${HELPER_PATH} checkin`], "the refusing stand-in met both, so neither ran");
+  // Every command a tool ran went through `sudo -n -u agentrun-tool --`, noted by the box's sudo.
+  const commands = fake.requests.filter((r) => r.path.endsWith("/process/execute")).map((r) => JSON.parse(r.body).command);
+  assert.ok(commands.length > 0 && commands.filter((c) => c.includes(TOOL_USER)).length > 0, commands.join("\n"));
 });

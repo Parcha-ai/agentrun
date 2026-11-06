@@ -30,6 +30,7 @@ import { runBoxVolumeOf, vmDocker, vmEgress } from "./box-egress-vm.js";
 import { awaitImage, boxImageOf } from "./box-image.js";
 import { egressParentOf, runBoxPathsOf } from "./box-paths.js";
 import { RELAYED_KEY, relayedBox, relayFetch } from "./box-relay.js";
+import { asToolUser } from "./tool-user.js";
 import { FolderHeld } from "./archil.js";
 import { VM_PROVIDER } from "./boxes.js";
 import type { DiskAdapter } from "./disk.js";
@@ -396,7 +397,8 @@ async function relayedRunBox(root: string, run: { id: string; dir: string; place
   const attached = await boxes.attach(given.id, context);
   if (!attached.ok) throw new Error(`the run's box could not be reached: ${attached.error.message}`);
   if (!attached.value) throw new Error(`the run's box ${given.id} is not running`);
-  return { box: attached.value, made: given.made, ...(given.replaced ? { replaced: true } : {}) };
+  // Its tools' programs run as the tool user, never the box's own (tool-user.ts), which holds the helper's sudo.
+  return { box: asToolUser(attached.value), made: given.made, ...(given.replaced ? { replaced: true } : {}) };
 }
 
 /** The run's process's Daytona provider: its calls go to the relay, which adds the key. */
