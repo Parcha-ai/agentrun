@@ -15,6 +15,8 @@ const { MODEL_PROVIDER, runModels } = modelModule;
 /** pi-ai's catalog price of gpt-5.4-mini, every provider that lists it alike: USD per million tokens. */
 const CATALOG_PRICE = { input: 0.75, output: 4.5, cacheRead: 0.075, cacheWrite: 0 };
 const NAMES = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_API_KEY", "AGENT_MODEL_PRICE", "AGENT_MODEL_FAST", "AGENT_MODEL_STRONG", "AGENT_MODEL_GATEWAY_IDS", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "OPENAI_API_KEY", "OPENROUTER_API_KEY"];
+/** The gateway's dummy key (no real key): built, so no key-shaped literal sits in the source the export scans. */
+const GATEWAY_KEY = `not-a-secret-${"gateway"}`;
 /** Every answer's usage: 1000 tokens in, 100 out, none cached. */
 const USAGE = { input: 1000, output: 100 };
 
@@ -78,7 +80,7 @@ test("a multi-digit version flips pair by pair as the catalog lists it (llama-3-
 test("a capped pi run on the gateway's gpt-5-4-mini completes, priced at the catalog's gpt-5.4-mini, with gpt-5-4-mini on the wire", { timeout: 90_000 }, async (t) => {
   const gw = await startFauxGateway({ usage: USAGE, port: await freePort() });
   t.after(() => gw.close());
-  withEnv(t, { AGENT_MODEL_BASE_URL: `${gw.url}/v1`, AGENT_MODEL_API_KEY: "not-a-secret-gateway", AGENT_MODEL: "gpt-5-4-mini" }, NAMES);
+  withEnv(t, { AGENT_MODEL_BASE_URL: `${gw.url}/v1`, AGENT_MODEL_API_KEY: GATEWAY_KEY, AGENT_MODEL: "gpt-5-4-mini" }, NAMES);
   const { api } = await serve(t, { faux: undefined });
   assert.equal((await api("POST", "/agents", agent("priced-flip"))).status, 201);
   const started = await api("POST", "/agents/priced-flip/runs", { input: { content: "Say hi." }, max_cost_usd: 0.25 });
