@@ -116,7 +116,8 @@ test("through a run: the row's holder names the door its process proved, with th
 test("a door that never serves its run (GET /status answers 503 OPENING for good) is waited for only until the deadline: the wait ends there with the last answer, and polls no more", { timeout: 30_000 }, async (t) => {
   const asked = [];
   const server = createServer((req, res) => {
-    asked.push(Date.now());
+    // Its polls alone: a machine's own port scanner may GET / on a new loopback port.
+    if (req.url === "/status") asked.push(Date.now());
     res.writeHead(503, { "content-type": "application/json" });
     res.end(JSON.stringify({ error: "OPENING", message: "the run is still opening" }));
   });
@@ -128,11 +129,24 @@ test("a door that never serves its run (GET /status answers 503 OPENING for good
   assert.deepEqual(ended, { opened: false, why: "deadline", last: "503 OPENING" });
   // A poll sent just before the deadline may reach this server (on the same event loop) after the wait ended: once those
   // are in, no more come.
-  await new Promise((resolve) => setTimeout(resolve, 500));
+  await new Promise((resolve) => setTimeout(resolve, 1_000));
   const count = asked.length;
   await new Promise((resolve) => setTimeout(resolve, 1_000));
   assert.equal(asked.length, count, "no poll after the wait ended");
   assert.ok(count <= 800 / 50 + 2, `polled about once each 50 ms until the deadline, not more: ${count}`);
+});
+
+test("a poll the deadline cuts short keeps the door's answer before it: a slow door's last word stays 503 OPENING, never no answer", { timeout: 30_000 }, async (t) => {
+  // Each answer takes 300 ms, and the wait 2 s: the poll sent at about 1.75 s, given only what is left, is cut before its
+  // answer comes, after earlier ones answered 503 OPENING.
+  const server = createServer((req, res) => setTimeout(() => {
+    res.writeHead(503, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: "OPENING", message: "the run is still opening" }));
+  }, 300));
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => server.close());
+  const ended = await untilOpened(`http://127.0.0.1:${server.address().port}`, {}, () => false, Date.now() + 2_000, 50);
+  assert.deepEqual(ended, { opened: false, why: "deadline", last: "503 OPENING" });
 });
 
 test("through a run whose process never opens it: one line naming the cause, its process stopped at the ready time, and a request's 503 says why", { timeout: 120_000 }, async (t) => {

@@ -76,7 +76,7 @@ export async function untilOpened(door: string, headers: Record<string, string>,
     if (res) {
       const code = await res.json().then((body: { error?: unknown }) => (typeof body?.error === "string" ? ` ${body.error}` : ""), () => "");
       last = `${res.status}${code}`;
-    } else last = "no answer";
+    } else if (Date.now() < deadline) last = "no answer"; // one the deadline cut keeps the answer before it
     await new Promise((resolve) => setTimeout(resolve, everyMs));
   }
 }
