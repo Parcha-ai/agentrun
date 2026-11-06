@@ -185,8 +185,9 @@ const closes = (line: string, fence: string) => line.trimEnd().replace(/^ {0,3}/
 /** The notes in an end-of-run turn's answer (reflectPrompt's format): each ```note <file> block's file name and text,
  *  in order, and each ````skill <name> and ````workflow <name> block's name and text. A learning block opens with the
  *  fence asked for (three or four backticks for a note, four for a skill or a draft) and runs to the next line that is
- *  that fence; every shorter fence is text, and a longer one is an example, skipped whole. An opening that reaches
- *  another opening or the answer's end first is no block: it alone is left out. A block that repeats one before it word
+ *  that fence; every shorter fence is text, and a longer one is an example, skipped whole (to the answer's end when it
+ *  never closes). An opening that reaches another opening in a fence as long or longer, or the answer's end, first is no
+ *  block: it alone is left out. A block that repeats one before it word
  *  for word is that one. A block that names nothing or more than one, or names what a block of its kind before it named
  *  with other words, is `unparsed`; so is an answer with no block that holds a note anyway (front matter outside a
  *  block), and one over ANSWER_MAX. An answer with none is `empty`. What a block says, its name included, is the
@@ -202,11 +203,13 @@ export function parseReflection(answer: unknown): Reflection {
       const long = LONG_OPEN.exec(lines[i]!)?.[1];
       let end = i + 1;
       while (long && end < lines.length && !closes(lines[end]!, long)) end++;
-      if (long && end < lines.length) i = end;
+      // Never closed, an example runs to the answer's end.
+      if (long) i = end;
       continue;
     }
     let end = i + 1;
-    while (end < lines.length && !closes(lines[end]!, open.fence) && !learningOpen(lines[end]!)) end++;
+    // Only an opening in a fence at least as long as this block's ends it: a shorter one is an example in its text.
+    while (end < lines.length && !closes(lines[end]!, open.fence) && !((learningOpen(lines[end]!)?.fence.length ?? 0) >= open.fence.length)) end++;
     if (end >= lines.length || !closes(lines[end]!, open.fence)) {
       i = end - 1;
       continue;
