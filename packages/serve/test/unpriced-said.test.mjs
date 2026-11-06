@@ -102,3 +102,21 @@ test("capabilities read a gateway default the catalog prices (gpt-5-4-mini, flip
   const { models } = (await api("GET", "/capabilities")).body;
   assert.deepEqual([models.ready, models.priced], [true, true], JSON.stringify(models));
 });
+
+// Saved under a default cap (definition max_cost_usd), a model with no price is a setting this host can fix, not a choice
+// the definition got wrong: the save keeps the agent, with a warning that names the fix, and an update saves too; only a
+// run under the cap is refused (#1822 review).
+test("an agent with a default cap on a gateway model with no price saves with a warning naming AGENT_MODEL_PRICE, and its update saves; its capped run is refused before it starts", { timeout: 60_000 }, async (t) => {
+  const gw = await gateway(t);
+  withEnv(t, { AGENT_MODEL_BASE_URL: `${gw.url}/v1`, AGENT_MODEL_API_KEY: KEY, AGENT_MODEL: NO_PRICE }, NAMES);
+  const { api } = await serve(t, { faux: undefined });
+  const definition = agent("capped-no-price", { max_cost_usd: 0.5 }).definition;
+  const created = await api("POST", "/agents", { definition });
+  const warning = created.body?.warnings?.find((w) => w.field === "definition.model");
+  assert.deepEqual([created.status, warning?.message, warning?.fix], [201, `The model ${NO_PRICE} has no price here, so a run's spend cap cannot be kept on it.`, "Set AGENT_MODEL_PRICE (USD per million input,output,cacheRead tokens) where AgentRun starts, or run without a spend cap."], JSON.stringify(created.body));
+  const updated = await api("PUT", "/agents/capped-no-price/definition", { definition: { ...definition, instructions: "Answer, updated." } });
+  assert.equal(updated.status, 200, JSON.stringify(updated.body));
+  const started = await api("POST", "/agents/capped-no-price/runs", { input: { content: "Say hi." } });
+  assert.equal(started.status, 409, JSON.stringify(started.body));
+  assert.equal(gw.requests.length, 0, "nothing reached the gateway");
+});
