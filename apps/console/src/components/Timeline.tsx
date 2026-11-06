@@ -29,12 +29,12 @@ const title = (row: TimelineRow) => {
   if (row.kind === "user_message" && text.startsWith("{")) {
     try { return Object.entries(JSON.parse(text) as Record<string, unknown>).map(([k, v]) => `${k}: ${typeof v === "string" ? v : JSON.stringify(v)}`).join(" · "); } catch { /* not whole JSON: as is */ }
   }
-  // An answer's first line as text: its markdown (a heading's #, bold's **, code's `) is not shown as typed. The summary is
-  // that first line (the server's), so an answer with more says so with "…": the rest is a click away, never dropped unseen.
-  if (row.kind === "final_answer") {
-    const more = (row.text ?? "").split("\n").filter((l) => l.trim()).length > 1;
-    return `${text.replace(/^\s*(#{1,6}\s+|>\s+|[-*+]\s+)/, "").replace(/(\*\*|__|`)/g, "")}${more ? "…" : ""}`;
-  }
+  // The summary is the text's first line (the server's), so an answer or your message with more says so with "…": the
+  // rest is a click away (the row opens its text whole), never dropped unseen.
+  const more = (row.text ?? "").split("\n").filter((l) => l.trim()).length > 1 ? "…" : "";
+  // An answer's first line as text: its markdown (a heading's #, bold's **, code's `) is not shown as typed.
+  if (row.kind === "final_answer") return `${text.replace(/^\s*(#{1,6}\s+|>\s+|[-*+]\s+)/, "").replace(/(\*\*|__|`)/g, "")}${more}`;
+  if (row.kind === "user_message") return `${text}${more}`;
   return text;
 };
 /** How long a tool took: "27 ms", or "3.5 s" from a second on. */
