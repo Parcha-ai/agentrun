@@ -72,7 +72,12 @@ export function AgentPage({ v2, agentId, defaultModel, modelSource, routePrefix,
   // Learned items that wait for the owner's OK, counted on the Learning tab from the agent's own `learning.pending`: no
   // read of what it learned for it. A write on the tab (an approve, a retire, an edit) reads the agent again for it.
   const itemsWaiting = waitingOf(agent);
-  const onChanged = () => { v2.getAgent(agentId).then((r) => setAgent((cur) => (cur && cur.agent_id === r.agent.agent_id ? r.agent : cur)), () => {}); };
+  // Only the newest re-read lands: one asked after an earlier write and answered last never puts back its older count.
+  const reread = useRef(0);
+  const onChanged = () => {
+    const n = ++reread.current;
+    v2.getAgent(agentId).then((r) => { if (n === reread.current) setAgent((cur) => (cur && cur.agent_id === r.agent.agent_id ? r.agent : cur)); }, () => {});
+  };
   const analytics = stats === undefined ? undefined : stats !== null;
   if (error) return error.cause instanceof ClientError && error.cause.status === 404
     ? <NotHere what="agent" id={agentId} list={{ href: "#/agents", label: "Open the agents list" }} />
