@@ -191,6 +191,25 @@ test("a workflow run whose claim cannot be written at its launch is launched aga
   assert.ok(claimOf(data, run.body.run_id).claim_epoch >= 1, "claimed by its process once it could be");
 });
 
+test("an agentic run whose claim cannot be written at its launch waits for it, its first message with it: once the claim is written it completes, never failed for a process it never had", { timeout: 120_000 }, async (t) => {
+  const { api, data } = await serve(t, { faux: FAUX, settleRetryMs: 200 });
+  assert.equal((await api("POST", "/agents", agent("asker"))).status, 201);
+  const db = new DatabaseSync(join(data, "store.sqlite"));
+  t.after(() => db.isOpen && db.close());
+  db.exec("CREATE TRIGGER held_claim BEFORE UPDATE OF claim_epoch ON runs BEGIN SELECT RAISE(ABORT, 'the claim is held'); END");
+  const run = await api("POST", "/agents/asker/runs", { input: { content: "Answer soon." } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  // Past the launch's first claim retries (50, 100 and 200 ms): its first message is still waiting, not failed.
+  await new Promise((resolve) => setTimeout(resolve, 1_500));
+  assert.equal(claimOf(data, run.body.run_id).claim_epoch, 0, "no claim written yet, so no process");
+  assert.notEqual((await api("GET", `/runs/${run.body.run_id}`)).body.status, "failed", "not failed while it waits on its claim");
+  db.exec("DROP TRIGGER held_claim");
+  db.close();
+  const { last } = await follow(api, run.body.run_id, ["completed", "failed"], { deadlineMs: 60_000 });
+  assert.equal(last.status, "completed", JSON.stringify(last));
+  assert.ok(claimOf(data, run.body.run_id).claim_epoch >= 1, "claimed by its process once it could be");
+});
+
 test("a run cancelled while its launch waits on its claim gives its place back at once: the next start takes it", { timeout: 120_000 }, async (t) => {
   const { api, data } = await serve(t, { faux: FAUX, settleRetryMs: 60_000, maxRuns: 1 });
   assert.equal((await api("POST", "/agents", flowAgent("flow"))).status, 201);

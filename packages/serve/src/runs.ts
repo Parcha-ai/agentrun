@@ -1853,6 +1853,12 @@ export class Runs {
           if (Date.now() > deadline) throw new ApiError("unavailable", "the run did not come up in time", { retry_after_ms: 1000 }, { "retry-after": "1" });
           continue;
         }
+        // A launch waiting on its claim has no process yet, and tries again on its own (launch): waited for, within the time
+        // left, never launched a second time nor read as a process that exited.
+        if (run.claimWait) {
+          if (Date.now() > deadline) throw new ApiError("unavailable", "the run did not come up in time", { retry_after_ms: 1000 }, { "retry-after": "1" });
+          continue;
+        }
         if (launched) throw new ApiError("internal", `the run's process exited before it served: ${await this.lastLine(run)}`);
         const pid = holderPid(record);
         const fresh = record?.status === "running" && typeof record.heartbeatAt === "string" && Date.now() - Date.parse(record.heartbeatAt) < LEASE_MS && (pid === undefined || alive(pid));
