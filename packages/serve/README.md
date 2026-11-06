@@ -1079,9 +1079,10 @@ browser session on it. Nothing else turns it on: `auto` never picks it, and no a
   loaded or the protocol handed to a page is refused, in words that name no path. No client may drive an extension's
   page, which could move itself onto a file, and a page the guard sees on a file or a browser-internal URL is closed.
   The extension's own APIs that would go around the guard (opening or moving a tab or a window, the debugger API, its
-  worker's clients, any offscreen page but Stagehand's heartbeat) are taken away in its copy before any code runs
-  there; a web page's own move to a file (a link, a script, `window.open`) is Chrome's to refuse, and it does. The
-  browser's own socket is on a port nothing in the browser can reach.
+  worker's clients, any offscreen page but Stagehand's heartbeat, a request rule that does more than allow or block)
+  are taken away in its copy before any code runs there; a web page's own move to a file (a link, a script,
+  `window.open`) is Chrome's to refuse, and it does. The browser's own socket is on a port nothing in the browser can
+  reach.
 - **What it can't do.** No saved sign-ins; no vendor proxies, verified browsing, geolocation or region, which a vendor's
   browser offers and this one has none of; and nothing on this machine or a private network, however the page or the
   model asks. Its downloads stay in a folder of the session's own under the run's directory, after its release too,
