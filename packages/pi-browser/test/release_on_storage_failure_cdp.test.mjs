@@ -66,8 +66,9 @@ const slowClosing = (driver, ms = 500) => async (...args) => {
   return { ...d, close: async () => { await new Promise((resolve) => setTimeout(resolve, ms)); await d.close(); } };
 };
 
-/** The crash-and-resume example's shutdown: release, close the extension, close the Harness, and no drain. The release
- *  task must start while the driver is still closing, or the Harness closes before it runs and the Chrome stays up. */
+/** The crash-and-resume example's shutdown: release, close the extension, close the Harness, and no drain. Closing the
+ *  Harness cancels a release task that has not released yet, so the release waits until the task has, however fast the
+ *  driver closed. */
 async function releaseWithoutDrain(t, { executablePath, args, driver }) {
   const profiles = await scratch(t, "release-cdp-");
   const dir = scratchSync(t, "release-cdp-store-");
@@ -88,6 +89,11 @@ async function releaseWithoutDrain(t, { executablePath, args, driver }) {
 
 test("a host that releases, closes the extension and closes the Harness with no drain leaves no Chrome (fake Chrome, a driver as slow to close as Stagehand)", async (t) => {
   await releaseWithoutDrain(t, { executablePath: FAKE, args: [], driver: slowClosing(stubDriver) });
+});
+
+test("a host that releases, closes the extension and closes the Harness with no drain leaves no Chrome (fake Chrome, a driver that closes at once)", async (t) => {
+  // Stagehand 4.4's disconnect can take milliseconds: the release must not count on the driver's close to give its task time.
+  await releaseWithoutDrain(t, { executablePath: FAKE, args: [], driver: stubDriver });
 });
 
 test("a host that releases, closes the extension and closes the Harness with no drain leaves no real Chrome (Stagehand)", { skip: NO_CHROME, timeout: 120_000 }, async (t) => {
