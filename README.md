@@ -9,6 +9,7 @@
   <a href="#architecture">Architecture</a> ·
   <a href="#the-life-of-a-request">Life of a request</a> ·
   <a href="packages/serve/README.md">Server docs</a> ·
+  <a href="#open-protocols">Protocols</a> ·
   <a href="#roadmap">Roadmap</a> ·
   <a href="LICENSE">Apache-2.0</a>
 </p>
@@ -215,7 +216,9 @@ Agents pick tools from one closed table: `read`, `write`, `edit`, `bash` and its
 `web_search`, `web_fetch`, `browser` and [monid](https://monid.ai)'s paid data APIs. Web search runs on the harness's
 own search where it has one, else Parallel on your key, else a keyless fallback. Every call goes through the same gate,
 on every harness: built-in tools allow by default, third-party tools ask. Remote MCP servers are saved once, with
-their credential sealed and their tools listed before you keep them.
+their credential sealed and their tools listed before you keep them, and agents on pi and Claude Code call those tools
+through the same gate and the same spend cap. A tool that runs other actions by name (a "meta tool" like
+`MULTI_EXECUTE`) can't be granted: a grant has to name the real action, so the gate and the price mean something.
 [Tools](packages/serve/README.md#tools) · [MCP servers](packages/serve/README.md#mcp-servers) ·
 [For coding agents](packages/serve/README.md#for-coding-agents)
 
@@ -260,17 +263,37 @@ sandboxes. An agent you build here will move there unchanged.
 **Enterprise** will run AgentRun in your own cloud with SSO, SCIM, audit and ContextForge. None of that goes into the
 open-source server.
 
+## Open protocols
+
+The theme of the next releases: make it work, then make it simple, then make it a protocol anyone can build on.
+
+- **The harness protocol.** What a harness implements to get everything above for free: the journal, resume, stop and
+  steer, the tool route and gate, the metered model route and cap, the learning turn. It's
+  [ACP](https://agentclientprotocol.com) plus one small durability extension under `ai.agentrun.*`, so any coding CLI
+  that speaks ACP is close to a durable AgentRun harness already. A typed workflow is a harness whose turn runs a graph.
+- **The computer protocol.** One small provisioner per vendor (create, network, mount, release) and one AgentRun
+  daemon inside every computer (exec, processes, files, later screen and input). A sandbox, a microVM, a full VM, a real
+  Mac or Windows machine and a phone all speak it. A new vendor is its provisioner plus a conformance suite it has to
+  pass. The daemon, the Docker provisioner and the suite are in review now.
+- **One tool spec.** Every tool, built in or from a catalog, is one spec with one id grammar
+  (`<source>:<toolkit>/<action>`), called through one path that gates, prices, redacts and journals it. Agents get a
+  `code` tool that writes a script against a typed module of their own granted tools, each call still gated and priced.
+  Each harness keeps the tool names and shapes its model was trained on.
+
+Each ships as code first, then as an open spec with its conformance suite.
+
 ## Roadmap
 
 What's built is above. What's next:
 
-- One disk per owner, read live off SQLite (rolling out in the next release), and Archil for sandboxes on other machines.
-- Agents calling the tools of your saved MCP servers.
+- One disk per owner, read live off SQLite, and Archil for sandboxes on other machines.
+- A spend cap that admits each request on its expected cost, so a run uses its budget and wraps up with an answer.
+- MCP tools on Codex and OpenCode.
 - Slack and GitHub triggers.
-- A CLI and SDKs.
-- Composio connectors.
+- TypeScript and Python SDKs.
+- Composio connectors and triggers.
 - ContextForge for your own APIs and MCP servers.
-- Full computers on E2B and Orgo.
+- Full computers on E2B and Orgo, and phones.
 - Hosted AgentRun.
 
 ## Contributing
