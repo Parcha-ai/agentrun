@@ -81,7 +81,7 @@ export const BOX_KEYS: readonly string[] = [DAYTONA_KEY, ...VM_PROVIDER.keys];
 /** Why docker is unavailable when its daemon refuses this server's process its socket (EACCES on /var/run/docker.sock):
  *  the user is in the docker group, but this process started before it was (a systemd user manager that has run since,
  *  kept by linger), so a restart of that manager, or a new login, gives it the group. */
-export const DOCKER_NOT_IN_GROUP = "this server's process isn't in the docker group: restart your user manager with `sudo systemctl restart user@$(id -u)`, or log in again if linger is off";
+export const DOCKER_NOT_IN_GROUP = "This server's process isn't in the docker group: restart your user manager with `sudo systemctl restart user@$(id -u)`, or log in again if linger is off";
 /** docker's own words for a socket that refused this process (the CLI's, or the connect's EACCES). Matched, never shown. */
 const SOCKET_DENIED = /permission denied while trying to connect to the docker daemon socket|docker\.sock: connect: permission denied/i;
 
