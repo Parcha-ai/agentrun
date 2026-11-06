@@ -1086,7 +1086,9 @@ browser session on it. Nothing else turns it on: `auto` never picks it, and no a
   page, which could move itself onto a file, and a page the guard sees on a file or a browser-internal URL is closed.
   The extension's own APIs that would go around the guard (opening or moving a tab or a window, the debugger API, its
   worker's clients, any offscreen page but Stagehand's heartbeat, a request rule that does more than allow or block)
-  are taken away in its copy before any code runs there; a web page's own move to a file (a link, a script,
+  are taken away in its copy, under both of its namespaces (`chrome` and `browser`), before any code runs there. Code
+  run beside them cannot loosen what is left by replacing a built-in or handing over an object that lies: each call is
+  checked on fields read once and passed on as a new object. A web page's own move to a file (a link, a script,
   `window.open`) is Chrome's to refuse, and it does. The browser's own socket is on a port nothing in the browser can
   reach.
 - **What it can't do.** No saved sign-ins; no vendor proxies, verified browsing, geolocation or region, which a vendor's

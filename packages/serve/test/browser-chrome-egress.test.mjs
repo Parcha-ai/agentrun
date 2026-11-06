@@ -305,6 +305,10 @@ await step("dnr_dynamic", () => chrome.declarativeNetRequest.updateDynamicRules(
 await step("upload_path", async () => { await page.goto(${STEER} + "/upload"); await page.locator("#pick").setInputFiles(${JSON.stringify(secret.url.slice("file://".length))}); await sleep(1000); return String(await page.locator("body").innerText()).slice(0, 300); });
 await step("worker_fetch", async () => (await fetch(${SECRET})).text());
 await step("worker_tabs", async () => { const tab = await chrome.tabs.create({ url: ${SECRET} }); await sleep(1500); const got = await chrome.tabs.get(tab.id); return String(got.url) + " " + String(got.status); });
+// Run code shares the locked worker's realm: with Object.keys replaced, or through Chrome's second namespace (browser), the
+// lock still hands Chrome nothing it was not built to.
+await step("worker_keys_replaced", async () => { const keys = Object.keys; Object.keys = () => []; try { const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true }); const moved = await chrome.tabs.update(tab.id, { url: ${SECRET} }); return String(moved.pendingUrl ?? moved.url); } finally { Object.keys = keys; } });
+await step("worker_browser_namespace", async () => { const tab = await globalThis.browser.tabs.create({ url: ${SECRET} }); await sleep(1500); return String(tab.url ?? tab.pendingUrl); });
 await step("worker_debugger", async () => { const [tab] = await chrome.tabs.query({}); await chrome.debugger.attach({ tabId: tab.id }, "1.3"); await chrome.debugger.sendCommand({ tabId: tab.id }, "Page.navigate", { url: ${SECRET} }); await sleep(1500); const read = await chrome.debugger.sendCommand({ tabId: tab.id }, "Runtime.evaluate", { expression: "location.href + ' ' + document.body.innerText", returnByValue: true }); return read.result.value; });
 await step("worker_clients", async () => { const open = await clients.matchAll({ includeUncontrolled: true, type: "window" }); for (const one of open) await one.navigate(${SECRET}); return open.length; });
 await step("page_location", async () => { await page.goto(${STEER} + "/tofile?how=location&to=" + encodeURIComponent(${SECRET})); await sleep(1500); });
@@ -337,7 +341,9 @@ return out;`;
   assert.match(out.offscreen_close.error ?? "", /closeDocument is not a function/);
   // The extension's own APIs and a public page's script: Chrome's own rules hold (no file access for the extension, no
   // web page may open a local resource); none reads the file.
-  for (const name of ["worker_fetch", "worker_tabs", "worker_debugger", "worker_clients", "page_location", "page_open", "upload_path"]) {
+  assert.match(out.worker_keys_replaced.error ?? "", /does not move or reload a tab/, JSON.stringify(out.worker_keys_replaced));
+  assert.ok(out.worker_browser_namespace.error, JSON.stringify(out.worker_browser_namespace));
+  for (const name of ["worker_keys_replaced", "worker_browser_namespace", "worker_fetch", "worker_tabs", "worker_debugger", "worker_clients", "page_location", "page_open", "upload_path"]) {
     assert.ok(out[name], name);
     assert.doesNotMatch(JSON.stringify(out[name]), new RegExp(secret.mark), name);
   }

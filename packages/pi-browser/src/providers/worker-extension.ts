@@ -45,40 +45,217 @@ export const HEARTBEAT = "offscreen/service-worker-heartbeat.html";
  *  focus), each held to what it uses. Gone: opening, moving or scripting a tab or a window (on any URL, a file:// one
  *  among them; every extension may, with no permission), driving a tab over the debugger API, moving one of its own
  *  pages (the worker's clients), an offscreen document but the heartbeat (a fresh extension context), a request rule
- *  that does more than allow or block (Stagehand 4.4's domain policy), and every other API that opens or captures a page. The originals stay in this closure alone; each replaced property is fixed, so run
- *  code can neither restore nor reach them. A lock that cannot take hold throws, and the worker does not start. */
+ *  that does more than allow or block (Stagehand 4.4's domain policy), and every other API that opens or captures a page.
+ *  Both of the worker's API namespaces are locked: `chrome` and `browser` (Chrome's second name for the same APIs, with
+ *  objects of its own), and neither can be swapped. The originals stay in this closure alone; each replaced property is
+ *  fixed, so run code can neither restore nor reach them.
+ *  Run code shares this worker's realm, so it can replace any global or prototype method and hand the lock objects that
+ *  lie (a Proxy, a getter that answers twice, a field on a prototype). So every intrinsic a wrapper uses is taken here,
+ *  before any other code runs, and none is looked up at call time; and no wrapper forwards what it is given: it reads
+ *  each field it allows once, as a primitive (or a list of them), refuses any other own field, and hands Chrome a new
+ *  object with no prototype that holds those values alone. A lock that cannot take hold throws, and the worker does not
+ *  start. */
 export const WORKER_LOCK = `/* pi-browser: run code in this worker reaches the browser through its DevTools guard alone. */
 (() => {
-  const api = globalThis.chrome;
-  const only = (keys, props) => props !== null && typeof props === "object" && Object.keys(props).every((key) => keys.includes(key));
-  const refused = (what) => Promise.reject(new Error("pi-browser: this browser's extension does not " + what));
-  const { tabs, windows, offscreen } = api;
-  const dnr = api.declarativeNetRequest;
-  const debuggerApi = api.debugger;
-  const replace = {
-    tabs: Object.freeze({ query: (query) => tabs.query(query), update: (id, props) => (only(["active"], props) ? tabs.update(id, props) : refused("move or reload a tab")), onCreated: tabs.onCreated }),
-    windows: Object.freeze({ update: (id, props) => (only(["focused"], props) ? windows.update(id, props) : refused("change a window")) }),
-    debugger: Object.freeze({ getTargets: () => debuggerApi.getTargets() }),
-    // Stagehand 4.4's domain policy: its session rules, each one that allows or blocks a request and does nothing else (no
-    // redirect, no header changed).
-    declarativeNetRequest: dnr ? Object.freeze({
-      getSessionRules: () => dnr.getSessionRules(),
-      isRegexSupported: (options) => dnr.isRegexSupported(options),
-      updateSessionRules: (options) => (only(["removeRuleIds", "addRules"], options) && (options.addRules ?? []).every((rule) => rule && rule.action && only(["type"], rule.action) && ["allow", "block"].includes(rule.action.type)) ? dnr.updateSessionRules(options) : refused("change a request but to allow or block it")),
-      MAX_NUMBER_OF_SESSION_RULES: dnr.MAX_NUMBER_OF_SESSION_RULES,
-      MAX_NUMBER_OF_REGEX_RULES: dnr.MAX_NUMBER_OF_REGEX_RULES,
-    }) : undefined,
-    // Stagehand's heartbeat page alone, the one document it makes: no other page of the extension's own.
-    offscreen: offscreen ? Object.freeze({ createDocument: (params) => (only(["url", "reasons", "justification"], params) && params.url === ${JSON.stringify(HEARTBEAT)} ? offscreen.createDocument(params) : refused("open a page of its own")) }) : undefined,
+  "use strict";
+  const realm = globalThis;
+  const apply = Reflect.apply;
+  const ownKeys = Reflect.ownKeys;
+  const define = Reflect.defineProperty;
+  const isArray = Array.isArray;
+  const isInteger = Number.isInteger;
+  const ErrorOf = Error;
+  const PromiseOf = Promise;
+  const reject = Promise.reject;
+  const freeze = Object.freeze;
+  const NO = freeze({ __proto__: null });
+  const fail = () => { throw NO; };
+  const refused = (what) => apply(reject, PromiseOf, [new ErrorOf("pi-browser: this browser's extension does not " + what)]);
+  const field = (value) => ({ __proto__: null, value, writable: true, enumerable: true, configurable: true });
+  const names = (list) => { const set = { __proto__: null }; for (let i = 0; i < list.length; i++) set[list[i]] = true; return set; };
+  // The caller's object, its own fields all among those allowed (a Proxy answers for itself, and anything it adds is refused).
+  const record = (value, allowed) => {
+    if (value === null || typeof value !== "object") fail();
+    const keys = ownKeys(value);
+    const count = keys.length;
+    for (let i = 0; i < count; i++) if (allowed[keys[i]] !== true) fail();
   };
-  for (const name of ["scripting", "sessions", "downloads", "pageCapture", "tabCapture", "desktopCapture", "tabGroups", "search", "history", "bookmarks", "readingList", "sidePanel", "action", "contextMenus", "devtools", "management", "permissions"]) replace[name] = undefined;
-  for (const [name, value] of Object.entries(replace)) {
-    Object.defineProperty(api, name, { value, writable: false, configurable: false, enumerable: true });
-    if (api[name] !== value) throw new Error("pi-browser: the extension API " + name + " could not be locked");
+  const flag = (value) => (typeof value === "boolean" ? value : fail());
+  const int = (value) => (typeof value === "number" && isInteger(value) ? value : fail());
+  const text = (value) => (typeof value === "string" ? value : fail());
+  // A new list of the caller's items, each read once and checked.
+  const list = (value, each) => {
+    if (!isArray(value)) fail();
+    const count = value.length;
+    if (typeof count !== "number" || !isInteger(count) || count < 0 || count > 5000) fail();
+    const out = [];
+    for (let i = 0; i < count; i++) if (!define(out, i, field(each(value[i])))) fail();
+    return out;
+  };
+  const QUERY = names(["active", "lastFocusedWindow", "currentWindow", "windowId"]);
+  const ACTIVE = names(["active"]);
+  const FOCUSED = names(["focused"]);
+  const DOCUMENT = names(["url", "reasons", "justification"]);
+  const REGEX = names(["regex", "isCaseSensitive", "requireCapturing"]);
+  const UPDATE = names(["removeRuleIds", "addRules"]);
+  const RULE = names(["id", "priority", "action", "condition"]);
+  const ACTION = names(["type"]);
+  const CONDITION = names(["regexFilter", "urlFilter", "isUrlFilterCaseSensitive", "resourceTypes", "excludedResourceTypes", "initiatorDomains", "tabIds"]);
+  const HEARTBEAT = ${JSON.stringify(HEARTBEAT)};
+  // A request rule of Stagehand 4.4's domain policy: it allows or blocks a request and does nothing else (no redirect, no
+  // header changed), built anew from the caller's fields.
+  const rule = (value) => {
+    record(value, RULE);
+    const out = { __proto__: null, id: int(value.id) };
+    const priority = value.priority;
+    if (priority !== undefined) out.priority = int(priority);
+    const action = value.action;
+    record(action, ACTION);
+    const type = action.type;
+    if (type !== "allow" && type !== "block") fail();
+    out.action = { __proto__: null, type };
+    const condition = value.condition;
+    record(condition, CONDITION);
+    const made = { __proto__: null };
+    const regexFilter = condition.regexFilter;
+    if (regexFilter !== undefined) made.regexFilter = text(regexFilter);
+    const urlFilter = condition.urlFilter;
+    if (urlFilter !== undefined) made.urlFilter = text(urlFilter);
+    const caseSensitive = condition.isUrlFilterCaseSensitive;
+    if (caseSensitive !== undefined) made.isUrlFilterCaseSensitive = flag(caseSensitive);
+    const resourceTypes = condition.resourceTypes;
+    if (resourceTypes !== undefined) made.resourceTypes = list(resourceTypes, text);
+    const excludedResourceTypes = condition.excludedResourceTypes;
+    if (excludedResourceTypes !== undefined) made.excludedResourceTypes = list(excludedResourceTypes, text);
+    const initiatorDomains = condition.initiatorDomains;
+    if (initiatorDomains !== undefined) made.initiatorDomains = list(initiatorDomains, text);
+    const tabIds = condition.tabIds;
+    if (tabIds !== undefined) made.tabIds = list(tabIds, int);
+    out.condition = made;
+    return out;
+  };
+  // One namespace's replacements, each wrapper calling that namespace's own originals, taken now.
+  const locked = (api) => {
+    const tabs = api.tabs;
+    const windows = api.windows;
+    const offscreen = api.offscreen;
+    const dnr = api.declarativeNetRequest;
+    const debuggerApi = api.debugger;
+    const query = tabs && tabs.query;
+    const update = tabs && tabs.update;
+    const focus = windows && windows.update;
+    const targets = debuggerApi && debuggerApi.getTargets;
+    const createDocument = offscreen && offscreen.createDocument;
+    const replace = {
+      tabs: tabs ? freeze({
+        query: (props) => {
+          let args;
+          try {
+            const made = { __proto__: null };
+            if (props !== undefined) {
+              record(props, QUERY);
+              const active = props.active;
+              if (active !== undefined) made.active = flag(active);
+              const last = props.lastFocusedWindow;
+              if (last !== undefined) made.lastFocusedWindow = flag(last);
+              const current = props.currentWindow;
+              if (current !== undefined) made.currentWindow = flag(current);
+              const windowId = props.windowId;
+              if (windowId !== undefined) made.windowId = int(windowId);
+            }
+            args = [made];
+          } catch { return refused("look a tab up but by its focus or window"); }
+          return apply(query, tabs, args);
+        },
+        update: (id, props) => {
+          let args;
+          try {
+            const tabId = int(id);
+            record(props, ACTIVE);
+            if (props.active !== true) fail();
+            args = [tabId, { __proto__: null, active: true }];
+          } catch { return refused("move or reload a tab"); }
+          return apply(update, tabs, args);
+        },
+        onCreated: tabs.onCreated,
+      }) : undefined,
+      windows: windows ? freeze({
+        update: (id, props) => {
+          let args;
+          try {
+            const windowId = int(id);
+            record(props, FOCUSED);
+            if (props.focused !== true) fail();
+            args = [windowId, { __proto__: null, focused: true }];
+          } catch { return refused("change a window"); }
+          return apply(focus, windows, args);
+        },
+      }) : undefined,
+      debugger: debuggerApi ? freeze({ getTargets: () => apply(targets, debuggerApi, []) }) : undefined,
+      declarativeNetRequest: dnr ? freeze({
+        getSessionRules: () => apply(dnr.getSessionRules, dnr, []),
+        isRegexSupported: (options) => {
+          let args;
+          try {
+            record(options, REGEX);
+            const made = { __proto__: null, regex: text(options.regex) };
+            const caseSensitive = options.isCaseSensitive;
+            if (caseSensitive !== undefined) made.isCaseSensitive = flag(caseSensitive);
+            const capturing = options.requireCapturing;
+            if (capturing !== undefined) made.requireCapturing = flag(capturing);
+            args = [made];
+          } catch { return refused("check a request rule's pattern but by its text"); }
+          return apply(dnr.isRegexSupported, dnr, args);
+        },
+        updateSessionRules: (options) => {
+          let args;
+          try {
+            record(options, UPDATE);
+            const made = { __proto__: null };
+            const removeRuleIds = options.removeRuleIds;
+            if (removeRuleIds !== undefined) made.removeRuleIds = list(removeRuleIds, int);
+            const addRules = options.addRules;
+            if (addRules !== undefined) made.addRules = list(addRules, rule);
+            args = [made];
+          } catch { return refused("change a request but to allow or block it"); }
+          return apply(dnr.updateSessionRules, dnr, args);
+        },
+        MAX_NUMBER_OF_SESSION_RULES: dnr.MAX_NUMBER_OF_SESSION_RULES,
+        MAX_NUMBER_OF_REGEX_RULES: dnr.MAX_NUMBER_OF_REGEX_RULES,
+      }) : undefined,
+      // Stagehand's heartbeat page alone, the one document it makes: no other page of the extension's own.
+      offscreen: offscreen ? freeze({
+        createDocument: (params) => {
+          let args;
+          try {
+            record(params, DOCUMENT);
+            if (params.url !== HEARTBEAT) fail();
+            const reasons = list(params.reasons, text);
+            if (reasons.length !== 1 || reasons[0] !== "BLOBS") fail();
+            args = [{ __proto__: null, url: HEARTBEAT, reasons: ["BLOBS"], justification: text(params.justification) }];
+          } catch { return refused("open a page of its own"); }
+          return apply(createDocument, offscreen, args);
+        },
+      }) : undefined,
+    };
+    for (const name of ["scripting", "sessions", "downloads", "pageCapture", "tabCapture", "desktopCapture", "tabGroups", "search", "history", "bookmarks", "readingList", "sidePanel", "action", "contextMenus", "devtools", "management", "permissions", "userScripts", "webNavigation", "webRequest", "debugger"].filter((name) => !(name in replace))) replace[name] = undefined;
+    for (const [name, value] of Object.entries(replace)) {
+      Object.defineProperty(api, name, { value, writable: false, configurable: false, enumerable: true });
+      if (api[name] !== value) throw new Error("pi-browser: the extension API " + name + " could not be locked");
+    }
+  };
+  // Both names Chrome gives a worker's APIs, each locked over its own objects, and each name fixed to what it holds now.
+  const done = [];
+  for (const name of ["chrome", "browser"]) {
+    const api = realm[name];
+    // A browser whose two names hold the one object locks it once.
+    if (api !== undefined && api !== null && !done.includes(api)) { locked(api); done.push(api); }
+    Object.defineProperty(realm, name, { value: api, writable: false, configurable: false });
+    if (realm[name] !== api) throw new Error("pi-browser: the worker's " + name + " namespace could not be fixed");
   }
   // A worker's own clients: it could move one of the extension's pages elsewhere (WindowClient.navigate).
-  Object.defineProperty(globalThis, "clients", { value: undefined, writable: false, configurable: false });
-  if (globalThis.clients !== undefined) throw new Error("pi-browser: the worker's clients could not be locked");
+  Object.defineProperty(realm, "clients", { value: undefined, writable: false, configurable: false });
+  if (realm.clients !== undefined) throw new Error("pi-browser: the worker's clients could not be locked");
 })();
 `;
 
