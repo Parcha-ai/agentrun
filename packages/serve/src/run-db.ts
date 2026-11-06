@@ -5,6 +5,7 @@
 // locking mode (the WAL index in heap, no -shm), kept for that read alone, since a connection kept open falls behind
 // the WAL; and a read whose last entry is below one already seen for that run is refused, never shown (the monotonic
 // guard). The one read-write open is the checkpoint when the server takes the run back (runs.ts), with no process left.
+import { statSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 
 /** One open of a run's database, as observeRunDbOpens reports it: `held`, whether a process held the run at the open. */
@@ -18,6 +19,26 @@ export function observeRunDbOpens(observer: (open: RunDbOpen) => void): () => vo
 
 /** `file` as a SQLite URI path: each segment percent-encoded, so a `?`, `#` or `%` in it is never read as a parameter. */
 const uriPath = (file: string): string => file.split("/").map(encodeURIComponent).join("/");
+
+/** The size below which a WAL holds no frame: its 32-byte header, and one frame's 24-byte header and a page of at least
+ *  512 bytes. */
+const ONE_FRAME = 32 + 24 + 512;
+
+/**
+ * How a lock-free reader opens run database `file`. A WAL with a frame in it: read-only with no locking
+ * (`vfs=unix-none`), the WAL read too. No WAL, or one with no frame yet: as an immutable file, the database file alone,
+ * which is whole then. SQLite's reader of a WAL-mode database makes a WAL file when there is none, and removes an empty
+ * one at its close: a run's process that opened that same file meanwhile would write its frames into a file the reader
+ * then removes. A reader that never opens an empty WAL never does either; one with frames in it is never removed by a
+ * read-only close.
+ */
+export function runReaderUri(file: string): string {
+  let wal = 0;
+  try {
+    wal = statSync(`${file}-wal`).size;
+  } catch {}
+  return wal >= ONE_FRAME ? `file:${uriPath(file)}?mode=ro&vfs=unix-none` : `file:${uriPath(file)}?mode=ro&immutable=1`;
+}
 
 /** A fresh read-only, lock-free connection to the run database at `file`, for one read: `read(db)`, then closed. A
  *  read-only close checkpoints nothing. `held`: whether a process holds the run now (reported to observers). */
@@ -34,7 +55,7 @@ export async function readRunDb<T>(file: string, held: boolean, read: (db: Datab
  *  closes it itself: `held` as readRunDb's. */
 export function openRunReader(file: string, held = false): DatabaseSync {
   for (const observer of observers) observer({ file, mode: "read", held });
-  const db = new DatabaseSync(`file:${uriPath(file)}?mode=ro&vfs=unix-none`, { readOnly: true });
+  const db = new DatabaseSync(runReaderUri(file), { readOnly: true });
   try {
     db.exec("PRAGMA locking_mode = EXCLUSIVE");
   } catch (error) {
@@ -74,7 +95,7 @@ export class HeldRunDbError extends Error {
   }
 }
 
-/** Checkpoints the run database at `file` into its database file and empties its WAL, once no process holds the run
+/** Checkpoints the run database at `file` into its database file and removes its WAL, once no process holds the run
  *  (`held` false; true throws HeldRunDbError before any open). A database with no WAL left is untouched but for the
  *  open. The one read-write open the server makes of a run's database. */
 export async function checkpointRunDb(file: string, held: boolean): Promise<void> {
@@ -85,8 +106,11 @@ export async function checkpointRunDb(file: string, held: boolean): Promise<void
     // As its writer opened it: the WAL index in heap, so no -shm is made.
     db.exec("PRAGMA locking_mode = EXCLUSIVE");
     db.exec("PRAGMA journal_mode = WAL");
-    db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+    db.prepare("SELECT count(*) FROM sqlite_schema").get();
   } finally {
+    // The close checkpoints: it copies into the database file only pages the WAL holds too, so a lock-free reader still
+    // reading the WAL reads the same bytes either way; then it removes the WAL, which a reader that holds it open goes on
+    // reading. Never wal_checkpoint(TRUNCATE): that cuts the WAL under such a reader, whose read then fails.
     db.close();
   }
 }

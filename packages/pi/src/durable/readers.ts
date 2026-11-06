@@ -32,10 +32,13 @@ export type DurableReadOptions = { immutable?: boolean; unlocked?: boolean };
 export function withDurableFile<T>(file: string, read: (db: Database) => T, options: DurableReadOptions = {}): T | null {
   if (!fs.existsSync(file)) return null;
   const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite") as typeof import("node:sqlite");
-  const at = options.immutable ? `${pathToFileURL(file).href}?immutable=1` : options.unlocked ? `${pathToFileURL(file).href}?mode=ro&vfs=unix-none` : file;
+  // Unlocked, a WAL with no frame yet is never opened: SQLite's reader makes one where there is none and removes an empty
+  // one at its close, under a writer that may have opened it meanwhile. With none, the database file is whole: immutable.
+  const walFrames = options.unlocked && (() => { try { return fs.statSync(`${file}-wal`).size >= 32 + 24 + 512; } catch { return false; } })();
+  const at = options.immutable || (options.unlocked && !walFrames) ? `${pathToFileURL(file).href}?mode=ro&immutable=1` : options.unlocked ? `${pathToFileURL(file).href}?mode=ro&vfs=unix-none` : file;
   const db = new DatabaseSync(at, { readOnly: true, timeout: 5000 });
   try {
-    if (options.unlocked) db.exec("PRAGMA locking_mode = EXCLUSIVE");
+    if (options.unlocked && walFrames) db.exec("PRAGMA locking_mode = EXCLUSIVE");
     db.exec("BEGIN");
     return read(db);
   } finally { db.close(); }
