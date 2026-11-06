@@ -202,8 +202,9 @@ export type Executor = (tool: string, args: unknown, callId: string, signal: Abo
 
 /** The mark a tool registration carries when its calls are gated by whoever registered it (the MCP gateway, which marks
  *  its registrations only when it holds this run's gate and park, and enters the gate in each call): RunGate.extension
- *  does not wrap it again. `Symbol.for`, so the mark is the same symbol whichever copy of this module set or reads it. */
-export const GATED_BY_GATEWAY: unique symbol = Symbol.for("agentrun.gatedByGateway");
+ *  does not wrap it again. A private symbol, never `Symbol.for`: a global-registry key could be recreated by any code
+ *  with the string alone. Only code that imports this export can set it (mcp-gateway.ts does). */
+export const GATED_BY_GATEWAY: unique symbol = Symbol("agentrun.gatedByGateway");
 /** A registration that may carry GATED_BY_GATEWAY. */
 export type GatewayMarked = ToolRegistration & { [GATED_BY_GATEWAY]?: true };
 
