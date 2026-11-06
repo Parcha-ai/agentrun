@@ -14,7 +14,7 @@ import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { doorTook } from "@parcha/pi-durable-disk";
 import { AgentHomeError, type Revision, type RevisionKind, type RunOrigin, type RunRow, type RunState, type StoredMetrics } from "@parcha/pi-durable-agent";
-import { chargedTool, isMessageRow, type MessageOrigin, registerLabel, registerTurnEnding, REQUEST_CONTINUED, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED, type RunMetrics, runMetricsWithDecisions, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
+import { chargedTool, isMessageRow, type MessageOrigin, registerLabel, registerTurnEnding, REQUEST_STARTED, type RunMetrics, runMetricsWithDecisions, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { HARNESS_LOG_EVENT, harnessModelKeys, thinkingFor } from "./adapters.js";
 import { DEFAULT_HARNESS, harnessOfBody, steersMidTurn } from "./harness.js";
 import type { RUN_EVENTS, RunNotice } from "./webhooks.js";
@@ -43,6 +43,7 @@ import { APPROVAL_ENTRY, APPROVAL_ROW, NO_APPROVER_ENV, type PendingApproval, pe
 import { ChangeClock, type Page, RowLog } from "./rows.js";
 import { TOOL_KEYS } from "./tool-keys.js";
 import { isObject, type Json } from "./validate.js";
+import { RequestBounds } from "./bounds.js";
 import { firstMessage } from "./run-manifest.js";
 import { REFLECT_REQUEST, Turns } from "./turns.js";
 import { DECISION_KEYS, handover, handoverSignIn, hostSecrets, mcpHandover, mcpSecretValues, secret, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, type StoredKeys, withoutSecrets, withSecrets } from "./secrets.js";
@@ -346,33 +347,9 @@ export type Run = {
   /** What it has spent paused at that refusal (its row), its process gone: the store's spend (spentNow), read once. */
   capSpent?: { mark: string; usd: number | null; at?: number };
   /** Its model requests' bounds (cap.ts BOUND_FIELD: the most a cache miss can make one cost beyond its hold), as its
-   *  entries say them (noteBounds). */
-  bounds?: Bounds;
+   *  entries say them (bounds.ts). */
+  bounds?: RequestBounds;
 };
-/** The bounds of a run's generation requests in flight, oldest first (0 for one whose start mark has none), and the bound
- *  of the newest one that ended: what the cost serves (overshoot_bound_usd) and the over-cap row names. Its error entries
- *  that answer no request (a refusal of its cap's, which has a start mark of its own, or its cancel's) and a harness
- *  answer's continuation close none. */
-type Bounds = { open: number[]; ended: number; skipErrors: number; continued: number };
-/** `bounds` with entry `value` read: a generation request's start opens its bound, and its end or answer closes the oldest
- *  open, as the requests of a run answer in order. */
-function noteBounds(bounds: Bounds, value: Json): void {
-  const data = isObject(value.data) ? value.data : {};
-  const side = typeof data.request === "string";
-  const message = Array.isArray(value.model) && isObject(value.model[0]) ? value.model[0] : undefined;
-  const close = () => void (bounds.open.length && (bounds.ended = bounds.open.shift()!));
-  if (value.kind === REQUEST_STARTED && data[CAP_REFUSED_FIELD] === true) bounds.skipErrors += 1;
-  else if (value.kind === REQUEST_STARTED && !side) bounds.open.push(typeof data[BOUND_FIELD] === "number" && Number.isFinite(data[BOUND_FIELD]) && (data[BOUND_FIELD] as number) > 0 ? (data[BOUND_FIELD] as number) : 0);
-  else if (value.kind === REQUEST_REFUSED) bounds.skipErrors += 1;
-  else if (value.kind === REQUEST_CONTINUED) bounds.continued += 1;
-  else if (value.kind === REQUEST_ENDED && !side) close();
-  else if (value.kind === "pi.assistant" && message) {
-    if (bounds.continued > 0) bounds.continued -= 1;
-    else if (message.stopReason === "error" && bounds.skipErrors > 0) bounds.skipErrors -= 1;
-    else close();
-  }
-}
-
 const ASKED = "Asked you: ";
 registerLabel(ASK_TOOL, (args) => `${ASKED}${typeof args.question === "string" ? args.question : ""}`, undefined, { name: "Ask you a question" });
 // ask_person ends its turn (tools.ts): the person's reply is their next message, never a steer.
@@ -429,7 +406,6 @@ function noteTurns(run: Run, entries: readonly unknown[], submissions: readonly 
     const data = value.kind === REQUEST_STARTED && isObject(value.data) && value.data[CAP_REFUSED_FIELD] === true ? value.data : undefined;
     if (data) run.capMark = value.id;
     if (data) run.capRefusal = typeof data.spentUsd === "number" && typeof data.needsUsd === "number" ? { spentUsd: data.spentUsd, needsUsd: data.needsUsd, ...(typeof data.boundUsd === "number" && data.boundUsd > 0 ? { boundUsd: data.boundUsd } : {}) } : undefined;
-    noteBounds((run.bounds ??= { open: [], ended: 0, skipErrors: 0, continued: 0 }), value);
     // The end-of-run turn's assistant messages, whole, by entry: what the turn answered, whose notes learning reads
     // (learning-run.ts). The ledger skips them; this is their only reader here.
     if (value.kind === "pi.assistant" && reflects(run.meta.reflect, value.id) && Array.isArray(value.model) && isObject(value.model[0])) {
@@ -439,6 +415,7 @@ function noteTurns(run: Run, entries: readonly unknown[], submissions: readonly 
   }
   const reflect = (id: number) => reflects(run.meta.reflect, id);
   run.turns.note(entries, submissions, reflect);
+  (run.bounds ??= new RequestBounds()).note(entries);
   if (snapshot) run.turns.snapshot(snapshot, reflect);
 }
 
@@ -1154,7 +1131,7 @@ export class Runs {
   /** New rows in: into the log, then the run's status, then whatever the status asks for. */
   /** `keep`: rows that stay served though `rows` no longer holds them (the live path's committed rows). */
   private take(run: Run, rows: TimelineEvent[], keep?: (id: string) => boolean): void {
-    run.rows = withOverCap(labelled(run.meta.reflect, withApprovals(withAsks(rows.filter((r) => !QUIET.test(r.id))), run, this.redactor(run))), run.meta.max_cost_usd, run.bounds?.ended);
+    run.rows = withOverCap(labelled(run.meta.reflect, withApprovals(withAsks(rows.filter((r) => !QUIET.test(r.id))), run, this.redactor(run))), run.meta.max_cost_usd, run.bounds?.ended());
     // Counted by id: a snapshot of a compacted conversation shows fewer user messages than before, which is not more
     // messages waiting, so a count of rows would leave the run working forever.
     const arrived = run.rows.filter((r) => isMessageRow(r) && !run.users.has(r.id));
@@ -1206,7 +1183,7 @@ export class Runs {
     const cost = costOf(run.rows);
     // Past it by a cache miss, within the bound its cap admitted it at (overByMiss), the run goes on: its next request is
     // refused, and it pauses at its cap for a raise, as when the cap has no room; the over-cap row says what happened.
-    if (cap !== undefined && cost !== null && cost > cap + FIT_TOLERANCE && !overByMiss(cost, cap, run.bounds?.ended ?? 0)) return { outcome: "failed", abort: true, error: { code: SPEND_CAP_REACHED, message: `The run cost ${cents(cost)}, ${centsUp(cost - cap)} over its cap of ${cents(cap)}.`, retryable: false } };
+    if (cap !== undefined && cost !== null && cost > cap + FIT_TOLERANCE && !overByMiss(cost, cap, run.bounds?.ended() ?? 0)) return { outcome: "failed", abort: true, error: { code: SPEND_CAP_REACHED, message: `The run cost ${cents(cost)}, ${centsUp(cost - cap)} over its cap of ${cents(cap)}.`, retryable: false } };
     if (run.submitted > 0) return undefined;
     if (run.turns.open > 0 || stopped(run)) return undefined;
     // A tool call waits for a person's approval, or for its answer to be acted on: the run goes on after it.
@@ -3077,7 +3054,7 @@ export class Runs {
     // its end (a run carried back with no rows read since).
     const soFar = usd === null && !run.imported ? (soFarOf(run.rows, run.decisionCost === undefined ? undefined : (run.decisionsPriced ?? null)) ?? (run.rows.length ? undefined : soFarOfMeta(run.meta))) : undefined;
     // Under a cap, the most a cache miss could make its requests in flight cost beyond what they are held at (cap.ts).
-    const bound = run.meta.max_cost_usd === undefined ? {} : { overshoot_bound_usd: microUp((run.bounds?.open ?? []).reduce((sum, usd) => sum + usd, 0)) };
+    const bound = run.meta.max_cost_usd === undefined ? {} : { overshoot_bound_usd: microUp(run.bounds?.inFlight() ?? 0) };
     return { usd, basis: "estimate", charge_state: null, cap_usd: run.meta.max_cost_usd ?? null, ...bound, ...(soFar ?? {}) };
   }
 
