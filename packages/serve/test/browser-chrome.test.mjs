@@ -17,7 +17,7 @@ import { CHROME_PROFILES, checkChrome, chromeFence, localChrome, NO_SANDBOX } fr
 import { FAUX_ENV } from "../dist/model.js";
 import { browserNeeds, LOCAL_CHROME_ENV, NO_BROWSER_KEY, NO_CHROME, planeFor, recheckPlane, relaunchPlane, resolveCapability } from "../dist/tool-plane.js";
 import { TOOLS } from "../dist/tools.js";
-import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
+import { agent, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
 
 const FAUX_BROWSER = new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname;
 const FAUX_BROWSERBASE = new URL("./fixtures/faux-browserbase-check.mjs", import.meta.url).pathname;
@@ -134,7 +134,7 @@ test("through the API: a run on the local Chrome is handed the server's resolved
   assert.deepEqual(ops.filter((op) => op.op === "sign-in" || op.op === "profile"), [], "no sign-in handed, no profile asked for");
   assert.deepEqual((await first.api("GET", "/agents/local")).body.sign_ins, [], "none made at a vendor for it");
   assert.match((await first.api("GET", `/runs/${started.body.run_id}`)).body.result.final_answer, /This browser is chrome's\./);
-  const file = join(first.data, "runs", started.body.run_id, "serve.json");
+  const file = join(runDir(first.data, started.body.run_id), "serve.json");
   assert.equal(JSON.parse(await readFile(file, "utf8")).tool_plane.browser, "chrome");
   await first.close();
 
@@ -226,7 +226,7 @@ test("through the API: the local Chrome's minutes are the run's spend at the ope
     const view = (await api("GET", `/runs/${started.body.run_id}`)).body;
     // Paused at its cap, its process lets the run go: its store is that process's until it has.
     if (view.status === "input_required") return { booked: undefined, view };
-    const db = new DatabaseSync(join(data, "runs", started.body.run_id, "store", "run.sqlite"), { readOnly: true });
+    const db = new DatabaseSync(join(runDir(data, started.body.run_id), "store", "run.sqlite"), { readOnly: true });
     const booked = db.prepare("SELECT record FROM entries ORDER BY rowid").all().map((row) => JSON.parse(String(row.record))).filter((entry) => entry.kind === "agentrun.tool_cost").map((entry) => entry.data);
     db.close();
     return { booked, view };
@@ -242,5 +242,5 @@ test("through the API: the local Chrome's minutes are the run's spend at the ope
   // A call the cap cannot hold is not sent: the run pauses at its cap, in the call's words (paid-pause.test.mjs).
   const tight = await browse({ AGENTRUN_BROWSER_USD_PER_HOUR_CDP: "36" }, "tight", 0.5);
   assert.deepEqual([tight.view.status, tight.view.pending?.kind], ["input_required", "budget"], JSON.stringify(tight.view));
-  assert.match(tight.view.pending.said, /^Not sent: the run has spent \$0 of its \$0\.50 cap, and this browser call could cost up to \$4\.20 \(cdp's session time at \$36 an hour: .*\)\. Raise the cap to at least \$4\.20 to run it\.$/);
+  assert.match(tight.view.pending.said, /^Not sent: this run has spent \$0 of its \$0\.50 cap, and the next step, this browser call, could cost up to \$4\.20 \(cdp's session time at \$36 an hour: .*\)\. Raise the cap to at least \$4\.20 to continue\.$/);
 });

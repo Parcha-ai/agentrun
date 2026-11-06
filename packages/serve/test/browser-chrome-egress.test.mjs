@@ -19,7 +19,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { CHROME_PROFILES, checkChrome, localChrome } from "../dist/local-chrome.js";
 import { STEER_HOST, REBIND_HOST } from "./fixtures/fake-steer-egress.mjs";
-import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
+import { agent, follow, runDir, runRecordOf, scratch, serve, withEnv } from "./support.mjs";
 
 const CHROME = process.env.CHROME_PATH;
 const REQUIRED = process.env.AGENTRUN_REQUIRE_LOCAL_CHROME === "1";
@@ -78,7 +78,7 @@ const steer = (req, res) => {
 
 /** The local Chrome's proxy decisions in a run's process log: `{ kind, host, port, ip, class }` each. */
 async function decisions(data, runId) {
-  const log = await readFile(join(data, "runs", runId, "process.log"), "utf8");
+  const log = await readFile(join(runDir(data, runId), "process.log"), "utf8");
   return log.split("\n").flatMap((line) => {
     let entry;
     try { entry = JSON.parse(line); } catch { return []; }
@@ -172,7 +172,7 @@ test("a run's local Chrome, steered by a public page to this server's port, meta
   assert.equal(datagrams, 0, "no UDP reached the STUN server on loopback");
   // Each session's profile, under the run's directory, goes with its release once the run lets it go; its downloads
   // folder stays, as pi-browser keeps it for browser_downloads after a release.
-  const profiles = join(data, "runs", started.body.run_id, CHROME_PROFILES);
+  const profiles = join(runDir(data, started.body.run_id), CHROME_PROFILES);
   let left = [];
   for (const until = Date.now() + 15_000; ; await new Promise((done) => setTimeout(done, 200))) {
     left = (await readdir(profiles).catch(() => [])).filter((name) => !name.startsWith(".") && !name.endsWith(".downloads"));
@@ -200,7 +200,7 @@ test("a run's process killed while its local Chrome is open: the run opens again
   const started = await api("POST", "/agents/survivor/runs", { input: { content } });
   assert.equal(started.status, 202, JSON.stringify(started.body));
   const runId = started.body.run_id;
-  const profiles = join(data, "runs", runId, CHROME_PROFILES);
+  const profiles = join(runDir(data, runId), CHROME_PROFILES);
   // The first call has answered (the public page loaded), and the run waits on the gate with its Chrome open.
   let old = [];
   for (const until = Date.now() + 90_000; ; await new Promise((done) => setTimeout(done, 200))) {
@@ -213,7 +213,7 @@ test("a run's process killed while its local Chrome is open: the run opens again
   t.after(() => { for (const pid of old) if (alive(pid)) process.kill(pid, "SIGKILL"); });
   // The run's process dies the way a crash kills it; its Chrome (its own process group) outlives it, and so would its
   // profile.
-  const holder = JSON.parse(await readFile(join(data, "runs", runId, "run.json"), "utf8")).holder.pid;
+  const holder = runRecordOf(data, runId).holder.pid;
   process.kill(holder, "SIGKILL");
   for (let i = 0; alive(holder); i++) {
     assert.ok(i < 200, "the run's process dies");
@@ -404,7 +404,8 @@ test("the guard on a local Chrome's DevTools socket, reached as its attach targe
   // The extension's own page, which the guard lets the driver open (to wake its worker), is no way to a file either: an
   // extension's page may move itself onto a file, so no client may drive one, by an attach or by a session the browser
   // attaches on its own; and a page the guard sees on a file is closed.
-  const { extensionId } = await provider.attach(ref);
+  const worker = (await send("Target.getTargets")).result.targetInfos.find((info) => info.type === "service_worker" && info.url.startsWith("chrome-extension://"));
+  const extensionId = worker && new URL(worker.url).host;
   assert.ok(extensionId, "a confined extension");
   const wake = (await send("Target.createTarget", { url: `chrome-extension://${extensionId}/wake-service-worker.html` })).result;
   assert.ok(wake?.targetId, "the driver may open its extension's wake page");
