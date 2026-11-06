@@ -1333,7 +1333,10 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     trigger: RUN_TRIGGER,
   },
-  InputIssue: { code: { type: "string", description: "A workflow definition's issue: the DSL's validation code (`STATE_PATH_UNPRODUCED`, say), with `field` the path to it under `definition.workflow`.", "x-agentrun-serve": "validate/1" } },
+  InputIssue: {
+    code: { type: "string", description: "A workflow definition's issue: the DSL's validation code (`STATE_PATH_UNPRODUCED`, say), with `field` the path to it under `definition.workflow`.", "x-agentrun-serve": "validate/1" },
+    example: { description: "A value the field accepts, read from the request body's schema (its first example, const or option, else made from its type: `true`, `\"…\"`, its least number, an object of its required properties), and said in `message`. For a field the body does not keep that an object inside it does, the body with the field where it belongs, as `fix` shows it: `{\"definition\": {\"name\": \"…\"}}`.", "x-agentrun-serve": "explain/1" },
+  },
   RunSummary: {
     ...RUN_FIELDS,
     effort: { $ref: "#/components/schemas/Effort", description: "The effort the run was started with, as the run shows it; absent when it was started with none.", "x-agentrun-serve": "effort/1" },
@@ -1604,6 +1607,27 @@ function contract(): Json {
 
 /** The document: the contract, its operations this server turns off marked with why (`capabilityOf` gives an
  *  operation's capability here, by its operationId), and this server's own routes added and marked. */
+/** A working request body for each operation a client most often writes by hand, by operationId: served as its media type's
+ *  examples, printed by the CLI's help as a `--body`, and sent to the server by a test, so none can stop working. The run
+ *  and the trigger name the agent the first one makes. */
+export const REQUEST_EXAMPLES: Record<string, Record<string, { summary: string; value: Json }>> = {
+  createAgent: {
+    agentic: {
+      summary: "An agent that researches a company on the web",
+      value: { definition: { id: "due-diligence", name: "Due diligence", instructions: "Research the company you are given on the web and write a short brief: what it does, who runs it, red flags, and the sources you read.", tools: ["web_search", "web_fetch"] } },
+    },
+  },
+  createRun: {
+    agentic: { summary: "An agentic agent's run, capped at $1", value: { input: { content: "Research https://stripe.com and write the brief." }, max_cost_usd: 1 } },
+  },
+  createTrigger: {
+    schedule: {
+      summary: "A capped run of an agent every Monday at 09:00 UTC",
+      value: { name: "Weekly brief", source: { kind: "schedule", cron: "0 9 * * 1" }, target: { kind: "start_run", agent_id: "due-diligence", input: { content: "Research https://stripe.com again and say what changed this week." }, max_cost_usd: 1 } },
+    },
+  },
+};
+
 export function openapiDocument(capabilityOf: (operationId: string) => string | undefined): Json {
   const doc = structuredClone(contract()) as Json & { info: Json; paths: Record<string, Record<string, Json>> };
   const unsupported: string[] = [];
@@ -1780,6 +1804,18 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
     for (const [method, op] of Object.entries(item)) {
       (doc.paths[path] ??= {})[method] = { "x-agentrun-serve": true, ...op };
       extensions.push(`${method.toUpperCase()} ${path}`);
+    }
+  }
+  // examples/1: a working body for the operations in REQUEST_EXAMPLES, on the JSON media type; a contract operation that
+  // gains one is changed, and says so.
+  for (const [path, item] of Object.entries(doc.paths)) {
+    for (const [method, op] of Object.entries(item)) {
+      const examples = REQUEST_EXAMPLES[op.operationId as string];
+      if (!examples) continue;
+      (((op.requestBody as Json).content as Json)["application/json"] as Json).examples = structuredClone(examples);
+      if (op["x-agentrun-serve"] !== undefined) continue;
+      op["x-agentrun-serve-changed"] = { ...(op["x-agentrun-serve-changed"] as Json | undefined), requestBody: "examples/1" };
+      if (!changed.includes(`${method.toUpperCase()} ${path}`)) changed.push(`${method.toUpperCase()} ${path}`);
     }
   }
   doc.info["x-agentrun-serve"] = {

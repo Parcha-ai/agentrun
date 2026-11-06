@@ -50,7 +50,8 @@ export type ErrorCode = keyof typeof ERROR_STATUS;
 
 const RETRYABLE = new Set<ErrorCode>(["home_busy", "idempotency_in_progress", "rate_limited", "internal", "unavailable"]);
 
-export type InputIssue = { field: string; reason: string; message: string; expected?: string; fix?: string; code?: string };
+/** A field that is missing or wrong. `example`: a value the field accepts, read from the request body's schema (explain.ts). */
+export type InputIssue = { field: string; reason: string; message: string; expected?: string; fix?: string; code?: string; example?: unknown };
 
 /** What a refusal carries beside its code and message. */
 export type ErrorExtra = {

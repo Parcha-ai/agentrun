@@ -21,6 +21,7 @@ import { FAUX_MONID_ENV } from "./monid.js";
 import { FAUX_EXA_ENV } from "./exa-keyless.js";
 import { FAUX_BROWSER_ENV, NODE_TOOLS, toolingOf, toolOf, toolsView } from "./tools.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
+import { deref, explain } from "./explain.js";
 import { DATA_ENV, DOOR_TOKEN_FILE, HOME_HOST_OWNED, HOMES_DIR, homeOf, readJson, RUN_META, SETUP_LOST, syncDir, TOKEN_FILE, writeDurable } from "./files.js";
 import { checkedPath, decodedPath, homePath, hostOwnedOf, hostOwnedRefusal, type OwnedReadAt, ownedByIdentity } from "./home-path.js";
 import { chooseModel, EFFORTS, FAUX_ENV, FAUX_UPSTREAM_ENV, MODEL_NODES, type ModelNeeds, modelSource, THINKING_LEVELS, withoutFaux } from "./model.js";
@@ -978,7 +979,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       if (!entry.revision) return [{ field: "target.agent_id", reason: "invalid", message: `the agent ${target.agent_id} has no current revision` }];
       if (entry.revision.kind === "workflow") return [{ field: "target.agent_id", reason: "not_allowed", message: "A trigger's runs are capped, and a workflow run's spend is not capped here: name an agent that is not a workflow." }];
       const uncapped = target.max_cost_usd === undefined && entry.revision.body.maxCostUsd === undefined ? [{ field: "target.max_cost_usd", reason: "missing", message: `Every run a trigger starts is capped: give the target a max_cost_usd or set the agent's (the agent ${target.agent_id} has none).` }] : [];
-      return [...uncapped, ...(await inputIssuesOf(entry.revision, target.input)).map((issue) => ({ ...issue, field: `target.${issue.field}` }))];
+      return [...uncapped, ...explain(await inputIssuesOf(entry.revision, target.input), openapi, runBodySchema(entry.revision)).map((issue) => ({ ...issue, field: `target.${issue.field}` }))];
     },
     async start(target, input, trigger) {
       const entry = await needAgent(target.agent_id);
@@ -1261,6 +1262,13 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     return blockers.map(issueOf);
   }
 
+  /** The body a run of `revision` takes, as its 422s are told from (explain.ts): the document's RunCreate, its input the
+   *  one this server checks, an agentic run's `{content: string}` (a workflow's is its workflow's, an object here). */
+  function runBodySchema(revision: Revision | null | undefined): Json {
+    const body = deref(openapi, { $ref: "#/components/schemas/RunCreate" }) ?? {};
+    return { ...body, properties: { ...(body.properties as Json), input: revision?.kind === "workflow" ? { type: "object" } : DEFAULT_INPUT_SCHEMA } };
+  }
+
   /** A run's input: an agentic run's `{content: string}`, a workflow run's what its workflow's input schema takes. */
   async function inputIssuesOf(revision: Revision, input: Json) {
     if (revision.kind === "agentic") return inputIssues(input, DEFAULT_INPUT_SCHEMA as Json);
@@ -1299,7 +1307,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     if (body.effort !== undefined && !(EFFORTS as readonly unknown[]).includes(body.effort)) issues.push({ field: "effort", reason: "not_an_option", message: `effort is one of ${EFFORTS.join(", ")}` });
     if (body.max_cost_usd !== undefined && !(typeof body.max_cost_usd === "number" && body.max_cost_usd > 0 && Number.isFinite(body.max_cost_usd))) issues.push({ field: "max_cost_usd", reason: "wrong_type", message: "max_cost_usd is a number above 0" });
     if (body.file_ids !== undefined && !Array.isArray(body.file_ids)) issues.push({ field: "file_ids", reason: "wrong_type", message: "file_ids is a list of file ids" });
-    if (issues.length) throw invalid(issues);
+    if (issues.length) throw invalid(explain(issues, openapi, runBodySchema(entry.revision)));
     if (body.quote_id !== undefined) throw unsupported("quotes", "This server has no billing, so it takes no quotes.");
     // Each a ready file, before anything starts: copied into the run's work/inputs/ once its directory is made.
     const files = Array.isArray(body.file_ids) ? await uploads.readyFiles(body.file_ids) : [];
@@ -1309,7 +1317,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     if (revision.kind === "workflow" && body.max_cost_usd !== undefined) throw invalid([{ field: "max_cost_usd", reason: "not_allowed", message: "A workflow run's spend is not capped here: its cost shows once it ends." }]);
     const input = body.input as Json;
     const wrong = await inputIssuesOf(revision, input);
-    if (wrong.length) throw invalid(wrong);
+    if (wrong.length) throw invalid(explain(wrong, openapi, runBodySchema(revision)));
     // The run's own cap, else the agent's default (an agentic revision's): the caller chose its own.
     const cap = typeof body.max_cost_usd === "number" ? body.max_cost_usd : revision.kind === "agentic" ? revision.body.maxCostUsd : undefined;
     if (capped && cap === undefined) throw invalid([{ field: "max_cost_usd", reason: "missing", message: "Every run a trigger starts is capped: give the trigger's target a max_cost_usd or set the agent's." }]);
@@ -1682,7 +1690,29 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
 
   // ---- routing --------------------------------------------------------------------------------------------------------
 
+  /** A route's answer; a 422's field issues told from the operation's request body schema (explain.ts). */
   async function route(req: IncomingMessage, res: ServerResponse, url: URL, path: string): Promise<void> {
+    try {
+      return await routeOf(req, res, url, path);
+    } catch (error) {
+      const name = ROUTES.find((r) => r.pattern.test(path) && r.method === req.method)?.name;
+      if (!(error instanceof ApiError) || error.code !== "input_invalid" || !error.extra.fields?.length || !name) throw error;
+      const fields = explain(error.extra.fields, openapi, bodySchemaOf(name));
+      throw new ApiError(error.code, error.message === error.extra.fields[0]!.message ? fields[0]!.message : error.message, { ...error.extra, fields }, error.headers);
+    }
+  }
+
+  /** An operation's JSON request body schema in the served document, if it has one. */
+  function bodySchemaOf(operationId: string): Json | undefined {
+    for (const item of Object.values(openapi.paths as Record<string, Record<string, Json>>)) {
+      for (const op of Object.values(item)) {
+        if (op.operationId === operationId) return deref(openapi, (((op.requestBody as Json | undefined)?.content as Json | undefined)?.["application/json"] as Json | undefined)?.schema);
+      }
+    }
+    return undefined;
+  }
+
+  async function routeOf(req: IncomingMessage, res: ServerResponse, url: URL, path: string): Promise<void> {
     const matching = ROUTES.filter((r) => r.pattern.test(path));
     // `/v2` twice: a path an answer gives (upload.url, a Location) appended to the /v2 base, where it starts at the root.
     if (!matching.length) throw new ApiError("not_found", path.startsWith("/v2/") ? `no route /v2${path}: /v2 is in it twice. A path an answer gives (upload.url, a Location) starts at the server's root: send it to the server's address, not after the /v2 base.` : `no route ${path}`);

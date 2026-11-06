@@ -1,0 +1,8 @@
+---
+packages: @parcha/agentrun-serve, @parcha/agentrun
+kind: feature
+---
+A coding agent gets `agents create` and `runs start` right on the first try, from the help and the 422s. The served OpenAPI document gives a working request body for `POST /agents`, `POST /agents/{agent_id}/runs` and `POST /triggers`, as the JSON media type's `examples` (examples/1), and `npx @parcha/agentrun agents create --help`, `runs start --help` and `triggers create --help` end with it as a `--body '…'` line to paste. A test sends every documented example to the server and requires a 2xx, so none can stop working.
+- Each field issue of a `422 input_invalid` (`error.fields[]`) gains `example` (explain/1), a value the field accepts, read from the request body's schema: its first example, const or option, else `true` for a switch, `"…"` for text, the least number it takes, an object of its required fields. The message says it too: `definition.learning is true or false, e.g. true`, `input is an object, e.g. {"content":"…"}`, `definition.name is required, e.g. "…"`. A run's `input` is told from the input this server checks, an agentic run's `{content}`.
+- A field sent at the wrong level, which an object inside the body keeps, is told where it belongs: `{"name": …}` to `POST /agents` answers `The body keeps no field name: name belongs under definition.`, with `fix` `name belongs under definition: {"definition":{"name":"…"}}` and that body as its `example`.
+- Upgrading: a field issue's `message` may now end with `, e.g. <value>` or name where the field belongs, and the issue may carry `example`; a client that compares a field issue's message whole compares its `field` and `reason` instead.
