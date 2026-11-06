@@ -425,7 +425,9 @@ export function adapterRun(
       }
     }
     else if (event.type === "tool_end") {
-      void flush();
+      // A call still waiting for its request's cost (one that ends, or is refused, before the request is booked) goes on
+      // the root now, at a cost still to come, which comes in later (PRICED_LATE): its result is never written above it.
+      void flush(calls.some((call) => call.id === event.callId));
       later(() =>
         commit(async (tx) => {
           await tx.appendEntry(ToolResultEntry, ROOT_CONVERSATION_ID, {
