@@ -18,6 +18,7 @@ export async function startFakeOAuth({ cimd = false, clients = {}, expiresIn = 3
   const refresh = new Map();
   const issued = [];
   let hanging = false;
+  let failing = 0;
   let grantedUnanswered = false;
   const http = createServer(async (req, res) => {
     const url = new URL(req.url, issuer());
@@ -61,6 +62,7 @@ export async function startFakeOAuth({ cimd = false, clients = {}, expiresIn = 3
     }
     if (url.pathname === "/token" && req.method === "POST") {
       if (hanging) return; // never answered: its client's own timeout ends it
+      if (failing) return void res.writeHead(failing, { "content-type": "text/plain" }).end("the token service is down");
       // The next one is granted (a refresh token rotated) but its answer never sent.
       const answer = grantedUnanswered ? ((grantedUnanswered = false), () => {}) : json;
       const basic = /^Basic (.+)$/.exec(req.headers.authorization ?? "");
@@ -107,6 +109,10 @@ export async function startFakeOAuth({ cimd = false, clients = {}, expiresIn = 3
     revoke: () => (refresh.clear(), access.clear()),
     /** From now on `/token` never answers, as an authorization server that hangs. */
     hang: () => void (hanging = true),
+    /** From now on `/token` answers `status` (a 503, say) and grants nothing, as an authorization server that is down. */
+    fail: (status) => void (failing = status),
+    /** Answering again: no hang, no failure. */
+    heal: () => void ((hanging = false), (failing = 0)),
     /** The next `/token` request is granted (a refresh token is spent) but never answered. */
     grantUnanswered: () => void (grantedUnanswered = true),
     /** Every access token given so far stops working, as at its expiry; refresh tokens still do. */

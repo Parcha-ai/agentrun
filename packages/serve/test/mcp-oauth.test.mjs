@@ -258,7 +258,7 @@ for (const name of ["docs", "constructor"]) test(`a run (server ${name}): its la
   const sent = mcp.log.filter((entry) => entry.method === "tools/call").length;
   const said = await run();
   // The refused refresh marks the sign-in expired: the call is refused unsent, never sent with no credential.
-  assert.ok(said.includes(`The MCP server ${name}'s credential can't be opened on this server (its sign-in expired or was revoked: sign in again in Settings → MCP servers)`), said);
+  assert.ok(said.endsWith(`The MCP server ${name}'s credential can't be used right now: its sign-in expired or was revoked: sign in again in Settings → MCP servers.`), said);
   assert.equal(mcp.log.filter((entry) => entry.method === "tools/call").length, sent, "nothing more was sent");
   assert.equal((await api("GET", `/settings/mcp-servers/${name}`)).body.credential, "expired");
 });
@@ -608,7 +608,7 @@ for (const harness of ["pi", ...(existsSync("/usr/bin/setpriv") ? ["claude-agent
     // Nothing reached the MCP server: no call, with or without a credential, and no handshake for one.
     assert.deepEqual(mcp.log.slice(before).filter((entry) => ["tools/call", "initialize", "server/discover"].includes(entry.method)), [], "the MCP server saw nothing of the run");
     assert.equal(last.status, "completed", JSON.stringify(view.error ?? view.result));
-    assert.match(view.result?.final_answer ?? "", /The MCP server docs's credential can't be opened on this server \(its sign-in expired or was revoked: sign in again in Settings → MCP servers\)/);
+    assert.match(view.result?.final_answer ?? "", /The MCP server docs's credential can't be used right now: its sign-in expired or was revoked: sign in again in Settings → MCP servers\./);
   });
 }
 
@@ -648,4 +648,153 @@ test("pi: a run whose process went while its call was parked: the owner's allow 
   const sent = mcp.log.filter((entry) => entry.method === "tools/call");
   assert.equal(sent.length, 1, "run once");
   assert.ok(sent[0].authorization);
+});
+
+test("the refresh step's test-only wait has no effect outside a test runner, and is capped at a second within one", async () => {
+  const { refreshDelayMs, REFRESH_DELAY_ENV } = await import("../dist/runs.js");
+  assert.equal(REFRESH_DELAY_ENV, "AGENTRUN_SERVE_TEST_REFRESH_DELAY_MS");
+  // A server's environment: the variable set by mistake, no test runner.
+  assert.equal(refreshDelayMs({ [REFRESH_DELAY_ENV]: "500" }), 0);
+  assert.equal(refreshDelayMs({ [REFRESH_DELAY_ENV]: "500", NODE_ENV: "production" }), 0);
+  // Under a test runner (node --test sets NODE_TEST_CONTEXT; NODE_ENV=test, as the stand-ins' guards read it).
+  assert.equal(refreshDelayMs({ [REFRESH_DELAY_ENV]: "500", NODE_TEST_CONTEXT: "child-v8" }), 500);
+  assert.equal(refreshDelayMs({ [REFRESH_DELAY_ENV]: "500", NODE_ENV: "test" }), 500);
+  assert.equal(refreshDelayMs({ [REFRESH_DELAY_ENV]: "600000", NODE_TEST_CONTEXT: "child-v8" }), 1_000, "capped");
+  for (const stray of [undefined, "", "soon", "-5"]) assert.equal(refreshDelayMs({ ...(stray === undefined ? {} : { [REFRESH_DELAY_ENV]: stray }), NODE_TEST_CONTEXT: "child-v8" }), 0, String(stray));
+});
+
+/** An authorization server on loopback publishing `metadata` over its own endpoints; its registration answers
+ *  `registerStatus` with a body that must never be echoed, when given. */
+async function loopbackAs(t, metadata = {}, { registerStatus } = {}) {
+  const http = createServer((req, res) => {
+    const base = `http://127.0.0.1:${http.address().port}`;
+    const json = (body) => res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(body));
+    if (req.url.startsWith("/.well-known/oauth-authorization-server")) return json({ issuer: base, authorization_endpoint: `${base}/authorize`, token_endpoint: `${base}/token`, registration_endpoint: `${base}/register`, response_types_supported: ["code"], code_challenge_methods_supported: ["S256"], ...metadata });
+    if (req.url === "/register" && registerStatus) return res.writeHead(registerStatus, { "content-type": "text/plain" }).end("upstream said: NOT-FOR-THE-OWNER-0123456789");
+    if (req.url === "/register") return json({ client_id: "loopback-client", redirect_uris: ["http://127.0.0.1/cb"] });
+    res.writeHead(404).end();
+  });
+  await new Promise((resolve) => http.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => (http.close(resolve), http.closeAllConnections())));
+  return `http://127.0.0.1:${http.address().port}`;
+}
+
+/** Every request this process sends off loopback, failed at once: none may be sent. */
+function offLoopback(t) {
+  const sent = [];
+  const real = globalThis.fetch;
+  t.mock.method(globalThis, "fetch", async (input, init) => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    if (!/^(?:localhost|127(?:\.\d{1,3}){3}|\[::1\])$/.test(url.hostname)) {
+      sent.push(url.href);
+      throw new TypeError("fetch failed (off loopback, in a test)");
+    }
+    return real(input, init);
+  });
+  return sent;
+}
+
+test("a loopback MCP server's authorization server may name loopback endpoints only: a private or link-local one is refused, and nothing is sent to it", async (t) => {
+  const key = sealKey();
+  const sent = offLoopback(t);
+  const net = { network: { lookup: async (host) => [host], fetch: async (url) => (sent.push(url), new Response("", { status: 404 })) } };
+  const bad = [
+    "http://169.254.169.254/latest", // key-gate: denylist the link-local metadata address an authorization server must not name
+    "http://10.0.0.5/as", // key-gate: denylist a private address an authorization server must not name
+    "http://[fd00::1]/as", // key-gate: denylist a private-range address an authorization server must not name
+  ];
+  for (const at of bad) {
+    // Its authorization server itself (the metadata address its resource metadata names), its token endpoint, its
+    // registration endpoint.
+    for (const [what, server] of [
+      ["address", async () => at],
+      ["token endpoint", async () => loopbackAs(t, { token_endpoint: `${at}/token` })],
+      ["registration endpoint", async () => loopbackAs(t, { registration_endpoint: `${at}/register` })],
+    ]) {
+      const mcp = await startFakeMcp({ token: () => false, oauth: await server() });
+      t.after(() => mcp.close());
+      const store = await storeOn(t, key, net);
+      await assert.rejects(store.oauthStart("loop", { url: mcp.url }), (error) => error.code === "upstream_failed" && /private address; refused/.test(error.message), `${what} ${at}`);
+    }
+  }
+  assert.deepEqual(sent, [], "nothing was sent off loopback");
+});
+
+test("a sign-in whose authorization server fails says which endpoint and its status, never what it answered", async (t) => {
+  const key = sealKey();
+  const mcp = await startFakeMcp({ token: () => false, oauth: await loopbackAs(t, {}, { registerStatus: 500 }) });
+  t.after(() => mcp.close());
+  const store = await storeOn(t, key, { network: { lookup: async () => [], fetch: async () => new Response("", { status: 404 }) } });
+  await assert.rejects(store.oauthStart("loop", { url: mcp.url }), (error) => {
+    assert.equal(error.code, "upstream_failed");
+    assert.match(error.message, /its authorization server's endpoint http:\/\/127\.0\.0\.1:\d+\/register answered HTTP 500\.$/);
+    assert.ok(!error.message.includes("NOT-FOR-THE-OWNER"), error.message);
+    return true;
+  });
+});
+
+for (const down of ["503", "timeout"]) {
+  test(`pi: an expired access token whose refresh gets ${down === "503" ? "a 503" : "no answer"} refuses the call unsent, saying to try again, keeps the refresh token, and the next launch refreshes and runs`, { timeout: 180_000 }, async (t) => {
+    withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() });
+    const { api } = await serve(t, { faux: FAUX_MCP });
+    // Access tokens that last two seconds: past their expiry by the run's launch.
+    const { as, mcp } = await fakes(t, { expiresIn: 2 });
+    const started = await api("POST", "/settings/mcp-servers/docs/oauth/start", { url: mcp.url });
+    assert.equal((await approve(started)).status, 302);
+    assert.equal((await api("POST", "/agents", agent("adder", { tools: ["mcp:docs/add"], tool_settings: { "mcp:docs/*": { permission: "allow" } } }))).status, 201);
+    await new Promise((resolve) => setTimeout(resolve, 2_500));
+    if (down === "503") as.fail(503);
+    else as.hang();
+    const run = async () => {
+      const made = await api("POST", "/agents/adder/runs", { input: { content: 'Call mcp__docs__add with {"a":2,"b":3}' } });
+      assert.equal(made.status, 202, JSON.stringify(made.body));
+      await follow(api, made.body.run_id, ["completed", "failed"], { deadlineMs: 150_000 });
+      return (await api("GET", `/runs/${made.body.run_id}`)).body.result?.final_answer ?? "";
+    };
+    const calls = () => mcp.log.filter((entry) => entry.method === "tools/call").length;
+    const tries = () => as.log.filter((entry) => entry.form.grant_type === "refresh_token").length;
+    const said = await run();
+    // Its own remedy, and none other: the credential is fine, so no one is told to update it or to sign in again.
+    assert.equal(said, "The tool said: The MCP server docs's credential can't be used right now: the sign-in server didn't answer; try again.");
+    assert.doesNotMatch(said, /update it|sign in again/);
+    assert.equal(calls(), 0, "nothing was sent with the expired token");
+    assert.equal(tries(), 2, "the refresh was tried twice");
+    assert.equal((await api("GET", "/settings/mcp-servers/docs")).body.credential, "sealed", "the sign-in stands: no one is asked to sign in again");
+    // The authorization server answers again: the next launch refreshes with the refresh token it kept, and runs.
+    as.heal();
+    assert.equal(await run(), "The tool said: 5");
+    assert.equal(calls(), 1);
+  });
+}
+
+test("an expired access token on a server started without its seal key reads the seal key's words, not an outage's, and no refresh is sent", async (t) => {
+  const key = sealKey();
+  withEnv(t, { AGENTRUN_SEAL_KEY: key });
+  const { api, data } = await serve(t);
+  const { as, mcp } = await fakes(t, { expiresIn: 2 });
+  const started = await api("POST", "/settings/mcp-servers/docs/oauth/start", { url: mcp.url });
+  assert.equal((await approve(started)).status, 302);
+  await new Promise((resolve) => setTimeout(resolve, 2_500));
+  const { UNUSABLE } = await import("../dist/mcp-servers.js");
+  const tries = () => as.log.filter((entry) => entry.form.grant_type === "refresh_token").length;
+  const before = tries();
+  // The same data, read by a server started without its seal key: retrying can never fix that.
+  const keyless = new McpServers(data, {}, "test");
+  assert.deepEqual(await keyless.headersForRun("docs"), { unopened: UNUSABLE.noSealKey });
+  assert.equal(tries(), before, "no refresh was sent");
+});
+
+test("a sign-in whose endpoint's name lookup outlives the request's time says that endpoint could not be reached, and why", { timeout: 120_000 }, async (t) => {
+  const key = sealKey();
+  // A resolver that never answers: each request's own timeout ends its lookup (an unreferenced timer, as in a server that
+  // has other work: this test keeps the process up meanwhile).
+  const up = setInterval(() => {}, 1_000);
+  t.after(() => clearInterval(up));
+  const net = { network: { lookup: () => new Promise(() => {}), fetch: async () => new Response("", { status: 404 }) } };
+  const store = await storeOn(t, key, net);
+  await assert.rejects(store.oauthStart("pub", { url: "https://mcp.example.test/mcp" }), (error) => {
+    assert.equal(error.code, "upstream_failed");
+    assert.match(error.message, /its authorization server's endpoint https:\/\/mcp\.example\.test\/\S+ could not be reached \(DNS lookup timed out\)\.$/);
+    return true;
+  });
 });

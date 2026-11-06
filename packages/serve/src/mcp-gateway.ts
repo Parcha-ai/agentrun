@@ -313,7 +313,8 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
     if (!now) return `The MCP server ${server} is no longer saved on this server; nothing was sent.`;
     if (now.url !== pinned.url) return `The MCP server ${server}'s address changed since this run started; nothing was sent. Start a new run to use it at its new address.`;
     // A credential that does not open is never a call without it.
-    if (now.unopened !== undefined) return `The MCP server ${server}'s credential can't be opened on this server (${now.unopened}); update it in Settings → MCP servers.`;
+    // The reason carries its own remedy (mcp-servers.ts UNUSABLE): nothing is added to it here.
+    if (now.unopened !== undefined) return `The MCP server ${server}'s credential can't be used right now: ${now.unopened}.`;
     return undefined;
   };
 
