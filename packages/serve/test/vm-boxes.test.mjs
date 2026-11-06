@@ -15,7 +15,7 @@ import { BOX_RELAY_FILE, startBoxRelay } from "../dist/box-relay.js";
 import * as relayVm from "../dist/box-relay-vm.js";
 import { BOX_ENV } from "../dist/run-box.js";
 import { ModalClient as FakeClient, vm } from "./fixtures/fake-vm.mjs";
-import { follow, scratch, serve, withEnv } from "./support.mjs";
+import { follow, runDir, scratch, serve, withEnv } from "./support.mjs";
 
 const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;
 const FAKE_VM = new URL("./fixtures/fake-vm.mjs", import.meta.url).pathname;
@@ -27,7 +27,7 @@ const NO_LIST = "the Modal sandbox takes a host list, but this server cannot rea
 const ENV_PROBE = "env; cat /proc/self/environ 2>/dev/null | tr '\\0' '\\n'";
 
 function answers(data, runId) {
-  const db = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { readOnly: true });
+  const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true });
   try {
     return db.prepare("SELECT record FROM entries ORDER BY id").all()
       .flatMap((row) => JSON.parse(row.record).model ?? [])
@@ -96,7 +96,7 @@ test("demo: a VM place runs bash, write, edit and read in the run's VM box: work
   assert.deepEqual(vm.clients.map((client) => client.params), [{ tokenId: TOKENS[VM_PROVIDER.keys[0]], tokenSecret: TOKENS[VM_PROVIDER.keys[1]] }]);
   const door = (await readFile(join(data, ".door-token"), "utf8")).trim();
   for (const [name, value] of Object.entries({ ...TOKENS, model: planted("model"), token: server.token, door })) assert.ok(!said[5].text.includes(value), `${name} reached the box`);
-  const log = readFileSync(join(data, "runs", run.run_id, "process.log"), "utf8");
+  const log = readFileSync(join(runDir(data, run.run_id), "process.log"), "utf8");
   for (const value of Object.values(TOKENS)) assert.ok(!log.includes(value), "the token is in no line of the run's process");
   // The run's end ended its box.
   assert.deepEqual(vm.running(), [], "the box is ended at the run's end");
@@ -133,10 +133,13 @@ test("a cancel ends the run's box", { timeout: 180_000 }, async (t) => {
   const run = await probe(api, "asker", [{ tool: "bash", args: { command: "printf one > kept.txt" } }, { tool: "ask_person", args: { question: "Go on?" } }]);
   await follow(api, run.run_id, ["input_required"], { deadlineMs: 120_000 });
   assert.equal(vm.running().length, 1);
+  // The turn's end copied it back already (a files read waits for that copy): what the cancel then keeps is that.
+  assert.deepEqual(await fileList(api, run.run_id), ["kept.txt"], "the turn's end brought it back");
+  const boxes = () => JSON.stringify(vm.sandboxes.map((sandbox) => [sandbox.sandboxId, sandbox.exitCode, sandbox.params.tags["agentrun.run"]]));
   assert.equal((await api("POST", `/runs/${run.run_id}/cancel`)).status, 202);
   await follow(api, run.run_id, ["cancelled"], { deadlineMs: 60_000 });
   await until(() => vm.running().length === 0, "the box's end");
-  assert.deepEqual(await fileList(api, run.run_id), ["kept.txt"], "what the box wrote came back first");
+  assert.deepEqual(await fileList(api, run.run_id), ["kept.txt"], `what the box wrote is kept through the cancel; boxes: ${boxes()}`);
 });
 
 test("a run's end lets the relay's hold on its programs go even when its box is kept: a program it holds is no longer read", { timeout: 180_000 }, async (t) => {
@@ -147,7 +150,7 @@ test("a run's end lets the relay's hold on its programs go even when its box is 
   const [box] = vm.running();
   // A program the relay holds and nobody reads: as one a run's process started just before it went.
   const { url } = JSON.parse(readFileSync(join(data, BOX_RELAY_FILE), "utf8"));
-  const door = readFileSync(join(data, "runs", run.run_id, "door-token"), "utf8").trim();
+  const door = readFileSync(join(runDir(data, run.run_id), "door-token"), "utf8").trim();
   const started = await fetch(`${url}/runs/${run.run_id}/vm/sandbox/${box.sandboxId}/exec`, { method: "POST", headers: { authorization: `Bearer ${door}`, "content-type": "application/json" }, body: JSON.stringify({ command: ["sleep", "30"] }) });
   assert.equal(started.status, 200);
   const held = box.execs.find((exec) => exec.command[0] === "sleep");
@@ -161,6 +164,31 @@ test("a run's end lets the relay's hold on its programs go even when its box is 
   assert.deepEqual(vm.running().map((sandbox) => sandbox.sandboxId), [box.sandboxId], "the box is kept");
   await until(() => held.released.length === 2, "the relay letting the program's output go");
   assert.deepEqual([...held.released].sort(), ["stderr", "stdout"]);
+});
+
+test("a program that is still starting when its run ends is let go as it lands, never held", { timeout: 180_000 }, async (t) => {
+  const { api, data } = await onVm(t);
+  assert.equal((await api("POST", "/agents", { definition: { id: "asker", name: "asker", instructions: "Probe.", place: PLACE, tools: ["bash", "ask_person"] } })).status, 201);
+  const run = await probe(api, "asker", [{ tool: "bash", args: { command: "true" } }, { tool: "ask_person", args: { question: "Go on?" } }]);
+  await follow(api, run.run_id, ["input_required"], { deadlineMs: 120_000 });
+  const [box] = vm.running();
+  const { url } = JSON.parse(readFileSync(join(data, BOX_RELAY_FILE), "utf8"));
+  const door = readFileSync(join(runDir(data, run.run_id), "door-token"), "utf8").trim();
+  // Its start takes a while; the run ends meanwhile, its box kept (its last copy back cannot be read).
+  vm.execDelayMs = (command) => (command[0] === "sleep" ? 20_000 : 0);
+  const starting = fetch(`${url}/runs/${run.run_id}/vm/sandbox/${box.sandboxId}/exec`, { method: "POST", headers: { authorization: `Bearer ${door}`, "content-type": "application/json" }, body: JSON.stringify({ command: ["sleep", "30"] }) });
+  await until(() => box.execs.some((exec) => exec.command[0] === "sleep"), "the start under way");
+  writeFileSync(join(box.dir, "run", "agentrun", "run", "work", "late.txt"), "changed in the box");
+  vm.hostileTar = Buffer.from("this is not an archive ".repeat(64));
+  assert.equal((await api("POST", `/runs/${run.run_id}/cancel`)).status, 202);
+  await follow(api, run.run_id, ["cancelled"], { deadlineMs: 120_000 });
+  assert.equal(box.execs.find((exec) => exec.command[0] === "sleep").released, undefined, "the run ended before the start landed");
+  const late = await starting;
+  vm.execDelayMs = 0;
+  assert.equal(late.status, 410, await late.text());
+  const held = box.execs.find((exec) => exec.command[0] === "sleep");
+  await until(() => held.released?.length === 2, "the late program's output let go");
+  assert.deepEqual(vm.running().map((sandbox) => sandbox.sandboxId), [box.sandboxId], "the box is kept");
 });
 
 test("the VM box never gets a network: with AGENTRUN_BOX_ALLOW set, capabilities and the banner say none and why, and the box is made blocked; with it none, none and no reason", { timeout: 120_000 }, async (t) => {
@@ -201,7 +229,7 @@ test("the relay takes a run's VM calls only for that run's own box, and never on
   for (const run of [a, b]) await follow(api, run.run_id, ["input_required"], { deadlineMs: 120_000 });
   const boxOf = (runId) => vm.running().find((sandbox) => sandbox.params.tags["agentrun.run"] === runId).sandboxId;
   const { url } = JSON.parse(readFileSync(join(data, BOX_RELAY_FILE), "utf8"));
-  const tokenOf = (runId) => readFileSync(join(data, "runs", runId, "door-token"), "utf8").trim();
+  const tokenOf = (runId) => readFileSync(join(runDir(data, runId), "door-token"), "utf8").trim();
   const call = (runId, path, body, token = tokenOf(runId), signal) => fetch(`${url}/runs/${runId}/vm/${path}`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify(body ?? {}), ...(signal ? { signal } : {}) });
   assert.equal((await call(a.run_id, `sandbox/${boxOf(a.run_id)}/poll`)).status, 200, "its own box");
   assert.equal((await call(a.run_id, `sandbox/${boxOf(b.run_id)}/poll`)).status, 404, "another run's box is not there for it");
@@ -289,6 +317,35 @@ test("the run's relay client waits on a program as long as it runs: its exit and
   // The relay's own client has none: the program's caller bounds it.
   assert.deepEqual({ ...relayVm.RELAY_AGENT_OPTIONS }, { headersTimeout: 0, bodyTimeout: 0 });
   assert.deepEqual(await run(relayVm.relayedVmSdk(root, runDir, "r1")), ["a\nb\n", "", 0]);
+});
+
+test("a start whose run ends while its sandbox is still looked up is let go as it lands; an ended run leaves the relay nothing", { timeout: 60_000 }, async (t) => {
+  vm.reset();
+  t.after(() => vm.reset());
+  const root = await scratch(t);
+  const runDir = join(root, "runs", "r1");
+  mkdirSync(runDir, { recursive: true });
+  writeFileSync(join(runDir, "door-token"), "door-of-r1\n");
+  const client = new FakeClient({});
+  const box = await client.sandboxes.create({}, {}, { tags: { "agentrun.run": "r1" }, timeoutMs: 60_000 });
+  const relayVmHalf = relayVm.vmRelay(client);
+  const relay = await startBoxRelay({ root, tokenOf: (id) => (id === "r1" ? "door-of-r1" : undefined), vm: relayVmHalf, serves: () => true, ensure: async () => ({ id: box.sandboxId, made: false }) });
+  t.after(() => relay.close());
+  // The relay has not looked this sandbox up yet, and the lookup takes a while: the run ends meanwhile.
+  vm.lookupDelayMs = 1500;
+  const starting = fetch(`${relay.url}/runs/r1/vm/sandbox/${box.sandboxId}/exec`, { method: "POST", headers: { authorization: "Bearer door-of-r1", "content-type": "application/json" }, body: JSON.stringify({ command: ["sleep", "30"] }) });
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  const during = relayVmHalf.footprint?.();
+  relayVmHalf.drop("r1");
+  const late = await starting;
+  assert.equal(late.status, 410, await late.text());
+  const held = box.execs.find((exec) => exec.command[0] === "sleep");
+  await until(() => held.released?.length === 2, "the late program's output let go");
+  assert.deepEqual(during, { programs: 0, starting: 1 }, "the start was under way from its request");
+  // Runs that end, many of them, leave the relay holding nothing for them.
+  vm.lookupDelayMs = 0;
+  for (let i = 0; i < 50; i++) relayVmHalf.drop(`ended-${i}`);
+  assert.deepEqual(relayVmHalf.footprint(), { programs: 0, starting: 0 });
 });
 
 // So the fixture's directory exists before any box writes its spool there.

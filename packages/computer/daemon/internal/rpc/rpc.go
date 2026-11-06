@@ -1,0 +1,363 @@
+// Package rpc serves JSON-RPC 2.0, one UTF-8 JSON object per line, over any reader and writer.
+package rpc
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log"
+	"sync"
+	"time"
+)
+
+// MaxLine is the longest line, in bytes without its newline, read or written.
+const MaxLine = 1 << 20
+
+// shutdownGrace is how long Serve waits for its handlers after it cancels them, before it closes w.
+const shutdownGrace = 2 * time.Second
+
+// CancelMethod is the notification that cancels a request by id.
+const CancelMethod = "$/cancelRequest"
+
+const (
+	CodeParse            = -32700
+	CodeInvalidRequest   = -32600
+	CodeMethodNotFound   = -32601
+	CodeInvalidParams    = -32602
+	CodeServer           = -32000
+	CodeRequestCancelled = -32800
+)
+
+// Kind is the protocol's error kind, sent as error.data.kind.
+type Kind string
+
+const (
+	KindNotFound    Kind = "not_found"
+	KindInvalid     Kind = "invalid"
+	KindTimeout     Kind = "timeout"
+	KindAborted     Kind = "aborted"
+	KindDenied      Kind = "denied"
+	KindLimit       Kind = "limit"
+	KindUnsupported Kind = "unsupported"
+)
+
+// Error is a protocol error.
+type Error struct {
+	Code    int
+	Message string
+	Kind    Kind
+}
+
+func (e *Error) Error() string { return e.Message }
+
+// Errorf makes an error of a kind, with the JSON-RPC code that kind takes.
+func Errorf(kind Kind, format string, args ...any) *Error {
+	code := CodeServer
+	switch kind {
+	case KindInvalid:
+		code = CodeInvalidParams
+	case KindAborted:
+		code = CodeRequestCancelled
+	}
+	return &Error{Code: code, Message: fmt.Sprintf(format, args...), Kind: kind}
+}
+
+// Handler answers one request. Its context ends when the request is cancelled or the input ends.
+type Handler func(ctx context.Context, params json.RawMessage) (any, error)
+
+// Server dispatches requests to handlers, each in a goroutine of its own: replies may leave out of order.
+type Server struct {
+	handlers map[string]Handler
+	log      *log.Logger
+}
+
+func NewServer(handlers map[string]Handler, logger *log.Logger) *Server {
+	return &Server{handlers: handlers, log: logger}
+}
+
+type request struct {
+	JSONRPC string          `json:"jsonrpc"`
+	ID      json.RawMessage `json:"id"`
+	Method  string          `json:"method"`
+	Params  json.RawMessage `json:"params"`
+}
+
+type wireError struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+	Data    struct {
+		Kind Kind `json:"kind"`
+	} `json:"data"`
+}
+
+type resultReply struct {
+	JSONRPC string          `json:"jsonrpc"`
+	ID      json.RawMessage `json:"id"`
+	Result  any             `json:"result"`
+}
+
+type errorReply struct {
+	JSONRPC string          `json:"jsonrpc"`
+	ID      json.RawMessage `json:"id"`
+	Error   wireError       `json:"error"`
+}
+
+var nullID = json.RawMessage("null")
+
+type session struct {
+	server   *Server
+	ctx      context.Context
+	out      io.Writer
+	writeMu  sync.Mutex
+	mu       sync.Mutex
+	inFlight map[string]context.CancelFunc
+	wg       sync.WaitGroup
+}
+
+// Serve reads requests from r and writes replies to w until r ends or ctx is done, then cancels what still runs and
+// returns once every handler has. It returns nil at the end of r or on ctx; a read error otherwise. On ctx it closes r
+// when r is an io.Closer, which ends the read; the read of an r that cannot be closed ends when its input does, and any
+// line it reads after Serve returned is dropped. A handler still writing a reply after a short grace (no one reads w)
+// is ended by closing w, when w is an io.Closer.
+func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	sess := &session{server: s, ctx: ctx, out: w, inFlight: map[string]context.CancelFunc{}}
+	type line struct {
+		data      []byte
+		oversized bool
+	}
+	lines := make(chan line)
+	readDone := make(chan error, 1)
+	go func() {
+		readDone <- readLines(r, MaxLine, func(data []byte, oversized bool) {
+			select {
+			case lines <- line{data, oversized}:
+			case <-ctx.Done():
+			}
+		})
+	}()
+	var err error
+loop:
+	for {
+		select {
+		case l := <-lines:
+			sess.handleLine(l.data, l.oversized)
+		case err = <-readDone:
+			break loop
+		case <-ctx.Done():
+			if closer, ok := r.(io.Closer); ok {
+				_ = closer.Close()
+			}
+			break loop
+		}
+	}
+	cancel()
+	// A handler can be stuck writing a reply no one reads. After a grace, closing w (when it can be closed) fails that
+	// write, so shutdown cannot hang on it.
+	handled := make(chan struct{})
+	go func() {
+		sess.wg.Wait()
+		close(handled)
+	}()
+	select {
+	case <-handled:
+	case <-time.After(shutdownGrace):
+		if closer, ok := w.(io.Closer); ok {
+			_ = closer.Close()
+		}
+		<-handled
+	}
+	if errors.Is(err, io.EOF) {
+		return nil
+	}
+	return err
+}
+
+// readLines calls fn with each line, without its newline (or CRLF). A line over max bytes is cut to its first bytes and
+// passed with oversized set; reading goes on at the next line.
+func readLines(r io.Reader, max int, fn func(line []byte, oversized bool)) error {
+	reader := bufio.NewReaderSize(r, 64<<10)
+	var line []byte
+	oversized := false
+	for {
+		chunk, err := reader.ReadSlice('\n')
+		complete := len(chunk) > 0 && chunk[len(chunk)-1] == '\n'
+		data := chunk
+		if complete {
+			data = chunk[:len(chunk)-1]
+		}
+		if !oversized && len(line)+len(data) > max {
+			oversized = true
+			if len(line) < idPrefix {
+				line = append(line, data[:min(len(data), idPrefix-len(line))]...)
+			}
+		} else if !oversized {
+			line = append(line, data...)
+		}
+		if complete || (err != nil && !errors.Is(err, bufio.ErrBufferFull) && len(line) > 0) {
+			fn(bytes.TrimSuffix(line, []byte("\r")), oversized)
+			line, oversized = nil, false
+		}
+		if err != nil && !errors.Is(err, bufio.ErrBufferFull) {
+			return err
+		}
+	}
+}
+
+// idPrefix is how much of an oversized line is kept to find its id.
+const idPrefix = 4096
+
+// idOf reads the top-level "id" from the start of a line that may be cut short.
+func idOf(prefix []byte) json.RawMessage {
+	dec := json.NewDecoder(bytes.NewReader(prefix))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		return nullID
+	}
+	for dec.More() {
+		key, err := dec.Token()
+		if err != nil {
+			return nullID
+		}
+		var value json.RawMessage
+		if err := dec.Decode(&value); err != nil {
+			return nullID
+		}
+		if key == "id" {
+			return value
+		}
+	}
+	return nullID
+}
+
+func (sess *session) handleLine(line []byte, oversized bool) {
+	if oversized {
+		sess.replyError(idOf(line), &Error{Code: CodeInvalidRequest, Kind: KindLimit, Message: fmt.Sprintf("the request is over the %d-byte line limit", MaxLine)})
+		return
+	}
+	if len(bytes.TrimSpace(line)) == 0 {
+		return
+	}
+	var req request
+	if err := json.Unmarshal(line, &req); err != nil {
+		sess.replyError(nullID, &Error{Code: CodeParse, Kind: KindInvalid, Message: "the line is not JSON: " + err.Error()})
+		return
+	}
+	notification := req.ID == nil
+	if req.JSONRPC != "2.0" || req.Method == "" {
+		if !notification {
+			sess.replyError(req.ID, &Error{Code: CodeInvalidRequest, Kind: KindInvalid, Message: `a request needs "jsonrpc": "2.0" and a method`})
+		}
+		return
+	}
+	if req.Method == CancelMethod {
+		var params struct {
+			ID json.RawMessage `json:"id"`
+		}
+		if json.Unmarshal(req.Params, &params) == nil && params.ID != nil {
+			sess.cancel(params.ID)
+		}
+		return
+	}
+	if notification {
+		return
+	}
+	handler, ok := sess.server.handlers[req.Method]
+	if !ok {
+		sess.replyError(req.ID, &Error{Code: CodeMethodNotFound, Kind: KindUnsupported, Message: fmt.Sprintf("this daemon has no method %q", req.Method)})
+		return
+	}
+	key := canonical(req.ID)
+	ctx, cancel := context.WithCancel(sess.ctx)
+	sess.mu.Lock()
+	if _, busy := sess.inFlight[key]; busy {
+		sess.mu.Unlock()
+		cancel()
+		sess.replyError(req.ID, &Error{Code: CodeInvalidRequest, Kind: KindInvalid, Message: fmt.Sprintf("request id %s is already in flight", req.ID)})
+		return
+	}
+	sess.inFlight[key] = cancel
+	sess.mu.Unlock()
+	sess.wg.Add(1)
+	go func() {
+		defer sess.wg.Done()
+		defer func() {
+			sess.mu.Lock()
+			delete(sess.inFlight, key)
+			sess.mu.Unlock()
+			cancel()
+		}()
+		result, err := sess.call(ctx, handler, req.Params)
+		if err != nil {
+			sess.replyError(req.ID, toError(ctx, err))
+			return
+		}
+		sess.write(resultReply{JSONRPC: "2.0", ID: req.ID, Result: result}, req.ID)
+	}()
+}
+
+func (sess *session) call(ctx context.Context, handler Handler, params json.RawMessage) (result any, err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			sess.server.log.Printf("handler panic: %v", p)
+			err = fmt.Errorf("the daemon failed: %v", p)
+		}
+	}()
+	return handler(ctx, params)
+}
+
+func toError(ctx context.Context, err error) *Error {
+	var e *Error
+	if errors.As(err, &e) {
+		return e
+	}
+	if ctx.Err() != nil {
+		return Errorf(KindAborted, "the request was cancelled")
+	}
+	return &Error{Code: CodeServer, Kind: KindInvalid, Message: err.Error()}
+}
+
+func (sess *session) cancel(id json.RawMessage) {
+	sess.mu.Lock()
+	cancel := sess.inFlight[canonical(id)]
+	sess.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+func canonical(id json.RawMessage) string {
+	var buf bytes.Buffer
+	if json.Compact(&buf, id) != nil {
+		return string(id)
+	}
+	return buf.String()
+}
+
+func (sess *session) replyError(id json.RawMessage, e *Error) {
+	reply := errorReply{JSONRPC: "2.0", ID: id, Error: wireError{Code: e.Code, Message: e.Message}}
+	reply.Error.Data.Kind = e.Kind
+	sess.write(reply, id)
+}
+
+func (sess *session) write(reply any, id json.RawMessage) {
+	data, err := json.Marshal(reply)
+	if err == nil && len(data) > MaxLine {
+		limit := wireError{Code: CodeServer, Message: fmt.Sprintf("the reply is %d bytes, over the %d-byte line limit", len(data), MaxLine)}
+		limit.Data.Kind = KindLimit
+		data, err = json.Marshal(errorReply{JSONRPC: "2.0", ID: id, Error: limit})
+	}
+	if err != nil {
+		sess.server.log.Printf("cannot encode a reply: %v", err)
+		return
+	}
+	sess.writeMu.Lock()
+	defer sess.writeMu.Unlock()
+	if _, err := sess.out.Write(append(data, '\n')); err != nil {
+		sess.server.log.Printf("cannot write a reply: %v", err)
+	}
+}

@@ -30,10 +30,8 @@ export function useRunGraph(load: (signal: AbortSignal) => Promise<RunGraph>, { 
         const asked = Date.now();
         const g = await loader.current(ctl.signal);
         if (ctl.signal.aborted) return;
-        // A stale view is the server's last good one while the run's store is busy: shown, but not a fresh read.
         setData(g); setError(null);
-        if (!g.stale) setReadAt(asked);
-        else { const at = Date.parse(g.read_at ?? ""); if (at) setReadAt((r) => (r ? Math.min(r, at) : at)); }
+        setReadAt(asked);
         if (isFinal(g.run.status)) return;
       } catch (e) {
         if (ctl.signal.aborted) return;
@@ -62,13 +60,13 @@ export function RunGraphView({ data, actions = {}, fileUrl, initial = null, last
   const [now, setNow] = useState(() => Date.now());
   const readAt = useMemo(() => Date.now(), [data]);
   useEffect(() => {
-    if (final || (data.run.paused && !data.stale)) return;
+    if (final || data.run.paused) return;
     const t = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(t);
-  }, [final, data.run.paused, data.stale]);
+  }, [final, data.run.paused]);
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <Totals data={data} readAt={readAt} now={now} actions={actions} stale={!final && !!lastRead && (data.stale || now - lastRead > 5000) ? Math.max(1000, now - lastRead) : 0} />
+      <Totals data={data} readAt={readAt} now={now} actions={actions} stale={!final && !!lastRead && now - lastRead > 5000 ? Math.max(1000, now - lastRead) : 0} />
       {data.run.paused && (
         <p className="border-b border-warning/40 bg-warning/10 px-5 py-2 font-mono text-[12px] text-warning-text md:px-8" role="status">
           Paused. Calls already in flight finish; no new node starts until you resume. The run keeps its place across a restart.

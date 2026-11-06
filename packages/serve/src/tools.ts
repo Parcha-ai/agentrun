@@ -4,6 +4,7 @@
 // without `bash`, so a run gets no shell on this machine; in a box, pi's four and the background tools (bash_background,
 // bash_output, bash_input, bash_signal, bash_list), each call made in the box. `bash` and the background tools may be
 // named only by an agent whose place is a box (runnable.ts).
+import { blurbOf } from "./tool-blurbs.js";
 import type { TSchema } from "@earendil-works/pi-ai";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -27,8 +28,9 @@ import { forModel } from "./result.js";
 import { fetchFor, runPages, WEB_FETCH_TOOL, webFetchTool } from "./web-fetch.js";
 import { searchFor, WEB_SEARCH_TOOL, webSearchTool } from "./web-search.js";
 import { browserNeeds, capabilityOf, explainsView, isUnavailable, NO_PARALLEL_KEY, permissionsOf, type Pickable, PICKABLE, planeOf, type Plane, PROVIDERS, type Tooling, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
-import { defaultPermission, permissionOf } from "./tool-gate.js";
+import { defaultPermission, permissionOf, type SettingFrom } from "./tool-gate.js";
 import { PARALLEL_KEY_ENV } from "./decisions.js";
+import { keyNeeded } from "./key-words.js";
 import { handedSignIn } from "./secrets.js";
 import { SIGN_IN_KEY, SIGN_IN_SAVED } from "./sign-ins.js";
 
@@ -276,7 +278,9 @@ const browserTool: ToolEntry = {
     };
     // The pointer is cut from everything the browser hands the model (its results, their details, its failures): a
     // vendor's refusal can quote it, as pi-browser's one-saver rule names Kernel's profile.
-    const browser = createBrowserExtension({ provider, driver: parts.driver as never, evidence: evidenceIn(host.where.work) as never, ...files, gates, onSession: onSessions as never, redact: { values: () => (kept ? [kept.ref] : []) }, prices: { sessionUsdPerHour: price.usdPerHour, sessionMinimumS: price.minimumS }, onCharge: spend.onCharge });
+    // A run handed its agent's sign-in tells the model its browser keeps it (`run`'s description): one with none claims
+    // cookies across pages only.
+    const browser = createBrowserExtension({ provider, driver: parts.driver as never, evidence: evidenceIn(host.where.work) as never, ...files, gates, onSession: onSessions as never, signIns: kept !== undefined, redact: { values: () => (kept ? [kept.ref] : []) }, prices: { sessionUsdPerHour: price.usdPerHour, sessionMinimumS: price.minimumS }, onCharge: spend.onCharge });
     const tools = (browser.tools as unknown as ToolRegistration[]).map(spend.capped);
     const extension = { ...(browser.extension as unknown as Extension), tools } as Extension;
     host.install(extension);
@@ -320,7 +324,7 @@ export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
   edit: fileTool("edit", "Edit a file in the run's work/."),
   bash: fileTool("bash", "Run a bash command in the run's box, from its work/, never on this server itself: only an agent whose place is a sandbox names it. Its output's tail; 300 s unless the call names a timeout.", true),
   // The background tools (background.ts): each call a short command in the run's box, on bash's environment.
-  bash_background: fileTool("bash_background", `Start a command in the background in the run's box, from its work/, and get its id at once: its stdout and stderr go to work/background/<id>/output.log (the first ${BACKGROUND_LOG_BYTES / (1024 * 1024)} MiB), its stdin is a pipe, and the run's end ends it; at most ${BACKGROUND_MAX} run at once. Only an agent whose place is a sandbox names it.`, true),
+  bash_background: fileTool("bash_background", `Start a command in the background in the run's box, from its work/, and get its id at once: its stdout and stderr go to work/background/<id>/output.log (the first ${BACKGROUND_LOG_BYTES / (1024 * 1024)} MiB), its stdin is a pipe (a terminal with tty: true), and the run's end ends it; at most ${BACKGROUND_MAX} run at once. Only an agent whose place is a sandbox names it.`, true),
   bash_output: fileTool("bash_output", `Read a background process's output from a byte offset, at most ${BACKGROUND_PAGE_BYTES / 1024} KiB a call, with whether it still runs, its exit code and the next offset. Sandbox only.`, true),
   bash_input: fileTool("bash_input", "Write text to a running background process's stdin, and close it if asked. Sandbox only.", true),
   bash_signal: fileTool("bash_signal", "Send TERM, INT or KILL to a background process's process group. Sandbox only.", true),
@@ -377,15 +381,18 @@ export const learnedWorkflowTools = (granted: readonly string[], plane?: Plane):
  *  tool to now (tool-gate.ts permissionOf, or the run's gate's policy), by its capability's settings key, as the gate
  *  holds a legacy name. One set to ask or deny is left out of `tools`, so the end-of-run prompt never offers it, and named
  *  in `gated` with its setting, which the checker and a learned workflow's check before it runs refuse a draft for. */
-export const learnedDraftTools = (granted: readonly string[], permission: (name: string) => string, plane?: Plane): { tools: string[]; gated: Record<string, string> } => {
+export const learnedDraftTools = (granted: readonly string[], permission: (name: string) => string, plane?: Plane, from?: (name: string) => SettingFrom): { tools: string[]; gated: Record<string, string>; deniedBy: Record<string, SettingFrom> } => {
   const gated: Record<string, string> = {};
+  // Where each deny was set (this agent's settings or this server's), so the refusal names it.
+  const deniedBy: Record<string, SettingFrom> = {};
   const tools = learnedWorkflowTools(granted, plane).filter((name) => {
     const setting = permission(capabilityOf(name));
     if (setting === "allow") return true;
     gated[name] = setting;
+    if (setting === "deny" && from) deniedBy[name] = from(capabilityOf(name));
     return false;
   });
-  return { tools, gated };
+  return { tools, gated, deniedBy };
 };
 
 /** The tools a workflow names (`nodes` from workflowNodes): on its model nodes (`tools`), and on its `call` nodes
@@ -433,8 +440,8 @@ export function toolRefusal(names: readonly string[], env: NodeJS.ProcessEnv, wh
   const missing = Object.fromEntries(names.map((name) => [name, missingEnv(toolOf(name)!, env)] as const).filter(([, vars]) => vars.length));
   const lacking = Object.entries(missing);
   if (!lacking.length) return undefined;
-  const said = lacking.map(([name, vars]) => `the tool ${name} needs ${vars.join(" and ")}`).join("; ");
-  return { message: `This server's environment does not set what the revision's tools need: ${said}.`, unbound: [], missing };
+  const said = lacking.map(([name, vars]) => `The tool ${name} needs ${keyNeeded(vars)}.`).join(" ");
+  return { message: `This server holds no key for what the revision's tools need. ${said}`, unbound: [], missing };
 }
 
 /** Every tool as capabilities show it, the server's one tool catalog: available here, or the variables it is missing
@@ -462,7 +469,7 @@ export const toolsView = (env: NodeJS.ProcessEnv, settings: ToolSettingsMap = {}
     const available = (plane ? Object.values(plane).some((resolution) => !isUnavailable(resolution)) : missing.length === 0) && boxless === undefined && refusal === undefined;
     // Unavailable says why: a sandbox-only tool no box here can run, why none can (`noBox`); on a tool a user picks a
     // provider for, the resolutions' own words (`web_search is turned off in settings`); else the variables it needs.
-    const reason = available ? undefined : refusal ?? boxless ?? (plane ? [...new Set(Object.values(plane).filter(isUnavailable).map(whyUnavailable))].join("; ") : `Needs ${missing.join(", ")}`);
-    return { name, summary: entry.summary, nodes: entry.nodes, calls: entry.effect !== undefined, ...(entry.callOnly ? { call_only: true } : {}), ...(entry.sandboxOnly ? { sandbox_only: true } : {}), available, ...(reason ? { reason } : {}), ...(missing.length ? { missing } : {}), harnesses: name in REPLAY ? [...HARNESSES] : [DEFAULT_HARNESS], permission: permissionOf(name, settings as never), default_permission: defaultPermission(name), permissions: [...permissionsOf(name)], ...(plane ? { providers: [...PROVIDERS[name as Pickable]], provider: picked[name as Pickable].provider, default_provider: PROVIDERS[name as Pickable][0], resolves: plane, why: view!.why } : {}) };
+    const reason = available ? undefined : refusal ?? boxless ?? (plane ? [...new Set(Object.values(plane).filter(isUnavailable).map(whyUnavailable))].join("; ") : `Needs ${keyNeeded(missing)}`);
+    return { name, summary: entry.summary, ...(blurbOf(name) ? { blurb: blurbOf(name) } : {}), nodes: entry.nodes, calls: entry.effect !== undefined, ...(entry.callOnly ? { call_only: true } : {}), ...(entry.sandboxOnly ? { sandbox_only: true } : {}), available, ...(reason ? { reason } : {}), ...(missing.length ? { missing } : {}), harnesses: name in REPLAY ? [...HARNESSES] : [DEFAULT_HARNESS], permission: permissionOf(name, settings as never), default_permission: defaultPermission(name), permissions: [...permissionsOf(name)], ...(plane ? { providers: [...PROVIDERS[name as Pickable]], provider: picked[name as Pickable].provider, default_provider: PROVIDERS[name as Pickable][0], resolves: plane, why: view!.why } : {}) };
   });
 };

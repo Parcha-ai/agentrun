@@ -27,6 +27,8 @@ import type { McpCallResult, McpTool, SessionMcp } from "@parcha/agentrun-kernel
 import { TOOL_COST, TOOL_STARTED, TOOL_UNMETERED } from "@parcha/pi-durable-agent/timeline";
 import { paidCall } from "./cap.js";
 import { wireName } from "./catalog.js";
+import { metaToolOf } from "./mcp-meta.js";
+import { SIGN_IN_AGAIN } from "./mcp-oauth.js";
 import { type Gate, GATED_BY_GATEWAY, mcpToolName, type Park } from "./tool-gate.js";
 import { forModel } from "./result.js";
 import { writeInWork } from "./workspace.js";
@@ -46,13 +48,16 @@ export const CONNECT_MS = 30_000;
 /** Each pinned server: its URL then, the granted tools as it listed them, and the prices its owner declared for them. */
 export type McpPin = Record<string, { url: string; tools: McpTool[]; prices?: Record<string, number> }>;
 /** The pipe's entry: each granted server's URL now, and its credential's headers when that URL is the pinned one. */
-export type McpCredentials = Record<string, { url: string; headers?: Record<string, string> }>;
+export type McpCredentials = Record<string, { url: string; headers?: Record<string, string>; /** Why its saved credential did not open: its calls are refused unsent. */ unopened?: string }>;
 
 /** The servers saved on this server (mcp-servers.ts), as a launch reads them. */
 export interface McpServerSource {
   server(name: string): { url: string; tools: readonly McpTool[]; prices?: Readonly<Record<string, number>> } | undefined;
-  /** The server's credential, opened now: its headers, or undefined when it has none or it does not open. */
-  headers(name: string): Record<string, string> | undefined;
+  /** The server's credential, opened now: its headers, or why it does not open, each under its own tag; undefined when
+   *  it has none. */
+  headers(name: string): { headers: Record<string, string> } | { unopened: string } | undefined;
+  /** Before a launch: an OAuth access token near its expiry refreshed (mcp-servers.ts headersForRun). Never throws. */
+  refresh?(name: string): Promise<void>;
 }
 
 /** `mcp:<server>/<tool>` read, or undefined for a name that is not one. */
@@ -65,13 +70,20 @@ export const mcpNameOf = (name: string): { server: string; tool: string } | unde
  *  refused, never walked further. */
 export const HEADER_SCAN_NODES = 10_000;
 export const HEADER_SCAN_DEPTH = 64;
+/** The keywords whose values are subschemas that `properties` alone does not reach, as the SDK client's check lists them
+ *  (@modelcontextprotocol/client 2.4.0, NON_REACHABLE_SUBSCHEMA_KEYWORDS): a declaration under one is refused. Each
+ *  holds a subschema or a list of them, but the OBJECT_VALUED ones, which map names to subschemas. */
+const SUBSCHEMA_KEYWORDS: ReadonlySet<string> = new Set(["items", "prefixItems", "contains", "additionalProperties", "unevaluatedProperties", "unevaluatedItems", "propertyNames", "patternProperties", "dependentSchemas", "oneOf", "anyOf", "allOf", "not", "if", "then", "else", "$defs", "definitions"]);
+const OBJECT_VALUED: ReadonlySet<string> = new Set(["patternProperties", "dependentSchemas", "$defs", "definitions"]);
 
 /** Why a tool's `x-mcp-header` declarations (SEP-2243, the 2026-07-28 revision) cannot be mirrored into `Mcp-Param-*`
  *  headers, by the rules the SDK client applies when it lists tools: only on a property reached through `properties`
  *  alone, a non-empty RFC 9110 token, on a string, integer or boolean, unique without regard to case. Undefined when they
  *  can, or there are none. The SDK does the mirroring itself (callTool's `toolDefinition`), but it exports no form of this
- *  check, which it runs only inside its own `listTools()`. Each object is visited once, from an explicit stack, within
- *  HEADER_SCAN_NODES and HEADER_SCAN_DEPTH. */
+ *  check, which it runs only inside its own `listTools()`. Like the SDK's, the walk goes through schema keywords alone
+ *  (`properties` and SUBSCHEMA_KEYWORDS): a value under `default`, `examples`, `const` or `enum`, or an annotation, is
+ *  data, never a declaration. Each object is visited once, from an explicit stack, within HEADER_SCAN_NODES and
+ *  HEADER_SCAN_DEPTH. */
 export function mcpHeaderProblem(inputSchema: unknown): string | undefined {
   const seen = new Map<string, string>();
   const visited = new WeakSet<object>();
@@ -98,9 +110,12 @@ export function mcpHeaderProblem(inputSchema: unknown): string | undefined {
       seen.set(name.toLowerCase(), name);
     }
     for (const [key, child] of Object.entries(schema)) {
-      if (!child || typeof child !== "object" || key === "x-mcp-header") continue;
-      if (key === "properties" && !Array.isArray(child)) for (const [name, property] of Object.entries(child)) stack.push({ node: property, path: [...path, name], reachable });
-      else stack.push({ node: child, path: [...path, `<${key}>`], reachable: false });
+      if (!child || typeof child !== "object") continue;
+      if (key === "properties") {
+        if (!Array.isArray(child)) for (const [name, property] of Object.entries(child)) stack.push({ node: property, path: [...path, name], reachable });
+      } else if (OBJECT_VALUED.has(key) && !Array.isArray(child)) {
+        for (const sub of Object.values(child)) stack.push({ node: sub, path: [...path, `<${key}>`], reachable: false });
+      } else if (SUBSCHEMA_KEYWORDS.has(key)) stack.push({ node: child, path: [...path, `<${key}>`], reachable: false });
     }
   }
   return undefined;
@@ -120,6 +135,9 @@ export function mcpPinOf(names: readonly string[], source: McpServerSource): Mcp
     // Gone since the run's check (deleted, or a refresh removed the tool): the run is refused, never started without it.
     if (!saved) throw new Error(`The MCP tool ${name} cannot be pinned: the MCP server ${parsed.server} is no longer saved.`);
     if (!tool) throw new Error(`The MCP tool ${name} cannot be pinned: ${parsed.tool} is no longer one of its tools since the last refresh.`);
+    // A meta tool granted before the rule (mcp-meta.ts): refused here, never run.
+    const meta = metaToolOf(saved.url, tool.name);
+    if (meta) throw new Error(`${name} can't be granted: ${meta.reason}`);
     const declared = mcpHeaderProblem(tool.inputSchema);
     if (declared) throw new Error(`The MCP tool ${name} declares a header it cannot send: ${declared}.`);
     if (!Object.hasOwn(pin, parsed.server)) pin[parsed.server] = { url: saved.url, tools: [] };
@@ -139,8 +157,8 @@ export function mcpCredentialsOf(pin: McpPin, source: McpServerSource): McpCrede
   for (const [name, pinned] of Object.entries(pin)) {
     const saved = source.server(name);
     if (!saved) continue;
-    const headers = saved.url === pinned.url ? source.headers(name) : undefined;
-    out[name] = { url: saved.url, ...(headers ? { headers } : {}) };
+    const credential = saved.url === pinned.url ? source.headers(name) : undefined;
+    out[name] = { url: saved.url, ...(credential && "unopened" in credential ? { unopened: credential.unopened } : credential ? { headers: credential.headers } : {}) };
   }
   return out;
 }
@@ -275,7 +293,8 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
       // The next call connects again (a server that dropped its session, say); this one is never sent again.
       clients.delete(server);
       const status = statuses.get(server)?.last;
-      if (status === 401 || status === 403) return said(`The MCP server ${server} refused its credential; update it in Settings → MCP servers.`, true);
+      // An OAuth token that expired mid-run is not refreshed here (no channel to serve for it): the next launch does.
+      if (status === 401 || status === 403) return said(`The MCP server ${server} refused its credential (its sign-in expired or was revoked, or its key changed): ${SIGN_IN_AGAIN}, or update its credential there.`, true);
       const why = scrub(String((error as Error)?.message ?? error), headers).slice(0, 300);
       return said(`The MCP server ${server} failed${status && status >= 400 ? ` (HTTP ${status})` : ""}: ${why}`, true);
     }
@@ -288,9 +307,13 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
   const unsendable = (server: string, tool: string): string | undefined => {
     const pinned = pins.get(server);
     if (!pinned?.tools.some((t) => t.name === tool)) return `${tool} is not a tool of the MCP server ${server} in this run.`;
+    const meta = metaToolOf(pinned.url, tool);
+    if (meta) return `mcp:${server}/${tool} can't be granted: ${meta.reason} Nothing was sent.`;
     const now = credentials.get(server);
     if (!now) return `The MCP server ${server} is no longer saved on this server; nothing was sent.`;
     if (now.url !== pinned.url) return `The MCP server ${server}'s address changed since this run started; nothing was sent. Start a new run to use it at its new address.`;
+    // A credential that does not open is never a call without it.
+    if (now.unopened !== undefined) return `The MCP server ${server}'s credential can't be opened on this server (${now.unopened}); update it in Settings → MCP servers.`;
     return undefined;
   };
 
@@ -368,7 +391,7 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
           if (error instanceof CannotPark) return cannot;
           return said(`The ${name} call was not sent: the tool gate failed (${String((error as Error)?.message ?? error).slice(0, 200)}).`, true);
         }
-        if (entered?.parked) return park === given ? Object.assign(said(entered.text), { [PARKED]: true }) : cannot;
+        if (entered?.parked) return park === given ? { ...said(entered.text), parked: true } : cannot;
         if (entered) return said(entered.text, entered.isError);
         const result = await sent(server, tool, args, id, signal);
         const text = result.content.map((block) => block.text).join("\n\n");
@@ -381,12 +404,12 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
   return gateway;
 }
 
-const PARKED = Symbol("agentrun.mcp.parked");
 /** A park refused: the call came from a harness that cannot end its turn on a parked call. */
 class CannotPark extends Error {}
-/** Whether the gateway's answer is a call the gate parked for a person's approval: the harness ends the turn on it. A
- *  symbol, so it never reaches a harness's MCP client in the answer's JSON. */
-export const isParked = (result: McpCallResult): boolean => (result as { [PARKED]?: true })[PARKED] === true;
+/** Whether the gateway's answer is a call the gate parked for a person's approval: the harness ends the turn on it, and
+ *  a harness's session records the call as one that did not run (McpCallResult's `parked`). The door that serves a
+ *  harness's own MCP client sends the answer's content and error only. */
+export const isParked = (result: McpCallResult): boolean => result.parked === true;
 
 /** pi's tools for the gateway's servers: each granted tool under its wire name (`mcp__<server>__<tool>`), with the pinned
  *  description and schema, never run again after a crash. */

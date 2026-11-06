@@ -13,7 +13,7 @@ import { processAlive } from "@parcha/agentrun-kernel/host";
 import { REQUEST_STARTED } from "@parcha/pi-durable-agent/timeline";
 import { spentIn } from "../dist/cap.js";
 import { startServe } from "../dist/index.js";
-import { agent, client, follow, letGo, scratch, serve, withEnv } from "./support.mjs";
+import { agent, client, follow, letGo, runDir, runRecordOf, scratch, serve, withEnv } from "./support.mjs";
 
 /** The tests' faux model priced on output only, $100 a million: a request's least (1,024 tokens) is $0.1024. */
 const OUTPUT_PRICED = new URL("./fixtures/faux-output-priced.mjs", import.meta.url).pathname;
@@ -32,7 +32,7 @@ async function paused(api, id) {
 
 /** The run's store entries, once its process has let it go. */
 function entriesOf(data, runId) {
-  const db = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { readOnly: true, timeout: 5_000 });
+  const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true, timeout: 5_000 });
   try {
     return db.prepare("SELECT record FROM entries ORDER BY id").all().map((row) => JSON.parse(row.record));
   } finally {
@@ -55,7 +55,7 @@ test("a run paused at its cap, its cap raised, goes on: one follow-up turn in th
   const entries = entriesOf(data, runId);
   assert.equal(entries.filter((entry) => entry.kind === REQUEST_STARTED && entry.data?.capRefused === true).length, 1);
   assert.equal(entries.filter((entry) => entry.kind === REQUEST_STARTED && entry.data?.capRefused !== true).length, 1);
-  assert.ok(spentIn(join(data, "runs", runId, "store", "run.sqlite")) <= 1, "within the new cap");
+  assert.ok(spentIn(join(runDir(data, runId), "store", "run.sqlite")) <= 1, "within the new cap");
 });
 
 test("a raise is checked: only above the run's own cap, a number, nothing else named; a run with no cap and an ended run take none; an unknown run is 404", async (t) => {
@@ -120,7 +120,7 @@ const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pat
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 const CONTINUE = (cap) => `The cap was raised to ${cap}; continue the task.`;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-const holderPid = (data, runId) => JSON.parse(readFileSync(join(data, "runs", runId, "run.json"), "utf8")).holder.pid;
+const holderPid = (data, runId) => runRecordOf(data, runId).holder.pid;
 /** What the person's side of the run says, in order: its user messages' text. */
 /** The run's messages in order: the person's (user_message) and the server's own (its "AgentRun: …" row, MessageOrigin). */
 const said = (rows) => rows.filter((row) => row.kind === "user_message" || (row.kind === "phase" && row.summary?.startsWith("AgentRun:"))).map((row) => row.text);
@@ -138,7 +138,8 @@ test("a raise sent while the paused run's process is still being let go is taken
   assert.deepEqual([raised.status, raised.body.resumed, typeof raised.body.message_id], [200, true, "string"], JSON.stringify(raised.body));
   assert.ok(processAlive(pid), "the raise was taken inside the let-go window");
   await sleep(500);
-  assert.equal(said((await follow(api, runId, SETTLED)).rows).length, 1, "no follow-up while the old process still holds the run");
+  const waiting = await follow(api, runId, ["queued"]);
+  assert.deepEqual([waiting.last.status, said(waiting.rows).length], ["queued", 1], "queued, and no follow-up while the old process still holds the run");
   await writeFile(gate, "");
   const { rows } = await follow(api, runId, ["completed", "failed", "cancelled"], { deadlineMs: 60_000 });
   const run = await view(api, runId);
@@ -209,7 +210,39 @@ test("a raise taken, then the server killed before its follow-up went: the next 
   assert.deepEqual([(await view(api, runId)).status, said(rows)], ["completed", ["Write one.md", CONTINUE("$1")]], "one follow-up across the restart");
   const again = await raise(api, runId, { max_cost_usd: 1 });
   assert.equal(again.status, 409, `an ended run takes no raise: ${JSON.stringify(again.body)}`);
-  const db = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { readOnly: true, timeout: 5_000 });
+  const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true, timeout: 5_000 });
+  try {
+    const marks = db.prepare("SELECT record FROM entries ORDER BY id").all().map((row) => JSON.parse(row.record)).filter((entry) => entry.kind === REQUEST_STARTED && entry.data?.capRefused === true);
+    assert.equal(marks.length, 1, "one refusal booked, never a second");
+  } finally {
+    db.close();
+  }
+});
+test("the same, with every launch path slow where it refreshes a run's MCP OAuth tokens: the next server still sends the follow-up once, and the run completes", { timeout: 150_000 }, async (t) => {
+  const data = join(await scratch(t), "agents");
+  const gate = join(await scratch(t), "exit");
+  const first = await serverProcess(data, { EXIT_GATE: gate });
+  t.after(() => first.child.kill("SIGKILL"));
+  const runId = await paused(first.api, "crashed");
+  const pid = holderPid(data, runId);
+  assert.ok(processAlive(pid), "the paused process is held, so the follow-up waits");
+  const raised = await raise(first.api, runId, { max_cost_usd: 1 });
+  assert.deepEqual([raised.status, raised.body.resumed], [200, true], JSON.stringify(raised.body));
+  first.child.kill("SIGKILL");
+  await new Promise((resolve) => first.child.once("exit", resolve));
+  // The old run process lets go once its gate opens; the next server finds the raise taken and its follow-up not sent.
+  await writeFile(gate, "");
+  await letGo(data, runId);
+  // As an authorization server slow to answer makes it (runs.ts mcpFresh): the launch the follow-up makes waits there.
+  withEnv(t, { AGENTRUN_SERVE_TEST_REFRESH_DELAY_MS: "1" });
+  const next = await startServe({ data, port: 0, faux: SLOW_EXIT, drainTimeout: "5s" });
+  t.after(() => next.close());
+  const api = client(next.baseUrl, next.token);
+  const { rows } = await follow(api, runId, ["completed", "failed", "cancelled"], { deadlineMs: 60_000 });
+  assert.deepEqual([(await view(api, runId)).status, said(rows)], ["completed", ["Write one.md", CONTINUE("$1")]], "one follow-up across the restart");
+  const again = await raise(api, runId, { max_cost_usd: 1 });
+  assert.equal(again.status, 409, `an ended run takes no raise: ${JSON.stringify(again.body)}`);
+  const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true, timeout: 5_000 });
   try {
     const marks = db.prepare("SELECT record FROM entries ORDER BY id").all().map((row) => JSON.parse(row.record)).filter((entry) => entry.kind === REQUEST_STARTED && entry.data?.capRefused === true);
     assert.equal(marks.length, 1, "one refusal booked, never a second");
@@ -249,7 +282,7 @@ test("a paused run's figures, once its process is gone, are the store's spend: a
   await server.close();
   // The refusal as the cap counted it with a $1.50 hold in flight (a request answering, its worst case held), which then
   // settled with nothing booked: its mark says $1.50 taken, the store says $0 spent.
-  const db = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { timeout: 5_000 });
+  const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { timeout: 5_000 });
   try {
     const marks = db.prepare("SELECT rowid AS at, record FROM entries ORDER BY rowid").all().filter((row) => { const e = JSON.parse(row.record); return e.kind === REQUEST_STARTED && e.data?.capRefused === true; });
     assert.equal(marks.length, 1, "one refusal mark");
@@ -258,7 +291,7 @@ test("a paused run's figures, once its process is gone, are the store's spend: a
   } finally {
     db.close();
   }
-  assert.equal(spentIn(join(data, "runs", runId, "store", "run.sqlite")), 0, "the store's spend");
+  assert.equal(spentIn(join(runDir(data, runId), "store", "run.sqlite")), 0, "the store's spend");
   server = await startServe({ data, port: 0, faux: OUTPUT_PRICED, drainTimeout: "5s" });
   const api = client(server.baseUrl, server.token);
   const { pending } = await view(api, runId);
@@ -296,7 +329,7 @@ const ENDED = ["completed", "failed", "cancelled"];
 
 /** Rewrites the run's refusal mark's figures, its server stopped: as the cap counted them, say, with a hold in flight. */
 function rewriteMark(data, runId, figures) {
-  const db = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { timeout: 5_000 });
+  const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { timeout: 5_000 });
   try {
     const marks = db.prepare("SELECT rowid AS at, record FROM entries ORDER BY rowid").all().filter((row) => { const e = JSON.parse(row.record); return e.kind === REQUEST_STARTED && e.data?.capRefused === true; });
     assert.equal(marks.length, 1, "one refusal mark");
@@ -331,7 +364,8 @@ test("a raise whose follow-up's process came up, then its server was killed befo
   await letGo(data, runId);
   // The raise is kept and answered; the follow-up's process, as it comes up, kills the server before the follow-up goes.
   await writeFile(kill, "");
-  const raised = await raise(first.api, runId, { max_cost_usd: 1 });
+  // No raise guard read after it (support.mjs raisedReadsQueued): the follow-up's process may kill this server first.
+  const raised = await first.api("PATCH", `/runs/${runId}`, { max_cost_usd: 1 }, {}, { raiseCheck: false });
   assert.deepEqual([raised.status, raised.body.resumed], [200, true], JSON.stringify(raised.body));
   if (first.child.exitCode === null && first.child.signalCode === null) await new Promise((resolve) => first.child.once("exit", resolve));
   for (let i = 0; !processAlive(holderPid(data, runId)); i++) {
@@ -375,7 +409,7 @@ test("a raise its run's serve.json could not keep is not taken: the run keeps it
   const { api, data } = await serve(t, { faux: OUTPUT_PRICED });
   const runId = await paused(api, "unsaved");
   await letGo(data, runId);
-  const temp = join(data, "runs", runId, "serve.json.tmp");
+  const temp = join(runDir(data, runId), "serve.json.tmp");
   await mkdir(temp);
   const failed = await raise(api, runId, { max_cost_usd: 1 });
   assert.ok(failed.status >= 500, `not kept: ${failed.status} ${JSON.stringify(failed.body)}`);
@@ -384,7 +418,7 @@ test("a raise its run's serve.json could not keep is not taken: the run keeps it
   await rmdir(temp);
   const again = await raise(api, runId, { max_cost_usd: 1 });
   assert.deepEqual([again.status, again.body.resumed], [200, true], JSON.stringify(again.body));
-  assert.equal(JSON.parse(readFileSync(join(data, "runs", runId, "serve.json"), "utf8")).max_cost_usd, 1, "kept");
+  assert.equal(JSON.parse(readFileSync(join(runDir(data, runId), "serve.json"), "utf8")).max_cost_usd, 1, "kept");
   const { rows } = await follow(api, runId, ENDED, { deadlineMs: 60_000 });
   assert.deepEqual([(await view(api, runId)).status, said(rows)], ["completed", ["Write one.md", CONTINUE("$1")]]);
 });
