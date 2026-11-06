@@ -106,6 +106,12 @@ test("where the daemon has the data directory: the read-write named volume of it
   for (const mounts of [[], [{ ...volume, Destination: "/other" }], [{ ...volume, Destination: "/dat" }], [{ ...volume, RW: false }], [{ Type: "bind", Destination: "/data", RW: true }], [{ Type: "tmpfs", Destination: "/data", RW: true }]]) {
     assert.deepEqual(pathsOf(mounts, "/data", "1.47"), { reason: IN_COMPOSE }, JSON.stringify(mounts));
   }
+  // A mount below the data directory hides part of it from the volume a box mounts its run's folder from: the box would
+  // get the volume's files there, not the server's. Refused; one beside it is not below it.
+  for (const below of ["/data/disk", "/data/disk/agents/a/runs", "/data/box-egress"]) {
+    assert.deepEqual(pathsOf([volume, { Type: "bind", Destination: below, RW: true }], "/data", "1.47"), { reason: IN_COMPOSE }, below);
+  }
+  assert.deepEqual(pathsOf([volume, { Type: "bind", Destination: "/data-other", RW: true }], "/data", "1.47"), { paths: { at: "/data", volume: "agentrun_agentrun-data" } });
 });
 test("on a host (no container of its own), nothing is asked of Docker and the paths are this machine's: the Linux path as it was; a container it can't place is compose's one way in", async () => {
   const { dockerPathsOf, IN_COMPOSE } = await import("../dist/box-paths.js");
@@ -118,7 +124,7 @@ test("on a host (no container of its own), nothing is asked of Docker and the pa
   const gone = async (args) => (args[0] === "inspect" ? { code: 1, stdout: "", stderr: `Error: No such object: ${ID}` } : { code: 0, stdout: "1.47\n", stderr: "" });
   assert.deepEqual(await dockerPathsOf(process.env, "/data", { mountinfo: mountinfo(ID), inContainer: true, docker: gone }), { reason: IN_COMPOSE }, "another Docker's socket");
 });
-test("demo through the API: the server in a container, its data a named volume: docker is available with the list; the run's box mounts its work/ and its egress directory as the volume's subpaths, keeps --network none, writes out.txt into the run's files, and reaches a listed host and nothing else", { timeout: 120_000 }, async (t) => {
+test("demo through the API: the server in a container, its data a named volume: docker is available with the list; the run's box mounts its work/ and its egress directory as the volume's subpaths, keeps --network none, writes out.txt into the run's files, and reaches a listed host and nothing else", { skip: process.platform !== "linux" && "a box's network list needs a Docker daemon of this Linux machine's own", timeout: 120_000 }, async (t) => {
   const data = await dataDir(t);
   const fake = await containerDocker(t, { mounts: [{ Type: "volume", Name: "agentrun_agentrun-data", Source: "/var/lib/docker/volumes/agentrun_agentrun-data/_data", Destination: data, RW: true }], volumes: { "agentrun_agentrun-data": data } });
   const hold = join(await mkdtemp(join(process.env.TMPDIR ?? "/tmp", "box-paths-hold-")), "hold");
@@ -190,4 +196,25 @@ test("the start check: a Docker whose data root this server can't see blocks the
   assert.match(await egressBlockedBy(env, said), /^this Docker \(Docker Engine - Community\) keeps its data in "\/var\/lib\/docker", which this server can't see/);
   assert.equal(await egressBlockedBy(env, { ...said, mapped: true }), undefined);
   assert.match(await egressBlockedBy(env, { ...said, mapped: true, kernel: "6.15.11-orbstack" }), /runs in a VM/, "a VM is still none");
+});
+
+test("the egress parent's limit holds the proxy's longest socket path, the temporary one it listens on first, in bytes: a parent of exactly the limit listens; one byte more is refused at the start, a two-byte character counted as two", { skip: process.platform !== "linux" && "a Unix socket's path limit is Linux's here (macOS's is 103 bytes)" }, async (t) => {
+  const { MAX_EGRESS_PARENT, egressParentTooLong } = await import("../dist/box-egress.js");
+  const base = join(realpathSync(await scratch(t)), "p");
+  // A parent of exactly MAX_EGRESS_PARENT bytes, padded under the scratch directory.
+  const parent = base + "x".repeat(MAX_EGRESS_PARENT - Buffer.byteLength(base));
+  assert.equal(Buffer.byteLength(parent), MAX_EGRESS_PARENT);
+  const dir = join(parent, "0123456789abcdef");
+  await mkdir(dir, { recursive: true });
+  // The run's proxy itself there: it listens on a temporary socket (`.egress-<12 hex>.sock`, its longest name) and links
+  // it to egress.sock, by the whole path. Node cuts a socket path past 107 bytes without a word, so only the link and the
+  // file's name show it whole.
+  const { startEgressProxy } = await import("@parcha/agentrun-kernel/host");
+  const socketPath = join(dir, "egress.sock");
+  const proxy = await startEgressProxy({ socketPath, maxTunnels: 1, maxConnections: 1, log: () => {}, allow: ["pypi.org"] });
+  t.after(() => proxy.close());
+  assert.ok(existsSync(socketPath), "egress.sock, under its whole name");
+  assert.equal(egressParentTooLong(parent), false);
+  assert.equal(egressParentTooLong(`${parent}x`), true, "one byte more");
+  assert.equal(egressParentTooLong(`${parent.slice(0, -1)}é`), true, "a two-byte character is two bytes");
 });
