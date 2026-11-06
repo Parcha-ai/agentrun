@@ -183,20 +183,20 @@ test("a trigger's run whose server went down before its first message was taken:
   assert.deepEqual(userEntries(data, runId), [{ text: await inputOf(data, runId), origin: { kind: "trigger", trigger_id: id, source: "webhook", owner: false } }], "the first message, sent by the next server, is the trigger's");
 });
 
-test("an origin read back from a run's serve.json that does not match the run's own trigger is not kept: never another trigger's, never its owner's for a webhook", { timeout: 180_000 }, async (t) => {
+test("an origin read back from a run's serve.json that does not hold up for the run's own trigger (forged, another trigger's, or missing) is rebuilt as that trigger's with owner false: never its owner's, never another trigger's", { timeout: 240_000 }, async (t) => {
   withEnv(t, SEAL);
-  for (const forge of [(o) => ({ ...o, owner: true }), (o) => ({ ...o, trigger_id: "trg_someone_else" }), (o) => ({ ...o, source: "schedule" })]) {
+  const forgeries = [["owner true", (o) => ({ ...o, owner: true })], ["another trigger", (o) => ({ ...o, trigger_id: "trg_someone_else" })], ["a schedule's source", (o) => ({ ...o, source: "schedule" })], ["missing", () => undefined]];
+  for (const [what, forge] of forgeries) {
     const { data, dir, runId, id } = await killedBeforeFirstMessage(t);
     const file = join(dir, "serve.json");
-    const meta = JSON.parse(await readFile(file, "utf8"));
-    const forged = forge(meta.input_origin);
-    await writeFile(file, `${JSON.stringify({ ...meta, input_origin: forged })}\n`);
+    const { input_origin, ...meta } = JSON.parse(await readFile(file, "utf8"));
+    const forged = forge(input_origin);
+    await writeFile(file, `${JSON.stringify(forged === undefined ? meta : { ...meta, input_origin: forged })}\n`);
     const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
     t.after(() => next.close());
     await follow(client(next.baseUrl, next.token), runId, ["completed"]);
     const [{ origin }] = userEntries(data, runId);
-    assert.ok(origin === undefined || (origin.trigger_id === id && origin.owner === false), `${JSON.stringify(forged)} read back as ${JSON.stringify(origin)}`);
-    assert.notDeepEqual(origin, forged, "the forged origin is not kept");
+    assert.deepEqual(origin, { kind: "trigger", trigger_id: id, source: "webhook", owner: false }, `${what}: read back as this run's trigger, never its owner's`);
     await next.close();
   }
 });
