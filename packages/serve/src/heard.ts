@@ -31,14 +31,18 @@ function heardOf(origin: MessageOrigin | undefined, text: string): Heard | undef
 /** A run's hearing: each entry of its stream noted in order (a snapshot sends them again, which changes nothing). */
 export class Hearing {
   readonly #origins = originMatcher();
+  /** Every entry noted, markers and the server's own messages among them: a snapshot sends them again, and a marker
+   *  seen twice would name a later message of the same text. */
+  readonly #seen = new Set<number>();
   /** What was said, by store entry. */
   readonly heard = new Map<number, Heard>();
 
   note(value: unknown): void {
-    if (!isObject(value) || typeof value.id !== "number") return;
+    if (!isObject(value) || typeof value.id !== "number" || this.#seen.has(value.id)) return;
+    this.#seen.add(value.id);
     const entry = value as unknown as EntryLike & { id: number };
     const origin = this.#origins(entry);
-    if (!isUserEntry(entry) || this.heard.has(entry.id)) return;
+    if (!isUserEntry(entry)) return;
     const heard = heardOf(origin, textOf(entry.model?.[0]));
     if (heard) this.heard.set(entry.id, heard);
   }

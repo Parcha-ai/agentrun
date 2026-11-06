@@ -194,11 +194,18 @@ const UNSEEN_IN_MESSAGE = /(?![\n\t])[\p{Cc}\p{Cf}\p{Co}\p{Cs}\u2028\u2029]/gu;
 /** The user's messages the prompt holds, each with its place in the run, cut and with unseen characters gone: every
  *  one while together they fit `total` (GRADE_CAPS.askedTotal, or the room the rest of the prompt leaves); past it, the first and then the newest that fit, the ones left
  *  out (`left`, a run of places from the second on) named in the prompt. Throws on a list of anything but text. */
-function askedOf(asked: readonly string[] | undefined, total: number): { shown: { at: number; text: string }[]; left: number[] } {
+function askedOf(asked: readonly string[] | undefined, total: number, keepFirst = true): { shown: { at: number; text: string }[]; left: number[] } {
   if (asked === undefined) return { shown: [], left: [] };
   if (!Array.isArray(asked) || asked.some((message) => typeof message !== "string")) throw new Error("the user's messages must be a list of text");
   const all = asked.map((text, i) => ({ at: i + 1, text: shortMessage(text.replace(/\r\n?/g, "\n").replace(UNSEEN_IN_MESSAGE, "")) }));
   if (all.reduce((n, { text }) => n + text.length, 0) <= total) return { shown: all, left: [] };
+  // A trigger's input keeps no first message: only the newest that fit in what is left, none when nothing is.
+  if (!keepFirst) {
+    let left = total;
+    let start = all.length;
+    while (start > 0 && all[start - 1]!.text.length <= left) left -= all[--start]!.text.length;
+    return { shown: all.slice(start), left: all.slice(0, start).map(({ at }) => at) };
+  }
   let room = total - all[0]!.text.length;
   let from = all.length;
   while (from > 1 && all[from - 1]!.text.length <= room) room -= all[--from]!.text.length;
@@ -285,7 +292,7 @@ function promptWithin(input: GradeInput, budget: number): string {
   const { shown: messages, left } = askedOf(asked, budget);
   // A trigger's input takes what the user's messages leave of the same budget.
   const sent = triggered ?? [];
-  const fromTriggers = askedOf(sent.map(({ text }) => text), Math.max(0, budget - messages.reduce((n, { text }) => n + text.length, 0)));
+  const fromTriggers = askedOf(sent.map(({ text }) => text), Math.max(0, budget - messages.reduce((n, { text }) => n + text.length, 0)), false);
 
   const told = instructions === undefined ? undefined : cut(instructions, GRADE_CAPS.instructions);
   const index = lines.map((line) => `${line}\n`).join("");
