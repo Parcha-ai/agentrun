@@ -264,6 +264,10 @@ test("web_fetch set to ask on pi, claude-agent and codex at once: each run parks
     if (run.decision === "allow") assert.match(message, /They allowed it, and it ran\. Its result:\n\{"ok":true,"url":"http:\/\/public\.example\/","status":200/, at);
     else assert.match(message, /\nThe user denied this web_fetch call\. Reason: That host is off limits\.$/, at);
     assert.equal(rows.filter((r) => r.kind === "user_message").length, 1, `${at}: the person's one message; the resume is the server's`);
+    // Never the person's, on every harness (claude-agent included): no "[tool approval]" user_message, and no row's summary
+    // carries the call's id (the id is the model's, in its message only).
+    assert.equal(rows.some((r) => r.kind === "user_message" && String(r.text ?? r.summary ?? "").includes("[tool approval]")), false, `${at}: never a "You" row`);
+    assert.deepEqual(rows.filter((r) => String(r.summary ?? "").includes(run.callId)).map((r) => r.summary), [], `${at}: no summary names the call id`);
     assert.equal(resumeRows(rows).length, 1, `${at}: one message resumed it`);
     ownRowsSay(rows, run.callId, run.decision === "allow" ? "Allowed: its result is in the message that resumed the run" : "Not run: you declined it", at);
     assert.equal(view.pending, null);
