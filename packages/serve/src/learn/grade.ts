@@ -187,14 +187,14 @@ function cut(text: string, max: number): string {
 const UNSEEN_IN_MESSAGE = /(?![\n\t])[\p{Cc}\p{Cf}\p{Co}\p{Cs}\u2028\u2029]/gu;
 
 /** The user's messages the prompt holds, each with its place in the run, cut and with unseen characters gone: every
- *  one while together they fit GRADE_CAPS.askedTotal; past it, the first and then the newest that fit, the ones left
+ *  one while together they fit `total` (GRADE_CAPS.askedTotal, or the room the rest of the prompt leaves); past it, the first and then the newest that fit, the ones left
  *  out (`left`, a run of places from the second on) named in the prompt. Throws on a list of anything but text. */
-function askedOf(asked: readonly string[] | undefined): { shown: { at: number; text: string }[]; left: number[] } {
+function askedOf(asked: readonly string[] | undefined, total: number): { shown: { at: number; text: string }[]; left: number[] } {
   if (asked === undefined) return { shown: [], left: [] };
   if (!Array.isArray(asked) || asked.some((message) => typeof message !== "string")) throw new Error("the user's messages must be a list of text");
   const all = asked.map((text, i) => ({ at: i + 1, text: cut(text.replace(/\r\n?/g, "\n").replace(UNSEEN_IN_MESSAGE, ""), GRADE_CAPS.askedMessage) }));
-  if (all.reduce((n, { text }) => n + text.length, 0) <= GRADE_CAPS.askedTotal) return { shown: all, left: [] };
-  let room = GRADE_CAPS.askedTotal - all[0]!.text.length;
+  if (all.reduce((n, { text }) => n + text.length, 0) <= total) return { shown: all, left: [] };
+  let room = total - all[0]!.text.length;
   let from = all.length;
   while (from > 1 && all[from - 1]!.text.length <= room) room -= all[--from]!.text.length;
   return { shown: [all[0]!, ...all.slice(from)], left: all.slice(1, from).map(({ at }) => at) };
@@ -227,6 +227,13 @@ function fenceToken(run: string, texts: readonly string[]): string {
  *  note that is not active or that the new notes do not supersede (or one they supersede and that is not given), a
  *  count or a note over its cap, or an unseen character. */
 export function gradePrompt(input: GradeInput): string {
+  return promptWithin(input, GRADE_CAPS.askedTotal);
+}
+
+/** gradePrompt with the user's messages given `budget` characters. Every other part is capped; the messages take the
+ *  room the rest leaves: over the cap, it is built again with fewer (the first and the newest that fit, the rest named),
+ *  so a proposal the checker passed never makes it throw. */
+function promptWithin(input: GradeInput, budget: number): string {
   const { run, instructions, active, superseded, proposed, asked } = input ?? ({} as GradeInput);
   if (typeof run !== "string" || !RUN_ID.test(run)) throw new Error("the run id is not 1 to 128 letters, digits, dots, dashes or underscores");
   const learned = learnedFilesOf(input?.files);
@@ -255,7 +262,7 @@ export function gradePrompt(input: GradeInput): string {
   for (const file of replaced) if (!given.includes(file)) throw new Error(`a new note supersedes ${file}, and its text is not given`);
   if (given.length > CAPS.supersedes) throw new Error(`the new notes supersede more than ${CAPS.supersedes} notes`);
   for (const note of superseded) noteText(note, "superseded");
-  const { shown: messages, left } = askedOf(asked);
+  const { shown: messages, left } = askedOf(asked, budget);
 
   const told = instructions === undefined ? undefined : cut(instructions, GRADE_CAPS.instructions);
   const index = lines.map((line) => `${line}\n`).join("");
@@ -327,6 +334,7 @@ export function gradePrompt(input: GradeInput): string {
     `${REASON_MAX} characters. In the reason and each why, say what you found in your own words: never quote a note, and`,
     "never write a name, an id, an amount, an address, a key or a password from one.",
   ].join("\n");
+  if (prompt.length > GRADE_CAPS.prompt && budget > 0) return promptWithin(input, Math.max(0, budget - (prompt.length - GRADE_CAPS.prompt) - 1_000));
   // By construction it is under the cap; a prompt over it is never sent.
   if (prompt.length > GRADE_CAPS.prompt) throw new Error(`the grader's prompt is ${prompt.length} characters, over its cap of ${GRADE_CAPS.prompt}`);
   return prompt;
