@@ -547,6 +547,8 @@ function resumeSays(approval: Approval, given: { decision: string; by?: string }
 }
 /** A dollar figure to a millionth, as the timeline's cost.usd is. */
 const micro = (usd: number): number => Math.round(usd * 1e6) / 1e6;
+/** For tests only: how long each launch path waits where it refreshes a run's MCP OAuth tokens (mcpFresh). */
+export const REFRESH_DELAY_ENV = "AGENTRUN_SERVE_TEST_REFRESH_DELAY_MS";
 /** How many tries a raised run's follow-up gets, and the waits between them, before the run fails with why. */
 const CONTINUE_TRIES = 3;
 const CONTINUE_RETRY_MS = [1_000, 3_000];
@@ -2134,6 +2136,14 @@ export class Runs {
    *  refresh token. Never on a path that only reaches a live process, nor on a stop's: an authorization server that is
    *  slow to answer never holds an abort. */
   private mcpFresh(run: Run): Promise<void> | undefined {
+    // A test's seam, unset in a server (REFRESH_DELAY_ENV): every launch path waits this long here, as one whose
+    // authorization server is slow to answer does.
+    const delay = Number(process.env[REFRESH_DELAY_ENV] ?? 0);
+    if (delay > 0) return new Promise<void>((resolve) => setTimeout(resolve, delay)).then(() => this.mcpFreshNow(run));
+    return this.mcpFreshNow(run);
+  }
+
+  private mcpFreshNow(run: Run): Promise<void> | undefined {
     const source = this.options.mcpServers;
     if (!source?.refresh) return undefined;
     // The servers its pin names, or, before its first launch makes the pin (which may refuse the launch in words, there
