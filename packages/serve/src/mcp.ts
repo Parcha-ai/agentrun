@@ -268,13 +268,15 @@ export function mcpEndpoint({ route, authorized, authFailed, version }: { route:
     res.end(body === undefined ? undefined : JSON.stringify(body));
   }
 
-  /** A route's answer to `call`, made with the caller's own Authorization: a synthetic request into `route`, and a
-   *  response that captures what it writes. A refusal is the route's error envelope, as it would have gone out. */
-  async function dispatch(call: Call, authorization: string, requestId: string, limit = MAX_ANSWER): Promise<Answered> {
+  /** A route's answer to `call`, made with the caller's own Authorization, and its Host and scheme (so a link in the
+   *  answer is at the address the caller reached): a synthetic request into `route`, and a response that captures what
+   *  it writes. A refusal is the route's error envelope, as it would have gone out. */
+  async function dispatch(call: Call, caller: IncomingMessage, requestId: string, limit = MAX_ANSWER): Promise<Answered> {
     const search = new URLSearchParams(Object.entries(call.query ?? {}).map(([k, v]) => [k, String(v)]));
     const target = `/v2${call.path}${search.size ? `?${search}` : ""}`;
     const body = call.body === undefined ? [] : [Buffer.from(JSON.stringify(call.body))];
-    const headers = { authorization, accept: "application/json", ...(call.body === undefined ? {} : { "content-type": "application/json" }), ...call.headers };
+    const from = Object.fromEntries((["authorization", "host", "x-forwarded-proto"] as const).flatMap((name) => (caller.headers[name] === undefined ? [] : [[name, String(caller.headers[name])]])));
+    const headers = { ...from, accept: "application/json", ...(call.body === undefined ? {} : { "content-type": "application/json" }), ...call.headers };
     const req = Object.assign(Readable.from(body), { method: call.method, url: target, headers }) as unknown as IncomingMessage;
     const res = new Answer(limit);
     try {
@@ -305,8 +307,7 @@ export function mcpEndpoint({ route, authorized, authFailed, version }: { route:
         if (!isObject(params) || typeof params.name !== "string") return { error: { code: -32602, message: "tools/call takes {name, arguments}" } };
         const tool = TOOLS.find((t) => t.name === params.name);
         if (!tool) return { error: { code: -32602, message: `no tool ${params.name}: tools/list names them` } };
-        const authorization = String(req.headers.authorization);
-        const context: Context = { call: (call, limit) => dispatch(call, authorization, requestId, limit), origin: ownOrigin(req), version, requestId };
+        const context: Context = { call: (call, limit) => dispatch(call, req, requestId, limit), origin: ownOrigin(req), version, requestId };
         try {
           if (params.arguments !== undefined && !isObject(params.arguments)) throw new ArgumentError("arguments", "wrong_type", "arguments is an object");
           return { result: await tool.run((params.arguments as Json | undefined) ?? {}, context) };
