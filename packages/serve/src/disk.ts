@@ -10,7 +10,7 @@ import { constants } from "node:fs";
 import { lstat, open, readdir, realpath } from "node:fs/promises";
 import { isAbsolute, join, relative, sep } from "node:path";
 import { DISK_DIR } from "@parcha/pi-durable-agent";
-import { fenceHolder, holderOf } from "./run-holder.js";
+import { fenceHolder, holderOfClaim } from "./run-holder.js";
 
 /** Who works in a mounted folder: a box's tools alone (`tools`: a run's work/), or its loop and tools (`loop`: the run's
  *  whole folder). */
@@ -56,9 +56,9 @@ export function localDisk(data: string, claims: Claims): DiskAdapter {
     async revoke(runId) {
       // From the epoch read here: the holder it names is killed and gone before the bump, and a claim that moved on
       // meanwhile refuses this one (stale).
-      const { epoch, holder } = claims.runClaim(runId);
-      await fenceHolder(holderOf(holder));
-      return claims.claimRun(runId, SERVER_HOLDER, epoch);
+      const claim = claims.runClaim(runId);
+      await fenceHolder(holderOfClaim(runId, claim));
+      return claims.claimRun(runId, SERVER_HOLDER, claim.epoch);
     },
   };
 }

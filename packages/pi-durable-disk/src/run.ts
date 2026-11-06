@@ -463,6 +463,31 @@ export interface StoreHeadSource {
  * `database` is the store's fence-aware facade (`FencedDatabase`), which turns an I/O-class error into a fence; through
  * a raw connection such an error would read as STORE_HEAD_UNREADABLE.
  */
+/**
+ * Refuses (HeldError `store`, STORE_BUSY) while another connection holds run store `file` as a run's process does (an
+ * exclusive locking mode): its read meets the holder's lock. A store that is free is taken for that read and let go;
+ * its close checkpoints what a previous incarnation left in its WAL, as the open that follows may. Read-write: in an
+ * exclusive locking mode a read takes a write lock, which a read-only descriptor cannot. No file: nothing holds it.
+ * Local directories only (a run under its host's epoch is one): an Archil run's store must never be opened read-write
+ * from anywhere but its holder, since a read-write open from another client flips that mount read-only.
+ */
+export function assertStoreFree(file: string): void {
+  if (!existsSync(file)) return;
+  let db: DatabaseSync | undefined;
+  try {
+    db = new DatabaseSync(file, { timeout: 0 });
+    db.exec("PRAGMA locking_mode = EXCLUSIVE");
+    db.prepare("SELECT count(*) FROM sqlite_schema").get();
+  } catch (error) {
+    // SQLITE_BUSY (5), or SQLITE_LOCKED (6): another connection holds it. Anything else is the open's own error.
+    const code = Number((error as { errcode?: number }).errcode) & 0xff;
+    if (code === 5 || code === 6) throw new HeldError("store", `${file} is held by another connection`, { cause: error });
+    throw error;
+  } finally {
+    db?.close();
+  }
+}
+
 export async function storeHead(store: StoreHeadSource): Promise<number> {
   let row: { next_seq?: unknown } | undefined;
   try {
@@ -671,6 +696,9 @@ class Lease implements RunLease {
       await step("claim-dir", async () => {
         const dir = (this.#dir = await this.#openDir(claim.root));
         await dir.assertMounted();
+        // The store's own exclusive lock is what a second writer meets here: tried now, before a previous incarnation's
+        // commands are reaped, so an open refused by it kills nothing of the run that holds the store.
+        assertStoreFree(join(claim.store, STORE_FILE));
       });
     } else this.#lock = await step("owner-lock", async () => {
       const dir = (this.#dir = await this.#openDir(claim.root));
@@ -1018,6 +1046,11 @@ async function openLease(ref: RunRef, options: OpenRunLeaseOptions, step: Step, 
     holder = currentHolder(options.holder);
   } catch (error) {
     throw new RunError("INVALID_ARGUMENT", `holder ${JSON.stringify(options.holder)}: ${(error as Error).message}`, { cause: error });
+  }
+  // A run under its host's epoch is a local directory's (localRun): its open probes its store read-write
+  // (assertStoreFree), which an Archil mount must never see from anywhere but its holder.
+  if (options.epoch !== undefined && options.acquire === undefined) {
+    throw new RunError("INVALID_ARGUMENT", "a run under its host's epoch is a local directory's: pass localRun(root)");
   }
   if (options.acquire === undefined && !options.mountToken) {
     throw new RunError("INVALID_ARGUMENT", "mountToken is required to mount an Archil disk; a run on a local directory passes localRun(root) instead");

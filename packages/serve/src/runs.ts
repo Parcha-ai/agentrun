@@ -58,7 +58,7 @@ import { destroyRunBoxes, ensureRemoteBox, PullIncomplete, pullRemoteBox, RUN_LA
 import { BACKGROUND_DIR, endBackground } from "./background.js";
 import { removeEgressDir, RUN_BOX_ALLOW_ENV } from "./box-egress.js";
 import { BehindReadError, checkpointRunDb, MonotonicReads, readRunDb } from "./run-db.js";
-import { holderLives, holderOf, holderOfProcess, killHolder, type RunHolder } from "./run-holder.js";
+import { holderLives, holderOfClaim, holderOfProcess, killHolder, LAUNCH_HOLDER, RUN_LAUNCH_ENV, type RunHolder } from "./run-holder.js";
 import { type DiskAdapter, localDisk } from "./disk.js";
 import { RUN_BOX_VOLUME_ENV } from "./box-egress-vm.js";
 import type { BoxProvider } from "@parcha/pi-transport";
@@ -85,8 +85,6 @@ const QUIET = /:run:(start|end)$/;
 const RETRY_CODES = ["OPENING", "PARKING", "RELEASED"];
 /** How often one server opens a run again whose process went before the run ended, before it fails the run. */
 const MAX_RELAUNCHES = 3;
-/** The holder a launch's claim names until its process is spawned and named in its place (nameHolder). */
-const LAUNCH_HOLDER = "launching";
 /** How soon a launch whose claim was refused tries again, at its first tries: a store another writer holds is let go of
  *  within moments, and a run waits on its launch. Past these, every settle retry. */
 const CLAIM_RETRY_MS = [50, 100, 200, 400, 800, 1_600];
@@ -1116,7 +1114,7 @@ export class Runs {
   /** The process that holds the run, as its row's claim names it (run-holder.ts); undefined for none, or the server. */
   private holder(run: Run): RunHolder | undefined {
     try {
-      return holderOf(this.store.runClaim(run.id).holder);
+      return holderOfClaim(run.id, this.store.runClaim(run.id));
     } catch {
       return undefined;
     }
@@ -2147,10 +2145,12 @@ export class Runs {
     let epoch: number;
     try {
       const claim = this.store.runClaim(run.id);
-      const held = holderOf(claim.holder);
+      const held = holderOfClaim(run.id, claim);
       if (held && killHolder(held)) throw new Error(`its holder ${held.pid} still lived; it is killed first`);
       epoch = this.store.claimRun(run.id, LAUNCH_HOLDER, claim.epoch);
       env[RUN_EPOCH_ENV] = String(epoch);
+      // Its mark: should the row still name the launch when this server goes, the next one finds the process by it.
+      env[RUN_LAUNCH_ENV] = `${run.id}:${epoch}`;
       run.claimTries = undefined;
     } catch (error) {
       // Soon at first (a store another writer holds for a moment), then every settle retry.

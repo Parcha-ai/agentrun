@@ -4,7 +4,19 @@
 // still lives before it claims over it, so no process of a lower epoch runs (or commits to the run's store) after the
 // bump. The server writes the holder (launch, then the door its process names on stdout); the run's process never
 // opens store.sqlite.
-import { processTable } from "@parcha/pi-durable-disk/internals";
+import { processTable, type ProcessTable } from "@parcha/pi-durable-disk/internals";
+
+/** Tests' seam: a process table read in place of this machine's (pi-durable-disk processTable: /proc on Linux, ps on
+ *  macOS, where a process's environment is read with `ps -E`). */
+export const runHolderTestHooks: { table?: ProcessTable } = {};
+const tableOf = (): ProcessTable => runHolderTestHooks.table ?? processTable();
+
+/** What a launch's claim names until its process is spawned and named in its place. */
+export const LAUNCH_HOLDER = "launching";
+
+/** The mark a launch puts in its process's environment, `<run id>:<epoch>`: how a row that still names LAUNCH_HOLDER (its
+ *  server went, or its store was held, before the process was named) finds the process that launch started. */
+export const RUN_LAUNCH_ENV = "AGENTRUN_RUN_LAUNCH";
 
 /** A run's process as its row names it. */
 export type RunHolder = { pid: number; start: number; boot: string | null; door?: string };
@@ -27,14 +39,45 @@ export function holderOf(claim: string | null | undefined): RunHolder | undefine
 
 /** Process `pid` as a holder: its start and this boot, read now; undefined once it is gone. */
 export function holderOfProcess(pid: number): RunHolder | undefined {
-  const table = processTable();
+  const table = tableOf();
   const start = table.snapshot().info(pid)?.start;
   return start === undefined ? undefined : { pid, start, boot: table.bootId() ?? null };
 }
 
+/** The live processes run `runId`'s launch at `epoch` started, by their mark (RUN_LAUNCH_ENV). Throws when the processes
+ *  cannot be listed: a process is never taken for gone on a failed look. */
+export function launchedProcesses(runId: string, epoch: number): RunHolder[] {
+  const table = tableOf();
+  let look: ReturnType<ProcessTable["snapshot"]>;
+  let marked: number[];
+  try {
+    look = table.snapshot();
+    marked = look.withMark(RUN_LAUNCH_ENV, `${runId}:${epoch}`);
+  } catch (error) {
+    // Never a kill on a look that failed: whoever asked waits and tries again.
+    throw new Error(`the process its launch started cannot be looked for (${(error as Error).message}); it is never killed unidentified`, { cause: error });
+  }
+  const boot = table.bootId() ?? null;
+  // The run's process, not a command of it that inherited the mark: a marked process whose parent is not marked. A
+  // process whose environment cannot be read (another user's, or one inside an exec) carries no mark here, so it is
+  // never killed; the run's store, which such a process would hold, refuses a second writer by its own lock.
+  return marked.flatMap((pid) => {
+    const info = look.info(pid);
+    return info === undefined || marked.includes(info.ppid) ? [] : [{ pid, start: info.start, boot }];
+  });
+}
+
+/** The process a row's claim (`holder` at `epoch`) names: the one it names outright, or for a launch not yet named, the
+ *  one that launch started; undefined for none or the server. */
+export function holderOfClaim(runId: string, claim: { epoch: number; holder: string | null }): RunHolder | undefined {
+  const named = holderOf(claim.holder);
+  if (named !== undefined || claim.holder !== LAUNCH_HOLDER) return named;
+  return launchedProcesses(runId, claim.epoch)[0];
+}
+
 /** Whether `holder`'s process lives: its pid names a process of the same start, on this boot. */
 export function holderLives(holder: RunHolder): boolean {
-  const table = processTable();
+  const table = tableOf();
   const boot = table.bootId() ?? null;
   if (holder.boot !== null && boot !== null && holder.boot !== boot) return false;
   try {

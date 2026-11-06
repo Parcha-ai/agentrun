@@ -267,6 +267,9 @@ async function runInstance(values: Record<string, unknown>): Promise<number> {
   const epochFlag = str(values.epoch);
   if (epochFlag !== undefined && (!/^\d{1,15}$/.test(epochFlag) || dir === undefined)) throw new UsageError("--epoch takes a whole number, with --dir");
   const epoch = epochFlag === undefined ? undefined : Number(epochFlag);
+  // Under a host's epoch stdout is the host's pipe: one that closed (its host went) loses a line (EPIPE), never the run,
+  // whose next host reads its door from the record it keeps in its store.
+  if (epoch !== undefined) process.stdout.on("error", () => {});
   const ms = (name: string) => durationFlag(values, name);
   const lease = { heartbeatMs: ms("heartbeat-ms"), expiryMs: ms("lease-expiry-ms"), marginMs: ms("lease-margin-ms") };
   const parkMs = ms("park-threshold") || undefined;
@@ -337,7 +340,9 @@ async function runInstance(values: Record<string, unknown>): Promise<number> {
   server?.attach(run, app!.door);
   log("running", { generation: run.generation, steps, ...(server ? { serve: server.url } : {}) });
   // Under a host's epoch nothing else says where this run serves: its host reads this one line on stdout.
-  if (epoch !== undefined) process.stdout.write(`${JSON.stringify({ event: "running", run: ref.id, epoch, pid: process.pid, ...(server ? { serve: server.url } : {}) })}\n`);
+  if (epoch !== undefined) {
+    process.stdout.write(`${JSON.stringify({ event: "running", run: ref.id, epoch, pid: process.pid, ...(server ? { serve: server.url } : {}) })}\n`, () => {});
+  }
   const { onOpen, wake: appWake } = app!;
   return serveUntilDone(run, onOpen, onSigterm, log, process, {
     drainMs,

@@ -383,9 +383,15 @@ describe("localRun", () => {
     try {
       const scripted = scriptedHarness();
       const options = { ...localRun(root), harness: { models: scripted.models, registry: scripted.registry } };
+      // Only a local directory's: an Archil mount is never probed read-write from anywhere but its holder.
+      await assert.rejects(openDurableRun(ref, { mountToken: "token", harness: options.harness, epoch: 1 }), (error) => error instanceof RunError && error.code === "INVALID_ARGUMENT");
       const run1 = await openDurableRun(ref, { ...options, epoch: 7 });
       assert.equal(run1.generation, 7);
-      await assert.rejects(openDurableRun(ref, { ...options, epoch: 8 }), "the store's exclusive lock keeps a second writer out");
+      // A command of the run that holds the store: a second open is refused by the store's lock before it reaps anything.
+      const command = await startCommand(run1, scripted.agent);
+      await assert.rejects(openDurableRun(ref, { ...options, epoch: 8 }), (error) => error instanceof HeldError && error.code === "STORE_BUSY", "the store's exclusive lock keeps a second writer out");
+      assert.ok(alive(command), "the refused open killed no command of the run that holds the store");
+      killQuietly(command);
       await run1.setStatus("done", { workflow: "complete" });
       await run1.release();
       assert.deepEqual(readdirSync(root).filter((name) => ["run.json", "run.json.tmp", "owner.lock"].includes(name)), [], "no lease file");

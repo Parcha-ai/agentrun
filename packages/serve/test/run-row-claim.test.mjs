@@ -89,8 +89,8 @@ async function crashMidRun(t) {
 }
 
 /** A process that stays alive, as a stand-in for a holder; its pid. */
-function standIn(t, script = "setInterval(() => {}, 1000)") {
-  const child = spawn(process.execPath, ["-e", script], { stdio: "ignore" });
+function standIn(t, env, script = "setInterval(() => {}, 1000)") {
+  const child = spawn(process.execPath, ["-e", script], { stdio: "ignore", env: { ...process.env, ...env } });
   t.after(() => child.kill("SIGKILL"));
   return child;
 }
@@ -109,7 +109,7 @@ test("a run whose holder is gone is taken over by its row, whatever a run.json b
   const { data, runId, dir, pid } = await crashMidRun(t);
   await killed(pid);
   // A record that reads as a live lease: running, a heartbeat of now, a live process (not the run's) and a door.
-  const other = standIn(t);
+  const other = standIn(t, undefined);
   const record = { run: runId, status: "running", generation: 1, sealedSeq: null, wakeAt: null, detail: null, heartbeatAt: new Date().toISOString(), updatedAt: new Date().toISOString(), holder: { driver: "local", host: "here", bootId: null, pid: other.pid, since: new Date().toISOString(), serve: "http://127.0.0.1:9" } };
   writeFileSync(join(dir, "run.json.tmp"), JSON.stringify(record));
   await rename(join(dir, "run.json.tmp"), join(dir, "run.json"));
@@ -123,13 +123,15 @@ test("a run whose holder is gone is taken over by its row, whatever a run.json b
   assert.ok(alive(other.pid), "the process the file named was never the run's, and is left alone");
 });
 
-test("a takeover kills a holder that still lives before it bumps the epoch: that process never commits to the run's store after it", { skip: process.platform !== "linux" && "reads /proc", timeout: 120_000 }, async (t) => {
+for (const named of ["its pid", "a launch not yet named"]) test(`a takeover kills a holder that still lives (the row names ${named}) before it bumps the epoch: that process never commits to the run's store after it`, { skip: process.platform !== "linux" && "reads /proc", timeout: 120_000 }, async (t) => {
   const { data, runId, dir, pid } = await crashMidRun(t);
   await killed(pid);
   const store = join(dir, "store", "run.sqlite");
   // A holder that lives and serves no door: it holds the run's store as the run's process does, and commits a row every
   // 100 ms for as long as it lives.
-  const holder = standIn(t, `
+  // A launch the row still names (its server went before it named the process) is found by its mark: <run>:<epoch>.
+  const epochNow = claimOf(data, runId).claim_epoch;
+  const holder = standIn(t, named === "its pid" ? undefined : { AGENTRUN_RUN_LAUNCH: `${runId}:${epochNow}` }, `
     const { DatabaseSync } = require("node:sqlite");
     const db = new DatabaseSync(${JSON.stringify(store)});
     db.exec("PRAGMA locking_mode = EXCLUSIVE; PRAGMA journal_mode = WAL; CREATE TABLE IF NOT EXISTS stale_holder(at INTEGER)");
@@ -139,7 +141,7 @@ test("a takeover kills a holder that still lives before it bumps the epoch: that
   const start = readFileSync(`/proc/${holder.pid}/stat`, "utf8").split(") ")[1].split(" ")[19];
   const boot = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
   const db = new DatabaseSync(join(data, "store.sqlite"));
-  db.prepare("UPDATE runs SET claim_holder = ? WHERE id = ?").run(JSON.stringify({ pid: holder.pid, start: Number(start), boot }), runId);
+  db.prepare("UPDATE runs SET claim_holder = ? WHERE id = ?").run(named === "its pid" ? JSON.stringify({ pid: holder.pid, start: Number(start), boot }) : "launching", runId);
   db.close();
   const before = claimOf(data, runId).claim_epoch;
   // Every claim the next server makes, as it makes it: whether the holder still lived then, and when.
