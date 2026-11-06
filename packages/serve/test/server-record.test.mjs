@@ -9,13 +9,15 @@ import { test } from "node:test";
 
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 const DROPPED = ["AGENTRUN_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL", "AGENTRUN_BOXES"];
+/** No box: unset, AGENTRUN_BOXES turns Docker on where it answers, which a CI runner's does (boxes.ts). */
+const NO_BOXES = { AGENTRUN_BOXES: "none" };
 
 /** A server on a fresh data directory; resolves once it wrote its record. */
 async function serve(t) {
   const dir = mkdtempSync(join(tmpdir(), "server-record-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const data = join(dir, "data");
-  const env = { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !DROPPED.includes(name))), HOME: dir, AGENTRUN_ACCOUNTS: "0" };
+  const env = { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !DROPPED.includes(name))), ...NO_BOXES, HOME: dir, AGENTRUN_ACCOUNTS: "0" };
   const child = spawn(process.execPath, [CLI, "--data", data, "--port", "0"], { stdio: ["ignore", "ignore", "pipe"], env });
   t.after(() => child.exitCode === null && child.kill("SIGKILL"));
   const exited = new Promise((resolve) => child.once("exit", (code) => resolve(code)));
@@ -43,7 +45,7 @@ test("a SIGTERM the moment the record appears is a clean stop: exit 0, the recor
     const dir = mkdtempSync(join(tmpdir(), "server-record-"));
     t.after(() => rmSync(dir, { recursive: true, force: true }));
     const data = join(dir, "data");
-    const env = { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !DROPPED.includes(name))), HOME: dir, AGENTRUN_ACCOUNTS: "0" };
+    const env = { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !DROPPED.includes(name))), ...NO_BOXES, HOME: dir, AGENTRUN_ACCOUNTS: "0" };
     const child = spawn(process.execPath, [CLI, "--data", data, "--port", "0"], { stdio: "ignore", env });
     t.after(() => child.exitCode === null && child.kill("SIGKILL"));
     const exited = new Promise((resolve) => child.once("exit", (code, signal) => resolve({ code, signal })));
