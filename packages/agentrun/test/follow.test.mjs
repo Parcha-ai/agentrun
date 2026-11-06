@@ -15,6 +15,8 @@ import { backoff } from "../lib/follow.mjs";
 const BIN = new URL("../bin/agentrun.mjs", import.meta.url).pathname;
 const SERVE = new URL("../../serve/dist/cli.js", import.meta.url).pathname;
 const DROPPED = ["AGENTRUN_BASE_URL", "AGENTRUN_API_KEY", "AGENTRUN_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL", "AGENTRUN_BOXES"];
+/** No box: unset, AGENTRUN_BOXES turns Docker on where it answers, which a CI runner's does (boxes.ts). */
+const NO_BOXES = { AGENTRUN_BOXES: "none" };
 
 // Asks its person which region when told to ask, and answers with what they said; takes its time, until it is stopped,
 // when told to; else answers at once.
@@ -31,7 +33,7 @@ export default (context, faux) => {
 async function serve(t) {
   const dir = mkdtempSync(join(tmpdir(), "agentrun-follow-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const env = { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !DROPPED.includes(name))), HOME: dir, XDG_CONFIG_HOME: join(dir, ".config") };
+  const env = { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !DROPPED.includes(name))), ...NO_BOXES, HOME: dir, XDG_CONFIG_HOME: join(dir, ".config") };
   writeFileSync(join(dir, "faux.mjs"), FAUX);
   const data = join(dir, "data");
   const child = spawn(process.execPath, [SERVE, "--data", data, "--port", "0", "--faux", join(dir, "faux.mjs")], { stdio: ["ignore", "pipe", "pipe"], env: { ...env, AGENTRUN_ACCOUNTS: "0" } });
@@ -247,7 +249,7 @@ async function stalling(t, run) {
 }
 
 test("--timeout bounds every request: a server that answers one page and then stalls ends the wait on time, exit 1", { timeout: 60_000 }, async (t) => {
-  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !DROPPED.includes(name)));
+  const env = { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !DROPPED.includes(name))), ...NO_BOXES };
   const cli = cliOf({ ...env, AGENTRUN_API_KEY: "fake-test-key" }, []);
   for (const run of [{ run_id: "r1", status: "working" }, undefined]) {
     const base = await stalling(t, run);
@@ -269,7 +271,7 @@ test("backoff: the client's own delay doubles up to its cap; the server's retry 
 });
 
 test("runs wait takes a run id as one whole path segment: an empty, . or .. one is refused, exit 2, and nothing is sent", async (t) => {
-  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !DROPPED.includes(name)));
+  const env = { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !DROPPED.includes(name))), ...NO_BOXES };
   const cli = cliOf({ ...env, AGENTRUN_API_KEY: "fake-test-key" }, []);
   const requests = [];
   const base = await loopback(t, (req, res) => (requests.push(req.url), res.writeHead(404, { "content-type": "application/json" }).end('{"error":{"code":"not_found"}}')));
@@ -280,7 +282,7 @@ test("runs wait takes a run id as one whole path segment: an empty, . or .. one 
 });
 
 test("--timeout takes a fraction of a second: the wait goes on to its timeout, exit 1, never a request refused before it is sent", { timeout: 60_000 }, async (t) => {
-  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !DROPPED.includes(name)));
+  const env = { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !DROPPED.includes(name))), ...NO_BOXES };
   const cli = cliOf({ ...env, AGENTRUN_API_KEY: "fake-test-key" }, []);
   // A run that keeps working: every page says nothing changed, and to ask again soon.
   const base = await loopback(t, (req, res) => {
