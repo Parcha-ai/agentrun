@@ -156,8 +156,8 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
             // A note its host has for this request, taken before it is measured, as the model proxy takes it: its bytes count
             // in what the request is admitted at, and it is filed as sent once the request is admitted carrying it.
             const note = io.models.note?.("faux");
-            const ticket = await io.models.beforeRequest({ model: "faux", inputTokensMax: note ? measured + Buffer.byteLength(note, "utf8") : measured, ...(note ? { noted: true as const } : {}) });
-            if (note) await append(FAUX_RECORDS.note, { text: note });
+            const ticket = await io.models.beforeRequest({ model: "faux", inputTokensMax: note ? measured + Buffer.byteLength(note, "utf8") : measured, ...(note ? { noted: true as const, inputTokensMaxWithoutNote: measured } : {}) });
+            if (note && !ticket?.noteDropped) await append(FAUX_RECORDS.note, { text: note });
             if ("cut" in action) { stats.requests += 1; return await hang(signal); }
             if ("cutBooked" in action) {
               stats.requests += 1;

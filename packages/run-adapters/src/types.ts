@@ -131,8 +131,10 @@ export interface ModelRequest {
   outputTokensLeast?: number;
   /** On another model than the session's: a client's side call (a title, a summary), never its turn's own. */
   side?: true;
-  /** It carries the host's note (ModelPort.note) in its body: the note is delivered once this request is admitted. */
+  /** It carries the host's note (ModelPort.note) in its body: the note is delivered once this request is admitted.
+   *  `inputTokensMaxWithoutNote`: its input measured as its client sent it, before the note was placed. */
   noted?: true;
+  inputTokensMaxWithoutNote?: number;
 }
 
 /** What a paid request cost, once it completed. */
@@ -187,6 +189,9 @@ export interface ModelTicket {
   /** The most output tokens, thinking included, the request may be sent with: what is left of its host's spend cap can
    *  buy. The session's model proxy writes it into the body; absent, the request goes as asked. */
   outputTokensMax?: number;
+  /** Admitted only without its host's note (ModelRequest.noted): its bytes did not fit what is left of the cap. The
+   *  request goes as its client sent it, and the note waits for another request. */
+  noteDropped?: true;
 }
 
 /** What the host lends a session. */

@@ -221,7 +221,22 @@ export function adapterRun(
     const paid = byCancel || !cap || request.spentUsd === null ? undefined : takePaidRefusal(spend);
     const model = (request as { model?: unknown }).model;
     const before = typeof model === "string" ? previous.get(model) : undefined;
-    const answer = byCancel ? { refuse: CANCELLED } : paid ? { refuse: `${CAP_REFUSAL_CODE}${paid.words}`, spentUsd: paid.figures.spentUsd, needsUsd: paid.figures.needsUsd, leastCapUsd: paid.figures.leastCapUsd } : cap?.beforeRequest({ ...request, spentUsd: plus(plus(request.spentUsd, charged), sideSpend()), ...(before ? { previous: before } : {}) });
+    const judge = (asked: typeof request) => cap?.beforeRequest({ ...asked, spentUsd: plus(plus(request.spentUsd, charged), sideSpend()), ...(before ? { previous: before } : {}) });
+    // A request carrying the wrap-up's note is judged first as its client sent it (`inputTokensMaxWithoutNote`), as pi's
+    // judge does: refused so, it is refused; admitted so, it goes with the note only if the note's bytes fit too, and
+    // otherwise without it (`withoutNote`), the note left for another request. The note never refuses what fits.
+    const noted = (request as { noted?: unknown }).noted === true;
+    const plainInput = (request as { inputTokensMaxWithoutNote?: unknown }).inputTokensMaxWithoutNote;
+    let withoutNote = false;
+    let answer: ReturnType<typeof judge> | { refuse: string; spentUsd?: number; needsUsd?: number; leastCapUsd?: number };
+    if (byCancel) answer = { refuse: CANCELLED };
+    else if (paid) answer = { refuse: `${CAP_REFUSAL_CODE}${paid.words}`, spentUsd: paid.figures.spentUsd, needsUsd: paid.figures.needsUsd, leastCapUsd: paid.figures.leastCapUsd };
+    else if (noted && typeof plainInput === "number") {
+      const plain = judge({ ...request, inputTokensMax: plainInput });
+      const full = plain && "refuse" in plain ? plain : judge(request);
+      withoutNote = !(plain && "refuse" in plain) && !!full && "refuse" in full;
+      answer = withoutNote ? plain : full;
+    } else answer = judge(request);
     if (answer && "refuse" in answer) {
       refused = answer.refuse;
       capRefused = !byCancel;
@@ -232,10 +247,11 @@ export function adapterRun(
     }
     inFlight.admitted(answer?.holdUsd);
     const side = (request as { side?: unknown }).side === true;
-    admittedNext = typeof model === "string" ? { model, ...(request.inputTokensMax === undefined ? {} : { inputTokensMax: request.inputTokensMax }), boundUsd: answer?.boundUsd ?? 0, ...(side ? { side } : {}) } : undefined;
+    const inputTokensMax = withoutNote ? (plainInput as number) : request.inputTokensMax;
+    admittedNext = typeof model === "string" ? { model, ...(inputTokensMax === undefined ? {} : { inputTokensMax }), boundUsd: answer?.boundUsd ?? 0, ...(side ? { side } : {}) } : undefined;
     if (!answer) return undefined;
     // Admitted carrying the note: it is sent, once per cap, and its row says so.
-    const data = (request as { noted?: unknown }).noted === true && !side ? wrap.taken : undefined;
+    const data = noted && !withoutNote && !side ? wrap.taken : undefined;
     wrap.taken = undefined;
     // None priced yet: this request's expected cost is the typical one, and what is left as its admission counts it
     // (spent, and what requests and paid calls in flight are held at) under three times it makes the note due for the
@@ -253,7 +269,7 @@ export function adapterRun(
     // Admitted, limited to the output what is left of the cap buys (which the runner hands the model proxy): what the cap
     // holds it at, which the runner records, and counts it at if its cost never comes in; stopped part way by its client,
     // what streamed (cap.ts Admitted), never more than its hold (the runner).
-    return { holdUsd: answer.holdUsd, ...(answer.outputTokensMax === undefined ? {} : { outputTokensMax: answer.outputTokensMax }), stoppedUsd: answer.stoppedUsd };
+    return { holdUsd: answer.holdUsd, ...(answer.outputTokensMax === undefined ? {} : { outputTokensMax: answer.outputTokensMax }), stoppedUsd: answer.stoppedUsd, ...(withoutNote ? { withoutNote: true as const } : {}) };
   };
   /** The cancel, as the booking's stop: read again after this check and after the request's record is written, so a
    *  cancel that lands between them still keeps the request from leaving. */

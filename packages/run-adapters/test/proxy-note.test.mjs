@@ -22,14 +22,14 @@ const base = {
 /** The policy's note: one trailing message after everything the client sent. */
 const withNote = { ...base, addNote: (body, text) => ({ ...body, messages: [...body.messages, { role: 'note', text }] }) };
 
-/** A proxy over `policy` whose host has `notes` to give, one per call of `note` (then none); what it forwarded and what
- *  `beforeRequest` was asked, per request. */
-async function proxied(t, policy, notes = [NOTE]) {
+/** A proxy over `policy` whose host has `notes` to give, one per call of `note` (then none), and admits each request
+ *  with `ticket`; what it forwarded and what `beforeRequest` was asked, per request. */
+async function proxied(t, policy, notes = [NOTE], ticket = undefined) {
   const forwarded = [];
   const asked = [];
   const taken = [];
   const hooks = {
-    beforeRequest: async (request) => void asked.push(request),
+    beforeRequest: async (request) => (asked.push(request), ticket),
     afterRequest: async () => {},
     note: (model) => (taken.push(model), notes.shift()),
   };
@@ -75,4 +75,14 @@ test('a policy that cannot place a note forwards the body as sent and leaves the
   await p.send(client);
   assert.deepEqual(p.taken, [], 'never asked for');
   assert.deepEqual(p.forwarded[0], client);
+});
+
+test('a request its host admits only without the note (ModelTicket.noteDropped) goes as the client sent it: the cap is asked with both measures', async (t) => {
+  const plain = await proxied(t, withNote, []);
+  await plain.send(client);
+  const p = await proxied(t, withNote, [NOTE], { turn: 1, noteDropped: true });
+  await p.send(client);
+  assert.deepEqual([p.asked[0].noted, p.asked[0].inputTokensMaxWithoutNote], [true, plain.asked[0].inputTokensMax], 'the admission has the request measured without the note too');
+  assert.ok(p.asked[0].inputTokensMax > p.asked[0].inputTokensMaxWithoutNote, 'and with it');
+  assert.deepEqual(p.forwarded[0], client, 'the body forwarded is the client\'s, without the note');
 });
