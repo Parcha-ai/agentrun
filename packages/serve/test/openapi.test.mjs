@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { isDeepStrictEqual } from "node:util";
 import { decisionRows } from "../dist/decision-rows.js";
-import { homeOf } from "../dist/files.js";
+import { agentFolderOf, homeOf } from "../dist/files.js";
 import { ROUTES } from "../dist/server.js";
 import { DEFINITION_FIELDS } from "../dist/validate.js";
 import { schemaProblems } from "./schema-support.mjs";
@@ -347,10 +347,11 @@ test("capabilities(), the exported helper, gives a document that passes the publ
   assert.notDeepEqual(schemaProblems(doc, shape, { ...caps, harnesses: caps.harnesses.map(({ default_model, ...offer }) => offer) }), []);
 });
 
-test("the decision providers' widening to parallel is its own addition, decisions/2, and info lists it", async (t) => {
+test("the decision providers' widening is its own addition, decisions/3 (parallel, then its route), and info lists it", async (t) => {
   const { doc } = await served(t);
   const decisions = doc.components.schemas.Capabilities.properties.workflows.properties.decisions;
-  assert.equal(decisions["x-agentrun-serve"], "decisions/2", "a client that validates against decisions/1 refuses parallel, so the widening is a new mark");
+  assert.equal(decisions["x-agentrun-serve"], "decisions/3", "a client that validates against decisions/2 refuses route, so the widening is a new mark");
+  assert.deepEqual(decisions.properties.providers.items.properties.route.enum, ["parallel", "openrouter"]);
   assert.deepEqual(decisions.properties.providers.items.properties.id.enum, ["jev", "parallel", "openrouter"]);
   assert.ok(doc.info["x-agentrun-serve"].fields.includes("Capabilities.workflows.decisions"), "info names it among the marked properties");
 });
@@ -369,7 +370,7 @@ test("a timeline row's usage says where it shows here: a browser call's row carr
 });
 
 /** The closed list of a run's learning reasons, as the console's read shape names them. */
-const REASONS = ["seed_failed", "no_budget", "unknown_cost", "no_write_tool", "tool_denied", "cancelled", "crashed", "reflect_timeout", "reflect_failed", "empty", "unparsed", "propose_failed", "checker", "screen", "screen_down", "grader", "grade_failed"];
+const REASONS = ["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_timeout", "reflect_failed", "empty", "unparsed", "propose_failed", "checker", "grader", "grade_failed"];
 
 test("learning is this server's own addition, learning/1: the definition's switch, the server's in capabilities, a run's learning whole on its read and short in lists, its timeline row, the usage meter and the stats block, each enum whole, and the answers meet the document", { timeout: 120_000 }, async (t) => {
   const { api, baseUrl, data } = await serve(t);
@@ -402,8 +403,8 @@ test("learning is this server's own addition, learning/1: the definition's switc
   assert.equal((await api("POST", "/agents", agent("learner", { learning: true }))).status, 201);
   assert.equal((await api("POST", "/agents", agent("blocked", { learning: true }))).status, 201);
   assert.equal((await api("POST", "/agents", agent("plain"))).status, 201);
-  await mkdir(homeOf(data, "blocked"), { recursive: true });
-  await writeFile(join(homeOf(data, "blocked"), "learning"), "not a folder");
+  await mkdir(agentFolderOf(data, "blocked"), { recursive: true });
+  await writeFile(join(agentFolderOf(data, "blocked"), "learning"), "not a folder");
   const want = { learner: ["dropped", "empty"], blocked: ["dropped", "seed_failed"], plain: null };
   for (const id of Object.keys(want)) {
     const started = await api("POST", `/agents/${id}/runs`, { input: { content: "hi" } });
@@ -439,10 +440,11 @@ test("what a run read and learned and what learning changed for its agent are le
   const whole = schemas.Run.properties.learning;
   const short = schemas.RunSummary.properties.learning;
   for (const schema of [whole.oneOf[0], short.oneOf[0]]) {
-    for (const field of ["used", "learned"]) {
+    assert.ok(!("used" in schema.properties), "used is gone: given and read say it");
+    for (const field of ["given", "read", "learned"]) {
       assert.equal(schema.properties[field]["x-agentrun-serve"], "learning/2", field);
       assert.ok(!schema.required.includes(field), `${field} is absent when it holds no note`);
-      assert.match(schema.properties[field].description, field === "used" ? /\.learning\/.*MEMORY\.md/s : /merged/, field);
+      assert.match(schema.properties[field].description, field === "read" ? /\.learning\/.*MEMORY\.md/s : field === "given" ? /# Learned/ : /merged/, field);
     }
   }
   // A list row says the run's learning in the same words, short: its detail at most 140 characters, and no time.
@@ -461,14 +463,14 @@ test("what a run read and learned and what learning changed for its agent are le
   const { id: _, version: __, ...next } = learner(id, { tools: ["write", "read"], instructions: `Answer the question.\n${reads}`, plan: [["check-units.md", note("Check units", "Convert every amount to one unit before comparing")]], once: true }).definition;
   assert.equal((await api("PUT", `/agents/${id}/definition`, { definition: next })).status, 200);
   for (let i = 0; i < 3; i++) views.push((await ended(api, await started(api, id))).view);
-  assert.deepEqual(views.map((view) => [view.learning.state, Boolean(view.learning.used), Boolean(view.learning.learned)]), [["dropped", false, false], ["merged", false, true], ["dropped", true, false], ["dropped", true, false]]);
+  assert.deepEqual(views.map((view) => [view.learning.state, Boolean(view.learning.given), Boolean(view.learning.read), Boolean(view.learning.learned)]), [["dropped", false, false, false], ["merged", false, false, true], ["dropped", true, true, false], ["dropped", true, true, false]]);
   const listed = (await api("GET", `/agents/${id}/runs`)).body.runs;
   const runLearning = doc.paths["/runs/{run_id}/learning"].get.responses["200"].content["application/json"].schema;
-  for (const field of ["used", "learned"]) assert.equal(runLearning.oneOf[0].properties[field]["x-agentrun-serve"], "learning/2", `GET /runs/{run_id}/learning's ${field}`);
-  assert.match(whole.oneOf[0].properties.used.description, /bash/, "a read through a command is not counted, and says so");
+  for (const field of ["given", "read", "learned"]) assert.equal(runLearning.oneOf[0].properties[field]["x-agentrun-serve"], "learning/2", `GET /runs/{run_id}/learning's ${field}`);
+  assert.match(whole.oneOf[0].properties.read.description, /bash/, "a read through a command is not counted, and says so");
   for (const view of views) {
     const all = (await api("GET", `/runs/${view.run_id}/learning`)).body;
-    assert.deepEqual([all.used, all.learned], [view.learning.used, view.learning.learned], "the run's learning whole names the same notes");
+    assert.deepEqual([all.given, all.read, all.learned], [view.learning.given, view.learning.read, view.learning.learned], "the run's learning whole names the same notes");
     assert.deepEqual(schemaProblems(doc, runLearning, all), [], JSON.stringify(all));
     assert.deepEqual(schemaProblems(doc, whole, view.learning), [], JSON.stringify(view.learning));
     const row = listed.find((run) => run.run_id === view.run_id).learning;
@@ -480,7 +482,9 @@ test("what a run read and learned and what learning changed for its agent are le
   assert.deepEqual(schemaProblems(doc, agentView, { ...agentLearning, impact: null }), [], "null is in the document");
   // The positive controls: an empty list, a learned note without what it replaced, and an impact side out of shape.
   const merged = views[1].learning;
-  assert.notDeepEqual(schemaProblems(doc, whole, { ...merged, used: [] }), []);
+  assert.notDeepEqual(schemaProblems(doc, whole, { ...merged, read: [] }), []);
+  assert.notDeepEqual(schemaProblems(doc, whole, { ...merged, given: [] }), []);
+  assert.notDeepEqual(schemaProblems(doc, whole, { ...merged, used: [{ file: "a.md", name: "A" }] }), [], "used is no field any more");
   assert.notDeepEqual(schemaProblems(doc, whole, { ...merged, learned: [{ file: "a.md", name: "A" }] }), []);
   assert.notDeepEqual(schemaProblems(doc, short, { state: "merged", reason: null, detail: merged.detail, learned: merged.learned, at: merged.at }), [], "a list has no time");
   assert.notDeepEqual(schemaProblems(doc, short, { state: "merged", reason: null, detail: "x".repeat(141) }), [], "a list's detail is short");

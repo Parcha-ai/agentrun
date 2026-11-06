@@ -17,11 +17,13 @@ const ROOT = new URL("../../../", import.meta.url).pathname;
 const GENERATOR = join(ROOT, "scripts", "generate-clients.mjs");
 const TABLE = join(ROOT, "packages", "agentrun", "lib", "commands.generated.mjs");
 const DROPPED = ["AGENTRUN_BASE_URL", "AGENTRUN_API_KEY", "AGENTRUN_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL", "AGENTRUN_BOXES"];
+/** No box: unset, AGENTRUN_BOXES turns Docker on where it answers, which a CI runner's does (boxes.ts). */
+const NO_BOXES = { AGENTRUN_BOXES: "none" };
 
 function scratch(t) {
   const dir = mkdtempSync(join(tmpdir(), "agentrun-cli-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !DROPPED.includes(name)));
+  const env = { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !DROPPED.includes(name))), ...NO_BOXES };
   return { dir, env: { ...env, HOME: dir, XDG_CONFIG_HOME: join(dir, ".config") } };
 }
 
@@ -174,6 +176,15 @@ test("demo: the CLI creates an agent, starts a capped run, reads it, lists runs 
   const rawInline = cli(["api", "PUT", "/settings/tool-keys/exa", "--body", '{"values":{"EXA_API_KEY":"not-a-secret"}}', ...data]);
   assert.equal(rawInline.code, 2);
   for (const run of [inline, rawInline]) assert.ok(!`${run.out}${run.err}`.includes("not-a-secret"), "the refused value is in no output");
+  // An MCP OAuth start may carry a pre-registered client's secret: no flag for it, and its body never from the command line.
+  const oauthFlag = cli(["local", "start-mcp-oauth", "docs", "--url", "https://mcp.example.com/mcp", "--client-id", "app", "--client-secret", "not-a-secret", ...data]);
+  assert.equal(oauthFlag.code, 2, oauthFlag.err);
+  const oauthInline = cli(["local", "start-mcp-oauth", "docs", "--body", '{"url":"https://mcp.example.com/mcp","client_id":"app","client_secret":"not-a-secret"}', ...data]);
+  assert.equal(oauthInline.code, 2, oauthInline.err);
+  assert.match(oauthInline.err, /--body -/);
+  const oauthRaw = cli(["api", "POST", "/settings/mcp-servers/docs/oauth/start", "--body", '{"url":"https://mcp.example.com/mcp","client_id":"app","client_secret":"not-a-secret"}', ...data]);
+  assert.equal(oauthRaw.code, 2, oauthRaw.err);
+  for (const run of [oauthFlag, oauthInline, oauthRaw]) assert.ok(!`${run.out}${run.err}`.includes("not-a-secret"), "the refused value is in no output");
   // 3: nothing answers.
   const port = await closedPort();
   const unreachable = cli(["agents", "list", "--base-url", `http://127.0.0.1:${port}/v2`], { extra: { AGENTRUN_API_KEY: "fake-test-key" } });

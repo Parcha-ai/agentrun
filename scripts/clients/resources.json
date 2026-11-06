@@ -1,5 +1,5 @@
 {
-  "secretBody": ["saveToolKey", "saveMcpServer", "previewMcpServer"],
+  "secretBody": ["saveToolKey", "saveMcpServer", "previewMcpServer", "startMcpOAuth"],
   "publicFields": {
     "saveMcpServer": ["url", "auth.type"],
     "previewMcpServer": ["url", "auth.type", "name"]

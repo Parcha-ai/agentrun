@@ -46,10 +46,11 @@ export interface HostTool {
   /** `safe`: may run again after a crash. `never`: at most once; a call a crash cut off is reported, never repeated. */
   replay: "safe" | "never";
   /** The tool's answer: its text (cut at HOST_RESULT_MAX_CHARS on its way to the harness), and any images it shows (a
-   *  screenshot), which a harness that can show them sends the model with the text. `sessionDir` is the runner's own,
+   *  screenshot), which a harness that can show them sends the model with the text; `parked`: the host parked the call
+   *  for a person's approval, so it did not run, and the text says it waits. `sessionDir` is the runner's own,
    *  when it has one: a tool that runs a node of its own (the delegate) gives its child a private directory the same
    *  way, by the child's key. */
-  call(args: unknown, context: { callId: string; signal: AbortSignal; sessionDir?: (key: string) => string }): Promise<{ text: string; isError?: boolean; images?: readonly ToolImage[] }>;
+  call(args: unknown, context: { callId: string; signal: AbortSignal; sessionDir?: (key: string) => string }): Promise<{ text: string; isError?: boolean; images?: readonly ToolImage[]; parked?: true }>;
 }
 
 /** A tool of a remote MCP server, as the server listed it when its owner saved it (the run's pinned copy). */
@@ -65,6 +66,9 @@ export interface McpTool {
 export interface McpCallResult {
   content: { type: "text"; text: string }[];
   isError?: boolean;
+  /** The host parked the call for a person's approval: it did not run, and the text says it waits. The harness's own
+   *  client never sees this flag (the door sends `content` and `isError`). */
+  parked?: true;
 }
 
 /** A session's remote MCP servers: each one's granted tools, and the call that reaches them through the host, which holds
@@ -246,6 +250,16 @@ export interface AdapterSession {
 export interface AdapterCapabilities {
   /** Whether the adapter can start a session from another's transcript. */
   fork: boolean;
+  /** Its harness's own MCP client, when it has one: it calls `spec.mcp`'s servers at the session proxy's `/mcp/<server>`,
+   *  which the kernel's model proxy mounts from the session's MCP and this fact (ModelProxyOptions.mcp). */
+  mcpClient?: McpClient;
+}
+
+/** A harness's own MCP client, as its adapter declares it: the `_meta` key of a `tools/call` that carries the harness's
+ *  own id for the call (Claude Code's `claudecode/toolUseId`, Codex's `callId`), the id its timeline and gate know the
+ *  call by. The route reads that key and no other. */
+export interface McpClient {
+  callIdMeta: string;
 }
 
 export interface AgentAdapter {

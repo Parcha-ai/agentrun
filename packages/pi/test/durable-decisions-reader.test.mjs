@@ -44,3 +44,23 @@ test('a store with no decision, and a file that is not there, hold none', async 
   assert.deepEqual(durableDecisions(file), []);
   assert.deepEqual(durableDecisions(join(root, 'no-such-file.sqlite')), []);
 });
+
+test('unlocked: a read-only, lock-free read (vfs=unix-none) of a store its process holds under an exclusive lock with its WAL in heap; the handle cannot write', async () => {
+  const file = fileOf();
+  const harness = await open(file);
+  try { await harness.commit(async (tx) => { const doc = await tx.doc(Single); for (const id of ['a', 'b']) doc.receipts.push(row(id)); }, ctx); } finally { await harness.close(ctx); }
+  // The run's own process, as pi-durable-disk's exclusive profile opens it: it holds the file's lock.
+  const { DatabaseSync } = await import('node:sqlite');
+  const writer = new DatabaseSync(file);
+  try {
+    writer.exec('PRAGMA locking_mode = EXCLUSIVE; PRAGMA journal_mode = WAL; BEGIN EXCLUSIVE; COMMIT');
+    assert.throws(() => durableDecisions(file), /locked|busy/i, 'a plain read waits on the lock');
+    assert.deepEqual(durableDecisions(file, { unlocked: true }).map((r) => r.decision_id), ['a', 'b']);
+    const { withDurableFile } = await import('../dist/durable/readers.js');
+    withDurableFile(file, (db) => {
+      assert.throws(() => db.exec('CREATE TABLE written (a)'), /readonly/i, 'read-only by construction');
+    }, { unlocked: true });
+  } finally {
+    writer.close();
+  }
+});

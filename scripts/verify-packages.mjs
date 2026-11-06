@@ -74,7 +74,9 @@ const allowedExtraFiles = {
   'run-adapters-claude-agent': ['package/vendor/durable-harness/UPSTREAM.json'],
   'run-adapters-codex': ['package/vendor/durable-harness/UPSTREAM.json'],
   // The server's bin is its launcher, which hands the server its secrets over a pipe (launcher/agentrun-serve).
-  serve: ['package/launcher/agentrun-serve'],
+  // And the lock Claude Code's first use installs by (src/claude-sdk.ts): the package.json it locks and npm's lock, metadata
+  // naming the Claude Agent SDK at its pin and every package of its tree by sha512, never the SDK itself.
+  serve: ['package/launcher/agentrun-serve', 'package/harnesses/claude-agent/package.json', 'package/harnesses/claude-agent/package-lock.json'],
   // `npx @parcha/agentrun` is a command, not a library: its bin and the module the bin loads, plain JavaScript with no build,
   // and the API's CLI with its command table generated from the server's OpenAPI document (scripts/generate-clients.mjs),
   // its wait-and-follow module (follow.mjs), the commands that read a secret from stdin (login.mjs) and its skill's
@@ -93,11 +95,6 @@ const allowedEndpoints = {
     ['dist/host/proxy.d.ts', 'http://127.0.0.1:<port>'],
   ],
   'pi-browser': [
-    // Stagehand's trace export is pointed at a closed loopback port (the discard port): nothing listens, nothing leaves the host.
-    // The request observer owns the URL (it exempts that export from its holds) and the driver's types carry it.
-    ['dist/core/effects.js', 'http://127.0.0.1:9/v1/traces'],
-    ['dist/core/effects.d.ts', 'http://127.0.0.1:9/v1/traces'],
-    ['dist/driver/stagehand.d.ts', 'http://127.0.0.1:9/v1/traces'],
     // The DevTools endpoint of the Chrome the provider started itself, on the free port it chose.
     ['dist/providers/cdp.js', 'http://127.0.0.1:${port}'],
     ['dist/providers/cdp.js', 'http://127.0.0.1:${local.port}'],

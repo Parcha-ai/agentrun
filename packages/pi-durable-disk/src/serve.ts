@@ -6,7 +6,7 @@
 // starts the run through `ensureRunning` (with demand) when it is released or gone, and retries while it starts.
 // Open requests keep the instance up (parking waits for none). On loopback a bearer token is optional; on any other
 // address it is required, read from a private file, and checked in constant time on every route.
-import { createHash, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { isIP, type AddressInfo } from "node:net";
@@ -24,6 +24,9 @@ import { CONTROL_TIMEOUT_MS, ensureRunning, LEASE_EXPIRY_MS, readRunStatus, with
 
 /** 503 codes the client answers by asking the supervisor again and retrying. */
 export const RETRY_CODES = ["OPENING", "PARKING", "RELEASED"] as const;
+
+/** What a door answers a host's `challenge` with, given the nonce the host handed its process: HMAC-SHA256, hex. */
+export const doorProof = (nonce: string, challenge: string): string => createHmac("sha256", nonce).update(challenge).digest("hex");
 export type ServeCode = (typeof RETRY_CODES)[number] | "BAD_REQUEST" | "UNAUTHORIZED" | "NOT_FOUND" | "BUSY" | "WAITING" | "FAILED" | "UNKNOWN";
 
 const MAX_BODY = 1 << 20;
@@ -63,6 +66,10 @@ export interface ServeOptions {
   readonly url?: string;
   /** Every request must carry `authorization: Bearer <token>` (see `readServeToken`). Optional on loopback only. */
   readonly token?: string;
+  /** The nonce the host handed this process (run's `--door-nonce-fd`): `POST /door-proof` answers `{challenge}` with
+   *  `{proof: doorProof(nonce, challenge)}`, from the moment the server listens, so the host knows this door is the one it
+   *  launched before it records it. Absent: no such route. */
+  readonly proof?: string;
   /** How the root conversation is created when absent (pi's `root()` options); a submit without `conversationId` goes there. */
   readonly root?: Parameters<Harness["root"]>[1];
   /** Called each time the last open request ends (parking looks again). */
@@ -463,6 +470,12 @@ export async function serveRun(options: ServeOptions = {}): Promise<RunServer> {
           return send(res, 200, await abort(await readJson(req), context));
         case "GET /status":
           return send(res, 200, await status(context));
+        case "POST /door-proof": {
+          if (options.proof === undefined) throw new HttpError(404, "NOT_FOUND", `no route ${route}`);
+          const body = (await readJson(req)) as { challenge?: unknown };
+          if (typeof body?.challenge !== "string" || !/^[0-9a-f]{16,128}$/.test(body.challenge)) throw new HttpError(400, "BAD_REQUEST", "challenge is 16 to 128 hex digits");
+          return send(res, 200, { proof: doorProof(options.proof, body.challenge) });
+        }
         case "GET /events":
           return events(req, res, url, context);
         default:
