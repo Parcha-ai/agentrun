@@ -760,13 +760,15 @@ No dependency, no Node built-in, and no thrown error of its own: a page, a viewe
 | `messageOrigins(entries)` | The user entries the server wrote, each with its origin: its own `data.origin`, else the first open `MESSAGE_ORIGIN` marker with its exact text. The Timeline reads them with the same rule: such an entry is a `phase` row, "AgentRun: <its first line>", with `origin: "server"`, never a "You:" `user_message`; an `approval_declined` one is the person's words (`said`) as their own `user_message` row, beside the server's `phase` row, which also has `origin: "server"` and an id ending in `:server` |
 | `originMatcher()` | A reader for entries in order: it returns, for each user entry, its origin (its own `data.origin`, else the first open `MESSAGE_ORIGIN` marker with its exact text), and `undefined` for a person's own message. `messageOrigins` reads with it; a host that walks entries as they stream (and keeps what each user entry said) uses it directly |
 | `isUserEntry(entry)` | Whether an entry is a user-role message the Timeline shows: a pi user entry, or a host's user entry |
+| `TRIGGER_SOURCES` | What can fire a trigger, as a `trigger` origin's `source` names it: `schedule`, `webhook`, `slack`, `github` |
 | `isMessageRow(row)` | Whether a row is a message its run took: a `user_message`, or a row with `origin: "server"` whose id does not end in `:server` (a server's row beside the person's words is not a second message). A host that counts a run's messages (their arrival, where a stop stands) counts these |
 
 Its types: `TimelineEvent` (Grep's fields, plus the optional ones above, `origin` among them) and `TimelineKind`, `TimelineOptions`, `OutcomeFn`,
 `EntryLike` (a pi conversation entry as stored), `AgentEventLike` (a pi event), `Call`, `Fold`, `Group`, `LabelFn`,
 `FoldSpec`, `ToolResultView`, `RunMetrics` and `ToolMetrics` (what `runMetricsOf` returns), and `DecisionLike` (a
-workflow's decision receipt, as `runMetricsWithDecisions` reads it), and `MessageOrigin` (who wrote a message the person did
-not: `{ kind: "server", reason: "cap_raised" | "approval" }`, or `"approval_declined"` with `said`).
+workflow's decision receipt, as `runMetricsWithDecisions` reads it), `TriggerSource` (one of `TRIGGER_SOURCES`), and `MessageOrigin` (who wrote a message the person did
+not: `{ kind: "server", reason: "cap_raised" | "approval" }`, or `"approval_declined"` with `said`; or a trigger's firing,
+`{ kind: "trigger", trigger_id, source, owner }`, `owner` true only when the trigger's owner wrote its words).
 
 ### `@parcha/pi-durable-agent/serve`
 
