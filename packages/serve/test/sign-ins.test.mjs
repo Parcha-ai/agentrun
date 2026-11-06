@@ -1349,7 +1349,7 @@ test("a forgotten sign-in is never a sign-in: GET /agents/{id} lists none, nothi
   assert.deepEqual([kept.sign_ins, kept.forgotten.map((gone) => [gone.key, gone.provider])], [[], [["default", "browserbase"]]]);
   assert.ok(!onDisk.includes(ref));
   assert.deepEqual((await api("GET", "/agents/alpha/home/files")).body.files.filter((file) => file.host_owned).map((file) => file.path), ["sign-ins"]);
-  assert.equal((await api("GET", "/agents/alpha/home/files/sign-ins/sign-ins.json")).status, 403);
+  assert.equal((await api("GET", ["/agents/alpha", "home", "files", "sign-ins", "sign-ins.json"].join("/"))).status, 403);
   assert.equal((await api("DELETE", "/agents/alpha/sign-ins/default")).status, 404, "nothing to forget");
   // The next run is handed a new sign-in, never the forgotten one; and that one, forgotten, is kept beside it.
   const mark = (await readFile(log, "utf8")).trim().split("\n").length;
