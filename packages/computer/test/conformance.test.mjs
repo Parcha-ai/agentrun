@@ -15,7 +15,7 @@ const IMAGE = "debian:bookworm-slim";
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 const CLI = fileURLToPath(new URL("../dist/conformance/cli.js", import.meta.url));
 const GROUPS = ["health", "exec", "files", "process", "provider", "drift"];
-const CAPABILITIES = ["exec", "files", "processes", "network:none", "network:open", "network:allow", "lifetime:janitor", "user:root", "user:uid"];
+const CAPABILITIES = ["exec", "files", "processes", "network:none", "network:open", "network:allow", "lifetime:janitor", "user:root", "user:uid", "release:stop"];
 
 const pass = (id, extra = {}) => ({ id, level: "core", group: id.split(".")[0], needs: [], run: async () => {}, ...extra });
 const statuses = (report) => Object.fromEntries(report.results.map((r) => [r.id, r.status]));
@@ -654,4 +654,43 @@ test("a create still pending when the cleanup bound runs out is named in cleanup
 	assert.ok(report.cleanup.errors.some((error) => /create \(provider\.leaves\) did not settle within 0\.3 s/.test(error)), JSON.stringify(report.cleanup.errors));
 	assert.equal(report.core, "fail", "a run whose cleanup is incomplete is not a Core pass");
 	assert.match(formatReport(report), /cleanup ✗ could not show nothing was left/);
+});
+
+test("provider.stop (Core) passes a provider that does not declare stop and refuses it in words, the computer still running and listed", async () => {
+	const fake = fakeComputers({ release: ["delete"] });
+	const report = await runConformance(fake.provider, { image: IMAGE, cases: byId("provider.stop") });
+	assert.deepEqual(statuses(report), { "provider.stop": "pass" }, JSON.stringify(report.results));
+	assert.equal(report.core, "pass");
+	assert.ok(fake.calls.some(([call, , how]) => call === "release" && how === "stop"), "the case asked for stop");
+	assert.deepEqual(fake.alive(), [], "the computer was deleted after");
+});
+
+test("provider.stop (Core) fails a provider that does not declare stop yet stops the computer", async () => {
+	const fake = fakeComputers({ release: ["delete"], stopAnyway: true });
+	const report = await runConformance(fake.provider, { image: IMAGE, cases: byId("provider.stop") });
+	assert.equal(statuses(report)["provider.stop"], "fail");
+	assert.match(reasons(report)["provider.stop"], /stop/);
+	assert.equal(report.core, "fail");
+});
+
+test("provider.stop (Core) fails a provider that declares stop but deletes the computer", async () => {
+	const fake = fakeComputers({ stopDeletes: true });
+	const report = await runConformance(fake.provider, { image: IMAGE, cases: byId("provider.stop") });
+	assert.equal(statuses(report)["provider.stop"], "fail");
+	assert.match(reasons(report)["provider.stop"], /stopped/);
+	assert.equal(report.core, "fail");
+});
+
+test("provider.stop (Core) passes a provider that declares stop and lists the computer stopped", async () => {
+	const fake = fakeComputers();
+	const report = await runConformance(fake.provider, { image: IMAGE, cases: byId("provider.stop") });
+	assert.deepEqual(statuses(report), { "provider.stop": "pass" }, JSON.stringify(report.results));
+});
+
+test("provider.janitor (Full) needs release:stop: a janitor provider that does not declare stop skips it in words", async () => {
+	const fake = fakeComputers({ release: ["delete"] });
+	const report = await runConformance(fake.provider, { image: IMAGE, cases: byId("provider.janitor") });
+	assert.deepEqual(statuses(report), { "provider.janitor": "skip" });
+	assert.equal(reasons(report)["provider.janitor"], "the provider does not declare release:stop");
+	assert.deepEqual(report.undeclared, ["release:stop"]);
 });

@@ -84,6 +84,7 @@ test("capabilities: a VM whose lifetime Modal enforces, network none or open wit
 		os: "linux",
 		daemon: ["exec", "files", "processes"],
 		user: ["root", "uid"],
+		release: ["delete"],
 	});
 	assert.deepEqual(fake.calls, []);
 });
