@@ -80,6 +80,9 @@ function fakeDaemon(hello, computer) {
  * - `capsForUser`: a computer whose spec asked for a user has every capability.
  * - `createRejects`: create rejects with that message. `createIgnoresCheck`: create makes a computer check refuses.
  * - `listPage`: how many processes one process.list page holds.
+ * - `networkSwitches`: network() applies a change to a network the provider declares, instead of refusing every change.
+ *   Each network() call that asks for a policy is in `calls` as ["network", name, policy].
+ * - `attachSpec`: merged over the spec attach reports (null: attach reports none).
  */
 export function fakeComputers({
 	id = "fake",
@@ -101,6 +104,8 @@ export function fakeComputers({
 	createRejects,
 	createIgnoresCheck = false,
 	listPage = 100,
+	networkSwitches = false,
+	attachSpec = {},
 } = {}) {
 	const computers = new Map();
 	const made = [];
@@ -129,6 +134,7 @@ export function fakeComputers({
 			const name = `fake-${++next}`;
 			const record = {
 				ref: { id: `id-${next}`, name },
+				image: spec.image,
 				labels: { ...spec.labels },
 				network: spec.network,
 				deadline: new Date(Date.now() + spec.lifetimeMs),
@@ -151,7 +157,10 @@ export function fakeComputers({
 			);
 			if (found.length === 0) return fail("not_found", "no such computer");
 			if (found.length > 1) return fail("invalid", `${found.length} computers match`);
-			return ok(found[0].ref);
+			const [c] = found;
+			const [u, g = u] = c.daemon.uid.split(":");
+			const read = { image: c.image, user: `${u}:${g}`, network: c.network, deadline: c.deadline };
+			return ok(attachSpec === null ? { ...c.ref } : { ...c.ref, spec: { ...read, ...attachSpec } });
 		},
 		async list(labels) {
 			calls.push(["list", labels]);
@@ -161,7 +170,11 @@ export function fakeComputers({
 		async network(ref, policy) {
 			const record = computers.get(ref.name);
 			if (!record) return fail("not_found", `no computer ${ref.name}`);
-			if (policy !== undefined && policy !== record.network) return fail("refused", "the network is fixed");
+			if (policy !== undefined) calls.push(["network", ref.name, policy]);
+			if (policy !== undefined && JSON.stringify(policy) !== JSON.stringify(record.network)) {
+				if (!networkSwitches || !network.includes(typeof policy === "string" ? policy : "allow")) return fail("refused", "the network is fixed");
+				record.network = policy;
+			}
 			return ok(record.network);
 		},
 		async connect(ref) {

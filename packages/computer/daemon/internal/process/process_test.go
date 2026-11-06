@@ -865,3 +865,74 @@ func TestRetainedOutputIsBoundedByReleasingTheOldestEndedRings(t *testing.T) {
 		t.Fatalf("the running process keeps its ring: read %d bytes, dropped %d, exited %v, %v", len(res.Data), res.Dropped, res.Exited, err)
 	}
 }
+
+// Live rings count against RetainedBytes too. Past it, the rings of the processes that ended first are let go; when
+// that is not enough, each live ring stops growing and keeps only its share of the budget (never under a floor),
+// dropping its oldest bytes, and a read reports what it dropped.
+func TestLiveOutputIsBoundedTooOnceNoEndedRingIsLeft(t *testing.T) {
+	const ringBytes, budget = 256 << 10, 1 << 20
+	tbl := table(t, process.Options{RingBytes: ringBytes, RetainedBytes: budget})
+	within := func(after string) {
+		t.Helper()
+		if held := process.Held(tbl); held > budget {
+			t.Fatalf("after %s the rings hold %d bytes, over the budget of %d", after, held, budget)
+		}
+	}
+	readFrom0 := func(id string) process.ReadResult {
+		t.Helper()
+		res, err := tbl.Read(context.Background(), process.ReadParams{ID: id, Stream: "stdout", Offset: off(0)})
+		if err != nil {
+			t.Fatalf("read %s: %v", id, err)
+		}
+		return res
+	}
+	var ended []string
+	for range 2 {
+		p := start(t, tbl, process.StartParams{Argv: []string{"head", "-c", strconv.Itoa(ringBytes), "/dev/zero"}})
+		wait(t, tbl, p.ID)
+		readAll(t, tbl, p.ID, "stdout")
+		within(p.ID)
+		ended = append(ended, p.ID)
+	}
+	// Each live process writes a ring's worth, waits for a line on stdin, writes another, and runs on.
+	script := `head -c "$0" /dev/zero; read line; head -c "$0" /dev/zero; exec sleep 303`
+	var live []string
+	for i := range 6 {
+		p := start(t, tbl, process.StartParams{Argv: []string{"sh", "-c", script, strconv.Itoa(ringBytes)}, Stdin: true})
+		readTo(t, tbl, p.ID, "stdout", ringBytes)
+		within(p.ID)
+		live = append(live, p.ID)
+		if i == 3 {
+			// Four live rings fill the budget: both ended rings were let go first, and no live ring lost a byte.
+			for _, id := range ended {
+				if res := readFrom0(id); len(res.Data) != 0 || res.Dropped != ringBytes || !res.Exited {
+					t.Errorf("%s ended, so its ring is let go before a live one: read %d bytes, dropped %d, exited %v", id, len(res.Data), res.Dropped, res.Exited)
+				}
+			}
+			for _, id := range live {
+				if res := readFrom0(id); len(res.Data) != ringBytes || res.Dropped != 0 {
+					t.Errorf("%s runs and the ended rings were enough: read %d bytes, dropped %d", id, len(res.Data), res.Dropped)
+				}
+			}
+		}
+	}
+	for _, id := range live {
+		if _, err := tbl.Write(context.Background(), process.WriteParams{ID: id, Data: []byte("go\n")}); err != nil {
+			t.Fatalf("write to %s: %v", id, err)
+		}
+		readTo(t, tbl, id, "stdout", 2*ringBytes)
+		within(id + "'s second write")
+	}
+	for i, id := range live {
+		res := readFrom0(id)
+		if res.Dropped+int64(len(res.Data)) != 2*ringBytes || res.NextOffset != 2*ringBytes || res.Exited {
+			t.Errorf("%s: dropped %d and read %d bytes to %d, of %d written; exited %v", id, res.Dropped, len(res.Data), res.NextOffset, 2*ringBytes, res.Exited)
+		}
+		if len(res.Data) < 64<<10 {
+			t.Errorf("%s keeps %d bytes, under the floor of %d", id, len(res.Data), 64<<10)
+		}
+		if i == 0 && res.Dropped <= ringBytes {
+			t.Errorf("%s was capped under its ring once no ended ring was left, so a read reports more dropped than a full ring would: dropped %d", id, res.Dropped)
+		}
+	}
+}
