@@ -30,13 +30,20 @@ export function openLineUrl(line, publicUrl) {
 /** How many of the server's last output lines a start that fails shows. */
 export const TAIL_LINES = 20;
 
+/** The server's lines this command says too, as they come: its banner's boxes line (whether new agents get the Docker
+ *  box, or why not), the Docker box image's first build, as it starts and ends, and, on a server with a public address
+ *  and no password yet, the setup link with its code, which setup at that address asks for. */
+export const SAID = /^(Boxes: |Preparing the Docker box image |The Docker box image |Set up this server: )/;
+
 /** The address a person opens first, as the server says it: the URL of the first "Open " line of its output that names
  *  one (openLineUrl). That line is the server's interface for it (the plain address today, a single-use sign-in link
  *  once the server prints one), so this command never builds the address itself. Resolves undefined when the output ends
- *  without one; the rest of the output is read and dropped, so the server never blocks on a full pipe. Until then, the
- *  last TAIL_LINES lines before it are kept in `seen`: what a start that fails shows. */
-export function openUrl(stdout, publicUrl, seen = []) {
+ *  without one. Until then, the last TAIL_LINES lines before it are kept in `seen`: what a start that fails shows, and each
+ *  goes to `onBefore`. Every whole line after it goes to `onLine`; the rest of the output is read and dropped, so the
+ *  server never blocks on a full pipe. */
+export function openUrl(stdout, publicUrl, seen = [], onLine = () => {}, onBefore = () => {}) {
   const keep = (line) => {
+    onBefore(line);
     seen.push(line);
     if (seen.length > TAIL_LINES) seen.shift();
   };
@@ -45,13 +52,12 @@ export function openUrl(stdout, publicUrl, seen = []) {
     let found;
     stdout.setEncoding("utf8");
     stdout.on("data", (chunk) => {
-      if (found !== undefined) return;
       pending += chunk;
-      for (let end = pending.indexOf("\n"); end >= 0 && found === undefined; end = pending.indexOf("\n")) {
+      for (let end = pending.indexOf("\n"); end >= 0; end = pending.indexOf("\n")) {
         const line = pending.slice(0, end).replace(/\r$/, "");
         pending = pending.slice(end + 1);
-        const url = openLineUrl(line, publicUrl);
-        if (url !== undefined) resolve((found = url));
+        if (found !== undefined) onLine(line);
+        else if ((found = openLineUrl(line, publicUrl)) !== undefined) resolve(found);
         else keep(line);
       }
     });
@@ -143,7 +149,8 @@ export async function main(argv, env = process.env) {
     return new Promise((resolve) => spawn(launcher, [rest[0], ...data, ...rest.slice(1)], { stdio: "inherit", env: childEnv }).on("exit", (code) => resolve(code ?? 1)));
   }
   // The server's banner and request lines stay out of this terminal: one line here says where to go, the URL of the
-  // server's own "Open " line. What it prints on stderr (why it did not start) comes through as it is.
+  // server's own "Open " line; the lines SAID names go to stderr after it, for the person, so stdout stays that one line.
+  // What it prints on stderr (why it did not start) comes through as it is.
   const child = spawn(launcher, serverArgs([...data, ...rest]), { stdio: ["ignore", "pipe", "inherit"], env: childEnv });
   // A stop this command passes on (Ctrl-C, a process manager's SIGTERM, npm gone) is a clean end, 0, even when the signal
   // itself ends the server; a server ended by a signal nobody here sent is not.
@@ -168,8 +175,13 @@ export async function main(argv, env = process.env) {
     child.on("exit", () => clearInterval(watch));
   }
   let timer;
+  let told = false;
+  const held = [];
+  const tell = (line) => SAID.test(line) && (told ? console.error(line) : held.push(line));
+  // A SAID line can come before the "Open " line too (the setup link is printed as the server attaches its owner, before
+  // its banner): it is held and said first, in order.
   const seen = [];
-  const url = await Promise.race([openUrl(child.stdout, env.AGENTRUN_PUBLIC_URL, seen), new Promise((resolve) => { timer = setTimeout(resolve, 60_000); })]);
+  const url = await Promise.race([openUrl(child.stdout, env.AGENTRUN_PUBLIC_URL, seen, tell, tell), new Promise((resolve) => { timer = setTimeout(resolve, 60_000); })]);
   clearTimeout(timer);
   if (url === undefined) {
     child.kill("SIGTERM");
@@ -183,5 +195,7 @@ export async function main(argv, env = process.env) {
   console.error(`Press Ctrl-C to stop it. Its data is in ${dataDir}.`);
   // And where the API's bearer token is: the server prints it on a line this terminal doesn't show.
   console.error(env.AGENTRUN_TOKEN ? "The API token is the AGENTRUN_TOKEN this command was started with." : `The API token is in ${join(dataDir, ".token")}.`);
+  told = true;
+  for (const line of held.splice(0)) console.error(line);
   return exited;
 }

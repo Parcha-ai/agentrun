@@ -86,15 +86,15 @@ test("under a cap, a paid call is refused before it is sent unless the spend plu
   useSpend({ cap: 2, spent: () => spent, add: (usd) => void (added.push(usd), (spent += usd)) });
   t.after(() => useSpend(undefined));
   const refused = await paidCall("monid_run", call, chargeOf, quoted(0.7));
-  assert.match(refused.refused, /^spend_cap_reached: Not sent: the run has spent \$1\.50 of its \$2 cap, and monid_run could cost up to \$0\.70 \(the price monid_inspect quoted\)\. Raise the cap to at least \$2\.20 to run it\.$/);
+  assert.match(refused.refused, /^spend_cap_reached: Not sent: this run has spent \$1\.50 of its \$2 cap, and the next step, monid_run, could cost up to \$0\.70 \(the price monid_inspect quoted\)\. Raise the cap to at least \$2\.20 to continue\.$/);
   assert.equal(sent, 0, "refused, not sent");
   assert.deepEqual([(await paidCall("monid_run", call, chargeOf, quoted(0.4))).result?.status, sent, added], ["COMPLETED", 1, [0.2]], "0.4 fits: it runs");
   // Two at once: the first is checked (1.5 + 0.4), sent and charged (1.7) before the second is checked (1.7 + 0.4 > 2).
   spent = 1.5;
   const [first, second] = await Promise.all([paidCall("monid_run", call, chargeOf, quoted(0.4)), paidCall("monid_run", call, chargeOf, quoted(0.4))]);
   assert.deepEqual([first.result?.status, sent, typeof second.refused], ["COMPLETED", 2, "string"]);
-  const allowance = await paidCall("monid_run", call, chargeOf, { usd: 1, basis: "no monid_inspect in this run quoted its price, so it is held at the $1 allowance; monid_inspect gives its quote" });
-  assert.match(allowance.refused, /held at the \$1 allowance; monid_inspect gives its quote/);
+  const allowance = await paidCall("monid_run", call, chargeOf, { usd: 1, basis: "no price was quoted for it in this run, so it counts at the $1 allowance; monid_inspect gives its price" });
+  assert.match(allowance.refused, /counts at the \$1 allowance; monid_inspect gives its price/);
   spent = null;
   assert.match((await paidCall("monid_run", call, chargeOf, quoted(0))).refused, /What the run has spent is unknown, so its cap of \$2 cannot be kept/);
   assert.equal(sent, 2, "no refusal was sent");
@@ -154,7 +154,7 @@ test("a run whose monid call times out (TIMED_OUT, no cost said) books its charg
   useSpend({ cap: 5, spent: () => capToolSpend(root), add: () => {} });
   assert.ok("result" in (await paidCall("monid_run", async () => ({}), chargeOf, { usd: 0.003, basis: "quoted" })), "a paid call that fits goes");
   useSpend({ cap: 1.002, spent: () => capToolSpend(root), add: () => {} });
-  assert.match((await paidCall("monid_run", async () => ({}), chargeOf, { usd: 0.003, basis: "quoted" })).refused ?? "", /^spend_cap_reached: Not sent: the run has spent \$1 of its \$1\.002 cap, and monid_run could cost up to \$0\.003 \(quoted\)\. Raise the cap to at least \$1\.01 to run it\.$/, "one that does not is refused for room");
+  assert.match((await paidCall("monid_run", async () => ({}), chargeOf, { usd: 0.003, basis: "quoted" })).refused ?? "", /^spend_cap_reached: Not sent: this run has spent \$1 of its \$1\.002 cap, and the next step, monid_run, could cost up to \$0\.003 \(quoted\)\. Raise the cap to at least \$1\.01 to continue\.$/, "one that does not is refused for room");
   const guard = await capBefore(5, { id: "faux", api: "faux", provider: "faux", maxTokens: 10, contextWindow: 100, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } });
   assert.deepEqual(guard.beforeRequest({ spentUsd: capToolSpend(root), inFlight: [], inputTokensMax: 1 }), { outputTokensMax: 10 }, "and a model request that fits goes, at its whole output (#1539's clamp leaves it whole)");
 });
@@ -286,7 +286,7 @@ test("a revision naming the three saves with a warning on a keyless server and i
   const claude = agent("finder-claude", { harness: "claude-agent", instructions: "Run monid's /person/enrich on Ada.", tools: ["read", "monid.run"], tool_settings: ALLOWED });
   const keyless = await api("POST", "/agents", claude);
   assert.equal(keyless.status, 201, JSON.stringify(keyless.body));
-  assert.deepEqual(keyless.body.warnings.map((w) => [w.field, w.message]), [["definition.tools[1]", "This server's environment does not set what the tool needs: the tool monid.run needs MONID_API_KEY."]], "the key, never that it runs on pi only");
+  assert.deepEqual(keyless.body.warnings.map((w) => [w.field, w.message]), [["definition.tools[1]", "The tool monid.run needs a Monid key: save one in Settings → Tool keys (or set MONID_API_KEY where the server starts)."]], "the key, never that it runs on pi only");
   const refused = await api("POST", "/agents/finder-claude/runs", { input: { content: "hi" } });
   assert.deepEqual([refused.status, refused.body.error.details.unbound, refused.body.error.details.missing], [409, [], { "monid.run": ["MONID_API_KEY"] }]);
   // A server reads its environment as it starts: the next one has the key.

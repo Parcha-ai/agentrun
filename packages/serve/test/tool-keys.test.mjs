@@ -57,6 +57,28 @@ async function meetsDocument(api, view) {
   assert.deepEqual(schemaProblems(doc, doc.paths["/settings/tool-keys"].get.responses["200"].content["application/json"].schema, view), [], JSON.stringify(view));
 }
 
+test("a tool key saved then removed in Settings: the refusal names Settings → Tool keys first, then the variable, for Monid and for Parallel; the structured fields are unchanged", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey(), AGENTRUN_SERVE_CODEX_STANDIN: await codexStandIn(t) }, [...KEYS, ...HARNESS_VARS]);
+  withMemory(t, ROOMY_MIB);
+  const { api } = await serve(t);
+  assert.equal((await api("PUT", "/settings/tool-keys/monid", { values: { MONID_API_KEY: made() } })).status, 204);
+  assert.equal((await api("DELETE", "/settings/tool-keys/monid")).status, 204);
+  const monid = "monid.discover needs a Monid key: save one in Settings → Tool keys (or set MONID_API_KEY where the server starts)";
+  const saved = await api("POST", "/agents", agent("finder", { tools: ["monid.discover"] }));
+  assert.equal(saved.status, 201, JSON.stringify(saved.body));
+  assert.deepEqual(saved.body.warnings.map((w) => w.message), [`The tool ${monid}.`], "the save's warning");
+  const run = await api("POST", "/agents/finder/runs", { input: { content: "hi" } });
+  assert.equal(run.status, 409, JSON.stringify(run.body));
+  assert.ok(run.body.error.message.includes(monid), run.body.error.message);
+  assert.ok(!/environment does not set/.test(run.body.error.message), run.body.error.message);
+  assert.deepEqual(run.body.error.details.missing, { "monid.discover": ["MONID_API_KEY"] }, "the structured fields are unchanged");
+  assert.equal((await api("PUT", "/settings/tools", { web_search: { provider: "parallel" } })).status, 200);
+  assert.equal((await api("POST", "/agents", agent("searcher", { tools: ["web_search"] }))).status, 201);
+  const search = await api("POST", "/agents/searcher/runs", { input: { content: "hi" } });
+  assert.equal(search.status, 409, JSON.stringify(search.body));
+  assert.ok(search.body.error.message.includes("web_search does not run here on pi: parallel is picked, and it needs a Parallel key: save one in Settings → Tool keys (or set PARALLEL_API_KEY where the server starts)"), search.body.error.message);
+});
+
 test("a key saved by name is kept sealed: GET says which fields are set and from where, never a value; PUT merges by field, DELETE forgets; the file is 0600 and holds no value", async (t) => {
   // Under a permissive umask, so the mode seen is the one the write asks for, not what the umask leaves of it.
   const umask = process.umask(0o022);
@@ -297,7 +319,7 @@ test("a key saved is read by name with no restart: capabilities lose the tool's 
   const browser = async () => {
     const caps = (await api("GET", "/capabilities")).body;
     for (const value of Object.values(values)) holdsNone(JSON.stringify(caps), formsOf(value), "capabilities");
-    const { summary: _, providers: __, resolves, why: ___, ...tool } = caps.tools.find((entry) => entry.name === "browser");
+    const { summary: _, blurb: ____, providers: __, resolves, why: ___, ...tool } = caps.tools.find((entry) => entry.name === "browser");
     return { ...tool, resolves: resolves.pi };
   };
   const refused = async () => {
@@ -305,8 +327,10 @@ test("a key saved is read by name with no restart: capabilities lose the tool's 
     return [res.status, res.body.error?.code, res.body.error?.details?.missing];
   };
   // The browser runs on either vendor's keys (tool-plane.ts): unavailable, its reason names both, and no one list is missing.
-  const reason = "no browser key: set or save Browserbase's (BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID) or Kernel's (KERNEL_API_KEY)";
-  const unset = { name: "browser", nodes: true, calls: false, available: false, reason, harnesses: ["pi"], provider: "auto", default_provider: "auto", permission: "allow", default_permission: "allow", permissions: ["allow", "deny"], resolves: `unavailable: ${reason}`, key: "browserbase" };
+  // The plane keeps its own value (a run's meta stores it); only the words a person reads name Settings first.
+  const STORED_NO_BROWSER_KEY = "unavailable: no browser key: set or save Browserbase's (BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID) or Kernel's (KERNEL_API_KEY)";
+  const reason = "it needs a Browserbase key: save one in Settings → Tool keys (or set BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID where the server starts), or a Kernel key: save one in Settings → Tool keys (or set KERNEL_API_KEY where the server starts)";
+  const unset = { name: "browser", nodes: true, calls: false, available: false, reason, harnesses: ["pi"], provider: "auto", default_provider: "auto", permission: "allow", default_permission: "allow", permissions: ["allow", "deny"], resolves: STORED_NO_BROWSER_KEY, key: "browserbase" };
   assert.deepEqual(await browser(), unset);
   assert.deepEqual((await api("GET", "/capabilities")).body.tools.filter((tool) => tool.key).map((tool) => [tool.name, tool.key]), [["web_fetch", "parallel"], ["web_search", "parallel"], ["browser", "browserbase"], ["monid.discover", "monid"], ["monid.inspect", "monid"], ["monid.run", "monid"]], "only a tool a key unlocks names one");
   assert.equal((await api("POST", "/agents", { definition: { id: "browse", name: "browse", instructions: "Browse.", tools: ["browser"] } })).status, 201);

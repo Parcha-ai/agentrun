@@ -24,9 +24,9 @@
 // run's own (decision keep, origin run) and names it Risky, and the rest, "Grade: you <file>." keeps that one as what
 // the user asked in their own words (decision keep, origin you), and the rest, "Grade: shop <file>." drops that one on
 // General with the user's origin (a weak grader's call on a shop's policy) and merges none, "Grade: sly." says merge and keeps
-// none, "Grade: garbage." is no JSON, "Grade: fail." fails the call, "Grade: drop at length." keeps no note for a reason
+// none, "Grade: garbage." is no JSON, "Grade: garbage once." no JSON to a prompt's first ask alone, "Grade: garbage saying <text>." no JSON with <text> in it (each _ a space), "Grade: fail." fails the call, "Grade: drop at length." keeps no note for a reason
 // and a why whose first sentence runs past 140 characters, "Grade: drop saying <text>." keeps no note for a reason and a
-// why that name <text>; anything else keeps every note. "Grade once <file> exists." holds the answer until the test makes that file
+// why that name <text>, "Grade: omit <file>." gives that file no item; anything else keeps every note. "Grade once <file> exists." holds the answer until the test makes that file
 // (or the call is aborted). With
 // AGENTRUN_TEST_FAUX_GRADE_HOLD set (in the server's environment), the grader answers only once it is aborted; set to
 // `never`, it never answers at all, aborted or not. Each grader call is filed as a line in the file
@@ -84,6 +84,10 @@ function grade(prompt, faux) {
   const files = /^Give one item for each of these files, each once, and for no other: (.*)\.$/m.exec(prompt)?.[1].split(", ") ?? [];
   if (process.env.AGENTRUN_TEST_FAUX_GRADE_HOLD === "never") return new Promise(() => {});
   if (process.env.AGENTRUN_TEST_FAUX_GRADE_HOLD) return slow(faux, 600_000, "");
+  // "Grade: garbage once.": no JSON to the first ask of a prompt alone; the host's one more ask is answered as any other.
+  const asked = (ASKS.get(prompt) ?? 0) + 1;
+  ASKS.set(prompt, asked);
+  if (rules.includes("Grade: garbage once.") && asked === 1) return faux.message("Looks fine to me, once.");
   const gate = /Grade once (\S+) exists\./.exec(rules)?.[1];
   if (gate) {
     return (async () => {
@@ -97,10 +101,16 @@ function grade(prompt, faux) {
   return verdictOf(rules, files, faux);
 }
 
+/** How many times the grader was asked each prompt (the host asks again, with the same prompt, an answer it could not read). */
+const ASKS = new Map();
+
 /** The grader's verdict on `files`, by the agent's instructions `rules`. */
 function verdictOf(rules, files, faux) {
   if (rules.includes("Grade: fail.")) return faux.message("", { stopReason: "error", errorMessage: "the faux grader failed on purpose" });
   if (rules.includes("Grade: garbage.")) return faux.message("Looks fine to me.");
+  // "Grade: garbage saying <text>.": no JSON, with <text> in it, each _ a space, to every ask.
+  const babble = /Grade: garbage saying (\S+)\./.exec(rules)?.[1];
+  if (babble) return faux.message(`Looks fine to me. ${babble.replaceAll("_", " ")}`);
   const long = rules.includes("Grade: drop at length.");
   const saying = /Grade: drop saying (\S+)\./.exec(rules)?.[1];
   const keep = !rules.includes("Grade: drop.") && !rules.includes("Grade: sly.") && !long && !saying;
@@ -116,6 +126,9 @@ function verdictOf(rules, files, faux) {
   const shop = /Grade: shop (\S+\.md)\./.exec(rules)?.[1];
   if (shop) return faux.message(JSON.stringify({ merge: false, reason: "The note records a policy specific to this shop, so it is not general enough to keep.", items: files.map((file) => (file === shop ? { file, decision: "drop", origin: "you", question: "General", why: "It records a shop-specific refund policy rather than a general rule." } : { file, decision: "keep", origin: "run", why: "It holds as a general rule." })) }));
   const kept = (file) => keep && file !== dropped;
+  // "Grade: omit <file>.": an answer that gives that file no item, which the host refuses (parseVerdict).
+  const omitted = /Grade: omit (\S+\.(?:md|json))\./.exec(rules)?.[1];
+  if (omitted) return faux.message(JSON.stringify({ merge: true, reason: "Each note is general and new.", items: files.filter((file) => file !== omitted).map((file) => ({ file, decision: "keep", why: "It holds." })) }));
   return faux.message(JSON.stringify({
     merge: (keep && !dropped) || rules.includes("Grade: sly."),
     reason: keep && !dropped ? "Each note is general and new." : saying ? `A note is about ${saying} alone, which no later run can use. Drop it.` : long ? `A note is about the one case it came from, and it holds nothing a later run of this agent could use on another shop, so it is not kept. Drop it.` : "A note is about the one case it came from.",

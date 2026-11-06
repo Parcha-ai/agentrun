@@ -76,6 +76,25 @@ test("learned_workflow is never run again after a crash, on any harness, and say
   assert.match(said, /^- answer: Answers a question as a number/m);
 });
 
+test("learned_workflow's description shows each workflow's input as its schema says it, compact: its fields, their types, which are required and a short description", () => {
+  const flow = answerFlow();
+  flow.schemas.In = { type: "object", required: ["question"], properties: { question: { type: "string", description: "The question to answer, in the person's words" }, tickets: { type: "array", items: { type: "string" } } } };
+  const said = learnedWorkflowDescription([{ name: "answer", description: DESCRIPTION, workflow: JSON.stringify(flow) }]);
+  assert.match(said, /^- answer: Answers a question as a number.*\n  input: \{question\* string "The question to answer, in the person's words", tickets array of string\} \(\* required\)$/m, said);
+  assert.ok(learning.workflowLine({ name: "answer", description: DESCRIPTION, workflow: JSON.stringify(flow) }).includes("question* string"), "the pin's budget counts the same line");
+});
+
+test("a learned workflow whose output names no path is refused before any node runs: its output is the value at output.path", { timeout: 120_000 }, async (t) => {
+  const { api, data } = await serve(t, { learning: "on" });
+  const flow = answerFlow();
+  delete flow.output.path;
+  const { runId, rows } = await ran(api, data, "pathless", "pi", flowFiles("answer", flow));
+  const result = learnedResult(rows);
+  assert.equal(result?.tool_status, "failed", JSON.stringify(result));
+  assert.match(JSON.stringify(result), /The learned workflow answer was not run: its output names no path: a learned workflow's output is the value at output\.path/, JSON.stringify(result));
+  assert.deepEqual(entries(data, runId, ["agentrun.request_started"]).filter((entry) => entry.request === LEARNED_WORKFLOW_TOOL), [], "no node ran");
+});
+
 for (const harness of ["pi", "claude-agent", "codex"]) {
   test(`a ${harness} run calls the workflow its agent learned as learned_workflow and gets its output, with no edit of its definition; its model requests are the run's, as side requests`, { timeout: 120_000 }, async (t) => {
     const opened = join(await scratch(t), "opened.jsonl");
@@ -401,8 +420,12 @@ test("on codex, learned_workflow set to ask parks the run; the owner's allow run
   assert.equal(answered.status, 204, answered.text);
   const { rows } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 90_000 });
   assert.equal((await api("GET", `/runs/${runId}`)).body.status, "completed");
-  const resume = rows.find((row) => row.kind === "user_message" && String(row.text).startsWith("[tool approval]"))?.text ?? "";
-  assert.match(resume, /This answers your learned_workflow call .*They allowed it, and it ran\. Its result:\n\{\\?"answer\\?":42\}/s, resume);
+  // The gate's resume is AgentRun's row (origin "server"), never the person's message, and it carries the call's result.
+  const resumed = rows.find((row) => String(row.text).startsWith("[tool approval]"));
+  assert.deepEqual([resumed?.kind, resumed?.origin], ["phase", "server"], JSON.stringify(resumed));
+  assert.match(resumed.summary, /^AgentRun: learned_workflow ran once you allowed it$/, resumed.summary);
+  assert.match(resumed.text, /This answers your learned_workflow call .*They allowed it, and it ran\. Its result:\n\{\\?"answer\\?":42\}/s, resumed.text);
+  assert.equal(rows.some((row) => row.kind === "user_message" && String(row.text).startsWith("[tool approval]")), false, "never shown as the person's message");
   assert.equal(entries(data, runId, ["agentrun.request_started"]).filter((entry) => entry.request === LEARNED_WORKFLOW_TOOL).length, 1, "its one node ran once");
 });
 
@@ -437,6 +460,16 @@ test("each call node of a learned workflow asks the run's gate as it runs, a com
       assert.ok(asked >= 2, `${nested ? "nested" : "flat"} ${later}: the gate was asked at the call too (${asked})`);
     }
   }
+});
+
+test("a learned workflow's input line reads a reference in the schema's own definitions first, as the DSL does, whatever a sibling schema of the same name says", () => {
+  const withDefs = (sibling) => ({ name: "refs", description: DESCRIPTION, workflow: JSON.stringify({
+    v: 2, name: "refs",
+    schemas: { In: { type: "object", definitions: { Name: { type: "string" } }, properties: { who: { $ref: "#/definitions/Name" } }, required: ["who"] }, ...(sibling ? { Name: { type: "number" } } : {}), Out: { type: "object", properties: { a: { type: "string" } } } },
+    input: { schemaId: "In" }, output: { schemaId: "Out", path: "out" },
+    root: { node: "extract", label: "n", instructions: "Answer.", out: "Out", as: "out" },
+  }) });
+  for (const sibling of [false, true]) assert.match(learning.workflowLine(withDefs(sibling)), /input: \{who\* string\}/, `sibling ${sibling}`);
 });
 
 test("a learned workflow's call reads on the run's timeline as the workflow it ran and what it gave: 'Ran the learned workflow <name>' and its output in one line", { timeout: 120_000 }, async (t) => {
