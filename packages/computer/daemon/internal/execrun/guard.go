@@ -54,8 +54,10 @@ type guardStatus struct {
 // Guard runs one guard and returns its exit code: the program's, 128 plus its signal, or 125 when the guard itself
 // failed before the program started.
 func Guard() int {
-	signals := make(chan os.Signal, 64)
-	signal.Notify(signals, syscall.SIGCHLD, syscall.SIGTERM, syscall.SIGINT)
+	// Apart, so a burst of SIGCHLD (dropped when the buffer is full, and only a hint to reap) never drops a SIGTERM.
+	childEnded, stop := make(chan os.Signal, 1), make(chan os.Signal, 2)
+	signal.Notify(childEnded, syscall.SIGCHLD)
+	signal.Notify(stop, syscall.SIGTERM, syscall.SIGINT)
 	syscall.CloseOnExec(guardSpecFD)
 	syscall.CloseOnExec(guardStatusFD)
 	statusFile := os.NewFile(guardStatusFD, "status")
@@ -93,7 +95,7 @@ func Guard() int {
 		report(guardStatus{StartErrno: int(errno), StartError: err.Error()})
 		return 127
 	}
-	ws := supervise(pid, signals)
+	ws := supervise(pid, childEnded, stop)
 	if ws.Signaled() {
 		report(guardStatus{Signal: int(ws.Signal())})
 		return 128 + int(ws.Signal())
@@ -106,7 +108,7 @@ func Guard() int {
 // supervise reaps every child of the guard until none is left, and returns the program's own wait status. The program
 // ending, or the grace after a SIGTERM running out, sends SIGKILL to every descendant, again on each pass, so one that
 // forks while it is being killed is caught on the next.
-func supervise(pid int, signals <-chan os.Signal) syscall.WaitStatus {
+func supervise(pid int, childEnded, stop <-chan os.Signal) syscall.WaitStatus {
 	var status syscall.WaitStatus
 	exited, ending, graceOver := false, false, false
 	var grace <-chan time.Time
@@ -137,8 +139,9 @@ func supervise(pid int, signals <-chan os.Signal) syscall.WaitStatus {
 			signalRun(pid, exited, syscall.SIGKILL)
 		}
 		select {
-		case sig := <-signals:
-			if sig != syscall.SIGCHLD && !ending {
+		case <-childEnded:
+		case <-stop:
+			if !ending {
 				ending = true
 				signalRun(pid, exited, syscall.SIGTERM)
 				grace = time.After(KillGrace)
