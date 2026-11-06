@@ -10,15 +10,28 @@ import { test } from "node:test";
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 const DROPPED = ["AGENTRUN_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL", "AGENTRUN_BOXES"];
 
+/** A server started on a fresh data directory, with no box: these tests are about its record, and a Docker box's image,
+ *  which a start on a machine with Docker begins to build, has Docker's own processes writing under HOME (here the
+ *  scratch directory) after the server is gone. `ended` resolves with how it exited. Once the test is over, the server
+ *  is killed if it still runs and awaited, then its directory removed. */
+function start(t, stdio = "ignore") {
+  const dir = mkdtempSync(join(tmpdir(), "server-record-"));
+  const data = join(dir, "data");
+  const env = { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !DROPPED.includes(name))), HOME: dir, AGENTRUN_ACCOUNTS: "0", AGENTRUN_BOXES: "none" };
+  const child = spawn(process.execPath, [CLI, "--data", data, "--port", "0"], { stdio: ["ignore", "ignore", stdio], env });
+  const ended = new Promise((resolve) => child.once("exit", (code, signal) => resolve({ code, signal })));
+  t.after(async () => {
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    await ended;
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  });
+  return { child, ended, data };
+}
+
 /** A server on a fresh data directory; resolves once it wrote its record. */
 async function serve(t) {
-  const dir = mkdtempSync(join(tmpdir(), "server-record-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const data = join(dir, "data");
-  const env = { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !DROPPED.includes(name))), HOME: dir, AGENTRUN_ACCOUNTS: "0" };
-  const child = spawn(process.execPath, [CLI, "--data", data, "--port", "0"], { stdio: ["ignore", "ignore", "pipe"], env });
-  t.after(() => child.exitCode === null && child.kill("SIGKILL"));
-  const exited = new Promise((resolve) => child.once("exit", (code) => resolve(code)));
+  const { child, ended, data } = start(t, "pipe");
+  const exited = ended.then(({ code }) => code);
   let err = "";
   child.stderr.on("data", (chunk) => (err += chunk));
   const record = join(data, ".server.json");
@@ -40,13 +53,7 @@ test("a clean stop removes the server's own record", { timeout: 120_000 }, async
 test("a SIGTERM the moment the record appears is a clean stop: exit 0, the record gone", { timeout: 180_000 }, async (t) => {
   // The record is written once the server listens; a stop sent as soon as it is there must find the stop handler in place.
   for (let i = 0; i < 8; i++) {
-    const dir = mkdtempSync(join(tmpdir(), "server-record-"));
-    t.after(() => rmSync(dir, { recursive: true, force: true }));
-    const data = join(dir, "data");
-    const env = { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !DROPPED.includes(name))), HOME: dir, AGENTRUN_ACCOUNTS: "0" };
-    const child = spawn(process.execPath, [CLI, "--data", data, "--port", "0"], { stdio: "ignore", env });
-    t.after(() => child.exitCode === null && child.kill("SIGKILL"));
-    const exited = new Promise((resolve) => child.once("exit", (code, signal) => resolve({ code, signal })));
+    const { child, ended: exited, data } = start(t);
     for (let j = 0; !existsSync(data); j++) {
       assert.ok(j < 6000 && child.exitCode === null, "the server made its data directory");
       await new Promise((resolve) => setTimeout(resolve, 10));
