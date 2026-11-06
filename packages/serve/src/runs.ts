@@ -41,7 +41,7 @@ import { DEFAULT_MODEL_ENV, EFFORT_ENV, GATEWAY_KEY_ENV, hostModel, llmTiers, mo
 import { llmAnswers, pausedIn, readNodeLog, RUN_PAUSED } from "./pause.js";
 import { durationMs } from "./print.js";
 import { handsParallel, keptFromBefore, keptVendor, type Plane, planeFor, recheckPlane, relaunchPlane, TOOL_PLANE_ENV, type Tooling, type ToolSettingsMap } from "./tool-plane.js";
-import { APPROVAL_ENTRY, APPROVAL_ROW, NO_APPROVER_ENV, type PendingApproval, permissionOf, previewOf, RESUME_PREFIX, TURN_ORIGIN_FILE } from "./tool-gate.js";
+import { APPROVAL_ENTRY, APPROVAL_ROW, NO_APPROVER_ENV, type PendingApproval, permissionOf, previewOf, RESUME_PREFIX, resumeHead, TURN_ORIGIN_FILE } from "./tool-gate.js";
 import { ChangeClock, type Page, RowLog } from "./rows.js";
 import { TOOL_KEYS } from "./tool-keys.js";
 import { isObject, type Json } from "./validate.js";
@@ -540,13 +540,15 @@ function resumeSays(approval: Approval, given: { decision: string; by?: string }
   return `AgentRun: ${approval.tool} ran once you allowed it${text.includes(" They allowed it, and it ran and failed.") ? ", and failed" : ""}`;
 }
 /** What a person reads when they open a resume's row: the outcome, then the call's result or the refusal's words, from the
- *  model's message (already redacted whole, as the row's text is), with its head (the call's id, its arguments, the words to
- *  the model) left out. The model's own message is unchanged. */
-function resumeShows(approval: Approval, given: { decision: string; by?: string } | undefined, text: string): string {
+ *  model's message (already redacted whole, as the row's text is), with its head left out. The head is rebuilt exactly as
+ *  the gate wrote it (tool-gate.ts resumeHead, from the stored answer's arguments), never searched for, so arguments that
+ *  quote the gate's words can't move it; a row whose text doesn't start with it shows the outcome alone. The model's own
+ *  message is unchanged. */
+function resumeShows(approval: Approval, given: { decision: string; by?: string; args_shown?: string } | undefined, text: string): string {
   const said = resumeSays(approval, given, text).replace(/^AgentRun: /, "");
-  const marker = "which waited for a person's approval; it is not a new message from them.";
-  const at = text.indexOf(marker);
-  const rest = at < 0 ? "" : text.slice(at + marker.length);
+  const head = resumeHead(approval, given?.args_shown ?? "(not shown)");
+  if (!text.startsWith(head)) return `${said}.`;
+  const rest = text.slice(head.length);
   if (given?.decision === "deny") return `${said}.${rest.trim() ? `\n${rest.trim()}` : ""}`;
   return `${said}. Its result:\n${rest.replace(/^ They allowed it, and it ran(?: and failed)?\. Its result:\n?/, "")}`;
 }
