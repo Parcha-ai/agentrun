@@ -58,3 +58,16 @@ export async function verifyDoor(door: string, nonce: string, headers: Record<st
     return false;
   }
 }
+
+/** Resolves true once the door at `door` serves its run (GET /status answers 200: the run opened, its app loaded), false
+ *  once `gone()` says its process went first. A door listens before its run opens, answering 503 OPENING until then: the
+ *  run is not taken for up, nor its launch for come through, before it serves. */
+export async function untilOpened(door: string, headers: Record<string, string>, gone: () => boolean, everyMs = 100): Promise<boolean> {
+  for (;;) {
+    if (gone()) return false;
+    const res = await fetch(new URL("/status", door), { headers, signal: AbortSignal.timeout(5_000) }).catch(() => undefined);
+    if (res?.status === 200) return true;
+    await res?.body?.cancel().catch(() => undefined);
+    await new Promise((resolve) => setTimeout(resolve, everyMs));
+  }
+}

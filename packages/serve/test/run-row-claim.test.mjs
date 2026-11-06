@@ -11,6 +11,8 @@ import { test } from "node:test";
 import { processAlive as alive } from "@parcha/agentrun-kernel/host";
 import { openStore } from "@parcha/pi-durable-agent";
 import { startServe } from "../dist/index.js";
+import { runHolderTestHooks } from "../dist/run-holder.js";
+import { procTable } from "../../pi-durable-disk/dist/process-table.js";
 import { agent, client, FAUX, follow, runDir, scratch, serve, storeRun } from "./support.mjs";
 
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
@@ -198,4 +200,70 @@ test("a watch of an adopted run whose poll fails (the agent store held by anothe
   assert.deepEqual(unhandled, [], "no failed poll went unhandled");
   assert.equal(last.status, "completed", JSON.stringify(last));
   assert.equal(alive(holder.pid), false, "taken over: the holder that named no door was killed");
+});
+
+/** Every line this process writes to stderr from now until the test ends (the in-process server's warnings). */
+function stderrLines(t) {
+  const lines = [];
+  const write = process.stderr.write;
+  process.stderr.write = function (chunk, ...rest) {
+    lines.push(String(chunk));
+    return write.call(this, chunk, ...rest);
+  };
+  t.after(() => (process.stderr.write = write));
+  return lines;
+}
+
+/** A process table that cannot be read: every look throws, as ps can on macOS. */
+const failingTable = { snapshot: () => { throw new Error("the process listing cannot be read"); }, bootId: () => undefined, walkMs: 0 };
+
+test("an adopted process whose pid now names another process (another start) gets no signal when the run is stopped", { skip: process.platform !== "linux" && "reads /proc", timeout: 120_000 }, async (t) => {
+  const { data, runId, pid } = await crashMidRun(t);
+  const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  t.after(() => next.close());
+  const api = client(next.baseUrl, next.token);
+  assert.equal((await api("GET", `/runs/${runId}`)).status, 200, "adopted");
+  // From here its pid reads as another process's: the same pid, another start.
+  const real = procTable();
+  runHolderTestHooks.table = { ...real, snapshot: () => {
+    const look = real.snapshot();
+    return { ...look, info: (asked) => { const info = look.info(asked); return asked === pid && info ? { ...info, start: info.start + 1 } : info; } };
+  } };
+  t.after(() => delete runHolderTestHooks.table);
+  assert.equal((await api("POST", `/runs/${runId}/cancel`)).status, 202);
+  await sleep(1_500);
+  assert.ok(alive(pid), "the process its pid now names got no SIGTERM");
+});
+
+test("a settle that cannot tell who holds the run (the process listing fails) neither takes it back nor opens it again; once it can, the run goes on", { timeout: 120_000 }, async (t) => {
+  const { data, runId, pid } = await crashMidRun(t);
+  await killed(pid);
+  const control = new DatabaseSync(join(data, "store.sqlite"));
+  control.prepare("UPDATE runs SET claim_holder = ? WHERE id = ?").run("launching", runId);
+  control.close();
+  const before = claimOf(data, runId);
+  const lines = stderrLines(t);
+  runHolderTestHooks.table = failingTable;
+  t.after(() => delete runHolderTestHooks.table);
+  const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", settleRetryMs: 300 });
+  t.after(() => next.close());
+  const api = client(next.baseUrl, next.token);
+  await sleep(2_500);
+  const said = lines.filter((line) => line.includes(runId));
+  assert.deepEqual(said.filter((line) => /opening it again|not taken back/.test(line)), [], `no take-back and no relaunch: ${said.join("")}`);
+  assert.deepEqual(claimOf(data, runId), before, "the row as it was");
+  delete runHolderTestHooks.table;
+  const { last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 60_000 });
+  assert.equal(last.status, "completed", JSON.stringify(last));
+});
+
+test("a launch whose process cannot be identified (the process listing fails right after the spawn) still wires its process: the run completes", { timeout: 120_000 }, async (t) => {
+  runHolderTestHooks.table = failingTable;
+  t.after(() => delete runHolderTestHooks.table);
+  const { api } = await serve(t, { faux: FAUX });
+  assert.equal((await api("POST", "/agents", agent("calc"))).status, 201);
+  const run = await api("POST", "/agents/calc/runs", { input: { content: "Answer soon." } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  const { last } = await follow(api, run.body.run_id, ["completed", "failed"], { deadlineMs: 60_000 });
+  assert.equal(last.status, "completed", JSON.stringify(last));
 });

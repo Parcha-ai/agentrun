@@ -277,7 +277,9 @@ and a 200 says it can work, and the platforms here take one path.
 A run whose end the agent store cannot take (a full disk) still ends: a cancel makes it `cancelled`, with its cost from
 its rows, and the server writes the end to the store again every 30 s until it lands; a restart before then reads the
 run as the store last had it. A run whose process was killed is opened again on its next message at once: the run's row
-names its process (its pid, that process's start and this boot), and a process that is gone holds nothing.
+names its process (its pid, that process's start and this boot), and a process that is gone holds nothing. One server
+serves a data root, and the agent disk under it (`<data>/disk`): a second server on the same root is refused at start
+(`server.lock`), so the row's claim never has two servers claiming it at once.
 
 ## Sandbox
 

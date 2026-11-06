@@ -38,11 +38,16 @@ export function holderOf(claim: string | null | undefined): RunHolder | undefine
   return { pid: holder.pid!, start: holder.start!, boot: holder.boot ?? null, ...(holder.door === undefined ? {} : { door: holder.door }), ...(holder.nonce === undefined ? {} : { nonce: holder.nonce }) };
 }
 
-/** Process `pid` as a holder: its start and this boot, read now; undefined once it is gone. */
+/** Process `pid` as a holder: its start and this boot, read now; undefined once it is gone, or when the process listing
+ *  cannot be read (its identity is then not known, and nothing is named for it). */
 export function holderOfProcess(pid: number): RunHolder | undefined {
   const table = tableOf();
-  const start = table.snapshot().info(pid)?.start;
-  return start === undefined ? undefined : { pid, start, boot: table.bootId() ?? null };
+  try {
+    const start = table.snapshot().info(pid)?.start;
+    return start === undefined ? undefined : { pid, start, boot: table.bootId() ?? null };
+  } catch {
+    return undefined;
+  }
 }
 
 /** The live processes run `runId`'s launch at `epoch` started, by their mark (RUN_LAUNCH_ENV). Throws when the processes

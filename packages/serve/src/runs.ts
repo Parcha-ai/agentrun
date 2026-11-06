@@ -58,8 +58,8 @@ import { destroyRunBoxes, ensureRemoteBox, PullIncomplete, pullRemoteBox, RUN_LA
 import { BACKGROUND_DIR, endBackground } from "./background.js";
 import { removeEgressDir, RUN_BOX_ALLOW_ENV } from "./box-egress.js";
 import { BehindReadError, checkpointRunDb, MonotonicReads, readRunDb } from "./run-db.js";
-import { holderLives, holderOfClaim, holderOfProcess, killHolder, LAUNCH_HOLDER, RUN_LAUNCH_ENV, type RunHolder } from "./run-holder.js";
-import { firstDoorLine, verifyDoor } from "./door-line.js";
+import { holderLives, holderOfClaim, holderOfProcess, holderState, killHolder, LAUNCH_HOLDER, RUN_LAUNCH_ENV, type RunHolder } from "./run-holder.js";
+import { firstDoorLine, untilOpened, verifyDoor } from "./door-line.js";
 
 /** `holder` with this launch's door nonce, which the row keeps so a next server can prove the door too. */
 const withNonce = (holder: RunHolder | undefined, nonce: string): RunHolder | undefined => holder && { ...holder, nonce };
@@ -119,6 +119,9 @@ const PULL_WAIT_MS = 120_000;
 
 /** A run's end that waits for its remote box's last pull: its settle is tried again until the pull lands. */
 class PullPending extends Error {}
+/** A settle that cannot tell who holds the run (its row, or the process listing, cannot be read): tried again, never taken
+ *  for a holder that is gone. */
+class HolderUnknown extends Error {}
 
 /** Run directory `dir`'s own door token, made now (mode 0600, never through a link) when it has none. */
 function ensureRunDoorToken(dir: string): string {
@@ -268,6 +271,8 @@ export type Run = {
   child?: ChildProcess;
   /** The pid of a run process an earlier server started that still serves the run: supervised by the holder its row names. */
   orphan?: number;
+  /** That process as its row names it (its pid, its start, this boot): what a signal to it is checked against. */
+  orphanHolder?: RunHolder;
   /** Adopted with a saved stop: its first snapshot is checked once, and a turn still working is aborted. */
   finishStop?: boolean;
   /** A completed run opening again for a follow-up: every follow-up meanwhile waits for this one, never a second. */
@@ -1117,10 +1122,17 @@ export class Runs {
 
   /** The process that holds the run, as its row's claim names it (run-holder.ts); undefined for none, or the server. */
   private holder(run: Run): RunHolder | undefined {
+    return this.holderView(run).holder;
+  }
+
+  /** Who holds the run, as its row says and the processes show: `unknown` when the row or the process listing cannot be
+   *  read, which a caller never takes for a holder that is gone. */
+  private holderView(run: Run): { holder?: RunHolder; unknown: boolean } {
     try {
-      return holderOfClaim(run.id, this.store.runClaim(run.id));
+      const holder = holderOfClaim(run.id, this.store.runClaim(run.id));
+      return holder === undefined ? { unknown: false } : holderState(holder) === "unknown" ? { holder, unknown: true } : { holder, unknown: false };
     } catch {
-      return undefined;
+      return { unknown: true };
     }
   }
 
@@ -1473,7 +1485,9 @@ export class Runs {
   /** SIGTERM to the run's process: it drains, releases the run and exits. */
   private terminate(run: Run): void {
     if (run.child) run.child.kill("SIGTERM");
-    else if (run.orphan && alive(run.orphan)) process.kill(run.orphan, "SIGTERM");
+    // An adopted process only once its identity is confirmed (its pid, of the same start, on this boot): a pid another
+    // process took over, or one that cannot be checked, gets no signal.
+    else if (run.orphanHolder && holderState(run.orphanHolder) === "alive") process.kill(run.orphanHolder.pid, "SIGTERM");
   }
 
   /** Supervise a run process an earlier server started, its row's holder: follow its door, and settle the run once the
@@ -1482,6 +1496,7 @@ export class Runs {
   private adoptProcess(run: Run, holder: RunHolder): void {
     const pid = holder.pid;
     run.orphan = pid;
+    run.orphanHolder = holder;
     this.reportedBack(run);
     this.connect(run);
     let releasedAt: number | undefined;
@@ -1493,6 +1508,7 @@ export class Runs {
       if (run.orphan !== pid) return;
       clearInterval(timer);
       run.orphan = undefined;
+      run.orphanHolder = undefined;
       void this.settle(run, null, !holderLives(holder) && !released);
     };
     const timer = setInterval(() => {
@@ -2209,21 +2225,6 @@ export class Runs {
     // A process that dies before it reads the nonce closes the pipe: that is its exit to settle, not an error here.
     noncePipe?.on("error", () => undefined);
     noncePipe?.end(nonce);
-    // The row names the process (its pid, its start and this boot) under the epoch it was given, and its door once it
-    // says, on stdout, where it serves: its one line there (pi-durable-disk's run under its host's epoch).
-    this.nameHolder(run, epoch, child.pid === undefined ? undefined : withNonce(holderOfProcess(child.pid), nonce));
-    // Its door: the first line it prints, before any harness or agent code of it runs, proven with this launch's nonce
-    // before it is recorded; no later line is read (door-line.ts).
-    if (child.stdout && child.pid !== undefined) {
-      const pid = child.pid;
-      void firstDoorLine(child.stdout, epoch).then(async (door) => {
-        if (door === undefined || !isLoopback(new URL(door).hostname)) return warn(run.id, `its process ${pid} named no loopback door first on stdout; none is recorded`);
-        if (!(await verifyDoor(door, nonce, this.headers(run)))) return warn(run.id, `its process ${pid}'s first line named a door that did not answer this launch's nonce; none is recorded`);
-        if (run.child === child) run.door = door;
-        const holder = holderOfProcess(pid);
-        if (holder) this.nameHolder(run, epoch, { ...holder, nonce, door });
-      });
-    }
     closeSync(log);
     const pipe = child.stdio[3] as import("node:stream").Writable | null;
     pipe?.on("error", () => {});
@@ -2248,6 +2249,24 @@ export class Runs {
       if (run.child === child) run.child = undefined;
       this.reportedBack(run);
     });
+    // Only once the child is wired (its exit and error handled above): the row names the process (its pid, its start and
+    // this boot) under the epoch it was given, and its door once it says, on stdout, where it serves: its one line there
+    // (pi-durable-disk's run under its host's epoch). A process listing that cannot be read names nothing.
+    this.nameHolder(run, epoch, child.pid === undefined ? undefined : withNonce(holderOfProcess(child.pid), nonce));
+    // Its door: the first line it prints, before any harness or agent code of it runs, proven with this launch's nonce
+    // before it is recorded; no later line is read (door-line.ts).
+    if (child.stdout && child.pid !== undefined) {
+      const pid = child.pid;
+      void firstDoorLine(child.stdout, epoch).then(async (door) => {
+        if (door === undefined || !isLoopback(new URL(door).hostname)) return warn(run.id, `its process ${pid} named no loopback door first on stdout; none is recorded`);
+        if (!(await verifyDoor(door, nonce, this.headers(run)))) return warn(run.id, `its process ${pid}'s first line named a door that did not answer this launch's nonce; none is recorded`);
+        // Recorded once its run serves: a door listens before its run opens, and the run is up only then.
+        if (!(await untilOpened(door, this.headers(run), () => run.child !== child))) return;
+        if (run.child === child) run.door = door;
+        const holder = holderOfProcess(pid);
+        if (holder) this.nameHolder(run, epoch, { ...holder, nonce, door });
+      }).catch((error: Error) => warn(run.id, `its door is not recorded: ${error.message}`));
+    }
     this.connect(run);
   }
 
@@ -2324,7 +2343,7 @@ export class Runs {
     run.settling = (run.settling ?? Promise.resolve())
       .then(() => (run.outcome ? undefined : this.settleOnce(run, code, exited)))
       .catch((error: Error) => {
-        if (!(storeBusy(error) || error instanceof PullPending) || this.closing) return warn(run.id, `not settled: ${error.message}; the next start tries again`);
+        if (!(storeBusy(error) || error instanceof PullPending || error instanceof HolderUnknown) || this.closing) return warn(run.id, `not settled: ${error.message}; the next start tries again`);
         // A store still held past the run end's retries: settled again later, not left until the next start.
         const every = this.options.settleRetryMs ?? SETTLE_RETRY_MS;
         warn(run.id, `not settled: ${error.message}; trying again in ${every / 1000} s`);
@@ -2349,8 +2368,21 @@ export class Runs {
     run.letGo = released;
     // Gone unless another live process serves it (its row's holder, which has not released it): a holder that lives
     // but serves no door, or lives on after its release, is taken back, which kills it first (the disk's revoke).
-    const holder = this.holder(run);
-    const door = !released && holder !== undefined && holder.pid !== process.pid ? this.doorOf(run) : undefined;
+    // This server's own process exited: nothing else holds the run. Any other settle asks the row, and a holder that
+    // cannot be told (its row or the process listing unreadable) is never taken for gone: the settle is tried again.
+    let door: string | undefined;
+    if (!exited && !this.live(run)) {
+      const view = this.holderView(run);
+      if (view.unknown) throw new HolderUnknown("who holds it cannot be told now (its row or the process listing cannot be read)");
+      const other = view.holder !== undefined && view.holder.pid !== process.pid && holderState(view.holder) === "alive" ? view.holder : undefined;
+      // A live holder that has not let go and serves no door yet (a launch an earlier server left opening): watched, as
+      // at a start, until it serves, goes, or is taken over past the ready time.
+      if (other && !released && !run.orphan && !this.doorOf(run)) {
+        this.adoptProcess(run, other);
+        return;
+      }
+      door = !released && other ? this.doorOf(run) : undefined;
+    }
     const gone = !this.live(run) && !door;
     // Its sign-in's save lease stays with it (below), but no longer than a session it opened could outlive its process.
     if (gone) await this.options.signIns?.markGone(run.agentId, run.id).catch((error: Error) => warn(run.id, `its sign-in's lease is not marked: ${error.message}`));
@@ -3265,7 +3297,7 @@ export class Runs {
   stopping(): { runs: number; boundMs: number } {
     const all = [...this.runs.values()];
     const started = all.filter((run) => run.child).length;
-    const adopted = all.filter((run) => !run.child && run.orphan && alive(run.orphan)).length;
+    const adopted = all.filter((run) => !run.child && run.orphanHolder && holderLives(run.orphanHolder)).length;
     return { runs: started + adopted, boundMs: (started ? this.killAfterMs() : 0) + (adopted ? this.killAfterMs() : 0) };
   }
 
@@ -3279,9 +3311,9 @@ export class Runs {
     }
     await Promise.all(live.map((run) => new Promise((resolve) => (run.child ? run.child.once("exit", resolve) : resolve(undefined)))));
     // An adopted process is stopped the same way, and watched by its pid.
-    const adopted = [...this.runs.values()].filter((run) => run.orphan && alive(run.orphan));
+    const adopted = [...this.runs.values()].filter((run) => run.orphanHolder && holderLives(run.orphanHolder));
     for (const run of adopted) this.terminate(run);
-    for (const deadline = Date.now() + this.killAfterMs(); adopted.some((run) => run.orphan && alive(run.orphan)) && Date.now() < deadline; ) await sleep(100);
+    for (const deadline = Date.now() + this.killAfterMs(); adopted.some((run) => run.orphanHolder && holderLives(run.orphanHolder)) && Date.now() < deadline; ) await sleep(100);
     await sleep(0);
     await Promise.all([...this.runs.values()].map((run) => run.settling));
     await this.learning.idle();
