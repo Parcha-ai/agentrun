@@ -20,6 +20,8 @@ const FAKE = new URL("./fixtures/fake-docker.mjs", import.meta.url).pathname;
 const DOCKER = { mode: "sandbox", box: "docker" };
 const RUNNER = { mode: "runner" };
 const BUILDING = "Preparing the box image: building it (python, git, curl, node, npm, rg)…";
+/** What a new agent in the box that names no tools gets: bash, and the background tools (background.ts). */
+const SHELL = ["bash", "bash_background", "bash_output", "bash_input", "bash_signal", "bash_list"];
 
 /** A fake docker first on PATH and docker listed in AGENTRUN_BOXES, with the state files `marks` names (build-hold,
  *  build-fail). `release()` lets a held build go on. */
@@ -92,8 +94,8 @@ test("demo through the API: a new agent on a server with docker, still preparing
   assert.equal(made.status, 201, JSON.stringify(made.body));
   assert.deepEqual(made.body.warnings, []);
   assert.deepEqual(made.body.definition.place, DOCKER, "the default is stamped on the revision");
-  assert.deepEqual(made.body.definition.tools, ["bash"], "a new agent in the box gets a shell");
-  assert.deepEqual(storedBodies(data).map((body) => [body.place, body.tools]), [[DOCKER, ["bash"]]]);
+  assert.deepEqual(made.body.definition.tools, SHELL, "a new agent in the box gets a shell, and its background tools");
+  assert.deepEqual(storedBodies(data).map((body) => [body.place, body.tools]), [[DOCKER, SHELL]]);
   const run = await probe(api, "shelly", [{ tool: "bash", args: { command: "printf 'hello from the box\\n' > out.txt" } }]);
   assert.deepEqual(run.place, DOCKER);
   await until(async () => (await rowsOf(api, run.run_id)).some((row) => row.summary === BUILDING), "the preparing row");
@@ -108,6 +110,28 @@ test("demo through the API: a new agent on a server with docker, still preparing
   assert.ok(docker.execs().some((args) => args.join(" ").includes("out.txt")), "bash ran in the box, through docker exec");
   assert.equal((await rowsOf(api, run.run_id)).filter((row) => row.summary?.startsWith("Preparing the box image")).length, 1);
   assert.equal((await api("GET", `/runs/${run.run_id}/files/out.txt`)).body, "hello from the box\n");
+});
+
+test("a new agent on a server with docker can start a command in the background and read its output, with no tools named", { timeout: 120_000 }, async (t) => {
+  const [{ NEW_AGENT_TOOLS }, { SHELL_TOOLS }] = await Promise.all([import("../dist/place.js"), import("../dist/background.js")]);
+  assert.deepEqual([...NEW_AGENT_TOOLS], [...SHELL_TOOLS], "a new agent's tools are the shell tools, bash and the background tools");
+  await fakeDocker(t);
+  const { api, data } = await serve(t, { faux: PROBE });
+  const made = await api("POST", "/agents", fresh("backgrounded"));
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  assert.deepEqual([made.body.definition.place, made.body.definition.tools], [DOCKER, SHELL]);
+  const plan = [
+    { tool: "bash_background", args: { command: "echo from the background" } },
+    // Until its runner has written its exit code, 20 s at most: no fixed wait a busy machine could outrun.
+    { tool: "bash", args: { command: "i=0; until [ -f background/1/exit ] || [ $i -ge 200 ]; do sleep 0.1; i=$((i+1)); done" } },
+    { tool: "bash_output", args: { id: "1" } },
+  ];
+  const run = await probe(api, "backgrounded", plan);
+  await follow(api, run.run_id, ["completed"], { deadlineMs: 60_000 });
+  const said = answers(data, run.run_id);
+  assert.deepEqual(said.map((a) => [a.tool, a.error]), plan.map((step) => [step.tool, false]), JSON.stringify(said));
+  assert.match(said[0].text, /^Started background process 1 /);
+  assert.equal(said[2].text, "Background process 1 exited with code 0. Output bytes 0 to 20 of 20, the end.\n\nfrom the background\n");
 });
 
 test("a new agent that names its tools gets exactly those in the box; one that names the runner, or a tool the box refuses, keeps the runner; a workflow is never given a box", { timeout: 60_000 }, async (t) => {
