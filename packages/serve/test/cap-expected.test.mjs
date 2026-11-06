@@ -151,17 +151,19 @@ test("pi: a cache miss on a request admitted at its expected cost books its real
   assert.ok(spent - CAP <= bound + 1e-12, `by no more than its bound: over $${spent - CAP}, bound $${bound}`);
 });
 
-test("the over-cap row of a run that passed its cap on a cache miss says by how much and the most it could have: one row, in these words", () => {
+test("the over-cap row of a run that passed its cap on a cache miss says by how much and the most it could have, in cents: one row, in these words", () => {
   const usage = (usd) => ({ id: "1:usage", kind: "usage", summary: "Cost so far", seq: 9, text: null, usage: { usd, requests: 2 } });
   const rows = (usd) => [{ id: "1:3", kind: "final_answer", summary: "Done.", seq: 8, text: "Done." }, usage(usd)];
   const out = withOverCap(rows(0.5267564), 0.5, 0.19603125);
   assert.equal(out.filter((row) => row.id.endsWith(":over_cap")).length, 1, "one row");
-  assert.equal(out[2].summary, "Went $0.0268 over its cap on a cache miss (at most $0.1961).");
-  // No bound (strict, a cold request, or a cap passed some other way): the row says what it said.
-  assert.equal(withOverCap(rows(0.5267564), 0.5, 0)[2].summary, "Spent $0.5268, $0.0268 over the run's cap of $0.5");
-  assert.equal(withOverCap(rows(0.5267564), 0.5)[2].summary, "Spent $0.5268, $0.0268 over the run's cap of $0.5");
+  assert.equal(out[2].summary, "Went $0.03 over its cap on a cache miss (at most $0.20).");
+  // No bound (strict, a cold request, or a cap passed some other way): the row says what it said, in cents.
+  assert.equal(withOverCap(rows(0.5267564), 0.5, 0)[2].summary, "Spent $0.53, $0.03 over the run's cap of $0.50");
+  assert.equal(withOverCap(rows(0.5267564), 0.5)[2].summary, "Spent $0.53, $0.03 over the run's cap of $0.50");
   // Over by more than the bound: not the cache miss's doing, so not in its words.
-  assert.equal(withOverCap(rows(0.8), 0.5, 0.1)[2].summary, "Spent $0.8000, $0.3000 over the run's cap of $0.5");
+  assert.equal(withOverCap(rows(0.8), 0.5, 0.1)[2].summary, "Spent $0.80, $0.30 over the run's cap of $0.50");
+  // A cap that is no whole number of cents is said in cents, never as a float's tail.
+  assert.equal(withOverCap(rows(0.5), 0.38020940000000003)[2].summary, "Spent $0.50, $0.12 over the run's cap of $0.38");
 });
 
 /** A store holding `entries` in order, as a later process reads it. */

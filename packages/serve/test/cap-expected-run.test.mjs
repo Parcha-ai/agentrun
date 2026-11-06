@@ -27,6 +27,8 @@ const expectedInput = (k) => {
 };
 /** Request k's input uncached: its whole bound at the cache write's $2.50. */
 const worstInput = (k) => grown(k).inputTokensMax * 2.5 / 1e6;
+/** An amount in a row's words: up to the cent above. */
+const centsUp = (usd) => `$${(Math.ceil(usd * 100 - 1e-9) / 100).toFixed(2)}`;
 const sum = (n) => Array.from({ length: n }, (_, k) => grown(k).usd).reduce((a, b) => a + b, 0);
 
 let server;
@@ -97,7 +99,7 @@ test("claude-agent: a cache miss passes the cap by no more than the bound served
   assert.ok(over > 0 && over <= served + 1e-6, `over by $${over}, at most $${served}`);
   assert.equal(run.cost.overshoot_bound_usd, 0, "no request in flight: nothing more can pass it");
   const rows = (await api("GET", `/runs/${runId}/timeline`)).body.rows.filter((row) => row.id.endsWith(":over_cap"));
-  assert.deepEqual(rows.map((row) => row.summary), [`Went $${over.toFixed(4)} over its cap on a cache miss (at most $${(Math.ceil(served * 1e4) / 1e4).toFixed(4)}).`]);
+  assert.deepEqual(rows.map((row) => row.summary), [`Went ${centsUp(over)} over its cap on a cache miss (at most ${centsUp(served)}).`]);
 });
 
 test("claude-agent: a restart mid-request reads the request in flight at the expected figure its process held it at, and the run's spend after it is the same", { timeout: 180_000 }, async (t) => {

@@ -325,7 +325,8 @@ export async function runModels(env: NodeJS.ProcessEnv, ref: string | undefined,
   const unpriced = new Set<string>();
   if (!ids.length) return { models, model, byTier, unpriced };
   if (faux) {
-    const mod = (await import(pathToFileURL(faux).href)) as { default?: unknown; cost?: { input: number; output: number; cacheRead: number; cacheWrite: number } | "unknown"; contextWindow?: number };
+    type Tokens = { input: number; output: number; cacheRead: number; cacheWrite: number };
+    const mod = (await import(pathToFileURL(faux).href)) as { default?: unknown; cost?: Tokens | "unknown"; contextWindow?: number; usage?: (context: unknown, usage: Tokens) => Tokens };
     const price = typeof mod.cost === "object" ? mod.cost : undefined;
     if (typeof mod.default !== "function") throw new Error(`the faux module ${faux} has no default export function`);
     const reply = mod.default as (context: unknown, helpers: FauxHelpers) => unknown;
@@ -345,6 +346,12 @@ export async function runModels(env: NodeJS.ProcessEnv, ref: string | undefined,
         for await (const event of inner) {
           const message = event.type === "done" ? event.message : event.type === "error" ? event.error : undefined;
           if (message) {
+            // `usage` (a faux module's own) reports the reply's tokens as a provider would, a cache's reads and writes among
+            // them, in place of the faux core's estimate, so a test can price a run that reads the cache.
+            if (typeof mod.usage === "function") {
+              const tokens = mod.usage(context, message.usage);
+              message.usage = { ...message.usage, ...tokens, totalTokens: tokens.input + tokens.output + tokens.cacheRead + tokens.cacheWrite };
+            }
             if (price) message.usage.cost = ai.calculateCost(model, message.usage);
             else delete (message.usage as { cost?: unknown }).cost;
             last = message;
