@@ -24,7 +24,10 @@ const DAEMON_IN_COMPUTER = "/opt/agentrun/computerd";
 const COMPUTER_LABEL = "agentrun.computer";
 const DEADLINE_LABEL = "agentrun.computer.deadline";
 const NAME = /^computer-[0-9a-f]{12}$/;
-const DEFAULT_PIDS = 4096;
+/** Serve's box sizes, when the spec names none. */
+const DEFAULT_CPUS = 2;
+const DEFAULT_MEMORY_MB = 4096;
+const DEFAULT_PIDS = 1024;
 /** A user in numbers, uid or uid:gid; (uid_t)-1 is no user. */
 const USER = /^(\d+)(?::(\d+))?$/;
 const MAX_ID = 4_294_967_294;
@@ -131,9 +134,10 @@ export class DockerProvider implements ComputerProvider {
 		args.push("--user", userOf(spec.user) ?? this.#user);
 		args.push("--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", String(spec.pids ?? DEFAULT_PIDS));
 		args.push("--network", spec.network === "none" ? "none" : "bridge");
-		if (spec.cpus !== undefined) args.push("--cpus", String(spec.cpus));
+		args.push("--cpus", String(spec.cpus ?? DEFAULT_CPUS));
 		// Memory and swap together are the memory: swap never adds to it.
-		if (spec.memoryMb !== undefined) args.push("--memory", `${spec.memoryMb}m`, "--memory-swap", `${spec.memoryMb}m`);
+		const memory = `${spec.memoryMb ?? DEFAULT_MEMORY_MB}m`;
+		args.push("--memory", memory, "--memory-swap", memory);
 		args.push("--mount", `type=bind,src=${this.#daemonPath},dst=${DAEMON_IN_COMPUTER},readonly`, "--entrypoint", DAEMON_IN_COMPUTER);
 		if (spec.workdir !== undefined) args.push("--workdir", spec.workdir);
 		args.push(spec.image, "init");
