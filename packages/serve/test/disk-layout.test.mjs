@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, symlinkSync, writeFileSync } from "node:fs";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
@@ -15,7 +15,7 @@ import { startServe } from "../dist/index.js";
 import { checkpointRunDb, HeldRunDbError, MonotonicReads, BehindReadError, observeRunDbOpens } from "../dist/run-db.js";
 import { localDisk } from "../dist/disk.js";
 import { learningRepo } from "../dist/learning.js";
-import { follow, scratch, serve } from "./support.mjs";
+import { agent, follow, runDir, scratch, serve } from "./support.mjs";
 
 const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;
 const folderOf = (id) => `${id.toLowerCase()}-${createHash("sha256").update(id, "utf8").digest("hex").slice(0, 16)}`;
@@ -125,4 +125,25 @@ test("a data directory an earlier version wrote is refused at start, in words, a
   db.close();
   await assert.rejects(startServe({ data: v1, port: 0 }), /an earlier version's store \(store version 1\)/);
   writeFileSync(join(v1, "untouched"), "");
+});
+
+test("a take-back whose claim cannot be written (the control plane not writable) checkpoints nothing: the run still settles, its database keeps its WAL, and no read-write open of it is made", { skip: process.getuid?.() === 0 && "root writes a directory of mode 555", timeout: 90_000 }, async (t) => {
+  const opens = [];
+  t.after(observeRunDbOpens((open) => opens.push(open)));
+  const { api, data } = await serve(t, { carryBackRetry: { delaysMs: [50] }, settleRetryMs: 200 });
+  assert.equal((await api("POST", "/agents", agent("asks", { tools: ["ask_person"] }))).status, 201);
+  const { body: run } = await api("POST", "/agents/asks/runs", { input: { content: "Pick a region." } });
+  await follow(api, run.run_id, ["input_required"]);
+  const file = join(runDir(data, run.run_id), "store", "run.sqlite");
+  // The data directory turns read-only: the agent store's next write cannot make its journal, so no claim is written.
+  await chmod(data, 0o555);
+  try {
+    assert.equal((await api("POST", `/runs/${run.run_id}/cancel`)).status, 202);
+    const { last } = await follow(api, run.run_id, ["cancelled"]);
+    assert.equal(last.final, true, "the run settles all the same");
+    assert.deepEqual(opens.filter((open) => open.file === file && open.mode === "checkpoint"), [], "no checkpoint without the server's recorded take-back");
+    assert.equal(claimOf(data, run.run_id).claim_holder, "run-process", "the claim is still its process's on the row");
+  } finally {
+    await chmod(data, 0o755);
+  }
 });
