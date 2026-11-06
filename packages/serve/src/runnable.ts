@@ -31,8 +31,8 @@ export type RevisionShape =
  *  not bind), `missing` (a bound tool's unset variables), `adapter`, `decision` (a decision provider's unset key), `codeNodes`
  *  (code nodes this server does not run), `shell` (a shell or executor call), `tier`, `harness`, `box` (the place's,
  *  which this server does not have) and `denied` (a tool a workflow's call node calls that is set to deny) name it for a
- *  run's 409 details. */
-export type Blocker = InputIssue & { host: boolean; tool?: string; missing?: { tool: string; vars: string[] }; adapter?: string; decision?: { provider: string; needs: string[] }; codeNodes?: true; shell?: true; tier?: string; harness?: string; box?: string; denied?: string; asks?: string };
+ *  run's 409 details; `notGrantable` a tool no setup makes grantable (a known MCP meta tool, mcp-meta.ts), with why. */
+export type Blocker = InputIssue & { host: boolean; tool?: string; notGrantable?: { tool: string; reason: string }; missing?: { tool: string; vars: string[] }; adapter?: string; decision?: { provider: string; needs: string[] }; codeNodes?: true; shell?: true; tier?: string; harness?: string; box?: string; denied?: string; asks?: string };
 
 /**
  * The model `harness` runs an agentic revision on here: `ref`, its own `provider/model-id`, or with none this host's
@@ -113,7 +113,7 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
         else if (named.server === "hands") out.push({ field, reason: "not_an_option", message: `${tool} names the MCP server hands, a name the harnesses keep for their own tools: save the server under another name.`, host: false, tool });
         // A meta tool runs other actions by name: a grant of it could not name the action (mcp-meta.ts). Refused before
         // the harness's check, since no host setup makes it grantable.
-        else if (listedTool?.grantable === false) out.push({ field, reason: "not_an_option", message: `${tool} can't be granted: ${listedTool.reason}`, host: false, tool });
+        else if (listedTool?.grantable === false) out.push({ field, reason: "not_an_option", message: `${tool} can't be granted: ${listedTool.reason}`, host: false, notGrantable: { tool, reason: listedTool.reason! } });
         else if (!MCP_HARNESSES.includes(harness)) out.push({ field, reason: NOT_SET_UP, message: `${tool} runs on ${MCP_HARNESSES.join(" and ")} here; on ${harness} MCP tools are not bound yet.`, host: true, tool });
         else if (!listed) out.push({ field, reason: "not_an_option", message: `No MCP server ${named.server} is saved on this server: add it in Settings → MCP servers first.`, host: false, tool });
         else if (!listed.includes(named.tool)) out.push({ field, reason: "not_an_option", message: `The MCP server ${named.server} has no tool ${named.tool}; its tools are ${listed.join(", ") || "none"}.`, host: false, tool });
@@ -147,7 +147,7 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
   (revision.tools ?? []).forEach((tool, index) => {
     const named = tool.startsWith("mcp:") ? mcpNameOf(tool) : undefined;
     const listed = named ? mcp?.(named.server)?.find((t) => t.name === named.tool) : undefined;
-    if (listed?.grantable === false) out.push({ field: `definition.tools[${index}]`, reason: "not_an_option", message: `${tool} can't be granted: ${listed.reason}`, host: false, tool });
+    if (listed?.grantable === false) out.push({ field: `definition.tools[${index}]`, reason: "not_an_option", message: `${tool} can't be granted: ${listed.reason}`, host: false, notGrantable: { tool, reason: listed.reason! } });
   });
   // A workflow's model nodes run on pi here; on another harness they are not bound yet, and never run on pi instead.
   if (harness !== DEFAULT_HARNESS) out.push({ field: "definition.workflow", reason: NOT_SET_UP, message: `A workflow runs on pi here; on ${harness} its model nodes are not bound yet.`, host: true, harness });
