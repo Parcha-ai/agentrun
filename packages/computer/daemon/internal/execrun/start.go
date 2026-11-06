@@ -3,6 +3,7 @@ package execrun
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -124,7 +125,9 @@ func EndAll(slack time.Duration) {
 
 // Start starts p under a guard of its own (guard.go), with stdin (nil is /dev/null), stdout and stderr, and returns once
 // the program has started. The caller closes its own copies of the three files. A program that cannot start is an
-// error of the protocol's kinds; once EndAll has begun, every start is refused as unsupported.
+// error of the protocol's kinds; once EndAll has begun, every start is refused as unsupported. Should ctx end before the
+// guard reports the program's pid (its exec may hang on a stalled filesystem), the guard and everything under it are
+// killed and reaped: a cancel is an aborted error, a deadline that passed a *startTimedOut.
 func Start(ctx context.Context, p Program, stdin, stdout, stderr *os.File) (*Guarded, error) {
 	if !admit() {
 		return nil, rpc.Errorf(rpc.KindUnsupported, "the computer is shutting down: it starts no program now")
@@ -152,6 +155,9 @@ func Start(ctx context.Context, p Program, stdin, stdout, stderr *os.File) (*Gua
 	path, err := lookPath(p.Argv[0], env, dir)
 	if err != nil {
 		return nil, err
+	}
+	if ctx.Err() != nil {
+		return nil, cutShort(ctx, p.Argv[0], nil, "")
 	}
 	specReader, specWriter, err := os.Pipe()
 	if err != nil {
@@ -205,6 +211,14 @@ func Start(ctx context.Context, p Program, stdin, stdout, stderr *os.File) (*Gua
 		}
 		return g, nil
 	case <-g.done:
+	case <-ctx.Done():
+		err := killGuard(g)
+		g.Close()
+		if err != nil {
+			return nil, err
+		}
+		code, signal := exitStatus(cmd.ProcessState)
+		return nil, cutShort(ctx, p.Argv[0], code, signal)
 	}
 	g.Close()
 	if g.Pid != 0 {
@@ -215,6 +229,25 @@ func Start(ctx context.Context, p Program, stdin, stdout, stderr *os.File) (*Gua
 	}
 	code, signal := exitStatus(cmd.ProcessState)
 	return nil, fmt.Errorf("the guard for %s ended before it started the program (exit code %v, signal %q)", p.Argv[0], code, signal)
+}
+
+// startTimedOut is Start's error when its context's deadline passed before the guard reported the program's pid. The
+// guard was killed and reaped by then; code and signal are how it ended (none when it never started).
+type startTimedOut struct {
+	code   *int
+	signal string
+}
+
+func (e *startTimedOut) Error() string {
+	return "the deadline passed before the program started; its guard and everything under it were ended"
+}
+
+// cutShort is Start's error once ctx has ended before the program started.
+func cutShort(ctx context.Context, program string, code *int, signal string) error {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return &startTimedOut{code: code, signal: signal}
+	}
+	return rpc.Errorf(rpc.KindAborted, "the start of %s was cancelled before its program ran; nothing it started is left", program)
 }
 
 // follow reads the guard's status lines, the program's pid and then how it ended, then reaps the guard.
