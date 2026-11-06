@@ -145,7 +145,8 @@ test("the end-of-run turn writes no file under work/.learning/: its write or edi
   assert.equal(gate.policy("web_fetch"), "deny", "the revision's own over it");
   assert.equal(gate.policy("mcp:srv/echo"), "deny", "an MCP server's wildcard");
   assert.equal(gate.policy("mcp:other/echo"), "ask", "another server's tool: the default");
-  assert.deepEqual(await gate.enter("web_fetch", { url: PAGE }, "c1", park), { text: deniedText("web_fetch"), isError: true });
+  // The deny is the revision's own (the agent's settings), so the words name the agent.
+  assert.deepEqual(await gate.enter("web_fetch", { url: PAGE }, "c1", park), { text: deniedText("web_fetch", undefined, "agent"), isError: true });
   await writeFile(join(root, TURN_ORIGIN_FILE), JSON.stringify({ origin: "reflect" }));
   assert.deepEqual(await gate.enter("write", { path: ".learning/notes.md", content: "x" }, "c2", park), { text: NOTE_ONLY, isError: true }, "a reflect write in work/.learning/ is refused");
   assert.deepEqual(written, []);
@@ -362,8 +363,10 @@ test("a deny refuses the call at once and the run goes on, on every harness; a w
   for (const { harness, runId } of denied) {
     const { answer, rows } = await resumed(api, runId);
     const result = rows.find((row) => row.kind === "tool_result");
-    assert.deepEqual([result.tool_status, result.tool_result_preview], ["failed", deniedText("web_fetch")], harness);
-    assert.equal(answer, harness === "pi" ? `Saw: ${deniedText("web_fetch")}` : "Fetched once.", `${harness}: the run went on`);
+    // Denied in the agent's own tool settings: the words name the agent, not the server.
+    assert.deepEqual([result.tool_status, result.tool_result_preview], ["failed", deniedText("web_fetch", undefined, "agent")], harness);
+    assert.match(result.tool_result_preview, /is set to deny for this agent/, harness);
+    assert.equal(answer, harness === "pi" ? `Saw: ${deniedText("web_fetch", undefined, "agent")}` : "Fetched once.", `${harness}: the run went on`);
   }
   assert.deepEqual(await dialled(), [], "a denied call never ran");
 
@@ -380,6 +383,11 @@ test("a deny refuses the call at once and the run goes on, on every harness; a w
   assert.equal((await api("PUT", "/settings/tools", { web_fetch: { permission: "deny" } })).status, 200);
   const saved = await api("POST", "/agents", { definition: { id: "site", name: "site", workflow: flow, tools: ["web_fetch"] } });
   assert.deepEqual([saved.status, saved.body.warnings?.map((w) => w.message)], [201, ["This workflow's call node calls web_fetch, which is set to deny on this server."]]);
+  // The same deny set in the agent's own tool settings names the agent.
+  assert.equal((await api("PUT", "/settings/tools", {})).status, 200);
+  const own = await api("POST", "/agents", { definition: { id: "site-own", name: "site-own", workflow: flow, tools: ["web_fetch"], tool_settings: { web_fetch: { permission: "deny" } } } });
+  assert.deepEqual([own.status, own.body.warnings?.map((w) => w.message)], [201, ["This workflow's call node calls web_fetch, which is set to deny for this agent."]]);
+  assert.equal((await api("PUT", "/settings/tools", { web_fetch: { permission: "deny" } })).status, 200);
   const refused = await api("POST", "/agents/site/runs", { input: { website: PAGE } });
   assert.deepEqual([refused.status, refused.body.error.code, refused.body.error.details.denied], [409, "agent_not_runnable", ["web_fetch"]]);
   // Ask too: a call node cannot wait for an approval, so it never runs unapproved (fails closed).

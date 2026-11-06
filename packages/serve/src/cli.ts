@@ -7,9 +7,9 @@ import { secret } from "./secrets.js";
 import "./quiet-sqlite-warning.js";
 import { parseArgs } from "node:util";
 import { spawn } from "node:child_process";
-import { chmodSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { defaultData, SERVER_FILE } from "./files.js";
+import { defaultData, removeOwnRecord, SERVER_FILE } from "./files.js";
 import { canOpen } from "./host.js";
 import { resetPassword } from "./owner.js";
 import type { ImageState } from "./box-image.js";
@@ -182,8 +182,12 @@ for (const line of early.splice(0)) console.log(line);
 // and the browser's history.
 if (values.open && canOpen(process.env)) spawn(process.platform === "darwin" ? "open" : "xdg-open", [`${publicUrl ?? serve.url}/`], { stdio: "ignore", detached: true }).on("error", () => {}).unref();
 const record = join(resolve(data), SERVER_FILE);
-writeFileSync(record, `${JSON.stringify({ base_url: serve.baseUrl, pid: process.pid, ...(serve.tokenFile ? { token_file: serve.tokenFile } : {}) })}\n`, { mode: 0o600 });
-chmodSync(record, 0o600);
-const stop = () => void serve.close().then(() => (rmSync(record, { force: true }), process.exit(0)));
+// The record goes before close() releases the data directory's lock, and only while it is this server's: a server that
+// takes the lock next writes its own, which this stop must not remove.
+const stop = () => (removeOwnRecord(record), void serve.close().then(() => process.exit(0)));
+// The stop is in place before the record is written: a SIGTERM sent the moment the record appears is a clean stop that
+// removes it, never the default end by signal that leaves it behind. Its handler runs after this synchronous write.
 process.once("SIGINT", stop);
 process.once("SIGTERM", stop);
+writeFileSync(record, `${JSON.stringify({ base_url: serve.baseUrl, pid: process.pid, ...(serve.tokenFile ? { token_file: serve.tokenFile } : {}) })}\n`, { mode: 0o600 });
+chmodSync(record, 0o600);
