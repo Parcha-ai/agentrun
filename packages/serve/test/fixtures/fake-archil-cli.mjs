@@ -2,7 +2,7 @@
 // `sync <mountpoint>` and `checkin <mountpoint>`, as the root helper calls them. The disk's state (who holds which
 // folder, every call) is one JSON file every box's client shares; the calls of one test are one after another.
 import { execFileSync } from "node:child_process";
-import { appendFileSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const env = process.env;
@@ -70,7 +70,7 @@ if (verb === "mount") {
   const disk = source.slice(0, at);
   const folder = source.slice(at + 2);
   const token = env.ARCHIL_MOUNT_TOKEN ?? "";
-  const call = { verb: force ? "revoke" : "mount", box: BOX, folder, region, flag, argv: process.argv.slice(2), tokenInEnv: token === EXPECTED_TOKEN };
+  const call = { verb: force ? "revoke" : "mount", box: BOX, folder, region, flag, argv: process.argv.slice(2), tokenInEnv: token === EXPECTED_TOKEN, netlocked: existsSync(join(env.FAKE_ARCHIL_NET, "iptables.chain.AGENTRUN-NET")) && existsSync(join(env.FAKE_ARCHIL_NET, "ip6tables.chain.AGENTRUN-NET")) };
   // While the mount runs: how many processes show the token in their arguments, and which files of the box hold it.
   const ps = execFileSync("ps", ["-eo", "args"], { encoding: "utf8" });
   call.psWithToken = token ? ps.split("\n").filter((line) => line.includes(token)).length : 0;

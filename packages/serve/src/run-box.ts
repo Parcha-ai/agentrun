@@ -446,9 +446,9 @@ export const memoryMbOf = (memory: string): number => {
 /** The spec of a run's remote box: its work/ is the run's folder on the Archil disk, which the box mounts (FUSE, so the
  *  VM box asks for the VM runtime: gVisor cannot mount it); its network the hosts `allow` names, or none; its limits,
  *  where its provider takes them. */
-const remoteSpec = (runId: string, allow: readonly string[] | "none", limits: RemoteLimits = {}, vm = false, from: { image?: string; snapshot?: string } = {}): BoxSpec => ({
+const remoteSpec = (runId: string, allow: readonly string[] | "none" | "open", limits: RemoteLimits = {}, vm = false, from: { image?: string; snapshot?: string } = {}): BoxSpec => ({
   ...(from.image ? { image: from.image } : {}), ...(from.snapshot ? { snapshot: from.snapshot } : {}),
-  env: BOX_ENV, workspace: BOX_WORK, labels: { [RUN_LABEL]: runId, [KIND_LABEL]: "run" }, network: allow === "none" ? "none" : { allow }, maxLifetimeMs: BOX_LIFETIME_MS,
+  env: BOX_ENV, workspace: BOX_WORK, labels: { [RUN_LABEL]: runId, [KIND_LABEL]: "run" }, network: allow === "none" || allow === "open" ? allow : { allow }, maxLifetimeMs: BOX_LIFETIME_MS,
   ...(limits.cpus === undefined ? {} : { cpus: limits.cpus }), ...(limits.memoryMb ? { memoryMb: limits.memoryMb } : {}),
   ...(vm ? { isolation: "vm" as const, capabilities: ["fuse" as const] } : {}),
 });
@@ -479,6 +479,9 @@ export type RemoteBoxOptions = {
   onNoList?: (code: string, message: string) => void;
   limits?: RemoteLimits;
   vm?: boolean;
+  /** The provider leaves the box's network open, and the box locks its tools' out itself (the helper's netlock), root
+   *  reaching Archil alone: Daytona's. */
+  locked?: boolean;
   /** What the box starts from, which ships the archil client, the helper and the tool user: the VM box's registry image,
    *  or Daytona's snapshot. */
   image?: string;
@@ -495,14 +498,17 @@ export type RemoteBoxOptions = {
  *  and the call fails. The folder another client holds is taken back (the adapter's revoke, then the mount again) only
  *  when no other box of the run lives: a box of it that is gone left its hold. A made box whose mount fails is destroyed. */
 export async function ensureRemoteBox(boxes: BoxProvider, run: { id: string; dir: string }, context: Context, options: RemoteBoxOptions): Promise<{ id: string; made: boolean; replaced?: boolean }> {
-  const { folder, wake, allow = "none", onNoList, limits, vm = false } = options;
+  const { folder, wake, onNoList, limits, vm = false, locked = false } = options;
+  const allow: readonly string[] | "none" | "open" = locked ? "open" : (options.allow ?? "none");
   const from = { ...(options.image ? { image: options.image } : {}), ...(options.snapshot ? { snapshot: options.snapshot } : {}) };
-  let asked: "none" | "allowlist" = allow === "none" ? "none" : "allowlist";
+  let asked: "none" | "allowlist" | "open" = allow === "none" || allow === "open" ? allow : "allowlist";
   let box = await runningRunBox(boxes, run.id, context, wake);
   let made = false;
   let replaced = false;
   const facts = box?.facts();
-  const keep = facts?.workspace === BOX_WORK && (facts?.network === "none" || (facts?.network === "allowlist" && allow !== "none" && sameHosts(facts.allow, allow)));
+  // A locked box is kept unless its provider blocks it (it could not reach Archil); the VM box's list is its provider's,
+  // fixed at its create and not read back, so one made with a list is kept.
+  const keep = facts?.workspace === BOX_WORK && (locked ? facts?.network !== "none" && facts?.network !== "allowlist" : facts?.network === "none" || (facts?.network === "allowlist" && Array.isArray(allow) && (vm || sameHosts(facts.allow, allow))));
   if (box && !keep) {
     // Its writes first, and the folder let go: a box replaced here takes nothing of the run's with it. One that cannot
     // let go is kept, and the call refused, so no tool runs in it.
@@ -529,13 +535,13 @@ export async function ensureRemoteBox(boxes: BoxProvider, run: { id: string; dir
     }
     box = created.value;
     made = true;
-    if (box.facts().network !== asked) {
+    if (asked === "open" ? box.facts().network === "none" || box.facts().network === "allowlist" : box.facts().network !== asked) {
       await box.destroy(context);
       throw new Error(`the run's box was made with its network ${box.facts().network ?? "unknown"}, not ${asked === "none" ? "closed" : "its host list"}, so it is not used`);
     }
   }
   try {
-    await mountIn(boxes, run, folder, box, context);
+    await mountIn(boxes, run, folder, box, context, locked);
   } catch (error) {
     if (made) await box.destroy(context).catch(() => undefined);
     throw new Error(`the run's folder could not be mounted in its box: ${(error as Error).message}`);
@@ -551,8 +557,8 @@ const mountedIn = (folder: RemoteFolder, box: Box, context: Context) => ({ subpa
  *  of the run is destroyed first, and only then is the folder revoked and mounted. A client whose hold is forced off still
  *  has its buffered writes answered as done, and loses them, so no box that held the folder may still run. A destroy
  *  that fails revokes nothing. */
-async function mountIn(boxes: BoxProvider, run: { id: string }, folder: RemoteFolder, box: Box, context: Context): Promise<void> {
-  const mount = () => folder.adapter.mount(folder.disk, folder.subpath, { box, path: BOX_WORK, context }, "tools");
+async function mountIn(boxes: BoxProvider, run: { id: string }, folder: RemoteFolder, box: Box, context: Context, lockNetwork = false): Promise<void> {
+  const mount = () => folder.adapter.mount(folder.disk, folder.subpath, { box, path: BOX_WORK, context, lockNetwork }, "tools");
   try {
     await mount();
   } catch (error) {

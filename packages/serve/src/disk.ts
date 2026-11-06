@@ -25,7 +25,7 @@ import { fenceHolder, holderOfClaim } from "./run-holder.js";
 export type DiskMode = "tools" | "loop";
 
 /** Where a folder is mounted: a path of this machine, or a path of a box on another machine (`box`). */
-export type MountTarget = string | undefined | { readonly box: Box; readonly path: string; readonly context: Context };
+export type MountTarget = string | undefined | { readonly box: Box; readonly path: string; readonly context: Context; /** The box locks its tools' network first (the helper's netlock): a box whose provider does not. */ readonly lockNetwork?: boolean };
 
 /** A folder of the disk as a holder reaches it: `path`, where it works in it; `box`, the box it is mounted in. */
 export type Mounted = { readonly subpath: string; readonly path: string; readonly mode: DiskMode; readonly box?: Box; readonly context?: Context };
@@ -106,6 +106,8 @@ export function archilDisk(data: string, archil: Archil, claims: Pick<Claims, "r
       // beside it (the run's store, another run).
       await shareTree(path, archil.gid);
       for (const above of [join(path, ".."), join(path, "..", ".."), join(path, "..", "..", "..")]) await chmod(above, 0o700);
+      // A box whose provider does not hold its network locks it itself, before anything of the run's is in it.
+      if (target.lockNetwork) await helper(target.box, archil, "netlock", target.context);
       const run = runOf(subpath);
       const force = revoked.has(run);
       await helper(target.box, archil, force ? "revoke" : "mount", target.context, subpath);

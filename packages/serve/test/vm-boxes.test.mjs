@@ -25,7 +25,7 @@ const VM = VM_PROVIDER.id;
 const PLACE = { mode: "sandbox", box: VM };
 const planted = (name) => `planted-${name}-sentinel`;
 const TOKENS = Object.fromEntries(VM_PROVIDER.keys.map((name, i) => [name, planted(`vm-token-${i}`)]));
-const NO_LIST = "the Modal sandbox takes a host list, but this server cannot read a sandbox's list back to check that it holds, so the Modal sandbox has no network";
+const NO_LIST = "remote boxes on an Archil disk: tools have no network yet; enforced by the provider's CIDR allowlist, which holds Archil's ranges alone";
 const ENV_PROBE = "env; cat /proc/self/environ 2>/dev/null | tr '\\0' '\\n'";
 
 function answers(data, runId) {
@@ -96,7 +96,8 @@ test("demo: a VM place runs bash, write, edit and read in the run's VM box: work
   // The box the provider was asked for: the network blocked, never a list; the fixed environment; the run's labels.
   assert.equal(vm.sandboxes.length, 1);
   const params = vm.sandboxes[0].params;
-  assert.deepEqual([params.blockNetwork, params.outboundDomainAllowlist, params.outboundCidrAllowlist], [true, undefined, undefined]);
+  // Its whole network: Archil's ranges, held by its provider. Its tools have no other.
+  assert.deepEqual([params.blockNetwork, params.outboundDomainAllowlist, params.outboundCidrAllowlist], [undefined, undefined, ["192.0.2.0/24", "198.51.100.0/24"]]);
   // The disk's folder, mounted through the helper with the token on its stdin (a real descriptor here), never an
   // argument; synced and checked in at the end.
   const calls = server.disk.calls();
@@ -212,7 +213,7 @@ test("a program that is still starting when its run ends is let go as it lands, 
   assert.deepEqual(vm.running().map((sandbox) => sandbox.sandboxId), [box.sandboxId], "the box is kept");
 });
 
-test("the VM box never gets a network: with AGENTRUN_BOX_ALLOW set, capabilities and the banner say none and why, and the box is made blocked; with it none, none and no reason", { timeout: 120_000 }, async (t) => {
+test("the VM box's tools get no network: whatever AGENTRUN_BOX_ALLOW names, capabilities and the banner say none and why, and the box reaches Archil's ranges alone", { timeout: 120_000 }, async (t) => {
   const server = await onVm(t, { env: { AGENTRUN_BOX_ALLOW: "pypi.org,*.pythonhosted.org" } });
   const { api, data } = server;
   assert.deepEqual((await api("GET", "/capabilities")).body.places.allow, ["pypi.org", "*.pythonhosted.org"]);
@@ -222,12 +223,14 @@ test("the VM box never gets a network: with AGENTRUN_BOX_ALLOW set, capabilities
   const run = await probe(api, "py", [{ tool: "bash", args: { command: "true" } }]);
   await follow(api, run.run_id, ["completed"], { deadlineMs: 90_000 });
   assert.deepEqual(answers(data, run.run_id).map((a) => a.error), [false]);
-  assert.deepEqual(vm.sandboxes.map(({ params }) => [params.blockNetwork, params.outboundDomainAllowlist, params.outboundCidrAllowlist]), [[true, undefined, undefined]]);
+  assert.deepEqual(vm.sandboxes.map(({ params }) => [params.blockNetwork, params.outboundDomainAllowlist, params.outboundCidrAllowlist]), [[undefined, undefined, ["192.0.2.0/24", "198.51.100.0/24"]]]);
 });
 
-test("AGENTRUN_BOX_ALLOW=none: the VM box has no network, and capabilities give no reason", { timeout: 60_000 }, async (t) => {
+test("AGENTRUN_BOX_ALLOW=none: the VM box's tools have no network, said the same; with Archil but no ranges for it, it is unavailable, saying which setting names them", { timeout: 60_000 }, async (t) => {
   const { api } = await onVm(t, { env: { AGENTRUN_BOX_ALLOW: "none" } });
-  assert.deepEqual(await vmOffer(api), { id: VM, available: true, state: "ready", reason: "configured; not probed at start", network: "none" });
+  assert.deepEqual(await vmOffer(api), { id: VM, available: true, state: "ready", reason: "configured; not probed at start", network: "none", network_reason: NO_LIST });
+  const bare = await onVm(t, { env: { AGENTRUN_ARCHIL_ALLOW: "" } });
+  assert.deepEqual(await vmOffer(bare.api), { id: VM, available: false, state: "unavailable", reason: "this box reaches Archil only through its provider's CIDR allowlist: set AGENTRUN_ARCHIL_ALLOW to Archil's IPv4 ranges" });
 });
 
 test("a missing token keeps the VM box unavailable with today's reason, and its client is never made", async (t) => {

@@ -281,8 +281,8 @@ serves a data root, and the agent disk under it (`<data>/disk`): a second server
 A sandbox agent's `bash` runs in a box, a machine apart from this server: today a Docker container made for each run,
 which binds the run's `work/` and nothing else, or a Daytona or Modal sandbox, which mounts it from the owner's
 [Archil disk](#a-box-on-another-machine-the-archil-disk). Neither holds a key. A
-Docker box on Linux reaches the package registries and GitHub through a proxy, and nothing else; a Daytona box reaches
-them through Daytona's domain list. Its `read`, `write` and `edit` work on that same `work/`: on this server, where the box binds it and this server
+Docker box on Linux reaches the package registries and GitHub through a proxy, and nothing else; a remote box's tools
+have no network yet. Its `read`, `write` and `edit` work on that same `work/`: on this server, where the box binds it and this server
 holds directory handles (Docker on Linux), else in the box. The agent's loop, its log, its model calls and every key stay
 on the server. An agent says so in its [place](#place); the server says which [boxes](#boxes) it has; [a run in a Docker
 box](#a-run-in-a-docker-box) is what the container gets, and [a run in a Daytona box](#a-run-in-a-daytona-box) what a
@@ -545,33 +545,16 @@ since nothing binds `work/` there):
   the key to the calls a run's tools make of their own sandbox (a read of it, and its toolbox's programs and files). It
   refuses every other call (a create, a listing, a stop, a delete, another run's sandbox or token, any other host), and
   it never follows a redirect, nor does the server's own Daytona client: a redirect would carry the key.
-- It reaches the hosts `AGENTRUN_BOX_ALLOW` names, and no other: Daytona's domain list (`domainAllowList`), which
-  Daytona's egress proxy enforces. Unset or empty, the list is the package registries and GitHub: `pypi.org`,
-  `files.pythonhosted.org`, `registry.npmjs.org`, `registry.yarnpkg.com`, `github.com` and `codeload.github.com`. A
-  comma list of hosts (a `*.` wildcard allowed, at most 100) replaces it, so to add one, copy this list and extend it.
-  `AGENTRUN_BOX_ALLOW=none` blocks its network (`networkBlockAll`), as before the list. `*`, an IP address, a CIDR, a
-  port or a URL refuses the start. Capabilities show the hosts in `places.allow`, and the box's `network` (`allowlist` or
-  `none`) in its `places.boxes` entry. Daytona's proxy re-signs each TLS connection with Daytona's own CA, which the
-  sandbox's environment names to pip, npm, git and curl (`REQUESTS_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`, `GIT_SSL_CAINFO`,
-  `CURL_CA_BUNDLE`, `SSL_CERT_FILE`).
-- A sandbox whose own read does not carry the list it was asked for is deleted. Daytona takes a domain list on its tier 3
-  and 4 only: where it keeps none, or refuses it, the server makes the run's box again with its network blocked, never
-  open, and makes every later Daytona box that way until it starts again. The log says so once, with Daytona's own
-  words (`event=box_network box=daytona network=none refused=<code> message="…"`), and capabilities show the box's
-  `network` as `none` with its `network_reason`. A box the server finds is kept when it has no network, or the list the
-  setting names now (the same hosts, in any order, as Daytona reads them back); any other (a wider or narrower list, a
-  list when the setting is `none`) is destroyed and made again, so a changed list holds for a run's box after a restart.
-- A sandbox Daytona does not report blocked, when blocked was asked, is deleted, and the tool call fails saying so. An
-  organization on Daytona's tier 1 or 2 keeps its own network policy, which a sandbox cannot override, so a run there
-  gets no Daytona box unless that policy blocks it.
+- Its tools have no network yet ([a box on another machine](#a-box-on-another-machine-the-archil-disk)): the sandbox is
+  made with Daytona's network open, and its own firewall keeps the tools off it, root reaching Archil alone. No
+  domain list is asked of Daytona; `AGENTRUN_BOX_ALLOW` and `places.allow` are the Docker box's.
 - A sandbox cannot bind `work/`: it mounts the run's `work/` from the owner's Archil disk at `/workspace` ([a box on
   another machine](#a-box-on-another-machine-the-archil-disk)). Nothing is copied in or out: what the box writes is in
   the run's folder on the disk, which this server reads through its own mount. At each turn's end the box syncs the
   folder (a read of the run's files waits for that sync). What the server files in `work/` during the run (monid's long
   answers) goes in through the sandbox, which holds the folder.
 - At the run's end, a cancel included, and at an archive, the sandbox syncs the folder and checks it in (Daytona cannot
-  unmount), and only then is it destroyed. One that cannot let go at the run's end is tried again, and the end waits for
-  it; at an archive, it is kept for the run's end. A start has the sandbox of every run that has ended or is archived
+  unmount), and only then is it destroyed. One that cannot let go is kept, said in the log, and the run ends. A start has the sandbox of every run that has ended or is archived
   let go of its folder, then destroys it; one that cannot is kept for the next start, its 24-hour lifetime bounding it.
 - A run's sandbox that Daytona stopped, paused (a sandbox class that pauses when idle, while the run waits for its
   person) or archived (a stopped one it moved away) is started again, an archived one restored, when the server next
@@ -596,10 +579,9 @@ is Modal's VM runtime: gVisor, its default, cannot mount the run's folder (FUSE)
   run's own door token. The relay makes only the calls a run's tools make of their own sandbox, with the server's
   client: finding it, reading its state and tags, and starting a program in it with that program's input, output and
   exit. It refuses everything else: a create, a listing, an end, a tag change, or another run's sandbox or program.
-- It has no network, whatever `AGENTRUN_BOX_ALLOW` names. The provider takes a domain list when a sandbox is made, but
-  its SDK cannot read a sandbox's list back, so this server cannot check that a box holds the list it asked for (as it
-  does for Daytona). Each box is made with its network blocked, never with the provider's open default. Capabilities
-  show the box's `network` as `none`, with `network_reason`, unless the setting is `none`.
+- Its tools have no network, whatever `AGENTRUN_BOX_ALLOW` names: the box is made with `AGENTRUN_ARCHIL_ALLOW`,
+  Archil's IPv4 ranges, as its whole CIDR allowlist, which its provider holds, never with the provider's open default.
+  Capabilities show the box's `network` as `none`, with `network_reason`.
 - A sandbox that is gone (it ended, or its lifetime ran out) is made again on the run's next tool call, and takes the
   run's folder back from the gone one (its hold forced off; no other box of the run lives). The call that met the gone
   box fails, saying so.
@@ -636,7 +618,7 @@ of one saved before is refused 409 `agent_not_runnable`.
   `daytona`; the Modal sandbox runs as root and needs none), with no other grant:
   `daytona ALL=(root) NOPASSWD: /usr/local/sbin/agentrun-archil` and `daytona ALL=(agentrun-tool) NOPASSWD: ALL`; and
   `/proc` mounted with `hidepid=2` (`invisible` on newer kernels), so no user sees another's processes, the root archil
-  client's included. A box without the helper, or whose `/proc` lets a user see another's processes, keeps no run
+  client's included; and, for Daytona, `iptables` and `ip6tables`. A box without the helper, or whose `/proc` lets a user see another's processes, keeps no run
   folder: the helper refuses the mount, and the tool call says why. Every box needs outbound TCP 8100 and 32050 to Archil.
 - **The mount.** The box mounts exactly its run's `work/` (`agents/<agent>/runs/<run>/work` on the disk) at
   `/workspace`, exclusively, so no other client writes it. A box whose mount finds the folder held (by a box that was
@@ -645,6 +627,16 @@ of one saved before is refused 409 `agent_not_runnable`.
   `revoke` (a mount with `--force`, which takes the folder back from a box that is gone) with the disk, region and
   folder, `sync` and `checkin`. It checks every argument itself: any other folder, a `.` or `..`, an absolute path, a
   link, a mountpoint that is not empty, or a token of any other shape refuses and runs nothing.
+- **The tools have no network yet.** Capabilities say so for each remote box: "remote boxes on an Archil disk: tools
+  have no network yet", with how it is held. The Modal sandbox's provider holds it: the box is made with
+  `AGENTRUN_ARCHIL_ALLOW`, Archil's IPv4 ranges, as its whole CIDR allowlist, and without that setting it is
+  unavailable. A Daytona box is made with its provider network open, and locks it itself before the mount and before
+  any tool runs: the helper's `netlock` puts a chain first in OUTPUT, for IPv4 and IPv6, in which the tool user sends
+  nothing (loopback and replies pass), and root sends DNS, TCP 8100 to the region's mount endpoint alone (resolved at
+  the lock), and TCP 32050 to any address: the file servers, whose addresses the endpoint gives only at the mount (the
+  one wide rule, root's alone). The rules are read back whole. A box with no `iptables` and `ip6tables`, whose root has
+  no `CAP_NET_ADMIN`, or whose rules read back otherwise keeps no run folder: the tool call says why, and the box goes.
+  The snapshot installs `iptables`. Reaching the package registries again through a proxy in the box comes next.
 - **The token never reaches a tool.** It goes into the box only on the helper's fd 0, which hands it to the archil
   client in that one root program's environment. On a Modal sandbox it is the helper's stdin. On Daytona, whose stdin
   travels as arguments, it is a file in a new `0700` folder of the box's own user, opened as fd 0 and removed, folder and

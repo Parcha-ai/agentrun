@@ -9,7 +9,9 @@
 // the disk, so what the box writes there is the run's work/. While it mounts, it notes how many processes show the
 // token in their arguments (`ps -eo args`) and which files of the box hold it.
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { userInfo } from "node:os";
 import { join } from "node:path";
+import { fakeConnect, fakeGetent, fakeIptables, fakeStatus } from "./fake-iptables.mjs";
 import { fileURLToPath } from "node:url";
 import { scratch } from "../support.mjs";
 
@@ -20,6 +22,8 @@ export const TOKEN = "planted-archil-mount-token-sentinel-0123456789";
 export const HELPER_PATH = "/usr/local/sbin/agentrun-archil";
 /** The Daytona snapshot and the VM box's image that ship the archil client, the helper and the tool user. */
 export const SNAPSHOT = "agentrun-archil-box";
+/** Archil's IPv4 ranges, the VM box's whole network. */
+export const ARCHIL_ALLOW = "192.0.2.0/24,198.51.100.0/24";
 export const VM_IMAGE = "registry.example/agentrun-archil-box:1";
 export const TOOL_USER = "agentrun-tool";
 const HELPER = fileURLToPath(new URL("../../box/agentrun-archil", import.meta.url));
@@ -60,7 +64,7 @@ export async function fakeArchil(t, { data, token = TOKEN } = {}) {
     root,
     disk,
     serverMounts,
-    env: { AGENTRUN_ARCHIL_DISK: DISK, AGENTRUN_ARCHIL_REGION: REGION, AGENTRUN_ARCHIL_TOKEN: token, AGENTRUN_ARCHIL_GID: String(process.getgid()), AGENTRUN_DAYTONA_SNAPSHOT: SNAPSHOT, AGENTRUN_VM_IMAGE: VM_IMAGE },
+    env: { AGENTRUN_ARCHIL_DISK: DISK, AGENTRUN_ARCHIL_REGION: REGION, AGENTRUN_ARCHIL_TOKEN: token, AGENTRUN_ARCHIL_GID: String(process.getgid()), AGENTRUN_DAYTONA_SNAPSHOT: SNAPSHOT, AGENTRUN_VM_IMAGE: VM_IMAGE, AGENTRUN_ARCHIL_ALLOW: ARCHIL_ALLOW },
     /** Every call any box's client took, in order: {verb, box, folder, ...}. */
     calls: () => read().calls,
     /** The folders held now, each by the box that holds it. */
@@ -69,6 +73,14 @@ export async function fakeArchil(t, { data, token = TOKEN } = {}) {
      *  not mount it so. */
     noHidepid() {
       change({ noHidepid: true });
+    },
+    /** Boxes made from now on have no CAP_NET_ADMIN for root: their firewall cannot be locked. */
+    noNetAdmin() {
+      change({ noNetAdmin: true });
+    },
+    /** Boxes made from now on read back one firewall rule fewer than they were given. */
+    tamperIptables() {
+      change({ tamperIptables: true });
     },
     /** Every box's sync fails while `on`, as one whose writes cannot reach the disk: such a box cannot let go. */
     failSyncs(on) {
@@ -85,13 +97,29 @@ export async function fakeArchil(t, { data, token = TOKEN } = {}) {
       const mounts = join(dir, ".mounts");
       if (!existsSync(mounts)) writeFileSync(mounts, `proc /proc proc rw,nosuid,nodev,noexec,relatime${read().noHidepid ? "" : ",hidepid=invisible"} 0 0\n`);
       const client = join(dir, ".archil");
-      writeFileSync(client, `#!/bin/sh\nFAKE_ARCHIL_STATE='${state}' FAKE_ARCHIL_BOX='${id}' FAKE_ARCHIL_BOX_DIR='${dir}' FAKE_ARCHIL_DISK_ROOT='${disk}' FAKE_ARCHIL_DISK='${DISK}' FAKE_ARCHIL_MOUNTS='${mounts}' exec '${process.execPath}' '${CLI}' "$@"\n`);
+      writeFileSync(client, `#!/bin/sh\nFAKE_ARCHIL_NET='${join(dir, ".net")}' FAKE_ARCHIL_STATE='${state}' FAKE_ARCHIL_BOX='${id}' FAKE_ARCHIL_BOX_DIR='${dir}' FAKE_ARCHIL_DISK_ROOT='${disk}' FAKE_ARCHIL_DISK='${DISK}' FAKE_ARCHIL_MOUNTS='${mounts}' exec '${process.execPath}' '${CLI}' "$@"\n`);
       chmodSync(client, 0o755);
+      // The box's firewall: its iptables and ip6tables, its getent, its root's capabilities, and the `connect` its
+      // tools reach a host with, as that firewall lets them (fake-iptables.mjs).
+      const net = join(dir, ".net");
+      mkdirSync(net, { recursive: true });
+      const flags = read();
+      const iptables = fakeIptables(net, "iptables");
+      const ip6tables = fakeIptables(net, "ip6tables");
+      if (flags.tamperIptables) writeFileSync(join(net, "iptables.tamper"), "");
+      const toolBin = join(dir, ".tool-bin");
+      mkdirSync(toolBin, { recursive: true });
+      fakeConnect(toolBin, join(net, "iptables.chain.AGENTRUN-NET"), process.getuid());
       const helper = join(dir, ".agentrun-archil");
       const source = readFileSync(HELPER, "utf8")
         .replace("\nARCHIL=/usr/bin/archil\n", `\nARCHIL=${client}\n`)
         .replace("\nMP=/workspace\n", `\nMP=${join(dir, "workspace")}\n`)
-        .replace("\nMOUNTS=/proc/self/mounts\n", `\nMOUNTS=${mounts}\n`);
+        .replace("\nMOUNTS=/proc/self/mounts\n", `\nMOUNTS=${mounts}\n`)
+        .replace("\nIPTABLES=/usr/sbin/iptables\n", `\nIPTABLES=${iptables}\n`)
+        .replace("\nIP6TABLES=/usr/sbin/ip6tables\n", `\nIP6TABLES=${ip6tables}\n`)
+        .replace("\nGETENT=/usr/bin/getent\n", `\nGETENT=${fakeGetent(net)}\n`)
+        .replace("\nSTATUS=/proc/self/status\n", `\nSTATUS=${fakeStatus(net, !flags.noNetAdmin)}\n`)
+        .replace("\nTOOL=agentrun-tool\n", `\nTOOL=${userInfo().username}\n`);
       writeFileSync(helper, source);
       chmodSync(helper, 0o755);
       // The tool user's PATH: the refusing stand-in first, so a tool's sudo meets it (that user has no sudo). Its
@@ -100,7 +128,7 @@ export async function fakeArchil(t, { data, token = TOKEN } = {}) {
       writeFileSync(join(bin, "sudo"), [
         "#!/bin/sh",
         `if [ "$#" -ge 2 ] && [ "$1" = -n ] && [ "$2" = '${HELPER_PATH}' ]; then shift 2; exec '${helper}' "$@"; fi`,
-        `if [ "$#" -ge 5 ] && [ "$1" = -n ] && [ "$2" = -u ] && [ "$3" = '${TOOL_USER}' ] && [ "$4" = -- ]; then shift 4; printf '%s\\n' "$1" >> '${asTool}'; exec env -i PATH='${refusing}:/usr/local/bin:/usr/bin:/bin' "$@"; fi`,
+        `if [ "$#" -ge 5 ] && [ "$1" = -n ] && [ "$2" = -u ] && [ "$3" = '${TOOL_USER}' ] && [ "$4" = -- ]; then shift 4; printf '%s\\n' "$1" >> '${asTool}'; exec env -i PATH='${refusing}:${toolBin}:/usr/local/bin:/usr/bin:/bin' "$@"; fi`,
         `exec '${join(refusing, "sudo")}' "$@"`,
         "",
       ].join("\n"));

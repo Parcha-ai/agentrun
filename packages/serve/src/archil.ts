@@ -42,6 +42,22 @@ export const HELPER_PATH = "/usr/local/sbin/agentrun-archil";
 const HELD = "has an outstanding delegation";
 /** Why a box whose /proc does not hide each user's processes keeps no run folder (the helper's exit 4). */
 export const NO_HIDEPID = "the box's /proc is not mounted with hidepid=2 (or invisible), so its tools could see the root archil client's processes: use an image or snapshot that mounts it so (see the README); this box keeps no run folder";
+/** Why a box whose firewall could not be locked keeps no run folder (the helper's netlock, exit 4). */
+export const NO_NETLOCK = "the box could not lock its tools' network: a Daytona box's snapshot needs iptables, ip6tables and root with CAP_NET_ADMIN, and its rules must read back whole (see the README); this box keeps no run folder";
+/** What capabilities say of a remote box's network, with how it is held. */
+export const TOOLS_NO_NETWORK = "remote boxes on an Archil disk: tools have no network yet";
+/** The setting naming Archil's IPv4 ranges, the only ones the VM box's provider lets it reach. */
+export const ARCHIL_ALLOW_ENV = "AGENTRUN_ARCHIL_ALLOW";
+const CIDR = /^(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)\/(?:3[0-2]|[12]?\d)$/;
+/** Archil's IPv4 ranges from `env` (a comma list of CIDRs), undefined when unset, or why the value is not one. */
+export function archilAllowOf(env: NodeJS.ProcessEnv): readonly string[] | undefined | { reason: string } {
+  const value = env[ARCHIL_ALLOW_ENV]?.trim();
+  if (!value) return undefined;
+  const cidrs = [...new Set(value.split(",").map((entry) => entry.trim()).filter(Boolean))];
+  const bad = cidrs.find((entry) => !CIDR.test(entry));
+  if (bad !== undefined || !cidrs.length) return { reason: `${ARCHIL_ALLOW_ENV} is a comma list of IPv4 ranges, such as 192.0.2.0/24; ${JSON.stringify(bad ?? value)} is not one` };
+  return Object.freeze(cidrs);
+}
 /** What Archil answers a checkin by a client that holds no delegation there: EROFS (30). */
 const CHECKED_IN = /'checkin' operation failed .*Unexpected error \(30\)/;
 const DISK_ID = /^(?:dsk-[0-9a-f]{16}|[A-Za-z0-9][A-Za-z0-9._@+-]{0,127}\/[A-Za-z0-9][A-Za-z0-9._-]{0,127})$/;
@@ -109,8 +125,8 @@ async function ran(box: Box, command: readonly string[], context: Context, input
 
 /** The helper's verbs, run in `box` as its own user through sudo: `mount` or `revoke` run `folder` (below the disk) to
  *  /workspace with the token on fd 0; `sync` and `checkin` act on that mount. */
-export async function helper(box: Box, archil: Archil, verb: "mount" | "revoke" | "sync" | "checkin", context: Context, folder?: string): Promise<void> {
-  const args = verb === "mount" || verb === "revoke" ? [verb, archil.disk, archil.region, folder!] : [verb];
+export async function helper(box: Box, archil: Archil, verb: "netlock" | "mount" | "revoke" | "sync" | "checkin", context: Context, folder?: string): Promise<void> {
+  const args = verb === "mount" || verb === "revoke" ? [verb, archil.disk, archil.region, folder!] : verb === "netlock" ? [verb, archil.region] : [verb];
   const answer = verb === "mount" || verb === "revoke" ? await withToken(box, archil.token, args, context) : await ran(box, ["sudo", "-n", HELPER_PATH, ...args], context);
   // A sync or checkin with nothing mounted (exit 3): nothing is held, so nothing is lost.
   if (answer.code === 0 || (answer.code === 3 && (verb === "sync" || verb === "checkin"))) return;
@@ -121,6 +137,8 @@ export async function helper(box: Box, archil: Archil, verb: "mount" | "revoke" 
   // The box's /proc lets a user see another's processes (no hidepid=2 or invisible): its tools could see the root
   // archil client's, so it keeps no run folder.
   if (answer.code === 4 && (verb === "mount" || verb === "revoke")) throw new Error(NO_HIDEPID);
+  // The box could not lock its tools' network (no CAP_NET_ADMIN, no iptables or ip6tables, a read-back that differs).
+  if (answer.code === 4 && verb === "netlock") throw new Error(`${NO_NETLOCK} (${answer.said.replace(/^agentrun-archil: /, "").slice(0, 200)})`);
   if (answer.said.includes(HELD)) throw new FolderHeld(`another client holds the run's folder: ${answer.said.slice(0, 300)}`);
   // sudo's own refusal (a password asked, the command not allowed) or no helper at all: the image lacks it.
   if (answer.code === 127 || answer.code === 126 || /a password is required|not allowed to execute|command not found|No such file/i.test(answer.said)) {

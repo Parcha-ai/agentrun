@@ -1,12 +1,15 @@
 #!/bin/sh
 # agentrun-archil: the root helper of a box on another machine, which keeps one run's work folder on the owner's Archil
-# disk at /workspace. It does four things and nothing else, each with fixed arguments to the archil client alone:
+# disk at /workspace. It does five things and nothing else, each with fixed arguments to the archil client, or to
+# iptables and ip6tables:
 #
+#   netlock <region>
 #   mount  <disk> <region> agents/<agent>/runs/<run>/work   the disk token as one line on fd 0
 #   revoke <disk> <region> agents/<agent>/runs/<run>/work   the disk token as one line on fd 0
 #   sync
 #   checkin
 #
+# netlock the box's firewall, run first: the tool user sends nothing, root reaches Archil alone (below).
 # mount   archil mount <disk>:/<path> /workspace --region <region>: exclusive, so no other client writes the folder.
 # revoke  the same with --force: takes the folder back from a box that is gone and left its delegation behind.
 # sync    archil sync /workspace: every write so far is durable when it returns.
@@ -21,7 +24,8 @@
 # newline, a disk, region or folder of any other shape (an absolute path, `.` or `..`, an empty or extra segment), a
 # mountpoint that is a link or not empty, or a token of any other shape exits 2 and runs nothing. A sync or checkin with
 # nothing mounted exits 3 and runs nothing. A mount or revoke in a box whose /proc lets a user see another's processes
-# (no hidepid=2 or invisible) exits 4 and runs nothing: the image mounts /proc so.
+# (no hidepid=2 or invisible) exits 4 and runs nothing: the image mounts /proc so. A netlock that cannot lock the
+# tools' network exits 4.
 set -eu
 umask 077
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
@@ -33,6 +37,12 @@ unset ENV CDPATH
 ARCHIL=/usr/bin/archil
 MP=/workspace
 MOUNTS=/proc/self/mounts
+IPTABLES=/usr/sbin/iptables
+IP6TABLES=/usr/sbin/ip6tables
+GETENT=/usr/bin/getent
+STATUS=/proc/self/status
+TOOL=agentrun-tool
+CHAIN=AGENTRUN-NET
 
 refuse() {
   printf 'agentrun-archil: %s\n' "$1" >&2
@@ -94,13 +104,76 @@ held() {
   fi
 }
 
-[ "$#" -ge 1 ] || refuse "say mount, revoke, sync or checkin"
+# netlock <region>: the box's firewall, before any tool runs and before the mount. In a chain of its own, jumped to
+# first from OUTPUT, for IPv4 and IPv6 alike: loopback and replies pass; the tool user sends nothing; root sends DNS,
+# TCP 8100 to the region's mount endpoint alone (resolved here, from the region) and TCP 32050 (the file servers, whose
+# addresses the endpoint gives only at the mount, so any address: root's one wide rule); everything else of root's is
+# dropped; other users are left as they are. The rules are read back whole. No CAP_NET_ADMIN, no iptables or
+# ip6tables, no such user, no address for the endpoint, or a read-back that differs exits 4.
+lockfail() {
+  printf 'agentrun-archil: the box cannot lock its tools'"'"' network: %s\n' "$1" >&2
+  exit 4
+}
+
+rules() {
+  # $1 iptables or ip6tables, $2 the endpoint's addresses, $3 their prefix length. One rule a line, as -S prints it.
+  printf '%s\n' "-N $CHAIN" \
+    "-A $CHAIN -o lo -j ACCEPT" \
+    "-A $CHAIN -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT" \
+    "-A $CHAIN -m owner --uid-owner $uid -j DROP" \
+    "-A $CHAIN -p udp -m owner --uid-owner 0 -m udp --dport 53 -j ACCEPT" \
+    "-A $CHAIN -p tcp -m owner --uid-owner 0 -m tcp --dport 53 -j ACCEPT"
+  for a in $2; do printf '%s\n' "-A $CHAIN -d $a/$3 -p tcp -m owner --uid-owner 0 -m tcp --dport 8100 -j ACCEPT"; done
+  printf '%s\n' "-A $CHAIN -p tcp -m owner --uid-owner 0 -m tcp --dport 32050 -j ACCEPT" \
+    "-A $CHAIN -m owner --uid-owner 0 -j DROP"
+}
+
+lockwith() {
+  # $1 the binary, $2 the addresses, $3 their prefix length: applied, then read back whole.
+  t=$1
+  "$t" -w -N "$CHAIN" 2>/dev/null || "$t" -w -F "$CHAIN" || lockfail "$t cannot make its chain"
+  n=0
+  while "$t" -w -C OUTPUT -j "$CHAIN" 2>/dev/null; do
+    n=$((n + 1))
+    [ "$n" -le 8 ] && "$t" -w -D OUTPUT -j "$CHAIN" || lockfail "$t cannot move its jump"
+  done
+  "$t" -w -I OUTPUT 1 -j "$CHAIN" || lockfail "$t cannot jump to its chain"
+  rules "$t" "$2" "$3" | while IFS= read -r line; do
+    case "$line" in -N*) continue ;; esac
+    # Each line is the rule's own words, split on spaces: none holds one.
+    "$t" -w $line || exit 1
+  done || lockfail "$t refused a rule"
+  [ "$("$t" -w -S "$CHAIN")" = "$(rules "$t" "$2" "$3")" ] || lockfail "$t reads back other rules than it was given"
+  [ "$("$t" -w -S OUTPUT | sed -n 2p)" = "-A OUTPUT -j $CHAIN" ] || lockfail "$t does not jump to its chain first"
+}
+
+netlock() {
+  [ "$#" -eq 1 ] || refuse "netlock takes <region>"
+  region=$1
+  matches "$region" '[a-z0-9]+-[a-z0-9][a-z0-9-]{0,62}' || refuse "the region is a provider, a dash and its region, such as aws-us-east-1"
+  cap=$(awk '$1 == "CapEff:" { print $2 }' "$STATUS")
+  matches "$cap" '[0-9a-f]{1,16}' || lockfail "its capabilities cannot be read"
+  [ $(( (0x$cap >> 12) & 1 )) -eq 1 ] || lockfail "root has no CAP_NET_ADMIN here"
+  [ -x "$IPTABLES" ] && [ -x "$IP6TABLES" ] || lockfail "iptables and ip6tables are not both installed"
+  uid=$(id -u "$TOOL" 2>/dev/null) || lockfail "there is no user $TOOL"
+  matches "$uid" '[1-9][0-9]{0,9}' || lockfail "the user $TOOL is root"
+  endpoint="mount.green.${region#*-}.${region%%-*}.prod.archil.com"
+  v4=$("$GETENT" ahostsv4 "$endpoint" 2>/dev/null | awk '$1 ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ { print $1 }' | sort -u | tr '\n' ' ')
+  v6=$("$GETENT" ahostsv6 "$endpoint" 2>/dev/null | awk '$1 ~ /^[0-9a-f:]+$/ && $1 !~ /^::ffff:/ { print $1 }' | sort -u | tr '\n' ' ')
+  [ -n "$v4$v6" ] || lockfail "$endpoint has no address"
+  lockwith "$IPTABLES" "$v4" 32
+  lockwith "$IP6TABLES" "$v6" 128
+  printf 'agentrun-archil: the tools'"'"' network is locked; root reaches %s on 8100 and any address on 32050\n' "$endpoint" >&2
+}
+
+[ "$#" -ge 1 ] || refuse "say netlock, mount, revoke, sync or checkin"
 verb=$1
 shift
 case "$verb" in
+  netlock) netlock "$@" ;;
   mount) force= && take "$@" ;;
   revoke) force=--force && take "$@" ;;
   sync) held "$@" && exec "$ARCHIL" sync "$MP" ;;
   checkin) held "$@" && exec "$ARCHIL" checkin "$MP" ;;
-  *) refuse "say mount, revoke, sync or checkin" ;;
+  *) refuse "say netlock, mount, revoke, sync or checkin" ;;
 esac

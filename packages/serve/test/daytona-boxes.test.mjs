@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { BOX_RELAY_FILE, relayFetch, startBoxRelay } from "../dist/box-relay.js";
-import { BOX_ENV, DEFAULT_BOX_ALLOW, runBox } from "./../dist/run-box.js";
+import { BOX_ENV, runBox } from "./../dist/run-box.js";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { KEY as MONID_KEY } from "./fixtures/faux-monid.mjs";
 import { fakeArchil } from "./fixtures/fake-archil.mjs";
@@ -164,7 +164,7 @@ test("demo: a Daytona place runs read, write, edit and bash in the run's box: wo
   const server = await onDaytona(t, fake, { fauxMonid: FAUX_MONID });
   const { api, data } = server;
   const places = (await api("GET", "/capabilities")).body.places;
-  assert.deepEqual(places.boxes.find((b) => b.id === "daytona"), { id: "daytona", available: true, state: "ready", network: "allowlist" });
+  assert.deepEqual(places.boxes.find((b) => b.id === "daytona"), { id: "daytona", available: true, state: "ready", network: "none", network_reason: "remote boxes on an Archil disk: tools have no network yet; enforced by an in-box firewall" });
   assert.deepEqual(places.allow, ["pypi.org", "files.pythonhosted.org", "registry.npmjs.org", "registry.yarnpkg.com", "github.com", "codeload.github.com"]);
   const made = await api("POST", "/agents", { definition: { id: "remote", name: "remote", instructions: "Probe.", place: DAYTONA, tools: ["read", "write", "edit", "bash", "monid.discover"], tool_settings: { "monid.discover": { permission: "allow" } } } });
   assert.equal(made.status, 201, JSON.stringify(made.body));
@@ -204,7 +204,8 @@ test("demo: a Daytona place runs read, write, edit and bash in the run's box: wo
   // destroyed at the end.
   const created = fake.requests.filter((r) => r.method === "POST" && r.path === "/api/sandbox").map((r) => JSON.parse(r.body));
   assert.equal(created.length, 1);
-  assert.equal(created[0].domainAllowList, DEFAULT_BOX_ALLOW.join(","));
+  // Its provider network open, which the box's own firewall closes to its tools (the helper's netlock).
+  assert.equal(created[0].domainAllowList, undefined);
   assert.equal(created[0].networkBlockAll, undefined);
   assert.deepEqual(created[0].env, BOX_ENV);
   // From the snapshot the setting names, which ships the archil client, the helper and the tool user.
@@ -322,112 +323,6 @@ test("a run's box that Daytona archived (or is archiving) while the run waited i
     assert.equal((await second.api("GET", `/runs/${run.run_id}/files/turn2.txt`)).body, "written after the last turn", `${reads}: the next turn ran in the same box`);
     await second.close();
   }
-});
-
-test("a Daytona that neither keeps a domain list nor blocks a box's network gets no run's tool: the call fails naming why, and no box is left", { timeout: 120_000 }, async (t) => {
-  const fake = await archilDaytona(t, { key: KEY, lists: false, blocks: false });
-  const { api, data } = await onDaytona(t, fake);
-  assert.equal((await api("POST", "/agents", { definition: { id: "open", name: "open", instructions: "Probe.", place: DAYTONA, tools: ["bash"] } })).status, 201);
-  const run = await probe(api, "open", [{ tool: "bash", args: { command: "printf x > out.txt" } }]);
-  await follow(api, run.run_id, ["completed"], { deadlineMs: 90_000 });
-  const [said] = answers(data, run.run_id);
-  assert.equal(said.error, true);
-  assert.match(said.text, /networkBlockAll/);
-  assert.ok(!fake.requests.some((r) => r.path.endsWith("/process/execute") && r.body.includes("out.txt")), "no command ran");
-  assert.equal(fake.sandboxes.size, 0);
-});
-
-/** The bodies of the creates Daytona was asked for. */
-const creates = (fake) => fake.requests.filter((r) => r.method === "POST" && r.path === "/api/sandbox").map((r) => JSON.parse(r.body));
-
-for (const [daytona, options, code, words] of [
-  ["keeps no domain list (a tier 1 or 2 organization)", { lists: false }, "unsupported", /Daytona did not keep this sandbox's domain list/],
-  ["refuses a domain list (403)", { refusesLists: 403 }, "unauthorized", /not available for your organization's tier/],
-  ["refuses a domain list (400)", { refusesLists: 400 }, "invalid", /not available for your organization's tier/],
-]) {
-  test(`a Daytona that ${daytona} gets boxes with no network, never open: the run's tool runs, capabilities say why, and the log says Daytona's own words`, { timeout: 120_000 }, async (t) => {
-    const fake = await archilDaytona(t, { key: KEY, ...options });
-    const lines = [];
-    const { api, data } = await onDaytona(t, fake, { log: (line) => lines.push(line) });
-    assert.equal((await api("POST", "/agents", { definition: { id: "closed", name: "closed", instructions: "Probe.", place: DAYTONA, tools: ["bash"] } })).status, 201);
-    const first = await probe(api, "closed", [{ tool: "bash", args: { command: "printf x > out.txt" } }]);
-    await follow(api, first.run_id, ["completed"], { deadlineMs: 90_000 });
-    assert.deepEqual(answers(data, first.run_id).map((a) => a.error), [false]);
-    // Asked with the list, then made again blocked; no sandbox with the list is left.
-    assert.deepEqual(creates(fake).map((body) => [typeof body.domainAllowList, body.networkBlockAll]), [["string", undefined], ["undefined", true]]);
-    assert.equal(fake.sandboxes.size, 0);
-    const offer = (await api("GET", "/capabilities")).body.places.boxes.find((b) => b.id === "daytona");
-    assert.equal(offer.network, "none");
-    assert.equal(offer.available, true);
-    // Available, so `reason` (which says why a box is unavailable) is absent; `network_reason` says why it has no network.
-    assert.equal(offer.reason, undefined);
-    assert.match(offer.network_reason, new RegExp(`domain list \\(${code}\\).*tier 3 and 4.*AGENTRUN_BOX_ALLOW=none`));
-    // places.allow is the server's configured list, still the six; the box's own network and network_reason say it does
-    // not apply to Daytona now. The log says why Daytona refused, in its words.
-    assert.deepEqual((await api("GET", "/capabilities")).body.places.allow, [...DEFAULT_BOX_ALLOW]);
-    assert.deepEqual(Object.keys(offer).sort(), ["available", "id", "network", "network_reason", "state"]);
-    const said = lines.filter((line) => line.includes("event=box_network"));
-    assert.equal(said.length, 1, said.join("\n"));
-    assert.match(said[0], new RegExp(`refused=${code}`));
-    assert.match(said[0], words);
-    // The next run's box is asked for blocked at once: the server does not try the list again until it starts again.
-    const second = await probe(api, "closed", [{ tool: "bash", args: { command: "true" } }]);
-    await follow(api, second.run_id, ["completed"], { deadlineMs: 90_000 });
-    assert.deepEqual(creates(fake).slice(2).map((body) => [typeof body.domainAllowList, body.networkBlockAll]), [["undefined", true]]);
-  });
-}
-
-test("a run's box made under a wider list is destroyed and made again under a narrower one after a restart, and kept under the same hosts in another order", { timeout: 240_000 }, async (t) => {
-  for (const [later, remade] of [["pypi.org", true], ["GitHub.com, pypi.org", false]]) {
-    const fake = await archilDaytona(t, { key: KEY });
-    const data = fake.data;
-    withEnv(t, { ...daytonaEnv(fake), AGENTRUN_BOX_ALLOW: "pypi.org,github.com" });
-    const first = await startServe({ data, port: 0, faux: PROBE, drainTimeout: "5s", archilMounts: fake.disk.serverMounts });
-    const firstApi = client(first.baseUrl, first.token);
-    assert.equal((await firstApi("POST", "/agents", { definition: { id: "narrowed", name: "narrowed", instructions: "Probe.", place: DAYTONA, tools: ["bash", "ask_person"] } })).status, 201);
-    const run = await probe(firstApi, "narrowed", [{ tool: "bash", args: { command: "printf one > turn1.txt" } }, { tool: "ask_person", args: { question: "Go on?" } }, { tool: "bash", args: { command: "cat turn1.txt > turn2.txt" } }]);
-    await follow(firstApi, run.run_id, ["input_required"], { deadlineMs: 120_000 });
-    await until(async () => (await fileList(firstApi, run.run_id)).includes("turn1.txt"), "the turn's end's sync");
-    await first.close();
-    const [made] = fake.sandboxes.keys();
-    process.env.AGENTRUN_BOX_ALLOW = later;
-    const second = await serve(t, { data, faux: PROBE, archilMounts: fake.disk.serverMounts });
-    assert.equal((await second.api("POST", `/runs/${run.run_id}/messages`, { content: "Yes." })).status, 202);
-    await follow(second.api, run.run_id, ["completed"], { deadlineMs: 120_000 });
-    assert.equal((await second.api("GET", `/runs/${run.run_id}/files/turn2.txt`)).body, "one");
-    const lists = creates(fake).map((body) => body.domainAllowList);
-    if (remade) {
-      assert.deepEqual(lists, ["pypi.org,github.com", "pypi.org"], "made again with the narrower list");
-      assert.ok(fake.requests.some((r) => r.method === "DELETE" && r.path.endsWith(`/sandbox/${made}`)), "the wider box was destroyed");
-    } else assert.deepEqual(lists, ["pypi.org,github.com"], "the same hosts: the box is kept");
-    await second.close();
-  }
-});
-
-test("AGENTRUN_BOX_ALLOW=none: a Daytona box is made blocked, as before the list, and capabilities say none with no reason", { timeout: 120_000 }, async (t) => {
-  const fake = await archilDaytona(t, { key: KEY });
-  withEnv(t, { AGENTRUN_BOX_ALLOW: "none" });
-  const { api, data } = await onDaytona(t, fake);
-  const places = (await api("GET", "/capabilities")).body.places;
-  assert.deepEqual(places.boxes.find((b) => b.id === "daytona"), { id: "daytona", available: true, state: "ready", network: "none" });
-  assert.deepEqual(places.allow, []);
-  assert.equal((await api("POST", "/agents", { definition: { id: "none", name: "none", instructions: "Probe.", place: DAYTONA, tools: ["bash"] } })).status, 201);
-  const run = await probe(api, "none", [{ tool: "bash", args: { command: "true" } }]);
-  await follow(api, run.run_id, ["completed"], { deadlineMs: 90_000 });
-  assert.deepEqual(answers(data, run.run_id).map((a) => a.error), [false]);
-  assert.deepEqual(creates(fake).map((body) => [body.domainAllowList, body.networkBlockAll]), [[undefined, true]]);
-});
-
-test("AGENTRUN_BOX_ALLOW replaces the default list: a Daytona box's domain list is the setting's hosts", { timeout: 120_000 }, async (t) => {
-  const fake = await archilDaytona(t, { key: KEY });
-  withEnv(t, { AGENTRUN_BOX_ALLOW: "PyPI.org, *.pythonhosted.org,pypi.org" });
-  const { api, data } = await onDaytona(t, fake);
-  assert.deepEqual((await api("GET", "/capabilities")).body.places.allow, ["pypi.org", "*.pythonhosted.org"]);
-  assert.equal((await api("POST", "/agents", { definition: { id: "py", name: "py", instructions: "Probe.", place: DAYTONA, tools: ["bash"] } })).status, 201);
-  const run = await probe(api, "py", [{ tool: "bash", args: { command: "true" } }]);
-  await follow(api, run.run_id, ["completed"], { deadlineMs: 90_000 });
-  assert.deepEqual(answers(data, run.run_id).map((a) => a.error), [false]);
-  assert.deepEqual(creates(fake).map((body) => [body.domainAllowList, body.networkBlockAll]), [["pypi.org,*.pythonhosted.org", undefined]]);
 });
 
 test("a start has the box of a run that ended while its box was left (its delete failed) let go of the run's folder, then destroys it", { timeout: 180_000 }, async (t) => {

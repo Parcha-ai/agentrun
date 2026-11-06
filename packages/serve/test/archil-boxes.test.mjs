@@ -115,7 +115,7 @@ test("with Archil but no image that ships the helper, a remote box is unavailabl
 test("demo: a Daytona run mounts exactly its run's work/ through the helper; nothing is seeded, pulled or mirrored; its end syncs and checks the folder in, then destroys the box", { timeout: 180_000 }, async (t) => {
   const { server, fake, disk } = await onArchil(t);
   const { api, data } = server;
-  assert.deepEqual((await api("GET", "/capabilities")).body.places.boxes.find((b) => b.id === "daytona"), { id: "daytona", available: true, state: "ready", network: "allowlist" });
+  assert.deepEqual((await api("GET", "/capabilities")).body.places.boxes.find((b) => b.id === "daytona"), { id: "daytona", available: true, state: "ready", network: "none", network_reason: "remote boxes on an Archil disk: tools have no network yet; enforced by an in-box firewall" });
   await agent(api, "remote");
   const plan = [
     { tool: "bash", args: { command: "pwd; printf 'hello from the box\\n' > out.txt" } },
@@ -137,7 +137,10 @@ test("demo: a Daytona run mounts exactly its run's work/ through the helper; not
   assert.equal(readFileSync(join(dir, "work", "note.txt"), "utf8"), "written in the box");
   // Exactly its folder, mounted once; a sync at a turn's end; at the end, a sync, then the checkin, then the destroy.
   const calls = disk.calls();
-  assert.deepEqual(calls.filter((c) => c.verb === "mount" || c.verb === "revoke").map((c) => [c.verb, c.folder, c.region]), [["mount", folder, REGION]]);
+  assert.deepEqual(calls.filter((c) => c.verb === "mount" || c.verb === "revoke").map((c) => [c.verb, c.folder, c.region, c.netlocked]), [["mount", folder, REGION, true]], "mounted once, after the box locked its tools' network");
+  // The box's provider network is open (root reaches Archil); the box itself keeps its tools off it.
+  const made = fake.requests.filter((r) => r.method === "POST" && r.path === "/api/sandbox").map((r) => JSON.parse(r.body));
+  assert.deepEqual(made.map((body) => [body.networkBlockAll, body.domainAllowList]), [[undefined, undefined]]);
   assert.deepEqual(calls.slice(-2).map((c) => c.verb), ["sync", "checkin"]);
   assert.deepEqual(disk.holds(), {}, "the folder is checked in");
   assert.equal(fake.sandboxes.size, 0, "the box is destroyed");
@@ -216,6 +219,37 @@ test("a box whose /proc lets its tool user see the root archil client's processe
   assert.deepEqual(disk.holds(), {});
   assert.equal(fake.sandboxes.size, 0, "the box that could not have the folder is destroyed");
 });
+
+test("a Daytona box's tools have no network: its firewall, locked before the mount, refuses them every host but loopback (Archil itself and the metadata address included)", { timeout: 180_000 }, async (t) => {
+  const { server } = await onArchil(t);
+  const { api, data } = server;
+  await agent(api, "remote");
+  const reach = (host, port) => `connect ${host} ${port} >/dev/null 2>&1 && echo "${host} reached" || echo "${host} refused"`;
+  const plan = [{ tool: "bash", args: { command: [reach("169.254.169.254", 80), reach("pypi.org", 443), reach("mount.green.us-east-1.aws.prod.archil.com", 8100), reach("203.0.113.10", 32050), reach("127.0.0.1", 9)].join("; ") } }];
+  const run = (await api("POST", "/agents/remote/runs", { input: { content: JSON.stringify({ probe: plan }) } })).body;
+  await follow(api, run.run_id, ["completed"], { deadlineMs: 120_000 });
+  assert.deepEqual(answers(data, run.run_id)[0].text.trim().split("\n"), ["169.254.169.254 refused", "pypi.org refused", "mount.green.us-east-1.aws.prod.archil.com refused", "203.0.113.10 refused", "127.0.0.1 reached"]);
+});
+
+for (const [what, spoil, said] of [
+  ["root has no CAP_NET_ADMIN", (disk) => disk.noNetAdmin(), /root has no CAP_NET_ADMIN/],
+  ["its rules read back other than given", (disk) => disk.tamperIptables(), /reads back other rules than it was given/],
+]) {
+  test(`a Daytona box whose firewall cannot be locked (${what}) keeps no run folder: the call is refused, saying why, nothing is mounted, and the box goes`, { timeout: 180_000 }, async (t) => {
+    const { server, fake, disk } = await onArchil(t);
+    const { api, data } = server;
+    spoil(disk);
+    await agent(api, "remote");
+    const run = (await api("POST", "/agents/remote/runs", { input: { content: JSON.stringify({ probe: [{ tool: "bash", args: { command: "echo never" } }] }) } })).body;
+    await follow(api, run.run_id, ["completed"], { deadlineMs: 120_000 });
+    const [answer] = answers(data, run.run_id);
+    assert.equal(answer.error, true);
+    assert.match(answer.text, /the box could not lock its tools' network/);
+    assert.match(answer.text, said);
+    assert.deepEqual(disk.calls(), [], "archil was never run");
+    assert.equal(fake.sandboxes.size, 0, "the box is destroyed");
+  });
+}
 
 test("two users: every tool command runs as the tool user, which has no sudo, and the helper is the only root the box's own user runs", { timeout: 180_000 }, async (t) => {
   const { server, fake } = await onArchil(t, { daytona: { sudoProbe: true } });
