@@ -103,6 +103,13 @@ test("an opening never closed, or that reaches another opening first, is no bloc
   // A fenced example of the format in five backticks holds a four-backtick skill block: an example, never a skill.
   const example = parseReflection(`\`\`\`\`\`markdown\n${block("skill", "shown-only", SKILL)}\n\`\`\`\`\`\n\nNo notes.`);
   assert.equal(example.skills, undefined, JSON.stringify(example));
+  // A five-backtick example never closed is an example to the answer's end: a skill quoted in it is never learning.
+  const unclosed = parseReflection(`\`\`\`\`\`markdown\n${block("skill", "shown-only", SKILL)}\n\nNo close.`);
+  assert.equal(unclosed.skills, undefined, JSON.stringify(unclosed));
+  // A three-backtick note example inside a four-backtick skill is the skill's text: the skill is read whole, and no note.
+  const withNote = `---\nname: find-policies\ndescription: ${DESCRIPTION}\n---\n# Find policies\n\nKeep each policy as a note, like this:\n\n\`\`\`note policy.md\n${note()}\`\`\`\n`;
+  const kept = parseReflection(block("skill", "find-policies", withNote));
+  assert.deepEqual([kept.ok, kept.skills, kept.notes], [true, [{ name: "find-policies", text: withNote }], []], JSON.stringify(kept));
 });
 
 test("the host writes a draft's README from the description its block gives, and the JSON after it is the workflow.json", () => {
