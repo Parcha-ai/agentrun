@@ -1606,7 +1606,11 @@ no such clause: running that line is the restart. A reason a setting fixes (a mo
 
 `claude-agent` sends its requests to `ANTHROPIC_BASE_URL` (else Anthropic) with `ANTHROPIC_API_KEY` and Anthropic's own
 model id, and prices the run by it: a revision's `anthropic/<model-id>`, its dots as dashes, so OpenRouter's dotted name
-(`anthropic/claude-sonnet-5.5`) and Anthropic's own (`claude-sonnet-5-5`) are one model. `codex` and `opencode` send their requests
+(`anthropic/claude-sonnet-5.5`) and Anthropic's own (`claude-sonnet-5-5`) are one model. `pi` sends its Anthropic models'
+requests there too, compaction, a hosted search, a learned node and a grade included: to `ANTHROPIC_BASE_URL` with
+`ANTHROPIC_API_KEY` as `x-api-key` alone (never `ANTHROPIC_AUTH_TOKEN` or an OAuth token), and capabilities read its
+Anthropic default ready only where that route runs (`models.needs: "key"` without `ANTHROPIC_API_KEY`, or with an
+`ANTHROPIC_BASE_URL` a key may not go to). `codex` and `opencode` send their requests
 to serve's gateway (`AGENT_MODEL_BASE_URL`), else OpenAI with `OPENAI_API_KEY`. A harness with none of its own settings, where
 `OPENROUTER_API_KEY` is set, runs through OpenRouter (`https://openrouter.ai/api`, the key as a bearer token):
 claude-agent on its Messages endpoint, with Anthropic's own id on the wire (OpenRouter takes it: its Claude Code guide

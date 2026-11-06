@@ -8,7 +8,7 @@
 //     workflow ends the app writes the run's final status, with the outcome, and releases the run. The server carries
 //     it back once this process has exited: this process holds the run's store until then.
 // First: the secrets serve hands this process over a pipe, read and the pipe closed before anything else runs.
-import { authContextOf, mcpCredentials, withSecrets } from "./secrets.js";
+import { mcpCredentials, withSecrets } from "./secrets.js";
 import { mkdir } from "node:fs/promises";
 import { BACKGROUND_CONTEXT as BACKGROUND } from "@earendil-works/chord/context";
 import { basename, join, resolve } from "node:path";
@@ -31,7 +31,7 @@ import { LEARNED_WORKFLOW_TOOL, learnedWorkflowTool } from "./learned-workflow.j
 import { completer } from "./llm.js";
 import { searchOn } from "./hosted-search.js";
 import { imageLoader } from "./pdf-pages.js";
-import { EFFORT_ENV, type ModelRef, llmTiers, nodeTiers, runModels, type Tier, thinkingOf, workflowNodes } from "./model.js";
+import { EFFORT_ENV, type ModelRef, llmTiers, nodeTiers, providerModels, runModels, type Tier, thinkingOf, workflowNodes } from "./model.js";
 import { gated, liveView, nodeLog, readLiveView } from "./pause.js";
 import { remotePlace, storedPlace } from "./place.js";
 import { runBox, runBoxProvider } from "./run-box.js";
@@ -77,8 +77,7 @@ async function markResumed({ harness, context, generation, previous }: BeforeRes
 async function claudeModels(env: NodeJS.ProcessEnv, ref: string | undefined) {
   const choice = claudeModel(env, ref);
   if ("why" in choice) throw new Error(choice.why);
-  const { builtinModels } = await import("@earendil-works/pi-ai/providers/all");
-  return { models: builtinModels({ authContext: authContextOf(env) }), model: choice.model as ModelRef | undefined, byTier: new Map([["default", choice.model]]), unpriced: new Set<string>() };
+  return { models: await providerModels(env), model: choice.model as ModelRef | undefined, byTier: new Map([["default", choice.model]]), unpriced: new Set<string>() };
 }
 
 /** codex's model (or opencode's, `harness`, on codex's route) and pi-ai's catalog that prices it, where it reaches OpenAI only through OpenRouter (codexModel: no
@@ -87,8 +86,7 @@ async function codexModels(env: NodeJS.ProcessEnv, ref: string | undefined, harn
   if (env[FAUX_HARNESS_ENV] || !openRouterOnly(harness, env)) return runModels(env, ref, ["default"], harness);
   const choice = await codexModel(env, ref, harness);
   if ("why" in choice) throw new Error(choice.why);
-  const { builtinModels } = await import("@earendil-works/pi-ai/providers/all");
-  return { models: builtinModels({ authContext: authContextOf(env) }), model: choice.model as ModelRef | undefined, byTier: new Map([["default", choice.model]]), unpriced: new Set<string>() };
+  return { models: await providerModels(env), model: choice.model as ModelRef | undefined, byTier: new Map([["default", choice.model]]), unpriced: new Set<string>() };
 }
 
 /** The run's row and its pinned revision, read from the store the run's directory sits in. */

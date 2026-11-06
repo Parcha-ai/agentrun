@@ -197,8 +197,13 @@ export async function chooseModel(env: NodeJS.ProcessEnv, ref: string | undefine
   const slash = named.indexOf("/");
   if (slash < 1) return { why: `The host's default model ${named} is not a provider/model-id.`, host: true, needs: "model" };
   const [provider, modelId] = [named.slice(0, slash), named.slice(slash + 1)];
-  const { builtinModels } = await import("@earendil-works/pi-ai/providers/all");
-  const models = builtinModels({ authContext: authContextOf(env) });
+  let models: Awaited<ReturnType<typeof providerModels>>;
+  try {
+    models = await providerModels(env);
+  } catch (error) {
+    // A gateway ANTHROPIC_BASE_URL names that a key may not go to (gatewayBase): no Anthropic model runs, by its words.
+    return { why: (error as Error).message, host: true, needs: "key" };
+  }
   const model = models.getModel(provider, modelId);
   if (!model) return { why: `pi-ai knows no model ${modelId} of ${provider}. Name one of its models, or route every model through a gateway with AGENT_MODEL_BASE_URL.`, host: ref === undefined, needs: "model" };
   if (!(await models.getAuth(model))) {
@@ -316,9 +321,9 @@ export async function runModels(env: NodeJS.ProcessEnv, ref: string | undefined,
   }
   const model = byTier.get("default");
   if (!faux && !env.AGENT_MODEL_BASE_URL) {
-    const { builtinModels } = await import("@earendil-works/pi-ai/providers/all");
-    // Each provider's key from `env`, which holds this process's secrets, never from process.env (secrets.ts).
-    return { models: withRequestKeys(builtinModels({ authContext: authContextOf(env) }), env), model, byTier, unpriced: new Set<string>() };
+    // Each provider's key from `env`, which holds this process's secrets, never from process.env (secrets.ts); Anthropic's
+    // at ANTHROPIC_BASE_URL when set (providerModels).
+    return { models: withRequestKeys(await providerModels(env), env), model, byTier, unpriced: new Set<string>() };
   }
   const ids = [...new Set([...byTier.values()].map((m) => m.modelId))];
   const models = createModels({ authContext: authContextOf(env) });
@@ -421,6 +426,37 @@ export async function runModels(env: NodeJS.ProcessEnv, ref: string | undefined,
 
 /** The requests a Models object sends, each with its options third. */
 const REQUESTS = new Set<PropertyKey>(["stream", "streamSimple", "complete", "completeSimple"]);
+
+/** The variable whose key a gateway named by ANTHROPIC_BASE_URL takes, sent as `x-api-key`, as claude-agent's adapter
+ *  sends it (adapters.ts claudeProvider). Never ANTHROPIC_AUTH_TOKEN (a bearer), an OAuth token or OpenRouter's key. */
+const ANTHROPIC_GATEWAY_KEY = "ANTHROPIC_API_KEY";
+
+/** pi-ai's providers, their keys read from `env` (authContextOf), with Anthropic's where ANTHROPIC_BASE_URL points when
+ *  it is set: each Anthropic model sent to <base>/v1/messages (adapters.ts gatewayBase, which refuses a base a key may
+ *  not go to, by its name), with ANTHROPIC_API_KEY alone, as `x-api-key`, as claude-agent's requests go. Every pi request
+ *  on an Anthropic model takes it: a run's turns and compaction, its side requests (a hosted search, a learned node) and
+ *  a grade, and the readiness chooseModel reports. */
+export async function providerModels(env: NodeJS.ProcessEnv) {
+  const { builtinModels } = await import("@earendil-works/pi-ai/providers/all");
+  const models = builtinModels({ authContext: authContextOf(env) });
+  if (!env.ANTHROPIC_BASE_URL) return models;
+  const { gatewayBase } = await import("./adapters.js");
+  const base = gatewayBase("ANTHROPIC_BASE_URL", env.ANTHROPIC_BASE_URL);
+  const [{ createProvider }, { anthropicMessagesApi }] = await Promise.all([import("@earendil-works/pi-ai/models"), import("@earendil-works/pi-ai/api/anthropic-messages.lazy")]);
+  const own = models.getProvider("anthropic")!;
+  models.setProvider(createProvider({
+    id: own.id,
+    name: own.name,
+    baseUrl: base,
+    auth: { apiKey: { name: ANTHROPIC_GATEWAY_KEY, resolve: async ({ ctx }) => {
+      const key = await ctx.env(ANTHROPIC_GATEWAY_KEY);
+      return key ? { auth: { apiKey: key }, source: ANTHROPIC_GATEWAY_KEY } : undefined;
+    } } },
+    models: own.getModels().map((model) => ({ ...model, baseUrl: base })),
+    api: anthropicMessagesApi(),
+  }));
+  return models;
+}
 
 /** `models` with each request's `env` option carrying the REQUEST_KEYS that `env` holds (a run's process holds only
  *  those of its model's provider), so Bedrock's request finds its AWS keys there: in no environment, which would hand
