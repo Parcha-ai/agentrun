@@ -243,12 +243,12 @@ npm run conformance -w @parcha/agentrun-computer -- --provider ./my-provider.js 
 ```text
 computer conformance · docker · computerd 0.1.0-beta.30 linux/amd64
 core health    hello ping unknown-method                    ✓ 3
-core exec      argv streams exit-code cwd env timeout abort ✓ 10
-               truncation setsid-escapee user
+core exec      argv streams exit-code cwd env timeout abort ✓ 11
+               truncation setsid-escapee unprivileged user
 ...
 full provider  network-open network-allow janitor           ✓ 2 - 1
   - provider.network-allow: the provider does not declare network:allow
-core PASS 46/46 · full 2/3 · network:allow not declared
+core PASS 47/47 · full 2/3 · network:allow not declared
 ```
 
 A module path is resolved from the directory npm was run in. It exits 0 when Core passes, 1 when it fails, and 2 on a usage error; `--json` prints the report object
