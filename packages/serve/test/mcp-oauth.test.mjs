@@ -699,9 +699,9 @@ test("a loopback MCP server's authorization server may name loopback endpoints o
   const sent = offLoopback(t);
   const net = { network: { lookup: async (host) => [host], fetch: async (url) => (sent.push(url), new Response("", { status: 404 })) } };
   const bad = [
-    "http://169.254.169.254/latest", // key-gate: denylist the link-local metadata address a loopback server's authorization server must not name
-    "http://10.0.0.5/as", // key-gate: denylist a private address a loopback server's authorization server must not name
-    "http://[fd00::1]/as", // key-gate: denylist a private-range address a loopback server's authorization server must not name
+    "http://169.254.169.254/latest", // key-gate: denylist the link-local metadata address an authorization server must not name
+    "http://10.0.0.5/as", // key-gate: denylist a private address an authorization server must not name
+    "http://[fd00::1]/as", // key-gate: denylist a private-range address an authorization server must not name
   ];
   for (const at of bad) {
     // Its authorization server itself (the metadata address its resource metadata names), its token endpoint, its
