@@ -18,6 +18,7 @@ import { ATTEMPTS_KEPT, MESSAGE_TYPES, WEBHOOK_EVENTS } from "./webhooks.js";
 import { HOOK_TOLERANCE_S } from "./trigger-secrets.js";
 import { CATCHUP_WINDOW_S, DUE_KEPT, FAILURES_TO_PAUSE, FIRING_STATUSES, PAYLOAD_KEPT_BYTES, HISTORY_KEPT, MAX_EVERY_S, MIN_EVERY_S, OVERLAP, SOURCE_KINDS, TARGET_KINDS } from "./triggers.js";
 import { DEFINITION_FIELDS, NOT_KEPT } from "./validate.js";
+import { NOT_SET_UP } from "./runnable.js";
 import { APPROVAL_ROW, ARGS_PREVIEW_BYTES, PERMISSIONS } from "./tool-gate.js";
 import { LEGACY_NAMES, permissionsOf, type Pickable, PICKABLE, PROVIDERS, TABLE_TOOLS } from "./tool-plane.js";
 
@@ -1664,7 +1665,10 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   // A row's usage: the contract's shape, on more rows here than the usage row (pi-durable-agent's timeline, BROWSER_CHARGE).
   const timelineRow = schemas.TimelineRow as Json & { properties: Record<string, Json> };
   timelineRow.properties.usage = { ...timelineRow.properties.usage, "x-agentrun-serve-note": "On the `usage` row, the run's cost so far. On a paid tool's charge row (a `phase` row, \"Tool cost: monid charged $0.0030 for monid.run\", `tool_name` the tool, `tool_use_id` the call), that charge alone. On a browser call's `tool_use` row (`tool_name` one of the browser's tools: snapshot, run, browser_read, ...), the browser session time booked under that call: what the session ran since its last charge, and, on the session's last call, its release's charge topped up to the provider's minimum. A browser charge has no row of its own. A charge booked after the row was served (a release after the answer) is served as a change of that row, with the same `id` and its new `usage`. `requests` is 0 on every row but the usage row; `usd` is null once a charge on the row has no price, with `so_far_usd` and `unpriced` saying what is known. The run's cost counts each charge once, wherever it shows: summing every row's `usage` but the usage row's gives what its paid tools charged." };
-  const noted = ["DefinitionInput.max_cost_usd", "TimelineRow.usage"];
+  // ErrorBody.fields beyond `input_invalid`: a 409 agent_not_runnable names each thing that keeps the run from starting.
+  const errorBody = schemas.ErrorBody as Json & { properties: Record<string, Json> };
+  errorBody.properties.fields = { ...errorBody.properties.fields, "x-agentrun-serve-note": "Also on `agent_not_runnable` (409) here: each thing that keeps the run from starting, by the field it is about, its reason, its message and the fix when there is one (such as AGENT_MODEL_PRICE for a capped run on a model with no price), as a 422 names each field." };
+  const noted = ["DefinitionInput.max_cost_usd", "TimelineRow.usage", "ErrorBody.fields"];
   // PUT .../definition takes the contract's body (the definition itself) or this server's own, POST /agents' body with a
   // note: exactly one, as only this server's holds `definition` and both are closed. If-Match is the contract's
   // precondition for its body; this server's own body may leave it out.
@@ -1756,6 +1760,14 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
     runStatus.enum = [...runStatus.enum.slice(0, runStatus.enum.indexOf("working") + 1), "paused", ...runStatus.enum.slice(runStatus.enum.indexOf("working") + 1)];
     runStatus["x-agentrun-serve"] = "pause/1";
     fields.push("RunStatus.paused");
+  }
+  // runnable/1: a 409 agent_not_runnable's `fields` (server.ts runnable) name what keeps a run from starting, many of them a
+  // setting this host lacks (`not_set_up_here`, runnable.ts NOT_SET_UP), a reason the contract's InputIssue enum lacks.
+  const issueReason = ((schemas.InputIssue as Json).properties as Record<string, Json>).reason as Json & { enum?: string[] };
+  if (Array.isArray(issueReason.enum) && !issueReason.enum.includes(NOT_SET_UP)) {
+    issueReason.enum = [...issueReason.enum, NOT_SET_UP];
+    issueReason["x-agentrun-serve"] = "runnable/1";
+    fields.push(`InputIssue.reason.${NOT_SET_UP}`);
   }
   // A paid tool's charges (monid's) are a meter of their own on /usage, beside the model's tokens.
   const meter = schemas.Meter as Json & { enum?: string[] };

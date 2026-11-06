@@ -753,8 +753,10 @@ model with no price set that the catalog does not list in any form; null while `
   entry when it is paid; a bare id, a provider the catalog does not list for it, or one it lists at $0 takes the highest
   price any provider lists (one entry's whole price, the most input plus output; a $0 entry never wins over a paid one),
   as the gateway does not say whose model answers. A run with `max_cost_usd` on a model with no price is refused before it
-  starts (409 `agent_not_runnable` on `definition.model`, "The model <id> has no price here, so a run's spend cap cannot be
-  kept on it.", its fix naming `AGENT_MODEL_PRICE`); an agent saved with a default cap on one gets that as a warning. One
+  starts: 409 `agent_not_runnable`, whose `error.fields` entry names `definition.model`, the reason `not_set_up_here`, "The
+  model <id> has no price here, so a run's spend cap cannot be kept on it." and the `fix` naming `AGENT_MODEL_PRICE`, as
+  every 409 `agent_not_runnable` names each thing that keeps a run from starting; an agent saved with a default cap on one
+  gets that as a warning. One
   without a cap runs, on every harness, with each request's cost unknown: codex's and opencode's proxy books it unknown,
   never $0, so the run's `cost.usd` is `null` and `/usage` counts it in `unpriced_runs`.
 - Otherwise pi-ai's providers serve them, each with its key from the environment (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`,

@@ -1238,6 +1238,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     const blockers = await blockersOf(env, shape, settings.get(), { capped, boxes: boxOffers, offers, mcp: mcpTools });
     if (!blockers.length) return;
     const message = blockers.map((b) => b.message).join(" ");
+    // Each blocker as a 422 names its issue: its field, reason and message, and the fix when it has one.
+    const fields = blockers.map(issueOf);
     const unbound = blockers.flatMap((b) => (b.tool ? [b.tool] : []));
     // A known MCP meta tool is no server or tool that is missing: it has a key of its own, with why it is not granted.
     const notGrantable = blockers.flatMap((b) => (b.notGrantable ? [b.notGrantable] : []));
@@ -1245,12 +1247,12 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     const harness = blockers.find((b) => b.harness)?.harness;
     const box = blockers.find((b) => b.box)?.box;
     const named = { ...(harness ? { harness } : {}), ...(box ? { box } : {}), ...(notGrantable.length ? { not_grantable: notGrantable } : {}) };
-    if (revision.kind === "agentic") throw new ApiError("agent_not_runnable", message, { details: { unbound, missing, ...named } });
+    if (revision.kind === "agentic") throw new ApiError("agent_not_runnable", message, { fields, details: { unbound, missing, ...named } });
     const tier = blockers.find((b) => b.tier)?.tier;
     const decisions = Object.fromEntries(blockers.flatMap((b) => (b.decision ? [[b.decision.provider, { reason: b.reason, needs: b.decision.needs }]] : [])));
     const denied = blockers.flatMap((b) => (b.denied ? [b.denied] : []));
     const asks = blockers.flatMap((b) => (b.asks ? [b.asks] : []));
-    throw new ApiError("agent_not_runnable", message, { details: { adapters: [...new Set(blockers.flatMap((b) => (b.adapter ? [b.adapter] : [])))], unbound, missing, code: blockers.some((b) => b.codeNodes || b.shell), ...(tier ? { tier } : {}), ...(Object.keys(decisions).length ? { decisions } : {}), ...(denied.length ? { denied } : {}), ...(asks.length ? { asks } : {}), ...named } });
+    throw new ApiError("agent_not_runnable", message, { fields, details: { adapters: [...new Set(blockers.flatMap((b) => (b.adapter ? [b.adapter] : [])))], unbound, missing, code: blockers.some((b) => b.codeNodes || b.shell), ...(tier ? { tier } : {}), ...(Object.keys(decisions).length ? { decisions } : {}), ...(denied.length ? { denied } : {}), ...(asks.length ? { asks } : {}), ...named } });
   }
 
   /** Where a revision of `kind` naming `tools` and no place runs here: the place a new agent would be saved with. */
