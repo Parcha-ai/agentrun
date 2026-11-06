@@ -276,8 +276,9 @@ func TestNotFound(t *testing.T) {
 		"files.move":   {"from": missing, "to": missing + "2"},
 		"files.remove": {"path": missing},
 		"files.write":  {"path": filepath.Join(missing, "f"), "data": ""},
-		"tar.pull":     {"path": missing},
-		"tar.push.end": {"id": "nope"},
+		"tar.pull.begin": {"path": missing},
+		"tar.pull.read":  {"id": "nope"},
+		"tar.push.end":   {"id": "nope"},
 	} {
 		r := c.fails(method, params, "not_found")
 		if r.Error.Message == "" {
@@ -302,7 +303,7 @@ func TestRelativePathsAreInvalid(t *testing.T) {
 		{"files.move", map[string]any{"from": abs + "/a", "to": "b"}},
 		{"files.remove", map[string]any{"path": "a"}},
 		{"files.stat", map[string]any{"path": ""}},
-		{"tar.pull", map[string]any{"path": "a"}},
+		{"tar.pull.begin", map[string]any{"path": "a"}},
 		{"tar.push.begin", map[string]any{"path": "a"}},
 	} {
 		r := c.fails(tc.method, tc.params, "invalid")
@@ -525,28 +526,30 @@ func TestRemove(t *testing.T) {
 	c.fails("files.remove", map[string]any{"path": "/"}, "denied")
 }
 
-// pull runs tar.pull and returns the archive, checking each tar.data against the request and the chunk limit.
+// pull runs a tar pull to its end and returns the archive, checking each read against the chunk limit.
 func pull(t *testing.T, c *conn, path string) []byte {
 	t.Helper()
-	var res struct{ Bytes int64 }
-	notes := c.ok("tar.pull", map[string]any{"path": path}, &res)
+	var begun struct{ ID string }
+	c.ok("tar.pull.begin", map[string]any{"path": path}, &begun)
+	if begun.ID == "" {
+		t.Fatal("no pull id")
+	}
 	var archive []byte
-	for _, n := range notes {
-		var data struct {
-			Request int
-			Data    []byte
+	for {
+		var read struct {
+			Data []byte
+			EOF  bool
 		}
-		if n.Method != "tar.data" || json.Unmarshal(n.Params, &data) != nil || data.Request != c.nextID {
-			t.Fatalf("a notification that is not this pull's tar.data: %s %s", n.Method, n.Params)
+		c.ok("tar.pull.read", map[string]any{"id": begun.ID}, &read)
+		if len(read.Data) > chunk || (len(read.Data) < chunk && !read.EOF) {
+			t.Fatalf("a read of %d bytes, eof %v: a read is a whole chunk until the end", len(read.Data), read.EOF)
 		}
-		if len(data.Data) == 0 || len(data.Data) > chunk {
-			t.Fatalf("a tar.data of %d bytes", len(data.Data))
+		archive = append(archive, read.Data...)
+		if read.EOF {
+			break
 		}
-		archive = append(archive, data.Data...)
 	}
-	if int64(len(archive)) != res.Bytes {
-		t.Fatalf("got %d bytes, the reply says %d", len(archive), res.Bytes)
-	}
+	c.ok("tar.pull.end", map[string]any{"id": begun.ID}, nil)
 	return archive
 }
 
@@ -648,6 +651,7 @@ type tarEntry struct {
 	name, link string
 	flag       byte
 	body       []byte
+	mode       int64
 }
 
 func makeTar(t *testing.T, entries ...tarEntry) []byte {
@@ -658,6 +662,9 @@ func makeTar(t *testing.T, entries ...tarEntry) []byte {
 		hdr := &tar.Header{Name: e.name, Linkname: e.link, Typeflag: e.flag, Mode: 0o644, Size: int64(len(e.body))}
 		if e.flag == tar.TypeDir {
 			hdr.Mode = 0o755
+		}
+		if e.mode != 0 {
+			hdr.Mode = e.mode
 		}
 		must(t, w.WriteHeader(hdr))
 		_, err := w.Write(e.body)
@@ -722,36 +729,153 @@ func TestTarPushEntriesMeetWhatIsThere(t *testing.T) {
 	}
 }
 
-func TestTarPullCancel(t *testing.T) {
+func TestTarPullEndStopsThePull(t *testing.T) {
 	c := dial(t)
 	dir := t.TempDir()
 	big := make([]byte, 8<<20)
 	_, _ = rand.Read(big)
 	write(t, filepath.Join(dir, "big"), big, 0o644)
-	c.send(41, "tar.pull", map[string]any{"path": dir})
-	if first := c.next(); first.Method != "tar.data" {
-		t.Fatalf("want tar.data first, got %s %+v", first.Result, first.Error)
+	var begun struct{ ID string }
+	c.ok("tar.pull.begin", map[string]any{"path": dir}, &begun)
+	var read struct {
+		Data []byte
+		EOF  bool
 	}
-	cancel, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "method": "$/cancelRequest", "params": map[string]any{"id": 41}})
-	_, err := c.in.Write(append(cancel, '\n'))
-	must(t, err)
-	chunks := 1
-	for {
-		m := c.next()
-		if m.ID == nil {
-			chunks++
-			continue
-		}
-		if string(m.ID) != "41" || m.kind() != "aborted" {
-			t.Fatalf("want aborted, got %s %+v", m.Result, m.Error)
-		}
-		break
+	c.ok("tar.pull.read", map[string]any{"id": begun.ID}, &read)
+	if len(read.Data) != chunk || read.EOF {
+		t.Fatalf("the first read: %d bytes, eof %v", len(read.Data), read.EOF)
 	}
-	if chunks >= len(big)/chunk {
-		t.Fatalf("%d chunks after the cancel: the pull did not stop", chunks)
-	}
+	c.ok("tar.pull.end", map[string]any{"id": begun.ID}, nil)
+	c.ok("tar.pull.end", map[string]any{"id": begun.ID}, nil)
+	c.fails("tar.pull.read", map[string]any{"id": begun.ID}, "not_found")
 	var stat entry
 	c.ok("files.stat", map[string]any{"path": dir}, &stat)
+}
+
+func TestTarPullReadSizes(t *testing.T) {
+	c := dial(t)
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "f"), bytes.Repeat([]byte("p"), 5000), 0o644)
+	want := pull(t, c, dir)
+	var begun struct{ ID string }
+	c.ok("tar.pull.begin", map[string]any{"path": dir}, &begun)
+	c.fails("tar.pull.read", map[string]any{"id": begun.ID, "maxBytes": chunk + 1}, "limit")
+	c.fails("tar.pull.read", map[string]any{"id": begun.ID, "maxBytes": 0}, "invalid")
+	var got []byte
+	for {
+		var read struct {
+			Data []byte
+			EOF  bool
+		}
+		c.ok("tar.pull.read", map[string]any{"id": begun.ID, "maxBytes": 1000}, &read)
+		if len(read.Data) > 1000 || (len(read.Data) < 1000 && !read.EOF) {
+			t.Fatalf("a read of %d bytes for 1000, eof %v", len(read.Data), read.EOF)
+		}
+		got = append(got, read.Data...)
+		if read.EOF {
+			break
+		}
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("reads of 1000 bytes gave %d bytes, not the %d of whole chunks", len(got), len(want))
+	}
+	c.ok("tar.pull.end", map[string]any{"id": begun.ID}, nil)
+}
+
+func TestPullsAreBoundedAndPerConnection(t *testing.T) {
+	c := dial(t)
+	dir := t.TempDir()
+	big := make([]byte, 4<<20)
+	_, _ = rand.Read(big)
+	write(t, filepath.Join(dir, "big"), big, 0o644)
+	var ids []string
+	for range 8 {
+		var begun struct{ ID string }
+		c.ok("tar.pull.begin", map[string]any{"path": dir}, &begun)
+		ids = append(ids, begun.ID)
+	}
+	c.fails("tar.pull.begin", map[string]any{"path": dir}, "limit")
+	other := dial(t)
+	other.fails("tar.pull.read", map[string]any{"id": ids[0]}, "not_found")
+	other.ok("tar.pull.end", map[string]any{"id": ids[0]}, nil)
+	c.ok("tar.pull.read", map[string]any{"id": ids[0]}, nil)
+	for _, id := range ids {
+		c.ok("tar.pull.end", map[string]any{"id": id}, nil)
+	}
+	if got := pull(t, c, filepath.Join(dir, "big")); len(got) < len(big) {
+		t.Fatalf("a pull after the 8 ended gave %d bytes", len(got))
+	}
+}
+
+func TestAnOpenPullIsEndedWhenTheConnectionEnds(t *testing.T) {
+	c := dial(t)
+	dir := t.TempDir()
+	big := make([]byte, 4<<20)
+	_, _ = rand.Read(big)
+	write(t, filepath.Join(dir, "big"), big, 0o644)
+	var begun struct{ ID string }
+	c.ok("tar.pull.begin", map[string]any{"path": dir}, &begun)
+	c.ok("tar.pull.read", map[string]any{"id": begun.ID}, nil)
+	_ = c.in.Close()
+	select {
+	case <-c.served:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the connection did not end")
+	}
+}
+
+func TestWriteThroughADanglingSymlinkMakesA0644File(t *testing.T) {
+	c := dial(t)
+	dir := t.TempDir()
+	must(t, os.Symlink("target", filepath.Join(dir, "link")))
+	c.ok("files.write", map[string]any{"path": filepath.Join(dir, "link"), "data": []byte("x")}, nil)
+	var stat entry
+	c.ok("files.stat", map[string]any{"path": filepath.Join(dir, "target")}, &stat)
+	if stat.Type != "file" || stat.Size != 1 || stat.Mode != 0o644 {
+		t.Fatalf("the file made through a dangling symlink: %+v, want a 0644 file", stat)
+	}
+	must(t, os.Symlink("given", filepath.Join(dir, "link2")))
+	c.ok("files.write", map[string]any{"path": filepath.Join(dir, "link2"), "data": []byte("y"), "mode": 0o600}, nil)
+	if c.ok("files.stat", map[string]any{"path": filepath.Join(dir, "given")}, &stat); stat.Mode != 0o600 {
+		t.Fatalf("a mode given through a dangling symlink: %o", stat.Mode)
+	}
+}
+
+func TestTarPushAppliesDirectoryModes(t *testing.T) {
+	c := dial(t)
+	dst := t.TempDir()
+	t.Cleanup(func() {
+		_ = filepath.WalkDir(dst, func(p string, d os.DirEntry, err error) error {
+			if err == nil && d.IsDir() {
+				_ = os.Chmod(p, 0o755)
+			}
+			return nil
+		})
+	})
+	must(t, os.Mkdir(filepath.Join(dst, "pre"), 0o700))
+	archive := makeTar(t,
+		tarEntry{name: "p/child", flag: tar.TypeReg, body: []byte("c")},
+		tarEntry{name: "p/", flag: tar.TypeDir, mode: 0o750},
+		tarEntry{name: "pre/", flag: tar.TypeDir, mode: 0o751},
+		tarEntry{name: "ro/", flag: tar.TypeDir, mode: 0o555},
+		tarEntry{name: "ro/a", flag: tar.TypeReg, body: []byte("a")},
+		tarEntry{name: "ro/sub/", flag: tar.TypeDir, mode: 0o555},
+		tarEntry{name: "ro/sub/b", flag: tar.TypeReg, body: []byte("b")},
+	)
+	if r := push(t, c, dst, archive, chunk); r.Error != nil {
+		t.Fatalf("push: %+v", r.Error)
+	}
+	for name, want := range map[string]uint32{"p": 0o750, "pre": 0o751, "ro": 0o555, "ro/sub": 0o555} {
+		var stat entry
+		if c.ok("files.stat", map[string]any{"path": filepath.Join(dst, name)}, &stat); stat.Type != "dir" || stat.Mode != want {
+			t.Errorf("%s: %s %o, want dir %o", name, stat.Type, stat.Mode, want)
+		}
+	}
+	for name, want := range map[string]string{"p/child": "c", "ro/a": "a", "ro/sub/b": "b"} {
+		if data, err := os.ReadFile(filepath.Join(dst, name)); err != nil || string(data) != want {
+			t.Errorf("%s: %q %v", name, data, err)
+		}
+	}
 }
 
 func TestAnAbandonedPushIsCleanedUpWhenTheConnectionEnds(t *testing.T) {
