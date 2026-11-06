@@ -95,10 +95,17 @@ async function joinedSince(groups: { file: string; user: string; ids: readonly n
   const line = (await readFile(groups.file, "utf8").catch(() => "")).split("\n").find((entry) => entry.startsWith("docker:"));
   if (!line) return false;
   const [, , gid, members = ""] = line.split(":");
-  return members.split(",").map((name) => name.trim()).includes(groups.user) && !groups.ids.includes(Number(gid));
+  return groups.user !== "" && members.split(",").map((name) => name.trim()).includes(groups.user) && !groups.ids.includes(Number(gid));
 }
-/** This process's user and groups, read from the system's group file: the probe's default for `groups`. */
-const ownGroups = () => ({ file: "/etc/group", user: userInfo().username, ids: process.getgroups?.() ?? [] });
+/** This process's user and groups, read from the system's group file: the probe's default for `groups`. A user with no
+ *  name (a numeric uid with no passwd entry, as in a container) is none: membership cannot be checked, so joining is said. */
+const ownGroups = () => {
+  let user = "";
+  try {
+    user = userInfo().username;
+  } catch {}
+  return { file: "/etc/group", user, ids: process.getgroups?.() ?? [] };
+};
 /** docker's own words for a socket that refused this process (the CLI's, or the connect's EACCES). Matched, never shown. */
 const SOCKET_DENIED = /permission denied while trying to connect to the docker daemon socket|docker\.sock: connect: permission denied/i;
 

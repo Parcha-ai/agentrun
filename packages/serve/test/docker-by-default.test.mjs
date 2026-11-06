@@ -137,6 +137,8 @@ test("a docker socket that refuses this process: the group file lists the user, 
     // In the group and holding it, yet refused: no restart would help, so the reason says to join (the full fix).
     assert.deepEqual(await reasonOf({ file: joined, user: "manuel", ids: [100, 999] }), { id: "docker", available: false, reason: JOIN_GROUP }, words);
     assert.deepEqual(await reasonOf({ file: join(await scratch(t), "none"), user: "manuel", ids: [100] }), { id: "docker", available: false, reason: JOIN_GROUP }, "no group file: it cannot say");
+    // A process whose uid has no name (no passwd entry) cannot be looked up: the guidance stays, never a failed probe.
+    assert.deepEqual(await reasonOf({ file: await groupFile(t, ["", "manuel"]), user: "", ids: [100] }), { id: "docker", available: false, reason: JOIN_GROUP }, "no user name");
   }
 });
 
