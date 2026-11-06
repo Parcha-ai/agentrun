@@ -68,6 +68,15 @@ test("a generic name is a meta tool only on its provider's host: Klavis's execut
   for (const name of ["COMPOSIO_SEARCH_TOOLS", "add", "execute", "code"]) assert.equal(metaToolOf("http://127.0.0.1:9/mcp", name), undefined, `${name} runs nothing by name, or is no known meta tool`);
 });
 
+test("a host written with any number of final dots is the same host: strata.klavis.ai.. is klavis.ai's, as strata.klavis.ai is", async () => {
+  const { metaToolOf } = await import("../dist/mcp-meta.js");
+  for (const host of ["strata.klavis.ai", "strata.klavis.ai.", "strata.klavis.ai..", "strata.klavis.ai..."]) {
+    assert.equal(metaToolOf(`https://${host}/mcp/?strata_id=x`, "execute_action")?.reason, REASON, host);
+  }
+  assert.equal(metaToolOf("https://mcp.zapier.com../api/mcp/s/x/mcp", "write_code_action")?.reason, REASON, "mcp.zapier.com.. is mcp.zapier.com");
+  assert.equal(metaToolOf("https://klavis.ai.example.com../mcp", "execute_action"), undefined, "a host that only looks like Klavis's stays one");
+});
+
 test("a meta tool granted before the rule is refused at the launch, when the run's tools are pinned", () => {
   const source = { server: () => ({ url: "http://127.0.0.1:9/mcp", tools: [{ name: "COMPOSIO_MULTI_EXECUTE_TOOL", inputSchema: object }, { name: "GMAIL_SEND_EMAIL", inputSchema: object }] }), headers: () => undefined };
   assert.throws(() => mcpPinOf(["mcp:composio/COMPOSIO_MULTI_EXECUTE_TOOL"], source), new RegExp(`mcp:composio/COMPOSIO_MULTI_EXECUTE_TOOL can't be granted: ${REASON.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
