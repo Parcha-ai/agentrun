@@ -1493,9 +1493,10 @@ export class Runs {
     return { ...error, message: this.shown(run, error.message) };
   }
 
-  /** A run's review as its view serves it: its reason (an escalation's own words) in shown()'s terms. */
+  /** A run's review as its view serves it: its reason (an escalation's own words) in shown()'s terms, or withheld as its
+   *  other words are while the run is hidden (meta.unshown), as a list row read from disk withholds it. */
   private servedReview(run: Run, review: RunReview | null): RunReview | null {
-    return review && { ...review, reason: this.shown(run, review.reason) };
+    return review && { ...review, reason: run.meta.unshown ? WITHHELD_SIGN_IN : this.shown(run, review.reason) };
   }
 
   /** The pointers a run was handed, read back to cut them (sign-ins.ts peek and forgotten), by its serve.json's
@@ -3803,7 +3804,8 @@ export class Runs {
       status: STATUS_OF[row.state as Ended], state: "idle" as State, title: typeof meta?.title === "string" ? meta.title : "",
       ...(typeof meta?.effort === "string" ? { effort: meta.effort } : {}),
       created_at: typeof meta?.created_at === "string" ? meta.created_at : row.startedAt, ended_at: row.endedAt ?? null,
-      error: failed && (shown === "withheld" ? { code: failed.code, message: WITHHELD_SIGN_IN, retryable: false } : { ...failed, message: say(failed.message) }),
+      // Withheld as load withholds a held run's: its code too, which can be the run's own (errorOfRow).
+      error: failed && (shown === "withheld" ? { code: "run_failed", message: WITHHELD_SIGN_IN, retryable: false } : { ...failed, message: say(failed.message) }),
       review: reviewAt(review && { ...review, reason: say(review.reason) }, row.endedAt ?? new Date(0).toISOString()),
       cost: { usd: row.costUsd ?? null, basis: "estimate", charge_state: null, cap_usd: typeof meta?.max_cost_usd === "number" ? meta.max_cost_usd : null, ...(typeof meta?.max_cost_usd === "number" ? { overshoot_bound_usd: 0 } : {}), ...(row.costUsd == null ? (soFarOfMeta(meta) ?? {}) : {}) },
       archived_at: row.archivedAt ?? null,

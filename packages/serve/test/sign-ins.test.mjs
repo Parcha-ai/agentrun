@@ -19,7 +19,7 @@ import { WITHHELD_SIGN_IN } from "../dist/runs.js";
 import { learningTestHooks } from "../dist/learning.js";
 import { calls as bbCalls, contexts, KEY as BB_KEY } from "./fixtures/faux-browserbase-check.mjs";
 import { KEY as KERNEL_KEY } from "./fixtures/faux-kernel-check.mjs";
-import { agent, client, FAUX, follow, runDir, runRecordOf, scratch, serve, storeRun, withEnv } from "./support.mjs";
+import { agent, answerFlow, client, FAUX, flowAgent, follow, runDir, runRecordOf, scratch, serve, storeRun, withEnv } from "./support.mjs";
 import { ended, LEARN, learner, made, objects, repoOf, started } from "./learn-support.mjs";
 import { note } from "./fixtures/faux-learn.mjs";
 
@@ -1463,4 +1463,27 @@ test("a hidden run's files are withheld as its words are: its work/ is neither l
   assert.equal(listed.status, 200);
   assert.ok(listed.body.files.some((file) => file.path === "account.html"), JSON.stringify(listed.body));
   assert.equal((await api("GET", `/runs/${first.runId}/files/account.html`)).status, 200);
+});
+
+test("an escalated run handed a sign-in that can't be read back has its review's reason withheld alike in its view and in both lists, read from disk or held", { timeout: 180_000 }, async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, KEYS);
+  const first = await serve(t);
+  const gated = answerFlow();
+  gated.schemas.In.properties.amount = { type: "number" };
+  gated.root.steps.unshift({ node: "escalate", label: "too big", when: { predicate: "gte", path: "amount", n: 500 }, kind: "review", stage: "gate", summary: "needs a person" });
+  assert.equal((await first.api("POST", "/agents", flowAgent("gated", gated))).status, 201);
+  const runId = (await first.api("POST", "/agents/gated/runs", { input: { question: "What is six times seven?", amount: 600 } })).body.run_id;
+  await follow(first.api, runId, ["completed"]);
+  assert.equal((await first.api("GET", `/runs/${runId}`)).body.review.reason, "needs a person");
+  await first.close();
+  // Marked as handed a sign-in this server keeps no pointer for, live or forgotten: it can't be read back.
+  const metaFile = join(runDir(first.data, runId), "serve.json");
+  const meta = JSON.parse(await readFile(metaFile, "utf8"));
+  await writeFile(metaFile, `${JSON.stringify({ ...meta, tool_plane: { ...meta.tool_plane, browser: "browserbase" }, sign_in_handed: "0".repeat(64) })}\n`);
+  const { api } = await serve(t, { data: first.data });
+  const withheld = "This server can't read the run's browser sign-in (its seal key changed or is missing, or the sign-in is damaged), so nothing the run said is shown.";
+  const reasons = async () => [(await api("GET", "/runs")).body, (await api("GET", "/agents/gated/runs")).body].map((body) => body.runs.find((r) => r.run_id === runId).review?.reason);
+  assert.deepEqual(await reasons(), [withheld, withheld], "read from its row and serve.json");
+  assert.equal((await api("GET", `/runs/${runId}`)).body.review?.reason, withheld, "its view");
+  assert.deepEqual(await reasons(), [withheld, withheld], "held now");
 });
