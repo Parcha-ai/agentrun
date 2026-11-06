@@ -4,8 +4,15 @@
 // production token under those names, and the SDK reads them, else the active profile of ~/.modal.toml, on its own
 // (modal-client@64880502:js/src/config.ts:139-145; client.ts:123). So the client is given the COMPUTER_MODAL_ pair
 // explicitly: a tokenId and tokenSecret passed to ModalClient replace what the environment or the profile held, and
-// clear any OAuth credentials (client.ts:124-148). The modal package is the host's: it is imported only when a
-// provider is made.
+// clear any OAuth credentials (client.ts:124-148).
+//
+// The key goes only to the server this module chooses: COMPUTER_MODAL_SERVER_URL, else the SDK's own default
+// (config.ts:143). ModalClient cannot take a server explicitly: it declares `endpoint` (client.ts:51) and never reads
+// it, and the control-plane client is made from the profile's serverUrl (client.ts:131, 175, 281), which getProfile
+// takes from MODAL_SERVER_URL before any profile's server_url (config.ts:140-143), the profile being MODAL_PROFILE's
+// or the active one in MODAL_CONFIG_PATH or ~/.modal.toml (config.ts:76-82, 126-137). So an ambient MODAL_SERVER_URL is
+// refused, and the module sets MODAL_SERVER_URL to its choice only while it constructs the client, so no profile can
+// redirect it. The modal package is the host's: it is imported only when a provider is made.
 import { ModalProvider, type ModalSdk } from "../modal.js";
 import type { ComputerProvider } from "../provider.js";
 
@@ -18,7 +25,12 @@ export const MODAL_ENV = {
 	daemonImage: "COMPUTER_MODAL_DAEMON_IMAGE",
 	/** The same daemon built as version <version>-drift, for the drift.version case. */
 	driftedDaemonImage: "COMPUTER_MODAL_DRIFTED_DAEMON_IMAGE",
+	/** The server the key goes to; the SDK's default when unset. */
+	serverUrl: "COMPUTER_MODAL_SERVER_URL",
 } as const;
+
+/** The SDK's default server (modal-client@64880502:js/src/config.ts:143). */
+const MODAL_DEFAULT_SERVER_URL = "https://api.modal.com:443";
 
 /** What this module gives the SDK's ModalClient: the token, explicitly, so the SDK fills none of it in. */
 export interface ModalClientParams {
@@ -55,8 +67,24 @@ async function client({ env = process.env, ModalClient }: ModalModuleOptions): P
 				"it takes a key from those names only, never MODAL_TOKEN_ID or MODAL_TOKEN_SECRET",
 		);
 	}
+	if (env.MODAL_SERVER_URL) {
+		throw new Error(
+			`the Modal conformance module refuses to start while MODAL_SERVER_URL is set: the SDK would send the key there. ` +
+				`Unset it, and name the server in ${MODAL_ENV.serverUrl} if it is not ${MODAL_DEFAULT_SERVER_URL}`,
+		);
+	}
+	const serverUrl = env[MODAL_ENV.serverUrl] || MODAL_DEFAULT_SERVER_URL;
 	const Client = ModalClient ?? ((await import(MODAL_PACKAGE)) as { ModalClient: new (params: ModalClientParams) => unknown }).ModalClient;
-	return new Client({ tokenId, tokenSecret }) as ModalSdk;
+	// getProfile reads MODAL_SERVER_URL from process.env when the client is constructed (client.ts:123), and the
+	// control-plane client is made then (client.ts:175); afterwards process.env is as it was.
+	const before = process.env.MODAL_SERVER_URL;
+	process.env.MODAL_SERVER_URL = serverUrl;
+	try {
+		return new Client({ tokenId, tokenSecret }) as ModalSdk;
+	} finally {
+		if (before === undefined) delete process.env.MODAL_SERVER_URL;
+		else process.env.MODAL_SERVER_URL = before;
+	}
 }
 
 export async function createProvider(options: ModalModuleOptions = {}): Promise<ComputerProvider> {
