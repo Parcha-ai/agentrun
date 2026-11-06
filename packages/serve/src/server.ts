@@ -291,8 +291,8 @@ async function tokenIn(file: string): Promise<{ token: string; made: boolean }> 
     return { token: known, made: false };
   }
   const token = `ar_local_${randomBytes(24).toString("base64url")}`;
-  await writeFile(file, `${token}\n`, { mode: 0o600, flag: "w" });
-  await chmod(file, 0o600);
+  // Whole or not there: a reader (the token file a server's record names, a script) never finds it made but empty.
+  await writeDurable(file, `${token}\n`, 0o600, undefined, true);
   return { token, made: true };
 }
 
