@@ -1,6 +1,6 @@
 // A server on a fresh data directory with the faux model, and a client for its /v2 routes. No key, no network.
 import assert from "node:assert/strict";
-import { chmod, copyFile, lstat, mkdir, mkdtemp, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, copyFile, lstat, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer, request } from "node:http";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -479,4 +479,20 @@ export function runIds(data) {
 export function runsFolders(data) {
   const agents = join(data, "disk", "agents");
   return (existsSync(agents) ? readdirSync(agents) : []).map((agent) => join(agents, agent, "runs")).filter((folder) => existsSync(folder));
+}
+
+/** What a faux process noted in `file` as JSON (a held process's pid and where it held): null while the file does not
+ *  exist. `read`: how the file is read (a test's stub). */
+export async function jsonIn(file, read = (path) => readFile(path, "utf8")) {
+  const text = await read(file).catch(() => null);
+  return text === null ? null : JSON.parse(text);
+}
+
+/** `file`'s JSON once a faux process has noted it (jsonIn), polled every 50 ms; fails saying `reaching` after `ms`. */
+export async function writtenJson(file, reaching, { ms = 55_000, read } = {}) {
+  for (const end = Date.now() + ms; ; await new Promise((resolve) => setTimeout(resolve, 50))) {
+    const value = await jsonIn(file, read);
+    if (value !== null) return value;
+    assert.ok(Date.now() < end, reaching);
+  }
 }
