@@ -169,3 +169,31 @@ test("a link to a directory planted at a display name is replaced, never moved i
   for (const name of ["ended", "exit"]) assert.equal(lstatSync(join(work, "background", "1", name)).isFile(), true, `${name} is a file of its own now`);
   assert.deepEqual(readdirSync(join(work, "background", "1")).filter((name) => name.startsWith(".put.")), [], "no temporary file is left");
 });
+
+test("on a terminal too, a pid written into work/ is no group a signal goes to: TERM ends process 1's own terminal command, and the forged group lives on", { timeout: 120_000 }, async (t) => {
+  const other = decoy(t);
+  const plan = [
+    { tool: "bash_background", args: { command: "sleep 30", tty: true } },
+    { tool: "write", args: { path: "background/1/pid", content: String(other) } },
+    { tool: "write", args: { path: "background/1/tty", content: "" } },
+    { tool: "bash_signal", args: { id: "1", signal: "TERM" } },
+  ];
+  const { said, data } = await boxedRun(t, plan);
+  assert.deepEqual(said.map((a) => [a.tool, a.error]), plan.map((step) => [step.tool, false]), JSON.stringify(said));
+  assert.equal(said[3].text, "Sent TERM to background process 1: it ended by signal TERM (exit code 143).");
+  await until(() => liveBoxes(data).length === 0, "the box's destroy at the run's end");
+  assert.equal(groupAlive(other), true, "the forged group was never signalled, by the call or by the run's end");
+});
+
+test("a tty mark written into work/ makes no plain process a terminal one: its signal goes to its own group", { timeout: 120_000 }, async (t) => {
+  const plan = [
+    { tool: "bash_background", args: { command: "sleep 30" } },
+    { tool: "write", args: { path: "background/1/tty", content: "" } },
+    { tool: "bash_list", args: {} },
+    { tool: "bash_signal", args: { id: "1", signal: "INT" } },
+  ];
+  const { said } = await boxedRun(t, plan);
+  assert.deepEqual(said.map((a) => [a.tool, a.error]), plan.map((step) => [step.tool, false]), JSON.stringify(said));
+  assert.ok(!said[2].text.includes("(tty)"), said[2].text);
+  assert.equal(said[3].text, "Sent INT to background process 1: it ended by signal INT (exit code 130).");
+});

@@ -16,6 +16,7 @@
 // the same link rule, so a link at the folder is an error on either, never followed. A text that leaves holding one of
 // the host's secrets as they are now (a value made secret after it was written) is cut of it, a file's name holding
 // one reads "[redacted]" whole, and a diff's file holding one is withheld.
+import { existsSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { join } from "node:path";
@@ -336,6 +337,45 @@ async function pageRequest(home: string, repo: string, query: URLSearchParams, f
   const known = named && (await git(home, repo, ["cat-file", "-e", `${named[1]}^{commit}`]).then(() => true, () => false));
   if (!named || !known) throw new ApiError("bad_request", "cursor is not one this server gave");
   return { limit, at: { sha: named[1]!, offset: Number(named[2]) } };
+}
+
+/** For tests: how many times a pending count was read from a folder (once per commit of its main). */
+export const pendingTestHooks = { reads: 0 };
+/** By agent: its folder's main commit and how many of its items wait for the owner's OK there. */
+const pendingBy = new Map<string, { sha: string; pending: number }>();
+const pendingReads = new Map<string, Promise<number>>();
+
+/** How many of agent `agentId`'s learned items wait for its owner's OK on its folder's main: notes, skills and workflow
+ *  drafts held with `status: pending`, as the learning view reads them (notesAt, learnedAt). Read once per commit of
+ *  main (a list of agents asks for every agent): the commit is resolved each time, the folder only when it moved. A
+ *  folder never made has none waiting; one that cannot be read is undefined (the caller shows no count). */
+export async function pendingCount(data: string, agentId: string): Promise<number | undefined> {
+  try {
+    const { home, repo } = await placeOf(data, agentId);
+    // A folder never made (no .git) holds nothing yet: 0. One whose .git git cannot read (an invalid repository, git
+    // missing) is unknown: undefined, so the count is left out rather than shown as 0.
+    if (existsSync(join(repo, ".git")) && !(await git(home, repo, ["rev-parse", "--git-dir"]).then(() => true, () => false))) return undefined;
+    const sha = await mainOf(home, repo);
+    if (!sha) return 0;
+    const known = pendingBy.get(agentId);
+    if (known?.sha === sha) return known.pending;
+    // Requests that miss together share one read of the commit (cleared once it settles, so a failure is not kept).
+    const key = `${agentId}\0${sha}`;
+    let reading = pendingReads.get(key);
+    if (!reading) {
+      pendingTestHooks.reads += 1;
+      reading = Promise.all([notesAt(home, repo, sha), learnedAt(home, repo, sha)]).then(([{ notes }, { skills, workflows }]) => {
+        const pending = notes.filter((note) => note.status === "pending").length + [...skills, ...workflows].filter((item) => item.status === "pending").length;
+        pendingBy.set(agentId, { sha, pending });
+        return pending;
+      });
+      pendingReads.set(key, reading);
+      void reading.finally(() => pendingReads.delete(key)).catch(() => undefined);
+    }
+    return await reading;
+  } catch {
+    return undefined;
+  }
 }
 
 /** GET /agents/{id}/learning: main, its index, the first page of its notes and of its log, and how the agent's runs

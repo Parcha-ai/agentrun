@@ -112,6 +112,12 @@ export type Learning = {
    *  for a person's OK (`status: pending` in its SKILL.md or README.md), and no run is given it until approved. */
   skills?: LearnedFile[];
   workflows?: LearnedFile[];
+  /** A grader's drop's skill and workflow draft, from what the run proposed: lost with the rest, and named when its
+   *  learning is said (learning-words.ts notKept). */
+  lost?: LearnedFile[];
+  /** A grader's drop on two answers the host could not read: the last, cut of secrets and in size (UNREAD_MAX), kept on the
+   *  run's file to diagnose it by, and served by no read. */
+  unread?: string;
 };
 /** A skill or a workflow draft a merge added or changed. */
 export type LearnedFile = { file: string; name: string; pending?: true };
@@ -1006,7 +1012,7 @@ export async function readPin(runDir: string): Promise<Pin | undefined> {
 export const LEARNED_HEADING = "# Learned";
 /** What every run that learns is told first under it, notes or none: a run not told it learns saves what the person
  *  asks it to remember in a file, or says it cannot, and that is never kept. */
-const LEARNS = "You learn from your runs. When this run ends you are asked what to keep for later runs, anything the person asked you to remember included, and only your answer then is kept: a file you write is not. So when the person asks you to remember something, don't put it in a file or say you can't: tell them you will keep it for later runs. A secret (a password, key or token) is never kept, so say so instead.";
+const LEARNS = "You learn from your runs. When this run ends you are asked what to keep for later runs, anything the person asked you to remember included, and only your answer then is kept: a file you write is not. So when the person asks you to remember something, don't put it in a file or say you can't: tell them you will keep it for later runs, in one short sentence at the start of your reply, never after a closing line or sign-off they asked you to end with. A secret (a password, key or token) is never kept, so say so instead.";
 /** What a run that starts with no note is told in place of what it learned. */
 const NOTHING_YET = "Nothing learned yet.";
 
