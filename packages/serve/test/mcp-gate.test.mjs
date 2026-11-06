@@ -96,7 +96,7 @@ test("pi: an MCP tool set to deny is refused, the model reads why, and the serve
   const runId = await started(api, "denied", ["mcp:fake/add"], ADD, { extra: { tool_settings: { "mcp:fake/add": { permission: "deny" } } } });
   const { last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 60_000 });
   assert.equal(last.status, "completed");
-  assert.equal(await answerOf(api, runId), "The tool said: Permission denied: mcp:fake/add is set to deny on this server. Don't retry it.");
+  assert.equal(await answerOf(api, runId), "The tool said: Permission denied: mcp:fake/add is set to deny for this agent. Don't retry it.");
   assert.equal(calls(fake).length, 0, "nothing was sent");
 });
 

@@ -85,8 +85,10 @@ export const REQUEST_COST_PENDING = "agentrun.request_cost_pending";
 export const REQUEST_COST_LATE = "agentrun.request_cost_late";
 /** What a paid tool's call charged, written apart from any request as the tool reports it: `tool` and `charged_by` name
  *  it, `usd` is the charge, or null when the call may have charged and did not say how much. It adds to the run's cost,
- *  which is then unknown on a null, and shows as a row of its own; it is no model request. A browser charge
- *  (BROWSER_CHARGE) shows on its call's row instead. */
+ *  which is then unknown on a null, and shows as a row of its own; it is no model request. The usage row counts paid
+ *  tool calls by `call`: a call that books several charges (a browser call, and its session's release under it) is one
+ *  paid tool call, and one charge not priced when any of them is unknown. A browser charge (BROWSER_CHARGE) shows on its
+ *  call's row instead. */
 export const TOOL_COST = "agentrun.tool_cost";
 /** The `tool` of a browser session's charge (serve's browser-cost.ts: `call`, the call it ran under, or for a release the
  *  session's last call; `tag`, the session; `conversation`, the browser's conversation). It makes no row: it folds into
@@ -224,9 +226,24 @@ function createMeter() {
   // whether its answer's tokens were unknown: its late cost's usage then stands in for them).
   let known = 0;
   let unknown = 0;
-  // Paid tool calls whose charge is in the cost (TOOL_COST), and calls with no price, run outside it (TOOL_UNMETERED).
-  let charges = 0;
+  // Paid tool calls whose charges are in the cost (TOOL_COST), each once however many it booked (paidCallOf), and calls
+  // with no price, run outside it (TOOL_UNMETERED).
+  const paidCalls = new Set<string>();
+  // Of those, the calls with a charge whose cost is unknown: each one charge not priced, however many it booked.
+  const unpricedCalls = new Set<string>();
+  // The call each browser session was last charged under (BROWSER_CHARGE's `tag`): a charge of it with no call of its
+  // own, a release after the run's last call, is that call's.
+  const sessionCall = new Map<string, string>();
   let notMetered = 0;
+  /** The paid call a TOOL_COST is for: its `call`; a browser charge with none (a release a reopened process made), the
+   *  call its session was last charged under; else a call of its own, as an older entry with no `call` is. */
+  const paidCallOf = (data: Obj | undefined): string => {
+    const [call, tag] = [str(data?.call), data?.tool === BROWSER_CHARGE ? str(data?.tag) : undefined];
+    if (call && tag) sessionCall.set(tag, call);
+    return call ?? (tag ? sessionCall.get(tag) : undefined) ?? `#${(unplaced += 1)}`;
+  };
+  // Charges that name no call the run can place: each a call of its own.
+  let unplaced = 0;
   // Paid tool calls marked and not yet settled, by call.
   const held = new Map<string, unknown>();
   const pending: boolean[] = [];
@@ -291,8 +308,12 @@ function createMeter() {
       held.set(str(data?.call) ?? `#${held.size}`, data?.heldUsd);
     } else if (entry.kind === TOOL_COST) {
       held.delete(str(data?.call) ?? "");
-      charges += 1;
-      addCost(data?.usd);
+      const call = paidCallOf(data);
+      paidCalls.add(call);
+      // Its cost joins the run's; an unknown one makes it unknown, counted once for its call.
+      const usd = data?.usd;
+      if (typeof usd === "number" && Number.isFinite(usd)) known += usd;
+      else if (!unpricedCalls.has(call)) (unpricedCalls.add(call), (unknown += 1));
       return "charge";
     } else if (entry.kind === TOOL_UNMETERED) {
       notMetered += 1;
@@ -355,11 +376,11 @@ function createMeter() {
     // A paid tool call cut by a crash: its charge is unknown, so the cost is.
     const cutCalls = settled ? held.size : 0;
     const unmetered = notMetered ? { not_metered: notMetered } : {};
-    if (!requests && !compactions && !cut && !charges && !cutCalls) return refusedAny || notMetered ? { usd: 0, requests: 0, charges: 0, ...unmetered } : undefined;
+    if (!requests && !compactions && !cut && !paidCalls.size && !cutCalls) return refusedAny || notMetered ? { usd: 0, requests: 0, charges: 0, ...unmetered } : undefined;
     const count = requests + Math.max(0, marked - answered) + Math.max(compactions, compacting);
     const usd = unknown > 0 || pending.length > 0 || cut || cutCalls > 0 ? null : Math.round(known * 1e6) / 1e6;
     const unpriced = unknown + pending.length + Math.max(0, marked - open(inFlight) - answered) + Math.max(0, compacting - (settled ? 0 : sidesOpen) - compactions) + cutCalls;
-    return { usd, requests: count, charges: charges + cutCalls, ...(usd === null && unpriced > 0 ? { so_far_usd: Math.round(known * 1e6) / 1e6, unpriced } : {}), ...unmetered };
+    return { usd, requests: count, charges: paidCalls.size + cutCalls, ...(usd === null && unpriced > 0 ? { so_far_usd: Math.round(known * 1e6) / 1e6, unpriced } : {}), ...unmetered };
   }
 
   // A workflow's decision requests (Jev, Parallel), from its receipts: requests of their own, beside its entries'.
