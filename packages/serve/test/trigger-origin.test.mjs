@@ -146,12 +146,11 @@ test("a webhook's message to a working run is refused busy and sent again on the
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 const HOLD_SEED = new URL("./fixtures/hold-seed.mjs", import.meta.url).href;
 
-test("a trigger's run whose server went down before its first message was taken: the next server sends that message as the trigger's, its origin read back from the run's serve.json", { timeout: 120_000 }, async (t) => {
-  withEnv(t, SEAL);
+/** A webhook trigger's run whose server is killed after the run's serve.json (input, origin) is written and before its
+ *  first message is sent: a server of its own, held where a learning run's seed is copied. */
+async function killedBeforeFirstMessage(t) {
   const data = join(await scratch(t), "agents");
   const signal = join(await scratch(t), "held");
-  // A server of its own, held where a learning run's seed is copied: after its serve.json (input, origin) is written,
-  // before its first message is sent. Killed there, as a crash would.
   const child = spawn(process.execPath, ["--import", HOLD_SEED, CLI, "--data", data, "--port", "0", "--faux", FAUX], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, HOME: dirname(data), AGENTRUN_TEST_HOLD_SEED: "beforePin", AGENTRUN_TEST_HOLD_SIGNAL: signal } });
   t.after(() => child.kill("SIGKILL"));
   let out = "";
@@ -171,10 +170,33 @@ test("a trigger's run whose server went down before its first message was taken:
   for (const end = Date.now() + 60_000; !(dir = await readFile(signal, "utf8").catch(() => "")); await sleep(50)) assert.ok(Date.now() < end, "the run's seed copy was reached");
   child.kill("SIGKILL");
   await new Promise((resolve) => child.once("exit", resolve));
-  const runId = basename(dir);
+  return { data, dir, runId: basename(dir), id };
+}
+
+test("a trigger's run whose server went down before its first message was taken: the next server sends that message as the trigger's, its origin read back from the run's serve.json", { timeout: 120_000 }, async (t) => {
+  withEnv(t, SEAL);
+  const { data, dir, runId, id } = await killedBeforeFirstMessage(t);
   assert.deepEqual(JSON.parse(await readFile(join(dir, "serve.json"), "utf8")).input_origin, { kind: "trigger", trigger_id: id, source: "webhook", owner: false }, "kept with its input");
   const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
   t.after(() => next.close());
   await follow(client(next.baseUrl, next.token), runId, ["completed"]);
   assert.deepEqual(userEntries(data, runId), [{ text: await inputOf(data, runId), origin: { kind: "trigger", trigger_id: id, source: "webhook", owner: false } }], "the first message, sent by the next server, is the trigger's");
+});
+
+test("an origin read back from a run's serve.json that does not match the run's own trigger is not kept: never another trigger's, never its owner's for a webhook", { timeout: 180_000 }, async (t) => {
+  withEnv(t, SEAL);
+  for (const forge of [(o) => ({ ...o, owner: true }), (o) => ({ ...o, trigger_id: "trg_someone_else" }), (o) => ({ ...o, source: "schedule" })]) {
+    const { data, dir, runId, id } = await killedBeforeFirstMessage(t);
+    const file = join(dir, "serve.json");
+    const meta = JSON.parse(await readFile(file, "utf8"));
+    const forged = forge(meta.input_origin);
+    await writeFile(file, `${JSON.stringify({ ...meta, input_origin: forged })}\n`);
+    const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+    t.after(() => next.close());
+    await follow(client(next.baseUrl, next.token), runId, ["completed"]);
+    const [{ origin }] = userEntries(data, runId);
+    assert.ok(origin === undefined || (origin.trigger_id === id && origin.owner === false), `${JSON.stringify(forged)} read back as ${JSON.stringify(origin)}`);
+    assert.notDeepEqual(origin, forged, "the forged origin is not kept");
+    await next.close();
+  }
 });
