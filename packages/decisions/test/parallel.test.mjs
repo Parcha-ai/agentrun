@@ -380,3 +380,21 @@ test('through OpenRouter: no usage.cost is an unknown cost, never 0, and a 5xx a
     return true;
   });
 });
+
+test('includeExcerpts: false keeps no passage text on either route; true keeps them, capped', async () => {
+  const cites = [{ url: 'https://example.test/eiffel', title: 'Eiffel Tower', excerpts: ['Completed in 1889.', 'e'.repeat(10_000)] }];
+  const direct = async (includeExcerpts) => {
+    const { fetch } = fakeFetch([json(wire({ yes: { type: 'noul', noul: 0.98 } }, cites))]);
+    return (await parallelProvider({ ...settings, fetch, includeExcerpts }).decide({ questions: noulQ, state: {} }, ctx())).evidence;
+  };
+  const routed = async (includeExcerpts) => {
+    const { fetch } = fakeFetch([json(orWire({ yes: { type: 'noul', noul: 0.98 } }, [{ url: cites[0].url, title: cites[0].title, content: 'e'.repeat(10_000) }], 0.002))]);
+    return (await parallelProvider({ fetch, includeExcerpts, openrouter: { apiKey: OR_KEY } }).decide({ questions: noulQ, state: {} }, ctx())).evidence;
+  };
+  for (const [route, ask] of [['parallel', direct], ['openrouter', routed]]) {
+    const off = await ask(false);
+    assert.deepEqual(off.map((e) => [e.url, e.title, e.excerpts]), [['https://example.test/eiffel', 'Eiffel Tower', []]], `${route}: no passage text when excerpts are off`);
+    const on = await ask(true);
+    assert.ok(on[0].excerpts.length > 0 && on[0].excerpts.every((x) => x.length <= 4096), `${route}: passages kept, each capped`);
+  }
+});

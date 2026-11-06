@@ -77,7 +77,7 @@ function checkLimits(questions: Record<string, SystemOneQuestion>): void {
 }
 
 /** The answers, sources and metering of a 200 response, checked against the questions asked. */
-function readResponse(body: unknown, questions: Record<string, SystemOneQuestion>, attempts: number): DecisionOutcome {
+function readResponse(body: unknown, questions: Record<string, SystemOneQuestion>, attempts: number, includeExcerpts = true): DecisionOutcome {
   // Parallel answered, so the request was billed: a response it rejects is booked at list price too.
   const invalid = (why: string) => new DecisionProviderError("invalid_response", `Parallel returned ${why}.`, { attempts, costUsd: PARALLEL_LIST_PRICE_USD, costBasis: "estimate" });
   if (!isRecord(body) || !isRecord(body.answers)) throw invalid("no answers");
@@ -96,7 +96,7 @@ function readResponse(body: unknown, questions: Record<string, SystemOneQuestion
     else throw invalid(`an answer of unknown type for "${id}"`);
   }
   if (body.citations !== undefined && !Array.isArray(body.citations)) throw invalid("citations that are not a list");
-  const evidence = parallelCitations(body.citations);
+  const evidence = parallelCitations(body.citations, { excerpts: includeExcerpts });
   const usage = isRecord(body.usage) && Number.isSafeInteger(body.usage.input_tokens) && (body.usage.input_tokens as number) >= 0 ? { input_tokens: body.usage.input_tokens as number, output_tokens: 0 } : null;
   return {
     answers: { ...answers }, evidence, model: typeof body.mode === "string" ? `parallel-${body.mode}` : null, usage,
@@ -126,7 +126,7 @@ export function parallelProvider(options: ParallelOptions = {}): DecisionProvide
   const url = `${(options.baseURL ?? BASE_URL).replace(/\/+$/, "")}/v1/decisions`;
   if (options.openrouter) {
     // The OpenRouter route: OpenRouter's Decisions provider, asked for Parallel's model, after Parallel's own checks.
-    const routed = openrouterProvider({ ...options.openrouter, ...(options.fetch ? { fetch: options.fetch } : {}), timeoutMs, maxAttempts, retryBaseMs, retryMaxMs, takesImages: () => false });
+    const routed = openrouterProvider({ ...options.openrouter, ...(options.fetch ? { fetch: options.fetch } : {}), timeoutMs, maxAttempts, retryBaseMs, retryMaxMs, takesImages: () => false, includeExcerpts: options.includeExcerpts ?? true });
     return {
       id: "parallel", needs: ["OPENROUTER_API_KEY"], capabilities,
       async decide(request: DecisionRequest, ctx: DecisionContext): Promise<DecisionOutcome> {
@@ -179,7 +179,7 @@ export function parallelProvider(options: ParallelOptions = {}): DecisionProvide
           let parsed: unknown;
           try { parsed = JSON.parse(text); }
           catch { throw new DecisionProviderError("invalid_response", "Parallel returned a body that is not JSON.", { attempts: attempt, costUsd: PARALLEL_LIST_PRICE_USD, costBasis: "estimate" }); }
-          return readResponse(parsed, request.questions, attempt);
+          return readResponse(parsed, request.questions, attempt, options.includeExcerpts ?? true);
         }
         const status = response.status;
         if (status === 408 || (status >= 500 && status <= 599)) { await response.body?.cancel().catch(() => {}); throw lost(attempt, `answered HTTP ${status}`, status); }
