@@ -394,6 +394,10 @@ export function withAsks(rows: readonly TimelineEvent[]): TimelineEvent[] {
   return out;
 }
 
+/** An amount in an over-cap row's or failure's words, to the cent ($0.38020940000000003 is $0.38; $1 is $1), as money
+ *  says it; `centsUp` to the cent above, for what a run went over by and a bound, so neither reads $0 or under. */
+const cents = (usd: number): string => money(Math.round(usd * 100) / 100);
+const centsUp = (usd: number): string => money(Math.ceil(usd * 100 - 1e-9) / 100);
 /** Whether a run that spent `usd` passed its `cap` by no more than `bound`, the bound of its newest ended request: a
  *  cache miss an expected-cost cap (cap.ts) admits the risk of, never a cap the run's own rule broke. */
 const overByMiss = (usd: number, cap: number, bound: number): boolean => bound > 0 && usd - cap <= bound + FIT_TOLERANCE;
@@ -407,8 +411,8 @@ export function withOverCap(rows: TimelineEvent[], cap: number | undefined, boun
   const usd = rows[at]?.usage?.usd;
   if (cap === undefined || typeof usd !== "number" || usd <= cap + FIT_TOLERANCE) return rows;
   const { usage: _, ...usage } = rows[at]!;
-  // Four decimals, as the run's cost reads; the bound rounded up, so "at most" holds.
-  const summary = overByMiss(usd, cap, bound) ? `Went $${(usd - cap).toFixed(4)} over its cap on a cache miss (at most $${(Math.ceil(bound * 1e4 - FIT_TOLERANCE) / 1e4).toFixed(4)}).` : `Spent $${usd.toFixed(4)}, $${(usd - cap).toFixed(4)} over the run's cap of $${cap}`;
+  // In cents: what it went over by and the bound rounded up, so "at most" holds.
+  const summary = overByMiss(usd, cap, bound) ? `Went ${centsUp(usd - cap)} over its cap on a cache miss (at most ${centsUp(bound)}).` : `Spent ${cents(usd)}, ${centsUp(usd - cap)} over the run's cap of ${cents(cap)}`;
   const over: TimelineEvent = { ...usage, id: `${usage.id}:over_cap`, kind: "phase", summary, text: null };
   return [...rows.slice(0, at + 1), over, ...rows.slice(at + 1)];
 }
@@ -1202,7 +1206,7 @@ export class Runs {
     const cost = costOf(run.rows);
     // Past it by a cache miss, within the bound its cap admitted it at (overByMiss), the run goes on: its next request is
     // refused, and it pauses at its cap for a raise, as when the cap has no room; the over-cap row says what happened.
-    if (cap !== undefined && cost !== null && cost > cap + FIT_TOLERANCE && !overByMiss(cost, cap, run.bounds?.ended ?? 0)) return { outcome: "failed", abort: true, error: { code: SPEND_CAP_REACHED, message: `The run cost $${cost.toFixed(4)}, $${(cost - cap).toFixed(4)} over its cap of $${cap}.`, retryable: false } };
+    if (cap !== undefined && cost !== null && cost > cap + FIT_TOLERANCE && !overByMiss(cost, cap, run.bounds?.ended ?? 0)) return { outcome: "failed", abort: true, error: { code: SPEND_CAP_REACHED, message: `The run cost ${cents(cost)}, ${centsUp(cost - cap)} over its cap of ${cents(cap)}.`, retryable: false } };
     if (run.submitted > 0) return undefined;
     if (run.turns.open > 0 || stopped(run)) return undefined;
     // A tool call waits for a person's approval, or for its answer to be acted on: the run goes on after it.

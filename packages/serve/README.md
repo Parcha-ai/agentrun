@@ -2222,7 +2222,7 @@ picking it is refused, and on `auto` it searches through Parallel on the server'
 keyless Exa, as a capped codex run does; pi's own search request is held at its context
 plus 125,000 (5 searches) and its most fee, 5 searches at $0.01. What the request
 cost, booked once it answers, stops the next request through the cap, and a run whose booked spend passes its cap shows
-one timeline row saying by how much (`Spent $X, $Y over the run's cap of $Z`).
+one timeline row saying by how much (`Spent $X, $Y over the run's cap of $Z`, in cents).
 
 The server also checks the run's cost after each response, as a backstop, and stops a run whose cost passed its cap.
 Either way the run keeps the answer it paid for: a run the cap stopped has `result: {output: null, final_answer}`, the
