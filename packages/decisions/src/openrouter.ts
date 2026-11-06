@@ -3,12 +3,14 @@
 // `perplexity/pplx-decider-v1.2`, `liquid/d1` or `cloudflare/clef`. A request is paid once sent, so it is sent again only
 // when it provably never reached OpenRouter (a connect error before sending) or was refused with a time to retry (a 429
 // with Retry-After); a 408, a 5xx, a connection lost after sending or a deadline in flight is outcome_unknown at an unknown
-// cost. The cost is the response's `usage.cost`, else unknown (null, never 0). Images go in the JSON body as base64
+// cost. The cost is the response's `usage.cost` when above 0, else unknown (null, never 0): a model the catalog prices at 0
+// reports 0, which is no price. A Decisions model that cites the web (Parallel's) returns url_citation annotations, the evidence. Images go in the JSON body as base64
 // `assets` (OpenRouter refuses TypeSafe's multipart form), only to a model whose catalog entry lists image input; OpenRouter
 // documents them as alpha, so the provider marks them experimental.
 import { setTimeout as sleep } from "node:timers/promises";
 import { checkCapabilities, DecisionProviderError, imageDimensions } from "@parcha/agentrun-dsl";
 import type { DecisionCapabilities, DecisionContext, DecisionImage, DecisionOutcome, DecisionProvider, DecisionRequest, ProviderAnswer } from "@parcha/agentrun-dsl";
+import { urlCitations } from "./evidence.js";
 
 const KEY_VARIABLE = "OPENROUTER_API_KEY";
 const BASE_URL = "https://openrouter.ai/api";
@@ -38,6 +40,8 @@ export interface OpenRouterOptions {
   takesImages?: (model: string) => boolean | Promise<boolean>;
   /** Sent as OpenRouter's app attribution headers (HTTP-Referer, X-Title) when set. */
   app?: { url?: string; title?: string };
+  /** Whether a citation keeps its passage (default true); false keeps none, whatever the model sent. */
+  includeExcerpts?: boolean;
 }
 
 /** What a provider adds beside the seam's capabilities: the inputs not verified against the live API. */
@@ -113,7 +117,7 @@ function* tokenPlaces(state: unknown, questions: DecisionRequest["questions"]): 
 
 /** The answers, metering and id of a 200 response, checked for shape and against the questions asked; the seam checks
  *  each answer against its question. */
-function readResponse(body: unknown, questions: DecisionRequest["questions"], attempts: number): DecisionOutcome {
+function readResponse(body: unknown, questions: DecisionRequest["questions"], attempts: number, includeExcerpts = true): DecisionOutcome {
   // OpenRouter answered, so the request was billed: a response this rejects is booked at an unknown cost.
   const invalid = (why: string) => new DecisionProviderError("invalid_response", `OpenRouter returned ${why}.`, { attempts, costUsd: null, costBasis: "unknown" });
   if (!isRecord(body) || !isRecord(body.answers)) throw invalid("no answers");
@@ -126,9 +130,10 @@ function readResponse(body: unknown, questions: DecisionRequest["questions"], at
   }
   const usage = isRecord(body.usage) ? body.usage : undefined;
   const counted = usage && isCount(usage.input_tokens) ? { input_tokens: usage.input_tokens as number, output_tokens: isCount(usage.output_tokens) ? usage.output_tokens as number : 0 } : null;
-  const cost = usage && typeof usage.cost === "number" && Number.isFinite(usage.cost) && usage.cost >= 0 ? usage.cost : null;
+  // A reported cost above 0 is the price. 0 (a model OpenRouter's catalog prices at 0) or none is unpriced: unknown, never $0.
+  const cost = usage && typeof usage.cost === "number" && Number.isFinite(usage.cost) && usage.cost > 0 ? usage.cost : null;
   return {
-    answers: { ...answers }, evidence: [], model: typeof body.model === "string" && body.model.trim() ? body.model : null, usage: counted,
+    answers: { ...answers }, evidence: urlCitations(body.annotations, { excerpts: includeExcerpts }), model: typeof body.model === "string" && body.model.trim() ? body.model : null, usage: counted,
     cost_usd: cost, cost_basis: cost === null ? "unknown" : "reported", provider_request_id: typeof body.id === "string" ? body.id : null,
   };
 }
@@ -160,7 +165,7 @@ function catalogReader(fetcher: typeof fetch, root: string): () => Promise<Set<s
 
 export function openrouterProvider(options: OpenRouterOptions = {}): DecisionProvider & ExperimentalInputs {
   const capabilities: DecisionCapabilities = {
-    types: ["noul", "choice", "score"], inputs: ["text", "json", "image"], evidence: "none", probability: "model", grounding: false,
+    types: ["noul", "choice", "score"], inputs: ["text", "json", "image"], evidence: "citations", probability: "model", grounding: false,
     replay: "never", maxQuestions: null, maxStateBytes: null,
   };
   const timeoutMs = options.timeoutMs ?? 30_000;
@@ -240,7 +245,7 @@ export function openrouterProvider(options: OpenRouterOptions = {}): DecisionPro
           let parsed: unknown;
           try { parsed = JSON.parse(text); }
           catch { throw new DecisionProviderError("invalid_response", "OpenRouter returned a body that is not JSON.", { attempts: attempt, costUsd: null, costBasis: "unknown" }); }
-          return readResponse(parsed, request.questions, attempt);
+          return readResponse(parsed, request.questions, attempt, options.includeExcerpts ?? true);
         }
         const status = response.status;
         if (status === 408 || (status >= 500 && status <= 599)) { void response.body?.cancel().catch(() => {}); throw lost(attempt, `answered HTTP ${status}`, status); }
