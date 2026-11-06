@@ -187,6 +187,50 @@ test("a trigger's message that reaches a run while a tool call waits for its own
   assert.equal((await api("POST", `/runs/${run.run_id}/cancel`)).status, 202);
 });
 
+/** The tests' faux model priced on output only, $100 a million: a request's least (1,024 tokens) is $0.1024. */
+const OUTPUT_PRICED = new URL("./fixtures/faux-output-priced.mjs", import.meta.url).pathname;
+
+// The cap's twin of the window above: a person's message in flight while the run's turn ends on a refusal for room, so
+// the run is paused at its cap for its person to raise. A trigger's message then never starts a turn in it.
+test("a trigger's message that reaches a run paused at its cap while another message is in flight is refused: the firing is skipped, and no message of the trigger reaches the run", { timeout: 120_000 }, async (t) => {
+  withEnv(t, SEAL);
+  const gate = join(await scratch(t), "gate");
+  let api;
+  let baseUrl;
+  let trigger;
+  let seen;
+  // The person's message, held at the door's seam once it is counted (the run reads working): the run's turn is let go
+  // on, to its next request, which its cap refuses for room; then the trigger fires and settles.
+  const beforeSubmit = async (runId, content) => {
+    if (content !== "And the other page too.") return;
+    try {
+      await writeFile(gate, "");
+      const refused = async () => (await api("GET", `/runs/${runId}/timeline`)).body.rows.some((row) => row.paused === true);
+      for (const end = Date.now() + 30_000; !(await refused()); await new Promise((resolve) => setTimeout(resolve, 50))) assert.ok(Date.now() < end, "the cap refuses the turn's next request");
+      assert.equal((await post(baseUrl, trigger.id, "eu", trigger.secret)).status, 202);
+      const [firing] = await firings(api, trigger.id, 1);
+      seen = { firing };
+    } catch (error) {
+      seen = { error };
+    }
+  };
+  const server = await serve(t, { faux: OUTPUT_PRICED, beforeSubmit });
+  ({ api, baseUrl } = server);
+  await made(api, "reader", { tools: ["read"] });
+  // Its first request fits the cap; the read's spend leaves less than the next one's least.
+  const run = (await api("POST", "/agents/reader/runs", { input: { content: `Read these paths once ${gate} exists: ["one.md"]` }, max_cost_usd: 0.1025 })).body;
+  await follow(api, run.run_id, ["working"]);
+  trigger = (await api("POST", "/triggers", messaging(run.run_id))).body;
+  const said = api("POST", `/runs/${run.run_id}/messages`, { content: "And the other page too." });
+  for (const end = Date.now() + 60_000; !seen; await new Promise((resolve) => setTimeout(resolve, 50))) assert.ok(Date.now() < end, "the person's message reached the seam");
+  await said;
+  if (seen.error) throw seen.error;
+  assert.deepEqual([seen.firing.status, seen.firing.reason], ["skipped", "The run is waiting on a person."], JSON.stringify(seen.firing));
+  const rows = (await api("GET", `/runs/${run.run_id}/timeline`)).body.rows;
+  assert.equal(rows.filter((row) => (row.text ?? "").startsWith("A new event came in.")).length, 0, `no message of the trigger's: ${JSON.stringify(rows.map((r) => [r.kind, r.summary]))}`);
+  assert.equal((await api("POST", `/runs/${run.run_id}/cancel`)).status, 202);
+});
+
 test("a run that comes to wait on a tool call's approval between the firing's check and its door's admission is never messaged: the door refuses, the firing is skipped, the approval stands, unanswered", { timeout: 120_000 }, async (t) => {
   withEnv(t, SEAL);
   const gate = join(await scratch(t), "gate");
