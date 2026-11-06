@@ -116,7 +116,7 @@ function assistantMessage(harness: string, model: string | undefined, request: P
 
 /** The session's own model's priced requests in its records, in order (the wrap-up's typical cost): each runner.turn whose
  *  cost is known and above 0 and whose runner.request was not a side call. */
-function ownCosts(records: readonly { kind: string; data: unknown }[]): number[] {
+export function ownCosts(records: readonly { kind: string; data: unknown }[]): number[] {
   const side = new Set<number>();
   const costs: number[] = [];
   for (const record of records) {

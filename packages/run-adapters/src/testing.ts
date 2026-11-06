@@ -153,10 +153,11 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
             if ("halt" in action) { turnSignal!.abort(new Error(action.halt)); return await hang(signal); }
             // Measured as a real adapter's proxy measures its body: the prompt's UTF-8 bytes, with nothing a provider adds.
             const measured = "inputTokensMax" in action && typeof action.inputTokensMax === "number" ? action.inputTokensMax : Buffer.byteLength(JSON.stringify({ system: spec.system, user: prompt }), "utf8");
-            // A note its host has for this request, taken before it is measured, as the model proxy takes it.
+            // A note its host has for this request, taken before it is measured, as the model proxy takes it: its bytes count
+            // in what the request is admitted at, and it is filed as sent once the request is admitted carrying it.
             const note = io.models.note?.("faux");
+            const ticket = await io.models.beforeRequest({ model: "faux", inputTokensMax: note ? measured + Buffer.byteLength(note, "utf8") : measured, ...(note ? { noted: true as const } : {}) });
             if (note) await append(FAUX_RECORDS.note, { text: note });
-            const ticket = await io.models.beforeRequest({ model: "faux", inputTokensMax: measured, ...(note ? { noted: true as const } : {}) });
             if ("cut" in action) { stats.requests += 1; return await hang(signal); }
             if ("cutBooked" in action) {
               stats.requests += 1;

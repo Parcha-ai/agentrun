@@ -132,3 +132,18 @@ test("claude-agent on the faux harness: a turn that ends on the request after wh
   await letGo(data, runId);
   assert.deepEqual(notesOf(data, runId), [WRAP_UP("$0.60")], "the follow-up's first request carried the note, once");
 });
+
+test("claude-agent on the faux harness: a request that fits what is left of the cap only without the note's bytes is sent without it, never refused, and the note stays untold", { timeout: 180_000 }, async (t) => {
+  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS, faux: new URL("./fixtures/faux-input-priced.mjs", import.meta.url).pathname });
+  assert.equal((await api("POST", "/agents", agent("room-h", { harness: "claude-agent", instructions: "Wrap up with no room for the note." }))).status, 201);
+  // Strict: every input priced uncached, so the answer's 5,990 tokens hold $0.599 of the $0.60 left after the $0.40 request.
+  const started = await api("POST", "/agents/room-h/runs", { input: { content: "go" }, max_cost_usd: 1, cap_mode: "strict" });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  const runId = started.body.run_id;
+  await follow(api, runId, ["completed", "failed", "input_required"], { deadlineMs: 60_000 });
+  const run = (await api("GET", `/runs/${runId}`)).body;
+  assert.deepEqual([run.status, run.pending?.kind ?? null, run.result?.final_answer], ["completed", null, "Answered."], `the answer that fits is sent: ${JSON.stringify(run.pending ?? run.error)}`);
+  assert.deepEqual(await rowsOf(api, runId), [], "no row: no request carried the note");
+  await letGo(data, runId);
+  assert.deepEqual(notesOf(data, runId), [], "the answer went without the note");
+});
