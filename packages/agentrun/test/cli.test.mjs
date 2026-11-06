@@ -583,3 +583,29 @@ test("a file path argument keeps its slashes and refuses a dot segment (plain or
   const homeFile = ["", "v2", "agents", "a", "home", "files", "notes", "a%20b.md"].join("/");
   assert.deepEqual(server.requests.map((r) => r.url), ["/v2/agents/a/learning/files/skills%2Ffind-policies%2FSKILL.md", homeFile]);
 });
+
+test("agents create --help and runs start --help end with the document's working body as a --body to paste, and pasted it works", { timeout: 120_000 }, async (t) => {
+  const { dir, env } = scratch(t);
+  const server = await serve(t, dir, env);
+  const cli = cliOf(env, []);
+  const doc = JSON.parse(cli(["--data", server.data, "server", "openapi"]).out);
+  const exampleOf = (path, method) => Object.values(doc.paths[path][method].requestBody.content["application/json"].examples)[0].value;
+  /** The help's example line, as a shell would split it: the words, then the single-quoted body. */
+  const pasted = (args) => {
+    const help = cli([...args, "--help"]);
+    assert.equal(help.code, 0, help.err);
+    const [, words, quoted] = /\nExample:\n {2}agentrun ([^']+) --body '((?:[^']|'\\'')*)'\n?$/.exec(help.out) ?? assert.fail(help.out);
+    return { words: words.split(" "), body: quoted.replace(/'\\''/g, "'") };
+  };
+  const create = pasted(["agents", "create"]);
+  assert.deepEqual(create.words, ["agents", "create"]);
+  assert.deepEqual(JSON.parse(create.body), exampleOf("/agents", "post"), "the document's example, whole");
+  const created = cli(["--data", server.data, ...create.words, "--body", create.body]);
+  assert.equal(created.code, 0, created.err);
+  const start = pasted(["runs", "start"]);
+  assert.deepEqual(start.words, ["runs", "start", "AGENT_ID"]);
+  assert.deepEqual(JSON.parse(start.body), exampleOf("/agents/{agent_id}/runs", "post"));
+  const started = cli(["--data", server.data, "runs", "start", created.json().agent_id, "--body", start.body]);
+  assert.equal(started.code, 0, started.err);
+  assert.equal(started.json().status, "queued");
+});
