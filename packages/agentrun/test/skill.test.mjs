@@ -20,9 +20,11 @@ const DROPPED = ["AGENTRUN_BASE_URL", "AGENTRUN_API_KEY", "AGENTRUN_TOKEN", "ANT
 
 // Writes the file the first message names (`write NAME.md`); asks its person first when told to ask, and writes what
 // they said; then answers. Priced, so recipe 5's run stops at its cap.
-const FAUX = `const textOf = (m) => (typeof m?.content === "string" ? m.content : (m?.content ?? []).map((c) => (c.type === "text" ? c.text : "")).join(""));
+const FAUX = `import { isReminder } from ${JSON.stringify(new URL("../../serve/test/fixtures/faux-model.mjs", import.meta.url).href)};
+const textOf = (m) => (typeof m?.content === "string" ? m.content : (m?.content ?? []).map((c) => (c.type === "text" ? c.text : "")).join(""));
 export default (context, faux) => {
-  const users = context.messages.filter((m) => m.role === "user").map(textOf);
+  // The person's messages: a <system-reminder> (the spend cap's wrap-up) is the server's aside, as serve's faux reads it.
+  const users = context.messages.filter((m) => m.role === "user" && !isReminder(m)).map(textOf);
   const wrote = context.messages.some((m) => m.role === "assistant" && Array.isArray(m.content) && m.content.some((c) => c.type === "toolCall" && c.name === "write"));
   if (wrote) return faux.message("Done.");
   if (users[0].includes("Ask me") && users.length === 1 && context.messages.at(-1)?.role !== "toolResult") return faux.message(faux.toolCall("ask_person", { question: "Which region?" }), { stopReason: "toolUse" });
@@ -31,8 +33,8 @@ export default (context, faux) => {
 };
 // Priced on output only, $100 a million, as the server's cap tests price it: a request's least (1,024 tokens) is
 // $0.1024, so a run capped under that stops at its cap before its first request. A request is held at far more, so a
-// cap under three of those holds draws the server's wrap-up note ("finish now") before the first request, a message
-// this script would read as its person's: recipes 2 and 3 cap their runs at $5, above that.
+// cap under three of those holds draws the server's wrap-up reminder before the first request; this script reads it as
+// the server's, not its person's. Recipes 2 and 3 still cap their runs at $5, clear of it, as a real run wants.
 export const cost = { input: 0, output: 100, cacheRead: 0, cacheWrite: 0 };
 `;
 
@@ -115,6 +117,17 @@ test("SKILL.md: its front matter, its size, and each recipe block run in order a
   const read = spawnSync("sh", ["-c", `agentrun runs read-file ${raised.run.run_id} moon.md`], { cwd: work, env: server.env, encoding: "utf8" });
   assert.equal(read.status, 0, read.stderr);
   for (const out of seen) assert.ok(!out.includes(server.token), "no output holds the token");
+
+  await t.test("under a cap small enough to draw the wrap-up reminder first, the run still asks its person: the reminder is the server's, not theirs", () => {
+    const run = (args) => spawnSync("sh", ["-c", args], { cwd: work, env: server.env, encoding: "utf8", timeout: 60_000 });
+    const asked = run(`agentrun runs start notes --max-cost-usd 0.5 --body '{"input": {"content": "Ask me which region to cover, then write region.md about it."}}' --wait`);
+    seen.push(asked.stdout, asked.stderr);
+    const view = JSON.parse(asked.stdout);
+    const timeline = JSON.parse(run(`agentrun runs timeline ${view.run_id}`).stdout);
+    assert.ok(timeline.rows.some((row) => row.kind === "phase" && /this run.s budget/i.test(row.summary ?? "")), "the wrap-up reminder came first");
+    assert.deepEqual([asked.status, view.status, view.pending?.kind], [8, "input_required", "question"], asked.stderr);
+    assert.equal(run(`agentrun runs cancel ${view.run_id}`).status, 0);
+  });
 
   await t.test("skill install --dir writes the folder; with no flag, each agent's folder that exists; never over a folder not its own", () => {
     const cli = cliOf(server.env, seen);
