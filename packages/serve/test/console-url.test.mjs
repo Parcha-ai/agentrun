@@ -39,8 +39,8 @@ for (const [label, options, originOf] of [["its own address", {}, (server) => se
 }
 
 /** A request sent to the server with `host` as its Host header, as a tunnel (`ssh -L`) or a forwarded port delivers it. */
-const through = (server, host) => (method, path, body) =>
-  call(server.port, { method, path: `/v2${path}`, headers: { host, authorization: `Bearer ${server.token}`, ...(body === undefined ? {} : { "content-type": "application/json", accept: "application/json, text/event-stream" }) }, body });
+const through = (server, host) => (method, path, body, headers = {}) =>
+  call(server.port, { method, path: `/v2${path}`, headers: { host, authorization: `Bearer ${server.token}`, ...(body === undefined ? {} : { "content-type": "application/json", accept: "application/json, text/event-stream" }), ...headers }, body });
 
 for (const [label, options, expected] of [["no public URL: the address the request reached", {}, (host) => `http://${host}`], ["a public URL: it wins over the request's Host", { publicUrl: PUBLIC }, () => PUBLIC]]) {
   test(`through a tunnel's own port, with ${label}; MCP's runs_get says the same as GET for the same Host`, async (t) => {
@@ -66,3 +66,34 @@ for (const [label, options, expected] of [["no public URL: the address the reque
     assert.equal(mcp.json.result.structuredContent.console_url, page);
   });
 }
+
+test("a retry with the same Idempotency-Key through another address gets its own address's page, not the first request's", async (t) => {
+  const server = await serve(t);
+  const [a, b] = [`localhost:${server.port + 1000}`, `localhost:${server.port + 2000}`];
+  const created = await through(server, a)("POST", "/agents", agent("demo"), { "idempotency-key": "agent-1" });
+  assert.equal(created.json.console_url, `http://${a}/#/agents/demo`);
+  const again = await through(server, b)("POST", "/agents", agent("demo"), { "idempotency-key": "agent-1" });
+  assert.equal(again.headers["idempotent-replayed"], "true");
+  assert.equal(again.json.console_url, `http://${b}/#/agents/demo`);
+  const input = { input: { content: "What is the answer?" } };
+  const started = await through(server, a)("POST", "/agents/demo/runs", input, { "idempotency-key": "run-1" });
+  assert.equal(started.json.console_url, `http://${a}/#/runs/${started.json.run_id}`);
+  const retried = await through(server, b)("POST", "/agents/demo/runs", input, { "idempotency-key": "run-1" });
+  assert.equal(retried.headers["idempotent-replayed"], "true");
+  assert.deepEqual([retried.json.run_id, retried.json.console_url], [started.json.run_id, `http://${b}/#/runs/${started.json.run_id}`]);
+});
+
+test("an agent named new gets the console's own address for it (its Runs tab), never the new-agent form", async (t) => {
+  const server = await serve(t);
+  const created = await server.api("POST", "/agents", agent("new"));
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  assert.equal(created.body.console_url, `${server.url}/#/agents/new/runs`);
+});
+
+test("a public URL given with a trailing slash makes no double slash", async (t) => {
+  const server = await serve(t, { publicUrl: `${PUBLIC}/` });
+  const created = await server.api("POST", "/agents", agent("demo"));
+  assert.equal(created.body.console_url, `${PUBLIC}/#/agents/demo`);
+  const started = await server.api("POST", "/agents/demo/runs", { input: { content: "What is the answer?" } });
+  assert.equal(started.body.console_url, `${PUBLIC}/#/runs/${started.body.run_id}`);
+});

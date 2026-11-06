@@ -1177,6 +1177,13 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const mismatch = () => new ApiError("idempotency_mismatch", "this Idempotency-Key was used with another body");
   /** Replays the first answer to a create with the same key and body; another body is a mismatch. `work` gets the key's
    *  origin (its slot and the body, hashed) for a create the agent store records with the run it starts. */
+  /** A kept answer, replayed to `req`: its console page (a run's or an agent's console_url) at the address this request
+   *  reached (linkOrigin), not the first request's. */
+  const pageFor = (req: IncomingMessage, body: unknown): unknown => {
+    if (!isObject(body) || typeof body.console_url !== "string") return body;
+    const at = body.console_url.indexOf("/#/");
+    return at < 0 ? body : { ...body, console_url: `${linkOrigin(req)}${body.console_url.slice(at)}` };
+  };
   async function idempotent(req: IncomingMessage, path: string, body: Json, work: (origin?: RunOrigin) => Promise<{ status: number; body: unknown; headers?: Record<string, string> }>) {
     const key = req.headers["idempotency-key"];
     if (key === undefined) return work();
@@ -1189,7 +1196,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     if (known) {
       if (known.fingerprint !== fingerprint) throw mismatch();
       if (!known.answer) throw new ApiError("idempotency_in_progress", "the first request with this Idempotency-Key is still in flight", { retry_after_ms: 500 });
-      return { ...known.answer, headers: { ...known.answer.headers, "idempotent-replayed": "true" } };
+      return { ...known.answer, body: pageFor(req, known.answer.body), headers: { ...known.answer.headers, "idempotent-replayed": "true" } };
     }
     idempotency.set(slot, { fingerprint, at: now });
     let answer: { status: number; body: unknown; headers?: Record<string, string> };
@@ -1273,7 +1280,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
    *  server's public URL when it has one; else the address the request reached it at, which passed the Host check (a
    *  tunnel's own port, say); else, with no Host, its own. Links made outside a request (the owner's, the webhooks') are
    *  at the public URL or the server's own address. */
-  const linkOrigin = (req: IncomingMessage): string => options.publicUrl ?? (req.headers.host ? ownOrigin(req) : url);
+  const linkOrigin = (req: IncomingMessage): string => (options.publicUrl ?? (req.headers.host ? ownOrigin(req) : url)).replace(/\/+$/, "");
 
   async function createRun(req: IncomingMessage, agentId: string) {
     const entry = await needAgent(agentId);
