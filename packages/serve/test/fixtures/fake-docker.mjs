@@ -25,7 +25,7 @@
 // `ps --all` lists stopped containers too.
 // An `exec` of the box's network relay (socat) is noted, never run here (`no-socat`, `no-setsid` or `relay-dead` in the
 // state directory: an image without one, or a relay that never listened).
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { constants, release } from "node:os";
@@ -83,6 +83,12 @@ const fail = (text, code = 1) => {
 /** A volume's directory: short, under /tmp, by the state directory and the name, so a Unix socket in it stays within a
  *  socket path's limit (107 bytes) wherever the state directory is. The test that made the state removes it. */
 const volumeDir = (name) => join("/tmp", `fdv-${createHash("sha256").update(`${state}\0${name}`).digest("hex").slice(0, 12)}`);
+
+/** A process's command line, as `ps` gives it, or "" when there is no such process. */
+const commandOf = (pid) => {
+  const answer = spawnSync("ps", ["-o", "args=", "-p", String(pid)], { encoding: "utf8" });
+  return answer.status === 0 ? answer.stdout : "";
+};
 
 const images = join(state, "images");
 const imageFile = (name) => join(images, `${encodeURIComponent(name)}.json`);
@@ -250,12 +256,9 @@ switch (args[0]) {
     const container = read(id);
     if (!container) fail(`Error response from daemon: No such container: ${id}`);
     // The proxy container's process group, which this fake started (its pgid is its pid).
-    // Checked first by its command line, so a pid the system gave another process since is never signalled.
-    let cmdline = "";
-    try {
-      cmdline = readFileSync(`${process.env.FAKE_DOCKER_PROC ?? "/proc"}/${container.pid}/cmdline`, "utf8");
-    } catch {}
-    if (container.pid && cmdline.includes("main.js")) try {
+    // Checked first by its command line, as `ps` gives it (Linux and macOS alike; a Mac has no /proc), so a pid the
+    // system gave another process since is never signalled.
+    if (container.pid && commandOf(container.pid).includes("main.js")) try {
       process.kill(-container.pid, "SIGKILL");
     } catch {}
     rmSync(file(container.Id));

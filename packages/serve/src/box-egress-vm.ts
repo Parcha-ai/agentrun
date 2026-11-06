@@ -190,6 +190,8 @@ export type EgressState = { state: "ready" } | { state: "preparing" | "unavailab
 export type EgressContainer = { readonly volume?: string; state(): EgressState; close(): Promise<void> };
 
 const OWN_WORDS = /^egress: [\x20-\x7e]{1,200}$/;
+/** A container's full id, as `docker run --detach` prints it. */
+const CONTAINER_ID = /^[0-9a-f]{64}$/;
 
 /**
  * The server's proxy container (see the head of this file): made ready now when Docker has its image (within
@@ -253,8 +255,10 @@ export async function startEgressContainer(options: { env: NodeJS.ProcessEnv; da
     const started = await docker(egressRunArgs({ key, uid: options.uid, gid: options.gid, code, allow: options.allow }), 30_000);
     // A name another container holds fails here (Docker's conflict), and that container is left as it is.
     if (started.code !== 0) return failed(`docker run failed (${started.code})`);
-    ours = started.stdout.trim().split("\n").at(-1)?.trim() || undefined;
-    if (!ours) return failed("docker run printed no container id");
+    // Only an id is taken as one: anything else Docker printed is never handed to rm, inspect or logs.
+    const id = started.stdout.trim().split("\n").at(-1)?.trim() ?? "";
+    if (!CONTAINER_ID.test(id)) return failed("docker run printed no container id");
+    ours = id;
     // A close while it started: what it started goes too.
     if (closed) return (await removeOurs(), state);
     const until = Date.now() + readyMs;
@@ -329,6 +333,9 @@ export async function startEgressContainer(options: { env: NodeJS.ProcessEnv; da
       // touches Docker after its close.
       await busy?.catch(() => undefined);
       await removeOurs();
+      // And any other container of this server's own label, by its id: one a start made though its docker run gave no
+      // answer (a client cut off). Never by name: a container that is not this server's carries no such label.
+      await sweep().catch(() => undefined);
     },
   };
 }

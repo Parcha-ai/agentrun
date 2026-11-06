@@ -436,8 +436,7 @@ test("the fake's rm ends the proxy it started on a machine with no /proc (macOS)
   });
   const id = "d".repeat(64);
   await writeFile(join(state, "containers", `${id}.json`), JSON.stringify({ Id: id, Name: "agentrun-egress-0123456789ab", pid: child.pid, State: { Running: true, ExitCode: 0 }, Config: { Labels: { "agentrun.egress": "0123456789ab" } }, HostConfig: {}, env: [], mounts: [] }));
-  // No /proc here, as on a Mac.
-  const removed = spawnSync(process.execPath, [FAKE, "rm", "--force", id], { env: { ...process.env, FAKE_DOCKER_STATE: state, FAKE_DOCKER_PROC: join(dir, "no-proc") }, encoding: "utf8" });
+  const removed = spawnSync(process.execPath, [FAKE, "rm", "--force", id], { env: { ...process.env, FAKE_DOCKER_STATE: state }, encoding: "utf8" });
   assert.equal(removed.status, 0, removed.stderr);
   const gone = await Promise.race([exited.then(() => true), new Promise((resolve) => setTimeout(() => resolve(false), 5_000))]);
   assert.equal(gone, true, "the proxy's process ended");
