@@ -202,8 +202,42 @@ test("a revision that names no place runs where default_place says, as a new age
   // (Its run may still be refused for the browser's keys, which this test does not hold: never for its place.)
   const browsing = await api("POST", "/agents/browsing/runs", { input: { content: JSON.stringify({ probe: [] }) } });
   if (browsing.status === 202) assert.deepEqual(browsing.body.place, RUNNER);
-  else assert.ok(!/sandbox|box/.test(browsing.body.message ?? ""), JSON.stringify(browsing.body));
+  else assert.ok(!/sandbox|box/.test(browsing.body.error?.message ?? ""), JSON.stringify(browsing.body));
   const flow = await api("POST", "/agents/flow/runs", { input: { question: "q" } });
   assert.equal(flow.status, 202, JSON.stringify(flow.body));
   assert.deepEqual(flow.body.place, RUNNER);
 });
+
+test("a revision with no place and bash, saved while docker was there, is refused at a run once default_place is the runner: a 409 that says why, never bash on the runner; one with the browser stays on the runner when docker comes", { timeout: 120_000 }, async (t) => {
+  withEnv(t, { AGENTRUN_BOXES: "none" });
+  const data = join(await scratch(t), "agents");
+  const first = await startServe({ data, port: 0, faux: PROBE, drainTimeout: "5s" });
+  const none = client(first.baseUrl, first.token);
+  assert.equal((await none("POST", "/agents", fresh("shell"))).status, 201);
+  assert.equal((await none("POST", "/agents", agent("browsing", { tools: ["read", "browser"] }))).status, 201);
+  await first.close();
+  // Docker is there: an edit naming bash and no place saves, its place resolving to the box.
+  const docker = await fakeDocker(t);
+  const second = await startServe({ data, port: 0, faux: PROBE, drainTimeout: "5s" });
+  const boxed = client(second.baseUrl, second.token);
+  const edited = await boxed("PUT", "/agents/shell/definition", { definition: { instructions: "Probe.", tools: ["bash"] } });
+  assert.equal(edited.status, 200, JSON.stringify(edited.body));
+  assert.equal("place" in edited.body.definition, false);
+  // The browser keeps the runner, docker or not: a revision with a tool the box refuses never resolves to it.
+  const browsing = await boxed("POST", "/agents/browsing/runs", { input: { content: JSON.stringify({ probe: [] }) } });
+  if (browsing.status === 202) assert.deepEqual(browsing.body.place, RUNNER);
+  else assert.ok(!/sandbox|box/.test(browsing.body.error?.message ?? ""), JSON.stringify(browsing.body));
+  await second.close();
+  // Docker is gone: default_place is the runner, and the revision with bash is refused, saying why, before anything runs.
+  withEnv(t, { AGENTRUN_BOXES: "none" });
+  const { api } = await serve(t, { data, faux: PROBE });
+  assert.deepEqual((await placesOf(api)).default_place, RUNNER);
+  const before = (await api("GET", "/runs?agent=shell")).body.runs.length;
+  const refused = await api("POST", "/agents/shell/runs", { input: { content: JSON.stringify({ probe: [{ tool: "bash", args: { command: "echo hi" } }] }) } });
+  assert.equal(refused.status, 409, JSON.stringify(refused.body));
+  assert.equal(refused.body.error.code, "agent_not_runnable");
+  assert.match(refused.body.error.message, /bash runs only in a box, and this agent names no place, so it runs on the runner, which has no shell/);
+  assert.equal((await api("GET", "/runs?agent=shell")).body.runs.length, before, "no run was made");
+  assert.deepEqual(docker.execs(), [], "no shell ran anywhere");
+});
+

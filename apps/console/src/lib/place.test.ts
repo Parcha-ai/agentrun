@@ -23,6 +23,6 @@ describe("places", () => {
     expect(placeWords({ mode: "sandbox", box: "docker" }, placesOf({ places: PLACES }))).toBe("Runs in a docker box");
     expect(placeWords({ mode: "runner" }, null)).toBe("Runs on the server");
     expect(placeWords(undefined, placesOf({ places: PLACES }))).toBe("Runs on the server");
-    expect(placeWords(undefined, placesOf({ places: { ...PLACES, default_place: { mode: "sandbox", box: "docker" } } }))).toBe("Runs in a docker box", "no place runs where default_place says");
+    expect(placeWords(undefined, placesOf({ places: { ...PLACES, default_place: { mode: "sandbox", box: "docker" } } }))).toBe("Runs in a docker box");
   });
 });
