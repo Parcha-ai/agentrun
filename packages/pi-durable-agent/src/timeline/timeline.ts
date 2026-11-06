@@ -1,6 +1,6 @@
 import { BROWSER_OPENERS, BROWSER_STEPS, callFailed, endsTurn, failedWith, inputPreview, labelOf, outcomeOf, savedPaths, type LabelFn, type ToolResultView } from "./labels.js";
 import { cut, firstLine, firstSentence, json, obj, scrubUrls, str, utf8Bytes, type Obj } from "./util.js";
-import { BESIDE_SUFFIX, originMatcher } from "./origin.js";
+import { BESIDE_SUFFIX, NOTE_SUFFIX, originMatcher } from "./origin.js";
 
 export type TimelineKind =
   | "thinking" | "text_block" | "tool_use" | "tool_result" | "phase"
@@ -635,9 +635,10 @@ function createProjector(options: TimelineOptions) {
     const touch = (row: TimelineEvent) => { if (!out.includes(row)) out.push(row); };
 
     if (entry.kind === CAP_WRAPUP) {
-      // What the run's model was told near its cap: the server's row, no request, no cost.
+      // What the run's model was told near its cap: the server's row (`origin: "server"`, in the words of its other rows),
+      // no request, no cost, and no message any turn took (its id ends in NOTE_SUFFIX, which isMessageRow passes over).
       const words = str(obj(entry.data)?.words);
-      if (words) add(make("phase", conv, base, { summary: `AgentRun: ${words}`, text: words }));
+      if (words) add(make("phase", conv, `${base}${NOTE_SUFFIX}`, { summary: `AgentRun: ${words}`, text: words, origin: "server" }));
       return out;
     }
     const metered = meter.push(entry);
