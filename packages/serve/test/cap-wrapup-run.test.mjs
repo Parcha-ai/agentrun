@@ -41,6 +41,33 @@ test("pi: near its cap the model is told once, in the request it is sent, to fin
   assert.ok(!entries(data, runId).some((entry) => JSON.stringify(entry.model ?? []).includes("left of this run's budget")), "no entry of pi's transcript holds it");
 });
 
+test("pi: the final-answer request that carries the note is the run's last: no further request is sent, live or after a restart that comes after the answer", { timeout: 240_000 }, async (t) => {
+  const dir = await scratch(t);
+  const calls = join(dir, "calls.jsonl");
+  withEnv(t, { AGENTRUN_TEST_FAUX_CALLS: calls });
+  const data = join(dir, "agents");
+  let stopFirst;
+  const { api } = await serve({ after: (stop) => void (stopFirst = stop) }, { faux: WRAPUP, data });
+  assert.equal((await api("POST", "/agents", agent("wrap-last", { instructions: "Write the pages.", tools: ["write"] }))).status, 201);
+  const runId = (await api("POST", "/agents/wrap-last/runs", { input: { content: "go" }, max_cost_usd: 0.5 })).body.run_id;
+  await follow(api, runId, ["completed", "failed", "input_required"], { deadlineMs: 150_000 });
+  assert.equal((await api("GET", `/runs/${runId}`)).body.status, "completed");
+  const requests = () => readFileSync(calls, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+  const answered = requests();
+  assert.ok(answered.at(-1).note, "the run's last request carried the note: its answer ended the turn");
+  // Live: whatever would follow the answer (a queued steer runs one more request after a request with no tool call,
+  // pi-agent-core's loop) has had its chance.
+  await letGo(data, runId);
+  await new Promise((resolve) => setTimeout(resolve, 3_000));
+  assert.equal(requests().length, answered.length, "no request after the answer");
+  // After a restart: a server started again on the same data reads the run whole, and sends nothing for it.
+  await stopFirst();
+  const again = await serve(t, { faux: WRAPUP, data });
+  await new Promise((resolve) => setTimeout(resolve, 3_000));
+  assert.equal((await again.api("GET", `/runs/${runId}`)).body.status, "completed");
+  assert.equal(requests().length, answered.length, "none after the restart either");
+});
+
 test("claude-agent on the faux harness: near its cap the guard arms the words for the session's next main-model request, taken once, and one row says so", { timeout: 180_000 }, async (t) => {
   const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS, faux: WRAPUP });
   assert.equal((await api("POST", "/agents", agent("wrap-h", { harness: "claude-agent", instructions: "Grow a cached context." }))).status, 201);
