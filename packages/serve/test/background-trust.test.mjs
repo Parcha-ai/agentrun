@@ -242,3 +242,20 @@ test("links planted at command and started after the start are replaced at the r
   assert.match(readFileSync(join(work, "background", "1", "started"), "utf8"), /^\d{4}-\d\d-\d\dT[\d:]+Z\n$/);
   assert.equal(readFileSync(secret, "utf8"), "SECRET-TEXT-OUTSIDE-WORK\n", "the file the links named is as it was");
 });
+
+test("links planted at pid and tty are replaced at the run's end by the process's own copies, as command and started are", { timeout: 120_000 }, async (t) => {
+  const outside = await scratch(t);
+  const secret = join(outside, "secret.txt");
+  await writeFile(secret, "SECRET-TEXT-OUTSIDE-WORK\n");
+  const plan = [
+    { tool: "bash_background", args: { command: "sleep 30", tty: true } },
+    { tool: "bash", args: { command: `ln -sf ${secret} background/1/pid; ln -sf ${secret} background/1/tty` } },
+  ];
+  const { said, data, work } = await boxedRun(t, plan);
+  assert.deepEqual(said.map((a) => [a.tool, a.error]), plan.map((step) => [step.tool, false]), JSON.stringify(said));
+  await until(() => liveBoxes(data).length === 0, "the box's destroy at the run's end");
+  for (const name of ["pid", "tty"]) assert.equal(lstatSync(join(work, "background", "1", name)).isFile(), true, `${name} is a file of its own again`);
+  assert.equal(readFileSync(join(work, "background", "1", "pid"), "utf8"), `${groupOf(said[0].text)}\n`);
+  assert.equal(readFileSync(join(work, "background", "1", "tty"), "utf8"), "");
+  assert.equal(readFileSync(secret, "utf8"), "SECRET-TEXT-OUTSIDE-WORK\n");
+});
