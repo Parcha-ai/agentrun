@@ -2037,7 +2037,8 @@ export class Runs {
         if (!fresh) {
           if (!refreshed) {
             refreshed = true;
-            await this.mcpFresh(run);
+            const refreshing = this.mcpFresh(run);
+            if (refreshing) await refreshing;
           }
           await this.pinSignIn(run);
           if (run.outcome || run.finishing || run.cancel || this.live(run)) continue;
@@ -2132,9 +2133,9 @@ export class Runs {
    *  refreshed in serve (mcp-servers.ts headersForRun), so the synchronous launch hands it a fresh access token, never a
    *  refresh token. Never on a path that only reaches a live process, nor on a stop's: an authorization server that is
    *  slow to answer never holds an abort. */
-  private async mcpFresh(run: Run): Promise<boolean> {
+  private mcpFresh(run: Run): Promise<void> | undefined {
     const source = this.options.mcpServers;
-    if (!source?.refresh) return false;
+    if (!source?.refresh) return undefined;
     // The servers its pin names, or, before its first launch makes the pin (which may refuse the launch in words, there
     // alone), the ones its granted tools name: read only, never pinned here.
     const file = join(run.dir, MCP_PIN);
@@ -2142,11 +2143,11 @@ export class Runs {
     try {
       names = existsSync(file) ? Object.keys(JSON.parse(readFileSync(file, "utf8")) as McpPin) : [...new Set((this.needs.get(run.revision)?.tools ?? []).flatMap((tool) => mcpNameOf(tool)?.server ?? []))];
     } catch {
-      return false;
+      return undefined;
     }
-    if (!names.length) return false;
-    await Promise.all(names.map((name) => source.refresh!(name)));
-    return true;
+    // Nothing to refresh, nothing awaited: a launch path with no OAuth server takes not one tick more than it did.
+    if (!names.length) return undefined;
+    return Promise.all(names.map((name) => source.refresh!(name))).then(() => undefined);
   }
 
   /** `run`'s pinned MCP tools: read from its directory, or at its first launch made from the granted `tools` and the
@@ -2610,7 +2611,8 @@ export class Runs {
       const never = neverFits(run.harness, this.memory);
       if (!never && run.relaunches < MAX_RELAUNCHES) {
         await this.pinNeeds(run);
-        await this.mcpFresh(run);
+        const refreshing = this.mcpFresh(run);
+        if (refreshing) await refreshing;
         await this.pinSignIn(run);
         return this.relaunch(run);
       }
@@ -2886,7 +2888,8 @@ export class Runs {
     const run = this.blank({ id: started.runId, agent: entry.agent.id, revision: revision.id, kind: revision.kind }, started.dir, meta, version, harnessOfBody(revision.body), tooling, revision);
     // Before the run is known here, so nothing launches it first.
     await this.pinNeeds(run, revision);
-    await this.mcpFresh(run);
+    const refreshing = this.mcpFresh(run);
+    if (refreshing) await refreshing;
     await this.pinSignIn(run);
     this.runs.set(run.id, run);
     // A seed that failed is a learning row from the start, and its learning's end is in the ledger.
@@ -3214,7 +3217,8 @@ export class Runs {
     await this.sweepOnce();
     await this.pinNeeds(run);
     // Before its place is taken: the launch below follows the place with no wait.
-    await this.mcpFresh(run);
+    const refreshing = this.mcpFresh(run);
+    if (refreshing) await refreshing;
     const row = this.store.readRun(run.id);
     if (row?.archivedAt) throw new ApiError("not_continuable", "This run is archived: unarchive it to continue it.");
     // Its end could not be written yet (persistLater tries again): it opens once the store has it.
