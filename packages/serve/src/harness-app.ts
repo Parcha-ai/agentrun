@@ -114,17 +114,22 @@ function assistantMessage(harness: string, model: string | undefined, request: P
   };
 }
 
+/** A request's cost as the wrap-up's typical cost counts it: its own reported cost (the runner's request_end usage.usd,
+ *  the `usd` of its runner.turn), when known and above 0. Never a figure it was booked or held at (a lost request's hold,
+ *  a stopped one's count): the live process and one opened again count the same. */
+const pricedUsd = (usd: unknown): number | undefined => (typeof usd === "number" && Number.isFinite(usd) && usd > 0 ? usd : undefined);
+
 /** The session's own model's priced requests in its records, in order (the wrap-up's typical cost): each runner.turn whose
- *  cost is known and above 0 and whose runner.request was not a side call. */
+ *  own cost is priced (pricedUsd) and whose runner.request was not a side call, as the live process counted them. */
 export function ownCosts(records: readonly { kind: string; data: unknown }[]): number[] {
   const side = new Set<number>();
   const costs: number[] = [];
   for (const record of records) {
-    const data = (record.data ?? {}) as { turn?: unknown; side?: unknown; usd?: unknown; bookedUsd?: unknown };
+    const data = (record.data ?? {}) as { turn?: unknown; side?: unknown; usd?: unknown };
     if (record.kind === RUNNER_RECORDS.request && data.side === true && typeof data.turn === "number") side.add(data.turn);
     if (record.kind !== RUNNER_RECORDS.turn || (typeof data.turn === "number" && side.has(data.turn))) continue;
-    const usd = typeof data.bookedUsd === "number" ? data.bookedUsd : data.usd;
-    if (typeof usd === "number" && Number.isFinite(usd) && usd > 0) costs.push(usd);
+    const usd = pricedUsd(data.usd);
+    if (usd !== undefined) costs.push(usd);
   }
   return costs;
 }
@@ -428,7 +433,8 @@ export function adapterRun(
       const sent = sentOf.get(event.turn);
       sentOf.delete(event.turn);
       // A priced request of the session's own model: the wrap-up's typical cost counts it.
-      if (sent && !sent.side && typeof event.usage.usd === "number" && Number.isFinite(event.usage.usd) && event.usage.usd > 0) wrap.costs.push(event.usage.usd);
+      const priced = pricedUsd(event.usage.usd);
+      if (sent && !sent.side && priced !== undefined) wrap.costs.push(priced);
       const last = sent && event.usage.usd !== null && !event.usage.cut ? previousOf(event.usage, sent.inputTokensMax, now()) : undefined;
       if (sent) last ? previous.set(sent.model, last) : previous.delete(sent.model);
       costed.push({ request: event.turn, usage: event.usage });
