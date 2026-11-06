@@ -1020,19 +1020,35 @@ describe("daytona boxes", () => {
 	});
 
 	it("kills a timed-out program under its exec's `killAs` when given: the user it runs as is the one that may signal it", async () => {
-		const box = (
-			await daytonaBoxes({ apiKey: API_KEY, apiUrl: `${fake.url}/api`, spoolDir: fake.path("spool-kill-as"), workspace: fake.path("workspace"), pollMs: 10, execPollMs: 20, listedStableMs: 50, destroyRetryMs: 10 }).create(spec(), context)
-		);
+		const box = await daytonaBoxes({
+			apiKey: API_KEY,
+			apiUrl: `${fake.url}/api`,
+			spoolDir: fake.path("spool-kill-as"),
+			workspace: fake.path("workspace"),
+			pollMs: 10,
+			execPollMs: 20,
+			listedStableMs: 50,
+			destroyRetryMs: 10,
+		}).create(spec(), context);
 		if (!box.ok) throw box.error;
 		try {
 			const before = fake.requests.length;
-			const slow = await box.value.exec(["sleep", "30"], { timeoutMs: 200, killAs: ["env", "KILLED_AS=tool-user"] }, context);
+			const slow = await box.value.exec(
+				["sleep", "30"],
+				{ timeoutMs: 200, killAs: ["env", "KILLED_AS=tool-user"] },
+				context,
+			);
 			if (!slow.ok) throw slow.error;
 			void readStream(slow.value.stdout);
 			await slow.value.wait();
 			let cleanup: string | undefined;
 			for (let waited = 0; waited < 3000 && cleanup === undefined; waited += 50) {
-				cleanup = fake.requests.slice(before).map((r) => (r.path.endsWith("/process/execute") ? (JSON.parse(r.body) as { command: string }).command : "")).find((c) => c.includes("kill -9"));
+				cleanup = fake.requests
+					.slice(before)
+					.map((r) =>
+						r.path.endsWith("/process/execute") ? (JSON.parse(r.body) as { command: string }).command : "",
+					)
+					.find((c) => c.includes("kill -9"));
 				if (cleanup === undefined) await new Promise((resolve) => setTimeout(resolve, 50));
 			}
 			expect(cleanup).toContain("KILLED_AS=tool-user");
@@ -1054,7 +1070,9 @@ describe("daytona boxes", () => {
 			const before = fake.sandboxes.size;
 			const lacking = await provider().create(spec({ capabilities: ["fuse"] }), context);
 			expect(lacking.ok ? "ok" : lacking.error.code).toBe("unsupported");
-			expect(lacking.ok ? "" : lacking.error.message).toMatch(/asked for fuse and lacks it: \S+ is not a character device in the box/);
+			expect(lacking.ok ? "" : lacking.error.message).toMatch(
+				/asked for fuse and lacks it: \S+ is not a character device in the box/,
+			);
 			expect(fake.sandboxes.size).toBe(before);
 		} finally {
 			fake.fuseDevice = "/dev/null";
@@ -1074,7 +1092,9 @@ describe("daytona boxes", () => {
 		expect(bare.traits?.egress).toBe("in-box");
 		expect(bare.traits?.egressWords).toBe("enforced by an in-box firewall");
 		expect(bare.traits?.diskMount).toMatch(/only from a snapshot that ships its client.*the `snapshot` option/);
-		expect(daytonaBoxes({ apiKey: API_KEY, apiUrl: `${fake.url}/api`, snapshot: "with-disk-client" }).traits?.diskMount).toBeUndefined();
+		expect(
+			daytonaBoxes({ apiKey: API_KEY, apiUrl: `${fake.url}/api`, snapshot: "with-disk-client" }).traits?.diskMount,
+		).toBeUndefined();
 	});
 
 	it("resolves relative paths against the workspace and sets a file's mode", async () => {

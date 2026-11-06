@@ -570,7 +570,9 @@ describe("modal boxes", () => {
 		expect(bare.traits?.egress).toBe("allowlist");
 		expect(bare.traits?.egressWords).toBe("enforced by the provider's CIDR allowlist");
 		expect(bare.traits?.diskMount).toMatch(/only from an image that ships its client.*the `image` option/);
-		expect(modalBoxes(new FakeModal(), { appName: "a", image: "registry.example/with-disk-client:1" }).traits?.diskMount).toBeUndefined();
+		expect(
+			modalBoxes(new FakeModal(), { appName: "a", image: "registry.example/with-disk-client:1" }).traits?.diskMount,
+		).toBeUndefined();
 	});
 
 	it("refuses a GPU on a vm, other isolations, a snapshot and a lifetime of zero, without calling Modal", async () => {

@@ -923,7 +923,11 @@ export function daytonaBoxes(options: DaytonaBoxesOptions): BoxProvider {
 			const wantsFuse = capabilities.includes("fuse");
 			const refused =
 				refuseNetworkFields(
-					{ ...asked, ...(allow.length > 0 ? { network: "open" as const } : {}), capabilities: capabilities.filter((c) => c !== "fuse") },
+					{
+						...asked,
+						...(allow.length > 0 ? { network: "open" as const } : {}),
+						capabilities: capabilities.filter((c) => c !== "fuse"),
+					},
 					"daytona",
 					true,
 				) ?? refuseMounts(spec, "daytona");
@@ -1036,7 +1040,10 @@ export function daytonaBoxes(options: DaytonaBoxesOptions): BoxProvider {
 				if (!fuse.ok) return abandon(fuse.error);
 				if (fuse.value.exitCode !== 0) {
 					return abandon(
-						new BoxError("unsupported", `the box asked for fuse and lacks it: ${fuse.value.result.trim().slice(0, 300)}`),
+						new BoxError(
+							"unsupported",
+							`the box asked for fuse and lacks it: ${fuse.value.result.trim().slice(0, 300)}`,
+						),
 					);
 				}
 			}
