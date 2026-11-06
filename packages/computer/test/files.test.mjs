@@ -202,9 +202,10 @@ test("writeFile of a read-only mode over many chunks writes them all, then sets 
 
 /**
  * A fake daemon for tar pulls and pushes that keeps sessions as the real one does: at most 8 of each a connection, a
- * pull reads `archive` in chunks of `chunk`, and its end is idempotent. What each push was sent is in `pushed`.
+ * pull reads `archive` in chunks of `chunk`, and its end is idempotent. What each push was sent is in `pushed`. With
+ * `lateBegin`, a push's begin is answered on a later turn, as a real daemon over a real pipe answers.
  */
-function tarDaemon({ archive = Buffer.alloc(0), chunk = MAX_CHUNK_BYTES, failRead } = {}) {
+function tarDaemon({ archive = Buffer.alloc(0), chunk = MAX_CHUNK_BYTES, failRead, lateBegin = false } = {}) {
 	const pulls = new Map();
 	const pushes = new Map();
 	const pushed = [];
@@ -232,6 +233,7 @@ function tarDaemon({ archive = Buffer.alloc(0), chunk = MAX_CHUNK_BYTES, failRea
 			case "tar.push.begin":
 				if (pushes.size >= 8) return daemon.error(request, "limit", "a connection has at most 8 pushes open: end one first");
 				pushes.set(`push-${++next}`, []);
+				if (lateBegin) return setImmediate(daemon.reply, request, { id: `push-${next}` });
 				return daemon.reply(request, { id: `push-${next}` });
 			case "tar.push.write":
 				if (!pushes.has(id)) return daemon.error(request, "not_found", `no push "${id}" on this connection`);
@@ -401,19 +403,15 @@ test("a push aborted after its source ends still ends, so the connection's 8 pus
 });
 
 test("a push aborted while it begins still ends what it began", async () => {
-	const { client, seen, pushes } = tarDaemon();
+	const { client, seen, pushes } = tarDaemon({ lateBegin: true });
 	const controller = new AbortController();
 	const pushing = pushTar(client, "/dst", Buffer.from("x"), { signal: controller.signal });
 	controller.abort();
 	const result = await within(pushing, 10_000, "the aborted push");
 	assert.equal(result.ok, false);
 	assert.equal(result.error.code, "aborted");
-	await within(
-		(async () => {
-			while (pushes.size > 0 || !seen.some((r) => r.method === "tar.push.end")) await tick();
-		})(),
-		10_000,
-		"the end of the begun push",
-	);
+	const deadline = Date.now() + 10_000;
+	while ((pushes.size > 0 || !seen.some((r) => r.method === "tar.push.end")) && Date.now() < deadline) await tick();
+	assert.equal(pushes.size, 0, "the begun push was never ended");
 	client.close();
 });

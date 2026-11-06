@@ -269,13 +269,13 @@ func TestNotFound(t *testing.T) {
 	c := dial(t)
 	missing := filepath.Join(t.TempDir(), "missing")
 	for method, params := range map[string]map[string]any{
-		"files.read":   {"path": missing},
-		"files.stat":   {"path": missing},
-		"files.list":   {"path": missing},
-		"files.mkdir":  {"path": filepath.Join(missing, "child")},
-		"files.move":   {"from": missing, "to": missing + "2"},
-		"files.remove": {"path": missing},
-		"files.write":  {"path": filepath.Join(missing, "f"), "data": ""},
+		"files.read":     {"path": missing},
+		"files.stat":     {"path": missing},
+		"files.list":     {"path": missing},
+		"files.mkdir":    {"path": filepath.Join(missing, "child")},
+		"files.move":     {"from": missing, "to": missing + "2"},
+		"files.remove":   {"path": missing},
+		"files.write":    {"path": filepath.Join(missing, "f"), "data": ""},
 		"tar.pull.begin": {"path": missing},
 		"tar.pull.read":  {"id": "nope"},
 		"tar.push.end":   {"id": "nope"},
