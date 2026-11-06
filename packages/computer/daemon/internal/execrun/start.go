@@ -64,6 +64,10 @@ func Guards() []int {
 // afterAdmit and afterStarted are nil outside tests: they run in Start once it is let in, and once its program runs.
 var afterAdmit, afterStarted func(p Program)
 
+// afterGuardFork and beforeGuardWait are nil outside tests: the first runs in Start right after a guard's fork, before
+// it is recorded, with the registry's lock held; the second in follow, right before it reaps the guard.
+var afterGuardFork, beforeGuardWait func(guardPid int)
+
 // endingBegan and guardsTermed are nil outside tests: they run in EndAll once it refuses new starts, and once every
 // guard has been sent SIGTERM.
 var endingBegan, guardsTermed func()
@@ -171,6 +175,9 @@ func Start(p Program, stdin, stdout, stderr *os.File) (*Guarded, error) {
 	}
 	guards.Lock()
 	err = cmd.Start()
+	if err == nil && afterGuardFork != nil {
+		afterGuardFork(cmd.Process.Pid)
+	}
 	if err == nil {
 		guards.pids[cmd.Process.Pid] = true
 	}
@@ -224,6 +231,9 @@ func (g *Guarded) follow(status *os.File, started chan<- struct{}) {
 		g.final, g.reported = s, true
 	}
 	_ = status.Close()
+	if beforeGuardWait != nil {
+		beforeGuardWait(g.guard.Process.Pid)
+	}
 	_ = g.guard.Wait()
 	guards.Lock()
 	delete(guards.pids, g.guard.Process.Pid)

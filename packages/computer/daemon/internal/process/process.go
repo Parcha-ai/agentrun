@@ -16,6 +16,8 @@ const (
 type Options struct {
 	RingBytes  int
 	MaxEntries int
+	// RetainedBytes bounds the output every ring in the table holds together.
+	RetainedBytes int64
 }
 
 type Size struct {
