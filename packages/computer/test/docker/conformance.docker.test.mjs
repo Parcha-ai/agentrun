@@ -16,10 +16,13 @@ const labelled = (run) => docker("ps", "-a", "--filter", `label=agentrun.conform
 describe("the conformance suite on Docker", { skip: LIVE ? false : "set AGENTRUN_COMPUTER_LIVE_DOCKER=1 to run on real Docker" }, () => {
 	let report;
 	let run;
+	let close = () => {};
 	const made = new Set();
 
 	before(async () => {
-		const { provider, drifted } = dockerConformance();
+		const fixture = dockerConformance();
+		const { provider, drifted } = fixture;
+		close = fixture.close;
 		const create = provider.create.bind(provider);
 		provider.create = async (spec, context) => {
 			run ??= spec.labels?.["agentrun.conformance"];
@@ -32,6 +35,7 @@ describe("the conformance suite on Docker", { skip: LIVE ? false : "set AGENTRUN
 	});
 
 	after(() => {
+		close();
 		for (const name of new Set([...made, ...(run ? labelled(run) : [])])) {
 			try {
 				execFileSync("docker", ["rm", "--force", "--volumes", name], { stdio: "ignore" });

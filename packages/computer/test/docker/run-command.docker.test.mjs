@@ -1,6 +1,8 @@
-// The demo on real Docker (AGENTRUN_COMPUTER_LIVE_DOCKER=1 only): a debian:bookworm-slim computer with no network and a
-// 10-minute lifetime runs commands through its daemon. Needs `npm run build` and `npm run build:daemon` first, and the
-// image pulled. Every container this file makes is removed by its exact name in the after hook, pass or fail.
+// What only Docker shows of a computer, on real Docker (AGENTRUN_COMPUTER_LIVE_DOCKER=1 only): the hardening flags and
+// the daemon mount in docker inspect, hello's arch against Docker's, no interface but lo with network none, no user
+// switch without capabilities, and the daemon as PID 1 exiting 0 on docker stop. What every provider must do is in the
+// conformance suite (conformance.docker.test.mjs). Needs `npm run build` and `npm run build:daemon` first, and the image
+// pulled. Every container this file makes is removed by its exact name in the after hook, pass or fail.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -13,18 +15,14 @@ const IMAGE = "debian:bookworm-slim";
 const docker = (...args) => execFileSync("docker", args, { encoding: "utf8" });
 const decode = (base64) => Buffer.from(base64, "base64").toString("utf8");
 
-describe("run a command in a Docker computer", { skip: LIVE ? false : "set AGENTRUN_COMPUTER_LIVE_DOCKER=1 to run on real Docker" }, () => {
+describe("a Docker computer, as Docker shows it", { skip: LIVE ? false : "set AGENTRUN_COMPUTER_LIVE_DOCKER=1 to run on real Docker" }, () => {
 	const made = [];
 	let provider;
 	let arch;
 	let ref;
 	let connection;
 
-	const ours = () => docker("ps", "-a", "--filter", "label=agentrun.computer=1", "--format", "{{.Names}}").split("\n").filter(Boolean).sort();
-	const exec = async (argv, extra = {}, options) => {
-		const result = await connection.client.call("exec.run", { argv, timeoutMs: 20_000, ...extra }, options);
-		return result;
-	};
+	const exec = (argv, extra = {}) => connection.client.call("exec.run", { argv, timeoutMs: 20_000, ...extra });
 	const run = async (argv, extra) => {
 		const result = await exec(argv, extra);
 		assert.equal(result.ok, true, JSON.stringify(result));
@@ -76,37 +74,16 @@ describe("run a command in a Docker computer", { skip: LIVE ? false : "set AGENT
 		assert.ok(deadline > Date.now() + 9 * 60_000 && deadline <= Date.now() + 10 * 60_000, labels["agentrun.computer.deadline"]);
 	});
 
-	it("connects, and hello reports the arch, exec, files and processes", async () => {
+	it("connects, and hello reports Docker's arch, exec, files and processes", async () => {
 		const connected = await provider.connect(ref);
 		assert.equal(connected.ok, true, JSON.stringify(connected));
 		connection = connected.value;
 		assert.equal(connection.hello.os, "linux");
 		assert.equal(connection.hello.arch, arch);
 		assert.deepEqual(connection.hello.capabilities, ["exec", "files", "processes"]);
-		assert.deepEqual(await connection.client.call("ping", {}), { ok: true, value: {} });
 	});
 
-	it("runs uname -m", async () => {
-		const result = await run(["uname", "-m"]);
-		assert.equal(result.exitCode, 0);
-		assert.equal(result.out.trim(), arch === "arm64" ? "aarch64" : "x86_64");
-		assert.equal(result.timedOut, false);
-		assert.equal(result.truncated, false);
-	});
-
-	it("keeps stdout and stderr apart, and returns a nonzero exit code", async () => {
-		const result = await run(["sh", "-c", "echo to-out; echo to-err >&2; exit 7"]);
-		assert.equal(result.out, "to-out\n");
-		assert.equal(result.err, "to-err\n");
-		assert.equal(result.exitCode, 7);
-	});
-
-	it("never expands argv in a shell", async () => {
-		const result = await run(["echo", "$(id)", "`id`", "a;b", "*"]);
-		assert.equal(result.out, "$(id) `id` a;b *\n");
-	});
-
-	it("has no network", async () => {
+	it("has no interface but lo with network none", async () => {
 		const result = await run(["sh", "-c", "ls /sys/class/net"]);
 		assert.deepEqual(result.out.split("\n").filter(Boolean), ["lo"]);
 	});
@@ -118,43 +95,6 @@ describe("run a command in a Docker computer", { skip: LIVE ? false : "set AGENT
 		assert.match(result.error.message, /CAP_SETUID/);
 	});
 
-	it("times out, and the whole process group is gone", async () => {
-		const result = await run(["sh", "-c", "sleep 300 & echo $!; wait"], { timeoutMs: 1000 });
-		assert.equal(result.timedOut, true);
-		assert.equal(result.exitCode, null);
-		assert.equal(result.signal, "TERM");
-		const pid = Number(result.out.trim());
-		assert.ok(pid > 1, result.out);
-		const check = await run(["sh", "-c", `if [ -e /proc/${pid} ]; then cat /proc/${pid}/stat; else echo gone; fi`]);
-		assert.equal(check.out.trim(), "gone");
-	});
-
-	it("ends a child that left the program's session and group (setsid) when the program ends", async () => {
-		const script = `p=$(mktemp -u); mkfifo "$p"; setsid sh -c 'echo $$ > "$0"; exec sleep 302' "$p" >/dev/null 2>&1 </dev/null & read pid < "$p"; echo $pid`;
-		const result = await run(["sh", "-c", script]);
-		assert.equal(result.exitCode, 0, result.err);
-		const pid = Number(result.out.trim());
-		assert.ok(pid > 1, result.out);
-		const check = await run(["sh", "-c", `if [ -e /proc/${pid} ]; then cat /proc/${pid}/stat; else echo gone; fi`]);
-		assert.equal(check.out.trim(), "gone");
-	});
-
-	it("aborts through an AbortSignal, and the program is ended", async () => {
-		const controller = new AbortController();
-		setTimeout(() => controller.abort(), 500);
-		const result = await exec(["sleep", "301"], { timeoutMs: 60_000 }, { signal: controller.signal });
-		assert.equal(result.ok, false);
-		assert.equal(result.error.code, "aborted");
-		const end = Date.now() + 5000;
-		let left;
-		do {
-			left = (await run(["sh", "-c", "cat /proc/[0-9]*/cmdline 2>/dev/null | tr '\\0' ' '"])).out;
-			if (!left.includes("sleep 301")) break;
-			await new Promise((resolve) => setTimeout(resolve, 200));
-		} while (Date.now() < end);
-		assert.ok(!left.includes("sleep 301"), `sleep 301 still runs: ${left}`);
-	});
-
 	it("stops the computer: the daemon as PID 1 exits 0 on SIGTERM, not SIGKILL (137), and the container stays", async () => {
 		await connection.close();
 		connection = undefined;
@@ -162,20 +102,5 @@ describe("run a command in a Docker computer", { skip: LIVE ? false : "set AGENT
 		const [inspected] = JSON.parse(docker("inspect", ref.name));
 		assert.equal(inspected.State.Running, false);
 		assert.equal(inspected.State.ExitCode, 0);
-	});
-
-	it("deletes the computer, and a second delete is ok", async () => {
-		assert.deepEqual(await provider.release(ref, "delete"), { ok: true, value: undefined });
-		assert.deepEqual(await provider.release(ref, "delete"), { ok: true, value: undefined });
-		assert.equal(ours().includes(ref.name), false);
-	});
-
-	it("refuses an allowlist and makes no container", async () => {
-		const before = ours();
-		const result = await provider.create({ image: IMAGE, lifetimeMs: 60_000, network: { allow: ["example.com"] } });
-		assert.equal(result.ok, false);
-		assert.equal(result.error.code, "refused");
-		assert.match(result.error.message, /cannot enforce an allowlist yet/);
-		assert.deepEqual(ours(), before);
 	});
 });
