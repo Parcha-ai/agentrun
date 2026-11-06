@@ -139,6 +139,49 @@ test("a run that comes to wait on a person between the firing's check and its do
 
 const GATE = { faux: new URL("./fixtures/faux-gate.mjs", import.meta.url).pathname, fauxWeb: new URL("./fixtures/faux-gate-web.mjs", import.meta.url).pathname, accounts: true, openSetup: true };
 
+// The window the server's own check cannot see: a person's message in flight (counted, so the run reads working) while
+// a call of its run is parked for its owner's approval. A trigger's message reaching the run then must never answer that
+// approval: it may not answer a person (answers false), so it never declines one either.
+test("a trigger's message that reaches a run while a tool call waits for its owner's approval never declines it: the approval stands, the same one, unanswered, and the firing sends nothing", { timeout: 120_000 }, async (t) => {
+  withEnv(t, SEAL);
+  const gate = join(await scratch(t), "gate");
+  let api;
+  let baseUrl;
+  let trigger;
+  let seen;
+  let server;
+  // The person's message, held at the door's seam once it is counted (the run reads working): the run's call is let park,
+  // then the trigger fires and settles, and the run's answers to its approvals are read (serve.json's `approvals`, where
+  // a decline is written), before the person's message goes on.
+  const beforeSubmit = async (runId, content) => {
+    if (content !== "And the other page too.") return;
+    try {
+      await writeFile(gate, "");
+      const parked = async () => (await api("GET", `/runs/${runId}/timeline`)).body.rows.some((row) => row.kind === "tool_approval_requested");
+      for (const end = Date.now() + 30_000; !(await parked()); await new Promise((resolve) => setTimeout(resolve, 50))) assert.ok(Date.now() < end, "the call parks");
+      assert.equal((await post(baseUrl, trigger.id, "eu", trigger.secret)).status, 202);
+      const [firing] = await firings(api, trigger.id, 1);
+      seen = { firing, approvals: JSON.parse(await readFile(join(runDir(server.data, runId), "serve.json"), "utf8")).approvals ?? {} };
+    } catch (error) {
+      seen = { error };
+    }
+  };
+  server = await serve(t, { ...GATE, beforeSubmit });
+  ({ api, baseUrl } = server);
+  assert.equal((await api("PUT", "/settings/tools", { web_fetch: { permission: "ask" } })).status, 200);
+  await made(api, "fetcher", { tools: ["web_fetch"] });
+  const run = (await api("POST", "/agents/fetcher/runs", { input: { content: `Fetch http://public.example/ once ${gate} exists.` }, max_cost_usd: 1 })).body;
+  await follow(api, run.run_id, ["working"]);
+  trigger = (await api("POST", "/triggers", messaging(run.run_id))).body;
+  const said = api("POST", `/runs/${run.run_id}/messages`, { content: "And the other page too." });
+  for (const end = Date.now() + 60_000; !seen; await new Promise((resolve) => setTimeout(resolve, 50))) assert.ok(Date.now() < end, "the person's message reached the seam");
+  await said;
+  if (seen.error) throw seen.error;
+  assert.deepEqual(seen.approvals, {}, "no approval answered: none declined by the trigger's message");
+  assert.notEqual(seen.firing.status, "sent", `the firing sent nothing: ${JSON.stringify(seen.firing)}`);
+  assert.equal((await api("POST", `/runs/${run.run_id}/cancel`)).status, 202);
+});
+
 test("a run that comes to wait on a tool call's approval between the firing's check and its door's admission is never messaged: the door refuses, the firing is skipped, the approval stands, unanswered", { timeout: 120_000 }, async (t) => {
   withEnv(t, SEAL);
   const gate = join(await scratch(t), "gate");
