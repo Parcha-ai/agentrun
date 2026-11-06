@@ -78,7 +78,7 @@ test("a person sees what the agent learned and controls it: the view, the log by
   assert.equal(view.main, main1);
   assert.equal(view.index, `${line("check-units.md", "Check units", "Convert every amount to one unit before comparing")}\n${line("quote-sources.md", "Quote sources", "Name the page each figure came from")}\n`);
   assert.deepEqual(view.notes.items.map((n) => [n.file, n.status, n.type, n.superseded_by]), [["check-units.md", "active", "reference", null], ["quote-sources.md", "active", "reference", null]]);
-  assert.deepEqual(view.notes.items[0], { file: "check-units.md", name: "Check units", description: "Convert every amount to one unit before comparing", type: "reference", status: "active", origin: "run", superseded_by: null, text: UNITS, etag: `"${git(repoOf(data, id), ["rev-parse", "main:check-units.md"])}"`, last_change: { kind: "learned", by: "run", at: view.notes.items[0].last_change?.at } });
+  assert.deepEqual(view.notes.items[0], { file: "check-units.md", name: "Check units", description: "Convert every amount to one unit before comparing", type: "reference", status: "active", origin: "run", superseded_by: null, text: UNITS, etag: `"${git(repoOf(data, id), ["rev-parse", "main:check-units.md"])}"`, runs: { given: 1, read: 0 }, last_change: { kind: "learned", by: "run", at: view.notes.items[0].last_change?.at } });
   assert.deepEqual(view.log, { items: [{ by: { run: one }, commit: main1, at: view.log.items[0].at, reason: "Each note is general and new.", files: ["MEMORY.md", "check-units.md", "quote-sources.md"] }], total: 1, next_cursor: null });
   assert.deepEqual(view.counts, { merged: 1, dropped: { grader: 1 }, in_progress: 0 });
 
@@ -92,7 +92,7 @@ test("a person sees what the agent learned and controls it: the view, the log by
   // Run 2: its learning whole shows the drop, and its diff its proposal against its seed.
   const learned2 = (await api("GET", `/runs/${two}/learning`)).body;
   meets("/runs/{run_id}/learning", learned2);
-  assert.deepEqual({ ...learned2, at: undefined, detail: undefined, cost_usd: undefined, tokens: undefined }, { run: two, state: "dropped", reason: "grader", detail: undefined, at: undefined, seed: main1, merged: null, pending: [], verdict: { merge: false, reason: "A note is about the one case it came from.", items: [{ file: "prefers-tables.md", keep: false, question: "General", why: "It is about one case." }] }, problems: [], cost_usd: undefined, tokens: undefined });
+  assert.deepEqual({ ...learned2, at: undefined, detail: undefined, cost_usd: undefined, tokens: undefined }, { run: two, state: "dropped", reason: "grader", detail: undefined, at: undefined, seed: main1, given: [{ file: "check-units.md", name: "Check units" }, { file: "quote-sources.md", name: "Quote sources" }], merged: null, pending: [], verdict: { merge: false, reason: "A note is about the one case it came from.", items: [{ file: "prefers-tables.md", keep: false, question: "General", why: "It is about one case." }] }, problems: [], cost_usd: undefined, tokens: undefined });
   assert.ok(Object.keys(learned2.cost_usd).join() === "grade" && learned2.cost_usd.grade > 0 && learned2.tokens.grade.input > 0, JSON.stringify(learned2));
   assert.deepEqual((await api("GET", `/runs/${two}/learning/diff`)).body, { base: main1, head: null, files: [{ path: "prefers-tables.md", status: "added", patch: added(TABLES) }] });
   const learned1 = (await api("GET", `/runs/${one}/learning`)).body;
@@ -416,7 +416,7 @@ test("a note's name that holds a value made secret after it was written is never
   // A third run reads the note by that name.
   assert.equal((await first.api("PUT", "/agents/namer/definition", learner("namer", { tools: ["write", "read"], instructions: `Answer the question.\nRead: ${JSON.stringify([`.learning/${named}`])}`, version: 3 }))).status, 200);
   const three = await ended(first.api, await started(first.api, "namer"));
-  assert.deepEqual(three.view.learning.used, [{ file: named, name: "Plan" }], "shown as it is while no secret");
+  assert.deepEqual(three.view.learning.read, [{ file: named, name: "Plan" }], "shown as it is while no secret");
   await first.close();
 
   // The server again, with the name's value as a launcher's secret (the model key).
@@ -450,9 +450,9 @@ test("a note's name that holds a value made secret after it was written is never
   const runTwo = (await api("GET", `/runs/${two.view.run_id}`)).body.learning;
   const runThree = (await api("GET", `/runs/${three.view.run_id}`)).body.learning;
   const listed = (await api("GET", "/agents/namer/runs")).body.runs;
-  assert.deepEqual([runTwo.learned, runThree.used], [[{ file: "[redacted]", name: "Plan", supersedes: ["old-plan.md"] }], [{ file: "[redacted]", name: "Plan" }]]);
+  assert.deepEqual([runTwo.learned, runThree.read], [[{ file: "[redacted]", name: "Plan", supersedes: ["old-plan.md"] }], [{ file: "[redacted]", name: "Plan" }]]);
   const inList = (runId) => listed.find((run) => run.run_id === runId).learning;
-  assert.deepEqual([inList(two.view.run_id).learned, inList(three.view.run_id).used], [runTwo.learned, runThree.used], "and in the list");
+  assert.deepEqual([inList(two.view.run_id).learned, inList(three.view.run_id).read], [runTwo.learned, runThree.read], "and in the list");
   const shown = JSON.stringify([view, page1, page2, log, diff, learned, old.body, [...old.headers], [...own.headers], retire.body, [...retire.headers], after, runTwo, runThree, listed]);
   assert.ok(!shown.includes(value), "the value is nowhere a person reads");
 });

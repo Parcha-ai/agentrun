@@ -86,20 +86,23 @@ export const GRADE_MODEL_ENV = "AGENTRUN_SERVE_GRADE_MODEL";
  *  (AGENT_MODEL_STRONG); undefined when it names none, and each run is graded on its agent's own model (grade.ts). A
  *  name is a model as the strong tier takes one: sent as it is to a gateway, a provider/model-id otherwise. */
 export const gradeModelOf = (env: NodeJS.ProcessEnv, given?: string): string | undefined => given || env[GRADE_MODEL_ENV] || env.AGENT_MODEL_STRONG || undefined;
-/** A note a run read from its copy of the folder (`used`), by its file and its front matter's name. */
+/** How many of an agent's runs were given a note, and read it, by the note's file (learning-run.ts noteRuns). */
+export type NoteRuns = Map<string, { given: number; read: number }>;
+/** A note by its file and its front matter's name: one a run was given (`given`) or read (`read`). */
 export type NoteUsed = { file: string; name: string };
 /** A note a run's learning added to the folder (`learned`): its file, its name, and the notes it superseded. */
 export type NoteLearned = NoteUsed & { supersedes: string[] };
 /** A run's learning as serve.json keeps it. Past the view's four fields: the checker's `problems` (printable), the
  *  grader's `verdict` and the blob of each note it read superseded (`graded`, by file), both kept before the merge, the
  *  merge commit, and what the grade cost (null when unknown, never 0), which is in no run's totals; the notes the run
- *  read from `.learning/` (`used`, found in its rows as it settles), and once merged the notes it added (`learned`);
+ *  started with (`given`: each note its # Learned section names, whole or as an index line, set as it is seeded) and read
+ *  from `.learning/` (`read`, found in its rows as it settles), and once merged the notes it added (`learned`);
  *  and how many notes it started from (`seed_notes`). Names are kept as written, and cut of the host's secrets as they
  *  leave. */
 export type Learning = {
   state: LearningState; reason: LearningReason | null; detail: string | null; at: string;
   problems?: Problem[]; verdict?: Verdict; graded?: Record<string, string>; merged?: string; cost_usd?: { grade: number | null }; tokens?: { grade: Tokens | null };
-  used?: NoteUsed[]; learned?: NoteLearned[];
+  given?: NoteUsed[]; read?: NoteUsed[]; learned?: NoteLearned[];
   /** How many active notes the run started from: its seed's, set as it is seeded (none for a seed that failed). */
   seed_notes?: number;
   /** Once it asked its end-of-run turn: when its job's answer was final (before it looked back), and what the run had
@@ -123,7 +126,7 @@ export type Learning = {
 export type LearnedFile = { file: string; name: string; pending?: true };
 /** What a run's learning keeps whatever its learning does after: what it read, how many notes it started from, and its
  *  answer's time and its costs (learning-run.ts setLearning). */
-export const KEPT_LEARNING = ["used", "seed_notes", "answered_at", "job_cost_usd", "look_back_usd"] as const;
+export const KEPT_LEARNING = ["given", "read", "seed_notes", "answered_at", "job_cost_usd", "look_back_usd"] as const;
 
 /** What a text or a name that leaves shows of the host's secrets now: none (secretsShown). */
 export type Shown = { text: (text: string) => string; name: (name: string) => string; holds: (text: string) => boolean };
@@ -140,16 +143,18 @@ export function secretsShown(values: readonly string[]): Shown {
 
 const isText = (value: unknown): value is string => typeof value === "string";
 /** The notes a run read and learned, as a view or a list shows them, each name cut of the host's secrets (`shown`):
- *  `used` once the run settled, `learned` and `pending` (what waits for the owner's OK) once it merged, and the skill
+ *  `given` from its start, `read` once the run settled, `learned` and `pending` (what waits for the owner's OK) once it merged, and the skill
  *  and the workflow draft it merged (`skills`, `workflows`, each `pending` while it waits), each only when it holds one.
  *  serve.json's are read as untrusted: an entry out of shape is left out. */
-export function notesView({ state, used, learned, pending, skills, workflows }: Learning, shown: Shown, settled: boolean): { used?: NoteUsed[]; learned?: NoteLearned[]; pending?: NoteUsed[]; skills?: LearnedFile[]; workflows?: LearnedFile[] } {
-  const read = settled && Array.isArray(used) ? used.filter((note) => isText(note?.file) && isText(note.name)).map(({ file, name }) => ({ file: shown.name(file), name: shown.text(name) })) : [];
+export function notesView({ state, given, read: opened, learned, pending, skills, workflows }: Learning, shown: Shown, settled: boolean): { given?: NoteUsed[]; read?: NoteUsed[]; learned?: NoteLearned[]; pending?: NoteUsed[]; skills?: LearnedFile[]; workflows?: LearnedFile[] } {
+  const refs = (list: NoteUsed[] | undefined) => (Array.isArray(list) ? list.filter((note) => isText(note?.file) && isText(note.name)).map(({ file, name }) => ({ file: shown.name(file), name: shown.text(name) })) : []);
+  const started = refs(given);
+  const read = settled ? refs(opened) : [];
   const added = state === "merged" && Array.isArray(learned) ? learned.filter((note) => isText(note?.file) && isText(note.name) && Array.isArray(note.supersedes) && note.supersedes.every(isText)).map(({ file, name, supersedes }) => ({ file: shown.name(file), name: shown.text(name), supersedes: supersedes.map(shown.name) })) : [];
   const waiting = state === "merged" && Array.isArray(pending) ? pending.filter((note) => isText(note?.file) && isText(note.name)).map(({ file, name }) => ({ file: shown.name(file), name: shown.text(name) })) : [];
   const files = (list: LearnedFile[] | undefined) => (state === "merged" && Array.isArray(list) ? list.filter((item) => isText(item?.file) && isText(item.name)).map(({ file, name, pending: waits }) => ({ file: shown.name(file), name: shown.name(name), ...(waits === true ? { pending: true as const } : {}) })) : []);
   const [kept, drafts] = [files(skills), files(workflows)];
-  return { ...(read.length ? { used: read } : {}), ...(added.length ? { learned: added } : {}), ...(waiting.length ? { pending: waiting } : {}), ...(kept.length ? { skills: kept } : {}), ...(drafts.length ? { workflows: drafts } : {}) };
+  return { ...(started.length ? { given: started } : {}), ...(read.length ? { read } : {}), ...(added.length ? { learned: added } : {}), ...(waiting.length ? { pending: waiting } : {}), ...(kept.length ? { skills: kept } : {}), ...(drafts.length ? { workflows: drafts } : {}) };
 }
 /** A run's learning in a person's words as a read shows them (learning-words.ts wordsOf): each part cut of the host's
  *  secrets as they are now (`shown`) first, then the words cut short to `max`, so a secret is never shown in part. */
@@ -198,7 +203,7 @@ export type Turn = { answer: string; asked: string[] };
  *  not get, their lines over what is left of the tool's description budget (LEARNED_WORKFLOWS_BUDGET), or holding a
  *  secret, or every one when `workflows_off` says why the run is offered none (its harness's requests go where a learned
  *  workflow's could not follow: learnedWorkflowsOff). */
-export type Pin = { seed: string; section?: string; learned?: string; skills?: string[]; skills_left_out?: string[]; workflows?: string[]; workflows_left_out?: string[]; workflows_off?: string };
+export type Pin = { seed: string; section?: string; given?: NoteUsed[]; learned?: string; skills?: string[]; skills_left_out?: string[]; workflows?: string[]; workflows_left_out?: string[]; workflows_off?: string };
 /** What a run is seeded from: main's commit, its index and its active notes by file, and the name of every entry at its
  *  top. `skipped` names what was there and not read. `recent`, when seedOf read it: the active notes' files, the one
  *  changed last on main first. `skills`, when seedOf read them: the skills the agent wrote, the one changed last on main
@@ -828,22 +833,37 @@ const wholeNote = (note: LearnedNote, shown: Shown): string => [`## ${shown.text
  *  larger), then the newest notes that fit what is left, each whole, and the rest named only in the index; an agent
  *  with the read tool is told they are in `.learning/`, one without is not. Every text is cut of the host's secrets. */
 export function learnedOf(seed: Seed, options: LearnedOptions): string | undefined {
+  return learnedParts(seed, options).section;
+}
+
+/** The notes a run's # Learned section names (learnedOf): each given whole, and each an index line names by its file;
+ *  every active note when all are given whole. A run "was given" these; whether it applied one is not measured. */
+export function givenOf(seed: Seed, options: LearnedOptions): NoteUsed[] {
+  return learnedParts(seed, options).given.map(({ file, name }) => ({ file, name }));
+}
+
+function learnedParts(seed: Seed, options: LearnedOptions): { section: string | undefined; given: LearnedNote[] } {
   const { budget, read, shown } = options;
   const active = new Map(activeOf(seed).map((note) => [note.file, note]));
   const notes = (seed.recent ?? [...active.keys()].sort()).flatMap((file) => active.get(file) ?? []);
   const index = servedIndex(seed);
   const lines = index === undefined ? [] : loadedIndex(index).split("\n").filter((entry) => entry.trim() !== "");
-  if (!notes.length && !lines.length) return undefined;
+  if (!notes.length && !lines.length) return { section: undefined, given: [] };
   const blocks = notes.map((note) => wholeNote(note, shown));
   // Each part's bytes, and the blank line before it.
   const size = (text: string) => Buffer.byteLength(text) + 2;
   // Each line's first link, in any spelling (`./x.md` is x.md: linkedFiles, as servedIndex reads it), names an active note.
   const named = lines.every((entry) => active.has(linkedFiles(entry)[0] ?? ""));
-  if (named && blocks.reduce((sum, block) => sum + size(block), 0) <= budget) return [WHOLE_INTRO, ...blocks].join("\n\n");
+  if (named && blocks.reduce((sum, block) => sum + size(block), 0) <= budget) return { section: [WHOLE_INTRO, ...blocks].join("\n\n"), given: notes };
   const shownIndex = lines.map(shown.text).join("\n");
   let left = budget - (shownIndex ? size(shownIndex) : 0);
-  const whole = blocks.filter((block) => size(block) <= left && ((left -= size(block)), true));
-  return [whole.length ? SOME_INTRO : INDEX_INTRO, shownIndex, ...(read && whole.length < notes.length ? [READ_LINE] : []), ...whole].filter(Boolean).join("\n\n");
+  const kept = notes.map((note, i) => ({ note, block: blocks[i]! })).filter(({ block }) => size(block) <= left && ((left -= size(block)), true));
+  const whole = kept.map(({ block }) => block);
+  // Given: each note whole here, and each the index names by its file, by any of a line's links (a hand-edited line may
+  // name more than one; linkedFiles, as servedIndex reads them).
+  const indexed = new Set(lines.flatMap((entry) => linkedFiles(entry).filter((file) => active.has(file))));
+  const given = notes.filter((note) => indexed.has(note.file) || kept.some((k) => k.note === note));
+  return { section: [whole.length ? SOME_INTRO : INDEX_INTRO, shownIndex, ...(read && whole.length < notes.length ? [READ_LINE] : []), ...whole].filter(Boolean).join("\n\n"), given };
 }
 
 /** `rel`, a folder of the run's `work`, made where absent by a plain `mkdir` (which follows no link), then checked by
@@ -924,7 +944,7 @@ export async function pinSeed(runDir: string, work: string, seed: Seed, options:
   try {
     await learningTestHooks.beforePin?.(runDir);
     await layLearned(dir, seed, options.shown);
-    const section = learnedOf(seed, options);
+    const { section, given } = learnedParts(seed, options);
     const { taken, left } = await chooseSkills(work, seed, options.own ?? [], options.shown);
     const skills = taken.flatMap(({ name, files = {} }) => Object.keys(files).sort().map((path) => `${name}/${path}`));
     // The learned workflows the run may run, whole, in its directory before the pin names them (a reopen keeps them):
@@ -949,7 +969,7 @@ export async function pinSeed(runDir: string, work: string, seed: Seed, options:
       else (room -= bytes), flows.push(flow);
     }
     if (flows.length) await writeDurable(join(runDir, LEARNED_WORKFLOWS_FILE), `${JSON.stringify(flows)}\n`);
-    const pin: Pin = { seed: seed.sha, ...(section ? { section } : {}), ...(skills.length ? { skills } : {}), ...(left.length ? { skills_left_out: left } : {}), ...(flows.length ? { workflows: flows.map(({ name }) => name) } : {}), ...(options.workflowsOff !== undefined && flowsLeft.length ? { workflows_off: options.workflowsOff } : {}), ...(flowsLeft.length ? { workflows_left_out: flowsLeft } : {}) };
+    const pin: Pin = { seed: seed.sha, ...(section ? { section } : {}), ...(given.length ? { given: given.map(({ file, name }) => ({ file, name })) } : {}), ...(skills.length ? { skills } : {}), ...(left.length ? { skills_left_out: left } : {}), ...(flows.length ? { workflows: flows.map(({ name }) => name) } : {}), ...(options.workflowsOff !== undefined && flowsLeft.length ? { workflows_off: options.workflowsOff } : {}), ...(flowsLeft.length ? { workflows_left_out: flowsLeft } : {}) };
     // The pin names the skills before they are laid: a server that goes down while they are takes them back (dropSeed).
     await writeDurable(pinFile, `${JSON.stringify(pin)}\n`);
     await laySkills(work, taken, made);
@@ -1004,7 +1024,7 @@ export async function readPin(runDir: string): Promise<Pin | undefined> {
   const pin = JSON.parse(text) as unknown;
   const names = (value: unknown, shape: (entry: string) => boolean) => value === undefined || (Array.isArray(value) && value.every((entry) => typeof entry === "string" && shape(entry)));
   const skillFile = (entry: string) => SKILL_NAME.test(entry.split("/")[0]!) && SKILL_FILE_PATH.test(entry.slice(entry.indexOf("/") + 1)) && entry.includes("/");
-  if (!isObject(pin) || typeof pin.seed !== "string" || (pin.section !== undefined && typeof pin.section !== "string") || (pin.learned !== undefined && typeof pin.learned !== "string") || !names(pin.skills, skillFile) || !names(pin.skills_left_out, () => true) || !names(pin.workflows, (entry) => WORKFLOW_NAME.test(entry)) || !names(pin.workflows_left_out, (entry) => WORKFLOW_NAME.test(entry)) || (pin.workflows_off !== undefined && typeof pin.workflows_off !== "string")) throw new Error(`the run's ${LEARNING_PIN} is not a learning pin`);
+  if (!isObject(pin) || typeof pin.seed !== "string" || (pin.section !== undefined && typeof pin.section !== "string") || (pin.learned !== undefined && typeof pin.learned !== "string") || (pin.given !== undefined && !(Array.isArray(pin.given) && pin.given.every((entry: unknown) => isObject(entry) && typeof entry.file === "string" && typeof entry.name === "string"))) || !names(pin.skills, skillFile) || !names(pin.skills_left_out, () => true) || !names(pin.workflows, (entry) => WORKFLOW_NAME.test(entry)) || !names(pin.workflows_left_out, (entry) => WORKFLOW_NAME.test(entry)) || (pin.workflows_off !== undefined && typeof pin.workflows_off !== "string")) throw new Error(`the run's ${LEARNING_PIN} is not a learning pin`);
   return pin as Pin;
 }
 

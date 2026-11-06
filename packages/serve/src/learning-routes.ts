@@ -23,7 +23,7 @@ import { join } from "node:path";
 import { approve, buildIndex, CAPS, checkNote, frontKeys, INDEX_FILE, INDEX_LINES, isHeld, LEARNED_KEYS, type LearnedNote, learnedFront, learnedName, learnedPlace, learnedStatus, NOTE_FILE, NOTE_STATUSES, parseNoteFile, type Problem, printable, released, retire, retiredLearned, skillProblems, SKILLS_DIR, supersede, unstorable, WORKFLOWS_DIR } from "./learn/index.js";
 import { ApiError, invalid } from "./errors.js";
 import { homeOf, readJson } from "./files.js";
-import { agentFolder, checkOut, detailShown, git, line, mainOf, notesView, openAgentRepo, PROPOSAL, readBlobs, readFolder, readPin, secretsShown, type Shown, withAgentRepo } from "./learning.js";
+import { agentFolder, changedOrder, checkOut, detailShown, git, line, mainOf, type NoteRuns, notesView, openAgentRepo, PROPOSAL, readBlobs, readFolder, readPin, secretsShown, type Shown, withAgentRepo } from "./learning.js";
 import type { Impact } from "./learning-run.js";
 import type { Run } from "./runs.js";
 import { isObject } from "./validate.js";
@@ -45,7 +45,7 @@ const RETIRED_LINE = Buffer.byteLength("status: retired\n");
 const utf8 = new TextDecoder("utf-8", { fatal: true });
 
 type Page<T> = { items: T[]; total: number; next_cursor: string | null };
-type NoteView = { file: string; name: string; description: string; type: string; status: string; origin: string; superseded_by: string | null; text: string; etag: string; retired?: Retired; last_change?: LastChange };
+type NoteView = { file: string; name: string; description: string; type: string; status: string; origin: string; superseded_by: string | null; text: string; etag: string; retired?: Retired; last_change?: LastChange; runs: { given: number; read: number } };
 /** When a retired note, skill or draft was retired, and by whom: a person (its retire's commit), else a run. */
 type Retired = { at: string; by: "person" | "run" };
 /** The newest change to a note, skill or draft (its file: the note, a SKILL.md, a draft's README.md): what it was, by
@@ -320,7 +320,7 @@ const learnedView = (item: LearnedView, shown: Shown): LearnedView => ({ ...item
 
 /** A note as the view shows it, cut of the host's secrets: its name and the one that superseded it whole; with its
  *  ETag, the one its file's GET answers, so an edit or a retire from the card names the version it shows. */
-const noteView = ({ file, name, description, type, status, origin, superseded_by, text, oid }: Note, shown: Shown): NoteView => ({ file: shown.name(file), name: shown.text(name), description: shown.text(description), type, status, origin, superseded_by: superseded_by === null ? null : shown.name(superseded_by), text: shown.text(text), etag: etagOf(oid) });
+const noteView = ({ file, name, description, type, status, origin, superseded_by, text, oid }: Note, shown: Shown, runs: NoteRuns): NoteView => ({ file: shown.name(file), name: shown.text(name), description: shown.text(description), type, status, origin, superseded_by: superseded_by === null ? null : shown.name(superseded_by), text: shown.text(text), etag: etagOf(oid), runs: { ...(runs.get(file) ?? { given: 0, read: 0 }) } });
 
 const cursorOf = (sha: string, offset: number) => Buffer.from(`${sha}.${offset}`).toString("base64url");
 /** A page of `all`, from `offset`, at most `limit`, each shown by `view` (so only the page's are cut of secrets). */
@@ -381,19 +381,19 @@ export async function pendingCount(data: string, agentId: string): Promise<numbe
 /** GET /agents/{id}/learning: main, its index, the first page of its notes and of its log, and how the agent's runs
  *  fared and what learning changed for them (`counts`, `impact`: learning-run.ts, from the runs' rows and the learning
  *  ledger); an agent with no folder (its learning never on) has an empty one. */
-export async function agentLearning(data: string, agentId: string, shown: Shown, counts: Counts, impact: Impact) {
+export async function agentLearning(data: string, agentId: string, shown: Shown, counts: Counts, impact: Impact, runs: NoteRuns = new Map()) {
   const { home, repo } = await placeOf(data, agentId);
   const sha = await mainOf(home, repo);
   if (!sha) return { agent: agentId, main: null, index: "", notes: EMPTY, skills: [], workflows: [], log: EMPTY, counts, impact };
   const [{ index, notes, changes }, { skills, workflows }, log] = await Promise.all([notesAt(home, repo, sha), learnedAt(home, repo, sha), logPage(home, repo, sha, 0, LOG_PAGE, shown)]);
   // Each note's last change, from the notes' walk; a skill's or a draft's is on it (learnedAt). A retired one says when
   // and by whom it was retired, from the same change.
-  return { agent: agentId, main: sha, index: shown.text(index), notes: pageOf(notes, sha, 0, NOTES_PAGE, (note) => withChanges(noteView(note, shown), changes.get(note.file))), skills: skills.map((item) => learnedView(item, shown)), workflows: workflows.map((item) => learnedView(item, shown)), log, counts, impact };
+  return { agent: agentId, main: sha, index: shown.text(index), notes: pageOf(notes, sha, 0, NOTES_PAGE, (note) => withChanges(noteView(note, shown, runs), changes.get(note.file))), skills: skills.map((item) => learnedView(item, shown)), workflows: workflows.map((item) => learnedView(item, shown)), log, counts, impact };
 }
 
 /** GET /agents/{id}/learning/notes?cursor=&limit=&status=: a page of the notes, ordered as the view's, from what the
  *  commit's first read kept. */
-export async function learningNotes(data: string, agentId: string, query: URLSearchParams, shown: Shown): Promise<Page<NoteView>> {
+export async function learningNotes(data: string, agentId: string, query: URLSearchParams, shown: Shown, runs: NoteRuns = new Map()): Promise<Page<NoteView>> {
   const status = query.get("status");
   if (status !== null && !(NOTE_STATUSES as readonly string[]).includes(status)) throw new ApiError("bad_request", `status is one of ${NOTE_STATUSES.join(", ")}`);
   const { home, repo } = await placeOf(data, agentId);
@@ -402,7 +402,7 @@ export async function learningNotes(data: string, agentId: string, query: URLSea
   if (!sha) return EMPTY;
   const { notes, changes } = await notesAt(home, repo, sha);
   const listed = status === null ? notes : notes.filter((note) => note.status === status);
-  return pageOf(listed, sha, at?.offset ?? 0, limit, (note) => withChanges(noteView(note, shown), changes.get(note.file)));
+  return pageOf(listed, sha, at?.offset ?? 0, limit, (note) => withChanges(noteView(note, shown, runs), changes.get(note.file)));
 }
 
 /** GET /agents/{id}/learning/log?cursor=&limit=: a page of the changes on main, newest first, reading only its own. */

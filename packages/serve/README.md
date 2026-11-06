@@ -1903,21 +1903,28 @@ grader's verdict), cut of the server's secrets as they are then before the words
 list), so a value that became a secret after the run is never shown in part. Once it is proposed, merged or dropped (`seed_failed` included), the run's
 timeline has one row of kind `learning` whose summary is that detail.
 
-Three more fields say what the run used, learned and holds for the owner's OK (`learning/2`), on its read and in run
-lists alike, each absent when it holds no note: `used`, `[{file, name}]`, the notes its job read from `.learning/`,
+Four more fields say what the run was given, read, learned and holds for the owner's OK (`learning/2`), on its read and
+in run lists alike, each absent when it holds no note: `given`, `[{file, name}]`, the notes it started with (each its
+`# Learned` section names, whole or as an index line naming its file, as it was seeded; absent when it started with
+nothing learned); `read`, `[{file, name}]`, the notes its job read from `.learning/` (absent when it opened no note file),
 found once as the run settles from its timeline (each `read` call on any harness whose result was a success, of a note
 the run started from: never `MEMORY.md`, nor a read its end-of-run turn made, nor a note read through a command such as
 `bash`'s `cat`) and kept in `serve.json`, so a list never reads a timeline; `learned`, `[{file, name, supersedes}]`, the
 notes its merge added, once `merged`; and `pending`, `[{file, name}]`, the notes its merge holds for the owner's OK, once
 `merged`, never among `learned`. A name and a file are cut of the server's secrets as they are now, a file holding one
-`[redacted]`.
+`[redacted]`. Whether a run applied a note is not measured: `given` and `read` say what it had and what it opened. Each
+note on the agent's learning view and notes page counts its runs of each, `runs: {given, read}`, over the runs the server
+knows (held ones from memory, ended ones from the learning ledger).
 
 Each run's learning end is written once to the learning ledger, `DATA/learning-usage.jsonl`, one line `{run, agent,
-state, reason, at, cost, tokens, seed_notes, answered_at, job_cost_usd, look_back_usd}` (`cost` and `tokens` the
-grade's, null when unknown, 0 when nothing was graded; `seed_notes` how many notes the run started from; once it looked
-back, `answered_at` and `job_cost_usd`, when its job's answer was final and what it had cost then; `look_back_usd` what
+state, reason, at, cost, tokens, seed_notes, given, read, answered_at, job_cost_usd, look_back_usd}` (`cost` and
+`tokens` the grade's, null when unknown, 0 when nothing was graded; `seed_notes` how many notes the run started from;
+`given` and `read` the files of the notes it was given and read, each absent when there are none; once it looked back,
+`answered_at` and `job_cost_usd`, when its job's answer was final and what it had cost then; `look_back_usd` what
 looking back cost, 0 when it did not), after its `serve.json` holds it; a server that went between the two writes it at
-its next start. `GET /stats` counts the runs that tried to learn under `learning`, over its `from`, `to` and
+its next start. A run's notes are the one part that moves after its end (a follow-up reads another note): a line
+`{run, agent, notes: true, given, read}` then says them anew, the latest one winning, and counts neither the run nor its
+costs again. `GET /stats` counts the runs that tried to learn under `learning`, over its `from`, `to` and
 `agent`, from that ledger and from the runs the server holds (`in_progress`), never opening a run's files; the
 `learning` meter on `GET /usage` reads the same lines.
 
@@ -1973,7 +1980,7 @@ with the token, an archived agent's too:
   too (`Approved-Via: console`). The learning view gives each item `last_change` (`{kind, by, at}`: `approved`,
   `edited`, `created`, `retired` or `restored` by a `person`, or `learned` by a `run`) and each retired one `retired`
   (`{at, by}`, the time of its retire, which an edit since moves not).
-- `GET /runs/{run_id}/learning`: the run's learning whole (its `used` and `learned` as on its read, its seed, its merge, the grader's verdict with its item for
+- `GET /runs/{run_id}/learning`: the run's learning whole (its `given`, `read` and `learned` as on its read, its seed, its merge, the grader's verdict with its item for
   each new note, `{file, keep, question, why}`, `question` the rubric's question a dropped note failed, the checker's
   problems, what the grade cost), `null` for a run that does not learn; `verdict` is `null` until a grade ran.
   `GET /runs/{run_id}/learning/diff`: a merged run's merge commit against its parent, else its proposal against its
