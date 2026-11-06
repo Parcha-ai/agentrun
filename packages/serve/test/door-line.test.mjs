@@ -149,8 +149,16 @@ test("through a run whose process never opens it: one line naming the cause, its
     assert.ok(i < 200, "the server said it, at the ready time");
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
-  assert.match(said()[0], /did not open the run within 2 s \(its door last answered 503 OPENING\); it is stopped, and the run opened again/);
+  assert.match(said()[0], /did not open the run within 2 s \(its door last answered 503 OPENING\); it is stopped/);
   const asked = await api("POST", `/runs/${run.body.run_id}/messages`, { content: "And now?" });
   assert.equal(asked.status, 503, JSON.stringify(asked.body));
   assert.match(asked.body.error.message, /the run did not come up in time: its process has not opened it yet/);
+  // Each launch after it misses the same way; the last one's failure names that cause, not the process's own log line.
+  let failed;
+  for (let i = 0; (failed = (await api("GET", `/runs/${run.body.run_id}`)).body).status !== "failed"; i++) {
+    assert.ok(i < 1200, `the run failed after its last launch, ${JSON.stringify(failed)}`);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  assert.match(failed.error.message, /went 4 times before the run ended: its process did not open the run within 2 s \(its door last answered 503 OPENING\)/);
+  assert.equal(said().length, 4, said().join(""));
 });

@@ -360,6 +360,9 @@ export type Run = {
   claimWait?: boolean;
   /** Why that claim waits, in words, for a request's 503 (notUp). */
   claimWaitWhy?: string;
+  /** Why its newest process was stopped unopened (the ready time passed, its door's last answer): the reason its run
+   *  fails with when that was its last launch, since the process's own log does not say it. */
+  notOpened?: string;
   /** The door the process this server started said it serves (its stdout line): this server's own record of it, so a
    *  row the agent store cannot take yet never keeps the door from it. */
   door?: string;
@@ -2158,6 +2161,7 @@ export class Runs {
     // run again, or not one at all.
     run.claimWait = undefined;
     run.claimWaitWhy = undefined;
+    run.notOpened = undefined;
     if (run.child || this.closing || run.cancel || run.outcome || run.finishing || run.preparing || run.installing) return;
     // Every launch of a claude-agent run (its start, a recovery after a restart, a relaunch, a wake) waits for Claude Code
     // to be installed whole first (harnessReady), holding its place meanwhile (waitsInstall), and launches once it is:
@@ -2380,7 +2384,8 @@ export class Runs {
         const opened = await untilOpened(door, this.headers(run), () => run.child !== child, Date.now() + readyMs);
         if (!opened.opened) {
           if (opened.why === "deadline" && run.child === child) {
-            warn(run.id, `its process ${pid} did not open the run within ${readyMs / 1000} s (its door last answered ${opened.last}); it is stopped, and the run opened again`);
+            run.notOpened = `its process did not open the run within ${readyMs / 1000} s (its door last answered ${opened.last})`;
+            warn(run.id, `its process ${pid} did not open the run within ${readyMs / 1000} s (its door last answered ${opened.last}); it is stopped`);
             // Its launch came through (the server is up): its stop is no launch that took the server down.
             this.reportedBack(run);
             child.kill("SIGKILL");
@@ -2576,7 +2581,7 @@ export class Runs {
         await this.pinSignIn(run);
         return this.relaunch(run);
       }
-      run.error = { code: "run_failed", message: never ?? `The run's process went ${MAX_RELAUNCHES + 1} times before the run ended: ${await this.lastLine(run)}`, retryable: false };
+      run.error = { code: "run_failed", message: never ?? `The run's process went ${MAX_RELAUNCHES + 1} times before the run ended: ${run.notOpened ?? (await this.lastLine(run))}`, retryable: false };
       ended = { outcome: "failed" };
     }
     await this.carryBack(run, ended.outcome, ended.state, ended.summary);
