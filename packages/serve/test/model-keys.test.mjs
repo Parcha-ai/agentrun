@@ -23,7 +23,7 @@ const made = () => `not-a-secret-${randomBytes(12).toString("hex")}`;
 /** Each form a value could plausibly leak in: as text, base64, base64url and hex, and its random part's first 8. */
 const formsOf = (value) => [value, ...["base64", "base64url", "hex"].map((code) => Buffer.from(value).toString(code)), value.slice(13, 21)];
 const holdsNone = (bytes, forms, where) => { for (const form of forms) assert.ok(!Buffer.from(bytes).includes(form), `${where} holds the key`); };
-// Files only: the Claude Code a first use installs (linked here from this repository: support.mjs linkClaudeSdk) is not the server's writing.
+// Files only: the Claude Code a first use installs (linked here from this repository: support.mjs linkHarnesses) is not the server's writing.
 const filesUnder = (dir) => readdirSync(dir, { withFileTypes: true }).flatMap((entry) => (entry.isDirectory() ? filesUnder(join(dir, entry.name)) : entry.isFile() ? [join(dir, entry.name)] : []));
 const keyed = (...ids) => Object.fromEntries(MODEL_KEYS.filter((row) => ids.includes(row.id)).map((row) => [row.field, made()]));
 

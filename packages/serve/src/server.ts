@@ -26,7 +26,7 @@ import { DATA_ENV, DOOR_TOKEN_FILE, HOME_HOST_OWNED, HOMES_DIR, homeOf, readJson
 import { checkedPath, decodedPath, homePath, hostOwnedOf, hostOwnedRefusal, type OwnedReadAt, ownedByIdentity } from "./home-path.js";
 import { chooseModel, EFFORTS, FAUX_ENV, FAUX_UPSTREAM_ENV, MODEL_NODES, type ModelNeeds, modelSource, THINKING_LEVELS, unpricedModels, withoutFaux } from "./model.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, type HarnessCapability, harnessOfBody, harnessOffers } from "./harness.js";
-import { ClaudeInstall, harnessesOf, npmInstall } from "./claude-sdk.js";
+import { HARNESS_INSTALLS, HarnessInstall, harnessesOf, installDirOf, npmInstall, removeFlatInstall } from "./harness-install.js";
 import { healthOf, hostMemory, maxRunsOf, MIN_FREE_MIB, runsThatFit } from "./host.js";
 import { IMPORT_ASKED } from "./import.js";
 import type { ImportAnswer, ImportTask } from "./import-worker.js";
@@ -184,9 +184,9 @@ export type ServeOptions = {
   /** Under `faux` only: a module that stands in for the VM provider's SDK (its client class, by the SDK's name for it),
    *  so the VM box runs on the tests' fake, never the provider. */
   fauxVm?: string;
-  /** For tests: the lock Claude Code's first use installs by (claude-sdk.ts), with the package.json it locks beside it, in
-   *  place of the one AgentRun ships, whose packages a test's own registry serves. */
-  claudeLock?: string;
+  /** For tests: the lock each harness's first use installs by (harness-install.ts), by harness, with the package.json it
+   *  locks beside it, in place of the one AgentRun ships, whose packages a test's own registry serves. */
+  harnessLocks?: Readonly<Record<string, string>>;
   /** Under `faux`: a module whose default export gives a box's egress proxy its `lookup` and `dial` (box-egress.ts), the
    *  tests' fake network. */
   fauxEgress?: string;
@@ -902,14 +902,26 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   if (swept > 0) log?.(logLine("uploads_swept", { removed: swept }));
   const documents = options.documents ?? process.env[DOCUMENTS_ENV];
   if (documents !== undefined && !(await stat(documents).then((info) => info.isDirectory(), () => false))) throw new Error(`the documents directory ${documents} is not a directory`);
-  // Claude Code, installed on first use into the data's harnesses directory (claude-sdk.ts): one install at a time, which
-  // every claude-agent run, and the save of an agent on claude-agent, waits for or starts; once it is in, the offers are
-  // probed again, so capabilities no longer say it installs on first use. A faux harness needs none.
-  const claudeInstall = options.fauxHarness ? undefined : new ClaudeInstall(harnessesOf(data), () => import("./adapters.js").then((adapters) => adapters.claudePins()), (dir, pins, signal) => npmInstall(dir, pins, { signal, ...(options.claudeLock ? { lock: options.claudeLock } : {}) }), (ms) => {
-    log?.(logLine("claude_installed", { ms, dir: harnessesOf(data) }));
-    void probe("claude_installed").catch(() => undefined);
-  });
-  const runs = new Runs({ ...(claudeInstall ? { claudeInstall } : {}), dockerAllow: boxNetwork.allow, ...(egress?.volume ? { dockerVolume: egress.volume } : {}), agents, token, storedKeys, mcpServers: mcpSource, doorTokenFile, doorToken, learning, learningBudget, ...(documents ? { documents: resolve(documents) } : {}), fauxEnv: fauxEnvOf(options), toolSettings: () => settings.get(), ...(runBoxes ? { runBoxes } : {}), ...(remoteBoxes ? { remoteBoxes } : {}), ...(vmBoxes && vmRelayHalf ? { vmBoxes, vmLimits, vmRelay: vmRelayHalf } : {}), ...(remoteBoxes && daytonaApi(env) ? { remoteApi: daytonaApi(env)! } : {}), ...(remoteBoxes ? { boxAllow, onNoBoxList } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(options.openTimeoutMs ? { openTimeoutMs: options.openTimeoutMs } : {}), ...(options.faux && options.fauxHandedNonce ? { fauxHandedNonce: options.fauxHandedNonce } : {}), ...(options.reflectTimeoutMs ? { reflectTimeoutMs: options.reflectTimeoutMs } : {}), ...(options.gradeTimeoutMs ? { gradeTimeoutMs: options.gradeTimeoutMs } : {}), ...(options.gradeModel ? { gradeModel: options.gradeModel } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}), notify: (event, run, marker) => webhooks.emit(event, run, marker), ownSecrets: () => triggerSecrets?.values() ?? [], signIns, approvers: options.accounts === true });
+  // The CLI harnesses, each installed on first use into the data's harnesses directory (harness-install.ts): one install
+  // of each at a time, which every run on that harness, and the save of an agent on it, waits for or starts; once one is
+  // in, the offers are probed again, so capabilities no longer say it installs on first use. A faux harness needs none.
+  // Claude Code as an earlier build installed it, at the top of the harnesses directory itself (read-only): removed once,
+  // before the first install, which then goes in beside nothing. Any other layout is left as it is.
+  let flat: Promise<void> | undefined;
+  const flatRemoved = () =>
+    (flat ??= removeFlatInstall(harnessesOf(data)).then(
+      (removed) => void (removed && log?.(logLine("harness_install_removed", { dir: harnessesOf(data), said: `removed the earlier Claude Code install at ${harnessesOf(data)}: it installs again under harnesses/claude-agent` }))),
+      (error: unknown) => ((flat = undefined), Promise.reject(error)),
+    ));
+  const installs: Record<string, HarnessInstall> = options.fauxHarness ? {} : Object.fromEntries(Object.values(HARNESS_INSTALLS).map((entry) => {
+    const lock = options.harnessLocks?.[entry.id];
+    const pins = () => import("./adapters.js").then((adapters) => adapters.harnessPins(entry.id));
+    return [entry.id, new HarnessInstall(entry, installDirOf(data, entry.id), pins, async (entry, dir, pins, signal) => (await flatRemoved(), npmInstall(entry, dir, pins, { signal, ...(lock ? { lock } : {}) })), (ms) => {
+      log?.(logLine("harness_installed", { harness: entry.id, ms, dir: installDirOf(data, entry.id) }));
+      void probe(`${entry.id}_installed`).catch(() => undefined);
+    })];
+  }));
+  const runs = new Runs({ installs, dockerAllow: boxNetwork.allow, ...(egress?.volume ? { dockerVolume: egress.volume } : {}), agents, token, storedKeys, mcpServers: mcpSource, doorTokenFile, doorToken, learning, learningBudget, ...(documents ? { documents: resolve(documents) } : {}), fauxEnv: fauxEnvOf(options), toolSettings: () => settings.get(), ...(runBoxes ? { runBoxes } : {}), ...(remoteBoxes ? { remoteBoxes } : {}), ...(vmBoxes && vmRelayHalf ? { vmBoxes, vmLimits, vmRelay: vmRelayHalf } : {}), ...(remoteBoxes && daytonaApi(env) ? { remoteApi: daytonaApi(env)! } : {}), ...(remoteBoxes ? { boxAllow, onNoBoxList } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(options.openTimeoutMs ? { openTimeoutMs: options.openTimeoutMs } : {}), ...(options.faux && options.fauxHandedNonce ? { fauxHandedNonce: options.fauxHandedNonce } : {}), ...(options.reflectTimeoutMs ? { reflectTimeoutMs: options.reflectTimeoutMs } : {}), ...(options.gradeTimeoutMs ? { gradeTimeoutMs: options.gradeTimeoutMs } : {}), ...(options.gradeModel ? { gradeModel: options.gradeModel } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}), notify: (event, run, marker) => webhooks.emit(event, run, marker), ownSecrets: () => triggerSecrets?.values() ?? [], signIns, approvers: options.accounts === true });
   const daytona = daytonaApi(env);
   const relay = (remoteBoxes && daytona) || vmRelayHalf ? await startBoxRelay({ root: data, tokenOf: (id) => runs.relayToken(id), ...(remoteBoxes && daytona ? daytona : {}), ...(vmRelayHalf ? { vm: vmRelayHalf } : {}), serves: (id) => runs.servesBox(id), ensure: (id) => runs.ensureBox(id) }) : undefined;
   if (relay) stops.push(() => relay.close());
@@ -998,13 +1010,13 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       const uncapped = target.max_cost_usd === undefined && entry.revision.body.maxCostUsd === undefined ? [{ field: "target.max_cost_usd", reason: "missing", message: `Every run a trigger starts is capped: give the target a max_cost_usd or set the agent's (the agent ${target.agent_id} has none).` }] : [];
       return [...uncapped, ...(await explainRun(await inputIssuesOf(entry.revision, target.input), { input: target.input }, entry.revision)).map((issue) => ({ ...issue, field: `target.${issue.field}` }))];
     },
-    async start(target, input, trigger) {
+    async start(target, input, trigger, from) {
       const entry = await needAgent(target.agent_id);
       // The target's cap, else the agent's default as it stands now: a run a trigger starts is never uncapped.
-      const run = await startRunOf(entry, { input, ...(target.max_cost_usd !== undefined ? { max_cost_usd: target.max_cost_usd } : {}), ...(target.effort ? { effort: target.effort } : {}) }, { trigger, origin: { key: trigger.firing_key }, capped: true });
+      const run = await startRunOf(entry, { input, ...(target.max_cost_usd !== undefined ? { max_cost_usd: target.max_cost_usd } : {}), ...(target.effort ? { effort: target.effort } : {}) }, { trigger, origin: { key: trigger.firing_key }, capped: true, from });
       return { run_id: run.id };
     },
-    async message(target, input, key) {
+    async message(target, input, key, from) {
       const run = await needRun(target.run_id);
       if (run.kind === "workflow") throw unsupported("messages.steer_workflow_runs", "A workflow run takes no messages here.");
       // A store held past its retries is a busy store: the firing stays due and is tried again, never failed.
@@ -1015,7 +1027,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       const { status, state } = statusOf(run);
       if (status === "input_required" && state === "waiting") return { skipped: WAITS_ON_A_PERSON };
       try {
-        await runs.message(run, String(input.content), key, { answers: false });
+        await runs.message(run, String(input.content), key, { answers: false, origin: from });
       } catch (error) {
         if (error instanceof ApiError && error.message === WAITS_ON_A_PERSON) return { skipped: WAITS_ON_A_PERSON };
         throw error;
@@ -1270,9 +1282,10 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   /** A definition being saved: refused (422 by field) when it can never run here; else what this host still lacks. A
    *  revision that names no place is checked where it would run (fallbackPlace). */
   async function saveable(revision: NewRevision): Promise<InputIssue[]> {
-    // An agent on claude-agent starts Claude Code's install, if it is not in yet: its first run waits for less.
-    if (claudeInstall && revision.kind === "agentic" && harnessOfBody(revision) === "claude-agent") {
-      void claudeInstall.ensure().catch((error: Error) => log?.(logLine("claude_install_failed", { message: error.message })));
+    // An agent on a harness that installs on first use starts its install, if it is not in yet: its first run waits for less.
+    const install = revision.kind === "agentic" ? installs[harnessOfBody(revision)] : undefined;
+    if (install) {
+      void install.ensure().catch((error: Error) => log?.(logLine("harness_install_failed", { harness: install.entry.id, message: error.message })));
     }
     const named = revision.kind === "agentic" ? revision : workflowShape(revision);
     const shape = named.place ? named : { ...named, place: fallbackPlace(named.kind, named.tools ?? []), unnamed: true as const };
@@ -1357,7 +1370,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
    *  trigger's firing's, which names itself as the run's `trigger`. Under `origin`, a key that already started a run
    *  gets that run (the agent store's run_origins). */
   /** `capped`: the run must have a cap (a trigger's), its own or else its agent's default. */
-  async function startRunOf(entry: AgentEntry, body: Json, { trigger, origin, capped = false }: { trigger?: RunTrigger; origin?: RunOrigin; capped?: boolean } = {}): Promise<Run> {
+  /** `from`: who the run's first message is from when the person did not write it (a trigger's firing). */
+  async function startRunOf(entry: AgentEntry, body: Json, { trigger, origin, capped = false, from }: { trigger?: RunTrigger; origin?: RunOrigin; capped?: boolean; from?: MessageOrigin } = {}): Promise<Run> {
     const issues = runBodyIssues(body);
     if (issues.length) {
       // Told from the revision the run would start on (a pinned one, else the current), once it reads as one: a pin that
@@ -1387,7 +1401,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     // value redacted before a long one is cut (a cut key could no longer be found), and the run gets its input as given.
     const shown = redactedOutput(input, learningSecrets());
     const title = revision.kind === "workflow" ? workflowTitle(entry.agent.name || entry.agent.id, isObject(shown) ? shown : {}) : typeof input.content === "string" ? input.content : (Object.values(input).find((v): v is string => typeof v === "string") ?? JSON.stringify(input));
-    return runs.create(entry, revision, version, { input, title, place, ...(typeof body.effort === "string" ? { effort: body.effort } : {}), ...(cap !== undefined ? { maxCostUsd: cap } : {}), ...(capMode !== undefined ? { capMode } : {}), ...(trigger ? { trigger } : {}), ...(origin ? { origin } : {}), ...(files.length ? { inputs: (work: string) => uploads.copyInto(work, files) } : {}) });
+    return runs.create(entry, revision, version, { input, title, place, ...(typeof body.effort === "string" ? { effort: body.effort } : {}), ...(cap !== undefined ? { maxCostUsd: cap } : {}), ...(capMode !== undefined ? { capMode } : {}), ...(trigger ? { trigger } : {}), ...(origin ? { origin } : {}), ...(from ? { from } : {}), ...(files.length ? { inputs: (work: string) => uploads.copyInto(work, files) } : {}) });
   }
 
   /** The revision a run of `entry` starts on: the one `body.revision` pins, else the agent's current; undefined when the
@@ -2407,8 +2421,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     // count writes nothing (it lists and reads), so it is ended at once: its listing of a big home checks for no stop.
     closing = true;
     stopping.abort();
-    // An install of Claude Code under way stops with the server: its npm gets SIGTERM, and nothing half installed stays.
-    const installStopped = claudeInstall?.stop();
+    // A harness install under way stops with the server: its npm gets SIGTERM, and nothing half installed stays.
+    const installStopped = Promise.all(Object.values(installs).map((install) => install.stop()));
     // Aborted now, so nothing it writes races the next server on the same refresh token; drained before the lock goes.
     const mcpStopped = mcpServers.close();
     triggers.close();

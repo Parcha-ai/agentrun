@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { unseal } from "@parcha/pi-durable-agent";
@@ -14,7 +14,7 @@ import { secret } from "../dist/secrets.js";
 import { readingOf } from "../dist/server.js";
 import { rowUnlocks, TOOL_KEYS, unlockedBy } from "../dist/tool-keys.js";
 import { schemaProblems } from "./schema-support.mjs";
-import { agent, call, claudeData, client, cookieOf, FAUX, follow, printed, scratch, serve, withEnv } from "./support.mjs";
+import { agent, call, harnessData, client, cookieOf, FAUX, follow, printed, scratch, serve, withEnv } from "./support.mjs";
 
 const LAUNCHER = new URL("../launcher/agentrun-serve", import.meta.url).pathname;
 const FAUX_BROWSER = new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname;
@@ -162,10 +162,9 @@ test("each key unlocks only what capabilities bind, a tool or a decision provide
   assert.deepEqual(rowUnlocks(model("openrouter"), later, [], [{ id: "pi", available: true }, { id: "claude-agent", available: false }, { id: "codex", available: false }]).harnesses, ["pi"], "unavailable for another reason (not installed): left out");
 });
 
-test("before any model key is saved, a model key's row names every harness the key runs that this server could run: OpenRouter's all four, Anthropic's pi and claude-agent; one not installed, one that does not fit and one the key alone does not fix are left out", { timeout: 180_000 }, async (t) => {
+test("before any model key is saved, a model key's row names every harness the key runs that this server could run: OpenRouter's all four, Anthropic's pi and claude-agent; one off its pins, one that does not fit and one the key alone does not fix are left out", { timeout: 180_000 }, async (t) => {
   const standIn = await codexStandIn(t);
-  // A path where nothing is installed, and a CLI that is not the pinned build.
-  const nothing = join(await scratch(t), "nothing");
+  // A CLI that is not the pinned build.
   const unpinned = join(await scratch(t), "claude");
   writeFileSync(unpinned, "#!/bin/sh\necho 0.0.1\n", { mode: 0o755 });
   const cases = [
@@ -174,7 +173,9 @@ test("before any model key is saved, a model key's row names every harness the k
     ["claude-agent not installed yet", ROOMY_MIB, { AGENTRUN_SERVE_CODEX_STANDIN: standIn }, OWN, false],
     // Claude Code's CLI off its pins: no key runs it.
     ["claude-agent's CLI off its pins", ROOMY_MIB, { AGENTRUN_SERVE_CODEX_STANDIN: standIn }, { anthropic: ["pi"], openai: ["pi", "codex", "opencode"], openrouter: ["pi", "codex", "opencode"] }, { cli: unpinned }],
-    ["codex not installed", ROOMY_MIB, { CODEX_BIN: nothing }, { anthropic: ["pi", "claude-agent"], openai: ["pi", "opencode"], openrouter: ["pi", "claude-agent", "opencode"] }],
+    // Codex not installed yet installs on first use too; its binary off its pins: no key runs it.
+    ["codex not installed yet", ROOMY_MIB, {}, OWN, { codex: false }],
+    ["codex's binary off its pins", ROOMY_MIB, {}, { anthropic: ["pi", "claude-agent"], openai: ["pi", "opencode"], openrouter: ["pi", "claude-agent", "opencode"] }, { codexBin: unpinned }],
     // 384 MiB holds the server's 128 and one codex run (192), never a claude-agent run (288) or an opencode run (704): no
     // key would run them.
     ["a host too small for a claude-agent run", 384, { AGENTRUN_SERVE_CODEX_STANDIN: standIn }, { anthropic: ["pi"], openai: ["pi", "codex"], openrouter: ["pi", "codex"] }],
@@ -183,11 +184,11 @@ test("before any model key is saved, a model key's row names every harness the k
     // An endpoint claude-agent refuses (plain http to another machine): its key alone would not run it.
     ["claude-agent on an endpoint it refuses", ROOMY_MIB, { AGENTRUN_SERVE_CODEX_STANDIN: standIn, ANTHROPIC_BASE_URL: "http://gateway.example" }, { anthropic: ["pi"], openai: ["pi", "codex", "opencode"], openrouter: ["pi", "codex", "opencode"] }],
   ];
-  for (const [label, mib, vars, rows, claudeSdk = true] of cases) {
+  for (const [label, mib, vars, rows, harnesses = true] of cases) {
     await t.test(label, async (st) => {
       withEnv(st, { AGENTRUN_SEAL_KEY: sealKey(), ...vars }, [...KEYS, ...HARNESS_VARS]);
       withMemory(st, mib);
-      const { api } = await serve(st, { claudeSdk });
+      const { api } = await serve(st, { harnesses });
       const caps = (await api("GET", "/capabilities")).body;
       const offers = Object.fromEntries(caps.harnesses.map((offer) => [offer.id, offer]));
       // No model key here: claude-agent and codex do not run now, whatever is installed.
@@ -436,12 +437,58 @@ test("under its launcher the seal key is made once, outside the data directory, 
   holdsNone(said.join("\n"), forms, "the server's log and answers");
 });
 
+test("under its launcher, a config directory the person made with a plain mkdir (0755) and no key yet: the launcher tightens its own directory to 0700, makes the key 0600, and the server keeps tool keys", { timeout: 60_000 }, async (t) => {
+  const dir = await scratch(t);
+  const [data, config] = [join(dir, "agents"), join(dir, "config")];
+  const keys = join(config, "agentrun");
+  mkdirSync(keys, { recursive: true });
+  chmodSync(keys, 0o755);
+  const token = `not-a-secret-token-${randomBytes(16).toString("hex")}`;
+  const server = await launched(t, data, config, token);
+  assert.equal(statSync(keys).mode & 0o777, 0o700, "its own directory, tightened before the key was written");
+  assert.equal(statSync(join(keys, "seal.key")).mode & 0o777, 0o600);
+  assert.deepEqual((await server.api("GET", "/capabilities")).body.features.tool_keys, { routes: true, at_rest: "sealed" });
+  const out = await server.stop();
+  assert.ok(!out.includes("no seal key"), out);
+});
+
+test("under its launcher, a key that already exists in a directory another user can read is refused and never changed: nothing is chmod-ed, and the message names the exact fix", { timeout: 60_000 }, async (t) => {
+  const dir = await scratch(t);
+  const [data, config] = [join(dir, "agents"), join(dir, "config")];
+  const keys = join(config, "agentrun");
+  mkdirSync(keys, { recursive: true });
+  chmodSync(keys, 0o755);
+  const key = randomBytes(32).toString("base64");
+  writeFileSync(join(keys, "seal.key"), `${key}\n`, { mode: 0o600 });
+  const token = `not-a-secret-token-${randomBytes(16).toString("hex")}`;
+  const server = await launched(t, data, config, token);
+  assert.deepEqual((await server.api("GET", "/capabilities")).body.features.tool_keys, { routes: true, at_rest: "unavailable" });
+  const out = await server.stop();
+  assert.equal(statSync(keys).mode & 0o777, 0o755, "an existing key's directory is never changed");
+  assert.equal(readFileSync(join(keys, "seal.key"), "utf8").trim(), key, "the key is untouched");
+  assert.ok(out.includes(`no seal key in ${join(keys, "seal.key")}`) && out.includes(`chmod 700 ${keys}; chmod 600 ${join(keys, "seal.key")}`), out);
+});
+
+test("under its launcher, a key directory that is a symlink is never chmod-ed: a shared target keeps its mode, even when the user owns it", { timeout: 60_000 }, async (t) => {
+  const dir = await scratch(t);
+  const [data, config, shared] = [join(dir, "agents"), join(dir, "config"), join(dir, "shared")];
+  const keys = join(config, "agentrun");
+  mkdirSync(config, { recursive: true });
+  mkdirSync(shared, { recursive: true });
+  chmodSync(shared, 0o755);
+  symlinkSync(shared, keys);
+  const token = `not-a-secret-token-${randomBytes(16).toString("hex")}`;
+  const server = await launched(t, data, config, token);
+  await server.stop();
+  assert.equal(statSync(shared).mode & 0o777, 0o755, "the symlink's shared target keeps its mode");
+});
+
 test("a key a harness reads, saved later, makes the harness available with no restart: the server's reading probes the harnesses' offers with it", async (t) => {
   if (secret("ANTHROPIC_API_KEY")) return t.skip("this process holds an Anthropic key of its own");
   let saved;
   const stored = (name) => (name === "ANTHROPIC_API_KEY" ? saved : undefined);
   // Its data holds Claude Code, as a first use installs it.
-  const base = { PATH: process.env.PATH, HOME: process.env.HOME, AGENTRUN_SERVE_DATA: await claudeData(t) };
+  const base = { PATH: process.env.PATH, HOME: process.env.HOME, AGENTRUN_SERVE_DATA: await harnessData(t) };
   const claude = async () => (await readingOf(base, 4, stored)).caps.harnesses.find((offer) => offer.id === "claude-agent");
   assert.deepEqual([(await claude()).available, (await claude()).reason], [false, "claude-agent needs ANTHROPIC_API_KEY or OPENROUTER_API_KEY."]);
   saved = ["not-a-secret", "anthropic"].join("-");

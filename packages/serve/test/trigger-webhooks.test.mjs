@@ -8,6 +8,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { test } from "node:test";
+import { isMessageRow } from "@parcha/pi-durable-agent/timeline";
 import { ownSecrets } from "../dist/import.js";
 import { schemaProblems } from "./schema-support.mjs";
 import { follow, runDir, scratch, serve, withEnv } from "./support.mjs";
@@ -138,7 +139,7 @@ test("a message_run trigger sends each firing to its run, which takes it once: a
   assert.deepEqual([sent.status, sent.run_id], ["sent", run.body.run_id], JSON.stringify(sent));
   assert.equal((await post(baseUrl, id, "{\"ticket\":42}", { secret, id: "msg_ticket" })).status, 200, "the same webhook-id again");
   const { rows } = await follow(api, run.body.run_id, ["completed"]);
-  const messages = rows.filter((row) => row.kind === "user_message").map((row) => row.text);
+  const messages = rows.filter(isMessageRow).map((row) => row.text);
   assert.equal(messages.length, 2, JSON.stringify(messages));
   assert.match(messages[1], /^A new event came in\.\n\n<trigger-payload source="webhook" untrusted>\n\{"ticket":42\}\n<\/trigger-payload>/);
   assert.equal((await api("GET", "/agents/chat/runs")).body.runs.length, 1, "no run started");
@@ -185,7 +186,7 @@ test("a message_run firing to a run that is working waits for its turn to end, n
   const [sent] = await firings(api, id, 1);
   assert.deepEqual([sent.status, sent.run_id, sent.error], ["sent", run.run_id, null], JSON.stringify(sent));
   const { rows } = await follow(api, run.run_id, ["completed"]);
-  assert.equal(rows.filter((row) => row.kind === "user_message").length, 2, "its message, once, after the turn it waited for");
+  assert.equal(rows.filter(isMessageRow).length, 2, "its message, once, after the turn it waited for");
 });
 
 test("a webhook trigger holds at most 20 events due to a busy run: the 21st is refused 429 with Retry-After, written nowhere and logged, and a sender's retry once one is sent goes in", { timeout: 180_000 }, async (t) => {
