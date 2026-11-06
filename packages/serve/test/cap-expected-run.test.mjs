@@ -5,13 +5,13 @@
 // the request in flight at the expected figure this process held it at. One server for the file: each test makes its own
 // agent and run on it, and kills only that run's own process.
 import assert from "node:assert/strict";
-import { readFile, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { after, before, test } from "node:test";
 import { REQUEST_STARTED } from "@parcha/pi-durable-agent/timeline";
 import { grown } from "./fixtures/faux-harness.mjs";
-import { agent, follow, letGo, runDir, scratch, serve } from "./support.mjs";
+import { agent, follow, letGo, runDir, runRecordOf, scratch, serve } from "./support.mjs";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const SONNET_PRICED = new URL("./fixtures/faux-sonnet-priced.mjs", import.meta.url).pathname;
@@ -115,7 +115,7 @@ test("claude-agent: a restart mid-request reads the request in flight at the exp
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   await writeFile(go, "");
-  const { holder } = JSON.parse(await readFile(join(runDir(data, runId), "run.json"), "utf8"));
+  const { holder } = runRecordOf(data, runId);
   assert.ok(Number.isInteger(holder.pid) && holder.pid !== process.pid, JSON.stringify(holder));
   process.kill(holder.pid, "SIGKILL");
   await follow(api, runId, ["input_required", "completed", "failed"], { deadlineMs: 120_000 });
