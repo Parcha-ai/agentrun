@@ -84,6 +84,9 @@ const RETRY_CODES = ["OPENING", "PARKING", "RELEASED"];
 const MAX_RELAUNCHES = 3;
 /** Who holds a run's claim (its row's claim_holder): its own process on this machine, or the server once it took it back. */
 const RUN_HOLDER = "run-process";
+/** How soon a launch whose claim was refused tries again, at its first tries: a store another writer holds is let go of
+ *  within moments, and a run waits on its launch. Past these, every settle retry. */
+const CLAIM_RETRY_MS = [50, 100, 200, 400, 800, 1_600];
 /** The epoch of the claim a run's process holds, which the server gave it at its launch. */
 export const RUN_EPOCH_ENV = "AGENTRUN_RUN_EPOCH";
 /** How often a run's end that the agent store refused is written again. */
@@ -2019,16 +2022,16 @@ export class Runs {
     const handsKey = Object.keys(decisionKeys).length > 0;
     // The run's claim, for its process: the epoch bumped and the holder named on its row, in one statement. A claim
     // that cannot be written (the agent store held, or not writable) launches nothing now, and is tried again, the
-    // launch whole, after each of the busy store's waits and then every settle retry, until it is written: a run never
-    // stays without a process for want of one.
+    // launch whole, soon at first (CLAIM_RETRY_MS) and then every settle retry, until it is written: a run never stays
+    // without a process for want of one.
     try {
       env[RUN_EPOCH_ENV] = String(this.store.claimRun(run.id, RUN_HOLDER));
       run.claimTries = undefined;
     } catch (error) {
-      // Soon at first, as a busy store is waited on (busyDelays), then every settle retry.
+      // Soon at first (a store another writer holds for a moment), then every settle retry.
       const tries = run.claimTries ?? 0;
       run.claimTries = tries + 1;
-      const every = this.busyDelays()[tries] ?? this.options.settleRetryMs ?? SETTLE_RETRY_MS;
+      const every = CLAIM_RETRY_MS[tries] ?? this.options.settleRetryMs ?? SETTLE_RETRY_MS;
       // What this launch took goes back, so the next one launches as this one would have.
       if (followUp) run.followUpOpen = true;
       if (first) run.firstLaunch = true;
