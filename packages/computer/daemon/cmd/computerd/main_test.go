@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -78,9 +80,58 @@ func TestInitRefusesToStartWithoutADeadline(t *testing.T) {
 	}
 }
 
+// dropsHere says whether init, started as this test process is, can leave itself no capability: it holds CAP_SETPCAP
+// or has an empty bounding set, in a binary without cgo. When it cannot, it refuses to start, and why is returned.
+func dropsHere(t *testing.T) (bool, string) {
+	t.Helper()
+	if cgoBuild {
+		return false, "this test binary links cgo, where Go cannot make one call on every thread"
+	}
+	status, err := os.ReadFile("/proc/self/status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var effective, bounding uint64
+	for line := range strings.Lines(string(status)) {
+		name, value, _ := strings.Cut(line, ":")
+		number, _ := strconv.ParseUint(strings.TrimSpace(value), 16, 64)
+		switch name {
+		case "CapEff":
+			effective = number
+		case "CapBnd":
+			bounding = number
+		}
+	}
+	if bounding != 0 && effective&(1<<8) == 0 {
+		return false, fmt.Sprintf("uid %d holds no CAP_SETPCAP and its bounding set is %016x", os.Geteuid(), bounding)
+	}
+	return true, ""
+}
+
+// refusedToStart checks that init refused to start, in words, where it cannot drop every capability.
+func refusedToStart(t *testing.T, why string, code int, stderr string) {
+	t.Helper()
+	if code == 0 || !strings.Contains(stderr, "refuses to start") {
+		t.Fatalf("init here (%s): exit %d, stderr %q; want a refusal to start, in words", why, code, stderr)
+	}
+}
+
+func TestInitRefusesToStartWithACapabilityItCannotDrop(t *testing.T) {
+	drops, why := dropsHere(t)
+	if drops {
+		t.Skip("init can drop every capability here; run as a user with a bounding set and no CAP_SETPCAP, as go test runs on a host")
+	}
+	code, stderr := computerd(t, 10*time.Second, "init", "--deadline", time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano))
+	refusedToStart(t, why, code, stderr)
+}
+
 func TestInitEndsAtItsDeadline(t *testing.T) {
 	deadline := time.Now().Add(500 * time.Millisecond)
 	code, stderr := computerd(t, 30*time.Second, "init", "--deadline", deadline.UTC().Format(time.RFC3339Nano))
+	if drops, why := dropsHere(t); !drops {
+		refusedToStart(t, why, code, stderr)
+		t.Skip("init refused to start here, as it must: the deadline runs where it can drop every capability (a container)")
+	}
 	if code != 0 {
 		t.Fatalf("exit code %d at the deadline, want 0; stderr: %s", code, stderr)
 	}
@@ -95,6 +146,10 @@ func TestInitEndsAtItsDeadline(t *testing.T) {
 func TestInitTakesTheProvidersDeadline(t *testing.T) {
 	// The form JavaScript's toISOString writes, which the provider passes.
 	code, stderr := computerd(t, 30*time.Second, "init", "--deadline", time.Now().Add(-time.Second).UTC().Format("2006-01-02T15:04:05.000Z"))
+	if drops, why := dropsHere(t); !drops {
+		refusedToStart(t, why, code, stderr)
+		t.Skip("init refused to start here, as it must: the deadline runs where it can drop every capability (a container)")
+	}
 	if code != 0 {
 		t.Fatalf("exit code %d, want 0 at a deadline already past; stderr: %s", code, stderr)
 	}

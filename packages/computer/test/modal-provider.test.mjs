@@ -791,6 +791,87 @@ test("release: a terminate that fails is an error unless the sandbox has finishe
 	assert.deepEqual(await provider.release(refOf(fake, "computer-000000000002"), "delete"), { ok: true, value: undefined });
 });
 
+const polls = (fake, id) => fake.calls.filter(([name, of]) => name === "sandbox.poll" && of === id).length;
+
+test("release delete waits, polling, until Modal reads the sandbox finished: a terminate is asynchronous", async () => {
+	const { provider, fake } = setup({ timeouts: { releasePollMs: 5 } }, { sandboxes: [seeded()], lingers: { polls: 3 } });
+	const ref = refOf(fake);
+	assert.deepEqual(await provider.release(ref, "delete"), { ok: true, value: undefined });
+	assert.equal(sandboxOf(fake, ref.id).running, false, "release returned once the sandbox had finished");
+	assert.equal(polls(fake, ref.id), 4, "three polls read null, the fourth an exit code");
+	const terminated = fake.names().indexOf("sandbox.terminate");
+	assert.ok(terminated >= 0 && fake.names().indexOf("sandbox.poll") > terminated, "the polls come after the terminate");
+});
+
+test("release delete that does not see the sandbox finish within releaseMs is a timeout naming what poll read, never done", async () => {
+	const { provider, fake } = setup({ timeouts: { releaseMs: 200, releasePollMs: 10 } }, { sandboxes: [{ ...seeded(), stuck: true }] });
+	const ref = refOf(fake);
+	const started = Date.now();
+	const released = await provider.release(ref, "delete");
+	assert.equal(released.ok, false);
+	assert.equal(released.error.code, "timeout");
+	assert.match(released.error.message, /computer-0123456789ab/);
+	assert.match(released.error.message, /0\.2 s/);
+	assert.match(released.error.message, /poll read null/);
+	assert.ok(Date.now() - started < 5_000, "bounded by releaseMs");
+	assert.ok(polls(fake, ref.id) >= 3, "it polled again and again within the bound");
+});
+
+test("release delete's wait takes the caller's signal, and an abort names what poll last read", async () => {
+	const { provider, fake } = setup({ timeouts: { releasePollMs: 10 } }, { sandboxes: [{ ...seeded(), stuck: true }] });
+	const controller = new AbortController();
+	setTimeout(() => controller.abort(), 100);
+	const released = await provider.release(refOf(fake), "delete", { signal: controller.signal });
+	assert.equal(released.error?.code, "aborted");
+	assert.match(released.error.message, /poll read null/);
+});
+
+test("release delete's wait ends when Modal no longer knows the sandbox", async () => {
+	const { provider, fake } = setup({ timeouts: { releasePollMs: 10 } }, { sandboxes: [{ ...seeded(), stuck: true }] });
+	const ref = refOf(fake);
+	setTimeout(() => fake.sandboxes.delete(ref.id), 60);
+	assert.deepEqual(await provider.release(ref, "delete"), { ok: true, value: undefined });
+});
+
+test("list leaves out a sandbox Modal still lists after its terminate once poll reads it finished", async () => {
+	const { provider, fake } = setup({ timeouts: { releasePollMs: 5 } }, { sandboxes: [seeded(), seeded({ name: "computer-000000000002" })], lingers: { polls: 0, lists: 5 } });
+	const gone = refOf(fake);
+	assert.deepEqual(await provider.release(gone, "delete"), { ok: true, value: undefined });
+	const listed = await provider.list({});
+	assert.equal(listed.ok, true, JSON.stringify(listed));
+	assert.deepEqual(listed.value.map((info) => info.ref.name), ["computer-000000000002"]);
+	const raw = [];
+	for await (const one of fake.sdk.sandboxes.list({ appId: `ap-${APP}`, tags: {} })) raw.push(one.sandboxId);
+	assert.ok(raw.includes(gone.id), "Modal's own listing still yields the finished sandbox");
+});
+
+test("list leaves out a sandbox whose poll finds it gone, and fails in words on a poll that fails otherwise", async () => {
+	const { provider, fake } = setup({}, { sandboxes: [seeded(), seeded({ name: "computer-000000000002" })] });
+	const first = refOf(fake);
+	const list = fake.sdk.sandboxes.list;
+	fake.sdk.sandboxes.list = (params) =>
+		(async function* () {
+			for await (const one of list(params)) {
+				yield one.sandboxId === first.id ? { ...one, poll: async () => Promise.reject(Object.assign(new Error("Sandbox not found"), { name: "NotFoundError" })) } : one;
+			}
+		})();
+	const listed = await provider.list({});
+	assert.deepEqual(listed.value?.map((info) => info.ref.name), ["computer-000000000002"]);
+	fake.sdk.sandboxes.list = (params) =>
+		(async function* () {
+			for await (const one of list(params)) yield { ...one, poll: async () => Promise.reject(new Error("the server is unavailable")) };
+		})();
+	const failed = await provider.list({});
+	assert.equal(failed.ok, false);
+	assert.match(failed.error.message, /poll/);
+	assert.match(failed.error.message, /the server is unavailable/);
+});
+
+test("the live Modal suite gives cleanup more than release's 120 s wait", () => {
+	const live = readFileSync(new URL("./modal/conformance.modal.test.mjs", import.meta.url), "utf8");
+	assert.match(live, /cleanupTimeoutMs: 150_000/);
+});
+
 test("every SDK call is bounded: a getTags that never answers is a timeout", async () => {
 	const { provider, fake } = setup({ timeouts: { callMs: 40 } }, { sandboxes: [seeded()] });
 	const ref = refOf(fake);

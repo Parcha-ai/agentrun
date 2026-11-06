@@ -21,8 +21,15 @@ import (
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/execrun"
 )
 
-// TestMain runs this test binary as computerd's guard, init or stdio when it is started as one.
+// TestMain runs this test binary as computerd's guard, init or stdio when it is started as one, or as a child of the
+// Become tests.
 func TestMain(m *testing.M) {
+	if len(os.Args) >= 2 && os.Args[1] == daemon.BecomeChildArg {
+		os.Exit(daemon.BecomeChild(os.Args[2:]))
+	}
+	if len(os.Args) == 2 && os.Args[1] == daemon.StatusChildArg {
+		os.Exit(daemon.StatusChild())
+	}
 	if len(os.Args) == 2 {
 		switch os.Args[1] {
 		case execrun.GuardCommand:

@@ -7,3 +7,9 @@ func SetAfterHalfClose(t *testing.T, fn func()) {
 	afterHalfClose = fn
 	t.Cleanup(func() { afterHalfClose = nil })
 }
+
+// BecomeChild and StatusChild are the children of the Become tests, run from TestMain.
+var (
+	BecomeChild = becomeChild
+	StatusChild = statusChild
+)

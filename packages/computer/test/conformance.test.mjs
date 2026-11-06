@@ -405,6 +405,37 @@ test("exec.user-uid fails a computer whose requested user has capabilities", asy
 	assert.equal(statuses(await runConformance(clean.provider, { image: IMAGE, cases: byId("exec.user-uid") }))["exec.user-uid"], "pass");
 });
 
+/** One thing a computer may leave its programs that the exec cases refuse: a set that is not empty, no_new_privs unset, or a set not reported. */
+const LEFT_OVER = [
+	["CapEff", "0000000000000400"],
+	["CapPrm", "0000000000000400"],
+	["CapInh", "0000000000000400"],
+	["CapBnd", "000001ffffffffff"],
+	["CapAmb", "0000000000000400"],
+	["NoNewPrivs", "0"],
+	["CapAmb", undefined],
+	["NoNewPrivs", undefined],
+];
+
+for (const [id, user, uses] of [
+	["exec.unprivileged", undefined, "status"],
+	["exec.root-on-request", "root", "statusForUser"],
+	["exec.user-uid", "uid", "statusForUser"],
+]) {
+	test(`${id} requires every capability set empty and no_new_privs set, and fails a computer that leaves any one`, async () => {
+		const options = user === undefined ? {} : { user: [user] };
+		for (const [field, value] of LEFT_OVER) {
+			const fake = fakeComputers({ ...options, [uses]: { [field]: value } });
+			const report = await runConformance(fake.provider, { image: IMAGE, cases: byId(id) });
+			assert.equal(statuses(report)[id], "fail", `${id} with ${field} ${value ?? "not reported"}`);
+			assert.match(reasons(report)[id], new RegExp(`^${field} in /proc/self/status`), `${id} with ${field} ${value ?? "not reported"}`);
+		}
+		const clean = fakeComputers(options);
+		const report = await runConformance(clean.provider, { image: IMAGE, cases: byId(id) });
+		assert.equal(statuses(report)[id], "pass", reasons(report)[id]);
+	});
+}
+
 test("a files case that makes a directory needs exec too: a daemon with files and no exec skips it in words", async () => {
 	const fake = fakeComputers({ daemon: ["files"] });
 	const report = await runConformance(fake.provider, { image: IMAGE, cases: conformanceCases.filter((c) => c.group === "files") });

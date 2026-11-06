@@ -3,7 +3,8 @@
 // dockerfileCommands, which build nothing; sandboxes.create, which keeps the tags it is given (sandbox.ts:808-867);
 // fromId, which makes a handle with no call (sandbox.ts:960-962); list, of running sandboxes that carry every tag
 // asked for (sandbox.ts:1116-1139); a sandbox's getTags, poll (null while it runs), terminate (idempotent here; the
-// sandbox finishes with 137, guide/sandboxes "Return Codes") and exec, which throws ConflictError once the sandbox has
+// sandbox finishes with 137, guide/sandboxes "Return Codes"; with `lingers`, as Modal's own end is asynchronous, poll
+// reads it running and list still lists it for some reads after) and exec, which throws ConflictError once the sandbox has
 // finished (sandbox.ts:2149-2154). exec of the daemon's stdio bridge answers hello, ping and exec.run of the probe as
 // computerd would. exec of the provider's upload command reads the daemon from stdin, as `cat` would, prints its sha256
 // and installs it only when it is the one the command names, as the script does; a sandbox whose command is the
@@ -217,9 +218,11 @@ function uploader(found, command, fake, how) {
  *  - upload: what the upload command does: "ok" (default), "throw" (exec fails), "exit" (the script exits 4 in words),
  *    "corrupt" (the bytes written differ from those sent), "lie" (prints a sha256 that is not the file's, exits 0), or
  *    "hang" (never exits);
- *  - list: "ok" (default) or "fail" (the listing throws InvalidError).
+ *  - list: "ok" (default) or "fail" (the listing throws InvalidError);
+ *  - lingers: { polls, lists }: after a terminate, poll answers null for the next `polls` polls before the sandbox
+ *    finishes with 137, and list still yields it for the next `lists` listings, finished or not (default none).
  */
-export function fakeModal({ create = "ok", box = {}, tags: tagPatch = {}, sandboxes: seeded = [], terminate = "ok", running = true, upload = "ok", list = "ok" } = {}) {
+export function fakeModal({ create = "ok", box = {}, tags: tagPatch = {}, sandboxes: seeded = [], terminate = "ok", running = true, upload = "ok", list = "ok", lingers } = {}) {
 	const calls = [];
 	const sandboxes = new Map();
 	const fake = { calls, sandboxes, execRuns: [], stdinClosed: 0, held: [], constructed: 0, uploads: [] };
@@ -260,6 +263,11 @@ export function fakeModal({ create = "ok", box = {}, tags: tagPatch = {}, sandbo
 			record("sandbox.poll", id);
 			const found = sandboxes.get(id);
 			if (!found) throw new NotFoundError(`Sandbox ${id} not found`);
+			if (found.lingering?.polls > 0) {
+				found.lingering.polls--;
+				return null;
+			}
+			if (found.lingering && found.running) Object.assign(found, { running: false, exitCode: 137 });
 			return found.running ? null : found.exitCode;
 		},
 		async terminate() {
@@ -268,7 +276,8 @@ export function fakeModal({ create = "ok", box = {}, tags: tagPatch = {}, sandbo
 			if (!found) throw new NotFoundError(`Sandbox ${id} not found`);
 			if (terminate === "fail") throw new Error("terminate failed on the server");
 			found.terminated++;
-			if (found.running && !found.stuck) Object.assign(found, { running: false, exitCode: 137 });
+			if (found.running && !found.stuck && lingers && !found.lingering) found.lingering = { polls: lingers.polls ?? 0, lists: lingers.lists ?? 0 };
+			else if (found.running && !found.stuck && !lingers) Object.assign(found, { running: false, exitCode: 137 });
 		},
 		async exec(command, params) {
 			record("sandbox.exec", id, command, params);
@@ -336,8 +345,9 @@ export function fakeModal({ create = "ok", box = {}, tags: tagPatch = {}, sandbo
 			list(params) {
 				record("sandboxes.list", params);
 				const matches = [...sandboxes.values()].filter(
-					(one) => one.running && one.appId === params.appId && Object.entries(params.tags ?? {}).every(([k, v]) => one.tags[k] === v),
+					(one) => (one.running || one.lingering?.lists > 0) && one.appId === params.appId && Object.entries(params.tags ?? {}).every(([k, v]) => one.tags[k] === v),
 				);
+				for (const one of matches) if (one.lingering?.lists > 0) one.lingering.lists--;
 				return (async function* () {
 					if (list === "fail") throw new InvalidError("sandbox list refused: permission denied for this app");
 					for (const one of matches) yield handle(one.id);

@@ -10,12 +10,17 @@ const b64 = (text) => Buffer.from(text).toString("base64");
 
 const ALL_CAPABILITIES = "000001ffffffffff";
 const NO_CAPABILITIES = "0000000000000000";
+/** What /proc/self/status reads in a computer that leaves its programs nothing: every set empty, no_new_privs set. */
+const UNPRIVILEGED = { CapInh: NO_CAPABILITIES, CapPrm: NO_CAPABILITIES, CapEff: NO_CAPABILITIES, CapBnd: NO_CAPABILITIES, CapAmb: NO_CAPABILITIES, NoNewPrivs: "1" };
 
 /** What exec.run of argv prints in a computer whose user is uid, as `user` (a name in users, or a uid) when given. */
-function output(argv, { uid, caps, users, user }) {
+function output(argv, { uid, status, users, user }) {
 	const who = user === undefined ? uid : String(users[user] ?? user);
 	if (argv[0] === "id" && argv[1] === "-u") return `${who}\n`;
-	if (argv[0] === "cat" && argv[1] === "/proc/self/status") return `Uid:\t${who}\nCapEff:\t${caps}\nCapPrm:\t${caps}\n`;
+	if (argv[0] === "cat" && argv[1] === "/proc/self/status") {
+		const lines = Object.entries(status).filter(([, value]) => value !== undefined);
+		return `Uid:\t${who}\n${lines.map(([field, value]) => `${field}:\t${value}\n`).join("")}`;
+	}
 	if (argv[0] === "env") return "PATH=/usr/bin:/bin\nHOME=/home/fake\n";
 	if (argv[0] === "sh" && argv[2]?.includes('echo ok > "$HOME/x"')) return "ok\n";
 	return `${argv.slice(1).join(" ")}\n`;
@@ -78,6 +83,8 @@ function fakeDaemon(hello, computer) {
  * - `createHangs`, `releaseHangs`: those calls never answer. `createDelays`: ms before each create answers, by call.
  * - `connectThrows`: connect throws that message. `uid`: the default user's uid; `users`: names to uids.
  * - `capsForUser`: a computer whose spec asked for a user has every capability.
+ * - `status`: /proc/self/status fields over the unprivileged ones, in every computer (a value of undefined drops the
+ *   line); `statusForUser`: the same, in a computer whose spec asked for a user.
  * - `createRejects`: create rejects with that message. `createIgnoresCheck`: create makes a computer check refuses.
  * - `listPage`: how many processes one process.list page holds.
  * - `networkSwitches`: network() applies a change to a network the provider declares, instead of refusing every change.
@@ -103,6 +110,8 @@ export function fakeComputers({
 	uid = 1000,
 	users = {},
 	capsForUser = false,
+	status = {},
+	statusForUser = {},
 	createRejects,
 	createIgnoresCheck = false,
 	listPage = 100,
@@ -146,7 +155,12 @@ export function fakeComputers({
 				state: "running",
 				daemon: {
 					uid: spec.user ?? String(uid),
-					caps: capsForUser && spec.user !== undefined ? ALL_CAPABILITIES : NO_CAPABILITIES,
+					status: {
+						...UNPRIVILEGED,
+						...status,
+						...(spec.user !== undefined && capsForUser ? { CapEff: ALL_CAPABILITIES, CapPrm: ALL_CAPABILITIES } : {}),
+						...(spec.user !== undefined ? statusForUser : {}),
+					},
 					users,
 					processes: [],
 					listPage,
