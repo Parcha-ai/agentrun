@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-codex/test/fake-app-server.mjs at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, patches: 005-fake-app-server-script, 006-comments, 014-fake-app-server-start-ms, 015-fake-app-server-sse-event-lines
+// Changed by Parcha, patches: 005-fake-app-server-script, 006-comments, 014-fake-app-server-start-ms, 015-fake-app-server-sse-event-lines, 016-fake-app-server-record-ms
 /**
  * A fake `codex app-server --stdio`, for the tests that need no network. It
  * speaks the subset of the protocol the harness uses and keeps a rollout
@@ -64,6 +64,8 @@
  *   in every echo (`[project config: …]`);
  * - `FAKE_CODEX_START_MS` answers `initialize` that many ms late, as a slow
  *   start does: the drive places no prompt before it;
+ * - `FAKE_CODEX_RECORD_MS` writes a turn's user message that many ms after
+ *   `turn/start` is answered, as Codex does (it answers first);
  * - `FAKE_CODEX_LAG=1` writes a call's `function_call` line only after the
  *   drive answered it (Codex's rollout writer is asynchronous);
  * - `escalate <command>` asks for its approval with `additionalPermissions`;
@@ -233,6 +235,7 @@ const scripted = () => {
 async function runTurn(turnId, clientId, text) {
   ensureMeta();
   write('event_msg', { type: 'task_started', turn_id: turnId });
+  if (process.env.FAKE_CODEX_RECORD_MS) await sleep(Number(process.env.FAKE_CODEX_RECORD_MS));
   userMessage(turnId, clientId, text);
   notify('turn/started', { threadId: thread.id, turn: { id: turnId, status: 'inProgress', items: [] } });
   let last;

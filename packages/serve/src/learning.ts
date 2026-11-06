@@ -33,7 +33,7 @@ import { constants, existsSync } from "node:fs";
 import { lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, posix, relative } from "node:path";
 import { SKILL_BYTES } from "@parcha/agentrun-kernel";
-import { INDEX_FILE, type LearnedNote, loadedIndex, NOTE_FILE, parseNoteFile, type Problem, redactSecrets, secretShapes, servedSkill, SKILLS_DIR, valueMatcher, type Verdict } from "./learn/index.js";
+import { INDEX_FILE, type LearnedNote, loadedIndex, NOTE_FILE, parseNoteFile, type Problem, redactSecrets, secretShapes, servedSkill, SKILLS_DIR, valueMatcher, type Verdict, WORKFLOW_NAME, WORKFLOWS_DIR } from "./learn/index.js";
 import { homeOf, serialBy, writeDurable } from "./files.js";
 import { DETAIL_MAX, LIST_DETAIL, short, wordsOf } from "./learning-words.js";
 import { isObject } from "./validate.js";
@@ -186,13 +186,29 @@ export type Turn = { answer: string; asked: string[] };
 /** What a run's pin holds: the commit of main it was seeded from, and what it reads under `# Learned` (learnedOf), when
  *  it learned anything. `learned`, the index alone, is a pin an earlier server wrote, read as that server gave it.
  *  `skills`: the files of the learned skills laid in its work, by their paths under `.agents/skills/`, as a revision
- *  names its own; `skills_left_out`: the learned skills it does not get, over their budget or holding a secret. */
-export type Pin = { seed: string; section?: string; learned?: string; skills?: string[]; skills_left_out?: string[] };
+ *  names its own; `skills_left_out`: the learned skills it does not get, over their budget or holding a secret.
+ *  `workflows`: the names of the learned workflows the run may run (its `learned_workflow` tool), each written whole in
+ *  LEARNED_WORKFLOWS_FILE in the run's directory, outside its work; `workflows_left_out`: the learned workflows it does
+ *  not get, their lines over what is left of the tool's description budget (LEARNED_WORKFLOWS_BUDGET), or holding a
+ *  secret, or every one when `workflows_off` says why the run is offered none (its harness's requests go where a learned
+ *  workflow's could not follow: learnedWorkflowsOff). */
+export type Pin = { seed: string; section?: string; learned?: string; skills?: string[]; skills_left_out?: string[]; workflows?: string[]; workflows_left_out?: string[]; workflows_off?: string };
 /** What a run is seeded from: main's commit, its index and its active notes by file, and the name of every entry at its
  *  top. `skipped` names what was there and not read. `recent`, when seedOf read it: the active notes' files, the one
  *  changed last on main first. `skills`, when seedOf read them: the skills the agent wrote, the one changed last on main
  *  first. */
-export type Seed = { sha: string; index?: string; notes: Record<string, string>; files: string[]; skipped: string[]; recent?: string[]; skills?: LearnedSkill[] };
+export type Seed = { sha: string; index?: string; notes: Record<string, string>; files: string[]; skipped: string[]; recent?: string[]; skills?: LearnedSkill[]; workflows?: LearnedWorkflow[] };
+/** A workflow the agent learned, as a run may run it: its name, the line its README says what it does with, and its
+ *  workflow.json whole. */
+export type LearnedWorkflow = { name: string; description: string; workflow: string };
+/** Where a run keeps the learned workflows its pin names, whole: in the run's directory, beside its pin, never in its
+ *  work, so nothing the run does changes what its `learned_workflow` tool runs. */
+export const LEARNED_WORKFLOWS_FILE = "learned-workflows.json";
+/** The most bytes the `learned_workflow` tool's description gives its workflows, each one's line (workflowLine)
+ *  together: every harness sends the description with each request, so it never grows with what an agent learned. */
+export const LEARNED_WORKFLOWS_BUDGET = 8 * 1024;
+/** A learned workflow's line in the `learned_workflow` tool's description: its name, and what its README says it does. */
+export const workflowLine = ({ name, description }: Pick<LearnedWorkflow, "name" | "description">): string => `- ${name}: ${description || "(no description)"}`;
 
 /** The most bytes of learned skills one run gets, every file of each together. They get no more than what the
  *  revision's own skills leave of the adapters' cap on a run's skills in all (SKILL_BYTES): over that cap an adapter
@@ -517,6 +533,87 @@ export async function readSkills(cwd: string, repo: string, sha: string): Promis
   return { skills, skipped };
 }
 
+/** The workflows commit `sha` holds under WORKFLOWS_DIR, read with plumbing, by name: each a folder with a workflow.json
+ *  and a README.md, each a regular file (mode 100644) of at most FILE_CAP bytes in UTF-8; else named in `skipped`. Only an
+ *  active one is a run's, by the rule a skill is (readSkills): its README.md sets no status, or `active`; one held for
+ *  its owner's OK, or retired, is left out. A symbolic link or a submodule under WORKFLOWS_DIR throws. */
+export async function readWorkflows(cwd: string, repo: string, sha: string): Promise<{ workflows: LearnedWorkflow[]; skipped: string[] }> {
+  const listed = (await git(cwd, repo, ["ls-tree", "-r", "-t", "-l", "-z", "--full-tree", sha, "--", WORKFLOWS_DIR])).toString("utf8").split("\0").filter(Boolean);
+  const found = new Map<string, Record<string, string>>();
+  const refused = new Set<string>();
+  const skipped: string[] = [];
+  for (const entry of listed) {
+    const tab = entry.indexOf("\t");
+    const [mode, type, oid, size] = entry.slice(0, tab).split(/\s+/);
+    const path = entry.slice(tab + 1);
+    if (path !== WORKFLOWS_DIR && !path.startsWith(`${WORKFLOWS_DIR}/`)) continue;
+    if (mode === "120000" || mode === "160000") throw new Error(`the learning folder's ${path} is a ${mode === "120000" ? "symbolic link" : "submodule"}, and the host never reads one for a run`);
+    if (type === "tree") continue;
+    const [name = "", file = "", ...more] = path.slice(WORKFLOWS_DIR.length + 1).split("/");
+    const why = !WORKFLOW_NAME.test(name) || more.length || (file !== "workflow.json" && file !== "README.md") ? "not a workflow's workflow.json or README.md" : mode !== "100644" || type !== "blob" || !oid ? `mode ${mode}` : Number(size) > FILE_CAP ? `over ${FILE_CAP} bytes` : undefined;
+    if (why) {
+      refused.add(name);
+      skipped.push(`${path} (${why})`);
+    } else (found.get(name) ?? found.set(name, {}).get(name)!)[file] = oid!;
+  }
+  const workflows: LearnedWorkflow[] = [];
+  for (const [name, oids] of [...found].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
+    if (refused.has(name)) continue;
+    if (!oids["workflow.json"] || !oids["README.md"]) {
+      skipped.push(`${WORKFLOWS_DIR}/${name} (no ${oids["workflow.json"] ? "README.md" : "workflow.json"})`);
+      continue;
+    }
+    const [json, readme] = await readBlobs(cwd, repo, [oids["workflow.json"], oids["README.md"]]);
+    let texts: [string, string];
+    try {
+      texts = [utf8.decode(json!), utf8.decode(readme!)];
+    } catch {
+      skipped.push(`${WORKFLOWS_DIR}/${name} (not UTF-8)`);
+      continue;
+    }
+    // Its README read one way only, or not at all: one whose front matter is not closed, or holds a line that is no key
+    // at its left edge, could hold a status a reader other than this one sees, so it is never read as active.
+    const front = readmeFront(texts[1]);
+    if (!front) {
+      skipped.push(`${WORKFLOWS_DIR}/${name} (its README.md's front matter does not read one way)`);
+      continue;
+    }
+    const status = front.get("status");
+    if (status !== undefined && status !== "active") continue;
+    workflows.push({ name, description: front.get("description") ?? "", workflow: texts[0] });
+  }
+  return { workflows, skipped };
+}
+
+/** A learned workflow README's front matter, each key to its value (quotes dropped; a `>` or `|` value's indented lines
+ *  joined by spaces), or undefined when it does not read one way: no front matter, none closed (`---` on a line of its
+ *  own, the last line or not), a line that is neither a key at its left edge, a comment, blank, nor a line of a `>` or
+ *  `|` value, or a key set twice. */
+export function readmeFront(text: string): Map<string, string> | undefined {
+  const lf = text.replace(/\r\n/g, "\n");
+  if (!lf.startsWith("---\n")) return undefined;
+  const close = /\n---(?:\n|$)/.exec(lf.slice(3));
+  if (!close) return undefined;
+  const front = new Map<string, string>();
+  let block: string | undefined;
+  for (const line of lf.slice(4, 3 + close.index).split("\n")) {
+    if (block !== undefined && (/^\s+\S/.test(line) || line.trim() === "")) {
+      if (line.trim()) front.set(block, `${front.get(block)} ${line.trim()}`.trim());
+      continue;
+    }
+    block = undefined;
+    if (line.trim() === "" || line.startsWith("#")) continue;
+    const pair = /^([A-Za-z_][\w-]*):(?:\s+(.*))?$/.exec(line);
+    if (!pair || front.has(pair[1]!)) return undefined;
+    const value = (pair[2] ?? "").trim();
+    if (/^[>|][-+]?$/.test(value)) {
+      block = pair[1]!;
+      front.set(block, "");
+    } else front.set(pair[1]!, value.replace(/^(["'])(.*)\1$/, "$2"));
+  }
+  return front;
+}
+
 /** Each file's place in main's first-parent log from `sha`, by the newest commit that changed it: 0 for those the newest
  *  commit changed, and so on, so two changes in one second keep their order. A run's notes (seedOf) and a person's view
  *  of them (learning-routes.ts) are in this order, the one changed last first. */
@@ -554,6 +651,9 @@ export function seedOf(data: string, agentId: string): Promise<Seed> {
     const placeOf = (skill: LearnedSkill) => skillPlace.get(skill.name) ?? Number.POSITIVE_INFINITY;
     seed.skills = [...skills].sort((a, b) => placeOf(a) - placeOf(b) || 0);
     seed.skipped.push(...skipped);
+    const flows = await readWorkflows(home, repo, sha);
+    seed.workflows = flows.workflows;
+    seed.skipped.push(...flows.skipped);
     return seed;
   });
 }
@@ -644,7 +744,7 @@ export async function layLearned(dir: string, seed: Seed, shown: Shown): Promise
 
 /** How a run reads what it learned (learnedOf): the server's learning budget, in bytes; whether its agent has the read
  *  tool; the host's secrets, which every text is cut of. */
-export type LearnedOptions = { budget: number; read: boolean; shown: Shown };
+export type LearnedOptions = { budget: number; read: boolean; shown: Shown; workflowsOff?: string };
 /** The lines before what a run learned, under `# Learned` after LEARNS, and the one that names `.learning/` to an agent
  *  that can read it. */
 const KEPT = "Follow a note when it applies to what you are doing.";
@@ -767,7 +867,29 @@ export async function pinSeed(runDir: string, work: string, seed: Seed, options:
     const section = learnedOf(seed, options);
     const { taken, left } = await chooseSkills(work, seed, options.own ?? [], options.shown);
     const skills = taken.flatMap(({ name, files = {} }) => Object.keys(files).sort().map((path) => `${name}/${path}`));
-    const pin: Pin = { seed: seed.sha, ...(section ? { section } : {}), ...(skills.length ? { skills } : {}), ...(left.length ? { skills_left_out: left } : {}) };
+    // The learned workflows the run may run, whole, in its directory before the pin names them (a reopen keeps them):
+    // by name, each while its line fits what is left of the tool's description budget; one that does not, or holds a
+    // secret, is left out, and the pin names it.
+    const flows: LearnedWorkflow[] = [];
+    const flowsLeft: string[] = [];
+    let room = LEARNED_WORKFLOWS_BUDGET;
+    for (const flow of seed.workflows ?? []) {
+      // None, when the run is offered none (learnedWorkflowsOff): each is named, but for a name that is itself a secret.
+      if (options.workflowsOff !== undefined) {
+        if (!options.shown.holds(flow.name)) flowsLeft.push(flow.name);
+        continue;
+      }
+      if (options.shown.holds(flow.workflow) || options.shown.holds(flow.description) || options.shown.holds(flow.name)) {
+        // Named, but for a name that is itself a secret.
+        if (!options.shown.holds(flow.name)) flowsLeft.push(flow.name);
+        continue;
+      }
+      const bytes = Buffer.byteLength(`${workflowLine(flow)}\n`, "utf8");
+      if (bytes > room) flowsLeft.push(flow.name);
+      else (room -= bytes), flows.push(flow);
+    }
+    if (flows.length) await writeDurable(join(runDir, LEARNED_WORKFLOWS_FILE), `${JSON.stringify(flows)}\n`);
+    const pin: Pin = { seed: seed.sha, ...(section ? { section } : {}), ...(skills.length ? { skills } : {}), ...(left.length ? { skills_left_out: left } : {}), ...(flows.length ? { workflows: flows.map(({ name }) => name) } : {}), ...(options.workflowsOff !== undefined && flowsLeft.length ? { workflows_off: options.workflowsOff } : {}), ...(flowsLeft.length ? { workflows_left_out: flowsLeft } : {}) };
     // The pin names the skills before they are laid: a server that goes down while they are takes them back (dropSeed).
     await writeDurable(pinFile, `${JSON.stringify(pin)}\n`);
     await laySkills(work, taken, made);
@@ -777,6 +899,7 @@ export async function pinSeed(runDir: string, work: string, seed: Seed, options:
     // writeDurable renames the pin into place before it syncs the run's directory, so a failure there leaves the pin
     // behind: it goes too, or the run's instructions would still say what it learned, of notes it has no copy of.
     await rm(pinFile, { force: true }).catch(() => undefined);
+    await rm(join(runDir, LEARNED_WORKFLOWS_FILE), { force: true }).catch(() => undefined);
     await rm(dir, { recursive: true, force: true }).catch(() => undefined);
     await takeSkills(work, made).catch(() => undefined);
     throw error;
@@ -821,7 +944,7 @@ export async function readPin(runDir: string): Promise<Pin | undefined> {
   const pin = JSON.parse(text) as unknown;
   const names = (value: unknown, shape: (entry: string) => boolean) => value === undefined || (Array.isArray(value) && value.every((entry) => typeof entry === "string" && shape(entry)));
   const skillFile = (entry: string) => SKILL_NAME.test(entry.split("/")[0]!) && SKILL_FILE_PATH.test(entry.slice(entry.indexOf("/") + 1)) && entry.includes("/");
-  if (!isObject(pin) || typeof pin.seed !== "string" || (pin.section !== undefined && typeof pin.section !== "string") || (pin.learned !== undefined && typeof pin.learned !== "string") || !names(pin.skills, skillFile) || !names(pin.skills_left_out, () => true)) throw new Error(`the run's ${LEARNING_PIN} is not a learning pin`);
+  if (!isObject(pin) || typeof pin.seed !== "string" || (pin.section !== undefined && typeof pin.section !== "string") || (pin.learned !== undefined && typeof pin.learned !== "string") || !names(pin.skills, skillFile) || !names(pin.skills_left_out, () => true) || !names(pin.workflows, (entry) => WORKFLOW_NAME.test(entry)) || !names(pin.workflows_left_out, (entry) => WORKFLOW_NAME.test(entry)) || (pin.workflows_off !== undefined && typeof pin.workflows_off !== "string")) throw new Error(`the run's ${LEARNING_PIN} is not a learning pin`);
   return pin as Pin;
 }
 
@@ -855,4 +978,15 @@ export async function withLearned(runDir: string, work: string, instructions: st
     instructions: pin ? `${instructions.trim()}\n\n${LEARNED_HEADING}\n\n${LEARNS}\n\n${section ?? NOTHING_YET}` : instructions,
     skills: [...own, ...learned.filter((path) => whole.has(path.split("/")[0]!))],
   };
+}
+
+/** The learned workflows a run's pin names, as its directory keeps them (LEARNED_WORKFLOWS_FILE): none when the pin
+ *  names none. A file that is not the list the pin names throws. */
+export async function pinnedWorkflows(runDir: string, pin: Pin | undefined): Promise<LearnedWorkflow[]> {
+  const names = pin?.workflows ?? [];
+  if (!names.length) return [];
+  const kept = JSON.parse(await readFile(join(runDir, LEARNED_WORKFLOWS_FILE), "utf8")) as unknown;
+  const ok = (entry: unknown): entry is LearnedWorkflow => isObject(entry) && typeof entry.name === "string" && typeof entry.description === "string" && typeof entry.workflow === "string";
+  if (!Array.isArray(kept) || !kept.every(ok) || kept.map(({ name }) => name).join("\n") !== names.join("\n")) throw new Error(`the run's ${LEARNED_WORKFLOWS_FILE} is not the workflows its pin names`);
+  return kept;
 }

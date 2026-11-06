@@ -130,7 +130,7 @@ test("with no box on the server, a sandbox-only tool reads unavailable for that 
   const boxless = toolsView({}, {}, noBox);
   const bash = boxless.find((tool) => tool.name === "bash");
   assert.deepEqual([bash.available, bash.reason, bash.sandbox_only], [false, noBox, true], "a sandbox-only tool no box can run is unavailable, with the box's reason");
-  assert.deepEqual(boxless.filter((tool) => tool.reason === noBox).map((tool) => tool.name), ["bash"], "only a sandbox-only tool");
+  assert.deepEqual(boxless.filter((tool) => tool.reason === noBox).map((tool) => tool.name), ["bash", "bash_background", "bash_output", "bash_input", "bash_signal", "bash_list"], "only the sandbox-only tools: bash and the background tools");
   const keyless = "Exa's free keyless search, no key";
   assert.deepEqual(boxless.filter((tool) => tool.resolves && tool.name !== "browser").map((tool) => [tool.name, tool.available, tool.resolves, tool.why]), [
     ["web_fetch", true, each("kernel"), each("the guarded direct fetch")],
@@ -148,7 +148,7 @@ test("a run's plane: each web tool its revision names, resolved in the server's 
   assert.deepEqual(planeFor(env, { harness: "claude-agent", tools: ["web_search"] }, {}, { capped: true }), { web_search: "parallel" }, "a capped claude-agent run searches through Parallel, never Claude's own");
   assert.deepEqual(planeFor({ AGENT_MODEL: env.AGENT_MODEL }, { harness: "claude-agent", tools: ["web_search"] }, {}, { capped: true }), { web_search: "exa-keyless" }, "with no key, keyless Exa");
   assert.deepEqual(planeFor(env, { harness: "claude-agent", tools: ["web_search"] }, {}), { web_search: "parallel" }, "claude-agent on auto: the server's key, Claude's own search an explicit pick");
-  assert.deepEqual(planeFor(env, { harness: "claude-agent", tools: ["web_search"], overrides: { web_search: { provider: "native" } } }, {}), { web_search: "native" }, "picked: Claude's own, no model to name");
+  assert.deepEqual(planeFor(env, { harness: "claude-agent", tools: ["web_search"], overrides: { web_search: { provider: "native" } } }, {}), { web_search: "native", model: "anthropic/claude-sonnet-4-5" }, "picked: Claude's own for its agent, and the model a learned workflow's call node searches on");
   assert.deepEqual(planeFor(env, { tools: ["web_search"], overrides: { web_search: { provider: "exa-keyless" } } }, { web_search: { provider: "parallel" } }), { web_search: "exa-keyless" });
   assert.deepEqual(planeFor({}, { tools: ["read"] }, {}), {}, "no web tool, nothing to say");
   assert.deepEqual(planeFor(env, { tools: ["fetch_page"] }, { web_fetch: { provider: "parallel" } }), { web_fetch: "parallel" }, "fetch_page resolves as web_fetch does");
@@ -184,14 +184,17 @@ test("a pi agent that names no model and picks native search runs on a server wh
   assert.equal(run.status, 202, JSON.stringify(run.body));
 });
 
-test("settings are checked before anything is kept: an unknown tool, a provider for a tool with no choice or not offered for it, and a permission not offered (tool-gate.test.mjs has the rest); the gate's names of the table are the table's", () => {
+test("settings are checked before anything is kept: an unknown tool, a provider for a tool with no choice or not offered for it, and a permission not offered (tool-gate.test.mjs has the rest); the gate's names of the table are the table's", async () => {
   assert.deepEqual(settingsIssues({ web_search: { provider: "exa-keyless" }, web_fetch: {} }), []);
   assert.deepEqual(settingsIssues({ ask_person: { provider: "native" } }).map((i) => [i.field, i.reason]), [["ask_person.provider", "not_allowed"]]);
   assert.deepEqual(settingsIssues({ fetch_pages: {} }).map((i) => [i.field, i.reason]), [["fetch_pages", "not_allowed"]]);
   assert.deepEqual(settingsIssues({ web_fetch: { provider: "native" } }).map((i) => [i.field, i.reason, i.message]), [["web_fetch.provider", "not_an_option", "web_fetch.provider is one of kernel, parallel"]]);
   assert.deepEqual(settingsIssues({ web_search: { permission: "deny" } }, "definition.tool_settings"), []);
   assert.deepEqual(settingsIssues({ web_search: { permission: "never" } }, "definition.tool_settings").map((i) => [i.field, i.reason, i.message]), [["definition.tool_settings.web_search.permission", "not_an_option", "definition.tool_settings.web_search.permission is one of allow, ask, deny"]]);
-  assert.deepEqual([...TABLE_TOOLS].sort(), [...Object.keys(TOOLS).filter((name) => !name.startsWith("monid.")), ...Object.keys(LEGACY_NAMES)].sort(), "tool-plane's names of the table are tools.ts's, and its legacy names");
+  // The background tools follow bash's setting (tool-gate.ts SHELL_FAMILY): none is a name of the table's settings.
+  const { SHELL_FAMILY } = await import("../dist/tool-gate.js");
+  const heldToAnother = (name) => Object.hasOwn(SHELL_FAMILY, name) && SHELL_FAMILY[name] !== name;
+  assert.deepEqual([...TABLE_TOOLS].sort(), [...Object.keys(TOOLS).filter((name) => !name.startsWith("monid.") && !heldToAnother(name)), ...Object.keys(LEGACY_NAMES)].sort(), "tool-plane's names of the table are tools.ts's, but those held to bash's setting, and its legacy names");
   assert.deepEqual(settingsIssues({ web_search: "parallel" }).map((i) => i.reason), ["wrong_type"]);
   assert.deepEqual(settingsIssues([]).map((i) => [i.field, i.reason]), [["body", "wrong_type"]]);
 });
