@@ -145,7 +145,9 @@ test("a call the gate parks answers its waiting text, marked parked, with the ha
   const parked = [];
   const park = { commit: async (change) => change({}), parked: (id) => parked.push(id) };
   const said = await gateway.call("fake", "add", { a: 1, b: 1 }, { signal: signal(), callId: "c1", park });
-  assert.deepEqual([textOf(said), said.isError, isParked(said), JSON.stringify(said).includes("parked")], [waitingText("mcp:fake/add"), undefined, true, false]);
+  // The gateway's answer carries `parked` for the harness's session; the door never sends it to a harness's own client
+  // (run-adapters mcp-route.test.mjs: "never the host's parked flag").
+  assert.deepEqual([textOf(said), said.isError, isParked(said), said.parked], [waitingText("mcp:fake/add"), undefined, true, true]);
   assert.deepEqual([parks[0] === park, parked], [true, ["c1"]], "the harness's park, told the call parked");
   assert.equal(isParked(await setup(t).then(({ gateway: plain }) => plain.call("fake", "add", { a: 1, b: 1 }, { signal: signal() }))), false);
   assert.equal(fake.log.filter((entry) => entry.method === "tools/call").length, 0);

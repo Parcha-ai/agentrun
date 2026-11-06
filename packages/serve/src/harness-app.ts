@@ -22,6 +22,12 @@
 // stop) after: one that waited for a turn's end when the process died is sent at the next open. Its end is written once
 // the session has it, so a process that dies between the two sends it again rather than never.
 //
+// A call is on the root as soon as the session records its intent (`tool_start`), in its request's entry once that
+// request's cost is in, so the Timeline shows a call while it runs. A call a crash cut off has its intent in the
+// session's records and no result on the root: the next open writes its result from those records (a `never` call's
+// reads interrupted, as the kernel records it), and its call too when the root never got it. A `safe` call cut off runs
+// again and reports itself; the root holds its call once.
+//
 // A host tool call the tool gate parks for a person's approval (tool-gate.ts) ends its turn: no model request leaves
 // after it, and the turn is interrupted once its result is in, then settled as a stopped one is, its end interrupted.
 // The answer's resume is a message of its own, sent as a person's is; a turn the park ended is not resumed at the next
@@ -31,6 +37,8 @@ import { randomUUID } from "node:crypto";
 import type { Context } from "@earendil-works/chord";
 import { AssistantEntry, type Cursor, type JsonObject, ROOT_CONVERSATION_ID, type ToolRegistration, ToolResultEntry, type Tx, UserEntry } from "@earendil-works/pi-durable";
 import { type AdapterEvent, type AdapterSession, type AgentAdapter, type ModelPortEvent, type ModelUsage, modelPortFor, RUNNER_RECORDS, type SessionSpec, type TurnStatus } from "@parcha/agentrun-kernel";
+import { foldSession, INTERRUPTED_TEXT } from "@parcha/agentrun-kernel/kernel";
+import { failureText } from "@parcha/agentrun-kernel/process";
 import type { DoorContext, DoorEvent, DoorHook, DurableRun } from "@parcha/pi-durable-disk";
 import { type ConfineChild, confineOf } from "./adapters.js";
 import { hostTools, type ToolResults } from "./host-tools.js";
@@ -90,6 +98,9 @@ function tokensOf(usage: unknown): { input: number; output: number; cacheRead: n
 /** One request as pi's own assistant message: its content, the model it asked for (the harness's id when that is not
  *  known), and its usage with the cost when it is known. Tokens not known are 0, which pi's timeline reads as unknown.
  *  `error`: a turn that ended on an error, as pi's own reads (the cap's refusal is spend_cap_reached), at $0. */
+/** A recorded tool output's text: a string, or `{ text }` (a tool that answered with images too). */
+const outputText = (output: unknown): string => (typeof output === "string" ? output : output && typeof output === "object" && typeof (output as { text?: unknown }).text === "string" ? (output as { text: string }).text : JSON.stringify(output ?? null));
+
 function assistantMessage(harness: string, model: string | undefined, request: Pending | undefined, text: string, calls: ToolCall[], error?: string) {
   if (error !== undefined) {
     return { role: "assistant", content: [], api: ADAPTER_API, provider: harness, model: harness, stopReason: "error", errorMessage: error, timestamp: now(), usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
@@ -210,6 +221,8 @@ export function adapterRun(
   const PARKED = new Error("the turn ended: a tool call waits for a person's approval");
   // Each call's arguments, by its id, for a park named by tool and arguments (endsTurn).
   const argsOf = new Map<string, unknown>();
+  /** The calls the root holds from an earlier process (read at the open): one run again after a crash is not written twice. */
+  const onRoot = new Set<string>();
   const results: ToolResults = new Map();
   let run: DurableRun | undefined;
   let session: AdapterSession | undefined;
@@ -358,20 +371,51 @@ export function adapterRun(
       // A cost that came in after its answer was written goes in now, not at some later flush, and so does one that came
       // in with no turn running, which no turn's flush would write. If that write fails, the next open writes it from
       // the session's booking, once.
-      if (written.has(event.turn) || turn === undefined) flush().catch(() => undefined);
+      // And content with a call waits for this cost to be written: the call shows from then.
+      if (written.has(event.turn) || turn === undefined || calls.length) flush().catch(() => undefined);
     }
   };
+
+  /** Each call the session recorded (`tool:<id>`) with no result on the root: a process died before it wrote one. Its
+   *  result is written from the session's record of it: its outcome, or for a `never` call with none, interrupted (the
+   *  kernel records that as the session opens again); its call first when the root never got it. A `safe` call with no
+   *  outcome runs again and reports itself. */
+  const settleCutCalls = (records: Parameters<typeof foldSession>[1], resulted: ReadonlySet<string>) =>
+    later(async () => {
+      const writes: ((tx: Tx) => Promise<unknown>)[] = [];
+      for (const effect of foldSession("", records).effectOrder) {
+        const callId = effect.key.startsWith("tool:") ? effect.key.slice("tool:".length) : undefined;
+        if (callId === undefined || resulted.has(callId) || (effect.status !== "completed" && effect.status !== "failed" && !(effect.status === "running" && effect.replay === "never"))) continue;
+        const name = effect.name.replace(/^tool\./, "");
+        const isError = effect.status !== "completed";
+        const said = effect.status === "completed" ? outputText(effect.output) : effect.status === "failed" ? failureText(effect.error ?? { message: "failed" }) : INTERRUPTED_TEXT;
+        if (!onRoot.has(callId)) {
+          const call: ToolCall = { type: "toolCall", id: callId, name, arguments: (effect.input ?? {}) as Record<string, unknown> };
+          writes.push(async (tx) => {
+            await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: REQUEST_CONTINUED, data: { key: spec.key, request: null } });
+            await tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [assistantMessage(harness, undefined, undefined, "", [call]) as never] });
+          });
+          onRoot.add(callId);
+        }
+        writes.push((tx) => tx.appendEntry(ToolResultEntry, ROOT_CONVERSATION_ID, { model: [{ role: "toolResult", toolCallId: callId, toolName: name, content: [{ type: "text", text: said }], isError, timestamp: now() } as never], data: { diagnostics: [] } }));
+      }
+      if (writes.length) await commit(async (tx) => { for (const write of writes) await write(tx); });
+    });
 
   const onEvent = (event: AdapterEvent) => {
     if (event.type === "text") text += event.delta;
     else if (event.type === "tool_start") {
       const call: ToolCall = { type: "toolCall", id: event.callId, name: event.name, arguments: (event.args ?? {}) as Record<string, unknown> };
       argsOf.set(event.callId, event.args ?? {});
+      if (onRoot.has(event.callId)) return;
       // A call of the current request's answer after that answer's entry was written (at its first call's end): written
       // now as the answer's continuation, so its result never comes before it and the next answer never holds it.
       const request = current;
-      if (text || calls.length || request === undefined || !answered.has(request)) calls.push(call);
-      else {
+      // Written as soon as its request's cost is in (now, or when it comes in), so the call shows while it runs.
+      if (text || calls.length || request === undefined || !answered.has(request)) {
+        calls.push(call);
+        void flush();
+      } else {
         later(() =>
           commit(async (tx) => {
             await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: REQUEST_CONTINUED, data: { key: spec.key, request } });
@@ -597,6 +641,8 @@ export function adapterRun(
       // The person's messages on the root: the newest one's entry id, and how many, for the run's stop record.
       let lastUser: number | undefined;
       let users = 0;
+      // The calls whose result the root holds.
+      const resulted = new Set<string>();
       for (let cursor: Cursor | undefined; root; ) {
         const page = await root.entries({ order: "ascending" }, 500, cursor, context);
         for (const entry of page.items) {
@@ -609,6 +655,8 @@ export function adapterRun(
             users += 1;
             lastUser = Number(entry.id);
           }
+          if (message?.api === ADAPTER_API) for (const block of ((message as { content?: unknown }).content as { type?: unknown; id?: unknown }[] | undefined) ?? []) if (block?.type === "toolCall" && typeof block.id === "string") onRoot.add(block.id);
+          if (message?.role === "toolResult" && typeof (message as { toolCallId?: unknown }).toolCallId === "string") resulted.add((message as { toolCallId: string }).toolCallId);
           if (data?.key !== spec.key) continue;
           if (entry.kind === BOOKED && typeof data.request === "number") {
             written.add(data.request);
@@ -670,6 +718,7 @@ export function adapterRun(
       // Each request the session booked and the root does not have, or has at unknown cost only: written now, once.
       for (const [request, usage] of inSession(await writer.read()).booked) if (!written.has(request) || (unpriced.has(request) && !priced.has(request))) costed.push({ request, usage });
       await flush();
+      await settleCutCalls(records, resulted);
       // The calls that wait for a person's approval, read before any turn goes on.
       await gate?.load(durable, context, coding, extra);
       // The park every gated call of the run's takes, built once: the host tools' here, and the MCP gateway's, which takes

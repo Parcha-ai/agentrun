@@ -387,7 +387,7 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
           if (error instanceof CannotPark) return cannot;
           return said(`The ${name} call was not sent: the tool gate failed (${String((error as Error)?.message ?? error).slice(0, 200)}).`, true);
         }
-        if (entered?.parked) return park === given ? Object.assign(said(entered.text), { [PARKED]: true }) : cannot;
+        if (entered?.parked) return park === given ? { ...said(entered.text), parked: true } : cannot;
         if (entered) return said(entered.text, entered.isError);
         const result = await sent(server, tool, args, id, signal);
         const text = result.content.map((block) => block.text).join("\n\n");
@@ -400,12 +400,12 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
   return gateway;
 }
 
-const PARKED = Symbol("agentrun.mcp.parked");
 /** A park refused: the call came from a harness that cannot end its turn on a parked call. */
 class CannotPark extends Error {}
-/** Whether the gateway's answer is a call the gate parked for a person's approval: the harness ends the turn on it. A
- *  symbol, so it never reaches a harness's MCP client in the answer's JSON. */
-export const isParked = (result: McpCallResult): boolean => (result as { [PARKED]?: true })[PARKED] === true;
+/** Whether the gateway's answer is a call the gate parked for a person's approval: the harness ends the turn on it, and
+ *  a harness's session records the call as one that did not run (McpCallResult's `parked`). The door that serves a
+ *  harness's own MCP client sends the answer's content and error only. */
+export const isParked = (result: McpCallResult): boolean => result.parked === true;
 
 /** pi's tools for the gateway's servers: each granted tool under its wire name (`mcp__<server>__<tool>`), with the pinned
  *  description and schema, never run again after a crash. */
