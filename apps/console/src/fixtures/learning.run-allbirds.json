@@ -1,14 +1,14 @@
 {
   "request": {
     "method": "GET",
-    "path": "/runs/01a1ada4-8d4b-71c8-903b-27d91ed77b83"
+    "path": "/runs/01a1addb-708f-7818-b34c-1ed897acdfa0"
   },
   "status": 200,
   "headers": {
     "content-type": "application/json"
   },
   "body": {
-    "run_id": "01a1ada4-8d4b-71c8-903b-27d91ed77b83",
+    "run_id": "01a1addb-708f-7818-b34c-1ed897acdfa0",
     "agent_id": "refund-finder",
     "agent_version": 1,
     "revision": "c5556e160672df38c594257f29053130d928130c0c4c850337bc5254db369b6f",
@@ -20,9 +20,9 @@
     "place": {
       "mode": "runner"
     },
-    "created_at": "2026-11-05T21:36:44.887Z",
-    "updated_at": "2026-11-05T21:36:47.773Z",
-    "ended_at": "2026-11-05T21:36:47.749Z",
+    "created_at": "2026-11-05T22:36:42.014Z",
+    "updated_at": "2026-11-05T22:36:44.932Z",
+    "ended_at": "2026-11-05T22:36:44.905Z",
     "result": {
       "output": null,
       "final_answer": "**Refund policy URL:** https://www.allbirds.com/policies/refund-policy\n\n- **Return window:** 30 days from delivery, unworn with tags on.\n- **Return shipping:** free for exchanges; a $7.50 label fee is taken from refunds.\n\nFound on the first try: Shopify stores keep the policy at /policies/refund-policy."
@@ -43,7 +43,17 @@
       "state": "dropped",
       "reason": "empty",
       "detail": "Nothing new to remember from this run.",
-      "at": "2026-11-05T21:36:47.772Z"
+      "at": "2026-11-05T22:36:44.932Z",
+      "given": [
+        {
+          "file": "keep-it-to-three-lines.md",
+          "name": "Keep the summary to three lines"
+        },
+        {
+          "file": "try-policies-refund-policy-first.md",
+          "name": "Try /policies/refund-policy first"
+        }
+      ]
     },
     "poll_after_ms": 0,
     "last_progress_at": null
