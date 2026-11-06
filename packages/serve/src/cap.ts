@@ -1099,22 +1099,24 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
    *  (markResponseBegan: its usage is what had streamed, not what the provider can have billed), or that failed with no
    *  answer, at `worst`, what the cap held for it; each as spentIn reads its end mark. Without a figure (a deferred
    *  response) it is unknown, as is a cost that is not a number, from then on. */
-  const count = (answer: Promise<AssistantMessage>, worst?: number, stopped?: Stopped, attempts?: readonly Attempt[]) => {
+  const count = (answer: Promise<AssistantMessage>, turn: boolean, worst?: number, stopped?: Stopped, attempts?: readonly Attempt[]) => {
     const plus = (sum: number | null, cost: unknown) => (sum !== null && typeof cost === "number" && Number.isFinite(cost) ? sum + cost : null);
     const add = (cost: unknown) => void (joined ? (sidesSpent = plus(sidesSpent, cost)) : (spent = plus(spent, cost)));
     // One rule (bookRequest), from how the request ended (piEnded) as its marks read it too.
     const at = (message: AssistantMessage) => message.stopReason === "aborted" ? (stopped && !anyAttemptLost(attempts) ? stopped(message) : worst)
       : bookRequest(piEnded(message, responseBegan.has(message), attempts), worst === undefined ? {} : { hold: worst }).usd;
-    // A priced answer of the run's own model: the wrap-up's typical cost counts it.
+    // A priced turn answer of the run's own model: the wrap-up's typical cost counts it, as costsIn reads it again (its
+    // pi.assistant entries). Never a compaction summary's or a native search's request on the same model (completeSimple
+    // calls, `turn` false): no pi.assistant entry keeps them, so a process opened again would count without them.
     const priced = (message: AssistantMessage) => {
       const total = message.usage?.cost?.total;
-      if (wrapUp && message.model === wrapUp.model && message.stopReason !== "error" && message.stopReason !== "aborted" && typeof total === "number" && Number.isFinite(total) && total > 0) wrapUp.costs.push(total);
+      if (wrapUp && turn && message.model === wrapUp.model && message.stopReason !== "error" && message.stopReason !== "aborted" && typeof total === "number" && Number.isFinite(total) && total > 0) wrapUp.costs.push(total);
     };
     return answer.then((message) => (endedNow(message), priced(message), add(at(message))), () => add(worst));
   };
   /** Sends a request judged to fit at `worst` (its hold), holding that until `answer` settles: here, or on another harness
    *  where its check sees it (`joined`: paidHolds). */
-  const admit = (worst: number, stopped: Stopped, answer: () => Promise<AssistantMessage>, attempts?: readonly Attempt[]): Promise<AssistantMessage> => {
+  const admit = (turn: boolean, worst: number, stopped: Stopped, answer: () => Promise<AssistantMessage>, attempts?: readonly Attempt[]): Promise<AssistantMessage> => {
     const hold = { usd: worst };
     if (joined) paidOpen.add(hold);
     else held += worst;
@@ -1126,7 +1128,7 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
       release();
       throw error;
     }
-    void count(answered, worst, stopped, attempts).finally(release);
+    void count(answered, turn, worst, stopped, attempts).finally(release);
     return answered;
   };
   // A paid tool's check reads the spend, and the requests in flight held at their worst case apart from it (it adds the
@@ -1147,7 +1149,7 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
       if ("hold" in judged) {
         let events: AssistantMessageEventStream | undefined;
         const attempts = attemptsFor(model);
-        admit(judged.hold, judged.stopped, () => (events = send(model, judged.context ?? context, carrying(judged.options ?? options, judged, attempts))).result(), attempts);
+        admit(true, judged.hold, judged.stopped, () => (events = send(model, judged.context ?? context, carrying(judged.options ?? options, judged, attempts))).result(), attempts);
         return events!;
       }
       const refused = createAssistantMessageEventStream();
@@ -1168,7 +1170,7 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
       const judged = judge(model, context, options, simpleCall, false);
       if (!("hold" in judged)) return Promise.resolve(refusal(model, judged.why));
       const attempts = attemptsFor(model);
-      return admit(judged.hold, judged.stopped, () => send(model, judged.context ?? context, carrying(judged.options ?? options, judged, attempts)), attempts);
+      return admit(false, judged.hold, judged.stopped, () => send(model, judged.context ?? context, carrying(judged.options ?? options, judged, attempts)), attempts);
     };
   const guarded: Record<PropertyKey, unknown> = {
     stream: stream(models.stream.bind(models) as never, false),
@@ -1178,12 +1180,12 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
     // A deferred response was admitted when it was sent; what it cost is counted when it is fetched.
     streamDeferred: (...args: Parameters<Models["streamDeferred"]>) => {
       const events = models.streamDeferred(...args);
-      void count(events.result());
+      void count(events.result(), true);
       return events;
     },
     fetchDeferred: (...args: Parameters<Models["fetchDeferred"]>) => {
       const answer = models.fetchDeferred(...args);
-      void count(answer);
+      void count(answer, true);
       return answer;
     },
   };

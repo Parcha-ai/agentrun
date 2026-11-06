@@ -55,3 +55,44 @@ test("the typical cost after a restart is the one the live process counted: a re
   assert.deepEqual(ownCosts(records), [0.02, 0.03], "the costs the live process pushed, in order");
   assert.equal(call("typicalCost", ownCosts(records), 1), 0.03, "and the same typical cost");
 });
+
+test("pi: the typical cost a live process counts is the one a process opened again reads: the run's own model's turn answers only, never a compaction summary's or a native search's request on the same model", async (t) => {
+  const { createAssistantMessageEventStream } = await import("@earendil-works/pi-ai");
+  const { DatabaseSync } = await import("node:sqlite");
+  const { mkdtempSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { REQUEST_COST } = await import("@parcha/pi-durable-agent/timeline");
+  const usage = (total) => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total } });
+  const answer = (total) => ({ role: "assistant", content: [{ type: "text", text: "42" }], api: "fake", provider: "fake", model: "m", usage: usage(total), stopReason: "stop", timestamp: 0 });
+  // A Models that answers each request at the next figure of `costs`, in order.
+  const costs = [0.02, 0.05, 0.01];
+  const send = () => {
+    const events = createAssistantMessageEventStream();
+    const message = answer(costs.shift());
+    queueMicrotask(() => (events.push({ type: "done", reason: "stop", message }), events.end(message)));
+    return events;
+  };
+  const models = { stream: send, streamSimple: send, complete: (...a) => send(...a).result(), completeSimple: (...a) => send(...a).result(), streamDeferred: send, fetchDeferred: (...a) => send(...a).result() };
+  const model = { id: "m", name: "m", api: "fake", provider: "fake", baseUrl: "", reasoning: false, input: ["text"], cost: { input: 0, output: 1, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128_000, maxTokens: 1_000 };
+  const context = { messages: [{ role: "user", content: "What is six times seven?", timestamp: 0 }] };
+  const wrapUp = { model: "m", costs: [], sent: false, record: () => {} };
+  const capped = await cap.capModels(models, 10, 0, { wrapUp });
+  // The turn's answer ($0.02), then on the same model a compaction summary ($0.05) and a native web search ($0.01), both
+  // completeSimple calls with no pi.assistant entry of their own.
+  const turn = await capped.streamSimple(model, context).result();
+  await capped.completeSimple(model, context);
+  await capped.completeSimple(model, context);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  // The store as pi keeps that run: the turn's answer as pi.assistant, the summary's cost as a REQUEST_COST.
+  const dir = mkdtempSync(join(tmpdir(), "cap-wrapup-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const file = join(dir, "run.sqlite");
+  const db = new DatabaseSync(file);
+  db.exec("CREATE TABLE entries (id INTEGER PRIMARY KEY, conversation_id INTEGER NOT NULL, record TEXT NOT NULL)");
+  const put = db.prepare("INSERT INTO entries (conversation_id, record) VALUES (1, ?)");
+  for (const entry of [{ kind: "pi.user", model: [context.messages[0]] }, { kind: "pi.assistant", model: [turn] }, { kind: REQUEST_COST, data: { request: "compaction", usd: 0.05 } }]) put.run(JSON.stringify(entry));
+  db.close();
+  assert.deepEqual(cap.costsIn(file, "m"), [0.02], "a process opened again reads the turn's answer");
+  assert.deepEqual(wrapUp.costs, cap.costsIn(file, "m"), "and the live process counted the same: no summary, no search");
+});

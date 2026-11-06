@@ -147,3 +147,18 @@ test("claude-agent on the faux harness: a request that fits what is left of the 
   await letGo(data, runId);
   assert.deepEqual(notesOf(data, runId), [], "the answer went without the note");
 });
+
+test("claude-agent on the faux harness: a side call admitted between the note's take and the admission of the request carrying it leaves the note told once, with one row", { timeout: 180_000 }, async (t) => {
+  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS, faux: OUTPUT_PRICED });
+  assert.equal((await api("POST", "/agents", agent("side-h", { harness: "claude-agent", instructions: "Wrap up with a side call in between." }))).status, 201);
+  const started = await api("POST", "/agents/side-h/runs", { input: { content: "go" }, max_cost_usd: 1 });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  const runId = started.body.run_id;
+  await follow(api, runId, ["completed", "failed", "input_required"], { deadlineMs: 60_000 });
+  const run = (await api("GET", `/runs/${runId}`)).body;
+  assert.deepEqual([run.status, run.result?.final_answer], ["completed", "Done."], JSON.stringify(run.pending ?? run.error));
+  // $0.40 spent: $0.60 left, under 3 x $0.40, as request 1 takes the note; the side call's admission comes before its own.
+  assert.deepEqual((await rowsOf(api, runId)).map((row) => row.text), [WRAP_UP("$0.60")], "one row");
+  await letGo(data, runId);
+  assert.deepEqual(notesOf(data, runId), [WRAP_UP("$0.60")], "the note went once: request 2 did not take it again");
+});

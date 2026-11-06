@@ -37,7 +37,10 @@ export function memorySessionStore(): SessionStore & { keys(): string[] } {
  *  bound its body was measured at (`inputTokensMax`; default the prompt's UTF-8 bytes), and a file it waits for once it
  *  is admitted, before it answers (`until`): a request held in flight until a test lets it go. `bookWhen`: its reply is
  *  shown at once and its cost booked only once that file exists, as a provider's usage can come after its answer. */
-export type FauxRequest = { tokens?: { input: number; output: number; cacheRead?: number; cacheWrite?: number }; inputTokensMax?: number; until?: string; bookWhen?: string };
+/** `sideAfterNote`: a client's side call on another model (a title, a summary: ModelRequest.side) admitted and answered
+ *  at `usd` after this request took its host's note and before this request is admitted, as a Claude Code side call can
+ *  be while the model proxy reads the credential between the two. */
+export type FauxRequest = { tokens?: { input: number; output: number; cacheRead?: number; cacheWrite?: number }; inputTokensMax?: number; until?: string; bookWhen?: string; sideAfterNote?: { usd: number } };
 
 /** One model request of the faux harness, and what its reply does. */
 export type FauxAction =
@@ -156,6 +159,10 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
             // A note its host has for this request, taken before it is measured, as the model proxy takes it: its bytes count
             // in what the request is admitted at, and it is filed as sent once the request is admitted carrying it.
             const note = io.models.note?.("faux");
+            if ("sideAfterNote" in action && action.sideAfterNote) {
+              const side = await io.models.beforeRequest({ model: "faux-small", side: true, inputTokensMax: 100 });
+              await io.models.afterRequest({ input: 10, output: 5, usd: action.sideAfterNote.usd }, side || undefined);
+            }
             const ticket = await io.models.beforeRequest({ model: "faux", inputTokensMax: note ? measured + Buffer.byteLength(note, "utf8") : measured, ...(note ? { noted: true as const, inputTokensMaxWithoutNote: measured } : {}) });
             if (note && !ticket?.noteDropped) await append(FAUX_RECORDS.note, { text: note });
             if ("cut" in action) { stats.requests += 1; return await hang(signal); }
