@@ -1703,17 +1703,23 @@ typed answers and their probabilities.
   for Jev through OpenRouter, and so does a model gateway on OpenRouter: with `AGENT_MODEL_BASE_URL` on the host
   `openrouter.ai` and neither key set, Jev runs on `AGENT_MODEL_API_KEY`.
 - Parallel Decisions, through `@parcha/agentrun-decisions`, answers a node that says `provider: "parallel"`, with web
-  citations as its evidence. Set `PARALLEL_API_KEY`. Each request is booked at Parallel's list price as an estimate,
-  and one whose outcome was lost after sending is never sent again: the run escalates it as interrupted.
+  citations as its evidence. It runs on one of two routes. With `PARALLEL_API_KEY` set, on Parallel's own API: each
+  request is booked at Parallel's list price as an estimate. Without it, on Parallel's model through OpenRouter,
+  `parallel/decisions-fast`, on the OpenRouter key (below): only an OpenRouter key is needed. Its citations (OpenRouter's
+  `url_citation` annotations) are the same evidence, and its cost is the one OpenRouter reports. A request whose outcome
+  was lost after sending is never sent again on either route: the run escalates it as interrupted. Capabilities say which
+  route it runs on (`route: "parallel"` or `"openrouter"`).
 - OpenRouter's Decisions models answer a node that says `provider: "openrouter"` and names its model in `model`
   (`liquid/d1`, `perplexity/pplx-decider-v1.2`, `cloudflare/clef`, `typesafe/jev-1.14`). They run on the OpenRouter key
   Jev's OpenRouter route reads (`OPENROUTER_API_KEY`, else `AGENT_MODEL_API_KEY` with `AGENT_MODEL_BASE_URL` on
   openrouter.ai), handed to the run's process on the decision descriptor as Jev's is. That key is also the model
-  gateway's, which a run's process holds. Images to them are experimental.
+  gateway's, which a run's process holds. Images to them are experimental. A model that cites the web returns
+  `url_citation` annotations, which become the node's evidence. A cost OpenRouter reports above 0 is booked; 0 (a model its
+  catalog prices at 0) or none is unknown, never $0.
 - A decision node's `images` are files of the run's `work/`, such as the pages `pdf_pages` draws: the run's process
   reads them and sends them with the request. The receipt keeps each image's SHA-256, never its bytes.
 - `GET /capabilities` lists the providers in `workflows.decisions.providers` (`[{id: "jev" | "parallel" | "openrouter", available,
-  reason?, note?}]`), and `runJudge` is among `workflows.adapters` once any of them runs here. On the OpenRouter route,
+  reason?, note?, route?}]`, `route` on parallel), and `runJudge` is among `workflows.adapters` once any of them runs here. On the OpenRouter route,
   jev's `note` names the variable Jev runs on (`OPENROUTER_API_KEY` or `AGENT_MODEL_API_KEY`) and says that it is the
   model gateway's key.
 - With no key for a provider a workflow's nodes name, the workflow saves with a `not_set_up_here` warning on

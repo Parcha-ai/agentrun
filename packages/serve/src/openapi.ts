@@ -1549,7 +1549,8 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     },
   },
   // decisions/2: the providers took on parallel (and, here, openrouter). A client that validates against decisions/1 refuses it, so the
-  // widening is a mark of its own.
+  // widening is a mark of its own. decisions/3: a provider takes `route` (parallel's, on Parallel's API or OpenRouter), which a
+  // client that validates against decisions/2 refuses.
   "Capabilities/places": {
     default_place: {
       oneOf: [
@@ -1567,9 +1568,9 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       type: "object", additionalProperties: false, required: ["providers"],
       description: "The decision providers a workflow's typed questions (judge, pick, sift, route, ask) run on, and whether this server runs each: when not, why (`reason`); when it runs in a way an operator should know of, a `note`. `runJudge` is among `adapters` once one runs.",
       properties: {
-        providers: { type: "array", items: { type: "object", additionalProperties: false, required: ["id", "available"], properties: { id: { enum: ["jev", "parallel", "openrouter"] }, available: { type: "boolean" }, reason: { type: "string" }, note: { type: "string" } } } },
+        providers: { type: "array", items: { type: "object", additionalProperties: false, required: ["id", "available"], properties: { id: { enum: ["jev", "parallel", "openrouter"] }, available: { type: "boolean" }, reason: { type: "string" }, note: { type: "string" }, route: { enum: ["parallel", "openrouter"], description: "parallel's route here: Parallel's own API (PARALLEL_API_KEY), else Parallel's model on OpenRouter (parallel/decisions-fast, on the OpenRouter key)." } } } },
       },
-      "x-agentrun-serve": "decisions/2",
+      "x-agentrun-serve": "decisions/3",
     },
   },
   "Capabilities/models": {
