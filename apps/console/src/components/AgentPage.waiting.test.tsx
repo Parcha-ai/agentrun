@@ -74,4 +74,36 @@ describe("AgentPage, learned items waiting for the owner's OK", () => {
     expect(p.asked.indexOf("approve")).toBeLessThan(p.asked.lastIndexOf("agent"));
     expect(p.badge()).toBeNull();
   });
+
+  it("two approves in a row: an older read of the agent landing last never puts back a count the newer one cleared", async () => {
+    const other: LearningNote = { ...waiting, file: "skip-b.md", name: "Skip b.com", etag: '"card-skip"', text: waiting.text.replace("Trust acme.com", "Skip b.com") } as LearningNote;
+    const left = new Set([waiting.file, other.file]);
+    // GET /agents/{id} answers, in turn: the page's read (2 wait), the read after the first approve (1 waits: held until
+    // released, so it lands last), the read after the second (none wait).
+    let release!: () => void;
+    const held = new Promise<void>((r) => { release = r; });
+    const answers = [async () => agentWith({ pending: 2 }), async () => { await held; return agentWith({ pending: 1 }); }, async () => agentWith({ pending: 0 })];
+    const v2 = {
+      getAgent: async () => ({ agent: await answers.shift()!(), etag: null }),
+      listAgentRuns: async () => ({ runs: [], next_cursor: null }),
+      statsOver: async () => ({}),
+      capabilities: async () => ({ learning: { pending: true, approve: true } }),
+      agentLearning: async () => view([waiting, other].filter((n) => left.has(n.file))),
+      approveNote: async (_id: string, file: string) => { left.delete(file); return { note: "", etag: '"v2"' }; },
+    };
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(AgentPage, { v2: v2 as never, agentId: "qa-learn", go: () => {}, tab: "learning", learning: "on" } as never)));
+    await settle();
+    const badge = () => [...host.querySelectorAll('[role="tab"]')].find((t) => /learning/i.test(t.textContent ?? ""))?.querySelector("[aria-label$='wait for your OK'], [aria-label$='waits for your OK']");
+    const click = async (label: string) => { await act(async () => { (host.querySelector(`button[aria-label="${label}"]`) as HTMLButtonElement).click(); }); await settle(); };
+    expect(badge()?.textContent).toBe("2");
+    await click("Approve Trust acme.com");
+    await click("Approve Skip b.com");
+    expect(badge()).toBeNull();
+    // The first approve's read lands now, after the second's.
+    await act(async () => { release(); });
+    await settle();
+    expect(badge()).toBeNull();
+  });
 });
