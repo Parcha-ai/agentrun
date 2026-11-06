@@ -616,3 +616,42 @@ test("provider.attach checks the spec attach reads back: the network and image c
 		assert.match(reasons(report)["provider.attach"], words, JSON.stringify(attachSpec));
 	}
 });
+
+test("provider.network-switch-allow (Full, network:allow) checks an allowlist change on a provider that declares none and allow, not open", async () => {
+	const allowCase = conformanceCases.find((c) => c.id === "provider.network-switch-allow");
+	assert.ok(allowCase, "a provider.network-switch-allow case");
+	assert.equal(allowCase.level, "full");
+	assert.deepEqual(allowCase.needs, ["network:allow"]);
+	const fake = fakeComputers({ network: ["none", "allow"], networkSwitches: true });
+	const cases = [pass("health.ping"), ...byId("provider.network-switch", "provider.network-switch-allow")];
+	const report = await runConformance(fake.provider, { image: IMAGE, cases });
+	assert.deepEqual(statuses(report), { "health.ping": "pass", "provider.network-switch": "skip", "provider.network-switch-allow": "pass" }, JSON.stringify(reasons(report)));
+	const shared = fake.made[0].name;
+	const allowed = asked(fake).filter(([, policy]) => typeof policy === "object");
+	assert.ok(allowed.length > 0, "the Full case asked for the allowlist");
+	assert.ok(allowed.every(([name]) => name !== shared), `the run's shared computer ${shared} was asked for the allowlist: ${JSON.stringify(allowed)}`);
+	assert.deepEqual(fake.alive(), []);
+	const fixed = await runConformance(fakeComputers({ network: ["none", "allow"] }).provider, { image: IMAGE, cases: byId("provider.network-switch-allow") });
+	assert.equal(statuses(fixed)["provider.network-switch-allow"], "pass", "a provider whose network is fixed at create refuses truthfully");
+	const lying = fakeComputers({ network: ["none", "allow"] });
+	lying.provider.network = async (_ref, policy) => ({ ok: true, value: policy ?? "none" });
+	const lied = await runConformance(lying.provider, { image: IMAGE, cases: byId("provider.network-switch-allow") });
+	assert.equal(statuses(lied)["provider.network-switch-allow"], "fail");
+	assert.match(reasons(lied)["provider.network-switch-allow"], /read back after it/);
+});
+
+test("a create still pending when the cleanup bound runs out is named in cleanup.errors, and Core fails", async () => {
+	const fake = fakeComputers({ createHangs: true, lifetime: "vendor" });
+	const report = await ends(
+		runConformance(fake.provider, {
+			image: IMAGE,
+			caseTimeoutMs: 300,
+			cleanupTimeoutMs: 300,
+			cases: [pass("provider.leaves", { computer: "none", run: async (t) => void t.attempt(t.spec()) })],
+		}),
+	);
+	assert.equal(statuses(report)["provider.leaves"], "pass");
+	assert.ok(report.cleanup.errors.some((error) => /create \(provider\.leaves\) did not settle within 0\.3 s/.test(error)), JSON.stringify(report.cleanup.errors));
+	assert.equal(report.core, "fail", "a run whose cleanup is incomplete is not a Core pass");
+	assert.match(formatReport(report), /cleanup ✗ could not show nothing was left/);
+});
