@@ -15,7 +15,7 @@ import { homedir } from "node:os";
 import { type NewRevision, type Revision, runDirIn, type RunOrigin, STORE_FILE } from "@parcha/pi-durable-agent";
 import { agentView, Agents, etagOf, homeBusy, revisionView, storeBusy, type AgentEntry } from "./agents.js";
 import { WORKFLOW_ADAPTERS } from "./app.js";
-import { DECISION_ADAPTER, decisionsOf, FAUX_JEV_ENV, FAUX_OPENROUTER_ENV, FAUX_PARALLEL_ENV } from "./decisions.js";
+import { DECISION_ADAPTER, decisionsOf, FAUX_JEV_ENV, FAUX_OPENROUTER_ENV, FAUX_PARALLEL_ENV, fauxFetch } from "./decisions.js";
 import { FAUX_WEB_ENV } from "./fetch-page.js";
 import { FAUX_MONID_ENV } from "./monid.js";
 import { FAUX_EXA_ENV } from "./exa-keyless.js";
@@ -909,6 +909,13 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     log?.(logLine("claude_installed", { ms, dir: harnessesOf(data) }));
     void probe("claude_installed").catch(() => undefined);
   });
+  // A capped start prices each OpenRouter Decisions model a workflow pins (runnable.ts) from OpenRouter's public catalog,
+  // read once for this server (and again after a read that failed), through the faux one under --faux.
+  let pricing: Promise<{ priceOf(model: string): Promise<unknown> }> | undefined;
+  const decisionPrice = async (model: string): Promise<unknown> => (await (pricing ??= (async () => {
+    const [{ openrouterProvider }, faux] = await Promise.all([import("@parcha/agentrun-decisions"), fauxFetch(fauxEnvOf(options), FAUX_OPENROUTER_ENV)]);
+    return openrouterProvider(faux ? { fetch: faux } : {});
+  })())).priceOf(model);
   const runs = new Runs({ ...(claudeInstall ? { claudeInstall } : {}), dockerAllow: boxNetwork.allow, ...(egress?.volume ? { dockerVolume: egress.volume } : {}), agents, token, storedKeys, mcpServers: mcpSource, doorTokenFile, doorToken, learning, learningBudget, ...(documents ? { documents: resolve(documents) } : {}), fauxEnv: fauxEnvOf(options), toolSettings: () => settings.get(), ...(runBoxes ? { runBoxes } : {}), ...(remoteBoxes ? { remoteBoxes } : {}), ...(vmBoxes && vmRelayHalf ? { vmBoxes, vmLimits, vmRelay: vmRelayHalf } : {}), ...(remoteBoxes && daytonaApi(env) ? { remoteApi: daytonaApi(env)! } : {}), ...(remoteBoxes ? { boxAllow, onNoBoxList } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(options.openTimeoutMs ? { openTimeoutMs: options.openTimeoutMs } : {}), ...(options.faux && options.fauxHandedNonce ? { fauxHandedNonce: options.fauxHandedNonce } : {}), ...(options.reflectTimeoutMs ? { reflectTimeoutMs: options.reflectTimeoutMs } : {}), ...(options.gradeTimeoutMs ? { gradeTimeoutMs: options.gradeTimeoutMs } : {}), ...(options.gradeModel ? { gradeModel: options.gradeModel } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}), notify: (event, run, marker) => webhooks.emit(event, run, marker), ownSecrets: () => triggerSecrets?.values() ?? [], signIns, approvers: options.accounts === true });
   const daytona = daytonaApi(env);
   const relay = (remoteBoxes && daytona) || vmRelayHalf ? await startBoxRelay({ root: data, tokenOf: (id) => runs.relayToken(id), ...(remoteBoxes && daytona ? daytona : {}), ...(vmRelayHalf ? { vm: vmRelayHalf } : {}), serves: (id) => runs.servesBox(id), ensure: (id) => runs.ensureBox(id) }) : undefined;
@@ -1243,7 +1250,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
    *  does not have yet. `capped`: the run has a spend cap, which a web tool's resolution reads (tool-plane.ts). */
   async function runnable(revision: Revision, place: Place, { capped = false }: { capped?: boolean } = {}): Promise<void> {
     const shape = { ...shapeOf(revision), place, ...(revision.body.place ? {} : { unnamed: true as const }) };
-    const blockers = await blockersOf(env, shape, settings.get(), { capped, boxes: boxOffers, offers, mcp: mcpTools });
+    const blockers = await blockersOf(env, shape, settings.get(), { capped, boxes: boxOffers, offers, mcp: mcpTools, decisionPrice });
     if (!blockers.length) return;
     const message = blockers.map((b) => b.message).join(" ");
     // Each blocker as a 422 names its issue: its field, reason and message, and the fix when it has one.
@@ -1282,7 +1289,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     if ((revision.maxCostUsd ?? 0) > 0) {
       const key = (b: Blocker) => `${b.field}\n${b.message}`;
       const plain = new Set((await blockersOf(env, shape, {}, { boxes: boxOffers, offers, mcp: mcpTools })).map(key));
-      const capped = await blockersOf(env, shape, {}, { capped: true, boxes: boxOffers, offers, mcp: mcpTools });
+      const capped = await blockersOf(env, shape, {}, { capped: true, boxes: boxOffers, offers, mcp: mcpTools, decisionPrice });
       // A model with no price (`unpriced`) is a setting this host fixes (AGENT_MODEL_PRICE): a warning, as it is; the
       // agent saves and updates, and only a run under the cap is refused (409). A tool's pick a cap rules out refuses it.
       const added = capped.filter((b) => !plain.has(key(b)));

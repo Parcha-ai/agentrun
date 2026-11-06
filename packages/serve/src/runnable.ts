@@ -3,11 +3,11 @@
 // no instructions, a workflow needing what it does not give) refuses the save, 422 by field; one a setting fixes (a
 // provider's key, a default model, a tier's model) saves as a warning. Either refuses a run, 409 agent_not_runnable.
 import { WORKFLOW_ADAPTERS } from "./app.js";
-import { DECISION_ADAPTER, providerMissing, providersNamed } from "./decisions.js";
+import { DECISION_ADAPTER, decisionModelsNamed, providerMissing, providersNamed } from "./decisions.js";
 import { REPLAY } from "./host-tools.js";
 import { type InputIssue, sentence } from "./errors.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, type HarnessCapability, harnessOffers } from "./harness.js";
-import { chooseModel, llmTiers, type ModelRef, nodeTiers, unpricedModels, workflowNodes } from "./model.js";
+import { chooseModel, llmTiers, MODEL_NODES, type ModelRef, nodeTiers, type Tier, unpricedModels, workflowNodes } from "./model.js";
 import type { BoxOffer } from "./boxes.js";
 import { boxAvailability, newAgentPlace, placeFix, RUN_BOXES } from "./place.js";
 import { allows, BOUND_TOOLS, CALL_TOOLS, grantedTools, missingEnv, NODE_TOOLS, toolOf, workflowTools } from "./tools.js";
@@ -61,6 +61,8 @@ export async function harnessModel(env: NodeJS.ProcessEnv, harness: string, ref:
 
 /** The reason a warning gives: the revision runs once this host has what it names. */
 export const NOT_SET_UP = "not_set_up_here";
+/** How a capped run on a model with no price is made to run: the price, where AgentRun starts, or no cap. */
+const PRICE_FIX = "Set AGENT_MODEL_PRICE (USD per million input,output,cacheRead tokens) where AgentRun starts, or run without a spend cap.";
 
 /** Set to 1 (`--allow-code-nodes`), this server runs workflows' `code` nodes: in the run's process, through the DSL's
  *  `new Function` transform, which is no sandbox. Off by default. */
@@ -74,7 +76,7 @@ const codexToolCheck = () => (codexCheck ??= import("@parcha/agentrun-harness-co
 /** What keeps `revision` from running in `env` under the server's tool `settings` (tool-plane.ts). `boxes`: what this
  *  server's box registry set up at its start (boxes.ts); none, every box is unavailable. `offers`: the harnesses' offers
  *  the server already holds (its reading); none given, they are probed here. */
-export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape, settings: ToolSettingsMap = {}, { capped = false, boxes = [], offers, mcp }: { capped?: boolean; boxes?: readonly BoxOffer[]; offers?: readonly HarnessCapability[]; mcp?: (server: string) => readonly (McpTool & { grantable?: false; reason?: string })[] | undefined } = {}): Promise<Blocker[]> {
+export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape, settings: ToolSettingsMap = {}, { capped = false, boxes = [], offers, mcp, decisionPrice }: { capped?: boolean; boxes?: readonly BoxOffer[]; offers?: readonly HarnessCapability[]; mcp?: (server: string) => readonly (McpTool & { grantable?: false; reason?: string })[] | undefined; decisionPrice?: (model: string) => Promise<unknown> } = {}): Promise<Blocker[]> {
   const out: Blocker[] = [];
   /** A web tool its run would resolve unavailable (tool-plane.ts): a warning at save, a 409 at a run, never another
    *  provider in its place. One set to deny is not: its run starts, and the gate refuses each call. */
@@ -174,7 +176,7 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
     else if ("refused" in resolved) out.push({ field: revision.model ? "definition.model" : "definition.harness", reason: NOT_SET_UP, message: resolved.refused, host: true, harness });
     // Under a cap, a model serve has no price for (unpricedModels: a gateway id no price names and the catalog does not
     // list) cannot be kept to it: the run is refused now, never started and refused at its first request.
-    else if (capped) for (const id of await unpricedModels(env, revision.model, ["default"], harness)) out.push({ field: "definition.model", reason: NOT_SET_UP, message: `The model ${id} has no price here, so a run's spend cap cannot be kept on it.`, fix: "Set AGENT_MODEL_PRICE (USD per million input,output,cacheRead tokens) where AgentRun starts, or run without a spend cap.", host: true, unpriced: true });
+    else if (capped) for (const id of await unpricedModels(env, revision.model, ["default"], harness)) out.push({ field: "definition.model", reason: NOT_SET_UP, message: `The model ${id} has no price here, so a run's spend cap cannot be kept on it.`, fix: PRICE_FIX, host: true, unpriced: true });
     return out;
   }
   // Every MCP tool a workflow grants, at its top level or on a node, is held to the one check (mcpGrant): refused at the
@@ -230,9 +232,29 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
     unset("definition.workflow", tool);
     unavailable("definition.workflow", granted, tool);
   }
-  for (const tier of llmTiers(nodes, nodeTiers(nodes))) {
+  const tiers = llmTiers(nodes, nodeTiers(nodes));
+  for (const tier of tiers) {
     const chosen = await chooseModel(env, undefined, tier);
     if ("why" in chosen) out.push({ field: "definition.workflow", reason: NOT_SET_UP, message: chosen.why, host: true, tier });
+  }
+  // Under a cap, as an agentic run's model is (above): each model a workflow's model nodes and `llm` calls run on, by
+  // their tier, has a price here, and each OpenRouter Decisions model a decision pins is priced in OpenRouter's catalog
+  // (decisionPrice: the server's read of it); else its run is refused now, never started and stopped at that node.
+  if (capped) {
+    const modelNode = (node: Record<string, unknown>) => (MODEL_NODES as readonly unknown[]).includes(node.node) || (node.node === "artifact" && ["markdown", "report"].includes(String(node.type)));
+    const tierOf = (value: unknown): Tier => (typeof value === "string" ? (value as Tier) : "default");
+    /** The labels of the nodes that run on `tier`: model nodes by their tier, `llm` calls by theirs. */
+    const onTier = (tier: Tier) => nodes.filter((node) => (modelNode(node) && tierOf(node.tier) === tier)
+      || (node.node === "call" && node.tool === "llm" && tierOf((node.args as { tier?: unknown } | undefined)?.tier) === tier)).map((node) => String(node.label));
+    const unpriced = new Map<string, string[]>();
+    for (const tier of tiers) for (const id of await unpricedModels(env, undefined, [tier], harness)) unpriced.set(id, [...new Set([...(unpriced.get(id) ?? []), ...onTier(tier)])]);
+    for (const [id, labels] of unpriced) {
+      out.push({ field: "definition.workflow", reason: NOT_SET_UP, message: `The model ${id} has no price here, so a run's spend cap cannot be kept on it. This workflow's ${labels.length === 1 ? "node" : "nodes"} ${labels.join(", ")} ${labels.length === 1 ? "runs" : "run"} on it.`, fix: PRICE_FIX, host: true, unpriced: true });
+    }
+    for (const { label, provider, model } of decisionModelsNamed(nodes)) {
+      if (provider !== "openrouter" || !decisionPrice || (await decisionPrice(model))) continue;
+      out.push({ field: "definition.workflow", reason: NOT_SET_UP, message: `The decision model ${model} has no price in OpenRouter's catalog, so a run's spend cap cannot be kept on it. This workflow's node ${label} asks it.`, fix: "Pick a Decisions model OpenRouter's catalog prices, or run without a spend cap.", host: true, unpriced: true });
+    }
   }
   return out;
 }

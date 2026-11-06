@@ -2415,9 +2415,11 @@ a request asked and unanswered. What a call node waited is not counted against i
 process for 10 minutes, then lets it go (nothing in flight but the waits): the run stays paused, and no process is
 started for it. `PATCH /runs/{run_id}` raises the cap as for an agentic run, with no follow-up turn: a waiting process
 judges its step again under the new cap, and a run whose process was let go is opened again under it, resuming from its
-journal, so no completed node is sent again (`resumed: true`, no `message_id`). A step no cap fixes (a decision model
-with no price in the catalog, a model with no price, a spend no one knows) ends the run `failed`, `spend_cap_reached`,
-in the cap's words, after the node's label.
+journal, so no completed node is sent again (`resumed: true`, no `message_id`). A capped start is refused before anything is sent, as an
+agentic run's is, when a model one of its nodes or `llm` calls runs on has no price here, or a decision pins an
+OpenRouter Decisions model the catalog lists no price for: `409 agent_not_runnable`, each in `error.fields` with the
+node's label and its fix. A step no cap fixes all the same (a spend no one knows) ends the run `failed`,
+`spend_cap_reached`, in the cap's words, after the node's label.
 
 ## The faux model
 
