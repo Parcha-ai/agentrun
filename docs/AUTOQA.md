@@ -78,9 +78,12 @@ Each row: entry point, then what makes it pass.
    `GET /v2/runs/{id}` to a terminal status (cap 300 s). Then check `GET /v2/runs/{id}/timeline` (`final: true`),
    `cost.usd`, `GET /v2/runs/{id}/files` and `GET /v2/runs/{id}/files/<path>`. Use a task that needs two files (two tool
    calls in one turn): see the open findings.
-9. **Spend cap**: a priced model and a `max_cost_usd` below its first request's worst case (see the caveats; `0.01` is
-   below it for most models) → `failed`, `error.code: spend_cap_reached`, `result: null`, no files. Check the worst
-   case first: a cap the first request fits under lets the run go on, and the check proves nothing.
+9. **Spend cap**: a priced model and a tiny `max_cost_usd`. A cap that can't buy the next request's least pauses the run:
+   `input_required` and `waiting`, `error` null, `pending.kind: "budget"` (with `cap_usd`, `spent_usd`, `needs_usd`,
+   `suggested_cap_usd`), a `spend_cap_reached` row on the timeline, the refused request unsent, no files; a higher cap
+   sends it. A cap that buys a smaller request limits it (its output is held to what the cap buys) and the run can
+   complete: e.g. `0.01` on luna completes and `0.0001` pauses. Only a refusal no cap fixes ends `failed`
+   (`spend_cap_reached`). See serve's README, "A run paused at its cap".
 10. **Cancel**: start a multi-step run, `POST /v2/runs/{id}/cancel` after its first tool_use → `cancelled` within a few
     seconds. Then `POST /v2/runs/{id}/messages {content}` → 409 `not_continuable`. The body takes `content` only.
 11. **Follow-up**: `POST /v2/runs/{id}/messages {content}` to a completed agentic run → back to `completed`. The
