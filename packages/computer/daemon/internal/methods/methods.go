@@ -15,7 +15,7 @@ import (
 )
 
 // Capabilities is what this daemon offers, as hello reports it.
-var Capabilities = []string{"exec", "files"}
+var Capabilities = []string{"exec", "files", "processes"}
 
 type HelloParams struct {
 	Client string `json:"client"`

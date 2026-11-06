@@ -1,12 +1,6 @@
 // Package process keeps programs running across calls and connections: the daemon's process.* methods.
 package process
 
-import (
-	"context"
-
-	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/rpc"
-)
-
 const (
 	// RingBytes is how much of each stream a process keeps: the last 8 MiB.
 	RingBytes = 8 << 20
@@ -102,22 +96,3 @@ type Info struct {
 }
 
 type Empty struct{}
-
-// Table is every process the daemon holds, shared by all its connections.
-type Table struct{}
-
-func NewTable(opts Options) *Table { return &Table{} }
-
-var errNotBuilt = rpc.Errorf(rpc.KindUnsupported, "processes are not built yet")
-
-func (t *Table) Start(StartParams) (StartResult, error) { return StartResult{}, errNotBuilt }
-func (t *Table) Read(context.Context, ReadParams) (ReadResult, error) {
-	return ReadResult{}, errNotBuilt
-}
-func (t *Table) Write(context.Context, WriteParams) (Empty, error) { return Empty{}, errNotBuilt }
-func (t *Table) Signal(SignalParams) (Empty, error)                { return Empty{}, errNotBuilt }
-func (t *Table) Resize(ResizeParams) (Empty, error)                { return Empty{}, errNotBuilt }
-func (t *Table) List(ListParams) ([]Info, error)                   { return nil, errNotBuilt }
-func (t *Table) Wait(context.Context, WaitParams) (WaitResult, error) {
-	return WaitResult{}, errNotBuilt
-}

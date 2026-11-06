@@ -91,6 +91,48 @@
       "lines": "40-82, 141-146",
       "license": "Apache-2.0",
       "changes": "SanitizePath as sanitizePath on a root already resolved and a relative path, so joinUnderRoot is not needed; a dangling symlink on the way is refused instead of resolved lexically."
+    },
+    {
+      "path": "daemon/internal/process/table.go",
+      "from": "kubernetes-sigs/agent-sandbox@bfc85052f8dbc3414c366a1bc86621ea19d0779b:packages/sandboxd/pkg/processmanager/manager.go",
+      "lines": "25-74",
+      "license": "Apache-2.0",
+      "changes": "ProcessRegistry as Table: ids are \"p1\", \"p2\", ... from a counter under the table's lock; processes are kept in start order; at most 256, the one that ended first dropped when a start needs room, a start refused as limit when all run; no SignalAll (init ends every guard)."
+    },
+    {
+      "path": "daemon/internal/process/table.go",
+      "from": "kubernetes-sigs/agent-sandbox@bfc85052f8dbc3414c366a1bc86621ea19d0779b:packages/sandboxd/pkg/processmanager/managed_process.go",
+      "lines": "32-118",
+      "license": "Apache-2.0",
+      "changes": "ManagedProcess as proc: the exit (code, or signal name without SIG) and end time recorded when the guard is done; Signal goes to the program's group through its guard and does nothing once it ended; CloseStdin as process.write's close, refused on a terminal; ResizeTTY refused without a terminal or after the end, with the size set by our own ioctl instead of creack/pty."
+    },
+    {
+      "path": "daemon/internal/process/table.go",
+      "from": "kubernetes-sigs/agent-sandbox@bfc85052f8dbc3414c366a1bc86621ea19d0779b:packages/sandboxd/pkg/server/process.go",
+      "lines": "649-712",
+      "license": "Apache-2.0",
+      "changes": "WriteStdin, SendSignal and ResizeTTY as Table.Write, Signal and Resize: the protocol's kinds instead of gRPC codes (not_found, invalid, timeout); a write has a 10 s deadline and stops when its call is cancelled; HUP added to the signals."
+    },
+    {
+      "path": "daemon/internal/process/table.go",
+      "from": "e2b-dev/infra@ff3922213f0201299602ad7fad4d6ca367363710:packages/envd/internal/services/process/signal.go",
+      "lines": "23-30",
+      "license": "Apache-2.0",
+      "changes": "The signal switch as a map of TERM, INT, KILL and HUP; any other name is invalid."
+    },
+    {
+      "path": "daemon/internal/process/table.go",
+      "from": "e2b-dev/infra@ff3922213f0201299602ad7fad4d6ca367363710:packages/envd/internal/services/process/list.go",
+      "lines": "14-28",
+      "license": "Apache-2.0",
+      "changes": "List over the table in start order, with ended processes kept, argv, pty, running, exit code, signal and start and end times in milliseconds."
+    },
+    {
+      "path": "daemon/internal/process/table.go",
+      "from": "e2b-dev/infra@ff3922213f0201299602ad7fad4d6ca367363710:packages/envd/internal/services/process/handler/handler.go",
+      "lines": "331-361, 514-520",
+      "license": "Apache-2.0",
+      "changes": "The pty read loop, which ends on EIO or EOF, as collect for every stream: bytes go to the stream's ring, not to subscribers; ResizeTty folded into Resize."
     }
   ]
 }
