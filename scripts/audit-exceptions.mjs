@@ -10,21 +10,26 @@ export const AUDIT_EXCEPTIONS = [
     advisories: ['GHSA-qhr7-859c-m2p7', 'GHSA-6j4f-fj2g-mc7p', 'GHSA-q2hr-2g5m-vwhr'],
     expires: '2026-12-01',
   },
-  // Stagehand pins zod 4.4.3 exactly and has no fixed release yet; this exception covers only that nested copy for
-  // GHSA-mrhx-c7xc-m3w5 and expires 2026-11-06. Availability only: input that reaches Stagehand's host-side validation is
-  // not size-capped, so the upgrade alone does not bound memory; a pi-browser fix is tracked privately. No data exposure.
+  // Stagehand pins zod 4.4.3 exactly in every release before 4.4.0, and 4.4.0 (zod 4.6.6, fixed) allows one client per
+  // browser, which @parcha/pi-browser's attach, close and reattach do not yet support. So Stagehand's own nested copy cannot
+  // reach the fixed zod from here; this exception covers only that copy, for GHSA-mrhx-c7xc-m3w5 (memory exhaustion while
+  // validating oversized constrained collections: availability only, no data exposure). Extended once, to 2026-11-13, by
+  // the maintainer's decision; the follow-up is porting pi-browser to Stagehand 4.4.0, which removes this entry.
   {
     package: 'zod',
     under: 'node_modules/@browserbasehq/stagehand/',
     advisories: ['GHSA-mrhx-c7xc-m3w5'],
-    expires: '2026-11-06',
+    expires: '2026-11-13',
   },
-  // The `disk` SDK and @earendil-works/pi-coding-agent pin undici 8.10.2 exactly in their latest releases (1.10.0 and 1.4.0),
-  // so neither copy can reach the fixed 8.12.2 from here; this exception covers only those two nested copies, for the
-  // advisories below, and expires 2026-11-06. Every fix awaits those upstream releases, and the follow-up is tracked privately.
+  // @earendil-works/pi-coding-agent pins undici 8.10.2 exactly in every release before 1.5.0, and the pi family these packages
+  // support is below 1.4.0, so no supported pi version carries a fixed undici and this nested copy cannot reach one from here.
+  // The highs it carries: GHSA-2m5v-pch6-74hx (TLS certificate validation), GHSA-4w7w-5xrc-9h26 (response caching across
+  // cross-origin redirects) and GHSA-qrxm-fqhp-jwvm (TLS renegotiation, availability). Extended once, to 2026-11-13, by the
+  // maintainer's decision; the follow-up is supporting pi 1.5.0 (undici 8.12.3), which removes this entry. Only this copy is
+  // covered: the `disk` SDK's copy is fixed (disk 1.12.0 takes undici ^8.12.3).
   {
     package: 'undici',
-    under: ['node_modules/disk/', 'node_modules/@earendil-works/pi-coding-agent/'],
+    under: 'node_modules/@earendil-works/pi-coding-agent/',
     advisories: [
       'GHSA-xjj6-f33q-929c', // high: availability.
       'GHSA-4qv8-2p9j-2685', // moderate: availability.
@@ -35,7 +40,7 @@ export const AUDIT_EXCEPTIONS = [
       'GHSA-9fm3-97px-rjf6', // moderate: availability (WebSocket client).
       'GHSA-55wc-3pg8-jfw6', // moderate: availability (decompression).
     ],
-    expires: '2026-11-06',
+    expires: '2026-11-13',
   },
 ];
 
