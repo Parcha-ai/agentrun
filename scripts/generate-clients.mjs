@@ -112,6 +112,8 @@ function stringPaths(doc, schema, path = [], seen = new Set()) {
   if (types.includes('string') || s.enum?.some((v) => typeof v === 'string')) found.push(path);
   for (const [name, property] of Object.entries(s.properties ?? {})) found.push(...stringPaths(doc, property, [...path, name], seen));
   if (s.additionalProperties && typeof s.additionalProperties === 'object') found.push(...stringPaths(doc, s.additionalProperties, [...path, '*'], seen));
+  // A list's items: `[]`, each of them, which a public field may name (`scopes.[]`), unlike a map's values.
+  if (s.items && typeof s.items === 'object' && !Array.isArray(s.items)) found.push(...stringPaths(doc, s.items, [...path, '[]'], seen));
   return found;
 }
 

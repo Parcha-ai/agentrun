@@ -711,95 +711,6 @@ export const COMMANDS = [
   },
   {
     "command": [
-      "local",
-      "mcp-oauth-callback"
-    ],
-    "operationId": "mcpOAuthCallback",
-    "method": "GET",
-    "path": "/settings/mcp-servers/oauth/callback",
-    "pathParams": [],
-    "multiSegment": [],
-    "query": [
-      {
-        "name": "code",
-        "type": "string",
-        "required": false,
-        "description": ""
-      },
-      {
-        "name": "state",
-        "type": "string",
-        "required": false,
-        "description": ""
-      },
-      {
-        "name": "iss",
-        "type": "string",
-        "required": false,
-        "description": ""
-      },
-      {
-        "name": "error",
-        "type": "string",
-        "required": false,
-        "description": ""
-      }
-    ],
-    "headers": [],
-    "bodyFlags": [],
-    "hasBody": false,
-    "bodyRequired": false,
-    "bodyTypes": [],
-    "secretBody": false,
-    "raw": false,
-    "summary": "Where the authorization server sends the owner's browser back"
-  },
-  {
-    "command": [
-      "local",
-      "mcp-oauth-client"
-    ],
-    "operationId": "mcpOAuthClient",
-    "method": "GET",
-    "path": "/settings/mcp-servers/oauth/client.json",
-    "pathParams": [],
-    "multiSegment": [],
-    "query": [],
-    "headers": [],
-    "bodyFlags": [],
-    "hasBody": false,
-    "bodyRequired": false,
-    "bodyTypes": [],
-    "secretBody": false,
-    "raw": false,
-    "summary": "This server's OAuth client metadata document"
-  },
-  {
-    "command": [
-      "local",
-      "start-mcp-oauth"
-    ],
-    "operationId": "startMcpOAuth",
-    "method": "POST",
-    "path": "/settings/mcp-servers/{name}/oauth/start",
-    "pathParams": [
-      "name"
-    ],
-    "multiSegment": [],
-    "query": [],
-    "headers": [],
-    "bodyFlags": [],
-    "hasBody": true,
-    "bodyRequired": true,
-    "bodyTypes": [
-      "application/json"
-    ],
-    "secretBody": true,
-    "raw": false,
-    "summary": "Start signing in to an MCP server with OAuth: the page the owner opens"
-  },
-  {
-    "command": [
       "mcp-servers",
       "delete"
     ],
@@ -861,6 +772,55 @@ export const COMMANDS = [
     "secretBody": false,
     "raw": false,
     "summary": "The remote MCP servers saved here, with their tools; never a credential"
+  },
+  {
+    "command": [
+      "mcp-servers",
+      "oauth-client"
+    ],
+    "operationId": "mcpOAuthClient",
+    "method": "GET",
+    "path": "/settings/mcp-servers/oauth/client.json",
+    "pathParams": [],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "This server's OAuth client metadata document"
+  },
+  {
+    "command": [
+      "mcp-servers",
+      "oauth-start"
+    ],
+    "operationId": "startMcpOAuth",
+    "method": "POST",
+    "path": "/settings/mcp-servers/{name}/oauth/start",
+    "pathParams": [
+      "name"
+    ],
+    "multiSegment": [],
+    "publicFields": [
+      "url",
+      "scopes.[]",
+      "client_id"
+    ],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": true,
+    "bodyRequired": true,
+    "bodyTypes": [
+      "application/json"
+    ],
+    "secretBody": true,
+    "raw": false,
+    "summary": "Start signing in to an MCP server with OAuth: the page the owner opens"
   },
   {
     "command": [

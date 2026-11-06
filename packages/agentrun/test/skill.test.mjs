@@ -255,6 +255,13 @@ async function echoServer(t) {
       // A tool's input schema may name any property, those JavaScript's objects hold for themselves among them. Written
       // as text: an object literal's __proto__ would set its prototype, not a key.
       if (form === "mcp-proto") return res.writeHead(200, { "content-type": "application/json" }).end('{"tools":{"t":{"input_schema":{"properties":{"__proto__":{"type":"string"},"constructor":{"type":"string"}}}}}}');
+      // An OAuth start's answer: the page to open, which carries the body's public fields (encoded), and an echo of
+      // its client secret.
+      if (form === "oauth") {
+        const sent = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        const page = `https://auth.example.com/authorize?client_id=${encodeURIComponent(sent.client_id)}&scope=${encodeURIComponent(sent.scopes.join(" "))}&resource=${encodeURIComponent(sent.url)}`;
+        return res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ authorization_url: page, echo: sent.client_secret }));
+      }
       if (form === "shape") return res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: true }));
       if (form === "raw") return res.writeHead(status, { "content-type": "text/plain" }).end(`refused ${secret}`);
       res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify({ error: { code: "input_invalid", message: `refused ${secret} ${encodeURIComponent(secret)}` }, echo: { secret } }));
@@ -357,6 +364,17 @@ test("a secret-bearing command never prints a server's error body, and cuts the 
   assert.deepEqual(Object.keys(properties), ["__proto__", "constructor"], proto.out);
   for (const name of ["__proto__", "constructor"]) assert.deepEqual(Object.getOwnPropertyDescriptor(properties, name)?.value, { type: "string" }, `${name}: ${proto.out}`);
   assert.equal(proto.out, '{"tools":{"t":{"input_schema":{"properties":{"__proto__":{"type":"string"},"constructor":{"type":"string"}}}}}}\n', "printed as it came");
+
+  // An OAuth start: its url, scopes and client_id are public, so the page to open prints whole; its client secret is cut.
+  Object.assign(echo.answer, { form: "oauth" });
+  const clientSecret = `not-a-secret-${randomBytes(8).toString("hex")}`;
+  const start = { url: "https://mcp.example.com/mcp", scopes: ["read", "write"], client_id: "agentrun-cli-test", client_secret: clientSecret };
+  const oauth = await cli(["mcp-servers", "oauth-start", "srv", "--body", "-", ...base], { ...key, input: JSON.stringify(start) });
+  assert.equal(oauth.code, 0, oauth.err);
+  assert.equal(echo.requests.at(-1), "POST /v2/settings/mcp-servers/srv/oauth/start");
+  assert.equal(JSON.parse(oauth.out).authorization_url, "https://auth.example.com/authorize?client_id=agentrun-cli-test&scope=read%20write&resource=https%3A%2F%2Fmcp.example.com%2Fmcp");
+  clean(oauth, clientSecret, "mcp-servers oauth-start");
+  assert.equal((await cli(["mcp-servers", "oauth-start", "srv", "--body", JSON.stringify(start), ...base], key)).code, 2, "its body only from stdin or a file");
 
   // A 200 that is not the agents list: not the server it says it is, so nothing is written.
   Object.assign(echo.answer, { form: "shape" });

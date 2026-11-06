@@ -177,9 +177,9 @@ test("demo: the CLI creates an agent, starts a capped run, reads it, lists runs 
   assert.equal(rawInline.code, 2);
   for (const run of [inline, rawInline]) assert.ok(!`${run.out}${run.err}`.includes("not-a-secret"), "the refused value is in no output");
   // An MCP OAuth start may carry a pre-registered client's secret: no flag for it, and its body never from the command line.
-  const oauthFlag = cli(["local", "start-mcp-oauth", "docs", "--url", "https://mcp.example.com/mcp", "--client-id", "app", "--client-secret", "not-a-secret", ...data]);
+  const oauthFlag = cli(["mcp-servers", "oauth-start", "docs", "--url", "https://mcp.example.com/mcp", "--client-id", "app", "--client-secret", "not-a-secret", ...data]);
   assert.equal(oauthFlag.code, 2, oauthFlag.err);
-  const oauthInline = cli(["local", "start-mcp-oauth", "docs", "--body", '{"url":"https://mcp.example.com/mcp","client_id":"app","client_secret":"not-a-secret"}', ...data]);
+  const oauthInline = cli(["mcp-servers", "oauth-start", "docs", "--body", '{"url":"https://mcp.example.com/mcp","client_id":"app","client_secret":"not-a-secret"}', ...data]);
   assert.equal(oauthInline.code, 2, oauthInline.err);
   assert.match(oauthInline.err, /--body -/);
   const oauthRaw = cli(["api", "POST", "/settings/mcp-servers/docs/oauth/start", "--body", '{"url":"https://mcp.example.com/mcp","client_id":"app","client_secret":"not-a-secret"}', ...data]);
