@@ -3,7 +3,7 @@ import type { Context } from "@earendil-works/chord";
 import { configure, defineDoc, defineExtension, defineTool, type Conversation, type ConversationDocToken, type ConversationId, type DocumentReader, type Extension, type Harness, type PromptSection, type SessionDocToken, type ToolExecutionApi, type ToolRegistration, type Tx } from "@earendil-works/pi-durable";
 import type { JsonValue } from "@earendil-works/chord";
 import type { TSchema, Usage } from "@earendil-works/pi-ai";
-import { BROWSER_TOOL_NAMES, BROWSER_TOOLS, browserSection, listedFor, WEB_TOOL_NAMES } from "./core/contract.js";
+import { BROWSER_TOOL_NAMES, browserSection, browserToolsFor, listedFor, WEB_TOOL_NAMES } from "./core/contract.js";
 import { BrowserFailureError, closeDriver, currentRecord, loadedNoPage, custodyTools, FIXED_SESSION_RELAUNCH, fenced, HANDED_BACK, newSessionRecord, notices, NAVIGATION_CAP, NOTHING_TO_HOLD, navigationRefusal, profileRefusal, relaunchRefusal, SESSION_REPLACED, sessionSpec, waitingForHuman, type AttachedSession, type CustodyPort, type DriverFactory, type FenceMark, type Overrides, type ToolOutput, NO_HANDOFF } from "./core/custody.js";
 import { forModel } from "./durable/result.js";
 import type { Decisions } from "./core/decisions.js";
@@ -33,6 +33,9 @@ export type { DriverFactory, DriverOptions } from "./core/custody.js";
 export type BrowserExtensionOptions<D extends PageDriver = PageDriver> = VaultOptions & {
   /** Default "browser"; a second plane installs a second extension under another name. */
   name?: string;
+  /** The plane's sessions open on its agent's saved sign-ins (a host's kept profile): `run` tells the model so, for a page
+   *  behind a sign-in. Default: whether a `sessionVault` is given. Without either, it claims cookies across pages only. */
+  signIns?: boolean;
   /** Called per use: the provider for this conversation's plane. Holds the credentials in its closure; nothing it
    *  returns is committed. */
   provider: (target: { conversationId: ConversationId; plane: string; config: BrowserConfig }) => BrowserProvider | Promise<BrowserProvider>;
@@ -763,7 +766,7 @@ const withSessionTime = (own: ToolOutput["usage"], charged: ToolUsage | null): T
 };
 
 function toolsFor<D extends PageDriver>(c: Custody<D>, impls: Partial<Record<string, ToolImpl<D>>>): ToolRegistration[] {
-  return BROWSER_TOOLS
+  return browserToolsFor(c.options.signIns ?? !!c.options.sessionVault)
     .filter((contract) => impls[contract.name] && listedFor(contract, { downloads: !!c.options.workspace, upload: !!(c.options.files || c.options.workspace), handoff: !!c.options.handoff }))
     .map((contract) => defineTool({
       name: contract.name,

@@ -203,6 +203,10 @@ CPU controller; `--cpus` fails in both. `cpus` is at least `0.01`, `memory` is b
 `pidsLimit` is at most 4194304. A spec's own `cpus` or `memoryMb` takes the option's place, and `facts()` says what the box
 got. With none of them a box has no limit.
 It alone binds a spec's `mounts` (`[{ source: "/data/run", target: "/workspace/run", readOnly: true }]`, canonical paths used as given, at most 8) with `--mount type=bind`, never `-v`, and refuses a source this machine lacks with `not_found`; `provider.mounts` says whether a provider binds them, and every other one refuses them as `unsupported`.
+`dockerBoxes({ volumes: [{ name: "v", target: "/run/x", readOnly: true }] })` mounts a named Docker volume on every box
+(`--mount type=volume`, after the binds): it lives on the daemon's own disk, so it carries what a file-sharing layer to a
+VM does not, such as a Unix socket another container made there. A name Docker would not take, or a target that is not an
+absolute path in normal form, throws at once; a spec's bind on a volume's target is refused `invalid`.
 `dockerBoxes({ dropCapabilities: true })` runs every box with `--cap-drop ALL` and `--security-opt no-new-privileges`, for a
 host whose boxes' programs never change user: as root a box then cannot make a device node in a directory it binds. With
 it, `attach` ends a box that was made without it (by an older version) instead of taking it, so the caller makes a new
