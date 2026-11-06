@@ -1,12 +1,14 @@
 // A server on a fresh data directory with the faux model, and a client for its /v2 routes. No key, no network.
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, copyFile, lstat, mkdir, mkdtemp, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer, request } from "node:http";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { claudeAgentExecutable } from "@parcha/agentrun-harness-claude";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { openStoreReader } from "@parcha/pi-durable-agent";
 import { startServe } from "../dist/index.js";
@@ -19,6 +21,12 @@ export const FAUX = new URL("./fixtures/faux-model.mjs", import.meta.url).pathna
 // set, boxes.ts): a test that wants a box lists it itself, with its endpoint on loopback (boxes.test.mjs), or unsets the
 // setting over a fake docker (docker-by-default.test.mjs).
 process.env.AGENTRUN_BOXES = "none";
+// No test reaches npm's registry: a server whose data holds no Claude Code would install it on first use (claude-sdk.ts)
+// from the registry npm is configured for. A test that installs names its own fake (claude-first-use.test.mjs); any other
+// such install fails at once on this closed port rather than downloading Claude Code.
+for (const name of ["npm_config_registry", "NPM_CONFIG_REGISTRY"]) process.env[name] = "http://127.0.0.1:9/";
+// And gives up there at once: no retry with npm's backoff, a short timeout, so a test can never wait on such an install.
+for (const [name, value] of [["fetch_retries", "0"], ["fetch_timeout", "5000"]]) for (const spelling of [`npm_config_${name}`, `NPM_CONFIG_${name.toUpperCase()}`]) process.env[spelling] = value;
 
 /** The records of a log another process appends to (a line of JSON each, as the fake docker's): only its whole lines,
  *  each ended by its newline. A file just made and still empty, or a last line still being written, is read as the
@@ -31,9 +39,18 @@ export function jsonLines(file) {
 
 export async function scratch(t) {
   const dir = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "agentrun-serve-"));
-  // Retried: a server that is still closing can write into it during the rm (ENOTEMPTY).
-  t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+  // Retried: a server that is still closing can write into it during the rm (ENOTEMPTY). Writable first: a first use
+  // leaves Claude Code read-only (claude-sdk.ts).
+  t.after(() => writableTree(dir).then(() => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })));
   return dir;
+}
+
+/** Every directory under `dir` (no link followed) made writable by its owner, so the tree can be removed. */
+export async function writableTree(dir) {
+  const st = await lstat(dir).catch(() => undefined);
+  if (!st?.isDirectory()) return;
+  await chmod(dir, st.mode | 0o700);
+  for (const name of await readdir(dir)) await writableTree(join(dir, name));
 }
 
 /** Resolves once `child`, a server in a process of its own, has printed a whole line on stdout that `ready` matches (the
@@ -88,14 +105,49 @@ export async function builtConsole(t) {
   return root;
 }
 
-/** A server for test `t`, stopped after it, before its scratch directory goes. */
-export async function serve(t, options = {}) {
+/** The packages a first use installs into `<data>/harnesses` (claude-sdk.ts), linked there from this repository's own
+ *  (the Claude Agent SDK, a dev dependency, its CLI's platform package and the MCP library), so a server on `data` runs
+ *  claude-agent as one whose Claude Code is installed, with no npm. `cli`: the file its platform package holds as the
+ *  CLI instead (one off its pins, or a path where nothing is). Nothing when the pinned CLI is not here. */
+export async function linkClaudeSdk(data, { cli } = {}) {
+  const pinned = claudeAgentExecutable();
+  if (!pinned) return;
+  const from = fileURLToPath(new URL("../../../node_modules/", import.meta.url));
+  const to = join(data, "harnesses", "node_modules");
+  const platform = `@anthropic-ai/${basename(dirname(pinned))}`;
+  const link = (target, path) => symlink(target, path).catch((error) => (error.code === "EEXIST" ? undefined : Promise.reject(error)));
+  for (const name of ["@anthropic-ai/claude-agent-sdk", "@modelcontextprotocol/sdk", ...(cli ? [] : [platform])]) {
+    await mkdir(dirname(join(to, name)), { recursive: true });
+    await link(join(from, name), join(to, name));
+  }
+  if (cli) {
+    // Its own file in the tree, as an install would leave it (one that is not there is a tree without its CLI).
+    await mkdir(join(to, platform), { recursive: true });
+    await writeFile(join(to, platform, "package.json"), readFileSync(join(from, platform, "package.json")));
+    if (existsSync(cli)) await copyFile(cli, join(to, platform, basename(pinned)));
+  }
+}
+
+/** A data directory for test `t` holding Claude Code as a first use installs it (linkClaudeSdk), for a test that makes
+ *  claude-agent's adapter itself (adapters.ts claudeOf, which loads the SDK from the data its env names). */
+export async function claudeData(t) {
+  const data = await scratch(t);
+  await linkClaudeSdk(data);
+  return data;
+}
+
+/** A server for test `t`, stopped after it, before its scratch directory goes. On the real models (`faux: undefined`) its
+ *  data holds Claude Code as a first use installs it (linkClaudeSdk; `claudeSdk: { cli }` with that CLI); `claudeSdk`
+ *  says so for any server, `false` for none. */
+export async function serve(t, { claudeSdk: asked, ...options } = {}) {
+  const claudeSdk = asked ?? (Object.hasOwn(options, "faux") && options.faux === undefined);
   const dir = options.data ? undefined : await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "agentrun-serve-"));
   const data = options.data ?? join(dir, "agents");
+  if (claudeSdk) await linkClaudeSdk(data, claudeSdk === true ? {} : claudeSdk);
   const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", ...options });
   t.after(async () => {
     await server.close();
-    if (dir) await rm(dir, { recursive: true, force: true });
+    if (dir) await writableTree(dir).then(() => rm(dir, { recursive: true, force: true }));
   });
   return { ...server, data, api: client(server.baseUrl, server.token) };
 }

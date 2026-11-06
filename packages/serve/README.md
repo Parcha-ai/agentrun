@@ -1580,7 +1580,22 @@ model). A definition naming a
 harness this server does not run yet saves with a warning on `definition.harness`, and a run of it is
 `409 agent_not_runnable` with `details.harness`; it never runs on pi instead. This server runs pi always, and
 `claude-agent`, `codex` and `opencode` when each adapter's package, pins and provider endpoint check out; the harness's
-`reason` says what is missing. `opencode` needs `opencode-ai@1.19.5` installed beside the server (an exact optional peer of
+`reason` says what is missing. `claude-agent` installs Claude Code on first use: AgentRun never ships the Claude Agent
+SDK, and the first run on claude-agent (or the first agent saved on it) installs the version AgentRun pins
+(`@anthropic-ai/claude-agent-sdk@0.3.286`) from npm into `<data>/harnesses`, with the npm that runs the server, once.
+The install is pinned by the lock the server ships, `harnesses/claude-agent/` (a package.json that names the SDK at the pin, and npm's lock for it: every package of the tree, its
+CLI's platform packages and its peers' dependencies included, by sha512), which `npm ci --ignore-scripts` holds every
+tarball to, from whichever registry the person's npm config names. It lands whole or not at all: npm writes into a fresh
+directory beside `<data>/harnesses`, the result is checked there (the SDK at the pin, its entry, this platform's CLI and
+the MCP library), then it is renamed into place and made read-only. `node scripts/claude-lock.mjs` makes the lock again
+when the pin moves (`--check` checks it).
+Every run that needs it waits for that one install, its ready time counted from the install's end, and shows a `phase`
+row, `Installing Claude Code (first use)…`, while it does. Each run then loads the SDK, its CLI and the MCP library from
+there and nowhere else. Until it is installed, capabilities list claude-agent with `installs: "on_first_use"`. When npm fails, the run fails and its error names the command that installs it by hand, the same locked install: the
+shipped `package.json` and `package-lock.json` copied into a fresh `<data>/harnesses.new`, `npm ci --ignore-scripts --include=optional` there,
+then that directory put in place of `<data>/harnesses` (made writable first: the server leaves its install read-only). Each run loads the SDK, its CLI and the MCP library only from their own packages inside
+`<data>/harnesses`, never from a `node_modules` above it; a tree that is not whole is installed again. A server that stops
+mid-install stops its npm (SIGTERM). `opencode` needs `opencode-ai@1.19.5` installed beside the server (an exact optional peer of
 it), and its model goes where codex's does: the gateway at `AGENT_MODEL_BASE_URL`, or
 OpenAI with `OPENAI_API_KEY`, on the Responses API. The packages and pins are checked once, at the start
 (`event=harness_offers why=start`): a harness
