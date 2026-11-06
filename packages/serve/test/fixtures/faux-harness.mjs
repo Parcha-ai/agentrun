@@ -44,7 +44,17 @@ export function grown(k, { miss = false } = {}) {
 
 export function script(spec) {
   const text = spec.system.join("\n");
-  if (process.env.AGENTRUN_TEST_FAUX_HARNESS_OPENED) appendFileSync(process.env.AGENTRUN_TEST_FAUX_HARNESS_OPENED, `${JSON.stringify({ tools: spec.tools.map((tool) => tool.name) })}\n`);
+  // The learned_workflow tool as the harness is given it (its description and input schema), when it is.
+  const given = spec.tools.find((tool) => tool.name === "learned_workflow");
+  if (process.env.AGENTRUN_TEST_FAUX_HARNESS_OPENED) appendFileSync(process.env.AGENTRUN_TEST_FAUX_HARNESS_OPENED, `${JSON.stringify({ tools: spec.tools.map((tool) => tool.name), ...(given ? { learned: { description: given.description, inputSchema: given.inputSchema } } : {}) })}\n`);
+  // Three requests of a growing conversation (grown), the second's answer calling the learned workflow <name> on
+  // <question> when the line names one: the harness's third request comes after the workflow's node request.
+  const thrice = /Grow three requests(?:, the second running the learned workflow (\S+) on (.+?))?\./.exec(text);
+  if (thrice) return [grown(0), thrice[1] ? { ...grown(1), call: "learned_workflow", args: { name: thrice[1], input: { question: thrice[2] } } } : grown(1), grown(2), { say: "Grown.", usd: 0.001 }];
+  // "Use the learned workflow <name> on <question>, and write note.md in the same answer.": one answer that asks for the
+  // run's learned_workflow and a write, run in turn, then a closing answer.
+  const beside = /Use the learned workflow (\S+) on (.+?), and write note\.md in the same answer\./.exec(text);
+  if (beside) return [{ calls: [{ call: "learned_workflow", args: { name: beside[1], input: { question: beside[2] } } }, { call: "write", args: { path: "note.md", content: "noted" } }], usd: 0.001 }, { say: "Ran the learned workflow and wrote note.md.", usd: 0.001 }];
   // "Use the learned workflow <name> on <question>.": the run's learned_workflow, then a closing answer.
   const learned = /Use the learned workflow (\S+) on (.+?)\./.exec(text);
   if (learned) return [{ call: "learned_workflow", args: { name: learned[1], input: { question: learned[2] } }, usd: 0.001 }, { say: "Ran the learned workflow.", usd: 0.001 }];

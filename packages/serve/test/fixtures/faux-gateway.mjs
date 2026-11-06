@@ -24,9 +24,10 @@ export const RECORDED_HEADERS = Object.freeze(["authorization", "x-api-key", "an
 
 /**
  * Starts the gateway on 127.0.0.1, on a port of its own.
- * @param {{ text?: string | ((request: GatewayRequest) => string), usage?: { input?: number, output?: number }, port?: number }} [options]
- *   `text`: what every answer says (or a function of the request); `usage`: the input and output tokens every answer
- *   reports (default 10 in, 2 out); `port`: the port to listen on (default: one the system picks).
+ * @param {{ text?: string | ((request: GatewayRequest) => string), call?: (request: GatewayRequest) => { name: string, input: unknown } | undefined, usage?: { input?: number, output?: number }, port?: number }} [options]
+ *   `text`: what every answer says (or a function of the request); `call`: a tool call to answer with instead, when it
+ *   returns one (Messages' tool_use, Responses' function_call; not on Chat Completions); `usage`: the input and output
+ *   tokens every answer reports (default 10 in, 2 out); `port`: the port to listen on (default: one the system picks).
  * @returns {Promise<{ url: string, requests: GatewayRequest[], close(): Promise<void> }>} `url` is the origin
  *   (`http://127.0.0.1:<port>`), with no path.
  * @typedef {{ method: string, path: string, query: string, headers: Record<string, string | undefined>, body: any }} GatewayRequest
@@ -51,6 +52,9 @@ export async function startFauxGateway(options = {}) {
       requests.push(request);
       const stream = body?.stream === true;
       if (req.method !== "POST") return void res.writeHead(404, { "content-type": "application/json" }).end(JSON.stringify({ error: { message: `no ${req.method} ${path} here` } }));
+      const call = options.call?.(request);
+      if (call && path.endsWith(ROUTES.responses)) return responsesCall(res, body, call, usage, stream);
+      if (call && path.endsWith(ROUTES.messages)) return messagesCall(res, body, call, usage, stream);
       if (path.endsWith(ROUTES.responses)) return responses(res, body, textOf(request), usage, stream);
       if (path.endsWith(ROUTES.messages)) return messages(res, body, textOf(request), usage, stream);
       if (path.endsWith(ROUTES.chat)) return chat(res, body, textOf(request), usage, stream);
@@ -99,6 +103,38 @@ function messages(res, body, text, usage, stream) {
     { type: "content_block_delta", index: 0, delta: { type: "text_delta", text } },
     { type: "content_block_stop", index: 0 },
     { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: counts },
+    { type: "message_stop" },
+  ], { named: true });
+}
+
+/** A Responses answer that is one function call: `call.name` with `call.input` as its arguments. */
+function responsesCall(res, body, call, usage, stream) {
+  const args = JSON.stringify(call.input ?? {});
+  const item = { type: "function_call", id: "fc_faux_1", call_id: "call_faux_1", name: call.name, arguments: args, status: "completed" };
+  const response = { id: "resp_faux_1", object: "response", status: "completed", model: body?.model, output: [item], usage: { input_tokens: usage.input, output_tokens: usage.output, total_tokens: usage.input + usage.output, input_tokens_details: { cached_tokens: 0 }, output_tokens_details: { reasoning_tokens: 0 } } };
+  if (!stream) return json(res, response);
+  sse(res, [
+    { type: "response.created", response: { ...response, status: "in_progress", output: [], usage: null } },
+    { type: "response.output_item.added", output_index: 0, item: { ...item, status: "in_progress", arguments: "" } },
+    { type: "response.function_call_arguments.delta", item_id: item.id, output_index: 0, delta: args },
+    { type: "response.function_call_arguments.done", item_id: item.id, output_index: 0, arguments: args },
+    { type: "response.output_item.done", output_index: 0, item },
+    { type: "response.completed", response },
+  ], { done: true });
+}
+
+/** A Messages answer that is one tool_use block: `call.name` with `call.input`. */
+function messagesCall(res, body, call, usage, stream) {
+  const counts = { input_tokens: usage.input, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: usage.output };
+  const block = { type: "tool_use", id: "toolu_faux_1", name: call.name, input: call.input ?? {} };
+  const message = { id: "msg_faux_1", type: "message", role: "assistant", model: body?.model, content: [block], stop_reason: "tool_use", stop_sequence: null, usage: counts };
+  if (!stream) return json(res, message);
+  sse(res, [
+    { type: "message_start", message: { ...message, content: [], stop_reason: null, usage: { ...counts, output_tokens: 1 } } },
+    { type: "content_block_start", index: 0, content_block: { ...block, input: {} } },
+    { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: JSON.stringify(block.input) } },
+    { type: "content_block_stop", index: 0 },
+    { type: "message_delta", delta: { stop_reason: "tool_use", stop_sequence: null }, usage: counts },
     { type: "message_stop" },
   ], { named: true });
 }
