@@ -253,7 +253,7 @@ switch (args[0]) {
     // Checked first by its command line, so a pid the system gave another process since is never signalled.
     let cmdline = "";
     try {
-      cmdline = readFileSync(`/proc/${container.pid}/cmdline`, "utf8");
+      cmdline = readFileSync(`${process.env.FAKE_DOCKER_PROC ?? "/proc"}/${container.pid}/cmdline`, "utf8");
     } catch {}
     if (container.pid && cmdline.includes("main.js")) try {
       process.kill(-container.pid, "SIGKILL");
