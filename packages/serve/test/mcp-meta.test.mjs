@@ -13,7 +13,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { mcpGateway, mcpPinOf } from "../dist/mcp-gateway.js";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
-import { agent, answerFlow, flowAgent, follow, serve as serveOf, withEnv } from "./support.mjs";
+import { agent, answerFlow, flowAgent, follow, runDir, serve as serveOf, withEnv } from "./support.mjs";
 
 const TOKEN = `not-a-secret-${"mcp-meta-bearer-0123"}`;
 const REASON = "it runs other actions by name, so a grant can't name the real action. Use the server's direct tools instead.";
@@ -91,7 +91,7 @@ test("a run's pin made before the rule, holding a meta tool, refuses its next la
   const runId = run.body.run_id;
   await follow(api, runId, ["completed"], { deadlineMs: 60_000 });
   // The pin as one made before the rule would be: the meta tool beside the direct one.
-  const file = join(data, "runs", runId, "mcp-tools.json");
+  const file = join(runDir(data, runId), "mcp-tools.json");
   const pin = JSON.parse(await readFile(file, "utf8"));
   pin.composio.tools.push({ name: "COMPOSIO_MULTI_EXECUTE_TOOL", inputSchema: object });
   await writeFile(file, JSON.stringify(pin));

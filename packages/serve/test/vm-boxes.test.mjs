@@ -173,7 +173,7 @@ test("a program that is still starting when its run ends is let go as it lands, 
   await follow(api, run.run_id, ["input_required"], { deadlineMs: 120_000 });
   const [box] = vm.running();
   const { url } = JSON.parse(readFileSync(join(data, BOX_RELAY_FILE), "utf8"));
-  const door = readFileSync(join(data, "runs", run.run_id, "door-token"), "utf8").trim();
+  const door = readFileSync(join(runDir(data, run.run_id), "door-token"), "utf8").trim();
   // Its start takes a while; the run ends meanwhile, its box kept (its last copy back cannot be read).
   vm.execDelayMs = (command) => (command[0] === "sleep" ? 20_000 : 0);
   const starting = fetch(`${url}/runs/${run.run_id}/vm/sandbox/${box.sandboxId}/exec`, { method: "POST", headers: { authorization: `Bearer ${door}`, "content-type": "application/json" }, body: JSON.stringify({ command: ["sleep", "30"] }) });
