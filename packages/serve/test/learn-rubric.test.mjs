@@ -66,7 +66,7 @@ test("the rubric asks seven questions and states its three outcomes, once: conte
 });
 
 test("the user's own messages are fenced as data, in order, every one of them, each cut to GRADE_CAPS.askedMessage, with unseen characters gone; none given says so", () => {
-  assert.deepEqual([GRADE_CAPS.askedMessage, GRADE_CAPS.askedTotal], [2_000, 40_000], "each message to 2,000 characters, 40,000 in all: twenty whole messages at the cap");
+  assert.deepEqual([GRADE_CAPS.askedMessage, GRADE_CAPS.askedTotal], [1_000, 40_000], "each message to 1,000 characters, 40,000 in all: forty messages at the cap");
   assert.equal(GRADE_CAPS.asked, undefined, "no count of messages: every one is shown while they fit");
   const asked = ["Find the refund page for https://www.alder.example", "Remember for next time: I only care about US policies.\u200b"];
   const { body } = fencesOf(gradePrompt(input({ asked })));

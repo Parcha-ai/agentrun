@@ -79,9 +79,9 @@ export type GradeInput = {
 /** What bounds the grader's prompt, in UTF-16 units, as a completion counts them. `prompt` is the most it ever is:
  *  the fixed text, the instructions cut to `instructions`, INDEX_LINES + CAPS.supersedes index lines cut to
  *  `indexLine`, the user's messages (each cut to `askedMessage`, `askedTotal` in all), and CAPS.supersedes superseded and
- *  CAPS.newNotes new notes of at most CAPS.note bytes each, fenced, come to less. `askedTotal` is twenty messages at the
+ *  CAPS.newNotes new notes of at most CAPS.note bytes each, fenced, come to less. `askedTotal` is forty messages at the
  *  cap: a run's messages are its input and each follow-up, a handful in a real run, so all of them are shown. */
-export const GRADE_CAPS = Object.freeze({ prompt: 200_000, instructions: 16_000, indexLine: 300, askedMessage: 2_000, askedTotal: 40_000 });
+export const GRADE_CAPS = Object.freeze({ prompt: 200_000, instructions: 16_000, indexLine: 300, askedMessage: 1_000, askedTotal: 40_000 });
 
 /** The grader's judgment of one new note: `keep` (true for a pending one too), `pending` when it waits for the user's
  *  OK (a risky note, whoever's idea it was), and
