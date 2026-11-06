@@ -989,6 +989,34 @@ describe("the Learning tab's retired notes and skills, opened", () => {
     expect(shown.textContent).toContain("The newer step.");
     expect(shown.textContent).not.toContain("The old step.");
   });
+
+  it("a read of the old version that answers late never replaces the newer text", async () => {
+    const SKILL_FILE = "skills/find-policies/SKILL.md";
+    const text = (step: string) => `---\nname: find-policies\ndescription: Find a store's policies\n---\n# Find policies\n\n1. ${step}\n`;
+    const listed = (etag: string) => view({ skills: [{ name: "find-policies", file: SKILL_FILE, description: "Find a store's policies", status: "retired", run: "run-b", bytes: 92, etag }], workflows: [] } as Partial<AgentLearning>);
+    let version = '"skill-v1"';
+    let release: () => void = () => {};
+    let reads = 0;
+    const t = await open(agent(true), {
+      learning: async () => listed(version),
+      // The first read (of v1) is held until released; the one after the list moves answers at once.
+      read: async () => {
+        if (reads++ === 0) return new Promise((done) => { release = () => done({ note: text("The old step."), etag: '"skill-v1"' }); });
+        return { note: text("The newer step."), etag: version };
+      },
+      restore: async () => { version = '"skill-v3"'; throw new ClientError(412, "precondition_failed", "changed"); },
+    });
+    await t.click(/^Earlier skills/);
+    await t.click(/^Show the skill find-policies$/);
+    await t.click(/^Restore find-policies$/);
+    await t.click(/^Yes, restore$/);
+    const earlier = () => t.host.querySelector('section[aria-label="Earlier skills"]')?.textContent ?? "";
+    expect(earlier()).toContain("The newer step.");
+    await act(async () => { release(); });
+    await settle();
+    expect(earlier()).toContain("The newer step.");
+    expect(earlier()).not.toContain("The old step.");
+  });
 });
 
 // What a card says of its newest change, as the server names it (last_change): approved, restored, retired, edited or
