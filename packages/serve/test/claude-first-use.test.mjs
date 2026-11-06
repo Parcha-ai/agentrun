@@ -4,7 +4,7 @@
 // the SDK's peer and the CLI's platform package. Its SDK and MCP modules re-export this repository's own copies, and its
 // CLI is the pinned binary itself, so a run that starts is a real Claude run against a fake Anthropic endpoint.
 import assert from "node:assert/strict";
-import { execFile, execFileSync } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
@@ -14,7 +14,7 @@ import { basename, dirname, join } from "node:path";
 import { after, test } from "node:test";
 import { claudeAgentExecutable, CLAUDE_AGENT_SDK_VERSION } from "@parcha/agentrun-harness-claude";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
-import { agent, follow, scratch, serve } from "./support.mjs";
+import { agent, client, follow, scratch, serve } from "./support.mjs";
 
 const SDK = "@anthropic-ai/claude-agent-sdk";
 const PIN = "0.3.286";
@@ -528,4 +528,49 @@ test("a run cancelled while it waits for the install gives its place back at onc
   const pi = await api("POST", "/agents/plain/runs", { input: { content: "Hi." } });
   assert.equal(pi.status, 202, `the place is free: ${JSON.stringify(pi.body)}`);
   letGo();
+});
+
+test("a server killed while it installs leaves its waiting run to the next server, which installs Claude Code first and resumes it, never running on a missing SDK", { timeout: 300_000, skip }, async (t) => {
+  let letGo;
+  const holdMcp = new Promise((resolve) => (letGo = resolve));
+  t.after(() => letGo());
+  const registry = await fakeRegistry(t, { holdMcp });
+  const anthropic = await anthropicEndpoint(t);
+  await firstUseEnv(t, registry, anthropic.fake);
+  const dir = await scratch(t);
+  const data = join(dir, "agents");
+  // The first server in a process of its own, so a test can kill it as a crash would.
+  const script = join(dir, "serve.mjs");
+  writeFileSync(script, `import { startServe } from ${JSON.stringify(new URL("../dist/index.js", import.meta.url).href)};
+const served = await startServe({ data: ${JSON.stringify(data)}, port: 0, claudeLock: ${JSON.stringify(registry.lock)}, drainTimeout: "5s" });
+console.log(JSON.stringify({ url: served.baseUrl, token: served.token }));
+`);
+  const child = spawn(process.execPath, [script], { stdio: ["ignore", "pipe", "inherit"], env: process.env });
+  t.after(() => void (child.exitCode === null && child.signalCode === null && child.kill("SIGKILL")));
+  const first = await new Promise((resolve, reject) => {
+    let out = "";
+    child.stdout.on("data", (chunk) => {
+      out += chunk;
+      if (out.includes("\n")) resolve(JSON.parse(out.slice(0, out.indexOf("\n"))));
+    });
+    child.once("exit", (code) => reject(new Error(`the first server exited (${code}) before it served`)));
+  });
+  const api = client(first.url, first.token);
+  assert.equal((await api("POST", "/agents", agent("claude", { harness: "claude-agent", model: `anthropic/${MODEL}` }))).status, 201);
+  const run = await api("POST", "/agents/claude/runs", { input: { content: "Say hello." } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  await until("npm runs on the data", async () => (await npmOn(data)).length > 0, 120_000);
+  // The crash: npm first (it would outlive its server), then the server, with the run waiting on the install.
+  for (const pid of await npmOn(data)) process.kill(pid, "SIGKILL");
+  child.kill("SIGKILL");
+  await new Promise((resolve) => (child.exitCode !== null || child.signalCode !== null ? resolve() : child.once("exit", resolve)));
+  letGo();
+  assert.equal(installedIn(data), undefined, "the crash left Claude Code uninstalled");
+  // The next server recovers the run: it installs Claude Code before the run's process starts, and the run answers.
+  const next = await serve(t, { faux: undefined, claudeSdk: false, claudeLock: registry.lock, data });
+  const { rows, last } = await follow(next.api, run.body.run_id, ["completed", "failed"], { deadlineMs: 240_000 });
+  assert.equal(last.status, "completed", JSON.stringify(rows.slice(-3)));
+  assert.equal(rows.findLast((row) => row.kind === "final_answer")?.text, "Claude answered.");
+  assert.equal(installedIn(data), PIN);
+  await next.close();
 });
