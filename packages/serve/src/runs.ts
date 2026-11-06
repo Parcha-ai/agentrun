@@ -770,23 +770,25 @@ const stopped = (run: Run) => stoppedAt(run.meta, run.rows);
  *  roomRefusal: what is left of its cap cannot buy the next request's least, which a higher cap would send), and nothing
  *  came since. The run then waits for its cap to be raised (input_required, `pending.kind` budget), never failed; a
  *  refusal no cap fixes (an unknown spend, no price) still fails it (decide). Undefined for any other run. */
-const refusedAt = (run: Run): string | undefined => {
-  if (run.kind !== "agentic" || run.cancel || run.submitted > 0 || run.turns.open > 0 || stopped(run)) return undefined;
+const refusedAt = (run: Run, { inFlight = true }: { inFlight?: boolean } = {}): string | undefined => {
+  // `inFlight: false`: a message counted but not yet shown does not move the run past its refusal (one that may not
+  // answer its person reads the pause through it).
+  if (run.kind !== "agentic" || run.cancel || (inFlight && run.submitted > 0) || run.turns.open > 0 || stopped(run)) return undefined;
   const end = run.turns.end();
   return end?.status === "failed" ? roomRefusal(end.error) : undefined;
 };
 /** The pause a run stands at, by its refusal's own start mark (its entry), so no row shown after it moves it; a store
  *  with no such mark keys it to the refusal's row. Undefined when it stands at no refusal for room. */
-const pauseOf = (run: Run): string | undefined => {
-  if (refusedAt(run) === undefined) return undefined;
+const pauseOf = (run: Run, read: { inFlight?: boolean } = {}): string | undefined => {
+  if (refusedAt(run, read) === undefined) return undefined;
   if (run.capMark !== undefined) return `mark:${run.capMark}`;
   const row = meaningful(run.rows)?.id;
   return row === undefined ? undefined : `row:${row}`;
 };
 /** Its cap was raised since the refusal it stands at (a raise names that pause): it waits for its follow-up then, not
  *  for a raise (input_required, idle). */
-const raisedSince = (run: Run): boolean => {
-  const pause = pauseOf(run);
+const raisedSince = (run: Run, read: { inFlight?: boolean } = {}): boolean => {
+  const pause = pauseOf(run, read);
   return pause !== undefined && run.meta.cap_raised?.some((raise) => raise.pause === pause) === true;
 };
 /** The follow-up a raise of the pause it stands at asked for and that has not gone yet: one per pause. */
@@ -807,12 +809,12 @@ function processIdentity(pid: number | undefined): string | undefined {
     return String(pid);
   }
 }
-const pausedAt = (run: Run): string | undefined => (raisedSince(run) ? undefined : refusedAt(run));
+const pausedAt = (run: Run, read: { inFlight?: boolean } = {}): string | undefined => (raisedSince(run, read) ? undefined : refusedAt(run, read));
 /** Whether the run waits on its person: a tool call parked for its owner's approval, a pause at its cap, or a question
  *  (ask_person) its turn ended on. Read from the run itself, so a message in flight (which reads working) hides none. */
 const waitsOnPerson = (run: Run): boolean => {
   if (run.kind !== "agentic") return false;
-  if (waitingApproval(run) !== undefined || pausedAt(run) !== undefined) return true;
+  if (waitingApproval(run) !== undefined || pausedAt(run, { inFlight: false }) !== undefined) return true;
   const { status, state } = statusOf(run);
   return status === "input_required" && state === "waiting";
 };
@@ -3409,7 +3411,7 @@ export class Runs {
       await this.personsTurn(run);
       // Read again after the last wait, with nothing awaited from here to the door: a call parked or a cap paused
       // meanwhile is still never answered by it (the door's own check also refuses a parked call or a question).
-      if (!answers && (waitingApproval(run) !== undefined || pausedAt(run) !== undefined)) throw waitingRefusal();
+      if (!answers && (waitingApproval(run) !== undefined || pausedAt(run, { inFlight: false }) !== undefined)) throw waitingRefusal();
       await this.submit(run, content, mode === "steer" ? "steer" : "followUp", messageId, undefined, answers ? this.messageOrigin?.(run.id, content) : undefined, answers);
     } catch (error) {
       run.submitted = Math.max(0, run.submitted - 1);
