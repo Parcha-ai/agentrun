@@ -12,7 +12,7 @@ const BOX_DIR = env.FAKE_ARCHIL_BOX_DIR;
 const DISK_ROOT = env.FAKE_ARCHIL_DISK_ROOT;
 const DISK = env.FAKE_ARCHIL_DISK;
 const MOUNTS = env.FAKE_ARCHIL_MOUNTS;
-const EXPECTED_TOKEN = "planted-archil-disk-token-sentinel-0123456789";
+const EXPECTED_TOKEN = "planted-archil-mount-token-sentinel-0123456789";
 
 const state = JSON.parse(readFileSync(STATE, "utf8"));
 const save = () => {

@@ -16,7 +16,7 @@ import { scratch } from "../support.mjs";
 export const DISK = "dsk-00000000000baf76";
 export const REGION = "aws-us-east-1";
 /** A disk token as the server holds it: planted, so a test finds it wherever it leaks. */
-export const TOKEN = "planted-archil-disk-token-sentinel-0123456789";
+export const TOKEN = "planted-archil-mount-token-sentinel-0123456789";
 export const HELPER_PATH = "/usr/local/sbin/agentrun-archil";
 export const TOOL_USER = "agentrun-tool";
 const HELPER = fileURLToPath(new URL("../../box/agentrun-archil", import.meta.url));
