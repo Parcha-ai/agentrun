@@ -243,7 +243,7 @@ test("the same, with every launch path slow where it refreshes a run's MCP OAuth
   t.after(() => next.close());
   const api = client(next.baseUrl, next.token);
   const { rows } = await follow(api, runId, ["completed", "failed", "cancelled"], { deadlineMs: 60_000 });
-  assert.deepEqual([(await view(api, runId)).status, said(rows)], ["completed", ["Write one.md", CONTINUE("$1")]], "one follow-up across the restart");
+  assert.deepEqual([(await view(api, runId)).status, said(rows)], ["completed", ["Write one.md", CONTINUE("$1"), WRAP_UP("$1")]], "one follow-up across the restart");
   const again = await raise(api, runId, { max_cost_usd: 1 });
   assert.equal(again.status, 409, `an ended run takes no raise: ${JSON.stringify(again.body)}`);
   const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true, timeout: 5_000 });
