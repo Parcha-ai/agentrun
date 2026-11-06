@@ -116,3 +116,19 @@ test('the seam cleans every provider\'s evidence, a third party\'s too: a javasc
   assert.deepEqual(kept.map((e) => e.url), ['https://ok.example/a'], 'the javascript: item is dropped');
   assert.ok(kept[0].excerpts[0].length <= 4096 && kept[0].excerpts[0].endsWith('…'), `the excerpt is cut: ${kept[0].excerpts[0].length}`);
 });
+
+test('wrapping evidence leaves every other value as it was: a host code node\'s Date and a toJSON value reach a later prompt as JSON sent them before', async () => {
+  const p = provider();
+  class Money { constructor(cents) { this.cents = cents; } toJSON() { return `$${(this.cents / 100).toFixed(2)}`; } }
+  const due = new Date('2026-11-06T00:00:00Z');
+  const runCode = async (node) => (node.label === 'stamp' ? { dueAt: due, fee: new Money(500) } : { final: { ok: true } });
+  const doc = { v: 2, name: 'values-then-ask', schemas: SCHEMAS, output: { schemaId: 'Out', path: 'final' }, root: { node: 'chain', steps: [
+    { node: 'judge', label: 'check', provider: 'parallel', evidence: 'if_supported', state: { text: '{text}' }, out: 'Check', as: 'check' },
+    { node: 'code', label: 'stamp', code: '() => ({})' }, gate, finish] } };
+  const outcome = await runWorkflow(doc, { text: 'a filing' }, { ...hostedBy(p), runCode });
+  assert.equal(outcome.status, 'complete', JSON.stringify(outcome).slice(0, 300));
+  const asked = p.asked.at(-1).state;
+  assert.equal(JSON.stringify(asked.dueAt), JSON.stringify(due), `the Date is sent as before: ${JSON.stringify(asked.dueAt)}`);
+  assert.equal(JSON.stringify(asked.fee), '"$5.00"', `the toJSON value is sent as before: ${JSON.stringify(asked.fee)}`);
+  assert.equal(wrappedEvidence(asked).length, 1, 'the evidence is still wrapped');
+});
