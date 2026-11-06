@@ -123,9 +123,9 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
     setSaving(true);
     // A workflow agent's edit is sent as its parsed JSON; text that does not parse is not sent at all.
     let fields: AgentFields = { ...f, workflowText: undefined, maxCostText: undefined };
-    // The default cap, an agentic revision's only: the field's number. Emptied, an edit clears a saved cap with an explicit
-    // 0 (the server's "no default"; a field left out keeps the cap), and sends none when there is no cap to clear.
-    if (!workflow && !starting) {
+    // The default cap, an agentic revision's or a workflow's: the field's number. Emptied, an edit clears a saved cap with an
+    // explicit 0 (the server's "no default"; a field left out keeps the cap), and sends none when there is no cap to clear.
+    if (!starting) {
       const cap = capOf(f.maxCostText);
       if (!cap.ok) { setSaving(false); setProblem({ kind: "invalid", message: cap.message, fields: { "definition.max_cost_usd": cap.message } }); return; }
       // 0 (typed, or an emptied field) clears a saved cap; with no cap saved there is nothing to clear, and a 0 sent
@@ -337,7 +337,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                   <input id="agent-model" value={f.model ?? ""} onChange={(e) => set({ model: e.target.value || undefined })} placeholder="provider/model" className={input} />
                 </Field>
               )}
-              {!workflow && !starting && (
+              {!starting && (
                 <Field label="Default spend cap per run, $" id="agent-max-cost" optional note="A run started without a cap of its own, and a trigger with none, stops at this spend. Empty means none." error={fieldError("max_cost_usd")} warning={fieldWarning("max_cost_usd")}>
                   <input id="agent-max-cost" inputMode="decimal" value={f.maxCostText ?? ""} onChange={(e) => set({ maxCostText: e.target.value })} placeholder="e.g., 2.50" className={input} />
                 </Field>

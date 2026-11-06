@@ -315,6 +315,10 @@ export type WorkflowDeps = {
      *  a host that has none to fork refuses it. */
     context?: AgentContext;
   }) => Promise<unknown>;
+  /** How long, in milliseconds, the host has held the call at `executionPath` so far, from any origin (a pause for a raise
+   *  of the run's spend cap, which no deadline is for): a call node's deadline moves back by what this grows while its
+   *  attempt runs. Absent = nothing is held, and the deadline is the attempt's own. */
+  held?: (executionPath: string) => number;
   runEffect?: (params: {
     node: CallNode;
     schema?: Record<string, unknown>;
@@ -1822,6 +1826,11 @@ async function runCallNode(node: CallNode, state: Record<string, unknown>, workf
       const controller = new AbortController();
       const attemptMs = Math.max(1, Math.min(node.deadline_s * 1000, remainingMs <= 0 && deps.recovery ? Infinity : remainingMs));
       const attemptDeadlineMs = performance.now() + attemptMs;
+      // What the host holds this call for (deps.held: a pause for a raise of the run's spend cap) is not the call's own
+      // time: its deadline moves back by every millisecond held while the attempt runs.
+      const heldPath = executionPath(deps);
+      const heldAt = deps.held?.(heldPath) ?? 0;
+      const deadlineNow = () => attemptDeadlineMs + Math.max(0, (deps.held?.(heldPath) ?? 0) - heldAt);
       let settled: EffectSettlement | undefined;
       let unknownOutcome: EffectOutcomeUnknownError | undefined;
       let interruptionCheck: ReturnType<typeof setImmediate> | undefined;
@@ -1860,7 +1869,7 @@ async function runCallNode(node: CallNode, state: Record<string, unknown>, workf
       let timer: LongTimer | undefined;
       const armDeadline = (ms: number) => {
         timer = setLongTimeout(() => {
-          const remainingMs = attemptDeadlineMs - performance.now();
+          const remainingMs = deadlineNow() - performance.now();
           if (remainingMs > 0) armDeadline(Math.ceil(remainingMs));
           else interrupt("deadline");
         }, ms);
@@ -1870,7 +1879,7 @@ async function runCallNode(node: CallNode, state: Record<string, unknown>, workf
         deps.onEvent?.({ type: "effect.attempt", label: node.label, detail: { via: node.via, attempt, idempotency_key: idempotencyKey } });
         Promise.resolve().then(() => {
           if (deps.signal?.aborted) throw deps.signal.reason ?? new Error("workflow aborted");
-          if (controller.signal.aborted || performance.now() >= attemptDeadlineMs) {
+          if (controller.signal.aborted || performance.now() >= deadlineNow()) {
             throw new EffectFailure(`call node "${node.label}" deadline elapsed before effect admission`, "timeout");
           }
           return deps.runEffect!({ node: effectNode, schema, input, produces, attempt, idempotencyKey, signal: controller.signal, ...(Number.isFinite(attemptDeadlineMs) ? { deadlineAt: attemptDeadlineMs } : {}) });
@@ -1880,7 +1889,7 @@ async function runCallNode(node: CallNode, state: Record<string, unknown>, workf
         if (outcome.status === "rejected") throw outcome.reason;
         result = outcome.value;
         if (deps.signal?.aborted) throw deps.signal.reason ?? new Error("workflow aborted");
-        if (controller.signal.aborted || performance.now() >= attemptDeadlineMs) throw new EffectDeadlineExceededError(node.label, result);
+        if (controller.signal.aborted || performance.now() >= deadlineNow()) throw new EffectDeadlineExceededError(node.label, result);
         failed = false;
         lastError = undefined;
         break;

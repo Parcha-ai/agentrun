@@ -40,6 +40,7 @@ import { DOCUMENTS_ENV } from "./pdf-pages.js";
 import { BOUND_FIELD, CAP_ENV, CAP_MODE_ENV, CAP_MODES, CAP_REFUSAL_PREFIX, CAP_REFUSED_FIELD, CAP_TOLERANCE, type CapMode, FIT_TOLERANCE, money, type RefusalFigures, roomRefusal, SPEND_CAP_REACHED, spentIn } from "./cap.js";
 import { DEFAULT_MODEL_ENV, EFFORT_ENV, GATEWAY_KEY_ENV, hostModel, llmTiers, modelKeys, nodeTiers, PROVIDER_KEYS, thinkingOf, type Tier, withoutFaux, workflowNodes } from "./model.js";
 import { llmAnswers, pausedIn, readNodeLog, RUN_PAUSED } from "./pause.js";
+import { BUDGET_PAUSE, budgetPausedIn, capStoppedIn, clearBudgetPause, writeRaisedCap } from "./budget.js";
 import { durationMs } from "./print.js";
 import { handsParallel, keptFromBefore, keptVendor, type Plane, planeFor, recheckPlane, relaunchPlane, TOOL_PLANE_ENV, type Tooling, type ToolSettingsMap } from "./tool-plane.js";
 import { APPROVAL_ENTRY, APPROVAL_ROW, NO_APPROVER_ENV, type PendingApproval, permissionOf, previewOf, RESUME_PREFIX, TURN_ORIGIN_FILE } from "./tool-gate.js";
@@ -471,7 +472,7 @@ const meaningful = (rows: readonly TimelineEvent[]) => rows.findLast((r) => show
 /** What a run waits on, as `pending` says it (one field for every kind; a tool call waiting on approval is another):
  *  the question a waiting run asked, read from its last meaningful row (withAsks' waiting row), the same row its
  *  status reads, never from a scan of its timeline. */
-type Pending = { kind: "question"; question: string; asked_at: string } | PendingApproval | { kind: "budget"; cap_usd: number; spent_usd?: number; needs_usd?: number; least_cap_usd?: number; suggested_cap_usd?: number; overshoot_bound_usd?: number; said: string; at: string } | null;
+type Pending = { kind: "question"; question: string; asked_at: string } | PendingApproval | { kind: "budget"; cap_usd: number; spent_usd?: number; needs_usd?: number; least_cap_usd?: number; suggested_cap_usd?: number; overshoot_bound_usd?: number; said: string; at: string; node?: string | null } | null;
 const pendingOf = (rows: readonly TimelineEvent[]): Pending => {
   const last = meaningful(rows);
   return last?.kind === "waiting" ? { kind: "question", question: last.text ?? last.summary ?? "", asked_at: last.timestamp } : null;
@@ -598,6 +599,19 @@ const budgetPending = (run: Run, spentNow?: number): Pending | undefined => {
   // request cost beyond what it needs (cap.ts), 0 for none.
   const figures = r && spent !== undefined ? { spent_usd: micro(spent), needs_usd: micro(r.needsUsd), least_cap_usd: r.leastCapUsd, suggested_cap_usd: suggestedCap(cap, spent, r.needsUsd), overshoot_bound_usd: microUp(r.boundUsd ?? 0) } : {};
   return { kind: "budget", cap_usd: cap, ...figures, said, at: meaningful(run.rows)?.timestamp ?? run.updatedAt };
+};
+/** A workflow run paused at its cap (budget.ts): its step waits for a raise in its process, or with none (let go). */
+const budgetWaiting = (run: Run): boolean => run.kind === "workflow" && !!run.dir && existsSync(join(run.dir, BUDGET_PAUSE));
+/** A workflow run's pause at its cap, as its process wrote it: the refusal's words and figures, as an agentic run's
+ *  budgetPending serves them, and the node whose step waits. */
+const workflowBudgetPending = (run: Run): Pending | undefined => {
+  const mark = run.kind === "workflow" && run.dir ? budgetPausedIn(run.dir) : undefined;
+  if (!mark) return undefined;
+  const cap = run.meta.max_cost_usd ?? mark.cap_usd;
+  const figures = mark.spent_usd !== undefined && mark.needs_usd !== undefined
+    ? { spent_usd: micro(mark.spent_usd), needs_usd: micro(mark.needs_usd), ...(mark.least_cap_usd !== undefined ? { least_cap_usd: mark.least_cap_usd } : {}), suggested_cap_usd: suggestedCap(cap, mark.spent_usd, mark.needs_usd), overshoot_bound_usd: microUp(mark.bound_usd ?? 0) }
+    : {};
+  return { kind: "budget", cap_usd: cap, ...figures, said: mark.words, at: mark.at, node: mark.node };
 };
 /** The row a run shows while Claude Code installs for it (claude-sdk.ts), since `at`. */
 const installRow = (at: string): TimelineEvent => ({ id: "harness:installing", timestamp: at, created_at: at, kind: "phase", summary: INSTALLING_CLAUDE, agent_label: null, tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null, text: null });
@@ -773,7 +787,8 @@ export function statusOf(run: Run): { status: Status; state: State } {
   if (run.finishing) return { status: run.finishing, state: "idle" };
   // A paused workflow run finishes what it has in flight and starts nothing new until it is resumed (pause.ts). A held run
   // read without its directory (a view built for a count) has no mark to read.
-  if (run.kind === "workflow") return run.dir && pausedIn(run.dir) ? { status: "paused", state: "idle" } : { status: run.working ? "working" : "queued", state: "working" };
+  // One paused at its cap waits for a raise (budget.ts): input_required and waiting, with or without its process.
+  if (run.kind === "workflow") return budgetWaiting(run) ? { status: "input_required", state: "waiting" } : run.dir && pausedIn(run.dir) ? { status: "paused", state: "idle" } : { status: run.working ? "working" : "queued", state: "working" };
   const users = usersOf(run.rows);
   if (run.submitted > 0) return { status: users ? "working" : "queued", state: "working" };
   // No rows is a run not shown yet (adopted, before its first snapshot), whatever an old stop says. Rows with no
@@ -1861,7 +1876,7 @@ export class Runs {
     run.waited = waiting;
     if (run.log.setState(`${status}/${state}/${run.settled}`)) run.updatedAt = new Date().toISOString();
     // What it waits on: an ask_person question (waiting), else a stopped turn, for the person's next message.
-    if (status === "input_required") this.notice(run, "run.needs_input", waitMark(run), { kind: state !== "waiting" ? "stopped" : waitingApproval(run) ? "approval" : pausedAt(run) !== undefined ? "budget" : "question" });
+    if (status === "input_required") this.notice(run, "run.needs_input", waitMark(run), { kind: state !== "waiting" ? "stopped" : waitingApproval(run) ? "approval" : pausedAt(run) !== undefined || budgetWaiting(run) ? "budget" : "question" });
   }
 
   /** Tells webhooks.ts (`notify`) of a moment of the run under `marker`: a wait it reached (mark), or an end the agent store
@@ -2606,7 +2621,8 @@ export class Runs {
     if (!ended) {
       // Work left and no process: opened again. A run that waits for the person waits without one, until a message.
       // A raised run whose follow-up is still to go let its process go as a paused one does: its sign-in's lease goes too.
-      const stalled = run.kind === "workflow" || (statusOf(run).status !== "input_required" && !raisedToGo(run));
+      // A workflow run paused at its cap that let its process go waits for a raise, which opens it again (raiseCap).
+      const stalled = run.kind === "workflow" ? !budgetWaiting(run) : statusOf(run).status !== "input_required" && !raisedToGo(run);
       // Its sign-in's save lease stays with it until it ends (carryBack), through a relaunch or a restart: a session it
       // opened before its process went may still be live at the vendor, and would write back over another run's. One
       // that let go cleanly to wait for its person released its sessions first, so its lease goes now.
@@ -2644,7 +2660,11 @@ export class Runs {
       const { escalation, escalatedAt } = await readWorkflowRun(at, { unlocked: true });
       run.meta.review = { kind: escalation?.kind ?? null, node: escalation?.label ?? escalatedAt?.label ?? null, reason: escalation?.summary ?? summary };
     }
-    else if (state === "failed") run.error = { code: "run_failed", message: `The workflow failed: ${summary}.`, retryable: false };
+    else if (state === "failed") {
+      // Stopped by its cap for good (budget.ts CapStop: a step with no price, a spend no one knows): in the cap's words.
+      const capped = capStoppedIn(run.dir);
+      run.error = capped ? { code: SPEND_CAP_REACHED, message: capped.node ? `${capped.node}: ${capped.words}` : capped.words, retryable: false } : { code: "run_failed", message: `The workflow failed: ${summary}.`, retryable: false };
+    }
     await this.readDecisionCost(run);
     return { outcome: STATUS_OF[state], state, summary };
   }
@@ -3026,6 +3046,7 @@ export class Runs {
     if (run.cancel || run.finishing || TERMINAL.has(statusOf(run).status)) throw this.finished(run);
     const from = run.meta.max_cost_usd;
     if (from === undefined) throw invalid([{ field: "max_cost_usd", reason: "not_allowed", message: "This run has no cap to raise: a cap is named when a run starts." }]);
+    if (run.kind === "workflow") return this.raiseWorkflow(run, from, cap);
     const last = run.meta.cap_raised?.at(-1);
     const pause = pauseOf(run);
     const next = continuationOf(run);
@@ -3063,6 +3084,30 @@ export class Runs {
     const answered = pause !== undefined ? run.meta.cap_continue : undefined;
     if (!answered) return { resumed: false, ...(this.live(run) ? { note: `The run's process keeps the ${money(from)} cap it was opened with; the ${money(cap)} cap holds from its next process.` } : {}) };
     return { resumed: true, messageId: answered.message_id };
+  }
+
+  /** A workflow run's raise (budget.ts): serve.json keeps it first, as an agentic run's does, then `cap.json` tells the
+   *  run's process, whose step waiting at its cap is judged again under it, and a run whose process the pause let go is
+   *  opened again (its pause's mark taken away first, so its settle does not hold it) under the raised cap (CAP_ENV),
+   *  resuming from its journal. A raise while it works holds from its next check. The same raise again changes nothing. */
+  private async raiseWorkflow(run: Run, from: number, cap: number): Promise<{ resumed: boolean }> {
+    const last = run.meta.cap_raised?.at(-1);
+    if (Math.abs(cap - from) <= CAP_TOLERANCE && last && Math.abs(last.to - cap) <= CAP_TOLERANCE) return { resumed: false };
+    if (!(cap > from + CAP_TOLERANCE)) throw invalid([{ field: "max_cost_usd", reason: "invalid", message: `A cap is only raised: name more than the run's ${money(from)}.` }]);
+    const paused = budgetWaiting(run);
+    const raised = [...(run.meta.cap_raised ?? []), { from, to: cap, at: new Date().toISOString(), ...(paused ? { pause: "budget" } : {}) }];
+    await this.saveMeta(run, () => ({ ...run.meta, max_cost_usd: cap, cap_raised: raised }));
+    run.meta.max_cost_usd = cap;
+    run.meta.cap_raised = raised;
+    writeRaisedCap(run.dir, cap);
+    if (paused && !this.live(run) && !run.outcome && !run.cancel) {
+      clearBudgetPause(run.dir);
+      await this.pinNeeds(run);
+      await this.pinSignIn(run);
+      this.launch(run);
+    }
+    this.refresh(run);
+    return { resumed: paused };
   }
 
   /** Sends a raised run its pause's follow-up, under its id (the door takes one id once), at the run's cap now: as a
@@ -3554,7 +3599,7 @@ export class Runs {
       result: status === "completed" ? { output: run.kind === "workflow" ? (this.servedOutput(run, run.meta.output ?? null)) : null, final_answer: this.servedAnswer(run, finalAnswer) } : kept ? { output: null, final_answer: this.servedAnswer(run, kept) } : null,
       error: status === "failed" ? (run.error ?? { code: "run_failed", message: "The run failed.", retryable: false }) : null,
       review: endedAt === null ? null : reviewAt(run.meta.review ?? (row ? reviewOfRow(row, run.meta) : null), endedAt),
-      pending: status === "input_required" && state === "waiting" ? (approvalOf(run, this.redactor(run)) ?? budgetPending(run, this.spentNow(run)) ?? pendingOf(run.rows)) : null,
+      pending: status === "input_required" && state === "waiting" ? (approvalOf(run, this.redactor(run)) ?? budgetPending(run, this.spentNow(run)) ?? workflowBudgetPending(run) ?? pendingOf(run.rows)) : null,
       cost: this.cost(run),
       // How its cap prices a request (cap.ts CapMode): its own, else expected; null with no cap.
       cap_mode: run.meta.max_cost_usd === undefined ? null : (run.meta.cap_mode ?? "expected"),

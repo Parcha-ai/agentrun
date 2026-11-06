@@ -38,7 +38,14 @@
 // fits the cap, and whenever the spend is unknown; paid calls go one at a time, so each check sees the charge before
 // it. A call sent holds its figure until its charge joins the spend (paidHolds), so a model request judged meanwhile, on
 // pi or on another harness, counts it beside the spend, as a paid call's check counts the model requests in flight.
+//
+// A workflow run (app.ts) is capped by the same checks: its model nodes' requests and its `llm` calls through capModels,
+// its paid tools through paidCall, and its decisions through holdPaid (decision-cap.ts). Where an agentic run's turn ends
+// on a refusal for room and waits for a raise without its process, a workflow's refused step waits where it stands
+// (RunSpend.wait, budget.ts): a model node's request before it is sent, a call node's call and a decision before they are
+// admitted again. A refusal inside a call node's effect is told to the call (capRefusals), never only to the model.
 import { readRunDbSync } from "./run-db.js";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { existsSync } from "node:fs";
 import { providerInputOverhead } from "@parcha/agentrun-kernel/host";
 import { bookRequest, type Ended, isConnectCode, isGatewayTimeout, rejectionCode } from "@parcha/agentrun-kernel";
@@ -489,6 +496,28 @@ export function spentIn(storeFile: string, { sides = false }: { sides?: boolean 
   return entries.reduce((sum, entry) => sum + costOf(entry), 0);
 }
 
+/** A workflow decision's charge as the cap counted it (decision-cap.ts): `call` names the request, `usd` what it charged,
+ *  or its hold when it said none. The run's shown cost reads its decisions from their receipts; this is the cap's own
+ *  reading, kept so a later process counts each decision as this one did. costOf counts none, so nothing counts twice. */
+export const DECISION_COST = "agentrun.decision_cost";
+
+/** What a workflow run's decisions cost, as the cap counted each (DECISION_COST entries) in its store: what the next
+ *  process adds to spentIn's reading. */
+export function decisionSpentIn(storeFile: string): number {
+  if (!existsSync(storeFile)) return 0;
+  let sum = 0;
+  readRunDbSync(storeFile, false, (db) => {
+    sum = 0;
+    for (const row of db.prepare("SELECT record FROM entries ORDER BY rowid").iterate()) {
+      const entry = JSON.parse(String((row as { record: string }).record)) as EntryLike;
+      if (entry.kind !== DECISION_COST) continue;
+      const usd = figureOf((entry.data as { usd?: unknown } | undefined)?.usd);
+      if (usd !== undefined && usd > 0) sum += usd;
+    }
+  });
+  return sum;
+}
+
 /** /usage's meters for a run that ended, from its store: `tools`, each TOOL_COST's `usd`, unknown (null) when one is,
  *  or when a call was cut (marked, never settled: what it charged no one knows); and `tokens`, the rest of its root
  *  conversation as its settled timeline prices it; `browser`, the part of `tools` that is browser session time
@@ -572,9 +601,29 @@ export function holdsInFlight() {
  *  (harness-app.ts); none without a cap. A run is one process, so one is set per process. `now`: the whole figure read at
  *  once, held requests included, with no wait for a cost still coming in; another harness sets it, for the run's own
  *  model requests beside the harness's (capModels' `joined`). */
-export type RunSpend = { cap: number; spent(): number | null | Promise<number | null>; held?(): number; add(usd: number | null): void; now?(): number | null };
+export type RunSpend = {
+  cap: number; spent(): number | null | Promise<number | null>; held?(): number; add(usd: number | null): void; now?(): number | null;
+  /** Raises the cap this process keeps to `to` (a raise of the run's cap, read by budget.ts): from the next check on. */
+  raise?(to: number): void;
+  /** A workflow run's wait for a raise (budget.ts), set once its run opens: a request refused for room waits on it before
+   *  it is sent, and is judged again once it resolves true (the cap was raised); false (a cancel, its signal) refuses it
+   *  as before. Absent on an agentic run, whose turn ends on the refusal instead. */
+  wait?(refusal: CapRefusal, signal?: AbortSignal): Promise<boolean>;
+  /** A workflow run's record of a refusal no raise fixes (budget.ts), which its run ends on, in the cap's words. */
+  stopped?(refusal: CapRefusal): void;
+};
+/** A refusal of the cap, as a call that was refused is told it: its words (after the code, as a pause serves them),
+ *  whether a higher cap would send it (`room`; not so for no price, no ceiling or an unknown spend), the cap that refused
+ *  it, and its figures when it was refused for room. */
+export type CapRefusal = { words: string; room: boolean; capUsd: number; figures?: RefusalFigures };
+/** Where a refusal of the cap inside a workflow call node's effect is told (app.ts runEffect): the call ends on it and
+ *  waits for a raise, never handed back as the tool's own failure, which a collecting map would take as the item's. A
+ *  paid call refused there leaves no refusal for a model's next request (takePaidRefusal): no model turn follows it. */
+export const capRefusals = new AsyncLocalStorage<(refusal: CapRefusal) => void>();
 let runSpend: RunSpend | undefined;
 let paying: Promise<unknown> = Promise.resolve();
+/** The run's spend this process counts, when it has a cap: for a workflow run's waits and decisions (app.ts). */
+export const runSpendNow = (): RunSpend | undefined => runSpend;
 export const useSpend = (spend: RunSpend | undefined): void => {
   runSpend = spend;
   // A paid call's refusal is its own spend's (its run's): another spend starts with none.
@@ -635,7 +684,11 @@ export async function paidCall<T>(name: string, call: () => Promise<T>, charge: 
   if (!spend) return { result: await call() };
   const turn = paying.then(async () => {
     const read = await spend.spent();
-    if (read === null) return { refused: `${SPEND_CAP_REACHED}: ${name} was not sent. What the run has spent is unknown, so its cap of ${money(spend.cap)} cannot be kept: the run is out of budget.` };
+    if (read === null) {
+      const text = `${SPEND_CAP_REACHED}: ${name} was not sent. What the run has spent is unknown, so its cap of ${money(spend.cap)} cannot be kept: the run is out of budget.`;
+      capRefusals.getStore()?.({ words: text.slice(`${SPEND_CAP_REACHED}: `.length), room: false, capUsd: spend.cap });
+      return { refused: text };
+    }
     // What is held for requests and calls still answering, apart from what was spent, as a model request's refusal says it.
     const holding = (spend.held?.() ?? 0) + paidHolds();
     // Written so that a figure that is not a number refuses.
@@ -643,7 +696,11 @@ export async function paidCall<T>(name: string, call: () => Promise<T>, charge: 
       // Refused for room: a raise would send it, so the run pauses at the model's next request (takePaidRefusal). Its
       // words and the least cap that sends it (leastCapUsd) are one figure, which the pause carries to its mark and serves.
       const refusal = paidRefusal(spend.cap, read, holding, name, hold);
-      paidRoomRefusal = { owner: spend, words: refusal.text.slice(`${SPEND_CAP_REACHED}: `.length), figures: { spentUsd: read + holding, needsUsd: hold.usd, leastCapUsd: refusal.leastCapUsd } };
+      const room = { words: refusal.text.slice(`${SPEND_CAP_REACHED}: `.length), figures: { spentUsd: read + holding, needsUsd: hold.usd, leastCapUsd: refusal.leastCapUsd } };
+      // Inside a workflow's call node: the call is told, and ends on it. Else the model's next request is refused in its words.
+      const told = capRefusals.getStore();
+      if (told) told({ ...room, room: true, capUsd: spend.cap });
+      else paidRoomRefusal = { owner: spend, ...room };
       return { refused: refusal.text, leastCapUsd: refusal.leastCapUsd };
     }
     // Held from here; settled into the spend in the same step that lets the hold go, so no check between sees neither.
@@ -663,6 +720,42 @@ export async function paidCall<T>(name: string, call: () => Promise<T>, charge: 
   });
   paying = turn.catch(() => undefined);
   return turn;
+}
+
+/** A paid call's hold, taken ahead of the call by the rule paidCall keeps (a workflow's decision, decision-cap.ts, which
+ *  must wait for a raise before its request is admitted, never after): refused unless what the run has spent plus what
+ *  is held plus `hold` fits the cap, and whenever the spend is unknown; else held (paidHolds) until the ticket settles it
+ *  at the charge the call reports (null: at its hold, as paidCall counts a charge not said) or drops it (nothing was
+ *  sent). The check takes its turn with paidCall's, but the call it holds for goes beside other calls: each check sees the
+ *  holds of those under way. A refusal for room waits on the run's wait (RunSpend.wait) when it has one and is checked
+ *  again once the cap is raised. With no cap it holds nothing. */
+export type PaidTicket = { settle(usd: number | null): void; drop(): void };
+export async function holdPaid(name: string, hold: { usd: number; basis: string }, signal?: AbortSignal): Promise<{ refused: CapRefusal } | { ticket: PaidTicket }> {
+  for (;;) {
+    const spend = runSpend;
+    if (!spend) return { ticket: { settle: () => undefined, drop: () => undefined } };
+    const turn = paying.then(async (): Promise<{ refused: CapRefusal } | { ticket: PaidTicket }> => {
+      const read = await spend.spent();
+      if (read === null) return { refused: { words: `${name} was not sent. What the run has spent is unknown, so its cap of ${money(spend.cap)} cannot be kept: the run is out of budget.`, room: false, capUsd: spend.cap } };
+      const holding = (spend.held?.() ?? 0) + paidHolds();
+      if (!(read + holding + hold.usd <= spend.cap + FIT_TOLERANCE)) {
+        const refusal = paidRefusal(spend.cap, read, holding, name, hold);
+        return { refused: { words: refusal.text.slice(`${SPEND_CAP_REACHED}: `.length), room: true, capUsd: spend.cap, figures: { spentUsd: read + holding, needsUsd: hold.usd, leastCapUsd: refusal.leastCapUsd } } };
+      }
+      // Held from here, in the same step as the check, so no other check between sees neither.
+      const open = { usd: hold.usd };
+      paidOpen.add(open);
+      let done = false;
+      return { ticket: {
+        settle: (usd) => { if (done) return; done = true; spend.add(usd ?? hold.usd); paidOpen.delete(open); },
+        drop: () => { if (done) return; done = true; paidOpen.delete(open); },
+      } };
+    });
+    paying = turn.catch(() => undefined);
+    const held = await turn;
+    if (!("refused" in held) || !held.refused.room || !spend.wait || signal?.aborted) return held;
+    if (!(await spend.wait(held.refused, signal))) return held;
+  }
 }
 
 /** The most output tokens one request may take: the model's ceiling, else its context window. A thinking budget can
@@ -936,7 +1029,11 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
   const spentNow = (): number | null => (joined ? (runSpend?.now?.() ?? null) : spent);
   // The run's spend as a paid tool's check reads it (installed below, useSpend): the requests in flight held at their
   // worst case apart from it (it adds the paid holds itself), and its charge joins the spend.
-  const own: RunSpend = { cap, spent: () => spent, held: () => held, add: (usd) => void (spent = spent !== null && typeof usd === "number" && Number.isFinite(usd) ? spent + usd : null) };
+  // `cap` moves only by a raise (raise: a workflow run's, budget.ts), read at each check from then on.
+  const own: RunSpend = {
+    get cap() { return cap; }, spent: () => spent, held: () => held, add: (usd) => void (spent = spent !== null && typeof usd === "number" && Number.isFinite(usd) ? spent + usd : null),
+    raise: (to) => void (to > cap && (cap = to)),
+  };
   type Options = { maxTokens?: number; reasoning?: string; thinkingBudgets?: Record<string, number> } & Record<PropertyKey, unknown>;
   /** What a request is held at (its expected cost, its worst case under strict), its bound, and the options it goes with
    *  (limited to what is left of the cap, when that is less than it asks for), or why the cap refuses it. `simpleCall`:
@@ -1072,6 +1169,31 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
         admit(judged.hold, judged.stopped, () => (events = send(model, context, carrying(judged.options ?? options, judged, attempts))).result(), attempts);
         return events!;
       }
+      // A workflow run's turn request refused for room waits for a raise, unsent, and is judged again (RunSpend.wait):
+      // its node stands where it is. Its events then come from the request sent, or from the refusal if none is.
+      const room = roomRefusal(judged.why);
+      if (room !== undefined && own.wait) {
+        const waited = createAssistantMessageEventStream();
+        const signal = (options as { signal?: AbortSignal } | undefined)?.signal;
+        void own.wait({ words: room, room: true, capUsd: cap, ...(judged.figures ? { figures: judged.figures } : {}) }, signal).then(
+          (raised) => raised ? stream(send, simpleCall)(model, context, options) : refusedStream(model, judged),
+          () => refusedStream(model, judged),
+        ).then(async (events) => {
+          for await (const event of events) waited.push(event);
+          waited.end(await events.result());
+        }).catch((error: unknown) => {
+          const failed = refusal(model, `${SPEND_CAP_REACHED}: Not sent: the wait for a raise failed (${String((error as Error)?.message ?? error).slice(0, 200)})`);
+          waited.push({ type: "error", reason: "error", error: failed });
+          waited.end(failed);
+        });
+        return waited;
+      }
+      // A refusal no raise fixes ends a workflow's run in its words (budget.ts): the node fails on the refusal.
+      if (room === undefined) own.stopped?.({ words: judged.why.replace(CAP_REFUSAL_PREFIX, ""), room: false, capUsd: cap });
+      return refusedStream(model, judged);
+    };
+  /** The refusal's own stream: its start mark first, then pi's error for it. */
+  const refusedStream = (model: Model<Api>, judged: { why: string; figures?: RefusalFigures }): AssistantMessageEventStream => {
       const refused = createAssistantMessageEventStream();
       const message = refusal(model, judged.why);
       // Its own start mark first, so pi's error entry for it answers that mark, never an earlier request a stop or a crash
@@ -1088,7 +1210,12 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
   const complete = (send: (model: Model<Api>, context: Context, options?: Options) => Promise<AssistantMessage>, simpleCall: boolean) =>
     (model: Model<Api>, context: Context, options?: Options): Promise<AssistantMessage> => {
       const judged = judge(model, context, options, simpleCall, false);
-      if (!("hold" in judged)) return Promise.resolve(refusal(model, judged.why));
+      if (!("hold" in judged)) {
+        // Inside a workflow's call node (the `llm` tool): the call is told, and ends on it (app.ts runEffect).
+        const room = roomRefusal(judged.why);
+        capRefusals.getStore()?.({ words: room ?? judged.why.replace(CAP_REFUSAL_PREFIX, ""), room: room !== undefined, capUsd: cap, ...(judged.figures ? { figures: judged.figures } : {}) });
+        return Promise.resolve(refusal(model, judged.why));
+      }
       const attempts = attemptsFor(model);
       return admit(judged.hold, judged.stopped, () => send(model, context, carrying(judged.options ?? options, judged, attempts)), attempts);
     };

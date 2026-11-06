@@ -34,7 +34,7 @@ export type {
   CompiledQuestions, AnswersSidecar, ConfidenceSource,
 } from "./system-one.js";
 
-export { judgeFromProvider, judgeFromProviders, checkCapabilities, DecisionProviderError, imageDimensions } from "./decision-provider.js";
+export { judgeFromProvider, judgeFromProviders, checkCapabilities, chargedCost, DecisionProviderError, imageDimensions } from "./decision-provider.js";
 export type {
   DecisionProvider, DecisionCapabilities, DecisionInput, DecisionRequest, DecisionContext, DecisionEvidence, DecisionOutcome,
   ProviderAnswer, CostBasis, DecisionProviderErrorCode, DecisionImage, LoadImage, JudgeFromProviderOptions,
