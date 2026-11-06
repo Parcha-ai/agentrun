@@ -33,6 +33,11 @@ test("the wrap-up's words, the amount to the cent", () => {
   assert.equal(call("wrapUpWords", 0.2), "About $0.20 left of this run's budget: finish now with your answer.");
 });
 
+test("with no priced request yet (its typical cost the next request's expected cost) the wrap-up's words say the budget, not a finish: a run told before its first request reads them at step 0", () => {
+  assert.equal(call("wrapUpWords", 0.5, true), "This run's budget is about $0.50, enough for little work: answer as soon as you can.");
+  assert.equal(call("wrapUpWords", 0.5, false), "About $0.50 left of this run's budget: finish now with your answer.", "with a priced request, the words as before");
+});
+
 test("the typical cost after a restart is the one the live process counted: a request's own reported cost above 0, never a lost or stopped request's booked or held figure", async () => {
   const { ownCosts } = await import("../dist/harness-app.js");
   // As the runner writes them (runner.ts): an answered request, one lost after its response began (booked at its hold,
