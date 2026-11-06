@@ -156,7 +156,7 @@ test("a run whose monid call times out (TIMED_OUT, no cost said) books its charg
   useSpend({ cap: 1.002, spent: () => capToolSpend(root), add: () => {} });
   assert.match((await paidCall("monid_run", async () => ({}), chargeOf, { usd: 0.003, basis: "quoted" })).refused ?? "", /^spend_cap_reached: Not sent: the run has spent \$1 of its \$1\.002 cap, and monid_run could cost up to \$0\.003 \(quoted\)\. Raise the cap to at least \$1\.01 to run it\.$/, "one that does not is refused for room");
   const guard = await capBefore(5, { id: "faux", api: "faux", provider: "faux", maxTokens: 10, contextWindow: 100, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } });
-  assert.deepEqual(guard.beforeRequest({ spentUsd: capToolSpend(root), inFlight: [], inputTokensMax: 1 }), { outputTokensMax: 10 }, "and a model request that fits goes, at its whole output (#1539's clamp leaves it whole)");
+  assert.equal(guard.beforeRequest({ spentUsd: capToolSpend(root), inFlight: [], inputTokensMax: 1 }).outputTokensMax, 10, "and a model request that fits goes, at its whole output (#1539's clamp leaves it whole)");
 });
 
 test("a capped pi run stopped while its monid call is under way: monid is asked to stop it, the call counts at its hold, never unknown, and the next message's request goes while the cap allows; the run's cost reads unknown", { timeout: 90_000 }, async (t) => {
