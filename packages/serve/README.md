@@ -2214,7 +2214,9 @@ in flight are held at) is under three times the run's typical request, the next 
 "About $X left of this run's budget: finish now with your answer." at its end, and the Timeline shows it as the server's
 row ("AgentRun: About $X left …"). The typical request is the median of the run's own model's priced requests after the
 first (the first writes the cache), else that one, else the next request's expected cost; side calls on another model
-and paid tools count in what is left, never in the typical request. On pi the words go into that one request's context;
+and paid tools count in what is left, never in the typical request. Told before the run's own model has a priced request
+(a small cap on a pricey model can be due at its first), the words say the budget instead: "This run's budget is about
+$X, enough for little work: answer as soon as you can." On pi the words go into that one request's context;
 on claude-agent, codex and opencode the model proxy adds them to the body (after everything the CLI sent, so its cached
 prefix is unchanged). Neither CLI nor pi keeps them in its transcript, and no message is queued, so nothing runs after
 the model's answer. Once per cap, across restarts; a raise re-arms it.

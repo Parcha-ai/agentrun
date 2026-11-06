@@ -133,8 +133,14 @@ export function wrapUpDue(cap: number, spent: number, held: number, typical: num
   const leftUsd = cap - spent - held;
   return Number.isFinite(leftUsd) && Number.isFinite(typical) && leftUsd < WRAP_UP_FACTOR * typical ? { leftUsd } : undefined;
 }
-/** The wrap-up's words, what is left to the cent. */
-export const wrapUpWords = (leftUsd: number): string => `About ${centsMoney(Math.max(0, leftUsd))} left of this run's budget: finish now with your answer.`;
+/** The wrap-up's words, what is left to the cent. `nonePriced`: the run's own model has no priced request yet, so its
+ *  typical cost is the next request's expected cost and the note can come before the run has done anything (step 0):
+ *  the words say the budget and ask for a short answer, not a finish. Read from the same priced costs live and in a
+ *  process opened again (costsIn, ownCosts), so a restart picks the same words. */
+export const wrapUpWords = (leftUsd: number, nonePriced = false): string => {
+  const left = centsMoney(Math.max(0, leftUsd));
+  return nonePriced ? `This run's budget is about ${left}, enough for little work: answer as soon as you can.` : `About ${left} left of this run's budget: finish now with your answer.`;
+};
 
 /** A request priced at `price` under `mode`, its input `bound` tokens after `previous` at `now`, plus `feeUsd`: `cost`, what
  *  it is held at given its output tokens (its expected input, never more than uncached), and `worst`, its input uncached.
@@ -1007,7 +1013,7 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
     // What is left as admission counted it: what was spent, and what requests and paid calls in flight are held at.
     const due = spentUsd === null ? undefined : wrapUpDue(cap, spentUsd, held + paidHolds(), typicalCost(wrapUp.costs, judged.hold));
     if (!due) return judged;
-    const words = wrapUpWords(due.leftUsd);
+    const words = wrapUpWords(due.leftUsd, wrapUp.costs.length === 0);
     const noted = { ...context, messages: [...context.messages, { role: "user", content: `<system-reminder>${words}</system-reminder>`, timestamp: now() }] } as Context;
     const again = judgeOne(model, noted, options, simpleCall, turn);
     // The note's own bytes do not fit: the request goes as it came, and the note waits for one they do.
