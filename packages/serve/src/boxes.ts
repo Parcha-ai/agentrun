@@ -14,6 +14,8 @@
 // handed one (SERVER_ONLY in runs.ts).
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { userInfo } from "node:os";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { BoxProvider } from "@parcha/pi-transport";
 import { withoutSecrets } from "./secrets.js";
@@ -53,8 +55,9 @@ export type BoxRegistry = {
   vmClient(): unknown;
 };
 /** What boxRegistry takes beyond the environment: the probes' bound, and, for tests only, the module that stands in for
- *  the VM provider's SDK (startServe's `fauxVm`, under --faux). */
-export type BoxRegistryOptions = { timeoutMs?: number; vmSdk?: () => Promise<Record<string, unknown>> };
+ *  the VM provider's SDK (startServe's `fauxVm`, under --faux) and the group file and this process's groups that say
+ *  whether a refused docker socket is a membership granted since this process started (`groups`). */
+export type BoxRegistryOptions = { timeoutMs?: number; vmSdk?: () => Promise<Record<string, unknown>>; groups?: { file: string; user: string; ids: readonly number[] } };
 
 /** The setting that lists the boxes to set up: a comma list of box ids, empty or `none` for no box. */
 export const BOXES_ENV = "AGENTRUN_BOXES";
@@ -78,10 +81,24 @@ export function daytonaApi(env: NodeJS.ProcessEnv): { apiKey: string; apiUrl: st
 /** The boxes' keys: secrets the server holds and the probes read, which no run's process is handed (runs.ts). */
 export const BOX_KEYS: readonly string[] = [DAYTONA_KEY, ...VM_PROVIDER.keys];
 
-/** Why docker is unavailable when its daemon refuses this server's process its socket (EACCES on /var/run/docker.sock):
- *  the user is in the docker group, but this process started before it was (a systemd user manager that has run since,
- *  kept by linger), so a restart of that manager, or a new login, gives it the group. */
+/** Why docker is unavailable when its daemon refuses this server's process its socket (EACCES on /var/run/docker.sock)
+ *  and the group file lists this user in the docker group: this process started before the user joined it (a systemd
+ *  user manager that has run since, kept by linger), so a restart of that manager, or a new login, gives it the group. */
 export const DOCKER_NOT_IN_GROUP = "This server's process isn't in the docker group: restart your user manager with `sudo systemctl restart user@$(id -u)`, or log in again if linger is off";
+/** The same, when the group file does not list this user in the docker group (or cannot say): joining comes first. */
+export const DOCKER_JOIN_GROUP = "This server's process isn't in the docker group: add this user to it with `sudo usermod -aG docker $USER`, then restart your user manager with `sudo systemctl restart user@$(id -u)`, or log in again if linger is off";
+
+/** Whether the group file lists `user` in the docker group while this process's groups (`ids`) lack that group: a
+ *  membership granted after this process started. False when it cannot say (no file, no docker group, users listed
+ *  elsewhere, as a directory service lists them). */
+async function joinedSince(groups: { file: string; user: string; ids: readonly number[] }): Promise<boolean> {
+  const line = (await readFile(groups.file, "utf8").catch(() => "")).split("\n").find((entry) => entry.startsWith("docker:"));
+  if (!line) return false;
+  const [, , gid, members = ""] = line.split(":");
+  return members.split(",").map((name) => name.trim()).includes(groups.user) && !groups.ids.includes(Number(gid));
+}
+/** This process's user and groups, read from the system's group file: the probe's default for `groups`. */
+const ownGroups = () => ({ file: "/etc/group", user: userInfo().username, ids: process.getgroups?.() ?? [] });
 /** docker's own words for a socket that refused this process (the CLI's, or the connect's EACCES). Matched, never shown. */
 const SOCKET_DENIED = /permission denied while trying to connect to the docker daemon socket|docker\.sock: connect: permission denied/i;
 
@@ -179,7 +196,7 @@ async function load<T>(name: string, importer: () => Promise<T>): Promise<Loaded
 
 const PROBES: Record<Exclude<BoxId, "bwrap">, (env: NodeJS.ProcessEnv, signal: AbortSignal, options: BoxRegistryOptions) => Promise<Probed>> = {
   /** `docker version` names the daemon's version: the CLI is on PATH and its daemon answers this user. */
-  async docker(env, signal) {
+  async docker(env, signal, options) {
     const boxes = await load(TRANSPORT, () => import("@parcha/pi-transport/box/docker").then((module) => module.dockerBoxes));
     if (!boxes.ok) return unavailable("docker", boxes.reason);
     // Its environment is the server's through the cut a run's takes (withoutSecrets): no box key, no other secret, no
@@ -194,8 +211,9 @@ const PROBES: Record<Exclude<BoxId, "bwrap">, (env: NodeJS.ProcessEnv, signal: A
     // The probe runs once, at the start: each fix takes a restart. Docker is on by default, so its reason is often a
     // first-time user's first read: what is wrong in plain words, what the probe saw, then what to do.
     if (answer.failed === "ENOENT") return unavailable("docker", "Docker isn't running on this machine (no docker command on PATH): install or start Docker, then restart AgentRun");
-    // Its socket refused this process: the group it lacks, and how to get it without a reboot (the words, never docker's).
-    if (answer.denied) return unavailable("docker", DOCKER_NOT_IN_GROUP);
+    // Its socket refused this process: the group it lacks, and how to get it without a reboot (the words, never docker's):
+    // a restart alone where the group file already lists this user, else joining it first.
+    if (answer.denied) return unavailable("docker", (await joinedSince(options.groups ?? ownGroups())) ? DOCKER_NOT_IN_GROUP : DOCKER_JOIN_GROUP);
     if (answer.failed) return unavailable("docker", `Docker isn't running on this machine, or this user may not use it (docker version failed: ${answer.failed}): start Docker, or add this user to the docker group, then restart AgentRun`);
     if (!answer.out.trim()) return unavailable("docker", "Docker isn't running on this machine (docker version named no daemon): start Docker, then restart AgentRun");
     return available("docker", boxes.value());
