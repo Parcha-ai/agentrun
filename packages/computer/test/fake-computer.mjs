@@ -80,12 +80,13 @@ function fakeDaemon(hello, computer) {
  * - `capsForUser`: a computer whose spec asked for a user has every capability.
  * - `createRejects`: create rejects with that message. `createIgnoresCheck`: create makes a computer check refuses.
  * - `listPage`: how many processes one process.list page holds.
+ * - `declaresStopDeletes`: capabilities().stopDeletes, left out unless given. `stopIgnored`: a stop does nothing, and the
+ *   computer runs on.
  * - `networkSwitches`: network() applies a change to a network the provider declares, instead of refusing every change.
  *   Each network() call that asks for a policy is in `calls` as ["network", name, policy].
  * - `attachSpec`: merged over the spec attach reports (null: attach reports none).
- * - `release`, `stopDeletes`: what capabilities() declares (release ["stop", "delete"]; stopDeletes left out unless given).
- *   `onStop`: what release(ref, "stop") does: "stop" (default) keeps the computer, stopped; "delete" deletes it;
- *   "nothing" leaves it running; "refuse" answers unsupported, in words.
+ * - `release`: what capabilities().release declares (default stop and delete). A stop it does not declare is refused as
+ *   `unsupported` and leaves the computer running, unless `stopAnyway`; `stopDeletes`: a stop deletes the computer.
  */
 export function fakeComputers({
 	id = "fake",
@@ -107,11 +108,13 @@ export function fakeComputers({
 	createRejects,
 	createIgnoresCheck = false,
 	listPage = 100,
+	declaresStopDeletes,
+	stopIgnored = false,
 	networkSwitches = false,
 	attachSpec = {},
 	release = ["stop", "delete"],
-	stopDeletes,
-	onStop = "stop",
+	stopAnyway = false,
+	stopDeletes = false,
 } = {}) {
 	const computers = new Map();
 	const made = [];
@@ -121,7 +124,7 @@ export function fakeComputers({
 	const provider = {
 		id,
 		version,
-		capabilities: () => ({ lifetime, network, isolation: "container", os: "linux", daemon, ...(user ? { user } : {}), release, ...(stopDeletes === undefined ? {} : { stopDeletes }) }),
+		capabilities: () => ({ lifetime, network, isolation: "container", os: "linux", daemon, release, ...(user ? { user } : {}) }),
 		check(spec) {
 			const refusals = [];
 			if (!(Number.isSafeInteger(spec.lifetimeMs) && spec.lifetimeMs > 0)) refusals.push({ field: "lifetimeMs", message: "lifetimeMs is required" });
@@ -200,13 +203,19 @@ export function fakeComputers({
 		async release(ref, how) {
 			calls.push(["release", ref.name, how]);
 			if (releaseHangs) return new Promise(() => {});
+			if (how === "stop" && stopIgnored) return ok(undefined);
 			const record = computers.get(ref.name);
-			if (how === "stop" && onStop === "refuse") return fail("unsupported", "this provider does not stop a computer: release it with delete");
-			if (record && how === "stop" && onStop === "stop") record.state = "stopped";
-			if (record && how === "stop" && onStop === "delete") computers.delete(ref.name);
+			if (how === "stop" && !release.includes("stop") && !stopAnyway) return fail("unsupported", "this fake has no stop that keeps a computer; release it with delete");
+			if (record && how === "stop" && stopDeletes) computers.delete(ref.name);
+			if (record && how === "stop") record.state = "stopped";
 			if (record && how === "delete" && !keepOnRelease) computers.delete(ref.name);
 			return ok(undefined);
 		},
 	};
+	// stopDeletes as declared, apart from the line that declares the rest.
+	if (declaresStopDeletes !== undefined) {
+		const declared = provider.capabilities;
+		provider.capabilities = () => ({ ...declared(), stopDeletes: declaresStopDeletes });
+	}
 	return { provider, made, calls, alive: () => [...computers.keys()], open: () => connections };
 }

@@ -644,19 +644,19 @@ test("provider.stop holds a provider to the release it declares: stop kept, stop
 	};
 	for (const [what, options] of [
 		["a kept stop, declared", {}],
-		["a stop that deletes, declared with stopDeletes", { stopDeletes: true, onStop: "delete" }],
-		["no stop, declared by a release of delete alone, and refused in words", { release: ["delete"], onStop: "refuse" }],
+		["a stop that deletes, declared with stopDeletes", { declaresStopDeletes: true, stopDeletes: true }],
+		["no stop, declared by a release of delete alone, and refused in words", { release: ["delete"] }],
 	]) {
 		const { status, reason } = await run(options);
 		assert.equal(status, "pass", `${what}: ${reason}`);
 	}
 	for (const [what, options, words] of [
-		["stopDeletes declared, and the stop leaves the computer running", { stopDeletes: true, onStop: "nothing" }, /stopDeletes\): listed after it: expected \[\], got \["fake-1"\]/],
-		["stopDeletes declared, and the stop keeps the computer, stopped", { stopDeletes: true, onStop: "stop" }, /listed after it/],
-		["a kept stop declared, and the stop deletes", { stopDeletes: false, onStop: "delete" }, /a stopped computer is listed, stopped: expected \[\["fake-1","stopped"\]\], got \[\]/],
-		["a kept stop declared by default, and the stop deletes", { onStop: "delete" }, /a stopped computer is listed, stopped/],
-		["a kept stop declared, and the stop does nothing", { onStop: "nothing" }, /got \[\["fake-1","running"\]\]/],
-		["no stop declared, and the stop stops", { release: ["delete"], onStop: "stop" }, /release stop, which the provider does not declare/],
+		["stopDeletes declared, and the stop leaves the computer running", { declaresStopDeletes: true, stopIgnored: true }, /stopDeletes\): listed after it: expected \[\], got \["fake-1"\]/],
+		["stopDeletes declared, and the stop keeps the computer, stopped", { declaresStopDeletes: true }, /listed after it/],
+		["a kept stop declared, and the stop deletes", { declaresStopDeletes: false, stopDeletes: true }, /a stopped computer is listed, stopped: expected \[\["fake-1","stopped"\]\], got \[\]/],
+		["a kept stop declared by default, and the stop deletes", { stopDeletes: true }, /a stopped computer is listed, stopped/],
+		["a kept stop declared, and the stop does nothing", { stopIgnored: true }, /got \[\["fake-1","running"\]\]/],
+		["no stop declared, and the stop stops", { release: ["delete"], stopAnyway: true }, /release stop, which the provider does not declare/],
 	]) {
 		const { status, reason } = await run(options);
 		assert.equal(status, "fail", what);
@@ -666,8 +666,8 @@ test("provider.stop holds a provider to the release it declares: stop kept, stop
 
 test("provider.janitor needs release:stop and a provider that keeps a stopped computer, and skips in words otherwise", async () => {
 	for (const [options, reason] of [
-		[{ release: ["delete"], onStop: "refuse" }, "the provider does not declare release:stop"],
-		[{ stopDeletes: true, onStop: "delete" }, "the provider declares stopDeletes: a stop ends in deletion, so it keeps no stopped computer for the janitor to sweep"],
+		[{ release: ["delete"] }, "the provider does not declare release:stop"],
+		[{ declaresStopDeletes: true, stopDeletes: true }, "the provider declares stopDeletes: a stop ends in deletion, so it keeps no stopped computer for the janitor to sweep"],
 	]) {
 		const report = await runConformance(fakeComputers(options).provider, { image: IMAGE, cases: byId("provider.janitor") });
 		assert.equal(statuses(report)["provider.janitor"], "skip", JSON.stringify(options));
