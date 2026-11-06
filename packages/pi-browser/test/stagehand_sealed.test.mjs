@@ -1,17 +1,19 @@
 // The sealed Stagehand's attach steps (src/driver/sealed.ts): a step that names where it went, and a cancelled attach that
-// stops at once and hands anything that still attaches later back to be let go.
+// stops at once and hands anything that still attaches later back to be let go; and the driver's own use of them, over a
+// Stagehand module that stands in for the real one.
 import assert from "node:assert/strict";
 import test from "node:test";
 import { attachStep, throwIfCancelled, untilCancelled } from "../dist/driver/sealed.js";
+import { stagehandDriver } from "../dist/driver/stagehand.js";
 
 const later = () => { let resolve, reject; const promise = new Promise((y, n) => { resolve = y; reject = n; }); return { promise, resolve, reject }; };
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 
 test("a failed attach step names the host it went to and keeps the original as its cause; a step that succeeds is untouched", async () => {
-  const step = attachStep("10.0.0.5:9222");
+  const step = attachStep("cdp.example.com:9222");
   const cause = { toString: () => "[object Object]" };
-  await assert.rejects(step(Promise.reject(cause)), (error) => error.message === "attaching to the browser at 10.0.0.5:9222 failed: [object Object]" && error.cause === cause);
-  await assert.rejects(step(Promise.reject(new Error("ECONNREFUSED"))), (error) => error.message === "attaching to the browser at 10.0.0.5:9222 failed: ECONNREFUSED");
+  await assert.rejects(step(Promise.reject(cause)), (error) => error.message === "attaching to the browser at cdp.example.com:9222 failed: [object Object]" && error.cause === cause);
+  await assert.rejects(step(Promise.reject(new Error("ECONNREFUSED"))), (error) => error.message === "attaching to the browser at cdp.example.com:9222 failed: ECONNREFUSED");
   assert.equal(await step(Promise.resolve(7)), 7);
 });
 
@@ -59,4 +61,43 @@ test("untilCancelled: a signal already ended rejects without waiting, and still 
   bad.reject(new Error("failed after the cancel"));
   await tick();
   assert.deepEqual(released, ["late"]);
+});
+
+/** A Stagehand module whose connect and create each wait for the test, recording what the driver does with the browser. */
+function fakeStagehand() {
+  const events = [];
+  const steps = { connect: later(), create: later() };
+  const browser = { disconnect: async () => { events.push("disconnect started"); await tick(); events.push("disconnected"); } };
+  const module = {
+    localBrowser: { connect: async () => { events.push("connect"); return steps.connect.promise.then(() => browser); } },
+    Stagehand: { create: async () => { events.push("create"); return steps.create.promise; } },
+  };
+  return { events, steps, driver: stagehandDriver({ stagehand: async () => module }) };
+}
+const TARGET = { sdkCdpUrl: "ws://127.0.0.1:9/devtools/browser/x" };
+
+test("the driver: a cancel while create runs disconnects the browser, then fails with the cancel; the create's late answer is dropped", async () => {
+  const fake = fakeStagehand();
+  const call = new AbortController();
+  const attaching = fake.driver(TARGET, call.signal);
+  fake.steps.connect.resolve();
+  while (!fake.events.includes("create")) await tick();
+  const reason = new Error("the turn ended");
+  call.abort(reason);
+  await assert.rejects(attaching, (error) => error === reason);
+  assert.deepEqual(fake.events, ["connect", "create", "disconnect started", "disconnected"], "disconnected before the failure reached the caller");
+  fake.steps.create.resolve({ late: true });
+  await tick();
+  assert.equal(fake.events.filter((event) => event === "disconnect started").length, 1, "the late create releases nothing more");
+});
+
+test("the driver: a create that fails disconnects the browser before the failure reaches the caller", async () => {
+  const fake = fakeStagehand();
+  const attaching = fake.driver(TARGET, new AbortController().signal);
+  fake.steps.connect.resolve();
+  while (!fake.events.includes("create")) await tick();
+  const failed = new Error("init refused");
+  fake.steps.create.reject(failed);
+  await assert.rejects(attaching, (error) => error === failed);
+  assert.deepEqual(fake.events, ["connect", "create", "disconnect started", "disconnected"]);
 });

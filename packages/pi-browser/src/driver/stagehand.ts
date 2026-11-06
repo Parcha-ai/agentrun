@@ -13,12 +13,15 @@ export const SEALED_STAGEHAND = {
   model: { generate: async (): Promise<never> => { throw new Error(STAGEHAND_INFERENCE_REFUSED); } },
 } as const;
 
+type StagehandModule = Pick<typeof import("@browserbasehq/stagehand"), "localBrowser" | "Stagehand">;
+
 /** The batch deadline comes from `DriverOptions`; a caller that passes none gets the facade's 60 s. Stagehand allows one
- *  client per browser: an attach that fails or is cancelled after it connected disconnects again, so it never refuses the
- *  next. */
-export function stagehandDriver(): DriverFactory<PageDriver> {
+ *  client per browser: an attach that fails or is cancelled after it connected disconnects again, and only then fails, so
+ *  the next attach never meets its slot still taken (Stagehand bounds the disconnect: 10 s for the detach). `internals` is
+ *  for tests: the Stagehand module the driver uses. */
+export function stagehandDriver(internals: { stagehand?: () => Promise<StagehandModule> } = {}): DriverFactory<PageDriver> {
   return async (target, signal, options) => {
-    const { localBrowser, Stagehand } = await import("@browserbasehq/stagehand");
+    const { localBrowser, Stagehand } = await (internals.stagehand ?? (() => import("@browserbasehq/stagehand")))();
     const host = new URL(target.dial?.url ?? target.sdkCdpUrl).host;
     throwIfCancelled(signal);
     const connecting = localBrowser.connect({ cdpUrl: target.sdkCdpUrl, ...(target.extensionCdpUrl ? { extensionCdpUrl: target.extensionCdpUrl } : {}) });

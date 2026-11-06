@@ -43,7 +43,7 @@ async function proxiedDriver(t) {
   const site = await startSite();
   t.after(() => site.close(), { timeout: 30_000 });
   await first.run({ code: `await page.goto(${JSON.stringify(`${site.base}/a`)}); await page.evaluate(() => localStorage.setItem("gre3649", "kept")); return true;` });
-  return { provider, ref, own, proxy, attach, site };
+  return { provider, ref, own, proxy, viaProxy, attach, drivers, site };
 }
 
 const KEPT = (site) => `await page.goto(${JSON.stringify(`${site.base}/a`)}); return await page.evaluate(() => localStorage.getItem("gre3649"));`;
@@ -85,4 +85,36 @@ test("an attach cancelled while its connection is held stops at once, and lets g
   }
   assert.ok(next, "an attach after the late connection was let go");
   assert.equal(await next.run({ code: KEPT(site) }), "kept");
+});
+
+test("an attach cancelled while Stagehand.create is still running disconnects before it fails, so the next attach is not refused", { skip: NO_CHROME, timeout: 180_000 }, async (t) => {
+  const rig = await proxiedDriver(t);
+  if (!rig) return;
+  const { proxy, viaProxy, attach, drivers, site } = rig;
+  proxy.drop();
+  // The real Stagehand, but its create waits at a gate the test opens: the connect has already succeeded when it is held.
+  let entered; const reached = new Promise((resolve) => { entered = resolve; });
+  let open; const gate = new Promise((resolve) => { open = resolve; });
+  let late;
+  const held = stagehandDriver({ stagehand: async () => {
+    const real = await import("@browserbasehq/stagehand");
+    return { localBrowser: real.localBrowser, Stagehand: { create: (options) => { entered(); late = gate.then(() => real.Stagehand.create(options)); return late; } } };
+  } });
+  t.after(() => open(), { timeout: 30_000 });
+  const call = new AbortController();
+  const attaching = held(viaProxy, call.signal);
+  await reached;
+  const started = Date.now();
+  call.abort();
+  await assert.rejects(attaching, (error) => error?.name === "AbortError");
+  const took = Date.now() - started;
+  t.diagnostic(`the cancelled attach failed ${took} ms after the cancel, the disconnect included`);
+  assert.ok(took < 12_000, `the cancelled attach failed ${took} ms after the cancel: past Stagehand's 10 s detach bound`);
+  // Disconnected before it failed: the next attach takes the browser at once, with no retry.
+  const next = await attach();
+  assert.equal(await next.run({ code: KEPT(site) }), "kept");
+  // The held create, let go now, finds its browser disconnected and fails; nothing else is attached.
+  open();
+  await assert.rejects(late);
+  assert.equal(drivers.length, 2, "only the first driver and the next one attached");
 });
