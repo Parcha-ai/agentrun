@@ -369,12 +369,12 @@ test("a secret-bearing command never prints a server's error body, and cuts the 
   Object.assign(echo.answer, { form: "oauth" });
   const clientSecret = `not-a-secret-${randomBytes(8).toString("hex")}`;
   const start = { url: "https://mcp.example.com/mcp", scopes: ["read", "write"], client_id: "agentrun-cli-test", client_secret: clientSecret };
-  const oauth = await cli(["mcp-servers", "oauth-start", "srv", "--body", "-", ...base], { ...key, input: JSON.stringify(start) });
+  const oauth = await cli(["mcp-servers", "oauth-start", "acme", "--body", "-", ...base], { ...key, input: JSON.stringify(start) });
   assert.equal(oauth.code, 0, oauth.err);
-  assert.equal(echo.requests.at(-1), "POST /v2/settings/mcp-servers/srv/oauth/start");
+  assert.equal(echo.requests.at(-1), "POST /v2/settings/mcp-servers/acme/oauth/start");
   assert.equal(JSON.parse(oauth.out).authorization_url, "https://auth.example.com/authorize?client_id=agentrun-cli-test&scope=read%20write&resource=https%3A%2F%2Fmcp.example.com%2Fmcp");
   clean(oauth, clientSecret, "mcp-servers oauth-start");
-  assert.equal((await cli(["mcp-servers", "oauth-start", "srv", "--body", JSON.stringify(start), ...base], key)).code, 2, "its body only from stdin or a file");
+  assert.equal((await cli(["mcp-servers", "oauth-start", "acme", "--body", JSON.stringify(start), ...base], key)).code, 2, "its body only from stdin or a file");
 
   // A 200 that is not the agents list: not the server it says it is, so nothing is written.
   Object.assign(echo.answer, { form: "shape" });
