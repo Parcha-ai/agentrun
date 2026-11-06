@@ -18,6 +18,7 @@ const DEFAULT_BASE_URL = "http://127.0.0.1:7340/v2"; // key-gate: loopback-rule 
 const START = "start it with `npx @parcha/agentrun`, or pass --base-url (or set AGENTRUN_BASE_URL) to the address the server printed";
 const GLOBAL = { "base-url": { type: "string" }, data: { type: "string" }, help: { type: "boolean", short: "h" } };
 const BODY = "--body JSON|@FILE|-";
+const ACCEPT = "application/json, */*";
 const JSON_TYPE = /^application\/(?:[\w.+-]+\+)?json\b/;
 // A header value fetch takes: no line break or other control character, nothing outside Latin-1.
 const BAD_HEADER = /[\0-\x08\x0a-\x1f\x7f]|[^\0-\xff]/;
@@ -245,7 +246,13 @@ function secretAt(method, url) {
 function clientOf(target, io) {
   return {
     io,
-    fetch: (path, { method = "GET", headers = {}, body, signal } = {}) => fetch(`${target.base}${path}`, { method, signal, headers: { accept: "application/json, */*", ...headers, authorization: `Bearer ${target.token}` }, ...(body !== undefined ? { body } : {}) }),
+    // The caller's headers, by name in any case; the default Accept only when they set none; the token last, always.
+    fetch: (path, { method = "GET", headers = {}, body, signal } = {}) => {
+      const sent = new Headers(headers);
+      if (!sent.has("accept")) sent.set("accept", ACCEPT);
+      sent.set("authorization", `Bearer ${target.token}`);
+      return fetch(`${target.base}${path}`, { method, signal, headers: sent, ...(body !== undefined ? { body } : {}) });
+    },
     // Only the cause's code: a fetch error's message can quote a header, the token's among them.
     unreachable: (error) => new Exit(3, target.unreachable ?? `Cannot reach the server at ${target.base} (${error?.cause?.code ?? error?.name}); ${START}.`),
     refused(response, bytes) {
@@ -261,7 +268,9 @@ function clientOf(target, io) {
  *  `signal`, when given, ended it first. */
 async function request(client, { method, path, headers, body, type, signal }) {
   try {
-    const response = await client.fetch(path, { method, signal, headers: { ...headers, accept: "application/json, */*", ...(body !== undefined ? { "content-type": type } : {}) }, body });
+    const sent = new Headers(headers);
+    if (body !== undefined) sent.set("content-type", type);
+    const response = await client.fetch(path, { method, signal, headers: sent, body });
     const bytes = Buffer.from(await response.arrayBuffer());
     return response.ok ? { response, bytes } : { code: client.refused(response, bytes) };
   } catch (error) {

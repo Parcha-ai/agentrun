@@ -137,3 +137,20 @@ test("api --header keeps a header of any name it can send, constructor among the
   const got = raw.filter((_, i) => i % 2 === 0).map((name, i) => [name.toLowerCase(), raw[2 * i + 1]]).filter(([name]) => ["constructor", "x-plain"].includes(name));
   assert.deepEqual(got.sort(), [["constructor", "two"], ["x-plain", "three"]], JSON.stringify(raw));
 });
+
+test("an Accept given with api --header is the one sent, in any case; without one the default goes; a download still reads its bytes", async (t) => {
+  const { env } = scratch(t);
+  const server = await listener(t, (request, res) => (request.url.includes("/files/") ? res.writeHead(200, { "content-type": "text/plain" }).end("the bytes\n") : res.writeHead(200, { "content-type": "application/json" }).end("{}")));
+  const accepted = async (...header) => {
+    const sent = await cli(env, ["api", "GET", "/runs/r1/timeline", ...header, "--base-url", server.base]);
+    assert.equal(sent.code, 0, sent.err);
+    const raw = server.requests.at(-1).rawHeaders;
+    return raw.filter((_, i) => i % 2 === 0).map((name, i) => [name.toLowerCase(), raw[2 * i + 1]]).filter(([name]) => name === "accept").map(([, value]) => value);
+  };
+  assert.deepEqual(await accepted("--header", "Accept: text/event-stream"), ["text/event-stream"]);
+  assert.deepEqual(await accepted("--header", "accept: x/y"), ["x/y"]);
+  assert.deepEqual(await accepted(), ["application/json, */*"]);
+  const read = await cli(env, ["runs", "read-file", "r1", "notes.md", "--base-url", server.base]);
+  assert.deepEqual([read.code, read.out], [0, "the bytes\n"], read.err);
+  assert.equal(server.requests.at(-1).headers.authorization, "Bearer fake-test-key", "the token goes last, as set");
+});

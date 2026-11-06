@@ -12,6 +12,8 @@ The CLI's edges, each said plainly:
   - Upgrading: a script that read exit 2 for a bad server record reads exit 4.
 - `login` writes its config through a temporary file with a random name, opened only when it is new, and a config it cannot write is exit 4 with a plain message and nothing left behind.
 - A run stopped at its spend cap prints a hint naming `agentrun runs raise-cap RUN_ID --max-cost-usd N`, N the server's `suggested_cap_usd`.
+- An `Accept` given with `api --header`, in any case, is the one sent, alone; without one the default (`application/json, */*`) goes, and the token's `Authorization` is always set last.
+  - Upgrading: `api ... --header 'Accept: ...'`, once overridden or merged with the default, is sent as given.
 - `api --header` keeps every header name it can send, `constructor` included, and refuses `__proto__`, which Node's fetch would drop unsent.
   - Upgrading: `--header '__proto__: ...'`, once dropped unsaid, is exit 2.
 - `skill install --codex`, and the default install for Codex, write `~/.agents/skills/agentrun-cli`, the user skills folder Codex reads (Cursor reads it too). With no flag, it installs into each of `~/.claude` and `~/.agents` that exists.
