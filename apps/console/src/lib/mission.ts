@@ -1,3 +1,4 @@
+import { byName } from "./agents";
 import { cost } from "./format";
 import type { Run } from "./v2";
 
@@ -122,7 +123,7 @@ export function missionFrom(s: Stats, recent: Run[]): MissionView {
   return {
     agents: s.agents,
     runs: { total: s.runs.total, active: s.runs.active, needsInput: s.runs.needs_input, failed: s.runs.failed, statusUnknown: s.runs.status_unknown, needsReview: s.runs.needs_review },
-    perAgent: s.per_agent.map((a) => ({ agentId: a.agent_id, name: a.name, runs: a.runs })),
+    perAgent: s.per_agent.map((a) => ({ agentId: a.agent_id, name: a.name, runs: a.runs })).sort((a, b) => byName({ name: a.name, id: a.agentId }, { name: b.name, id: b.agentId })),
     cost: { usd: s.cost.usd, basis: s.cost.basis === "charge" ? "reported" : s.cost.basis, unknownRuns: s.cost.unknown_runs },
     recent,
     analytics: s.analytics,
