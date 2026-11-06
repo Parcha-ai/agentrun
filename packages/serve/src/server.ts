@@ -832,6 +832,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     const egressLog = (state: ReturnType<EgressContainer["state"]>) => log?.(logLine("box_egress", { runtime: boxNetwork.vm!, state: state.state, ...("reason" in state ? { reason: state.reason } : {}) }));
     egress = await startEgressContainer({
       env, data, allow, uid: process.getuid?.() ?? 0, gid: process.getgid?.() ?? 0,
+      warn: (message) => (log ? log(logLine("box_egress", { runtime: boxNetwork.vm!, warning: message })) : void process.stderr.write(`agentrun-serve: ${message}\n`)),
       onChange: (state) => {
         egressLog(state);
         boxOffers = offersNow();

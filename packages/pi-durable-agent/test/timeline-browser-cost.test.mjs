@@ -37,7 +37,7 @@ test("a browser charge folds into its call's row: no Tool cost row, each call's 
   assert.ok(!rows.some((row) => row.kind === "tool_result" && row.usage), "the call's row alone carries it, never its result's too");
   // Three model requests at $0.01 each and $0.0018 of browser time, three charges: as when each charge had its own row.
   assert.deepEqual(rows.at(-1).usage, { usd: 0.0318, requests: 3 });
-  assert.equal(rows.at(-1).summary, "Cost so far: $0.0318 over 3 model requests and 3 paid tool calls");
+  assert.equal(rows.at(-1).summary, "Cost so far: $0.0318 over 3 model requests and 2 paid tool calls", "two calls, each counted once: the release adds a charge, never a call");
   assert.equal(pico(browserRows(rows).reduce((sum, row) => sum + (row.usage?.usd ?? 0), 0)), 0.0018, "the rows sum to the browser's charges");
 });
 
@@ -85,4 +85,27 @@ test("the text view shows a browser call's charge on its line", () => {
   // Two browser calls of one tool fold into one line, with what they came to together.
   const twice = [user("Look twice", 0), assistant([call("s1", "snapshot")], 1), charge(0.0001, "s1"), result("s1", "snapshot", "a", 2), assistant([call("s2", "snapshot")], 3), charge(0.0001, "s2"), result("s2", "snapshot", "b", 4), charge(0.0016, "s2", { final: true })];
   assert.match(renderText(timelineOf(twice).filter((row) => row.kind !== "usage")), / · \$0\.0018 +2 ok/);
+});
+
+test("a paid tool call counts once however many charges it books: one browser call and its release is 1 paid tool call; a release with no call of its own adds none", () => {
+  const one = (release) => [user("Open the page", 0), assistant([call("b1", "snapshot")], 1), charge(0.0001, "b1"), result("b1", "snapshot", "[1-1] page", 2), assistant([{ type: "text", text: "Done." }], 3), release];
+  for (const [name, release] of [["under its call", charge(0.0016, "b1", { final: true })], ["with no call, its session's", charge(0.0016, null, { final: true })]]) {
+    const usage = timelineOf(one(release)).at(-1);
+    assert.equal(usage.summary, "Cost so far: $0.0217 over 2 model requests and 1 paid tool call", name);
+    assert.deepEqual(usage.usage, { usd: 0.0217, requests: 2 }, `${name}: the charge still counts once in the cost`);
+  }
+  // A release whose session no charge named before, with no call: a charge the run cannot place adds a call of its own.
+  assert.match(timelineOf(one(charge(0.0016, null, { tag: "s9", final: true }))).at(-1).summary, / and 2 paid tool calls$/);
+});
+
+test("a call whose charges have no price is one charge not priced, however many it books", () => {
+  const usage = timelineOf([assistant([call("b1", "snapshot")], 0), charge(null, "b1"), result("b1", "snapshot", "a", 1), assistant([{ type: "text", text: "Done." }], 2), charge(null, "b1", { final: true })]).at(-1);
+  assert.deepEqual(usage.usage, { usd: null, requests: 2, so_far_usd: 0.02, unpriced: 1 });
+  assert.equal(usage.summary, "Cost so far: $0.0200 known, 1 not priced, over 2 model requests and 1 paid tool call");
+});
+
+test("other tools' counts do not change: one monid call is 1 paid tool call, two are 2", () => {
+  const monid = (call, usd = 0.003) => custom(TOOL_COST, { tool: "monid.run", charged_by: "monid", call, usd });
+  assert.match(timelineOf([assistant([call("m1", "monid_run")], 0), monid("m1"), result("m1", "monid_run", "ok", 1)]).at(-1).summary, / and 1 paid tool call$/);
+  assert.match(timelineOf([assistant([call("m1", "monid_run"), call("m2", "monid_run")], 0), monid("m1"), monid("m2"), result("m1", "monid_run", "ok", 1), result("m2", "monid_run", "ok", 1)]).at(-1).summary, / and 2 paid tool calls$/);
 });
