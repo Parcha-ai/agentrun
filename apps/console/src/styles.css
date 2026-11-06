@@ -2,79 +2,23 @@
 @import "@fontsource/jetbrains-mono/600.css";
 @import "@fontsource/schibsted-grotesk/400.css";
 @import "@fontsource/schibsted-grotesk/600.css";
+@import "./tokens.css";
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-/* AgentRun uses the browser's light or dark theme, restrained orange and separate control, card and composer radii.
-   Color values are HSL triplets so host applications can supply their own theme. */
+/* Token values live in tokens.css, generated from the shared design-token vocabulary: light and dark palettes,
+   restrained orange and separate control, card and composer radii. Color values are HSL triplets so host applications
+   can supply their own theme. */
 @layer base {
-  :root {
-    color-scheme: light;
-    --ar-control-radius: 8px;
-    --ar-card-radius: 12px;
-    --ar-composer-radius: 14px;
-    --background: 0 0% 100%;
-    --foreground: 240 10% 3.9%;
-    --card: 0 0% 100%;
-    --card-foreground: 240 10% 3.9%;
-    --muted: 240 4.8% 95.9%;
-    --muted-foreground: 240 3.8% 46.1%;
-    --accent: 240 4.8% 95.9%;
-    --accent-foreground: 240 5.9% 10%;
-    --primary: 30 100% 50%;
-    --primary-foreground: 0 0% 100%;
-    --destructive: 0 84.2% 60.2%;
-    --destructive-text: 0 72.2% 50.6%;
-    --success: 142 71% 45%;
-    --success-text: 142.4 71.8% 29.2%;
-    --warning: 38 92% 50%;
-    --warning-text: 35.5 91.7% 32.9%;
-    --info: 217 91% 60%;
-    --border: 240 5.9% 90%;
-    --border-strong: 216 12% 84%;
-    --input: 240 5.9% 90%;
-    --ring: 30 100% 50%;
-    --run-active: 239 83.3% 67%;
-    --run-error-surface: 0 85.7% 97.3%;
-  }
-  .dark {
-    color-scheme: dark;
-    --background: 240 6% 9%;
-    --foreground: 0 0% 95%;
-    --card: 240 5% 12%;
-    --card-foreground: 0 0% 95%;
-    --muted: 240 5% 18%;
-    --muted-foreground: 240 5% 66%;
-    --accent: 240 5% 18%;
-    --accent-foreground: 0 0% 98%;
-    --primary: 30 100% 50%;
-    --primary-foreground: 0 0% 98%;
-    --destructive: 0 84.2% 60.2%;
-    --destructive-text: 0 90.6% 70.8%;
-    --success: 142 71% 45%;
-    --success-text: 142 71% 45%;
-    --warning: 38 92% 55%;
-    --warning-text: 38 92% 55%;
-    --info: 217 91% 66%;
-    --border: 240 5% 18%;
-    --border-strong: 240 5% 45%;
-    --input: 240 5% 18%;
-    --ring: 30 100% 50%;
-    --run-active: 239 83.3% 71.8%;
-    --run-error-surface: 0 33.3% 17.1%;
-  }
   * { @apply border-border; }
   html, body, #root { height: 100%; }
-  /* Before the script puts the theme on <html>, a dark OS's page is dark already (.dark's background), never a white
-     flash. */
-  @media (prefers-color-scheme: dark) { html:not(.light):not(.dark) { --background: 240 6% 9%; color-scheme: dark; } }
   body { @apply bg-background font-sans text-foreground antialiased; }
   :focus-visible { outline: 1px solid hsl(var(--ring)); outline-offset: 1px; }
-  button, input, select, textarea { border-radius: var(--ar-control-radius); }
+  button, input, select, textarea { border-radius: var(--radius-control); }
   input[type="checkbox"], input[type="radio"] { border-radius: 3px; }
-  section.border, [class~="border"][class~="bg-card"], .grid > .border, dialog > div { border-radius: var(--ar-card-radius); }
-  form:has(#composer) { border-radius: var(--ar-composer-radius); }
+  section.border, [class~="border"][class~="bg-card"], .grid > .border, dialog > div { border-radius: var(--radius-card); }
+  form:has(#composer) { border-radius: var(--radius-composer); }
   [role="tab"], .ar-tab { border-radius: 0; }
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
@@ -102,9 +46,8 @@
 }
 
 /* The workflow graph (src/lib/wfGraph.ts, after pi-durable-agent's serve page.css): who works colours a card's swatch, a
-   run's state its box, and an item's cell. Decision providers: Jev pink, Parallel teal, OpenRouter indigo. Outside a layer: Tailwind keeps it whole. */
-:root { --wf-jev: 322 58% 51%; --wf-parallel: 174 72% 33%; --wf-openrouter: 239 70% 60%; --wf-tool: 207 70% 41%; --wf-exit: 251 55% 53%; }
-.dark { --wf-jev: 318 73% 61%; --wf-parallel: 172 66% 50%; --wf-openrouter: 234 89% 74%; --wf-tool: 206 83% 65%; --wf-exit: 253 100% 81%; }
+   run's state its box, and an item's cell. Decision providers: Jev pink, Parallel teal, OpenRouter indigo, from the --wf-*
+   tokens in tokens.css. Outside a layer: Tailwind keeps it whole. */
 svg.wf { display: block; max-width: 100%; height: auto; margin: 0 auto; font-family: "JetBrains Mono", monospace; }
 .wf .wire { fill: none; stroke: hsl(var(--border-strong) / 0.55); stroke-width: 1.5; }
 .wf .exit-wire { stroke: hsl(var(--wf-exit)); }

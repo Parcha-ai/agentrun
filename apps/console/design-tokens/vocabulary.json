@@ -1,0 +1,311 @@
+{
+  "$comment": "The design-token vocabulary: one entry per token, with its group, scope, kind and Tailwind colour class. Values live in palettes/*.json. build.mjs generates the stylesheets and Tailwind presets from these files; never edit a generated file by hand.",
+  "groups": {
+    "page": "Page",
+    "surfaces": "Surfaces",
+    "lines": "Lines",
+    "brand": "Brand",
+    "status": "Status",
+    "run": "Run state",
+    "navigation": "Navigation",
+    "links": "Text links",
+    "interaction": "Interaction",
+    "shape": "Shape",
+    "data": "Data",
+    "layout": "Layout"
+  },
+  "kinds": {
+    "color": "An HSL triplet (\"239 87% 65%\") or a var() alias of another colour token. Mapped as hsl(var(--name)).",
+    "color-value": "A complete CSS colour (\"hsl(239, 87%, 65%)\"). Read through var(--name); takes no opacity modifier.",
+    "length": "A CSS length. Read through var(--name) or the preset's borderRadius scale.",
+    "layout": "Set by app code or its stylesheet, not by a palette. Listed so conformance checks can ignore it."
+  },
+  "scopes": {
+    "shared": "One value for every brand, written in palettes/grep.json and inherited by the other palettes.",
+    "brand": "Each palette sets its own value, or lists the token under \"unset\" with the reason.",
+    "app": "Owned by one app's code; no palette sets it."
+  },
+  "tokens": {
+    "background": { "group": "page", "scope": "shared", "kind": "color", "class": "background" },
+    "foreground": { "group": "page", "scope": "shared", "kind": "color", "class": "foreground" },
+
+    "card": { "group": "surfaces", "scope": "shared", "kind": "color", "class": "card" },
+    "card-foreground": { "group": "surfaces", "scope": "shared", "kind": "color", "class": "card-foreground" },
+    "popover": { "group": "surfaces", "scope": "shared", "kind": "color", "class": "popover" },
+    "popover-foreground": { "group": "surfaces", "scope": "shared", "kind": "color", "class": "popover-foreground" },
+    "muted": { "group": "surfaces", "scope": "shared", "kind": "color", "class": "muted" },
+    "muted-foreground": { "group": "surfaces", "scope": "shared", "kind": "color", "class": "muted-foreground" },
+    "accent": {
+      "group": "surfaces",
+      "scope": "shared",
+      "kind": "color",
+      "class": "accent",
+      "description": "Hover and selected surface. Neutral, not the brand colour."
+    },
+    "accent-foreground": { "group": "surfaces", "scope": "shared", "kind": "color", "class": "accent-foreground" },
+    "secondary": { "group": "surfaces", "scope": "shared", "kind": "color", "class": "secondary" },
+    "secondary-foreground": {
+      "group": "surfaces",
+      "scope": "shared",
+      "kind": "color",
+      "class": "secondary-foreground"
+    },
+    "surface": {
+      "group": "surfaces",
+      "scope": "shared",
+      "kind": "color",
+      "class": "surface",
+      "description": "Semantic palette for product surfaces. Prefer these over fixed neutrals."
+    },
+    "surface-raised": { "group": "surfaces", "scope": "shared", "kind": "color", "class": "surface-raised" },
+    "surface-sunken": { "group": "surfaces", "scope": "shared", "kind": "color", "class": "surface-sunken" },
+    "surface-inverse": { "group": "surfaces", "scope": "shared", "kind": "color", "class": "surface-inverse" },
+    "surface-inverse-foreground": {
+      "group": "surfaces",
+      "scope": "shared",
+      "kind": "color",
+      "class": "surface-inverse-foreground"
+    },
+    "toolkit-logo-background": {
+      "group": "surfaces",
+      "scope": "shared",
+      "kind": "color",
+      "class": null,
+      "description": "External brand images keep a light surface; the outline also reveals white artwork.",
+      "deprecated": "Fold into surface and border-strong."
+    },
+    "toolkit-logo-outline": {
+      "group": "surfaces",
+      "scope": "shared",
+      "kind": "color",
+      "class": null,
+      "deprecated": "Fold into surface and border-strong."
+    },
+
+    "border": { "group": "lines", "scope": "shared", "kind": "color", "class": "border" },
+    "border-subtle": { "group": "lines", "scope": "shared", "kind": "color", "class": "border-subtle" },
+    "border-strong": { "group": "lines", "scope": "shared", "kind": "color", "class": "border-strong" },
+    "input": { "group": "lines", "scope": "shared", "kind": "color", "class": "input" },
+
+    "primary": { "group": "brand", "scope": "brand", "kind": "color", "class": "primary" },
+    "primary-foreground": { "group": "brand", "scope": "brand", "kind": "color", "class": "primary-foreground" },
+    "primary-strong": {
+      "group": "brand",
+      "scope": "brand",
+      "kind": "color",
+      "class": "primary-strong",
+      "description": "Theme-invariant like --primary, and dark enough to carry white digits: a count badge is small type on a fill, so it needs the contrast the lighter brand fill cannot give."
+    },
+    "brand-accent": {
+      "group": "brand",
+      "scope": "brand",
+      "kind": "color",
+      "class": "brand-accent",
+      "description": "Brand accent for text and indicators drawn ON a themed surface. Each palette carries the value that clears 4.5:1 against its own background, so the accent lightens as the surface darkens. Not interchangeable with the fixed `brand-purple`: that one backs white text and must stay dark enough to carry it."
+    },
+    "ring": { "group": "brand", "scope": "brand", "kind": "color", "class": "ring" },
+
+    "success": { "group": "status", "scope": "shared", "kind": "color", "class": "success" },
+    "success-foreground": { "group": "status", "scope": "shared", "kind": "color", "class": "success-foreground" },
+    "success-text": {
+      "group": "status",
+      "scope": "shared",
+      "kind": "color",
+      "class": "success-text",
+      "description": "Semantic tokens are fills. As small text they miss 4.5:1, so each carries a text alias measured against the card surface the text is drawn on. Never darken the base fill to fix text contrast, and never draw semantic-coloured text on a tinted wash; chips take the card surface with a token-coloured border instead. Each theme carries the value that passes on its own card: on the dark card the success and warning fills already pass, so their text aliases carry the base values, while destructive needs a lifted red."
+    },
+    "warning": { "group": "status", "scope": "shared", "kind": "color", "class": "warning" },
+    "warning-foreground": { "group": "status", "scope": "shared", "kind": "color", "class": "warning-foreground" },
+    "warning-text": { "group": "status", "scope": "shared", "kind": "color", "class": "warning-text" },
+    "destructive": {
+      "group": "status",
+      "scope": "shared",
+      "kind": "color",
+      "class": "destructive",
+      "description": "Theme-invariant fill, like --primary: the same red passes as a fill in both themes and clears 4.5:1 as text against the dark page background (small text on the card uses --destructive-text)."
+    },
+    "destructive-foreground": {
+      "group": "status",
+      "scope": "shared",
+      "kind": "color",
+      "class": "destructive-foreground"
+    },
+    "destructive-text": { "group": "status", "scope": "shared", "kind": "color", "class": "destructive-text" },
+    "info": { "group": "status", "scope": "shared", "kind": "color", "class": "info" },
+    "info-foreground": { "group": "status", "scope": "shared", "kind": "color", "class": "info-foreground" },
+
+    "run-active": {
+      "group": "run",
+      "scope": "brand",
+      "kind": "color",
+      "class": "run-active",
+      "description": "Run-state aliases keep status colour out of component code: a palette change is one edit in the palette file. Active follows the brand accent, idle follows muted text. Phase-bar segments: queue = --border, sandbox = --muted-foreground, execution = --run-active."
+    },
+    "run-idle": { "group": "run", "scope": "shared", "kind": "color", "class": "run-idle" },
+    "run-error-surface": {
+      "group": "run",
+      "scope": "shared",
+      "kind": "color",
+      "class": "run-error-surface",
+      "description": "The wash behind a failed run."
+    },
+
+    "sidebar": { "group": "navigation", "scope": "shared", "kind": "color", "class": "sidebar" },
+    "sidebar-foreground": { "group": "navigation", "scope": "shared", "kind": "color", "class": "sidebar-foreground" },
+    "sidebar-muted": { "group": "navigation", "scope": "shared", "kind": "color", "class": "sidebar-muted" },
+    "sidebar-accent": { "group": "navigation", "scope": "shared", "kind": "color", "class": "sidebar-accent" },
+    "sidebar-accent-foreground": {
+      "group": "navigation",
+      "scope": "shared",
+      "kind": "color",
+      "class": "sidebar-accent-foreground",
+      "description": "Sidebar aliases follow the page tokens: text on the sidebar accent is sidebar text, and the sidebar's lines and focus ring are the page's."
+    },
+    "sidebar-border": { "group": "navigation", "scope": "shared", "kind": "color", "class": "sidebar-border" },
+    "sidebar-ring": { "group": "navigation", "scope": "shared", "kind": "color", "class": "sidebar-ring" },
+
+    "link": {
+      "group": "links",
+      "scope": "shared",
+      "kind": "color",
+      "class": "link",
+      "description": "Link text sits on --background, so each theme carries its own value. Both are chosen to clear 4.5:1 against their own surface."
+    },
+    "link-hover": { "group": "links", "scope": "shared", "kind": "color", "class": "link-hover" },
+
+    "focus": {
+      "group": "interaction",
+      "scope": "shared",
+      "kind": "color",
+      "class": "focus",
+      "description": "The global focus outline."
+    },
+    "disabled": { "group": "interaction", "scope": "shared", "kind": "color", "class": "disabled" },
+    "disabled-foreground": {
+      "group": "interaction",
+      "scope": "shared",
+      "kind": "color",
+      "class": "disabled-foreground"
+    },
+
+    "radius": {
+      "group": "shape",
+      "scope": "brand",
+      "kind": "length",
+      "class": null,
+      "description": "The shadcn radius behind the rounded-lg, rounded-md and rounded-sm scale."
+    },
+    "radius-control": {
+      "group": "shape",
+      "scope": "brand",
+      "kind": "length",
+      "class": null,
+      "description": "Buttons, inputs, selects and textareas."
+    },
+    "radius-card": {
+      "group": "shape",
+      "scope": "brand",
+      "kind": "length",
+      "class": null,
+      "description": "Cards, bordered sections and dialog panels."
+    },
+    "radius-composer": {
+      "group": "shape",
+      "scope": "brand",
+      "kind": "length",
+      "class": null,
+      "description": "The message composer."
+    },
+
+    "chart-1": {
+      "group": "data",
+      "scope": "shared",
+      "kind": "color-value",
+      "class": null,
+      "description": "Chart series. Complete colour values, read through var()."
+    },
+    "chart-2": { "group": "data", "scope": "shared", "kind": "color-value", "class": null },
+    "chart-3": { "group": "data", "scope": "shared", "kind": "color-value", "class": null },
+    "chart-4": { "group": "data", "scope": "shared", "kind": "color-value", "class": null },
+    "chart-5": { "group": "data", "scope": "shared", "kind": "color-value", "class": null },
+    "wf-jev": {
+      "group": "data",
+      "scope": "brand",
+      "kind": "color",
+      "class": null,
+      "description": "Workflow-graph swatches, by who works a node."
+    },
+    "wf-parallel": { "group": "data", "scope": "brand", "kind": "color", "class": null },
+    "wf-openrouter": { "group": "data", "scope": "brand", "kind": "color", "class": null },
+    "wf-tool": { "group": "data", "scope": "brand", "kind": "color", "class": null },
+    "wf-exit": { "group": "data", "scope": "brand", "kind": "color", "class": null },
+
+    "app-content-left": {
+      "group": "layout",
+      "scope": "app",
+      "kind": "layout",
+      "class": null,
+      "description": "parcha-fe/src/index.css: the viewport's left edge the app shell occupies."
+    },
+    "mobile-bottom-nav-row-height": {
+      "group": "layout",
+      "scope": "app",
+      "kind": "layout",
+      "class": null,
+      "description": "parcha-fe/src/index.css: the portrait mobile bottom nav's tab row."
+    },
+    "mobile-bottom-nav-height": {
+      "group": "layout",
+      "scope": "app",
+      "kind": "layout",
+      "class": null,
+      "description": "parcha-fe/src/index.css: the bottom nav row plus the device safe area."
+    },
+    "sidebar-width": {
+      "group": "layout",
+      "scope": "app",
+      "kind": "layout",
+      "class": null,
+      "description": "Set inline by the sidebar primitive and GrepSidebar."
+    },
+    "sidebar-width-icon": {
+      "group": "layout",
+      "scope": "app",
+      "kind": "layout",
+      "class": null,
+      "description": "Set inline by the sidebar primitive."
+    }
+  },
+  "borderRadius": {
+    "$comment": "The Tailwind borderRadius scale the preset sets. Values may read shape tokens through var().",
+    "lg": "var(--radius)",
+    "md": "calc(var(--radius) - 2px)",
+    "sm": "calc(var(--radius) - 4px)"
+  },
+  "pairs": [
+    { "text": "foreground", "on": "background", "min": 7 },
+    { "text": "card-foreground", "on": "card", "min": 4.5 },
+    { "text": "popover-foreground", "on": "popover", "min": 4.5 },
+    { "text": "muted-foreground", "on": "muted", "min": 4.5 },
+    { "text": "muted-foreground", "on": "card", "min": 4.5 },
+    { "text": "accent-foreground", "on": "accent", "min": 4.5 },
+    { "text": "secondary-foreground", "on": "secondary", "min": 4.5 },
+    { "text": "surface-inverse-foreground", "on": "surface-inverse", "min": 4.5 },
+    { "text": "primary-foreground", "on": "primary", "min": 4.5 },
+    { "text": "brand-accent", "on": "background", "min": 4.5 },
+    { "text": "brand-accent", "on": "card", "min": 4.5 },
+    { "text": "success-text", "on": "card", "min": 4.5 },
+    { "text": "warning-text", "on": "card", "min": 4.5 },
+    { "text": "destructive-text", "on": "card", "min": 4.5 },
+    { "text": "success-foreground", "on": "success", "min": 4.5 },
+    { "text": "warning-foreground", "on": "warning", "min": 4.5 },
+    { "text": "destructive-foreground", "on": "destructive", "min": 4.5 },
+    { "text": "info-foreground", "on": "info", "min": 4.5 },
+    { "text": "link", "on": "background", "min": 4.5 },
+    { "text": "chart-1", "on": "card", "min": 3 },
+    { "text": "chart-2", "on": "card", "min": 3 },
+    { "text": "chart-3", "on": "card", "min": 3 },
+    { "text": "chart-4", "on": "card", "min": 3 },
+    { "text": "chart-5", "on": "card", "min": 3 }
+  ]
+}

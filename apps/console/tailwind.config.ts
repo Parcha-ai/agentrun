@@ -29,7 +29,7 @@ export default {
         input: hsl("input"),
         ring: hsl("ring"),
         "run-active": hsl("run-active"),
-        "run-error": hsl("run-error-surface"),
+        "run-error-surface": hsl("run-error-surface"),
       },
     },
   },

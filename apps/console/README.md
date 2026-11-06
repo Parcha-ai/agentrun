@@ -57,6 +57,10 @@ Imported histories accept no new messages. Completed archived runs must be unarc
 
 File bytes are fetched through the authenticated client. Downloads preserve the original Blob. Markdown is sanitized, HTML previews are sandboxed, and scripts never run in an artifact preview. Incomplete listings and failed reads remain visible.
 
+## Design tokens
+
+`src/tokens.css` holds every colour, radius and theme custom property, light and dark. It is generated from a design-token vocabulary shared with other applications and vendored with that vocabulary in `design-tokens/vocabulary.json`; its header names the command that regenerates both. Never edit either file by hand: `src/tokens.test.ts` and `scripts/check-generated.mjs` fail when the stylesheet's recorded hashes do not match it and the vocabulary, when `src/styles.css` declares a token itself, or when a Tailwind colour class or a `var(--…)` in the source names a token the stylesheet does not declare.
+
 ## Checks and distribution
 
 ```sh
