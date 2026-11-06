@@ -15,7 +15,7 @@ import { processAlive } from "@parcha/agentrun-kernel/host";
 import { doorKey, doorTook } from "@parcha/pi-durable-disk";
 import { RUN_STATUS_TABLE } from "@parcha/pi-durable-disk/internals";
 import { AgentHomeError, type Revision, runDirIn, type RevisionKind, type RunOrigin, type RunRow, type RunState, type StoredMetrics } from "@parcha/pi-durable-agent";
-import { chargedTool, isMessageRow, MESSAGE_ORIGIN, type MessageOrigin, registerLabel, registerTurnEnding, REQUEST_STARTED, type RunMetrics, runMetricsWithDecisions, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
+import { chargedTool, isMessageRow, MESSAGE_ORIGIN, type MessageOrigin, registerLabel, registerTurnEnding, REQUEST_STARTED, type RunMetrics, runMetricsWithDecisions, scrubUrls, type TimelineEvent, timelineOf, timelineReducer } from "@parcha/pi-durable-agent/timeline";
 import { HARNESS_LOG_EVENT, harnessModelKeys, thinkingFor } from "./adapters.js";
 import { DEFAULT_HARNESS, harnessOfBody, steersMidTurn } from "./harness.js";
 import type { RUN_EVENTS, RunNotice } from "./webhooks.js";
@@ -546,8 +546,10 @@ function resumeSays(approval: Approval, given: { decision: string; by?: string }
  *  message is unchanged. */
 function resumeShows(approval: Approval, given: { decision: string; by?: string; args_shown?: string } | undefined, text: string, redact: (text: string) => string): string {
   const said = resumeSays(approval, given, text).replace(/^AgentRun: /, "");
-  // The row's text went through the run's redactor whole (redactGateMessages), so the head is compared as it did.
-  const head = [redact(resumeHead(approval, given?.args_shown ?? "(not shown)")), resumeHead(approval, given?.args_shown ?? "(not shown)")].find((h) => text.startsWith(h));
+  // The row's text is the message as the Timeline shows it: redacted whole (the run's redactor) and its links scrubbed
+  // (scrubUrls), so the gate's head is compared after the same two steps.
+  const written = resumeHead(approval, given?.args_shown ?? "(not shown)");
+  const head = [scrubUrls(redact(written)), redact(written), scrubUrls(written), written].find((h) => text.startsWith(h));
   if (head === undefined) return `${said}.`;
   const rest = text.slice(head.length);
   if (given?.decision === "deny") return `${said}.${rest.trim() ? `\n${rest.trim()}` : ""}`;
