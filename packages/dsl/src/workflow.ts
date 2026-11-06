@@ -1525,10 +1525,10 @@ export class EscalationSignal extends Error {
   constructor(readonly escalation: Escalation) { super(`escalated: ${escalation.kind}`); }
 }
 
-async function evaluatePredicate(pred: Predicate, state: Record<string, unknown>, deps: WorkflowDeps, at: { label: string; kind: "loop" | "escalate" }): Promise<{ holds: boolean; detail?: Record<string, unknown> }> {
+async function evaluatePredicate(pred: Predicate, state: Record<string, unknown>, deps: WorkflowDeps, at: { label: string; kind: "loop" | "escalate" }, workflow?: Workflow): Promise<{ holds: boolean; detail?: Record<string, unknown> }> {
   if (pred.predicate !== "ask") return { holds: predicateMatches(pred, state) };
   const ask = pred as AskPredicate;
-  const asked = ask.state ? interpolateValue(ask.state, state, at.label) : promptStateOf(state);
+  const asked = ask.state ? interpolateValue(ask.state, state, at.label) : promptStateOf(state, workflow);
   const questions: Record<string, SystemOneQuestion> = { holds: { type: "noul", instructions: ask.instructions, ...(ask.criteria ? { criteria: ask.criteria } : {}) } };
   const gte = ask.gte ?? 0.6;
   const decided = await decide(deps, { workflowState: state, nodeKind: `${at.kind} (ask predicate)`, kind: "ask", judgeKind: "ask", label: at.label, state: asked, questions, decision: decisionOf(ask), images: resolveImages(ask.images, state, at.label) }, (answers) => {
@@ -1554,8 +1554,45 @@ function untrustedEvidence(value: unknown): unknown {
   return { ...sidecar, evidence: { note: UNTRUSTED_EVIDENCE_NOTE, web_excerpts: sidecar.evidence } };
 }
 
-function promptStateOf(state: Record<string, unknown>): Record<string, unknown> {
-  const marked = Object.fromEntries(Object.entries(state).map(([key, value]) => [key, key.endsWith("$answers") ? untrustedEvidence(value) : value]));
+/** The state keys a sift node of `workflow` writes its result under, its nested workflows' included: each holds
+ *  `answers[i].evidence` (runSiftNode). Read from the workflow, never guessed from the shape of user data. */
+const siftKeysCache = new WeakMap<object, ReadonlySet<string>>();
+function siftKeysOf(workflow: Workflow | undefined): ReadonlySet<string> {
+  if (!workflow) return new Set();
+  const cached = siftKeysCache.get(workflow);
+  if (cached) return cached;
+  const keys = new Set<string>();
+  const walk = (value: unknown): void => {
+    if (Array.isArray(value)) { value.forEach(walk); return; }
+    if (!value || typeof value !== "object") return;
+    const node = value as Record<string, unknown>;
+    if (node.node === "sift" && typeof node.as === "string") keys.add(node.as);
+    Object.values(node).forEach(walk);
+  };
+  walk(workflow.root);
+  siftKeysCache.set(workflow, keys);
+  return keys;
+}
+
+/** A copy of `value` in which every evidence list the engine wrote, at any depth, is wrapped as untrusted data: each
+ *  `<as>$answers` sidecar's (a judge, pick, route or ask, and the item states a map or a child workflow carries up), and
+ *  each item sidecar of a sift's result (`<as>.answers[i]`). The state itself is never changed. */
+function markEvidence(value: unknown, siftKeys: ReadonlySet<string>, depth = 0): unknown {
+  if (depth > 64 || !value || typeof value !== "object") return value;
+  if (Array.isArray(value)) return value.map((v) => markEvidence(v, siftKeys, depth + 1));
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, v]) => {
+    if (key.endsWith("$answers")) return [key, untrustedEvidence(markEvidence(v, siftKeys, depth + 1))];
+    const inner = markEvidence(v, siftKeys, depth + 1);
+    if (siftKeys.has(key) && inner && typeof inner === "object" && !Array.isArray(inner) && Array.isArray((inner as Record<string, unknown>).answers)) {
+      const result = inner as Record<string, unknown>;
+      return [key, { ...result, answers: (result.answers as unknown[]).map(untrustedEvidence) }];
+    }
+    return [key, inner];
+  }));
+}
+
+function promptStateOf(state: Record<string, unknown>, workflow?: Workflow): Record<string, unknown> {
+  const marked = markEvidence(state, siftKeysOf(workflow)) as Record<string, unknown>;
   const context = marked.context as Record<string, unknown> | undefined;
   if (!context || (context.references === undefined && context.references_parsed === undefined)) return marked;
   const { references: _r, references_parsed: _rp, ...rest } = context;
@@ -2297,7 +2334,7 @@ async function runJudgeNode(node: JudgeNode, state: Record<string, unknown>, wor
   return { ...state, [node.as]: value, [`${node.as}$answers`]: sidecar };
 }
 
-async function runPickNode(node: PickNode, state: Record<string, unknown>, deps: WorkflowDeps): Promise<Record<string, unknown>> {
+async function runPickNode(node: PickNode, state: Record<string, unknown>, deps: WorkflowDeps, workflow?: Workflow): Promise<Record<string, unknown>> {
   assertNodeInputs(node, state);
   const items = getPath(state, node.itemsPath);
   if (!Array.isArray(items)) throw new WorkflowStateError(`pick node "${node.label}": ${node.itemsPath} is not a list`, node.label, node.itemsPath, "expected_list");
@@ -2312,7 +2349,7 @@ async function runPickNode(node: PickNode, state: Record<string, unknown>, deps:
   if (items.length > capacity) throw new Error(`pick node "${node.label}": ${items.length} items exceed the ${capacity} a choice can hold — sift first`);
   const options: Record<string, string> = Object.fromEntries(items.map((item, i) => [`item_${i}`, describeItem(node.describe, state, item, i) || `item ${i}`]));
   const criteria: Record<string, string | null> = node.allowNone ? { ...options, [NONE]: "none of the items fits" } : options;
-  const asked = { ...(node.state ? interpolateValue(node.state, state, node.label) as Record<string, unknown> : { context: promptStateOf(state) }), candidates: options };
+  const asked = { ...(node.state ? interpolateValue(node.state, state, node.label) as Record<string, unknown> : { context: promptStateOf(state, workflow) }), candidates: options };
   const decided = await decide(deps, { workflowState: state, decision: decisionOf(node), images: resolveImages(node.images, state, node.label), nodeKind: "pick", kind: "pick", judgeKind: "pick", label: node.label, state: asked, questions: { pick: { type: "choice", instructions: node.instructions, criteria } } }, (answers) => {
     const a = answers.pick;
     if (!a || a.type !== "choice") throw new Error(`pick node "${node.label}": no choice came back`);
@@ -2687,7 +2724,7 @@ async function runNodeBody(node: WorkflowNode, state: Record<string, unknown>, w
       const { sopSections, sopSlice } = resolveSopSections(node, deps);
       if (deps.sop) deps.onEvent?.({ type: "sop.coverage", label: node.label, detail: { sections: sopSections.map((s) => ({ name: s, chars: sliceSop(deps.sop as string, s).length })), sliceChars: sopSlice.length, sopChars: (deps.sop as string).length } });
       assertNodeInputs(node, state);
-      const promptState = node.state ? interpolateValue(node.state, state, node.label) : promptStateOf(state);
+      const promptState = node.state ? interpolateValue(node.state, state, node.label) : promptStateOf(state, workflow);
       const verifier = node.node !== "report" && node.verify ? compileVerifier(workflow, node as WorkflowNode & { verify: VerifyClause; as?: string; label: string; node: string }, state, deps) : null;
       // Host policy: the adapter submits against the transport schema (the stage schema plus the host's
       // channels); the decoded domain value is what the stage schema, the verifier and the state see.
@@ -2899,7 +2936,7 @@ async function runNodeBody(node: WorkflowNode, state: Record<string, unknown>, w
       for (let i = 0; i < node.maxIters; i += 1) {
         const iterationDeps = scopeExecution(deps, "iterations", i);
         current = await runNodeOnState(node.body, current, workflow, scopeExecution(iterationDeps, "body"));
-        if ((await evaluatePredicate(node.until, current, withExecutionLocation(iterationDeps), { label: node.label, kind: "loop" })).holds) {
+        if ((await evaluatePredicate(node.until, current, withExecutionLocation(iterationDeps), { label: node.label, kind: "loop" }, workflow)).holds) {
           deps.onEvent?.({ type: "loop.exited", label: node.label, detail: { reason: "condition_met", iterations: i + 1 } });
           return current;
         }
@@ -2911,7 +2948,7 @@ async function runNodeBody(node: WorkflowNode, state: Record<string, unknown>, w
       return runJudgeNode(node, state, workflow, deps);
     }
     case "pick": {
-      return runPickNode(node, state, deps);
+      return runPickNode(node, state, deps, workflow);
     }
     case "sift": {
       return runSiftNode(node, state, workflow, deps);
@@ -2944,7 +2981,7 @@ async function runNodeBody(node: WorkflowNode, state: Record<string, unknown>, w
       return { ...state, [node.as]: structuredClone(result.output) };
     }
     case "escalate": {
-      const evaluated = await evaluatePredicate(node.when, state, deps, { label: node.label, kind: "escalate" });
+      const evaluated = await evaluatePredicate(node.when, state, deps, { label: node.label, kind: "escalate" }, workflow);
       const fired = evaluated.holds;
       const pathValue = (node.when as { path?: string })?.path
         ? String((node.when as { path?: string }).path).split(".").reduce<any>((acc, key) => (acc == null ? acc : acc[key]), state)
