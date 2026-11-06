@@ -2,7 +2,7 @@
 // a ceiling for its timeout, and read opens an image anywhere in the run's box, through the box, never on this machine.
 import assert from "node:assert/strict";
 import test from "node:test";
-import { codingSource } from "../dist/coding-tools.js";
+import { codingSource, READ_IMAGE_MAX_BYTES } from "../dist/coding-tools.js";
 
 const BOX = { mode: "sandbox", box: "docker" };
 const api = (seen = []) => ({ env: { cwd: "/host" }, output: (chunk) => seen.push(chunk), outputWindow: undefined, retainedOutput: () => ({ text: "", truncated: false }), diagnostic() {}, callId: "c1" });
@@ -47,22 +47,54 @@ test("bash asked for more than 600 s runs at 600 s and says so: in a diagnostic 
   assert.deepEqual(slow.timeouts, [600]);
 });
 
-/** A box that holds `files` (absolute box paths to bytes) and records each path it was asked for. */
+/** A box that holds `files` (absolute box paths to bytes). It runs only the bounded read (`head -c "$2" -- "$1" | base64`,
+ *  `$2` the most bytes it may send), as a shell in the box would: what each command asked for, and the bytes it sent. */
 function fileBox(files, hostWork) {
   const asked = [];
-  const env = { cwd: "/run/agentrun/run/work", readBinaryFile: async (path) => (asked.push(path), path in files ? { ok: true, value: new Uint8Array(files[path]) } : { ok: false, error: { code: "not_found", message: `${path}: not found` } }) };
-  return { asked, source: codingSource(BOX, { ...(hostWork ? { hostWork } : {}), env: async () => env }) };
+  const sent = [];
+  const env = {
+    cwd: "/run/agentrun/run/work",
+    exec: async (command, options) => {
+      const [, , script, , path, limit] = command;
+      asked.push({ path, limit: Number(limit), script });
+      if (!(path in files)) {
+        options.onOutput?.(`head: ${path}: No such file or directory`, {}, { stream: "stderr" });
+        return { ok: true, value: { exitCode: 1 } };
+      }
+      const held = Buffer.from(files[path]).subarray(0, Number(limit));
+      sent.push(held.length);
+      options.onOutput?.(held.toString("base64"), {}, { stream: "stdout" });
+      return { ok: true, value: { exitCode: 0 } };
+    },
+  };
+  return { asked, sent, source: codingSource(BOX, { ...(hostWork ? { hostWork } : {}), env: async () => env }) };
 }
 
-test("read opens an image the model rendered outside work/, at a path in the run's box, and answers it as an image", async () => {
+test("read opens an image the model rendered outside work/, at a path in the run's box, and answers it as an image under both of pi's result keys", async () => {
   const { asked, source } = fileBox({ "/tmp/view/frame.png": PNG });
   const read = source.tools.find((tool) => tool.name === "read");
   const result = await read.execute({ path: "/tmp/view/frame.png" }, api(), {});
-  assert.deepEqual(asked, ["/tmp/view/frame.png"], "read through the box, at the box's own path");
-  assert.equal(result.content?.[0]?.type, "image", JSON.stringify(result).slice(0, 300));
-  assert.equal(result.content[0].mimeType, "image/png");
-  assert.equal(Buffer.from(result.content[0].data, "base64").equals(PNG), true);
+  assert.deepEqual(asked.map((a) => [a.path, a.limit]), [["/tmp/view/frame.png", READ_IMAGE_MAX_BYTES + 1]], "read through the box, at the box's own path, at most one byte over the bound");
+  assert.match(asked[0].script, /head -c "\$2" -- "\$1" \| base64/);
+  // pi 1.1 reads `content`, 1.2 and 1.3 `output`: the same blocks under each (result.ts).
+  for (const key of ["content", "output"]) {
+    const image = result[key]?.find((block) => block.type === "image");
+    assert.ok(image, `${key}: ${JSON.stringify(result).slice(0, 300)}`);
+    assert.deepEqual(Object.keys(image).sort(), ["data", "mimeType", "type"]);
+    assert.equal(image.mimeType, "image/png");
+    assert.equal(Buffer.from(image.data, "base64").equals(PNG), true);
+    assert.match(result[key].find((block) => block.type === "text")?.text ?? "", /\/tmp\/view\/frame\.png.*image\/png/, "a line of text names it, so no answer is an empty text");
+  }
   assert.match(read.description, /image/i, "read says it opens images");
+});
+
+test("an image over read's bound is refused, and the box sends at most one byte past the bound: the server never holds the whole file", async () => {
+  const big = Buffer.concat([PNG.subarray(0, 16), Buffer.alloc(6 * 1024 * 1024)]);
+  const { asked, sent, source } = fileBox({ "/tmp/big.png": big });
+  const read = source.tools.find((tool) => tool.name === "read");
+  await assert.rejects(read.execute({ path: "/tmp/big.png" }, api(), {}), new RegExp(`/tmp/big\\.png is an image over read's ${READ_IMAGE_MAX_BYTES} bytes`));
+  assert.deepEqual(asked.map((a) => a.limit), [READ_IMAGE_MAX_BYTES + 1]);
+  assert.deepEqual(sent, [READ_IMAGE_MAX_BYTES + 1], "the box sent max + 1 bytes of the 6 MB, no more");
 });
 
 test("read outside work/ stays confined for anything but an image: a text file in /tmp, a file named .png that is not one, a host path", async () => {
