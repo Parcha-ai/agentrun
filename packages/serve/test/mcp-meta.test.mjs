@@ -91,6 +91,27 @@ test("a grant of a meta tool is 422 on a harness that doesn't bind MCP tools too
   assert.ok(JSON.stringify(refused.body).includes(`can't be granted: ${REASON}`), JSON.stringify(refused.body));
 });
 
+test("a run of a revision saved granting what is now a meta tool is 409 naming it under details.not_grantable with the reason, never under unbound", async (t) => {
+  const { api, data } = await serve(t);
+  // Klavis's generic execute_action is granted on a host that is not Klavis's; the server then moves to Klavis's host.
+  await saved(t, api, "strata", ["execute_action"]);
+  assert.equal((await api("POST", "/agents", agent("strata-old", { tools: ["mcp:strata/execute_action"] }))).status, 201);
+  const file = join(data, "mcp-servers.json");
+  const doc = JSON.parse(await readFile(file, "utf8"));
+  doc.servers.strata.url = "https://strata.klavis.ai/mcp/?strata_id=x";
+  await writeFile(file, JSON.stringify(doc));
+  const run = await api("POST", "/agents/strata-old/runs", { input: { content: "Hello." } });
+  assert.equal(run.status, 409, JSON.stringify(run.body));
+  assert.equal(run.body.error.code, "agent_not_runnable");
+  assert.equal(run.body.error.message, `mcp:strata/execute_action can't be granted: ${REASON}`);
+  assert.deepEqual(run.body.error.details.not_grantable, [{ tool: "mcp:strata/execute_action", reason: REASON }], JSON.stringify(run.body.error.details));
+  assert.deepEqual(run.body.error.details.unbound, [], "a meta tool is no missing server or tool");
+  // The served document describes the key.
+  const doc409 = (await api("GET", "/openapi.json")).body;
+  const blocked = JSON.stringify(doc409).includes('"not_grantable"');
+  assert.ok(blocked, "the served document names details.not_grantable");
+});
+
 test("a run's pin made before the rule, holding a meta tool, refuses its next launch in words; the gateway never sends a pinned meta tool", { timeout: 120_000 }, async (t) => {
   const { api, data } = await serve(t);
   await saved(t, api, "composio", ["COMPOSIO_MULTI_EXECUTE_TOOL", "GMAIL_SEND_EMAIL"]);
