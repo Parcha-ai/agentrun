@@ -194,3 +194,77 @@ func TestUser(t *testing.T) {
 		t.Fatalf("want denied naming CAP_SETUID, got %v", err)
 	}
 }
+
+// escape is a script that starts sleep 300 in a session of its own (setsid), so out of the program's process group, and
+// prints its pid once it runs. With orphan set it is also double-forked: the subshell that started it exits at once, so
+// it is no longer the program's descendant.
+func escape(dir string, orphan bool) string {
+	fifo := filepath.Join(dir, "pid")
+	start := `setsid sh -c 'echo $$ > "$0"; exec sleep 300' "` + fifo + `" >/dev/null 2>&1 </dev/null &`
+	if orphan {
+		start = "( " + start + " );"
+	}
+	return `mkfifo "` + fifo + `"; ` + start + ` read pid < "` + fifo + `"; echo $pid`
+}
+
+// escapee is the pid an escape script printed. Should the test fail with it still running, it is killed at the end.
+func escapee(t *testing.T, out []byte) int {
+	t.Helper()
+	pid := pidOf(t, out)
+	t.Cleanup(func() {
+		if cmdline, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/cmdline"); err == nil && string(cmdline) == "sleep\x00300\x00" {
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+		}
+	})
+	return pid
+}
+
+func TestASetsidChildDoesNotOutliveTheRun(t *testing.T) {
+	start := time.Now()
+	res := run(t, execrun.Spec{Argv: []string{"sh", "-c", escape(t.TempDir(), false)}})
+	if res.ExitCode == nil || *res.ExitCode != 0 || time.Since(start) > 3*time.Second {
+		t.Fatalf("want exit 0 at once, got %+v after %v", res, time.Since(start))
+	}
+	gone(t, escapee(t, res.Stdout))
+}
+
+func TestADoubleForkedSetsidChildDoesNotOutliveTheRun(t *testing.T) {
+	res := run(t, execrun.Spec{Argv: []string{"sh", "-c", escape(t.TempDir(), true)}})
+	if res.ExitCode == nil || *res.ExitCode != 0 {
+		t.Fatalf("want exit 0, got %+v", res)
+	}
+	gone(t, escapee(t, res.Stdout))
+}
+
+func TestADoubleForkedSetsidChildDoesNotOutliveATimeout(t *testing.T) {
+	res := run(t, execrun.Spec{Argv: []string{"sh", "-c", escape(t.TempDir(), true) + "; sleep 60"}, Timeout: 500 * time.Millisecond})
+	if !res.TimedOut || res.Signal != "SIGTERM" {
+		t.Fatalf("want timed out by SIGTERM, got %+v", res)
+	}
+	gone(t, escapee(t, res.Stdout))
+}
+
+func TestARelativeProgramIsFoundInCwd(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "script"), []byte("#!/bin/sh\necho ran\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	res := run(t, execrun.Spec{Argv: []string{"./script"}, Cwd: dir})
+	if string(res.Stdout) != "ran\n" {
+		t.Fatalf("stdout %q", res.Stdout)
+	}
+}
+
+func TestARelativePathEntryIsFoundInCwd(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "bin", "only-in-cwd-bin"), []byte("#!/bin/sh\necho found\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	res := run(t, execrun.Spec{Argv: []string{"only-in-cwd-bin"}, Cwd: dir, Env: map[string]string{"PATH": "bin:/usr/bin:/bin"}})
+	if string(res.Stdout) != "found\n" {
+		t.Fatalf("stdout %q", res.Stdout)
+	}
+}
