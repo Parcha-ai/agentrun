@@ -337,9 +337,9 @@ export type Run = {
   raising?: Promise<unknown>;
   /** Its raise's follow-up is being sent (resumeRaised), or waits to be tried again (its time): never two at once. */
   resuming?: "sending" | number;
-  /** Its newest refusal for room's figures, from that refusal's own start mark (cap.ts RefusalFigures); `leastCapUsd`
-   *  absent on a mark an older server wrote. */
-  capRefusal?: Omit<RefusalFigures, "leastCapUsd"> & { leastCapUsd?: number };
+  /** Its newest refusal for room's figures, from that refusal's own start mark (cap.ts RefusalFigures): all three, or
+   *  none. */
+  capRefusal?: RefusalFigures;
   /** That refusal's own start mark (its entry): the pause a raise answers is keyed to it (pauseOf). */
   capMark?: number;
   /** What it has spent paused at that refusal (its row), its process gone: the store's spend (spentNow), read once. */
@@ -390,7 +390,7 @@ function noteTurns(run: Run, entries: readonly unknown[], submissions: readonly 
     // A refusal for room's own start mark: what the cap counted as taken, and the least the request needed.
     const data = value.kind === REQUEST_STARTED && isObject(value.data) && value.data[CAP_REFUSED_FIELD] === true ? value.data : undefined;
     if (data) run.capMark = value.id;
-    if (data) run.capRefusal = typeof data.spentUsd === "number" && typeof data.needsUsd === "number" ? { spentUsd: data.spentUsd, needsUsd: data.needsUsd, ...(typeof data.leastCapUsd === "number" ? { leastCapUsd: data.leastCapUsd } : {}) } : undefined;
+    if (data) run.capRefusal = typeof data.spentUsd === "number" && typeof data.needsUsd === "number" && typeof data.leastCapUsd === "number" ? { spentUsd: data.spentUsd, needsUsd: data.needsUsd, leastCapUsd: data.leastCapUsd } : undefined;
     // The end-of-run turn's assistant messages, whole, by entry: what the turn answered, whose notes learning reads
     // (learning-run.ts). The ledger skips them; this is their only reader here.
     if (value.kind === "pi.assistant" && reflects(run.meta.reflect, value.id) && Array.isArray(value.model) && isObject(value.model[0])) {
@@ -502,7 +502,7 @@ const budgetPending = (run: Run, spentNow?: number): Pending | undefined => {
   // Shown as cost.usd is (to a millionth of a dollar), the suggestion from the figures as the cap counts them. The least cap
   // that sends the refused request is the one its words name (`said`), carried from the refusal that wrote them, never
   // worked out again here from figures that may have moved since.
-  const figures = r && spent !== undefined ? { spent_usd: micro(spent), needs_usd: micro(r.needsUsd), ...(r.leastCapUsd !== undefined ? { least_cap_usd: r.leastCapUsd } : {}), suggested_cap_usd: suggestedCap(cap, spent, r.needsUsd) } : {};
+  const figures = r && spent !== undefined ? { spent_usd: micro(spent), needs_usd: micro(r.needsUsd), least_cap_usd: r.leastCapUsd, suggested_cap_usd: suggestedCap(cap, spent, r.needsUsd) } : {};
   return { kind: "budget", cap_usd: cap, ...figures, said, at: meaningful(run.rows)?.timestamp ?? run.updatedAt };
 };
 /** The waiting row of a run paused at its cap, after the refusal's error row: "Paused at the run's $1 cap: Not sent: …". */
