@@ -220,20 +220,22 @@ export interface Gate {
 
 /** Where a permission was set (permissionFrom's `from`): the agent's own tool settings, the server's, or the default. */
 export type SettingFrom = "agent" | "server" | "default";
+/** What every deny tells the model, plainly: the call never left, so nothing was charged for it. */
+export const NOT_RUN = "It was not run: nothing was sent and nothing was charged.";
 /** Where a deny was set, in words: the place a person changes it. */
 export const denyPlace = (from: SettingFrom = "server"): string => (from === "agent" ? "for this agent" : from === "default" ? "by default" : "on this server");
 /** The refusal of a call whose tool is set to deny; of one held to another tool's setting (`heldTo`, a shell tool's
  *  bash), naming the setting to change and where it was set (`from`: this agent's settings or this server's). */
 export const deniedText = (tool: string, heldTo?: string, from: SettingFrom = "server"): string =>
-  heldTo && heldTo !== tool ? `Permission denied: ${tool} follows ${heldTo}'s setting, which is deny ${denyPlace(from)}. Don't retry it.` : `Permission denied: ${tool} is set to deny ${denyPlace(from)}. Don't retry it.`;
+  heldTo && heldTo !== tool ? `Permission denied: ${tool} follows ${heldTo}'s setting, which is deny ${denyPlace(from)}. ${NOT_RUN} Don't retry it.` : `Permission denied: ${tool} is set to deny ${denyPlace(from)}. ${NOT_RUN} Don't retry it.`;
 /** The refusal of an ask where no one can approve it: a server with accounts off, whose answer route takes no token. */
-export const noApproverText = (tool: string): string => `Permission denied: ${tool} needs the owner's approval, and this server has accounts off (AGENTRUN_ACCOUNTS=0), so no one can give it: set the tool to allow or deny in the agent's Tools.`;
+export const noApproverText = (tool: string): string => `Permission denied: ${tool} needs the owner's approval, and this server has accounts off (AGENTRUN_ACCOUNTS=0), so no one can give it: set the tool to allow or deny in the agent's Tools. ${NOT_RUN}`;
 /** Set by the server in a run's environment when no one can approve here (accounts off): the gate refuses each ask. */
 export const NO_APPROVER_ENV = "AGENTRUN_SERVE_NO_APPROVER";
 /** A parked call's answer: the run pauses here. */
 export const waitingText = (tool: string): string => `This ${tool} call waits for a person's approval; the run pauses here and continues with the result when they answer.`;
 /** A call a person denied, with their reason when they gave one. */
-export const refusedText = (tool: string, note?: string): string => `The user denied this ${tool} call.${note ? ` Reason: ${note}` : ""}`;
+export const refusedText = (tool: string, note?: string): string => `The user denied this ${tool} call. ${NOT_RUN}${note ? ` Reason: ${note}` : ""}`;
 
 /** The Timeline row of a call that waits for an approval. */
 export const APPROVAL_ROW = "tool_approval_requested" as const;

@@ -96,7 +96,7 @@ test("pi: an MCP tool set to deny is refused, the model reads why, and the serve
   const runId = await started(api, "denied", ["mcp:fake/add"], ADD, { extra: { tool_settings: { "mcp:fake/add": { permission: "deny" } } } });
   const { last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 60_000 });
   assert.equal(last.status, "completed");
-  assert.equal(await answerOf(api, runId), "The tool said: Permission denied: mcp:fake/add is set to deny for this agent. Don't retry it.");
+  assert.equal(await answerOf(api, runId), "The tool said: Permission denied: mcp:fake/add is set to deny for this agent. It was not run: nothing was sent and nothing was charged. Don't retry it.");
   assert.equal(calls(fake).length, 0, "nothing was sent");
 });
 
@@ -148,7 +148,7 @@ test("pi: an MCP tool's default ask shows not metered when it has no price; the 
   assert.equal(pending.price, "not metered");
   assert.equal(await answer(runId, pending.id, { decision: "deny", note: "not today" }), 204);
   await follow(server.api, runId, ["completed"], { deadlineMs: 60_000 });
-  assert.equal(await answerOf(server.api, runId), "Resumed: The user denied this mcp:fake/add call. Reason: not today");
+  assert.equal(await answerOf(server.api, runId), "Resumed: The user denied this mcp:fake/add call. It was not run: nothing was sent and nothing was charged. Reason: not today");
   assert.equal(calls(fake).length, 0);
 });
 
@@ -339,7 +339,7 @@ test("a person's message while an MCP call is parked declines it with their word
     const sent = await api("POST", `/runs/${runId}/messages`, { content: said });
     assert.equal(sent.status, 202, JSON.stringify(sent.body));
     const { rows } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 150_000 });
-    assert.match(await answerOf(api, runId) ?? "", new RegExp(`^Resumed: The user denied this mcp:fake/add call\\. Reason: ${said}`), harness);
+    assert.match(await answerOf(api, runId) ?? "", new RegExp(`^Resumed: The user denied this mcp:fake/add call\\. It was not run: nothing was sent and nothing was charged\\. Reason: ${said}`), harness);
     assert.match(rows.find((row) => row.kind === "tool_approval_requested")?.summary ?? "", /^Declined by your message: mcp:fake\/add /, harness);
     assert.equal(await answer(runId, pending.id, { decision: "allow" }), 409, `${harness}: a later allow`);
     assert.equal(calls(fake).length, 0, `${harness}: the server saw nothing`);
