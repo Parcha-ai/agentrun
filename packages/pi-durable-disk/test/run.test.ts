@@ -4,7 +4,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { createInterface } from "node:readline";
 import type { Context } from "@earendil-works/chord";
 import type { Cursor, DocumentRecord, Page, Seq, Storage } from "@earendil-works/pi-durable";
@@ -17,6 +17,7 @@ import {
   openDurableRun,
   OWNER_LOCK,
   RunError,
+  runOpenSeams,
   STORE_FILE,
   StoreBehindSealError,
   storeHead,
@@ -244,6 +245,24 @@ describe("openDurableRun", () => {
       await run.release();
       assert.deepEqual(t.claim.log, ["acquire", "cleanup", "barrier", "release"]);
     } finally {
+      dir.remove();
+    }
+  });
+
+  it("makes run.sqlite durable before the run is reported started: the file, then its directory, fsynced in the store's step, before the Harness and live", async () => {
+    const dir = scratchRoot("store-durable");
+    const timeline: string[] = [];
+    runOpenSeams.synced = (what, path) => void timeline.push(`fsync ${what} ${relative(dir.root, path) || "."}`);
+    try {
+      const t = setup(dir.root, { options: { onStep: (step) => void timeline.push(step) } });
+      const run = await t.open();
+      // A step is noted when it ends: both fsyncs are the store step's own, its last work.
+      const store = timeline.indexOf("store");
+      assert.deepEqual(timeline.slice(store - 2, store + 2), [`fsync file ${join("store", STORE_FILE)}`, "fsync dir store", "store", "seal"], "the file first, then the folder that names it, within the store's step");
+      assert.ok(timeline.indexOf("fsync dir store") < timeline.indexOf("live"), "both before the run is reported live");
+      await run.release();
+    } finally {
+      runOpenSeams.synced = undefined;
       dir.remove();
     }
   });

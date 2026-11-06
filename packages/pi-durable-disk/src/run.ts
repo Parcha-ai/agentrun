@@ -5,8 +5,8 @@
 // a write of the run's own files or the lapsed lease kills the run's commands and ends the instance (exit 75). Nothing
 // is retried. The lease writes its own files through the claim directory (`ClaimDir`), never by path.
 import { existsSync } from "node:fs";
-import { mkdir } from "node:fs/promises";
-import { isAbsolute, join, relative } from "node:path";
+import { mkdir, open as openFile } from "node:fs/promises";
+import { dirname, isAbsolute, join, relative } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { Context, JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -45,6 +45,21 @@ export const OWNER_LOCK = "owner.lock";
 export const STORE_FILE = "run.sqlite";
 /** Under a host's epoch (`epoch`), the table of the run's store that holds what run.json would: one row, its record as JSON. */
 export const RUN_STATUS_TABLE = "pda_run_status";
+
+/** Seams for tests, each unset in a run: `synced` hears each fsync of the store's open, the file or its folder, once it
+ *  returned. */
+export const runOpenSeams: { synced?: (what: "file" | "dir", path: string) => void } = {};
+
+/** Fsyncs `path`, a file or a folder, opened read-only. */
+async function syncPath(path: string, what: "file" | "dir"): Promise<void> {
+  const handle = await openFile(path, "r");
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  runOpenSeams.synced?.(what, path);
+}
 export { EXIT_DATAERR, EXIT_SOFTWARE };
 
 export type RunErrorCode = "INVALID_ARGUMENT" | "STORE_HEAD_UNREADABLE" | "RUN_RELEASED";
@@ -1134,13 +1149,23 @@ class Run implements DurableRun {
   async open(step: Step): Promise<void> {
     const lease = this.#lease;
     const file = join(lease.rawClaim.store, STORE_FILE);
-    this.#store = await step("store", () =>
-      openArchilStore(file, this.#options.profile ?? "exclusive", {
+    this.#store = await step("store", async () => {
+      const store = await openArchilStore(file, this.#options.profile ?? "exclusive", {
         onFenced: (error) => void lease.fence(error),
         ...(this.#options.keepWal ? { keepWal: true } : {}),
         ...(this.#options.decorateStore === undefined ? {} : { decorate: this.#options.decorateStore }),
-      }),
-    );
+      });
+      // The store exists now, and is made durable before anything says the run started: the file, then the folder that
+      // names it. A reader that looks for it after that report finds it, on this machine's disk and on a network one.
+      try {
+        await syncPath(file, "file");
+        await syncPath(dirname(file), "dir");
+      } catch (error) {
+        await store.storage.close(this.#context).catch(() => undefined);
+        throw ownWriteFenced(file, error);
+      }
+      return store;
+    });
     // Both refusals here are terminal: the run is marked `failed`, keeping its seal, so the supervisor stops on it.
     await step("seal", () => lease.checkSeal(this.#store!));
     const storage = lease.observe(this.#store.storage);
