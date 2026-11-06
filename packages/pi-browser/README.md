@@ -396,6 +396,9 @@ await browser.reconcile(harness, () => true, context);   // settles what a dead 
 - `decisions`: `classifyPage` and `rankChunks`, answered with your judge. Absent, no page is classified and no find is ranked.
 - `redact.values`: exact strings to scrub besides the built-in shapes.
 - `section.addendum`: your text after the package's prompt section.
+- `signIns`: `true` when the plane's sessions open on the agent's saved sign-ins (your kept profile or context). `run`'s
+  description then tells the model the browser keeps them, for a page behind a sign-in; without it, it says only that the
+  browser keeps cookies across pages. Absent, it is whether a `sessionVault` is given.
 - `workspace`: where `browser_downloads` writes, and where `browser_upload` reads when `files` is absent. Absent, `browser_downloads` is not listed, and `browser_upload` is listed only if `files` is given.
 - `files`: a `WorkspaceFiles` that resolves `browser_upload` paths. Given, `browser_upload` is listed without a `workspace`.
 - `handoff`: a `HandoffPort` that reaches a person (`request`, then `outcome` polled until done, cancelled or expired;
