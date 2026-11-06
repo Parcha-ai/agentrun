@@ -324,6 +324,9 @@ export async function serveRun(options: ServeOptions = {}): Promise<RunServer> {
     if (parks !== undefined && !(Array.isArray(parks) && parks.every((kind) => typeof kind === "string"))) throw new HttpError(400, "BAD_REQUEST", "parks is a list of entry kinds");
     const waiting = (tx: Tx, conversationId: ConversationId) => waitsOnPerson(tx, conversationId, (asks as string[] | undefined) ?? [], (parks as string[] | undefined) ?? []);
     const guarded = answers === false;
+    // A guarded input (one that may not answer a person) takes only a trigger's origin: the server's own messages are
+    // never guarded. Its marker is withdrawn if the input is refused busy (below).
+    if (guarded && origin !== undefined && !(isOrigin(origin) && (origin as { kind?: unknown }).kind === "trigger")) throw new HttpError(400, "BAD_REQUEST", "an input with answers false takes no origin but a trigger's");
     if (typeof requestId !== "string" || !REQUEST_ID.test(requestId)) throw new HttpError(400, "BAD_REQUEST", "requestId must be 1 to 200 printable ASCII characters");
     if (typeof content !== "string" && !Array.isArray(content)) throw new HttpError(400, "BAD_REQUEST", "content must be a string or an array of content blocks");
     if (whenBusy !== undefined && whenBusy !== "steer" && whenBusy !== "followUp" && whenBusy !== "reject") throw new HttpError(400, "BAD_REQUEST", "whenBusy is steer, followUp or reject");

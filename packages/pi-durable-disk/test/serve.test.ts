@@ -252,6 +252,29 @@ describe("the HTTP front", () => {
     }
   });
 
+  it("a trigger's guarded message refused WAITING writes no marker: the waiting check comes before it; a server origin on a guarded input is refused", async () => {
+    const disk = new LocalDisk("serve-trigger-waiting");
+    let server: RunServer | undefined;
+    let run: DurableRun | undefined;
+    try {
+      ({ server, run } = await served(disk, newCounters()));
+      const PARK = "agentrun.tool_approval";
+      const root = await run!.harness.root(ctx);
+      await run!.harness.commit((tx) => tx.appendEntry(root.id, { kind: PARK, data: { phase: "requested", id: "ap_9", tool: "web_fetch", call_id: "call_9" } as never }), ctx);
+      const origin = { kind: "trigger", trigger_id: "trg_1", source: "schedule", owner: true };
+      const waiting = await call(server!, "POST", "/submit", { requestId: "w1", content: "Check the queue.", origin, answers: false, asks: ["ask_person"], parks: [PARK] });
+      assert.deepEqual([waiting.status, waiting.body.error], [409, "WAITING"], JSON.stringify(waiting.body));
+      const server_ = await call(server!, "POST", "/submit", { requestId: "s1", content: "The cap was raised.", origin: { kind: "server", reason: "cap_raised" }, answers: false });
+      assert.deepEqual([server_.status, server_.body.error], [400, "BAD_REQUEST"], "a server origin is never on a guarded input");
+      const markers = (await root.entries({}, 500, undefined, ctx)).items.filter((entry) => entry.kind === MESSAGE_ORIGIN_KIND);
+      assert.deepEqual(markers, [], "no marker written");
+    } finally {
+      await run?.release();
+      await server?.close();
+      disk.remove();
+    }
+  });
+
   it("dedup is per conversation, as pi's submissionByRequest is: the same requestId on another conversation is a new submission", async () => {
     const disk = new LocalDisk("serve-perconv");
     const counters = newCounters();
