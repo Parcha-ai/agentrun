@@ -17,6 +17,17 @@ const v2 = devProxy(process.env)["/v2"];
 const wanted = process.env.VITEST_MAX_WORKERS?.trim() ?? "";
 if (wanted !== "" && !/^[1-9][0-9]*$/.test(wanted)) throw new Error(`VITEST_MAX_WORKERS must be a whole number of workers, got "${wanted}"`);
 const workers = wanted === "" ? undefined : Number(wanted);
+const alias = {
+  "@dsl": fileURLToPath(new URL("../../packages/dsl/src", import.meta.url)),
+  // The timeline library's tool names and pi-browser's tool list, from their sources (each imports nothing of Node).
+  "@timeline": fileURLToPath(new URL("../../packages/pi-durable-agent/src/timeline", import.meta.url)),
+  "@pi-browser": fileURLToPath(new URL("../../packages/pi-browser/src/core", import.meta.url)),
+  "@": fileURLToPath(new URL("./src", import.meta.url)),
+};
+// @storybook/addon-vitest runs story tests from this file: Storybook sets VITEST_STORYBOOK=true in its own process and
+// selects the storybookTest project in .storybook/vitest.project.ts. Every other run, `npm test` among them, keeps the unit
+// configuration below and no projects.
+const projects = process.env.VITEST_STORYBOOK === "true" ? [(await import("./.storybook/vitest.project")).storybookProject(alias)] : undefined;
 
 export default defineConfig({
   base: "./",
@@ -34,15 +45,7 @@ export default defineConfig({
       },
     },
   },
-  resolve: {
-    alias: {
-      "@dsl": fileURLToPath(new URL("../../packages/dsl/src", import.meta.url)),
-      // The timeline library's tool names and pi-browser's tool list, from their sources (each imports nothing of Node).
-      "@timeline": fileURLToPath(new URL("../../packages/pi-durable-agent/src/timeline", import.meta.url)),
-      "@pi-browser": fileURLToPath(new URL("../../packages/pi-browser/src/core", import.meta.url)),
-      "@": fileURLToPath(new URL("./src", import.meta.url)),
-    },
-  },
+  resolve: { alias },
   build: { outDir: "dist", assetsInlineLimit: 0 },
-  test: { environment: "jsdom", include: ["src/**/*.test.ts", "src/**/*.test.tsx"], ...(workers ? { minWorkers: 1, maxWorkers: workers } : {}) },
+  test: { environment: "jsdom", include: ["src/**/*.test.ts", "src/**/*.test.tsx"], ...(workers ? { minWorkers: 1, maxWorkers: workers } : {}), ...(projects ? { projects } : {}) },
 });

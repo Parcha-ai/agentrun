@@ -4,6 +4,9 @@ import type { StorybookConfig } from "@storybook/react-vite";
 const config: StorybookConfig = {
   framework: { name: "@storybook/react-vite", options: {} },
   stories: ["../src/**/*.stories.tsx"],
+  // addon-mcp serves the catalogue to agents at /mcp on the dev server; addon-vitest runs the stories as tests, which the
+  // MCP test-run tool needs (the project is in vitest.project.ts).
+  addons: ["@storybook/addon-vitest", "@storybook/addon-mcp"],
   core: { disableTelemetry: true, disableWhatsNewNotifications: true },
   viteFinal(config) {
     // Storybook's development catalog includes its own runtime. The public dependency guard applies to distributable console builds.
