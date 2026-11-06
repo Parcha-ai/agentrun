@@ -59,7 +59,10 @@ export async function holdOf(provider: DecisionProvider, params: JudgeParams, mo
   const model = params.model;
   // A request that names no model is refused by its provider before it is sent: nothing to hold.
   if (typeof priced.priceOf === "function" && model === undefined) return { usd: 0, basis: "no request is sent without a model" };
-  const price = typeof priced.priceOf === "function" && model !== undefined ? await priced.priceOf(model) : null;
+  // A catalog that cannot be read gives no price either: said as such, never taken for one.
+  const read = typeof priced.priceOf === "function" && model !== undefined ? await priced.priceOf(model).then((value) => ({ value }), () => undefined) : { value: null };
+  if (!read) return { unpriced: `the price of ${model} could not be read from OpenRouter's catalog` };
+  const price = read.value;
   if (!price) return { unpriced: `${model ?? provider.id} has no price here` };
   const questions = Object.keys(params.questions).length;
   const output = mode === "strict" ? price.maxCompletionTokens : questions * DECISION_OUTPUT_TOKENS;

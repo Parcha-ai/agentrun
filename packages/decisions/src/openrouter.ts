@@ -51,8 +51,14 @@ export interface ExperimentalInputs { experimental: { inputs: readonly DecisionC
  *  per request and per image, and the most output its top provider gives one request (null when it names none). */
 export type DecisionModelPrice = { promptUsd: number; completionUsd: number; requestUsd: number; imageUsd: number; maxCompletionTokens: number | null };
 /** What the provider adds for a host that keeps a spend cap: `priceOf(model)`, the model's catalog price, read once
- *  with the catalog; null when the catalog lists no price for it, or cannot be read. */
+ *  with the catalog; null when the catalog lists no price for it. A catalog that cannot be read (no answer in 10 s, an
+ *  answer not 2xx, one that does not parse) throws CatalogUnreadable, never a price or null, and is read again next time. */
 export interface PricedModels { priceOf(model: string): Promise<DecisionModelPrice | null> }
+/** OpenRouter's catalog could not be read, so no model's price is known from it now. */
+export class CatalogUnreadable extends Error {
+  override readonly name = "CatalogUnreadable";
+  constructor() { super("OpenRouter's catalog could not be read"); }
+}
 
 const isRecord = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
 const isCount = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
@@ -206,7 +212,11 @@ export function openrouterProvider(options: OpenRouterOptions = {}): DecisionPro
   return {
     id: "openrouter", needs: [KEY_VARIABLE], capabilities,
     // A host's spend cap prices a request before it is sent: the catalog's figures, the same read the image check makes.
-    priceOf: async (model: string) => (await catalog())?.prices.get(model) ?? null,
+    priceOf: async (model: string) => {
+      const read = await catalog();
+      if (!read) throw new CatalogUnreadable();
+      return read.prices.get(model) ?? null;
+    },
     experimental: { inputs: ["image"], note: "Images to OpenRouter's Decisions models go as base64 JSON assets, an alpha OpenRouter feature; for other models each token is a whole top-level state value, sent as an item of an array state." },
     async decide(request: DecisionRequest, ctx: DecisionContext): Promise<DecisionOutcome> {
       checkCapabilities(capabilities, request);

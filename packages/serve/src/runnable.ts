@@ -252,7 +252,14 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
       out.push({ field: "definition.workflow", reason: NOT_SET_UP, message: `The model ${id} has no price here, so a run's spend cap cannot be kept on it. This workflow's ${labels.length === 1 ? "node" : "nodes"} ${labels.join(", ")} ${labels.length === 1 ? "runs" : "run"} on it.`, fix: PRICE_FIX, host: true, unpriced: true });
     }
     for (const { label, provider, model } of decisionModelsNamed(nodes)) {
-      if (provider !== "openrouter" || !decisionPrice || (await decisionPrice(model))) continue;
+      if (provider !== "openrouter" || !decisionPrice) continue;
+      // A catalog that cannot be read is no price, said as such: the start is refused, and the next one reads it again.
+      const price = await decisionPrice(model).then((value) => ({ value }), () => undefined);
+      if (!price) {
+        out.push({ field: "definition.workflow", reason: NOT_SET_UP, message: `OpenRouter's catalog could not be read, so the price of the decision model ${model} is not known and a run's spend cap cannot be kept on it. This workflow's node ${label} asks it.`, fix: "Try the run again once OpenRouter's catalog answers, or run without a spend cap.", host: true, unpriced: true });
+        continue;
+      }
+      if (price.value) continue;
       out.push({ field: "definition.workflow", reason: NOT_SET_UP, message: `The decision model ${model} has no price in OpenRouter's catalog, so a run's spend cap cannot be kept on it. This workflow's node ${label} asks it.`, fix: "Pick a Decisions model OpenRouter's catalog prices, or run without a spend cap.", host: true, unpriced: true });
     }
   }
