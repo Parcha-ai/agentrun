@@ -76,6 +76,12 @@ export function script(spec) {
   // The same two calls, each ending before its request is paid, as with Claude Code, whose cost comes in after its
   // response: each result is stored before the answer that holds its call.
   if (/Write two files while answering\./.test(text)) return [{ calls: [{ call: "write", args: { path: "a.md", content: "alpha" } }, { call: "write", args: { path: "b.md", content: "beta" } }], usd: 0.001, bookAfter: true }, { say: "Wrote a.md and b.md.", usd: 0.002 }];
+  // The spend cap's wrap-up across a crash: a request at $0.30, then the turn holds (writing `<file>.held`) with no
+  // request open until `<file>` exists, then answers. A process opened once `<file>` exists answers at once.
+  const crashAt = /Wrap up across a crash at (\S+)\./.exec(text)?.[1];
+  if (crashAt) return [{ call: "read", args: { path: "a.txt" }, usd: 0.3 }, ...(existsSync(crashAt) ? [] : [hangSignalled(`${crashAt}.held`)]), { say: "Done.", usd: 0.01 }];
+  // The wrap-up due only after a turn's one request ($0.40): the next turn's first request is the first that can take it.
+  if (/Wrap up in the next turn\./.test(text)) return [{ end: true, usd: 0.4 }, { say: "Second.", usd: 0.01 }];
   if (/Make three requests\./.test(text)) return [{ call: "read", args: { path: "a.txt" }, usd: 0.001 }, { call: "read", args: { path: "b.txt" }, usd: 0.002 }, { say: "Read it.", usd: 0.004 }];
   // Reads a file the run was given (an upload, copied into its inputs/), then says so.
   const upload = /Read the upload (\S+)\./.exec(text)?.[1];

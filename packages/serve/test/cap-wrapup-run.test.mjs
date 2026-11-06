@@ -4,15 +4,24 @@
 // again. Another harness (the faux harness standing in for claude-agent): its guard arms the same words for the
 // session's next main-model request, taken once (the model proxy adds them to its body), with the same row.
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { agent, follow, letGo, runDir, scratch, serve, withEnv } from "./support.mjs";
+import { agent, follow, letGo, runDir, runRecordOf, scratch, serve, withEnv } from "./support.mjs";
 
 const WRAPUP = new URL("./fixtures/faux-wrapup.mjs", import.meta.url).pathname;
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
-const WORDS = /^AgentRun: About \$\d+\.\d\d left of this run's budget: finish now with your answer\.$/;
+/** The tests' faux model priced on output only, $100 a million: what the faux harness's requests are held at. */
+const OUTPUT_PRICED = new URL("./fixtures/faux-output-priced.mjs", import.meta.url).pathname;
+/** The wrap-up's words with `left` of the cap (cap.ts wrapUpWords). */
+const WRAP_UP = (left) => `About ${left} left of this run's budget: finish now with your answer.`;
+/** The faux harness's notes taken into its requests (FAUX_RECORDS.note), once the run's process has let it go. */
+const notesOf = (data, runId) => entries(data, runId).filter((record) => record.kind === "faux.note").map((record) => record.data.text);
+/** The run's messages in order: the person's and the server's own rows. */
+const said = (rows) => rows.filter((row) => row.kind === "user_message" || (row.kind === "phase" && row.summary?.startsWith("AgentRun:"))).map((row) => row.text);
+const WORDS = /^AgentRun: About \$\d+(?:\.\d\d)? left of this run's budget: finish now with your answer\.$/;
 const rowsOf = async (api, runId) => (await api("GET", `/runs/${runId}/timeline`)).body.rows.filter((row) => row.kind === "phase" && WORDS.test(row.summary ?? ""));
 /** The run's root entries, read once its process has let it go. */
 const entries = (data, runId) => {
@@ -82,4 +91,42 @@ test("claude-agent on the faux harness: near its cap the guard arms the words fo
   const notes = db.prepare("SELECT record FROM entries").all().map((row) => JSON.parse(String(row.record))).filter((record) => record.kind === "faux.note");
   db.close();
   assert.deepEqual(notes.map((record) => `AgentRun: ${record.data.text}`), [rows[0].summary], "the session's next main-model request took the words, once");
+});
+
+test("claude-agent on the faux harness: a crash after the wrap-up came due and before the next request: the process that opens the run again sends the note in its first request, once, with what is left then", { timeout: 180_000 }, async (t) => {
+  const go = join(await scratch(t), "go");
+  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS, faux: OUTPUT_PRICED });
+  assert.equal((await api("POST", "/agents", agent("crash-h", { harness: "claude-agent", instructions: `Wrap up across a crash at ${go}.` }))).status, 201);
+  const started = await api("POST", "/agents/crash-h/runs", { input: { content: "go" }, max_cost_usd: 1 });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  const runId = started.body.run_id;
+  // The $0.30 request is answered and booked; the turn holds with no request open: $0.70 left, under 3 x $0.30.
+  for (const end = Date.now() + 60_000; !existsSync(`${go}.held`); await new Promise((resolve) => setTimeout(resolve, 50))) assert.ok(Date.now() < end, "the turn reached its hold");
+  await writeFile(go, "");
+  process.kill(runRecordOf(data, runId).holder.pid, "SIGKILL");
+  await follow(api, runId, ["completed", "failed", "input_required"], { deadlineMs: 150_000 });
+  const run = (await api("GET", `/runs/${runId}`)).body;
+  assert.deepEqual([run.status, run.result?.final_answer], ["completed", "Done."], JSON.stringify(run.pending ?? run.error));
+  const rows = await rowsOf(api, runId);
+  assert.deepEqual(rows.map((row) => row.text), [WRAP_UP("$0.70")], "one row, in the words the request carried");
+  await letGo(data, runId);
+  assert.deepEqual(notesOf(data, runId), [WRAP_UP("$0.70")], "the next request, in the process opened again, carried the note, once");
+});
+
+test("claude-agent on the faux harness: a turn that ends on the request after which the wrap-up comes due: the next turn's first request carries the note, with what is left then, and its row follows that turn's message", { timeout: 180_000 }, async (t) => {
+  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS, faux: OUTPUT_PRICED });
+  assert.equal((await api("POST", "/agents", agent("next-h", { harness: "claude-agent", instructions: "Wrap up in the next turn." }))).status, 201);
+  const started = await api("POST", "/agents/next-h/runs", { input: { content: "go" }, max_cost_usd: 1 });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  const runId = started.body.run_id;
+  await follow(api, runId, ["completed", "failed", "input_required"], { deadlineMs: 60_000 });
+  assert.deepEqual(await rowsOf(api, runId), [], "no row while no request has carried the note");
+  assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "go on" })).status, 202);
+  const { rows } = await follow(api, runId, ["completed", "failed", "input_required"], { deadlineMs: 60_000 });
+  const run = (await api("GET", `/runs/${runId}`)).body;
+  assert.deepEqual([run.status, run.result?.final_answer], ["completed", "Second."], JSON.stringify(run.pending ?? run.error));
+  // $0.40 spent: $0.60 left, under 3 x $0.40, read as the follow-up's first request takes the note.
+  assert.deepEqual(said(rows), ["go", "go on", WRAP_UP("$0.60")], "the row after the turn's message, in the words it carried");
+  await letGo(data, runId);
+  assert.deepEqual(notesOf(data, runId), [WRAP_UP("$0.60")], "the follow-up's first request carried the note, once");
 });
