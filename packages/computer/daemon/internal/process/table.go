@@ -54,8 +54,9 @@ var signals = map[string]syscall.Signal{"TERM": syscall.SIGTERM, "INT": syscall.
 
 // Table is every process the daemon holds, shared by all its connections. It holds at most MaxEntries, running or
 // ended; a start into a full table drops the process that ended first once the new one runs, and is refused as limit
-// when all of them run. Its rings hold at most RetainedBytes together: past that, the rings of the processes that ended
-// first are let go, while their entries stay.
+// when all of them run. Its rings, live and ended, hold at most RetainedBytes together: past that, the rings of the
+// processes that ended first are let go, while their entries stay, and when no ended ring is left the live rings are
+// limited to their share of the budget.
 type Table struct {
 	opts    Options
 	startMu sync.Mutex
@@ -246,16 +247,22 @@ func (t *Table) hold(grew int) {
 	t.trim()
 }
 
-// trim lets go of the rings of the processes that ended first until the table is within RetainedBytes, or no ended
-// process holds a ring. A running process keeps its ring. Hold t.mu.
+// trim keeps the table within RetainedBytes. First it lets go of the rings of the processes that ended first. When
+// every ended ring is gone and the table is still over, the live rings are what holds it: each stops growing and keeps
+// at most an equal share of the budget, never less than the floor, dropping its oldest bytes, which a read reports as
+// dropped. Hold t.mu.
 func (t *Table) trim() {
 	if t.held <= t.opts.RetainedBytes {
 		return
 	}
-	var ended []*proc
+	var ended, live []*proc
+	rings := 0
 	for _, p := range t.procs {
 		if p.hasEnded() {
 			ended = append(ended, p)
+		} else {
+			live = append(live, p)
+			rings += len(p.streams)
 		}
 	}
 	sort.SliceStable(ended, func(i, j int) bool { return ended[i].endedAt.Before(ended[j].endedAt) })
@@ -265,6 +272,24 @@ func (t *Table) trim() {
 		}
 		t.held -= p.releaseRings()
 	}
+	if t.held <= t.opts.RetainedBytes || rings == 0 {
+		return
+	}
+	share := int(max(t.opts.RetainedBytes/int64(rings), int64(min(RingFloorBytes, t.opts.RingBytes))))
+	for _, p := range live {
+		t.held -= p.limitRings(share)
+	}
+}
+
+// limitRings keeps each ring of p within n bytes from now on (ring.limit), and returns how many bytes they let go.
+func (p *proc) limitRings(n int) int64 {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	var freed int64
+	for _, s := range p.streams {
+		freed += int64(s.limit(n))
+	}
+	return freed
 }
 
 // releaseRings lets go of every ring of p, so none of them grows again, and returns how many bytes they held.
@@ -284,13 +309,16 @@ func (p *proc) collect(s *stream) {
 	for {
 		n, err := s.reader.Read(buf)
 		if n > 0 {
+			// Under t.mu, so the table counts and trims the bytes before anything else reads what it holds.
+			t := p.table
+			t.mu.Lock()
 			p.mu.Lock()
 			grew := s.write(buf[:n])
 			p.notify()
 			p.mu.Unlock()
-			if grew > 0 {
-				p.table.hold(grew)
-			}
+			t.held += int64(grew)
+			t.trim()
+			t.mu.Unlock()
 		}
 		if err != nil {
 			break

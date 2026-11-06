@@ -101,10 +101,12 @@ Its whole tree ends when the program ends or is signalled to its end. Ids are `p
 - The table holds at most 256 processes, running or ended. A start into a full table drops the process that ended
   first (its output with it) once the new program runs; a start that is refused drops nothing. When all 256 run, the
   start is refused as `limit`.
-- The rings hold at most 256 MiB of output together (256 full rings would be 4 GiB). Past that, the daemon lets go
-  of the rings of the processes that ended first until it is back under, never a running process's ring. Such a
-  process stays listed with its exit status; a read of its streams returns no data, `dropped` counts every byte from
-  `offset` on, and `exited` is true. Running processes alone can pass the bound (32 of them with full rings).
+- The rings, of running and ended processes alike, hold at most 256 MiB of output together (256 entries' full rings
+  would be 4 GiB, the default box's memory). Past that, the daemon first lets go of the rings of the processes that
+  ended first until it is back under. Such a process stays listed with its exit status; a read of its streams returns
+  no data, `dropped` counts every byte from `offset` on, and `exited` is true. When no ended ring is left and running
+  processes still hold more, each running process's ring stops growing and keeps at most an equal share of the budget
+  (never under 64 KiB), dropping its oldest bytes; a read from an offset it dropped reports them in `dropped`.
 
 `src/processes.ts` has `readAll(client, id, stream, {offset?, waitMs?, signal?})`, which pages a stream by offset
 until the process ends and returns its bytes, where it ended and what the ring dropped, and `listProcesses(client)`,
