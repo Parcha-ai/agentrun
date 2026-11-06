@@ -229,6 +229,61 @@ const swept = await sweep(new DockerProvider({ daemonPath: "dist/computerd-linux
 if (swept.ok) console.log(`deleted ${swept.value.deleted.join(", ") || "none"}; kept ${swept.value.kept}`);
 ```
 
+## Conformance
+
+A provider for another vendor passes the same suite as Docker's, with one command. The suite is data: each case in
+`src/conformance/cases/` names its level, its group (`health`, `exec`, `files`, `process`, `provider`, `drift`) and
+the capabilities it needs, and uses only `ComputerProvider`, `DaemonClient` and the suite's assertion helpers.
+
+```sh
+npm run conformance -w @parcha/agentrun-computer -- --provider docker
+npm run conformance -w @parcha/agentrun-computer -- --provider ./my-provider.js [--image debian:bookworm-slim] [--only exec,files] [--json]
+```
+
+```text
+computer conformance · docker · computerd 0.1.0-beta.30 linux/amd64
+core health    hello ping unknown-method                    ✓ 3
+core exec      argv streams exit-code cwd env timeout abort ✓ 10
+               truncation setsid-escapee user
+...
+full provider  network-open network-allow janitor           ✓ 2 - 1
+  - provider.network-allow: the provider does not declare network:allow
+core PASS 46/46 · full 2/3 · network:allow not declared
+```
+
+A module path is resolved from the directory npm was run in. It exits 0 when Core passes, 1 when it fails, and 2 on a usage error; `--json` prints the report object
+(`{ provider, providerVersion, image, daemon: { version, arch }, results: [{ id, level, group, status, reason? }], core,
+undeclared, cleanup }`). A failure is listed under its line with what the case found.
+
+What a provider module implements:
+
+- `export function createProvider()` returning a `ComputerProvider` (sync or async): `id`, `version`,
+  `capabilities()`, `check`, `create`, `attach`, `list`, `network`, `connect` and `release`, as in `src/provider.ts`.
+  `connect` hands out a connection whose daemon answers the methods in `src/protocol.ts`.
+- `export function createDriftedProvider()`, for the drift case: the same provider with a daemon that reports a version
+  other than `version`. A computer of that daemon must never be handed out: `create` refuses it (and deletes it), or
+  `connect` refuses it. Without this export the case is skipped, so Core does not pass.
+
+Core and Full follow the Kubernetes agent-sandbox conformance levels (KEP-539.2):
+
+- **Core** is what every computer does: hello and ping, `exec.run`, the `files.*` and `tar.*` methods, the `process.*`
+  methods, a computer with network `none`, `check`, `create`, `attach`, `list`, `network` read-back and `release`, and
+  the drift checks. Core passes when every Core case passes and the run leaves no computer behind.
+- **Full** is each optional capability a provider declares: network `open`, a network allowlist, and the janitor for
+  a provider whose lifetime is `"janitor"`.
+
+A case whose needs the provider does not declare (in `capabilities()`), or the daemon does not declare (in hello), is
+skipped with the reason and never fails. A skipped Full case is reported as not declared; a skipped Core case means
+the provider lacks something every computer must have, so Core does not pass.
+
+The suite makes every computer with the label `agentrun.conformance=<run id>`, image `--image`, a 30-minute lifetime
+and network `none`. It deletes each computer a case made when the case ends, and the shared one at the end; for a
+provider with lifetime `"janitor"` it then sweeps that label, and it lists the label to show nothing is left. A case
+that runs past 3 minutes fails and its computers are deleted. Cases do not assume root: they work under `/tmp`.
+
+From code: `runConformance(provider, { image, only?, signal?, drifted? })` returns the report, and
+`formatReport(report)` the text above.
+
 ## Build
 
 ```sh
@@ -244,9 +299,11 @@ cd packages/computer/daemon && go vet ./... && go test ./...
 AGENTRUN_COMPUTER_LIVE_DOCKER=1 npm run test:docker -w @parcha/agentrun-computer
 ```
 
-The live tests need Docker, `debian:bookworm-slim` and `alpine:3.20` pulled, both builds, and Go on PATH (the drift
-test builds a daemon of another version). They use the daemon for Docker's own
-architecture, and remove every container they make by its exact name, pass or fail.
+The live tests run the conformance suite on Docker, one test per case, and the CLI against `alpine:3.20`; the rest of
+them check what only Docker shows (the hardening flags in `docker inspect`, the daemon mount, hello's arch against
+Docker's, the daemon's exit on `docker stop`, attach by a container's name). They need Docker, `debian:bookworm-slim`
+and `alpine:3.20` pulled, both builds, and Go on PATH (the drift case builds a daemon of another version). They use
+the daemon for Docker's own architecture, and remove every container they make by its exact name, pass or fail.
 
 ## Acknowledgements
 
