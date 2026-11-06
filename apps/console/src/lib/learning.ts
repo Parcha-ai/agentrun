@@ -290,22 +290,6 @@ export const learningHash = (agentId: string, files: readonly string[] = []) => 
   return `#/agents/${encodeURIComponent(agentId)}/learning${named.length ? `?${q}` : ""}`;
 };
 
-/** A run's title cut to about `max` characters for a line that names it, its start and its end kept (a run's title is
- *  its first message, whose end often says what it was about): "Find this shop's…brooklinen.com". */
-export function shortTitle(title: string, max = 40): string {
-  const t = title.replace(/\s+/g, " ").trim();
-  if (t.length <= max) return t;
-  const tail = Math.floor((max - 1) * 0.45);
-  // Each side cut at a word's edge: the head back to its last space, the tail on past a cut word's rest.
-  let head = t.slice(0, max - 1 - tail);
-  const space = head.lastIndexOf(" ");
-  if (space > head.length / 2) head = head.slice(0, space);
-  let end = t.slice(t.length - tail);
-  const edge = /\W/.exec(end);
-  if (/\w/.test(t[t.length - tail - 1] ?? "") && edge && edge.index < end.length / 2) end = end.slice(edge.index + 1);
-  return `${head.trimEnd()}…${end.trimStart()}`;
-}
-
 /** A timeline row as the console labels a run's learning: the row that says how it ended, and the message that starts
  *  the look back ("Looking back on this run.", the server's own words; it is not the person's), each read "Learning",
  *  without the chip that would say it again. An older server's look-back row, which carried the prompt, loses its

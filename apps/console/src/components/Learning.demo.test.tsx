@@ -89,9 +89,9 @@ describe("demo: a person and an agent's notes, on a faux server's recorded answe
     expect(page.text()).toContain("2 notes in use. Every later run reads them before it starts.");
     const first = page.card(FIRST)!;
     expect(first.textContent).toContain("It answered at once on Taylor Stitch and Brooklinen.");
-    // The run it was learned in, its title cut short with its end kept, whole in its tooltip.
+    // The run it was learned in, by its short id (linked to it), its whole title in its tooltip.
     const source = first.querySelector('a[href^="#/runs/"]')!;
-    expect(source.textContent).toBe("Find this shop's…brooklinen.com");
+    expect(source.textContent).toBe(decodeURIComponent(source.getAttribute("href")!.slice("#/runs/".length)).slice(-8));
     expect(source.getAttribute("title")).toBe("Find this shop's refund policy page: https://www.brooklinen.com");
     // Who changed it, as the server names it (last_change): the person's own note, created by them.
     expect(page.card(MINE)!.textContent).toMatch(/Created by you · \S/);
