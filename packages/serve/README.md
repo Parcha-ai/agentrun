@@ -1075,7 +1075,7 @@ picks which one a run gets, never the model.
   not read, since what it says could repeat the pointer, which the server could not cut. Once the sign-in opens again
   (the right seal key back), its rows are read and shown, cut of it. A run that had already ended keeps how it ended,
   but while the sign-in does not open none of what it said is served (rows, answer, output, error words, a workflow
-  run's graph, which answers 403 `forbidden`), it can't be continued, and what its end-of-run learning turn wrote is
+  run's graph, and its files, `GET /runs/{id}/files` and each file, which answer 403 `forbidden`), it can't be continued, and what its end-of-run learning turn wrote is
   not checked, graded or merged (it waits as it was for a server that reads the sign-in). It is shown again, cut, once
   the sign-in opens. A run that was never handed the sign-in (one launched signed out since the key changed) is taken
   up as any other. That a run was handed it is kept in its `serve.json`; a launch that can't save that hands it none,

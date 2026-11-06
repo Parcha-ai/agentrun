@@ -1704,6 +1704,15 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   createFile.responses["415"] = ref("responses/UnsupportedMediaType");
   createFile["x-agentrun-serve-changed"] = { requestBody: "upload/2", parameters: "upload/2", responses: "upload/2" };
   changed.push("POST /files");
+  // A hidden run's files are refused, as its graph is: 403 forbidden while the server can't read its browser sign-in.
+  for (const path of ["/runs/{run_id}/files", "/runs/{run_id}/files/{path}"]) {
+    const files = (doc.paths[path] as Json).get as Json & { responses: Record<string, Json> };
+    files.description = `${String(files.description ?? "").trimEnd()}\nHere \`403 forbidden\` while this server can't read the browser sign-in the run was handed (its seal key changed or is missing): a page it saved signed in holds what it saw there, so none of its files is listed or read until the sign-in opens again.\n`;
+    const added = files.responses["403"] === undefined;
+    if (added) files.responses["403"] = ref("responses/Forbidden");
+    files["x-agentrun-serve-changed"] = { description: "signins/1", ...(added ? { responses: "signins/1" } : {}) };
+    changed.push(`GET ${path}`);
+  }
   // An agentic run's cancel is its end at once: the 202 reads `cancelled`, and no later end of its turn moves it.
   const cancel = (doc.paths["/runs/{run_id}/cancel"] as Json).post as Json;
   cancel.description = `${String(cancel.description).trimEnd()}\nHere an agentic run reads \`cancelled\` from the 202 on, \`final\` once it has stopped: a run's first terminal status is its last, so nothing its cut turn writes later (an answer, a cost over its cap) moves it. A workflow run reads \`cancelled\` once its workflow has stopped.\n`;

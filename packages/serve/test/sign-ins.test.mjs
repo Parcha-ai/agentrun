@@ -1439,3 +1439,28 @@ test("a run handed a sign-in forgotten so long ago that it is no longer kept (pa
   assert.ok(!timeline.includes("I kept"), timeline);
   assert.equal((await api("GET", `/runs/${first.runId}`)).body.result?.final_answer ?? null, null);
 });
+
+test("a hidden run's files are withheld as its words are: its work/ is neither listed nor read while its sign-in does not open, and served once it does", { timeout: 300_000 }, async (t) => {
+  const dir = await scratch(t);
+  const log = join(dir, "browser.jsonl");
+  const seal = randomBytes(32).toString("base64");
+  withEnv(t, { BROWSERBASE_API_KEY: BB_KEY, BROWSERBASE_PROJECT_ID: "proj-1", AGENTRUN_SEAL_KEY: seal, FAUX_BROWSER_LOG: log }, KEYS);
+  const first = await forgottenAfterEnd(t, dir, log);
+  await first.close();
+  // A page the run saved while signed in.
+  await writeFile(join(runDir(first.data, first.runId), "work", "account.html"), "<p>Signed in as Ada.</p>");
+  process.env.AGENTRUN_SEAL_KEY = randomBytes(32).toString("base64");
+  const rotated = await serve(t, { data: first.data, fauxBrowser: FAUX_BROWSER, fauxBrowserbase: FAUX_BROWSERBASE });
+  const withheld = "This server can't read the run's browser sign-in (its seal key changed or is missing, or the sign-in is damaged), so nothing the run said is shown.";
+  for (const path of [`/runs/${first.runId}/files`, `/runs/${first.runId}/files/account.html`]) {
+    const answer = await rotated.api("GET", path);
+    assert.deepEqual([answer.status, answer.body?.error?.code, answer.body?.error?.message], [403, "forbidden", withheld], path);
+  }
+  await rotated.close();
+  process.env.AGENTRUN_SEAL_KEY = seal;
+  const { api } = await serve(t, { data: first.data, fauxBrowser: FAUX_BROWSER, fauxBrowserbase: FAUX_BROWSERBASE });
+  const listed = await api("GET", `/runs/${first.runId}/files`);
+  assert.equal(listed.status, 200);
+  assert.ok(listed.body.files.some((file) => file.path === "account.html"), JSON.stringify(listed.body));
+  assert.equal((await api("GET", `/runs/${first.runId}/files/account.html`)).status, 200);
+});

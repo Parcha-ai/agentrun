@@ -40,7 +40,7 @@ import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
 import { answerPage, byOwnerSession, isJson, ownerCookie, ownOrigin, sendHostRefused, signedIn } from "./page.js";
 import { hostFix, hostName, loopbackNames } from "./host-check.js";
 import { durationMs, logLine } from "./print.js";
-import { type CarryBackRetry, knownToolCostOf, type Run, Runs, STATUSES, type Status, statusOf, toolCostOf, WAITS_ON_A_PERSON } from "./runs.js";
+import { type CarryBackRetry, knownToolCostOf, type Run, Runs, STATUSES, type Status, statusOf, toolCostOf, WAITS_ON_A_PERSON, WITHHELD_SIGN_IN } from "./runs.js";
 import { runLines } from "./usage-lines.js";
 import { BOX_QUARANTINE, type BoxHost, Quarantine } from "./box/sweep.js";
 import { type BoxOffer, boxesByDefault, boxesLog, boxRegistry, daytonaApi, enabledBoxes, VM_NO_LIST, VM_PROVIDER } from "./boxes.js";
@@ -403,6 +403,12 @@ export const ROUTES: readonly Route[] = [
 
 /** Where agent `agentId`'s host-owned path is read on this server: its route, when ROUTES has one (the learning API, for
  *  learning/); sign-ins/ only as the agent's `sign_ins`, never a pointer. */
+/** A run's files (its work/), refused while it is hidden (runs.ts meta.unshown: this server can't read the browser
+ *  sign-in it was handed), as its graph is: a page it saved signed in is what it saw, and no file is cut. */
+function filesShown(run: Run): void {
+  if (run.meta.unshown) throw new ApiError("forbidden", WITHHELD_SIGN_IN);
+}
+
 const ownedReadAt = (agentId: string): OwnedReadAt => (owned) => (owned === SIGN_INS_DIR ? `/v2/agents/${agentId}` : ROUTES.some((r) => r.method === "GET" && r.pattern.test(`/agents/${agentId}/${owned}`)) ? `/v2/agents/${agentId}/${owned}` : undefined);
 
 /** Whether the request to `path` (under /v2) is a PUT of a route marked `raw`. */
@@ -1915,6 +1921,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       }
       case "listRunFiles": {
         const run = await needRun(id);
+        filesShown(run);
         // A remote box's turn just ended: its pull lands first, so the list shows what the box wrote.
         await runs.pulled(run.id);
         const { files, deep } = await walk(join(run.dir, "work"));
@@ -1987,6 +1994,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         return send(res, 200, await runs.pause(await needRun(id), found.name === "pauseRun"));
       case "readRunFile": {
         const run = await needRun(id);
+        filesShown(run);
         await runs.pulled(run.id);
         return sendFile(req, res, url, join(run.dir, "work"), checkedPath(decodedPath(second!), "the run's own, not a file it wrote"), "a tool in the run's box");
       }
