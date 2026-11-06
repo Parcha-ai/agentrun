@@ -444,7 +444,21 @@ go through `work/` by path.
 An agent whose place is a sandbox may also name `bash_background`, `bash_output`, `bash_input`, `bash_signal` and
 `bash_list`, to run a command that outlives one call: a dev server, a watcher, a long build, a program that reads its
 input as it goes. Each call is one short command in the run's box, on the same path as `bash`, so they work on every box
-`bash` runs on, the permission gate takes each call as it takes `bash`'s, and nothing new runs on this server.
+`bash` runs on, and nothing new runs on this server.
+
+The permission gate holds all five to `bash`'s setting (none is a settings key of its own, so no setting of one lifts
+`bash`'s), and `capabilities.tools` and an agent's `tools` show each as the gate takes it, `permission_from` being
+where `bash`'s setting came from:
+
+- `bash: deny` refuses all five, as it refuses `bash`, with no shell at all.
+- `bash: ask` parks only the calls that start or feed a process: `bash_background` and `bash_input` (and `bash`
+  itself), each under its own name, so an approval runs that call. `bash_output`, `bash_list` and `bash_signal` run
+  unasked: they reach only the processes this run started, by its own ids (another run's id, or one never started, is
+  answered "there is no background process"), so watching an approved process costs no approval per page. They run so
+  on a server with accounts off too, where an ask is refused. Only an `ask` set as written lets them: where `bash` asks
+  because its setting is a value not offered, or because the settings file never read, they ask too. A save of the
+  settings as served keeps that stand-in, and the file keeps the value as written; only a different permission sets it.
+- `bash: allow` runs all five.
 
 - `bash_background {command}` starts the command from `work/`, in a fresh shell (`bash`, else `sh`) under a session of
   its own (`setsid`, its runner under `nohup`), and answers its id (`"1"`, then `"2"`, and on) at once. Its stdout and
