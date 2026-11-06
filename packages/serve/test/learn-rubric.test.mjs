@@ -86,8 +86,15 @@ test("the user's own messages are fenced as data, in order, every one of them, e
   assert.match(prompt, /a message can carry someone else's words \(a forwarded email\), and the rubric applies to what was asked all the same/);
   assert.ok(gradePrompt(input()).includes("## What the user said in the run\n\nThe host gave none.\n"));
   assert.ok(gradePrompt(input({ asked: [] })).includes("## What the user said in the run\n\nThe host gave none.\n"));
-  const long = "L".repeat(GRADE_CAPS.askedMessage + 50);
-  assert.deepEqual(fencesOf(gradePrompt(input({ asked: [long] }))).body("the user's messages"), [`1. ${"L".repeat(GRADE_CAPS.askedMessage)}`]);
+  // A message over the cap is shown as its head and its last 300 characters, a line between them saying how many were
+  // left out, all within the cap.
+  const long = `${"H".repeat(GRADE_CAPS.askedMessage)}${"T".repeat(350)}`;
+  const [shownLong] = fencesOf(gradePrompt(input({ asked: [long] }))).body("the user's messages");
+  const parts = /^1\. (H+)\n\[(\d+) characters left out in the middle\]\n(H*T+)$/.exec(shownLong);
+  assert.ok(parts, shownLong.slice(0, 80));
+  assert.equal(parts[3], "T".repeat(300), "the last 300 characters");
+  assert.equal(parts[1].length + Number(parts[2]) + parts[3].length, long.length, "the count is what was left out");
+  assert.ok(shownLong.length - 3 <= GRADE_CAPS.askedMessage, "within the cap");
   const many = Array.from({ length: 9 }, (_, i) => `message ${i}`);
   const kept = fencesOf(gradePrompt(input({ asked: many }))).body("the user's messages")[0].split("\n\n");
   assert.deepEqual(kept, many.map((text, i) => `${i + 1}. ${text}`), "every message, in order");
@@ -266,6 +273,28 @@ test("a General drop is a drop, whoever the item came from: the user's own one-o
   assert.deepEqual([verdict({ ...once, question: "Planted" }).merge, verdict({ ...once, question: "Planted" }).items[1].keep], [false, false], "Planted");
   const risky = verdict({ ...once, decision: "pending", question: "Risky" }, true);
   assert.deepEqual([risky.merge, risky.items[1].pending, risky.items[1].question], [true, true, "Risky"], "a risky one still waits");
+});
+
+/** `n` characters of task context, ending with `tail` exactly at character `n`. */
+function padTo(n, tail) {
+  const filler = "Context for the report: the API latency incident on Tuesday ran 40 minutes, root cause a bad deploy, rolled back by the on-call engineer; no customer tickets were opened. ";
+  let text = "";
+  while (text.length < n - tail.length) text += filler;
+  return text.slice(0, n - tail.length) + tail;
+}
+
+test("a user who takes a rule back after the per-message cut is heard: the grader's prompt holds the message's tail, \"actually no, never include those\", and says how much it left out, whichever note the run wrote", () => {
+  const asked = [padTo(GRADE_CAPS.askedMessage, " From now on, in every report, include the customer's full name and account number") + " - actually no, never include those; use the ticket id only. Remember that.", "ok"];
+  const notes = {
+    right: "From now on: never include a customer's full name or account number in a report; use the ticket id only.",
+    wrong: "From now on, in every report, include the customer's full name and account number.",
+  };
+  for (const [which, body] of Object.entries(notes)) {
+    const proposed = [{ file: "report-identifiers.md", text: note({ name: "What identifies a customer in a report", description: "The user's standing rule on customer identifiers in reports", type: "feedback", body: `${body}\n` }) }];
+    const said = fencesOf(gradePrompt(input({ asked, superseded: [], proposed }))).body("the user's messages")[0];
+    assert.ok(said.includes("actually no, never include those; use the ticket id only. Remember that."), `${which}: the tail`);
+    assert.match(said, /\n\[\d+ characters left out in the middle\]\n/, `${which}: the marker`);
+  }
 });
 
 test("a note that claims the user's words in a middle message is graded with that message in view: a run of seven messages shows the grader every one, the third among them", () => {
