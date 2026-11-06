@@ -732,3 +732,35 @@ test("a sign-in whose authorization server fails says which endpoint and its sta
     return true;
   });
 });
+
+for (const down of ["503", "timeout"]) {
+  test(`pi: an expired access token whose refresh gets ${down === "503" ? "a 503" : "no answer"} refuses the call unsent, saying to try again, keeps the refresh token, and the next launch refreshes and runs`, { timeout: 180_000 }, async (t) => {
+    withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() });
+    const { api } = await serve(t, { faux: FAUX_MCP });
+    // Access tokens that last two seconds: past their expiry by the run's launch.
+    const { as, mcp } = await fakes(t, { expiresIn: 2 });
+    const started = await api("POST", "/settings/mcp-servers/docs/oauth/start", { url: mcp.url });
+    assert.equal((await approve(started)).status, 302);
+    assert.equal((await api("POST", "/agents", agent("adder", { tools: ["mcp:docs/add"], tool_settings: { "mcp:docs/*": { permission: "allow" } } }))).status, 201);
+    await new Promise((resolve) => setTimeout(resolve, 2_500));
+    if (down === "503") as.fail(503);
+    else as.hang();
+    const run = async () => {
+      const made = await api("POST", "/agents/adder/runs", { input: { content: 'Call mcp__docs__add with {"a":2,"b":3}' } });
+      assert.equal(made.status, 202, JSON.stringify(made.body));
+      await follow(api, made.body.run_id, ["completed", "failed"], { deadlineMs: 150_000 });
+      return (await api("GET", `/runs/${made.body.run_id}`)).body.result?.final_answer ?? "";
+    };
+    const calls = () => mcp.log.filter((entry) => entry.method === "tools/call").length;
+    const tries = () => as.log.filter((entry) => entry.form.grant_type === "refresh_token").length;
+    const said = await run();
+    assert.equal(said, "The tool said: The MCP server docs's credential can't be opened on this server (the sign-in server didn't answer; try again); update it in Settings → MCP servers.");
+    assert.equal(calls(), 0, "nothing was sent with the expired token");
+    assert.equal(tries(), 2, "the refresh was tried twice");
+    assert.equal((await api("GET", "/settings/mcp-servers/docs")).body.credential, "sealed", "the sign-in stands: no one is asked to sign in again");
+    // The authorization server answers again: the next launch refreshes with the refresh token it kept, and runs.
+    as.heal();
+    assert.equal(await run(), "The tool said: 5");
+    assert.equal(calls(), 1);
+  });
+}
