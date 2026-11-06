@@ -24,6 +24,11 @@ const raise = (api, runId, body) => api("PATCH", `/runs/${runId}`, body);
  *  is its first priced one, so its typical cost is that request's expected cost, which the faux model's 16,384 tokens
  *  clamp to nearly all that is left: under 3 times it, the note is due there, and its row follows the follow-up's. */
 const WRAP_UP = (left) => `About ${left} left of this run's budget: finish now with your answer.`;
+/** The same told before the run's own model has a priced request (step 0, cap.ts wrapUpWords' `nonePriced`): a pi run
+ *  paused at its first request has none, so its raised follow-up's request is told in these words. The faux harness's is
+ *  told a request later (its proxy places the note before the guard has priced anything), once its follow-up's first
+ *  request is priced: the words above. */
+const WRAP_UP_FIRST = (left) => `This run's budget is about ${left}, enough for little work: answer as soon as you can.`;
 
 /** A run under a $0.05 cap, paused at it: its first request (least $0.1024) is refused. */
 async function paused(api, id) {
@@ -53,7 +58,7 @@ test("a run paused at its cap, its cap raised, goes on: one follow-up turn in th
   const run = await view(api, runId);
   assert.deepEqual([run.status, run.error, run.pending, run.cost.cap_usd], ["completed", null, null, 1], JSON.stringify(run));
   const said = rows.filter((row) => row.kind === "user_message" || (row.kind === "phase" && row.summary?.startsWith("AgentRun:"))).map((row) => row.text);
-  assert.deepEqual(said, ["Write one.md", CONTINUE("$1"), WRAP_UP("$1")], "the server's line after the person's message, then the wrap-up's, told once in the follow-up's request");
+  assert.deepEqual(said, ["Write one.md", CONTINUE("$1"), WRAP_UP_FIRST("$1")], "the server's line after the person's message, then the wrap-up's, told once in the follow-up's request");
   assert.equal(run.result.final_answer, "On The cap was raised to $1; continue the task.: done.");
   // The refused request has its own start mark and was never sent: the one request sent is the follow-up's answer.
   const entries = entriesOf(data, runId);
@@ -148,7 +153,7 @@ test("a raise sent while the paused run's process is still being let go is taken
   const { rows } = await follow(api, runId, ["completed", "failed", "cancelled"], { deadlineMs: 60_000 });
   const run = await view(api, runId);
   assert.deepEqual([run.status, run.error, run.cost.cap_usd], ["completed", null, 1], JSON.stringify(run));
-  assert.deepEqual(said(rows), ["Write one.md", CONTINUE("$1"), WRAP_UP("$1")], "one follow-up, after the old process was gone");
+  assert.deepEqual(said(rows), ["Write one.md", CONTINUE("$1"), WRAP_UP_FIRST("$1")], "one follow-up, after the old process was gone");
   assert.ok(!JSON.stringify(rows).includes("database is locked"), "no locked store");
   assert.deepEqual(lines().filter((line) => line.includes(runId) && line.includes("opening it again")), [], "its process going at the pause is no process lost: no relaunch counted");
 });
@@ -160,7 +165,7 @@ test("two raises of a paused run at once (a retry) resume it once: both answered
   assert.deepEqual(answers.map((a) => a.status), [200, 200], JSON.stringify(answers.map((a) => a.body)));
   assert.equal(answers[0].body.message_id, answers[1].body.message_id, "the same follow-up");
   const { rows } = await follow(api, runId, ["completed", "failed", "cancelled"], { deadlineMs: 60_000 });
-  assert.deepEqual(said(rows), ["Write one.md", CONTINUE("$1"), WRAP_UP("$1")]);
+  assert.deepEqual(said(rows), ["Write one.md", CONTINUE("$1"), WRAP_UP_FIRST("$1")]);
   assert.equal((await view(api, runId)).status, "completed");
 });
 
@@ -211,7 +216,7 @@ test("a raise taken, then the server killed before its follow-up went: the next 
   t.after(() => next.close());
   const api = client(next.baseUrl, next.token);
   const { rows } = await follow(api, runId, ["completed", "failed", "cancelled"], { deadlineMs: 60_000 });
-  assert.deepEqual([(await view(api, runId)).status, said(rows)], ["completed", ["Write one.md", CONTINUE("$1"), WRAP_UP("$1")]], "one follow-up across the restart");
+  assert.deepEqual([(await view(api, runId)).status, said(rows)], ["completed", ["Write one.md", CONTINUE("$1"), WRAP_UP_FIRST("$1")]], "one follow-up across the restart");
   const again = await raise(api, runId, { max_cost_usd: 1 });
   assert.equal(again.status, 409, `an ended run takes no raise: ${JSON.stringify(again.body)}`);
   const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true, timeout: 5_000 });
@@ -243,7 +248,7 @@ test("the same, with every launch path slow where it refreshes a run's MCP OAuth
   t.after(() => next.close());
   const api = client(next.baseUrl, next.token);
   const { rows } = await follow(api, runId, ["completed", "failed", "cancelled"], { deadlineMs: 60_000 });
-  assert.deepEqual([(await view(api, runId)).status, said(rows)], ["completed", ["Write one.md", CONTINUE("$1"), WRAP_UP("$1")]], "one follow-up across the restart");
+  assert.deepEqual([(await view(api, runId)).status, said(rows)], ["completed", ["Write one.md", CONTINUE("$1"), WRAP_UP_FIRST("$1")]], "one follow-up across the restart");
   const again = await raise(api, runId, { max_cost_usd: 1 });
   assert.equal(again.status, 409, `an ended run takes no raise: ${JSON.stringify(again.body)}`);
   const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true, timeout: 5_000 });
@@ -265,7 +270,7 @@ test("a paused run's pending suggests a raise, spent + 10 × the refused request
   assert.deepEqual([raised.status, raised.body.max_cost_usd, raised.body.resumed], [200, 2, true], JSON.stringify(raised.body));
   const { rows } = await follow(api, runId, ["completed", "failed", "cancelled"], { deadlineMs: 60_000 });
   const run = await view(api, runId);
-  assert.deepEqual([run.status, run.error, run.cost.cap_usd, said(rows)], ["completed", null, 2, ["Write one.md", CONTINUE("$2"), WRAP_UP("$2")]], JSON.stringify(run));
+  assert.deepEqual([run.status, run.error, run.cost.cap_usd, said(rows)], ["completed", null, 2, ["Write one.md", CONTINUE("$2"), WRAP_UP_FIRST("$2")]], JSON.stringify(run));
 });
 
 test("the suggested raise is a whole dollar, always above the cap, and a float just past a dollar stays that dollar", async () => {
@@ -305,7 +310,7 @@ test("a paused run's figures, once its process is gone, are the store's spend: a
   const raised = await raise(api, runId, { max_cost_usd: 1 });
   assert.deepEqual([raised.status, raised.body.resumed], [200, true], JSON.stringify(raised.body));
   const { rows } = await follow(api, runId, ["completed", "failed", "cancelled"], { deadlineMs: 60_000 });
-  assert.deepEqual([(await view(api, runId)).status, said(rows)], ["completed", ["Write one.md", CONTINUE("$1"), WRAP_UP("$1")]]);
+  assert.deepEqual([(await view(api, runId)).status, said(rows)], ["completed", ["Write one.md", CONTINUE("$1"), WRAP_UP_FIRST("$1")]]);
 });
 
 for (const harness of ["claude-agent", "codex"]) {
@@ -356,7 +361,7 @@ test("two raises of a paused run before its let-go process is gone resume it onc
   await writeFile(gate, "");
   const { rows } = await follow(api, runId, ENDED, { deadlineMs: 60_000 });
   const run = await view(api, runId);
-  assert.deepEqual([run.status, run.cost.cap_usd, said(rows)], ["completed", 2, ["Write one.md", CONTINUE("$2"), WRAP_UP("$2")]], JSON.stringify(run));
+  assert.deepEqual([run.status, run.cost.cap_usd, said(rows)], ["completed", 2, ["Write one.md", CONTINUE("$2"), WRAP_UP_FIRST("$2")]], JSON.stringify(run));
 });
 
 test("a raise whose follow-up's process came up, then its server was killed before the follow-up went: the next server sends it to that process, once", { timeout: 150_000 }, async (t) => {
@@ -380,7 +385,7 @@ test("a raise whose follow-up's process came up, then its server was killed befo
   t.after(() => next.close());
   const api = client(next.baseUrl, next.token);
   const { rows } = await follow(api, runId, ENDED, { deadlineMs: 20_000 });
-  assert.deepEqual([(await view(api, runId)).status, said(rows)], ["completed", ["Write one.md", CONTINUE("$1"), WRAP_UP("$1")]]);
+  assert.deepEqual([(await view(api, runId)).status, said(rows)], ["completed", ["Write one.md", CONTINUE("$1"), WRAP_UP_FIRST("$1")]]);
 });
 
 test("a raised run's follow-up that could not be sent is tried again, and the run goes on", { timeout: 120_000 }, async (t) => {
@@ -393,7 +398,7 @@ test("a raised run's follow-up that could not be sent is tried again, and the ru
   const raised = await raise(api, runId, { max_cost_usd: 1 });
   assert.deepEqual([raised.status, raised.body.resumed], [200, true], JSON.stringify(raised.body));
   const { rows } = await follow(api, runId, ENDED, { deadlineMs: 20_000 });
-  assert.deepEqual([(await view(api, runId)).status, said(rows)], ["completed", ["Write one.md", CONTINUE("$1"), WRAP_UP("$1")]]);
+  assert.deepEqual([(await view(api, runId)).status, said(rows)], ["completed", ["Write one.md", CONTINUE("$1"), WRAP_UP_FIRST("$1")]]);
 });
 
 test("a raised run's follow-up that can never be sent fails the run after its tries, saying why: never a pause stuck in silence", { timeout: 120_000 }, async (t) => {
@@ -424,7 +429,7 @@ test("a raise its run's serve.json could not keep is not taken: the run keeps it
   assert.deepEqual([again.status, again.body.resumed], [200, true], JSON.stringify(again.body));
   assert.equal(JSON.parse(readFileSync(join(runDir(data, runId), "serve.json"), "utf8")).max_cost_usd, 1, "kept");
   const { rows } = await follow(api, runId, ENDED, { deadlineMs: 60_000 });
-  assert.deepEqual([(await view(api, runId)).status, said(rows)], ["completed", ["Write one.md", CONTINUE("$1"), WRAP_UP("$1")]]);
+  assert.deepEqual([(await view(api, runId)).status, said(rows)], ["completed", ["Write one.md", CONTINUE("$1"), WRAP_UP_FIRST("$1")]]);
 });
 
 test("a raise taken while the paused process is let go, then that process cut off before it releases the run (as at its drain's end): the raise is honoured, never lost on a failed run", { timeout: 120_000 }, async (t) => {
@@ -438,7 +443,7 @@ test("a raise taken while the paused process is let go, then that process cut of
   await writeFile(gate, "");
   const { rows } = await follow(api, runId, ENDED, { deadlineMs: 60_000 });
   const run = await view(api, runId);
-  assert.deepEqual([run.status, run.error, said(rows)], ["completed", null, ["Write one.md", CONTINUE("$1"), WRAP_UP("$1")]], JSON.stringify(run));
+  assert.deepEqual([run.status, run.error, said(rows)], ["completed", null, ["Write one.md", CONTINUE("$1"), WRAP_UP_FIRST("$1")]], JSON.stringify(run));
 });
 
 test("a paused run's figures are shown as cost.usd is, to a millionth of a dollar", { timeout: 120_000 }, async (t) => {
@@ -466,6 +471,8 @@ test("a raise is the same cap within a float's tail: a cap a hair above the run'
 
 for (const harness of ["pi", "claude-agent"]) {
   test(`${harness}: a raise's follow-up shows as the server's, "AgentRun: The cap was raised to $1; continue the task.", never as the person's "You: …"`, { timeout: 120_000 }, async (t) => {
+    // pi tells its raised follow-up's request at step 0; the faux harness a request later, once one is priced (WRAP_UP_FIRST).
+    const told = harness === "pi" ? WRAP_UP_FIRST : WRAP_UP;
     const { api } = await serve(t, { faux: OUTPUT_PRICED, ...(harness === "pi" ? {} : { fauxHarness: FAUX_HARNESS }) });
     assert.equal((await api("POST", "/agents", agent(`said-${harness}`, { ...(harness === "pi" ? {} : { harness }), instructions: "Make three requests." }))).status, 201);
     const { run_id } = (await api("POST", `/agents/said-${harness}/runs`, { input: { content: "go" }, max_cost_usd: 0.05 })).body;
@@ -475,7 +482,7 @@ for (const harness of ["pi", "claude-agent"]) {
     const { rows } = await follow(api, run_id, ENDED, { deadlineMs: 60_000 });
     assert.equal((await view(api, run_id)).status, "completed");
     assert.deepEqual(rows.filter((r) => r.kind === "user_message").map((r) => r.summary), ["You: go"], "the person's one message");
-    assert.deepEqual(rows.filter((r) => r.kind === "phase" && r.summary?.startsWith("AgentRun:")).map((r) => [r.summary, r.text]), [[`AgentRun: ${CONTINUE("$1")}`, CONTINUE("$1")], [`AgentRun: ${WRAP_UP("$1")}`, WRAP_UP("$1")]], "the server's rows: the raise's follow-up, then the wrap-up told in its request");
+    assert.deepEqual(rows.filter((r) => r.kind === "phase" && r.summary?.startsWith("AgentRun:")).map((r) => [r.summary, r.text]), [[`AgentRun: ${CONTINUE("$1")}`, CONTINUE("$1")], [`AgentRun: ${told("$1")}`, told("$1")]], "the server's rows: the raise's follow-up, then the wrap-up told in its request");
   });
 }
 
@@ -537,7 +544,7 @@ test("a raise whose save is slow while the paused process exits sends its follow
   const raised = await raise(api, id, { max_cost_usd: 1 });
   assert.deepEqual([raised.status, raised.body.resumed], [200, true], JSON.stringify(raised.body));
   const { rows } = await follow(api, id, ENDED, { deadlineMs: 60_000 });
-  assert.deepEqual([(await view(api, id)).status, said(rows)], ["completed", ["Write one.md", CONTINUE("$1"), WRAP_UP("$1")]]);
+  assert.deepEqual([(await view(api, id)).status, said(rows)], ["completed", ["Write one.md", CONTINUE("$1"), WRAP_UP_FIRST("$1")]]);
 });
 
 test("the suggested raise is above the cap by more than a float's tail, so a PATCH with it is always a raise", async () => {
@@ -624,7 +631,7 @@ test("a message sent while a raise's follow-up waits for the paused process to g
   const sent = await sending;
   assert.equal(sent.status, 202, JSON.stringify(sent.body));
   const { rows } = await follow(api, runId, ENDED, { deadlineMs: 60_000 });
-  assert.deepEqual([(await view(api, runId)).status, said(rows)], ["completed", ["Write one.md", CONTINUE("$1"), WRAP_UP("$1"), "And add a title."]]);
+  assert.deepEqual([(await view(api, runId)).status, said(rows)], ["completed", ["Write one.md", CONTINUE("$1"), WRAP_UP_FIRST("$1"), "And add a title."]]);
 });
 
 test("a message sent while a raised run's follow-up keeps failing is answered not_continuable once the run has failed, promptly, never a 503 at the wait's deadline", { timeout: 120_000 }, async (t) => {
