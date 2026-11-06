@@ -37,7 +37,7 @@ const skip = (!CLI && "no pinned Claude CLI here") || (!existsSync("/usr/bin/set
 const manualLine = (data, lock) => {
   const dir = join(data, "harnesses");
   const next = `${dir}.new`;
-  return `rm -rf ${next} && mkdir -p ${next} && cp ${join(dirname(lock), "package.json")} ${lock} ${next}/ && npm ci --prefix ${next} --ignore-scripts && (chmod -R u+w ${dir} 2>/dev/null || true) && rm -rf ${dir} && mv ${next} ${dir}`;
+  return `rm -rf ${next} && mkdir -p ${next} && cp ${join(dirname(lock), "package.json")} ${lock} ${next}/ && npm ci --prefix ${next} --ignore-scripts --include=optional && (chmod -R u+w ${dir} 2>/dev/null || true) && rm -rf ${dir} && mv ${next} ${dir}`;
 };
 /** The SDK's version as installed in the data's harnesses, or undefined. */
 const installedIn = (data) => {
@@ -573,4 +573,18 @@ console.log(JSON.stringify({ url: served.baseUrl, token: served.token }));
   assert.equal(rows.findLast((row) => row.kind === "final_answer")?.text, "Claude answered.");
   assert.equal(installedIn(data), PIN);
   await next.close();
+});
+
+test("a person's npm config that omits optional packages still installs Claude Code's CLI: the install includes it", { timeout: 300_000, skip }, async (t) => {
+  const registry = await fakeRegistry(t);
+  const anthropic = await anthropicEndpoint(t);
+  await firstUseEnv(t, registry, anthropic.fake);
+  // As an .npmrc with omit=optional would say it (the CLI is the SDK's optional platform package).
+  Object.assign(process.env, { npm_config_omit: "optional", NPM_CONFIG_OMIT: "optional" });
+  const { api, data } = await firstUseServe(t, registry);
+  const run = await api("POST", "/agents/claude/runs", { input: { content: "Say hello." } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  const { rows, last } = await follow(api, run.body.run_id, ["completed", "failed"], { deadlineMs: 240_000 });
+  assert.equal(last.status, "completed", JSON.stringify(rows.slice(-3)));
+  assert.ok(existsSync(join(data, "harnesses", "node_modules", ...PLATFORM.split("/"), "claude")), "the platform package's CLI is installed");
 });

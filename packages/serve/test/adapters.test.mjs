@@ -133,7 +133,7 @@ test("claude-agent with Claude Code not installed in the data, and no key: the r
     assert.ok(error.message.includes(installLine(join(data, "harnesses"))), error.message);
     // The locked install, exactly: npm ci in a fresh directory with no script, then that put in place of the harnesses.
     const [dir, shipped] = [join(data, "harnesses"), fileURLToPath(new URL("../harnesses/claude-agent/", import.meta.url))];
-    assert.equal(installLine(dir), `rm -rf ${dir}.new && mkdir -p ${dir}.new && cp ${join(shipped, "package.json")} ${join(shipped, "package-lock.json")} ${dir}.new/ && npm ci --prefix ${dir}.new --ignore-scripts && (chmod -R u+w ${dir} 2>/dev/null || true) && rm -rf ${dir} && mv ${dir}.new ${dir}`);
+    assert.equal(installLine(dir), `rm -rf ${dir}.new && mkdir -p ${dir}.new && cp ${join(shipped, "package.json")} ${join(shipped, "package-lock.json")} ${dir}.new/ && npm ci --prefix ${dir}.new --ignore-scripts --include=optional && (chmod -R u+w ${dir} 2>/dev/null || true) && rm -rf ${dir} && mv ${dir}.new ${dir}`);
     assert.doesNotMatch(error.message, /ANTHROPIC_API_KEY/);
     return true;
   });
