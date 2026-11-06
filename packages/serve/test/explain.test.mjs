@@ -70,3 +70,34 @@ test("an option, a number and a field an object below keeps are told from the sc
   assert.equal(at("max_cost_usd").message, "max_cost_usd is a number above 0, e.g. 1");
   assert.equal(at("content").fix, 'content belongs under input: {"input":{"content":"…"}}');
 });
+
+test("a suggested value is one the server takes: a bad id gets the documented one, a model no value at all, and every value a 422 suggests, sent in place of the wrong one, clears the field's issue", async (t) => {
+  const { api } = await serve(t);
+  const good = { name: "Business due diligence", instructions: "Research.", tools: ["web_search", "web_fetch"] };
+  /** POSTs `definition`, then again with each suggested value put where the issue's field is: the field's issue goes. */
+  const resent = async (definition, path) => {
+    const first = await api("POST", "/agents", { definition });
+    assert.equal(first.status, 422, JSON.stringify(first.body));
+    const issue = first.body.error.fields.find((f) => f.field === path) ?? assert.fail(JSON.stringify(first.body));
+    if (issue.example !== undefined) {
+      const key = path.split(".").at(-1);
+      const again = await api("POST", "/agents", { definition: { ...definition, [key]: issue.example } });
+      assert.ok(!(again.body?.error?.fields ?? []).some((f) => f.field === path), `${path} = ${JSON.stringify(issue.example)} is refused too: ${JSON.stringify(again.body)}`);
+    }
+    return issue;
+  };
+  const id = await resent({ ...good, id: "bad id" }, "definition.id");
+  assert.equal(id.example, "due-diligence", "the documented createAgent body's id");
+  assert.match(id.message, /, e\.g\. "due-diligence"$/);
+  const model = await resent({ ...good, model: "gpt" }, "definition.model");
+  assert.equal(model.example, undefined, "no model this server would refuse");
+  assert.doesNotMatch(model.message, /e\.g\./);
+  for (const [definition, path] of [[{ ...good, learning: "on" }, "definition.learning"], [{ instructions: "Research." }, "definition.name"]]) {
+    const issue = await resent(definition, path);
+    assert.notEqual(issue.example, undefined, path);
+  }
+  // A run's input: the suggested input, sent as the input, starts the run.
+  assert.equal((await api("POST", "/agents", { definition: { ...good, id: "brief", tools: [] } })).status, 201);
+  const input = (await api("POST", "/agents/brief/runs", { input: "Research." })).body.error.fields.find((f) => f.field === "input");
+  assert.equal((await api("POST", "/agents/brief/runs", { input: input.example })).status, 202);
+});
