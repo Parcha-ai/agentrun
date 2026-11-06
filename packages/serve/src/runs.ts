@@ -1111,6 +1111,8 @@ export class Runs {
       ...(isObject(stored?.reflect) ? { reflect: stored.reflect as Reflect } : {}),
       ...(isObject(stored?.approvals) ? { approvals: stored.approvals as Record<string, ApprovalAnswer> } : {}),
       ...(trigger ? { trigger } : {}),
+      // Its first message's origin, for a relaunch that sends it again: kept only as an origin the Timeline reads.
+      ...(originOf(stored?.input_origin) ? { input_origin: originOf(stored?.input_origin) } : {}),
     };
     // A turn's origin a server before this one set is not known to be the turn running now: it goes.
     await rm(join(dir, TURN_ORIGIN_FILE), { force: true }).catch(() => undefined);
