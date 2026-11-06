@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { boxRegistry, enabledBoxes, VM_PROVIDER } from "../dist/boxes.js";
 import { client, follow, jsonLines, printed, scratch, serve, withEnv } from "./support.mjs";
@@ -22,6 +22,7 @@ const RUNNER = { mode: "runner" };
 const ON_BY_DEFAULT = "Boxes: docker (on by default; set AGENTRUN_BOXES to change).";
 const NO_DOCKER = "Docker isn't running on this machine (no docker command on PATH): install or start Docker, then restart AgentRun";
 const NO_DAEMON = "Docker isn't running on this machine, or this user may not use it (docker version failed: exit 1): start Docker, or add this user to the docker group, then restart AgentRun";
+const NOT_IN_GROUP = "this server's process isn't in the docker group: restart your user manager with `sudo systemctl restart user@$(id -u)`, or log in again if linger is off";
 const PREPARING = "Preparing the Docker box image (first start only, a few minutes); agents can be made now, and their first run waits for it.";
 const NOT_ENABLED = "not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker";
 
@@ -103,6 +104,29 @@ test("with AGENTRUN_BOXES not set and a Docker daemon that does not answer, the 
   await writeFile(join(bin, "docker"), "#!/bin/sh\necho 'Cannot connect to the Docker daemon' >&2\nexit 1\n", { mode: 0o755 });
   const registry = await boxRegistry({ PATH: bin });
   assert.deepEqual(registry.offers().find((offer) => offer.id === "docker"), { id: "docker", available: false, reason: NO_DAEMON });
+});
+
+/** A docker on PATH whose daemon refuses this process its socket, in the Docker CLI's own words. */
+async function deniedDocker(t) {
+  const bin = join(await scratch(t), "bin");
+  await mkdir(bin);
+  await writeFile(join(bin, "docker"), "#!/bin/sh\necho 'permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock: Get \"http://%2Fvar%2Frun%2Fdocker.sock/v1.47/version\": dial unix /var/run/docker.sock: connect: permission denied' >&2\nexit 1\n", { mode: 0o755 });
+  return bin;
+}
+
+test("a docker whose socket refuses this server's process says it is not in the docker group, and how to fix that without a reboot: in capabilities, the default reason and the banner, default or listed", { timeout: 60_000 }, async (t) => {
+  const bin = await deniedDocker(t);
+  const registry = await boxRegistry({ PATH: bin });
+  assert.deepEqual(registry.offers().find((offer) => offer.id === "docker"), { id: "docker", available: false, reason: NOT_IN_GROUP });
+  withEnv(t, { PATH: `${bin}:${dirname(process.execPath)}` }, ["AGENTRUN_BOXES", "AGENTRUN_DOCKER_IMAGE", "AGENTRUN_BOX_ALLOW"]);
+  const server = await serve(t, { faux: PROBE });
+  const places = await placesOf(server.api);
+  assert.equal(dockerOf(places).reason, NOT_IN_GROUP);
+  assert.equal(places.default_reason, `new agents run on the runner, because the docker box is unavailable here: ${NOT_IN_GROUP}`);
+  assert.equal(server.boxesLine, `Boxes: none, so new agents run on the runner. ${NOT_IN_GROUP}.`);
+  withEnv(t, { AGENTRUN_BOXES: "docker" });
+  const listed = await serve(t, { faux: PROBE });
+  assert.ok(listed.boxesLine.includes(`docker: ${NOT_IN_GROUP}.`), listed.boxesLine);
 });
 
 test("an explicit AGENTRUN_BOXES wins: a list probes only what it names, so daytona alone asks Docker nothing", { timeout: 60_000 }, async (t) => {

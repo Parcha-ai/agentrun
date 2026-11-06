@@ -78,6 +78,13 @@ export function daytonaApi(env: NodeJS.ProcessEnv): { apiKey: string; apiUrl: st
 /** The boxes' keys: secrets the server holds and the probes read, which no run's process is handed (runs.ts). */
 export const BOX_KEYS: readonly string[] = [DAYTONA_KEY, ...VM_PROVIDER.keys];
 
+/** Why docker is unavailable when its daemon refuses this server's process its socket (EACCES on /var/run/docker.sock):
+ *  the user is in the docker group, but this process started before it was (a systemd user manager that has run since,
+ *  kept by linger), so a restart of that manager, or a new login, gives it the group. */
+export const DOCKER_NOT_IN_GROUP = "this server's process isn't in the docker group: restart your user manager with `sudo systemctl restart user@$(id -u)`, or log in again if linger is off";
+/** docker's own words for a socket that refused this process (the CLI's, or the connect's EACCES). Matched, never shown. */
+const SOCKET_DENIED = /permission denied while trying to connect to the docker daemon socket|docker\.sock: connect: permission denied/i;
+
 /** How long one box's probe may take; the probes run at once, so this bounds them all. */
 export const PROBE_TIMEOUT_MS = 5_000;
 
@@ -178,15 +185,17 @@ const PROBES: Record<Exclude<BoxId, "bwrap">, (env: NodeJS.ProcessEnv, signal: A
     // Its environment is the server's through the cut a run's takes (withoutSecrets): no box key, no other secret, no
     // name shaped like a key.
     const dockerEnv = withoutSecrets(env);
-    const answer = await new Promise<{ failed?: string; out: string }>((resolve) =>
-      execFile("docker", ["version", "--format", "{{.Server.Version}}"], { env: dockerEnv, signal, maxBuffer: 64 * 1024 }, (error, stdout) => {
+    const answer = await new Promise<{ failed?: string; denied?: true; out: string }>((resolve) =>
+      execFile("docker", ["version", "--format", "{{.Server.Version}}"], { env: dockerEnv, signal, maxBuffer: 64 * 1024 }, (error, stdout, stderr) => {
         const code = (error as { code?: unknown } | null)?.code;
-        resolve({ ...(error ? { failed: typeof code === "number" ? `exit ${code}` : errorName(error) } : {}), out: String(stdout) });
+        resolve({ ...(error ? { failed: typeof code === "number" ? `exit ${code}` : errorName(error), ...(SOCKET_DENIED.test(String(stderr)) ? { denied: true as const } : {}) } : {}), out: String(stdout) });
       }),
     );
     // The probe runs once, at the start: each fix takes a restart. Docker is on by default, so its reason is often a
     // first-time user's first read: what is wrong in plain words, what the probe saw, then what to do.
     if (answer.failed === "ENOENT") return unavailable("docker", "Docker isn't running on this machine (no docker command on PATH): install or start Docker, then restart AgentRun");
+    // Its socket refused this process: the group it lacks, and how to get it without a reboot (the words, never docker's).
+    if (answer.denied) return unavailable("docker", DOCKER_NOT_IN_GROUP);
     if (answer.failed) return unavailable("docker", `Docker isn't running on this machine, or this user may not use it (docker version failed: ${answer.failed}): start Docker, or add this user to the docker group, then restart AgentRun`);
     if (!answer.out.trim()) return unavailable("docker", "Docker isn't running on this machine (docker version named no daemon): start Docker, then restart AgentRun");
     return available("docker", boxes.value());
