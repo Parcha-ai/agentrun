@@ -6,13 +6,13 @@ import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { AgentToolSettings } from "@/components/ToolSettings";
 import { WorkflowEditor } from "@/components/WorkflowEditor";
-import { type Agent, type AgentFields, DECISION, defaultTools, harnessOptions, isStarter, reachesWeb, same, sandboxReason, type SaveProblem, type ToolOffer, toolsFor, warningsFor } from "@/lib/agentForm";
+import { type Agent, type AgentFields, capOf, DECISION, defaultTools, harnessOptions, defaultPlaceOf, isStarter, reachesWeb, same, sandboxReason, type SaveProblem, type ToolOffer, toolsFor, warningsFor } from "@/lib/agentForm";
 import type { WorkflowCheck } from "@/lib/client";
 import { markdown, when } from "@/lib/format";
 import { harnessDefault, modelLabel, NO_DEFAULT } from "@/lib/models";
-import { newAgentPlace } from "@/lib/place";
+import { newAgentPlace, placeOf } from "@/lib/place";
 import type { Places } from "@/lib/place";
-import type { ToolChoice } from "@/lib/toolSettings";
+import { callNodeTools, type ToolChoice, type ToolGate } from "@/lib/toolSettings";
 import { cn } from "@/lib/utils";
 
 /** A revision as GET /v2/agents/{id}/revisions lists it; `definition` is what it holds (a workflow revision's workflow). */
@@ -43,8 +43,14 @@ export type EditorProps = {
   validate?: (body: { workflow: unknown; tools?: string[] }, signal?: AbortSignal) => Promise<WorkflowCheck>;
   /** The capabilities with a provider choice (capabilities.tools): the Tools step's tool settings, for those the agent grants. */
   providerChoices?: ToolChoice[];
+  /** Each tool's permission on this server (approvals/1), from capabilities: an agent's own is set over it. */
+  permissionGates?: ToolGate[];
+  /** A tool whose permission the Tools step opens on, focused (a start refused for it links here). */
+  focusTool?: string;
 };
 type Step = "context" | "workflow" | "tools" | "settings" | "history";
+/** The workflow in the form's text, when it parses; else undefined (the saved one stands). */
+const parsedWorkflow = (text: string | undefined): unknown => { try { return text ? JSON.parse(text) : undefined; } catch { return undefined; } };
 
 /** A refused save's issues in the workflow: each 422 field under definition.workflow at its path, else the refusal's
  *  message for a workflow agent. */
@@ -65,14 +71,14 @@ const STEPS: { id: Step; label: string; note: string; Icon: typeof FileText }[] 
 /** The hosted console's agent builder, over AgentRun Server's agents: a numbered step rail, one step at a time, and a
  *  save that makes a new revision. A save made on a revision that is no longer current is refused (If-Match), and the
  *  editor says so instead of overwriting the other save. */
-export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent, onArchive, onReload, onBack, step: initialStep, problem: initialProblem = null, notice, draft, validate, providerChoices = [] }: EditorProps) {
+export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent, onArchive, onReload, onBack, step: initialStep, problem: initialProblem = null, notice, draft, validate, providerChoices = [], permissionGates = [], focusTool }: EditorProps) {
   const creating = !agent;
   const d = agent?.definition;
   const [step, setStep] = useState<Step>(initialStep ?? (agent?.kind === "workflow" ? "workflow" : "context"));
   // Tools are on by default: a new agent starts with every tool its harness runs here; an agent keeps its own. A new
   // agent starts on the place the server gives new agents (a sandbox where it has a box: bash ticked too); else none.
   const startPlace = creating ? newAgentPlace(caps.places) : undefined;
-  const [f, setF] = useState<AgentFields>({ name: d?.name ?? "", description: d?.description ?? "", instructions: d?.instructions ?? "", harness: d?.harness ?? "pi", thinking: d?.thinking, model: d?.model, tools: creating ? defaultTools("pi", caps.tools, startPlace) : d?.tools ?? [], ...(startPlace ? { place: startPlace } : {}), ...(agent?.kind === "workflow" ? { workflowText: draft ?? JSON.stringify(d!.workflow, null, 2) } : {}) });
+  const [f, setF] = useState<AgentFields>({ name: d?.name ?? "", description: d?.description ?? "", instructions: d?.instructions ?? "", harness: d?.harness ?? "pi", thinking: d?.thinking, model: d?.model, tools: creating ? defaultTools("pi", caps.tools, startPlace) : d?.tools ?? [], maxCostText: typeof d?.max_cost_usd === "number" && d.max_cost_usd > 0 ? String(d.max_cost_usd) : "", ...(startPlace ? { place: startPlace } : {}), ...(agent?.kind === "workflow" ? { workflowText: draft ?? JSON.stringify(d!.workflow, null, 2) } : {}) });
   // The form as it is now, for a save's answer to compare with what that save sent.
   const formNow = useRef(f);
   formNow.current = f;
@@ -116,7 +122,18 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
     if (!onSave) return;
     setSaving(true);
     // A workflow agent's edit is sent as its parsed JSON; text that does not parse is not sent at all.
-    let fields: AgentFields = { ...f, workflowText: undefined };
+    let fields: AgentFields = { ...f, workflowText: undefined, maxCostText: undefined };
+    // The default cap, an agentic revision's only: the field's number. Emptied, an edit clears a saved cap with an explicit
+    // 0 (the server's "no default"; a field left out keeps the cap), and sends none when there is no cap to clear.
+    if (!workflow && !starting) {
+      const cap = capOf(f.maxCostText);
+      if (!cap.ok) { setSaving(false); setProblem({ kind: "invalid", message: cap.message, fields: { "definition.max_cost_usd": cap.message } }); return; }
+      // 0 (typed, or an emptied field) clears a saved cap; with no cap saved there is nothing to clear, and a 0 sent
+      // anyway would count as a change and make a revision the server refuses as unchanged.
+      const saved = typeof d?.max_cost_usd === "number" && d.max_cost_usd > 0;
+      const value = cap.value ?? 0;
+      if (value !== 0 || saved) fields = { ...fields, max_cost_usd: value };
+    }
     if (workflow) {
       try { fields = { ...fields, workflow: JSON.parse(f.workflowText ?? "") }; }
       catch (e) { setSaving(false); setProblem({ kind: "invalid", message: `The workflow is not JSON: ${(e as Error).message}`, fields: { "definition.workflow": `The workflow is not JSON: ${(e as Error).message}` } }); return; }
@@ -239,12 +256,12 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                     const choice = providerChoices.find((c) => c.name === t.name);
                     const ownPick = (f.tool_settings ?? d?.tool_settings ?? {})[t.name]?.provider;
                     const pickedOver = !!choice && ownPick !== undefined && ownPick !== choice.provider;
-                    const why = t.call_only && !workflow ? "Workflow-only: a workflow's call node runs it, not an agent" : !runs ? `Not on ${f.harness ?? "pi"} on this server` : sandboxReason(t, f.place ?? d?.place) ?? (!t.available && !pickedOver ? (choice?.reason ?? t.reason ?? `Needs ${(t.missing ?? []).join(", ")}`) : undefined);
+                    const why = t.call_only && !workflow ? "Workflow-only: a workflow's call node runs it, not an agent" : !runs ? `Not on ${f.harness ?? "pi"} on this server` : sandboxReason(t, f.place ?? placeOf(d?.place) ?? defaultPlaceOf(workflow, f.tools ?? [], caps.places)) ?? (!t.available && !pickedOver ? (choice?.reason ?? t.reason ?? `Needs ${(t.missing ?? []).join(", ")}`) : undefined);
                     return (
                       <li key={t.name}><label title={why} className={cn("flex items-center gap-3 border px-3 py-2.5 font-mono text-[13px]", on && "border-foreground", why && !on ? "cursor-not-allowed opacity-60" : "cursor-pointer")}>
                         <input type="checkbox" value={t.name} checked={on} disabled={!!why && !on} onChange={() => { setToolsTouched(true); set({ tools: on ? f.tools!.filter((x) => x !== t.name) : [...(f.tools ?? []), t.name] }); }} className="accent-[hsl(var(--primary))]" />
                         <span className="min-w-0">{t.name}{why && <span className="ml-2 text-[11px] text-muted-foreground">{why}</span>}
-                          {t.summary && <span className="mt-0.5 line-clamp-2 block font-sans text-[11px] text-muted-foreground" title={t.summary}>{t.summary}</span>}</span>
+                          {t.summary && <Summary text={t.summary} />}</span>
                       </label></li>
                     );
                   })}
@@ -254,8 +271,10 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                   <p className="mt-2 font-mono text-[12px] text-muted-foreground">This agent can't reach the web: {webHere.length ? `tick ${webHere.join(" or ")} in Tools.` : `${f.harness ?? "pi"} runs no web tool on this server.`}</p>
                 )}
               </Field>
-              {!workflow && (
-                <AgentToolSettings agent={agent} harness={f.harness ?? "pi"} model={f.model} tools={f.tools ?? []} choices={providerChoices}
+              {/* A workflow agent's tools have no provider here (a call node runs the tool as the server resolves it), but each
+                  one's permission is this agent's to set: a call node refused for a tool set to deny or ask is fixed here. */}
+              {(
+                <AgentToolSettings agent={agent} harness={f.harness ?? "pi"} model={f.model} tools={f.tools ?? []} choices={workflow ? [] : providerChoices} gates={permissionGates} focus={focusTool} callTools={workflow ? callNodeTools(parsedWorkflow(f.workflowText) ?? d?.workflow) : undefined}
                   value={f.tool_settings ?? d?.tool_settings ?? {}} issues={problem?.kind === "invalid" ? problem.fields : {}}
                   // Settings equal to the definition's are no change of the form's. While a save is under way the definition is
                   // about to be what it sent, so every change is kept: the save's answer drops it only if it equals what was sent.
@@ -316,6 +335,11 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
               {!starting && (
                 <Field label="Model" id="agent-model" optional note={modelDefault ? <>Empty uses the server's default (<span title={modelDefault.title}>{modelDefault.text}</span>).</> : NO_DEFAULT} error={fieldError("model")} warning={fieldWarning("model")}>
                   <input id="agent-model" value={f.model ?? ""} onChange={(e) => set({ model: e.target.value || undefined })} placeholder="provider/model" className={input} />
+                </Field>
+              )}
+              {!workflow && !starting && (
+                <Field label="Default spend cap per run, $" id="agent-max-cost" optional note="A run started without a cap of its own, and a trigger with none, stops at this spend. Empty means none." error={fieldError("max_cost_usd")} warning={fieldWarning("max_cost_usd")}>
+                  <input id="agent-max-cost" inputMode="decimal" value={f.maxCostText ?? ""} onChange={(e) => set({ maxCostText: e.target.value })} placeholder="e.g., 2.50" className={input} />
                 </Field>
               )}
               {!workflow && !starting && caps.places && <PlaceSetting value={f.place} saved={d?.place} places={caps.places} tools={caps.tools} picked={f.tools ?? []} onChange={set} error={fieldError("place")} warning={fieldWarning("place")} />}
@@ -381,5 +405,19 @@ function Field({ label, id, required, optional, note, error, warning, aside, chi
       {error && <p className="mt-2 font-mono text-[12px] text-destructive-text" role="alert">{error}</p>}
       {warning && <p className="mt-2 font-mono text-[12px] text-warning-text">{warning}</p>}
     </div>
+  );
+}
+
+/** A tool's description in its card: two lines, and "more" for the rest when it is longer (a tool's summary is written for
+ *  the model, often a paragraph). A <div>-free span pair, so the clamp's own display holds. "more" never ticks the tool. */
+function Summary({ text }: { text: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <span className="mt-0.5 block font-sans text-[11px] text-muted-foreground">
+      <span className={open ? undefined : "line-clamp-2"} title={text}>{text}</span>
+      {text.length > 120 && (
+        <button type="button" className="underline underline-offset-2 hover:text-foreground" onClick={(e) => { e.preventDefault(); e.stopPropagation(); setOpen((v) => !v); }}>{open ? "less" : "more"}</button>
+      )}
+    </span>
   );
 }

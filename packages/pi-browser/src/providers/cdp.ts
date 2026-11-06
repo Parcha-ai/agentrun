@@ -12,11 +12,11 @@ import { cdpCall } from "./cdp-call.js";
 import { chromeTail, openChromeStderr, watchChromeStderr } from "./chrome-stderr.js";
 import { claimWriter, freeWriter, noteWriter } from "./profiles.js";
 import { chromeArgs } from "./chrome-args.js";
-import { COPY, copyExtension, copyId, isLoaded, loadConfined } from "./worker-extension.js";
+import { COPY, copyExtension, copyId, isLoaded, loadConfined, soleStagehand } from "./worker-extension.js";
 
 export type CdpOptions =
   /** An existing browser: `http://host:port` or a `ws://` debugger URL. Release leaves it running. */
-  | { endpoint: string; extensionId?: string;
+  | { endpoint: string;
     /** The host asserts this endpoint is the run's OWN browser (the launcher that owns its process and its stop started it for this run alone), not one other runs or people share. Only then is a session of it offered to a session vault. Never set it for a shared browser. */
     ownBrowser?: boolean }
   /** Start Chrome under `profileRoot/<tag>` on a loopback port Chrome picks; release kills that process by exact pid. */
@@ -279,7 +279,7 @@ export function cdpProvider(options: CdpOptions, internals: { remove?: RemoveDir
   /** The private TMPDIR of each lease this provider started, by tag: the profile's marker is the only record a restarted process has, and a profile
    *  that something else removed first takes it along. */
   const privateTmps = new Map<string, string>();
-  /** The confined extension each lease has been given, by tag, loaded on its first attach: its id is handed to Stagehand as the attach target's extension. */
+  /** The confined extension each lease has been given, by tag, loaded on its first attach: the only Stagehand extension its browser keeps. */
   const extensionIds = new Map<string, Promise<string | null>>();
   /** A lease whose private TMPDIR is gone (or never made) keeps neither its map entry nor its record. */
   const forgetTmp = async (root: string, tag: string): Promise<void> => {
@@ -438,7 +438,7 @@ export function cdpProvider(options: CdpOptions, internals: { remove?: RemoveDir
     },
 
     async attach(ref): Promise<AttachTarget> {
-      if ("endpoint" in options) return { sdkCdpUrl: await debuggerUrl(options.endpoint), ...(options.extensionId ? { extensionId: options.extensionId } : {}) };
+      if ("endpoint" in options) return { sdkCdpUrl: await debuggerUrl(options.endpoint) };
       const local = parse(ref.id);
       if (!local) throw new Error("not a cdp lease");
       const own = await ownDebugger(profileDir(options.chrome.profileRoot, local.tag));
@@ -447,8 +447,11 @@ export function cdpProvider(options: CdpOptions, internals: { remove?: RemoveDir
       if (new URL(url).pathname !== own.path) throw new Error(`the browser on port ${local.port} is not the browser this lease's profile records`);
       // A Chrome this host did not start outlived the host that did: its stderr file is bounded here too.
       watchChromeStderr(privateTmps.get(local.tag) ?? await recordedTmp(options.chrome.profileRoot, local.tag) ?? await ownedTmp(profileDir(options.chrome.profileRoot, local.tag), local.tag), local.pid);
+      // Stagehand attaches to the one extension carrying its name: on every attach, any other (one loaded since the last) goes.
       const extensionId = await confinedExtension(local.tag, url);
-      return { sdkCdpUrl: url, ...(extensionId ? { extensionId } : {}) };
+      if (extensionId) await soleStagehand(url, extensionId);
+      // The extension lives in this browser and dials it on loopback, never through whatever the host puts in front of the driver.
+      return { sdkCdpUrl: url, extensionCdpUrl: url };
     },
 
     async release(ref) {

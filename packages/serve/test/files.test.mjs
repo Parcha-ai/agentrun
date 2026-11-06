@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdir, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
-import { follow, serve, startRun } from "./support.mjs";
+import { follow, runDir, serve, startRun } from "./support.mjs";
 
 test("the files a run wrote are listed and served raw; dot segments, .. and symlinks are refused with the contract's codes", async (t) => {
   const { api, data, baseUrl, token, port } = await serve(t);
@@ -11,7 +11,7 @@ test("the files a run wrote are listed and served raw; dot segments, .. and syml
   await follow(api, run_id, ["completed"]).catch(async (error) => {
     throw new Error(`${error.message}: ${JSON.stringify((await api("GET", `/runs/${run_id}`)).body)}`);
   });
-  const work = join(data, "runs", run_id, "work");
+  const work = join(runDir(data, run_id), "work");
   await writeFile(join(work, "page.html"), "<script>alert(1)</script>");
   await mkdir(join(work, "sub"));
   await writeFile(join(work, "sub", "a b.txt"), "spaced");
@@ -62,7 +62,7 @@ test("a run file whose extension names an object's own property (.constructor, .
   const { api, data, baseUrl, token } = await serve(t);
   const { run_id } = await startRun(api, "plain", "Hello.");
   await follow(api, run_id, ["completed"]);
-  const work = join(data, "runs", run_id, "work");
+  const work = join(runDir(data, run_id), "work");
   for (const name of ["x.constructor", "x.__proto__"]) await writeFile(join(work, name), `bytes of ${name}`);
   const list = await api("GET", `/runs/${run_id}/files`);
   assert.equal(list.status, 200, JSON.stringify(list.body));

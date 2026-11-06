@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { FRAME } from "./fixtures/faux-browser.mjs";
 import { connect } from "./fixtures/ws-client.mjs";
-import { builtConsole, call, cookieOf, follow, scratch, serve, withEnv } from "./support.mjs";
+import { builtConsole, call, cookieOf, follow, runDir as runFolder, runRecordOf, scratch, serve, withEnv } from "./support.mjs";
 
 const FAUX_BROWSER = new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname;
 const BROWSE_ASK = new URL("./fixtures/faux-browse-ask.mjs", import.meta.url).pathname;
@@ -40,7 +40,7 @@ async function watched(t, options = {}) {
   assert.equal(started.status, 202, JSON.stringify(started.body));
   const runId = started.body.run_id;
   const { after } = await follow(server.api, runId, ["input_required"]);
-  const dir = join(server.data, "runs", runId, "browser-live");
+  const dir = join(runFolder(server.data, runId), "browser-live");
   assert.ok(await until(() => readdir(dir).then((names) => names.some((name) => name.endsWith(".json")), () => false)), "the run's process handed its viewer over");
   const file = join(dir, (await readdir(dir)).find((name) => name.endsWith(".json")));
   return { server, origin, cookie, runId, file, after };
@@ -108,7 +108,7 @@ test("the owner's signed-in page alone gets the viewer's link; the page is frame
 test("the viewer's token and its file are in no record, row, view, file list, home or log; it dies with the session: the route says none and the old link is refused", { timeout: 120_000 }, async (t) => {
   const w = await watched(t);
   const handed = JSON.parse(readFileSync(w.file, "utf8"));
-  const runDir = join(w.server.data, "runs", w.runId);
+  const runDir = runFolder(w.server.data, w.runId);
   const said = [];
   for (const path of [`/runs/${w.runId}`, `/runs/${w.runId}/timeline`, "/runs", `/agents/watch/runs`, `/runs/${w.runId}/files`, "/agents/watch/home/files", "/capabilities", "/stats"]) {
     const res = await w.server.api("GET", path);
@@ -162,13 +162,13 @@ test("the route says whether a run has a browser at all: off with why when its a
   assert.deepEqual((await browserOfRun(first, cookieOf(made), browsed)).json, { state: "none" }, "a browser, its session released with the run");
   await first.close();
   // Its browser resolving unavailable at the next start (its vendor's key gone): off, in the plane's words.
-  const file = join(first.data, "runs", browsed, "serve.json");
+  const file = join(runFolder(first.data, browsed), "serve.json");
   const meta = JSON.parse(readFileSync(file, "utf8"));
   writeFileSync(file, JSON.stringify({ ...meta, tool_plane: { ...meta.tool_plane, browser: "kernel" } }));
   const again = await serve(t, { data: first.data, accounts: true, fauxBrowser: FAUX_BROWSER });
   const signed = await call(again.port, { method: "POST", path: "/v2/auth/sign-in", headers: own(again), body: { password: PASSWORD } });
   assert.equal(signed.status, 200, signed.text);
-  assert.deepEqual((await browserOfRun(again, cookieOf(signed), browsed)).json, { state: "off", reason: "kernel picked, no KERNEL_API_KEY" });
+  assert.deepEqual((await browserOfRun(again, cookieOf(signed), browsed)).json, { state: "off", reason: "kernel is picked, and it needs a Kernel key: save one in Settings → Tool keys (or set KERNEL_API_KEY where the server starts)" });
 });
 
 test("a malformed run id under the live path is a 404, never a crash: the server answers the next request, for HTTP and for the upgrade", { timeout: 60_000 }, async (t) => {
@@ -185,7 +185,7 @@ test("a malformed run id under the live path is a 404, never a crash: the server
 test("a run's process that dies without letting its sessions go takes its hand-over with it, and a hand-over with no live process names no viewer: none, and nothing is proxied", { timeout: 120_000 }, async (t) => {
   const w = await watched(t);
   const handed = JSON.parse(readFileSync(w.file, "utf8"));
-  const { holder } = JSON.parse(readFileSync(join(w.server.data, "runs", w.runId, "run.json"), "utf8"));
+  const { holder } = runRecordOf(w.server.data, w.runId);
   process.kill(holder.pid, "SIGKILL");
   assert.ok(await until(() => stat(w.file).then(() => false, () => true)), "the hand-over went with the process");
   assert.deepEqual((await browserOf(w, { cookie: w.cookie })).json, { state: "none" });
@@ -205,7 +205,7 @@ test("a run's process that restarts with its browser session kept hands that ses
   withEnv(t, { FAUX_BROWSER_STATE: join(await scratch(t), "vendor-sessions.json") }, ["FAUX_BROWSER_STATE"]);
   const w = await watched(t, { faux: RECOVER });
   const before = JSON.parse(readFileSync(w.file, "utf8"));
-  const { holder } = JSON.parse(readFileSync(join(w.server.data, "runs", w.runId, "run.json"), "utf8"));
+  const { holder } = runRecordOf(w.server.data, w.runId);
   process.kill(holder.pid, "SIGKILL");
   assert.ok(await until(() => stat(w.file).then(() => false, () => true)), "the hand-over went with the process");
   // The next message starts a new process for the run, which finds its session still running at the vendor and keeps it;
@@ -261,6 +261,25 @@ test("the viewer's code is always this server's own: a run's port that answers t
   assert.equal(socket.status, 101);
   assert.deepEqual(upgraded, [`/v/${handed.id}/ws`], "the socket alone reached it");
   socket.ws.destroy();
+});
+
+test("the viewer's WebSocket gets the Host check every route gets (host-check.ts): a page that rebound a name of its own to this address is refused, whatever its Origin and cookie; this machine's names on any port (a tunnel) and an --allow-host name are taken", { timeout: 120_000 }, async (t) => {
+  const w = await watched(t, { allowHosts: ["agents.internal"] });
+  const handed = JSON.parse(readFileSync(w.file, "utf8"));
+  const wsPath = `/v2/runs/${w.runId}/browser/live/v/${handed.id}/ws`;
+  const at = (name) => ({ origin: `http://${name}`, headers: { host: name } });
+  // A rebinding page: its Origin is its own name, which this server's Origin check would take; its Host is what gives it away.
+  assert.equal((await liveWs(w, wsPath, at(`rebound.example:${w.server.port}`))).status, 403, "a rebound name");
+  assert.equal((await liveWs(w, "/v2/runs/whatever", at(`rebound.example:${w.server.port}`))).status, 403, "refused before anything else about it");
+  for (const name of [`localhost:${w.server.port + 1}`, `127.0.0.1:${w.server.port}`, `agents.internal:${w.server.port}`]) {
+    const taken = await liveWs(w, wsPath, at(name));
+    assert.equal(taken.status, 101, name);
+    taken.ws.sendJson({ type: "hello", token: handed.token });
+    assert.equal(JSON.parse((await taken.ws.next(5_000)).data).type, "ready", name);
+    taken.ws.destroy();
+    // One viewer at a time: the next waits for this one's socket to close.
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  }
 });
 
 test("behind a TLS proxy that rewrites Host or drops X-Forwarded-Proto, the owner's WebSocket from the server's public address is taken; another origin still is not", { timeout: 120_000 }, async (t) => {

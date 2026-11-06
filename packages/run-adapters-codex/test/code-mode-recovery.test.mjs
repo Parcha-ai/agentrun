@@ -53,3 +53,44 @@ test("a cut-off exec's output says of each nested call what the recovery note of
   assert.match(line(1), /It is safe to repeat/);
   assert.doesNotMatch(line(2), /safe to repeat/);
 });
+
+/** An exec whose script made one call the host parked for a person's approval, through `call(drive)`, then was cut by the
+ *  park (the host ends the turn on it), as the next drive reads it: the exec's recovered output. */
+async function parkedExec(call) {
+  const store = memorySessionStore();
+  const first = await openDrive({ writer: await store.open('code'), signal: new AbortController().signal });
+  await first.submit({ id: 's1', kind: 'prompt', text: 'Add them.' });
+  await placeSubmissions(first, [first.pending()[0]]);
+  const since = openTurn(first.state()).since;
+  await call(first);
+  const next = await openDrive({ writer: await store.open('code'), signal: new AbortController().signal });
+  const ties = [{ callId: 'exec-1', exec: EXEC, since }];
+  const journal = { append() {}, flush: async () => {}, read: async (stream) => (stream === NESTED_STREAM ? ties.map((data) => ({ data })) : []) };
+  const mode = codeMode({ ctx: next, machine: {}, journal, logged: new Set(), synced: async () => {}, bridge: { get: () => undefined }, log() {}, lines: [], rpc: () => ({ request: async () => ({}) }), guard: (p) => p, threadId: () => 't', tries: 1 });
+  const items = [{ type: 'custom_tool_call_output', call_id: EXEC, output: '' }];
+  await mode.recoverItems(items, [{ callId: EXEC, name: 'exec', type: 'custom_tool_call' }], [], since);
+  return items[0].output;
+}
+const WAITING = "This mcp:fake/add call waits for a person's approval; the run pauses here and continues with the result when they answer.";
+
+test("a cut-off exec tells a nested MCP call the host parked that it was waiting for a person's approval and did not run, never that it completed", async () => {
+  const { recorded } = await import('../dist/mcp.js');
+  const output = await parkedExec(async (drive) => {
+    const mcp = { servers: [{ name: 'fake', tools: [{ name: 'add', inputSchema: { type: 'object' } }] }], call: async () => ({ content: [{ type: 'text', text: WAITING }], parked: true }) };
+    const door = recorded(mcp, drive, () => ({ barrier: async () => true, recovered: () => undefined }));
+    assert.equal((await door.call('fake', 'add', { a: 2, b: 3 }, { signal: new AbortController().signal, callId: 'exec-1' })).content[0].text, WAITING, 'the model is told it waits');
+  });
+  assert.match(output, /\n1\. mcp__fake__add was waiting for a person's approval and did not run; it was not run again\./);
+  assert.doesNotMatch(output, /completed|effect is done/i);
+});
+
+test("a cut-off exec tells a nested host tool's call the host parked the same: it was waiting for a person's approval and did not run", async () => {
+  const { kernelTool } = await import('../dist/adapter.js');
+  const output = await parkedExec(async (drive) => {
+    const host = { name: 'web_fetch', description: 'web_fetch', inputSchema: { type: 'object' }, replay: 'safe', call: async () => ({ text: WAITING.replace('mcp:fake/add', 'web_fetch'), parked: true }) };
+    const bridge = toolBridge(drive, [kernelTool(host)], { live: false });
+    assert.equal((await bridge.call('web_fetch', { url: 'https://example.com' }, 'exec-1')).isError, false);
+  });
+  assert.match(output, /\n1\. web_fetch was waiting for a person's approval and did not run; it was not run again\./);
+  assert.doesNotMatch(output, /completed|effect is done/i);
+});

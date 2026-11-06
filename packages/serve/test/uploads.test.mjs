@@ -10,7 +10,7 @@ import { mock, test } from "node:test";
 import { ROUTES, takesBytes } from "../dist/server.js";
 import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, pathProblem, suffixed, uploadTestHooks } from "../dist/uploads.js";
 import { schemaProblems } from "./schema-support.mjs";
-import { agent, call, cookieOf, follow, scratch, serve, storeRun } from "./support.mjs";
+import { agent, call, cookieOf, follow, runDir, runIds, scratch, serve, storeRun } from "./support.mjs";
 
 const sha = (bytes) => createHash("sha256").update(bytes).digest("hex");
 /** A test password, not a real one. */
@@ -183,7 +183,7 @@ export default function reply(context, faux) {
   const run = await api("POST", "/agents/reader/runs", { input: { content: "Read the notes." }, file_ids: [a.file_id, b.file_id] });
   assert.equal(run.status, 202, JSON.stringify(run.body));
   assert.equal(run.body.file_ids, undefined, "the contract's Run has no file_ids");
-  const work = join(server.data, "runs", run.body.run_id, "work");
+  const work = join(runDir(server.data, run.body.run_id), "work");
   // There at the 202: copied before the run's process started.
   const listed = await fileList(api, run.body.run_id);
   assert.deepEqual(listed.filter((f) => f.path.startsWith("inputs/")).map((f) => [f.path, f.size_bytes]), [["inputs/docs/2026/blob.bin", blob.length], ["inputs/notes.txt", notes.length]]);
@@ -201,7 +201,7 @@ export default function reply(context, faux) {
   // The same file reaches another run as it was uploaded.
   const second = await api("POST", "/agents/reader/runs", { input: { content: "Read the notes." }, file_ids: [a.file_id] });
   assert.equal(second.status, 202);
-  assert.ok((await readFile(join(server.data, "runs", second.body.run_id, "work", "inputs", "notes.txt"))).equals(notes));
+  assert.ok((await readFile(join(runDir(server.data, second.body.run_id), "work", "inputs", "notes.txt"))).equals(notes));
 });
 
 test("a run whose files are still being copied does not start for a message meanwhile: its process waits for the copy", async (t) => {
@@ -251,7 +251,7 @@ test("a copy that fails ends the run failed with why, starts no process, and the
   const read = (await api("GET", `/runs/${run.body.run_id}`)).body;
   assert.deepEqual([read.status, read.error?.code], ["failed", "run_failed"], JSON.stringify(read));
   assert.match(read.error.message, /could not be copied into its workspace: no space left on the test's disk/);
-  const dir = join(server.data, "runs", run.body.run_id);
+  const dir = join(runDir(server.data, run.body.run_id));
   assert.equal(storeRun(server.data, run.body.run_id)?.state, "failed", "the store has its end");
   assert.deepEqual([await stat(join(dir, "process.log")).catch(() => null), await stat(join(dir, "launching")).catch(() => null)], [null, null], "no process, and, its end in the store, no launch mark left");
   const message = await api("POST", `/runs/${run.body.run_id}/messages`, { content: "Go on." });
@@ -272,7 +272,7 @@ test("a name taken already gets the next suffix, the same for the same files in 
   for (let i = 0; i < 2; i++) {
     const run = await api("POST", "/agents/dupes/runs", { input: { content: "Hello." }, file_ids: files.map((f) => f.file_id) });
     assert.equal(run.status, 202, JSON.stringify(run.body));
-    const work = join(server.data, "runs", run.body.run_id, "work");
+    const work = join(runDir(server.data, run.body.run_id), "work");
     const found = [];
     for (const [path, text] of expected) found.push([path, await readFile(join(work, path), "utf8")]);
     assert.deepEqual(found, expected);
@@ -360,7 +360,7 @@ test("file_ids naming an unknown, pending or repeated file, or more than max_fil
   for (let i = 0; i <= MAX_FILES_PER_RUN; i++) many.push((await upload(server, `f${i}.txt`, Buffer.from(String(i)))).file_id);
   assert.deepEqual(await refused(many), [["file_ids", "too_many"]]);
   assert.deepEqual((await api("GET", "/agents/refused/runs")).body.runs, [], "no run");
-  assert.deepEqual(await readdir(join(server.data, "runs")).catch(() => []), [], "and no run directory");
+  assert.deepEqual(runIds(server.data), [], "and no run directory");
   // At the limit, it starts.
   const full = await api("POST", "/agents/refused/runs", { input: { content: "Hello." }, file_ids: many.slice(0, MAX_FILES_PER_RUN) });
   assert.equal(full.status, 202, JSON.stringify(full.body));
@@ -368,7 +368,7 @@ test("file_ids naming an unknown, pending or repeated file, or more than max_fil
   // None at all starts as a run with no file_ids does: no inputs folder.
   const none = await api("POST", "/agents/refused/runs", { input: { content: "Hello." }, file_ids: [] });
   assert.equal(none.status, 202, JSON.stringify(none.body));
-  assert.equal(await stat(join(server.data, "runs", none.body.run_id, "work", "inputs")).catch(() => null), null);
+  assert.equal(await stat(join(runDir(server.data, none.body.run_id), "work", "inputs")).catch(() => null), null);
 });
 
 test("the console's session sends a file's bytes: a PUT to a route marked raw takes any content type from the page's own origin; without it, or from another, it is no credential; nothing else changes", async (t) => {

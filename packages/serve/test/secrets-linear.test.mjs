@@ -79,3 +79,12 @@ test("the cases that cut across a match still redact what they did: a github_pat
   const chain = "eyJaaaaaaaa.eyJbbbbbbbb.eyJcccccccc.dddddddd";
   assert.equal(redactSecrets(`p ${chain} q`, [], 1 << 20), reference(`p ${chain} q`));
 });
+
+test("two whsec_ secrets back to back are both redacted whole: the first's run takes the second's whsec, and the second is still found from inside it", () => {
+  // Unpadded (a key whose length is a multiple of 3 bytes): nothing ends the first's run before the second's prefix.
+  const first = `whsec_${"A".repeat(40)}`;
+  const second = `whsec_${"B".repeat(40)}`;
+  const out = redactSecrets(`keys: ${first}${second} end`, []);
+  assert.equal(out, "keys: [redacted] end");
+  assert.doesNotMatch(out, /AAAA|BBBB/);
+});

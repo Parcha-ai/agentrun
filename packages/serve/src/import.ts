@@ -6,7 +6,7 @@
 // the owner's only. Read again, it imports only the sessions it has not.
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync, type Stats } from "node:fs";
-import { chmod, lstat, mkdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, lstat, readFile, realpath, rename, rm, stat } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, sep } from "node:path";
 import { parseArgs } from "node:util";
@@ -15,7 +15,7 @@ import { AssistantEntry, createRegistry, Harness, ROOT_CONVERSATION_ID, ToolResu
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { type AgentStore, type AgentStoreReader, type NewRevision, openStore, openStoreReader, type Revision, STORE_FILE, type StoredMetrics } from "@parcha/pi-durable-agent";
 import { type EntryLike, REQUEST_COST, type RunMetrics, runMetricsOf } from "@parcha/pi-durable-agent/timeline";
-import { DOOR_TOKEN_FILE, defaultData, readJson, RUN_META, TOKEN_FILE } from "./files.js";
+import { DOOR_TOKEN_FILE, defaultData, readJson, RUN_META, TOKEN_FILE, writeDurable } from "./files.js";
 import { childFiles, HARNESS_OF, mostEffortOf, readSession, type Session, SOURCES, type Source, sessionFiles, type Turn } from "./import-sources.js";
 import { type Found, foundIn, hoursOf, summaryLines } from "./import-summary.js";
 import { catalogPrices, type Listed } from "./model.js";
@@ -26,7 +26,9 @@ import { REDACTED, secretCut, secretsIn } from "./secret-cut.js";
 import { SECRET_NAMES, withSecrets } from "./secrets.js";
 import { SEAL_KEY_ENV, ToolKeys } from "./tool-keys.js";
 import { WEBHOOK_FILE, webhookSecretIn } from "./webhooks.js";
+import { triggerSecretsIn } from "./trigger-secrets.js";
 import { type RefusedReason, readWorkBytes, WorkRefused, walkWork } from "./workspace.js";
+import { readRunDbSync } from "./run-db.js";
 
 /** In the data directory while an import the owner asked for at setup has not ended: the server's next start goes on with it. */
 export const IMPORT_ASKED = ".import-at-setup";
@@ -204,7 +206,7 @@ async function filesIn(store: AgentStoreReader): Promise<Map<string, SourceFile 
   const out = new Map<string, SourceFile & { run: string }>();
   for (const run of store.listRuns()) {
     if (!run.importedFrom || !existsSync(store.runStorePath(run.id))) continue;
-    const meta = (await readJson(join(store.dir, "runs", run.id, RUN_META))) as { source_file?: SourceFile } | null;
+    const meta = (await readJson(join(store.runDir(run.id), RUN_META))) as { source_file?: SourceFile } | null;
     const seen = meta?.source_file;
     if (seen && typeof seen.path_sha256 === "string" && typeof seen.size === "number" && typeof seen.mtime_ms === "number") out.set(seen.path_sha256, { ...seen, run: run.id });
   }
@@ -475,16 +477,13 @@ async function seenIn(store: AgentStoreReader | undefined, agentId: string): Pro
   const { DatabaseSync } = await import("node:sqlite");
   for (const run of store.listRuns({ agent: agentId })) {
     if (run.importedFrom?.source !== "claude-code" || !existsSync(store.runStorePath(run.id))) continue;
-    const db = new DatabaseSync(store.runStorePath(run.id), { readOnly: true });
-    try {
+    readRunDbSync(store.runStorePath(run.id), false, (db) => {
       const rows = db.prepare("SELECT json_extract(record, '$.model[0].responseId') AS id, json_extract(record, '$.data.record_uuids') AS uuids FROM entries").all() as { id: unknown; uuids: unknown }[];
       for (const { id, uuids } of rows) {
         if (typeof id === "string" && id) seen("claude-code").add(`m:${id}`);
         if (typeof uuids === "string") for (const uuid of JSON.parse(uuids) as unknown[]) if (typeof uuid === "string") seen("claude-code").add(`u:${uuid}`);
       }
-    } finally {
-      db.close();
-    }
+    });
   }
   return seen;
 }
@@ -863,13 +862,13 @@ async function writeMeta(dir: string, session: Session, read: SourceFile, json: 
     input: { content: session.firstPrompt ?? "" },
   }) as Record<string, unknown>;
   const metaPath = join(dir, RUN_META);
-  await writeFile(metaPath, `${JSON.stringify({ ...meta, source_file: read })}\n`, { mode: 0o600 });
-  await chmod(metaPath, 0o600);
+  // Whole or not there: a server that runs beside this import reads its runs' serve.json files.
+  await writeDurable(metaPath, `${JSON.stringify({ ...meta, source_file: read })}\n`, 0o600, undefined, true);
 }
 
 /** The secrets this server made and keeps in data directory `data`, by value: its API token (`ar_local_...`) and its
- *  door token (server.ts), its sign-in sessions' secret (owner.ts) and its webhook's signing secret (`whsec_...`;
- *  webhooks.ts), opened with the seal key of `env`, so left out when that key is not there. One pasted into a session is
+ *  door token (server.ts), its sign-in sessions' secret (owner.ts), its webhook's signing secret (`whsec_...`;
+ *  webhooks.ts) and each webhook trigger's (trigger-secrets.ts), opened with the seal key of `env`, so left out when that key is not there. One pasted into a session is
  *  this server's own, so an import cuts it wherever it is, as it cuts the environment's keys. Not among them: a run's own
  *  door token (one file a run; not read at each import), and a key-shaped value this server did not make (a `whsec_`
  *  from elsewhere). A webhook secret that does not open is said to `say`, as ToolKeys says a saved key that does not:
@@ -884,7 +883,7 @@ export function ownSecrets(data: string, env: NodeJS.ProcessEnv, say: (fields: R
   };
   const webhook = webhookSecretIn(data, env);
   if (webhook && "signing" in webhook) say({ condition: webhook.signing, name: SEAL_KEY_ENV, file: join(data, WEBHOOK_FILE), effect: "this server's webhook secret cannot be read, so the import does not cut it" });
-  const values = [read(TOKEN_FILE), read(DOOR_TOKEN_FILE), read(SESSION_SECRET_FILE), webhook && "secret" in webhook ? webhook.secret : ""];
+  const values = [read(TOKEN_FILE), read(DOOR_TOKEN_FILE), read(SESSION_SECRET_FILE), webhook && "secret" in webhook ? webhook.secret : "", ...triggerSecretsIn(data, env)];
   return [...new Set(values)].filter((value) => value.length >= 8 && !/\s/.test(value));
 }
 
@@ -982,8 +981,8 @@ export async function runImport(store: AgentStore, plan: Plan, options: ImportOp
         const estimate = session.costUsd === undefined ? await estimateOf([...entries, ...subagents.flatMap(entriesOf)], catalog) : undefined;
         if (estimate !== undefined) Object.assign(metrics, { costUsdEst: estimate, costBasis: "catalog" });
         if (heldRun !== undefined) {
-          started = { runId: heldRun, dir: join(store.dir, "runs", heldRun), storePath: store.runStorePath(heldRun) };
-          if ((await mkdir(dirname(started.storePath), { recursive: true })) !== undefined) for (const made of [started.dir, dirname(started.storePath)]) await chmod(made, 0o700);
+          // Its folders as the store makes a run's: never through a link (a link there refuses the import).
+          started = store.runFolders(heldRun);
         } else {
           const answer = session.turns.findLast((t) => t.role === "assistant" && t.text)?.text;
           started = await store.importRun({
