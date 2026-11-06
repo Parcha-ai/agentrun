@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { startServe } from "../dist/index.js";
-import { agent, client, FAUX, follow, runDir, scratch, serve, storeRun, withEnv } from "./support.mjs";
+import { agent, client, FAUX, follow, runDir, runRecordOf, scratch, serve, storeRun, withEnv } from "./support.mjs";
 
 const MiB = 2 ** 20;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -355,7 +355,7 @@ test("a message to a run whose process was killed is answered at once: a dead pr
   assert.equal((await api("POST", "/agents", agent("asks", { tools: ["ask_person"] }))).status, 201);
   const { body: run } = await api("POST", "/agents/asks/runs", { input: { content: "Pick a region." } });
   await follow(api, run.run_id, ["input_required"]);
-  const pid = JSON.parse(await readFile(join(runDir(data, run.run_id), "run.json"), "utf8")).holder.pid;
+  const pid = runRecordOf(data, run.run_id).holder.pid;
   process.kill(pid, "SIGKILL");
   for (let i = 0; ; i++) {
     try {

@@ -17,7 +17,7 @@ import { CAP_REFUSED_FIELD, capBefore, capModels, capToolSpend, HELD_FIELD, HELD
 import { markRequests } from "../dist/request-start.js";
 import { KEY as MONID_KEY } from "./fixtures/faux-monid.mjs";
 import { startServe } from "../dist/index.js";
-import { agent, client, follow, letGo, runDir, scratch, serve, withEnv } from "./support.mjs";
+import { agent, client, follow, letGo, runDir, runRecordOf, scratch, serve, withEnv } from "./support.mjs";
 
 const UNKNOWN = /^spend_cap_reached: .*spent is unknown.*out of budget/;
 const NO_CEILING = /^spend_cap_reached: .*no output ceiling.*out of budget/;
@@ -106,7 +106,7 @@ test("/usage by meter for a run whose monid call a crash cut: its cost is unknow
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   // The run's process dies mid-call: the next one answers the call interrupted, never sends it again, and ends.
-  process.kill(JSON.parse(readFileSync(join(runDir(data, body.run_id), "run.json"), "utf8")).holder.pid, "SIGKILL");
+  process.kill(runRecordOf(data, body.run_id).holder.pid, "SIGKILL");
   await follow(api, body.run_id, ["completed"], { deadlineMs: 90_000 });
   assert.equal((await api("GET", `/runs/${body.run_id}`)).body.cost.usd, null, "what the cut call charged no one knows");
   const { tokens } = metersIn(join(runDir(data, body.run_id), "store", "run.sqlite"));
@@ -966,7 +966,7 @@ test("/usage's total counts every priced dollar of a run whose cost is unknown: 
   await monidRunsSent(api, body.run_id, log, 1);
   // The run's process dies mid-call: what the call charged no one knows, so the run's cost is unknown; its model
   // requests are priced.
-  process.kill(JSON.parse(readFileSync(join(runDir(data, body.run_id), "run.json"), "utf8")).holder.pid, "SIGKILL");
+  process.kill(runRecordOf(data, body.run_id).holder.pid, "SIGKILL");
   await follow(api, body.run_id, ["completed"], { deadlineMs: 90_000 });
   const { tokens } = metersIn(join(runDir(data, body.run_id), "store", "run.sqlite"));
   assert.ok(tokens > 0, `the model requests are priced: ${tokens}`);
@@ -996,7 +996,7 @@ test("/usage puts a run's known tool dollars on tools when another tool charge i
   // The second monid run call, the slow one, is sent: faux monid files one line per call.
   await monidRunsSent(api, body.run_id, log, 2);
   // A crash cuts the slow call: its charge is unknown; the first call's ($0.003) and the model requests' are known.
-  process.kill(JSON.parse(readFileSync(join(runDir(data, body.run_id), "run.json"), "utf8")).holder.pid, "SIGKILL");
+  process.kill(runRecordOf(data, body.run_id).holder.pid, "SIGKILL");
   await follow(api, body.run_id, ["completed"], { deadlineMs: 90_000 });
   const { tokens } = metersIn(join(runDir(data, body.run_id), "store", "run.sqlite"));
   const round = (usd) => Math.round(usd * 1e6) / 1e6;
@@ -1042,7 +1042,7 @@ test("/usage counts an ended run of unknown cost at what it saved it spent so fa
   assert.equal((await api("POST", "/agents", agent("saved", { tools: ["monid.run"], tool_settings: ALLOWED }))).status, 201);
   const { body } = await api("POST", "/agents/saved/runs", { input: { content: "Run monid's /person/enrich, then its slow endpoint." } });
   await monidRunsSent(api, body.run_id, log, 2);
-  process.kill(JSON.parse(readFileSync(join(runDir(data, body.run_id), "run.json"), "utf8")).holder.pid, "SIGKILL");
+  process.kill(runRecordOf(data, body.run_id).holder.pid, "SIGKILL");
   await follow(api, body.run_id, ["completed"], { deadlineMs: 90_000 });
   await server.close();
   server = undefined;

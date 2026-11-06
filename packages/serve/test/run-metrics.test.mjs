@@ -12,7 +12,7 @@ import { openStoreReader } from "@parcha/pi-durable-agent";
 import { durableDecisions } from "@parcha/agentrun-pi/durable";
 import { CANARY } from "./fixtures/faux-jev.mjs";
 import { startServe } from "../dist/index.js";
-import { agent, answerFlow, client, FAUX, flowAgent, follow, printed, runDir, scratch, serve, startRun, storeRun, withEnv } from "./support.mjs";
+import { agent, answerFlow, client, FAUX, flowAgent, follow, printed, runDir, runRecordOf, scratch, serve, startRun, storeRun, withEnv } from "./support.mjs";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const FAUX_JEV = new URL("./fixtures/faux-jev.mjs", import.meta.url).pathname;
@@ -92,13 +92,13 @@ test("a run its server's successor ends keeps the effort its process ran at, not
   }
   first.kill("SIGKILL");
   await new Promise((resolve) => first.once("exit", resolve));
-  const { holder } = JSON.parse(await readFile(join(runDir(data, runId), "run.json"), "utf8"));
+  const { holder } = runRecordOf(data, runId);
   t.after(() => processAlive(holder.pid) && process.kill(holder.pid, "SIGKILL"));
   const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
   t.after(() => next.close());
   await writeFile(go, "");
   await follow(client(next.baseUrl, next.token), runId, ["completed"]);
-  assert.equal(JSON.parse(await readFile(join(runDir(data, runId), "run.json"), "utf8")).generation, 1, "the first process finished it");
+  assert.equal(runRecordOf(data, runId).generation, 1, "the first process finished it");
   assert.equal(metricsOf(data, runId).effort, "high");
 });
 
@@ -151,7 +151,7 @@ test("a run whose process died before it released the run gets its metrics from 
   assert.deepEqual([m.requests, m.unmetered], [2, 1]);
   assert.deepEqual([m.input, m.output], [answered[0].model[0].usage.input, answered[0].model[0].usage.output]);
   assert.deepEqual(m.tools, { write: { calls: 1, errors: 0 } });
-  assert.equal(JSON.parse(await readFile(join(runDir(data, runId), "run.json"), "utf8")).generation, 1, "never opened again");
+  assert.equal(runRecordOf(data, runId).generation, 1, "never opened again");
 });
 
 test("a workflow run's metrics count every model node's conversation", async (t) => {

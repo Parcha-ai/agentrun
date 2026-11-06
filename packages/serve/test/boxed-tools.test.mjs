@@ -13,7 +13,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { startServe } from "../dist/index.js";
 import { writesHeld } from "../dist/workspace.js";
 import fauxBoxes, { fauxRoot } from "./fixtures/faux-box.mjs";
-import { client, flowAgent, follow, jsonLines, runDir, scratch, serve, withEnv } from "./support.mjs";
+import { client, flowAgent, follow, jsonLines, runDir, runRecordOf, scratch, serve, withEnv } from "./support.mjs";
 
 const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;
 const FAUX_BOX = new URL("./fixtures/faux-box.mjs", import.meta.url).pathname;
@@ -303,7 +303,7 @@ test("a crash: the run's next process finds its box by its label, kills the comm
   await until(() => existsSync(join(work, "left.pid")) && readFileSync(join(work, "left.pid"), "utf8").trim() !== "", "the left command's start");
   const left = Number(readFileSync(join(work, "left.pid"), "utf8").trim());
   t.after(() => running(left) && process.kill(left, "SIGKILL"));
-  const { holder } = JSON.parse(await readFile(join(runDir(data, run.run_id), "run.json"), "utf8"));
+  const { holder } = runRecordOf(data, run.run_id);
   process.kill(holder.pid, "SIGKILL");
   await follow(api, run.run_id, ["completed"], { deadlineMs: 90_000 });
   const said = answers(data, run.run_id);

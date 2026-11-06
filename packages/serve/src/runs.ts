@@ -13,6 +13,7 @@ import { fileURLToPath } from "node:url";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { doorKey, doorTook } from "@parcha/pi-durable-disk";
+import { RUN_STATUS_TABLE } from "@parcha/pi-durable-disk/internals";
 import { AgentHomeError, type Revision, runDirIn, type RevisionKind, type RunOrigin, type RunRow, type RunState, type StoredMetrics } from "@parcha/pi-durable-agent";
 import { chargedTool, isMessageRow, MESSAGE_ORIGIN, type MessageOrigin, registerLabel, registerTurnEnding, REQUEST_STARTED, type RunMetrics, runMetricsWithDecisions, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { HARNESS_LOG_EVENT, harnessModelKeys, thinkingFor } from "./adapters.js";
@@ -57,6 +58,11 @@ import { destroyRunBoxes, ensureRemoteBox, PullIncomplete, pullRemoteBox, RUN_LA
 import { BACKGROUND_DIR, endBackground } from "./background.js";
 import { removeEgressDir, RUN_BOX_ALLOW_ENV } from "./box-egress.js";
 import { BehindReadError, checkpointRunDb, MonotonicReads, readRunDb } from "./run-db.js";
+import { holderLives, holderOfClaim, holderOfProcess, holderState, killHolder, LAUNCH_HOLDER, RUN_LAUNCH_ENV, type RunHolder, signal } from "./run-holder.js";
+import { firstDoorLine, untilOpened, verifyDoor } from "./door-line.js";
+
+/** `holder` with this launch's door nonce, which the row keeps so a next server can prove the door too. */
+const withNonce = (holder: RunHolder | undefined, nonce: string): RunHolder | undefined => holder && { ...holder, nonce };
 import { type DiskAdapter, localDisk } from "./disk.js";
 import { RUN_BOX_VOLUME_ENV } from "./box-egress-vm.js";
 import type { BoxProvider } from "@parcha/pi-transport";
@@ -71,10 +77,9 @@ type Ended = Exclude<RunState, "running">;
 const TERMINAL = new Set<Status>(["completed", "failed", "cancelled"]);
 
 const RELEASED = new Set(["sleeping", "paused", "done", "failed"]);
-const LEASE_MS = 90_000;
 /** How long an agentic run's process may finish its turn after SIGTERM, unless the server says otherwise. */
 const DRAIN = "30s";
-/** The run process's stderr, beside run.json: a file, so the process outlives a server that stops without stopping it. */
+/** The run process's stderr, in its folder: a file, so the process outlives a server that stops without stopping it. */
 const PROCESS_LOG = "process.log";
 /** How long a request waits for a run's door: its process coming up, or a settle in progress. */
 const READY_TIMEOUT_MS = 45_000;
@@ -84,8 +89,6 @@ const QUIET = /:run:(start|end)$/;
 const RETRY_CODES = ["OPENING", "PARKING", "RELEASED"];
 /** How often one server opens a run again whose process went before the run ended, before it fails the run. */
 const MAX_RELAUNCHES = 3;
-/** Who holds a run's claim (its row's claim_holder): its own process on this machine, or the server once it took it back. */
-const RUN_HOLDER = "run-process";
 /** How soon a launch whose claim was refused tries again, at its first tries: a store another writer holds is let go of
  *  within moments, and a run waits on its launch. Past these, every settle retry. */
 const CLAIM_RETRY_MS = [50, 100, 200, 400, 800, 1_600];
@@ -105,8 +108,6 @@ const CARRY_BACK_RETRIES_MS = [500, 1_000, 2_000, 4_000, 8_000];
 /** How long a run's process may live on after it released the run before its store is read anyway: the process holds the
  *  store's exclusive lock until it exits. */
 const EXIT_AFTER_RELEASE_MS = 30_000;
-/** How many 500 ms ticks in a row a live run's record is unreadable before the server says so. */
-const UNREADABLE_TICKS = 10;
 const warn = (runId: string, text: string) => void process.stderr.write(`agentrun-serve: run ${runId}: ${text}\n`);
 /** How long serve's calls on a run's box (its destroy, the start's sweep) may take. */
 const BOX_CALL_MS = 60_000;
@@ -118,6 +119,9 @@ const PULL_WAIT_MS = 120_000;
 
 /** A run's end that waits for its remote box's last pull: its settle is tried again until the pull lands. */
 class PullPending extends Error {}
+/** A settle that cannot tell who holds the run (its row, or the process listing, cannot be read): tried again, never taken
+ *  for a holder that is gone. */
+class HolderUnknown extends Error {}
 
 /** Run directory `dir`'s own door token, made now (mode 0600, never through a link) when it has none. */
 function ensureRunDoorToken(dir: string): string {
@@ -137,7 +141,6 @@ function ensureRunDoorToken(dir: string): string {
 }
 const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
 const isLoopback = (host: string) => host === "localhost" || host === "[::1]" || host === "::1" || /^127\./.test(host);
-const holderPid = (record: Json | null) => (isObject(record?.holder) && Number.isSafeInteger(record.holder.pid) ? (record.holder.pid as number) : undefined);
 type WorkflowEnding = { status: "complete" | "escalated" | "refused" | "stopped"; code?: string; message?: string };
 /** How a workflow run's workflow ended, as its app wrote it in the run's final status: absent until it ended. */
 function workflowEnding(record: Json | null): WorkflowEnding | undefined {
@@ -266,8 +269,14 @@ export type Run = {
    *  notes learning reads (learning-run.ts). */
   turnText?: Map<number, string>;
   child?: ChildProcess;
-  /** The pid of a run process an earlier server started that still serves the run: supervised by its run.json. */
+  /** The pid of a run process an earlier server started that still serves the run: supervised by the holder its row names. */
   orphan?: number;
+  /** That process as its row names it (its pid, its start, this boot): what a signal to it is checked against. */
+  orphanHolder?: RunHolder;
+  /** A stop of that process kept pending while its identity cannot be checked (terminate): tried again every second. */
+  stopPending?: NodeJS.Timeout;
+  /** That pending stop has been said in the log: once for as long as it waits. */
+  stopWaits?: boolean;
   /** Adopted with a saved stop: its first snapshot is checked once, and a turn still working is aborted. */
   finishStop?: boolean;
   /** A completed run opening again for a follow-up: every follow-up meanwhile waits for this one, never a second. */
@@ -340,6 +349,11 @@ export type Run = {
   pulling?: Promise<void>;
   /** Its launch waits on its claim, tried again later (launch): it keeps its place in the server's limits (takePlace). */
   claimWait?: boolean;
+  /** The door the process this server started said it serves (its stdout line): this server's own record of it, so a
+   *  row the agent store cannot take yet never keeps the door from it. */
+  door?: string;
+  /** The holder its row is still to name (nameHolder), while a store another writer holds keeps the write waiting. */
+  naming?: { epoch: number; holder: RunHolder; tries: number };
   /** How many launches in a row its claim was refused: the next try comes sooner while it is few. */
   claimTries?: number;
   /** The last of its database's reads and take-back checkpoint (runs.ts runDb): the next waits for it. */
@@ -1046,11 +1060,13 @@ export class Runs {
     this.runs.set(row.id, run);
     run.launching = existsSync(join(dir, RUN_LAUNCHING));
     run.notSetUp = row.state === "running" && !isObject(stored?.input);
-    const record = await this.record(run);
+    // The process its row names, when it lives on: an earlier server's, serving the run or still opening it.
+    const adopted = this.holder(run);
+    const lives = adopted !== undefined && adopted.pid !== process.pid && holderLives(adopted);
     // An ended run is ended before its rows are read, so they never make it a wait: a last row that asks is no notice.
     if (row.state !== "running") run.outcome = STATUS_OF[row.state];
-    // Only a store no live instance holds is opened: released, or left by an instance whose lease lapsed.
-    if (row.state !== "running" || !this.doorOf(record)) await this.storeWhenFree(run);
+    // Only a store no live process holds is opened: released, or left by a process that is gone.
+    if (row.state !== "running" || !lives) await this.storeWhenFree(run);
     if (row.state !== "running") {
       // An ended run's one read is done: no guard is kept for it.
       this.reads.forget(row.id);
@@ -1069,8 +1085,7 @@ export class Runs {
         run.cancel = true;
         run.finishing = "cancelled";
       }
-      const adopted = record && this.doorOf(record) ? record : null;
-      if (adopted) {
+      if (lives) {
         // A server that died between saving a stop and its abort reaching the run leaves the turn working.
         run.finishStop = run.meta.stopped_at !== undefined || run.meta.stopped_after !== undefined;
         this.adoptProcess(run, adopted);
@@ -1079,7 +1094,7 @@ export class Runs {
       }
       // One a server left in its end-of-run turn finishes with its job's outcome, and its turn, when its process lives,
       // is asked again (learning-run.ts).
-      this.learning.onAdopt(run, adopted !== null);
+      this.learning.onAdopt(run, lives);
     }
     this.refresh(run);
     return run;
@@ -1109,19 +1124,48 @@ export class Runs {
     return run.saving;
   }
 
-  private record(run: Run): Promise<Json | null> {
-    return readJson(join(run.dir, "run.json"));
+  /** The process that holds the run, as its row's claim names it (run-holder.ts); undefined for none, or the server. */
+  private holder(run: Run): RunHolder | undefined {
+    return this.holderView(run).holder;
   }
 
-  /** The door a live run serves, from its run.json: running, a fresh heartbeat, and a loopback address. */
-  private doorOf(record: Json | null): string | undefined {
-    if (record?.status !== "running" || !isObject(record.holder) || typeof record.holder.serve !== "string") return undefined;
-    // A run's process is a process on this machine: one that is gone serves no door, however fresh its heartbeat.
-    const pid = holderPid(record);
-    if (pid !== undefined && !alive(pid)) return undefined;
-    if (typeof record.heartbeatAt !== "string" || Date.now() - Date.parse(record.heartbeatAt) >= LEASE_MS) return undefined;
-    const url = URL.parse(record.holder.serve);
+  /** Who holds the run, as its row says and the processes show: `unknown` when the row or the process listing cannot be
+   *  read, which a caller never takes for a holder that is gone. */
+  private holderView(run: Run): { holder?: RunHolder; unknown: boolean } {
+    try {
+      const holder = holderOfClaim(run.id, this.store.runClaim(run.id));
+      return holder === undefined ? { unknown: false } : holderState(holder) === "unknown" ? { holder, unknown: true } : { holder, unknown: false };
+    } catch {
+      return { unknown: true };
+    }
+  }
+
+  /** The door a live run serves, from its row's holder: a process that lives (its pid, of the same start, on this boot)
+   *  and a loopback address it named. */
+  private doorOf(run: Run): string | undefined {
+    let door = run.child && run.door !== undefined ? run.door : undefined;
+    if (door === undefined) {
+      const holder = this.holder(run);
+      if (holder?.door === undefined || !holderLives(holder)) return undefined;
+      door = holder.door;
+    }
+    const url = URL.parse(door);
     return url?.protocol === "http:" && isLoopback(url.hostname) ? url.origin : undefined;
+  }
+
+  /** The record the run's process keeps in its own store (pi-durable-disk RUN_STATUS_TABLE: its status, `detail` and
+   *  `wakeAt`), read lock-free; null when it has none or it cannot be read. */
+  private async runRecord(run: Run): Promise<Json | null> {
+    const file = this.storeFile(run);
+    if (!existsSync(file)) return null;
+    try {
+      return await readRunDb(file, this.live(run), (db) => {
+        const row = db.prepare(`SELECT record FROM ${RUN_STATUS_TABLE} WHERE id = 1`).get() as { record: string } | undefined;
+        return row ? (JSON.parse(row.record) as Json) : null;
+      });
+    } catch {
+      return null;
+    }
   }
 
   private storeFile(run: Run): string {
@@ -1444,39 +1488,94 @@ export class Runs {
 
   /** SIGTERM to the run's process: it drains, releases the run and exits. */
   private terminate(run: Run): void {
-    if (run.child) run.child.kill("SIGTERM");
-    else if (run.orphan && alive(run.orphan)) process.kill(run.orphan, "SIGTERM");
+    if (run.child) return void run.child.kill("SIGTERM");
+    // An adopted process only once its identity is confirmed (its pid, of the same start, on this boot): a pid another
+    // process took over gets no signal, and one that cannot be checked keeps its stop pending, tried again every second
+    // until it can be (said once for each reason), never sent unidentified. The timer keeps no server up, and close()
+    // clears it.
+    const holder = run.orphanHolder;
+    if (holder === undefined) return;
+    const state = holderState(holder);
+    if (state === "alive") {
+      run.stopWaits = undefined;
+      // Already exited (ESRCH) or another user's pid now (EPERM): nothing to stop.
+      return void signal(holder.pid, "SIGTERM");
+    }
+    if (state === "gone" || this.closed) return;
+    if (!run.stopWaits) warn(run.id, `its stop waits: its process ${holder.pid} cannot be identified (the process listing cannot be read); it is sent once it can be`);
+    run.stopWaits = true;
+    clearTimeout(run.stopPending);
+    run.stopPending = setTimeout(() => {
+      run.stopPending = undefined;
+      try {
+        if (run.orphanHolder === holder && !this.closed) this.terminate(run);
+      } catch (error) {
+        warn(run.id, `its stop is not sent: ${(error as Error).message}`);
+      }
+    }, 1_000).unref();
   }
 
-  /** Supervise a run process an earlier server started: follow its door, and settle the run once its run.json says it
-   *  let go (released, or its lease lapsed) or the process is gone. */
-  private adoptProcess(run: Run, record: Json): void {
-    const pid = holderPid(record);
-    if (!pid) return;
+  /** Supervise a run process an earlier server started, its row's holder: follow its door, and settle the run once the
+   *  process is gone, or once the record it keeps in its store has said for EXIT_AFTER_RELEASE_MS that it let go while
+   *  the process lives on. */
+  private adoptProcess(run: Run, holder: RunHolder): void {
+    const pid = holder.pid;
     run.orphan = pid;
+    run.orphanHolder = holder;
     this.reportedBack(run);
     this.connect(run);
     let releasedAt: number | undefined;
-    let unreadable = 0;
+    let reading = false;
+    let failedWith: string | undefined;
+    // A holder that never says where it serves within the ready time is fenced: killed, then taken over.
+    const doorBy = Date.now() + (this.options.readyTimeoutMs ?? READY_TIMEOUT_MS);
+    const done = (released: boolean) => {
+      if (run.orphan !== pid) return;
+      clearInterval(timer);
+      run.orphan = undefined;
+      run.orphanHolder = undefined;
+      void this.settle(run, null, !holderLives(holder) && !released);
+    };
     const timer = setInterval(() => {
-      void this.record(run).then((now) => {
-        if (now !== null) unreadable = 0;
-        if (run.orphan !== pid || (this.doorOf(now) && alive(pid))) return;
-        // A record that cannot be read while the process lives is read again at every tick: settling on no record could
-        // leave the run unsettled and unwatched. The server says so once the record has been unreadable for a while.
-        if (now === null && alive(pid)) {
-          if (++unreadable === UNREADABLE_TICKS) warn(run.id, `its run.json has been unreadable for ${UNREADABLE_TICKS / 2} s; still watching its process ${pid}`);
-          return;
-        }
-        if (RELEASED.has(String(now?.status)) && alive(pid)) {
+      if (run.orphan !== pid) return clearInterval(timer);
+      if (reading) return;
+      reading = true;
+      const lives = holderLives(holder);
+      void this.runRecord(run)
+        .then(async (now) => {
+          const released = RELEASED.has(String(now?.status));
+          if (!lives) return done(released);
+          // Its door, when the server that launched it went before it read the line: the one this process keeps in its
+          // own store (the record names its pid), under the epoch its row holds.
+          if (this.doorOf(run) === undefined) {
+            const claim = this.store.runClaim(run.id);
+            const own = isObject(now?.holder) && now.holder.pid === holder.pid ? now.holder : undefined;
+            const serve = own?.serve;
+            // Proven with the nonce the launching server kept on the row, as that server would have.
+            const proven = now?.generation === claim.epoch && typeof serve === "string" && holder.nonce !== undefined && (await verifyDoor(serve, holder.nonce, this.headers(run)));
+            if (proven) {
+              this.nameHolder(run, claim.epoch, { ...holder, door: serve as string });
+              this.connect(run);
+            } else if (Date.now() > doorBy) {
+              warn(run.id, `its process ${pid} named no door within ${(this.options.readyTimeoutMs ?? READY_TIMEOUT_MS) / 1000} s; it is killed and the run taken over`);
+              killHolder(holder);
+              return;
+            }
+          }
+          if (!released) return;
           releasedAt ??= Date.now();
           if (Date.now() - releasedAt < EXIT_AFTER_RELEASE_MS) return;
           warn(run.id, `its process ${pid} released the run ${EXIT_AFTER_RELEASE_MS / 1000} s ago and has not exited; reading its store anyway`);
-        }
-        clearInterval(timer);
-        run.orphan = undefined;
-        void this.settle(run, null, !alive(pid) && !RELEASED.has(String(now?.status)));
-      });
+          done(true);
+        })
+        // A poll that fails (the agent store held by another writer, a listing that cannot be read) changes nothing: the
+        // run stays watched, and the next tick looks again.
+        .catch((error: Error) => {
+          // Said once for each reason, not at every tick.
+          if (error.message !== failedWith) warn(run.id, `its watch of process ${pid} looks again: ${error.message}`);
+          failedWith = error.message;
+        })
+        .finally(() => void (reading = false));
     }, 500);
     timer.unref();
   }
@@ -1754,7 +1853,7 @@ export class Runs {
     run.feed = abort;
     void (async () => {
       while (!abort.signal.aborted) {
-        const door = this.doorOf(await this.record(run));
+        const door = this.doorOf(run);
         if (door) this.reportedBack(run);
         if (door && run.kind === "workflow") {
           if (!run.working && !run.outcome) {
@@ -1762,7 +1861,7 @@ export class Runs {
             this.refresh(run);
           }
         } else if (door) await this.follow(run, door, abort.signal).catch(() => undefined);
-        if (abort.signal.aborted || (!this.live(run) && !this.doorOf(await this.record(run)))) break;
+        if (abort.signal.aborted || (!this.live(run) && !this.doorOf(run))) break;
         await sleep(run.kind === "workflow" ? 500 : 200);
       }
       if (run.feed === abort) run.feed = undefined;
@@ -1840,10 +1939,9 @@ export class Runs {
       if (run.preparing === copying) throw new ApiError("unavailable", "the run's files are still being copied into its workspace", { retry_after_ms: 1000 }, { "retry-after": "1" });
     }
     for (let launched = false; ; await sleep(100)) {
-      const record = await this.record(run);
-      // Checked after the read: a settle may end the run while it is read, and nothing starts a run that ended.
+      // Checked first: a settle may have ended the run, and nothing starts a run that ended.
       if (run.outcome || run.finishing || run.cancel) throw this.finished(run);
-      const door = this.doorOf(record);
+      const door = this.doorOf(run);
       if (door) return door;
       if (!this.live(run)) {
         // A process that just went is being settled: its run may be over, so nothing starts it again before that.
@@ -1860,8 +1958,9 @@ export class Runs {
           continue;
         }
         if (launched) throw new ApiError("internal", `the run's process exited before it served: ${await this.lastLine(run)}`);
-        const pid = holderPid(record);
-        const fresh = record?.status === "running" && typeof record.heartbeatAt === "string" && Date.now() - Date.parse(record.heartbeatAt) < LEASE_MS && (pid === undefined || alive(pid));
+        // A holder another server started that lives on (its door still to come): waited for, never launched over.
+        const holder = this.holder(run);
+        const fresh = holder !== undefined && holder.pid !== process.pid && holderLives(holder);
         // A run already going is never refused a place, but one whose harness this host's memory never holds (after a
         // restart on a smaller one) is not started: said, never tried.
         const never = fresh ? undefined : neverFits(run.harness, this.memory);
@@ -1899,7 +1998,7 @@ export class Runs {
    *  has no turn: the door's abort would give it a root conversation. */
   private async abortTurn(run: Run): Promise<void> {
     if (run.kind === "workflow") return;
-    const door = this.doorOf(await this.record(run));
+    const door = this.doorOf(run);
     if (door) await fetch(new URL("/abort", door), { method: "POST", headers: this.headers(run, true), body: "{}", signal: AbortSignal.timeout(5_000) }).catch(() => undefined);
   }
 
@@ -1911,7 +2010,7 @@ export class Runs {
     if (turnOrigin) await (run.originWrite = writeWhole(join(run.dir, TURN_ORIGIN_FILE), `${JSON.stringify({ origin: turnOrigin })}\n`));
     for (const deadline = Date.now() + 30_000; ; await sleep(200)) {
       if (!this.live(run) || run.cancel) throw new Error("the run's process is gone");
-      const door = this.doorOf(await this.record(run));
+      const door = this.doorOf(run);
       const res = door ? await fetch(new URL(path, door), { method: body ? "POST" : "GET", headers: this.headers(run, body !== undefined), body: body && JSON.stringify(body), signal: AbortSignal.timeout(15_000) }).catch(() => null) : null;
       const data = res ? ((await res.json().catch(() => null)) as Json | null) : null;
       if (res && res.status < 400) return data;
@@ -2091,12 +2190,24 @@ export class Runs {
     const providers = needs?.decisionProviders;
     const decisionKeys = providers ? decisionKeysFor(served, { providers, parallelWeb: handsParallel(plane) }) : {};
     const handsKey = Object.keys(decisionKeys).length > 0;
-    // The run's claim, for its process: the epoch bumped and the holder named on its row, in one statement. A claim
-    // that cannot be written (the agent store held, or not writable) launches nothing now, and is tried again, the
-    // launch whole, soon at first (CLAIM_RETRY_MS) and then every settle retry, until it is written: a run never stays
-    // without a process for want of one.
+    // The run's claim, for its process: from the epoch its row holds, bumped with the holder named, in one statement (a
+    // claim that moved meanwhile is stale, and this launch writes nothing). A holder the row names that still lives (a
+    // process an earlier server left that serves no door) is killed first, and the claim waits until it is gone: no
+    // process of a lower epoch runs, or commits to the run's store, once the epoch is bumped. A claim that cannot be
+    // written (the agent store held, or not writable) launches nothing now, and is tried again, the launch whole, soon at
+    // first (CLAIM_RETRY_MS) and then every settle retry, until it is written: a run never stays without a process for
+    // want of one.
+    let epoch: number;
+    const nonce = randomBytes(32).toString("hex");
     try {
-      env[RUN_EPOCH_ENV] = String(this.store.claimRun(run.id, RUN_HOLDER));
+      const claim = this.store.runClaim(run.id);
+      const held = holderOfClaim(run.id, claim);
+      if (held && killHolder(held)) throw new Error(`its holder ${held.pid} still lived; it is killed first`);
+      epoch = this.store.claimRun(run.id, LAUNCH_HOLDER, claim.epoch);
+      env[RUN_EPOCH_ENV] = String(epoch);
+      // Its mark: should the row still name the launch when this server goes, the next one finds the process by it.
+      env[RUN_LAUNCH_ENV] = `${run.id}:${epoch}`;
+
       run.claimTries = undefined;
     } catch (error) {
       // Soon at first (a store another writer holds for a moment), then every settle retry.
@@ -2108,18 +2219,29 @@ export class Runs {
       if (first) run.firstLaunch = true;
       run.claimWait = true;
       warn(run.id, `its process is not started: its claim was not written (${(error as Error).message}); trying again in ${every / 1000} s`);
-      setTimeout(() => void (this.closing ? undefined : this.launch(run)), every).unref();
+      setTimeout(() => {
+        if (this.closing) return;
+        try {
+          this.launch(run);
+        } catch (error) {
+          warn(run.id, `its process is not started: ${(error as Error).message}`);
+        }
+      }, every).unref();
       return;
     }
     this.markLaunching(run);
     const log = openSync(join(run.dir, PROCESS_LOG), "a", 0o600);
-    const stdio: ("ignore" | "pipe" | number)[] = ["ignore", "ignore", log, "pipe"];
+    const stdio: ("ignore" | "pipe" | number)[] = ["ignore", "pipe", log, "pipe"];
     // The first descriptor after the others: macOS aborts the parent of a spawn with a pipe at 16 or above.
     const keyFd = stdio.length;
     if (handsKey) {
       stdio.push("pipe");
       env[DECISION_KEY_FD_ENV] = String(keyFd);
     }
+    // This launch's door nonce, on a pipe of its own, never in an environment (which stays readable by the user's other
+    // processes): the process reads it first and closes it, and its door proves it (door-line.ts).
+    const nonceFd = stdio.length;
+    stdio.push("pipe");
     // A workflow run resumes from its journal when it opens again, so SIGTERM lets it go at once, undrained.
     const drain = run.kind === "workflow" ? "0s" : (this.options.drainTimeout ?? DRAIN);
     // Its own door token, which its door takes and its calls to the box relay carry: no other run's process holds it.
@@ -2129,7 +2251,12 @@ export class Runs {
       // secrets.ts first, as a preload: the pipe is read and closed before pi-durable-disk's CLI loads or starts anything.
       "--no-warnings=ExperimentalWarning", "--import", SECRETS_MODULE, this.cli, "run", "--dir", run.dir, "--app", this.app,
       "--serve", "0", "--serve-host", "127.0.0.1", "--serve-token-file", doorTokenFile, "--drain-timeout", drain, // key-gate: loopback-rule the door of a run listens on loopback only, for this server
+      "--epoch", String(epoch), "--door-nonce-fd", String(nonceFd),
     ], { stdio, env });
+    const noncePipe = (child.stdio as unknown as readonly (Writable | null | undefined)[])[nonceFd];
+    // A process that dies before it reads the nonce closes the pipe: that is its exit to settle, not an error here.
+    noncePipe?.on("error", () => undefined);
+    noncePipe?.end(nonce);
     closeSync(log);
     const pipe = child.stdio[3] as import("node:stream").Writable | null;
     pipe?.on("error", () => {});
@@ -2141,8 +2268,12 @@ export class Runs {
       keyPipe?.end(JSON.stringify(decisionKeys));
     }
     run.child = child;
+    run.door = undefined;
     child.once("exit", (code) => {
-      if (run.child === child) run.child = undefined;
+      if (run.child === child) {
+        run.child = undefined;
+        run.door = undefined;
+      }
       this.reportedBack(run);
       void this.settle(run, code, true);
     });
@@ -2150,7 +2281,61 @@ export class Runs {
       if (run.child === child) run.child = undefined;
       this.reportedBack(run);
     });
+    // Only once the child is wired (its exit and error handled above): the row names the process (its pid, its start and
+    // this boot) under the epoch it was given, and its door once it says, on stdout, where it serves: its one line there
+    // (pi-durable-disk's run under its host's epoch). A process listing that cannot be read names nothing.
+    this.nameHolder(run, epoch, child.pid === undefined ? undefined : withNonce(holderOfProcess(child.pid), nonce));
+    // Its door: the first line it prints, before any harness or agent code of it runs, proven with this launch's nonce
+    // before it is recorded; no later line is read (door-line.ts).
+    if (child.stdout && child.pid !== undefined) {
+      const pid = child.pid;
+      void firstDoorLine(child.stdout, epoch).then(async (door) => {
+        if (door === undefined || !isLoopback(new URL(door).hostname)) return warn(run.id, `its process ${pid} named no loopback door first on stdout; none is recorded`);
+        if (!(await verifyDoor(door, nonce, this.headers(run)))) return warn(run.id, `its process ${pid}'s first line named a door that did not answer this launch's nonce; none is recorded`);
+        // Recorded once its run serves: a door listens before its run opens, and the run is up only then.
+        if (!(await untilOpened(door, this.headers(run), () => run.child !== child))) return;
+        if (run.child === child) run.door = door;
+        const holder = holderOfProcess(pid);
+        if (holder) this.nameHolder(run, epoch, { ...holder, nonce, door });
+      }).catch((error: Error) => warn(run.id, `its door is not recorded: ${error.message}`));
+    }
     this.connect(run);
+  }
+
+  /** Names `holder` on the run's row under `epoch`, the claim its launch made: a claim that moved on since (a take-back,
+   *  a later launch) is left as it is, and a store that is busy is tried again shortly, a few times. */
+  private nameHolder(run: Run, epoch: number, holder: RunHolder | undefined): void {
+    if (holder === undefined) return;
+    const pending = run.naming;
+    run.naming = { epoch, holder, tries: 0 };
+    // One write at a time per run, of the newest holder: a retry under way takes this one.
+    if (pending === undefined) this.writeHolder(run);
+  }
+
+  /** Writes the run's newest holder to name (`naming`); a store another writer holds is tried again, soon at first, then
+   *  every settle retry, while the process lives and the server runs. */
+  private writeHolder(run: Run): void {
+    const naming = run.naming;
+    if (naming === undefined) return;
+    if (this.closed || !holderLives(naming.holder)) return void (run.naming = undefined);
+    try {
+      this.store.setRunHolder(run.id, naming.epoch, JSON.stringify(naming.holder));
+    } catch (error) {
+      if (storeBusy(error)) {
+        const every = CLAIM_RETRY_MS[naming.tries] ?? this.options.settleRetryMs ?? SETTLE_RETRY_MS;
+        naming.tries++;
+        setTimeout(() => {
+          try {
+            this.writeHolder(run);
+          } catch (error) {
+            warn(run.id, `its holder is not named on its row: ${(error as Error).message}`);
+          }
+        }, every).unref();
+        return;
+      }
+      if (!(error instanceof AgentHomeError && error.code === "stale")) warn(run.id, `its holder is not named on its row: ${(error as Error).message}`);
+    }
+    run.naming = undefined;
   }
 
   /** Writes the run's launch mark before its process is spawned: a spawn that takes the server down leaves it, and the
@@ -2196,7 +2381,7 @@ export class Runs {
     run.settling = (run.settling ?? Promise.resolve())
       .then(() => (run.outcome ? undefined : this.settleOnce(run, code, exited)))
       .catch((error: Error) => {
-        if (!(storeBusy(error) || error instanceof PullPending) || this.closing) return warn(run.id, `not settled: ${error.message}; the next start tries again`);
+        if (!(storeBusy(error) || error instanceof PullPending || error instanceof HolderUnknown) || this.closing) return warn(run.id, `not settled: ${error.message}; the next start tries again`);
         // A store still held past the run end's retries: settled again later, not left until the next start.
         const every = this.options.settleRetryMs ?? SETTLE_RETRY_MS;
         warn(run.id, `not settled: ${error.message}; trying again in ${every / 1000} s`);
@@ -2215,12 +2400,28 @@ export class Runs {
     run.feed?.abort();
     run.feed = undefined;
     run.working = false;
-    const record = await this.record(run);
+    // What the run's process said in its store: a release (its status), and a workflow's end (its detail).
+    const record = await this.runRecord(run);
     const released = RELEASED.has(String(record?.status));
     run.letGo = released;
-    const pid = holderPid(record);
-    // A process that is gone serves no door, whatever its last heartbeat says.
-    const gone = !this.live(run) && !(pid !== undefined && pid !== process.pid && alive(pid) && this.doorOf(record));
+    // Gone unless another live process serves it (its row's holder, which has not released it): a holder that lives
+    // but serves no door, or lives on after its release, is taken back, which kills it first (the disk's revoke).
+    // This server's own process exited: nothing else holds the run. Any other settle asks the row, and a holder that
+    // cannot be told (its row or the process listing unreadable) is never taken for gone: the settle is tried again.
+    let door: string | undefined;
+    if (!exited && !this.live(run)) {
+      const view = this.holderView(run);
+      if (view.unknown) throw new HolderUnknown("who holds it cannot be told now (its row or the process listing cannot be read)");
+      const other = view.holder !== undefined && view.holder.pid !== process.pid && holderState(view.holder) === "alive" ? view.holder : undefined;
+      // A live holder that has not let go and serves no door yet (a launch an earlier server left opening): watched, as
+      // at a start, until it serves, goes, or is taken over past the ready time.
+      if (other && !released && !run.orphan && !this.doorOf(run)) {
+        this.adoptProcess(run, other);
+        return;
+      }
+      door = !released && other ? this.doorOf(run) : undefined;
+    }
+    const gone = !this.live(run) && !door;
     // Its sign-in's save lease stays with it (below), but no longer than a session it opened could outlive its process.
     if (gone) await this.options.signIns?.markGone(run.agentId, run.id).catch((error: Error) => warn(run.id, `its sign-in's lease is not marked: ${error.message}`));
     // Its metrics are this settle's read, or none: never an earlier end's.
@@ -2252,7 +2453,7 @@ export class Runs {
     } else if (exited && !released && code !== null && code !== 0) {
       run.error = { code: "run_failed", message: `The run's process exited (${code}) without releasing the run: ${await this.lastLine(run)}`, retryable: false };
       ended = { outcome: "failed" };
-    } else if (!gone && this.doorOf(record)) ended = undefined;
+    } else if (!gone && door) ended = undefined;
     else if (run.kind === "workflow") ended = await this.workflowEnd(run, workflowEnding(record));
     else {
       const end = this.decide(run);
@@ -3134,7 +3335,7 @@ export class Runs {
   stopping(): { runs: number; boundMs: number } {
     const all = [...this.runs.values()];
     const started = all.filter((run) => run.child).length;
-    const adopted = all.filter((run) => !run.child && run.orphan && alive(run.orphan)).length;
+    const adopted = all.filter((run) => !run.child && run.orphanHolder && holderLives(run.orphanHolder)).length;
     return { runs: started + adopted, boundMs: (started ? this.killAfterMs() : 0) + (adopted ? this.killAfterMs() : 0) };
   }
 
@@ -3148,13 +3349,17 @@ export class Runs {
     }
     await Promise.all(live.map((run) => new Promise((resolve) => (run.child ? run.child.once("exit", resolve) : resolve(undefined)))));
     // An adopted process is stopped the same way, and watched by its pid.
-    const adopted = [...this.runs.values()].filter((run) => run.orphan && alive(run.orphan));
+    const adopted = [...this.runs.values()].filter((run) => run.orphanHolder && holderLives(run.orphanHolder));
     for (const run of adopted) this.terminate(run);
-    for (const deadline = Date.now() + this.killAfterMs(); adopted.some((run) => run.orphan && alive(run.orphan)) && Date.now() < deadline; ) await sleep(100);
+    for (const deadline = Date.now() + this.killAfterMs(); adopted.some((run) => run.orphanHolder && holderLives(run.orphanHolder)) && Date.now() < deadline; ) await sleep(100);
     await sleep(0);
     await Promise.all([...this.runs.values()].map((run) => run.settling));
     await this.learning.idle();
-    for (const run of this.runs.values()) run.feed?.abort();
+    for (const run of this.runs.values()) {
+      run.feed?.abort();
+      clearTimeout(run.stopPending);
+      run.stopPending = undefined;
+    }
     this.closed = true;
   }
 

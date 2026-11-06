@@ -126,7 +126,7 @@ test("the local disk adapter: mount gives a runner the folder itself, below the 
   const work = join(data, "disk", "agents", "a-0123456789abcdef", "runs", "r1", "work");
   mkdirSync(work, { recursive: true });
   const claimed = [];
-  const disk = localDisk(data, { claimRun: (runId, holder) => (claimed.push([runId, holder]), claimed.length + 1) });
+  const disk = localDisk(data, { runClaim: () => ({ epoch: claimed.length + 1, holder: null }), claimRun: (runId, holder, from) => (claimed.push([runId, holder, from]), from + 1) });
   const mounted = await disk.mount("agents/a-0123456789abcdef/runs/r1/work", undefined, "tools");
   assert.deepEqual(mounted, { subpath: "agents/a-0123456789abcdef/runs/r1/work", path: work, mode: "tools" });
   // Its files and folders, nested, are synced; a link in it is never followed.
@@ -136,7 +136,7 @@ test("the local disk adapter: mount gives a runner the folder itself, below the 
   await disk.sync(mounted);
   await disk.unmount(mounted);
   assert.equal(await disk.revoke("r1"), 2);
-  assert.deepEqual(claimed, [["r1", "server"]]);
+  assert.deepEqual(claimed, [["r1", "server", 1]], "claimed from the epoch it read");
   for (const bad of ["", "/etc", "agents/../../x", "agents/./a"]) await assert.rejects(disk.mount(bad, undefined, "tools"), /is not a path below the disk/, bad);
   symlinkSync(work, join(data, "disk", "agents", "linked"));
   await assert.rejects(disk.mount("agents/linked", undefined, "tools"), /is a link/);
@@ -180,7 +180,7 @@ test("a take-back whose claim cannot be written (the control plane not writable)
     const { last } = await follow(api, run.run_id, ["cancelled"]);
     assert.equal(last.final, true, "the run settles all the same");
     assert.deepEqual(opens.filter((open) => open.file === file && open.mode === "checkpoint"), [], "no checkpoint without the server's recorded take-back");
-    assert.equal(claimOf(data, run.run_id).claim_holder, "run-process", "the claim is still its process's on the row");
+    assert.equal(JSON.parse(claimOf(data, run.run_id).claim_holder).pid > 0, true, "the claim is still its process's on the row");
   } finally {
     await chmod(data, 0o755);
   }

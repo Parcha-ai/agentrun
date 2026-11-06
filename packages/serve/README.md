@@ -276,8 +276,10 @@ and a 200 says it can work, and the platforms here take one path.
 
 A run whose end the agent store cannot take (a full disk) still ends: a cancel makes it `cancelled`, with its cost from
 its rows, and the server writes the end to the store again every 30 s until it lands; a restart before then reads the
-run as the store last had it. A run whose process was killed is opened again on its next message at once: a heartbeat
-of a process that is gone is not trusted.
+run as the store last had it. A run whose process was killed is opened again on its next message at once: the run's row
+names its process (its pid, that process's start and this boot), and a process that is gone holds nothing. One server
+serves a data root, and the agent disk under it (`<data>/disk`): a second server on the same root is refused at start
+(`server.lock`), so the row's claim never has two servers claiming it at once.
 
 ## Sandbox
 
@@ -1798,7 +1800,8 @@ left out: 2 sessions still being written: they come in next time
    page says `final`. v2's `cancelled` is the store's `stopped`; a workflow that escalated ends `failed` with
    `error: {code: "escalated", message: <its summary>}`, in the run and in the lists.
 4. When the server starts, it reads every run the store says is running. A run process an earlier server started and
-   that still serves the run is supervised again, by its `run.json` and its pid; a run that already ended is carried
+   that still serves the run is supervised again, by the holder its row names (its pid, its start, its door); a run
+   that already ended is carried
    back; a run whose process is gone before it ended is opened again on its directory and resumes from its store (an
    agentic run waiting for an answer waits without one, until a message). A carry back that finds the store held by
    another writer is tried again with backoff, and at the next start.

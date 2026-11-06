@@ -44,17 +44,36 @@ test("a run's claim is on its row: each claim bumps its epoch and names its hold
   const { dir, store, agent } = await aStore();
   const run = await store.startRun({ agent: agent.id });
   assert.deepEqual(store.runClaim(run.runId), { epoch: 0, holder: null });
-  assert.equal(store.claimRun(run.runId, "run-process"), 1);
+  assert.equal(store.claimRun(run.runId, "run-process", 0), 1);
   assert.deepEqual(store.runClaim(run.runId), { epoch: 1, holder: "run-process" });
-  assert.equal(store.claimRun(run.runId, "server"), 2);
+  assert.equal(store.claimRun(run.runId, "server", 1), 2);
   const db = new DatabaseSync(path.join(dir, "store.sqlite"), { readOnly: true });
   try {
     assert.deepEqual({ ...db.prepare("SELECT claim_epoch, claim_holder FROM runs WHERE id = ?").get(run.runId) }, { claim_epoch: 2, claim_holder: "server" });
   } finally {
     db.close();
   }
-  assert.throws(() => store.claimRun("no-such-run", "server"), (error) => error instanceof AgentHomeError && error.code === "missing");
-  assert.throws(() => store.claimRun(run.runId, ""), (error) => error instanceof AgentHomeError && error.code === "invalid");
+  assert.throws(() => store.claimRun("no-such-run", "server", 0), (error) => error instanceof AgentHomeError && error.code === "missing");
+  assert.throws(() => store.claimRun(run.runId, "", 2), (error) => error instanceof AgentHomeError && error.code === "invalid");
+});
+
+test("two launchers racing for one run, both from the epoch they read: exactly one claims it, by the row alone; the other is refused as stale and its holder is never written", async () => {
+  const { store, agent } = await aStore();
+  const run = await store.startRun({ agent: agent.id });
+  const { epoch } = store.runClaim(run.runId);
+  const tries = ["first", "second"].map((holder) => {
+    try {
+      return { holder, epoch: store.claimRun(run.runId, holder, epoch) };
+    } catch (error) {
+      return { holder, refused: error instanceof AgentHomeError ? error.code : String(error) };
+    }
+  });
+  assert.deepEqual(tries, [{ holder: "first", epoch: epoch + 1 }, { holder: "second", refused: "stale" }]);
+  assert.deepEqual(store.runClaim(run.runId), { epoch: epoch + 1, holder: "first" });
+  // A holder's identity changes under its own epoch only (its door, once it serves): never under one that moved on.
+  store.setRunHolder(run.runId, epoch + 1, "first, serving");
+  assert.throws(() => store.setRunHolder(run.runId, epoch, "late"), (error) => error instanceof AgentHomeError && error.code === "stale");
+  assert.deepEqual(store.runClaim(run.runId), { epoch: epoch + 1, holder: "first, serving" });
 });
 
 test("a store an earlier version wrote (store version 1) is refused, by the writer and the reader, with no migration", async () => {

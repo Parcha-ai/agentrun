@@ -103,6 +103,22 @@ test('a new header (the WAL made again, with new salts) starts the walk over', (
   assert.equal(walHasCommit(wal), true);
 });
 
+test('a WAL rewritten in place at the same size, with a new header, misses the kept walk: its own frames are walked', () => {
+  const first = writeWal(dirOf());
+  const second = writeWal(dirOf());
+  assert.equal(first.committed.length, second.committed.length, 'two WALs of the same size');
+  assert.notEqual(first.committed.subarray(16, 24).toString('hex'), second.committed.subarray(16, 24).toString('hex'), 'new salts');
+  const wal = join(dirOf(), 'run.sqlite-wal');
+  writeFileSync(wal, first.committed);
+  assert.equal(walHasCommit(wal), true, 'walked and kept: committed');
+  // The same file, the same size, another WAL's header and frames whose commit frame does not verify: a walk kept by
+  // size or inode alone would still say committed.
+  const torn = Buffer.from(second.committed);
+  torn[torn.length - 1] ^= 0xff;
+  writeFileSync(wal, torn);
+  assert.equal(walHasCommit(wal), false, 'the new header misses the kept walk');
+});
+
 test('a walk is kept only while its WAL exists: a WAL found gone, or forgotten after a checkpoint, leaves nothing kept', () => {
   const { wal, committed } = writeWal(dirOf());
   const gone = `${wal}.gone`;

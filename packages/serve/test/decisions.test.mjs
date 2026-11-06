@@ -14,7 +14,7 @@ import { durableDecisions } from "@parcha/agentrun-pi/durable";
 import { startServe } from "../dist/index.js";
 import { DECISION_KEY_FD_ENV, decisionsOf, FAUX_JEV_ENV, jevRoute } from "../dist/decisions.js";
 import { FAUX_ENV } from "../dist/model.js";
-import { client, FAUX, flowAgent, follow, runDir, scratch, serve, storeRun, withEnv } from "./support.mjs";
+import { client, FAUX, flowAgent, follow, runDir, runRecordOf, scratch, serve, storeRun, withEnv } from "./support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 import { CANARY } from "./fixtures/faux-jev.mjs";
 import { CANARY as PARALLEL_CANARY } from "./fixtures/faux-parallel.mjs";
@@ -97,7 +97,7 @@ async function startFlow(api, steps, output, { schemas = {}, tools, tool_setting
 /** The run's process, once it serves its door (after its app, which reads the key, has returned): its pid. */
 async function processOf(data, runId, not) {
   for (let i = 0; ; i++) {
-    const record = JSON.parse(await readFile(join(runDir(data, runId), "run.json"), "utf8").catch(() => "{}"));
+    const record = runRecordOf(data, runId);
     const pid = record.holder?.pid;
     if (record.status === "running" && record.holder?.serve && pid && pid !== not && existsSync(`/proc/${pid}`)) return pid;
     assert.ok(i < 400, "the run's process serves");

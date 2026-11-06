@@ -269,14 +269,17 @@
       "LABEL_FLEET",
       "LABEL_RUN",
       "RUN_JSON",
+      "RUN_STATUS_TABLE",
       "confineTestHooks",
       "createRunDir",
+      "doorProof",
       "findDelegations",
       "isLeaseFresh",
       "mintMountToken",
       "newestSettledInput",
       "parseRunRecord",
       "pathlessResolver",
+      "processTable",
       "profilePragmas",
       "removeMountToken",
       "runPath",
@@ -290,6 +293,10 @@
       "InputRecord",
       "Pin",
       "PinSpec",
+      "ProcessInfo",
+      "ProcessOrigin",
+      "ProcessSnapshot",
+      "ProcessTable",
       "RootName"
     ]
   }

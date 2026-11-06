@@ -217,6 +217,10 @@ function checkVersion(db: DatabaseSync): void {
 }
 
 const invalid = (message: string) => new AgentHomeError("invalid", message);
+/** A claim's holder: a non-empty name (the run's process, as its host describes it, or the server) of at most 1,024 characters. */
+function checkHolder(holder: unknown): asserts holder is string {
+  if (typeof holder !== "string" || holder === "" || holder.length > 1024) throw invalid("a claim's holder is a non-empty name of at most 1,024 characters");
+}
 /** Refuses a run's folder `dir` below `base` (the data directory) when any level of it there now is a symbolic link or not
  *  a directory: a run's files are never made or written where a link points. The disk's one link rule, as the learning
  *  folder's (serve learning.ts). */
@@ -674,13 +678,31 @@ export class AgentStore extends AgentStoreReader {
     return run;
   }
 
-  /** Claims run `runId` for `holder`: its epoch is bumped and the holder recorded, in one transaction. The new epoch,
-   *  which the holder carries; a holder of a lower one is fenced. A take-back is a claim by the server. */
-  claimRun(runId: string, holder: string): number {
-    if (typeof holder !== "string" || holder === "" || holder.length > 256) throw invalid("a claim's holder is a non-empty name of at most 256 characters");
-    const row = this.db.prepare("UPDATE runs SET claim_epoch = claim_epoch + 1, claim_holder = ? WHERE id = ? RETURNING claim_epoch").get(holder, checkId(runId, "run")) as { claim_epoch: number } | undefined;
-    if (!row) throw new AgentHomeError("missing", "that run is unknown");
+  /** Claims run `runId` for `holder` from epoch `from`, the one its claimer read (runClaim): the epoch is bumped and the
+   *  holder recorded in one statement, only while the row still holds `from`. The new epoch, which the holder carries; a
+   *  holder of a lower one is fenced. Two claimers from the same epoch: one claims, the other is `stale` and writes
+   *  nothing. A take-back is a claim by the server. */
+  claimRun(runId: string, holder: string, from: number): number {
+    checkHolder(holder);
+    if (!Number.isSafeInteger(from) || from < 0) throw invalid("a claim names the epoch it claims from, a whole number of at least 0");
+    const row = this.db.prepare("UPDATE runs SET claim_epoch = claim_epoch + 1, claim_holder = ? WHERE id = ? AND claim_epoch = ? RETURNING claim_epoch").get(holder, checkId(runId, "run"), from) as { claim_epoch: number } | undefined;
+    if (!row) throw this.lostClaim(runId, from);
     return Number(row.claim_epoch);
+  }
+
+  /** Names `holder` for run `runId`'s claim at `epoch` (its door, once it serves), only while the row still holds that
+   *  epoch: a claim that moved on is `stale`, and nothing is written. */
+  setRunHolder(runId: string, epoch: number, holder: string): void {
+    checkHolder(holder);
+    const changed = this.db.prepare("UPDATE runs SET claim_holder = ? WHERE id = ? AND claim_epoch = ?").run(holder, checkId(runId, "run"), epoch).changes;
+    if (Number(changed) === 0) throw this.lostClaim(runId, epoch);
+  }
+
+  /** Why a claim's statement changed no row: no such run, or its epoch is no longer `epoch`. */
+  private lostClaim(runId: string, epoch: number): AgentHomeError {
+    const now = this.db.prepare("SELECT claim_epoch FROM runs WHERE id = ?").get(runId) as { claim_epoch: number } | undefined;
+    if (!now) return new AgentHomeError("missing", "that run is unknown");
+    return new AgentHomeError("stale", `the run's claim is at epoch ${Number(now.claim_epoch)}, not ${epoch}`);
   }
 
   /** The run `key` started (startRun's `origin`), as startRun returns it with `existing`; undefined when it started none. */

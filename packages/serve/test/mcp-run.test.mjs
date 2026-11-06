@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
-import { agent, follow, runDir, serve as serveOf, withEnv } from "./support.mjs";
+import { agent, follow, runDir, runRecordOf, serve as serveOf, withEnv } from "./support.mjs";
 
 const FAUX_MCP = new URL("./fixtures/faux-mcp.mjs", import.meta.url).pathname;
 /** The fake server's bearer token: no real one. */
@@ -163,7 +163,7 @@ test("a granted tool whose server was deleted, or whose tool a refresh removed, 
   assert.equal((await api("POST", "/settings/mcp-servers/fake/refresh")).status, 200);
   assert.equal((await api("DELETE", "/settings/mcp-servers/other")).status, 204);
   const failedWith = async (runId) => {
-    const pid = JSON.parse(await readFile(join(runDir(data, runId), "run.json"), "utf8")).holder.pid;
+    const pid = runRecordOf(data, runId).holder.pid;
     process.kill(pid, "SIGKILL");
     const { last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 90_000 });
     return [last.status, (await api("GET", `/runs/${runId}`)).body.error?.message];
@@ -197,7 +197,7 @@ test("pi: a run killed mid-call resumes with the call answered interrupted, and 
     assert.ok(i < 600, "the call reaches the server");
     await sleep(100);
   }
-  const record = async () => JSON.parse(await readFile(join(runDir(data, runId), "run.json"), "utf8").catch(() => "{}"));
+  const record = async () => runRecordOf(data, runId);
   const pid = (await record()).holder.pid;
   // Mid-call, the run's process: its environment holds no token.
   const environ = await readFile(`/proc/${pid}/environ`, "utf8");
@@ -289,7 +289,7 @@ test("claude-agent: a run killed mid-call resumes with the call reported interru
     assert.ok(i < 1200, "the call reaches the server");
     await sleep(100);
   }
-  const record = async () => JSON.parse(await readFile(join(runDir(data, runId), "run.json"), "utf8").catch(() => "{}"));
+  const record = async () => runRecordOf(data, runId);
   process.kill((await record()).holder.pid, "SIGKILL");
   const { rows, last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 180_000 });
   assert.equal(last.status, "completed", JSON.stringify(rows.filter((row) => row.kind === "error" || row.kind.startsWith("tool"))));

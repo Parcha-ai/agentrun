@@ -83,6 +83,31 @@ describe("the exclusive profile: a run's database", () => {
     }
   });
 
+  it("a run's writer never checkpoints: after its writes and its exit, the WAL header's checkpoint sequence is still 0, with wal_autocheckpoint 0 read back", (t) => {
+    // agentrun-pi's wal.ts keeps a verified walk under the WAL's inode and its header: true only while the writer never
+    // checkpoints, so any rewrite of the WAL comes with a new header (new salts) and misses the kept walk.
+    const file = join(scratch(t), "run.sqlite");
+    const child = `
+import { openArchilStore } from ${JSON.stringify(new URL("../src/store.ts", import.meta.url).href)};
+import { writeFileSync } from "node:fs";
+const [file] = process.argv.slice(1);
+const store = await openArchilStore(file, "exclusive", { keepWal: true });
+const auto = await store.database.get("PRAGMA wal_autocheckpoint");
+await store.database.exec("CREATE TABLE t(id INTEGER PRIMARY KEY, b TEXT)");
+for (let i = 0; i < ${ROWS}; i++) await store.database.exec("INSERT INTO t(b) VALUES ('" + "x".repeat(500) + "')");
+writeFileSync(file + ".auto", JSON.stringify(auto));
+await store.database.close();
+process.exit(0);
+`;
+    const ran = spawnSync(process.execPath, ["--no-warnings=ExperimentalWarning", "--experimental-strip-types", "--input-type=module", "-e", child, file], { encoding: "utf8" });
+    assert.equal(ran.status, 0, ran.stderr);
+    assert.deepEqual(JSON.parse(readFileSync(`${file}.auto`, "utf8")), { wal_autocheckpoint: 0 });
+    const header = readFileSync(`${file}-wal`).subarray(0, 32);
+    assert.equal(header.readUInt32BE(0) & 0xfffffffe, 0x377f0682, "a WAL");
+    assert.equal(header.readUInt32BE(12), 0, "its checkpoint sequence: never checkpointed");
+    assert.ok(statSync(`${file}-wal`).size > ROWS * 500, "every write in the WAL");
+  });
+
   it("with keepWal, its close leaves the WAL and the database file as they are; the process's exit ends it", (t) => {
     const file = join(scratch(t), "run.sqlite");
     const child = `

@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
-import { agent, follow, runDir, serve } from "./support.mjs";
+import { agent, follow, runDir, runRecordOf, serve } from "./support.mjs";
 
 /** A key for the fake endpoint: no real one. */
 const KEY = `not-a-secret-${"anthropic"}`;
@@ -196,7 +196,7 @@ test("a claude-agent run whose process dies while a request is in flight resumes
   assert.ok(cli, "the Claude CLI runs, under this test");
   // Accepted while the request is in flight: it waits for the turn, and outlives the process.
   assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "And then?" })).status, 202);
-  const { holder } = JSON.parse(await readFile(join(runDir(data, runId), "run.json"), "utf8"));
+  const { holder } = runRecordOf(data, runId);
   process.kill(holder.pid, "SIGKILL");
   const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 180_000 });
   assert.deepEqual(rows.filter((r) => r.kind === "user_message").map((r) => r.text), ["Say what you did.", "And then?"]);

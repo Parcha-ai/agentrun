@@ -8,14 +8,14 @@ import { createServer } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
 import { processAlive } from "@parcha/agentrun-kernel/host";
-import { agent, client, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
+import { agent, client, follow, runDir, runRecordOf, scratch, serve, withEnv } from "./support.mjs";
 
 /** The output-priced faux model ($100 a million output tokens: a request's least is $0.1024) in a process that cannot
  *  exit until EXIT_GATE exists, so the raise lands while the paused run's process is still being let go. */
 const SLOW_EXIT = new URL("./fixtures/faux-output-priced-slow-exit.mjs", import.meta.url).pathname;
 const SETTLED = ["input_required", "completed", "failed", "cancelled"];
 const ENDED = ["completed", "failed", "cancelled"];
-const holderPid = (data, runId) => JSON.parse(readFileSync(join(runDir(data, runId), "run.json"), "utf8")).holder.pid;
+const holderPid = (data, runId) => runRecordOf(data, runId).holder.pid;
 
 test("a run whose cap is raised at its pause reads queued at once, before its follow-up goes: never input_required with no pending", { timeout: 120_000 }, async (t) => {
   const gate = join(await scratch(t), "exit");
