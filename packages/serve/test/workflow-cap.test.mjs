@@ -216,3 +216,36 @@ test("cancelling a capped workflow run paused at its cap whose process was let g
   assert.equal((await view(api, runId)).status, "cancelled");
   assert.equal(answered(entriesOf(data, runId)), 1, "the first node's request, none after the cancel");
 });
+
+test("a capped workflow start whose decision model's price cannot be read, OpenRouter's catalog down, is refused 409 in words that say so, and the next start reads the catalog again", async (t) => {
+  withEnv(t, { OPENROUTER_API_KEY: `not-a-secret-${"openrouter"}`, AGENTRUN_FAUX_SYSTEM_ONE_DELAY_MS: "0" }, KEYS);
+  const dir = await scratch(t);
+  const sent = join(dir, "sent.jsonl");
+  const up = join(dir, "catalog-up");
+  const fauxOpenrouter = join(dir, "faux-openrouter.mjs");
+  // OpenRouter's catalog answers 503 until `up` exists; every other path is the faux System One's.
+  await writeFile(fauxOpenrouter, [
+    `import { appendFileSync, existsSync } from "node:fs";`,
+    `import faux from ${JSON.stringify(new URL("../../decisions/dist/testing/faux-system-one.js", import.meta.url).href)};`,
+    `export default async (url, init = {}) => {`,
+    `  const path = new URL(String(url)).pathname;`,
+    `  appendFileSync(${JSON.stringify(sent)}, JSON.stringify({ path }) + "\\n");`,
+    `  if (path.endsWith("/v1/models") && !existsSync(${JSON.stringify(up)})) return new Response(JSON.stringify({ error: { message: "faux down" } }), { status: 503, headers: { "content-type": "application/json" } });`,
+    `  return faux(url, init);`,
+    `};`,
+  ].join("\n"));
+  const { api } = await serve(t, { fauxOpenrouter });
+  assert.equal((await api("POST", "/agents", flowAgent("listed", judgeFlow("ask", "openrouter", "liquid/d1")))).status, 201);
+  const start = () => api("POST", "/agents/listed/runs", { input: { doc: "Certificate of incorporation of Acme Widgets" }, max_cost_usd: 1 });
+  const down = await start();
+  assert.deepEqual([down.status, down.body.error?.code], [409, "agent_not_runnable"]);
+  const issues = (down.body.error.fields ?? []).filter((issue) => issue.message.includes("liquid/d1"));
+  assert.deepEqual(issues.map((issue) => [issue.field, issue.reason, issue.message, issue.fix]), [["definition.workflow", "not_set_up_here", "OpenRouter's catalog could not be read, so the price of the decision model liquid/d1 is not known and a run's spend cap cannot be kept on it. This workflow's node ask asks it.", "Try the run again once OpenRouter's catalog answers, or run without a spend cap."]]);
+  assert.deepEqual((await lines(sent)).filter((call) => call.path.endsWith("/systemone")), [], "no decision request was sent");
+  // The catalog back: the next start reads it again, prices liquid/d1, and runs.
+  await writeFile(up, "");
+  const again = await start();
+  assert.equal(again.status, 202);
+  await follow(api, again.body.run_id, ENDED, { deadlineMs: 60_000 });
+  assert.equal((await view(api, again.body.run_id)).status, "completed");
+});

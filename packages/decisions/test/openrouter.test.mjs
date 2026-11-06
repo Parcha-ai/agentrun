@@ -293,3 +293,12 @@ test('a reported usage.cost above 0 is booked as reported; a cost of 0 is unpric
   const free = await openrouterProvider({ ...settings, fetch: zero }).decide({ questions: QUESTIONS, state: {} }, ctx());
   assert.deepEqual([free.cost_usd, free.cost_basis], [null, 'unknown'], 'a $0 report (a model the catalog prices at 0) is no price');
 });
+
+test("priceOf: a catalog that cannot be read throws CatalogUnreadable, never a price or null, and is read again on the next call", async () => {
+  const { default: faux } = await import("../dist/testing/faux-system-one.js");
+  let down = true;
+  const provider = openrouterProvider({ apiKey: `not-a-secret-${"openrouter"}`, fetch: async (url, init) => (down && new URL(String(url)).pathname.endsWith("/v1/models") ? new Response("{}", { status: 503 }) : faux(url, init)) });
+  await assert.rejects(provider.priceOf("liquid/d1"), { name: "CatalogUnreadable", message: "OpenRouter's catalog could not be read" });
+  down = false;
+  assert.equal((await provider.priceOf("liquid/d1"))?.promptUsd, 0.00000002, "read again once it answers");
+});
