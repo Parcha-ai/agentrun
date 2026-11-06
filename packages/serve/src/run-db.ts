@@ -7,7 +7,7 @@
 // guard). The one read-write open is the checkpoint when the server takes the run back (runs.ts), with no process left.
 import { closeSync, openSync, readSync, statSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import { walHasCommit } from "@parcha/agentrun-pi/durable";
+import { forgetWalWalk, walHasCommit } from "@parcha/agentrun-pi/durable";
 
 /** One open of a run's database, as observeRunDbOpens reports it: `held`, whether a process held the run at the open. */
 /** `dropped`: a read of the file alone whose file changed during it, made again (readRunDbSync). */
@@ -147,5 +147,7 @@ export async function checkpointRunDb(file: string, held: boolean): Promise<void
     // reading the WAL reads the same bytes either way; then it removes the WAL, which a reader that holds it open goes on
     // reading. Never wal_checkpoint(TRUNCATE): that cuts the WAL under such a reader, whose read then fails.
     db.close();
+    // The WAL is gone, and with it what was kept of its walk (walHasCommit).
+    forgetWalWalk(`${file}-wal`);
   }
 }

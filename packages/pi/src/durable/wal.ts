@@ -37,9 +37,15 @@ function checksum(data: Buffer, bigEnd: boolean, s1: number, s2: number): [numbe
   return [s1, s2];
 }
 
-/** Forgets every walk kept (tests). */
-export function forgetWalWalks(): void {
-  walked.clear();
+/** Forgets the walk kept for `wal`: a WAL a checkpoint removed. A WAL found gone is forgotten by walHasCommit too, so the
+ *  walks kept are of WALs that still exist. */
+export function forgetWalWalk(wal: string): void {
+  walked.delete(wal);
+}
+
+/** How many walks are kept (tests). */
+export function keptWalWalks(): number {
+  return walked.size;
 }
 
 /**
@@ -52,6 +58,7 @@ export function walHasCommit(wal: string): boolean {
   try {
     fd = fs.openSync(wal, "r");
   } catch {
+    walked.delete(wal);
     return false;
   }
   try {

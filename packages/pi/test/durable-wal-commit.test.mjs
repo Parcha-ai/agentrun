@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { after, test } from 'node:test';
-import { walHasCommit } from '@parcha/agentrun-pi/durable';
+import { forgetWalWalk, keptWalWalks, walHasCommit } from '@parcha/agentrun-pi/durable';
 
 const root = mkdtempSync(join(tmpdir(), 'agentrun-wal-commit-'));
 after(() => rmSync(root, { recursive: true, force: true }));
@@ -101,4 +101,21 @@ test('a new header (the WAL made again, with new salts) starts the walk over', (
   assert.equal(walHasCommit(wal), false);
   appendFileSync(wal, second.committed.subarray(beforeCommit(second).length));
   assert.equal(walHasCommit(wal), true);
+});
+
+test('a walk is kept only while its WAL exists: a WAL found gone, or forgotten after a checkpoint, leaves nothing kept', () => {
+  const { wal, committed } = writeWal(dirOf());
+  const gone = `${wal}.gone`;
+  writeFileSync(gone, committed);
+  const before = keptWalWalks();
+  assert.equal(walHasCommit(gone), true);
+  assert.equal(keptWalWalks(), before + 1);
+  rmSync(gone);
+  assert.equal(walHasCommit(gone), false);
+  assert.equal(keptWalWalks(), before, 'the walk of a WAL found gone is dropped');
+  const checkpointed = `${wal}.checkpointed`;
+  writeFileSync(checkpointed, committed);
+  assert.equal(walHasCommit(checkpointed), true);
+  forgetWalWalk(checkpointed);
+  assert.equal(keptWalWalks(), before, 'a forgotten walk is dropped');
 });
