@@ -132,6 +132,9 @@ const SCRIPT = [
   'case $op in',
   'start)',
   '  if [ "$5" = 1 ] && ! command -v script >/dev/null 2>&1; then echo noscript; exit 0; fi',
+  // util-linux's script alone takes -e (the command's exit code as script's own); busybox's refuses it, and always exits
+  // 0 without it, so its terminal process would read as succeeded whatever the command did.
+  '  if [ "$5" = 1 ] && ! script --version 2>&1 | grep -q util-linux; then echo notutil; exit 0; fi',
   '  mkdir -p "$c" || exit 1; [ -L "$d" ] && { echo linkdir; exit 0; }; mkdir -p "$d" || exit 1',
   '  k=0; until mkdir "$c/.lock" 2>/dev/null; do k=$((k+1)); if [ $k -ge 100 ]; then rmdir "$c/.lock" 2>/dev/null; k=0; fi; sleep 0.05; done',
   '  trap \'rmdir "$c/.lock" 2>/dev/null\' EXIT',
@@ -264,6 +267,7 @@ const bashBackground = defineTool({
     if (!command.trim()) throw new Error("command is the shell command to start");
     const said = (await inBox(api.env, "start", [command, String(BACKGROUND_MAX), String(BACKGROUND_LOG_BYTES), RUNNER, tty ? "1" : "0"], context)).trim();
     if (said === "noscript") throw new Error("this box has no `script` program (util-linux), so tty: true cannot run here: start the command without tty");
+    if (said === "notutil") throw new Error("this box's `script` is not util-linux's (it takes no -e, so the command's exit code would be lost), so tty: true cannot run here: start the command without tty");
     if (said === "linkdir") throw new Error("work/background is a link, so no background process starts: remove it, and its logs go in a directory of their own again");
     const full = /^full (\d+)/.exec(said);
     if (full) throw new Error(`${full[1]} background processes already run in this run's box, the most at once (${BACKGROUND_MAX}): end one with bash_signal (bash_list shows them), or wait for one to exit, then start this again.`);
