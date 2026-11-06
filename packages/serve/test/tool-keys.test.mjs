@@ -14,7 +14,7 @@ import { secret } from "../dist/secrets.js";
 import { readingOf } from "../dist/server.js";
 import { rowUnlocks, TOOL_KEYS, unlockedBy } from "../dist/tool-keys.js";
 import { schemaProblems } from "./schema-support.mjs";
-import { agent, call, client, cookieOf, FAUX, follow, printed, scratch, serve, withEnv } from "./support.mjs";
+import { agent, call, claudeData, client, cookieOf, FAUX, follow, printed, scratch, serve, withEnv } from "./support.mjs";
 
 const LAUNCHER = new URL("../launcher/agentrun-serve", import.meta.url).pathname;
 const FAUX_BROWSER = new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname;
@@ -56,6 +56,28 @@ async function meetsDocument(api, view) {
   const doc = (await api("GET", "/openapi.json")).body;
   assert.deepEqual(schemaProblems(doc, doc.paths["/settings/tool-keys"].get.responses["200"].content["application/json"].schema, view), [], JSON.stringify(view));
 }
+
+test("a tool key saved then removed in Settings: the refusal names Settings → Tool keys first, then the variable, for Monid and for Parallel; the structured fields are unchanged", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey(), AGENTRUN_SERVE_CODEX_STANDIN: await codexStandIn(t) }, [...KEYS, ...HARNESS_VARS]);
+  withMemory(t, ROOMY_MIB);
+  const { api } = await serve(t);
+  assert.equal((await api("PUT", "/settings/tool-keys/monid", { values: { MONID_API_KEY: made() } })).status, 204);
+  assert.equal((await api("DELETE", "/settings/tool-keys/monid")).status, 204);
+  const monid = "monid.discover needs a Monid key: save one in Settings → Tool keys (or set MONID_API_KEY where the server starts)";
+  const saved = await api("POST", "/agents", agent("finder", { tools: ["monid.discover"] }));
+  assert.equal(saved.status, 201, JSON.stringify(saved.body));
+  assert.deepEqual(saved.body.warnings.map((w) => w.message), [`The tool ${monid}.`], "the save's warning");
+  const run = await api("POST", "/agents/finder/runs", { input: { content: "hi" } });
+  assert.equal(run.status, 409, JSON.stringify(run.body));
+  assert.ok(run.body.error.message.includes(monid), run.body.error.message);
+  assert.ok(!/environment does not set/.test(run.body.error.message), run.body.error.message);
+  assert.deepEqual(run.body.error.details.missing, { "monid.discover": ["MONID_API_KEY"] }, "the structured fields are unchanged");
+  assert.equal((await api("PUT", "/settings/tools", { web_search: { provider: "parallel" } })).status, 200);
+  assert.equal((await api("POST", "/agents", agent("searcher", { tools: ["web_search"] }))).status, 201);
+  const search = await api("POST", "/agents/searcher/runs", { input: { content: "hi" } });
+  assert.equal(search.status, 409, JSON.stringify(search.body));
+  assert.ok(search.body.error.message.includes("web_search does not run here on pi: parallel is picked, and it needs a Parallel key: save one in Settings → Tool keys (or set PARALLEL_API_KEY where the server starts)"), search.body.error.message);
+});
 
 test("a key saved by name is kept sealed: GET says which fields are set and from where, never a value; PUT merges by field, DELETE forgets; the file is 0600 and holds no value", async (t) => {
   // Under a permissive umask, so the mode seen is the one the write asks for, not what the umask leaves of it.
@@ -142,11 +164,16 @@ test("each key unlocks only what capabilities bind, a tool or a decision provide
 
 test("before any model key is saved, a model key's row names every harness the key runs that this server could run: OpenRouter's all four, Anthropic's pi and claude-agent; one not installed, one that does not fit and one the key alone does not fix are left out", { timeout: 180_000 }, async (t) => {
   const standIn = await codexStandIn(t);
-  // A path where nothing is installed.
+  // A path where nothing is installed, and a CLI that is not the pinned build.
   const nothing = join(await scratch(t), "nothing");
+  const unpinned = join(await scratch(t), "claude");
+  writeFileSync(unpinned, "#!/bin/sh\necho 0.0.1\n", { mode: 0o755 });
   const cases = [
     ["claude-agent installed, codex stood in", ROOMY_MIB, { AGENTRUN_SERVE_CODEX_STANDIN: standIn }, OWN],
-    ["claude-agent not installed", ROOMY_MIB, { AGENTRUN_SERVE_CODEX_STANDIN: standIn, AGENTRUN_CLAUDE_AGENT_EXECUTABLE: nothing }, { anthropic: ["pi"], openai: ["pi", "codex", "opencode"], openrouter: ["pi", "codex", "opencode"] }],
+    // Claude Code not installed yet installs on first use: the key still runs it.
+    ["claude-agent not installed yet", ROOMY_MIB, { AGENTRUN_SERVE_CODEX_STANDIN: standIn }, OWN, false],
+    // Claude Code's CLI off its pins: no key runs it.
+    ["claude-agent's CLI off its pins", ROOMY_MIB, { AGENTRUN_SERVE_CODEX_STANDIN: standIn }, { anthropic: ["pi"], openai: ["pi", "codex", "opencode"], openrouter: ["pi", "codex", "opencode"] }, { cli: unpinned }],
     ["codex not installed", ROOMY_MIB, { CODEX_BIN: nothing }, { anthropic: ["pi", "claude-agent"], openai: ["pi", "opencode"], openrouter: ["pi", "claude-agent", "opencode"] }],
     // 384 MiB holds the server's 128 and one codex run (192), never a claude-agent run (288) or an opencode run (704): no
     // key would run them.
@@ -156,11 +183,11 @@ test("before any model key is saved, a model key's row names every harness the k
     // An endpoint claude-agent refuses (plain http to another machine): its key alone would not run it.
     ["claude-agent on an endpoint it refuses", ROOMY_MIB, { AGENTRUN_SERVE_CODEX_STANDIN: standIn, ANTHROPIC_BASE_URL: "http://gateway.example" }, { anthropic: ["pi"], openai: ["pi", "codex", "opencode"], openrouter: ["pi", "codex", "opencode"] }],
   ];
-  for (const [label, mib, vars, rows] of cases) {
+  for (const [label, mib, vars, rows, claudeSdk = true] of cases) {
     await t.test(label, async (st) => {
       withEnv(st, { AGENTRUN_SEAL_KEY: sealKey(), ...vars }, [...KEYS, ...HARNESS_VARS]);
       withMemory(st, mib);
-      const { api } = await serve(st);
+      const { api } = await serve(st, { claudeSdk });
       const caps = (await api("GET", "/capabilities")).body;
       const offers = Object.fromEntries(caps.harnesses.map((offer) => [offer.id, offer]));
       // No model key here: claude-agent and codex do not run now, whatever is installed.
@@ -297,7 +324,7 @@ test("a key saved is read by name with no restart: capabilities lose the tool's 
   const browser = async () => {
     const caps = (await api("GET", "/capabilities")).body;
     for (const value of Object.values(values)) holdsNone(JSON.stringify(caps), formsOf(value), "capabilities");
-    const { summary: _, providers: __, resolves, why: ___, ...tool } = caps.tools.find((entry) => entry.name === "browser");
+    const { summary: _, blurb: ____, providers: __, resolves, why: ___, ...tool } = caps.tools.find((entry) => entry.name === "browser");
     return { ...tool, resolves: resolves.pi };
   };
   const refused = async () => {
@@ -305,8 +332,10 @@ test("a key saved is read by name with no restart: capabilities lose the tool's 
     return [res.status, res.body.error?.code, res.body.error?.details?.missing];
   };
   // The browser runs on either vendor's keys (tool-plane.ts): unavailable, its reason names both, and no one list is missing.
-  const reason = "no browser key: set or save Browserbase's (BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID) or Kernel's (KERNEL_API_KEY)";
-  const unset = { name: "browser", nodes: true, calls: false, available: false, reason, harnesses: ["pi"], provider: "auto", default_provider: "auto", permission: "allow", default_permission: "allow", permissions: ["allow", "deny"], resolves: `unavailable: ${reason}`, key: "browserbase" };
+  // The plane keeps its own value (a run's meta stores it); only the words a person reads name Settings first.
+  const STORED_NO_BROWSER_KEY = "unavailable: no browser key: set or save Browserbase's (BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID) or Kernel's (KERNEL_API_KEY)";
+  const reason = "it needs a Browserbase key: save one in Settings → Tool keys (or set BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID where the server starts), or a Kernel key: save one in Settings → Tool keys (or set KERNEL_API_KEY where the server starts)";
+  const unset = { name: "browser", nodes: true, calls: false, available: false, reason, harnesses: ["pi"], provider: "auto", default_provider: "auto", permission: "allow", default_permission: "allow", permissions: ["allow", "deny"], resolves: STORED_NO_BROWSER_KEY, key: "browserbase" };
   assert.deepEqual(await browser(), unset);
   assert.deepEqual((await api("GET", "/capabilities")).body.tools.filter((tool) => tool.key).map((tool) => [tool.name, tool.key]), [["web_fetch", "parallel"], ["web_search", "parallel"], ["browser", "browserbase"], ["monid.discover", "monid"], ["monid.inspect", "monid"], ["monid.run", "monid"]], "only a tool a key unlocks names one");
   assert.equal((await api("POST", "/agents", { definition: { id: "browse", name: "browse", instructions: "Browse.", tools: ["browser"] } })).status, 201);
@@ -411,7 +440,8 @@ test("a key a harness reads, saved later, makes the harness available with no re
   if (secret("ANTHROPIC_API_KEY")) return t.skip("this process holds an Anthropic key of its own");
   let saved;
   const stored = (name) => (name === "ANTHROPIC_API_KEY" ? saved : undefined);
-  const base = { PATH: process.env.PATH, HOME: process.env.HOME };
+  // Its data holds Claude Code, as a first use installs it.
+  const base = { PATH: process.env.PATH, HOME: process.env.HOME, AGENTRUN_SERVE_DATA: await claudeData(t) };
   const claude = async () => (await readingOf(base, 4, stored)).caps.harnesses.find((offer) => offer.id === "claude-agent");
   assert.deepEqual([(await claude()).available, (await claude()).reason], [false, "claude-agent needs ANTHROPIC_API_KEY or OPENROUTER_API_KEY."]);
   saved = ["not-a-secret", "anthropic"].join("-");

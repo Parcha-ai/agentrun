@@ -23,8 +23,16 @@ export function registerLabel(tool: string, label: LabelFn, fold?: FoldSpec, { n
   if (name) names.set(tool, name);
 }
 
+/** A remote MCP server's tool as the harnesses name it, `mcp__<server>__<tool>` (a server's name has no `_`; `hands` is a
+ *  harness's own tools'), read `<server> · <tool>`. */
+const MCP_TOOL = /^mcp__([a-z][a-z0-9-]{0,31})__([A-Za-z0-9_-]{1,64})$/;
+const mcpLabel = (tool: string): string | undefined => {
+  const match = MCP_TOOL.exec(tool);
+  return match && match[1] !== "hands" ? `${match[1]} · ${match[2]}` : undefined;
+};
+
 /** What a tool is called where its calls are counted, in plain words: its registered name, else the name it was called by. */
-export const nameOf = (tool: string): string => names.get(tool) ?? tool;
+export const nameOf = (tool: string): string => names.get(tool) ?? mcpLabel(tool) ?? tool;
 
 /** A finished call's outcome, when its own result says more than that the call returned: a tool that answers a refusal
  *  or a failure as its result, not as an error (a fetch's `{ok: false, refused}`), reads as refused or failed. */
@@ -61,7 +69,7 @@ export const endsTurn = (tool: string): boolean => turnEnding.has(tool);
 /** The label of a call; `result` is given once the call has finished. Unknown tools get Grep's own fallback. */
 export function labelOf(tool: string, args: Obj, result?: ToolResultView, extra?: Record<string, LabelFn>): string {
   const own = extra && Object.hasOwn(extra, tool) ? extra[tool] : undefined;
-  return (own ?? labels.get(tool))?.(args, result) ?? `Using tool: ${tool}`;
+  return (own ?? labels.get(tool))?.(args, result) ?? mcpLabel(tool) ?? `Using tool: ${tool}`;
 }
 
 /** One line for several calls of one tool: `Read 4 pages: a.example, b.example, +2 more`. */
@@ -96,6 +104,8 @@ export function savedPaths(tool: string, args: Obj, result: ToolResultView): str
 
 /** Tools that use the browser session; the first of them opens one. */
 export const BROWSER_OPENERS: ReadonlySet<string> = new Set(["snapshot", "run", "screenshot", "browser_read", "browser_downloads"]);
+/** Every tool of the browser (pi-browser's): the calls a browser charge with no call of its own may fold into. */
+export const BROWSER_STEPS: ReadonlySet<string> = new Set([...BROWSER_OPENERS, "browser_release", "browser_relaunch", "browser_upload", "browser_request_handoff"]);
 
 const path = (args: Obj) => str(args.path) ?? str(args.file_path);
 const GOTO = /page\.goto\(\s*["'`]([^"'`]+)/;

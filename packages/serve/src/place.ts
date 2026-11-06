@@ -9,20 +9,20 @@
 //
 // The box is a new agent's default machine: an agentic definition that names no place is saved, at its create, with the
 // Docker box as its place wherever this server has docker (ready, or preparing), and with bash when it names no tools
-// (newAgentPlace). The place is written on the revision then, never resolved at run time, so a revision saved with none
-// (before this, or where docker was not there) runs on the runner, whatever the server has now.
+// (newAgentPlace). A revision that names no place resolves the same way at each run (defaultPlaceOf): this server's
+// default_place, so where docker is there now it runs in the Docker box, and the runner where it is not. A workflow, and a
+// revision with a tool the box refuses, run on the runner.
 import { join } from "node:path";
-import { BOX_IDS, type BoxId, type BoxOffer } from "./boxes.js";
+import { BOX_IDS, BOXES_ENV, type BoxId, type BoxOffer, VM_PROVIDER } from "./boxes.js";
 import { type InputIssue, sentence } from "./errors.js";
 
 export const PLACE_MODES = ["runner", "sandbox"] as const;
 export type PlaceMode = (typeof PLACE_MODES)[number];
-export const DEFAULT_PLACE_MODE: PlaceMode = "runner";
 
 export type Place = { mode: "runner" } | { mode: "sandbox"; box: BoxId };
 
-/** The boxes runs execute in so far. */
-export const RUN_BOXES: readonly BoxId[] = ["docker", "daytona"];
+/** The boxes runs execute in so far: Docker, Daytona and the VM box. */
+export const RUN_BOXES: readonly BoxId[] = ["docker", "daytona", VM_PROVIDER.id];
 
 /** The boxes this server gives runs, from what its registry set up at its start (boxes.ts): a box runs execute in
  *  that the registry has, and no other. */
@@ -44,9 +44,20 @@ export function newAgentPlace(registry: readonly BoxOffer[]): { place: Place } |
   return { reason: `new agents run on the runner, because the docker box is unavailable here: ${docker?.reason ?? "it is not set up"}` };
 }
 
-/** The tools a new agent in the default box is given when its definition names none: a shell. A definition that names its
- *  tools, an empty list included, keeps exactly those. */
-export const NEW_AGENT_TOOLS: readonly string[] = Object.freeze(["bash"]);
+/** The place a revision that names none resolves to, at its create and at each run alike: this server's default place
+ *  (newAgentPlace) for an agentic revision; the runner for a workflow, which is never given a box, and for one that names
+ *  a tool the box refuses (`refused`: the browser, runner-only for now). */
+export function defaultPlaceOf(kind: "agentic" | "workflow", tools: readonly unknown[], registry: readonly BoxOffer[], refused: (tool: string) => boolean): Place {
+  if (kind === "workflow" || tools.some((tool) => typeof tool === "string" && refused(tool))) return { mode: "runner" };
+  const fresh = newAgentPlace(registry);
+  return "place" in fresh ? fresh.place : { mode: "runner" };
+}
+
+/** The tools a new agent in the default box is given when its definition names none: a shell, and the background tools
+ *  that start, read, feed, signal and list commands that outlive one call (background.ts SHELL_TOOLS, which a test holds
+ *  this list to; written out here, since background.ts reads this module). A definition that names its tools, an empty
+ *  list included, keeps exactly those. */
+export const NEW_AGENT_TOOLS: readonly string[] = Object.freeze(["bash", "bash_background", "bash_output", "bash_input", "bash_signal", "bash_list"]);
 
 /** Why a sandbox-only tool (bash) cannot run on this server: no box runs execute in is available, each with its reason.
  *  Undefined when one is. */
@@ -58,8 +69,9 @@ export function noBoxReason(registry: readonly BoxOffer[]): string | undefined {
 
 /** The start banner's words on the boxes: which are ready for a sandbox agent's tools, which are still preparing (an
  *  available box whose `state` says so, with its reason: what it is pulling), then why each box is not that
- *  AGENTRUN_BOXES lists (`listed`), or, when none is ready or preparing, each box runs execute in, with what to do. */
-export function boxesLine(registry: readonly BoxOffer[], listed: ReadonlySet<BoxId>, allow: readonly string[] | "none" = "none"): string {
+ *  AGENTRUN_BOXES lists (`listed`), or, when none is ready or preparing, each box runs execute in, with what to do.
+ *  `byDefault`, with AGENTRUN_BOXES not set at all: short, docker alone, said to be on by default, or why it is not. */
+export function boxesLine(registry: readonly BoxOffer[], listed: ReadonlySet<BoxId>, allow: readonly string[] | "none" = "none", byDefault = false): string {
   const boxes = boxAvailability(registry);
   const preparing = (box: BoxOffer) => (box as { state?: unknown }).state === "preparing";
   const ready = boxes.filter((box) => box.available && !preparing(box)).map((box) => box.id);
@@ -74,16 +86,21 @@ export function boxesLine(registry: readonly BoxOffer[], listed: ReadonlySet<Box
   const hosts = new Intl.ListFormat("en", { type: "conjunction" }).format(allow === "none" ? [] : allow);
   const reach = boxes.filter((box) => box.available && box.network).map((box) =>
     box.network === "allowlist" ? sentence(`${box.id} boxes reach only ${hosts}`) : sentence(`${box.id} boxes have no network${box.network_reason ? `: ${box.network_reason}` : ""}`));
+  if (byDefault) {
+    const docker = boxes.find((box) => box.id === "docker");
+    if (!docker?.available) return `Boxes: none, so new agents run on the runner. ${sentence(docker?.reason ?? "Docker is not set up")}`;
+    const coming = preparing(docker) ? ` docker is preparing${docker.reason ? ` (${docker.reason})` : ""}.` : "";
+    return [`Boxes: docker (on by default; set ${BOXES_ENV} to change).${coming}`, ...reach].join(" ");
+  }
   return ["Boxes:", ...(none ? ["none is ready, so sandbox agents do not run here."] : said), ...reach, ...why.map((box) => sentence(`${box.id}: ${box.reason ?? "not available"}`))].join(" ");
 }
 
-/** `places` in capabilities: the modes a revision may name, where a revision that names none runs (`default`: the runner,
- *  for a revision saved with no place), the place a new agent is saved with (`default_place`, with `default_reason` when
- *  it is the runner), each box, and the hosts a box whose `network` is `allowlist` reaches (`allow`, run-box.ts
- *  boxAllowOf; empty for `none`). */
+/** `places` in capabilities: the modes a revision may name, the place a new agent is saved with and a revision that
+ *  names none runs in (`default_place`, with `default_reason` when it is the runner), each box, and the hosts a box whose
+ *  `network` is `allowlist` reaches (`allow`, run-box.ts boxAllowOf; empty for `none`). */
 export const placesOf = (registry: readonly BoxOffer[], allow: readonly string[] | "none" = "none") => {
   const fresh = newAgentPlace(registry);
-  return { modes: [...PLACE_MODES], default: DEFAULT_PLACE_MODE, ...("place" in fresh ? { default_place: fresh.place } : { default_place: { mode: "runner" } as Place, default_reason: fresh.reason }), boxes: boxAvailability(registry).map(stated), allow: allow === "none" ? [] : [...allow] };
+  return { modes: [...PLACE_MODES], ...("place" in fresh ? { default_place: fresh.place } : { default_place: { mode: "runner" } as Place, default_reason: fresh.reason }), boxes: boxAvailability(registry).map(stated), allow: allow === "none" ? [] : [...allow] };
 };
 /** A box with its state: what the server set (a Docker box whose image is coming is `preparing`), else `ready` when it
  *  is available and `unavailable` when not; and, on an available box, its network as the server set it, with
@@ -95,8 +112,8 @@ const stated = ({ state, network, network_reason, ...offer }: BoxOffer): BoxOffe
   ...(offer.available && network === "none" && network_reason ? { network_reason } : {}),
 });
 
-/** A run's place: its revision's, else this host's default. */
-export const resolvePlace = (revision: Place | undefined): Place => revision ?? { mode: "runner" };
+/** A run's place: its revision's, else the place a revision that names none resolves to here (`fallback`: defaultPlaceOf). */
+export const resolvePlace = (revision: Place | undefined, fallback: Place): Place => revision ?? fallback;
 
 /** The place a run kept (its serve.json), or runner for a run kept before runs had one. */
 export function storedPlace(value: unknown): Place {
@@ -109,7 +126,7 @@ export const BOX_WORK = "/run/agentrun/run/work";
 
 /** The boxes that cannot bind a run's work/, being on another machine: its work/ is seeded at the box's making and
  *  pulled back (run-box.ts). */
-export const REMOTE_BOXES: readonly BoxId[] = ["daytona"];
+export const REMOTE_BOXES: readonly BoxId[] = ["daytona", VM_PROVIDER.id];
 export const remotePlace = (place: Place): boolean => place.mode === "sandbox" && REMOTE_BOXES.includes(place.box);
 
 /** The run's work/ as its agent's tools see it: on the runner, `<runDir>/work`; in any box, BOX_WORK. */

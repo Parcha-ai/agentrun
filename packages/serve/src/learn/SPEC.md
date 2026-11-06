@@ -66,8 +66,14 @@ to 64 lowercase letters, digits, dashes and underscores, starting with a letter 
 from the one-line description the draft's block gives (`draftFiles`): front matter with the folder's `name` and that
 `description`, and `status: pending` when the grader holds the draft. A run adds or changes at most one draft. The workflow DSL's own
 `validateWorkflow` judges the draft, with no code run (`executeCode: false`) and the agent's tools as the list a node may
-name: the tools its definition grants that a workflow's model or call node runs on this server, so a harness's own tool
-(`Bash`, `exec_command`, `apply_patch`) is never on it. With no list, a draft that names any tool is refused. A draft
+name: the tools its definition grants that a workflow's call node runs on this server, so a harness's own tool
+(`Bash`, `exec_command`, `apply_patch`) is never on it, nor is a tool the gate does not allow (set to ask or deny, under the
+server's tool settings and the agent's own): a draft whose call node calls one, a composed workflow's inner node too, is
+refused in the words a workflow revision's call node is, and the end-of-run prompt offers only tools set to allow. A model node that names any tool is refused: a learned
+workflow's model node runs without tools. So is a node the learned runner cannot run: a learned workflow runs model
+and tool-call nodes, and a judge, pick or sift node (or a route by question, a verify, an ask) needs a decision provider a
+run is not given. So is an agent node that asks more than the learned runner's 8 turns, or `context: "fork"` (each node
+starts a fresh session). With no list, a draft that names any tool is refused. A draft
 holds no node that runs code: no `code` node, and no call `via: "shell"` or `via: "executor"`.
 
 ## The index
@@ -146,7 +152,7 @@ Over a cap is refused, never cut.
   characters), private use, line and paragraph separators and control characters other than tab and newline. An
   emoji's joiners and variation selectors, and the joiners some scripts need between letters, are text.
 - Text shaped like a secret: well-known key prefixes such as AWS, Google, GitHub, Slack and `sk-` keys, JSON web
-  tokens, URLs with a password, and PEM private-key headers. A value the host holds counts as written, as JSON writes
+  tokens, Standard Webhooks signing secrets (`whsec_`), URLs with a password, and PEM private-key headers. A value the host holds counts as written, as JSON writes
   it, percent or form encoded, in base64 or in hex. A skill's or a draft's folder name is read as its file's name is.
 - Every problem is `{ rule, path?, detail }`, printable as it is: its path and detail are cut of the host's values and
   of secret shapes, and a field over 4096 bytes prints whole as `[redacted]`, never scanned.

@@ -52,6 +52,29 @@ export interface HostTool {
   call(args: unknown, context: { callId: string; signal: AbortSignal; sessionDir?: (key: string) => string }): Promise<{ text: string; isError?: boolean; images?: readonly ToolImage[] }>;
 }
 
+/** A tool of a remote MCP server, as the server listed it when its owner saved it (the run's pinned copy). */
+export interface McpTool {
+  name: string;
+  title?: string;
+  description?: string;
+  inputSchema: Record<string, unknown>;
+  annotations?: Record<string, unknown>;
+}
+
+/** What an MCP tool call answers the model: its text, and whether the tool said it failed. */
+export interface McpCallResult {
+  content: { type: "text"; text: string }[];
+  isError?: boolean;
+}
+
+/** A session's remote MCP servers: each one's granted tools, and the call that reaches them through the host, which holds
+ *  their credentials. A harness with its own MCP client points it at the session's model proxy (`/mcp/<server>`). */
+export interface SessionMcp {
+  servers: readonly { name: string; tools: readonly McpTool[] }[];
+  /** Never throws: a failure is an `isError` result the model reads. `callId` is the harness's id for the call. */
+  call(server: string, tool: string, args: Record<string, unknown>, context: { signal: AbortSignal; callId?: string }): Promise<McpCallResult>;
+}
+
 /** One durable record of a session, in the order it was appended. */
 export interface SessionRecord {
   kind: string;
@@ -87,6 +110,8 @@ export interface SessionSpec {
   system: string[];
   /** Exactly these tools; the harness's own stay off. */
   tools: HostTool[];
+  /** The remote MCP servers it may call, for a harness that has its own MCP client. */
+  mcp?: SessionMcp;
   context: "fresh" | "fork";
   tier?: NodeRequest["tier"];
   effort?: NodeRequest["effort"];
@@ -202,8 +227,9 @@ export interface AdapterSession {
   /** Record the open turn as ended, interrupted, and send nothing: the turn is not to be resumed (a person stopped it, and
    *  an interrupt writes no end in the session). Only when `state` is `open_turn`; the session is `idle` after, here and
    *  when a later process opens it, and the next `send` is a turn of its own. A follow-up closes a cut turn the same way
-   *  (kernel/follow-up.ts, FollowUpTarget.settleOpenTurn). */
-  settleOpenTurn(): Promise<void>;
+   *  (kernel/follow-up.ts, FollowUpTarget.settleOpenTurn), naming its own prompt (`opening`): that one is withdrawn and
+   *  never carried, and the rest is left as it is. */
+  settleOpenTurn(options?: { opening?: string }): Promise<void>;
   /** Resolves when the turn in flight ends. */
   turnEnd(): Promise<{ status: TurnStatus; error?: string }>;
   /** Stop the turn in flight; calls it left open end interrupted. With `drainMs`, a pause: no new turn is sent, and the
@@ -220,6 +246,16 @@ export interface AdapterSession {
 export interface AdapterCapabilities {
   /** Whether the adapter can start a session from another's transcript. */
   fork: boolean;
+  /** Its harness's own MCP client, when it has one: it calls `spec.mcp`'s servers at the session proxy's `/mcp/<server>`,
+   *  which the kernel's model proxy mounts from the session's MCP and this fact (ModelProxyOptions.mcp). */
+  mcpClient?: McpClient;
+}
+
+/** A harness's own MCP client, as its adapter declares it: the `_meta` key of a `tools/call` that carries the harness's
+ *  own id for the call (Claude Code's `claudecode/toolUseId`, Codex's `callId`), the id its timeline and gate know the
+ *  call by. The route reads that key and no other. */
+export interface McpClient {
+  callIdMeta: string;
 }
 
 export interface AgentAdapter {

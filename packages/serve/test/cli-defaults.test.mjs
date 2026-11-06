@@ -14,6 +14,9 @@ import * as host from "../dist/host.js";
 import { startServe } from "../dist/index.js";
 import * as model from "../dist/model.js";
 
+// A server here, or one the CLI starts, asks no Docker (on by default when AGENTRUN_BOXES is not set): support.mjs's rule.
+process.env.AGENTRUN_BOXES = "none";
+
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 const FAUX = new URL("./fixtures/faux-model.mjs", import.meta.url).pathname;
 
@@ -89,6 +92,24 @@ async function serve(t, args, env = {}, data = undefined) {
   const stop = () => stopChild(child, exited);
   return { home, base: /AGENTRUN_BASE_URL=(\S+)\/v2/.exec(out)[1], out, stop };
 }
+
+test("with accounts off (AGENTRUN_ACCOUNTS=0), the AGENTRUN_PUBLIC_URL name is served on loopback as with them on, and another name is still refused", { timeout: 120_000 }, async (t) => {
+  // Port 0: the server's own listen picks the port, so no other process can take it between a pick and the listen. The
+  // banner's first line names the local address; AGENTRUN_BASE_URL names the public one.
+  const { out } = await serve(t, ["--port", "0"], { AGENTRUN_ACCOUNTS: "0", AGENTRUN_PUBLIC_URL: "https://agentrun.example.com" });
+  assert.match(out, /^Open https:\/\/agentrun\.example\.com\//m, out);
+  const port = Number(/^agentrun-serve on http:\/\/127\.0\.0\.1:(\d+)\/v2 /m.exec(out)?.[1]);
+  assert.ok(port > 0, `the banner names the local port: ${out}`);
+  const { request } = await import("node:http");
+  const status = (name) =>
+    new Promise((resolve, reject) => {
+      const req = request({ host: "127.0.0.1", port, path: "/v2/capabilities", headers: { host: name } }, (res) => (res.resume(), resolve(res.statusCode)));
+      req.once("error", reject).end();
+    });
+  assert.equal(await status("agentrun.example.com"), 200, "the public name, as a proxy in front sends it");
+  assert.equal(await status(`localhost:${port + 1}`), 200);
+  assert.equal(await status("evil.example"), 403);
+});
 
 test("demo: with no --port the server takes the first free port from its default", { timeout: 120_000 }, async (t) => {
   const busy = await heldFirstFree(t);

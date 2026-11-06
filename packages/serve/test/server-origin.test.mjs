@@ -12,25 +12,25 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import * as disk from "@parcha/pi-durable-disk";
 import * as timeline from "@parcha/pi-durable-agent/timeline";
-import { agent, follow, scratch, serve } from "./support.mjs";
+import { agent, follow, runDir, runRecordOf, scratch, serve } from "./support.mjs";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const FAUX_WEB_HOLD = new URL("./fixtures/faux-web-hold.mjs", import.meta.url).pathname;
 const RAISED = "The cap was raised to $5; continue the task.";
-const recordOf = (data, runId) => JSON.parse(readFileSync(join(data, "runs", runId, "run.json"), "utf8"));
+const recordOf = (data, runId) => runRecordOf(data, runId);
 const shown = (rows) => JSON.stringify(rows.map((r) => [r.kind, r.summary]));
 
 /** POST /submit to the run's own door, as serve's submit sends a message, with `origin`. */
 async function toDoor(data, runId, body) {
   const door = recordOf(data, runId).holder.serve;
-  const token = readFileSync(join(data, "runs", runId, "door-token"), "utf8").trim();
+  const token = readFileSync(join(runDir(data, runId), "door-token"), "utf8").trim();
   const res = await fetch(new URL("/submit", door), { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify(body) });
   return { status: res.status, body: await res.json().catch(() => null) };
 }
 
 /** The run's store's entries, in order. */
 function storeEntries(data, runId) {
-  const db = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { readOnly: true });
+  const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true });
   try {
     return db.prepare("SELECT record FROM entries ORDER BY rowid").all().map((row) => JSON.parse(String(row.record)));
   } finally {
@@ -107,6 +107,21 @@ test("the door refuses an origin that is not the server's, and writes nothing fo
   await writeFile(go, "");
   await follow(api, runId, ["completed"], { deadlineMs: 90_000 });
   assert.ok(!userTexts(data, runId).includes(RAISED), "nothing written for a refused origin");
+});
+
+// An input that may not answer (answers false: a trigger's message) is refused while the run works, after the door
+// would have queued its origin's marker: a marker with no input after it would name the next message as the server's.
+test("the door refuses an origin on an input that may not answer: 400, and no marker written, though the run works", { timeout: 120_000 }, async (t) => {
+  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
+  const go = join(await scratch(t), "go");
+  assert.equal((await api("POST", "/agents", agent("origin-guarded", { tools: [] }))).status, 201);
+  const runId = (await api("POST", "/agents/origin-guarded/runs", { input: { content: `Hold the answer until ${go}.` } })).body.run_id;
+  await follow(api, runId, ["working"], { deadlineMs: 30_000 });
+  const sent = await toDoor(data, runId, { requestId: "guarded-1", content: RAISED, answers: false, asks: ["ask_person"], origin: { kind: "server", reason: "cap_raised" } });
+  await writeFile(go, "");
+  await follow(api, runId, ["completed"], { deadlineMs: 90_000 });
+  assert.deepEqual(storeEntries(data, runId).filter((e) => e.kind === disk.MESSAGE_ORIGIN_KIND), [], `no marker left with no message after it (the door answered ${JSON.stringify(sent)})`);
+  assert.deepEqual([sent.status, sent.body?.error], [400, "BAD_REQUEST"], JSON.stringify(sent));
 });
 
 test("the door's marker kind is the Timeline's: one name for the entry that names a server message's origin", () => {
