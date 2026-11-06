@@ -1,5 +1,6 @@
 // Find, check and sweep computers on real Docker (AGENTRUN_COMPUTER_LIVE_DOCKER=1 only): attach by id and by labels,
-// list by label, network read-back, a drifted computer deleted at create, and the janitor deleting only the expired.
+// list by label, network read-back, a drifted computer deleted at create, and the janitor deleting only the expired,
+// stopped or running.
 // Needs `npm run build` and `npm run build:daemon` first, Go on PATH (for the drifted daemon), and the images pulled.
 // Every computer this file makes carries a label with this run's id; each is removed by its exact name in the after
 // hook, pass or fail. The janitor sweeps only this run's label.
@@ -159,15 +160,33 @@ describe("find, check and sweep Docker computers", { skip: LIVE ? false : "set A
 		assert.deepEqual(ours(), [a.name, b.name].sort(), "nothing left with the drift label");
 	});
 
-	it("the janitor deletes exactly the computer whose deadline has passed", async () => {
+	it("the janitor deletes exactly the computers past their deadline: one that stopped itself, and one still running", async () => {
 		const sweepLabel = { [RUN_LABEL]: run, sweep: "yes" };
-		const short = await create({ image: "alpine:3.20", network: "none", lifetimeMs: 1000, labels: { sweep: "yes", role: "short" } });
+		// Long enough for create's drift check on a loaded host; then init ends the computer and it stays, stopped.
+		const short = await create({ image: "alpine:3.20", network: "none", lifetimeMs: 15_000, labels: { sweep: "yes", role: "short" } });
 		assert.equal(short.ok, true, JSON.stringify(short));
+		const mid = await create({ image: "alpine:3.20", network: "none", lifetimeMs: 5 * 60_000, labels: { sweep: "yes", role: "mid" } });
+		assert.equal(mid.ok, true, JSON.stringify(mid));
 		const long = await create({ image: "alpine:3.20", network: "none", labels: { sweep: "yes", role: "long" } });
 		assert.equal(long.ok, true, JSON.stringify(long));
-		const swept = await sweep(provider, { labels: sweepLabel, now: new Date(Date.now() + 60_000) });
-		assert.deepEqual(swept, { ok: true, value: { deleted: [short.value.name], kept: 1 } });
+		const bound = Date.now() + 120_000;
+		let state;
+		do {
+			[{ State: state }] = JSON.parse(docker("inspect", short.value.name));
+			if (!state.Running) break;
+			await new Promise((resolve) => setTimeout(resolve, 500));
+		} while (Date.now() < bound);
+		assert.equal(state.Running, false, "still running 120 s after a 15 s lifetime");
+		assert.equal(state.ExitCode, 0);
+		const listed = await provider.list(sweepLabel);
+		assert.deepEqual(Object.fromEntries(listed.value.map((info) => [info.labels.role, info.state])), { short: "stopped", mid: "running", long: "running" });
+		// mid's deadline is passed only for this sweep's now; long's is not.
+		const swept = await sweep(provider, { labels: sweepLabel, now: new Date(Date.now() + 6 * 60_000) });
+		assert.equal(swept.ok, true, JSON.stringify(swept));
+		assert.deepEqual(swept.value.deleted.sort(), [short.value.name, mid.value.name].sort());
+		assert.equal(swept.value.kept, 1);
 		assert.equal(exists(short.value.name), false);
+		assert.equal(exists(mid.value.name), false);
 		assert.equal(exists(long.value.name), true);
 		assert.equal(exists(a.name), true, "a computer outside the swept label is never touched");
 		assert.deepEqual(await sweep(provider, { labels: sweepLabel }), { ok: true, value: { deleted: [], kept: 1 } });

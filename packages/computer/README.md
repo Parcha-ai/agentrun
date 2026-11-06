@@ -226,11 +226,13 @@ hello, expected)`, a pure function that returns one sentence per mismatch. From 
 | network | `none` or `open` as declared, read back as `network(ref)` does |
 | `HostConfig.CapDrop`, `CapAdd`, `Privileged` | `["ALL"]`, nothing added, false |
 | `HostConfig.SecurityOpt` | holds `no-new-privileges` |
-| `HostConfig.PidsLimit` | `pids`, or 4096 |
-| `HostConfig.Memory`, `MemorySwap` | both `memoryMb` MiB, when asked |
-| `HostConfig.NanoCpus` | `cpus` times 10^9, when asked |
+| `HostConfig.PidsLimit` | `pids`, or 1024 |
+| `HostConfig.Memory`, `MemorySwap` | both `memoryMb` MiB, or 4096 MiB |
+| `HostConfig.CpuPeriod`, `CpuQuota` | 100000, and `cpus` (or 2) times 100000 |
+| `Config.User` | the uid:gid asked for: the spec's, the provider's, or the default |
+| `HostConfig.Tmpfs` | `/work` and `/run/agentrun`, each with that uid and gid, `mode=0700`, `nosuid` and `nodev` (`/work` `exec`, `/run/agentrun` `noexec`); options in any order |
 | `Mounts` | the provider's daemon binary bound read-only at `/opt/agentrun/computerd`, and no other bind mount |
-| `Config.Entrypoint`, `Cmd` | `["/opt/agentrun/computerd"]`, `["init"]` |
+| `Config.Entrypoint`, `Cmd` | `["/opt/agentrun/computerd"]`, `["init", "--deadline", <the deadline label's value>]` |
 | `Config.Labels` | `agentrun.computer=1`, the deadline as written, and every label the spec asked for |
 
 From the daemon's `hello`, over one short connection: the provider's version, `os` linux, every capability in
@@ -241,16 +243,18 @@ before `create` returns `refused` with every mismatch. A computer is never left 
 
 ### The janitor
 
-Docker ends nothing at a deadline, so the provider declares `lifetime: "janitor"` and `sweep(provider, { labels?, now?,
-signal? })` (in `src/janitor.ts`) ends computers instead. It works for any provider that declares `lifetime: "janitor"`
+A Docker computer stops itself at its deadline (init exits), but Docker deletes nothing, so the provider declares
+`lifetime: "janitor"` and `sweep(provider, { labels?, now?, signal? })` (in `src/janitor.ts`) deletes computers instead. It works for any provider that declares `lifetime: "janitor"`
 and refuses one that declares `"vendor"`. It lists the provider's computers with `labels` (all of them by default) and
-deletes each whose deadline is at or before `now`, or whose deadline is missing or unreadable; it keeps the rest and
+deletes each whose deadline is at or before `now`, or whose deadline is missing or unreadable, stopped or running (a
+computer past its deadline has usually stopped itself already); it keeps the rest and
 returns `{ deleted, kept }`. It never touches a container the provider does not list: on Docker, one without
 `agentrun.computer=1` and a computer's name. A computer it cannot delete does not stop it; the result is then an error
 naming it and what was deleted.
 
 This package does not schedule the janitor. Whoever runs computers runs `sweep` on a schedule (a cron job, or a timer
-in a long-lived service), with Docker's CLI on its PATH; a computer may outlive its deadline by up to one interval.
+in a long-lived service), with Docker's CLI on its PATH. A computer stops at its deadline whether the janitor runs or not;
+its stopped container may stay up to one interval longer.
 
 ```ts
 import { DockerProvider, sweep } from "@parcha/agentrun-computer";
