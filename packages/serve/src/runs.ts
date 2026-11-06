@@ -546,12 +546,15 @@ const budgetPending = (run: Run, spentNow?: number): Pending | undefined => {
   const figures = r && spent !== undefined ? { spent_usd: micro(spent), needs_usd: micro(r.needsUsd), suggested_cap_usd: suggestedCap(cap, spent, r.needsUsd) } : {};
   return { kind: "budget", cap_usd: cap, ...figures, said, at: meaningful(run.rows)?.timestamp ?? run.updatedAt };
 };
-/** The waiting row of a run paused at its cap, after the refusal's error row: "Paused at the run's $1 cap: Not sent: …". */
-function withPaused(rows: readonly TimelineEvent[], said: string, cap: number): TimelineEvent[] {
+/** The waiting row of a run paused at its cap, after the refusal's error row: "Waiting for you to raise the cap", and no
+ *  more: the refusal's words are the pause's (pending.said), which a client shows once, as its banner. */
+const BUDGET_WAITING = "Waiting for you to raise the cap";
+function withPaused(rows: readonly TimelineEvent[]): TimelineEvent[] {
   const at = rows.findLastIndex((row) => row.kind === "error");
   if (at < 0) return [...rows];
-  const error = rows[at]!;
-  const paused: TimelineEvent = { ...error, id: `${error.id}:paused`, kind: "waiting", summary: `Paused at the run's ${money(cap)} cap: ${clip(said, 400)}`, text: clip(said, 2000), tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null };
+  // The refusal's own marker (`paused`, servedError) stays on the refusal's row: the waiting row is no refusal.
+  const { paused: _marker, ...error } = rows[at]!;
+  const paused: TimelineEvent = { ...error, id: `${error.id}:paused`, kind: "waiting", summary: BUDGET_WAITING, text: BUDGET_WAITING, tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null };
   return [...rows.slice(0, at + 1), paused, ...rows.slice(at + 1)];
 }
 /** An import's answer, the one row reading of an answer left: its records hold no turn's end (it ran elsewhere), so its
@@ -685,6 +688,9 @@ function processIdentity(pid: number | undefined): string | undefined {
   }
 }
 const pausedAt = (run: Run): string | undefined => (raisedSince(run) ? undefined : refusedAt(run));
+/** Raised at the pause it stands at, and that raise's follow-up still to go (continuationOf): the run goes on without a
+ *  person, once the follow-up opens its next process (resumeRaised). */
+const raisedToGo = (run: Run): boolean => raisedSince(run) && continuationOf(run) !== undefined;
 /** What a stop keeps of where the run stands: the person's last message, by its id, or the place before any. */
 export const stopMark = (rows: readonly TimelineEvent[]): { stopped_at: string } => ({ stopped_at: lastUserMessage(rows) ?? `${ROOT_CONVERSATION_ID}:0` });
 
@@ -727,8 +733,10 @@ export function statusOf(run: Run): { status: Status; state: State } {
   // Every message's turn is over and the newest one's ended interrupted, with no stop of the person's saying so (the
   // harness ended it on its own): the run waits for the person, as after a stop, never working for good.
   if (run.kind === "agentic" && run.submitted === 0 && run.turns.end()?.status === "interrupted") return { status: "input_required", state: "idle" };
-  // Paused at its cap: it waits for the cap to be raised; raised, for a message, if the raise's own follow-up did not go.
-  if (refusedAt(run) !== undefined) return pausedAt(run) !== undefined ? { status: "input_required", state: "waiting" } : { status: "input_required", state: "idle" };
+  // Paused at its cap: it waits for the cap to be raised. Raised, it is queued while the raise's follow-up is still to go
+  // (raisedToGo: from the moment the raise is taken, through its paused process's let-go and the follow-up's tries), since
+  // nothing waits on a person; for a message only if that follow-up will not go.
+  if (refusedAt(run) !== undefined) return pausedAt(run) !== undefined ? { status: "input_required", state: "waiting" } : raisedToGo(run) ? { status: "queued", state: "working" } : { status: "input_required", state: "idle" };
   if (run.working) return { status: "working", state: "working" };
   if (meaningful(run.rows)?.kind === "waiting") return { status: "input_required", state: "waiting" };
   return { status: "working", state: "idle" };
@@ -1223,7 +1231,7 @@ export class Runs {
     const served = own.map((row) => (row.kind === "error" ? this.servedError(run, row) : row));
     // A run paused at its cap says so after the refusal, as the row its status reads.
     const said = pausedAt(run);
-    const rows = said === undefined || run.meta.max_cost_usd === undefined ? served : withPaused(served, said, run.meta.max_cost_usd);
+    const rows = said === undefined || run.meta.max_cost_usd === undefined ? served : withPaused(served);
     if (run.log.sync(withLearning(rows, run.meta.learning, this.learning.shown()), run.keep)) run.updatedAt = new Date().toISOString();
   }
 
@@ -1274,12 +1282,15 @@ export class Runs {
   /** An error row as served: its summary and text in errorWords' terms. The run's own rows, which its status reads, keep
    *  what the harness said. */
   private servedError(run: Run, row: TimelineEvent): TimelineEvent {
+    // A refusal for room pauses the run (pausedAt), and its row says so (`paused`): the request was not sent, and a raise
+    // goes on, so it reads as a pause, never as a failure. Every refusal for room pauses, so the row keeps it after a raise.
+    const paused = roomRefusal(row.text ?? undefined) !== undefined ? { paused: true as const } : {};
     const plain = this.plainKey(run, row.text ?? undefined);
     if (plain) {
       const words = this.shown(run, plain);
-      return { ...row, summary: words, text: words };
+      return { ...row, summary: words, text: words, ...paused };
     }
-    return { ...row, ...(row.summary ? { summary: this.shown(run, row.summary) } : {}), ...(row.text ? { text: this.shown(run, row.text) } : {}) };
+    return { ...row, ...(row.summary ? { summary: this.shown(run, row.summary) } : {}), ...(row.text ? { text: this.shown(run, row.text) } : {}), ...paused };
   }
 
   /** What serve shows of a run's error text, for every run kind: no held secret (redacted, key-refusal.ts' one rule) and
@@ -2244,7 +2255,8 @@ export class Runs {
     }
     if (!ended) {
       // Work left and no process: opened again. A run that waits for the person waits without one, until a message.
-      const stalled = run.kind === "workflow" || statusOf(run).status !== "input_required";
+      // A raised run whose follow-up is still to go let its process go as a paused one does: its sign-in's lease goes too.
+      const stalled = run.kind === "workflow" || (statusOf(run).status !== "input_required" && !raisedToGo(run));
       // Its sign-in's save lease stays with it until it ends (carryBack), through a relaunch or a restart: a session it
       // opened before its process went may still be live at the vendor, and would write back over another run's. One
       // that let go cleanly to wait for its person released its sessions first, so its lease goes now.

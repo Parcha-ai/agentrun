@@ -42,6 +42,9 @@ export type TimelineEvent = {
   /** `server` on the row of a message the server wrote into the run (origin.ts): a `phase` row, which counts, as a
    *  person's `user_message` does, as the message its turn took (`isMessageRow`). */
   origin?: "server";
+  /** `true` on an `error` row that is a spend cap's refusal for room (serve): the request was not sent and the run paused
+   *  for a raise; a pause, never a failure, whether the run waits on its cap now or was raised since. */
+  paused?: true;
   /** On the usage row, the run's cost. On a paid tool's charge row (a `phase` naming the tool), that charge alone. On a
    *  browser call's `tool_use` row, every browser charge booked under that call (BROWSER_CHARGE): its session's time
    *  since its last charge, and its release's when it was the session's last call. `requests` is 0 on all but the usage

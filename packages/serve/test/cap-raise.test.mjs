@@ -138,7 +138,8 @@ test("a raise sent while the paused run's process is still being let go is taken
   assert.deepEqual([raised.status, raised.body.resumed, typeof raised.body.message_id], [200, true, "string"], JSON.stringify(raised.body));
   assert.ok(processAlive(pid), "the raise was taken inside the let-go window");
   await sleep(500);
-  assert.equal(said((await follow(api, runId, SETTLED)).rows).length, 1, "no follow-up while the old process still holds the run");
+  const waiting = await follow(api, runId, ["queued"]);
+  assert.deepEqual([waiting.last.status, said(waiting.rows).length], ["queued", 1], "queued, and no follow-up while the old process still holds the run");
   await writeFile(gate, "");
   const { rows } = await follow(api, runId, ["completed", "failed", "cancelled"], { deadlineMs: 60_000 });
   const run = await view(api, runId);
@@ -331,7 +332,8 @@ test("a raise whose follow-up's process came up, then its server was killed befo
   await letGo(data, runId);
   // The raise is kept and answered; the follow-up's process, as it comes up, kills the server before the follow-up goes.
   await writeFile(kill, "");
-  const raised = await raise(first.api, runId, { max_cost_usd: 1 });
+  // No raise guard read after it (support.mjs raisedReadsQueued): the follow-up's process may kill this server first.
+  const raised = await first.api("PATCH", `/runs/${runId}`, { max_cost_usd: 1 }, {}, { raiseCheck: false });
   assert.deepEqual([raised.status, raised.body.resumed], [200, true], JSON.stringify(raised.body));
   if (first.child.exitCode === null && first.child.signalCode === null) await new Promise((resolve) => first.child.once("exit", resolve));
   for (let i = 0; !processAlive(holderPid(data, runId)); i++) {

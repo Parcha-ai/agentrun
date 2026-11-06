@@ -174,7 +174,7 @@ test("a capped pi run whose auto search is Parallel, under a cap just short of o
   const run = await research(api, "auto-capped", {}, { max_cost_usd: 0.0009 }, ["input_required", "completed"]);
   const paused = (await api("GET", `/runs/${run.runId}`)).body;
   assert.deepEqual([paused.status, paused.state, paused.pending?.kind, paused.pending?.needs_usd], ["input_required", "waiting", "budget", 0.001], JSON.stringify(paused));
-  assert.equal(run.results.web_search, JSON.stringify({ error: "spend_cap_reached: Not sent: the run has spent $0 of its $0.0009 cap, and Parallel's search could cost up to $0.001 (Parallel's list price for a fast search). Raise the cap to at least $0.01 to run it." }));
+  assert.equal(run.results.web_search, JSON.stringify({ error: "spend_cap_reached: Not sent: this run has spent $0 of its $0.0009 cap, and the next step, Parallel's search, could cost up to $0.001 (Parallel's list price for a fast search). Raise the cap to at least $0.01 to continue." }));
   const calls = await seen();
   assert.deepEqual([calls.parallel.slice(checked), calls.exa], [[], []], "nothing sent to Parallel, nor to Exa instead");
 });

@@ -35,7 +35,7 @@ describe("RunDetail, a run waiting on a question", () => {
 describe("RunDetail, a run paused at its spend cap", () => {
   const f = runFixture("run.input_required.waiting.1");
   // Words with no apostrophe: the page's markup escapes one (&#x27;), and these tests read its text as written.
-  const SAID = "Not sent: the run has spent $0.04 of its $0.05 cap, and its next faux-1 request needs at least $0.11. Raise the cap to at least $0.16 to run it.";
+  const SAID = "Not sent: this run has spent $0.04 of its $0.05 cap, and the next step needs at least $0.11. Raise the cap to at least $0.16 to continue.";
   const paused: Run = { ...f.run, pending: { kind: "budget", cap_usd: 0.05, spent_usd: 0, needs_usd: 0.1024, said: SAID, at: "2026-11-04T20:08:05.127Z" } };
   it("shows the cap's words in the banner and offers no composer: no answer, no follow-up", () => {
     const shown = page(paused, f.page.rows);
@@ -105,7 +105,7 @@ describe("RunDetail's Report tab before an answer", () => {
 
   it("a run paused at its spend cap says so, with what it spent of its cap from the served figures, and points at the raise above", () => {
     const f = runFixture("run.input_required.waiting.1");
-    const said = "Not sent: the run has spent $0.04 of its $0.05 cap.";
+    const said = "Not sent: this run has spent $0.04 of its $0.05 cap.";
     const paused = { ...f.run, pending: { kind: "budget", cap_usd: 0.05, spent_usd: 0.04, needs_usd: 0.1024, said, at: "2026-11-04T20:08:05.127Z" } } as Run;
     const shown = report(paused, f.page.rows);
     expect(shown).not.toContain(WRITING);

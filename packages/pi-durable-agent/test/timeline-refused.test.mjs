@@ -9,7 +9,7 @@ import { assistant, custom, user } from "./timeline-support.mjs";
 
 const rowsOf = (entries) => timelineOf(entries, { settled: true });
 const usageOf = (entries) => rowsOf(entries).find((row) => row.kind === "usage");
-const SAID = "Not sent: this run's cap of $0.05 can't cover one Model M request (at least $0.11). Raise the cap to at least $0.11 to run it.";
+const SAID = "Not sent: the next step needs at least $0.11, and this run's cap is $0.05. Raise the cap to at least $0.11 to continue.";
 const refusal = () => [
   custom(REQUEST_STARTED, { capRefused: true }),
   assistant([], 0, { stopReason: "error", errorMessage: `spend_cap_reached (out of budget): ${SAID}`, usage: { input: 0, output: 0, cost: { total: 0 } } }),

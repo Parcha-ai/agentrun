@@ -92,7 +92,7 @@ test("a saved monid key reaches only the runs that name monid, with no restart; 
   assert.deepEqual([pausedAt.status, pausedAt.state, pausedAt.pending?.kind, pausedAt.pending?.needs_usd], ["input_required", "waiting", "budget", 1], JSON.stringify(pausedAt));
   const result = ended.rows.find((row) => row.kind === "tool_result" && row.tool_name === "monid_run");
   assert.equal(result?.tool_status, "failed", JSON.stringify(result));
-  assert.match(result.tool_result_preview, /spend_cap_reached: Not sent: the run has spent \$0(\.001)?( and holds \$0\.001 for calls still answering)? of its \$0\.001 cap, and monid_run could cost up to \$1 \(no monid_inspect in this run quoted its price, so it is held at the \$1 allowance; monid_inspect gives its quote\)\. Raise the cap to at least \$1\.01 to run it\./);
+  assert.match(result.tool_result_preview, /spend_cap_reached: Not sent: this run has spent \$0 of its \$0\.001 cap, and the next step, monid_run, could cost up to \$1 \(no price was quoted for it in this run, so it counts at the \$1 allowance; monid_inspect gives its price\)\. Raise the cap to at least \$1\.01 to continue\./);
   assert.equal(sent().length, before, "monid saw no request");
   assert.deepEqual([...entries(data, capped.body.run_id, "agentrun.tool_started"), ...entries(data, capped.body.run_id, "agentrun.tool_cost")], [], "nothing marked or charged");
 

@@ -288,7 +288,7 @@ test("a capped run on a model named as OpenRouter names it (dotted) is held to i
   const ended = (await api("GET", `/runs/${run.body.run_id}`)).body;
   assert.deepEqual([ended.status, ended.state, ended.error, ended.pending?.kind], ["input_required", "waiting", null, "budget"], JSON.stringify(ended));
   // Named as the catalog shows it, and nothing spent or held: the cap to raise to is the least.
-  const words = /^Not sent: this run's cap of \$0\.001 can't cover one Claude Haiku 4\.5 \(latest\) request \(at least \$(\d+\.\d\d)\)\. Raise the cap to at least \$(\d+\.\d\d) to run it\.$/.exec(ended.pending.said);
+  const words = /^Not sent: the next step needs at least \$(\d+\.\d\d), and this run's cap is \$0\.001\. Raise the cap to at least \$(\d+\.\d\d) to continue\.$/.exec(ended.pending.said);
   assert.ok(words, ended.pending.said);
   assert.equal(words[2], words[1]);
   assert.ok(Number(words[1]) >= 0.00512, `the least covers the answer's 1,024 tokens: $${words[1]}`);

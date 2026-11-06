@@ -165,6 +165,9 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     retireNote: async (id: string, file: string, etag: string) => asNote(await callTagged<string>("POST", `${note(id, file)}/retire`, { body: {}, headers: { ...noteAccept, "if-match": etag }, text: true })),
     /** Approves a note that waits for the owner's OK, so later runs read it; 412 when it changed since `etag`. */
     approveNote: async (id: string, file: string, etag: string) => asNote(await callTagged<string>("POST", `${note(id, file)}/approve`, { body: {}, headers: { ...noteAccept, "if-match": etag }, text: true })),
+    /** A retired note, skill (its SKILL.md) or draft (its README.md) made active again, on version `etag`: the owner's
+     *  session only, and checked again as a new one is (POST …/learning/files/{file}/restore). */
+    restoreNote: async (id: string, file: string, etag: string) => asNote(await callTagged<string>("POST", `${note(id, file)}/restore`, { body: {}, headers: { ...noteAccept, "if-match": etag }, text: true })),
     getRun: (id: string) => call<Run>("GET", run(id)),
     /** What the run's learning changed in its agent's notes, file by file (each with its patch, or why it is withheld). */
     runLearningDiff: (id: string) => call<LearningDiff>("GET", `${run(id)}/learning/diff`),
