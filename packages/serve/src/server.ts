@@ -2145,8 +2145,11 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     const raw = (req.url ?? "/").split("?")[0]!;
     const viewing = LIVE_PATH.exec(raw);
     const deny = (status: string) => void socket.end(`HTTP/1.1 ${status}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
+    // On loopback, the Host check every route gets (host-check.ts), first: a page that rebound a name of its own to this
+    // address sends its own name as Origin too, which the Origin check below would take, so its Host is what gives it
+    // away. Its name alone, on any port, as the HTTP routes check it.
+    if (names && !names.has(hostName(req.headers.host) ?? "")) return deny("403 Forbidden");
     if (!viewing || !ID.test(viewing[1]!) || !/^\/v\/[A-Za-z0-9_-]{22}\/ws$/.test(viewing[2]!)) return deny("404 Not Found");
-    if (names && !names.has(String(req.headers.host ?? "").toLowerCase())) return deny("403 Forbidden");
     // A browser always sends its page's origin on a WebSocket, which no other page's script can forge: this server's own
     // (as this request reaches it, or its public address, which a TLS proxy that rewrites Host or drops
     // X-Forwarded-Proto leaves as the only one the owner's page has), and the owner signed in, or nothing.

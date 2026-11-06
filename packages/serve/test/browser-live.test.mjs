@@ -205,6 +205,25 @@ test("a run's process that dies without letting its sessions go takes its hand-o
   assert.equal((await liveWs(w, `/v2/runs/${w.runId}/browser/live/v/${handed.id}/ws`)).status, 404);
 });
 
+test("the viewer's WebSocket gets the Host check every route gets (host-check.ts): a page that rebound a name of its own to this address is refused, whatever its Origin and cookie; this machine's names on any port (a tunnel) and an --allow-host name are taken", { timeout: 120_000 }, async (t) => {
+  const w = await watched(t, { allowHosts: ["agents.internal"] });
+  const handed = JSON.parse(readFileSync(w.file, "utf8"));
+  const wsPath = `/v2/runs/${w.runId}/browser/live/v/${handed.id}/ws`;
+  const at = (name) => ({ origin: `http://${name}`, headers: { host: name } });
+  // A rebinding page: its Origin is its own name, which this server's Origin check would take; its Host is what gives it away.
+  assert.equal((await liveWs(w, wsPath, at(`rebound.example:${w.server.port}`))).status, 403, "a rebound name");
+  assert.equal((await liveWs(w, "/v2/runs/whatever", at(`rebound.example:${w.server.port}`))).status, 403, "refused before anything else about it");
+  for (const name of [`localhost:${w.server.port + 1}`, `127.0.0.1:${w.server.port}`, `agents.internal:${w.server.port}`]) {
+    const taken = await liveWs(w, wsPath, at(name));
+    assert.equal(taken.status, 101, name);
+    taken.ws.sendJson({ type: "hello", token: handed.token });
+    assert.equal(JSON.parse((await taken.ws.next(5_000)).data).type, "ready", name);
+    taken.ws.destroy();
+    // One viewer at a time: the next waits for this one's socket to close.
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  }
+});
+
 test("behind a TLS proxy that rewrites Host or drops X-Forwarded-Proto, the owner's WebSocket from the server's public address is taken; another origin still is not", { timeout: 120_000 }, async (t) => {
   const w = await watched(t, { publicUrl: "https://agent.example.com" });
   const handed = JSON.parse(readFileSync(w.file, "utf8"));
