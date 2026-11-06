@@ -375,9 +375,16 @@ full provider  network-switch network-open network-allow    ✓ 3 - 1
 core PASS 52/52 · full 5/6 · network:allow not declared
 ```
 
-A module path is resolved from the directory npm was run in. It exits 0 when Core passes, 1 when it fails, and 2 on a usage error; `--json` prints the report object
-(`{ provider, providerVersion, image, daemon: { version, arch }, results: [{ id, level, group, status, reason? }], core,
-undeclared, cleanup }`). A failure is listed under its line with what the case found.
+A module path is resolved from the directory npm was run in. It exits 0 when Core passes, 1 when it fails, 2 on a
+usage error, and 3 on a partial run; `--json` prints the report object (`{ provider, providerVersion, image, daemon: {
+version, arch }, only?, coreNotRun?, results: [{ id, level, group, status, reason? }], core, undeclared, cleanup }`). A
+failure is listed under its line with what the case found.
+
+`--only` that leaves any Core case out is a partial run: `core` is `"partial"` when every case that ran passed (a
+skipped Core case is not a pass) and nothing was left behind, else `"fail"`; `coreNotRun` names the Core cases that did
+not run, the text report lists them on a `core not run` line, and the verdict reads `core PARTIAL 9/9 · 43 Core cases
+not run`, never PASS. A partial run exits 3, so a script that checks for 0 never takes a subset for a Core pass. An
+`--only` that names every Core case is a whole run, and can pass.
 
 What a provider module implements:
 

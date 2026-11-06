@@ -78,7 +78,7 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 		providerVersion: provider.version,
 		image,
 		daemon: null,
-		...(only === undefined ? {} : { only }),
+		...(only === undefined ? {} : { only, coreNotRun: cases.filter((c) => c.level === "core" && !selected.includes(c)).map((c) => c.id) }),
 		results: [],
 		core: "fail",
 		undeclared: [],
@@ -384,7 +384,9 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 	}
 	const core = report.results.filter((r) => r.level === "core");
 	const clean = report.cleanup.left.length === 0 && report.cleanup.errors.length === 0;
-	report.core = core.length > 0 && core.every((r) => r.status === "pass") && clean ? "pass" : "fail";
+	const corePassed = core.every((r) => r.status === "pass") && clean;
+	if ((report.coreNotRun ?? []).length === 0) report.core = core.length > 0 && corePassed ? "pass" : "fail";
+	else report.core = corePassed && report.results.every((r) => r.status !== "fail") ? "partial" : "fail";
 	return report;
 }
 

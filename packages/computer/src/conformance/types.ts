@@ -116,9 +116,15 @@ export interface ConformanceReport {
 	daemon: { version: string; arch: string } | null;
 	/** The groups or case ids the run was limited to, when it was. */
 	only?: string[];
+	/** When only was given: the Core cases it left out, which did not run. */
+	coreNotRun?: string[];
 	results: CaseResult[];
-	/** pass when every Core case ran and passed, and the run left no computer behind. */
-	core: "pass" | "fail";
+	/**
+	 * pass when every Core case ran and passed, and the run left no computer behind. partial when only left Core cases
+	 * out and every case that ran passed (a Core case skipped is not a pass), with nothing left behind: no Core verdict.
+	 * fail otherwise.
+	 */
+	core: "pass" | "partial" | "fail";
 	/** Capabilities Full cases needed that the provider or the daemon does not declare. */
 	undeclared: Capability[];
 	/**
