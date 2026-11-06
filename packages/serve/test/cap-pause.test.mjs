@@ -14,7 +14,7 @@ const OUTPUT_PRICED = new URL("./fixtures/faux-output-priced.mjs", import.meta.u
 /** Where a run stands once its first turn is over: paused, failed or completed. */
 const SETTLED = ["input_required", "completed", "failed", "cancelled"];
 const view = async (api, runId) => (await api("GET", `/runs/${runId}`)).body;
-const CANT_COVER = /^Not sent: this run's cap of \$0\.05 can't cover one \S+ request \(at least \$0\.11\)\. Raise the cap to at least \$0\.11 to run it\.$/;
+const CANT_COVER = /^Not sent: the next step needs at least \$0\.11, and this run's cap is \$0\.05\. Raise the cap to at least \$0\.11 to continue\.$/;
 
 async function paused(api, id) {
   assert.equal((await api("POST", "/agents", agent(id))).status, 201);
@@ -36,7 +36,7 @@ test("pi: a run whose cap cannot buy its next request's least pauses, the reques
   // Its last rows but the usage line: the refusal, then the pause.
   const shown = rows.filter((row) => row.kind !== "usage" && row.kind !== "phase");
   const last = shown.at(-1);
-  assert.deepEqual([last.kind, last.summary.startsWith("Paused at the run's $0.05 cap: Not sent: this run's cap of $0.05 can't cover one ")], ["waiting", true], JSON.stringify(last));
+  assert.deepEqual([last.kind, last.summary, last.text], ["waiting", "Waiting for you to raise the cap", "Waiting for you to raise the cap"], JSON.stringify(last));
   assert.equal(shown.at(-2).kind, "error", "after the refusal's own row");
   assert.equal(run.cost.usd, 0, "nothing was sent");
 });

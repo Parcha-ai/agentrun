@@ -178,7 +178,7 @@ test("a priced call is marked at its price, sent and booked at it; over the run'
   useSpend({ cap: 0.04, spent: () => spent, add: (usd) => void (spent += usd) });
   const refused = await gateway.call("fake", "paid", { query: "ada" }, { signal: signal(), callId: "c1" });
   assert.equal(refused.isError, true);
-  assert.match(textOf(refused), /^spend_cap_reached: Not sent: the run has spent \$0 of its \$0\.04 cap, and mcp:fake\/paid could cost up to \$0\.05 \(the price its owner set for mcp:fake\/paid\)/);
+  assert.match(textOf(refused), /^spend_cap_reached: Not sent: this run has spent \$0 of its \$0\.04 cap, and the next step, mcp:fake\/paid, could cost up to \$0\.05 \(the price its owner set for mcp:fake\/paid\)/);
   assert.deepEqual(entries, [], "no mark: nothing was sent");
   useSpend({ cap: 1, spent: () => spent, add: (usd) => void (spent += usd) });
   assert.equal(textOf(await gateway.call("fake", "paid", { query: "ada" }, { signal: signal(), callId: "c2" })), "paid for ada");
@@ -242,7 +242,7 @@ test("a tool named like an object's own property (__proto__) keeps its price: pi
   const gateway = mcpGateway({ pin: JSON.parse(JSON.stringify({ fake: { url: fake.url, tools: listed, prices: pin.fake.prices } })), credentials: { fake: { url: fake.url, headers: { authorization: `Bearer ${TOKEN}` } } }, work: () => tmpdir(), commit });
   let spent = 0;
   useSpend({ cap: 0.04, spent: () => spent, add: (usd) => void (spent += usd) });
-  assert.match(textOf(await gateway.call("fake", "__proto__", {}, { signal: signal(), callId: "c1" })), /^spend_cap_reached: Not sent: the run has spent \$0 of its \$0\.04 cap, and mcp:fake\/__proto__ could cost up to \$0\.05/);
+  assert.match(textOf(await gateway.call("fake", "__proto__", {}, { signal: signal(), callId: "c1" })), /^spend_cap_reached: Not sent: this run has spent \$0 of its \$0\.04 cap, and the next step, mcp:fake\/__proto__, could cost up to \$0\.05/);
   useSpend({ cap: 1, spent: () => spent, add: (usd) => void (spent += usd) });
   // The call leaves (the fake answers it has no such tool): booked at its price, whatever it answers.
   await gateway.call("fake", "__proto__", {}, { signal: signal(), callId: "c2" });
