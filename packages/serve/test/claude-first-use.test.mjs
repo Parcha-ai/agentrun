@@ -5,7 +5,7 @@
 // CLI is the pinned binary itself, so a run that starts is a real Claude run against a fake Anthropic endpoint.
 import assert from "node:assert/strict";
 import { execFile, execFileSync, spawn } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -15,6 +15,8 @@ import { after, test } from "node:test";
 import { claudeAgentExecutable, CLAUDE_AGENT_SDK_VERSION } from "@parcha/agentrun-harness-claude";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
 import { agent, client, follow, scratch, serve } from "./support.mjs";
+import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
+import { startFakeOAuth } from "./fixtures/fake-oauth-server.mjs";
 
 const SDK = "@anthropic-ai/claude-agent-sdk";
 const PIN = "0.3.286";
@@ -305,6 +307,36 @@ test("while it installs, the run reads \"Installing Claude Code (first use)…\"
     assert.ok(!rows.some((r) => r.summary === INSTALLING), "the install's row goes once it is installed");
   }
   assert.equal(registry.tarballs().length, 1, "still one install");
+});
+
+test("a launch that waited for the install refreshes its MCP OAuth tokens again just before it starts, as its wait may have outlived them", { timeout: 300_000, skip }, async (t) => {
+  let letGo;
+  const hold = new Promise((resolve) => (letGo = resolve));
+  t.after(() => letGo());
+  const registry = await fakeRegistry(t, { hold });
+  const anthropic = await anthropicEndpoint(t);
+  await firstUseEnv(t, registry, anthropic.fake);
+  process.env.AGENTRUN_SEAL_KEY = randomBytes(32).toString("base64");
+  const { api } = await firstUseServe(t, registry);
+  // Every access token is within a launch's refresh margin (a minute left): each launch refreshes.
+  const as = await startFakeOAuth({ expiresIn: 60 });
+  const mcp = await startFakeMcp({ token: as.accepts, oauth: as.issuer });
+  t.after(() => Promise.all([as.close(), mcp.close()]));
+  const started = await api("POST", "/settings/mcp-servers/docs/oauth/start", { url: mcp.url });
+  assert.equal(started.status, 200, JSON.stringify(started.body));
+  const asked = await fetch(started.body.authorization_url, { redirect: "manual" });
+  const back = await fetch(asked.headers.get("location"), { redirect: "manual", headers: { cookie: started.headers.get("set-cookie")?.split(";")[0] ?? "" } });
+  assert.equal(back.headers.get("location"), "/#/settings/mcp?server=docs&sign_in=ok");
+  assert.equal((await api("POST", "/agents", agent("claude-docs", { harness: "claude-agent", model: `anthropic/${MODEL}`, tools: ["mcp:docs/add"], tool_settings: { "mcp:docs/*": { permission: "allow" } } }))).status, 201);
+  const refreshes = () => as.log.filter((entry) => entry.form.grant_type === "refresh_token").length;
+  const run = await api("POST", "/agents/claude-docs/runs", { input: { content: "Say hello." } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  await until("the run waits for the install", async () => (await api("GET", `/runs/${run.body.run_id}/timeline`)).body.rows?.some((r) => r.kind === "phase" && r.summary === INSTALLING), 60_000);
+  const before = refreshes();
+  letGo();
+  const { last } = await follow(api, run.body.run_id, ["completed", "failed"], { deadlineMs: 240_000 });
+  assert.equal(last.status, "completed");
+  assert.ok(refreshes() > before, `the launch after the install refreshed again (${before} refreshes before the install ended, ${refreshes()} after)`);
 });
 
 test("capabilities say claude-agent installs on first use until it is installed", { timeout: 300_000, skip }, async (t) => {

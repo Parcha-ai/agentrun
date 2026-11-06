@@ -77,26 +77,18 @@ test("a risky rule the run worked out itself waits for the owner too: the grader
   assert.ok(!existsSync(join(copyOf(data, next), "paperdepot24-first.md")), "its copy holds no pending note");
 });
 
-test("a fact the user asked to remember is kept though the grader drops it as one shop's policy: General never drops a note with the user's origin, and as the grader asked it nothing else it is merged pending with the user's origin, in no MEMORY.md and no later run's copy", { timeout: 150_000 }, async (t) => {
+test("a one-off the user asked to keep, dropped by the grader on General, is dropped: never held for their OK, never merged", { timeout: 120_000 }, async (t) => {
   withEnv(t, {}, ["AGENTRUN_TEST_FAUX_GRADE_HOLD", "AGENTRUN_TEST_FAUX_CALLS", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_STRONG", "AGENTRUN_SERVE_GRADE_MODEL"]);
   const { api, data } = await serve(t, { learning: "on", faux: LEARN });
-  const LIMIT = note("Refund limit", "When a refund needs a manager", "Refunds above $250 need a manager's approval.\n");
-  await made(api, learner("shop", { instructions: "Answer the question.\nGrade: shop refund-limit.md.", plan: [["refund-limit.md", LIMIT]], once: true }));
-  const runId = await started(api, "shop", "Our refund limit is $250, above it a manager approves. Remember this.");
+  const ONCE = note("Acme outage", "This week's report", "For this week's report only, mention the Acme outage on Tuesday.\n");
+  await made(api, learner("shop", { instructions: "Answer the question.\nGrade: shop acme-outage.md.", plan: [["acme-outage.md", ONCE]], once: true }));
+  const runId = await started(api, "shop", "For this week's report only, mention the Acme outage on Tuesday. Remember this.");
   const { view, rows } = await ended(api, runId);
-  settled(view, rows, "merged");
-  assert.deepEqual(view.learning.pending, [{ file: "refund-limit.md", name: "Refund limit" }], "it is kept, and waits");
+  settled(view, rows, "dropped", "grader");
   const { learning } = await savedOf(data, runId);
-  assert.equal(learning.verdict.merge, true);
-  assert.deepEqual(learning.verdict.items, [{ file: "refund-limit.md", keep: true, pending: true, origin: "you", why: "The user asked to remember it, so it passes General; the grader asked it no other question, so it waits for the user's OK." }]);
-  const repo = repoOf(data, "shop");
-  const held = git(repo, ["show", "main:refund-limit.md"]);
-  assert.match(held, /\norigin: you\n/);
-  assert.match(held, /\nstatus: pending\n---\n/);
-  assert.ok(!git(repo, ["ls-tree", "-r", "--name-only", "main"]).includes("MEMORY.md") || !git(repo, ["show", "main:MEMORY.md"]).includes("refund-limit"), "no index names it");
-  const next = await started(api, "shop");
-  await ended(api, next);
-  assert.ok(!existsSync(join(copyOf(data, next), "refund-limit.md")), "its copy holds no pending note");
+  assert.equal(learning.verdict.merge, false);
+  assert.deepEqual(learning.verdict.items.map(({ file, keep, pending }) => ({ file, keep, pending })), [{ file: "acme-outage.md", keep: false, pending: undefined }]);
+  assert.ok(!git(repoOf(data, "shop"), ["ls-tree", "-r", "--name-only", "main"]).includes("acme-outage.md"), "nothing on main");
 });
 
 test("a note a run proposes at the largest it may, kept from the user's words or held for the OK, can still be retired by a person and superseded by a later run: the host's own lines never push a note on main past the note cap", { timeout: 240_000 }, async (t) => {

@@ -6,7 +6,7 @@
 // the owner's only. Read again, it imports only the sessions it has not.
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync, type Stats } from "node:fs";
-import { chmod, lstat, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, lstat, readFile, realpath, rename, rm, stat } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, sep } from "node:path";
 import { parseArgs } from "node:util";
@@ -15,7 +15,7 @@ import { AssistantEntry, createRegistry, Harness, ROOT_CONVERSATION_ID, ToolResu
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { type AgentStore, type AgentStoreReader, type NewRevision, openStore, openStoreReader, type Revision, STORE_FILE, type StoredMetrics } from "@parcha/pi-durable-agent";
 import { type EntryLike, REQUEST_COST, type RunMetrics, runMetricsOf } from "@parcha/pi-durable-agent/timeline";
-import { DOOR_TOKEN_FILE, defaultData, readJson, RUN_META, TOKEN_FILE } from "./files.js";
+import { DOOR_TOKEN_FILE, defaultData, readJson, RUN_META, TOKEN_FILE, writeDurable } from "./files.js";
 import { childFiles, HARNESS_OF, mostEffortOf, readSession, type Session, SOURCES, type Source, sessionFiles, type Turn } from "./import-sources.js";
 import { type Found, foundIn, hoursOf, summaryLines } from "./import-summary.js";
 import { catalogPrices, type Listed } from "./model.js";
@@ -862,8 +862,8 @@ async function writeMeta(dir: string, session: Session, read: SourceFile, json: 
     input: { content: session.firstPrompt ?? "" },
   }) as Record<string, unknown>;
   const metaPath = join(dir, RUN_META);
-  await writeFile(metaPath, `${JSON.stringify({ ...meta, source_file: read })}\n`, { mode: 0o600 });
-  await chmod(metaPath, 0o600);
+  // Whole or not there: a server that runs beside this import reads its runs' serve.json files.
+  await writeDurable(metaPath, `${JSON.stringify({ ...meta, source_file: read })}\n`, 0o600, undefined, true);
 }
 
 /** The secrets this server made and keeps in data directory `data`, by value: its API token (`ar_local_...`) and its
