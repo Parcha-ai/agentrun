@@ -1580,6 +1580,10 @@ function siftKeysOf(workflow: Workflow | undefined): ReadonlySet<string> {
 function markEvidence(value: unknown, siftKeys: ReadonlySet<string>, depth = 0): unknown {
   if (depth > 64 || !value || typeof value !== "object") return value;
   if (Array.isArray(value)) return value.map((v) => markEvidence(v, siftKeys, depth + 1));
+  // Only a plain object is walked and rebuilt. Any other object (a Date, a class with toJSON, a Map) is returned as it
+  // is, so JSON.stringify sends it exactly as before; the engine writes evidence only into plain objects.
+  const proto = Object.getPrototypeOf(value);
+  if (proto !== Object.prototype && proto !== null) return value;
   return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, v]) => {
     if (key.endsWith("$answers")) return [key, untrustedEvidence(markEvidence(v, siftKeys, depth + 1))];
     const inner = markEvidence(v, siftKeys, depth + 1);
