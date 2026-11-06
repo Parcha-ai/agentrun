@@ -132,7 +132,8 @@ export function mcpRoute(mcp: SessionMcp, options: McpRouteOptions = {}): McpHan
       running.delete(key);
     }
     if (res.destroyed) return;
-    const body = { jsonrpc: "2.0", id, result };
+    // What the client reads of the answer: its content, and whether it failed (never the host's `parked`).
+    const body = { jsonrpc: "2.0", id, result: { content: result.content, ...(result.isError ? { isError: true } : {}) } };
     if (!stream) return json(res, 200, body);
     send(body);
     res.end();

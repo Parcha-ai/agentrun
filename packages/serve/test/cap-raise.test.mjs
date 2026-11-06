@@ -222,6 +222,38 @@ test("a raise taken, then the server killed before its follow-up went: the next 
     db.close();
   }
 });
+test("the same, with every launch path slow where it refreshes a run's MCP OAuth tokens: the next server still sends the follow-up once, and the run completes", { timeout: 150_000 }, async (t) => {
+  const data = join(await scratch(t), "agents");
+  const gate = join(await scratch(t), "exit");
+  const first = await serverProcess(data, { EXIT_GATE: gate });
+  t.after(() => first.child.kill("SIGKILL"));
+  const runId = await paused(first.api, "crashed");
+  const pid = holderPid(data, runId);
+  assert.ok(processAlive(pid), "the paused process is held, so the follow-up waits");
+  const raised = await raise(first.api, runId, { max_cost_usd: 1 });
+  assert.deepEqual([raised.status, raised.body.resumed], [200, true], JSON.stringify(raised.body));
+  first.child.kill("SIGKILL");
+  await new Promise((resolve) => first.child.once("exit", resolve));
+  // The old run process lets go once its gate opens; the next server finds the raise taken and its follow-up not sent.
+  await writeFile(gate, "");
+  await letGo(data, runId);
+  // As an authorization server slow to answer makes it (runs.ts mcpFresh): the launch the follow-up makes waits there.
+  withEnv(t, { AGENTRUN_SERVE_TEST_REFRESH_DELAY_MS: "1" });
+  const next = await startServe({ data, port: 0, faux: SLOW_EXIT, drainTimeout: "5s" });
+  t.after(() => next.close());
+  const api = client(next.baseUrl, next.token);
+  const { rows } = await follow(api, runId, ["completed", "failed", "cancelled"], { deadlineMs: 60_000 });
+  assert.deepEqual([(await view(api, runId)).status, said(rows)], ["completed", ["Write one.md", CONTINUE("$1")]], "one follow-up across the restart");
+  const again = await raise(api, runId, { max_cost_usd: 1 });
+  assert.equal(again.status, 409, `an ended run takes no raise: ${JSON.stringify(again.body)}`);
+  const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true, timeout: 5_000 });
+  try {
+    const marks = db.prepare("SELECT record FROM entries ORDER BY id").all().map((row) => JSON.parse(row.record)).filter((entry) => entry.kind === REQUEST_STARTED && entry.data?.capRefused === true);
+    assert.equal(marks.length, 1, "one refusal booked, never a second");
+  } finally {
+    db.close();
+  }
+});
 
 test("a paused run's pending suggests a raise, spent + 10 × the refused request's least rounded up to a whole dollar and above its cap, and PATCHing it resumes the run", { timeout: 120_000 }, async (t) => {
   const { api } = await serve(t, { faux: OUTPUT_PRICED });
