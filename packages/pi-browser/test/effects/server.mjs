@@ -13,11 +13,14 @@ export async function startServer() {
   const held = new Set();
   const waiting = [];
   const watchers = [];
+  /** By path, how many more preflights (OPTIONS) to cut before answering: the browser then drops the request it precedes. */
+  const cutPreflights = new Map();
   let port = 0;
   const server = http.createServer((req, res) => {
     let url = null;
     try { url = new URL(req.url, "http://x"); } catch {}
     if (!url || !PATHS.has(url.pathname)) { req.resume(); res.writeHead(404); return res.end(); }
+    if (req.method === "OPTIONS" && (cutPreflights.get(url.pathname) ?? 0) > 0) { cutPreflights.set(url.pathname, cutPreflights.get(url.pathname) - 1); return req.socket.destroy(); }
     req.resume();
     req.on("end", () => {
       const key = `${req.method} ${url.pathname}`;
@@ -41,6 +44,7 @@ export async function startServer() {
     }),
     reset: () => counts.clear(),
     hold: (path) => held.add(path),
+    cutPreflights: (path, n) => cutPreflights.set(path, n),
     release: () => { held.clear(); for (const answer of waiting.splice(0)) answer(); },
     close: () => new Promise((resolve) => { held.clear(); waiting.length = 0; server.closeAllConnections?.(); server.close(() => resolve()); }),
   };
