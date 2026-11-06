@@ -15,10 +15,8 @@ type NodeView = { status: GraphNodeStatus; startedAt?: string; endedAt?: string;
 
 export type GraphInput = {
   run: { id: string; agent: string; revision: string; status: string; paused: boolean; startedAt: string; endedAt: string | null };
-  /** The run has ended: a node it never reached is `not_run`, not `pending`, and its store is read. */
+  /** The run has ended: a node it never reached is `not_run`, not `pending`, and its store is read, lock-free. */
   ended: boolean;
-  /** Read the live view even though the run ended: its store was busy. */
-  liveOnly?: boolean;
   workflow: unknown;
   storeFile: string;
   /** The run's directory: its node log is there. */
@@ -60,9 +58,10 @@ export async function runGraph(given: GraphInput) {
   let pin: Frame;
   let receipts: Array<Record<string, unknown>>;
   let readAt = new Date().toISOString();
-  if (given.ended && !given.liveOnly) {
-    view = await readWorkflowRun({ runId: id, storePath: given.storeFile, revision: { body: { workflow: given.workflow } } as never });
-    pin = ((readJournal(given.storeFile, id)?.state as { pin?: Frame } | undefined)?.pin) ?? {};
+  if (given.ended) {
+    // Lock-free, as every server read of a run's database (run-db.ts): nothing made beside it, never a lock to wait on.
+    view = await readWorkflowRun({ runId: id, storePath: given.storeFile, revision: { body: { workflow: given.workflow } } as never }, { unlocked: true });
+    pin = ((readJournal(given.storeFile, id, { unlocked: true })?.state as { pin?: Frame } | undefined)?.pin) ?? {};
     receipts = durableDecisions(given.storeFile, { unlocked: true });
   } else {
     const live = await readLiveView(given.root);

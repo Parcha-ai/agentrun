@@ -281,9 +281,10 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   const loadImage = imageLoader(where.work);
   const log = nodeLog(where.root);
   // The receipts earlier processes recorded, read before this one opens the store, which then holds it exclusively.
+  // Lock-free, as the server reads it: nothing made beside the store (a plain read leaves a -shm there).
   const earlier = await (async () => {
     try {
-      return durableDecisions(join(where.store, RUN_STORE_FILE));
+      return durableDecisions(join(where.store, RUN_STORE_FILE), { unlocked: true });
     } catch {
       return (await readLiveView(where.root))?.receipts ?? [];
     }

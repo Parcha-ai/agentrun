@@ -154,8 +154,7 @@ test("a workflow with code, pdf_pages and llm calls runs on serve; its graph sho
   const run = (await api("GET", `/runs/${id}`)).body;
   assert.deepEqual(run.result.output.count, 3);
   graph = (await api("GET", `/runs/${id}/graph`)).body;
-  assert.deepEqual(Object.keys(graph).sort(), ["decisions", "effects", "graph", "nodes", "read_at", "run", "stale", "totals", "workflow"]);
-  assert.equal(graph.stale, false);
+  assert.deepEqual(Object.keys(graph).sort(), ["decisions", "effects", "graph", "nodes", "read_at", "run", "totals", "workflow"]);
   assert.deepEqual(Object.keys(graph.run).sort(), ["agent", "endedAt", "id", "paused", "revision", "startedAt", "status"]);
   assert.equal(graph.run.status, "completed");
   assert.deepEqual(graph.nodes["/root/steps/0"].items.map((i) => i.status), ["done", "done", "done"]);
@@ -218,10 +217,9 @@ test("a run's graph reads while it goes and while it is paused mid-map at maxCon
     const started = Date.now();
     const answer = await api("GET", `/runs/${id}/graph`);
     assert.equal(answer.status, 200, JSON.stringify(answer.body));
-    assert.equal(answer.body.stale, false, "read live, not from a cache");
-    // A read that waited on the paused run's store would wait until the resume, which comes only after these reads; one that
-    // met a busy store answers at once, marked stale (asserted above). So the bound only has to clear a slow runner: CI's
-    // slowest read was 2.6 s (F30, a merge-queue run on 11-05), against 1 s before.
+    // A read that waited on the paused run's store would wait until the resume, which comes only after these reads; the
+    // graph reads it lock-free, so it never waits. The bound only has to clear a slow runner: CI's slowest read was 2.6 s
+    // (F30, a merge-queue run on 11-05), against 1 s before.
     assert.ok(Date.now() - started < READ_BOUND_MS, `the graph answered in ${Date.now() - started} ms`);
     return answer.body;
   };
