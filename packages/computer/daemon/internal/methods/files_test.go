@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -184,6 +185,13 @@ type readResult struct {
 	Size int64  `json:"size"`
 }
 
+// write makes a file with exactly perm, whatever the umask.
+func write(t *testing.T, path string, data []byte, perm os.FileMode) {
+	t.Helper()
+	must(t, os.WriteFile(path, data, perm))
+	must(t, os.Chmod(path, perm))
+}
+
 func must(t *testing.T, err error) {
 	t.Helper()
 	if err != nil {
@@ -232,6 +240,10 @@ func TestWriteReadAndStat(t *testing.T) {
 		t.Fatalf("stat of a dir %+v", dirStat)
 	}
 	c.fails("files.read", map[string]any{"path": dir}, "is_dir")
+	c.fails("files.write", map[string]any{"path": dir, "data": ""}, "is_dir")
+	must(t, syscall.Mkfifo(filepath.Join(dir, "fifo"), 0o600))
+	c.fails("files.read", map[string]any{"path": filepath.Join(dir, "fifo")}, "invalid")
+	c.fails("files.write", map[string]any{"path": filepath.Join(dir, "fifo"), "data": ""}, "invalid")
 	c.fails("files.write", map[string]any{"path": filepath.Join(dir, "no", "such", "f"), "data": []byte("x")}, "not_found")
 	c.ok("files.write", map[string]any{"path": filepath.Join(dir, "made", "deep", "f"), "data": []byte("x"), "parents": true}, &wrote)
 }
@@ -239,13 +251,14 @@ func TestWriteReadAndStat(t *testing.T) {
 func TestStatOfASymlink(t *testing.T) {
 	c := dial(t)
 	dir := t.TempDir()
-	must(t, os.WriteFile(filepath.Join(dir, "real"), []byte("12345"), 0o600))
+	write(t, filepath.Join(dir, "real"), []byte("12345"), 0o600)
 	must(t, os.Symlink("real", filepath.Join(dir, "link")))
 	var stat entry
 	c.ok("files.stat", map[string]any{"path": filepath.Join(dir, "link")}, &stat)
 	if stat.Type != "symlink" || stat.Target != "real" {
 		t.Fatalf("lstat %+v", stat)
 	}
+	stat = entry{}
 	c.ok("files.stat", map[string]any{"path": filepath.Join(dir, "link"), "follow": true}, &stat)
 	if stat.Type != "file" || stat.Size != 5 || stat.Mode != 0o600 || stat.Target != "" {
 		t.Fatalf("stat followed %+v", stat)
@@ -379,8 +392,8 @@ func TestListDepth(t *testing.T) {
 	c := dial(t)
 	root := t.TempDir()
 	must(t, os.MkdirAll(filepath.Join(root, "a", "b", "c"), 0o755))
-	must(t, os.WriteFile(filepath.Join(root, "a", "b", "f"), []byte("f"), 0o644))
-	must(t, os.WriteFile(filepath.Join(root, "top"), []byte("top"), 0o755))
+	write(t, filepath.Join(root, "a", "b", "f"), []byte("f"), 0o644)
+	write(t, filepath.Join(root, "top"), []byte("top"), 0o755)
 	must(t, os.Symlink("a/b", filepath.Join(root, "link")))
 	var list struct {
 		Entries   []entry
@@ -421,7 +434,7 @@ func TestListCapAndOffset(t *testing.T) {
 	root := t.TempDir()
 	const total = 2345
 	for i := range total {
-		must(t, os.WriteFile(filepath.Join(root, fmt.Sprintf("f%05d", i)), nil, 0o644))
+		write(t, filepath.Join(root, fmt.Sprintf("f%05d", i)), nil, 0o644)
 	}
 	var seen []string
 	for page := 0; ; page++ {
@@ -460,15 +473,15 @@ func TestMkdir(t *testing.T) {
 	if c.ok("files.stat", map[string]any{"path": filepath.Join(root, "x", "y", "z")}, &stat); stat.Type != "dir" || stat.Mode != 0o755 {
 		t.Fatalf("mkdir parents %+v", stat)
 	}
-	must(t, os.WriteFile(filepath.Join(root, "file"), nil, 0o644))
+	write(t, filepath.Join(root, "file"), nil, 0o644)
 	c.fails("files.mkdir", map[string]any{"path": filepath.Join(root, "file"), "parents": true}, "exists")
 }
 
 func TestMove(t *testing.T) {
 	c := dial(t)
 	root := t.TempDir()
-	must(t, os.WriteFile(filepath.Join(root, "a"), []byte("A"), 0o644))
-	must(t, os.WriteFile(filepath.Join(root, "b"), []byte("B"), 0o644))
+	write(t, filepath.Join(root, "a"), []byte("A"), 0o644)
+	write(t, filepath.Join(root, "b"), []byte("B"), 0o644)
 	must(t, os.MkdirAll(filepath.Join(root, "d", "inner"), 0o755))
 	c.ok("files.move", map[string]any{"from": filepath.Join(root, "a"), "to": filepath.Join(root, "c")}, nil)
 	if data, err := os.ReadFile(filepath.Join(root, "c")); err != nil || string(data) != "A" {
@@ -491,7 +504,7 @@ func TestMove(t *testing.T) {
 func TestRemove(t *testing.T) {
 	c := dial(t)
 	root := t.TempDir()
-	must(t, os.WriteFile(filepath.Join(root, "f"), nil, 0o644))
+	write(t, filepath.Join(root, "f"), nil, 0o644)
 	must(t, os.MkdirAll(filepath.Join(root, "empty"), 0o755))
 	must(t, os.MkdirAll(filepath.Join(root, "full", "sub"), 0o755))
 	must(t, os.Symlink(filepath.Join(root, "full"), filepath.Join(root, "link")))
@@ -588,12 +601,12 @@ func TestTarRoundTrip(t *testing.T) {
 	src := filepath.Join(t.TempDir(), "src")
 	must(t, os.MkdirAll(filepath.Join(src, "a", "b"), 0o755))
 	must(t, os.Mkdir(filepath.Join(src, "private"), 0o700))
-	must(t, os.WriteFile(filepath.Join(src, "run.sh"), []byte("#!/bin/sh\necho hi\n"), 0o755))
-	must(t, os.WriteFile(filepath.Join(src, "private", "key"), []byte("k"), 0o600))
-	must(t, os.WriteFile(filepath.Join(src, "a", "b", "empty"), nil, 0o644))
+	write(t, filepath.Join(src, "run.sh"), []byte("#!/bin/sh\necho hi\n"), 0o755)
+	write(t, filepath.Join(src, "private", "key"), []byte("k"), 0o600)
+	write(t, filepath.Join(src, "a", "b", "empty"), nil, 0o644)
 	big := make([]byte, 1500<<10)
 	_, _ = rand.Read(big)
-	must(t, os.WriteFile(filepath.Join(src, "a", "big.bin"), big, 0o644))
+	write(t, filepath.Join(src, "a", "big.bin"), big, 0o644)
 	must(t, os.Symlink("a/b", filepath.Join(src, "link")))
 	archive := pull(t, c, src)
 	if len(archive) < len(big) {
@@ -688,7 +701,7 @@ func TestTarPushRefusesEntriesOutsideTheTarget(t *testing.T) {
 func TestTarPushEntriesMeetWhatIsThere(t *testing.T) {
 	c := dial(t)
 	dst := t.TempDir()
-	must(t, os.WriteFile(filepath.Join(dst, "was-file"), []byte("old"), 0o644))
+	write(t, filepath.Join(dst, "was-file"), []byte("old"), 0o644)
 	must(t, os.Symlink("/etc/hostname", filepath.Join(dst, "was-link")))
 	r := push(t, c, dst, makeTar(t, tarEntry{name: "was-link", flag: tar.TypeReg, body: []byte("new")}), chunk)
 	if r.Error != nil {
@@ -701,7 +714,7 @@ func TestTarPushEntriesMeetWhatIsThere(t *testing.T) {
 	if r.kind() != "exists" {
 		t.Fatalf("a dir over a file: %+v", r.Error)
 	}
-	must(t, os.WriteFile(filepath.Join(dst, "a-file"), nil, 0o644))
+	write(t, filepath.Join(dst, "a-file"), nil, 0o644)
 	c.fails("tar.push.begin", map[string]any{"path": filepath.Join(dst, "a-file")}, "not_dir")
 	r = push(t, c, filepath.Join(dst, "cut"), makeTar(t, tarEntry{name: "f", flag: tar.TypeReg, body: bytes.Repeat([]byte("x"), 5000)})[:2048], chunk)
 	if r.kind() != "invalid" {
@@ -714,7 +727,7 @@ func TestTarPullCancel(t *testing.T) {
 	dir := t.TempDir()
 	big := make([]byte, 8<<20)
 	_, _ = rand.Read(big)
-	must(t, os.WriteFile(filepath.Join(dir, "big"), big, 0o644))
+	write(t, filepath.Join(dir, "big"), big, 0o644)
 	c.send(41, "tar.pull", map[string]any{"path": dir})
 	if first := c.next(); first.Method != "tar.data" {
 		t.Fatalf("want tar.data first, got %s %+v", first.Result, first.Error)

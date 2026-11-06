@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"maps"
 	"runtime"
 	"time"
 
@@ -13,7 +14,7 @@ import (
 )
 
 // Capabilities is what this daemon offers, as hello reports it.
-var Capabilities = []string{"exec"}
+var Capabilities = []string{"exec", "files"}
 
 type HelloParams struct {
 	Client string `json:"client"`
@@ -41,26 +42,17 @@ const maxTimeoutMs = 24 * 60 * 60 * 1000
 
 // Handlers is every method this daemon answers.
 func Handlers(version string) map[string]rpc.Handler {
-	return map[string]rpc.Handler{
+	handlers := map[string]rpc.Handler{
 		"hello": func(context.Context, json.RawMessage) (any, error) {
 			return HelloResult{Version: version, OS: runtime.GOOS, Arch: runtime.GOARCH, Capabilities: Capabilities}, nil
 		},
 		"ping": func(context.Context, json.RawMessage) (any, error) {
 			return struct{}{}, nil
 		},
-		"exec.run":       execRun,
-		"files.read":     filesRead,
-		"files.write":    filesWrite,
-		"files.stat":     filesStat,
-		"files.list":     filesList,
-		"files.mkdir":    filesMkdir,
-		"files.move":     filesMove,
-		"files.remove":   filesRemove,
-		"tar.pull":       tarPull,
-		"tar.push.begin": tarPushBegin,
-		"tar.push.write": tarPushWrite,
-		"tar.push.end":   tarPushEnd,
+		"exec.run": execRun,
 	}
+	maps.Copy(handlers, fileHandlers())
+	return handlers
 }
 
 func execRun(ctx context.Context, raw json.RawMessage) (any, error) {
