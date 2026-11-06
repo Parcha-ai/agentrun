@@ -286,7 +286,7 @@ test("a revision naming the three saves with a warning on a keyless server and i
   const claude = agent("finder-claude", { harness: "claude-agent", instructions: "Run monid's /person/enrich on Ada.", tools: ["read", "monid.run"], tool_settings: ALLOWED });
   const keyless = await api("POST", "/agents", claude);
   assert.equal(keyless.status, 201, JSON.stringify(keyless.body));
-  assert.deepEqual(keyless.body.warnings.map((w) => [w.field, w.message]), [["definition.tools[1]", "This server's environment does not set what the tool needs: the tool monid.run needs MONID_API_KEY."]], "the key, never that it runs on pi only");
+  assert.deepEqual(keyless.body.warnings.map((w) => [w.field, w.message]), [["definition.tools[1]", "The tool monid.run needs a Monid key: save one in Settings → Tool keys (or set MONID_API_KEY where the server starts)."]], "the key, never that it runs on pi only");
   const refused = await api("POST", "/agents/finder-claude/runs", { input: { content: "hi" } });
   assert.deepEqual([refused.status, refused.body.error.details.unbound, refused.body.error.details.missing], [409, [], { "monid.run": ["MONID_API_KEY"] }]);
   // A server reads its environment as it starts: the next one has the key.

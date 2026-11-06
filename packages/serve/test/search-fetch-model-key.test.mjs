@@ -213,5 +213,5 @@ test("a pi run whose model goes through a gateway searches keyless Exa, as claud
   assert.deepEqual((await resolves(api)).web_search, each("unavailable: parallel picked, no PARALLEL_API_KEY"));
   const refused = await api("POST", "/agents/gateway-pi/runs", { input: { content: "Research widgets on the web and write report.md." } });
   assert.deepEqual([refused.status, refused.body.error?.code, refused.body.error?.details?.missing], [409, "agent_not_runnable", { web_search: ["PARALLEL_API_KEY"] }]);
-  assert.match(refused.body.error.message, /web_search does not run here on pi: parallel picked, no PARALLEL_API_KEY/);
+  assert.match(refused.body.error.message, /web_search\ does\ not\ run\ here\ on\ pi:\ parallel\ is\ picked,\ and\ it\ needs\ a\ Parallel\ key:\ save\ one\ in\ Settings\ →\ Tool\ keys\ \(or\ set\ PARALLEL_API_KEY\ where\ the\ server\ starts\)/);
 });

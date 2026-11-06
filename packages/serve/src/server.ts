@@ -30,7 +30,7 @@ import { IMPORT_ASKED } from "./import.js";
 import type { ImportAnswer, ImportTask } from "./import-worker.js";
 import type { MessageOrigin } from "@parcha/pi-durable-agent/timeline";
 import { gradeModelOf, learningBudgetOf, type LearningMode, learningOf } from "./learning.js";
-import { agentLearning, learningLog, learningNotes, noteBody, readNote, runDiff, runLearning, secretsShown, sendNote, writeNote } from "./learning-routes.js";
+import { agentLearning, learningLog, learningNotes, noteBody, pendingCount, readNote, runDiff, runLearning, secretsShown, sendNote, writeNote } from "./learning-routes.js";
 import { answerLlms, MCP_PATH, mcpEndpoint } from "./mcp.js";
 import { openapiDocument, servedOpenapi, UNSUPPORTED } from "./openapi.js";
 import { boxesLine, NEW_AGENT_TOOLS, newAgentPlace, noBoxReason, type Place, placesOf, resolvePlace } from "./place.js";
@@ -42,8 +42,9 @@ import { durationMs, logLine } from "./print.js";
 import { type CarryBackRetry, knownToolCostOf, type Run, Runs, STATUSES, type Status, statusOf, toolCostOf, WAITS_ON_A_PERSON } from "./runs.js";
 import { runLines } from "./usage-lines.js";
 import { BOX_QUARANTINE, type BoxHost, Quarantine } from "./box/sweep.js";
-import { type BoxOffer, boxesLog, boxRegistry, daytonaApi, enabledBoxes, VM_NO_LIST, VM_PROVIDER } from "./boxes.js";
+import { type BoxOffer, boxesByDefault, boxesLog, boxRegistry, daytonaApi, enabledBoxes, VM_NO_LIST, VM_PROVIDER } from "./boxes.js";
 import { type DockerNetwork, FAUX_EGRESS_ENV, sweepEgressDirs } from "./box-egress.js";
+import { type EgressContainer, startEgressContainer } from "./box-egress-vm.js";
 import { boxImageOf, clearImage, type DockerImage, dockerImage, type ImageState, withImage } from "./box-image.js";
 import { startBoxRelay } from "./box-relay.js";
 import { vmRelay, type VmSdk } from "./box-relay-vm.js";
@@ -58,6 +59,7 @@ import { outcomes } from "./usage.js";
 import { keyOf, SEAL_KEY_ENV, sealKeyOf, TOOL_FIELDS, ToolKeys } from "./tool-keys.js";
 import { SIGN_INS_DIR, SignIns, vendorsOver } from "./sign-ins.js";
 import { MCP_AUTH_TYPES, McpServers } from "./mcp-servers.js";
+import { metaToolOf } from "./mcp-meta.js";
 import type { McpServerSource } from "./mcp-gateway.js";
 import { WEBHOOK_EVENTS, Webhooks } from "./webhooks.js";
 import { HOOK_TOLERANCE_S, hookHeadersRefusal, hookRefusal, TriggerSecrets } from "./trigger-secrets.js";
@@ -182,6 +184,9 @@ export type ServeOptions = {
   /** Under `faux`: a module whose default export gives a box's egress proxy its `lookup` and `dial` (box-egress.ts), the
    *  tests' fake network. */
   fauxEgress?: string;
+  /** With `faux` only: the platform this server takes itself to run on (tests: `darwin`, to take a Mac's path to a box's
+   *  network, box-egress-vm.ts, on another machine). */
+  fauxPlatform?: NodeJS.Platform;
   /** Extra `Host` names to accept besides the loopback ones, on any port (host-check.ts). */
   allowHosts?: string[];
   /** The console's built files, answered at / (default dist/console beside the server, which this package's build copies
@@ -198,6 +203,9 @@ export type ServeOptions = {
   settleRetryMs?: number;
   /** Where the log lines go (print.ts); none without it. AGENTRUN_LOG=quiet leaves out the request lines. */
   log?: (line: string) => void;
+  /** Told the Docker box image's state at the start, when this server has a Docker box, then each change (box-image.ts):
+   *  the CLI says a first build in words, as it starts and as it ends. */
+  onBoxImage?: (state: ImageState) => void;
   /** The lines a person reads about a stop on this data root: this server's, as its close begins and runs' processes are
    *  left to finish their turn, and this start's, when it waits for a server that is stopping (server-lock.ts). Default:
    *  standard error, after `agentrun-serve: `. */
@@ -378,6 +386,7 @@ export const ROUTES: readonly Route[] = [
   { method: "PUT", pattern: /^\/agents\/([^/]+)\/learning\/files\/([^/]+)$/, name: "writeLearningFile" },
   { method: "POST", pattern: /^\/agents\/([^/]+)\/learning\/files\/([^/]+)\/retire$/, name: "retireLearningFile" },
   { method: "POST", pattern: /^\/agents\/([^/]+)\/learning\/files\/([^/]+)\/approve$/, name: "approveLearningFile" },
+  { method: "POST", pattern: /^\/agents\/([^/]+)\/learning\/files\/([^/]+)\/restore$/, name: "restoreLearningFile" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/learning$/, name: "getRunLearning" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/learning\/diff$/, name: "getRunLearningDiff" },
 ];
@@ -657,6 +666,14 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
 
 async function startHolding(options: ServeOptions, data: string, lock: ServerLock, checked: { maxRuns: number; minFreeBytes: number; learning: LearningMode; learningBudget: number; boxAllow: readonly string[] | "none" }, stops: Array<() => Promise<void>>): Promise<Serve> {
   const { maxRuns, minFreeBytes, learning, learningBudget, boxAllow } = checked;
+  /** What an agent's view says of its learning: how many learned items wait for its owner's OK, for an agent that learns
+   *  on this server (learning on, its current revision `learning: true`); none for another, or when the count cannot be
+   *  read (the view never fails for it). */
+  const learningOfAgent = async (entry: { agent: { id: string }; revision?: { kind: string; body: unknown } | null }): Promise<{ pending: number } | undefined> => {
+    if (learning === "off" || entry.revision?.kind !== "agentic" || (entry.revision.body as { learning?: unknown }).learning !== true) return undefined;
+    const pending = await pendingCount(data, entry.agent.id);
+    return pending === undefined ? undefined : { pending };
+  };
   const tokenFile = options.token === undefined ? join(data, TOKEN_FILE) : null;
   const stored = options.token === undefined ? await tokenIn(tokenFile!) : undefined;
   const token = options.token ?? stored!.token;
@@ -701,7 +718,14 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     },
     headers: (name) => mcpServers.headers(name),
   };
-  const mcpTools = (server: string) => mcpSource.server(server)?.tools;
+  // Each with whether it can be granted: a known meta tool can't (mcp-meta.ts).
+  const mcpTools = (server: string) => {
+    const saved = mcpSource.server(server);
+    return saved?.tools.map((tool) => {
+      const meta = metaToolOf(saved.url, tool.name);
+      return meta ? { ...tool, grantable: false as const, reason: meta.reason } : tool;
+    });
+  };
   // The server's tool settings, beside the agent store: capabilities say what they resolve to, again after a PUT.
   const settings = new ToolSettings(data);
   // The server's reading, in parts: `env`, its environment with its secrets, saved keys among them (storedKeys);
@@ -749,7 +773,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     if (offersFrom && inputs.length === offersFrom.length && inputs.every((value, i) => value === offersFrom![i])) recompose();
     else await probe("key");
   };
-  // The boxes AGENTRUN_BOXES lists, each probed once (boxes.ts); runs execute in Docker's (place.ts). Under --faux, a faux
+  // The boxes AGENTRUN_BOXES lists, docker when it is not set, each probed once (boxes.ts); runs execute in Docker's (place.ts). Under --faux, a faux
   // box stands in for Docker, and nothing asks Docker.
   // Under --faux, the tests' fake stands in for the VM provider's SDK (startServe's `fauxVm`), never the provider.
   const boxes = await boxRegistry(env, options.faux && options.fauxVm ? { vmSdk: () => import(pathToFileURL(resolve(options.fauxVm!)).href) as Promise<Record<string, unknown>> } : {});
@@ -760,11 +784,18 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   let image: DockerImage | undefined;
   // What a Docker box's programs reach, resolved once here (run-box.ts boxNetworkOf): the setting's list, on a Docker
   // daemon of this Linux machine's own; else none, and why. A run's process gets the list or none (RUN_BOX_ALLOW_ENV).
-  const boxNetwork: DockerNetwork = fauxBox ? { allow: "none", reason: "a faux box (tests)" } : boxes.provider("docker") ? await boxNetworkOf(env) : { allow: "none", reason: "no Docker box on this server" };
+  const boxNetwork: DockerNetwork = fauxBox ? { allow: "none", reason: "a faux box (tests)" } : boxes.provider("docker") ? await boxNetworkOf(env, options.faux && options.fauxPlatform ? { platform: options.fauxPlatform } : {}) : { allow: "none", reason: "no Docker box on this server" };
   // The proxy directories runs that are gone left in /tmp (box-egress.ts): a live run's, any server's, stays.
   if (!fauxBox && boxes.provider("docker")) await sweepEgressDirs().catch(() => 0);
-  const dockerNetwork = (offer: BoxOffer): BoxOffer =>
-    !offer.available ? offer : boxNetwork.allow === "none" ? { ...offer, network: "none", network_reason: boxNetwork.reason } : { ...offer, network: "allowlist" };
+  // On a Mac whose Docker runs in a VM this server knows, the list is served by one proxy container inside that VM
+  // (box-egress-vm.ts): a box's network is the list once it is ready, and none, saying why, until then or when it can't start.
+  let egress: EgressContainer | undefined;
+  const dockerNetwork = (offer: BoxOffer): BoxOffer => {
+    if (!offer.available) return offer;
+    if (boxNetwork.allow === "none") return { ...offer, network: "none", network_reason: boxNetwork.reason };
+    const proxy = egress?.state();
+    return proxy && proxy.state !== "ready" ? { ...offer, network: "none", network_reason: proxy.reason } : { ...offer, network: "allowlist" };
+  };
   // A Daytona box reaches the hosts AGENTRUN_BOX_ALLOW names, through Daytona's domain list, until Daytona cannot keep
   // one here (an organization whose tier takes none): from then on each is made with no network, and capabilities say why.
   let daytonaNoList: string | undefined;
@@ -783,12 +814,14 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       onChange: (state, ms) => {
         boxOffers = offersNow();
         imageLog(state, { ms });
+        options.onBoxImage?.(state);
         // The box's state is in caps alone, not in the offers: recomposed now, or, while the start's probe of the offers
         // has not ended, by that probe, which reads the box offers when it does.
         if (offers) recompose();
       },
     });
     stops.push(async () => void (await image?.close()));
+    options.onBoxImage?.(image.state());
   } else await clearImage(data);
   boxOffers = offersNow();
   const runBoxes = fauxBox ?? boxes.provider("docker");
@@ -814,6 +847,21 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     boxOffers = offersNow();
     if (offers) recompose();
   };
+  if (boxNetwork.allow !== "none" && boxNetwork.vm) {
+    const allow = boxNetwork.allow;
+    const egressLog = (state: ReturnType<EgressContainer["state"]>) => log?.(logLine("box_egress", { runtime: boxNetwork.vm!, state: state.state, ...("reason" in state ? { reason: state.reason } : {}) }));
+    egress = await startEgressContainer({
+      env, data, allow, uid: process.getuid?.() ?? 0, gid: process.getgid?.() ?? 0,
+      onChange: (state) => {
+        egressLog(state);
+        boxOffers = offersNow();
+        if (offers) recompose();
+      },
+    });
+    stops.push(() => egress!.close());
+    egressLog(egress.state());
+    boxOffers = offersNow();
+  }
   log?.(logLine("boxes", boxesLog(boxOffers, enabledBoxes(env))));
   if (image) imageLog(image.state());
   const openapi = openapiDocument((operationId) => ROUTES.find((r) => r.name === operationId)?.capability);
@@ -831,7 +879,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   if (swept > 0) log?.(logLine("uploads_swept", { removed: swept }));
   const documents = options.documents ?? process.env[DOCUMENTS_ENV];
   if (documents !== undefined && !(await stat(documents).then((info) => info.isDirectory(), () => false))) throw new Error(`the documents directory ${documents} is not a directory`);
-  const runs = new Runs({ dockerAllow: boxNetwork.allow, agents, token, storedKeys, mcpServers: mcpSource, doorTokenFile, doorToken, learning, learningBudget, ...(documents ? { documents: resolve(documents) } : {}), fauxEnv: fauxEnvOf(options), toolSettings: () => settings.get(), ...(runBoxes ? { runBoxes } : {}), ...(remoteBoxes ? { remoteBoxes } : {}), ...(vmBoxes && vmRelayHalf ? { vmBoxes, vmLimits, vmRelay: vmRelayHalf } : {}), ...(remoteBoxes && daytonaApi(env) ? { remoteApi: daytonaApi(env)! } : {}), ...(remoteBoxes ? { boxAllow, onNoBoxList } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(options.reflectTimeoutMs ? { reflectTimeoutMs: options.reflectTimeoutMs } : {}), ...(options.gradeTimeoutMs ? { gradeTimeoutMs: options.gradeTimeoutMs } : {}), ...(options.gradeModel ? { gradeModel: options.gradeModel } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}), notify: (event, run, marker) => webhooks.emit(event, run, marker), ownSecrets: () => triggerSecrets?.values() ?? [], signIns, approvers: options.accounts === true });
+  const runs = new Runs({ dockerAllow: boxNetwork.allow, ...(egress?.volume ? { dockerVolume: egress.volume } : {}), agents, token, storedKeys, mcpServers: mcpSource, doorTokenFile, doorToken, learning, learningBudget, ...(documents ? { documents: resolve(documents) } : {}), fauxEnv: fauxEnvOf(options), toolSettings: () => settings.get(), ...(runBoxes ? { runBoxes } : {}), ...(remoteBoxes ? { remoteBoxes } : {}), ...(vmBoxes && vmRelayHalf ? { vmBoxes, vmLimits, vmRelay: vmRelayHalf } : {}), ...(remoteBoxes && daytonaApi(env) ? { remoteApi: daytonaApi(env)! } : {}), ...(remoteBoxes ? { boxAllow, onNoBoxList } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(options.reflectTimeoutMs ? { reflectTimeoutMs: options.reflectTimeoutMs } : {}), ...(options.gradeTimeoutMs ? { gradeTimeoutMs: options.gradeTimeoutMs } : {}), ...(options.gradeModel ? { gradeModel: options.gradeModel } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}), notify: (event, run, marker) => webhooks.emit(event, run, marker), ownSecrets: () => triggerSecrets?.values() ?? [], signIns, approvers: options.accounts === true });
   const daytona = daytonaApi(env);
   const relay = (remoteBoxes && daytona) || vmRelayHalf ? await startBoxRelay({ root: data, tokenOf: (id) => runs.relayToken(id), ...(remoteBoxes && daytona ? daytona : {}), ...(vmRelayHalf ? { vm: vmRelayHalf } : {}), serves: (id) => runs.servesBox(id), ensure: (id) => runs.ensureBox(id) }) : undefined;
   if (relay) stops.push(() => relay.close());
@@ -1470,7 +1518,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       // ended (a call a crash cut makes `tools` unknown, never `tokens`). An unknown meter counts the run as unpriced on it.
       // An ended run's are its store's figures (metersOf keeps them, never its timeline), read for its lines by meter and,
       // by any group, for what a run of unknown cost is known to have spent.
-      const read = (group === "meter" && usd !== 0) || usd === null ? (live ? { tools: toolCostOf(live.rows), tokens: null, browser: { usd: toolCostOf(live.rows, "browser"), seconds: null }, others: toolCostOf(live.rows.filter((r) => r.tool_name !== "browser")), known: { tokens: 0, browser: knownToolCostOf(live.rows, "browser"), others: knownToolCostOf(live.rows, "browser", true) } } : metersOf(row)) : undefined;
+      const read = (group === "meter" && usd !== 0) || usd === null ? (live ? { tools: toolCostOf(live.rows), tokens: null, browser: { usd: toolCostOf(live.rows, "browser"), seconds: null }, others: toolCostOf(live.rows, "browser", true), known: { tokens: 0, browser: knownToolCostOf(live.rows, "browser"), others: knownToolCostOf(live.rows, "browser", true) } } : metersOf(row)) : undefined;
       // A run whose cost is unknown still spent what is known of it (so_far: each meter's known dollars): that is in the
       // total and its lines, and the run is counted unpriced, so a total is never below a line of its own and reads as
       // the lower bound unpriced_runs says it is.
@@ -1617,6 +1665,11 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     // page cookie a token can mint (accounts off). The page's cookie stands in for the token only on its own origin
     // with a JSON body (page.ts), so this is CSRF-checked as every page write is. With no credential at all it is 401,
     // as every route is.
+    // Restoring a retired one puts it back in every later run, as an approval does: the same owner's session alone.
+    if (found.name === "restoreLearningFile" && !byOwnerSession(req) && req.headers.authorization !== undefined) {
+      authFailed(`/v2${path}`, "restore_without_session");
+      throw new ApiError("forbidden", owner ? "Restoring a retired note takes the owner's password sign-in in the console, never a token." : "Restoring a retired note takes the owner's password sign-in, and this server has no accounts (AGENTRUN_ACCOUNTS=0).");
+    }
     if (found.name === "approveLearningFile" && !byOwnerSession(req) && req.headers.authorization !== undefined) {
       authFailed(`/v2${path}`, "approve_without_session");
       throw new ApiError("forbidden", owner ? "Approving a note takes the owner's password sign-in in the console, never a token." : "Approving a note takes the owner's password sign-in, and this server has no accounts (AGENTRUN_ACCOUNTS=0).");
@@ -1645,7 +1698,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
           const named = Array.isArray(definition.definition.tools) ? definition.definition.tools : [];
           const fresh = named.some((tool) => typeof tool === "string" && toolOf(tool)?.runnerOnly) ? { reason: "" } : newAgentPlace(boxOffers);
           const entry = await agents.create(definition, async (revision) => void (warnings = await saveable(revision)), "place" in fresh ? { place: fresh.place, tools: NEW_AGENT_TOOLS } : undefined);
-          return { status: 201, body: { ...agentView(entry, await signIns.view(entry.agent.id)), warnings }, headers: { location: `/v2/agents/${entry.agent.id}`, etag: etagOf(entry) } };
+          return { status: 201, body: { ...agentView(entry, await signIns.view(entry.agent.id), await learningOfAgent(entry)), warnings }, headers: { location: `/v2/agents/${entry.agent.id}`, etag: etagOf(entry) } };
         });
         return send(res, answer.status, answer.body, answer.headers);
       }
@@ -1654,13 +1707,13 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         const offset = cursorOf(url.searchParams.get("cursor"));
         const archived = archivedParam(url);
         const all = (await agents.list()).filter((entry) => Boolean(entry.agent.archivedAt) === archived);
-        return send(res, 200, { agents: await Promise.all(all.slice(offset, offset + limit).map(async (entry) => agentView(entry, await signIns.view(entry.agent.id)))), next_cursor: nextCursor(offset + limit, all.length) });
+        return send(res, 200, { agents: await Promise.all(all.slice(offset, offset + limit).map(async (entry) => agentView(entry, await signIns.view(entry.agent.id), await learningOfAgent(entry)))), next_cursor: nextCursor(offset + limit, all.length) });
       }
       case "getAgent": {
         const entry = await needAgent(id);
         // The tools its current revision grants, as capabilities list them, each with its provider for this agent.
         const tools = entry.revision ? agentTools(env, settings.get(), await toolingOf(entry.revision), caps.tools.map((tool) => tool.name)) : [];
-        return send(res, 200, { ...agentView(entry, await signIns.view(entry.agent.id)), tools }, { etag: etagOf(entry) });
+        return send(res, 200, { ...agentView(entry, await signIns.view(entry.agent.id), await learningOfAgent(entry)), tools }, { etag: etagOf(entry) });
       }
       case "updateDefinition": {
         const entry = await needAgent(id);
@@ -1680,7 +1733,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         let warnings: InputIssue[] = [];
         const check = async (revision: NewRevision) => void (warnings = await saveable(revision));
         const edited = await agents.commit(entry, checkDefinitionBody(contract ? { definition: body } : body, { creating: false }), { check, contract, ...(match === undefined ? {} : { ifCurrent: entry.revision?.id ?? null }) });
-        return send(res, 200, { ...agentView(edited, await signIns.view(edited.agent.id)), warnings }, { etag: etagOf(edited) });
+        return send(res, 200, { ...agentView(edited, await signIns.view(edited.agent.id), await learningOfAgent(edited)), warnings }, { etag: etagOf(edited) });
       }
       case "listRevisions": {
         const entry = await needAgent(id);
@@ -1699,7 +1752,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         if (typeof revision !== "string" || !ID.test(revision)) throw invalid([{ field: "revision", reason: revision === undefined ? "missing" : "wrong_type", message: "revision is a revision id of this agent" }]);
         if (!(await agents.revision(id, revision))) throw invalid([{ field: "revision", reason: "not_an_option", message: `${revision} is not a revision of the agent ${id}` }]);
         const moved = await agents.setCurrent(entry, revision);
-        return send(res, 200, agentView(moved, await signIns.view(moved.agent.id)), { etag: etagOf(moved) });
+        return send(res, 200, agentView(moved, await signIns.view(moved.agent.id), await learningOfAgent(moved)), { etag: etagOf(moved) });
       }
       case "archiveAgent":
       case "unarchiveAgent": {
@@ -1707,7 +1760,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         await agents.setArchived("agent", id, found.name === "archiveAgent");
         if (found.name === "archiveAgent") await runs.archived();
         const entry = await needAgent(id);
-        return send(res, 200, agentView(entry, await signIns.view(entry.agent.id)), { etag: etagOf(entry) });
+        return send(res, 200, agentView(entry, await signIns.view(entry.agent.id), await learningOfAgent(entry)), { etag: etagOf(entry) });
       }
       case "forgetSignIn": {
         await needAgent(id);
@@ -1858,7 +1911,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         const { issues, warnings } = await workflowIssues(body.workflow, body.tools as string[] | undefined);
         // What a save refuses on this host (a model node's tool, a code node where none runs), and what it lacks yet.
         if (!issues.length) {
-          for (const blocker of await blockersOf(env, { kind: "workflow", workflow: body.workflow as never, ...(body.tools ? { tools: body.tools as string[] } : {}) }, settings.get(), { offers }).catch(() => [])) {
+          for (const blocker of await blockersOf(env, { kind: "workflow", workflow: body.workflow as never, ...(body.tools ? { tools: body.tools as string[] } : {}) }, settings.get(), { offers, mcp: mcpTools }).catch(() => [])) {
             if (blocker.host) warnings.push(blocker.message);
             else issues.push({ path: "", code: "NOT_RUNNABLE_HERE", message: blocker.message });
           }
@@ -1988,11 +2041,12 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         return sendNote(res, 200, await readNote(data, id, second!, secretsShown(learningSecrets())));
       case "writeLearningFile":
       case "retireLearningFile":
-      case "approveLearningFile": {
+      case "approveLearningFile":
+      case "restoreLearningFile": {
         await needAgent(id);
         const header = (name: string) => (typeof req.headers[name] === "string" ? (req.headers[name] as string) : undefined);
         const body = found.name === "writeLearningFile" ? await noteBody(req, MAX_BODY) : undefined;
-        const written = await writeNote(data, id, second!, { ifMatch: header("if-match"), ifNoneMatch: header("if-none-match"), body, refuse: learningSecrets(), approve: found.name === "approveLearningFile" });
+        const written = await writeNote(data, id, second!, { ifMatch: header("if-match"), ifNoneMatch: header("if-none-match"), body, refuse: learningSecrets(), approve: found.name === "approveLearningFile", restore: found.name === "restoreLearningFile" });
         // A name holding a secret (one the checks let by) is never echoed, not even as where the note is.
         const shown = secretsShown(learningSecrets());
         const located = written.status === 201 && shown.name(written.file) === written.file;
@@ -2168,6 +2222,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     await relay?.close();
     // Before the lock goes: the image's last record lands first (box-image.ts), never after the next server's start.
     await image?.close();
+    // The box network proxy goes with the server that owns it (box-egress-vm.ts); its volume stays for the next start.
+    await egress?.close();
     await webhooks.close();
     await new Promise((done) => (server.close(done), server.closeAllConnections()));
     agents.close();
@@ -2182,7 +2238,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     tokenFile,
     tokenMade: stored?.made ?? false,
     ...(setupUrl ? { setupUrl } : {}),
-    boxesLine: boxesLine(boxOffers, enabledBoxes(env), boxAllow),
+    boxesLine: boxesLine(boxOffers, enabledBoxes(env), boxAllow, boxesByDefault(env)),
     // Once: a second call, at any time, is the first one's promise, so a close repeated after the next server started
     // never writes this data root's record again (the next server's, by then).
     close: () => (stopped ??= stop()),

@@ -14,9 +14,10 @@ import { startServe } from "../dist/index.js";
 export const FAUX = new URL("./fixtures/faux-model.mjs", import.meta.url).pathname;
 
 // No test reaches a box provider: the boxes the environment running the suite lists are not the tests'. A server here,
-// or one a test starts in a process of its own, probes none; a test that wants a box lists it itself, with its endpoint
-// on loopback (boxes.test.mjs).
-delete process.env.AGENTRUN_BOXES;
+// or one a test starts in a process of its own, probes none, Docker included (on by default when AGENTRUN_BOXES is not
+// set, boxes.ts): a test that wants a box lists it itself, with its endpoint on loopback (boxes.test.mjs), or unsets the
+// setting over a fake docker (docker-by-default.test.mjs).
+process.env.AGENTRUN_BOXES = "none";
 
 /** The records of a log another process appends to (a line of JSON each, as the fake docker's): only its whole lines,
  *  each ended by its newline. A file just made and still empty, or a last line still being written, is read as the

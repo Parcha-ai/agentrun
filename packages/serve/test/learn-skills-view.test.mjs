@@ -52,8 +52,8 @@ test("the agent's learning lists the skill and the workflow it learned beside it
   assert.deepEqual(schemaProblems(doc, agentSchema, agent), [], JSON.stringify(agent));
   const blob = (path) => git(repo, ["rev-parse", `main:${path}`]);
   const size = (path) => Number(git(repo, ["cat-file", "-s", `main:${path}`]));
-  assert.deepEqual(agent.skills, [{ name: "find-policies", file: SKILL_FILE, description: "Find a store's refund and shipping policies", status: "active", run: runId, bytes: size(SKILL_FILE), etag: `"${blob(SKILL_FILE)}"` }]);
-  assert.deepEqual(agent.workflows, [{ name: "find-policies", file: DRAFT_FILE, readme: README_FILE, description: DESCRIPTION, status: "active", run: runId, bytes: size(DRAFT_FILE), etag: `"${blob(README_FILE)}"` }]);
+  assert.deepEqual(agent.skills, [{ name: "find-policies", file: SKILL_FILE, description: "Find a store's refund and shipping policies", status: "active", run: runId, bytes: size(SKILL_FILE), etag: `"${blob(SKILL_FILE)}"`, last_change: { kind: "learned", by: "run", at: agent.skills[0]?.last_change?.at } }]);
+  assert.deepEqual(agent.workflows, [{ name: "find-policies", file: DRAFT_FILE, readme: README_FILE, description: DESCRIPTION, status: "active", run: runId, bytes: size(DRAFT_FILE), etag: `"${blob(README_FILE)}"`, last_change: { kind: "learned", by: "run", at: agent.workflows[0]?.last_change?.at } }]);
   assert.deepEqual(agent.notes.items.map((item) => item.file), ["check-units.md"], "the notes are notes alone");
   // Each file, as text with its version.
   const read = async (file) => api("GET", `/agents/keeper/learning/files/${enc(file)}`);

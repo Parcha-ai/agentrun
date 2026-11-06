@@ -163,18 +163,18 @@ describe("the Learning tab's notes", () => {
 describe("what runs did not keep", () => {
   it("lists a refused note and a skip with their words, newest first, and counts the runs with nothing new", async () => {
     const t = await open(agent(true));
-    const list = t.host.querySelector('section[aria-label="Not kept"]')!;
+    const list = t.host.querySelector('section[aria-label="Kept nothing"]')!;
     const rows = [...list.querySelectorAll("li")].map((li) => li.textContent);
-    expect(rows[0]).toContain("It's about one shop's returns portal.");
-    expect(rows[0]).not.toContain("Not kept:");
+    // The server's sentence as it is, under a title that does not say "Not kept" again.
+    expect(rows[0]).toContain("Not kept: It's about one shop's returns portal.");
     expect(rows[0]).toContain("kith.com");
     expect(rows[1]).toContain("Skipped: no budget left in this run to look back.");
     expect(rows).toHaveLength(2);
     expect(list.textContent).toContain("2 more runs had nothing new to remember.");
   });
-  it("an older server's list, with no sentence, says the reason in the console's words", async () => {
+  it("a run with no sentence says the reason in the console's words", async () => {
     const t = await open(agent(true), { runs: [runOf("run-k", "kith.com", { state: "dropped", reason: "grader" })] });
-    expect(t.host.querySelector('section[aria-label="Not kept"]')!.textContent).toContain("It wouldn't help later runs enough.");
+    expect(t.host.querySelector('section[aria-label="Kept nothing"]')!.textContent).toContain("Not kept: it wouldn't help later runs enough.");
   });
 });
 
@@ -919,5 +919,25 @@ describe("text in angle brackets in what it learned", () => {
     await t.click(/^Show the workflow refund-summary$/);
     const flow = t.host.querySelector('section[aria-label="Workflows it learned"]') as HTMLElement;
     expect(flow.textContent).toContain("Customer: <name>, Amount: $<amount>");
+  });
+});
+
+// The panel of runs that kept nothing shows each run's sentence as the server says it, under a title that does not say
+// "Not kept" again: whatever shape the sentence takes, "Not kept" appears once a row.
+describe("the Learning tab's runs that kept nothing", () => {
+  const SHAPES = [
+    "Not kept: It's about one shop's returns portal, not a rule other shops share.",
+    "Not kept, with the skill weekly-summary: it's about one shop's returns portal.",
+    "Not kept, the skill find-policies: it named a value the server keeps secret.",
+  ];
+  it("lists each sentence as served, saying Not kept once in each row and not in the title", async () => {
+    const runs = SHAPES.map((detail, i) => runOf(`run-d${i}`, `shop${i}.com`, { state: "dropped", reason: "grader", detail }));
+    const t = await open(agent(true), { learning: async () => view(), runs });
+    const panel = [...t.host.querySelectorAll("aside section")].find((s) => SHAPES.some((d) => s.textContent?.includes(d))) as HTMLElement;
+    expect(panel).toBeTruthy();
+    expect(panel.querySelector("h2")!.textContent).not.toContain("Not kept");
+    const rows = [...panel.querySelectorAll("li")].map((li) => li.querySelector("span")!.textContent ?? "");
+    expect(rows).toEqual(SHAPES);
+    for (const row of rows) expect(row.match(/Not kept/g)).toHaveLength(1);
   });
 });

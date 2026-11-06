@@ -158,7 +158,7 @@ for (const harness of ["pi", "claude-agent", "codex"]) {
     assert.ok(prompt.includes(`Answer the question.\n\n# Learned\n\n${KEEPS}\n\n${NOTHING_YET}`), prompt);
     assert.equal(prompt.split("# Learned").length, 2, "one section");
     // It never promises to keep what is never kept: a secret the person asks it to remember is refused, and said so.
-    assert.match(prompt, /\n# Learned\n\n[^\n]*tell them you will keep it for later runs\. A secret \(a password, key or token\) is never kept, so say so instead\.\n\n/);
+    assert.match(prompt, /\n# Learned\n\n[^\n]*tell them you will keep it for later runs, in one short sentence at the start of your reply, never after a closing line or sign-off they asked you to end with\. A secret \(a password, key or token\) is never kept, so say so instead\.\n\n/);
   });
 }
 
