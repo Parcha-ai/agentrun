@@ -12,7 +12,7 @@ import { once } from "node:events";
 import { existsSync, readFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { homedir } from "node:os";
-import type { NewRevision, Revision, RunOrigin } from "@parcha/pi-durable-agent";
+import { type NewRevision, type Revision, runDirIn, type RunOrigin, STORE_FILE } from "@parcha/pi-durable-agent";
 import { agentView, Agents, etagOf, homeBusy, revisionView, storeBusy, type AgentEntry } from "./agents.js";
 import { WORKFLOW_ADAPTERS } from "./app.js";
 import { DECISION_ADAPTER, decisionsOf, FAUX_JEV_ENV, FAUX_OPENROUTER_ENV, FAUX_PARALLEL_ENV } from "./decisions.js";
@@ -37,13 +37,14 @@ import { boxesLine, NEW_AGENT_TOOLS, newAgentPlace, noBoxReason, type Place, pla
 import { BOX_ALLOW_ENV, boxAllowOf, boxLimitsOf, boxNetworkOf, FAUX_BOX_ENV, fauxBoxes } from "./run-box.js";
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
 import { answerPage, byOwnerSession, isJson, ownerCookie, ownOrigin, sendHostRefused, signedIn } from "./page.js";
-import { HOST_FIX, hostName, loopbackNames } from "./host-check.js";
+import { hostFix, hostName, loopbackNames } from "./host-check.js";
 import { durationMs, logLine } from "./print.js";
 import { type CarryBackRetry, knownToolCostOf, type Run, Runs, STATUSES, type Status, statusOf, toolCostOf, WAITS_ON_A_PERSON } from "./runs.js";
 import { runLines } from "./usage-lines.js";
 import { BOX_QUARANTINE, type BoxHost, Quarantine } from "./box/sweep.js";
 import { type BoxOffer, boxesByDefault, boxesLog, boxRegistry, daytonaApi, enabledBoxes, VM_NO_LIST, VM_PROVIDER } from "./boxes.js";
 import { type DockerNetwork, FAUX_EGRESS_ENV, sweepEgressDirs } from "./box-egress.js";
+import { type EgressContainer, startEgressContainer } from "./box-egress-vm.js";
 import { boxImageOf, clearImage, type DockerImage, dockerImage, type ImageState, withImage } from "./box-image.js";
 import { startBoxRelay } from "./box-relay.js";
 import { vmRelay, type VmSdk } from "./box-relay-vm.js";
@@ -58,6 +59,7 @@ import { outcomes } from "./usage.js";
 import { keyOf, SEAL_KEY_ENV, sealKeyOf, TOOL_FIELDS, ToolKeys } from "./tool-keys.js";
 import { SIGN_INS_DIR, SignIns, vendorsOver } from "./sign-ins.js";
 import { MCP_AUTH_TYPES, McpServers } from "./mcp-servers.js";
+import { metaToolOf } from "./mcp-meta.js";
 import type { McpServerSource } from "./mcp-gateway.js";
 import { WEBHOOK_EVENTS, Webhooks } from "./webhooks.js";
 import { HOOK_TOLERANCE_S, hookHeadersRefusal, hookRefusal, TriggerSecrets } from "./trigger-secrets.js";
@@ -182,6 +184,9 @@ export type ServeOptions = {
   /** Under `faux`: a module whose default export gives a box's egress proxy its `lookup` and `dial` (box-egress.ts), the
    *  tests' fake network. */
   fauxEgress?: string;
+  /** With `faux` only: the platform this server takes itself to run on (tests: `darwin`, to take a Mac's path to a box's
+   *  network, box-egress-vm.ts, on another machine). */
+  fauxPlatform?: NodeJS.Platform;
   /** Extra `Host` names to accept besides the loopback ones, on any port (host-check.ts). */
   allowHosts?: string[];
   /** The console's built files, answered at / (default dist/console beside the server, which this package's build copies
@@ -597,6 +602,24 @@ async function oldHomes(data: string): Promise<string[]> {
   return found.sort();
 }
 
+/** Why the data directory is one an earlier version wrote, which keeps its runs outside the disk: a `runs/` folder at
+ *  its top (0.1.0-beta.27 to this version's last, `<data>/runs/<id>/`), or a store.sqlite of store version 1. This
+ *  version keeps every run on the disk (`<data>/disk/agents/<agent>/runs/<run>/`), and moves nothing: undefined when
+ *  neither is there. */
+async function oldLayout(data: string): Promise<string | undefined> {
+  if (await stat(join(data, "runs")).then((info) => info.isDirectory(), () => false)) return `${join(data, "runs")} holds runs in an earlier version's layout`;
+  const file = join(data, STORE_FILE);
+  if (!(await stat(file).then((info) => info.isFile(), () => false))) return undefined;
+  const { DatabaseSync } = await import("node:sqlite");
+  const db = new DatabaseSync(file, { readOnly: true });
+  try {
+    const version = Number((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version);
+    return version === 1 ? `${file} is an earlier version's store (store version 1)` : undefined;
+  } finally {
+    db.close();
+  }
+}
+
 export async function startServe(options: ServeOptions): Promise<Serve> {
   await mkdir(resolve(options.data), { recursive: true, mode: 0o700 });
   // Canonical once, here: a box's mount source below it must then be its own canonical path, through no link (run-box.ts).
@@ -607,6 +630,8 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
     const named = homes.length > 5 ? [...homes.slice(0, 5), `and ${homes.length - 5} more`] : homes;
     throw new Error(`this data directory holds agent homes from AgentRun Server 0.1.0-beta.26 or earlier (${named.join(", ")}), which this version does not read: started here, it would show none of their agents or runs. Keep them with the earlier version, or move those directories out of ${data} to start this one; see "Upgrading from 0.1.0-beta.26" in the serve README.`);
   }
+  const old = await oldLayout(data);
+  if (old) throw new Error(`this data directory was written by an earlier version of AgentRun Server, which kept its runs outside the disk (${old}): this version keeps every run under ${join(data, "disk")} and does not read or move the old ones. Keep this directory with the earlier version, or start this one on a new data directory (an empty folder, or a new volume).`);
   if (options.token !== undefined && (options.token.length < 32 || /\s/.test(options.token))) throw new Error("the token must be 32 characters or more, with no whitespace");
   if (options.drainTimeout !== undefined && durationMs(options.drainTimeout) === undefined) throw new Error(`the drain timeout ${options.drainTimeout} is not a duration such as 8s`);
   enabledBoxes(process.env);
@@ -693,7 +718,14 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     },
     headers: (name) => mcpServers.headers(name),
   };
-  const mcpTools = (server: string) => mcpSource.server(server)?.tools;
+  // Each with whether it can be granted: a known meta tool can't (mcp-meta.ts).
+  const mcpTools = (server: string) => {
+    const saved = mcpSource.server(server);
+    return saved?.tools.map((tool) => {
+      const meta = metaToolOf(saved.url, tool.name);
+      return meta ? { ...tool, grantable: false as const, reason: meta.reason } : tool;
+    });
+  };
   // The server's tool settings, beside the agent store: capabilities say what they resolve to, again after a PUT.
   const settings = new ToolSettings(data);
   // The server's reading, in parts: `env`, its environment with its secrets, saved keys among them (storedKeys);
@@ -752,11 +784,18 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   let image: DockerImage | undefined;
   // What a Docker box's programs reach, resolved once here (run-box.ts boxNetworkOf): the setting's list, on a Docker
   // daemon of this Linux machine's own; else none, and why. A run's process gets the list or none (RUN_BOX_ALLOW_ENV).
-  const boxNetwork: DockerNetwork = fauxBox ? { allow: "none", reason: "a faux box (tests)" } : boxes.provider("docker") ? await boxNetworkOf(env) : { allow: "none", reason: "no Docker box on this server" };
+  const boxNetwork: DockerNetwork = fauxBox ? { allow: "none", reason: "a faux box (tests)" } : boxes.provider("docker") ? await boxNetworkOf(env, options.faux && options.fauxPlatform ? { platform: options.fauxPlatform } : {}) : { allow: "none", reason: "no Docker box on this server" };
   // The proxy directories runs that are gone left in /tmp (box-egress.ts): a live run's, any server's, stays.
   if (!fauxBox && boxes.provider("docker")) await sweepEgressDirs().catch(() => 0);
-  const dockerNetwork = (offer: BoxOffer): BoxOffer =>
-    !offer.available ? offer : boxNetwork.allow === "none" ? { ...offer, network: "none", network_reason: boxNetwork.reason } : { ...offer, network: "allowlist" };
+  // On a Mac whose Docker runs in a VM this server knows, the list is served by one proxy container inside that VM
+  // (box-egress-vm.ts): a box's network is the list once it is ready, and none, saying why, until then or when it can't start.
+  let egress: EgressContainer | undefined;
+  const dockerNetwork = (offer: BoxOffer): BoxOffer => {
+    if (!offer.available) return offer;
+    if (boxNetwork.allow === "none") return { ...offer, network: "none", network_reason: boxNetwork.reason };
+    const proxy = egress?.state();
+    return proxy && proxy.state !== "ready" ? { ...offer, network: "none", network_reason: proxy.reason } : { ...offer, network: "allowlist" };
+  };
   // A Daytona box reaches the hosts AGENTRUN_BOX_ALLOW names, through Daytona's domain list, until Daytona cannot keep
   // one here (an organization whose tier takes none): from then on each is made with no network, and capabilities say why.
   let daytonaNoList: string | undefined;
@@ -808,6 +847,22 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     boxOffers = offersNow();
     if (offers) recompose();
   };
+  if (boxNetwork.allow !== "none" && boxNetwork.vm) {
+    const allow = boxNetwork.allow;
+    const egressLog = (state: ReturnType<EgressContainer["state"]>) => log?.(logLine("box_egress", { runtime: boxNetwork.vm!, state: state.state, ...("reason" in state ? { reason: state.reason } : {}) }));
+    egress = await startEgressContainer({
+      env, data, allow, uid: process.getuid?.() ?? 0, gid: process.getgid?.() ?? 0,
+      warn: (message) => (log ? log(logLine("box_egress", { runtime: boxNetwork.vm!, warning: message })) : void process.stderr.write(`agentrun-serve: ${message}\n`)),
+      onChange: (state) => {
+        egressLog(state);
+        boxOffers = offersNow();
+        if (offers) recompose();
+      },
+    });
+    stops.push(() => egress!.close());
+    egressLog(egress.state());
+    boxOffers = offersNow();
+  }
   log?.(logLine("boxes", boxesLog(boxOffers, enabledBoxes(env))));
   if (image) imageLog(image.state());
   const openapi = openapiDocument((operationId) => ROUTES.find((r) => r.name === operationId)?.capability);
@@ -825,7 +880,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   if (swept > 0) log?.(logLine("uploads_swept", { removed: swept }));
   const documents = options.documents ?? process.env[DOCUMENTS_ENV];
   if (documents !== undefined && !(await stat(documents).then((info) => info.isDirectory(), () => false))) throw new Error(`the documents directory ${documents} is not a directory`);
-  const runs = new Runs({ dockerAllow: boxNetwork.allow, agents, token, storedKeys, mcpServers: mcpSource, doorTokenFile, doorToken, learning, learningBudget, ...(documents ? { documents: resolve(documents) } : {}), fauxEnv: fauxEnvOf(options), toolSettings: () => settings.get(), ...(runBoxes ? { runBoxes } : {}), ...(remoteBoxes ? { remoteBoxes } : {}), ...(vmBoxes && vmRelayHalf ? { vmBoxes, vmLimits, vmRelay: vmRelayHalf } : {}), ...(remoteBoxes && daytonaApi(env) ? { remoteApi: daytonaApi(env)! } : {}), ...(remoteBoxes ? { boxAllow, onNoBoxList } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(options.reflectTimeoutMs ? { reflectTimeoutMs: options.reflectTimeoutMs } : {}), ...(options.gradeTimeoutMs ? { gradeTimeoutMs: options.gradeTimeoutMs } : {}), ...(options.gradeModel ? { gradeModel: options.gradeModel } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}), notify: (event, run, marker) => webhooks.emit(event, run, marker), ownSecrets: () => triggerSecrets?.values() ?? [], signIns, approvers: options.accounts === true });
+  const runs = new Runs({ dockerAllow: boxNetwork.allow, ...(egress?.volume ? { dockerVolume: egress.volume } : {}), agents, token, storedKeys, mcpServers: mcpSource, doorTokenFile, doorToken, learning, learningBudget, ...(documents ? { documents: resolve(documents) } : {}), fauxEnv: fauxEnvOf(options), toolSettings: () => settings.get(), ...(runBoxes ? { runBoxes } : {}), ...(remoteBoxes ? { remoteBoxes } : {}), ...(vmBoxes && vmRelayHalf ? { vmBoxes, vmLimits, vmRelay: vmRelayHalf } : {}), ...(remoteBoxes && daytonaApi(env) ? { remoteApi: daytonaApi(env)! } : {}), ...(remoteBoxes ? { boxAllow, onNoBoxList } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(options.reflectTimeoutMs ? { reflectTimeoutMs: options.reflectTimeoutMs } : {}), ...(options.gradeTimeoutMs ? { gradeTimeoutMs: options.gradeTimeoutMs } : {}), ...(options.gradeModel ? { gradeModel: options.gradeModel } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}), notify: (event, run, marker) => webhooks.emit(event, run, marker), ownSecrets: () => triggerSecrets?.values() ?? [], signIns, approvers: options.accounts === true });
   const daytona = daytonaApi(env);
   const relay = (remoteBoxes && daytona) || vmRelayHalf ? await startBoxRelay({ root: data, tokenOf: (id) => runs.relayToken(id), ...(remoteBoxes && daytona ? daytona : {}), ...(vmRelayHalf ? { vm: vmRelayHalf } : {}), serves: (id) => runs.servesBox(id), ensure: (id) => runs.ensureBox(id) }) : undefined;
   if (relay) stops.push(() => relay.close());
@@ -877,14 +932,20 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     .catch((error: Error) => void process.stderr.write(`agentrun-serve: recovery: ${error.message}\n`))
     .then(async () => {
       const rows = (await agents.request(() => agents.store.listRuns())).filter((row) => !row.importedFrom);
-      const byId = new Map(rows.map((row) => [row.id, row]));
-      // An end's notice from its row and its serve.json alone, as the run list reads an ended run (summaryOfRow): never
-      // its own store, whose read can fail, so a busy store loses no end. The same body a live end's notice has.
+      // An end's notice from its row as the agent store holds it now and its serve.json alone, as the run list reads an
+      // ended run (summaryOfRow): never its own store, whose read can fail, so a busy store loses no end. The same body a
+      // live end's notice has.
       await webhooks.catchUp(rows, async (id) => {
-        const row = byId.get(id);
+        // Its folder on the disk by its row's agent, which a run never changes: the listed row's, or the store's for a run
+        // listed after the list.
+        const listed = rows.find((row) => row.id === id) ?? (await agents.request(() => agents.store.readRun(id)));
+        if (!listed) return null;
+        const meta = await readJson(join(runDirIn(agents.dir, listed.agent, id), RUN_META));
+        // Read last, so nothing but this read stands between the run as it is now and its end's queuing.
+        const row = await agents.request(() => agents.store.readRun(id));
         if (!row) return null;
-        const meta = await readJson(join(agents.dir, "runs", id, RUN_META));
-        return { run_id: id, agent_id: row.agent, status: await runs.statusOfRow(row), title: isObject(meta) && typeof meta.title === "string" ? meta.title : "" };
+        const notice = { run_id: id, agent_id: row.agent, status: await runs.statusOfRow(row), title: isObject(meta) && typeof meta.title === "string" ? meta.title : "" };
+        return { state: row.state, endedAt: row.endedAt, notice };
       });
     })
     .catch((error: Error) => void process.stderr.write(`agentrun-serve: the webhook's catch-up: ${error.message}\n`));
@@ -1082,6 +1143,15 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     return value;
   }
 
+  /** The tools a learned draft of agent `id` may name, as a run's merge reads them (learning-run.ts draftTools): its
+   *  current revision's, those the gate allows under the server's settings and the agent's own. */
+  async function learnedDraftToolsOf(id: string): Promise<{ tools: string[]; gated: Record<string, string> }> {
+    const revision = (await needAgent(id)).revision;
+    if (revision?.kind !== "agentic") return { tools: [], gated: {} };
+    const [{ learnedDraftTools }, { permissionOf }, { readToolSettings }] = await Promise.all([import("./tools.js"), import("./tool-gate.js"), import("./tool-plane.js")]);
+    const server = readToolSettings(agents.dir).settings;
+    return learnedDraftTools(revision.body.tools, (name) => permissionOf(name, server as never, (revision.body.toolSettings ?? {}) as never));
+  }
   async function needAgent(id: string): Promise<AgentEntry> {
     const entry = ID.test(id) ? await agents.get(id) : null;
     if (!entry) throw new ApiError("not_found", `no agent ${id}`);
@@ -1464,7 +1534,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       // ended (a call a crash cut makes `tools` unknown, never `tokens`). An unknown meter counts the run as unpriced on it.
       // An ended run's are its store's figures (metersOf keeps them, never its timeline), read for its lines by meter and,
       // by any group, for what a run of unknown cost is known to have spent.
-      const read = (group === "meter" && usd !== 0) || usd === null ? (live ? { tools: toolCostOf(live.rows), tokens: null, browser: { usd: toolCostOf(live.rows, "browser"), seconds: null }, others: toolCostOf(live.rows.filter((r) => r.tool_name !== "browser")), known: { tokens: 0, browser: knownToolCostOf(live.rows, "browser"), others: knownToolCostOf(live.rows, "browser", true) } } : metersOf(row)) : undefined;
+      const read = (group === "meter" && usd !== 0) || usd === null ? (live ? { tools: toolCostOf(live.rows), tokens: null, browser: { usd: toolCostOf(live.rows, "browser"), seconds: null }, others: toolCostOf(live.rows, "browser", true), known: { tokens: 0, browser: knownToolCostOf(live.rows, "browser"), others: knownToolCostOf(live.rows, "browser", true) } } : metersOf(row)) : undefined;
       // A run whose cost is unknown still spent what is known of it (so_far: each meter's known dollars): that is in the
       // total and its lines, and the run is counted unpriced, so a total is never below a line of its own and reads as
       // the lower bound unpriced_runs says it is.
@@ -1857,7 +1927,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         const { issues, warnings } = await workflowIssues(body.workflow, body.tools as string[] | undefined);
         // What a save refuses on this host (a model node's tool, a code node where none runs), and what it lacks yet.
         if (!issues.length) {
-          for (const blocker of await blockersOf(env, { kind: "workflow", workflow: body.workflow as never, ...(body.tools ? { tools: body.tools as string[] } : {}) }, settings.get(), { offers }).catch(() => [])) {
+          for (const blocker of await blockersOf(env, { kind: "workflow", workflow: body.workflow as never, ...(body.tools ? { tools: body.tools as string[] } : {}) }, settings.get(), { offers, mcp: mcpTools }).catch(() => [])) {
             if (blocker.host) warnings.push(blocker.message);
             else issues.push({ path: "", code: "NOT_RUNNABLE_HERE", message: blocker.message });
           }
@@ -1997,7 +2067,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         await needAgent(id);
         const header = (name: string) => (typeof req.headers[name] === "string" ? (req.headers[name] as string) : undefined);
         const body = found.name === "writeLearningFile" ? await noteBody(req, MAX_BODY) : undefined;
-        const written = await writeNote(data, id, second!, { ifMatch: header("if-match"), ifNoneMatch: header("if-none-match"), body, refuse: learningSecrets(), approve: found.name === "approveLearningFile", restore: found.name === "restoreLearningFile" });
+        const written = await writeNote(data, id, second!, { ifMatch: header("if-match"), ifNoneMatch: header("if-none-match"), body, refuse: learningSecrets(), approve: found.name === "approveLearningFile", restore: found.name === "restoreLearningFile", draftTools: () => learnedDraftToolsOf(id) });
         // A name holding a secret (one the checks let by) is never echoed, not even as where the note is.
         const shown = secretsShown(learningSecrets());
         const located = written.status === 201 && shown.name(written.file) === written.file;
@@ -2096,7 +2166,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     // address. A browser is shown a page that says which names work; a script, the same in the error.
     if (names && !names.has(hostName(req.headers.host) ?? "")) {
       if (/\btext\/html\b/i.test(String(req.headers.accept ?? ""))) return sendHostRefused(req, res);
-      return fail(new ApiError("forbidden", `unexpected Host header: ${HOST_FIX}`));
+      return fail(new ApiError("forbidden", `unexpected Host header: ${hostFix(req.socket.localPort ?? 0)}`));
     }
     // Routed on the path as sent: a parsed URL folds `..` and `%2E%2E` segments away, and a file path must see them.
     const raw = (req.url ?? "/").split("?")[0]!;
@@ -2173,6 +2243,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     await relay?.close();
     // Before the lock goes: the image's last record lands first (box-image.ts), never after the next server's start.
     await image?.close();
+    // The box network proxy goes with the server that owns it (box-egress-vm.ts); its volume stays for the next start.
+    await egress?.close();
     await webhooks.close();
     await new Promise((done) => (server.close(done), server.closeAllConnections()));
     agents.close();

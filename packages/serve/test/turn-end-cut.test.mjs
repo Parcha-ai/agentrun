@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { startServe } from "../dist/index.js";
 import { DatabaseSync } from "node:sqlite";
-import { agent, client, FAUX, follow, scratch, serve, withEnv } from "./support.mjs";
+import { agent, client, FAUX, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
 
 const CUT = new URL("./fixtures/faux-harness-turn-end-cut.mjs", import.meta.url).pathname;
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
@@ -40,7 +40,7 @@ test("a follow-up whose turn ended showing nothing, its process killed before th
   // entry, with no content), and the root's turn end is the write held open.
   const ended = hold.since.lastIndexOf("faux.turn_end");
   assert.ok(ended >= 0 && hold.since.lastIndexOf("pi.assistant") > ended, `written since the arm: ${hold.since.join(", ")}`);
-  assert.equal(JSON.parse(await readFile(join(data, "runs", runId, "run.json"), "utf8")).holder?.pid, hold.pid, "the held process is the run's");
+  assert.equal(JSON.parse(await readFile(join(runDir(data, runId), "run.json"), "utf8")).holder?.pid, hold.pid, "the held process is the run's");
   process.kill(hold.pid, "SIGKILL");
 
   // No message after the kill: the relaunched process writes the turn's end, interrupted, and the run waits for the person.
@@ -87,7 +87,7 @@ async function queuedRelaunch(t, armed, reaching, holds) {
   let hold = null;
   for (const end = Date.now() + 55_000; !(hold = JSON.parse(await readFile(held, "utf8").catch(() => "null"))); await sleep(50)) assert.ok(Date.now() < end, reaching);
   holds(hold);
-  assert.equal(JSON.parse(await readFile(join(data, "runs", runId, "run.json"), "utf8")).holder?.pid, hold.pid, "the held process is the run's");
+  assert.equal(JSON.parse(await readFile(join(runDir(data, runId), "run.json"), "utf8")).holder?.pid, hold.pid, "the held process is the run's");
   // The run's process and the server go down together: the next server counts no message waiting.
   process.kill(hold.pid, "SIGKILL");
   closed = true;
@@ -106,7 +106,7 @@ async function queuedRelaunch(t, armed, reaching, holds) {
       early = { status: view.status, final_answer: view.result?.final_answer ?? null };
       break;
     }
-    const holder = JSON.parse(await readFile(join(data, "runs", runId, "run.json"), "utf8").catch(() => "{}")).holder?.pid;
+    const holder = JSON.parse(await readFile(join(runDir(data, runId), "run.json"), "utf8").catch(() => "{}")).holder?.pid;
     if (view.status === "working" && view.state === "working" && holder && holder !== hold.pid) break;
     assert.ok(Date.now() < end, `the run opens again: last ${view.status}/${view.state}`);
   }
@@ -146,7 +146,7 @@ test("a follow-up still queued behind an answerless turn whose end was written, 
 /** The run's store entries, read once its process lets go of the store; a read that finds it held tries again. */
 function storeEntries(data, runId) {
   for (let tries = 0; ; tries++) {
-    const db = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
+    const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
     try {
       return db.prepare("SELECT record FROM entries ORDER BY id").all().map((row) => JSON.parse(String(row.record)));
     } catch (error) {
@@ -156,7 +156,7 @@ function storeEntries(data, runId) {
     }
   }
 }
-const holderOf = (data, runId) => JSON.parse(readFileSync(join(data, "runs", runId, "run.json"), "utf8")).holder?.pid;
+const holderOf = (data, runId) => JSON.parse(readFileSync(join(runDir(data, runId), "run.json"), "utf8")).holder?.pid;
 const gone = (pid) => { try { process.kill(pid, 0); return false; } catch { return true; } };
 
 for (const harness of ["claude-agent", "codex"]) {

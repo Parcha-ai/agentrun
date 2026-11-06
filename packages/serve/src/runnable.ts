@@ -12,8 +12,9 @@ import type { BoxOffer } from "./boxes.js";
 import { boxAvailability, placeFix, RUN_BOXES } from "./place.js";
 import { allows, BOUND_TOOLS, CALL_TOOLS, grantedTools, missingEnv, NODE_TOOLS, toolOf, workflowTools } from "./tools.js";
 import { capabilityOf, DENIED, isUnavailable, NO_PARALLEL_KEY, type Pickable, planeFor, type ToolSettingsMap, whyUnavailable } from "./tool-plane.js";
-import { permissionOf } from "./tool-gate.js";
+import { denyPlace, permissionFrom, permissionOf } from "./tool-gate.js";
 import { PARALLEL_KEY_ENV } from "./decisions.js";
+import { keyNeeded } from "./key-words.js";
 import { wireName } from "./catalog.js";
 import { mcpHeaderProblem, mcpNameOf } from "./mcp-gateway.js";
 import { type McpTool, toolSchemaProblems } from "@parcha/agentrun-kernel";
@@ -67,7 +68,7 @@ export const CODE_NODES_ENV = "AGENTRUN_SERVE_CODE_NODES";
 /** What keeps `revision` from running in `env` under the server's tool `settings` (tool-plane.ts). `boxes`: what this
  *  server's box registry set up at its start (boxes.ts); none, every box is unavailable. `offers`: the harnesses' offers
  *  the server already holds (its reading); none given, they are probed here. */
-export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape, settings: ToolSettingsMap = {}, { capped = false, boxes = [], offers, mcp }: { capped?: boolean; boxes?: readonly BoxOffer[]; offers?: readonly HarnessCapability[]; mcp?: (server: string) => readonly McpTool[] | undefined } = {}): Promise<Blocker[]> {
+export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape, settings: ToolSettingsMap = {}, { capped = false, boxes = [], offers, mcp }: { capped?: boolean; boxes?: readonly BoxOffer[]; offers?: readonly HarnessCapability[]; mcp?: (server: string) => readonly (McpTool & { grantable?: false; reason?: string })[] | undefined } = {}): Promise<Blocker[]> {
   const out: Blocker[] = [];
   /** A web tool its run would resolve unavailable (tool-plane.ts): a warning at save, a 409 at a run, never another
    *  provider in its place. One set to deny is not: its run starts, and the gate refuses each call. */
@@ -78,7 +79,7 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
   /** A bound tool whose variables this host does not set: a warning at save, a 409 at a run. */
   const unset = (field: string, tool: string) => {
     const vars = missingEnv(toolOf(tool)!, env);
-    if (vars.length) out.push({ field, reason: NOT_SET_UP, message: `This server's environment does not set what the tool needs: the tool ${tool} needs ${vars.join(" and ")}.`, host: true, missing: { tool, vars } });
+    if (vars.length) out.push({ field, reason: NOT_SET_UP, message: `The tool ${tool} needs ${keyNeeded(vars)}.`, host: true, missing: { tool, vars } });
   };
   const harness = revision.harness ?? DEFAULT_HARNESS;
   const offer = (offers ?? (await harnessOffers(env))).find((h) => h.id === harness);
@@ -101,7 +102,8 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
         const named = mcpNameOf(tool);
         const saved = named && mcp?.(named.server);
         const listed = saved && saved.map((t) => t.name);
-        const schema = saved && named ? saved.find((t) => t.name === named.tool)?.inputSchema : undefined;
+        const listedTool = saved && named ? saved.find((t) => t.name === named.tool) : undefined;
+        const schema = listedTool?.inputSchema;
         const declared = schema ? mcpHeaderProblem(schema) : undefined;
         // On claude-agent the CLI drops a tool whose schema fails the kernel's check, or whose root holds anyOf, allOf or
         // oneOf (harness-claude's check, measured on the pinned CLI), without a word: refused here, not missing at the run.
@@ -109,6 +111,9 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
         if (!named) out.push({ field, reason: "not_an_option", message: `${tool} is not an MCP tool's name: mcp:<server>/<tool>, the server's name in lowercase letters, digits and -.`, host: false, tool });
         // claude-agent's own tools are its MCP server `hands`: a remote server of that name could never be called there.
         else if (named.server === "hands") out.push({ field, reason: "not_an_option", message: `${tool} names the MCP server hands, a name the harnesses keep for their own tools: save the server under another name.`, host: false, tool });
+        // A meta tool runs other actions by name: a grant of it could not name the action (mcp-meta.ts). Refused before
+        // the harness's check, since no host setup makes it grantable.
+        else if (listedTool?.grantable === false) out.push({ field, reason: "not_an_option", message: `${tool} can't be granted: ${listedTool.reason}`, host: false, tool });
         else if (!MCP_HARNESSES.includes(harness)) out.push({ field, reason: NOT_SET_UP, message: `${tool} runs on ${MCP_HARNESSES.join(" and ")} here; on ${harness} MCP tools are not bound yet.`, host: true, tool });
         else if (!listed) out.push({ field, reason: "not_an_option", message: `No MCP server ${named.server} is saved on this server: add it in Settings → MCP servers first.`, host: false, tool });
         else if (!listed.includes(named.tool)) out.push({ field, reason: "not_an_option", message: `The MCP server ${named.server} has no tool ${named.tool}; its tools are ${listed.join(", ") || "none"}.`, host: false, tool });
@@ -137,6 +142,13 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
     else if ("refused" in resolved) out.push({ field: revision.model ? "definition.model" : "definition.harness", reason: NOT_SET_UP, message: resolved.refused, host: true, harness });
     return out;
   }
+  // A workflow's own grants hold a known MCP meta tool to the same rule (mcp-meta.ts): refused at the save, never a
+  // workflow that cannot launch.
+  (revision.tools ?? []).forEach((tool, index) => {
+    const named = tool.startsWith("mcp:") ? mcpNameOf(tool) : undefined;
+    const listed = named ? mcp?.(named.server)?.find((t) => t.name === named.tool) : undefined;
+    if (listed?.grantable === false) out.push({ field: `definition.tools[${index}]`, reason: "not_an_option", message: `${tool} can't be granted: ${listed.reason}`, host: false, tool });
+  });
   // A workflow's model nodes run on pi here; on another harness they are not bound yet, and never run on pi instead.
   if (harness !== DEFAULT_HARNESS) out.push({ field: "definition.workflow", reason: NOT_SET_UP, message: `A workflow runs on pi here; on ${harness} its model nodes are not bound yet.`, host: true, harness });
   const { inspectWorkflow } = await import("@parcha/agentrun-dsl");
@@ -173,7 +185,7 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
     // ask (which it could never get), would be refused mid-run (app.ts runEffect), so the run never starts.
     // Held to its settings key: a legacy name (fetch_page) takes its capability's permission (web_fetch's), as the gate does.
     else if (permissionOf(capabilityOf(tool), settings as never, (revision.toolSettings ?? {}) as never) === "ask") out.push({ field: "definition.workflow", reason: NOT_SET_UP, message: `This workflow's call node calls ${capabilityOf(tool) === tool ? tool : `${tool} (${capabilityOf(tool)})`}, which is set to ask, and a workflow's call node can't wait for an approval: set it to allow for this agent.`, host: true, asks: capabilityOf(tool) });
-    else if (permissionOf(capabilityOf(tool), settings as never, (revision.toolSettings ?? {}) as never) === "deny") out.push({ field: "definition.workflow", reason: NOT_SET_UP, message: `This workflow's call node calls ${capabilityOf(tool) === tool ? tool : `${tool} (${capabilityOf(tool)})`}, which is set to deny on this server.`, host: true, denied: capabilityOf(tool) });
+    else if (permissionOf(capabilityOf(tool), settings as never, (revision.toolSettings ?? {}) as never) === "deny") out.push({ field: "definition.workflow", reason: NOT_SET_UP, message: `This workflow's call node calls ${capabilityOf(tool) === tool ? tool : `${tool} (${capabilityOf(tool)})`}, which is set to deny ${denyPlace(permissionFrom(capabilityOf(tool), settings as never, (revision.toolSettings ?? {}) as never).from)}.`, host: true, denied: capabilityOf(tool) });
   }
   const granted = await grantedTools(revision);
   for (const tool of new Set([...named.nodes.filter((name) => allows(NODE_TOOLS, name)), ...named.calls.filter((name) => allows(CALL_TOOLS, name))])) {

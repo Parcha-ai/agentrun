@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { answerWith, note } from "./fixtures/faux-learn.mjs";
 import { copyOf, ended, git, KEEPS, LEARN, learnedIn, learner, NOTHING_YET, onMain, learningRows, made, mergesOf, reflectRows, repoOf, savedOf, settled, started, turnOf, wholeIn } from "./learn-support.mjs";
-import { scratch, serve } from "./support.mjs";
+import { runDir, scratch, serve } from "./support.mjs";
 
 const FILE = "check-units.md";
 const NOTE = note("Check units", "Convert every amount to one unit before comparing", "Amounts in one answer came in cents and in dollars.\n");
@@ -92,7 +92,7 @@ for (const harness of ["pi", "claude-agent", "codex"]) {
     assert.ok(section.includes("## Check units (check-units.md)\n\nConvert every amount to one unit before comparing\n\nAmounts in one answer came in cents and in dollars."), section);
     assert.ok(!section.includes(LINE), "every note is whole, so the index adds nothing");
     assert.equal(readFileSync(join(copyOf(data, two), FILE), "utf8"), onMain(NOTE), "the note was in run 2's .learning/");
-    assert.equal(JSON.parse(readFileSync(join(data, "runs", two, "learning.json"), "utf8")).seed, main);
+    assert.equal(JSON.parse(readFileSync(join(runDir(data, two), "learning.json"), "utf8")).seed, main);
     // It used the note, read as the job's first call: the note by its name, MEMORY.md (read too) no note at all. In its
     // view, and in every list, as serve.json keeps it.
     assert.deepEqual([readsOf(second.rows, READS[0]), readsOf(second.rows, READS[1])], [["success"], ["success"]], "run 2 read both");
@@ -108,6 +108,6 @@ for (const harness of ["pi", "claude-agent", "codex"]) {
     assert.equal("learned" in second.view.learning, false, "run 2 learned nothing");
     assert.equal(git(repo, ["rev-parse", "main"]), main);
     assert.equal(learningRows(second.rows).length, 1);
-    assert.equal(existsSync(join(data, "runs", two, "learning-proposal.json")), false, "nothing was proposed");
+    assert.equal(existsSync(join(runDir(data, two), "learning-proposal.json")), false, "nothing was proposed");
   });
 }

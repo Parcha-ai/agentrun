@@ -9,7 +9,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { after, before, test } from "node:test";
-import { agent, follow, scratch, serve } from "./support.mjs";
+import { agent, follow, runDir, scratch, serve } from "./support.mjs";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const OUTPUT_PRICED = new URL("./fixtures/faux-output-priced.mjs", import.meta.url).pathname;
@@ -30,7 +30,7 @@ after(async () => {
 /** The run's runner records of `kind`, read from its store once its process has let it go. */
 function records(runId, kind) {
   for (let tries = 0; ; tries++) {
-    const db = new DatabaseSync(join(server.data, "runs", runId, "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
+    const db = new DatabaseSync(join(runDir(server.data, runId), "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
     try {
       return db.prepare("SELECT record FROM entries").all().map((row) => JSON.parse(String(row.record))).filter((entry) => entry.kind === kind);
     } catch (error) {
@@ -59,7 +59,7 @@ async function cutByCrash(t, harness, cap) {
   }
   await writeFile(go, "");
   // This run's own process, by its own record: never this test's process (which the server runs in) or another run's.
-  const { holder } = JSON.parse(await readFile(join(data, "runs", runId, "run.json"), "utf8"));
+  const { holder } = JSON.parse(await readFile(join(runDir(data, runId), "run.json"), "utf8"));
   assert.ok(Number.isInteger(holder.pid) && holder.pid !== process.pid, JSON.stringify(holder));
   process.kill(holder.pid, "SIGKILL");
   return { api, runId };
@@ -84,6 +84,6 @@ test(`${harness}: a capped run whose process dies mid-request, when the held wor
   const run = (await api("GET", `/runs/${runId}`)).body;
   assert.deepEqual([run.status, run.state, run.error, run.pending?.kind], ["input_required", "waiting", null, "budget"], JSON.stringify(run));
   // To run it the cap would have to be $1.6404 spent and the next request's least, $0.1024: $1.75 up to the cent.
-  assert.match(run.pending.said, /^Not sent: the run has spent \$1\.6404 of its \$1\.7404 cap, and its next \S+ request needs at least \$0\.11\. Raise the cap to at least \$1\.75 to run it\.$/);
+  assert.match(run.pending.said, /^Not sent: this run has spent \$1\.64 of its \$1\.7404 cap, and the next step needs at least \$0\.11\. Raise the cap to at least \$1\.75 to continue\.$/);
   assert.equal(records(runId, "runner.request").length, 2, "the third request is refused before its record");
 });

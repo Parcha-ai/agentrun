@@ -11,19 +11,19 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import { startServe } from "../dist/index.js";
-import { agent, client, FAUX, follow, scratch, serve, withEnv } from "./support.mjs";
+import { agent, client, FAUX, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const CUT = new URL("./fixtures/faux-harness-turn-end-cut.mjs", import.meta.url).pathname;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-const recordOf = (data, runId) => { try { return JSON.parse(readFileSync(join(data, "runs", runId, "run.json"), "utf8")); } catch { return null; } };
+const recordOf = (data, runId) => { try { return JSON.parse(readFileSync(join(runDir(data, runId), "run.json"), "utf8")); } catch { return null; } };
 const gone = (pid) => { try { process.kill(pid, 0); return false; } catch { return true; } };
 const shown = (rows) => rows.map((r) => [r.kind, r.summary]);
 
 /** The run's store entries, read once its process lets go of the store; a read that finds it held tries again. */
 function storeEntries(data, runId) {
   for (let tries = 0; ; tries++) {
-    const db = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
+    const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
     try {
       return db.prepare("SELECT record FROM entries ORDER BY id").all().map((row) => JSON.parse(String(row.record)));
     } catch (error) {

@@ -14,7 +14,7 @@ import { durableDecisions } from "@parcha/agentrun-pi/durable";
 import { startServe } from "../dist/index.js";
 import { DECISION_KEY_FD_ENV, decisionsOf, FAUX_JEV_ENV, jevRoute } from "../dist/decisions.js";
 import { FAUX_ENV } from "../dist/model.js";
-import { client, FAUX, flowAgent, follow, scratch, serve, storeRun, withEnv } from "./support.mjs";
+import { client, FAUX, flowAgent, follow, runDir, scratch, serve, storeRun, withEnv } from "./support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 import { CANARY } from "./fixtures/faux-jev.mjs";
 import { CANARY as PARALLEL_CANARY } from "./fixtures/faux-parallel.mjs";
@@ -97,7 +97,7 @@ async function startFlow(api, steps, output, { schemas = {}, tools, tool_setting
 /** The run's process, once it serves its door (after its app, which reads the key, has returned): its pid. */
 async function processOf(data, runId, not) {
   for (let i = 0; ; i++) {
-    const record = JSON.parse(await readFile(join(data, "runs", runId, "run.json"), "utf8").catch(() => "{}"));
+    const record = JSON.parse(await readFile(join(runDir(data, runId), "run.json"), "utf8").catch(() => "{}"));
     const pid = record.holder?.pid;
     if (record.status === "running" && record.holder?.serve && pid && pid !== not && existsSync(`/proc/${pid}`)) return pid;
     assert.ok(i < 400, "the run's process serves");
@@ -262,7 +262,7 @@ test("a System One request that fails after it was sent (a 503) is sent once, an
   assert.equal((await seen()).length, 1, "a request that may have been answered and billed is never sent again");
   // An escalated run ends completed and waits for review, never failed.
   assert.deepEqual([run.status, run.error, run.review?.kind], ["completed", null, "decision_interrupted"], JSON.stringify([run.error, run.review]));
-  assert.deepEqual(escalations(join(data, "runs", runId, "store", "run.sqlite")), ["decision_interrupted"], "the run waits for review as an interrupted decision");
+  assert.deepEqual(escalations(join(runDir(data, runId), "store", "run.sqlite")), ["decision_interrupted"], "the run waits for review as an interrupted decision");
 });
 
 test("each decision Jev answers is booked at TypeSafe's published price as an estimate, and the run's cost is their sum, once", async (t) => {
@@ -281,7 +281,7 @@ test("each decision Jev answers is booked at TypeSafe's published price as an es
   assert.deepEqual((await seen()).map((c) => [c.path, c.authorized, c.questions]), [["/v1/systemone", true, ["is_coi"]], ["/v1/systemone", true, ["is_coi"]]], "one System One request per decision, sent with the key the server's environment names");
   // The fake answers each call with 120 input tokens and none out; TypeSafe prices input at $0.042 per million.
   const each = (120 * 0.042 + 0 * 0) / 1_000_000;
-  const rows = durableDecisions(join(data, "runs", runId, "store", "run.sqlite"));
+  const rows = durableDecisions(join(runDir(data, runId), "store", "run.sqlite"));
   assert.deepEqual(rows.map((row) => [row.kind, row.answers.is_coi.noul]), [["judge", 0.92], ["judge", 0.92]], "each decision's receipt is a row of the run's store");
   assert.deepEqual(rows.map((row) => row.cost_usd), [each, each], "each receipt holds its own estimate");
   assert.equal(run.cost.usd, each + each, "the run's cost is the two decisions' sum, counted once");
@@ -460,7 +460,7 @@ test("a node asking what its provider cannot give is refused before the run, by 
   const { last } = await follow(api, runId, ["completed", "failed"]);
   const run = (await api("GET", `/runs/${runId}`)).body;
   assert.equal(last.status, "failed", JSON.stringify(run));
-  assert.match(failures(join(data, "runs", runId, "store", "run.sqlite")).join("\n"), /judge node "coi" requires evidence, and the decision provider jev gives none/);
+  assert.match(failures(join(runDir(data, runId), "store", "run.sqlite")).join("\n"), /judge node "coi" requires evidence, and the decision provider jev gives none/);
   assert.deepEqual(await seen(), [], "the request was never sent");
 });
 
@@ -471,7 +471,7 @@ test("a node's timeoutMs bounds its decision: with Jev never answering, the requ
   const runId = await startFlow(api, [{ ...judge, provider: "jev", timeoutMs: 200 }, probe()]);
   // Jev's own deadline is 30 s: a run that ends well inside it ended on the node's bound.
   await follow(api, runId, ["completed", "failed"], { deadlineMs: 20_000 });
-  assert.deepEqual(escalations(join(data, "runs", runId, "store", "run.sqlite")), ["decision_interrupted"]);
+  assert.deepEqual(escalations(join(runDir(data, runId), "store", "run.sqlite")), ["decision_interrupted"]);
 });
 
 test("a workflow whose decision cost is unknown and whose model request is priced reads its cost unknown, before and after the server restarts", async (t) => {
@@ -488,7 +488,7 @@ test("a workflow whose decision cost is unknown and whose model request is price
   const { last } = await follow(api, runId, ["completed", "failed"]);
   const before = (await api("GET", `/runs/${runId}`)).body;
   assert.equal(last.status, "completed", JSON.stringify(before.error));
-  assert.equal(durableDecisions(join(data, "runs", runId, "store", "run.sqlite"))[0].cost_usd, null, "Jev counts no tokens: the decision's cost is unknown");
+  assert.equal(durableDecisions(join(runDir(data, runId), "store", "run.sqlite"))[0].cost_usd, null, "Jev counts no tokens: the decision's cost is unknown");
   const rows = (await api("GET", `/runs/${runId}/timeline?limit=500`)).body.rows;
   assert.deepEqual(rows.filter((row) => row.kind === "decision").map((row) => row.usage), [{ usd: null, requests: 1 }], "the decision's own cost is unknown");
   const usage = rows.findLast((row) => row.kind === "usage");
@@ -524,7 +524,7 @@ test("an ended workflow run whose decisions cannot be read after the server rest
   await closeFirst();
   // The twin's decisions unreadable and the rest of its store as it was: each decision document's newest revision is a
   // delta no reader can apply.
-  const twinStore = join(data, "runs", twin, "store", "run.sqlite");
+  const twinStore = join(runDir(data, twin), "store", "run.sqlite");
   const db = new DatabaseSync(twinStore);
   try {
     const { changes } = db.prepare(`INSERT INTO document_revisions (document_id, seq, kind, version, content) SELECT document_id, MAX(seq) + 1, 'delta', MAX(version), '[["unknown"]]' FROM document_revisions WHERE document_id IN (SELECT id FROM documents WHERE kind LIKE '"agentrun.decisions%') GROUP BY document_id`).run();
@@ -564,7 +564,7 @@ test("an ended workflow run with no store file keeps its known cost after the se
   const known = (await api("GET", `/runs/${runId}`)).body.cost.usd;
   assert.ok(typeof known === "number" && known > 0, `the run's cost is known: ${known}`);
   await closeFirst();
-  const store = join(data, "runs", runId, "store");
+  const store = join(runDir(data, runId), "store");
   for (const name of await readdir(store)) await rm(join(store, name), { force: true });
   const next = await startServe({ data, port: 0, faux: priced, fauxJev: FAUX_JEV, drainTimeout: "5s" });
   t.after(() => next.close());
@@ -674,7 +674,7 @@ test("a node naming the provider parallel is answered by Parallel, sent the key 
   const calls = await seen();
   assert.deepEqual(calls.parallel.map((c) => [c.path, c.authorized, c.questions]), [["/v1/decisions", true, ["is_coi"]]], "one Parallel request, with the canary key");
   assert.deepEqual(calls.jev.map((c) => [c.path, c.authorized, c.questions]), [["/v1/systemone", true, ["is_coi"]]], "and one Jev request, for the node that names no provider");
-  const rows = Object.fromEntries(durableDecisions(join(data, "runs", runId, "store", "run.sqlite")).map((row) => [row.node, row]));
+  const rows = Object.fromEntries(durableDecisions(join(runDir(data, runId), "store", "run.sqlite")).map((row) => [row.node, row]));
   assert.deepEqual(Object.keys(rows).sort(), ["coi", "coi-parallel"]);
   assert.deepEqual([rows["coi-parallel"].answers.is_coi.noul, rows["coi-parallel"].model], [0.31, "parallel-fast"], "Parallel's answer");
   assert.equal(rows["coi-parallel"].cost_usd, 0.001, "booked at Parallel's list price");

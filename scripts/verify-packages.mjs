@@ -50,7 +50,8 @@ async function run(command, args, cwd = root, allowFailure = false, commandEnv =
 }
 const json = async path => JSON.parse(await readFile(path, 'utf8'));
 const forbid = [
-  ['machine-specific path', /(?:\/(?:home|Users)\/[^/\s"']+\/|[A-Za-z]:\\Users\\[^\\\s"']+\\)/],
+  // A /home/ or /Users/ right after a route parameter (`{name}`, not `${...}`) is an API route template (/agents/{agent_id}/home/files/{path}).
+  ['machine-specific path', /(?:(?<!(?<!\$)\{[A-Za-z0-9_]+\})\/(?:home|Users)\/[^/\s"']+\/|[A-Za-z]:\\Users\\[^\\\s"']+\\)/],
   ['private service endpoint', /https?:\/\/(?:localhost\b|127\.\d+\.\d+\.\d+\b|10\.\d+\.\d+\.\d+\b|192\.168\.\d+\.\d+\b|172\.(?:1[6-9]|2\d|3[01])\.\d+\.\d+\b|169\.254\.\d+\.\d+\b|[a-z0-9.-]+\.(?:internal|local|localhost)\b)/i],
   ['embedded credential value', /\b(?:api[_-]?key|access[_-]?token|client[_-]?secret|password)\s*[:=]\s*["'][A-Za-z0-9_./+=-]{24,}["']/i],
   ['private key', /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/],
@@ -74,8 +75,10 @@ const allowedExtraFiles = {
   'run-adapters-codex': ['package/vendor/durable-harness/UPSTREAM.json'],
   // The server's bin is its launcher, which hands the server its secrets over a pipe (launcher/agentrun-serve).
   serve: ['package/launcher/agentrun-serve'],
-  // `npx @parcha/agentrun` is a command, not a library: its bin and the module the bin loads, plain JavaScript with no build.
-  agentrun: ['package/bin/agentrun.mjs', 'package/lib/start.mjs'],
+  // `npx @parcha/agentrun` is a command, not a library: its bin and the module the bin loads, plain JavaScript with no build,
+  // and the API's CLI with its command table generated from the server's OpenAPI document (scripts/generate-clients.mjs) and
+  // its wait-and-follow module (follow.mjs).
+  agentrun: ['package/bin/agentrun.mjs', 'package/lib/start.mjs', 'package/lib/cli.mjs', 'package/lib/follow.mjs', 'package/lib/commands.generated.mjs'],
 };
 const allowedEndpoints = {
   'run-adapters-claude-agent': [
@@ -89,11 +92,6 @@ const allowedEndpoints = {
     ['dist/host/proxy.d.ts', 'http://127.0.0.1:<port>'],
   ],
   'pi-browser': [
-    // Stagehand's trace export is pointed at a closed loopback port (the discard port): nothing listens, nothing leaves the host.
-    // The request observer owns the URL (it exempts that export from its holds) and the driver's types carry it.
-    ['dist/core/effects.js', 'http://127.0.0.1:9/v1/traces'],
-    ['dist/core/effects.d.ts', 'http://127.0.0.1:9/v1/traces'],
-    ['dist/driver/stagehand.d.ts', 'http://127.0.0.1:9/v1/traces'],
     // The DevTools endpoint of the Chrome the provider started itself, on the free port it chose.
     ['dist/providers/cdp.js', 'http://127.0.0.1:${port}'],
     ['dist/providers/cdp.js', 'http://127.0.0.1:${local.port}'],
@@ -113,6 +111,11 @@ const allowedEndpoints = {
   'run-adapters-codex': [
     // A session's model proxy binds the loopback only, on a port it chose, and gives Codex that address as its provider.
     ['dist/host/proxy.js', 'http://127.0.0.1:${address.port}'],
+  ],
+  agentrun: [
+    // The CLI's last resort for the server started on this machine: the address agentrun-serve binds by default.
+    ['lib/cli.mjs',
+      'http://127.0.0.1:7340/v2'], // key-gate: loopback-rule the default address of the server started on this machine
   ],
   serve: [
     // The address agentrun-serve binds by default, which its quick start points a client at.
@@ -138,7 +141,7 @@ try {
     assert.equal(text, JSON.stringify(JSON.parse(text), null, 2) + '\n', `packages/${entry.name}/package.json is not canonical two-space JSON: a key appears twice, or the layout differs`);
   }
   receipt.checks.push('Every packages/*/package.json is canonical two-space JSON, so no key appears twice.');
-  const packageDirectories = ['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent', 'serve', 'pi-git-remote', 'pi-agent-learn', 'learn', 'decisions', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'harness', 'agentrun'];
+  const packageDirectories = ['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent', 'serve', 'pi-git-remote', 'pi-agent-learn', 'learn', 'decisions', 'computer', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'harness', 'agentrun'];
   const tarballs = [];
   const attributed = [];
   for (const directory of packageDirectories) {

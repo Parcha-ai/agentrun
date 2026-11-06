@@ -4,7 +4,9 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer, request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { existsSync, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { DatabaseSync } from "node:sqlite";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { openStoreReader } from "@parcha/pi-durable-agent";
 import { startServe } from "../dist/index.js";
@@ -114,7 +116,9 @@ export function client(baseUrl, token) {
       req.once("error", reject).end();
     });
   return Object.assign(api, { fresh });
-  async function api(method, path, body, headers = {}) {
+  /** `raiseCheck: false`: no raise guard read after this request (raisedReadsQueued), for a test whose server goes away
+   *  once the raise is answered. */
+  async function api(method, path, body, headers = {}, { raiseCheck = true } = {}) {
     const res = await fetch(`${baseUrl}${path}`, {
       method,
       headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), ...(body === undefined ? {} : { "content-type": "application/json" }), ...headers },
@@ -125,8 +129,18 @@ export function client(baseUrl, token) {
     try {
       json = JSON.parse(text);
     } catch {}
+    if (raiseCheck && method === "PATCH" && res.status === 200 && json?.resumed === true) await raisedReadsQueued(baseUrl, token, path);
     return { status: res.status, headers: res.headers, body: json ?? text };
   };
+}
+
+/** A guard on every raise a test makes: a raise that resumed a paused run (PATCH /runs/{id}, `resumed: true`) leaves it
+ *  reading as a run that goes on, at once. Never input_required with no pending, which `agentrun runs wait` and the
+ *  client's runs.wait take as a run that needs someone; its follow-up turn is still to go (runs.ts statusOf). */
+async function raisedReadsQueued(baseUrl, token, path) {
+  if (!/^(?:\/v2)?\/runs\/[^/?]+$/.test(path)) return;
+  const run = await (await fetch(`${baseUrl}${path}`, { headers: token ? { authorization: `Bearer ${token}` } : {} })).json();
+  assert.ok(!(run?.status === "input_required" && run?.pending === null), `PATCH ${path} resumed the run, which then reads input_required with no pending: ${JSON.stringify(run)}`);
 }
 
 export const agent = (id, extra = {}) => ({ definition: { id, version: 1, name: id, instructions: "Answer.", skills: [], tools: [], ...extra } });
@@ -263,8 +277,32 @@ export const cookieOf = (res) => (res.headers["set-cookie"] ?? []).map((line) =>
 /** Once the process that held run `runId` (its run.json's holder) has exited: only then is the run's store free to read.
  *  A paused run's process marks the run released itself (sleeping) before it closes its store and exits, so run.json's
  *  status is not that signal; the process gone is, as it is for the server (runs.ts, a run no longer live). */
+/** Whether the server took run `runId` back: its row's claim is the server's, and its WAL is checkpointed. */
+function takenBack(data, runId) {
+  let holder;
+  try {
+    const db = new DatabaseSync(join(data, "store.sqlite"), { readOnly: true, timeout: 1_000 });
+    try {
+      holder = db.prepare("SELECT claim_holder FROM runs WHERE id = ?").get(runId)?.claim_holder;
+    } finally {
+      db.close();
+    }
+  } catch {
+    return false;
+  }
+  if (holder !== "server") return false;
+  // Its size read once: a checkpoint may remove the WAL between two looks.
+  try {
+    return statSync(join(runDir(data, runId), "store", "run.sqlite-wal")).size === 0;
+  } catch (error) {
+    if (error.code === "ENOENT") return true;
+    throw error;
+  }
+}
+
 export async function letGo(data, runId, { deadlineMs = 20_000 } = {}) {
-  const file = join(data, "runs", runId, "run.json");
+  const file = join(runDir(data, runId), "run.json");
+  let gone;
   for (const end = Date.now() + deadlineMs; ; await new Promise((resolve) => setTimeout(resolve, 50))) {
     let record = null;
     try {
@@ -273,7 +311,40 @@ export async function letGo(data, runId, { deadlineMs = 20_000 } = {}) {
       // Read while it was rewritten: read again.
     }
     const pid = record?.holder?.pid;
-    if (Number.isInteger(pid) && !processAlive(pid)) return;
+    // Its process gone, and a live server's take-back done (the claim is the server's, its WAL checkpointed), so a reader
+    // of its store meets no lock; with no server to take it back (one killed), 5 s after its process went.
+    if (Number.isInteger(pid) && !processAlive(pid)) {
+      gone ??= Date.now();
+      if (takenBack(data, runId) || Date.now() - gone > 5_000) return;
+    }
     assert.ok(Date.now() < end, `the run's process did not exit: ${JSON.stringify(record)}`);
   }
+}
+
+/** Run `runId`'s folder on the disk of data directory `data`: `<data>/disk/agents/<agent>/runs/<run>`, its agent read from
+ *  the run's row in store.sqlite (read-only). A run the store does not know yet gets a folder no run has. */
+export function runDir(data, runId) {
+  let agent;
+  try {
+    const db = new DatabaseSync(join(data, "store.sqlite"), { readOnly: true });
+    try {
+      agent = db.prepare("SELECT agent_id FROM runs WHERE id = ?").get(runId)?.agent_id;
+    } finally {
+      db.close();
+    }
+  } catch {}
+  const folder = agent === undefined ? "unknown-agent" : `${agent.toLowerCase()}-${createHash("sha256").update(agent, "utf8").digest("hex").slice(0, 16)}`;
+  return join(data, "disk", "agents", folder, "runs", runId);
+}
+
+/** The run folders' names on the disk of data directory `data`, across its agents' folders. */
+export function runIds(data) {
+  const agents = join(data, "disk", "agents");
+  return (existsSync(agents) ? readdirSync(agents) : []).flatMap((agent) => (existsSync(join(agents, agent, "runs")) ? readdirSync(join(agents, agent, "runs")) : [])).sort();
+}
+
+/** Each agent's runs/ folder on the disk of data directory `data`. */
+export function runsFolders(data) {
+  const agents = join(data, "disk", "agents");
+  return (existsSync(agents) ? readdirSync(agents) : []).map((agent) => join(agents, agent, "runs")).filter((folder) => existsSync(folder));
 }

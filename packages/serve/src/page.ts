@@ -12,7 +12,7 @@ import type { Owner } from "./owner.js";
 import { fileURLToPath } from "node:url";
 import { storeApi } from "@parcha/pi-durable-agent/serve";
 import { ApiError } from "./errors.js";
-import { HOST_REFUSED_PAGE } from "./host-check.js";
+import { hostRefusedPage } from "./host-check.js";
 
 const CSP = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 const SECURITY = { "content-security-policy": CSP, "x-content-type-options": "nosniff", "referrer-policy": "no-referrer", "cache-control": "no-store" };
@@ -53,7 +53,7 @@ function send(req: IncomingMessage, res: ServerResponse, status: number, type: s
   res.end(req.method === "HEAD" ? undefined : bytes);
 }
 /** A browser's answer for a Host the server refuses (host-check.ts): 403, a fixed page under the console's CSP. */
-export const sendHostRefused = (req: IncomingMessage, res: ServerResponse) => send(req, res, 403, HTML, HOST_REFUSED_PAGE);
+export const sendHostRefused = (req: IncomingMessage, res: ServerResponse) => send(req, res, 403, HTML, hostRefusedPage(req.socket.localPort ?? 0));
 const refuse = (req: IncomingMessage, res: ServerResponse, error: ApiError) =>
   send(req, res, error.status, "application/json", JSON.stringify(error.body(String(res.getHeader("x-request-id") ?? ""))), error.headers);
 
