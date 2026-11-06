@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import { after } from 'node:test';
 import { toolSchemaProblems } from '@parcha/agentrun-kernel';
 import { memorySessionStore, SCHEMA_CHECK_CASES } from '@parcha/agentrun-kernel/testing';
-import { codexAdapter } from '@parcha/agentrun-harness-codex';
+import { codexAdapter, codexToolProblems } from '@parcha/agentrun-harness-codex';
 import { findCodex } from '../dist/binary.js';
 import { verifyCodexBinary } from '../dist/verify.js';
 import { codexSchemaProblems, describeDropped, describedDescription, DESCRIBED_HEADING, stripDescribed } from '../dist/schema.js';
@@ -114,6 +114,17 @@ test('the adapter refuses a session whose tool Codex would mangle, before anythi
   assert.equal(problems.length, 2);
   assert.match(problems[0], /^bad: \/properties\/p\/not: not is not supported by Codex 0\.164\.0/);
   assert.match(problems[1], /^worse: \/properties\/p\/enum: enum with a non-scalar value/);
+});
+
+test('codexToolProblems is the check the adapter runs, for a host to run sooner; the adapter has no MCP client of its own and refuses spec.mcp', () => {
+  const codex = codexAdapter({ model: 'luna-test', provider: { origin: 'https://provider.invalid', credential: () => 'k' }, sessionsDir: '/nonexistent', standIn: { command: process.execPath, args: ['-e', ''] } });
+  const tool = (name, inputSchema) => ({ name, description: 'd', inputSchema, replay: 'never', call: async () => ({ text: 'ok' }) });
+  const spec = { key: 'step:mcp', label: 'x', system: [], tools: [tool('mcp__fake__greet', P({ not: {} }))], context: 'fresh' };
+  assert.deepEqual(codexToolProblems('mcp__fake__greet', P({ not: {} })), codex.check(spec));
+  assert.deepEqual(codexToolProblems('mcp__fake__add', P({ type: 'number' })), []);
+  assert.equal(codex.capabilities().mcpClient, undefined);
+  const servers = [{ name: 'fake', tools: [{ name: 'add', inputSchema: { type: 'object' } }] }];
+  assert.deepEqual(codex.check({ ...spec, tools: [], mcp: { servers, call: async () => ({ content: [] }) } }), ['Codex sessions take no MCP servers (spec.mcp): give their tools as host tools']);
 });
 
 test('the recorded column: a schema the adapter does not refuse comes out of Codex as the original less exactly the described keywords', () => {
