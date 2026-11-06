@@ -31,17 +31,19 @@ export function openLineUrl(line, publicUrl) {
 export const TAIL_LINES = 20;
 
 /** The server's lines this command says too, as they come: its banner's boxes line (whether new agents get the Docker
- *  box, or why not) and the Docker box image's first build, as it starts and ends. */
-export const SAID = /^(Boxes: |Preparing the Docker box image |The Docker box image )/;
+ *  box, or why not), the Docker box image's first build, as it starts and ends, and, on a server with a public address
+ *  and no password yet, the setup link with its code, which setup at that address asks for. */
+export const SAID = /^(Boxes: |Preparing the Docker box image |The Docker box image |Set up this server: )/;
 
 /** The address a person opens first, as the server says it: the URL of the first "Open " line of its output that names
  *  one (openLineUrl). That line is the server's interface for it (the plain address today, a single-use sign-in link
  *  once the server prints one), so this command never builds the address itself. Resolves undefined when the output ends
- *  without one. Until then, the last TAIL_LINES lines before it are kept in `seen`: what a start that fails shows. Every
- *  whole line after it goes to `onLine`; the rest of the output is read and dropped, so the server never blocks on a full
- *  pipe. */
-export function openUrl(stdout, publicUrl, seen = [], onLine = () => {}) {
+ *  without one. Until then, the last TAIL_LINES lines before it are kept in `seen`: what a start that fails shows, and each
+ *  goes to `onBefore`. Every whole line after it goes to `onLine`; the rest of the output is read and dropped, so the
+ *  server never blocks on a full pipe. */
+export function openUrl(stdout, publicUrl, seen = [], onLine = () => {}, onBefore = () => {}) {
   const keep = (line) => {
+    onBefore(line);
     seen.push(line);
     if (seen.length > TAIL_LINES) seen.shift();
   };
@@ -176,8 +178,10 @@ export async function main(argv, env = process.env) {
   let told = false;
   const held = [];
   const tell = (line) => SAID.test(line) && (told ? console.error(line) : held.push(line));
+  // A SAID line can come before the "Open " line too (the setup link is printed as the server attaches its owner, before
+  // its banner): it is held and said first, in order.
   const seen = [];
-  const url = await Promise.race([openUrl(child.stdout, env.AGENTRUN_PUBLIC_URL, seen, tell), new Promise((resolve) => { timer = setTimeout(resolve, 60_000); })]);
+  const url = await Promise.race([openUrl(child.stdout, env.AGENTRUN_PUBLIC_URL, seen, tell, tell), new Promise((resolve) => { timer = setTimeout(resolve, 60_000); })]);
   clearTimeout(timer);
   if (url === undefined) {
     child.kill("SIGTERM");

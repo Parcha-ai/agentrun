@@ -4,6 +4,7 @@ import { createRegistry, createSession, defineDocFamily, Harness } from "@earend
 import { SqliteStorage } from "@earendil-works/pi-durable/storage/sqlite";
 import { openNodeSqliteDatabase } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { createHash } from "node:crypto";
+import { existsSync, readdirSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import http from "node:http";
 import { tmpdir } from "node:os";
@@ -20,6 +21,14 @@ export async function scratch() {
   const dir = await mkdtemp(path.join(tmpdir(), "pi-durable-agent-"));
   roots.push(dir);
   return dir;
+}
+
+/** An agent's folder's name on the disk: its id in lower case, then 16 hex digits of the id's SHA-256. */
+export const agentFolder = (id) => `${id.toLowerCase()}-${sha256(id).slice(0, 16)}`;
+/** Every run folder's name on the disk of the store in `dir`, across its agents' folders. */
+export function diskRuns(dir) {
+  const agents = path.join(dir, "disk", "agents");
+  return (existsSync(agents) ? readdirSync(agents) : []).flatMap((agent) => (existsSync(path.join(agents, agent, "runs")) ? readdirSync(path.join(agents, agent, "runs")) : [])).sort();
 }
 
 /** The stored format, declared from outside the package. */

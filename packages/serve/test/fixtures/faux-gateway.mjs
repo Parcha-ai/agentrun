@@ -24,9 +24,9 @@ export const RECORDED_HEADERS = Object.freeze(["authorization", "x-api-key", "an
 
 /**
  * Starts the gateway on 127.0.0.1, on a port of its own.
- * @param {{ text?: string | ((request: GatewayRequest) => string), usage?: { input?: number, output?: number } }} [options]
+ * @param {{ text?: string | ((request: GatewayRequest) => string), usage?: { input?: number, output?: number }, port?: number }} [options]
  *   `text`: what every answer says (or a function of the request); `usage`: the input and output tokens every answer
- *   reports (default 10 in, 2 out).
+ *   reports (default 10 in, 2 out); `port`: the port to listen on (default: one the system picks).
  * @returns {Promise<{ url: string, requests: GatewayRequest[], close(): Promise<void> }>} `url` is the origin
  *   (`http://127.0.0.1:<port>`), with no path.
  * @typedef {{ method: string, path: string, query: string, headers: Record<string, string | undefined>, body: any }} GatewayRequest
@@ -57,7 +57,7 @@ export async function startFauxGateway(options = {}) {
       res.writeHead(404, { "content-type": "application/json" }).end(JSON.stringify({ error: { message: `no route ${path} here` } }));
     });
   });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await new Promise((resolve, reject) => server.once("error", reject).listen(options.port ?? 0, "127.0.0.1", resolve));
   const url = `http://127.0.0.1:${server.address().port}`;
   return {
     url,

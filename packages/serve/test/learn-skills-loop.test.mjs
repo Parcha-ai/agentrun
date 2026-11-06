@@ -9,7 +9,7 @@ import { test } from "node:test";
 import { note } from "./fixtures/faux-learn.mjs";
 import { CAPS } from "../dist/learn/check.js";
 import { ended, git, learner, LEARN, made, mergesOf, reflectRows, repoOf, savedOf, sleep, started } from "./learn-support.mjs";
-import { scratch, serve, withEnv } from "./support.mjs";
+import { runDir, scratch, serve, withEnv } from "./support.mjs";
 
 /** A SKILL.md whose steps hold a fenced code block: a ``` line inside its four-backtick block closes nothing. */
 const SKILL = "---\nname: find-policies\ndescription: Find a store's refund and shipping policies; use when a case asks what they say\n---\n# Find policies\n\n1. Open the policies page first:\n\n```sh\ncurl -s https://shop.example/policies/\n```\n\n2. Then the footer links.\n";
@@ -216,7 +216,7 @@ test("a skill is laid into a run with its name and description alone in its fron
   git(repo, ["commit", "-q", "-m", "a hand edit"]);
   const runId = await started(api, "laid");
   await ended(api, runId);
-  const given = readFileSync(join(data, "runs", runId, "work", ".agents", "skills", "find-policies", "SKILL.md"), "utf8");
+  const given = readFileSync(join(runDir(data, runId), "work", ".agents", "skills", "find-policies", "SKILL.md"), "utf8");
   assert.ok(!given.includes("hooks:") && !given.includes("touch /tmp/never"), given);
   assert.match(given, /^---\nname: find-policies\ndescription: [^\n]+\n---\n/);
 });

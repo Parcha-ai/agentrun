@@ -16,6 +16,7 @@
 // (cap.ts stoppedFigure: what it streamed and an allowance, never more than its worst case). The timeline does not read it, so the run's shown cost
 // is unknown as before. A request the cap refused gets a start mark of its own (`capRefused`), written before pi writes
 // its error entry, so that entry answers its own mark and never stands for an earlier request a stop or a crash cut.
+import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -23,7 +24,7 @@ import type { Api, AssistantMessage, Context, Model, Models } from "@earendil-wo
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { REQUEST_COST, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED } from "@parcha/pi-durable-agent/timeline";
 import type { DurableRun } from "@parcha/pi-durable-disk";
-import { anyAttemptLost, ATTEMPTS, type Attempt, attemptLost, CAP_REFUSED_FIELD, END_NOT_WRITTEN, CLAMP, HELD_FIELD, HELD_USD, MARK_NOT_WRITTEN, markResponseBegan, piEnded, type RefusalFigures, sideRequests, STOPPED_USD, type Stopped } from "./cap.js";
+import { anyAttemptLost, ATTEMPTS, type Attempt, attemptLost, BOUND_FIELD, BOUND_USD, CAP_REFUSED_FIELD, END_NOT_WRITTEN, CLAMP, HELD_FIELD, HELD_USD, MARK_NOT_WRITTEN, markResponseBegan, piEnded, type RefusalFigures, refusalFields, sideRequests, STOPPED_USD, type Stopped } from "./cap.js";
 import { RUN_CANCELLED } from "./files.js";
 import { isConnectCode, isGatewayTimeout } from "@parcha/agentrun-kernel";
 
@@ -133,12 +134,18 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
     const figure = typeof stopped === "function" ? stopped(message) : undefined;
     return typeof figure === "number" && Number.isFinite(figure) ? { [HELD_FIELD]: figure } : heldOf(options);
   };
-  /** A start mark's figures: its worst case, and what the cap limited its output to when it did (CLAMP), so a reply cut
-   *  short there says so on the run's timeline. */
+  /** A request's bound (BOUND_FIELD, when above 0: the run's cost serves it while the request is in flight), as its
+   *  start mark keeps it. */
+  const boundOf = (options: unknown): Record<string, number> => {
+    const bound = (options as Record<symbol, unknown> | undefined)?.[BOUND_USD];
+    return typeof bound === "number" && Number.isFinite(bound) && bound > 0 ? { [BOUND_FIELD]: bound } : {};
+  };
+  /** A start mark's figures: what the cap held it at, its bound, and what the cap limited its output to when it did
+   *  (CLAMP), so a reply cut short there says so on the run's timeline. */
   const startOf = (options: unknown): Record<string, Mark> => {
     const clamp = (options as Record<symbol, unknown> | undefined)?.[CLAMP] as { tokens?: unknown; leftUsd?: unknown; capUsd?: unknown } | undefined;
     const kept: Record<string, Mark> = clamp && typeof clamp.tokens === "number" && typeof clamp.leftUsd === "number" && typeof clamp.capUsd === "number" ? { clamp: { tokens: clamp.tokens, leftUsd: clamp.leftUsd, capUsd: clamp.capUsd } } : {};
-    return { ...heldOf(options), ...kept };
+    return { ...heldOf(options), ...boundOf(options), ...kept };
   };
   /** A cancelled run's request, never sent. It waits for the cancel to reach the run (the request's abort), and then ends
    *  as aborted, as a request the cancel cut does: the turn, or a workflow's node, stops, never failing on the refusal.
@@ -269,12 +276,14 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
   };
   const completeSimple = async (model: Model<Api>, context: Context, options?: Parameters<Models["completeSimple"]>[2]): Promise<AssistantMessage> => {
     const side = sideRequests.get(context);
-    const COMPACTION = { request: side?.label ?? "compaction" };
+    // Its label, and an id of its own: such requests run inside tool calls, which pi runs side by side, so its marks name
+    // it (bounds.ts closes its bound by it).
+    const COMPACTION = { request: side?.label ?? "compaction", requestId: randomUUID() };
     const what = side ? `${side.label} request` : "summary request";
     // A cancelled run sends no summary either; pi writes no entry for a failed summary, so nothing needs marking.
     if (cancelled()) return refuse(model, what, options?.signal, false);
     try {
-      await mark(REQUEST_STARTED, { ...COMPACTION, ...heldOf(options) });
+      await mark(REQUEST_STARTED, { ...COMPACTION, ...heldOf(options), ...boundOf(options) });
     } catch (error) {
       return failed(model, `${MARK_NOT_WRITTEN} (${reason(error)})`);
     }
@@ -322,6 +331,6 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
   });
   // The start mark of a generation request the cap refused (capModels), which never left: pi's error entry answers it. A
   // refusal for room keeps its figures on it (what the cap counted as taken, and the least the request needed).
-  const refused = (figures?: RefusalFigures) => mark(REQUEST_STARTED, { [CAP_REFUSED_FIELD]: true, ...(figures ? { spentUsd: figures.spentUsd, needsUsd: figures.needsUsd } : {}) });
+  const refused = (figures?: RefusalFigures) => mark(REQUEST_STARTED, { [CAP_REFUSED_FIELD]: true, ...refusalFields(figures) });
   return { models: proxy, open, refused };
 }

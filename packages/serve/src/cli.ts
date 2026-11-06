@@ -7,9 +7,9 @@ import { secret } from "./secrets.js";
 import "./quiet-sqlite-warning.js";
 import { parseArgs } from "node:util";
 import { spawn } from "node:child_process";
-import { chmodSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { defaultData, SERVER_FILE } from "./files.js";
+import { defaultData, removeOwnRecord, SERVER_FILE, writeDurableSync } from "./files.js";
 import { stopOnSignals } from "./stop-signals.js";
 import { canOpen } from "./host.js";
 import { resetPassword } from "./owner.js";
@@ -183,14 +183,19 @@ for (const line of early.splice(0)) console.log(line);
 // and the browser's history.
 if (values.open && canOpen(process.env)) spawn(process.platform === "darwin" ? "open" : "xdg-open", [`${publicUrl ?? serve.url}/`], { stdio: "ignore", detached: true }).on("error", () => {}).unref();
 const record = join(resolve(data), SERVER_FILE);
-writeFileSync(record, `${JSON.stringify({ base_url: serve.baseUrl, pid: process.pid, ...(serve.tokenFile ? { token_file: serve.tokenFile } : {}) })}\n`, { mode: 0o600 });
-chmodSync(record, 0o600);
-// One stop per press or process-manager stop; a later signal, or a stop past its deadline, stops at once (stop-signals.ts).
+// The record goes only while it is this server's: a server that takes the lock next writes its own, which this stop must
+// not remove. One stop per press or process-manager stop; a later signal, or a stop past its deadline, stops at once
+// (stop-signals.ts). The stop is in place before the record is written: a SIGTERM sent the moment the record appears is
+// a clean stop that removes it, never the default end by signal that leaves it behind.
 const stop = stopOnSignals({
-  close: () => serve.close(),
+  close: () => (removeOwnRecord(record), serve.close()),
   stopping: () => serve.stopping(),
-  done: (code) => (rmSync(record, { force: true }), process.exit(code)),
+  done: (code) => (removeOwnRecord(record), process.exit(code)),
   say: (line) => console.error(line),
 });
 process.on("SIGINT", stop);
 process.on("SIGTERM", stop);
+// Written whole under a name of its own, then renamed into place: a reader in another process (the npx command, a test
+// waiting for this server) that finds the record reads all of it, never a file made but not yet filled.
+writeDurableSync(record, `${JSON.stringify({ base_url: serve.baseUrl, pid: process.pid, ...(serve.tokenFile ? { token_file: serve.tokenFile } : {}) })}\n`);
+chmodSync(record, 0o600);

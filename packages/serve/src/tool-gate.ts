@@ -40,7 +40,7 @@ import { type Cursor, defineExtension, type Extension, ROOT_CONVERSATION_ID, typ
 import { type Drive, EffectFailure, INTERRUPTED_TEXT, openDrive } from "@parcha/agentrun-kernel/kernel";
 import { boundResult } from "@parcha/agentrun-kernel/process";
 import { type DurableRun, MESSAGE_ORIGIN_KIND } from "@parcha/pi-durable-disk";
-import { readJson, RUN_META } from "./files.js";
+import { dataOfRun, readJson, RUN_META } from "./files.js";
 import { LEARNED_DIR } from "./learning.js";
 import { BOX_WORK } from "./place.js";
 import type { TurnOrigin } from "./learning-run.js";
@@ -202,8 +202,9 @@ export type Executor = (tool: string, args: unknown, callId: string, signal: Abo
 
 /** The mark a tool registration carries when its calls are gated by whoever registered it (the MCP gateway, which marks
  *  its registrations only when it holds this run's gate and park, and enters the gate in each call): RunGate.extension
- *  does not wrap it again. `Symbol.for`, so the mark is the same symbol whichever copy of this module set or reads it. */
-export const GATED_BY_GATEWAY: unique symbol = Symbol.for("agentrun.gatedByGateway");
+ *  does not wrap it again. A private symbol, never `Symbol.for`: a global-registry key could be recreated by any code
+ *  with the string alone. Only code that imports this export can set it (mcp-gateway.ts does). */
+export const GATED_BY_GATEWAY: unique symbol = Symbol("agentrun.gatedByGateway");
 /** A registration that may carry GATED_BY_GATEWAY. */
 export type GatewayMarked = ToolRegistration & { [GATED_BY_GATEWAY]?: true };
 
@@ -217,10 +218,14 @@ export interface Gate {
   spill(callId: string, text: string): string;
 }
 
+/** Where a permission was set (permissionFrom's `from`): the agent's own tool settings, the server's, or the default. */
+export type SettingFrom = "agent" | "server" | "default";
+/** Where a deny was set, in words: the place a person changes it. */
+export const denyPlace = (from: SettingFrom = "server"): string => (from === "agent" ? "for this agent" : from === "default" ? "by default" : "on this server");
 /** The refusal of a call whose tool is set to deny; of one held to another tool's setting (`heldTo`, a shell tool's
- *  bash), naming the setting to change. */
-export const deniedText = (tool: string, heldTo?: string): string =>
-  heldTo && heldTo !== tool ? `Permission denied: ${tool} follows ${heldTo}'s setting, which is deny on this server. Don't retry it.` : `Permission denied: ${tool} is set to deny on this server. Don't retry it.`;
+ *  bash), naming the setting to change and where it was set (`from`: this agent's settings or this server's). */
+export const deniedText = (tool: string, heldTo?: string, from: SettingFrom = "server"): string =>
+  heldTo && heldTo !== tool ? `Permission denied: ${tool} follows ${heldTo}'s setting, which is deny ${denyPlace(from)}. Don't retry it.` : `Permission denied: ${tool} is set to deny ${denyPlace(from)}. Don't retry it.`;
 /** The refusal of an ask where no one can approve it: a server with accounts off, whose answer route takes no token. */
 export const noApproverText = (tool: string): string => `Permission denied: ${tool} needs the owner's approval, and this server has accounts off (AGENTRUN_ACCOUNTS=0), so no one can give it: set the tool to allow or deny in the agent's Tools.`;
 /** Set by the server in a run's environment when no one can approve here (accounts off): the gate refuses each ask. */
@@ -302,17 +307,22 @@ export const RESUME_PREFIX = "[tool approval] ";
 
 /** The one message that resumes a session once a person answered: it names the call it answers (its tool, call id and
  *  arguments), so the model tells it from a person's new input, and carries the call's result, or the refusal. */
-export function resumeText(request: Pick<ApprovalRequest, "tool" | "call_id">, shown: string, decision: "allow" | "deny", result: ToolAnswer): string {
-  // `shown`: the arguments as the server shows them, redacted whole then cut (runs.ts): never the call's own.
+/** The head of the gate's resume message: the call it answers, its arguments as shown (`shown`, redacted whole then cut,
+ *  runs.ts) cut again at 300 characters, and the words that say it is not the person's. The one source of it: the resume
+ *  writes it, and the Timeline strips exactly it from the row a person opens (runs.ts resumeShows). */
+export function resumeHead(request: Pick<ApprovalRequest, "tool" | "call_id">, shown: string): string {
   const args = shown.length > 300 ? `${shown.slice(0, 299)}…` : shown;
-  const head = `${RESUME_PREFIX}This answers your ${request.tool} call ${request.call_id} (arguments ${args}), which waited for a person's approval; it is not a new message from them.`;
+  return `${RESUME_PREFIX}This answers your ${request.tool} call ${request.call_id} (arguments ${args}), which waited for a person's approval; it is not a new message from them.`;
+}
+export function resumeText(request: Pick<ApprovalRequest, "tool" | "call_id">, shown: string, decision: "allow" | "deny", result: ToolAnswer): string {
+  const head = resumeHead(request, shown);
   return decision === "allow" ? `${head} They allowed it, and it ran${result.isError ? " and failed" : ""}. Its result:\n${result.text}` : `${head}\n${result.text}`;
 }
 
 /** The gate of the run `runId` at `where` (its directory, under the data directory's runs/), on its pinned revision:
  *  an agentic run's parks an asked call; a workflow's model node cannot. */
 export function runGate(where: { root: string; work: string }, runId: string, revision: { kind: string; body: { toolSettings?: unknown; harness?: string } }): RunGate {
-  return new RunGate({ root: where.root, work: where.work, data: resolve(where.root, "..", ".."), runId, harness: revision.body.harness ?? "pi" }, (revision.body.toolSettings ?? {}) as PermissionSettings, revision.kind === "agentic", process.env[NO_APPROVER_ENV] !== "1");
+  return new RunGate({ root: where.root, work: where.work, data: dataOfRun(where.root), runId, harness: revision.body.harness ?? "pi" }, (revision.body.toolSettings ?? {}) as PermissionSettings, revision.kind === "agentic", process.env[NO_APPROVER_ENV] !== "1");
 }
 
 /** The gate in a run's process, park mode: its policy, the turn's origin, the calls that wait, and the answers acted on. */
@@ -336,18 +346,24 @@ export class RunGate {
 
   /** A tool's permission now (permissionOf): the revision's own over the server's setting, read at each call, so a change
    *  reaches a live run at its next call. */
-  readonly policy = (tool: string): Permission => {
+  readonly policy = (tool: string): Permission => this.setting(tool).permission;
+  /** Where the permission `policy` gives `tool` was set: the agent's own tool settings, the server's, or the default. */
+  readonly denyFrom = (tool: string): SettingFrom => this.setting(tool).from;
+  private setting(tool: string): { permission: Permission; from: SettingFrom } {
     const key = settingsKeyOf(this.where.harness ?? "pi", tool, this.where.mcpServers);
     // A name nothing maps fails closed: it asks (refused where no one can approve), never allows.
-    if (key === undefined) return "ask";
+    if (key === undefined) return { permission: "ask", from: "default" };
     const server = this.serverSettings();
     // No settings ever read: every tool asks, the shell watchers too (fail closed: an ask nothing read is never lifted),
     // or keeps the revision's own deny.
-    if (server === undefined) return permissionOf(key, {}, this.overrides) === "deny" ? "deny" : "ask";
+    if (server === undefined) {
+      const own = permissionFrom(key, {}, this.overrides);
+      return own.permission === "deny" ? own : { permission: "ask", from: "default" };
+    }
     // A shell tool under every harness's name for it is read as its own name, by bash's key (permissionFrom): a watcher's
     // ask is allow only where bash's ask is set as written.
-    return permissionOf(shellToolOf(tool) ?? key, server, this.overrides);
-  };
+    return permissionFrom(shellToolOf(tool) ?? key, server, this.overrides);
+  }
 
   private lastGood?: PermissionSettings;
   private readonly told = new Set<string>();
@@ -386,7 +402,7 @@ export class RunGate {
     if ((key === "write" || key === "edit") && this.turnOrigin() === "reflect" && underLearning(this.where.work, args)) return { text: NOTE_ONLY_TEXT, isError: true };
     const verdict = this.policy(name);
     if (verdict === "allow") return undefined;
-    if (verdict === "deny") return { text: deniedText(tool, key), isError: true };
+    if (verdict === "deny") return { text: deniedText(tool, key, this.denyFrom(name)), isError: true };
     // No one can answer here: refused at once with why, never parked until a cancel.
     if (!this.approvers) return { text: noApproverText(tool), isError: true };
     if (!this.parks) return { text: `This ${tool} call needs a person's approval, which a workflow's model node cannot wait for; it was not run.`, isError: true };
@@ -529,7 +545,7 @@ export class RunGate {
           continue;
         }
         // An allow runs the call, unless its tool was set to deny since it asked.
-        const result = decision === "deny" ? { text: refusedText(held.tool, answer.note), isError: true } : this.policy(held.tool) === "deny" ? { text: deniedText(held.tool, settingsKeyOf(this.where.harness ?? "pi", held.tool, this.where.mcpServers)), isError: true } : await this.run(held);
+        const result = decision === "deny" ? { text: refusedText(held.tool, answer.note), isError: true } : this.policy(held.tool) === "deny" ? { text: deniedText(held.tool, settingsKeyOf(this.where.harness ?? "pi", held.tool, this.where.mcpServers), this.denyFrom(held.tool)), isError: true } : await this.run(held);
         // And again once the call is done: a stop or a cancel while it ran drops its result, which never reaches the model.
         const after = ((await readJson(join(this.where.root, RUN_META)))?.approvals as Record<string, { decision?: string }> | undefined)?.[held.id];
         if (after?.decision === "canceled" || after?.decision === "withdrawn") {

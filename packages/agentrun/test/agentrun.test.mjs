@@ -117,6 +117,44 @@ test("with AGENTRUN_BOXES not set and Docker answering (a fake docker first on P
   assert.equal(await exited, 0, err);
 });
 
+test("a terminal that closes its pipes after the address (`| head -n 1`) ends no command: a box image line said later goes nowhere, and the server keeps running until it is stopped", { timeout: 120_000 }, async (t) => {
+  const { home, env } = bare(t);
+  delete env.AGENTRUN_BOXES;
+  const dir = mkdtempSync(join(tmpdir(), "agentrun-npx-pipe-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  mkdirSync(join(dir, "bin"));
+  mkdirSync(join(dir, "state"));
+  writeFileSync(join(dir, "bin", "docker"), `#!/bin/sh\nexec '${process.execPath}' '${FAKE_DOCKER}' "$@"\n`, { mode: 0o755 });
+  writeFileSync(join(dir, "state", "build-hold"), "");
+  const child = spawn(process.execPath, [BIN, "--no-open"], { env: { ...env, PATH: `${join(dir, "bin")}:${env.PATH}`, FAKE_DOCKER_STATE: join(dir, "state") }, stdio: ["ignore", "pipe", "pipe"] });
+  const exited = new Promise((resolve) => child.on("exit", resolve));
+  t.after(() => stopChild(child, exited));
+  let out = "";
+  let err = "";
+  child.stdout.on("data", (chunk) => (out += chunk));
+  child.stderr.on("data", (chunk) => (err += chunk));
+  // Read on either pipe: what this test checks is that a line said once the reader has gone ends nothing, wherever it goes.
+  for (let i = 0; !/^Preparing the Docker box image /m.test(out + err); i++) {
+    assert.ok(i < 1000, `the bin printed its lines: ${out}${err}`);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  // The reader goes, as `head -n 1` does once it has its line: both pipes close. The command says its later lines through
+  // console, which drops a write's error; a raw stream write there would end it on the closed pipe (EPIPE).
+  child.stdout.destroy();
+  child.stderr.destroy();
+  rmSync(join(dir, "state", "build-hold"));
+  // The build ends (the server's record of the image says so), and the server says it, a line the command passes on.
+  const record = join(STORE(home), "box-image.json");
+  for (let i = 0; !(existsSync(record) && JSON.parse(readFileSync(record, "utf8")).state === "ready"); i++) {
+    assert.ok(i < 600, "the image's build ended");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  await new Promise((resolve) => setTimeout(resolve, 2_000));
+  assert.equal(child.exitCode, null, "the command is still running after a line it said went nowhere");
+  child.kill("SIGTERM");
+  assert.equal(await exited, 0, "a stop then is a clean one");
+});
+
 test("a subcommand is the server's own, on ~/.agentrun: import --dry-run", { timeout: 60_000 }, async (t) => {
   const { home, env } = bare(t);
   const child = spawn(process.execPath, [BIN, "import", "--dry-run"], { env, stdio: ["ignore", "pipe", "pipe"] });
@@ -184,6 +222,8 @@ if (process.env.STUB_FAIL) { console.log("listen EADDRINUSE: 127.0.0.1:7340 is i
 // STUB_FAIL_STDERR: say why on stderr only (as a lock refusal does) and exit before any line on stdout.
 if (process.env.STUB_FAIL_STDERR) { console.error("agentrun-serve: another server holds this data root (stub)"); process.exit(1); }
 console.log("agentrun-serve on http://127.0.0.1:7399/v2 (stub)");
+// STUB_SETUP: the setup-code line a server with a public URL and no password yet prints.
+if (process.env.STUB_SETUP) console.log("Set up this server: " + process.env.STUB_SETUP);
 console.log("Open " + (process.env.STUB_OPEN || "http://127.0.0.1:7399/"));
 if (process.env.STUB_SIGTERM !== "die") process.on("SIGTERM", () => process.exit(0));
 setInterval(() => {}, 1000);
@@ -290,6 +330,14 @@ test("the lines after the Open line go on, one whole line at a time, however the
   }
   assert.deepEqual(after.filter((line) => start.SAID.test(line)), ["Boxes: docker (on by default; set AGENTRUN_BOXES to change).", "Preparing the Docker box image (first start only, a few minutes); agents can be made now, and their first run waits for it.", "The Docker box image is ready."]);
   assert.equal(start.SAID.test("GET /v2/health 200"), false);
+});
+
+test("with a public URL and no password yet, the server's setup-code line reaches the person (stderr), not stdout", { timeout: 60_000 }, async (t) => {
+  const setup = "https://agentrun.example.com/setup#code=AbCdEfGhIjKlMnOpQrStUv";
+  const run = await throughStub(t, ["--no-open"], { AGENTRUN_PUBLIC_URL: "https://agentrun.example.com", STUB_OPEN: "https://agentrun.example.com/", STUB_SETUP: setup });
+  assert.equal(run.out, "AgentRun is running at https://agentrun.example.com/\n", "stdout stays the one line");
+  assert.match(run.err, new RegExp(`^Set up this server: ${setup.replace(/[.?#/]/g, "\\$&")}$`, "m"), run.err);
+  assert.ok(start.SAID.test(`Set up this server: ${setup}`));
 });
 
 test("an Open line's URL is its first word, an http(s) URL on the server's loopback address; nothing else is", () => {

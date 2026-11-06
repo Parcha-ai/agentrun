@@ -9,7 +9,7 @@ import { createRequire } from "node:module";
 import { join } from "node:path";
 import { test } from "node:test";
 import { ROUTES } from "../dist/server.js";
-import { call, follow, scratch, serve, withEnv } from "./support.mjs";
+import { call, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
 import { firings, made } from "./trigger-support.mjs";
 
 const { Webhook } = createRequire(import.meta.url)("standardwebhooks");
@@ -36,11 +36,15 @@ test("no route but POST /v2/hooks/{id} (and capabilities, the document and healt
   await made(api, "triage");
   const { id, secret } = (await api("POST", "/triggers", hooked("triage"))).body;
   const at = port(baseUrl);
-  const open = new Set(["getCapabilities", "getOpenapi", "getHealth", "receiveHook"]);
+  // mcpOAuthClient: the OAuth client metadata document an authorization server fetches, public by design (mcp-oauth.ts).
+  const open = new Set(["getCapabilities", "getOpenapi", "getHealth", "receiveHook", "mcpOAuthClient"]);
   for (const route of ROUTES) {
     const path = `/v2${route.pattern.source.replace(/^\^|\$$/g, "").replace(/\\\//g, "/").replace(/\\\./g, ".").replace(/\(\[\^\/\]\+\)|\(\.\+\)/g, "x-id")}`;
     const answer = await raw(at, { method: route.method, path, headers: { "content-type": "application/json" }, body: ["POST", "PUT", "PATCH"].includes(route.method) ? "{}" : undefined });
     if (open.has(route.name)) assert.notEqual(answer.status, 500, `${route.name} ${path}`);
+    // The OAuth callback takes no token, only the cookie its own start set in the browser that started it (mcp-oauth.ts):
+    // without that cookie it is 403, and it is served to nothing else.
+    else if (route.name === "mcpOAuthCallback") assert.equal(answer.status, 403, `${route.method} ${path} (${route.name}): ${answer.text.slice(0, 200)}`);
     else assert.equal(answer.status, 401, `${route.method} ${path} (${route.name}) needs the token: ${answer.text.slice(0, 200)}`);
   }
   const body = "{}";
@@ -135,7 +139,7 @@ test("the signature covers the exact bytes: a body serialised again differently 
     assert.equal(answer.status, 202, `${type}: ${answer.text}`);
     const [firing] = await firings(api, id, n + 1);
     assert.equal(firing.status, "started", `${type}: ${JSON.stringify(firing)}`);
-    const { content } = JSON.parse(await readFile(join(data, "runs", firing.run_id, "serve.json"), "utf8")).input;
+    const { content } = JSON.parse(await readFile(join(runDir(data, firing.run_id), "serve.json"), "utf8")).input;
     assert.ok(content.includes(`<trigger-payload source="webhook" untrusted>\n${text}\n</trigger-payload>`), content);
     await follow(api, firing.run_id, ["completed"]);
   }

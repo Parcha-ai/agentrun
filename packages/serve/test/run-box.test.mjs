@@ -17,7 +17,7 @@ import { writesHeld } from "../dist/workspace.js";
 import { DEFAULT_DOCKER_IMAGE, RECIPE_HASH, RECIPE_LABEL } from "../dist/box-image.js";
 import { startServe } from "../dist/index.js";
 import { SERVER_LOCK } from "../dist/server-lock.js";
-import { client, follow, jsonLines, scratch, serve, withEnv } from "./support.mjs";
+import { client, follow, jsonLines, runDir, scratch, serve, withEnv } from "./support.mjs";
 
 const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;
 const FAKE = new URL("./fixtures/fake-docker.mjs", import.meta.url).pathname;
@@ -50,7 +50,7 @@ async function fakeDocker(t, vars = {}) {
 }
 
 function answers(data, runId) {
-  const db = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { readOnly: true });
+  const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true });
   try {
     return db.prepare("SELECT record FROM entries ORDER BY id").all()
       .flatMap((row) => JSON.parse(row.record).model ?? [])
@@ -141,7 +141,7 @@ test("fake docker: one create per run, with no network, serve's user, work/ alon
   assert.ok(!said[3].text.includes(realpathSync(data)), "never the data root");
   assert.equal(said[1].text, "hi");
   for (const [name, value] of Object.entries(PLANTED)) assert.ok(!said[2].text.includes(value), `${name}: the run's environment is not the box's`);
-  assert.equal(readFileSync(join(data, "runs", runId, "work", "out.txt"), "utf8"), "hi");
+  assert.equal(readFileSync(join(runDir(data, runId), "work", "out.txt"), "utf8"), "hi");
   const runs = docker.runs();
   assert.equal(runs.length, 1, "one box for the run's calls");
   const [args] = runs;
@@ -149,7 +149,7 @@ test("fake docker: one create per run, with no network, serve's user, work/ alon
   assert.deepEqual(flag(args, "--user"), [`${process.getuid()}:${process.getgid()}`]);
   // No capability and no new privilege: as root (serve run as uid 0) the box still cannot make a device node in work/.
   assert.deepEqual([flag(args, "--cap-drop"), flag(args, "--security-opt")], [["ALL"], ["no-new-privileges"]]);
-  assert.deepEqual(flag(args, "--mount"), [`type=bind,source=${join(realpathSync(data), "runs", runId, "work")},target=${WORK}`]);
+  assert.deepEqual(flag(args, "--mount"), [`type=bind,source=${join(runDir(realpathSync(data), runId), "work")},target=${WORK}`]);
   assert.deepEqual(flag(args, "--workdir"), [WORK]);
   assert.deepEqual(flag(args, "--env"), ["LANG=C.UTF-8", "HOME=/tmp"], "the fixed environment, each NAME=value: a bare --env NAME would copy the host's");
   for (const label of [`agentrun.run=${runId}`, "agentrun.box=run"]) assert.ok(flag(args, "--label").includes(label), label);
@@ -391,7 +391,7 @@ test("fake docker: a run whose earlier process left a box gets that box's left c
   const run = await api("POST", "/agents/files/runs", { input: { content: JSON.stringify({ probe: [{ wait: go }, { tool: "write", args: { path: "a.txt", content: "resumed" } }, { tool: "read", args: { path: "a.txt" } }] }) } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
   const runId = run.body.run_id;
-  const work = join(realpathSync(data), "runs", runId, "work");
+  const work = join(runDir(realpathSync(data), runId), "work");
   await until(() => existsSync(work), "the run's work/");
   // The box an earlier process of the run made, as Docker would list it: its commands may still change work/.
   const id = "e".repeat(64);
@@ -435,7 +435,7 @@ test("fake docker: a run's box made before every capability was dropped (an olde
   await boxedAgent(api);
   const go = join(await scratch(t), "go");
   const runId = await probe(api, [{ wait: go }, { tool: "bash", args: { command: "printf fresh > out.txt" } }]);
-  const work = join(realpathSync(data), "runs", runId, "work");
+  const work = join(runDir(realpathSync(data), runId), "work");
   await until(() => existsSync(work), "the run's work/");
   const id = "a".repeat(64);
   const labels = { "pi-transport.box": "1", "pi-transport.facts": JSON.stringify({ provider: "docker", workspace: WORK, isolation: "container" }), "agentrun.run": runId, "agentrun.box": "run" };
@@ -459,7 +459,7 @@ test("fake docker: a run's box is found by its label and taken over, its left co
   await boxedAgent(api);
   const go = join(await scratch(t), "go");
   const runId = await probe(api, [{ wait: go }, { tool: "bash", args: { command: "printf adopted > out.txt" } }]);
-  const work = join(realpathSync(data), "runs", runId, "work");
+  const work = join(runDir(realpathSync(data), runId), "work");
   await until(() => existsSync(work), "the run's work/");
   // The box an earlier process of the run made, as Docker would list it.
   const id = "c".repeat(64);
@@ -499,10 +499,10 @@ test("fake docker: a bash timeout kills the command's group in the box, though t
   const [bash] = answers(data, runId);
   assert.equal(bash.error, true);
   assert.match(bash.text, /timed out after 1 seconds/);
-  const pid = Number(readFileSync(join(data, "runs", runId, "work", "k.pid"), "utf8").trim());
+  const pid = Number(readFileSync(join(runDir(data, runId), "work", "k.pid"), "utf8").trim());
   t.after(() => running(pid) && process.kill(pid, "SIGKILL"));
   await until(() => !running(pid), "the timed-out command's kill", 15_000);
-  assert.equal(existsSync(join(data, "runs", runId, "work", "late.txt")), false);
+  assert.equal(existsSync(join(runDir(data, runId), "work", "late.txt")), false);
 });
 
 test("fake docker: a create that fails is the call's error, never a run on this machine, and the container it left is destroyed by its label", { timeout: 90_000 }, async (t) => {
@@ -515,7 +515,7 @@ test("fake docker: a create that fails is the call's error, never a run on this 
   const [bash] = answers(data, runId);
   assert.equal(bash.error, true);
   assert.match(bash.text, /the run's box could not be made: docker could not start a box: docker: Error response from daemon: the fake's start failed/);
-  assert.equal(existsSync(join(data, "runs", runId, "work", "out.txt")), false, "nothing ran on this machine");
+  assert.equal(existsSync(join(runDir(data, runId), "work", "out.txt")), false, "nothing ran on this machine");
   assert.equal(docker.runs().length, 1);
   // Waited on by its rm and its file, not by polling containers(), which could read a file an rm in flight is removing.
   await until(() => docker.removed().length >= 1 && docker.removed().every(docker.gone), "the left container's destroy");
