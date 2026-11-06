@@ -155,3 +155,13 @@ test("a browser charge folds only into a browser step's row: one naming another 
   assert.deepEqual(alone.filter((row) => row.usage && row.kind !== "usage").map((row) => [row.kind, row.summary]), [["phase", "Tool cost: browserbase charged $0.0002 for browser"]], "with no browser call to fold into, its own row, as before");
   assert.equal(alone.find((row) => row.kind === "tool_use").usage, undefined);
 });
+
+test("a browser call's row counts its charges with no price as the usage row does: one call, one not priced, however many it booked", () => {
+  const rows = timelineOf([assistant([call("b1", "snapshot")], 0), charge(null, "b1"), result("b1", "snapshot", "a", 1), assistant([{ type: "text", text: "Done." }], 2), charge(null, "b1", { final: true })]);
+  assert.deepEqual(browserRows(rows)[0].usage, { usd: null, requests: 0, so_far_usd: 0, unpriced: 1 }, "the call's row: 1, as on the usage row");
+  assert.deepEqual(rows.at(-1).usage, { usd: null, requests: 2, so_far_usd: 0.02, unpriced: 1 });
+  assert.equal(rows.at(-1).summary, "Cost so far: $0.0200 known, 1 not priced, over 2 model requests and 1 paid tool call");
+  // A known charge and an unknown one on the same call: what is known, and the call not priced once.
+  const mixed = timelineOf([assistant([call("b1", "snapshot")], 0), charge(0.0001, "b1"), result("b1", "snapshot", "a", 1), charge(null, "b1", { final: true }), charge(null, "b1", { final: true })]);
+  assert.deepEqual(browserRows(mixed)[0].usage, { usd: null, requests: 0, so_far_usd: 0.0001, unpriced: 1 });
+});

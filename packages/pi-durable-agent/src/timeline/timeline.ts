@@ -485,7 +485,7 @@ function createProjector(options: TimelineOptions) {
   const browsers = new Set<number>();
   // Browser charges (BROWSER_CHARGE), folded into their call's row: what each row's charges sum to, the call each session
   // was last charged under, and each conversation's latest browser call.
-  const folded = new Map<TimelineEvent, { known: number; unpriced: number }>();
+  const folded = new Map<TimelineEvent, { known: number; unpriced: boolean }>();
   const sessionCalls = new Map<string, OpenCall>();
   const browserCalls = new Map<number, OpenCall>();
   const children = new Map<number, string>();
@@ -588,14 +588,16 @@ function createProjector(options: TimelineOptions) {
     return call;
   }
 
-  /** Adds a browser charge (`usd`, null when unknown) to the `usage` of its call's row, which is returned. */
+  /** Adds a browser charge (`usd`, null when unknown) to the `usage` of its call's row, which is returned. The row is one
+   *  call, so a charge with no price makes it one not priced (`unpriced: 1`) however many it booked, as the usage row
+   *  counts a paid call once. */
   function foldCharge(row: TimelineEvent, usd: number | null): TimelineEvent {
-    const sum = folded.get(row) ?? { known: 0, unpriced: 0 };
-    if (usd === null) sum.unpriced += 1;
+    const sum = folded.get(row) ?? { known: 0, unpriced: false };
+    if (usd === null) sum.unpriced = true;
     else sum.known += usd;
     folded.set(row, sum);
     const known = Math.round(sum.known * 1e12) / 1e12;
-    row.usage = sum.unpriced > 0 ? { usd: null, requests: 0, so_far_usd: known, unpriced: sum.unpriced } : { usd: known, requests: 0 };
+    row.usage = sum.unpriced ? { usd: null, requests: 0, so_far_usd: known, unpriced: 1 } : { usd: known, requests: 0 };
     return row;
   }
 
