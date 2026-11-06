@@ -8,9 +8,14 @@ func SetStartHooks(t *testing.T, admitted, started func(p Program)) {
 	t.Cleanup(func() { afterAdmit, afterStarted = nil, nil })
 }
 
-// SetEndHooks runs began in EndAll as it begins, and termed once it has sent every guard SIGTERM, for the test's
-// duration.
+// SetEndHooks runs began in EndAll once it refuses new starts, and termed once it has sent every guard SIGTERM, for the
+// test's duration; after the test, starts are let in again.
 func SetEndHooks(t *testing.T, began, termed func()) {
 	endingBegan, guardsTermed = began, termed
-	t.Cleanup(func() { endingBegan, guardsTermed = nil, nil })
+	t.Cleanup(func() {
+		endingBegan, guardsTermed = nil, nil
+		admission.Lock()
+		admission.closed = false
+		admission.Unlock()
+	})
 }

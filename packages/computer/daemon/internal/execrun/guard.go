@@ -19,8 +19,9 @@ import (
 //
 // The daemon starts it as `computerd guard` from /proc/self/exe, in a process group of its own, with an empty
 // environment, and stdin, stdout and stderr that the program inherits: /dev/null or a pipe and two output pipes, or one
-// terminal. The spec comes as one JSON line on fd 3, the control pipe; later lines there ask for a signal to the
-// program's group, and its end (the daemon let go, or died) ends the program. Status leaves on fd 4 as JSON lines: the
+// terminal. Once the program runs, the guard lets go of its copies of the pipes; a terminal it keeps. The spec comes as
+// one JSON line on fd 3, the control pipe; later lines there ask for a signal to the program's group, and its end (the
+// daemon let go, or died) ends the program. Status leaves on fd 4 as JSON lines: the
 // program's pid once it has started, then how it ended, after the last descendant is reaped. Both fds are closed on
 // exec, so the program never holds them. SIGTERM or SIGINT asks the guard to end the program: it sends SIGTERM to the
 // program's group and to every descendant, and SIGKILLs whatever is left KillGrace later.
@@ -96,6 +97,9 @@ func Guard() int {
 		report(guardStatus{StartErrno: int(errno), StartError: err.Error()})
 		return 127
 	}
+	if !spec.Terminal {
+		releaseStdio()
+	}
 	report(guardStatus{Pid: pid})
 	commands := make(chan syscall.Signal, 8)
 	go func() {
@@ -167,6 +171,22 @@ func supervise(pid int, childEnded, stop <-chan os.Signal, commands <-chan sysca
 			graceOver, grace = true, nil
 		case <-tick.C:
 		}
+	}
+}
+
+// releaseStdio points fds 0 to 2 at /dev/null, so the guard holds no copy of the program's pipes: once the program has
+// closed its stdin, a write to it finds no reader and fails at once.
+func releaseStdio() {
+	null, err := syscall.Open(os.DevNull, syscall.O_RDWR|syscall.O_CLOEXEC, 0)
+	for fd := 0; fd <= 2; fd++ {
+		if err == nil {
+			_ = syscall.Dup3(null, fd, 0)
+		} else {
+			_ = syscall.Close(fd)
+		}
+	}
+	if err == nil {
+		_ = syscall.Close(null)
 	}
 }
 
