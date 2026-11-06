@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -80,13 +81,18 @@ func TestInitRefusesToStartWithoutADeadline(t *testing.T) {
 	}
 }
 
+// The tests of init's start need a test binary without cgo, as computerd is built: with cgo, init refuses to start for
+// that (ENOTSUP), and the refusal for a capability it cannot drop (EPERM) and the deadline go untested.
+func TestThisTestBinaryLinksNoCgo(t *testing.T) {
+	if cgoBuild {
+		t.Fatal("this test binary links cgo: init's start is tested only in one without cgo, as computerd is built")
+	}
+}
+
 // dropsHere says whether init, started as this test process is, can leave itself no capability: it holds CAP_SETPCAP
-// or has an empty bounding set, in a binary without cgo. When it cannot, it refuses to start, and why is returned.
+// or has an empty bounding set. When it cannot, it refuses to start, and why is returned.
 func dropsHere(t *testing.T) (bool, string) {
 	t.Helper()
-	if cgoBuild {
-		return false, "this test binary links cgo, where Go cannot make one call on every thread"
-	}
 	status, err := os.ReadFile("/proc/self/status")
 	if err != nil {
 		t.Fatal(err)
@@ -108,11 +114,15 @@ func dropsHere(t *testing.T) (bool, string) {
 	return true, ""
 }
 
-// refusedToStart checks that init refused to start, in words, where it cannot drop every capability.
+// refusedToStart checks that init, having taken its deadline, refused to start, in words, because it cannot drop a
+// capability from its bounding set (EPERM): not for cgo (ENOTSUP), and not for its arguments.
 func refusedToStart(t *testing.T, why string, code int, stderr string) {
 	t.Helper()
-	if code == 0 || !strings.Contains(stderr, "refuses to start") {
-		t.Fatalf("init here (%s): exit %d, stderr %q; want a refusal to start, in words", why, code, stderr)
+	if code != 1 || !strings.Contains(stderr, "refuses to start") || !strings.Contains(stderr, "bounding set") || !strings.Contains(stderr, syscall.EPERM.Error()) {
+		t.Fatalf("init here (%s): exit %d, stderr %q; want exit 1 and a refusal to start that names the bounding set and EPERM", why, code, stderr)
+	}
+	if strings.Contains(stderr, syscall.ENOTSUP.Error()) || strings.Contains(stderr, "--deadline") {
+		t.Fatalf("init here (%s): stderr %q; want the refusal for the bounding set alone, with no ENOTSUP and no word on its deadline", why, stderr)
 	}
 }
 
@@ -129,8 +139,10 @@ func TestInitEndsAtItsDeadline(t *testing.T) {
 	deadline := time.Now().Add(500 * time.Millisecond)
 	code, stderr := computerd(t, 30*time.Second, "init", "--deadline", deadline.UTC().Format(time.RFC3339Nano))
 	if drops, why := dropsHere(t); !drops {
+		// It took the deadline and refused to start, as it must here. Init's end at its deadline is
+		// internal/daemon's TestInitEndsEveryProcessAtItsDeadlineAndExits0, and computerd's in the Docker live tests.
 		refusedToStart(t, why, code, stderr)
-		t.Skip("init refused to start here, as it must: the deadline runs where it can drop every capability (a container)")
+		return
 	}
 	if code != 0 {
 		t.Fatalf("exit code %d at the deadline, want 0; stderr: %s", code, stderr)
@@ -147,8 +159,9 @@ func TestInitTakesTheProvidersDeadline(t *testing.T) {
 	// The form JavaScript's toISOString writes, which the provider passes.
 	code, stderr := computerd(t, 30*time.Second, "init", "--deadline", time.Now().Add(-time.Second).UTC().Format("2006-01-02T15:04:05.000Z"))
 	if drops, why := dropsHere(t); !drops {
+		// It took the deadline in that form, and refused to start only for the bounding set.
 		refusedToStart(t, why, code, stderr)
-		t.Skip("init refused to start here, as it must: the deadline runs where it can drop every capability (a container)")
+		return
 	}
 	if code != 0 {
 		t.Fatalf("exit code %d, want 0 at a deadline already past; stderr: %s", code, stderr)
