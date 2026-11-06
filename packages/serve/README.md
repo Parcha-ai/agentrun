@@ -1234,7 +1234,7 @@ asked by default.
   `mcp_servers` (an agent's own `config` still may not), at the session's model proxy with the session's key, with
   only the granted tools enabled. Each call runs without Codex asking (`default_tools_approval_mode = "approve"`): the
   proxy is the gate. Codex sends a call as soon as it starts it, so the proxy records the call in the session before
-  it sends anything. Each server is `required`, so one that does not start fails the turn.
+  it sends anything. Each server is `required`, so one that does not start fails the turn. A tool whose schema Codex would drop or retype (a `not`, `patternProperties`, ...) is `422` at the save, naming the place and why.
 - **A call** goes to the pinned URL alone, the 2026-07-28 revision first and a 2025-era server through its
   `initialize`; on 2026-07-28 each `x-mcp-header` parameter of the pinned tool is sent as its `Mcp-Param-*` header. No
   redirect is followed, at most 4 MiB is read, and it may take 120 s. The

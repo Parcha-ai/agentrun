@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import { after } from 'node:test';
 import { toolSchemaProblems } from '@parcha/agentrun-kernel';
 import { memorySessionStore, SCHEMA_CHECK_CASES } from '@parcha/agentrun-kernel/testing';
-import { codexAdapter } from '@parcha/agentrun-harness-codex';
+import { codexAdapter, codexToolProblems } from '@parcha/agentrun-harness-codex';
 import { findCodex } from '../dist/binary.js';
 import { verifyCodexBinary } from '../dist/verify.js';
 import { codexSchemaProblems, describeDropped, describedDescription, DESCRIBED_HEADING, stripDescribed } from '../dist/schema.js';
@@ -119,6 +119,14 @@ test('the adapter refuses a session whose tool Codex would mangle, before anythi
 test("the adapter declares Codex's own MCP client: the kernel's proxy mounts the session's MCP door from it, and reads a call's id from callId (its mcpToolCall item's id)", () => {
   const codex = codexAdapter({ model: 'luna-test', provider: { origin: 'https://provider.invalid', credential: () => 'k' }, sessionsDir: '/nonexistent', standIn: { command: process.execPath, args: ['-e', ''] } });
   assert.deepEqual(codex.capabilities(), { fork: false, mcpClient: { callIdMeta: 'callId' } });
+});
+
+test('codexToolProblems is the check the adapter runs on a host tool, for a host to run on a remote MCP tool sooner', () => {
+  const codex = codexAdapter({ model: 'luna-test', provider: { origin: 'https://provider.invalid', credential: () => 'k' }, sessionsDir: '/nonexistent', standIn: { command: process.execPath, args: ['-e', ''] } });
+  const tool = (name, inputSchema) => ({ name, description: 'd', inputSchema, replay: 'never', call: async () => ({ text: 'ok' }) });
+  const spec = { key: 'step:mcp', label: 'x', system: [], tools: [tool('greet', P({ not: {} }))], context: 'fresh' };
+  assert.deepEqual(codexToolProblems('greet', P({ not: {} })), codex.check(spec));
+  assert.deepEqual(codexToolProblems('add', P({ type: 'number' })), []);
 });
 
 test('the recorded column: a schema the adapter does not refuse comes out of Codex as the original less exactly the described keywords', () => {
