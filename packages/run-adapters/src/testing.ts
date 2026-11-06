@@ -32,14 +32,20 @@ export function memorySessionStore(): SessionStore & { keys(): string[] } {
   };
 }
 
+/** What a scripted request reports beside its cost, as a real adapter's proxy reads a response, and how it is measured:
+ *  its tokens (`tokens`, in pi's shape: `input` excludes the cache's reads and writes; default 10 in, 5 out), the input
+ *  bound its body was measured at (`inputTokensMax`; default the prompt's UTF-8 bytes), and a file it waits for once it
+ *  is admitted, before it answers (`until`): a request held in flight until a test lets it go. */
+export type FauxRequest = { tokens?: { input: number; output: number; cacheRead?: number; cacheWrite?: number }; inputTokensMax?: number; until?: string };
+
 /** One model request of the faux harness, and what its reply does. */
 export type FauxAction =
-  | { say: string; usd?: number | null }
-  | { call: string; args?: unknown; usd?: number | null }
+  | ({ say: string; usd?: number | null } & FauxRequest)
+  | ({ call: string; args?: unknown; usd?: number | null } & FauxRequest)
   /** One answer that asks for several tools, run one after another, as Claude Code and Codex run a response's calls.
    *  `bookAfter`: the calls run before the answer's cost is booked, as with Claude Code, whose cost comes in after its
    *  response, so a call can end before the request that asked for it is paid. */
-  | { calls: { call: string; args?: unknown }[]; usd?: number | null; bookAfter?: boolean }
+  | ({ calls: { call: string; args?: unknown }[]; usd?: number | null; bookAfter?: boolean } & FauxRequest)
   | { submit: unknown; usd?: number | null }
   /** The reply ends the turn without a submission: `completed`, or the status `turn` names (a harness that ends its own
    *  turn interrupted, with no stop asked for, ends it so). */
@@ -51,7 +57,7 @@ export type FauxAction =
   /** The harness halts the drive with this reason (a spend cap, a mirror it cannot keep): the turn ends failed, naming it. */
   | { halt: string }
   /** A paid request leaves (its beforeRequest passes) and the process dies before it answers: nothing more resolves. */
-  | { cut: true }
+  | ({ cut: true } & FauxRequest)
   /** A paid request leaves and holds unanswered until the turn is stopped: the stop cuts it, and its cost (what had
    *  streamed) is still booked, as a provider bills a response cut short. */
   | { cutBooked: true; usd?: number | null };
@@ -122,6 +128,13 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
         io.onEvent({ type: "turn_end", status });
         ending?.resolve({ status, ...(error === undefined ? {} : { error }) });
       };
+      const untilExists = async (file: string, signal: AbortSignal) => {
+        const { existsSync } = await import("node:fs");
+        while (!existsSync(file)) {
+          if (signal.aborted) throw signal.reason;
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+      };
       const hang = (signal: AbortSignal) => new Promise<never>((_, reject) => {
         if (signal.aborted) reject(signal.reason);
         else signal.addEventListener("abort", () => reject(signal.reason), { once: true });
@@ -136,7 +149,8 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
             if ("hang" in action) return await hang(signal);
             if ("halt" in action) { turnSignal!.abort(new Error(action.halt)); return await hang(signal); }
             // Measured as a real adapter's proxy measures its body: the prompt's UTF-8 bytes, with nothing a provider adds.
-            const ticket = await io.models.beforeRequest({ model: "faux", inputTokensMax: Buffer.byteLength(JSON.stringify({ system: spec.system, user: prompt }), "utf8") });
+            const measured = "inputTokensMax" in action && typeof action.inputTokensMax === "number" ? action.inputTokensMax : Buffer.byteLength(JSON.stringify({ system: spec.system, user: prompt }), "utf8");
+            const ticket = await io.models.beforeRequest({ model: "faux", inputTokensMax: measured });
             if ("cut" in action) { stats.requests += 1; return await hang(signal); }
             if ("cutBooked" in action) {
               stats.requests += 1;
@@ -150,7 +164,10 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
             const limit = ticket ? ticket.outputTokensMax : undefined;
             await append(FAUX_RECORDS.request, { index, ...(limit === undefined ? {} : { outputTokensMax: limit }) });
             if ("fail" in action) return await end("failed", action.fail);
-            const book = () => io.models.afterRequest({ input: 10, output: 5, usd: action.usd === undefined ? 0.001 : action.usd });
+            // Held in flight, admitted and not answered, until the file it waits for exists (or the turn is stopped).
+            if ("until" in action && typeof action.until === "string") await untilExists(action.until, signal);
+            const tokens = "tokens" in action && action.tokens ? action.tokens : { input: 10, output: 5 };
+            const book = () => io.models.afterRequest({ ...tokens, usd: action.usd === undefined ? 0.001 : action.usd });
             const bookAfter = "calls" in action && action.bookAfter === true;
             if (!bookAfter) await book();
             if ("say" in action) io.onEvent({ type: "text", delta: action.say });
