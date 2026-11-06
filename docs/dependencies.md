@@ -62,7 +62,7 @@ Optional peer/dependency names absent from this lockfile: `bufferutil`, `utf-8-v
 | @aws/lambda-invoke-store | 0.3.0 | Apache-2.0 | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
 | @babel/runtime | 7.29.7 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, run-adapters-claude-agent, serve | no | 1 |
 | @browserbasehq/sdk | 2.21.0 | Apache-2.0 | agentrun, harness, pi-browser, serve | no | 1 |
-| @browserbasehq/stagehand | 4.4.0 | MIT | agentrun, harness, pi-browser, serve | no | 1 |
+| @browserbasehq/stagehand | 4.1.0 | MIT | agentrun, harness, pi-browser, serve | no | 1 |
 | @earendil-works/chord | 1.1.0 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
 | @earendil-works/pi-agent-core | 1.1.0 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-git-remote, serve | no | 1 |
 | @earendil-works/pi-ai | 1.1.0 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
