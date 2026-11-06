@@ -520,8 +520,11 @@ export function cdpProvider(options: CdpOptions, internals: { remove?: RemoveDir
       // Stagehand attaches to the one extension carrying its name: on every attach, any other (one loaded since the last) goes.
       const extensionId = await confinedExtension(local.tag, url, sdkCdpUrl);
       if (extensionId) await soleStagehand(url, extensionId);
-      // The extension lives in this browser and dials it on loopback, never through whatever the host puts in front of the driver.
-      return { sdkCdpUrl, extensionCdpUrl: url };
+      // The extension lives in this browser and dials it on loopback, never through whatever the host puts in front of the
+      // driver: the browser's own socket, or for a guarded session the guard, the one socket the browser can reach (its
+      // socket policy names the guard, and the host's fence lets nothing else through). The guard gives each client an
+      // upstream connection of its own, so a drop on the driver's side never cuts the extension's.
+      return { sdkCdpUrl, extensionCdpUrl: options.chrome.guard ? sdkCdpUrl : url };
     },
 
     async release(ref) {
