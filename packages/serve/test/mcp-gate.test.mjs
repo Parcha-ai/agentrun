@@ -4,19 +4,21 @@
 // approval, with the call's price or "not metered"), the server sees nothing, and the owner's password session answers:
 // an allow runs it once and resumes the run with its result, a deny resumes it with the refusal; a restart while parked
 // loses nothing. A tool its owner priced is held at that price under the run's cap (refused unsent when the cap cannot
-// take it) and booked as the run's tool cost; one with no price runs "not metered". pi (the faux model) and claude-agent
-// (the pinned Agent SDK and Claude CLI). No key, no network.
+// take it) and booked as the run's tool cost; one with no price runs "not metered". pi (the faux model), claude-agent
+// (the pinned Agent SDK and Claude CLI) and codex (the stand-in for Codex's app-server). No key, no network.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { noApproverText } from "../dist/tool-gate.js";
 import { schemaProblems } from "./schema-support.mjs";
-import { agent, call, cookieOf, follow, serve as serveOf, withEnv } from "./support.mjs";
+import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
+import { agent, call, cookieOf, follow, runDir, runRecordOf, scratch, serve as serveOf, withEnv } from "./support.mjs";
 
 const FAUX_MCP = new URL("./fixtures/faux-mcp.mjs", import.meta.url).pathname;
 const TOKEN = `not-a-secret-${"mcp-gate-bearer-0123"}`;
@@ -96,7 +98,7 @@ test("pi: an MCP tool set to deny is refused, the model reads why, and the serve
   const runId = await started(api, "denied", ["mcp:fake/add"], ADD, { extra: { tool_settings: { "mcp:fake/add": { permission: "deny" } } } });
   const { last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 60_000 });
   assert.equal(last.status, "completed");
-  assert.equal(await answerOf(api, runId), "The tool said: Permission denied: mcp:fake/add is set to deny on this server. Don't retry it.");
+  assert.equal(await answerOf(api, runId), "The tool said: Permission denied: mcp:fake/add is set to deny for this agent. Don't retry it.");
   assert.equal(calls(fake).length, 0, "nothing was sent");
 });
 
@@ -159,7 +161,7 @@ test("pi: the run's process killed while a call is parked loses nothing: the sam
   const fake = await addFake(t, api);
   const runId = await started(api, "crash", ["mcp:fake/add"], ADD);
   const pending = await parked(api, runId);
-  const record = JSON.parse(await readFile(join(data, "runs", runId, "run.json"), "utf8"));
+  const record = runRecordOf(data, runId);
   if (record.holder?.pid) process.kill(record.holder.pid, "SIGKILL");
   const again = await parked(api, runId);
   assert.equal(again.id, pending.id, "the same approval");
@@ -178,7 +180,7 @@ test("pi: a tool priced $0.05 under a $0.04 cap is refused unsent in the cap's w
   // A paid call the cap refuses pauses the run for a raise, as any paid tool's does: its price is what it needs.
   const paused = (await api("GET", `/runs/${tight}`)).body;
   assert.deepEqual([paused.state, paused.pending?.kind, paused.pending?.cap_usd, paused.pending?.needs_usd], ["waiting", "budget", 0.04, 0.05], JSON.stringify(paused.pending));
-  assert.match(paused.pending.said, /Not sent: the run has spent \$0 of its \$0\.04 cap, and mcp:fake\/paid could cost up to \$0\.05 \(the price its owner set for mcp:fake\/paid\)/);
+  assert.match(paused.pending.said, /Not sent: this run has spent \$0 of its \$0\.04 cap, and the next step, mcp:fake\/paid, could cost up to \$0\.05 \(the price its owner set for mcp:fake\/paid\)/);
   assert.equal(calls(fake).length, 0, "refused unsent");
   const roomy = await started(api, "roomy", ["mcp:fake/paid"], PAID, { run: { max_cost_usd: 1 } });
   const { rows } = await follow(api, roomy, ["completed"], { deadlineMs: 60_000 });
@@ -277,6 +279,58 @@ test("claude-agent: a priced call through the CLI's own MCP client is held and b
     assert.match(rows.find((row) => row.kind === "phase" && row.tool_name === tool)?.summary ?? "", summary, JSON.stringify(rows.filter((row) => row.kind === "phase")));
   }
   assert.deepEqual([calls(fake, "paid").length, calls(fake, "add").length], [1, 1]);
+});
+
+/** A priced call the cap has no room for pauses the run for a raise in the cap's words, and the server sees nothing. */
+function pausedForRoom(view, fake) {
+  assert.deepEqual([view.state, view.pending?.kind, view.pending?.cap_usd], ["waiting", "budget", 0.04], JSON.stringify(view.pending));
+  assert.ok(view.pending.needs_usd >= 0.05, JSON.stringify(view.pending));
+  // The cap's words, as main says them (#1768).
+  assert.match(view.pending.said, /Not sent: this run has spent \$[\d.]+ of its \$0\.04 cap, and the next step, mcp:fake\/paid, could cost up to \$0\.05 \(the price its owner set for mcp:fake\/paid\)/);
+  assert.equal(calls(fake).length, 0, "refused unsent");
+}
+
+test("claude-agent: a call through the CLI's own MCP client priced $0.05 under a $0.04 cap is refused unsent and pauses the run for a raise", { timeout: 240_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
+  const anthropic = await fakeAnthropic({
+    reply: (request) => (Object.keys(request.results).length ? { text: `The tool said: ${Object.values(request.results)[0]}` } : request.tools.includes("mcp__fake__paid") ? { tool: { name: "mcp__fake__paid", input: { query: "ada" } } } : { text: "Noted." }),
+  });
+  t.after(() => anthropic.close());
+  withEnv(t, { ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}`, ANTHROPIC_BASE_URL: anthropic.url, AGENT_MODEL: "anthropic/claude-haiku-4-5" }, ["AGENT_MODEL_BASE_URL", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "AGENT_MODEL"]);
+  const { api } = await serve(t, { faux: undefined });
+  const fake = await addFake(t, api, { paid: 0.05 });
+  assert.equal((await allowFake(api)).status, 200);
+  const runId = await started(api, "claude-tight", ["mcp:fake/paid"], "Look up ada with the paid tool.", { extra: { harness: "claude-agent", model: "anthropic/claude-haiku-4-5" }, run: { max_cost_usd: 0.04 } });
+  await follow(api, runId, ["input_required"], { deadlineMs: 150_000 });
+  pausedForRoom((await api("GET", `/runs/${runId}`)).body, fake);
+});
+
+test("codex: a call through Codex's own MCP client priced $0.05 under a $0.04 cap is refused unsent and pauses the run for a raise", { timeout: 150_000 }, async (t) => {
+  const standIn = join(await scratch(t), "codex-stand-in.mjs");
+  await copyStandIn(standIn);
+  const gateway = createServer(async (req, res) => {
+    if (!req.url?.startsWith("/v1/")) return void res.writeHead(404).end();
+    let body = "";
+    for await (const chunk of req) body += chunk;
+    const text = JSON.parse(body || "{}").input?.[0]?.content?.[0]?.text ?? "";
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    res.end(`data: ${JSON.stringify({ type: "response.output_text.delta", delta: text })}\n\ndata: ${JSON.stringify({ type: "response.completed", response: { usage: { input_tokens: 10, output_tokens: 10 } } })}\n\ndata: [DONE]\n\n`);
+  });
+  await new Promise((resolve) => gateway.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => gateway.close(resolve)));
+  withEnv(t, {
+    AGENTRUN_CODEX_STANDIN: "1",
+    AGENTRUN_SERVE_CODEX_STANDIN: JSON.stringify({ command: process.execPath, args: [standIn], env: { FAKE_CODEX_MODEL: "remote" } }),
+    AGENT_MODEL_BASE_URL: `http://127.0.0.1:${gateway.address().port}`,
+    AGENT_MODEL: "gpt-test",
+    AGENT_MODEL_API_KEY: `not-a-secret-${"gateway"}`,
+    AGENT_MODEL_PRICE: "1,2,0.5",
+  }, ["AGENT_MODEL_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_API_KEY", "AGENT_MODEL_PRICE", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"]);
+  const { api } = await serve(t, { faux: undefined });
+  const fake = await addFake(t, api, { paid: 0.05 });
+  assert.equal((await allowFake(api)).status, 200);
+  const runId = await started(api, "codex-tight", ["mcp:fake/paid"], 'mcp fake paid {"query":"ada"}', { extra: { harness: "codex" }, run: { max_cost_usd: 0.04 } });
+  await follow(api, runId, ["input_required"], { deadlineMs: 120_000 });
+  pausedForRoom((await api("GET", `/runs/${runId}`)).body, fake);
 });
 
 /** A server for `harness` with the owner signed in and the fake saved: pi on the faux model, claude-agent on the pinned

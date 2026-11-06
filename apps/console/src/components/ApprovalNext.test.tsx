@@ -54,7 +54,7 @@ describe("LiveRun, the next approval with the same status", () => {
     await settle(50);
     const card = host.querySelector("section[aria-label='Approval required']")!;
     expect(card.querySelector("pre")?.textContent).toContain("public.example/2");
-    await act(async () => { button(card, "Allow")!.click(); });
+    await act(async () => { button(card, "Allow once")!.click(); });
     await settle();
     expect(answered).toEqual(["ap_2"]);
   });
@@ -70,7 +70,7 @@ describe("a refusal of one approval while the next one waits", () => {
       // As the live page does: the run is read again (now waiting on the second call) before the refusal comes back.
       onApprove: async () => { root!.render(createElement(RunDetail, props(run(approval(2))))); return WORDS; } });
     act(() => root!.render(createElement(RunDetail, props(run(approval(1))))));
-    await act(async () => { button(host, "Allow")!.click(); });
+    await act(async () => { button(host, "Allow once")!.click(); });
     await settle();
     expect(host.querySelector("section[aria-label='Approval required'] pre")?.textContent).toContain("public.example/2");
     expect([...host.querySelectorAll("[role='alert']")].map((a) => a.textContent)).toContain(`Your answer wasn't taken: ${WORDS}`);
@@ -82,7 +82,7 @@ describe("a refusal of one approval while the next one waits", () => {
     const base: Omit<NeedsYouProps, "asking"> = { failed: [], live: [], agentName: () => "Fetcher", now: () => Date.parse("2026-11-05T10:01:00Z"), onAnswer: async () => null, onRunAgain: async () => ({ started: [], problem: null }), onStop: async () => null,
       onApprove: async () => { root!.render(createElement(NeedsYouStrip, { ...base, asking: [run(approval(2))] })); return WORDS; } };
     act(() => root!.render(createElement(NeedsYouStrip, { ...base, asking: [run(approval(1))] })));
-    await act(async () => { button(host, "Allow")!.click(); });
+    await act(async () => { button(host, "Allow once")!.click(); });
     await settle();
     expect(host.querySelector("section[aria-label='Approval required'] pre")?.textContent).toContain("public.example/2");
     expect([...host.querySelectorAll("[role='alert']")].some((a) => (a.textContent ?? "").includes(`your answer wasn't taken. ${WORDS}`))).toBe(true);

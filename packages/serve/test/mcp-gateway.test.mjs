@@ -7,7 +7,7 @@ import { createServer, request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { mcpRoute, startModelProxy } from "@parcha/agentrun-kernel/host";
+import { startModelProxy } from "@parcha/agentrun-kernel/host";
 import { useSpend } from "../dist/cap.js";
 import { HEADER_SCAN_DEPTH, isParked, MCP_CLIP, mcpCredentialsOf, mcpGateway, mcpHeaderProblem, mcpPinOf, mcpRegistrations } from "../dist/mcp-gateway.js";
 import { deniedText, GATED_BY_GATEWAY, gateOf, waitingText } from "../dist/tool-gate.js";
@@ -92,11 +92,12 @@ test("a redirect is never followed: the credential goes nowhere else", async (t)
 
 test("names that are an object's own properties are servers and tools like any other: the pin and the credentials hold them", async () => {
   const listed = [{ name: "toString", inputSchema: schema }];
-  const source = { server: (name) => (name === "constructor" ? { url: "http://127.0.0.1:9/mcp", tools: listed } : undefined), headers: () => ({ authorization: `Bearer ${TOKEN}` }) };
+  const source = { server: (name) => (name === "constructor" ? { url: "http://127.0.0.1:9/mcp", tools: listed } : undefined), headers: () => ({ headers: { authorization: `Bearer ${TOKEN}` } }) };
   const pin = mcpPinOf(["mcp:constructor/toString", "mcp:toString/add"], source);
   assert.deepEqual(Object.keys(pin), ["constructor"]);
   assert.deepEqual(pin.constructor.tools.map((tool) => tool.name), ["toString"]);
   assert.deepEqual(Object.keys(mcpCredentialsOf(pin, source)), ["constructor"]);
+  assert.deepEqual(mcpCredentialsOf(pin, source).constructor.headers, { authorization: `Bearer ${TOKEN}` });
   const none = mcpGateway({ pin: {}, credentials: {}, work: () => tmpdir() });
   assert.match(textOf(await none.call("constructor", "toString", {}, { signal: signal() })), /not a tool of the MCP server constructor/);
   assert.match(textOf(await none.call("__proto__", "toString", {}, { signal: signal() })), /not a tool/);
@@ -178,7 +179,7 @@ test("a priced call is marked at its price, sent and booked at it; over the run'
   useSpend({ cap: 0.04, spent: () => spent, add: (usd) => void (spent += usd) });
   const refused = await gateway.call("fake", "paid", { query: "ada" }, { signal: signal(), callId: "c1" });
   assert.equal(refused.isError, true);
-  assert.match(textOf(refused), /^spend_cap_reached: Not sent: the run has spent \$0 of its \$0\.04 cap, and mcp:fake\/paid could cost up to \$0\.05 \(the price its owner set for mcp:fake\/paid\)/);
+  assert.match(textOf(refused), /^spend_cap_reached: Not sent: this run has spent \$0 of its \$0\.04 cap, and the next step, mcp:fake\/paid, could cost up to \$0\.05 \(the price its owner set for mcp:fake\/paid\)/);
   assert.deepEqual(entries, [], "no mark: nothing was sent");
   useSpend({ cap: 1, spent: () => spent, add: (usd) => void (spent += usd) });
   assert.equal(textOf(await gateway.call("fake", "paid", { query: "ada" }, { signal: signal(), callId: "c2" })), "paid for ada");
@@ -210,7 +211,7 @@ test("at the session proxy's /mcp/<server>: a client that drops a held tools/cal
   const { fake, gateway, cancelled } = await setup(t);
   const key = "session-key-for-tests";
   const policy = { id: "test", routes: [], keyOf: (headers) => String(headers.authorization ?? "").replace(/^Bearer /, ""), authHeaders: () => ({}), apply: (body) => body, usageOf: () => undefined };
-  const proxy = await startModelProxy({ policy, model: "m", origin: "https://provider.invalid", credential: () => "c", hooks: { beforeRequest: async () => {}, afterRequest: async () => {} }, mcp: mcpRoute(gateway) }, key);
+  const proxy = await startModelProxy({ policy, model: "m", origin: "https://provider.invalid", credential: () => "c", hooks: { beforeRequest: async () => {}, afterRequest: async () => {} }, mcp: { session: gateway, client: { callIdMeta: "claudecode/toolUseId" } } }, key);
   t.after(() => proxy.close());
   const gone = new AbortController();
   const body = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "slow_write", arguments: { line: "x", seconds: 30 } } });
@@ -242,7 +243,7 @@ test("a tool named like an object's own property (__proto__) keeps its price: pi
   const gateway = mcpGateway({ pin: JSON.parse(JSON.stringify({ fake: { url: fake.url, tools: listed, prices: pin.fake.prices } })), credentials: { fake: { url: fake.url, headers: { authorization: `Bearer ${TOKEN}` } } }, work: () => tmpdir(), commit });
   let spent = 0;
   useSpend({ cap: 0.04, spent: () => spent, add: (usd) => void (spent += usd) });
-  assert.match(textOf(await gateway.call("fake", "__proto__", {}, { signal: signal(), callId: "c1" })), /^spend_cap_reached: Not sent: the run has spent \$0 of its \$0\.04 cap, and mcp:fake\/__proto__ could cost up to \$0\.05/);
+  assert.match(textOf(await gateway.call("fake", "__proto__", {}, { signal: signal(), callId: "c1" })), /^spend_cap_reached: Not sent: this run has spent \$0 of its \$0\.04 cap, and the next step, mcp:fake\/__proto__, could cost up to \$0\.05/);
   useSpend({ cap: 1, spent: () => spent, add: (usd) => void (spent += usd) });
   // The call leaves (the fake answers it has no such tool): booked at its price, whatever it answers.
   await gateway.call("fake", "__proto__", {}, { signal: signal(), callId: "c2" });

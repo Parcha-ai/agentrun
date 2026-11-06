@@ -1,15 +1,15 @@
 {
   "request": {
     "method": "GET",
-    "path": "/runs/01a1a4cb-1f7d-7331-af5c-5086065311f5/learning/diff"
+    "path": "/runs/01a1addb-61d4-7bef-9908-3be8d605a371/learning/diff"
   },
   "status": 200,
   "headers": {
     "content-type": "application/json"
   },
   "body": {
-    "base": "f0f289bcaac87dc5120707ac15e30af95364e449",
-    "head": "e804a608ac0ff46a77037a4bf9efbc4ef3cec012",
+    "base": "a9319410191fe03b0540088e8ee19ebdd14c6fe4",
+    "head": "7b7fd8a56793f28fdbfa3e234149b17855c5e98f",
     "files": [
       {
         "path": "MEMORY.md",

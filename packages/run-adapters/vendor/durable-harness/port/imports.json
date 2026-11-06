@@ -23,6 +23,9 @@
       },
       "packages/harness-claude-code/src/cli-names.ts": {
         "harness-claude-code": "src/cli-names.ts"
+      },
+      "packages/harness-codex/test/fake-app-server-mcp.ts": {
+        "harness-codex": "test/fake-app-server-mcp.js"
       }
     }
   },

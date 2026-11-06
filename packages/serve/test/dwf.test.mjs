@@ -9,7 +9,7 @@ import { test } from "node:test";
 import { completer } from "../dist/llm.js";
 import { documentPath, MAX_PAGE_PX, pagesStem, pdfPages } from "../dist/pdf-pages.js";
 import { gated, RUN_PAUSED } from "../dist/pause.js";
-import { flowAgent, follow, scratch, serve, withEnv } from "./support.mjs";
+import { flowAgent, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
 
 /** A fake's key: a stand-in it never checks, held in a name so no key literal sits beside a key variable. */
 const STAND_IN = "faux-test-placeholder";
@@ -142,7 +142,7 @@ test("a workflow with code, pdf_pages and llm calls runs on serve; its graph sho
   const listed = (await api("GET", "/runs?status=paused")).body.runs.map((r) => r.run_id);
   assert.deepEqual(listed, [id]);
   // Its process is up and its workflow's driver open (it writes the live view then), so the first node waits at the gate.
-  for (let i = 0; !existsSync(join(data, "runs", id, "live.json")); i++) {
+  for (let i = 0; !existsSync(join(runDir(data, id), "live.json")); i++) {
     assert.ok(i < 600, "the run's process opens its workflow");
     await sleep(50);
   }
@@ -154,8 +154,7 @@ test("a workflow with code, pdf_pages and llm calls runs on serve; its graph sho
   const run = (await api("GET", `/runs/${id}`)).body;
   assert.deepEqual(run.result.output.count, 3);
   graph = (await api("GET", `/runs/${id}/graph`)).body;
-  assert.deepEqual(Object.keys(graph).sort(), ["decisions", "effects", "graph", "nodes", "read_at", "run", "stale", "totals", "workflow"]);
-  assert.equal(graph.stale, false);
+  assert.deepEqual(Object.keys(graph).sort(), ["decisions", "effects", "graph", "nodes", "read_at", "run", "totals", "workflow"]);
   assert.deepEqual(Object.keys(graph.run).sort(), ["agent", "endedAt", "id", "paused", "revision", "startedAt", "status"]);
   assert.equal(graph.run.status, "completed");
   assert.deepEqual(graph.nodes["/root/steps/0"].items.map((i) => i.status), ["done", "done", "done"]);
@@ -218,10 +217,9 @@ test("a run's graph reads while it goes and while it is paused mid-map at maxCon
     const started = Date.now();
     const answer = await api("GET", `/runs/${id}/graph`);
     assert.equal(answer.status, 200, JSON.stringify(answer.body));
-    assert.equal(answer.body.stale, false, "read live, not from a cache");
-    // A read that waited on the paused run's store would wait until the resume, which comes only after these reads; one that
-    // met a busy store answers at once, marked stale (asserted above). So the bound only has to clear a slow runner: CI's
-    // slowest read was 2.6 s (F30, a merge-queue run on 11-05), against 1 s before.
+    // A read that waited on the paused run's store would wait until the resume, which comes only after these reads; the
+    // graph reads it lock-free, so it never waits. The bound only has to clear a slow runner: CI's slowest read was 2.6 s
+    // (F30, a merge-queue run on 11-05), against 1 s before.
     assert.ok(Date.now() - started < READ_BOUND_MS, `the graph answered in ${Date.now() - started} ms`);
     return answer.body;
   };
@@ -427,7 +425,7 @@ test("a judge naming provider openrouter is answered by the OpenRouter model it 
   assert.equal(run.status, "completed", JSON.stringify(run.error));
   assert.equal(typeof run.result.output.is_coi, "boolean");
   const { durableDecisions } = await import("@parcha/agentrun-pi/durable");
-  const receipts = durableDecisions(join(data, "runs", id, "store", "run.sqlite"));
+  const receipts = durableDecisions(join(runDir(data, id), "store", "run.sqlite"));
   assert.deepEqual(receipts.map((r) => [r.provider, r.model]), [["openrouter", "liquid/d1 (faux)"]], "OpenRouter answered, on the model the node names (the faux marks its answers)");
   const sent = (await readFile(sentWith, "utf8")).split("\n").filter(Boolean).map((line) => JSON.parse(line));
   assert.deepEqual(sent, [{ path: "/api/v1/systemone", auth: `Bearer ${placeholder}` }], "one request, sent with the key handed to the run");

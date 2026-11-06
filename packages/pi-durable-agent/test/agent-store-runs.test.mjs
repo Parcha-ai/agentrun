@@ -1,6 +1,7 @@
 // The agent store's run half: store.startRun pins a revision and seeds the run's folder, store.carryBack ends the run once.
 // Real stores in temp dirs; no model calls. The runs are read with plain SQL, read-only, as serve reads them.
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { existsSync, readdirSync } from "node:fs";
 import { readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -10,6 +11,8 @@ import { AgentHomeError, openStore, openStoreReader } from "../dist/index.js";
 import { scratch } from "./support.mjs";
 import { TOOLS, workflowDoc } from "./workflow-support.mjs";
 
+/** An agent's folder's name on the disk: its id in lower case, then 16 hex digits of the id's SHA-256. */
+const agentFolder = (id) => `${id.toLowerCase()}-${createHash("sha256").update(id, "utf8").digest("hex").slice(0, 16)}`;
 const refused = (code) => (error) => error instanceof AgentHomeError && error.code === code;
 /** The refusal carries no value: nothing of the input (an id, a path, a skill's text) is in its message. */
 const valueFree = (...values) => (error) => values.every((value) => !String(error.message).includes(value));
@@ -43,7 +46,7 @@ test("startRun pins the current revision at start: it returns the verified revis
   assert.equal(run.agentId, agent.id);
   assert.deepEqual({ id: run.revision.id, kind: run.revision.kind }, { id: a.id, kind: "agentic" });
   assert.deepEqual(run.revision.body, a.body);
-  assert.equal(run.dir, path.join(dir, "runs", run.runId));
+  assert.equal(run.dir, path.join(dir, "disk", "agents", agentFolder(agent.id), "runs", run.runId));
   assert.equal(await readFile(path.join(run.workspace, ".agents/skills/read/SKILL.md"), "utf8"), "Read the site.\n");
   assert.ok(existsSync(run.storePath), "the run's own pi-durable store is seeded");
   await store.setCurrent(agent.id, b.id);
@@ -118,10 +121,10 @@ test("a skill whose bytes no longer match their sha256 is refused (format), and 
 
 test("a seed that fails throws and writes no row; the same start works once the cause is gone", async () => {
   const { dir, store, agent } = await aStore();
-  await writeFile(path.join(dir, "runs"), "not a directory");
+  await writeFile(path.join(dir, "disk"), "not a directory");
   await assert.rejects(store.startRun({ agent: agent.id }));
   assert.deepEqual(runs(dir), [], "no row");
-  await rm(path.join(dir, "runs"));
+  await rm(path.join(dir, "disk"));
   const run = await store.startRun({ agent: agent.id });
   assert.equal(runs(dir).length, 1);
   assert.ok(existsSync(run.storePath));
@@ -135,7 +138,8 @@ test("an insert that fails after the seed leaves no row and no directory: the ro
   db.close();
   await assert.rejects(store.startRun({ agent: agent.id }));
   assert.deepEqual(runs(dir), []);
-  assert.deepEqual(existsSync(path.join(dir, "runs")) ? readdirSync(path.join(dir, "runs")) : [], [], "the seeded directory was removed");
+  const folder = path.join(dir, "disk", "agents", agentFolder(agent.id), "runs");
+  assert.deepEqual(existsSync(folder) ? readdirSync(folder) : [], [], "the seeded directory was removed");
   await store.close();
 });
 

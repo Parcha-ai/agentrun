@@ -9,7 +9,7 @@ import { test } from "node:test";
 import { note } from "./fixtures/faux-learn.mjs";
 import { ended, git, learner, LEARN, made, repoOf, started } from "./learn-support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
-import { call, cookieOf, serve, withEnv } from "./support.mjs";
+import { call, cookieOf, runDir, serve, withEnv } from "./support.mjs";
 
 const SKILL = "---\nname: find-policies\ndescription: Find a store's refund and shipping policies\n---\n# Find policies\n\n1. Open the policies page first.\n";
 const DRAFT = JSON.stringify({
@@ -52,8 +52,8 @@ test("the agent's learning lists the skill and the workflow it learned beside it
   assert.deepEqual(schemaProblems(doc, agentSchema, agent), [], JSON.stringify(agent));
   const blob = (path) => git(repo, ["rev-parse", `main:${path}`]);
   const size = (path) => Number(git(repo, ["cat-file", "-s", `main:${path}`]));
-  assert.deepEqual(agent.skills, [{ name: "find-policies", file: SKILL_FILE, description: "Find a store's refund and shipping policies", status: "active", run: runId, bytes: size(SKILL_FILE), etag: `"${blob(SKILL_FILE)}"` }]);
-  assert.deepEqual(agent.workflows, [{ name: "find-policies", file: DRAFT_FILE, readme: README_FILE, description: DESCRIPTION, status: "active", run: runId, bytes: size(DRAFT_FILE), etag: `"${blob(README_FILE)}"` }]);
+  assert.deepEqual(agent.skills, [{ name: "find-policies", file: SKILL_FILE, description: "Find a store's refund and shipping policies", status: "active", run: runId, bytes: size(SKILL_FILE), etag: `"${blob(SKILL_FILE)}"`, last_change: { kind: "learned", by: "run", at: agent.skills[0]?.last_change?.at } }]);
+  assert.deepEqual(agent.workflows, [{ name: "find-policies", file: DRAFT_FILE, readme: README_FILE, description: DESCRIPTION, status: "active", run: runId, bytes: size(DRAFT_FILE), etag: `"${blob(README_FILE)}"`, last_change: { kind: "learned", by: "run", at: agent.workflows[0]?.last_change?.at } }]);
   assert.deepEqual(agent.notes.items.map((item) => item.file), ["check-units.md"], "the notes are notes alone");
   // Each file, as text with its version.
   const read = async (file) => api("GET", `/agents/keeper/learning/files/${enc(file)}`);
@@ -157,8 +157,8 @@ test("a person retires a learned skill or a workflow draft as they retire a note
   assert.equal(git(repo, ["rev-parse", "main"]), main);
   // The next run no longer gets it: not in its pin, not in its work.
   const next = await started(api, "retirer");
-  const pin = JSON.parse(readFileSync(join(data, "runs", next, "learning.json"), "utf8"));
+  const pin = JSON.parse(readFileSync(join(runDir(data, next), "learning.json"), "utf8"));
   assert.ok(!(pin.skills ?? []).some((path) => path.startsWith("find-policies/")), JSON.stringify(pin));
-  assert.throws(() => readFileSync(join(data, "runs", next, "work", ".agents", "skills", "find-policies", "SKILL.md")), /ENOENT/);
+  assert.throws(() => readFileSync(join(runDir(data, next), "work", ".agents", "skills", "find-policies", "SKILL.md")), /ENOENT/);
   await ended(api, next);
 });
