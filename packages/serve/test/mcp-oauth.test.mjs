@@ -173,6 +173,8 @@ test("CIMD only on a public https address: the client id is this server's metada
   assert.equal(body.client_id, `${base}/v2/settings/mcp-servers/oauth/client.json`);
   assert.deepEqual(body.redirect_uris, [`${base}${CALLBACK}`]);
   assert.equal(body.token_endpoint_auth_method, "none");
+  // Public client metadata, and nothing else: a secret or a token added to the document fails here.
+  assert.deepEqual(Object.keys(body).sort(), ["client_id", "client_name", "grant_types", "redirect_uris", "response_types", "token_endpoint_auth_method"]);
 });
 
 test("a run's launch refreshes a token near its expiry, once for launches at the same time; a refused refresh reads expired", async (t) => {

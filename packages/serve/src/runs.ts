@@ -2169,7 +2169,8 @@ export class Runs {
   private mcpFresh(run: Run): Promise<void> | undefined {
     // A test's seam, unset in a server (REFRESH_DELAY_ENV): every launch path waits this long here, as one whose
     // authorization server is slow to answer does.
-    const delay = Number(process.env[REFRESH_DELAY_ENV] ?? 0);
+    // Capped, so a stray value never holds a launch for long; inert unless set.
+    const delay = Math.min(Number(process.env[REFRESH_DELAY_ENV]) || 0, 1_000);
     if (delay > 0) return new Promise<void>((resolve) => setTimeout(resolve, delay)).then(() => this.mcpFreshNow(run));
     return this.mcpFreshNow(run);
   }
