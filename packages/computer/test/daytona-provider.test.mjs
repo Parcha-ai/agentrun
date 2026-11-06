@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { DaytonaProvider } from "../dist/index.js";
-import { API, fakeDaytona, HOSTS, KEY, PROXY, scriptOf, statusText, VERSION } from "./fake-daytona.mjs";
+import { API, DEFAULT_SNAPSHOT, fakeDaytona, HOSTS, KEY, PROXY, scriptOf, statusText, VERSION } from "./fake-daytona.mjs";
 
 const SPEC = { image: "agentrun-debian", lifetimeMs: 600_000, network: "none" };
 const FAST = { requestMs: 2000, createMs: 2000, startMs: 300, deleteMs: 2000, stopMs: 500, uploadMs: 2000, execMs: 2000, helloMs: 1000, pollMs: 1, retryMs: 1, listedMs: 2000, listedStableMs: 0 };
@@ -213,6 +213,111 @@ test("create() asks Daytona for the network as declared", async () => {
 		const read = await provider.network(made.value);
 		assert.deepEqual(read, { ok: true, value: network });
 	}
+});
+
+test('image "default" sends no snapshot field, so Daytona makes the sandbox from its default snapshot; a named one is sent', async () => {
+	const { provider, fake } = setup();
+	assert.deepEqual(provider.check({ ...SPEC, image: "default" }), [], 'check() accepts "default"');
+	const made = await provider.create({ ...SPEC, image: "default" });
+	assert.equal(made.ok, true, JSON.stringify(made));
+	const [post] = created(fake);
+	assert.equal(Object.hasOwn(post.body, "snapshot"), false, "no snapshot key at all for the default snapshot");
+	assert.equal(fake.sandboxes.get(made.value.id).snapshot, DEFAULT_SNAPSHOT, "Daytona reports its own default's name");
+	const attached = await provider.attach({ id: made.value.id });
+	assert.equal(attached.ok, true, JSON.stringify(attached));
+	assert.equal(attached.value.spec.image, DEFAULT_SNAPSHOT, "attach returns the snapshot Daytona reports");
+
+	const named = setup();
+	assert.equal((await named.provider.create(SPEC)).ok, true);
+	assert.equal(created(named.fake)[0].body.snapshot, SPEC.image, "a named snapshot is sent by its name");
+	allToTheFake(fake);
+});
+
+test('drift: a "default" computer is not held to a snapshot name, and is held to everything else', async () => {
+	for (const snapshot of ["daytona-small", "anything-daytona-reports"]) {
+		const { provider } = setup({ readBack: () => ({ snapshot }) });
+		const made = await provider.create({ ...SPEC, image: "default" });
+		assert.equal(made.ok, true, `${snapshot}: ${JSON.stringify(made)}`);
+	}
+	for (const [readBack, words] of [
+		[() => ({ networkBlockAll: false }), /network: declared none, read back open/],
+		[() => ({ autoStopInterval: 15 }), /autoStopInterval: declared 0, read back 15/],
+		[() => ({ public: true }), /public: declared false, read back true/],
+	]) {
+		const { provider, fake } = setup({ readBack });
+		const made = await provider.create({ ...SPEC, image: "default" });
+		assert.equal(made.ok, false);
+		assert.match(made.error.message, words);
+		assert.doesNotMatch(made.error.message, /snapshot:/);
+		assert.equal(fake.sandboxes.size, 0, "the drifted sandbox is deleted");
+	}
+	const { provider } = setup({ readBack: () => ({ snapshot: "other" }) });
+	const named = await provider.create(SPEC);
+	assert.match(named.error.message, /snapshot: declared "agentrun-debian", read back "other"/, "a named snapshot still drifts on its name");
+});
+
+test("the constructor takes autoStopMinutes and autoDeleteMinutes as whole minutes, 0 or more, and refuses anything else in words", () => {
+	const make = (options) => () => new DaytonaProvider({ apiKey: KEY, apiUrl: API, daemonPath: DAEMON, fetch: async () => {}, ...options });
+	for (const value of [-1, 1.5, "30", Number.NaN, Number.POSITIVE_INFINITY, null]) {
+		assert.throws(make({ autoStopMinutes: value }), /autoStopMinutes is a whole number of minutes, 0 or more/, String(value));
+		assert.throws(make({ autoDeleteMinutes: value }), /autoDeleteMinutes is a whole number of minutes, 0 or more/, String(value));
+	}
+	for (const value of [0, 1, 30, 1440]) {
+		assert.doesNotThrow(make({ autoStopMinutes: value }));
+		assert.doesNotThrow(make({ autoDeleteMinutes: value }));
+	}
+});
+
+test("create() sends autoStopMinutes and autoDeleteMinutes as Daytona's autoStopInterval and autoDeleteInterval, and the drift check holds them", async () => {
+	const lifetimes = { autoStopMinutes: 30, autoDeleteMinutes: 0 };
+	const { provider, fake } = setup({}, lifetimes);
+	const made = await provider.create(SPEC);
+	assert.equal(made.ok, true, JSON.stringify(made));
+	const [post] = created(fake);
+	assert.equal(post.body.autoStopInterval, 30);
+	assert.equal(post.body.autoDeleteInterval, 0);
+	assert.equal(post.body.ttlMinutes, 10, "the TTL is sent besides them");
+	assert.equal((await provider.attach({ id: made.value.id })).ok, true, "attach holds the computer to the same lifetimes");
+
+	const defaults = setup();
+	assert.equal((await defaults.provider.create(SPEC)).ok, true);
+	assert.equal(created(defaults.fake)[0].body.autoStopInterval, 0, "unset: no idle stop");
+	assert.equal(created(defaults.fake)[0].body.autoDeleteInterval, -1, "unset: no auto-delete");
+
+	for (const [readBack, words] of [
+		[() => ({ autoStopInterval: 0 }), /autoStopInterval: declared 30, read back 0/],
+		[() => ({ autoStopInterval: 15 }), /autoStopInterval: declared 30, read back 15/],
+		[() => ({ autoDeleteInterval: -1 }), /autoDeleteInterval: declared 0, read back -1/],
+		[() => ({ autoDeleteInterval: 30 }), /autoDeleteInterval: declared 0, read back 30/],
+		[() => ({ autoDeleteInterval: undefined }), /autoDeleteInterval: declared 0, read back nothing/],
+	]) {
+		const drifted = setup({ readBack }, lifetimes);
+		const result = await drifted.provider.create(SPEC);
+		assert.equal(result.ok, false);
+		assert.equal(result.error.code, "refused");
+		assert.match(result.error.message, words);
+		assert.equal(drifted.fake.sandboxes.size, 0, "the drifted sandbox is deleted");
+	}
+
+	const other = setup({}, lifetimes);
+	const deadline = new Date(Date.now() + 600_000).toISOString();
+	const seeded = other.fake.seed({ name: "computer-0000000000ae", autoDestroyAt: deadline, labels: { "agentrun.computer": "1", "agentrun.computer.deadline": deadline } });
+	const attached = await other.provider.attach({ id: seeded.id });
+	assert.equal(attached.ok, false, "a computer made with other lifetimes drifts");
+	assert.match(attached.error.message, /autoStopInterval: declared 30, read back 0/);
+	assert.match(attached.error.message, /autoDeleteInterval: declared 0, read back -1/);
+	assert.ok(other.fake.sandboxes.has(seeded.id), "attach leaves it as it is");
+});
+
+test("with autoDeleteMinutes 0 a stop deletes: release stop is ok, the computer is gone, and a stopped one is never listed", async () => {
+	const { provider, fake } = setup({}, { autoStopMinutes: 30, autoDeleteMinutes: 0 });
+	const made = await provider.create(SPEC);
+	assert.equal(made.ok, true, JSON.stringify(made));
+	assert.deepEqual(await provider.release(made.value, "stop"), { ok: true, value: undefined });
+	assert.equal(fake.sandboxes.has(made.value.id), false, "Daytona deleted it as it stopped");
+	assert.deepEqual(await provider.list({}), { ok: true, value: [] });
+	assert.equal((await provider.connect(made.value)).error.code, "not_found");
+	assert.deepEqual(await provider.release(made.value, "delete"), { ok: true, value: undefined });
 });
 
 test("create() waits out a sandbox still being made, and a 5xx on a read is retried", async () => {

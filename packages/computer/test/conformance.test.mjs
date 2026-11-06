@@ -255,6 +255,26 @@ test("the CLI loads a provider module by path, prints the report, and exits 0 wh
 	assert.match(out.text(), /core PASS 1\/1/);
 });
 
+test("a module's conformanceImage() is the run's image unless --image names one, and its conformanceNotes go in the report", async () => {
+	const out = sink();
+	assert.equal(await main(["--provider", "./fixtures/noted-provider.mjs", "--json"], { stdout: out, cwd: HERE, cases: [pass("health.ping")] }), 0);
+	const report = JSON.parse(out.text());
+	assert.equal(report.image, "module-image");
+	assert.deepEqual(report.notes, ["a stop deletes on this configuration: provider.stop is expected to fail"]);
+	const named = sink();
+	assert.equal(await main(["--provider", "./fixtures/noted-provider.mjs", "--json", "--image", "alpine:3.20"], { stdout: named, cwd: HERE, cases: [pass("health.ping")] }), 0);
+	assert.equal(JSON.parse(named.text()).image, "alpine:3.20", "--image wins");
+	const text = sink();
+	assert.equal(await main(["--provider", "./fixtures/noted-provider.mjs"], { stdout: text, cwd: HERE, cases: [pass("health.ping")] }), 0);
+	const lines = text.text().trimEnd().split("\n");
+	assert.equal(lines.at(-2), "note: a stop deletes on this configuration: provider.stop is expected to fail");
+	assert.match(lines.at(-1), /^core PASS 1\/1/);
+	const plain = sink();
+	assert.equal(await main(["--provider", "./fixtures/fake-provider.mjs", "--json"], { stdout: plain, cwd: HERE, cases: [pass("health.ping")] }), 0);
+	assert.equal(JSON.parse(plain.text()).image, "debian:bookworm-slim", "a module that names no image: the default");
+	assert.equal(Object.hasOwn(JSON.parse(plain.text()), "notes"), false, "no notes, no field");
+});
+
 test("the CLI's --json prints the report object; a Core failure exits 1", async () => {
 	const out = sink();
 	const cases = [pass("health.ping"), pass("exec.argv", { run: async (t) => t.equal(1, 2, "one and two") })];

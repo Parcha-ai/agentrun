@@ -11,6 +11,9 @@ export const PROXY = "https://proxy.daytona.test/toolbox";
 export const HOSTS = ["api.daytona.test", "proxy.daytona.test"];
 export const KEY = "fake-key-for-tests";
 export const VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
+/** The snapshot the fake gives a create that names none: the open platform takes its configured default snapshot
+ *  (daytonaio/daytona@b5a5d9e7 apps/api/src/sandbox/services/sandbox.service.ts:471-475). The name is the fake's own. */
+export const DEFAULT_SNAPSHOT = "fake-default-snapshot";
 const OUT = Buffer.from([1, 1, 1]);
 const ERR = Buffer.from([2, 2, 2]);
 
@@ -79,6 +82,9 @@ const abortError = (signal) => signal?.reason ?? new DOMException("This operatio
  *   suppressInputEcho unset. `pageSize`: items a listing page holds. `sandboxClass` ("container").
  * - `networkStatus`: the answer to a network-settings change; `networkIgnored`: it answers 200 and changes nothing.
  * - `stopStopped` (400): the answer to a stop of a stopped sandbox.
+ * - `deleteIgnored`: a DELETE answers 200 and the sandbox stays, started. `lingerReads`: after a DELETE the sandbox reads
+ *   back as destroying for that many single reads, then is gone (404).
+ * A sandbox whose autoDeleteInterval is 0 is deleted as soon as it stops (api.json:12199).
  */
 export function fakeDaytona(initial = {}) {
 	const knobs = { startAfterReads: 1, pageSize: 100, sandboxClass: "container", stopStopped: 400, ...initial };
@@ -104,7 +110,7 @@ export function fakeDaytona(initial = {}) {
 			id,
 			organizationId: "org-test",
 			name: body.name ?? id,
-			snapshot: body.snapshot,
+			snapshot: typeof body.snapshot === "string" && body.snapshot.trim() !== "" ? body.snapshot : DEFAULT_SNAPSHOT,
 			user: "daytona",
 			env: body.env ?? {},
 			labels: { ...(body.labels ?? {}) },
@@ -135,6 +141,13 @@ export function fakeDaytona(initial = {}) {
 
 	function single(sb) {
 		const box = inside.get(sb.id);
+		if (sb.lingering !== undefined) {
+			if (sb.lingering <= 0) {
+				sandboxes.delete(sb.id);
+				return undefined;
+			}
+			sb.lingering--;
+		}
 		if (sb.state === "creating" || sb.state === "pending_build") {
 			box.reads++;
 			if (knobs.startError) Object.assign(sb, { state: "error", errorReason: knobs.startError });
@@ -296,17 +309,23 @@ export function fakeDaytona(initial = {}) {
 		const sb = find(decodeURIComponent(match[1]));
 		const rest = match[2] ?? "";
 		if (sb === undefined) return json(404, { statusCode: 404, message: `Sandbox with ID or name ${match[1]} not found` });
-		if (method === "GET" && rest === "") return json(200, single(sb));
+		if (method === "GET" && rest === "") {
+			const read = single(sb);
+			return read === undefined ? json(404, { statusCode: 404, message: `Sandbox with ID or name ${match[1]} not found` }) : json(200, read);
+		}
 		if (method === "GET" && rest === "toolbox-proxy-url") return json(200, { url: PROXY });
 		if (method === "DELETE" && rest === "") {
+			if (knobs.deleteIgnored) return json(200, sb);
 			endAll(inside.get(sb.id));
-			sandboxes.delete(sb.id);
+			if (knobs.lingerReads > 0) Object.assign(sb, { state: "destroying", desiredState: "destroyed", lingering: knobs.lingerReads });
+			else sandboxes.delete(sb.id);
 			return json(200, { ...sb, state: "destroying", desiredState: "destroyed" });
 		}
 		if (method === "POST" && rest.startsWith("stop")) {
 			if (sb.state === "stopped") return json(knobs.stopStopped, { statusCode: knobs.stopStopped, message: "Sandbox is already stopped" });
 			endAll(inside.get(sb.id));
 			sb.state = "stopped";
+			if (sb.autoDeleteInterval === 0) sandboxes.delete(sb.id);
 			return json(200, sb);
 		}
 		if (method === "POST" && rest === "network-settings") {
