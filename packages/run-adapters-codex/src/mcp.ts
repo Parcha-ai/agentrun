@@ -14,6 +14,7 @@ import { HOST_RESULT_MAX_CHARS, type McpCallResult, type McpClient, type Session
 import type { TomlValue } from "./config.js";
 import type { DriveContext } from "./host/kernel.js";
 import { BuiltinCalls, type CallHooks, toolKey } from "./host/process.js";
+import { markParked } from "./scripts.js";
 
 /** Codex's own MCP client: it sends a call's id in tools/call's `_meta.callId`, its `mcpToolCall` item's id
  *  (codex-rs core/src/mcp_tool_call.rs at rust-v0.164.0), the id the drive records the call by. */
@@ -63,6 +64,8 @@ export function recorded(mcp: SessionMcp, ctx: DriveContext, hooks: () => CallHo
       }
       if (!start.run) return said(start.result.text, start.result.isError === true);
       const result = await mcp.call(server, tool, args, context);
+      // A call the host parked for a person's approval did not run: recorded so before its answer, the waiting text.
+      if (result.parked) await markParked(ctx, callId).catch(() => {});
       await calls.end(callId, { text: result.content.map((block) => block.text).join("\n\n"), isError: result.isError === true }).catch(() => {});
       return result;
     },
