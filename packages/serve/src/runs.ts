@@ -23,6 +23,7 @@ import { hostMemory, memoryFull, neverFits, runMibOf, runsMemoryMib } from "./ho
 import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from "./agents.js";
 import { FOLLOW_UP_OPEN_ENV, LAUNCH_LOST, readJson, RUN_CANCELLED, RUN_DOOR_TOKEN, RUN_LAUNCHING, RUN_META, runDoorToken, SETUP_LOST, writeDurableSync, writeWhole } from "./files.js";
 import { MCP_PIN, mcpCredentialsOf, type McpPin, mcpPinOf, type McpServerSource } from "./mcp-gateway.js";
+import { META_REASON, metaToolOf } from "./mcp-meta.js";
 import { type DaytonaApi, KEPT_AUTOSTOP_MINUTES, keepWhenIdle, wakeBoxes } from "./daytona-api.js";
 import { type Learning, LEARNING_LABEL, type LearningMode, type LearningReason, type LearningState, shortOf } from "./learning.js";
 import { labelled, LearningRuns, type Reflect, reflecting, reflects, type TurnOrigin, withLearning } from "./learning-run.js";
@@ -1846,7 +1847,15 @@ export class Runs {
    *  servers saved now, and written before its process starts. Undefined when it grants none. */
   private mcpPin(run: Run, tools: readonly string[] | undefined): McpPin | undefined {
     const file = join(run.dir, MCP_PIN);
-    if (existsSync(file)) return JSON.parse(readFileSync(file, "utf8")) as McpPin;
+    if (existsSync(file)) {
+      const pinned = JSON.parse(readFileSync(file, "utf8")) as McpPin;
+      // A pin made before meta tools were refused (mcp-meta.ts) is checked at each launch, never rewritten: one it holds
+      // refuses the launch, as making the pin does.
+      for (const [server, { url, tools: listed }] of Object.entries(pinned)) {
+        for (const tool of listed) if (metaToolOf(url, tool.name)) throw new Error(`mcp:${server}/${tool.name} can't be granted: ${META_REASON}`);
+      }
+      return pinned;
+    }
     if (!tools?.some((name) => name.startsWith("mcp:")) || !this.options.mcpServers) return undefined;
     const pin = mcpPinOf(tools, this.options.mcpServers);
     if (!Object.keys(pin).length) return undefined;
