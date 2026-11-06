@@ -662,3 +662,73 @@ test("the refresh step's test-only wait has no effect outside a test runner, and
   assert.equal(refreshDelayMs({ [REFRESH_DELAY_ENV]: "600000", NODE_TEST_CONTEXT: "child-v8" }), 1_000, "capped");
   for (const stray of [undefined, "", "soon", "-5"]) assert.equal(refreshDelayMs({ ...(stray === undefined ? {} : { [REFRESH_DELAY_ENV]: stray }), NODE_TEST_CONTEXT: "child-v8" }), 0, String(stray));
 });
+
+/** An authorization server on loopback publishing `metadata` over its own endpoints; its registration answers
+ *  `registerStatus` with a body that must never be echoed, when given. */
+async function loopbackAs(t, metadata = {}, { registerStatus } = {}) {
+  const http = createServer((req, res) => {
+    const base = `http://127.0.0.1:${http.address().port}`;
+    const json = (body) => res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(body));
+    if (req.url.startsWith("/.well-known/oauth-authorization-server")) return json({ issuer: base, authorization_endpoint: `${base}/authorize`, token_endpoint: `${base}/token`, registration_endpoint: `${base}/register`, response_types_supported: ["code"], code_challenge_methods_supported: ["S256"], ...metadata });
+    if (req.url === "/register" && registerStatus) return res.writeHead(registerStatus, { "content-type": "text/plain" }).end("upstream said: NOT-FOR-THE-OWNER-0123456789");
+    if (req.url === "/register") return json({ client_id: "loopback-client", redirect_uris: ["http://127.0.0.1/cb"] });
+    res.writeHead(404).end();
+  });
+  await new Promise((resolve) => http.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => (http.close(resolve), http.closeAllConnections())));
+  return `http://127.0.0.1:${http.address().port}`;
+}
+
+/** Every request this process sends off loopback, failed at once: none may be sent. */
+function offLoopback(t) {
+  const sent = [];
+  const real = globalThis.fetch;
+  t.mock.method(globalThis, "fetch", async (input, init) => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    if (!/^(?:localhost|127(?:\.\d{1,3}){3}|\[::1\])$/.test(url.hostname)) {
+      sent.push(url.href);
+      throw new TypeError("fetch failed (off loopback, in a test)");
+    }
+    return real(input, init);
+  });
+  return sent;
+}
+
+test("a loopback MCP server's authorization server may name loopback endpoints only: a private or link-local one is refused, and nothing is sent to it", async (t) => {
+  const key = sealKey();
+  const sent = offLoopback(t);
+  const net = { network: { lookup: async (host) => [host], fetch: async (url) => (sent.push(url), new Response("", { status: 404 })) } };
+  const bad = [
+    "http://169.254.169.254/latest", // key-gate: denylist the link-local metadata address a loopback server's authorization server must not name
+    "http://10.0.0.5/as", // key-gate: denylist a private address a loopback server's authorization server must not name
+    "http://[fd00::1]/as", // key-gate: denylist a private-range address a loopback server's authorization server must not name
+  ];
+  for (const at of bad) {
+    // Its authorization server itself (the metadata address its resource metadata names), its token endpoint, its
+    // registration endpoint.
+    for (const [what, server] of [
+      ["address", async () => at],
+      ["token endpoint", async () => loopbackAs(t, { token_endpoint: `${at}/token` })],
+      ["registration endpoint", async () => loopbackAs(t, { registration_endpoint: `${at}/register` })],
+    ]) {
+      const mcp = await startFakeMcp({ token: () => false, oauth: await server() });
+      t.after(() => mcp.close());
+      const store = await storeOn(t, key, net);
+      await assert.rejects(store.oauthStart("loop", { url: mcp.url }), (error) => error.code === "upstream_failed" && /private address; refused/.test(error.message), `${what} ${at}`);
+    }
+  }
+  assert.deepEqual(sent, [], "nothing was sent off loopback");
+});
+
+test("a sign-in whose authorization server fails says which endpoint and its status, never what it answered", async (t) => {
+  const key = sealKey();
+  const mcp = await startFakeMcp({ token: () => false, oauth: await loopbackAs(t, {}, { registerStatus: 500 }) });
+  t.after(() => mcp.close());
+  const store = await storeOn(t, key, { network: { lookup: async () => [], fetch: async () => new Response("", { status: 404 }) } });
+  await assert.rejects(store.oauthStart("loop", { url: mcp.url }), (error) => {
+    assert.equal(error.code, "upstream_failed");
+    assert.match(error.message, /registration endpoint .*HTTP 500/);
+    assert.ok(!error.message.includes("NOT-FOR-THE-OWNER"), error.message);
+    return true;
+  });
+});
