@@ -2,11 +2,11 @@
   "about": "Code this package copies, one record per upstream file. Each copied Go file keeps its upstream copyright and license header and says what changed.",
   "files": [
     {
-      "path": "daemon/internal/execrun/kill.go",
+      "path": "daemon/internal/execrun/status.go",
       "from": "kubernetes-sigs/agent-sandbox@bfc85052f8dbc3414c366a1bc86621ea19d0779b:packages/sandboxd/pkg/server/process.go",
-      "lines": "760-829, 845-853",
+      "lines": "845-853",
       "license": "Apache-2.0",
-      "changes": "killProcessTree, killDescendants and readProcChildren as functions, not ProcessServer methods, with no logger and the signal as a parameter, so one walk sends SIGTERM and later SIGKILL; exitStatus reports the signal by name instead of 128+n."
+      "changes": "exitStatus, reporting the signal by name instead of 128+n. Its process-tree kill (killProcessTree, killDescendants, readProcChildren, lines 760-829) is not used: each run's subreaper guard (guard.go, our own code) ends every descendant."
     },
     {
       "path": "daemon/internal/execrun/stream.go",

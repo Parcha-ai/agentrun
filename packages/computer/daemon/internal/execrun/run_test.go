@@ -268,3 +268,21 @@ func TestARelativePathEntryIsFoundInCwd(t *testing.T) {
 		t.Fatalf("stdout %q", res.Stdout)
 	}
 }
+
+func TestASignalDeathIsReportedByName(t *testing.T) {
+	res := run(t, execrun.Spec{Argv: []string{"sh", "-c", "kill -USR1 $$"}})
+	if res.ExitCode != nil || res.Signal != "SIGUSR1" || res.TimedOut {
+		t.Fatalf("want ended by SIGUSR1, got %+v", res)
+	}
+}
+
+func TestAProgramThatCannotStartIsAnError(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "garbage"), []byte{0, 1, 2, 3}, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, err := execrun.Run(context.Background(), execrun.Spec{Argv: []string{filepath.Join(dir, "garbage")}, Timeout: time.Second})
+	if kindOf(t, err) != rpc.KindInvalid || !strings.Contains(err.Error(), "exec format error") {
+		t.Fatalf("want invalid naming the exec format error, got %v", err)
+	}
+}
