@@ -15,7 +15,7 @@ import { processAlive } from "@parcha/agentrun-kernel/host";
 import { doorKey, doorTook } from "@parcha/pi-durable-disk";
 import { RUN_STATUS_TABLE } from "@parcha/pi-durable-disk/internals";
 import { AgentHomeError, type Revision, runDirIn, type RevisionKind, type RunOrigin, type RunRow, type RunState, type StoredMetrics } from "@parcha/pi-durable-agent";
-import { chargedTool, isMessageRow, MESSAGE_ORIGIN, type MessageOrigin, registerLabel, registerTurnEnding, REQUEST_STARTED, type RunMetrics, runMetricsWithDecisions, scrubUrls, type TimelineEvent, timelineOf, timelineReducer } from "@parcha/pi-durable-agent/timeline";
+import { chargedTool, isMessageRow, MESSAGE_ORIGIN, type MessageOrigin, originOf, registerLabel, registerTurnEnding, REQUEST_STARTED, type RunMetrics, runMetricsWithDecisions, scrubUrls, type TimelineEvent, timelineOf, timelineReducer } from "@parcha/pi-durable-agent/timeline";
 import { HARNESS_LOG_EVENT, harnessModelKeys, thinkingFor } from "./adapters.js";
 import { runLink } from "./console-links.js";
 import { DEFAULT_HARNESS, harnessOfBody, steersMidTurn } from "./harness.js";
@@ -200,6 +200,9 @@ type RunMeta = {
   cancel_waits_for?: string[];
   /** The trigger that started it, and its firing's key (triggers.ts); absent for a run a caller started. */
   trigger?: RunTrigger;
+  /** Who its first message is from when its person did not write it (a trigger's firing, pi-durable-agent's
+   *  MessageOrigin): sent with that message, and with it again by a relaunch. Absent: the person's. */
+  input_origin?: MessageOrigin;
 };
 /** A tool call that waited for a person's approval, as the run's store has it (tool-gate.ts): `resolved` once the run's
  *  process acted on the answer. */
@@ -825,7 +828,7 @@ export type CarryBackRetry = { delaysMs?: readonly number[]; onBusy?: (runId: st
 /** How a run is asked to start: its input and title, its effort and cap, and what puts its files in its work/. `origin`:
  *  the store's key for what asked (an Idempotency-Key's, a trigger's firing): a key that already started a run gets that
  *  run. `trigger`: the trigger and firing that started it. */
-export type StartOptions = { input: Json; title: string; place: Place; effort?: string; maxCostUsd?: number; capMode?: CapMode; trigger?: RunTrigger; inputs?: (work: string) => Promise<unknown>; origin?: RunOrigin };
+export type StartOptions = { input: Json; title: string; place: Place; effort?: string; maxCostUsd?: number; capMode?: CapMode; trigger?: RunTrigger; inputs?: (work: string) => Promise<unknown>; origin?: RunOrigin; /** Who the first message is from, when not the person (RunMeta.input_origin). */ from?: MessageOrigin };
 
 /** `token` is the server's own: no run's process sees it. */
 /** `maxRuns`: the most runs with a live process at once; `settleRetryMs`: how often a carry back the store refused is
@@ -2526,7 +2529,7 @@ export class Runs {
     run.submitted = 1;
     this.refresh(run);
     // As it was first sent: the run never took it, so its work/inputs/ is as its start left it.
-    void firstMessage(first, join(run.dir, "work")).then((content) => this.submit(run, content, "followUp", `first-${run.id}`, READY_TIMEOUT_MS)).catch((error: Error) => warn(run.id, `its first message did not land again: ${error.message}`));
+    void firstMessage(first, join(run.dir, "work")).then((content) => this.submit(run, content, "followUp", `first-${run.id}`, READY_TIMEOUT_MS, originOf(run.meta.input_origin))).catch((error: Error) => warn(run.id, `its first message did not land again: ${error.message}`));
   }
 
   /** After the run's process exited, or was found gone: its rows from its released store, then, when it is over, its
@@ -2898,6 +2901,7 @@ export class Runs {
       ...(options.maxCostUsd !== undefined ? { max_cost_usd: options.maxCostUsd } : {}),
       ...(options.capMode !== undefined ? { cap_mode: options.capMode } : {}),
       ...(options.trigger ? { trigger: options.trigger } : {}),
+      ...(options.from ? { input_origin: options.from } : {}),
       ...(Object.keys(plane).length ? { tool_plane: plane } : {}),
     };
     // The run's input is saved first, as the store has it running: a server that goes down from here on leaves a run the
@@ -2933,7 +2937,7 @@ export class Runs {
     this.launch(run);
     if (revision.kind === "workflow") return run;
     // The first message names the files given to the run (run-manifest.ts), on every harness.
-    void firstMessage(options.input.content as string, started.workspace).then((content) => this.submit(run, content, "followUp", `first-${run.id}`, READY_TIMEOUT_MS)).catch((error: Error) => {
+    void firstMessage(options.input.content as string, started.workspace).then((content) => this.submit(run, content, "followUp", `first-${run.id}`, READY_TIMEOUT_MS, options.from)).catch((error: Error) => {
       run.submitted = 0;
       // The run ended before its first message reached it (a process that crashed at its start): how it ended stands.
       if (run.outcome || run.finishing || run.cancel) return;
@@ -3140,7 +3144,8 @@ export class Runs {
 
   /** One message to an agentic run, its mode chosen by the run's state (the contract's table). `requestId`: the message's
    *  id in the run's store, which takes one message per id (a trigger's firing key); default a new one. */
-  async message(run: Run, content: string, requestId?: string, { answers = true }: { answers?: boolean } = {}): Promise<{ mode: "steer" | "answer" | "follow_up"; messageId: string }> {
+  /** `origin`: who the message is from when its person did not write it (a trigger's firing). */
+  async message(run: Run, content: string, requestId?: string, { answers = true, origin }: { answers?: boolean; origin?: MessageOrigin } = {}): Promise<{ mode: "steer" | "answer" | "follow_up"; messageId: string }> {
     if (run.imported) throw this.importedRefusal(run);
     // A cancelled run takes no message, whether or not its end is written yet.
     if (run.cancel) throw this.finished(run);
@@ -3205,7 +3210,7 @@ export class Runs {
       // After every wait, and once the count above holds the run from ending (so no end-of-run turn is asked from here):
       // one asked while this message waited for the run's end wrote its origin then, after any earlier removal.
       await this.personsTurn(run);
-      await this.submit(run, content, mode === "steer" ? "steer" : "followUp", messageId, undefined, answers ? this.messageOrigin?.(run.id, content) : undefined, answers);
+      await this.submit(run, content, mode === "steer" ? "steer" : "followUp", messageId, undefined, origin ?? (answers ? this.messageOrigin?.(run.id, content) : undefined), answers);
     } catch (error) {
       run.submitted = Math.max(0, run.submitted - 1);
       this.refresh(run);
