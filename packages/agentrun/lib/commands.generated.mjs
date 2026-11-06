@@ -788,32 +788,13 @@ export const COMMANDS = [
     "multiSegment": [],
     "query": [],
     "headers": [],
-    "bodyFlags": [
-      {
-        "name": "url",
-        "type": "string",
-        "required": true,
-        "description": "The server's Streamable HTTP endpoint: https, or http on a loopback address of this machine; no user or password."
-      },
-      {
-        "name": "client_id",
-        "type": "string",
-        "required": false,
-        "description": ""
-      },
-      {
-        "name": "client_secret",
-        "type": "string",
-        "required": false,
-        "description": "Only with client_id; kept sealed with the token set."
-      }
-    ],
+    "bodyFlags": [],
     "hasBody": true,
     "bodyRequired": true,
     "bodyTypes": [
       "application/json"
     ],
-    "secretBody": false,
+    "secretBody": true,
     "raw": false,
     "summary": "Start signing in to an MCP server with OAuth: the page the owner opens"
   },
