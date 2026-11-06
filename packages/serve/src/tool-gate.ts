@@ -47,7 +47,7 @@ import type { TurnOrigin } from "./learning-run.js";
 import { forModel } from "./result.js";
 import { durableSessions } from "./sessions.js";
 import { SHELL_TOOLS } from "./background.js";
-import { LEGACY_NAMES, readToolSettings, TABLE_TOOLS } from "./tool-plane.js";
+import { LEGACY_NAMES, readToolSettings, SERVE_OWN_TOOLS, TABLE_TOOLS } from "./tool-plane.js";
 
 /** What the gate does with a tool's calls. */
 export const PERMISSIONS = ["allow", "ask", "deny"] as const;
@@ -96,13 +96,14 @@ const HOST_TOOLS_SERVER = "hands";
  *  wire name) and on OpenCode `<server>_<tool>`, is `mcp:<server>/<tool>`; a catalog's wire name (`monid_run`) is its
  *  catalog name; the browser's registrations are `browser`. OpenCode's `<server>_<tool>` maps only for a server of
  *  `mcpServers` (the run's configured MCP servers), never by its shape, since a host tool's name has the same shape.
- *  Undefined: nothing maps it, and the gate asks. The key only: an MCP call enters the gate once, in the MCP gateway. */
+ *  Undefined: nothing maps it, and the gate asks. The key only: an MCP call enters the gate once, in the MCP gateway for a
+ *  registration it marks (GATED_BY_GATEWAY), else where its tool is wrapped. */
 export function settingsKeyOf(harness: string, name: string, mcpServers: readonly string[] = []): string | undefined {
   // A legacy name the tool plane folds into a capability (fetch_page into web_fetch) is held to that capability's key,
   // and a tool that runs a command in the box (bash_background and the rest) to bash's: before the table's own names.
   if (Object.hasOwn(LEGACY_NAMES, name)) return LEGACY_NAMES[name];
   if (Object.hasOwn(SHELL_FAMILY, name)) return SHELL_FAMILY[name];
-  if (TABLE_TOOLS.includes(name) || isCatalogTool(name)) return name;
+  if (TABLE_TOOLS.includes(name) || SERVE_OWN_TOOLS.includes(name) || isCatalogTool(name)) return name;
   const native = NATIVE_TOOLS[harness]?.[name];
   if (native) return native;
   const mcp = /^mcp__([a-z][a-z0-9-]*)__(.+)$/.exec(name);
@@ -176,6 +177,13 @@ export type Entered = undefined | (ToolAnswer & { parked?: true });
  *  call's deadline: the gate puts no wall-clock bound on it (only a stop or a cancel cuts it, through `signal`), so an
  *  executor bounds its own work and answers a timeout as an error result (`isError: true`), never by waiting on. */
 export type Executor = (tool: string, args: unknown, callId: string, signal: AbortSignal) => Promise<ToolAnswer>;
+
+/** The mark a tool registration carries when its calls are gated by whoever registered it (the MCP gateway, which marks
+ *  its registrations only when it holds this run's gate and park, and enters the gate in each call): RunGate.extension
+ *  does not wrap it again. `Symbol.for`, so the mark is the same symbol whichever copy of this module set or reads it. */
+export const GATED_BY_GATEWAY: unique symbol = Symbol.for("agentrun.gatedByGateway");
+/** A registration that may carry GATED_BY_GATEWAY. */
+export type GatewayMarked = ToolRegistration & { [GATED_BY_GATEWAY]?: true };
 
 /** The gate of one run, in the run's process. */
 export interface Gate {
@@ -287,6 +295,8 @@ export class RunGate {
   private durable?: DurableRun;
   private context?: Context;
   private coding?: readonly ToolRegistration[];
+  /** The run's own tools beyond the table (its learned_workflow), on which an approved call of one runs. */
+  private extra: readonly ToolRegistration[] = [];
   private resume?: Resume;
   private drive?: Promise<Drive>;
   private timer?: NodeJS.Timeout;
@@ -376,8 +386,10 @@ export class RunGate {
   /** pi's `tools` behind the gate: wraps, by name, for the run's registry, which apply wherever it is selected (every
    *  agent selects it: the root by default, a workflow's model node by name, app.ts). */
   extension(tools: readonly ToolRegistration[]): Extension {
-    // pi's MCP tools (mcp__<server>__<tool>) are gated by the MCP gateway itself, inside their execute: not wrapped here.
-    const named = [...new Map(tools.filter((tool) => !tool.name.startsWith("mcp__")).map((tool) => [tool.name, tool])).values()];
+    // Every tool is wrapped, an mcp__ name too, except a registration marked GATED_BY_GATEWAY: the MCP gateway marks the
+    // ones whose calls it takes to this gate itself (gate.enter in its call), so such a call passes one gate, once. Nothing
+    // is skipped by its name: an unmarked mcp__ tool is gated here as any tool is.
+    const named = [...new Map(tools.filter((tool) => (tool as GatewayMarked)[GATED_BY_GATEWAY] !== true).map((tool) => [tool.name, tool])).values()];
     return defineExtension({ name: "tool-gate", wraps: named.map((tool) => wrapTool(tool, (inner) => this.wrap(inner))) });
   }
 
@@ -395,11 +407,13 @@ export class RunGate {
   }
 
   /** Reads the requests the run's store holds, as the run's process opens, before its turns go on. `coding`: the run's
-   *  coding source (coding-tools.ts), on which an approved coding call runs, as the run's own would. */
-  async load(durable: DurableRun, context: Context, coding?: readonly ToolRegistration[]): Promise<void> {
+   *  coding source (coding-tools.ts), on which an approved coding call runs, as the run's own would; `extra`, the run's
+ *  own tools beyond the table (its learned_workflow), on which an approved call of one runs. */
+  async load(durable: DurableRun, context: Context, coding?: readonly ToolRegistration[], extra: readonly ToolRegistration[] = []): Promise<void> {
     this.durable = durable;
     this.context = context;
     this.coding = coding;
+    this.extra = extra;
     const root = await durable.harness.conversation(ROOT_CONVERSATION_ID, context);
     for (let cursor: Cursor | undefined; root; ) {
       const page = await root.entries({ order: "ascending" }, 500, cursor, context);
@@ -580,7 +594,7 @@ export class RunGate {
     // Imported here, not at the top: host-tools reaches the web tools, which reach tool-plane, which reads this module's
     // permission rule, and a cycle of top-level imports leaves one of them uninitialized for whichever loads first.
     const { hostTools } = await import("./host-tools.js");
-    const [tool] = hostTools(this.durable!, [held.tool], this.context!, new Map(), this.coding);
+    const [tool] = hostTools(this.durable!, [held.tool], this.context!, new Map(), this.coding, undefined, this.extra);
     if (!tool) return { refused: `The approved ${held.tool} call is not one the kernel runs outside the model's turn.` };
     return { replay: tool.replay, call: (signal) => tool.call(held.args, { callId: held.call_id, signal }) as Promise<ToolAnswer> };
   }

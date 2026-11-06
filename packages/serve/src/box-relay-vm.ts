@@ -147,7 +147,7 @@ export function vmRelay(sdk: VmSdk, secrets: () => readonly string[] = () => [])
   };
 
   async function handle(runId: string, path: string, req: IncomingMessage, res: ServerResponse): Promise<void> {
-    if (req.method !== "POST") return answer(res, 405, { message: "the VM relay takes POST" });
+    if (req.method !== "POST") return answer(res, 405, { message: "the Modal sandbox relay takes POST" });
     const onSandbox = /^sandbox\/([^/]+)\/(find|poll|tags|exec)$/.exec(path);
     if (onSandbox) {
       const id = decodeURIComponent(onSandbox[1]!);

@@ -148,7 +148,7 @@ test("a run's plane: each web tool its revision names, resolved in the server's 
   assert.deepEqual(planeFor(env, { harness: "claude-agent", tools: ["web_search"] }, {}, { capped: true }), { web_search: "parallel" }, "a capped claude-agent run searches through Parallel, never Claude's own");
   assert.deepEqual(planeFor({ AGENT_MODEL: env.AGENT_MODEL }, { harness: "claude-agent", tools: ["web_search"] }, {}, { capped: true }), { web_search: "exa-keyless" }, "with no key, keyless Exa");
   assert.deepEqual(planeFor(env, { harness: "claude-agent", tools: ["web_search"] }, {}), { web_search: "parallel" }, "claude-agent on auto: the server's key, Claude's own search an explicit pick");
-  assert.deepEqual(planeFor(env, { harness: "claude-agent", tools: ["web_search"], overrides: { web_search: { provider: "native" } } }, {}), { web_search: "native" }, "picked: Claude's own, no model to name");
+  assert.deepEqual(planeFor(env, { harness: "claude-agent", tools: ["web_search"], overrides: { web_search: { provider: "native" } } }, {}), { web_search: "native", model: "anthropic/claude-sonnet-4-5" }, "picked: Claude's own for its agent, and the model a learned workflow's call node searches on");
   assert.deepEqual(planeFor(env, { tools: ["web_search"], overrides: { web_search: { provider: "exa-keyless" } } }, { web_search: { provider: "parallel" } }), { web_search: "exa-keyless" });
   assert.deepEqual(planeFor({}, { tools: ["read"] }, {}), {}, "no web tool, nothing to say");
   assert.deepEqual(planeFor(env, { tools: ["fetch_page"] }, { web_fetch: { provider: "parallel" } }), { web_fetch: "parallel" }, "fetch_page resolves as web_fetch does");

@@ -100,7 +100,11 @@ function reader(anthropic: boolean) {
  *  run's models, at most `n` results: a Search. `models`: the run's (searchOn). */
 export async function hostedSearch(query: string, n: number, ref: string | undefined, signal?: AbortSignal, models = runModels): Promise<Search> {
   const slash = ref?.indexOf("/") ?? -1;
-  const model = models && ref && slash > 0 ? models.getModel(ref.slice(0, slash), ref.slice(slash + 1)) : undefined;
+  const provider = ref && slash > 0 ? ref.slice(0, slash) : undefined;
+  const id = ref && slash > 0 ? ref.slice(slash + 1) : undefined;
+  // The name as written, else Anthropic's own id for it (dots as dashes, as claude-agent prepares a dotted name:
+  // adapters.ts claudeModelId), the one the run's models hold.
+  const model = models && provider && id ? (models.getModel(provider, id) ?? (provider === "anthropic" ? models.getModel(provider, id.replaceAll(".", "-")) : undefined)) : undefined;
   if (!models || !model) return { error: `web_search has no model to search on in this run${ref ? ` (${ref})` : ""}` };
   const anthropic = model.api === "anthropic-messages";
   if (!anthropic && model.api !== "openai-responses") return { error: `web_search: ${ref} has no hosted web search here` };
