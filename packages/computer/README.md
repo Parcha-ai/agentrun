@@ -49,32 +49,38 @@ daemon's user, and data is base64.
 | Method | Params | Result |
 | --- | --- | --- |
 | `files.read` | `path, offset?, length?` | `{data, eof, size}`: at most 512 KiB a call; a larger `length` is `limit` |
-| `files.write` | `path, data, offset?, append?, mode?, parents?` | `{size}`: replaces the file unless `offset` or `append`; makes it if missing; `mode` is set when given (a new file gets 0644); `parents` makes missing directories |
+| `files.write` | `path, data, offset?, append?, mode?, parents?` | `{size}`: replaces the file unless `offset` or `append`; makes it if missing (through a dangling symlink too); `mode` is set when given (a new file gets 0644); `parents` makes missing directories |
 | `files.stat` | `path, follow?` | `{type, size, mode, mtimeMs, uid, gid, target?}`: `type` is `file`, `dir`, `symlink` or `other`; a symlink is reported as one unless `follow` |
 | `files.list` | `path, depth?, offset?` | `{entries, truncated}`: entries carry the stat fields and `path`, in walk order (by name, a directory before its contents); `depth` 1 (default) to 16; symlinks are listed, never entered; at most 1000 entries (and 768 KiB) a reply: when `truncated`, list again with `offset` plus the entries read |
 | `files.mkdir` | `path, parents?, mode?` | `{}`: mode 0755 unless given; a directory already there is `exists`, or fine with `parents` |
-| `files.move` | `from, to, overwrite?` | `{}`: a rename; what is at `to` is `exists` unless `overwrite`; across filesystems is `unsupported` |
+| `files.move` | `from, to, overwrite?` | `{}`: a rename; without `overwrite` it never replaces what is at `to` (`exists`), checked in the same step as the rename (renameat2 with RENAME_NOREPLACE; a file is linked and unlinked where that is missing, a directory refused); across filesystems is `unsupported` |
 | `files.remove` | `path, recursive?` | `{}`: a directory with entries is `is_dir` unless `recursive`; a symlink is removed, never followed; `/` is `denied` |
 
 Tar archives move whole trees without holding an archive in memory, and no line passes 1 MiB:
 
-- `tar.pull {path}` sends the tar of a file (one entry, its name) or a directory (entries relative to it) as
-  notifications `tar.data {request: <the pull's id>, data}` of at most 512 KiB, then replies `{bytes}`. The daemon
-  writes each chunk only as the client reads, and `$/cancelRequest` stops the pull at the next chunk. Symlinks are
-  archived as links; sockets, devices and pipes are left out.
+- `tar.pull.begin {path}` returns `{id}` for the tar of a file (one entry, its name) or a directory (entries relative
+  to it); `tar.pull.read {id, maxBytes?}` returns `{data, eof}`, the next `maxBytes` (default and most 512 KiB) of the
+  archive, fewer only at its end; `tar.pull.end {id}` returns `{}`, stops the pull and frees it, and may be sent
+  again. The daemon writes the archive only as it is read, so a pull holds at most one read's bytes. Symlinks are
+  archived as links; sockets, devices and pipes are left out. A connection has at most 8 pulls open, and those still
+  open when it ends are ended with it.
 - `tar.push.begin {path}` makes the directory if missing and returns `{id}`; `tar.push.write {id, data}` hands it the
   next bytes (send each after the last one's reply), and extraction runs as they come; `tar.push.end {id}` returns
-  `{entries}`. Files, directories and symlinks are extracted with their modes and never chowned. An entry that is
+  `{entries}`. Files, directories and symlinks are extracted with their modes and never chowned; a directory keeps
+  owner access until the archive ends, then gets its mode, deepest first, whether the push made it or found it. An
+  entry that is
   absolute, has a `..` part, or would be written through a symlink that leads out of the directory is `denied`, and
   ends the push; entries before it stay. A file is written beside its target and renamed into place, so a failed or
   abandoned push leaves no half file. Hard links, devices and pipes are `invalid`. A connection has at most 8 pushes
   open, and those still open when it ends are ended with it.
 
-`src/files.ts` has the helpers that go past one call: `readFile(client, path)`, `writeFile(client, path, bytes)`,
+`src/files.ts` has the helpers that go past one call: `readFile(client, path)`, `writeFile(client, path, bytes)` (a
+`mode` is set with the last chunk, so a read-only file over 512 KiB can be written),
 `pushTar(client, dir, bytes | AsyncIterable<Uint8Array>)`, `pullTar(client, path)` (the archive's bytes) and
-`pullTarStream(client, path)` (`{chunks, done}`: the chunks as they come, and how the pull ended). A
-`DaemonClient.call` takes `onNotification` for the notifications that name it; a promise it returns holds back reading
-until it settles, which is how `pullTarStream` waits for a slow reader.
+`pullTarStream(client, path, {signal})` (`{chunks, done}`: one `tar.pull.read` each time the loop asks for a chunk,
+and how the pull ended). Every call is a request and its reply: a slow reader holds back only its own pull, so
+`pushTar(client, dir, pullTarStream(client, path).chunks)` copies a tree on one connection. A push or pull that began
+is always ended, whether it finished, failed, was left or was aborted.
 
 `src/protocol.ts` and `daemon/internal/methods` are the two definitions of these methods, TypeScript and Go (the Go
 params and results of `files.*` and `tar.*` sit beside their code in `daemon/internal/files`).
