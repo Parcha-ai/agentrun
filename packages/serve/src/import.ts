@@ -28,6 +28,7 @@ import { SEAL_KEY_ENV, ToolKeys } from "./tool-keys.js";
 import { WEBHOOK_FILE, webhookSecretIn } from "./webhooks.js";
 import { triggerSecretsIn } from "./trigger-secrets.js";
 import { type RefusedReason, readWorkBytes, WorkRefused, walkWork } from "./workspace.js";
+import { openRunReader } from "./run-db.js";
 
 /** In the data directory while an import the owner asked for at setup has not ended: the server's next start goes on with it. */
 export const IMPORT_ASKED = ".import-at-setup";
@@ -205,7 +206,7 @@ async function filesIn(store: AgentStoreReader): Promise<Map<string, SourceFile 
   const out = new Map<string, SourceFile & { run: string }>();
   for (const run of store.listRuns()) {
     if (!run.importedFrom || !existsSync(store.runStorePath(run.id))) continue;
-    const meta = (await readJson(join(store.dir, "runs", run.id, RUN_META))) as { source_file?: SourceFile } | null;
+    const meta = (await readJson(join(store.runDir(run.id), RUN_META))) as { source_file?: SourceFile } | null;
     const seen = meta?.source_file;
     if (seen && typeof seen.path_sha256 === "string" && typeof seen.size === "number" && typeof seen.mtime_ms === "number") out.set(seen.path_sha256, { ...seen, run: run.id });
   }
@@ -476,7 +477,7 @@ async function seenIn(store: AgentStoreReader | undefined, agentId: string): Pro
   const { DatabaseSync } = await import("node:sqlite");
   for (const run of store.listRuns({ agent: agentId })) {
     if (run.importedFrom?.source !== "claude-code" || !existsSync(store.runStorePath(run.id))) continue;
-    const db = new DatabaseSync(store.runStorePath(run.id), { readOnly: true });
+    const db = openRunReader(store.runStorePath(run.id));
     try {
       const rows = db.prepare("SELECT json_extract(record, '$.model[0].responseId') AS id, json_extract(record, '$.data.record_uuids') AS uuids FROM entries").all() as { id: unknown; uuids: unknown }[];
       for (const { id, uuids } of rows) {
@@ -983,7 +984,7 @@ export async function runImport(store: AgentStore, plan: Plan, options: ImportOp
         const estimate = session.costUsd === undefined ? await estimateOf([...entries, ...subagents.flatMap(entriesOf)], catalog) : undefined;
         if (estimate !== undefined) Object.assign(metrics, { costUsdEst: estimate, costBasis: "catalog" });
         if (heldRun !== undefined) {
-          started = { runId: heldRun, dir: join(store.dir, "runs", heldRun), storePath: store.runStorePath(heldRun) };
+          started = { runId: heldRun, dir: store.runDir(heldRun), storePath: store.runStorePath(heldRun) };
           if ((await mkdir(dirname(started.storePath), { recursive: true })) !== undefined) for (const made of [started.dir, dirname(started.storePath)]) await chmod(made, 0o700);
         } else {
           const answer = session.turns.findLast((t) => t.role === "assistant" && t.text)?.text;

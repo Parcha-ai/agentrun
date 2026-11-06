@@ -5,7 +5,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { evidenceIn } from "../dist/tools.js";
-import { answerFlow, client, follow, scratch, serve } from "./support.mjs";
+import { answerFlow, client, follow, runDir, scratch, serve } from "./support.mjs";
 
 const FAUX_BROWSER = new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname;
 const KEYS = ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "KERNEL_API_KEY"];
@@ -58,7 +58,7 @@ test("an agentic run calls the browser: the provider in its own process is reach
   assert.deepEqual(ops[0], { op: "env", BROWSERBASE_API_KEY: "set", BROWSERBASE_PROJECT_ID: "set" }, "the keys reach the run's process");
   assert.ok(ops.some((row) => row.op === "create") && ops.some((row) => row.op === "attach"), JSON.stringify(ops.map((row) => row.op)));
   assert.ok(ops.some((row) => row.op === "release"), "the session the run held is released when the run is let go");
-  const custody = await readFile(join(data, "runs", started.body.run_id, "store", "run.sqlite"));
+  const custody = await readFile(join(runDir(data, started.body.run_id), "store", "run.sqlite"));
   assert.ok(custody.includes("browser.sessions"), "the session's custody is in the run's own store");
 });
 
@@ -104,7 +104,7 @@ test("two parallel workflow nodes that browse each keep their evidence file", as
   assert.equal(started.status, 202, JSON.stringify(started.body));
   const { rows } = await follow(api, started.body.run_id, ["completed"]);
   assert.equal(rows.filter((row) => row.kind === "tool_use" && row.tool_name === "browser_read").length, 2);
-  const evidence = join(data, "runs", started.body.run_id, "work", "evidence");
+  const evidence = join(runDir(data, started.body.run_id), "work", "evidence");
   const files = (await readdir(evidence)).filter((name) => name.endsWith(".md"));
   assert.equal(files.length, 2, files.join(", "));
   for (const name of files) assert.match(await readFile(join(evidence, name), "utf8"), /The answer is forty-two\./, name);

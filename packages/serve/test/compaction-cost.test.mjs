@@ -5,13 +5,13 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { openStoreReader } from "@parcha/pi-durable-agent";
-import { agent, follow, serve } from "./support.mjs";
+import { agent, follow, runDir, serve } from "./support.mjs";
 
 const COMPACT = new URL("./fixtures/faux-compact.mjs", import.meta.url).pathname;
 const usageOf = (rows) => rows.findLast((r) => r.kind === "usage")?.usage;
 /** The run's store entries of `kind`, with their data. */
 const entries = (data, runId, kind) => {
-  const db = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
+  const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
   try {
     return db.prepare("SELECT record FROM entries").all().map((row) => JSON.parse(String(row.record))).filter((entry) => entry.kind === kind);
   } finally {

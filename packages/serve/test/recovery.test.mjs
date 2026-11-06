@@ -14,7 +14,7 @@ import { startServe } from "../dist/index.js";
 import { Runs } from "../dist/runs.js";
 import { stable } from "../dist/validate.js";
 import { ledgerOf, reflectRows } from "./learn-support.mjs";
-import { agent, client, FAUX, flowAgent, follow, scratch, startRun, storeRun } from "./support.mjs";
+import { agent, client, FAUX, flowAgent, follow, runDir, scratch, startRun, storeRun } from "./support.mjs";
 
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 // A hang guard far beyond a measured start (median 7.4 s locally; slowest CI test 17.4 s), not a start budget.
@@ -60,7 +60,7 @@ async function crashMidRun(t, content, { create = agent("calc"), input = { conte
   await untilState(first.api, run.run_id, ["working", "working"]);
   first.child.kill("SIGKILL");
   await new Promise((resolve) => first.child.once("exit", resolve));
-  const record = JSON.parse(await readFile(join(data, "runs", run.run_id, "run.json"), "utf8"));
+  const record = JSON.parse(await readFile(join(runDir(data, run.run_id), "run.json"), "utf8"));
   assert.ok(alive(record.holder.pid), "the run's process outlived its server");
   t.after(() => alive(record.holder.pid) && process.kill(record.holder.pid, "SIGKILL"));
   return { data, runId: run.run_id, pid: record.holder.pid };
@@ -97,9 +97,9 @@ test("a run whose process died with its server is relaunched on its directory by
   assert.deepEqual(rows.filter((r) => r.kind === "phase" && r.summary.startsWith("Resumed")).map((r) => r.summary), ["Resumed after a crash"], "one stored row, kept by the settle's read");
   assert.equal((await api("GET", `/runs/${runId}`)).body.result.final_answer, "Soon.");
   assert.equal(storeRun(data, runId).state, "completed");
-  assert.ok(JSON.parse(await readFile(join(data, "runs", runId, "run.json"), "utf8")).generation >= 2, "opened again on its directory");
+  assert.ok(JSON.parse(await readFile(join(runDir(data, runId), "run.json"), "utf8")).generation >= 2, "opened again on its directory");
   // A launch that served removes its mark: the next server opens the run again once, never fails it as lost at launch.
-  assert.equal(JSON.parse(await readFile(join(data, "runs", runId, "run.json"), "utf8")).generation, 2, "opened again once");
+  assert.equal(JSON.parse(await readFile(join(runDir(data, runId), "run.json"), "utf8")).generation, 2, "opened again once");
 });
 
 // A server that goes down while it copies what a learning run's agent learned: before the copy starts, or once it is
@@ -116,17 +116,17 @@ for (const [seam, learning] of [["beforePin", null], ["afterPin", { state: "drop
     assert.equal((await first.api("POST", "/agents", agent("learner", { learning: true, tools: ["write"] }))).status, 201);
     // The start waits on the held copy, so it never answers: the run is found by its directory once the copy holds.
     const starting = first.api("POST", "/agents/learner/runs", { input: { content: "Answer soon." } }).catch(() => undefined);
-    let runDir = "";
-    for (let i = 0; !(runDir = await readFile(signal, "utf8").catch(() => "")); i++) {
+    let dir = "";
+    for (let i = 0; !(dir = await readFile(signal, "utf8").catch(() => "")); i++) {
       assert.ok(i < 1200, "the run's seed copy was reached");
       await sleep(50);
     }
     first.child.kill("SIGKILL");
     await new Promise((resolve) => first.child.once("exit", resolve));
     await starting;
-    const runId = basename(runDir);
+    const runId = basename(dir);
     assert.equal(storeRun(data, runId).state, "running");
-    assert.equal(existsSync(join(runDir, "learning.json")), seam === "afterPin", "a pin only once the copy was whole");
+    assert.equal(existsSync(join(dir, "learning.json")), seam === "afterPin", "a pin only once the copy was whole");
     const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
     // Closed in the body, before the data directory's hook removes it: the control run below learns, and its check and
     // grade still write into its directory after it reads completed. close() returns once they ended.
@@ -138,11 +138,11 @@ for (const [seam, learning] of [["beforePin", null], ["afterPin", { state: "drop
     const read = (await api("GET", `/runs/${runId}`)).body;
     assert.equal(read.result.final_answer, "Soon.", "its first message reached it");
     assert.deepEqual(read.learning && { state: read.learning.state, reason: read.learning.reason }, learning);
-    assert.equal(existsSync(join(runDir, "learning.json")), false, "no pin");
-    assert.equal(existsSync(join(runDir, "work", ".learning")), false, "no copy of the notes");
+    assert.equal(existsSync(join(dir, "learning.json")), false, "no pin");
+    assert.equal(existsSync(join(dir, "work", ".learning")), false, "no copy of the notes");
     // Nothing seeded, so no end-of-run turn: none asked, none saved, no row of one.
     assert.equal(reflectRows(rows).length, 0, "no end-of-run turn");
-    assert.equal(JSON.parse(await readFile(join(runDir, "serve.json"), "utf8")).reflect, undefined, "none saved");
+    assert.equal(JSON.parse(await readFile(join(dir, "serve.json"), "utf8")).reflect, undefined, "none saved");
     if (learning) {
       // Its end is in the ledger once, after its serve.json: /v2/stats counts it.
       assert.deepEqual(ledgerOf(data).filter((line) => line.run === runId).map((line) => [line.state, line.reason]), [["dropped", "seed_failed"]]);
@@ -151,7 +151,7 @@ for (const [seam, learning] of [["beforePin", null], ["afterPin", { state: "drop
     // The control: a run of the same agent that is seeded asks its end-of-run turn.
     const control = (await api("POST", "/agents/learner/runs", { input: { content: "Answer soon." } })).body.run_id;
     await follow(api, control, ["completed"]);
-    const saved = JSON.parse(await readFile(join(data, "runs", control, "serve.json"), "utf8"));
+    const saved = JSON.parse(await readFile(join(runDir(data, control), "serve.json"), "utf8"));
     assert.equal(typeof saved.reflect?.after, "number", JSON.stringify(saved));
     await stop();
   });
@@ -169,7 +169,7 @@ test("a workflow run whose process died with its server is relaunched by the nex
   assert.equal(storeRun(data, runId).state, "completed");
 });
 
-test("a run released but not carried back when its server stopped is carried back by the next one, its run store read again once free if still locked, so the run still ends final", async (t) => {
+test("a run released but not carried back when its server stopped is carried back by the next one, which reads its run store with a lock-free read even while another holder keeps it locked, so the run still ends final", async (t) => {
   const { data, runId, pid } = await crashMidRun(t, "Answer soon.");
   await sleep(2_500);
   process.kill(pid, "SIGTERM");
@@ -178,21 +178,20 @@ test("a run released but not carried back when its server stopped is carried bac
     await sleep(50);
   }
   assert.equal(storeRun(data, runId).state, "running", "released, and nobody carried it back yet");
-  // Another holder keeps the run's store locked across the next server's start, as the run's own process does until it exits.
-  const store = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { timeout: 0 });
+  // Another holder keeps the run's store locked across the next server's start, as the run's own process does until it
+  // exits: the server's reads are lock-free (run-db.ts), so they do not wait on it; its checkpoint, which needs the lock,
+  // is left to a later take-back.
+  const store = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { timeout: 0 });
+  t.after(() => store.isOpen && store.close());
   store.exec("PRAGMA locking_mode = EXCLUSIVE");
   store.exec("BEGIN EXCLUSIVE");
   store.exec("COMMIT");
-  let busy;
-  const refused = new Promise((resolve) => (busy = resolve));
-  const next = await startServe({ data, port: 0, faux: FAUX, carryBackRetry: { delaysMs: Array(20).fill(50), onBusy: (id) => busy(id) } });
+  const next = await startServe({ data, port: 0, faux: FAUX, carryBackRetry: { delaysMs: Array(20).fill(50) } });
   t.after(() => next.close());
-  assert.equal(await Promise.race([refused, sleep(10_000).then(() => "the locked store was never tried again")]), runId);
-  store.close();
   const api = client(next.baseUrl, next.token);
   const { last } = await follow(api, runId, ["completed"]);
   assert.equal(last.final, true);
-  assert.equal(storeRun(data, runId).state, "completed");
+  assert.equal(storeRun(data, runId).state, "completed", "carried back while the store was still locked");
 });
 
 /** A run that answered and released, shown to the next server as still running under a stand-in process that stays
@@ -207,7 +206,7 @@ async function adoptedStandIn(t, script = "setInterval(() => {}, 1000)", env = {
     assert.ok(i < 200, "the run's process exits on SIGTERM");
     await sleep(50);
   }
-  const file = join(data, "runs", runId, "run.json");
+  const file = join(runDir(data, runId), "run.json");
   const released = JSON.parse(await readFile(file, "utf8"));
   const standIn = spawn(process.execPath, ["-e", script], { stdio: "ignore", env: { ...process.env, ...env } });
   t.after(() => standIn.kill("SIGKILL"));
@@ -242,7 +241,7 @@ test("an adopted run that released is read only once its process has exited, so 
   await tear();
   await sleep(1_000);
   assert.equal((await api("GET", `/runs/${runId}/timeline?after=0`)).body.final, false, "not settled on an unreadable record");
-  const store = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { timeout: 0 });
+  const store = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { timeout: 0 });
   store.exec("PRAGMA locking_mode = EXCLUSIVE");
   store.exec("BEGIN EXCLUSIVE");
   store.exec("COMMIT");
@@ -396,7 +395,7 @@ test("a run create retried after its server was killed before it saved the key a
   await untilState(first.api, runId, ["working", "working"]);
   first.child.kill("SIGKILL");
   await new Promise((resolve) => first.child.once("exit", resolve));
-  const pid = JSON.parse(await readFile(join(data, "runs", runId, "run.json"), "utf8")).holder.pid;
+  const pid = JSON.parse(await readFile(join(runDir(data, runId), "run.json"), "utf8")).holder.pid;
   t.after(() => alive(pid) && process.kill(pid, "SIGKILL"));
   assert.equal(existsSync(join(data, ".idempotency.json")), false, "no key was saved");
   await rm(partial, { recursive: true });
@@ -605,7 +604,7 @@ test("a stopped run whose live process the next server adopts is input_required 
   const crash = async (server, runId) => {
     server.child.kill("SIGKILL");
     await new Promise((resolve) => server.child.once("exit", resolve));
-    const { holder } = JSON.parse(await readFile(join(data, "runs", runId, "run.json"), "utf8"));
+    const { holder } = JSON.parse(await readFile(join(runDir(data, runId), "run.json"), "utf8"));
     assert.ok(alive(holder.pid), "the run's process outlived its server");
     t.after(() => alive(holder.pid) && process.kill(holder.pid, "SIGKILL"));
   };
@@ -661,11 +660,11 @@ test("a stop saved before its abort reached the run is finished by the next serv
   await untilState(first.api, run_id, ["working", "working"]);
   first.child.kill("SIGKILL");
   await new Promise((resolve) => first.child.once("exit", resolve));
-  const { holder } = JSON.parse(await readFile(join(data, "runs", run_id, "run.json"), "utf8"));
+  const { holder } = JSON.parse(await readFile(join(runDir(data, run_id), "run.json"), "utf8"));
   assert.ok(alive(holder.pid), "the run's process outlived its server");
   t.after(() => alive(holder.pid) && process.kill(holder.pid, "SIGKILL"));
   // The server died after it saved the stop and before its abort reached the run: the turn still works.
-  const meta = join(data, "runs", run_id, "serve.json");
+  const meta = join(runDir(data, run_id), "serve.json");
   await writeFile(meta, `${JSON.stringify({ ...JSON.parse(await readFile(meta, "utf8")), stopped_after: 1 })}\n`);
   const next = await start({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
   const api = client(next.baseUrl, next.token);
@@ -700,9 +699,9 @@ test("a run that reads stopped runs the follow-up it takes, even while the abort
   await untilState(first.api, run_id, ["working", "working"]);
   first.child.kill("SIGKILL");
   await new Promise((resolve) => first.child.once("exit", resolve));
-  const { holder } = JSON.parse(await readFile(join(data, "runs", run_id, "run.json"), "utf8"));
+  const { holder } = JSON.parse(await readFile(join(runDir(data, run_id), "run.json"), "utf8"));
   t.after(() => alive(holder.pid) && process.kill(holder.pid, "SIGKILL"));
-  const meta = join(data, "runs", run_id, "serve.json");
+  const meta = join(runDir(data, run_id), "serve.json");
   await writeFile(meta, `${JSON.stringify({ ...JSON.parse(await readFile(meta, "utf8")), stopped_after: 1 })}\n`);
   // The order a loaded machine can give: the next server's abort reaches the run's door only after a message has (or
   // after 3 s, when none comes). A message that reaches the door first is queued behind the turn the abort then ends.

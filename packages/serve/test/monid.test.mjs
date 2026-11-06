@@ -11,7 +11,7 @@ import { wireName } from "../dist/catalog.js";
 import { capBefore, capToolSpend, holdsInFlight, paidCall, spentIn, useSpend } from "../dist/cap.js";
 import { chargeOf, CLIP, monidClient, monidText } from "../dist/monid.js";
 import fakeMonid, { calls, KEY } from "./fixtures/faux-monid.mjs";
-import { agent, client, follow, scratch, serve, withEnv } from "./support.mjs";
+import { agent, client, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
 
 const FAUX_MONID = new URL("./fixtures/faux-monid.mjs", import.meta.url).pathname;
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
@@ -121,7 +121,7 @@ test("another harness's paid-call check holds each model request still in flight
 const entriesOf = (data, runId, kind) => {
   // The run's process writes the store meanwhile: a read that finds it locked tries again.
   for (let tries = 0; ; tries++) {
-    const db = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
+    const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
     try {
       return db.prepare("SELECT record FROM entries ORDER BY id").all().map((row) => JSON.parse(String(row.record))).filter((entry) => kind === undefined || entry.kind === kind);
     } catch (error) {
@@ -148,7 +148,7 @@ test("a run whose monid call times out (TIMED_OUT, no cost said) books its charg
   // A restarted process starts from what the store says: the hold, so what fits goes and what does not is refused for room.
   const root = entriesOf(data, id);
   assert.equal(capToolSpend(root), 1, "another harness's reading, at its open: the $1 hold");
-  const spent = spentIn(join(data, "runs", id, "store", "run.sqlite"));
+  const spent = spentIn(join(runDir(data, id), "store", "run.sqlite"));
   assert.ok(spent >= 1 && spent < 1.01, `pi's reading: the $1 hold and the requests, $${spent}`);
   t.after(() => useSpend(undefined));
   useSpend({ cap: 5, spent: () => capToolSpend(root), add: () => {} });
@@ -185,7 +185,7 @@ test("a capped pi run stopped while its monid call is under way: monid is asked 
   assert.deepEqual([ended.status, ended.error?.code ?? null, ended.result?.final_answer], ["completed", null, "Ran."], `the stopped call counts at its $1 hold, never unknown: the next request goes (${JSON.stringify(ended.error)})`);
   assert.equal(ended.cost.usd, null, "what the stopped call charged no one knows: the run's cost reads unknown");
   // Its process gone, the store says the same: the hold, never unknown.
-  const spent = spentIn(join(data, "runs", id, "store", "run.sqlite"));
+  const spent = spentIn(join(runDir(data, id), "store", "run.sqlite"));
   assert.ok(spent >= 1 && spent < 1.1, `a later process reads the $1 hold and the requests: $${spent}`);
 });
 
@@ -320,7 +320,7 @@ test("a pi run's model finds, reads and runs a monid endpoint through monid_disc
   assert.deepEqual(rows.filter((row) => row.kind === "phase" && row.tool_name === "monid.run").map((row) => [row.summary, typeof row.tool_use_id]), [["Tool cost: monid charged $0.0030 for monid.run", "string"]]);
   assert.equal((await api("GET", `/runs/${started.body.run_id}`)).body.cost.usd, 0.003);
   // Marked before it was sent at the price its inspect quoted, then settled by its charge.
-  const db = new DatabaseSync(join(data, "runs", started.body.run_id, "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
+  const db = new DatabaseSync(join(runDir(data, started.body.run_id), "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
   const paid = db.prepare("SELECT record FROM entries").all().map((row) => JSON.parse(String(row.record))).filter((entry) => entry.kind.startsWith("agentrun.tool_"));
   db.close();
   assert.deepEqual(paid.map((entry) => [entry.kind, entry.data.heldUsd ?? entry.data.usd]), [["agentrun.tool_started", 0.003], ["agentrun.tool_cost", 0.003]]);

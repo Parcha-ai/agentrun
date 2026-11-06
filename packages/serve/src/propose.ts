@@ -7,7 +7,7 @@
 // (a note holding a secret among them) is never kept anywhere.
 import { join } from "node:path";
 import { type Change, checkProposal, draftFiles, unstorable, GRADE_CAPS, learnedStatus, parseReflection, type Problem, redactSecrets, SKILLS_DIR, WORKFLOWS_DIR } from "./learn/index.js";
-import { homeOf, writeDurable } from "./files.js";
+import { agentFolderOf, writeDurable } from "./files.js";
 import { activeOf, agentFolder, git, type Proposal, PROPOSAL, readBlobs, readSeed, type Turn, withAgentRepo } from "./learning.js";
 
 export type Proposed =
@@ -59,7 +59,7 @@ async function seedFiles(home: string, repo: string, sha: string, wanted: readon
  *  `tools`, those a draft may name (tools.ts learnedWorkflowTools); `refuse`: this host's secrets. In the agent's
  *  queue. */
 export const proposeRun = (input: { data: string; agentId: string; runDir: string; seed: string; turn: Turn; refuse: readonly string[]; outcome?: string; tools?: readonly string[]; gated?: Readonly<Record<string, string>> }): Promise<Proposed> => withAgentRepo(input.data, input.agentId, async () => {
-  const home = homeOf(input.data, input.agentId);
+  const home = agentFolderOf(input.data, input.agentId);
   const repo = await agentFolder(input.data, input.agentId);
   const seed = await readSeed(home, repo, input.seed);
   const parsed = parseReflection(input.turn.answer);

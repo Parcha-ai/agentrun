@@ -13,7 +13,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { startServe } from "../dist/index.js";
 import { writesHeld } from "../dist/workspace.js";
 import fauxBoxes, { fauxRoot } from "./fixtures/faux-box.mjs";
-import { client, flowAgent, follow, jsonLines, scratch, serve, withEnv } from "./support.mjs";
+import { client, flowAgent, follow, jsonLines, runDir, scratch, serve, withEnv } from "./support.mjs";
 
 const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;
 const FAUX_BOX = new URL("./fixtures/faux-box.mjs", import.meta.url).pathname;
@@ -31,7 +31,7 @@ const LOCAL_BOX_OWN = ["PI_TRANSPORT_BOX", "TMPDIR"];
 
 /** Each tool call of run `runId` and its answer, in order, from its released store. */
 function answers(data, runId) {
-  const db = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { readOnly: true });
+  const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true });
   try {
     return db.prepare("SELECT record FROM entries ORDER BY id").all()
       .flatMap((row) => JSON.parse(row.record).model ?? [])
@@ -135,7 +135,7 @@ test("demo (pi): in a Docker place bash runs in the run's box, and read, write a
   assert.equal(more.length, 0, "one box for the run");
   assert.deepEqual(spec, {
     env: { LANG: "C.UTF-8", HOME: "/tmp" }, workspace: "/run/agentrun/run/work",
-    mounts: [{ source: join(data, "runs", run.run_id, "work"), target: "/run/agentrun/run/work" }],
+    mounts: [{ source: join(runDir(data, run.run_id), "work"), target: "/run/agentrun/run/work" }],
     labels: { "agentrun.run": run.run_id, "agentrun.box": "run" }, network: "none", maxLifetimeMs: 86_400_000,
   });
   // bash's calls ran in the box, one command each; read, write and edit ran none where they run here (bound-files.ts),
@@ -172,12 +172,12 @@ test("demo (claude-agent, codex): the faux harness's bash, write and read run in
     const said = answers(data, run.body.run_id);
     assert.deepEqual(said.map((a) => [a.tool, a.error]), [["bash", false], ["write", false], ["read", false], ["bash", false], ["read", true], ["write", false], ["read", true]], `${harness}: ${JSON.stringify(said)}`);
     assert.equal(said[4].text, `${calls[4].args.path}: outside the workspace`, harness);
-    assert.equal(await readFile(join(data, "runs", run.body.run_id, "work", "abs.txt"), "utf8"), "absolute");
+    assert.equal(await readFile(join(runDir(data, run.body.run_id), "work", "abs.txt"), "utf8"), "absolute");
     // As the harness gave it, under its cwd, the run's work/: named relative to it.
     assert.equal(said[6].text, "../serve.json: outside the workspace", harness);
     assert.ok(!said[6].text.includes(realpathSync(data)), said[6].text);
     assert.equal(said[2].text, "from the host tool");
-    assert.equal(await readFile(join(data, "runs", run.body.run_id, "work", "out.txt"), "utf8"), "hi");
+    assert.equal(await readFile(join(runDir(data, run.body.run_id), "work", "out.txt"), "utf8"), "hi");
     assert.ok((await api("GET", `/runs/${run.body.run_id}/files`)).body.files.some((f) => f.path === "out.txt"), harness);
     const env = envOf(said[3].text);
     assert.deepEqual([env.LANG, env.HOME], ["C.UTF-8", "/tmp"], harness);
@@ -205,7 +205,7 @@ test("a run request names no place: a sandbox agent's run with place \"runner\" 
   assert.deepEqual(inBox.place, SANDBOX, "the revision's place");
   await follow(api, inBox.run_id, ["completed"]);
   assert.deepEqual(answers(data, inBox.run_id).map((a) => [a.tool, a.error]), [["bash", false]]);
-  assert.equal(await readFile(join(data, "runs", inBox.run_id, "work", "out.txt"), "utf8"), "hi");
+  assert.equal(await readFile(join(runDir(data, inBox.run_id), "work", "out.txt"), "utf8"), "hi");
   assert.ok(specs(data).some((spec) => spec.labels["agentrun.run"] === inBox.run_id), "its box was made");
   assert.deepEqual((await api("GET", `/runs/${inBox.run_id}`)).body.place, SANDBOX);
   const onRunner = await probe(api, "plain", [{ tool: "write", args: { path: "a.txt", content: "a" } }]);
@@ -243,7 +243,7 @@ test("a link swapped in at the run's work/ is refused as a mount source: bash's 
   const target = join(elsewhere, "target");
   await mkdir(target);
   const run = await probe(api, "boxed", [{ wait: go }, { tool: "bash", args: { command: "printf pwned > pwned.txt" } }]);
-  const work = join(data, "runs", run.run_id, "work");
+  const work = join(runDir(data, run.run_id), "work");
   await until(() => existsSync(work), "the run's work/");
   await rename(work, `${work}.moved`);
   await symlink(target, work);
@@ -271,7 +271,7 @@ test("lifecycle: no tool call makes no box; a wait for the person keeps it; canc
   await until(() => liveBoxes(data).length === 0, "the destroy at completion");
   // A cancel destroys it, the command it runs included.
   const long = await probe(api, "boxed", [{ tool: "bash", args: { command: "echo $$ > long.pid; sleep 600" } }]);
-  const pidFile = join(data, "runs", long.run_id, "work", "long.pid");
+  const pidFile = join(runDir(data, long.run_id), "work", "long.pid");
   await until(() => existsSync(pidFile) && readFileSync(pidFile, "utf8").trim() !== "", "the long command's start");
   assert.equal((await api("POST", `/runs/${long.run_id}/cancel`)).status, 202);
   await follow(api, long.run_id, ["cancelled"]);
@@ -299,11 +299,11 @@ test("a crash: the run's next process finds its box by its label, kills the comm
   const { api, data } = await boxed(t);
   assert.equal((await api("POST", "/agents", { definition: { id: "boxed", name: "boxed", instructions: "Probe.", place: SANDBOX, tools: ["bash"] } })).status, 201);
   const run = await probe(api, "boxed", [{ tool: "bash", args: { command: "echo $$ > left.pid; sleep 600; touch late.txt" } }, { tool: "bash", args: { command: "printf after > after.txt" } }]);
-  const work = join(data, "runs", run.run_id, "work");
+  const work = join(runDir(data, run.run_id), "work");
   await until(() => existsSync(join(work, "left.pid")) && readFileSync(join(work, "left.pid"), "utf8").trim() !== "", "the left command's start");
   const left = Number(readFileSync(join(work, "left.pid"), "utf8").trim());
   t.after(() => running(left) && process.kill(left, "SIGKILL"));
-  const { holder } = JSON.parse(await readFile(join(data, "runs", run.run_id, "run.json"), "utf8"));
+  const { holder } = JSON.parse(await readFile(join(runDir(data, run.run_id), "run.json"), "utf8"));
   process.kill(holder.pid, "SIGKILL");
   await follow(api, run.run_id, ["completed"], { deadlineMs: 90_000 });
   const said = answers(data, run.run_id);

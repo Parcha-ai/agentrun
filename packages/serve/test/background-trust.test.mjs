@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { fauxRoot } from "./fixtures/faux-box.mjs";
-import { follow, scratch, serve } from "./support.mjs";
+import { follow, runDir, scratch, serve } from "./support.mjs";
 
 const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;
 const FAUX_BOX = new URL("./fixtures/faux-box.mjs", import.meta.url).pathname;
@@ -20,7 +20,7 @@ const SANDBOX = { mode: "sandbox", box: "docker" };
 const TOOLS = ["bash", "write", "bash_background", "bash_output", "bash_input", "bash_signal", "bash_list"];
 
 function answers(data, runId) {
-  const db = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { readOnly: true });
+  const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true });
   try {
     return db.prepare("SELECT record FROM entries ORDER BY id").all()
       .flatMap((row) => JSON.parse(row.record).model ?? [])
@@ -66,7 +66,7 @@ async function boxedRun(t, plan) {
   const run = await api("POST", "/agents/bg/runs", { input: { content: JSON.stringify({ probe: plan }) } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
   await follow(api, run.body.run_id, ["completed"], { deadlineMs: 90_000 });
-  return { ...server, runId: run.body.run_id, said: answers(server.data, run.body.run_id), work: join(server.data, "runs", run.body.run_id, "work") };
+  return { ...server, runId: run.body.run_id, said: answers(server.data, run.body.run_id), work: join(runDir(server.data, run.body.run_id), "work") };
 }
 const groupOf = (started) => Number(/\(process group (\d+)\)/.exec(started)?.[1]);
 

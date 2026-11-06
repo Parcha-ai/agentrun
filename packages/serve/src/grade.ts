@@ -21,7 +21,7 @@ import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { buildIndex, gradedItems, held, INDEX_FILE, type IndexEntry, type LearnedNote, learnedPlace, mergedNote, mergeProblems, type NoteText, parseNoteFile, type Problem, supersede, supersededBy, type Verdict } from "./learn/index.js";
 import { claudeModel, claudeProvider, codexModel, codexProvider } from "./adapters.js";
-import { homeOf } from "./files.js";
+import { agentFolderOf } from "./files.js";
 import { FAUX_HARNESS_ENV } from "./harness.js";
 import { agentFolder, checkOut, git, line, mainOf, NO_TOKENS, type Proposal, readBlobs, type Tokens, withAgentRepo } from "./learning.js";
 import { type Complete, completer } from "./llm.js";
@@ -89,7 +89,7 @@ export type GradeMain = { active: IndexEntry[]; superseded: NoteText[]; graded: 
 /** Main now, for run `runId`'s grade, in the agent's queue: merged already (a commit names the run), what stops its
  *  proposal joining main as it is now, or its active notes' index lines and the notes the proposal supersedes in full. */
 export function readForGrade(data: string, agentId: string, runId: string, proposal: Proposal): Promise<{ merged: string } | { problems: Problem[] } | GradeMain> {
-  const home = homeOf(data, agentId);
+  const home = agentFolderOf(data, agentId);
   return withAgentRepo(data, agentId, async () => {
     const repo = await agentFolder(data, agentId);
     const sha = (await mainOf(home, repo))!;
@@ -278,7 +278,7 @@ async function blobAt(home: string, repo: string, sha: string, file: string): Pr
  *  its owner's OK marks nothing (supersededBy), so what it names is not checked. `checkout` is why the files could not
  *  be brought in line, when they could not: main is merged all the same. */
 export function mergeProposal(data: string, agentId: string, runId: string, proposal: Proposal, reason: string, graded: Readonly<Record<string, string>>, verdict?: Verdict): Promise<{ merged: string; checkout: Error | undefined } | { problems: Problem[] }> {
-  const home = homeOf(data, agentId);
+  const home = agentFolderOf(data, agentId);
   // Each note as main keeps it: its origin, the grader's (a run's when it names none), and a pending one waiting.
   const judged = new Map((verdict?.items ?? []).map((item) => [item.file, item]));
   const texts = proposal.notes.map(({ file, text }) => ({ file, text: mergedNote(text, { origin: judged.get(file)?.origin ?? "run", pending: judged.get(file)?.pending === true }) }));

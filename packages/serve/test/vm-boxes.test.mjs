@@ -15,7 +15,7 @@ import { BOX_RELAY_FILE, startBoxRelay } from "../dist/box-relay.js";
 import * as relayVm from "../dist/box-relay-vm.js";
 import { BOX_ENV } from "../dist/run-box.js";
 import { ModalClient as FakeClient, vm } from "./fixtures/fake-vm.mjs";
-import { follow, scratch, serve, withEnv } from "./support.mjs";
+import { follow, runDir, scratch, serve, withEnv } from "./support.mjs";
 
 const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;
 const FAKE_VM = new URL("./fixtures/fake-vm.mjs", import.meta.url).pathname;
@@ -27,7 +27,7 @@ const NO_LIST = "the Modal sandbox takes a host list, but this server cannot rea
 const ENV_PROBE = "env; cat /proc/self/environ 2>/dev/null | tr '\\0' '\\n'";
 
 function answers(data, runId) {
-  const db = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { readOnly: true });
+  const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true });
   try {
     return db.prepare("SELECT record FROM entries ORDER BY id").all()
       .flatMap((row) => JSON.parse(row.record).model ?? [])
@@ -96,7 +96,7 @@ test("demo: a VM place runs bash, write, edit and read in the run's VM box: work
   assert.deepEqual(vm.clients.map((client) => client.params), [{ tokenId: TOKENS[VM_PROVIDER.keys[0]], tokenSecret: TOKENS[VM_PROVIDER.keys[1]] }]);
   const door = (await readFile(join(data, ".door-token"), "utf8")).trim();
   for (const [name, value] of Object.entries({ ...TOKENS, model: planted("model"), token: server.token, door })) assert.ok(!said[5].text.includes(value), `${name} reached the box`);
-  const log = readFileSync(join(data, "runs", run.run_id, "process.log"), "utf8");
+  const log = readFileSync(join(runDir(data, run.run_id), "process.log"), "utf8");
   for (const value of Object.values(TOKENS)) assert.ok(!log.includes(value), "the token is in no line of the run's process");
   // The run's end ended its box.
   assert.deepEqual(vm.running(), [], "the box is ended at the run's end");
@@ -147,7 +147,7 @@ test("a run's end lets the relay's hold on its programs go even when its box is 
   const [box] = vm.running();
   // A program the relay holds and nobody reads: as one a run's process started just before it went.
   const { url } = JSON.parse(readFileSync(join(data, BOX_RELAY_FILE), "utf8"));
-  const door = readFileSync(join(data, "runs", run.run_id, "door-token"), "utf8").trim();
+  const door = readFileSync(join(runDir(data, run.run_id), "door-token"), "utf8").trim();
   const started = await fetch(`${url}/runs/${run.run_id}/vm/sandbox/${box.sandboxId}/exec`, { method: "POST", headers: { authorization: `Bearer ${door}`, "content-type": "application/json" }, body: JSON.stringify({ command: ["sleep", "30"] }) });
   assert.equal(started.status, 200);
   const held = box.execs.find((exec) => exec.command[0] === "sleep");
@@ -201,7 +201,7 @@ test("the relay takes a run's VM calls only for that run's own box, and never on
   for (const run of [a, b]) await follow(api, run.run_id, ["input_required"], { deadlineMs: 120_000 });
   const boxOf = (runId) => vm.running().find((sandbox) => sandbox.params.tags["agentrun.run"] === runId).sandboxId;
   const { url } = JSON.parse(readFileSync(join(data, BOX_RELAY_FILE), "utf8"));
-  const tokenOf = (runId) => readFileSync(join(data, "runs", runId, "door-token"), "utf8").trim();
+  const tokenOf = (runId) => readFileSync(join(runDir(data, runId), "door-token"), "utf8").trim();
   const call = (runId, path, body, token = tokenOf(runId), signal) => fetch(`${url}/runs/${runId}/vm/${path}`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify(body ?? {}), ...(signal ? { signal } : {}) });
   assert.equal((await call(a.run_id, `sandbox/${boxOf(a.run_id)}/poll`)).status, 200, "its own box");
   assert.equal((await call(a.run_id, `sandbox/${boxOf(b.run_id)}/poll`)).status, 404, "another run's box is not there for it");

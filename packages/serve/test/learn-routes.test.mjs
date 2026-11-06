@@ -12,7 +12,7 @@ import { note } from "./fixtures/faux-learn.mjs";
 import { copyOf, ended, git, LEARN, learnedIn, learner, made, objects, repoOf, savedOf, settled, started, wholeIn } from "./learn-support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 import { learningTestHooks } from "../dist/learning.js";
-import { agent, call, follow, scratch, serve, withEnv } from "./support.mjs";
+import { agent, call, follow, runsFolders, scratch, serve, withEnv } from "./support.mjs";
 
 const UNITS = note("Check units", "Convert every amount to one unit before comparing", "Amounts in one answer came in cents and in dollars.\n");
 const SOURCES = note("Quote sources", "Name the page each figure came from");
@@ -317,13 +317,13 @@ test("a restarted server counts an agent's runs that tried to learn from the lea
   await first.close();
   // The restarted server holds neither run: both are counted from the ledger, and no run's files are opened.
   const again = await serve(t, { learning: "on", faux: LEARN, data });
-  const runs = join(data, "runs");
-  chmodSync(runs, 0o000);
+  const runs = runsFolders(data);
+  for (const folder of runs) chmodSync(folder, 0o000);
   try {
     assert.deepEqual((await again.api("GET", "/agents/counted/learning")).body.counts, want, "read back from the ledger");
     assert.deepEqual((await again.api("GET", "/stats?agent=counted")).body.learning, { runs: 2, ...want });
   } finally {
-    chmodSync(runs, 0o700);
+    for (const folder of runs) chmodSync(folder, 0o700);
   }
 });
 

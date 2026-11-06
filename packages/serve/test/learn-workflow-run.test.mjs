@@ -7,13 +7,13 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { homeOf } from "../dist/files.js";
+import { agentFolderOf } from "../dist/files.js";
 import { seedOf } from "../dist/learning.js";
 import * as learning from "../dist/learning.js";
 import { LEARNED_WORKFLOW_TOOL, learnedWorkflowDescription } from "../dist/learned-workflow.js";
 import { REPLAY } from "../dist/host-tools.js";
 import { git } from "./learn-support.mjs";
-import { agent, answerFlow, call, cookieOf, follow, scratch, serve, withEnv } from "./support.mjs";
+import { agent, answerFlow, call, cookieOf, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 /** The owner's sign-in phrase on a test server with accounts (no real secret). */
@@ -35,7 +35,7 @@ const withTools = (tools) => {
 /** Agent `id`'s learning folder made as a first run makes it, then `files` committed on main. */
 async function folderWith(data, id, files) {
   await seedOf(data, id);
-  const repo = join(homeOf(data, id), "learning");
+  const repo = join(agentFolderOf(data, id), "learning");
   for (const [path, text] of Object.entries(files)) {
     mkdirSync(dirname(join(repo, path)), { recursive: true });
     writeFileSync(join(repo, path), text);
@@ -44,10 +44,10 @@ async function folderWith(data, id, files) {
   git(repo, ["commit", "-q", "-m", "learned"]);
 }
 
-const pinOf = (data, runId) => JSON.parse(readFileSync(join(data, "runs", runId, "learning.json"), "utf8"));
+const pinOf = (data, runId) => JSON.parse(readFileSync(join(runDir(data, runId), "learning.json"), "utf8"));
 /** The run's root entries of `kinds`, from its store. */
 function entries(data, runId, kinds) {
-  const db = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
+  const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
   try {
     return db.prepare("SELECT record FROM entries").all().map((row) => JSON.parse(String(row.record))).filter((entry) => kinds.includes(entry.kind)).map((entry) => ({ kind: entry.kind, ...entry.data }));
   } finally {
@@ -146,7 +146,7 @@ test("the tool's description gives its workflows a budget: by name, each whose l
   // Each line is 3,209 bytes: two fit the 8 KiB, and the next two are left out.
   assert.equal(learning.LEARNED_WORKFLOWS_BUDGET, 8 * 1024);
   assert.deepEqual([pin.workflows, pin.workflows_left_out], [["a-flow", "b-flow"], ["c-flow", "d-flow"]], JSON.stringify(pin));
-  const kept = JSON.parse(readFileSync(join(data, "runs", runId, "learned-workflows.json"), "utf8"));
+  const kept = JSON.parse(readFileSync(join(runDir(data, runId), "learned-workflows.json"), "utf8"));
   assert.ok(Buffer.byteLength(learnedWorkflowDescription(kept)) < learning.LEARNED_WORKFLOWS_BUDGET + 512, "the description stays within its budget and its two lines of what the tool does");
 });
 
@@ -320,7 +320,7 @@ test("a claude-agent run on Claude's dotted name (anthropic/claude-sonnet-4.5) w
 const OUTPUT_PRICED = new URL("./fixtures/faux-output-priced.mjs", import.meta.url).pathname;
 /** The run's harness requests' records, from its store: each with the worst case its cap held it at. */
 function harnessRequests(data, runId) {
-  const db = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
+  const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
   try {
     return db.prepare("SELECT record FROM entries").all().map((row) => JSON.parse(String(row.record))).filter((entry) => entry.kind === "runner.request").map((entry) => entry.data);
   } finally {

@@ -22,15 +22,23 @@ type DriverRecord = { binding: string | null; inputs: Record<string, string> | n
 
 /** How a reader opens the store file. `immutable` opens it as SQLite's immutable file, for a store no process writes any
  *  more and with no write-ahead log beside it (an ended run's): nothing beside it is read or made. */
-export type DurableReadOptions = { immutable?: boolean };
+/** `immutable`: a file nothing writes again. `unlocked`: a file a process may hold under an exclusive lock with its WAL
+ *  in heap (a run's own, written as pi-durable-disk's exclusive profile writes it): read with no locking (`vfs=unix-none`)
+ *  and an exclusive locking mode, the WAL read into heap, so the read neither waits on the writer nor makes a -shm. */
+export type DurableReadOptions = { immutable?: boolean; unlocked?: boolean };
 
 /** The run's store `file`, opened read-only for `read`; null when there is no such file. Every query of one `read` runs
  *  in one read transaction, so what it returns is one commit's view, whatever a writer commits meanwhile. */
 export function withDurableFile<T>(file: string, read: (db: Database) => T, options: DurableReadOptions = {}): T | null {
   if (!fs.existsSync(file)) return null;
   const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite") as typeof import("node:sqlite");
-  const db = new DatabaseSync(options.immutable ? `${pathToFileURL(file).href}?immutable=1` : file, { readOnly: true, timeout: 5000 });
-  try { db.exec("BEGIN"); return read(db); } finally { db.close(); }
+  const at = options.immutable ? `${pathToFileURL(file).href}?immutable=1` : options.unlocked ? `${pathToFileURL(file).href}?mode=ro&vfs=unix-none` : file;
+  const db = new DatabaseSync(at, { readOnly: true, timeout: 5000 });
+  try {
+    if (options.unlocked) db.exec("PRAGMA locking_mode = EXCLUSIVE");
+    db.exec("BEGIN");
+    return read(db);
+  } finally { db.close(); }
 }
 
 /** A document's value: its latest base with every later delta applied, as the storage materializes it. */
@@ -82,7 +90,7 @@ export function durableDoc<T = Record<string, unknown>>(file: string, kind: stri
 /** The decision rows (`agentrun.decisions`) of the run's store `file`, in commit order, in whichever form the store holds: the single
  *  document's `receipts` list, or the keyed documents (one row each, in the order of their keys). A reader that folds decisions from the
  *  store uses this and not `durableDoc(file, "agentrun.decisions").receipts`, which is nothing in the keyed form. */
-export function durableDecisions(file: string): Array<Record<string, unknown>> {
+export function durableDecisions(file: string, options: DurableReadOptions = {}): Array<Record<string, unknown>> {
   return withDurableFile(file, (db) => {
     const single = sessionDoc(db, "agentrun.decisions") as { receipts?: unknown } | undefined;
     if (single) return Array.isArray(single.receipts) ? (single.receipts as Array<Record<string, unknown>>) : [];
@@ -90,7 +98,7 @@ export function durableDecisions(file: string): Array<Record<string, unknown>> {
     const rows: Array<Record<string, unknown>> = [];
     if (typeof count === "number") for (let place = 0; place < count; place += 1) { const row = sessionDoc(db, "agentrun.decisions", decisionKey(place)); if (row) rows.push(row as Record<string, unknown>); }
     return rows;
-  }) ?? [];
+  }, options) ?? [];
 }
 
 /** The journal `key` holds in the run's store `file`, as the last commit left it; undefined when the file holds no

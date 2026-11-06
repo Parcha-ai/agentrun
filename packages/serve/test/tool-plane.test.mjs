@@ -11,7 +11,7 @@ import { BOUND_TOOLS, TOOLS, toolsView } from "../dist/tools.js";
 import { CAPABILITIES, explainsView, LEGACY_NAMES, planeFor, PROVIDERS, recheckPlane, relaunchPlane, resolveCapability, settingsIssues, TABLE_TOOLS, ToolSettings } from "../dist/tool-plane.js";
 import { CANARY } from "./fixtures/faux-parallel.mjs";
 import { schemaProblems } from "./schema-support.mjs";
-import { agent, answerFlow, flowAgent, follow, scratch, serve, withEnv } from "./support.mjs";
+import { agent, answerFlow, flowAgent, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
 import { blockersOf } from "../dist/runnable.js";
 
 const base = { gateway: false, parallelKey: false };
@@ -299,7 +299,7 @@ test("a workflow's model node naming web_search, its revision listing no tools, 
   const made = await api("POST", "/agents", flowAgent("finder", flow, { tool_settings: { web_search: {} } }));
   assert.equal(made.status, 201, JSON.stringify(made.body));
   assert.deepEqual([made.body.definition.tools, made.body.definition.tool_settings], [[], undefined], "nothing listed; an empty setting is none");
-  const planeOfRun = async (id) => JSON.parse(await readFile(join(data, "runs", id, "serve.json"), "utf8")).tool_plane;
+  const planeOfRun = async (id) => JSON.parse(await readFile(join(runDir(data, id), "serve.json"), "utf8")).tool_plane;
   const ran = async () => {
     const started = await api("POST", "/agents/finder/runs", { input: { question: "What is six times seven?" } });
     assert.equal(started.status, 202, JSON.stringify(started.body));

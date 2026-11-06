@@ -1,5 +1,5 @@
 // Learning: an agent whose definition says `learning: true` keeps a folder of what it learned, and each of its runs
-// starts from it. The folder is its home's `learning/` (files.ts homeOf), in Claude Code's auto-memory format
+// starts from it. The folder is `learning/` in the agent's folder on the disk (files.ts agentFolderOf), in Claude Code's auto-memory format
 // (learn/notes.ts): `MEMORY.md`, the index, one line per active note, and one `<slug>.md` per note. It is plain
 // git with main checked out, so any reader sees its files. This server is its only writer. Every git call runs with the
 // repository's hooks, fsmonitor, replace refs and lazy fetches off and reads no system or global config, and every call
@@ -34,7 +34,8 @@ import { lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, posix, relative } from "node:path";
 import { SKILL_BYTES } from "@parcha/agentrun-kernel";
 import { INDEX_FILE, type LearnedNote, loadedIndex, NOTE_FILE, parseNoteFile, type Problem, redactSecrets, secretShapes, servedSkill, SKILLS_DIR, valueMatcher, type Verdict, WORKFLOW_NAME, WORKFLOWS_DIR } from "./learn/index.js";
-import { homeOf, serialBy, writeDurable } from "./files.js";
+import { DISK_DIR } from "@parcha/pi-durable-agent";
+import { agentFolderOf, serialBy, writeDurable } from "./files.js";
 import { DETAIL_MAX, LIST_DETAIL, short, wordsOf } from "./learning-words.js";
 import { isObject } from "./validate.js";
 import { readWorkText } from "./workspace.js";
@@ -241,9 +242,9 @@ const MIN_GIT = [2, 40] as const;
 /** How long one git call may take before it is killed: a hung call would hold its agent's queue. */
 const GIT_TIMEOUT_MS = 60_000;
 
-/** The agent's learning folder: its home's `learning/` entry, which only the host writes. The home is files.ts homeOf,
- *  the one definition the home's routes use too, so two ids that differ only in case never share a folder. */
-export const learningRepo = (data: string, agentId: string): string => join(homeOf(data, agentId), "learning");
+/** The agent's learning folder: `learning/` in its folder on the disk, which only the host writes. The folder is files.ts
+ *  agentFolderOf (pi-durable-agent agentDiskDir), so two ids that differ only in case never share one. */
+export const learningRepo = (data: string, agentId: string): string => join(agentFolderOf(data, agentId), "learning");
 
 /** Makes `dir` where it is absent: a plain `mkdir`, never recursive (which would follow a link on the way). One that is
  *  there, whatever it is, is left for the check after. */
@@ -276,9 +277,12 @@ async function refuseLink(data: string, path: string, absent = false): Promise<v
  *  points. `make`: the home and the folder are made where absent first, one level at a time, each checked after it is
  *  made (agentFolder); without it nothing is made and a missing level passes (readFolder). The one link rule. */
 async function checkedFolder(data: string, agentId: string, make: boolean): Promise<string> {
-  const home = homeOf(data, agentId);
+  const home = agentFolderOf(data, agentId);
   const repo = learningRepo(data, agentId);
-  if (make) await makeDir(dirname(home));
+  if (make) {
+    await makeDir(join(data, DISK_DIR));
+    await makeDir(dirname(home));
+  }
   for (const dir of [home, repo]) {
     if (make) await makeDir(dir);
     await refuseLink(data, dir, !make);
@@ -288,7 +292,7 @@ async function checkedFolder(data: string, agentId: string, make: boolean): Prom
 }
 
 /** The agent's learning folder, its home and the folder made where absent (checkedFolder). A link swapped in for a part
- *  just made is caught by the check after. `<data>/homes` is the operator's, as the data directory is. Every write into
+ *  just made is caught by the check after. `<data>/disk/agents` is the operator's, as the data directory is. Every write into
  *  the folder goes through it, in the agent's queue: before anything reads or makes the repository, and again once
  *  `git init` has made `.git`; before a run's end-of-run turn reads its seed again (seedAt), before its proposal is
  *  checked against it (propose.ts), before its grade reads main and its merge writes it (grade.ts), and before a
@@ -635,7 +639,7 @@ export function seedOf(data: string, agentId: string): Promise<Seed> {
   return withAgentRepo(data, agentId, async () => {
     const check = () => agentFolder(data, agentId);
     const repo = await check();
-    const home = homeOf(data, agentId);
+    const home = agentFolderOf(data, agentId);
     const sha = await openAgentRepo(home, repo, check);
     const seed = await readSeed(home, repo, sha);
     const order = await changedOrder(home, repo, sha);
@@ -661,12 +665,12 @@ export function seedOf(data: string, agentId: string): Promise<Seed> {
 /** The skills the agent wrote at commit `sha` (readSkills): what a run's pin names, laid again. In the agent's queue,
  *  through agentFolder. */
 export const skillsAt = (data: string, agentId: string, sha: string): Promise<LearnedSkill[]> =>
-  withAgentRepo(data, agentId, async () => (await readSkills(homeOf(data, agentId), await agentFolder(data, agentId), sha)).skills);
+  withAgentRepo(data, agentId, async () => (await readSkills(agentFolderOf(data, agentId), await agentFolder(data, agentId), sha)).skills);
 
 /** What commit `sha` of the agent's folder holds for a run, as seedOf reads main: a run's seed, read again. In the
  *  agent's queue, through agentFolder. */
 export const seedAt = (data: string, agentId: string, sha: string): Promise<Seed> =>
-  withAgentRepo(data, agentId, async () => readSeed(homeOf(data, agentId), await agentFolder(data, agentId), sha));
+  withAgentRepo(data, agentId, async () => readSeed(agentFolderOf(data, agentId), await agentFolder(data, agentId), sha));
 /** The active notes of a seed, parsed. */
 export const activeOf = (seed: Pick<Seed, "notes">): LearnedNote[] => Object.entries(seed.notes).flatMap(([file, text]) => {
   const note = parseNoteFile(file, text);

@@ -12,7 +12,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { CANARY as PARALLEL_CANARY } from "./fixtures/faux-parallel.mjs";
-import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
+import { agent, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
 
 const fixture = (name) => new URL(`./fixtures/${name}`, import.meta.url).pathname;
 const FAUX = { fauxHarness: fixture("faux-harness.mjs"), fauxWeb: fixture("faux-web.mjs"), fauxParallel: fixture("faux-parallel.mjs"), fauxUpstream: fixture("faux-upstream.mjs"), fauxExa: fixture("faux-exa.mjs") };
@@ -182,7 +182,7 @@ test("a capped pi run whose auto search is Parallel, under a cap just short of o
 test("a capped claude-agent run on auto never sends Claude's own search: it resolves to Parallel where the server holds the key, else to keyless Exa, and its adapter is opened with no WebSearch, web_search a host tool", { timeout: 120_000 }, async (t) => {
   const { seen } = await setting(t, { PARALLEL_API_KEY: PARALLEL_CANARY });
   const { api, data } = await serve(t, FAUX);
-  const planeOf = async (runId) => JSON.parse(await readFile(join(data, "runs", runId, "serve.json"), "utf8")).tool_plane;
+  const planeOf = async (runId) => JSON.parse(await readFile(join(runDir(data, runId), "serve.json"), "utf8")).tool_plane;
   for (const [id, keyed] of [["capped-claude-keyed", true], ["capped-claude-keyless", false]]) {
     if (!keyed) delete process.env.PARALLEL_API_KEY;
     const before = (await seen()).opened.length;

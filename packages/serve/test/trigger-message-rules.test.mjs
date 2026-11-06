@@ -10,7 +10,7 @@ import { createRequire } from "node:module";
 import { join } from "node:path";
 import { test } from "node:test";
 import { hookRefusal } from "../dist/trigger-secrets.js";
-import { follow, scratch, serve, withEnv } from "./support.mjs";
+import { follow, runDir, scratch, serve, withEnv } from "./support.mjs";
 import { firings, made } from "./trigger-support.mjs";
 
 const { Webhook } = createRequire(import.meta.url)("standardwebhooks");
@@ -41,7 +41,7 @@ test("a message_run target must be a capped run: refused at create and at PATCH 
   assert.deepEqual([patched.status, patched.body.error.fields.map((f) => f.field)], [422, ["target.run_id"]]);
   await first.close();
   // The cap gone from the run's record (nothing removes one today): the firing is refused, never an uncapped turn.
-  const file = join(data, "runs", capped.run_id, "serve.json");
+  const file = join(runDir(data, capped.run_id), "serve.json");
   const meta = JSON.parse(await readFile(file, "utf8"));
   delete meta.max_cost_usd;
   await writeFile(file, JSON.stringify(meta));

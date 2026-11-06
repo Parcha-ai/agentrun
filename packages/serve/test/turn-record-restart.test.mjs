@@ -9,7 +9,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { startServe } from "../dist/index.js";
-import { agent, client, FAUX, follow, printed, scratch } from "./support.mjs";
+import { agent, client, FAUX, follow, printed, runDir, scratch } from "./support.mjs";
 
 const SLOW_EXIT_HARNESS = new URL("./fixtures/faux-harness-slow-exit.mjs", import.meta.url).pathname;
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
@@ -47,7 +47,7 @@ process.stdout.write(JSON.stringify({ base: server.baseUrl, token: server.token 
     // The server goes down at once, then the run's process, held on its SIGTERM, before anything carried the run back.
     child.kill("SIGKILL");
     await new Promise((resolve) => (child.exitCode !== null || child.signalCode !== null ? resolve() : child.once("exit", resolve)));
-    const { holder } = JSON.parse(await readFile(join(data, "runs", runId, "run.json"), "utf8"));
+    const { holder } = JSON.parse(await readFile(join(runDir(data, runId), "run.json"), "utf8"));
     process.kill(holder.pid, "SIGKILL");
     for (const end = Date.now() + 10_000; !gone(holder.pid); await sleep(50)) assert.ok(Date.now() < end, "the run's process is gone");
     const next = await startServe({ data, port: 0, faux: FAUX, fauxHarness: FAUX_HARNESS, drainTimeout: "5s" });

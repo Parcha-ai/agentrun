@@ -4,7 +4,9 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer, request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { existsSync, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { DatabaseSync } from "node:sqlite";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { openStoreReader } from "@parcha/pi-durable-agent";
 import { startServe } from "../dist/index.js";
@@ -263,7 +265,7 @@ export const cookieOf = (res) => (res.headers["set-cookie"] ?? []).map((line) =>
  *  A paused run's process marks the run released itself (sleeping) before it closes its store and exits, so run.json's
  *  status is not that signal; the process gone is, as it is for the server (runs.ts, a run no longer live). */
 export async function letGo(data, runId, { deadlineMs = 20_000 } = {}) {
-  const file = join(data, "runs", runId, "run.json");
+  const file = join(runDir(data, runId), "run.json");
   for (const end = Date.now() + deadlineMs; ; await new Promise((resolve) => setTimeout(resolve, 50))) {
     let record = null;
     try {
@@ -275,4 +277,32 @@ export async function letGo(data, runId, { deadlineMs = 20_000 } = {}) {
     if (Number.isInteger(pid) && !processAlive(pid)) return;
     assert.ok(Date.now() < end, `the run's process did not exit: ${JSON.stringify(record)}`);
   }
+}
+
+/** Run `runId`'s folder on the disk of data directory `data`: `<data>/disk/agents/<agent>/runs/<run>`, its agent read from
+ *  the run's row in store.sqlite (read-only). A run the store does not know yet gets a folder no run has. */
+export function runDir(data, runId) {
+  let agent;
+  try {
+    const db = new DatabaseSync(join(data, "store.sqlite"), { readOnly: true });
+    try {
+      agent = db.prepare("SELECT agent_id FROM runs WHERE id = ?").get(runId)?.agent_id;
+    } finally {
+      db.close();
+    }
+  } catch {}
+  const folder = agent === undefined ? "unknown-agent" : `${agent.toLowerCase()}-${createHash("sha256").update(agent, "utf8").digest("hex").slice(0, 16)}`;
+  return join(data, "disk", "agents", folder, "runs", runId);
+}
+
+/** The run folders' names on the disk of data directory `data`, across its agents' folders. */
+export function runIds(data) {
+  const agents = join(data, "disk", "agents");
+  return (existsSync(agents) ? readdirSync(agents) : []).flatMap((agent) => (existsSync(join(agents, agent, "runs")) ? readdirSync(join(agents, agent, "runs")) : [])).sort();
+}
+
+/** Each agent's runs/ folder on the disk of data directory `data`. */
+export function runsFolders(data) {
+  const agents = join(data, "disk", "agents");
+  return (existsSync(agents) ? readdirSync(agents) : []).map((agent) => join(agents, agent, "runs")).filter((folder) => existsSync(folder));
 }

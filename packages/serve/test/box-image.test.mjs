@@ -17,7 +17,7 @@ import { test } from "node:test";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { awaitImage, BOX_RECIPE, DEFAULT_DOCKER_IMAGE, dockerImage, IMAGE_STATE_FILE, RECIPE_HASH, RECIPE_LABEL, STALE_AFTER_MS } from "../dist/box-image.js";
 import { startTimeOf } from "../dist/box/sweep.js";
-import { client, follow, jsonLines, scratch, serve, withEnv } from "./support.mjs";
+import { client, follow, jsonLines, runDir, scratch, serve, withEnv } from "./support.mjs";
 import { daytonaSandboxes } from "./fixtures/fake-daytona.mjs";
 import { startServe } from "../dist/index.js";
 
@@ -84,7 +84,7 @@ async function rowsOf(api, runId) {
   }
 }
 function answers(data, runId) {
-  const db = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { readOnly: true });
+  const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true });
   try {
     return db.prepare("SELECT record FROM entries ORDER BY id").all()
       .flatMap((row) => JSON.parse(row.record).model ?? [])
@@ -602,7 +602,7 @@ test("demo, a server killed mid-build: the run it left fails its call at once, i
   // The run's process, left behind, holds its store to itself; that the call ended shows as a write to it after the
   // kill (the run waits until then, so nothing writes between the mark and the kill). It ends with the server gone,
   // before any server is back: the next is started only once the run has had time to read the record again.
-  const store = join(data, "runs", runId, "store");
+  const store = join(runDir(data, runId), "store");
   const touched = () => Math.max(...readdirSync(store).map((name) => statSync(join(store, name)).mtimeMs));
   const before = touched();
   child.kill("SIGKILL");

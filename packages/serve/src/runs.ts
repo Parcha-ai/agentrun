@@ -12,8 +12,8 @@ import type { Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { processAlive } from "@parcha/agentrun-kernel/host";
-import { doorTook } from "@parcha/pi-durable-disk";
-import { AgentHomeError, type Revision, type RevisionKind, type RunOrigin, type RunRow, type RunState, type StoredMetrics } from "@parcha/pi-durable-agent";
+import { doorKey, doorTook } from "@parcha/pi-durable-disk";
+import { AgentHomeError, type Revision, runDirIn, type RevisionKind, type RunOrigin, type RunRow, type RunState, type StoredMetrics } from "@parcha/pi-durable-agent";
 import { isMessageRow, type MessageOrigin, registerLabel, registerTurnEnding, REQUEST_STARTED, type RunMetrics, runMetricsWithDecisions, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { HARNESS_LOG_EVENT, harnessModelKeys, thinkingFor } from "./adapters.js";
 import { DEFAULT_HARNESS, harnessOfBody, steersMidTurn } from "./harness.js";
@@ -54,6 +54,8 @@ import { type Place, remotePlace, storedPlace } from "./place.js";
 import { destroyRunBoxes, ensureRemoteBox, PullIncomplete, pullRemoteBox, RUN_LABEL, sweepRunBoxes } from "./run-box.js";
 import { BACKGROUND_DIR, endBackground } from "./background.js";
 import { removeEgressDir, RUN_BOX_ALLOW_ENV } from "./box-egress.js";
+import { BehindReadError, checkpointRunDb, MonotonicReads, readRunDb } from "./run-db.js";
+import { type DiskAdapter, localDisk } from "./disk.js";
 import type { BoxProvider } from "@parcha/pi-transport";
 import type { RemoteLimits } from "./run-box.js";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
@@ -79,6 +81,10 @@ const QUIET = /:run:(start|end)$/;
 const RETRY_CODES = ["OPENING", "PARKING", "RELEASED"];
 /** How often one server opens a run again whose process went before the run ended, before it fails the run. */
 const MAX_RELAUNCHES = 3;
+/** Who holds a run's claim (its row's claim_holder): its own process on this machine, or the server once it took it back. */
+const RUN_HOLDER = "run-process";
+/** The epoch of the claim a run's process holds, which the server gave it at its launch. */
+export const RUN_EPOCH_ENV = "AGENTRUN_RUN_EPOCH";
 /** How often a run's end that the agent store refused is written again. */
 const SETTLE_RETRY_MS = 30_000;
 /** How a run ended in the store, as its status: the store's `stopped` is v2's `cancelled`, and an escalated workflow
@@ -326,6 +332,8 @@ export type Run = {
   boxing?: Promise<{ id: string; made: boolean }>;
   /** Its remote box's newest pull: a read of its files waits for it. */
   pulling?: Promise<void>;
+  /** The last of its database's reads and take-back checkpoint (runs.ts runDb): the next waits for it. */
+  dbQueue?: Promise<void>;
   /** It stood waiting for the person when last marked: a turn's end is the change into that. */
   waited?: boolean;
   /** The pause at its cap (its mark) whose process was let go: once per pause. */
@@ -847,6 +855,13 @@ export const runsTestHooks: { personsTurn?: (runDir: string) => Promise<void> | 
 
 export class Runs {
   private readonly runs = new Map<string, Run>();
+  /** The last entry each run's database reads have seen (run-db.ts): a read behind it is never shown. */
+  private readonly reads = new MonotonicReads();
+  /** The disk the runs' folders are on (disk.ts): on this machine, the data directory's own. */
+  private get disk(): DiskAdapter {
+    return (this.#disk ??= localDisk(this.options.agents.dir, this.store));
+  }
+  #disk: DiskAdapter | undefined;
   /** Each workflow revision's workflow, by revision id, as a graph read it: a revision never changes. */
   private readonly workflows = new Map<string, unknown>();
   /** What decides the secrets each revision's runs are handed (needsOf), by revision id: read once, from the revision the
@@ -943,7 +958,7 @@ export class Runs {
 
   private async load(row: RunRow): Promise<Run> {
     this.onRunLoad?.(row.id);
-    const dir = join(this.options.agents.dir, "runs", row.id);
+    const dir = runDirIn(this.options.agents.dir, row.agent, row.id);
     const stored = (await readJson(join(dir, RUN_META))) as Partial<RunMeta> | null;
     const trigger = triggerOf(stored);
     const meta: RunMeta = {
@@ -1064,11 +1079,10 @@ export class Runs {
   private async readStore(run: Run, atEnd = false): Promise<void> {
     const file = this.storeFile(run);
     if (!(await stat(file).catch(() => null))) return;
-    const { DatabaseSync } = await import("node:sqlite");
     const read: Array<{ conversation: number; entry: Json }> = [];
     const submissions: Json[] = [];
-    const db = new DatabaseSync(file, { readOnly: true });
-    try {
+    // A fresh read-only, lock-free read (run-db.ts), after any take-back's checkpoint of this run: one at a time.
+    const last = await this.runDb(run, () => readRunDb(file, this.live(run), (db) => {
       const rows = run.kind === "workflow" || atEnd
         ? db.prepare("SELECT conversation_id, record FROM entries ORDER BY id").iterate()
         : db.prepare("SELECT conversation_id, record FROM entries WHERE conversation_id = (SELECT MIN(conversation_id) FROM entries) ORDER BY id").iterate();
@@ -1078,8 +1092,14 @@ export class Runs {
         const inputs = db.prepare("SELECT record FROM submissions WHERE conversation_id = (SELECT MIN(conversation_id) FROM entries) ORDER BY id").all() as { record: string }[];
         for (const row of inputs) submissions.push(JSON.parse(String(row.record)) as Json);
       }
-    } finally {
-      db.close();
+      return Number((db.prepare("SELECT max(id) AS last FROM entries").get() as { last: number | null }).last ?? 0);
+    }));
+    // An older view of the file than one read before is never shown: what was read before stays.
+    try {
+      this.reads.accept(run.id, last);
+    } catch (error) {
+      if (error instanceof BehindReadError) return warn(run.id, `a read of its store was behind one before (${error.message}); the earlier read stands`);
+      throw error;
     }
     const root = read.reduce((min, r) => Math.min(min, r.conversation), Infinity);
     const entries = read.flatMap((r) => (run.kind === "workflow" || r.conversation === root ? [r.entry] : []));
@@ -1087,7 +1107,7 @@ export class Runs {
       const { durableDecisions } = await import("@parcha/agentrun-pi/durable");
       // Decisions it cannot read add no rows, and leave the served usage row's total unknown, as the run's cost read
       // does (readDecisionCost): never its model nodes' total alone.
-      try { run.decisions = durableDecisions(file); } catch { run.decisions = null; }
+      try { run.decisions = durableDecisions(file, { unlocked: true }); } catch { run.decisions = null; }
       run.llmRead = llmAnswers(await readNodeLog(run.dir)).length;
     }
     // Its decision requests count with its model requests: each receipt's tokens, or unmetered without them.
@@ -1096,6 +1116,28 @@ export class Runs {
     noteTurns(run, entries, submissions);
     noteApprovals(run, entries);
     this.take(run, timelineOf(redactGateMessages(entries, this.redactor(run)) as never, { settled: true, path: rowPaths(run.dir), redact: this.redactor(run) }));
+  }
+
+  /** `act` on run `run`'s database, after every earlier one on it: its reads and its take-back's checkpoint never meet. */
+  private runDb<T>(run: Run, act: () => Promise<T>): Promise<T> {
+    const next = (run.dbQueue ?? Promise.resolve()).then(act);
+    run.dbQueue = next.then(() => undefined, () => undefined);
+    return next;
+  }
+
+  /** The server takes run `run` back once no process holds it: its claim's epoch is bumped, with the server as its
+   *  holder (the disk's revoke, disk.ts), and only then its database checkpointed (run-db.ts), its WAL emptied into the
+   *  database file. A run whose process still lives is not taken. A take-back that fails (the agent store held past its
+   *  retries, or not writable) only warns: the run settles all the same, its database read with its WAL, and the next
+   *  settle or start takes it back. */
+  private async takeBack(run: Run): Promise<void> {
+    if (this.live(run)) return;
+    await this.runDb(run, async () => {
+      // A store another writer holds is waited on, as the run's end is: no checkpoint before the claim is the server's.
+      await whenFree(() => this.disk.revoke(run.id), this.busyDelays(), this.onBusy(run.id, "the agent store"));
+      const file = this.storeFile(run);
+      if (await stat(file).catch(() => null)) await checkpointRunDb(file, this.live(run));
+    }).catch((error: Error) => warn(run.id, `it was not taken back (${error.message}); its database keeps its WAL until the next take-back`));
   }
 
   /** New rows in: into the log, then the run's status, then whatever the status asks for. */
@@ -1394,7 +1436,8 @@ export class Runs {
       }
       // A remote box of an ended run is pulled first, so what it changed after its run's last pull is kept, and goes only
       // once that pull landed: one that fails keeps the box for the next start, its lifetime bounding it.
-      const dirOf = (id: string) => join(this.options.agents.dir, "runs", id);
+      const agentOf = new Map(rows.map((row) => [row.id, row.agent]));
+      const dirOf = (id: string) => runDirIn(this.options.agents.dir, agentOf.get(id) ?? "", id);
       const pulledFirst = (boxes: BoxProvider, daytona: boolean) => (id: string, boxId: string) =>
         pullRemoteBox(boxes, { id, dir: dirOf(id) }, boxContext(REMOTE_SYNC_MS)).then(
           () => true,
@@ -1414,7 +1457,7 @@ export class Runs {
         await sweepRunBoxes(remoteBoxes, (id) => ended.has(id), boxContext(REMOTE_SYNC_MS), pulledFirst(remoteBoxes, true)).catch((error: Error) => warn("-", `its start's sweep of remote run boxes failed (${error.message}); the next start sweeps again`));
       }
       if (!box) return;
-      const settled = await sweepBoxes(box.host, box.quarantine, rows.map((row) => ({ id: row.id, dir: join(this.options.agents.dir, "runs", row.id) })));
+      const settled = await sweepBoxes(box.host, box.quarantine, rows.map((row) => ({ id: row.id, dir: runDirIn(this.options.agents.dir, row.agent, row.id) })));
       for (const [id, how] of Object.entries(settled)) if (how === "quarantined") warn(id, "its box could not be emptied; it is quarantined, and tried again at each start");
     })().catch((error: unknown) => {
       // A sweep that failed is not kept: the next start, open or relaunch sweeps again, so one transient error never
@@ -1940,6 +1983,13 @@ export class Runs {
     const providers = needs?.decisionProviders;
     const decisionKeys = providers ? decisionKeysFor(served, { providers, parallelWeb: handsParallel(plane) }) : {};
     const handsKey = Object.keys(decisionKeys).length > 0;
+    // The run's claim, for its process: the epoch bumped and the holder named on its row, in one statement. A claim
+    // that cannot be written launches nothing; the next launch or start tries again.
+    try {
+      env[RUN_EPOCH_ENV] = String(this.store.claimRun(run.id, RUN_HOLDER));
+    } catch (error) {
+      return warn(run.id, `its process is not started: its claim was not written (${(error as Error).message})`);
+    }
     this.markLaunching(run);
     const log = openSync(join(run.dir, PROCESS_LOG), "a", 0o600);
     const stdio: ("ignore" | "pipe" | number)[] = ["ignore", "ignore", log, "pipe"];
@@ -2054,6 +2104,8 @@ export class Runs {
     if (gone) await this.options.signIns?.markGone(run.agentId, run.id).catch((error: Error) => warn(run.id, `its sign-in's lease is not marked: ${error.message}`));
     // Its metrics are this settle's read, or none: never an earlier end's.
     run.metrics = undefined;
+    // Its process gone: the server takes the run back, its database checkpointed, before it reads it.
+    if (gone) await this.takeBack(run);
     if (released || gone) await this.storeWhenFree(run, true);
     // Its process gone: an archived run's box is let go now, whatever comes next (an outcome, a wait for the person, a
     // relaunch), since nothing else would until the next start or archive. This is every archived end that can let a box
@@ -2136,7 +2188,7 @@ export class Runs {
     const { durableDecisions } = await import("@parcha/agentrun-pi/durable");
     // Not its `llm` calls: each completes on the run's marked models, so its cost is a REQUEST_COST entry its usage row
     // already sums (request-start.ts).
-    const paid = durableDecisions(this.storeFile(run)).map((row) => row.cost_usd);
+    const paid = durableDecisions(this.storeFile(run), { unlocked: true }).map((row) => row.cost_usd);
     if (paid.length) run.decisionCost = paid.every((cost) => typeof cost === "number") ? (paid as number[]).reduce((a, b) => a + b, 0) : null;
     if (paid.length) run.decisionsPriced = { known: paid.reduce<number>((a, b) => a + (typeof b === "number" ? b : 0), 0), unpriced: paid.filter((cost) => typeof cost !== "number").length };
   }
@@ -2453,21 +2505,29 @@ export class Runs {
     if (this.live(run)) return false;
     const file = this.storeFile(run);
     if (!(await stat(file).catch(() => null))) return false;
-    const { DatabaseSync } = await import("node:sqlite");
-    return whenFree(async () => {
-      const db = new DatabaseSync(file, { readOnly: true });
+    // A fresh read-only, lock-free read (run-db.ts), after any take-back's checkpoint of this run.
+    return this.runDb(run, async () => {
       try {
-        if (db.prepare("SELECT 1 FROM submissions WHERE request_id = ? LIMIT 1").get(JSON.stringify(requestId)) !== undefined) return true;
-        const status = db.prepare("SELECT json_extract(e.record, '$.data.status') AS status FROM submissions s JOIN entries e ON e.id = json_extract(s.record, '$.entry') WHERE s.request_id = ? LIMIT 1");
-        return await doorTook(requestId, (key) => (status.get(JSON.stringify(key)) as { status?: string } | undefined)?.status ?? undefined);
+        const statusOf = await readRunDb(file, this.live(run), (db) => {
+          if (db.prepare("SELECT 1 FROM submissions WHERE request_id = ? LIMIT 1").get(JSON.stringify(requestId)) !== undefined) return true;
+          const status = db.prepare("SELECT json_extract(e.record, '$.data.status') AS status FROM submissions s JOIN entries e ON e.id = json_extract(s.record, '$.entry') WHERE s.request_id = ? LIMIT 1");
+          // The door's journal for it, key by key until the first it does not hold (pi-durable-disk doorKey).
+          const journal = new Map<string, string>();
+          for (let n = 0; ; n++) {
+            const key = doorKey(requestId, n);
+            const at = (status.get(JSON.stringify(key)) as { status?: string } | undefined)?.status ?? undefined;
+            if (at === undefined) break;
+            journal.set(key, at);
+          }
+          return journal;
+        });
+        return statusOf === true ? true : await doorTook(requestId, (key) => statusOf.get(key));
       } catch (error) {
         // A store that keeps no submissions has taken none.
         if (/no such table/.test((error as Error).message)) return false;
         throw error;
-      } finally {
-        db.close();
       }
-    }, this.busyDelays(), this.onBusy(run.id, "its store"));
+    });
   }
 
   /** Raises the cap of an agentic run that names one, to `cap`: above its own (by more than CAP_TOLERANCE), or the same as
@@ -3047,7 +3107,7 @@ export class Runs {
   async summaryOfRow(row: RunRow, versions: Map<string, number>): Promise<Awaited<ReturnType<Runs["summary"]>>> {
     const known = this.runs.get(row.id) ?? (row.state === "running" ? await this.get(row.id) : null);
     if (known) return this.summary(known);
-    const meta = (await readJson(join(this.options.agents.dir, "runs", row.id, RUN_META))) as Partial<RunMeta> | null;
+    const meta = (await readJson(join(runDirIn(this.options.agents.dir, row.agent, row.id), RUN_META))) as Partial<RunMeta> | null;
     return {
       run_id: row.id, agent_id: row.agent, agent_version: versions.get(row.revision) ?? 0, revision: row.revision, kind: row.kind, sha: null,
       status: STATUS_OF[row.state as Ended], state: "idle" as State, title: typeof meta?.title === "string" ? meta.title : "",

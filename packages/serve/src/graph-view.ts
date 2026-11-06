@@ -63,7 +63,7 @@ export async function runGraph(given: GraphInput) {
   if (given.ended && !given.liveOnly) {
     view = await readWorkflowRun({ runId: id, storePath: given.storeFile, revision: { body: { workflow: given.workflow } } as never });
     pin = ((readJournal(given.storeFile, id)?.state as { pin?: Frame } | undefined)?.pin) ?? {};
-    receipts = durableDecisions(given.storeFile);
+    receipts = durableDecisions(given.storeFile, { unlocked: true });
   } else {
     const live = await readLiveView(given.root);
     pin = (live?.pin as Frame | undefined) ?? {};

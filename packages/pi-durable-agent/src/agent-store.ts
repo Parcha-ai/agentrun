@@ -1,10 +1,10 @@
 import type { JsonObject } from "@earendil-works/pi-durable";
 import type { Workflow } from "@parcha/agentrun-dsl"; // a type only: a store that never holds a workflow loads nothing of the DSL
-import { chmodSync, existsSync, mkdirSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, rmSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { ID_PATTERN, isSkillPath, openAgentHome, readAgentHome, runStoreIn, sha256, uuidv7 } from "./home.js";
+import { ID_PATTERN, isSkillPath, openAgentHome, readAgentHome, runDirIn, runStoreIn, sha256, uuidv7 } from "./home.js";
 import type { PromptVariant } from "./kinds.js";
 import { canonical } from "./kinds.js";
 import { seedRun } from "./runs.js";
@@ -135,7 +135,9 @@ CREATE TABLE IF NOT EXISTS runs (
   started_at  TEXT NOT NULL,
   ended_at    TEXT,
   cost_usd    REAL,
-  summary     TEXT
+  summary     TEXT,
+  claim_epoch  INTEGER NOT NULL DEFAULT 0,
+  claim_holder TEXT
 );
 CREATE INDEX IF NOT EXISTS runs_by_agent ON runs(agent_id, started_at);
 CREATE INDEX IF NOT EXISTS runs_by_state ON runs(state);
@@ -201,15 +203,48 @@ BEGIN SELECT RAISE(ABORT, 'an origin is written once'); END;`;
 // archive_changes, runs_by_state, run_imports, run_metrics, run_tool_metrics and run_origins came after version 1 without
 // a new version: an earlier version opens the file and ignores them. run_imports' trigger on runs is in the file, so that
 // version still cannot change an imported run.
-const STORE_VERSION = 1;
+// Version 2: each run lives on the disk (<data>/disk/agents/<agent>/runs/<run>), and its row holds its claim
+// (claim_epoch, claim_holder). A version 1 store's runs are under <data>/runs/, which this version does not read: it is
+// refused, with no migration.
+const STORE_VERSION = 2;
 const SQLITE_READONLY_ROLLBACK = 776;
 const SQLITE_CONSTRAINT = 19;
 /** Fail closed on a file a newer version wrote. */
 function checkVersion(db: DatabaseSync): void {
-  if ((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version > STORE_VERSION) throw new AgentHomeError("format", "this store was written by a newer version");
+  const version = (db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version;
+  if (version > STORE_VERSION) throw new AgentHomeError("format", "this store was written by a newer version");
+  if (version > 0 && version < STORE_VERSION) throw new AgentHomeError("format", `this store was written by a version that kept its runs outside the disk (store version ${version}), which this version does not read`);
 }
 
 const invalid = (message: string) => new AgentHomeError("invalid", message);
+/** Refuses a run's folder `dir` below `base` (the data directory) when any level of it there now is a symbolic link or not
+ *  a directory: a run's files are never made or written where a link points. The disk's one link rule, as the learning
+ *  folder's (serve learning.ts). */
+function refuseLinks(base: string, dir: string): void {
+  let at = base;
+  for (const part of path.relative(base, dir).split(path.sep).filter(Boolean)) {
+    at = path.join(at, part);
+    let stats;
+    try {
+      stats = lstatSync(at);
+    } catch {
+      return;
+    }
+    if (stats.isSymbolicLink()) throw invalid(`${path.relative(base, at)} is a symbolic link, and a run's folder is never made through one`);
+    if (!stats.isDirectory()) throw invalid(`${path.relative(base, at)} is not a directory`);
+  }
+}
+/** Makes each folder from `base` down to `dir` that is missing, 0700, each mode set after its mkdir, so no umask loosens it. */
+function ownedDirs(base: string, dir: string): void {
+  const below = path.relative(base, dir);
+  let at = base;
+  for (const part of below.split(path.sep).filter(Boolean)) {
+    at = path.join(at, part);
+    if (existsSync(at)) continue;
+    mkdirSync(at, { mode: 0o700 });
+    chmodSync(at, 0o700);
+  }
+}
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const checkId = (id: unknown, what: string): string => {
   if (typeof id !== "string" || !ID_PATTERN.test(id)) throw invalid(`the ${what} id is not letters, digits, ".", "_" or "-" (at most 128)`);
@@ -493,8 +528,21 @@ export class AgentStoreReader {
     const revisions = rows.filter((r) => r.id !== null).map((r) => ({ ...revisionOf({ ...r, agent_id: r.agent_id }), current: r.id === first.current_revision }));
     return { agent, revisions };
   }
-  /** `<dir>/runs/<run id>/store/run.sqlite`, for a run's timeline. It does not check that the file exists. */
-  runStorePath(runId: string): string { return runStoreIn(path.join(this.dir, "runs", checkId(runId, "run"))); }
+  /** Run `runId`'s folder on the disk, `<dir>/disk/agents/<agent>/runs/<run id>`, by its row's agent. It does not check
+   *  that the folder exists; an unknown run is AgentHomeError `missing`. */
+  runDir(runId: string): string {
+    const row = this.db.prepare("SELECT agent_id FROM runs WHERE id = ?").get(checkId(runId, "run")) as { agent_id: string } | undefined;
+    if (!row) throw new AgentHomeError("missing", "that run is unknown");
+    return runDirIn(this.dir, row.agent_id, runId);
+  }
+  /** `<run's folder>/store/run.sqlite`, for a run's timeline. It does not check that the file exists. */
+  runStorePath(runId: string): string { return runStoreIn(this.runDir(runId)); }
+  /** Run `runId`'s claim, as its row holds it: the epoch, bumped at each claim, and who holds it (null before the first). */
+  runClaim(runId: string): { epoch: number; holder: string | null } {
+    const row = this.db.prepare("SELECT claim_epoch, claim_holder FROM runs WHERE id = ?").get(checkId(runId, "run")) as { claim_epoch: number; claim_holder: string | null } | undefined;
+    if (!row) throw new AgentHomeError("missing", "that run is unknown");
+    return { epoch: Number(row.claim_epoch), holder: row.claim_holder };
+  }
 }
 
 export class AgentStore extends AgentStoreReader {
@@ -590,7 +638,8 @@ export class AgentStore extends AgentStoreReader {
       if (text === undefined || sha256(text) !== sha) throw new AgentHomeError("format", "a skill of the revision is missing or does not match its hash");
       return [file, text];
     }));
-    const dir = path.join(this.dir, "runs", runId);
+    const dir = runDirIn(this.dir, agent, runId);
+    refuseLinks(this.dir, dir);
     const run: StartedRun = { runId, dir, storePath: runStoreIn(dir), workspace: path.join(dir, "work"), agentId: agent, revision };
     // The directory first, then the row: a seed that fails throws and nothing is written; a hard kill between the two leaves a directory no query shows.
     try {
@@ -615,11 +664,20 @@ export class AgentStore extends AgentStoreReader {
     return run;
   }
 
+  /** Claims run `runId` for `holder`: its epoch is bumped and the holder recorded, in one transaction. The new epoch,
+   *  which the holder carries; a holder of a lower one is fenced. A take-back is a claim by the server. */
+  claimRun(runId: string, holder: string): number {
+    if (typeof holder !== "string" || holder === "" || holder.length > 256) throw invalid("a claim's holder is a non-empty name of at most 256 characters");
+    const row = this.db.prepare("UPDATE runs SET claim_epoch = claim_epoch + 1, claim_holder = ? WHERE id = ? RETURNING claim_epoch").get(holder, checkId(runId, "run")) as { claim_epoch: number } | undefined;
+    if (!row) throw new AgentHomeError("missing", "that run is unknown");
+    return Number(row.claim_epoch);
+  }
+
   /** The run `key` started (startRun's `origin`), as startRun returns it with `existing`; undefined when it started none. */
   runOfOrigin(key: string): StartedRun | undefined {
     const row = this.db.prepare("SELECT o.run_id, o.fingerprint, r.agent_id, r.revision_id FROM run_origins o JOIN runs r ON r.id = o.run_id WHERE o.key = ?").get(key) as Record<string, string | null> | undefined;
     if (!row) return undefined;
-    const dir = path.join(this.dir, "runs", row.run_id!);
+    const dir = runDirIn(this.dir, row.agent_id!, row.run_id!);
     return { runId: row.run_id!, dir, storePath: runStoreIn(dir), workspace: path.join(dir, "work"), agentId: row.agent_id!, revision: this.readRevision(row.revision_id!), existing: row.fingerprint === null ? {} : { fingerprint: row.fingerprint! } };
   }
 
@@ -686,12 +744,13 @@ export class AgentStore extends AgentStoreReader {
     if (input.summary !== undefined && (typeof input.summary !== "string" || input.summary === "")) throw invalid("the summary is not non-empty text");
     const metrics = input.metrics === undefined ? undefined : checkMetrics(input.metrics);
     const runId = uuidv7();
-    const dir = path.join(this.dir, "runs", runId);
+    const dir = runDirIn(this.dir, agent, runId);
     const storePath = runStoreIn(dir);
     // The directory first, then the rows (startRun's order); each mode set after its mkdir, so no umask loosens it.
-    // runs/ made here (a first import, before any run) is the owner's too: a umask that strips the owner's write bit
-    // would leave it unwritable, and this run's directory never made.
-    if (mkdirSync(path.dirname(dir), { recursive: true }) !== undefined) chmodSync(path.dirname(dir), 0o700);
+    // The folders above it made here (a first import, before any run) are the owner's too: a umask that strips the
+    // owner's write bit would leave them unwritable, and this run's directory never made.
+    refuseLinks(this.dir, dir);
+    ownedDirs(this.dir, path.dirname(dir));
     try {
       for (const made of [dir, path.dirname(storePath)]) {
         mkdirSync(made, { mode: 0o700 });

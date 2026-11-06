@@ -9,7 +9,7 @@ import { test } from "node:test";
 import { note } from "./fixtures/faux-learn.mjs";
 import { ended, git, learner, LEARN, made, repoOf, started } from "./learn-support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
-import { call, cookieOf, serve, withEnv } from "./support.mjs";
+import { call, cookieOf, runDir, serve, withEnv } from "./support.mjs";
 
 const SKILL = "---\nname: find-policies\ndescription: Find a store's refund and shipping policies\n---\n# Find policies\n\n1. Open the policies page first.\n";
 const DRAFT = JSON.stringify({
@@ -157,8 +157,8 @@ test("a person retires a learned skill or a workflow draft as they retire a note
   assert.equal(git(repo, ["rev-parse", "main"]), main);
   // The next run no longer gets it: not in its pin, not in its work.
   const next = await started(api, "retirer");
-  const pin = JSON.parse(readFileSync(join(data, "runs", next, "learning.json"), "utf8"));
+  const pin = JSON.parse(readFileSync(join(runDir(data, next), "learning.json"), "utf8"));
   assert.ok(!(pin.skills ?? []).some((path) => path.startsWith("find-policies/")), JSON.stringify(pin));
-  assert.throws(() => readFileSync(join(data, "runs", next, "work", ".agents", "skills", "find-policies", "SKILL.md")), /ENOENT/);
+  assert.throws(() => readFileSync(join(runDir(data, next), "work", ".agents", "skills", "find-policies", "SKILL.md")), /ENOENT/);
   await ended(api, next);
 });

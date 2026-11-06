@@ -72,7 +72,7 @@ export class StorePragmaError extends Error {
 
 /** What each profile must read back after it is set. `synchronous` 2 is FULL. */
 export const PROFILE_PRAGMAS = {
-  exclusive: { locking_mode: "exclusive", journal_mode: "wal", synchronous: 2, mmap_size: 0 },
+  exclusive: { locking_mode: "exclusive", journal_mode: "wal", synchronous: 2, mmap_size: 0, wal_autocheckpoint: 0 },
   shared: { locking_mode: "normal", journal_mode: "wal", synchronous: 2, mmap_size: 0 },
 } as const satisfies Record<Profile, Record<string, string | number>>;
 
@@ -221,7 +221,28 @@ export type OpenOptions = {
   readonly decorate?: (database: SqliteDatabase) => SqliteDatabase;
   /** The platform whose pragmas the store takes (`profilePragmas`); default this one. For tests. */
   readonly platform?: NodeJS.Platform;
+  /**
+   * The exclusive profile only: the store's close leaves its WAL in place. node:sqlite's close checkpoints the WAL into
+   * the database file; with this, close only lets go of the store, and the connection stays open, held here, until the
+   * process ends, which a process.exit does without a checkpoint (a natural end of the event loop would close it, and
+   * checkpoint). For a run's own process, which ends by process.exit (cli.ts), so whoever takes the run back next
+   * checkpoints it. A second open of the file in this process is refused busy, as the connection still holds its lock.
+   */
+  readonly keepWal?: boolean;
 };
+
+/** The connections a keepWal store's close let go of: held, so a collected handle never closes, and checkpoints, its file. */
+const keptOpen = new Set<SqliteDatabase>();
+
+/** `database` whose close lets go of it without closing the connection (keepWal). */
+const keepingWal = (database: SqliteDatabase): SqliteDatabase =>
+  new Proxy(database, {
+    get(target, key, receiver) {
+      if (key === "close") return async () => void keptOpen.add(target);
+      const value = Reflect.get(target, key, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
 
 export type ArchilStore = {
   readonly storage: SqliteStorage;
@@ -251,9 +272,11 @@ export async function openArchilStore(
     if (file !== ":memory:") await mkdir(dirname(file), { recursive: true });
     if (profile === "exclusive") {
       const raw = await fence.guard(() => new NodeSqliteDatabase(new DatabaseSync(file, { timeout: 0 })));
-      database = new FencedDatabase(decorate(raw), fence);
+      database = new FencedDatabase(decorate(options.keepWal ? keepingWal(raw) : raw), fence);
       await database.exec("PRAGMA locking_mode = EXCLUSIVE"); // before WAL: the WAL index stays in heap
       await database.exec("PRAGMA journal_mode = WAL");
+      // No checkpoint while it runs: whoever takes the run back checkpoints it, with no writer left.
+      await database.exec("PRAGMA wal_autocheckpoint = 0");
     } else {
       database = new FencedDatabase(decorate(await fence.guard(() => openNodeSqliteDatabase(file))), fence);
     }

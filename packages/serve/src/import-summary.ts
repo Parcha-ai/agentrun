@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import type { AgentStoreReader } from "@parcha/pi-durable-agent";
 import type { RunMetrics } from "@parcha/pi-durable-agent/timeline";
 import { SOURCES, type Source } from "./import-sources.js";
+import { openRunReader } from "./run-db.js";
 
 /** A session an import found: its source and agent; what it used (undefined: unknown), with its time at work; and its
  *  model requests by local hour of the day (undefined: their times are unknown). `untied`: a subagent's session whose
@@ -34,8 +35,7 @@ export async function foundIn(store: AgentStoreReader, runId: string): Promise<F
   const file = store.runStorePath(runId);
   let hours: number[] | undefined;
   if (existsSync(file)) {
-    const { DatabaseSync } = await import("node:sqlite");
-    const db = new DatabaseSync(file, { readOnly: true });
+    const db = openRunReader(file);
     try {
       const rows = db.prepare("SELECT json_extract(record, '$.model[0].timestamp') AS at FROM entries WHERE json_extract(record, '$.kind') = 'pi.assistant'").all() as { at: unknown }[];
       hours = hoursOf(rows.map((row) => Number(row.at)));

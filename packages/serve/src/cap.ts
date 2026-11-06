@@ -32,7 +32,7 @@
 // fits the cap, and whenever the spend is unknown; paid calls go one at a time, so each check sees the charge before
 // it. A call sent holds its figure until its charge joins the spend (paidHolds), so a model request judged meanwhile, on
 // pi or on another harness, counts it beside the spend, as a paid call's check counts the model requests in flight.
-import { DatabaseSync } from "node:sqlite";
+import { openRunReader } from "./run-db.js";
 import { existsSync } from "node:fs";
 import { providerInputOverhead } from "@parcha/agentrun-kernel/host";
 import { bookRequest, type Ended, isConnectCode, isGatewayTimeout, rejectionCode } from "@parcha/agentrun-kernel";
@@ -300,7 +300,8 @@ function openFigures(entries: readonly EntryLike[]): { generation: Figure[]; com
  *  harness spent beside its harness's own requests and its paid tools, which that harness's booking does not hold. */
 export function spentIn(storeFile: string, { sides = false }: { sides?: boolean } = {}): number | null {
   if (!existsSync(storeFile)) return 0;
-  const db = new DatabaseSync(storeFile, { readOnly: true });
+  // Fresh, read-only and lock-free (run-db.ts): its process may hold it.
+  const db = openRunReader(storeFile);
   const entries: EntryLike[] = [];
   // The store's own entries, as read (without the answers written below for a stopped request): openFigures reads them.
   const read: EntryLike[] = [];
@@ -436,7 +437,7 @@ export function metersIn(storeFile: string): Meters {
  *  unknown cost is known to have spent on each (server.ts /usage). */
 export function meterFiguresIn(storeFile: string): Meters & { known: { tokens: number; browser: number; others: number } } {
   if (!existsSync(storeFile)) return { tools: 0, tokens: null, browser: { usd: 0, seconds: 0 }, others: 0, known: { tokens: 0, browser: 0, others: 0 } };
-  const db = new DatabaseSync(storeFile, { readOnly: true, timeout: 2_000 });
+  const db = openRunReader(storeFile);
   try {
     const rows = db.prepare("SELECT conversation_id AS conversation, record FROM entries ORDER BY rowid").all().map((row) => ({ conversation: Number(row.conversation), entry: JSON.parse(String(row.record)) as EntryLike }));
     const root = rows.reduce((min, row) => Math.min(min, row.conversation), Infinity);

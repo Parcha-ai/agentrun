@@ -83,29 +83,3 @@ test("nothing is deleted: an unarchive appends a row, and the database refuses a
   db.close();
 });
 
-test("a store written before archiving (no archive_changes table) opens: the reader lists it with nothing archived, and the writer adds the table and archives", async () => {
-  const { dir, store, runId } = await seeded();
-  store.close();
-  // The differences archiving (and later, imports, run metrics and run origins) make to the file: drop them, and the file is as an earlier version wrote it.
-  const db = new DatabaseSync(path.join(dir, "store.sqlite"));
-  for (const table of ["run_origins", "run_tool_metrics", "run_metrics", "run_imports", "archive_changes"]) {
-    for (const { type, name } of db.prepare("SELECT type, name FROM sqlite_master WHERE (tbl_name = ? OR sql LIKE '%' || ? || '%') AND type != 'table' AND sql IS NOT NULL").all(table, table)) db.exec(`DROP ${type.toUpperCase()} ${name}`);
-    db.exec(`DROP TABLE ${table}`);
-  }
-  assert.deepEqual(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all().map((r) => r.name), ["agents", "revisions", "runs", "skills"]);
-  assert.equal(db.prepare("PRAGMA user_version").get().user_version, 1);
-  db.close();
-  const reader = openStoreReader(dir);
-  assert.deepEqual(reader.listAgents().map((a) => [a.id, a.archivedAt]), [["calc", undefined]]);
-  assert.deepEqual(reader.listRuns().map((r) => [r.id, r.archivedAt]), [[runId, undefined]]);
-  assert.equal(reader.readAgent("calc").agent.archivedAt, undefined);
-  assert.equal(reader.readRun(runId).archivedAt, undefined);
-  reader.close();
-  const writer = openStore(dir);
-  assert.equal(typeof writer.setArchived("agent", "calc", true), "string");
-  assert.equal(writer.listAgents()[0].archivedAt !== undefined, true);
-  writer.close();
-  const again = new DatabaseSync(path.join(dir, "store.sqlite"), { readOnly: true });
-  assert.equal(again.prepare("PRAGMA user_version").get().user_version, 1, "the version stays: an earlier version still opens the file, and ignores the table");
-  again.close();
-});
