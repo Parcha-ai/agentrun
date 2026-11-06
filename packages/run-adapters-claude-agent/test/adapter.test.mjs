@@ -137,11 +137,6 @@ test("a host header the proxy would refuse is refused when the adapter is made, 
   assert.doesNotThrow(() => make({ 'x-litellm-tags': 'job:1' }));
 });
 
-test("the adapter says its harness has an MCP client of its own: a host gives it spec.mcp, never the servers' tools as host tools", () => {
-  const adapter = claudeAgentAdapter({ model: 'm', provider: { origin: 'https://x.invalid', credential: () => 'k' }, sdk: fakeSdk(), standIn: { command: process.execPath } });
-  assert.deepEqual(adapter.capabilities(), { fork: false, mcpClient: true });
-});
-
 test("the PreToolUse gate leaves the session's own tools to the tool, and a failure inside it is a deny, while the turn runs", async (t) => {
   const seen = [];
   const decisions = {};

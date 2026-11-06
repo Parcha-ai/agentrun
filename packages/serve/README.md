@@ -1230,10 +1230,11 @@ asked by default.
   those servers (`strictMcpConfig`) and only the granted tools allowed. The proxy answers the MCP exchange itself and
   makes the call with the credential. The CLI's tool search is off in such a session, so the granted tools are
   offered whole. A server the CLI cannot connect to fails the turn, never a turn without its tools.
-- **codex** is given each granted tool as one of the session's host tools, as it is given `read` or `bash` (Codex's
-  dynamic tools): `mcp__<server>__<tool>` to the run and its timeline, `mcp_<server>__<tool>` on Codex's wire (Codex
-  reserves `mcp__` names), with the pinned description and schema, called from the run's process like pi's. Codex's own MCP client is not used, and Codex holds no server or credential. A tool whose schema Codex would
-  drop or retype (a `not`, `patternProperties`, ...) is `422` at the save, naming the place and why.
+- **codex** uses Codex's own MCP client the same way: the harness writes each granted server in Codex's
+  `mcp_servers` (an agent's own `config` still may not), at the session's model proxy with the session's key, with
+  only the granted tools enabled. Each call runs without Codex asking (`default_tools_approval_mode = "approve"`): the
+  proxy is the gate. Codex sends a call as soon as it starts it, so the proxy records the call in the session before
+  it sends anything. Each server is `required`, so one that does not start fails the turn.
 - **A call** goes to the pinned URL alone, the 2026-07-28 revision first and a 2025-era server through its
   `initialize`; on 2026-07-28 each `x-mcp-header` parameter of the pinned tool is sent as its `Mcp-Param-*` header. No
   redirect is followed, at most 4 MiB is read, and it may take 120 s. The

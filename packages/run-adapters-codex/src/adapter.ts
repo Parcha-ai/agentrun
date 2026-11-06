@@ -78,20 +78,13 @@ export interface CodexAdapterOptions {
   fetch?: typeof fetch;
 }
 
-/** A host tool's name on Codex's wire. Codex 0.164 refuses a dynamic tool named `mcp` or `mcp__…` at thread/start ("dynamic
- *  tool name is reserved", app-server thread_processor.rs at rust-v0.164.0): a remote MCP server's tool, which a host names
- *  `mcp__<server>__<tool>`, goes as `mcp_<server>__<tool>`, and the session's events name it as the host does. Every
- *  other name goes as it is. */
-export const codexToolName = (name: string): string => (name === "mcp" ? "mcp_" : name.startsWith("mcp__") ? `mcp_${name.slice("mcp__".length)}` : name);
-
-/** The kernel's tool for a host tool: the same schema and replay policy, under its name on Codex's wire (codexToolName); a
- *  host's error result is the call's failure.
+/** The kernel's tool for a host tool: the same name, schema and replay policy; a host's error result is the call's failure.
  *  The call runs as a kernel effect, whose intent is durable in the session's records before `execute` is entered, so a
  *  crash inside a `never` tool is always reported, never repeated. The copied harness's wait for Codex's own `function_call`
  *  line before it runs such a tool is a second guard (the transcript Codex resumes from), not the one that protects it. */
 function kernelTool(tool: HostTool): KernelTool {
   return {
-    name: codexToolName(tool.name),
+    name: tool.name,
     // Codex strips some keywords from the schema its model is given: they are said in plain words in the description
     // (the schema itself is the host's, and every call is checked against it).
     description: describedDescription(tool.description, tool.inputSchema),
@@ -107,31 +100,12 @@ function kernelTool(tool: HostTool): KernelTool {
   };
 }
 
-/** What keeps Codex from taking a tool named `name` with `inputSchema`, one problem each, `<name>: <pointer>: <why>`: what no
- *  harness takes (an object root, valid 2020-12, no remote $ref), then what Codex would drop or retype in the schema. A
- *  place the first already refused is not refused again by the second. The adapter refuses such a tool at the open, and a
- *  host may refuse it sooner (an MCP tool's grant, at its save). Nothing in it throws: a schema that cannot be checked is a
- *  problem at "/", naming the tool. */
-export function codexToolProblems(name: string, inputSchema: unknown): string[] {
-  try {
-    const shared = toolSchemaProblems(name, inputSchema);
-    // A schema the shared check refuses as a whole (its root, or that it is not JSON: a cycle only code can build) is not
-    // walked again: Codex's rules would never reach the end of a cycle.
-    const wholly = shared.some((problem) => problem.startsWith(`${name}: /:`));
-    const refusedAt = new Set(shared.map((problem) => /^[^:]*: (\S+):/.exec(problem)?.[1]));
-    return [...shared, ...(wholly ? [] : codexSchemaProblems(name, inputSchema).filter((problem) => !refusedAt.has(/^[^:]*: (\S+):/.exec(problem)?.[1])))];
-  } catch (error) {
-    return [`${name}: /: the tool's schema could not be checked (${String((error as Error)?.message ?? error).slice(0, 120)})`];
-  }
-}
-
-/** The adapter's event for a harness live event, if it has one: a tool named as the host named it (`hostName`, from its name on
- *  Codex's wire). */
-function adapterEvent(event: unknown, hostName: (wire: string) => string = (wire) => wire): AdapterEvent | undefined {
+/** The adapter's event for a harness live event, if it has one. */
+function adapterEvent(event: unknown): AdapterEvent | undefined {
   const e = event as { type?: string; delta?: unknown; name?: unknown; callId?: unknown; args?: unknown; isError?: unknown; truncated?: unknown };
   if (e?.type === "text" && typeof e.delta === "string") return { type: "text", delta: e.delta };
-  if (e?.type === "tool_start" && typeof e.name === "string") return { type: "tool_start", callId: String(e.callId ?? ""), name: hostName(e.name), args: e.args };
-  if (e?.type === "tool_end" && typeof e.name === "string") return { type: "tool_end", callId: String(e.callId ?? ""), name: hostName(e.name), isError: e.isError === true, ...(e.truncated === true ? { truncated: true as const } : {}) };
+  if (e?.type === "tool_start" && typeof e.name === "string") return { type: "tool_start", callId: String(e.callId ?? ""), name: e.name, args: e.args };
+  if (e?.type === "tool_end" && typeof e.name === "string") return { type: "tool_end", callId: String(e.callId ?? ""), name: e.name, isError: e.isError === true, ...(e.truncated === true ? { truncated: true as const } : {}) };
   return undefined;
 }
 
@@ -180,16 +154,26 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
     check(spec) {
       const problems: string[] = [];
       if (spec.context === "fork") problems.push("Codex sessions cannot fork another session's transcript; declare context: \"fresh\"");
-      // Codex's own MCP client is not used: a host gives a remote server's tools as host tools, through its own gate.
-      if (spec.mcp?.servers.length) problems.push("Codex sessions take no MCP servers (spec.mcp): give their tools as host tools");
       const seen = new Set<string>();
       for (const tool of spec.tools) {
         if (!TOOL_NAME.test(tool.name)) problems.push(`the tool name ${JSON.stringify(tool.name.slice(0, 80))} is not one Codex accepts (letters, digits, _ and -, at most 64)`);
-        // Twice by its name on Codex's wire too: mcp__a__b and mcp_a__b are one name there (codexToolName).
-        if (seen.has(codexToolName(tool.name))) problems.push(`the tool ${tool.name} is given twice`);
+        if (seen.has(tool.name)) problems.push(`the tool ${tool.name} is given twice`);
         if (skills.length && tool.name === READ_SKILL_FILE) problems.push(`the tool name ${READ_SKILL_FILE} is the adapter's own when it has skills`);
-        seen.add(codexToolName(tool.name));
-        problems.push(...codexToolProblems(tool.name, tool.inputSchema));
+        seen.add(tool.name);
+        // What no harness takes (an object root, valid 2020-12, no remote $ref), then what Codex would drop or retype in
+        // the tool's schema: refused here, by name, not found out mid-turn. A place the first already refused is not
+        // refused again by the second.
+        // Nothing in it may throw: a tool whose schema cannot be checked is a problem at "/", naming the tool.
+        try {
+          const shared = toolSchemaProblems(tool.name, tool.inputSchema);
+          // A schema the shared check refuses as a whole (its root, or that it is not JSON: a cycle only code can build)
+          // is not walked again: Codex's rules would never reach the end of a cycle.
+          const wholly = shared.some((problem) => problem.startsWith(`${tool.name}: /:`));
+          const refusedAt = new Set(shared.map((problem) => /^[^:]*: (\S+):/.exec(problem)?.[1]));
+          problems.push(...shared, ...(wholly ? [] : codexSchemaProblems(tool.name, tool.inputSchema).filter((problem) => !refusedAt.has(/^[^:]*: (\S+):/.exec(problem)?.[1]))));
+        } catch (error) {
+          problems.push(`${tool.name}: /: the tool's schema could not be checked (${String((error as Error)?.message ?? error).slice(0, 120)})`);
+        }
       }
       return problems;
     },
@@ -230,9 +214,11 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
             ...(options.confine ? { confine: options.confine } : {}),
             ...(seed ? { seed } : {}),
             ...(options.webSearch ? { webSearch: options.webSearch } : {}),
+            // A granted MCP server's tools: Codex's own MCP client calls them at the proxy (mcp.ts).
+            ...(spec.mcp?.servers.length ? { mcp: spec.mcp } : {}),
             proxy: {
               hooks: io.models,
-              tools: tools.map((t) => codexToolName(t.name)),
+              tools: tools.map((t) => t.name),
               ...(options.log ? { log: options.log } : {}),
               ...(options.price ? { price: options.price } : {}),
               ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}),
@@ -243,9 +229,8 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
       };
       const harness = checked === undefined ? codexHarness(harnessOptions) : withCheckedBinary(checked, () => codexHarness(harnessOptions));
 
-      const hostNames = new Map(tools.map((tool) => [codexToolName(tool.name), tool.name]));
       const live = (event: unknown) => {
-        const mapped = adapterEvent(event, (wire) => hostNames.get(wire) ?? wire);
+        const mapped = adapterEvent(event);
         if (mapped) io.onEvent(mapped);
       };
       // Every drive of this session writes through one serialized writer, so a drive opened after an interrupt reads only

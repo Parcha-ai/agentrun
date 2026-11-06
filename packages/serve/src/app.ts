@@ -186,8 +186,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     // opened with that day.
     const spec = { key: `run:${run.id}`, label: run.agent, system: [environmentLine(), instructions, guidance].filter((text): text is string => Boolean(text)), context: "fresh" as const, thinking: thinkingFor(harness, thinkingLevel), ...(gateway ? { mcp: gateway } : {}) };
     // ask_person stays pi's (runnable.ts refuses a run that names it here); the file tools are pi's own; the MCP tools
-    // come from the gateway (spec.mcp): the harness's own client calls them at the session's proxy, or, for a harness with
-    // none (codex), the session takes them as host tools of the gateway's (harness-app.ts).
+    // are the harness's own client's, at the session's proxy.
     const named = revision.body.tools.filter((name) => name !== ASK_TOOL && !mcpNameOf(name));
     // The harness's own files (its homes, its state) go in a private directory beside the workspace, never in it. It works
     // in the workspace itself (where.work), the directory the run's file tools confine to: a path the model builds from

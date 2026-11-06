@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import { after } from 'node:test';
 import { toolSchemaProblems } from '@parcha/agentrun-kernel';
 import { memorySessionStore, SCHEMA_CHECK_CASES } from '@parcha/agentrun-kernel/testing';
-import { codexAdapter, codexToolName, codexToolProblems } from '@parcha/agentrun-harness-codex';
+import { codexAdapter } from '@parcha/agentrun-harness-codex';
 import { findCodex } from '../dist/binary.js';
 import { verifyCodexBinary } from '../dist/verify.js';
 import { codexSchemaProblems, describeDropped, describedDescription, DESCRIBED_HEADING, stripDescribed } from '../dist/schema.js';
@@ -114,28 +114,6 @@ test('the adapter refuses a session whose tool Codex would mangle, before anythi
   assert.equal(problems.length, 2);
   assert.match(problems[0], /^bad: \/properties\/p\/not: not is not supported by Codex 0\.164\.0/);
   assert.match(problems[1], /^worse: \/properties\/p\/enum: enum with a non-scalar value/);
-});
-
-test('codexToolProblems is the check the adapter runs, for a host to run sooner; the adapter has no MCP client of its own and refuses spec.mcp', () => {
-  const codex = codexAdapter({ model: 'luna-test', provider: { origin: 'https://provider.invalid', credential: () => 'k' }, sessionsDir: '/nonexistent', standIn: { command: process.execPath, args: ['-e', ''] } });
-  const tool = (name, inputSchema) => ({ name, description: 'd', inputSchema, replay: 'never', call: async () => ({ text: 'ok' }) });
-  const spec = { key: 'step:mcp', label: 'x', system: [], tools: [tool('mcp__fake__greet', P({ not: {} }))], context: 'fresh' };
-  assert.deepEqual(codexToolProblems('mcp__fake__greet', P({ not: {} })), codex.check(spec));
-  assert.deepEqual(codexToolProblems('mcp__fake__add', P({ type: 'number' })), []);
-  assert.equal(codex.capabilities().mcpClient, undefined);
-  const servers = [{ name: 'fake', tools: [{ name: 'add', inputSchema: { type: 'object' } }] }];
-  assert.deepEqual(codex.check({ ...spec, tools: [], mcp: { servers, call: async () => ({ content: [] }) } }), ['Codex sessions take no MCP servers (spec.mcp): give their tools as host tools']);
-});
-
-test("a host tool named as Codex reserves (mcp, mcp__…) goes on Codex's wire as mcp_…; two names that meet there are refused", () => {
-  assert.equal(codexToolName('mcp__fake__add'), 'mcp_fake__add');
-  assert.equal(codexToolName('mcp'), 'mcp_');
-  for (const name of ['read', 'bash', 'mcp_fake__add', 'web_fetch']) assert.equal(codexToolName(name), name);
-  const codex = codexAdapter({ model: 'luna-test', provider: { origin: 'https://provider.invalid', credential: () => 'k' }, sessionsDir: '/nonexistent', standIn: { command: process.execPath, args: ['-e', ''] } });
-  const tool = (name) => ({ name, description: 'd', inputSchema: P({ type: 'number' }), replay: 'never', call: async () => ({ text: 'ok' }) });
-  const spec = (tools) => ({ key: 'step:names', label: 'x', system: [], tools, context: 'fresh' });
-  assert.deepEqual(codex.check(spec([tool('mcp__fake__add')])), []);
-  assert.deepEqual(codex.check(spec([tool('mcp__fake__add'), tool('mcp_fake__add')])), ['the tool mcp_fake__add is given twice']);
 });
 
 test('the recorded column: a schema the adapter does not refuse comes out of Codex as the original less exactly the described keywords', () => {

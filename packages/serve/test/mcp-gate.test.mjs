@@ -9,7 +9,7 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
-import { copyFile, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -17,6 +17,7 @@ import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { noApproverText } from "../dist/tool-gate.js";
 import { schemaProblems } from "./schema-support.mjs";
+import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
 import { agent, call, cookieOf, follow, scratch, serve as serveOf, withEnv } from "./support.mjs";
 
 const FAUX_MCP = new URL("./fixtures/faux-mcp.mjs", import.meta.url).pathname;
@@ -302,9 +303,9 @@ test("claude-agent: a call through the CLI's own MCP client priced $0.05 under a
   pausedForRoom((await api("GET", `/runs/${runId}`)).body, fake);
 });
 
-test("codex: a call of the dynamic MCP tool priced $0.05 under a $0.04 cap is refused unsent and pauses the run for a raise", { timeout: 150_000 }, async (t) => {
+test("codex: a call through Codex's own MCP client priced $0.05 under a $0.04 cap is refused unsent and pauses the run for a raise", { timeout: 150_000 }, async (t) => {
   const standIn = join(await scratch(t), "codex-stand-in.mjs");
-  await copyFile(new URL("../../run-adapters-codex/test/fake-app-server.mjs", import.meta.url).pathname, standIn);
+  await copyStandIn(standIn);
   const gateway = createServer(async (req, res) => {
     if (!req.url?.startsWith("/v1/")) return void res.writeHead(404).end();
     let body = "";
@@ -326,7 +327,7 @@ test("codex: a call of the dynamic MCP tool priced $0.05 under a $0.04 cap is re
   const { api } = await serve(t, { faux: undefined });
   const fake = await addFake(t, api, { paid: 0.05 });
   assert.equal((await allowFake(api)).status, 200);
-  const runId = await started(api, "codex-tight", ["mcp:fake/paid"], 'call mcp_fake__paid {"query":"ada"}', { extra: { harness: "codex" }, run: { max_cost_usd: 0.04 } });
+  const runId = await started(api, "codex-tight", ["mcp:fake/paid"], 'mcp fake paid {"query":"ada"}', { extra: { harness: "codex" }, run: { max_cost_usd: 0.04 } });
   await follow(api, runId, ["input_required"], { deadlineMs: 120_000 });
   pausedForRoom((await api("GET", `/runs/${runId}`)).body, fake);
 });

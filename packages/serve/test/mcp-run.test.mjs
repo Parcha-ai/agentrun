@@ -1,21 +1,21 @@
 // An agent granted `mcp:<server>/<tool>` calls it, through the API: on pi (the faux model, the gateway in the run's
 // process), on claude-agent (the pinned Agent SDK and Claude CLI, whose own MCP client calls the session proxy's
-// /mcp/<server>) and on codex (the stand-in for Codex's app-server, given the tools as dynamic tools). The fake MCP
+// /mcp/<server>) and on codex (the stand-in for Codex's app-server, whose MCP client calls the same route). The fake MCP
 // server (fixtures/fake-mcp-server.mjs) takes one bearer token and logs whether each request carried an Authorization
 // header, never its value. No key, no network.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
-import { copyFile, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { agent, follow, scratch, serve as serveOf, withEnv } from "./support.mjs";
+import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
 
 const FAUX_MCP = new URL("./fixtures/faux-mcp.mjs", import.meta.url).pathname;
-const STAND_IN = new URL("../../run-adapters-codex/test/fake-app-server.mjs", import.meta.url).pathname;
 /** The fake server's bearer token: no real one. */
 const TOKEN = `not-a-secret-${"mcp-bearer-0123456789"}`;
 /** A server that seals saved credentials, under a seal key of its own. */
@@ -128,20 +128,6 @@ test("a tool whose schema the Claude CLI would drop (a root anyOf) is refused on
   const { last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 60_000 });
   assert.equal(last.status, "completed");
   assert.equal((await api("GET", `/runs/${runId}`)).body.result?.final_answer, "The tool said: picked x");
-});
-
-test("a tool whose schema Codex would drop or retype (a not) is refused on codex at the save, in words; on pi it saves", async (t) => {
-  const { api } = await serve(t);
-  const fake = await startFakeMcp({ token: TOKEN });
-  const odd = { type: "object", properties: { name: { type: "string", not: { const: "root" } } }, required: ["name"] };
-  fake.tools.greet = { description: "Greets anyone but root.", input: odd, run: ({ name }) => ({ content: [{ type: "text", text: `hello ${name}` }] }) };
-  await addFake(t, api, "fake", fake);
-  const listed = (await api("GET", "/settings/mcp-servers/fake")).body.tools.find((tool) => tool.name === "greet");
-  assert.ok(listed?.input_schema?.properties?.name?.not, `the server listed the not: ${JSON.stringify(listed)}`);
-  const refused = await api("POST", "/agents", agent("codex-greet", { harness: "codex", tools: ["mcp:fake/greet"] }));
-  assert.equal(refused.status, 422, JSON.stringify(refused.body));
-  assert.match(JSON.stringify(refused.body), /tool greet cannot be offered on codex: \/properties\/name\/not: not is not supported by Codex 0\.164\.0 \(it drops or retypes it\)/);
-  assert.equal((await api("POST", "/agents", agent("pi-greet", { tools: ["mcp:fake/greet"] }))).status, 201, "pi takes the schema whole");
 });
 
 test("a tool whose header declaration a refresh made unsendable refuses the run in words, naming it, and nothing is sent", { timeout: 90_000 }, async (t) => {
@@ -377,12 +363,12 @@ async function echoGateway(t) {
 }
 
 /** serve with codex on a copy of the repo's stand-in for Codex's app-server (no Codex binary): its "model" is the turn's
- *  text, said through serve's gateway, and `call <tool> <json>` a call of one of the session's dynamic tools. `standInEnv`
- *  is the stand-in's own. */
+ *  text, said through serve's gateway, and `mcp <server> <tool> <json>` a call of a server's tool through the MCP client
+ *  Codex has, at the URL its config.toml names. `standInEnv` is the stand-in's own. */
 async function codexServe(t, standInEnv = {}) {
   const dir = await scratch(t);
   const standIn = join(dir, "codex-stand-in.mjs");
-  await copyFile(STAND_IN, standIn);
+  await copyStandIn(standIn);
   withEnv(t, {
     AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"),
     AGENTRUN_CODEX_STANDIN: "1",
@@ -397,54 +383,56 @@ async function codexServe(t, standInEnv = {}) {
 /** The config.toml Codex was given for a run, from the run's own directory. */
 const codexConfigOf = async (data, runId) => (await filesUnder(join(data, "runs", runId))).filter((file) => file.path.endsWith("/config.toml")).map((file) => file.text);
 
-/** Every line of the rollouts Codex wrote for a run (its session's log), parsed. */
-const rolloutOf = async (data, runId) => (await filesUnder(join(data, "runs", runId))).filter((file) => /\/rollout-[^/]*\.jsonl$/.test(file.path)).flatMap((file) => file.text.split("\n").filter(Boolean).map((line) => JSON.parse(line)));
-
-test("codex: a granted MCP tool is one of the session's dynamic tools; its call through them runs once with the bearer, keyed by Codex's call id, and the timeline reads fake · add", { timeout: 90_000 }, async (t) => {
+test("codex: an agent granted mcp:fake/add calls it through the session's proxy; the timeline reads fake · add, the fake saw the bearer, no file holds it", { timeout: 90_000 }, async (t) => {
   const { api, data } = await codexServe(t);
   const fake = await addFake(t, api);
-  assert.equal((await api("POST", "/agents", agent("codex-dynamic", { harness: "codex", tools: ["mcp:fake/add"], tool_settings: ALLOW_FAKE }))).status, 201);
-  // Codex 0.164 reserves a dynamic tool named mcp or mcp__… (its app-server refuses thread/start: "dynamic tool name is
-  // reserved"), so the tool goes on Codex's wire as mcp_<server>__<tool>, and comes back to the run as mcp__fake__add.
-  const runId = await runOf(api, "codex-dynamic", 'call mcp_fake__add {"a":2,"b":3}');
+  assert.equal((await api("POST", "/agents", agent("codex-adder", { harness: "codex", tools: ["mcp:fake/add"], tool_settings: ALLOW_FAKE }))).status, 201);
+  const runId = await runOf(api, "codex-adder", 'mcp fake add {"a":2,"b":3}');
   const { rows, last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 60_000 });
-  const log = await rolloutOf(data, runId);
-  // Codex is handed the tool as it is handed the host's own: in thread/start's dynamicTools, which its rollout records.
-  const offered = log.filter((line) => line.type === "session_meta").flatMap((line) => line.payload.dynamic_tools ?? []);
-  assert.deepEqual(offered.filter((tool) => tool.name === "mcp" || tool.name.startsWith("mcp__")).map((tool) => tool.name), [], "no name Codex reserves");
-  const dynamic = offered.find((tool) => tool.name === "mcp_fake__add");
-  assert.ok(dynamic, `the session's dynamic tools: ${offered.map((tool) => tool.name).join(", ")}`);
-  assert.deepEqual(dynamic.inputSchema?.required, ["a", "b"], "with the schema the server listed");
   assert.equal(last.status, "completed", JSON.stringify(rows.filter((row) => row.kind === "error" || row.kind.startsWith("tool"))));
-  assert.match((await api("GET", `/runs/${runId}`)).body.result?.final_answer ?? "", /^mcp_fake__add returned: 5$/);
-  const callId = log.find((line) => line.type === "response_item" && line.payload.type === "function_call" && line.payload.name === "mcp_fake__add")?.payload.call_id;
-  assert.ok(callId, "Codex's call of it is in its log");
-  assert.deepEqual(rows.filter((row) => row.tool_name === "mcp__fake__add").map((row) => [row.kind, row.summary, row.tool_use_id]), [["tool_use", "fake · add", callId], ["tool_result", "fake · add: ok", callId]]);
+  const answer = /^add returned: 5 \(item (\S+)\)$/.exec((await api("GET", `/runs/${runId}`)).body.result?.final_answer ?? "");
+  assert.ok(answer, "the stand-in answered with the tool's result and its mcpToolCall item's id");
+  const call = rows.find((row) => row.kind === "tool_use" && row.tool_name === "mcp__fake__add");
+  assert.equal(call?.summary, "fake · add", JSON.stringify(rows.filter((row) => row.kind.startsWith("tool"))));
+  // The call is keyed by the id Codex sends in tools/call's _meta.callId, which is its mcpToolCall item's id: a host that
+  // acts on a call's result event (a parked call ends the turn) finds the call by it.
+  assert.deepEqual(rows.filter((row) => row.tool_name === "mcp__fake__add").map((row) => [row.kind, row.tool_use_id]), [["tool_use", answer[1]], ["tool_result", answer[1]]]);
   assert.deepEqual(calls(fake).map((entry) => [entry.tool, entry.authorization]), [["add", true]], "one call, with the bearer");
   const configs = await codexConfigOf(data, runId);
-  assert.ok(configs.length > 0 && configs.every((text) => !text.includes("mcp_servers")), "Codex's own MCP client is given no server");
+  assert.ok(configs.some((text) => /^\[mcp_servers\.fake\]$/m.test(text) && /^default_tools_approval_mode = "approve"$/m.test(text) && /^enabled_tools = \["add"\]$/m.test(text)), `Codex was given the server, its grant and approve mode: ${configs.join("\n---\n")}`);
   const leaked = (await filesUnder(join(data, "runs", runId))).filter((file) => file.text.includes(TOKEN)).map((file) => file.path);
   assert.deepEqual(leaked, [], "no file of the run, Codex's own home among them, holds the token");
 });
 
-test("codex: a run that grants nothing from the server is given none of its tools, and the server sees nothing", { timeout: 90_000 }, async (t) => {
+test("codex: a run that grants nothing from the server gets no MCP server and the server sees nothing", { timeout: 90_000 }, async (t) => {
   const { api, data } = await codexServe(t);
   const fake = await addFake(t, api);
   const before = fake.log.length;
   assert.equal((await api("POST", "/agents", agent("codex-plain", { harness: "codex", tools: [] }))).status, 201);
-  const runId = await runOf(api, "codex-plain", 'call mcp_fake__add {"a":2,"b":3}');
+  const runId = await runOf(api, "codex-plain", 'mcp fake add {"a":2,"b":3}');
   const { last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 60_000 });
   assert.equal(last.status, "completed");
-  const offered = (await rolloutOf(data, runId)).filter((line) => line.type === "session_meta").flatMap((line) => line.payload.dynamic_tools ?? []);
-  assert.deepEqual(offered.filter((tool) => tool.name.startsWith("mcp")), [], "no MCP tool among the session's dynamic tools");
+  const configs = await codexConfigOf(data, runId);
+  assert.ok(configs.length > 0 && configs.every((text) => !text.includes("mcp_servers")), "Codex was given no MCP server");
   assert.deepEqual(fake.log.slice(before), [], "the server saw nothing of the run");
+});
+
+test("codex: a server that does not start fails the run, naming it, rather than running it without its tools", { timeout: 90_000 }, async (t) => {
+  const { api } = await codexServe(t, { FAKE_CODEX_MCP_START: "fail" });
+  await addFake(t, api);
+  assert.equal((await api("POST", "/agents", agent("codex-down", { harness: "codex", tools: ["mcp:fake/add"] }))).status, 201);
+  const runId = await runOf(api, "codex-down", 'mcp fake add {"a":2,"b":3}');
+  const { last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 60_000 });
+  assert.equal(last.status, "failed");
+  const view = (await api("GET", `/runs/${runId}`)).body;
+  assert.match(JSON.stringify(view.error ?? view), /MCP servers failed to initialize: fake\b/);
 });
 
 test("codex: a run killed mid-call resumes with the call answered interrupted, and the server saw the call once", { timeout: 120_000 }, async (t) => {
   const { api, data } = await codexServe(t);
   const fake = await addFake(t, api);
   assert.equal((await api("POST", "/agents", agent("codex-writer", { harness: "codex", tools: ["mcp:fake/slow_write"], tool_settings: ALLOW_FAKE }))).status, 201);
-  const runId = await runOf(api, "codex-writer", 'call mcp_fake__slow_write {"line":"once","seconds":30}');
+  const runId = await runOf(api, "codex-writer", 'mcp fake slow_write {"line":"once","seconds":30}');
   for (let i = 0; calls(fake, "slow_write").length === 0; i++) {
     assert.ok(i < 600, "the call reaches the server");
     await sleep(100);
@@ -453,28 +441,11 @@ test("codex: a run killed mid-call resumes with the call answered interrupted, a
   process.kill(holder.pid, "SIGKILL");
   const { rows, last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 90_000 });
   assert.equal(last.status, "completed", JSON.stringify(rows.at(-1)));
-  // What the model reads of the call in the resumed thread: its output says it was interrupted.
-  const log = await rolloutOf(data, runId);
-  const callId = log.find((line) => line.type === "response_item" && line.payload.type === "function_call" && line.payload.name === "mcp_fake__slow_write")?.payload.call_id;
-  const outputs = log.filter((line) => line.type === "response_item" && line.payload.type === "function_call_output" && line.payload.call_id === callId).map((line) => String(line.payload.output));
-  assert.ok(outputs.some((output) => /interrupted/i.test(output)), JSON.stringify(outputs));
+  // What the model reads of the call in the resumed thread: Codex was told it was interrupted.
+  assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "outputs" })).status, 202);
+  await sleep(500);
+  const { last: after } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 60_000 });
+  assert.equal(after.status, "completed");
+  assert.match((await api("GET", `/runs/${runId}`)).body.result?.final_answer ?? "", /interrupted/i);
   assert.equal(calls(fake, "slow_write").length, 1, "the call was never sent again");
-});
-
-
-test("codex: a saved credential that can't be opened refuses the call before anything is sent, in words", { timeout: 90_000 }, async (t) => {
-  const { api, data } = await codexServe(t);
-  const fake = await addFake(t, api);
-  // The sealed bearer damaged at rest, as one sealed under another seal key reads.
-  const file = join(data, "mcp-servers.json");
-  const doc = JSON.parse(await readFile(file, "utf8"));
-  doc.servers.fake.auth.sealed.authorization = Buffer.from("not what was sealed").toString("base64");
-  await writeFile(file, JSON.stringify(doc));
-  assert.equal((await api("POST", "/agents", agent("codex-unopened", { harness: "codex", tools: ["mcp:fake/add"], tool_settings: ALLOW_FAKE }))).status, 201);
-  const before = fake.log.length;
-  const runId = await runOf(api, "codex-unopened", 'call mcp_fake__add {"a":2,"b":3}');
-  const { last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 60_000 });
-  assert.equal(last.status, "completed");
-  assert.equal((await api("GET", `/runs/${runId}`)).body.result?.final_answer, "mcp_fake__add failed: The MCP server fake's credential can't be opened on this server (sealed under another seal key, or damaged); update it in Settings → MCP servers.");
-  assert.deepEqual(fake.log.slice(before).filter((entry) => ["tools/call", "initialize", "server/discover"].includes(entry.method)), [], "nothing reached the server");
 });

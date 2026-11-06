@@ -23,7 +23,7 @@ import { randomUUID } from "node:crypto";
 import { lstat } from "node:fs/promises";
 import { join } from "node:path";
 import { defineTool, ROOT_CONVERSATION_ID, type ToolRegistration } from "@earendil-works/pi-durable";
-import type { HostTool, McpCallResult, McpTool, SessionMcp } from "@parcha/agentrun-kernel";
+import type { McpCallResult, McpTool, SessionMcp } from "@parcha/agentrun-kernel";
 import { TOOL_COST, TOOL_STARTED, TOOL_UNMETERED } from "@parcha/pi-durable-agent/timeline";
 import { paidCall } from "./cap.js";
 import { wireName } from "./catalog.js";
@@ -397,57 +397,30 @@ class CannotPark extends Error {}
  *  symbol, so it never reaches a harness's MCP client in the answer's JSON. */
 export const isParked = (result: McpCallResult): boolean => (result as { [PARKED]?: true })[PARKED] === true;
 
-/** The gateway's granted tools as a harness is given them: each under its wire name (`mcp__<server>__<tool>`, which the
- *  timeline reads `<server> · <tool>`), with the pinned description and schema. */
-function mcpToolsOf(gateway: Pick<McpGateway, "servers">): { server: string; tool: string; name: string; description: string; inputSchema: Record<string, unknown> }[] {
-  return gateway.servers.flatMap((server) => server.tools.map((tool) => ({
-    server: server.name,
-    tool: tool.name,
-    name: wireName(`mcp:${server.name}/${tool.name}`),
-    description: tool.description || tool.title || `${tool.name}, a tool of the MCP server ${server.name}.`,
-    inputSchema: tool.inputSchema,
-  })));
-}
-
-const textOf = (result: McpCallResult): string => result.content.map((block) => block.text).join("\n\n");
-
-/** pi's tools for the gateway's servers (mcpToolsOf), never run again after a crash. */
+/** pi's tools for the gateway's servers: each granted tool under its wire name (`mcp__<server>__<tool>`), with the pinned
+ *  description and schema, never run again after a crash. */
 export function mcpRegistrations(gateway: McpGateway): ToolRegistration[] {
   // Marked when the gateway holds the run's gate: its calls enter the gate in the gateway, so the gate's own wrapper
   // (tool-gate.ts extension) leaves them be. Unmarked, the wrapper gates them as any tool.
   const marked = gating.has(gateway) ? { [GATED_BY_GATEWAY]: true as const } : {};
-  return mcpToolsOf(gateway).map(({ server, tool, name, description, inputSchema }) => Object.assign(
-    defineTool({
-      name,
-      description,
-      replay: "unsafe",
-      parameters: inputSchema as never,
-      execute: async (args, api, context) => {
-        // The gate's park is this call's own journal commit, as for every pi tool.
-        // pi ends the turn on a parked answer itself (below), so its park needs nothing told.
-        const park: Park = { commit: (change) => api.commit(change as never, context) as never, parked: () => undefined };
-        const result = await gateway.call(server, tool, (args ?? {}) as Record<string, unknown>, { signal: context?.abortSignal ?? new AbortController().signal, ...(api?.callId ? { callId: api.callId, park } : {}) });
-        // A parked call ends the turn, as ask_person's does; the gate resumes the session once a person answers.
-        return isParked(result) ? forModel(textOf(result), { control: { terminate: true } }) : forModel(textOf(result), { isError: result.isError === true });
-      },
-    }),
-    marked,
-  ) as unknown as ToolRegistration);
-}
-
-/** The gateway's tools (mcpToolsOf) as host tools, for a harness with no MCP client of its own (codex): each call goes to
- *  `call`, which is the gateway's with the run's park (harness-app.ts), so it passes the run's gate once, there, and a
- *  call the gate parks is answered with its waiting text, on which the host ends the turn (the park's `parked`). At most
- *  once: a call a crash cut off is reported, never sent again. */
-export function mcpHostTools(gateway: Pick<McpGateway, "servers" | "call">): HostTool[] {
-  return mcpToolsOf(gateway).map(({ server, tool, name, description, inputSchema }) => ({
-    name,
-    description,
-    inputSchema,
-    replay: "never",
-    async call(args, { callId, signal }) {
-      const result = await gateway.call(server, tool, (args ?? {}) as Record<string, unknown>, { signal, callId });
-      return { text: textOf(result), isError: result.isError === true };
-    },
-  }));
+  return gateway.servers.flatMap((server) =>
+    server.tools.map((tool) => Object.assign(
+      defineTool({
+        name: wireName(`mcp:${server.name}/${tool.name}`),
+        description: tool.description || tool.title || `${tool.name}, a tool of the MCP server ${server.name}.`,
+        replay: "unsafe",
+        parameters: tool.inputSchema as never,
+        execute: async (args, api, context) => {
+          // The gate's park is this call's own journal commit, as for every pi tool.
+          // pi ends the turn on a parked answer itself (below), so its park needs nothing told.
+          const park: Park = { commit: (change) => api.commit(change as never, context) as never, parked: () => undefined };
+          const result = await gateway.call(server.name, tool.name, (args ?? {}) as Record<string, unknown>, { signal: context?.abortSignal ?? new AbortController().signal, ...(api?.callId ? { callId: api.callId, park } : {}) });
+          const text = result.content.map((block) => block.text).join("\n\n");
+          // A parked call ends the turn, as ask_person's does; the gate resumes the session once a person answers.
+          return isParked(result) ? forModel(text, { control: { terminate: true } }) : forModel(text, { isError: result.isError === true });
+        },
+      }),
+      marked,
+    ) as unknown as ToolRegistration),
+  );
 }

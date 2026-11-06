@@ -1,21 +1,21 @@
 // Every MCP tool call passes the run's one tool gate, on pi, claude-agent and codex, through the API: with the server's
 // mcp:fake/* set to deny the call is refused and the fake MCP server sees nothing; with no setting it asks, parks, and
 // the owner's allow runs it exactly once; set to allow it runs once with no one asked. claude-agent runs the pinned
-// Agent SDK and Claude CLI against a scripted Messages endpoint; codex the stand-in for Codex's app-server, given the MCP
-// tools as dynamic tools, its "model" the turn's text said through serve's gateway. No key, no network.
+// Agent SDK and Claude CLI against a scripted Messages endpoint; codex the stand-in for Codex's app-server, whose MCP
+// client calls the session proxy as Codex does, its "model" the turn's text said through serve's gateway. No key, no
+// network.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
-import { copyFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
+import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
 import { agent, call, cookieOf, follow, scratch, serve as serveOf, withEnv } from "./support.mjs";
 
 const FAUX_MCP = new URL("./fixtures/faux-mcp.mjs", import.meta.url).pathname;
-const STAND_IN = new URL("../../run-adapters-codex/test/fake-app-server.mjs", import.meta.url).pathname;
 const TOKEN = `not-a-secret-${"mcp-gate-wired-0123"}`;
 const PHRASE = "the owner signs in with this phrase";
 const json = { "content-type": "application/json" };
@@ -68,7 +68,7 @@ async function setup(t, harness) {
   let model;
   if (harness === "codex") {
     const standIn = join(await scratch(t), "codex-stand-in.mjs");
-    await copyFile(STAND_IN, standIn);
+    await copyStandIn(standIn);
     model = await echoGateway(t);
     withEnv(t, {
       AGENTRUN_CODEX_STANDIN: "1",
@@ -78,7 +78,7 @@ async function setup(t, harness) {
       AGENT_MODEL_API_KEY: `not-a-secret-${"gateway"}`,
     }, ["AGENT_MODEL_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"]);
     extra = { harness: "codex" };
-    content = 'call mcp_fake__add {"a":2,"b":3}';
+    content = 'mcp fake add {"a":2,"b":3}';
   }
   const server = await serveOf(t, { faux: harness === "pi" ? FAUX_MCP : undefined, accounts: true, openSetup: true });
   const fake = await startFakeMcp({ token: TOKEN });
@@ -120,13 +120,11 @@ for (const harness of HARNESSES) {
     assert.deepEqual([pending?.kind, pending?.tool], ["approval", "mcp:fake/add"], JSON.stringify(pending));
     assert.equal(calls(fake).length, 0, "nothing sent while it waits");
     if (harness === "codex") {
-      // What parks is Codex's own call id (its dynamic tool call's), the one its Timeline rows carry.
+      // What parks is Codex's own call id (tools/call's _meta.callId, its mcpToolCall item's id), the one its Timeline rows carry.
       assert.match(pending.call_id, /^call_[0-9a-f]{20}$/);
       assert.deepEqual([...new Set(rows.filter((row) => row.tool_name === "mcp__fake__add").map((row) => row.tool_use_id))], [pending.call_id], JSON.stringify(rows.filter((row) => row.kind.startsWith("tool"))));
-      // Gated once: one approval asked, by the gateway, never again by the host tools' own gate.
-      assert.equal(rows.filter((row) => row.kind === "tool_approval_requested").length, 1, JSON.stringify(rows.filter((row) => row.kind.startsWith("tool"))));
       // The turn ended at the parked result: the stand-in's next request (its answer after the call) never left.
-      assert.deepEqual(model.seen, ["Calling mcp_fake__add."]);
+      assert.deepEqual(model.seen, ["Calling fake add."]);
     }
     assert.equal(await answer(runId, pending.id, { decision: "allow" }), 204);
     await follow(api, runId, ["completed", "failed"], { deadlineMs: 180_000 });
@@ -142,7 +140,7 @@ for (const harness of HARNESSES) {
     const runId = await run(`allow-${harness}`);
     const { last } = await follow(api, runId, ["completed", "failed", "input_required"], { deadlineMs: 180_000 });
     assert.equal(last.status, "completed");
-    assert.match(await answerOf(api, runId), harness === "codex" ? /^mcp_fake__add returned: 5$/ : /The tool said: 5/);
+    assert.match(await answerOf(api, runId), harness === "codex" ? /^add returned: 5 / : /The tool said: 5/);
     assert.equal(calls(fake).length, 1);
   });
 }
