@@ -18,6 +18,14 @@ import { REQUEST_COST, REQUEST_ENDED, REQUEST_STARTED } from "@parcha/pi-durable
 import { capModels, spentIn } from "../dist/cap.js";
 import { END_MARK_WAIT_MS, markRequests } from "../dist/request-start.js";
 
+/** A side request's marks without their request id, once each names one and the same one (request-start.ts). */
+const sameRequest = (marks) => {
+  const ids = new Set(marks.map((m) => (Array.isArray(m) ? m[1] : m.data)?.requestId));
+  assert.ok(ids.size === 1 && typeof [...ids][0] === "string", `one request id across its marks: ${JSON.stringify(marks)}`);
+  const plain = ({ requestId: _, ...data }) => data;
+  return marks.map((m) => (Array.isArray(m) ? [m[0], plain(m[1])] : { ...m, data: plain(m.data) }));
+};
+
 /** $1 a million output tokens, a ceiling of 1,000 and free input: each request is held at $0.001. */
 const MODEL = { id: "claude-x", name: "Claude X", api: "anthropic-messages", provider: "anthropic", baseUrl: "https://api.anthropic.com", reasoning: false, input: ["text"], cost: { input: 0, output: 1, cacheRead: 0, cacheWrite: 0 }, contextWindow: 200_000, maxTokens: 1_000 };
 const CAP = 0.0015;
@@ -335,7 +343,7 @@ test("a summary request the run stops while pi-ai waits to retry a lost attempt 
   const summary = await run.completeSimple(big, context, { ...options(scripted([resetThenStop, STEPS.ok])), signal: stop.signal });
   await settle();
   assert.deepEqual([summary.stopReason, fetches], ["aborted", 1], "stopped before its retry was sent");
-  assert.deepEqual(marks.filter((m) => m.kind === REQUEST_ENDED).map((m) => m.data), [{ request: "compaction", heldUsd: 0.01 }], "its end mark keeps the hold");
+  assert.deepEqual(sameRequest(marks.filter((m) => m.kind === REQUEST_ENDED)).map((m) => m.data), [{ request: "compaction", heldUsd: 0.01 }], "its end mark keeps the hold");
   assert.equal(spentIn(storeOf(t, marks)), 0.01, "a later process reads the hold");
 });
 
