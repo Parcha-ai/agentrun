@@ -756,7 +756,8 @@ test("another harness under a cap: a model whose output is priced and that has n
     const guard = await capBefore(1_000, model({ input: 0, output: 1, cacheRead: 0, cacheWrite: 0 }, ceiling));
     assert.match(guard.beforeRequest({ spentUsd: 0, inFlight: [], inputTokensMax: 10 })?.refuse ?? "", NO_CEILING, why);
     const free = await capBefore(0.000001, model({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, ceiling));
-    assert.equal(free.beforeRequest({ spentUsd: 0, inFlight: [], inputTokensMax: 10 }), undefined, `${why}: output that costs nothing goes`);
+    const admitted = free.beforeRequest({ spentUsd: 0, inFlight: [], inputTokensMax: 10 });
+    assert.deepEqual([admitted.refuse, admitted.outputTokensMax, admitted.holdUsd], [undefined, undefined, 0], `${why}: output that costs nothing goes, with no limit, held at $0`);
     assert.equal(await capBefore(undefined, model({ input: 0, output: 1, cacheRead: 0, cacheWrite: 0 }, ceiling)), undefined, `${why}: no cap, no refusal`);
   }
 });

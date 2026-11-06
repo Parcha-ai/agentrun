@@ -70,13 +70,20 @@ export const mcpNameOf = (name: string): { server: string; tool: string } | unde
  *  refused, never walked further. */
 export const HEADER_SCAN_NODES = 10_000;
 export const HEADER_SCAN_DEPTH = 64;
+/** The keywords whose values are subschemas that `properties` alone does not reach, as the SDK client's check lists them
+ *  (@modelcontextprotocol/client 2.4.0, NON_REACHABLE_SUBSCHEMA_KEYWORDS): a declaration under one is refused. Each
+ *  holds a subschema or a list of them, but the OBJECT_VALUED ones, which map names to subschemas. */
+const SUBSCHEMA_KEYWORDS: ReadonlySet<string> = new Set(["items", "prefixItems", "contains", "additionalProperties", "unevaluatedProperties", "unevaluatedItems", "propertyNames", "patternProperties", "dependentSchemas", "oneOf", "anyOf", "allOf", "not", "if", "then", "else", "$defs", "definitions"]);
+const OBJECT_VALUED: ReadonlySet<string> = new Set(["patternProperties", "dependentSchemas", "$defs", "definitions"]);
 
 /** Why a tool's `x-mcp-header` declarations (SEP-2243, the 2026-07-28 revision) cannot be mirrored into `Mcp-Param-*`
  *  headers, by the rules the SDK client applies when it lists tools: only on a property reached through `properties`
  *  alone, a non-empty RFC 9110 token, on a string, integer or boolean, unique without regard to case. Undefined when they
  *  can, or there are none. The SDK does the mirroring itself (callTool's `toolDefinition`), but it exports no form of this
- *  check, which it runs only inside its own `listTools()`. Each object is visited once, from an explicit stack, within
- *  HEADER_SCAN_NODES and HEADER_SCAN_DEPTH. */
+ *  check, which it runs only inside its own `listTools()`. Like the SDK's, the walk goes through schema keywords alone
+ *  (`properties` and SUBSCHEMA_KEYWORDS): a value under `default`, `examples`, `const` or `enum`, or an annotation, is
+ *  data, never a declaration. Each object is visited once, from an explicit stack, within HEADER_SCAN_NODES and
+ *  HEADER_SCAN_DEPTH. */
 export function mcpHeaderProblem(inputSchema: unknown): string | undefined {
   const seen = new Map<string, string>();
   const visited = new WeakSet<object>();
@@ -103,9 +110,12 @@ export function mcpHeaderProblem(inputSchema: unknown): string | undefined {
       seen.set(name.toLowerCase(), name);
     }
     for (const [key, child] of Object.entries(schema)) {
-      if (!child || typeof child !== "object" || key === "x-mcp-header") continue;
-      if (key === "properties" && !Array.isArray(child)) for (const [name, property] of Object.entries(child)) stack.push({ node: property, path: [...path, name], reachable });
-      else stack.push({ node: child, path: [...path, `<${key}>`], reachable: false });
+      if (!child || typeof child !== "object") continue;
+      if (key === "properties") {
+        if (!Array.isArray(child)) for (const [name, property] of Object.entries(child)) stack.push({ node: property, path: [...path, name], reachable });
+      } else if (OBJECT_VALUED.has(key) && !Array.isArray(child)) {
+        for (const sub of Object.values(child)) stack.push({ node: sub, path: [...path, `<${key}>`], reachable: false });
+      } else if (SUBSCHEMA_KEYWORDS.has(key)) stack.push({ node: child, path: [...path, `<${key}>`], reachable: false });
     }
   }
   return undefined;

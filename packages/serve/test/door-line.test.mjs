@@ -149,6 +149,19 @@ test("a poll the deadline cuts short keeps the door's answer before it: a slow d
   assert.deepEqual(ended, { opened: false, why: "deadline", last: "503 OPENING" });
 });
 
+test("a door that answers nothing until the deadline (its process busy) is waited for until then, and its last answer is no answer", { timeout: 30_000 }, async (t) => {
+  // It takes each connection and never answers: as a door whose thread is held by its app's loading.
+  const held = [];
+  const server = createServer((req) => void held.push(req));
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => (server.closeAllConnections(), server.close()));
+  const started = Date.now();
+  const ended = await untilOpened(`http://127.0.0.1:${server.address().port}`, {}, () => false, started + 800, 50);
+  assert.deepEqual(ended, { opened: false, why: "deadline", last: "no answer" });
+  assert.ok(Date.now() - started >= 790, "waited for the deadline");
+  assert.ok(held.length >= 1, "it was asked");
+});
+
 test("through a run whose process never opens it: one line naming the cause, its process stopped at the ready time, and a request's 503 says why", { timeout: 120_000 }, async (t) => {
   const lines = [];
   const write = process.stderr.write;
@@ -167,7 +180,10 @@ test("through a run whose process never opens it: one line naming the cause, its
     assert.ok(i < 200, "the server said it, at the ready time");
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
-  assert.match(said()[0], /did not open the run within 2 s \(its door last answered 503 OPENING\); it is stopped/);
+  // The line names the door's last answer as it was: 503 OPENING when the door answered within the open time, or no
+  // answer when it did not. After its proof, the run's process opens its store and loads its app on the door's own
+  // thread, and on a loaded machine that can hold the door past 2 s. Which of the two each is, the unit tests above pin.
+  assert.match(said()[0], /did not open the run within 2 s \(its door last answered (503 OPENING|no answer)\); it is stopped/);
   const asked = await api("POST", `/runs/${run.body.run_id}/messages`, { content: "And now?" });
   assert.equal(asked.status, 503, JSON.stringify(asked.body));
   assert.match(asked.body.error.message, /the run did not come up in time: its process has not opened it yet/);
@@ -180,4 +196,28 @@ test("through a run whose process never opens it: one line naming the cause, its
   // A later launch's door may not answer by the deadline at all ("no answer"): the cause is the same either way.
   assert.match(failed.error.message, /went 4 times before the run ended: its process did not open the run within 2 s \(its door last answered (503 OPENING|no answer)\)$/);
   assert.equal(said().length, 4, said().join(""));
+});
+
+test("through a run whose door does not answer its launch's nonce: its process is stopped, by this server's own handle, then the run opened again, at most MAX_RELAUNCHES times, and it fails saying why", { timeout: 120_000 }, async (t) => {
+  const lines = [];
+  const write = process.stderr.write;
+  process.stderr.write = function (chunk, ...rest) {
+    lines.push(String(chunk));
+    return write.call(this, chunk, ...rest);
+  };
+  t.after(() => (process.stderr.write = write));
+  // Each process is handed another nonce than its launch checks: its door answers the proof, wrongly.
+  const { api } = await serve(t, { fauxHandedNonce: "f".repeat(64) });
+  assert.equal((await api("POST", "/agents", { definition: { id: "proofless", name: "proofless", instructions: "Answer." } })).status, 201);
+  const run = await api("POST", "/agents/proofless/runs", { input: { content: "Answer soon." } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  let failed;
+  for (let i = 0; (failed = (await api("GET", `/runs/${run.body.run_id}`)).body).status !== "failed"; i++) {
+    assert.ok(i < 600, `the run failed after its last launch, ${JSON.stringify(failed)}; said: ${lines.filter((line) => line.includes(run.body.run_id)).join("")}`);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  const said = lines.filter((line) => line.includes(run.body.run_id) && line.includes("did not answer this launch's nonce"));
+  assert.equal(said.length, 4, said.join(""));
+  assert.match(said[0], /its process \d+'s door did not answer this launch's nonce; it is stopped/);
+  assert.match(failed.error.message, /went 4 times before the run ended: its process's door did not answer this launch's nonce$/);
 });

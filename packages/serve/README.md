@@ -744,7 +744,10 @@ know). Where the models come from:
   gateway that wants the id alone, `AGENT_MODEL_GATEWAY_IDS=bare` sends a revision's model without its provider. `AGENT_MODEL_API_KEY` is its key when it needs one. `AGENT_MODEL_PRICE` is `input,output,cacheRead[,cacheWrite]`
   in USD per million tokens, so a run's cost estimate has a price; `AGENT_MODEL_FAST_PRICE` and `AGENT_MODEL_STRONG_PRICE`
   price their tier's model, and default to it. With no price set, a model id pi-ai's catalog knows (`gpt-6-luna`, say)
-  takes the catalog's list price, and any other has no price: its answers' cost is unknown, so the run's `cost.usd` is
+  takes the catalog's list price; one it lists only with its version's separators written the other way (a gateway's
+  `gpt-5-4-mini` for the catalog's `gpt-5.4-mini`, `claude-haiku-4.5` for `claude-haiku-4-5`) takes that entry's price,
+  only when every entry of that form lists one price (else none), and the id sent to the gateway stays as named; any
+  other has no price: its answers' cost is unknown, so the run's `cost.usd` is
   `null`, never $0. A model the catalog lists at $0, or one `AGENT_MODEL_PRICE=0,0` prices, is a known $0. A revision's `provider/model-id` takes that provider's
   entry when it is paid; a bare id, a provider the catalog does not list for it, or one it lists at $0 takes the highest
   price any provider lists (one entry's whole price, the most input plus output; a $0 entry never wins over a paid one),
@@ -1279,7 +1282,9 @@ An agent grants a saved server's tool by its catalog name, `mcp:<server>/<tool>`
 saved, or a tool it did not list, is `422` naming the server's tools, and so is a name whose wire name,
 `mcp__<server>__<tool>`, is over 52 characters, or a tool whose `x-mcp-header` declaration cannot be sent (on a
 property not reached through `properties` alone, not a string, integer or boolean, not a header name, or declared twice). pi, claude-agent and codex run them (`features.mcp_client.harnesses`); on
-another harness the save warns that they are not bound there yet, and a run is refused.
+another harness the save warns that they are not bound there yet, and a run is refused. A workflow's nodes bind no MCP
+tool yet: a workflow that grants one, in its `tools` or on a node, is `422` ("a workflow's nodes don't bind MCP tools
+here yet; grant it to an agentic agent").
 
 A known **meta tool**, one that runs other actions by name, is never granted: Composio's `COMPOSIO_MULTI_EXECUTE_TOOL`,
 `COMPOSIO_REMOTE_WORKBENCH`, `COMPOSIO_REMOTE_BASH_TOOL` and `COMPOSIO_PROXY_EXECUTE`, Klavis Strata's `execute_action`
@@ -1287,7 +1292,8 @@ A known **meta tool**, one that runs other actions by name, is never granted: Co
 `mcp.zapier.com`), Arcade's `Arcade_UseTool`, Docker's `mcp-exec` and generated `code-mode-*` tools, and Cloudflare's
 `portal_execute` and `portal_codemode_execute`. A grant of one couldn't name the real action, so allow would cover every
 action it runs and deny could target none. Reads mark it `grantable: false` with its `reason`, a save that grants it is
-`422` in those words, and a run that pinned one before is refused at its launch. Use the server's direct tools instead:
+`422` in those words, a run of a revision saved granting one is `409 agent_not_runnable` naming it under
+`details.not_grantable` (each with its `tool` and `reason`), and a run that pinned one before is refused at its launch. Use the server's direct tools instead:
 each of these providers has a direct mode. The list is closed: a meta tool it doesn't know is an MCP tool like any other,
 asked by default.
 
@@ -1305,12 +1311,13 @@ asked by default.
   model proxy, `/mcp/<server>`, behind the session's key, sent over the CLI's stdin (never its arguments), with only
   those servers (`strictMcpConfig`) and only the granted tools allowed. The proxy answers the MCP exchange itself and
   makes the call with the credential. The CLI's tool search is off in such a session, so the granted tools are
-  offered whole. A server the CLI cannot connect to fails the turn, never a turn without its tools.
+  offered whole. The proxy answers the handshake and the tool list itself, so a remote server that can't be reached
+  shows at the first call, as that call's error; only a proxy route the CLI can't connect to fails the turn.
 - **codex** uses Codex's own MCP client the same way: the harness writes each granted server in Codex's
   `mcp_servers` (an agent's own `config` still may not), at the session's model proxy with the session's key, with
   only the granted tools enabled. Each call runs without Codex asking (`default_tools_approval_mode = "approve"`): the
   proxy is the gate. Codex sends a call as soon as it starts it, so the proxy records the call in the session before
-  it sends anything. Each server is `required`, so one that does not start fails the turn. A tool whose schema Codex would drop or retype (a `not`, `patternProperties`, ...) is `422` at the save, naming the place and why.
+  it sends anything. Each server is `required`, but the proxy answers its handshake, so a remote server that can't be reached shows at the first call, as that call's error; only a proxy route Codex can't reach fails the turn. A tool whose schema Codex would drop or retype (a `not`, `patternProperties`, ...) is `422` at the save, naming the place and why.
 - **A call** goes to the pinned URL alone, the 2026-07-28 revision first and a 2025-era server through its
   `initialize`; on 2026-07-28 each `x-mcp-header` parameter of the pinned tool is sent as its `Mcp-Param-*` header. No
   redirect is followed, at most 4 MiB is read, and it may take 120 s. The
@@ -1476,7 +1483,7 @@ with `Retry-After: 30`, recording nothing, and a schedule's time is `skipped`.
 | `GET /health` | Without a credential: whether the store reads and the disk has room ([capacity and health](#capacity-and-health)). |
 | `GET /openapi.json` | Without a credential: this API as an OpenAPI 3.1 document, the `agentrun.v2/0` contract (vendored in `src/openapi/`, its source in `info`) with this server's own routes marked `x-agentrun-serve` the operations it answers `501` marked `x-agentrun-serve-unsupported`, and a contract operation that takes more than the contract gives marked `x-agentrun-serve-changed` with each change named; `links.openapi` in capabilities points at it. |
 | `GET /capabilities` | Without a credential. `backend: local`, every feature flag present and true only when it works; `tools`, the tools an agentic revision may name; `workflows`, what a workflow revision's model nodes get and, in `workflows.decisions.providers`, the decision providers its typed questions run on; `models`, where models come from and the model of each tier. |
-| `POST /agents`, `GET /agents`, `GET /agents/{id}` | `POST` takes `{definition, skills?, note?}` and makes the agent with its first revision, current. A definition has `instructions` (an agentic revision) or `workflow` (a workflow revision, checked by the DSL first), and `name`, `description`, `model` and `thinking` (agentic only), `harness` ([harnesses](#harnesses)), `place` ([place](#place)), `tools`, `tool_settings` ([search and fetch](#search-and-fetch)), `skills` (names; each `<name>/SKILL.md` is in `skills`) and `version`, which is the number the revision gets, and `max_cost_usd` (agentic only), the agent's default cap, kept by an edit that leaves it out and cleared only by 0 ([spend cap](#spend-cap)). A field the store does not keep (`input_schema`, `output_schema`) is `422 input_invalid` by name, and so is a definition that can never run here; one this host cannot run yet saves with `warnings` ([models](#models)). The ETag (`home_etag`) is the current revision's id. `GET /agents/{id}` adds `tools`, the tools its current revision grants with each one's provider ([search and fetch](#search-and-fetch)). |
+| `POST /agents`, `GET /agents`, `GET /agents/{id}` | `POST` takes `{definition, skills?, note?}` and makes the agent with its first revision, current. A definition has `instructions` (an agentic revision) or `workflow` (a workflow revision, checked by the DSL first), and `name`, `description`, `model` and `thinking` (agentic only), `harness` ([harnesses](#harnesses)), `place` ([place](#place)), `tools`, `tool_settings` ([search and fetch](#search-and-fetch)), `skills` (names; each `<name>/SKILL.md` is in `skills`) and `version`, which is the number the revision gets, and `max_cost_usd` (agentic only), the agent's default cap, kept by an edit that leaves it out and cleared only by 0, and `cap_mode` (agentic only), how such a cap prices a request, `expected` or `strict` ([spend cap](#spend-cap)). A field the store does not keep (`input_schema`, `output_schema`) is `422 input_invalid` by name, and so is a definition that can never run here; one this host cannot run yet saves with `warnings` ([models](#models)). The ETag (`home_etag`) is the current revision's id. `GET /agents/{id}` adds `tools`, the tools its current revision grants with each one's provider ([search and fetch](#search-and-fetch)). |
 | `PUT /agents/{id}/definition` | The same body, checked [the same way](#models): a new revision, its parent the current one, made current. Without `skills` the current revision's skill files carry over. A definition that is the current revision already writes nothing, so a PUT sent twice makes one revision. An agent's id, name and description stay those it was made with. `If-Match` that is not the current ETag is `412 precondition_failed`; the store compares it again inside the commit, so of two edits that read the same revision exactly one lands. The contract's body is taken too: the definition itself, with `If-Match` required (`412` without it) and `definition.version` greater than the current one (`422`). Any such version is taken, and always makes a new revision, the same definition included; the revision is numbered as this server numbers them, the next, and the answer says which; the route reads a body holding `definition` as this one, any other as the contract's. |
 | `GET /agents/{id}/revisions` | The agent's revisions, newest first: `revision`, `version`, `parent`, `kind`, `current`, `note`, `created_at` and the `definition`. |
 | `POST /agents/{id}/current` | `{revision}`: one of the agent's revisions becomes current again. |
@@ -1987,7 +1994,10 @@ As the run settles, before it reads ended and before a follow-up can open it aga
 answered, the whole text of each of its messages, and what the user said in the run, in `runs/<id>/learning-turn.json`.
 Once the run has ended, in the agent's queue, the server reads the notes from that answer alone (`parseReflection`, in
 `src/learn/reflect.ts`): an answer with no note is `empty`, and one that gives notes out of format (a note outside a
-block, a block not closed, with no file name, or a name given twice) is `unparsed`, nothing kept. `checkProposal`
+block, a block with no file name, or one name given twice with other words) is `unparsed`, nothing kept. A block opens
+with the fence asked for (```` ```note ```` or four backticks for a note, four for a skill or a draft) and runs to the
+next line that is that fence; a shorter fence is text, a longer one an example, and an opening never closed is left out
+alone. `checkProposal`
 (`src/learn/check.ts`) then refuses, before anything is written anywhere, a note that reuses an existing note's name, a
 path that is not a `.md` file at the top, a bad name, front matter out of shape or setting `status`, a `supersedes`
 naming a note that is not active, more than 8 notes superseded, more than 8 new notes or a note over 4068 bytes (4096,
@@ -2154,10 +2164,28 @@ definition's `max_cost_usd` above 0 sets that default, and 0 clears it (no defau
 leaves the field out keeps the agent's default, as it keeps its harness and place: leaving a field out never removes a
 spend limit. A workflow definition keeps none: above 0 is `422 not_allowed`, and 0 changes nothing. The cap is checked in the run's own process
 before each model request, the agent's and a compaction's alike, on every harness: what the run has spent so far, plus
-the worst case of each request still in flight, plus this request's worst case must stay within it, or the request is
-not sent and the run pauses ([below](#a-run-paused-at-its-cap)). A request's worst case is its input bound at the higher of
-the model's input and cache-write prices (the provider may bill any of the input as a cache write), plus the output it is
-sent with at the output price, plus any fee its tokens do not show (below). Under a cap each request is limited to the
+what each request still in flight is held at, plus what this request is expected to cost must stay within it, or the
+request is not sent and the run pauses ([below](#a-run-paused-at-its-cap)). A request costs its input, plus the output it
+is sent with at the output price, plus any fee its tokens do not show (below). How its input is priced is the run's
+`cap_mode`: the run's own (`POST /agents/{id}/runs` with `cap_mode`), else its agent's (a definition's `cap_mode`, kept by
+an edit that leaves it out), else `expected`; only a run with a cap takes one (`422 not_allowed` otherwise).
+
+- `expected`: priced from the previous request of its conversation, as that request's usage reported it. The input it
+  read from the cache or wrote to it (`cache_read_input_tokens` and `cache_creation_input_tokens` on Anthropic's API,
+  `input_tokens_details.cached_tokens` on the Responses API) at the cache-read price, if that request ended less than 4
+  minutes before (Anthropic keeps a cache 5); the rest (its input after the cache, plus what the conversation grew by
+  since, one token per byte) at the higher of the input and cache-write prices. With no previous request in hand, or one
+  older than 4 minutes, all of the input at that price. On claude-agent, codex and opencode the previous request is the
+  session's last on the same model in the run's current process, so a run's first request after a restart is priced
+  with nothing cached; on pi it is the conversation's last answer. Output never passes the cap (below); a request that
+  misses the cache can, by at most its bound: its input at full price less its input expected. The run's
+  `cost.overshoot_bound_usd` serves the bound of the requests in flight. A request's real cost is always booked, never
+  clipped: a run that passed its cap so is not failed for it, its timeline says `Went $X over its cap on a cache miss (at
+  most $Y).`, and its next request is refused, so it pauses at its cap as usual. A request whose cost never comes in (cut,
+  stopped, lost) counts at what it was held at, its expected cost, in this process and after a restart alike.
+- `strict`: every input token at the higher of the input and cache-write prices (the provider may bill any of the input as
+  a cache write), the worst case: no request passes the cap, and a run whose requests read the cache pauses well before
+  it has spent its cap. Under a cap each request is limited to the
 output tokens what is left of the cap can buy, thinking included, never more than it asks for or than the model's
 ceiling (its max output tokens, else its context window, clamped to what the window leaves): on pi through the request's
 own options (its max tokens, and on Anthropic's API its thinking budget), on claude-agent, codex and opencode written into its body
@@ -2168,8 +2196,8 @@ where thinking takes one (Anthropic's, 1,024, the budget squeezed to it at the l
 budget, since its reasoning then shares the limit (minimal 1,024, low 2,048, medium 8,192, high 16,384). The input bound is one token per UTF-8 byte of what is sent (a byte-level tokenizer never makes
 a token of less than one byte, and an image's base64 is far more bytes than its tokens), plus what the provider adds
 server-side (a tool-use prompt, each image), from the same table the model proxy of claude-agent, codex and opencode uses; there
-the proxy measures each request's body. A request in flight holds its worst case until it answers, so requests sent side
-by side cannot pass the cap together. Spent so far is read from the run's store each time its process starts, so it
+the proxy measures each request's body. A request in flight holds what it was admitted at until it answers, so requests
+sent side by side cannot pass the cap together. Spent so far is read from the run's store each time its process starts, so it
 survives a restart, plus each response since, and with them each charge a paid tool booked (`monid.run`, which is itself
 refused once the spend reaches the cap; see [monid](#tools)).
 
@@ -2320,7 +2348,7 @@ picking it is refused, and on `auto` it searches through Parallel on the server'
 keyless Exa, as a capped codex run does; pi's own search request is held at its context
 plus 125,000 (5 searches) and its most fee, 5 searches at $0.01. What the request
 cost, booked once it answers, stops the next request through the cap, and a run whose booked spend passes its cap shows
-one timeline row saying by how much (`Spent $X, $Y over the run's cap of $Z`).
+one timeline row saying by how much (`Spent $X, $Y over the run's cap of $Z`, in cents).
 
 The server also checks the run's cost after each response, as a backstop, and stops a run whose cost passed its cap.
 Either way the run keeps the answer it paid for: a run the cap stopped has `result: {output: null, final_answer}`, the

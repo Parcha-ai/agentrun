@@ -5,7 +5,9 @@
 //  - it writes each server in Codex's `mcp_servers` (an app may not: config.ts RESERVED_CONFIG_KEYS), with only the
 //    granted tools. Each call is allowed without asking (`default_tools_approval_mode = "approve"`): the proxy is the
 //    one gate, and under Codex's default a tool with no `readOnlyHint` is refused when nobody is there to approve it.
-//    Each server is `required`: one that does not start fails the thread's start, never a turn without its tools.
+//    Each server is `required`, and its endpoint is the proxy, which answers `initialize` and `tools/list` itself from
+//    the grant: the thread starts with every granted tool, and a remote server that can't be reached shows at the first
+//    call, as that call's error result. Only a proxy route Codex can't reach fails the thread's start.
 //  - it records each call (`recorded`). Codex sends a call to the proxy as soon as it starts the call's item, and waits
 //    for nothing of ours, so the proxy writes the call's intent in the session's records itself, by Codex's own call id
 //    (`_meta.callId`), before anything is sent, and its outcome after. A call a crash cut off is then answered

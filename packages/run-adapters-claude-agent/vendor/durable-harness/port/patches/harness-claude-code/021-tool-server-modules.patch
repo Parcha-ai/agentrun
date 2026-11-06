@@ -7,7 +7,7 @@ diff --git a/packages/harness-claude-code/src/harness.ts b/packages/harness-clau
 --- a/packages/harness-claude-code/src/harness.ts
 +++ b/packages/harness-claude-code/src/harness.ts
 @@ -208,6 +208,12 @@
-    * connect fails the turn. Default none.
+    * handshake: an unreachable server shows at its first call. Default none.
     */
    mcpServers?: readonly { readonly name: string; readonly tools: readonly string[] }[];
 +  /**
