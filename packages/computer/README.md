@@ -92,8 +92,9 @@ read to its end, the push calls its `return()` however it ends, so a pull piped 
   for a symlink between two steps refuses the entry instead of redirecting it.
 - `files.write`, `files.mkdir`, `files.move` and `files.remove` act on the absolute path the caller chose and make no
   promise to confine it: they resolve it by name, as any program in the computer would, and follow a symlink on the
-  way. The computer is their boundary. A caller that needs a write held inside one directory against a concurrent
-  actor pushes a tar into that directory.
+  way. The daemon does not confine them: the container is the only boundary. A provider that runs the daemon as root
+  and programs as a lesser user must confine these calls first. A caller that needs a write held inside one directory
+  against a concurrent actor pushes a tar into that directory.
 - `files.read`, `files.write` and a pull open a file first and then check what they opened (`fstat` on the
   descriptor), never a path checked and then opened by name. The open carries `O_NONBLOCK`, so a FIFO or a device,
   there from the start or swapped in by another program, never makes it wait: `files.read` and `files.write` refuse
