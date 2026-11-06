@@ -213,11 +213,12 @@ func Bridge(socket string, in io.Reader, out io.Writer, errOut io.Writer) int {
 	replies := make(chan struct{})
 	go func() {
 		_, _ = io.Copy(conn, in)
+		// Marked before the half-close: the daemon's answering close can only come after it.
+		close(inputEnded)
 		_ = conn.CloseWrite()
 		if afterHalfClose != nil {
 			afterHalfClose()
 		}
-		close(inputEnded)
 	}()
 	go func() {
 		_, _ = io.Copy(out, conn)
@@ -229,6 +230,11 @@ func Bridge(socket string, in io.Reader, out io.Writer, errOut io.Writer) int {
 		<-replies
 		return 0
 	case <-replies:
+		select {
+		case <-inputEnded:
+			return 0
+		default:
+		}
 		fmt.Fprintln(errOut, "computerd stdio: the daemon closed the connection")
 		return 1
 	}
