@@ -141,6 +141,9 @@ const VERSION: string = JSON.parse(readFileSync(new URL("../package.json", impor
 const DEFAULT_API_URL = "https://app.daytona.io/api";
 /** The image that asks for Daytona's default snapshot: the create sends no snapshot field. */
 export const DAYTONA_DEFAULT_SNAPSHOT = "default";
+/** The label, in the provider's own namespace beside the deadline's, that holds the image create was asked for: Daytona
+ *  reports only the snapshot it resolved that image to, a name of its own for "default". */
+const IMAGE_LABEL = `${COMPUTER_LABEL}.image`;
 /** autoDeleteInterval when autoDeleteMinutes is unset: negative is disabled. */
 const NO_AUTO_DELETE = -1;
 const DEFAULTS: DaytonaTimeouts = {
@@ -520,6 +523,7 @@ function sandboxDrift(spec: ComputerSpec, sb: Sandbox, expected: SandboxExpected
 	const labels = sb.labels ?? {};
 	if (labels[COMPUTER_LABEL] !== "1") mismatch(`label ${COMPUTER_LABEL}`, "1", labels[COMPUTER_LABEL]);
 	if (labels[DEADLINE_LABEL] !== expected.deadline) mismatch(`label ${DEADLINE_LABEL}`, expected.deadline, labels[DEADLINE_LABEL]);
+	if (labels[IMAGE_LABEL] !== spec.image) mismatch(`label ${IMAGE_LABEL}`, spec.image, labels[IMAGE_LABEL]);
 	for (const [key, value] of Object.entries(spec.labels ?? {})) if (labels[key] !== value) mismatch(`label ${key}`, value, labels[key]);
 	if (sb.autoStopInterval !== expected.autoStopInterval) mismatch("autoStopInterval", expected.autoStopInterval, sb.autoStopInterval);
 	if (sb.autoDeleteInterval !== expected.autoDeleteInterval) mismatch("autoDeleteInterval", expected.autoDeleteInterval, sb.autoDeleteInterval);
@@ -722,7 +726,7 @@ export class DaytonaProvider implements ComputerProvider {
 			name,
 			// "default" sends no snapshot, and Daytona makes the sandbox from its default snapshot.
 			...(spec.image === DAYTONA_DEFAULT_SNAPSHOT ? {} : { snapshot: spec.image }),
-			labels: { ...spec.labels, [COMPUTER_LABEL]: "1", [DEADLINE_LABEL]: deadline },
+			labels: { ...spec.labels, [COMPUTER_LABEL]: "1", [DEADLINE_LABEL]: deadline, [IMAGE_LABEL]: spec.image },
 			env: {},
 			public: false,
 			...(this.#target === undefined ? {} : { target: this.#target }),
@@ -1019,10 +1023,20 @@ export class DaytonaProvider implements ComputerProvider {
 		const network = networkOf(sb);
 		if (typeof network === "object" && "other" in network) found.push(`network: ${network.other}, which this provider never makes`);
 		const labels = Object.fromEntries(Object.entries(sb.labels ?? {}).filter(([key]) => key !== COMPUTER_LABEL && !key.startsWith(`${COMPUTER_LABEL}.`)));
-		const spec = { image: sb.snapshot, lifetimeMs: 1, network: typeof network === "object" && "other" in network ? "none" : network, labels } as ComputerSpec;
+		// The image create was asked for, from its label; a computer made before the label was written reports its snapshot.
+		const asked = sb.labels?.[IMAGE_LABEL];
+		const spec = { image: asked ?? sb.snapshot, lifetimeMs: 1, network: typeof network === "object" && "other" in network ? "none" : network, labels } as ComputerSpec;
 		found.push(...this.check(spec).map(({ field, message }) => `${field}: ${message}, read back from the computer`));
 		const vendor = sandboxDrift(spec, sb, this.#sandboxExpected(sb.labels?.[DEADLINE_LABEL] ?? ""));
-		found.push(...vendor.filter((line) => !line.startsWith("network:") && !line.startsWith(`label ${DEADLINE_LABEL}`) && !(deadline === undefined && line.startsWith("autoDestroyAt"))));
+		found.push(
+			...vendor.filter(
+				(line) =>
+					!line.startsWith("network:") &&
+					!line.startsWith(`label ${DEADLINE_LABEL}`) &&
+					!(asked === undefined && line.startsWith(`label ${IMAGE_LABEL}`)) &&
+					!(deadline === undefined && line.startsWith("autoDestroyAt")),
+			),
+		);
 		let user = `${this.#uid}:${this.#gid}`;
 		let workdir: string | undefined;
 		if (sb.state === "started") {
@@ -1041,6 +1055,7 @@ export class DaytonaProvider implements ComputerProvider {
 			...ref,
 			spec: {
 				image: spec.image,
+				...(typeof sb.snapshot === "string" ? { snapshot: sb.snapshot } : {}),
 				user,
 				network: spec.network,
 				...(isWhole(sb.cpu) ? { cpus: sb.cpu } : {}),

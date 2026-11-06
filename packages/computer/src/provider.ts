@@ -64,7 +64,10 @@ export type NetworkPolicy = NetworkSpec | { other: string };
 
 /** The spec a computer runs with, read back from the computer itself, not from what was asked. */
 export interface ReadBackSpec {
+	/** The image as create was asked for it, read back from the computer (Docker's config, Daytona's label). */
 	image: string;
+	/** What the vendor resolved the image to, by its own name, when it reports one (a Daytona snapshot). */
+	snapshot?: string;
 	/** uid:gid in numbers: "0:0" is root. */
 	user: string;
 	network: NetworkPolicy;

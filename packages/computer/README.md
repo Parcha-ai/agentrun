@@ -376,7 +376,9 @@ The key is the caller's to pass: the provider never reads the environment, never
 toolbox URL that is not https, and never puts it in a computer. `image` is a Daytona snapshot, by id or name: the
 snapshot gives the sandbox its class and its size. `image: "default"` sends no snapshot field at all, and Daytona makes
 the sandbox from its default snapshot; the provider never guesses a snapshot's name. (A snapshot that is itself named
-`default` is reached by its id.)
+`default` is reached by its id.) Daytona reports only the snapshot it resolved, by its own name, so create records the
+image it was asked for in the label `agentrun.computer.image`, beside the deadline's in the provider's own namespace,
+and attach reports that as `image` and the resolved snapshot apart, as `snapshot`.
 
 ### Lifetimes
 
@@ -450,7 +452,7 @@ Daytona's container class runs code as root, and the open runner runs it privile
   namespace (`agentrun.computer`), `cpus`, `memoryMb` or `pids` (a snapshot's size is its own), `user`, `workdir`
   (the daemon works in `/work`), and any other field.
 - `create` sends `POST /sandbox` with the name `computer-<12 hex digits>`, the snapshot (none for `"default"`), the
-  labels with `agentrun.computer=1` and `agentrun.computer.deadline=<ISO time>`, `public: false`, `ttlMinutes`,
+  labels with `agentrun.computer=1`, `agentrun.computer.deadline=<ISO time>` and `agentrun.computer.image=<the image>`, `public: false`, `ttlMinutes`,
   `autoStopInterval` (`autoStopMinutes`; unset, 0, since Daytona's idle timer counts only outside traffic and a daemon
   at work would be stopped), and `autoDeleteInterval` (`autoDeleteMinutes`; unset, -1: a stop keeps the sandbox, which
   the TTL then ends). `POST /sandbox` is never retried. A
@@ -462,8 +464,10 @@ Daytona's container class runs code as root, and the open runner runs it privile
 - `attach({ id })` takes a sandbox id or a computer's name; `attach({ labels })` must match exactly one computer. Only
   a sandbox with `agentrun.computer=1` and a computer's name counts. Attach runs the same drift check, with the spec
   read back from the sandbox, and, when it is started, the daemon's; a computer that drifts is refused and left as it
-  is. It returns `spec`: the snapshot, the daemon's user, the network, `cpus`, `memoryMb` (Daytona's GiB times 1024),
-  `/work` when the daemon was checked, and the deadline.
+  is. It returns `spec`: `image`, the image create was asked for (`"default"` stays `"default"`), from its label;
+  `snapshot`, the snapshot Daytona reports; the daemon's user, the network, `cpus`, `memoryMb` (Daytona's GiB times
+  1024), `/work` when the daemon was checked, and the deadline. A computer with no image label (made before create
+  wrote it) reports its snapshot as `image`, and is not refused for the missing label.
 - `list(labels)` asks Daytona for `agentrun.computer=1` alone, every page, and filters the other labels itself. A
   sandbox that is `destroying` or `destroyed`, or whose desired state is `destroyed`, is going and left out.
   `started`, the states on the way to it, and `stopping` and `pausing` (on the way from it) are `running`: a stopping
@@ -499,7 +503,7 @@ From Daytona's read of the sandbox:
 | --- | --- |
 | `snapshot` | the spec's image; for `"default"`, whatever Daytona names, unchecked |
 | `networkBlockAll`, `networkAllowList`, `domainAllowList`, `outboundProxyUrl` | the network declared; an outbound proxy, both lists, or block-all with a list is drift |
-| `labels` | `agentrun.computer=1`, the deadline as written, every label the spec asked for |
+| `labels` | `agentrun.computer=1`, the deadline and the image as written, every label the spec asked for |
 | `autoStopInterval`, `autoDeleteInterval` | `autoStopMinutes` (0 unset), `autoDeleteMinutes` (-1 unset), exactly |
 | `autoDestroyAt` | set, and no later than the deadline plus the TTL's minute and 2 minutes of clock skew |
 | `sandboxClass` | the provider's class |
