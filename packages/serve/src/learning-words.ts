@@ -157,8 +157,16 @@ const OWN_REASONS = new Set(["", "[]", '{"merge":true,"reason":"r","items":[{"fi
  *  parseVerdict's own; an answer that held neither is said as such. */
 export function notKept(verdict: Pick<Verdict, "reason" | "items">): string {
   const why = verdict.items.find((item) => !item.keep)?.why;
-  if (why) return said.grader(why);
-  return OWN_REASONS.has(verdict.reason) ? said.stopped(STOPPED.unread) : said.grader(verdict.reason);
+  const said_ = why ? said.grader(why) : OWN_REASONS.has(verdict.reason) ? said.stopped(STOPPED.unread) : said.grader(verdict.reason);
+  // Nothing merged: a skill or a workflow draft the run proposed is lost with the note, kept by the grader or not, and
+  // the line says so, so a lost skill is never silent.
+  const lost = [...new Set(verdict.items.flatMap((item) => {
+    const place = /^(skills|workflows)\/([^/]+)\//.exec(item.file);
+    return place ? [`the ${place[1] === "skills" ? "skill" : "workflow"} ${place[2]}`] : [];
+  }))];
+  if (!lost.length) return said_;
+  const named = listed(lost);
+  return `${said_}${said_.endsWith(".") ? "" : "."} ${named[0]!.toUpperCase()}${named.slice(1)} ${lost.length === 1 ? "was" : "were"} not kept either.`;
 }
 
 /** A run's learning in words as a read says them, whole: what it learned and what waits for the owner's OK, or why the
