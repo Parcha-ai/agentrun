@@ -30,7 +30,9 @@ export default (context, faux) => {
   return faux.message(faux.toolCall("write", { path: file, content: "# " + users.at(-1) + "\\n" }), { stopReason: "toolUse" });
 };
 // Priced on output only, $100 a million, as the server's cap tests price it: a request's least (1,024 tokens) is
-// $0.1024, so a run capped under that stops at its cap before its first request.
+// $0.1024, so a run capped under that stops at its cap before its first request. A request is held at far more, so a
+// cap under three of those holds draws the server's wrap-up note ("finish now") before the first request, a message
+// this script would read as its person's: recipes 2 and 3 cap their runs at $5, above that.
 export const cost = { input: 0, output: 100, cacheRead: 0, cacheWrite: 0 };
 `;
 
