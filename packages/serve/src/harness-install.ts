@@ -38,8 +38,9 @@ export const INSTALL_TIMEOUT_MS = 10 * 60_000;
 export type HarnessPins = { version: string; platform: string; target?: string };
 
 /** One harness that installs on first use: its name for people, the package an install names (at its pin), the lock
- *  AgentRun ships for it, and what an install in a directory lacks of a whole one (undefined when it is whole). */
-export type HarnessInstallEntry = { id: string; label: string; package: string; lock: string; lacking(dir: string, pins: HarnessPins): string | undefined };
+ *  AgentRun ships for it, what an install in a directory lacks of a whole one (undefined when it is whole), and the
+ *  package that holds its CLI for this platform (undefined where its adapter knows of no build for it). */
+export type HarnessInstallEntry = { id: string; label: string; package: string; lock: string; lacking(dir: string, pins: HarnessPins): string | undefined; platformPackage(pins: HarnessPins): string | undefined };
 
 /** The data's harnesses directory, and the one a harness installs into. */
 export const harnessesOf = (data: string): string => join(data, HARNESSES_DIR);
@@ -120,6 +121,7 @@ const CLAUDE: HarnessInstallEntry = {
   lock: fileURLToPath(new URL("../harnesses/claude-agent/package-lock.json", import.meta.url)),
   // The SDK at the pin and its entry, this platform's CLI, and the MCP library (its server and its types).
   lacking: (dir, { version, platform }) => (!installedSdk(dir, version) ? `${CLAUDE_SDK}@${version}` : !claudeCliIn(dir, platform) ? `its CLI for ${platform}` : MCP_PARTS.find((part) => !inTree(dir, part))),
+  platformPackage: ({ platform }) => `@anthropic-ai/claude-agent-sdk-${platform}`,
 };
 
 /** What claude-agent's adapter takes from an install (its `sdk`, `sdkVersion`, `cliPath` and `mcp`). */
@@ -149,6 +151,8 @@ const CODEX: HarnessInstallEntry = {
   lock: fileURLToPath(new URL("../harnesses/codex/package-lock.json", import.meta.url)),
   // The launcher at the pin, and this platform's package at the pin with its binary.
   lacking: (dir, pins) => (versionIn(dir, CODEX_PACKAGE) !== pins.version ? `${CODEX_PACKAGE}@${pins.version}` : !codexBinaryIn(dir, pins) ? `its binary for ${pins.platform}` : undefined),
+  // Only where the adapter knows the binary's target (and pins its sha256): a platform package it cannot check is none.
+  platformPackage: ({ platform, target }) => (target ? codexPlatform(platform) : undefined),
 };
 
 /** The Codex binary an install in `dir` holds, with its platform package's version, as the Codex adapter takes it
@@ -165,6 +169,22 @@ export function codexBinaryIn(dir: string, { version, platform, target }: Harnes
 export const HARNESS_INSTALLS: Readonly<Record<string, HarnessInstallEntry>> = Object.freeze({ [CLAUDE.id]: CLAUDE, [CODEX.id]: CODEX });
 
 // ---- installing -----------------------------------------------------------------------------------------------------------
+
+const lockPackages = new Map<string, ReadonlySet<string>>();
+/** The package paths a lock names (`node_modules/<name>`), read once per lock. */
+function packagesOf(lock: string): ReadonlySet<string> {
+  let known = lockPackages.get(lock);
+  if (!known) lockPackages.set(lock, (known = new Set(Object.keys((JSON.parse(readFileSync(lock, "utf8")) as { packages?: Record<string, unknown> }).packages ?? {}))));
+  return known;
+}
+
+/** Why `entry` is never installed on this platform, or undefined: no build of its CLI for `pins.platform`, in its
+ *  adapter's own table or in the lock it installs by. Such a harness is unavailable for it, and nothing is installed:
+ *  an install would end without its CLI, every time. */
+export function noBuild(entry: HarnessInstallEntry, pins: HarnessPins, lock: string = entry.lock): string | undefined {
+  const pkg = entry.platformPackage(pins);
+  return pkg && packagesOf(lock).has(`node_modules/${pkg}`) ? undefined : `no ${entry.label} build for this platform (${pins.platform})`;
+}
 
 /** A harness is not installed in `dir` (or not whole): its message names the command that installs it by hand. */
 export class HarnessNotInstalled extends Error {
@@ -299,7 +319,7 @@ export class HarnessInstall {
   get installed(): boolean {
     return this.done;
   }
-  constructor(readonly entry: HarnessInstallEntry, readonly dir: string, private readonly pins: () => Promise<HarnessPins>, private readonly install: (entry: HarnessInstallEntry, dir: string, pins: HarnessPins, signal: AbortSignal) => Promise<void> = (entry, dir, pins, signal) => npmInstall(entry, dir, pins, { signal }), private readonly onInstalled?: (ms: number) => void) {}
+  constructor(readonly entry: HarnessInstallEntry, readonly dir: string, private readonly pins: () => Promise<HarnessPins>, private readonly install: (entry: HarnessInstallEntry, dir: string, pins: HarnessPins, signal: AbortSignal) => Promise<void> = (entry, dir, pins, signal) => npmInstall(entry, dir, pins, { signal }), private readonly onInstalled?: (ms: number) => void, private readonly lock: string = entry.lock) {}
 
   /** What a run waiting for it shows (a `phase` row). */
   get installingWords(): string {
@@ -310,7 +330,10 @@ export class HarnessInstall {
   async needed(): Promise<boolean> {
     if (this.done) return false;
     if (this.running) return true;
-    this.done = this.entry.lacking(this.dir, await this.pins()) === undefined;
+    const pins = await this.pins();
+    // No build for this platform: nothing to wait for, as nothing installs (the adapter says why it does not run).
+    if (noBuild(this.entry, pins, this.lock)) return false;
+    this.done = this.entry.lacking(this.dir, pins) === undefined;
     return !this.done;
   }
 
@@ -319,6 +342,9 @@ export class HarnessInstall {
     if (this.stopping.signal.aborted) return Promise.reject(new Error("the server is stopping"));
     this.running ??= (async () => {
       const pins = await this.pins();
+      // Refused before npm, a temp directory or a registry request: no install of it ever lands here.
+      const never = noBuild(this.entry, pins, this.lock);
+      if (never) throw new Error(never);
       if (this.entry.lacking(this.dir, pins) === undefined) return void (this.done = true);
       const started = performance.now();
       await this.install(this.entry, this.dir, pins, this.stopping.signal);

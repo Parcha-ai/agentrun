@@ -11,7 +11,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { AgentAdapter, SessionSpec } from "@parcha/agentrun-kernel";
-import { CLAUDE_SDK, codexBinaryIn, HARNESS_INSTALLS, type HarnessPins, HarnessNotInstalled, installDirOf, installLine, loadSdk, type LoadedSdk } from "./harness-install.js";
+import { CLAUDE_SDK, codexBinaryIn, HARNESS_INSTALLS, type HarnessPins, HarnessNotInstalled, installDirOf, installLine, loadSdk, type LoadedSdk, noBuild } from "./harness-install.js";
 import { DATA_ENV, defaultData } from "./files.js";
 import { FAUX_HARNESS_ENV } from "./harness.js";
 import { chooseModel, FAUX_ENV, hostModel, type ModelRef, openRouterOnly } from "./model.js";
@@ -494,6 +494,13 @@ export async function codexPins(): Promise<HarnessPins> {
 /** The pins of a harness that installs on first use (HARNESS_INSTALLS), by id. */
 export const harnessPins = (harness: string): Promise<HarnessPins> => (harness === "codex" ? codexPins() : claudePins());
 
+/** Why a harness that installs on first use is never installed here (harness-install.ts' noBuild: no build of its CLI for
+ *  this platform), or undefined; undefined for any other harness. */
+export async function harnessNoBuild(harness: string): Promise<string | undefined> {
+  const entry = HARNESS_INSTALLS[harness];
+  return entry ? noBuild(entry, await harnessPins(harness)) : undefined;
+}
+
 /** Whether a harness that installs on first use is installed whole in this server's data; true for any other harness. */
 export async function harnessInstalled(harness: string, env: NodeJS.ProcessEnv): Promise<boolean> {
   const entry = HARNESS_INSTALLS[harness];
@@ -527,6 +534,8 @@ export async function claudeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, load
   const dir = installDirOf(dataOf(env), "claude-agent");
   const line = installLine(dir, HARNESS_INSTALLS["claude-agent"]!.lock);
   const version = claude.CLAUDE_AGENT_SDK_VERSION;
+  const never = noBuild(HARNESS_INSTALLS["claude-agent"]!, { version, platform: claude.claudeAgentPlatform() });
+  if (never) throw new HarnessUnavailable(never);
   const sdk = await sdkOf(version, claude.claudeAgentPlatform()).catch((error: Error) => {
     throw new HarnessUnavailable(error.message, "install");
   });
@@ -576,6 +585,8 @@ export async function codexOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, load:
     const entry = HARNESS_INSTALLS.codex!;
     const dir = installDirOf(dataOf(env), "codex");
     const pins = await codexPins();
+    const never = noBuild(entry, pins);
+    if (never) throw new HarnessUnavailable(never);
     const missing = entry.lacking(dir, pins);
     if (missing) throw new HarnessUnavailable(new HarnessNotInstalled(entry, dir, pins.version, existsSync(dir) ? `Codex in ${dir} is not whole: it lacks ${missing}` : undefined).message, "install");
     binary = codexBinaryIn(dir, pins);
@@ -648,6 +659,9 @@ export async function harnessRefusal(harness: string, env: NodeJS.ProcessEnv, gi
   try {
     // Claude Code not installed yet installs on first use (harness-install.ts): until then the provider decides, as it would
     // for a session.
+    // No build of its CLI for this platform: unavailable for that, before anything else (nothing installs it).
+    const never = await harnessNoBuild(harness);
+    if (never) throw new HarnessUnavailable(never);
     if (HARNESS_INSTALLS[harness] && !(await harnessInstalled(harness, env))) return void (harness === "codex" ? codexProvider(env, needs.model) : claudeProvider(env, needs.model));
     const adapter = await adapterFor(harness, env, needs);
     const problems = adapter.check({ key: "capabilities", label: "capabilities", system: [], tools: [], context: "fresh" });
