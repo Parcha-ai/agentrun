@@ -187,7 +187,7 @@ the runs and the token.
 The token is in the log of the start that made it. On a stop the server gives a busy run 6 s
 (`--drain-timeout 6s`) to finish its turn, so a busy `docker stop` ends in about 7.5 s, inside Docker's default 10 s
 grace, and Compose's `stop_grace_period` is 15 s; a turn cut off resumes at the next start. Compose publishes the port
-on this machine's loopback only (port 7340, or `AGENTRUN_PORT`, which the printed link follows unless `AGENTRUN_PUBLIC_URL` is set), and
+on this machine's loopback only (port 7340, or `AGENTRUN_PORT`; set `AGENTRUN_PUBLIC_URL` with it, so the printed link names that port), and
 the volume `agentrun-data` keeps `/data` across `down` and `up`. In the container the server listens on `0.0.0.0`, and
 every route but `GET /v2/capabilities` and `GET /v2/health` still needs the token. Compose's `healthcheck` and
 `render.yaml`'s `healthCheckPath` are `GET /v2/health`.
