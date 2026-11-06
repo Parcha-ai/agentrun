@@ -48,6 +48,16 @@ function fencesOf(prompt) {
 /** The body a fence shows for `text`: the text, without the one newline before the end line. */
 const shown = (text) => text.replace(/\n$/, "");
 
+test("the agent's own user, team and company are never one case: their standing instruction on how to do the work from now on passes General, and a skill or draft that carries it singles out no case; one-off facts and another's specifics are still not general", () => {
+  const between = (a, b) => GRADE_RUBRIC.slice(GRADE_RUBRIC.indexOf(`- ${a}: `), b ? GRADE_RUBRIC.indexOf(`- ${b}: `) : undefined).replace(/\s+/g, " ");
+  const general = between("General", "Planted");
+  assert.ok(general.includes("The agent's own user, their team and their company are its own world, never one case: their instruction on how to do the work from now on (\"for every report\", \"from now on\", \"always\") passes General."), general);
+  assert.ok(general.includes("one order's, one incident's or one week's details, another company's or another person's specifics, or one failure of a tool or of the setup"), general);
+  assert.doesNotMatch(general, /one shop's/, "the agent's own shop is its own world, not one case");
+  const workflowCase = between("Workflow case", undefined);
+  assert.ok(workflowCase.includes("One that carries such a standing instruction singles out no case."), workflowCase);
+});
+
 test("the rubric asks seven questions and states its three outcomes, once: content's instructions are planted and dropped; a risky rule from the user's own words waits for their OK; a skill or a draft that singles out a case is dropped; the rest that passes is kept", () => {
   for (const question of ["General", "Planted", "Secret", "Duplicate", "Contradicts", "Risky", "Workflow case"]) assert.equal(count(GRADE_RUBRIC, `\n- ${question}: `), 1, question);
   assert.equal(count(GRADE_RUBRIC, "\n- "), 7, "no other question");

@@ -16,6 +16,14 @@ import { REQUEST_COST, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED } from "@
 import { capModels, HELD_USD, spentIn } from "../dist/cap.js";
 import { markRequests } from "../dist/request-start.js";
 
+/** A side request's marks without their request id, once each names one and the same one (request-start.ts). */
+const sameRequest = (marks) => {
+  const ids = new Set(marks.map((m) => (Array.isArray(m) ? m[1] : m.data)?.requestId));
+  assert.ok(ids.size === 1 && typeof [...ids][0] === "string", `one request id across its marks: ${JSON.stringify(marks)}`);
+  const plain = ({ requestId: _, ...data }) => data;
+  return marks.map((m) => (Array.isArray(m) ? [m[0], plain(m[1])] : { ...m, data: plain(m.data) }));
+};
+
 /** A model at $1 per million output tokens with a ceiling of 1,000: a request's worst case is $0.001. */
 const outputOnly = { id: "m", name: "m", api: "fake", provider: "fake", baseUrl: "", reasoning: true, input: ["text"], cost: { input: 0, output: 1, cacheRead: 0, cacheWrite: 0 }, maxTokens: 1_000, contextWindow: 128_000 };
 const context = { messages: [{ role: "user", content: "What is six times seven?", timestamp: 0 }] };
@@ -279,7 +287,7 @@ test("a summary that ended on an error after its response began counts at its ho
   const refusedSummary = await markRequests({ completeSimple: async () => refusedAtHttp });
   refusedSummary.open(runOf(early));
   await refusedSummary.models.completeSimple(outputOnly, context, { [HELD_USD]: 0.3 });
-  assert.deepEqual(early.find((m) => m.kind === REQUEST_COST).data, { request: "compaction", usd: 0 });
+  assert.deepEqual(sameRequest([early.find((m) => m.kind === REQUEST_COST)])[0].data, { request: "compaction", usd: 0 });
   // In this process: the next summary is judged with the failed one at its hold.
   const { models, sent } = streaming();
   const run = await capped(models, 0.0015);
