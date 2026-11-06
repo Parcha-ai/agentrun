@@ -38,6 +38,23 @@ export interface ComputerRef {
 	name: string;
 }
 
+/** A computer's network as read back from the computer itself. `other` is a network the provider never makes, in words. */
+export type NetworkPolicy = NetworkSpec | { other: string };
+
+/** One computer as list() reads it back. */
+export interface ComputerInfo {
+	ref: ComputerRef;
+	labels: Record<string, string>;
+	/** undefined when the deadline label is missing or unreadable: the janitor deletes such a computer. */
+	deadline: Date | undefined;
+	state: "running" | "stopped";
+	network: NetworkPolicy;
+}
+
+export interface CallContext {
+	signal?: AbortSignal;
+}
+
 /** A live connection to a computer's daemon. */
 export interface ComputerConnection {
 	client: DaemonClient;
@@ -51,6 +68,13 @@ export interface ComputerProvider {
 	capabilities(): ComputerCapabilities;
 	check(spec: ComputerSpec): Refusal[];
 	create(spec: ComputerSpec, context?: { signal?: AbortSignal }): Promise<Result<ComputerRef>>;
+	/** Finds one computer this provider made, by its id or by labels; none or several is an error in words. */
+	attach(ref: { id: string } | { labels: Record<string, string> }, context?: CallContext): Promise<Result<ComputerRef>>;
+	/** Every computer this provider made that carries all of these labels: the janitor's view. */
+	list(labels: Record<string, string>, context?: CallContext): Promise<Result<ComputerInfo[]>>;
+	/** Reads the network back; with a policy, sets it, or refuses in words when it cannot. Never wider than asked. */
+	network(ref: ComputerRef, policy?: NetworkSpec, context?: CallContext): Promise<Result<NetworkPolicy>>;
+	/** Checks hello against this provider's version and daemon capabilities, and refuses on a mismatch. */
 	connect(ref: ComputerRef): Promise<Result<ComputerConnection>>;
 	/** Idempotent: a computer already gone is ok. */
 	release(ref: ComputerRef, how: "stop" | "delete"): Promise<Result<void>>;

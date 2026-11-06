@@ -1,67 +1,15 @@
-// DockerProvider against a fake docker program under the test's temp dir: it records each call's argv and answers as
-// the docker CLI does. No Docker and no daemon binary are needed.
+// DockerProvider against a fake docker program under the test's temp dir (test/fake-docker.mjs): it records each
+// call's argv and answers as the docker CLI does. No Docker and no daemon binary are needed.
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test, { after } from "node:test";
+import test from "node:test";
 import { DockerProvider } from "../dist/index.js";
+import { fakeDocker, idOf, valuesOf, VERSION } from "./fake-docker.mjs";
 
 const SPEC = { image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none" };
 const ALLOWLIST = "a Docker computer cannot enforce an allowlist yet; ask for network none or open";
-
-const dirs = [];
-after(() => {
-	for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
-});
-
-/** A fake docker: `running` is what inspect reports, `gone` makes stop and rm answer "No such container". */
-function fakeDocker({ running = true, gone = false } = {}) {
-	const dir = mkdtempSync(join(tmpdir(), "computer-fake-docker-"));
-	dirs.push(dir);
-	const log = join(dir, "calls.jsonl");
-	const daemonPath = join(dir, "computerd");
-	writeFileSync(daemonPath, "not a real daemon");
-	chmodSync(daemonPath, 0o755);
-	const program = join(dir, "docker");
-	const config = JSON.stringify({ log, running, gone });
-	writeFileSync(
-		program,
-		`#!${process.execPath}
-const { appendFileSync } = require("node:fs");
-const config = ${config};
-const args = process.argv.slice(2);
-appendFileSync(config.log, JSON.stringify(args) + "\\n");
-const noSuch = () => { process.stderr.write("Error response from daemon: No such container: " + args.at(-1) + "\\n"); process.exit(1); };
-switch (args[0]) {
-	case "run": process.stdout.write("f".repeat(64) + "\\n"); break;
-	case "inspect": process.stdout.write(JSON.stringify({ Id: "f".repeat(64), State: { Running: config.running, Status: config.running ? "running" : "exited", ExitCode: config.running ? 0 : 127, Error: config.running ? "" : "exec format error" } }) + "\\n"); break;
-	case "stop": case "rm": if (config.gone) noSuch(); process.stdout.write(args.at(-1) + "\\n"); break;
-	case "exec": {
-		let buffered = "";
-		process.stdin.on("data", (chunk) => {
-			buffered += chunk;
-			let at;
-			while ((at = buffered.indexOf("\\n")) >= 0) {
-				const request = JSON.parse(buffered.slice(0, at));
-				buffered = buffered.slice(at + 1);
-				if (request.method === "hello") process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: request.id, result: { version: "fake", os: "linux", arch: "amd64", capabilities: ["exec"] } }) + "\\n");
-			}
-		});
-		process.stdin.on("end", () => process.exit(0));
-		break;
-	}
-	default: process.stderr.write("unexpected docker call\\n"); process.exit(2);
-}
-`,
-		{ mode: 0o755 },
-	);
-	const calls = () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)) : []);
-	return { provider: new DockerProvider({ daemonPath, docker: program }), calls, daemonPath };
-}
-
-/** The value after each occurrence of a flag. */
-const valuesOf = (args, flag) => args.flatMap((arg, i) => (arg === flag ? [args[i + 1]] : []));
 
 test("capabilities: a container whose lifetime the janitor enforces, network none or open, and a daemon with exec, files and processes", () => {
 	const { provider } = fakeDocker();
@@ -139,11 +87,11 @@ test("create() runs a hardened container with the daemon as its first process an
 	const before = Date.now();
 	const result = await provider.create({ ...SPEC, labels: { team: "a" } });
 	assert.equal(result.ok, true, JSON.stringify(result));
-	const [run, inspect, ...rest] = calls();
+	const [run, inspect, info, exec, ...rest] = calls();
 	assert.deepEqual(rest, []);
 	const name = valuesOf(run, "--name")[0];
 	assert.match(name, /^computer-[0-9a-f]{12}$/);
-	assert.deepEqual(result.value, { id: "f".repeat(64), name });
+	assert.deepEqual(result.value, { id: idOf(name), name });
 	assert.deepEqual(run.slice(0, 2), ["run", "--detach"]);
 	assert.equal(run.includes("--rm"), false, "stop keeps the computer");
 	const labels = valuesOf(run, "--label");
@@ -163,6 +111,8 @@ test("create() runs a hardened container with the daemon as its first process an
 	for (const flag of ["--cpus", "--memory", "--workdir"]) assert.equal(run.includes(flag), false, `${flag} only when asked`);
 	assert.deepEqual(inspect.slice(0, 1), ["inspect"]);
 	assert.equal(inspect.at(-1), name);
+	assert.deepEqual(info, ["info", "--format", "{{.Architecture}}"]);
+	assert.deepEqual(exec, ["exec", "-i", name, "/opt/agentrun/computerd", "stdio"]);
 });
 
 test("create() passes the sizes, an open network and the workdir", async () => {
@@ -236,10 +186,75 @@ test("connect() opens the daemon over docker exec and says hello", async () => {
 	const ref = { id: "f".repeat(64), name: "computer-0123456789ab" };
 	const connected = await provider.connect(ref);
 	assert.equal(connected.ok, true, JSON.stringify(connected));
-	assert.deepEqual(connected.value.hello.capabilities, ["exec"]);
+	assert.deepEqual(connected.value.hello, { version: VERSION, os: "linux", arch: "amd64", capabilities: ["exec", "files", "processes"] });
 	assert.deepEqual(calls(), [["exec", "-i", ref.name, "/opt/agentrun/computerd", "stdio"]]);
 	await connected.value.close();
 	const after = await connected.value.client.call("ping", {});
 	assert.equal(after.ok, false);
 	assert.equal(after.error.code, "gone");
+});
+
+test("connect() refuses a daemon of another version, or one missing a declared capability, and closes the stream", async () => {
+	const ref = { id: "f".repeat(64), name: "computer-0123456789ab" };
+	for (const [hello, words] of [
+		[{ version: "0.0.1" }, /version 0\.0\.1.*expected/],
+		[{ capabilities: ["exec", "files"] }, /processes/],
+		[{ os: "windows" }, /os windows/],
+	]) {
+		const { provider, calls } = fakeDocker({ hello });
+		const connected = await provider.connect(ref);
+		if (connected.ok) await connected.value.close();
+		assert.equal(connected.ok, false, JSON.stringify(hello));
+		assert.equal(connected.error.code, "refused");
+		assert.match(connected.error.message, words);
+		assert.match(connected.error.message, /computer-0123456789ab/);
+		assert.deepEqual(calls(), [["exec", "-i", ref.name, "/opt/agentrun/computerd", "stdio"]]);
+	}
+	const extra = fakeDocker({ hello: { capabilities: ["exec", "files", "processes", "display"] } });
+	const connected = await extra.provider.connect(ref);
+	assert.equal(connected.ok, true, "a daemon may offer more than the provider declares");
+	await connected.value.close();
+});
+
+test("create() deletes a computer whose own report drifts from its spec, and says every way it drifted", async () => {
+	const { provider, calls, names } = fakeDocker({ patch: { HostConfig: { PidsLimit: 1, CapDrop: [] } }, hello: { version: "0.0.1" } });
+	const result = await provider.create(SPEC);
+	assert.equal(result.ok, false);
+	assert.equal(result.error.code, "refused");
+	const name = valuesOf(calls()[0], "--name")[0];
+	assert.match(result.error.message, new RegExp(`${name}.*deleted`));
+	assert.match(result.error.message, /PidsLimit/);
+	assert.match(result.error.message, /CapDrop/);
+	assert.match(result.error.message, /version 0\.0\.1/);
+	assert.deepEqual(calls().map((args) => args[0]), ["run", "inspect", "info", "exec", "rm"]);
+	assert.deepEqual(calls().at(-1), ["rm", "--force", "--volumes", name]);
+	assert.deepEqual(names(), []);
+});
+
+test("create() deletes a computer whose daemon reports another architecture than the Docker host", async () => {
+	const { provider, calls, names } = fakeDocker({ arch: "aarch64" });
+	const result = await provider.create(SPEC);
+	assert.equal(result.ok, false);
+	assert.equal(result.error.code, "refused");
+	assert.match(result.error.message, /arch amd64.*arm64/);
+	assert.equal(calls().at(-1)[0], "rm");
+	assert.deepEqual(names(), []);
+});
+
+test("create() maps docker info's architecture to Go's names: x86_64 is amd64, aarch64 is arm64", async () => {
+	const amd = fakeDocker({ arch: "x86_64" });
+	assert.equal((await amd.provider.create(SPEC)).ok, true);
+	const arm = fakeDocker({ arch: "aarch64", hello: { arch: "arm64" } });
+	assert.equal((await arm.provider.create(SPEC)).ok, true);
+	const odd = fakeDocker({ arch: "riscv64", hello: { arch: "riscv64" } });
+	assert.equal((await odd.provider.create(SPEC)).ok, true);
+});
+
+test("create() deletes a computer whose daemon does not answer hello", async () => {
+	const { provider, calls, names } = fakeDocker({ noDaemon: true });
+	const result = await provider.create(SPEC);
+	assert.equal(result.ok, false);
+	assert.match(result.error.message, /OCI runtime exec failed/);
+	assert.deepEqual(calls().map((args) => args[0]), ["run", "inspect", "info", "exec", "rm"]);
+	assert.deepEqual(names(), []);
 });

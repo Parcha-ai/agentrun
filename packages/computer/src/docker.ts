@@ -5,7 +5,18 @@ import { randomBytes } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import { DaemonClient } from "./client.js";
-import type { ComputerCapabilities, ComputerConnection, ComputerProvider, ComputerRef, ComputerSpec, Refusal } from "./provider.js";
+import type {
+	CallContext,
+	ComputerCapabilities,
+	ComputerConnection,
+	ComputerInfo,
+	ComputerProvider,
+	ComputerRef,
+	ComputerSpec,
+	NetworkPolicy,
+	NetworkSpec,
+	Refusal,
+} from "./provider.js";
 import { fail, ok, type Result } from "./result.js";
 
 export interface DockerProviderOptions {
@@ -178,6 +189,18 @@ export class DockerProvider implements ComputerProvider {
 			return fail("unsupported", `the daemon in ${ref.name} (version ${hello.value.version}) does not offer exec`);
 		}
 		return ok({ client, hello: hello.value, close });
+	}
+
+	async attach(_ref: { id: string } | { labels: Record<string, string> }, _context: CallContext = {}): Promise<Result<ComputerRef>> {
+		return fail("unsupported", "attach is not built yet");
+	}
+
+	async list(_labels: Record<string, string>, _context: CallContext = {}): Promise<Result<ComputerInfo[]>> {
+		return fail("unsupported", "list is not built yet");
+	}
+
+	async network(_ref: ComputerRef, _policy?: NetworkSpec, _context: CallContext = {}): Promise<Result<NetworkPolicy>> {
+		return fail("unsupported", "network is not built yet");
 	}
 
 	async release(ref: ComputerRef, how: "stop" | "delete"): Promise<Result<void>> {
