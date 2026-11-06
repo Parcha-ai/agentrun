@@ -1,6 +1,6 @@
 import { BROWSER_OPENERS, BROWSER_STEPS, callFailed, endsTurn, failedWith, inputPreview, labelOf, outcomeOf, savedPaths, type LabelFn, type ToolResultView } from "./labels.js";
 import { cut, firstLine, firstSentence, json, obj, scrubUrls, str, utf8Bytes, type Obj } from "./util.js";
-import { originMatcher } from "./origin.js";
+import { BESIDE_SUFFIX, originMatcher } from "./origin.js";
 
 export type TimelineKind =
   | "thinking" | "text_block" | "tool_use" | "tool_result" | "phase"
@@ -759,11 +759,12 @@ function createProjector(options: TimelineOptions) {
       // a phase row with one folds into the tool row before it.
       const text = redactText(textOf(message));
       // A person's message that declined the call: their words are the message the turn took, a row of theirs under a
-      // person's rules, with the entry's own id; the server's resume beside it is shown only (an id of its own, no
-      // origin). Any other: the server's row is that message, with the entry's id and `origin: "server"`.
+      // person's rules, with the entry's own id; the server's resume beside it is the server's (`origin: "server"`) but
+      // not a message (an id of its own, BESIDE_SUFFIX, which isMessageRow passes over). Any other: the server's row is
+      // that message, with the entry's id and `origin: "server"`.
       if (origin.reason === "approval_declined") {
         const said = redactText(origin.said.trim());
-        add(make("phase", conv, `${base}:server`, { summary: `AgentRun: ${firstLine(text)}`, text }));
+        add(make("phase", conv, `${base}${BESIDE_SUFFIX}`, { summary: `AgentRun: ${firstLine(text)}`, text, origin: "server" }));
         add(make("user_message", conv, base, { summary: `You: ${firstLine(said)}`, text: said }));
       } else add(make("phase", conv, base, { summary: `AgentRun: ${firstLine(text)}`, text, origin: "server" }));
       provisional.delete(conv);
