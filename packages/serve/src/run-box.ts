@@ -521,18 +521,17 @@ export async function ensureRemoteBox(boxes: BoxProvider, run: { id: string; dir
 /** The run's folder as mounted in `box`, for the adapter's sync and unmount. */
 const mountedIn = (folder: RemoteFolder, box: Box, context: Context) => ({ subpath: folder.subpath, path: BOX_WORK, mode: "tools" as const, box, context });
 
-/** Mounts the run's folder in `box` (one already mounted there answers at once). Held by another client: taken back only
- *  when `box` is the run's only box, since then the holder is one of its boxes that is gone. */
+/** Mounts the run's folder in `box` (one already mounted there answers at once). Held by another client: every other box
+ *  of the run is destroyed first, and only then is the folder revoked and mounted. A client whose hold is forced off still
+ *  has its buffered writes answered as done, and loses them, so no box that held the folder may still run. A destroy
+ *  that fails revokes nothing. */
 async function mountIn(boxes: BoxProvider, run: { id: string }, folder: RemoteFolder, box: Box, context: Context): Promise<void> {
   const mount = () => folder.adapter.mount(folder.disk, folder.subpath, { box, path: BOX_WORK, context }, "tools");
   try {
     await mount();
   } catch (error) {
     if (!(error instanceof FolderHeld)) throw error;
-    const listed = await boxes.list({ [RUN_LABEL]: run.id }, context);
-    if (!listed.ok) throw listed.error;
-    const others = listed.value.filter((ref) => ref.id !== box.id);
-    if (others.length) throw new Error(`another box of the run (${others.map((ref) => ref.id).join(", ")}) still holds its folder`);
+    await destroyListed(boxes, { [RUN_LABEL]: run.id }, () => true, context, async (_run, id) => id !== box.id);
     await folder.adapter.revoke(run.id);
     await mount();
   }

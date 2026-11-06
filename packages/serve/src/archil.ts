@@ -33,6 +33,8 @@ export const NO_ARCHIL = `remote boxes keep their run folder on an Archil disk: 
 export const HELPER_PATH = "/usr/local/sbin/agentrun-archil";
 /** What Archil answers a mount of a folder another client holds. */
 const HELD = "has an outstanding delegation";
+/** Why a box whose /proc does not hide each user's processes keeps no run folder (the helper's exit 4). */
+export const NO_HIDEPID = "the box's /proc is not mounted with hidepid=2 (or invisible), so its tools could see the root archil client's processes: use an image or snapshot that mounts it so (see the README); this box keeps no run folder";
 /** What Archil answers a checkin by a client that holds no delegation there: EROFS (30). */
 const CHECKED_IN = /'checkin' operation failed .*Unexpected error \(30\)/;
 const DISK_ID = /^(?:dsk-[0-9a-f]{16}|[A-Za-z0-9][A-Za-z0-9._@+-]{0,127}\/[A-Za-z0-9][A-Za-z0-9._-]{0,127})$/;
@@ -106,8 +108,12 @@ export async function helper(box: Box, archil: Archil, verb: "mount" | "revoke" 
   // A sync or checkin with nothing mounted (exit 3): nothing is held, so nothing is lost.
   if (answer.code === 0 || (answer.code === 3 && (verb === "sync" || verb === "checkin"))) return;
   // A checkin by a client that holds no delegation on the folder (it checked in already, or a revoke forced its hold
-  // off): archil answers EROFS, measured on client 0.10.1. It holds nothing, so it has let go.
-  if (verb === "checkin" && CHECKED_IN.test(answer.said)) return;
+  // off): archil exits 1 with its checkin operation's EROFS, measured on client 0.10.1 (it has no exit code of its own
+  // for this). It holds nothing, so it has let go.
+  if (verb === "checkin" && answer.code === 1 && CHECKED_IN.test(answer.said)) return;
+  // The box's /proc lets a user see another's processes (no hidepid=2 or invisible): its tools could see the root
+  // archil client's, so it keeps no run folder.
+  if (answer.code === 4 && (verb === "mount" || verb === "revoke")) throw new Error(NO_HIDEPID);
   if (answer.said.includes(HELD)) throw new FolderHeld(`another client holds the run's folder: ${answer.said.slice(0, 300)}`);
   // sudo's own refusal (a password asked, the command not allowed) or no helper at all: the image lacks it.
   if (answer.code === 127 || answer.code === 126 || /a password is required|not allowed to execute|command not found|No such file/i.test(answer.said)) {

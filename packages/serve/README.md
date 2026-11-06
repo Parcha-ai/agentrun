@@ -632,10 +632,14 @@ of one saved before is refused 409 `agent_not_runnable`.
   the root helper, this package's `box/agentrun-archil`, at `/usr/local/sbin/agentrun-archil`, `root:root 0755`; a user
   `agentrun-tool` in the shared group, with no sudo; and these sudoers lines for the box's own user (Daytona's
   `daytona`; the Modal sandbox runs as root and needs none), with no other grant:
-  `daytona ALL=(root) NOPASSWD: /usr/local/sbin/agentrun-archil` and `daytona ALL=(agentrun-tool) NOPASSWD: ALL`. A box
-  without the helper is refused, saying so. Every box needs outbound TCP 8100 and 32050 to Archil.
+  `daytona ALL=(root) NOPASSWD: /usr/local/sbin/agentrun-archil` and `daytona ALL=(agentrun-tool) NOPASSWD: ALL`; and
+  `/proc` mounted with `hidepid=2` (`invisible` on newer kernels), so no user sees another's processes, the root archil
+  client's included. A box without the helper, or whose `/proc` lets a user see another's processes, keeps no run
+  folder: the helper refuses the mount, and the tool call says why. Every box needs outbound TCP 8100 and 32050 to Archil.
 - **The mount.** The box mounts exactly its run's `work/` (`agents/<agent>/runs/<run>/work` on the disk) at
-  `/workspace`, exclusively, so no other client writes it. The helper takes four verbs and nothing else: `mount` and
+  `/workspace`, exclusively, so no other client writes it. A box whose mount finds the folder held (by a box that was
+  lost) destroys every other box of the run first, and only then revokes the hold and mounts: a client whose hold is
+  forced off is still told its buffered writes are done, and loses them. The helper takes four verbs and nothing else: `mount` and
   `revoke` (a mount with `--force`, which takes the folder back from a box that is gone) with the disk, region and
   folder, `sync` and `checkin`. It checks every argument itself: any other folder, a `.` or `..`, an absolute path, a
   link, a mountpoint that is not empty, or a token of any other shape refuses and runs nothing.

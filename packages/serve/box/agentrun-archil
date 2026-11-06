@@ -20,7 +20,8 @@
 # never as an argument and never in a file. Every argument is checked here, whoever calls: a wrong verb or count, a
 # newline, a disk, region or folder of any other shape (an absolute path, `.` or `..`, an empty or extra segment), a
 # mountpoint that is a link or not empty, or a token of any other shape exits 2 and runs nothing. A sync or checkin with
-# nothing mounted exits 3 and runs nothing.
+# nothing mounted exits 3 and runs nothing. A mount or revoke in a box whose /proc lets a user see another's processes
+# (no hidepid=2 or invisible) exits 4 and runs nothing: the image mounts /proc so.
 set -eu
 umask 077
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
@@ -53,6 +54,12 @@ take() {
   matches "$disk" 'dsk-[0-9a-f]{16}|[A-Za-z0-9][A-Za-z0-9._@+-]{0,127}/[A-Za-z0-9][A-Za-z0-9._-]{0,127}' || refuse "the disk is a disk id (dsk-...) or owner/name"
   matches "$region" '[a-z0-9][a-z0-9-]{0,63}' || refuse "the region is lowercase letters, digits and dashes"
   matches "$folder" 'agents/[A-Za-z0-9][A-Za-z0-9_-]{0,127}/runs/[A-Za-z0-9][A-Za-z0-9_-]{0,127}/work' || refuse "the folder is agents/<agent>/runs/<run>/work, nothing else"
+  # The box's /proc (its last mount there) must hide each user's processes from the others, hidepid=2 or invisible as
+  # newer kernels name it: else the run's tools could see this root archil client's.
+  if ! awk '$2 == "/proc" && $3 == "proc" { o = $4 } END { exit !(o ~ /(^|,)hidepid=(2|invisible)(,|$)/) }' "$MOUNTS"; then
+    printf 'agentrun-archil: /proc is not mounted with hidepid=2 (or invisible): the run'"'"'s tools could see the root archil client'"'"'s processes\n' >&2
+    exit 4
+  fi
   if listed fuse.archil; then
     # This folder, mounted here already (a box the server finds again): nothing to do. Any other is refused.
     awk -v m="$MP" -v a="$disk:/$folder" -v b="$disk:/$folder[$region]" '$2 == m && $3 == "fuse.archil" && ($1 == a || $1 == b) { f = 1 } END { exit !f }' "$MOUNTS" || refuse "$MP holds another archil mount"

@@ -43,6 +43,11 @@ export async function fakeArchil(t, { data, token = TOKEN } = {}) {
     calls: () => read().calls,
     /** The folders held now, each by the box that holds it. */
     holds: () => read().holds,
+    /** Boxes made from now on have a /proc in which any user sees every process (no hidepid), as an image that does
+     *  not mount it so. */
+    noHidepid() {
+      writeFileSync(state, JSON.stringify({ ...read(), noHidepid: true }));
+    },
     /** Every box's sync fails while `on`, as one whose writes cannot reach the disk: such a box cannot let go. */
     failSyncs(on) {
       const now = read();
@@ -57,7 +62,7 @@ export async function fakeArchil(t, { data, token = TOKEN } = {}) {
       const bin = join(dir, ".fake-bin");
       mkdirSync(bin, { recursive: true });
       const mounts = join(dir, ".mounts");
-      if (!existsSync(mounts)) writeFileSync(mounts, "proc /proc proc rw 0 0\n");
+      if (!existsSync(mounts)) writeFileSync(mounts, `proc /proc proc rw,nosuid,nodev,noexec,relatime${read().noHidepid ? "" : ",hidepid=invisible"} 0 0\n`);
       const client = join(dir, ".archil");
       writeFileSync(client, `#!/bin/sh\nFAKE_ARCHIL_STATE='${state}' FAKE_ARCHIL_BOX='${id}' FAKE_ARCHIL_BOX_DIR='${dir}' FAKE_ARCHIL_DISK_ROOT='${disk}' FAKE_ARCHIL_DISK='${DISK}' FAKE_ARCHIL_MOUNTS='${mounts}' exec '${process.execPath}' '${CLI}' "$@"\n`);
       chmodSync(client, 0o755);

@@ -369,29 +369,55 @@ test("a remote box found with a host list is kept only when its list is the one 
   assert.equal(made.length, 2);
 });
 
-test("a remote box's folder that a box gone held is taken back: the mount is refused as held, the folder revoked, and mounted again; with another box of the run alive, it is never revoked", async (t) => {
+test("a takeover of a remote box's folder: every other box of the run is destroyed BEFORE the revoke, then the folder is mounted (a forced-off client's buffered write returns 0 and is lost, so none may still run)", async (t) => {
   const { ensureRemoteBox } = await import("../dist/run-box.js");
   const runDir = await scratch(t);
-  const live = [];
-  const box = (id) => ({ id, facts: () => ({ provider: "fake", workspace: "/workspace", network: "none" }), destroy: async () => ({ ok: true, value: undefined }) });
+  for (const others of [[], ["stale"], ["stale", "older"]]) {
+    const order = [];
+    const live = [...others];
+    const box = (id) => ({ id, facts: () => ({ provider: "fake", workspace: "/workspace", network: "none" }), destroy: async () => {
+      order.push(["destroy", id]);
+      live.splice(live.indexOf(id), 1);
+      return { ok: true, value: undefined };
+    } });
+    let made = false;
+    const boxes = {
+      list: async () => ({ ok: true, value: live.map((id) => ({ id, labels: {} })) }),
+      // The stale boxes are not running (lost, unreachable), so none is kept: a new one is made. Each is still listed,
+      // and still found for its destroy.
+      attach: async (id) => ({ ok: true, value: made && live.includes(id) ? box(id) : undefined }),
+      create: async () => {
+        made = true;
+        live.push("new");
+        return { ok: true, value: box("new") };
+      },
+    };
+    const taken = await remoteFolder({ held: true });
+    const adapter = {
+      ...taken.folder.adapter,
+      mount: async (...args) => (order.push(["mount", args[2].box.id]), taken.folder.adapter.mount(...args)),
+      revoke: async (runId) => (order.push(["revoke", runId]), taken.folder.adapter.revoke(runId)),
+    };
+    assert.deepEqual(await ensureRemoteBox(boxes, { id: "r", dir: runDir }, BACKGROUND_CONTEXT, { allow: "none", folder: { ...taken.folder, adapter } }), { id: "new", made: true });
+    assert.deepEqual(order, [["mount", "new"], ...others.map((id) => ["destroy", id]), ["revoke", "r"], ["mount", "new"]], JSON.stringify(others));
+  }
+});
+
+test("a takeover whose destroy of the run's other box fails revokes nothing: the call fails, and the new box goes", async (t) => {
+  const { ensureRemoteBox } = await import("../dist/run-box.js");
+  const runDir = await scratch(t);
+  const destroyed = [];
+  let made = false;
+  const box = (id, fails = false) => ({ id, facts: () => ({ provider: "fake", workspace: "/workspace", network: "none" }), destroy: async () => (destroyed.push(id), fails ? { ok: false, error: new Error("the provider refused the delete") } : { ok: true, value: undefined }) });
   const boxes = {
-    list: async () => ({ ok: true, value: live.map((b) => ({ id: b.id, labels: {} })) }),
-    attach: async () => ({ ok: true, value: undefined }),
-    create: async () => {
-      const made = box(`made-${live.length + 1}`);
-      live.push(made);
-      return { ok: true, value: made };
-    },
+    list: async () => ({ ok: true, value: [{ id: "stuck", labels: {} }, ...(made ? [{ id: "new", labels: {} }] : [])] }),
+    attach: async (id) => ({ ok: true, value: made && id === "stuck" ? box("stuck", true) : undefined }),
+    create: async () => ((made = true), { ok: true, value: box("new") }),
   };
-  const taken = await remoteFolder({ held: true });
-  assert.deepEqual(await ensureRemoteBox(boxes, { id: "r", dir: runDir }, BACKGROUND_CONTEXT, { allow: "none", folder: taken.folder }), { id: "made-1", made: true });
-  assert.deepEqual(taken.calls, [["mount", "made-1"], ["revoke", "r"], ["mount", "made-1"]]);
-  // A second box of the run alive (one whose destroy failed): its hold is never forced off, and the new box goes.
-  live.length = 0;
-  live.push(box("alive"));
   const other = await remoteFolder({ held: true });
-  await assert.rejects(ensureRemoteBox(boxes, { id: "r", dir: runDir }, BACKGROUND_CONTEXT, { allow: "none", folder: other.folder }), /could not be mounted in its box: another box of the run \(alive\) still holds its folder/);
-  assert.deepEqual(other.calls.map(([verb]) => verb), ["mount"]);
+  await assert.rejects(ensureRemoteBox(boxes, { id: "r", dir: runDir }, BACKGROUND_CONTEXT, { allow: "none", folder: other.folder }), /could not be mounted in its box: .*the provider refused the delete/);
+  assert.deepEqual(other.calls.map(([verb]) => verb), ["mount"], "no revoke");
+  assert.deepEqual(destroyed, ["stuck", "new"], "the stuck box was tried, and the new box went");
 });
 
 test("a remote box's refused host list is said as it is refused, before the closed box is made: a closed box that then fails still leaves it said", async (t) => {

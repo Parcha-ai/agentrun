@@ -196,6 +196,21 @@ test("takeover: a box lost while it held the folder is replaced, and the new box
   assert.deepEqual(disk.holds(), {});
 });
 
+test("a box whose /proc lets its tool user see the root archil client's processes (no hidepid) keeps no run folder: the call is refused, saying why, and nothing is mounted", { timeout: 180_000 }, async (t) => {
+  const { server, fake, disk } = await onArchil(t);
+  const { api, data } = server;
+  disk.noHidepid();
+  await agent(api, "remote");
+  const run = (await api("POST", "/agents/remote/runs", { input: { content: JSON.stringify({ probe: [{ tool: "bash", args: { command: "echo never" } }] }) } })).body;
+  await follow(api, run.run_id, ["completed"], { deadlineMs: 120_000 });
+  const [said] = answers(data, run.run_id);
+  assert.equal(said.error, true);
+  assert.match(said.text, /\/proc is not mounted with hidepid=2 \(or invisible\), so its tools could see the root archil client's processes/);
+  assert.deepEqual(disk.calls(), [], "archil was never run");
+  assert.deepEqual(disk.holds(), {});
+  assert.equal(fake.sandboxes.size, 0, "the box that could not have the folder is destroyed");
+});
+
 test("two users: every tool command runs as the tool user, which has no sudo, and the helper is the only root the box's own user runs", { timeout: 180_000 }, async (t) => {
   const { server, fake } = await onArchil(t, { daytona: { sudoProbe: true } });
   const { api, data } = server;

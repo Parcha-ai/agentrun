@@ -194,6 +194,11 @@ test("the Archil disk adapter: a box mounts its run's work/ alone, through the h
   const released = notingBox((command) => (command[3] === "checkin" ? 1 : 0), "'checkin' operation failed while 'running command ArchilCheckinInode' on '/workspace': Unexpected error (30)");
   await disk.unmount({ ...mounted, box: released.box });
   assert.deepEqual(released.ran.map((r) => r.command.slice(3)), [["sync"], ["checkin"]]);
+  // The same words with another exit, or another operation's EROFS, are a failure.
+  for (const [code, said] of [[2, "'checkin' operation failed while 'running command ArchilCheckinInode' on '/workspace': Unexpected error (30)"], [1, "'sync' operation failed while 'running command ArchilSync' on '/workspace': Unexpected error (30)"]]) {
+    const failing = notingBox((command) => (command[3] === "checkin" ? code : 0), said);
+    await assert.rejects(disk.unmount({ ...mounted, box: failing.box }), /archil checkin in the box failed/);
+  }
   // A box whose image has no helper its user may run: said, with what to do.
   const bare = notingBox(() => 1);
   await assert.rejects(disk.mount(archil.disk, folder, { ...target, box: bare.box }, "tools"), /the box has no Archil helper its user may run as root at \/usr\/local\/sbin\/agentrun-archil: use an image or snapshot that ships it/);

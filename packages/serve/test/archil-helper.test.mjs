@@ -16,6 +16,8 @@ const DISK = "dsk-00000000000baf76";
 const REGION = "aws-us-east-1";
 const FOLDER = "agents/a1/runs/r1/work";
 const TOKEN = "tok-archil-helper-test-0123456789abcdef";
+/** The box's /proc as the image mounts it: no user sees another's processes. */
+const PROC = "proc /proc proc rw,nosuid,nodev,noexec,relatime,hidepid=invisible 0 0\n";
 
 /** A copy of the helper over a scratch box: its archil a stand-in that records each call's arguments, whether the token
  *  was in its environment, and every process's arguments as `ps` shows them while it runs. */
@@ -24,7 +26,7 @@ async function box(t) {
   const mp = join(dir, "workspace");
   mkdirSync(mp);
   const mounts = join(dir, "mounts");
-  writeFileSync(mounts, "proc /proc proc rw 0 0\n");
+  writeFileSync(mounts, PROC);
   const calls = join(dir, "calls");
   const archil = join(dir, "archil");
   writeFileSync(archil, `#!/bin/sh\n{ printf 'argv %s\\n' "$*"; [ "\${ARCHIL_MOUNT_TOKEN-}" = '${TOKEN}' ] && echo 'env token'; ps -eo args | awk 'index($0, ENVIRON["ARCHIL_MOUNT_TOKEN"]) { n++ } END { print "ps " n + 0 }'; } >> '${calls}'\n`);
@@ -38,7 +40,7 @@ async function box(t) {
     const ran = spawnSync(helper, args, { input: stdin, encoding: "utf8", env: { PATH: process.env.PATH } });
     return { status: ran.status, stderr: ran.stderr, calls: existsSync(calls) ? readFileSync(calls, "utf8").split("\n").filter(Boolean) : [] };
   };
-  return { dir, mp, mounts, run, mounted: (folder = FOLDER) => writeFileSync(mounts, `proc /proc proc rw 0 0\n${DISK}:/${folder}[${REGION}] ${mp} fuse.archil rw 0 0\n`) };
+  return { dir, mp, mounts, run, mounted: (folder = FOLDER) => writeFileSync(mounts, `${PROC}${DISK}:/${folder}[${REGION}] ${mp} fuse.archil rw 0 0\n`) };
 }
 
 test("mount: the client alone, with fixed arguments; the token in its environment, never an argument any process shows", async (t) => {
@@ -152,7 +154,24 @@ test("refuses a mountpoint that is a link, one that is not empty, and one that i
   symlinkSync(elsewhere, linked.mp);
   assert.equal(linked.run(["mount", DISK, REGION, FOLDER]).status, 2, "a link");
   const other = await box(t);
-  writeFileSync(other.mounts, `tmpfs ${other.mp} tmpfs rw 0 0\n`);
+  writeFileSync(other.mounts, `${PROC}tmpfs ${other.mp} tmpfs rw 0 0\n`);
   assert.equal(other.run(["mount", DISK, REGION, FOLDER]).status, 2, "another mount");
   for (const each of [b, linked, other]) assert.deepEqual(each.run([]).calls, []);
+});
+
+test("refuses a mount or revoke while the box's /proc lets a user see another's processes (no hidepid=2 or invisible), exit 4, and runs nothing", async (t) => {
+  for (const proc of ["proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0\n", "proc /proc proc rw,hidepid=1 0 0\n", "proc /proc proc rw,hidepid=invisible 0 0\nproc /proc proc rw,relatime 0 0\n", ""]) {
+    const b = await box(t);
+    writeFileSync(b.mounts, proc);
+    for (const verb of ["mount", "revoke"]) {
+      const ran = b.run([verb, DISK, REGION, FOLDER]);
+      assert.equal(ran.status, 4, `${JSON.stringify(proc)}: ${ran.stderr}`);
+      assert.match(ran.stderr, /\/proc is not mounted with hidepid=2/);
+      assert.deepEqual(ran.calls, []);
+    }
+  }
+  // hidepid=2, as an older kernel names it, is the same as invisible.
+  const b = await box(t);
+  writeFileSync(b.mounts, "proc /proc proc rw,hidepid=2 0 0\n");
+  assert.equal(b.run(["mount", DISK, REGION, FOLDER]).status, 0);
 });
