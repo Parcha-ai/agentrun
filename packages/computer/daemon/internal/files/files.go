@@ -155,17 +155,22 @@ func Write(spec WriteParams) (WriteResult, error) {
 	if info, err := os.Stat(path); err == nil && !info.Mode().IsRegular() && !info.IsDir() {
 		return WriteResult{}, rpc.Errorf(rpc.KindInvalid, "%s is not a regular file", path)
 	}
-	flags := os.O_WRONLY | os.O_CREATE
+	flags := os.O_WRONLY
 	switch {
 	case spec.Append:
 		flags |= os.O_APPEND
 	case spec.Offset == nil:
 		flags |= os.O_TRUNC
 	}
-	f, err := os.OpenFile(path, flags|os.O_EXCL, perm)
+	f, err := os.OpenFile(path, flags|os.O_CREATE|os.O_EXCL, perm)
 	created := err == nil
 	if errors.Is(err, os.ErrExist) {
 		f, err = os.OpenFile(path, flags, 0)
+		if errors.Is(err, os.ErrNotExist) {
+			// A dangling symlink (O_EXCL never follows one): make the file it names, as a new file.
+			f, err = os.OpenFile(path, flags|os.O_CREATE, perm)
+			created = err == nil
+		}
 	}
 	if err != nil {
 		return WriteResult{}, fsError(err)
