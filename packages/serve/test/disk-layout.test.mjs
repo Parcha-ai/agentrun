@@ -106,7 +106,7 @@ test("the local disk adapter: mount gives a runner the folder itself, below the 
 });
 
 test("an agent's learning folder is on the disk, in its folder: <data>/disk/agents/<agent>/learning", () => {
-  assert.equal(learningRepo("/srv/data", "Notes"), join("/srv/data", "disk", "agents", folderOf("Notes"), "learning"));
+  assert.equal(learningRepo("/var/lib/agentrun", "Notes"), join("/var/lib/agentrun", "disk", "agents", folderOf("Notes"), "learning"));
 });
 
 test("a data directory an earlier version wrote is refused at start, in words, and nothing is moved: a runs/ folder at its top, or a store of store version 1", async (t) => {
