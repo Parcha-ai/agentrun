@@ -41,11 +41,11 @@ import { durableSessions } from "./sessions.js";
 import { handsParallel, planeOf } from "./tool-plane.js";
 import { parallelOf } from "./web-fetch.js";
 import { WEB_SEARCH_TOOL } from "./web-search.js";
-import { ADAPTER_API, MESSAGE, MESSAGE_END, TURN_END, type TurnEndData } from "./turn-end.js";
+import { ADAPTER_API, BOOKED, MESSAGE, MESSAGE_END, TURN_END, type TurnEndData } from "./turn-end.js";
 import { originOf, REQUEST_CONTINUED, REQUEST_COST_LATE, REQUEST_COST_PENDING, REQUEST_STARTED, TOOL_COST, TOOL_STARTED } from "@parcha/pi-durable-agent/timeline";
 
-/** The root's marker of a paid request already written as a pi.assistant entry. */
-export const BOOKED = "adapter.request";
+/** The root's marker of a paid request already written as a pi.assistant entry (turn-end.ts). */
+export { BOOKED } from "./turn-end.js";
 /** The cost of a request whose answer was written at unknown cost, and its tokens, written once it came in: the timeline
  *  adds it to the run's cost without counting a request, and a later open reads it as that request's cost being in. */
 export const PRICED_LATE = REQUEST_COST_LATE;

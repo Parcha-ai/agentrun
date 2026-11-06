@@ -375,13 +375,14 @@ export function withAsks(rows: readonly TimelineEvent[]): TimelineEvent[] {
  *  says it; `centsUp` to the cent above, for what a run went over by and a bound, so neither reads $0 or under. */
 const cents = (usd: number): string => money(Math.round(usd * 100) / 100);
 const centsUp = (usd: number): string => money(Math.ceil(usd * 100 - 1e-9) / 100);
-/** Whether a run that spent `usd` passed its `cap` by no more than `bound`, the bound of its newest ended request: a
+/** Whether a run that spent `usd` passed its `cap` by no more than `bound`, the bounds of the requests that ended since
+ *  its cost last fit (bounds.ts): a
  *  cache miss an expected-cost cap (cap.ts) admits the risk of, never a cap the run's own rule broke. */
 const overByMiss = (usd: number, cap: number, bound: number): boolean => bound > 0 && usd - cap <= bound + FIT_TOLERANCE;
 /** The row that says a run's booked spend passed its cap, and by how much, after its usage row: a request's cost is
  *  booked once it answers, never clipped, and under an expected-cost cap (cap.ts) a request that missed the cache can cost
  *  up to its bound beyond what it was admitted at; one carrying a native web search is held at an allowance, not a bound,
- *  so a run can pass its cap by its last request. The next request is then refused. `bound`: the newest ended request's
+ *  so a run can pass its cap by its last request. The next request is then refused. `bound`: the requests' that ended since the cost last fit,
  *  bound; when the run passed its cap by no more than it, the row says a cache miss did it, and the most it could have. */
 export function withOverCap(rows: TimelineEvent[], cap: number | undefined, bound = 0): TimelineEvent[] {
   const at = rows.findLastIndex((row) => row.kind === "usage");
@@ -1132,6 +1133,9 @@ export class Runs {
   /** `keep`: rows that stay served though `rows` no longer holds them (the live path's committed rows). */
   private take(run: Run, rows: TimelineEvent[], keep?: (id: string) => boolean): void {
     run.rows = withOverCap(labelled(run.meta.reflect, withApprovals(withAsks(rows.filter((r) => !QUIET.test(r.id))), run, this.redactor(run))), run.meta.max_cost_usd, run.bounds?.ended());
+    // Its cost fits its cap: the requests that ended so far explain no overshoot to come (bounds.ts).
+    const cost = costOf(run.rows);
+    if (run.bounds && (run.meta.max_cost_usd === undefined || (cost !== null && cost <= run.meta.max_cost_usd + FIT_TOLERANCE))) run.bounds.fit();
     // Counted by id: a snapshot of a compacted conversation shows fewer user messages than before, which is not more
     // messages waiting, so a count of rows would leave the run working forever.
     const arrived = run.rows.filter((r) => isMessageRow(r) && !run.users.has(r.id));
@@ -3053,8 +3057,9 @@ export class Runs {
     // Unknown: what it cost so far and how many charges have no price (costsofar/1), from its rows, else what it said at
     // its end (a run carried back with no rows read since).
     const soFar = usd === null && !run.imported ? (soFarOf(run.rows, run.decisionCost === undefined ? undefined : (run.decisionsPriced ?? null)) ?? (run.rows.length ? undefined : soFarOfMeta(run.meta))) : undefined;
-    // Under a cap, the most a cache miss could make its requests in flight cost beyond what they are held at (cap.ts).
-    const bound = run.meta.max_cost_usd === undefined ? {} : { overshoot_bound_usd: microUp(run.bounds?.inFlight() ?? 0) };
+    // Under a cap, the most a cache miss could make its requests in flight cost beyond what they are held at (cap.ts):
+    // none without a live process, which every request in flight needs.
+    const bound = run.meta.max_cost_usd === undefined ? {} : { overshoot_bound_usd: this.live(run) ? microUp(run.bounds?.inFlight() ?? 0) : 0 };
     return { usd, basis: "estimate", charge_state: null, cap_usd: run.meta.max_cost_usd ?? null, ...bound, ...(soFar ?? {}) };
   }
 
@@ -3095,6 +3100,8 @@ export class Runs {
       review: endedAt === null ? null : reviewAt(run.meta.review ?? (row ? reviewOfRow(row, run.meta) : null), endedAt),
       pending: status === "input_required" && state === "waiting" ? (approvalOf(run, this.redactor(run)) ?? budgetPending(run, this.spentNow(run)) ?? pendingOf(run.rows)) : null,
       cost: this.cost(run),
+      // How its cap prices a request (cap.ts CapMode): its own, else expected; null with no cap.
+      cap_mode: run.meta.max_cost_usd === undefined ? null : (run.meta.cap_mode ?? "expected"),
       archived_at: stored?.archivedAt ?? null,
       imported_from: run.imported ?? null,
       trigger: run.meta.trigger ?? null,
