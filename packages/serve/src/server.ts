@@ -25,7 +25,7 @@ import { DATA_ENV, DOOR_TOKEN_FILE, HOME_HOST_OWNED, HOMES_DIR, homeOf, readJson
 import { checkedPath, decodedPath, homePath, hostOwnedOf, hostOwnedRefusal, type OwnedReadAt, ownedByIdentity } from "./home-path.js";
 import { chooseModel, EFFORTS, FAUX_ENV, FAUX_UPSTREAM_ENV, MODEL_NODES, type ModelNeeds, modelSource, THINKING_LEVELS, withoutFaux } from "./model.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, type HarnessCapability, harnessOfBody, harnessOffers } from "./harness.js";
-import { HARNESS_INSTALLS, HarnessInstall, installDirOf, npmInstall } from "./harness-install.js";
+import { HARNESS_INSTALLS, HarnessInstall, harnessesOf, installDirOf, npmInstall, removeFlatInstall } from "./harness-install.js";
 import { healthOf, hostMemory, maxRunsOf, MIN_FREE_MIB, runsThatFit } from "./host.js";
 import { IMPORT_ASKED } from "./import.js";
 import type { ImportAnswer, ImportTask } from "./import-worker.js";
@@ -893,10 +893,18 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   // The CLI harnesses, each installed on first use into the data's harnesses directory (harness-install.ts): one install
   // of each at a time, which every run on that harness, and the save of an agent on it, waits for or starts; once one is
   // in, the offers are probed again, so capabilities no longer say it installs on first use. A faux harness needs none.
+  // Claude Code as an earlier build installed it, at the top of the harnesses directory itself (read-only): removed once,
+  // before the first install, which then goes in beside nothing. Any other layout is left as it is.
+  let flat: Promise<void> | undefined;
+  const flatRemoved = () =>
+    (flat ??= removeFlatInstall(harnessesOf(data)).then(
+      (removed) => void (removed && log?.(logLine("harness_install_removed", { dir: harnessesOf(data), said: `removed the earlier Claude Code install at ${harnessesOf(data)}: it installs again under harnesses/claude-agent` }))),
+      (error: unknown) => ((flat = undefined), Promise.reject(error)),
+    ));
   const installs: Record<string, HarnessInstall> = options.fauxHarness ? {} : Object.fromEntries(Object.values(HARNESS_INSTALLS).map((entry) => {
     const lock = options.harnessLocks?.[entry.id];
     const pins = () => import("./adapters.js").then((adapters) => adapters.harnessPins(entry.id));
-    return [entry.id, new HarnessInstall(entry, installDirOf(data, entry.id), pins, (entry, dir, pins, signal) => npmInstall(entry, dir, pins, { signal, ...(lock ? { lock } : {}) }), (ms) => {
+    return [entry.id, new HarnessInstall(entry, installDirOf(data, entry.id), pins, async (entry, dir, pins, signal) => (await flatRemoved(), npmInstall(entry, dir, pins, { signal, ...(lock ? { lock } : {}) })), (ms) => {
       log?.(logLine("harness_installed", { harness: entry.id, ms, dir: installDirOf(data, entry.id) }));
       void probe(`${entry.id}_installed`).catch(() => undefined);
     })];
