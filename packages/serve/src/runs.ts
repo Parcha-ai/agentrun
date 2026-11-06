@@ -490,7 +490,7 @@ function noteTurns(run: Run, entries: readonly unknown[], submissions: readonly 
     const by = (run.saidBy ??= originMatcher())(value as EntryLike);
     const learning = run.meta.learning?.state;
     if ((learning === "seeded" || learning === "reflecting") && isUserEntry(value as EntryLike) && !run.said?.has(value.id)) {
-      const words = by === undefined ? userText((value as EntryLike).model?.[0]) : by.reason === "approval_declined" ? by.said.trim() : undefined;
+      const words = by === undefined ? userText((value as EntryLike).model?.[0]) : by.kind === "server" && by.reason === "approval_declined" ? by.said.trim() : undefined;
       if (words !== undefined) (run.said ??= new Map()).set(value.id, words);
     }
     // The end-of-run turn's assistant messages, whole, by entry: what the turn answered, whose notes learning reads
