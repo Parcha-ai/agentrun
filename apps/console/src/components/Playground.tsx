@@ -122,7 +122,7 @@ export function Playground({ agents, revisions = [], revisionsError, efforts, or
             options={agents.map((a) => ({ value: a.agent_id, label: a.definition.name }))}
             className="h-10 min-w-0 max-w-full" />
         </label>
-        <span className="min-w-0 break-all font-mono text-[12px]"><span className="text-primary">POST</span> <span className="text-muted-foreground" aria-label="Request URL">{target}</span></span>
+        <span className="min-w-0 break-all font-mono text-[12px]"><span className="text-brand-accent">POST</span> <span className="text-muted-foreground" aria-label="Request URL">{target}</span></span>
         <span className="flex-1" />
         <span className="caps text-[11px] text-muted-foreground">Live API</span>
         <button type="button" onClick={() => setShowCode((s) => !s)} aria-expanded={showCode} className="caps hidden border px-3 py-1.5 text-[11px] text-muted-foreground hover:text-foreground short:inline-flex">{showCode ? "Hide code" : "Show code"}</button>
@@ -214,7 +214,7 @@ export function Playground({ agents, revisions = [], revisionsError, efforts, or
                     <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words py-3 font-mono text-[12px] leading-[1.8]">{JSON.stringify(result.body, null, 2)}</pre></details>
                 </>
               ) : <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words px-5 py-5 font-mono text-[12px] leading-[1.8] md:px-6">{JSON.stringify(result.body, null, 2)}</pre>}
-              {result.runId && <button type="button" onClick={() => onOpenRun?.(result.runId!)} className="caps flex items-center justify-between border-t px-5 py-4 text-[12px] text-primary hover:bg-accent md:px-6">Open this run <ArrowRight className="size-4" aria-hidden /></button>}
+              {result.runId && <button type="button" onClick={() => onOpenRun?.(result.runId!)} className="caps flex items-center justify-between border-t px-5 py-4 text-[12px] text-brand-accent hover:bg-accent md:px-6">Open this run <ArrowRight className="size-4" aria-hidden /></button>}
             </>
           )}
         </section>

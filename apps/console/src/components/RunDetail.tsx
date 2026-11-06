@@ -144,7 +144,7 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, timel
       <div className="flex border-b px-5 md:px-8" role="tablist">
         {tabs.map(([id, name]) => (
           <button key={id} type="button" role="tab" aria-selected={tab === id} onClick={() => setTab(id)}
-            className={cn("caps -mb-px border-b-2 px-3 py-3 text-[12px]", tab === id ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground")}>
+            className={cn("caps -mb-px border-b-2 px-3 py-3 text-[12px]", tab === id ? "border-primary text-brand-accent" : "border-transparent text-muted-foreground hover:text-foreground")}>
             {name}
           </button>
         ))}

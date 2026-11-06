@@ -160,9 +160,9 @@ export function Select({ value, onValueChange, options, "aria-label": label, "ar
       {options.map((option) => <div key={option.value} id={optionId(option)} role="option" aria-label={option.label} aria-selected={option.value === value} aria-disabled={option.disabled || undefined}
         aria-describedby={option.description ? `${optionId(option)}-description` : undefined}
         onPointerDown={(event) => event.preventDefault()} onMouseDown={(event) => event.preventDefault()} onMouseMove={() => { if (!option.disabled) setActive(option.value); }} onClick={() => choose(option)}
-        className={cn("flex items-center gap-3 rounded-lg px-2.5 py-2.5 text-[13px]", option.disabled ? "cursor-not-allowed opacity-40" : "cursor-pointer transition-colors hover:bg-accent", option.value === value && "bg-primary/[0.08] text-primary", option.value === activeOption?.value && "bg-accent")}>
+        className={cn("flex items-center gap-3 rounded-lg px-2.5 py-2.5 text-[13px]", option.disabled ? "cursor-not-allowed opacity-40" : "cursor-pointer transition-colors hover:bg-accent", option.value === value && "bg-primary/[0.08] text-brand-accent", option.value === activeOption?.value && "bg-accent")}>
         <span className="min-w-0 flex-1"><span className="block break-words font-medium">{option.label}</span>{option.description && <span id={`${optionId(option)}-description`} className="mt-0.5 block break-words text-[11px] text-muted-foreground">{option.description}</span>}</span>
-        <Check className={cn("size-4 shrink-0 text-primary", option.value !== value && "invisible")} aria-hidden />
+        <Check className={cn("size-4 shrink-0 text-brand-accent", option.value !== value && "invisible")} aria-hidden />
       </div>)}
     </div>, host)}
   </>;

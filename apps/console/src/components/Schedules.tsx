@@ -318,7 +318,7 @@ function ScheduleForm({ v2, go, trigger, minEvery }: FormProps & { trigger?: Tri
   return (
     <form onSubmit={(e) => void save(e)} className="max-w-2xl p-5 md:p-8" noValidate>
       <a href={trigger ? hashOf(trigger.id) : "#/schedules"} className="caps flex items-center gap-2 text-[11px] text-muted-foreground hover:text-foreground"><ArrowLeft className="size-3.5" aria-hidden /> {trigger ? trigger.name : "Schedules"}</a>
-      <h1 className="mt-3 flex items-center gap-2 text-2xl font-semibold"><CalendarClock className="size-5 text-primary" aria-hidden />{trigger ? "Edit schedule" : "New schedule"}</h1>
+      <h1 className="mt-3 flex items-center gap-2 text-2xl font-semibold"><CalendarClock className="size-5 text-brand-accent" aria-hidden />{trigger ? "Edit schedule" : "New schedule"}</h1>
       {rest.length > 0 && <div className="mt-4 border border-destructive/50 p-3 text-[13px] text-destructive-text" role="alert">{rest.map((r, i) => <p key={i}>{r}</p>)}</div>}
       <div className="mt-5 space-y-5">
         <Field label="Name" field="name" issue={issues.name}><input name="name" className={INPUT} value={draft.name} onChange={(e) => set("name")(e.target.value)} placeholder="nightly triage" /></Field>
@@ -326,7 +326,7 @@ function ScheduleForm({ v2, go, trigger, minEvery }: FormProps & { trigger?: Tri
           <legend className="caps text-[11px] text-muted-foreground">When</legend>
           <div className="mt-1 flex flex-wrap gap-2" role="radiogroup">
             {kinds.map(({ kind, label }) => (
-              <label key={kind} className={`flex h-9 cursor-pointer items-center gap-2 border px-3 text-[13px] ${draft.kind === kind ? "border-primary text-primary" : ""}`}>
+              <label key={kind} className={`flex h-9 cursor-pointer items-center gap-2 border px-3 text-[13px] ${draft.kind === kind ? "border-primary text-brand-accent" : ""}`}>
                 <input type="radio" name="kind" value={kind} checked={draft.kind === kind} onChange={() => set("kind")(kind)} className="accent-primary" />{label}
               </label>
             ))}

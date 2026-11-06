@@ -128,7 +128,7 @@ export function AgentPage({ v2, agentId, defaultModel, modelSource, routePrefix,
       {tabs.length > 0 && <div className="flex border-b px-5 md:px-8" role="tablist">
         {tabs.map((t) => (
           <button key={t.id} type="button" role="tab" aria-selected={at.id === t.id} onClick={() => go(agentHash(agent.agent_id, t.id))}
-            className={cn("caps -mb-px border-b-2 px-3 py-3 text-[12px]", at.id === t.id ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground")}>
+            className={cn("caps -mb-px border-b-2 px-3 py-3 text-[12px]", at.id === t.id ? "border-primary text-brand-accent" : "border-transparent text-muted-foreground hover:text-foreground")}>
             {t.label}
           </button>
         ))}

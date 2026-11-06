@@ -85,7 +85,7 @@ export function AgentEditPage({ v2, caps, choices = [], gates = [], focusTool, a
       } else setNotice(null);
     } catch (e) { setNotice(`${what} done. The page could not be refreshed: ${problemOf(e).message}. Reload to see the current state.`); }
   };
-  if (!maySave) return <p role="status" className="p-8 text-[13px] text-muted-foreground">This server does not support {agentId === null ? "creating" : "editing"} agents. <a className="text-primary underline" href={agentId === null ? "#/agents" : agentHash(agentId)}>View agents</a></p>;
+  if (!maySave) return <p role="status" className="p-8 text-[13px] text-muted-foreground">This server does not support {agentId === null ? "creating" : "editing"} agents. <a className="text-brand-accent underline" href={agentId === null ? "#/agents" : agentHash(agentId)}>View agents</a></p>;
   if (agentId && loadError && !agent) return <p className="m-8 border p-4 font-mono text-[13px] text-destructive-text" role="alert">{loadError}</p>;
   if (agentId && !agent) return <p className="p-8 text-center font-mono text-[13px] text-muted-foreground">Loading the agent...</p>;
   return (

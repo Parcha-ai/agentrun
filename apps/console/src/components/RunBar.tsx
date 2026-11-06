@@ -96,7 +96,7 @@ export function RunBar({ agent, efforts, v2, go, blocked, limits, endpoint, uplo
       )}
       <div className="mt-3 flex flex-wrap items-center gap-3" aria-label="Run agent">
         <CodingAgentHandoff context={{ kind: "run", agentId: agent.agent_id, revision: agent.revision }} serverUrl={endpoint ?? v2.endpoint} label="Run with your coding agent" />
-        <a href={`#/playground?agent=${encodeURIComponent(agent.agent_id)}&revision=${encodeURIComponent(agent.revision)}`} className="text-[12px] text-primary hover:underline">API playground</a>
+        <a href={`#/playground?agent=${encodeURIComponent(agent.agent_id)}&revision=${encodeURIComponent(agent.revision)}`} className="text-[12px] text-brand-accent hover:underline">API playground</a>
       </div>
     </section>
   );

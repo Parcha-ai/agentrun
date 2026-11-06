@@ -21,6 +21,7 @@ export default {
         muted: { DEFAULT: hsl("muted"), foreground: hsl("muted-foreground") },
         accent: { DEFAULT: hsl("accent"), foreground: hsl("accent-foreground") },
         primary: { DEFAULT: hsl("primary"), foreground: hsl("primary-foreground") },
+        "brand-accent": hsl("brand-accent"),
         destructive: { DEFAULT: hsl("destructive"), text: hsl("destructive-text") },
         success: { DEFAULT: hsl("success"), text: hsl("success-text") },
         warning: { DEFAULT: hsl("warning"), text: hsl("warning-text") },
