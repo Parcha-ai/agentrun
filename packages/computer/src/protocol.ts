@@ -14,6 +14,12 @@ export const MAX_LIST_DEPTH = 16;
 export const MAX_LIST_ENTRIES = 1000;
 /** The server notification that carries a tar.pull's bytes. */
 export const TAR_DATA_METHOD = "tar.data";
+/** How much of each stream a process keeps: the last 8 MiB, read by byte offset. */
+export const PROCESS_RING_BYTES = 8 * 1024 * 1024;
+/** How many processes a daemon holds, running or ended; the oldest ended ones are dropped first. */
+export const MAX_PROCESSES = 256;
+/** The longest a process.read waits for new bytes. */
+export const MAX_READ_WAIT_MS = 30_000;
 
 /** What a daemon can do, as hello reports it. */
 export type DaemonCapability = "exec" | "files" | "processes";
@@ -196,6 +202,100 @@ export interface TarPushEndResult {
 	entries: number;
 }
 
+/** A terminal's size in characters. */
+export interface PtySize {
+	cols: number;
+	rows: number;
+}
+
+export interface ProcessStartParams {
+	/** The program and its arguments, never a shell string. */
+	argv: string[];
+	cwd?: string;
+	/** Added over the same minimal default as exec.run's. */
+	env?: Record<string, string>;
+	user?: string;
+	/** Run in a terminal of this size: one "pty" stream, and the program's own session with it as the controlling terminal. */
+	pty?: PtySize;
+	/** Keep stdin open for process.write. Without it (and without a pty), stdin is /dev/null. */
+	stdin?: boolean;
+}
+
+export interface ProcessStartResult {
+	/** The daemon's name for the process, such as "p1". */
+	id: string;
+	/** The program's pid in the computer. */
+	pid: number;
+}
+
+export type ProcessStream = "stdout" | "stderr" | "pty";
+
+export interface ProcessReadParams {
+	id: string;
+	/** "stdout" or "stderr"; "pty" for a process started with one. */
+	stream: ProcessStream;
+	/** Bytes since the process started. Pass the last read's nextOffset. */
+	offset: number;
+	/** Default and most MAX_CHUNK_BYTES; more is refused as `limit`. */
+	maxBytes?: number;
+	/** When nothing past offset is there yet, wait up to this long (most MAX_READ_WAIT_MS) for bytes or the end. */
+	waitMs?: number;
+}
+
+export interface ProcessReadResult {
+	/** base64. */
+	data: string;
+	nextOffset: number;
+	/** Bytes before offset the ring no longer held: the read began at the ring's start instead. */
+	dropped: number;
+	/** The process has ended and nothing is left past nextOffset. */
+	exited: boolean;
+}
+
+export interface ProcessWriteParams {
+	id: string;
+	/** base64, to stdin or the terminal. */
+	data?: string;
+	/** Close stdin after the data. A terminal has no stdin to close: send "\x04" or signal HUP. */
+	close?: boolean;
+}
+
+export type ProcessSignal = "TERM" | "INT" | "KILL" | "HUP";
+
+export interface ProcessSignalParams {
+	id: string;
+	/** Sent to the program's process group. A signal to a process that has ended does nothing. */
+	signal: ProcessSignal;
+}
+
+export interface ProcessResizeParams extends PtySize {
+	id: string;
+}
+
+export interface ProcessExit {
+	running: boolean;
+	/** null while running, or when a signal ended it. */
+	exitCode: number | null;
+	/** The signal that ended it, without SIG: "TERM", "KILL". */
+	signal: string | null;
+}
+
+export interface ProcessInfo extends ProcessExit {
+	id: string;
+	pid: number;
+	argv: string[];
+	pty: boolean;
+	/** Milliseconds since the epoch. */
+	startedAt: number;
+	endedAt: number | null;
+}
+
+export interface ProcessWaitParams {
+	id: string;
+	/** How long to wait for the end, up to a day; 0 asks without waiting. On timeout, running is true. */
+	timeoutMs: number;
+}
+
 export type Empty = Record<string, never>;
 
 /** Every method the daemon answers: its params and its result. */
@@ -214,6 +314,13 @@ export interface DaemonMethods {
 	"tar.push.begin": { params: TarPushBeginParams; result: TarPushBeginResult };
 	"tar.push.write": { params: TarPushWriteParams; result: Empty };
 	"tar.push.end": { params: TarPushEndParams; result: TarPushEndResult };
+	"process.start": { params: ProcessStartParams; result: ProcessStartResult };
+	"process.read": { params: ProcessReadParams; result: ProcessReadResult };
+	"process.write": { params: ProcessWriteParams; result: Empty };
+	"process.signal": { params: ProcessSignalParams; result: Empty };
+	"process.resize": { params: ProcessResizeParams; result: Empty };
+	"process.list": { params: Empty; result: ProcessInfo[] };
+	"process.wait": { params: ProcessWaitParams; result: ProcessExit };
 }
 
 /** Every notification the daemon sends. */

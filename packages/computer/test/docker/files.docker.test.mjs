@@ -106,7 +106,7 @@ describe("move files in and out of a Docker computer", { skip: LIVE ? false : "s
 	});
 
 	it("says hello with files, in a computer with no network", async () => {
-		assert.deepEqual(connection.hello.capabilities, ["exec", "files"]);
+		assert.deepEqual(connection.hello.capabilities, ["exec", "files", "processes"]);
 		assert.deepEqual((await run(["ls", "/sys/class/net"])).out.split("\n").filter(Boolean), ["lo"]);
 	});
 

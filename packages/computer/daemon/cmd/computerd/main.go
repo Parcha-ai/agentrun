@@ -18,6 +18,7 @@ import (
 
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/execrun"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/methods"
+	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/process"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/rpc"
 )
 
@@ -32,7 +33,7 @@ func main() {
 	case "version":
 		fmt.Println(version)
 	case "stdio":
-		server := rpc.NewServer(methods.Handlers(version), logger)
+		server := rpc.NewServer(methods.Handlers(version, process.NewTable(process.Options{})), logger)
 		if err := server.Serve(context.Background(), os.Stdin, os.Stdout); err != nil {
 			logger.Fatalf("stdio: %v", err)
 		}
