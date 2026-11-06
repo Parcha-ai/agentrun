@@ -68,6 +68,15 @@ test("a generic name is a meta tool only on its provider's host: Klavis's execut
   for (const name of ["COMPOSIO_SEARCH_TOOLS", "add", "execute", "code"]) assert.equal(metaToolOf("http://127.0.0.1:9/mcp", name), undefined, `${name} runs nothing by name, or is no known meta tool`);
 });
 
+test("a host written with any number of final dots is the same host: strata.klavis.ai.. is klavis.ai's, as strata.klavis.ai is", async () => {
+  const { metaToolOf } = await import("../dist/mcp-meta.js");
+  for (const host of ["strata.klavis.ai", "strata.klavis.ai.", "strata.klavis.ai..", "strata.klavis.ai..."]) {
+    assert.equal(metaToolOf(`https://${host}/mcp/?strata_id=x`, "execute_action")?.reason, REASON, host);
+  }
+  assert.equal(metaToolOf("https://mcp.zapier.com../api/mcp/s/x/mcp", "write_code_action")?.reason, REASON, "mcp.zapier.com.. is mcp.zapier.com");
+  assert.equal(metaToolOf("https://klavis.ai.example.com../mcp", "execute_action"), undefined, "a host that only looks like Klavis's stays one");
+});
+
 test("a meta tool granted before the rule is refused at the launch, when the run's tools are pinned", () => {
   const source = { server: () => ({ url: "http://127.0.0.1:9/mcp", tools: [{ name: "COMPOSIO_MULTI_EXECUTE_TOOL", inputSchema: object }, { name: "GMAIL_SEND_EMAIL", inputSchema: object }] }), headers: () => undefined };
   assert.throws(() => mcpPinOf(["mcp:composio/COMPOSIO_MULTI_EXECUTE_TOOL"], source), new RegExp(`mcp:composio/COMPOSIO_MULTI_EXECUTE_TOOL can't be granted: ${REASON.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
@@ -80,6 +89,27 @@ test("a grant of a meta tool is 422 on a harness that doesn't bind MCP tools too
   const refused = await api("POST", "/agents", agent("opencode-meta", { harness: "opencode", tools: ["mcp:composio/COMPOSIO_MULTI_EXECUTE_TOOL"] }));
   assert.equal(refused.status, 422, JSON.stringify(refused.body));
   assert.ok(JSON.stringify(refused.body).includes(`can't be granted: ${REASON}`), JSON.stringify(refused.body));
+});
+
+test("a run of a revision saved granting what is now a meta tool is 409 naming it under details.not_grantable with the reason, never under unbound", async (t) => {
+  const { api, data } = await serve(t);
+  // Klavis's generic execute_action is granted on a host that is not Klavis's; the server then moves to Klavis's host.
+  await saved(t, api, "strata", ["execute_action"]);
+  assert.equal((await api("POST", "/agents", agent("strata-old", { tools: ["mcp:strata/execute_action"] }))).status, 201);
+  const file = join(data, "mcp-servers.json");
+  const doc = JSON.parse(await readFile(file, "utf8"));
+  doc.servers.strata.url = "https://strata.klavis.ai/mcp/?strata_id=x";
+  await writeFile(file, JSON.stringify(doc));
+  const run = await api("POST", "/agents/strata-old/runs", { input: { content: "Hello." } });
+  assert.equal(run.status, 409, JSON.stringify(run.body));
+  assert.equal(run.body.error.code, "agent_not_runnable");
+  assert.equal(run.body.error.message, `mcp:strata/execute_action can't be granted: ${REASON}`);
+  assert.deepEqual(run.body.error.details.not_grantable, [{ tool: "mcp:strata/execute_action", reason: REASON }], JSON.stringify(run.body.error.details));
+  assert.deepEqual(run.body.error.details.unbound, [], "a meta tool is no missing server or tool");
+  // The served document describes the key.
+  const doc409 = (await api("GET", "/openapi.json")).body;
+  const blocked = JSON.stringify(doc409).includes('"not_grantable"');
+  assert.ok(blocked, "the served document names details.not_grantable");
 });
 
 test("a grant of a meta tool is 422 in the same words on every harness that binds MCP tools: pi, claude-agent and codex", async (t) => {
@@ -123,22 +153,55 @@ test("a run's pin made before the rule, holding a meta tool, refuses its next la
   assert.deepEqual([said.isError, said.content[0].text], [true, `mcp:composio/COMPOSIO_MULTI_EXECUTE_TOOL can't be granted: ${REASON} Nothing was sent.`]);
 });
 
-test("a workflow's own grants are held to the rule too: one that lists a meta tool is 422 at the save, never saved to fail its launches; one that lists a direct MCP tool saves", async (t) => {
+/** What a save says of a workflow's grant of a direct MCP tool: no workflow node binds one here. */
+const UNBOUND_IN_WORKFLOW = (tool) => `${tool}: a workflow's nodes don't bind MCP tools here yet; grant it to an agentic agent.`;
+
+test("a workflow's own grants are held to the rule too: one that lists a meta tool is 422 at the save in its words, never saved to fail its launches", async (t) => {
   const { api } = await serve(t);
   await saved(t, api, "composio", ["COMPOSIO_MULTI_EXECUTE_TOOL", "GMAIL_SEND_EMAIL"]);
   const refused = await api("POST", "/agents", flowAgent("flow-meta", undefined, { tools: ["mcp:composio/COMPOSIO_MULTI_EXECUTE_TOOL"] }));
   assert.equal(refused.status, 422, JSON.stringify(refused.body));
   assert.ok(JSON.stringify(refused.body).includes(`mcp:composio/COMPOSIO_MULTI_EXECUTE_TOOL can't be granted: ${REASON}`), JSON.stringify(refused.body));
-  const ordinary = await api("POST", "/agents", flowAgent("flow-direct", undefined, { tools: ["mcp:composio/GMAIL_SEND_EMAIL"] }));
-  assert.ok(![422].includes(ordinary.status), `a workflow that lists a direct MCP tool saves: ${JSON.stringify(ordinary.body)}`);
+  assert.ok(!JSON.stringify(refused.body).includes("don't bind MCP tools"), "a meta tool is said as one, first");
 });
 
-test("the workflow check agrees with the save: a workflow that lists a meta tool reads not ok, with the same words", async (t) => {
+test("a workflow that grants a direct MCP tool at its top level is 422 at the save, in words: no workflow node binds an MCP tool, so its run would lack it", async (t) => {
+  const { api } = await serve(t);
+  await saved(t, api, "composio", ["COMPOSIO_MULTI_EXECUTE_TOOL", "GMAIL_SEND_EMAIL"]);
+  const refused = await api("POST", "/agents", flowAgent("flow-direct", undefined, { tools: ["mcp:composio/GMAIL_SEND_EMAIL"] }));
+  assert.equal(refused.status, 422, JSON.stringify(refused.body));
+  const issue = refused.body.error.fields.find((one) => one.message === UNBOUND_IN_WORKFLOW("mcp:composio/GMAIL_SEND_EMAIL"));
+  assert.equal(issue?.field, "definition.tools[0]", JSON.stringify(refused.body));
+  // A server that is not saved, or a tool it does not list, is the same refusal: no setup makes a workflow bind it.
+  const unsaved = await api("POST", "/agents", flowAgent("flow-unsaved", undefined, { tools: ["web_search", "mcp:nowhere/thing"] }));
+  assert.equal(unsaved.status, 422, JSON.stringify(unsaved.body));
+  assert.ok(unsaved.body.error.fields.some((one) => one.field === "definition.tools[1]" && one.message === UNBOUND_IN_WORKFLOW("mcp:nowhere/thing")), JSON.stringify(unsaved.body));
+});
+
+test("a workflow whose model node lists a meta tool is 422 in the meta rule's words, as a top-level grant is", async (t) => {
+  const { api } = await serve(t);
+  await saved(t, api, "composio", ["COMPOSIO_MULTI_EXECUTE_TOOL", "GMAIL_SEND_EMAIL"]);
+  const flow = answerFlow();
+  flow.root.steps[0].tools = ["mcp:composio/COMPOSIO_MULTI_EXECUTE_TOOL"];
+  const refused = await api("POST", "/agents", flowAgent("node-meta", flow));
+  assert.equal(refused.status, 422, JSON.stringify(refused.body));
+  const messages = refused.body.error.fields.map((one) => one.message);
+  assert.deepEqual(messages, [`mcp:composio/COMPOSIO_MULTI_EXECUTE_TOOL can't be granted: ${REASON}`], JSON.stringify(refused.body));
+  const direct = answerFlow();
+  direct.root.steps[0].tools = ["mcp:composio/GMAIL_SEND_EMAIL"];
+  const node = await api("POST", "/agents", flowAgent("node-direct", direct));
+  assert.equal(node.status, 422, JSON.stringify(node.body));
+  assert.deepEqual(node.body.error.fields.map((one) => one.message), [UNBOUND_IN_WORKFLOW("mcp:composio/GMAIL_SEND_EMAIL")], JSON.stringify(node.body));
+});
+
+test("the workflow check agrees with the save: a workflow that grants a meta tool, or a direct MCP tool, reads not ok in the same words", async (t) => {
   const { api } = await serve(t);
   await saved(t, api, "composio", ["COMPOSIO_MULTI_EXECUTE_TOOL", "GMAIL_SEND_EMAIL"]);
   const checked = (await api("POST", "/workflows/validate", { workflow: answerFlow(), tools: ["mcp:composio/COMPOSIO_MULTI_EXECUTE_TOOL"] })).body;
   assert.equal(checked.ok, false, JSON.stringify(checked));
   assert.ok(checked.issues.some((issue) => issue.message === `mcp:composio/COMPOSIO_MULTI_EXECUTE_TOOL can't be granted: ${REASON}`), JSON.stringify(checked.issues));
   const direct = (await api("POST", "/workflows/validate", { workflow: answerFlow(), tools: ["mcp:composio/GMAIL_SEND_EMAIL"] })).body;
+  assert.equal(direct.ok, false, JSON.stringify(direct));
+  assert.ok(direct.issues.some((issue) => issue.message === UNBOUND_IN_WORKFLOW("mcp:composio/GMAIL_SEND_EMAIL")), JSON.stringify(direct.issues));
   assert.ok(!direct.issues.some((issue) => /can't be granted/.test(issue.message)), JSON.stringify(direct.issues));
 });

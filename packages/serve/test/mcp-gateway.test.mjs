@@ -300,6 +300,25 @@ test("a declared header that cannot be sent is named, and a grant of its tool re
   assert.throws(() => mcpPinOf(["mcp:fake/bad", "mcp:fake/good"], source), /^Error: The MCP tool mcp:fake\/bad declares a header it cannot send: a: x-mcp-header is only allowed on a string, integer or boolean\.$/);
 });
 
+test("the header check walks schema keywords only: an x-mcp-header inside default, examples, const or enum is data and never refused; the same under a real keyword still is", () => {
+  const stray = { "x-mcp-header": "Stray" };
+  const unsendable = { type: "object", "x-mcp-header": "Stray", properties: { inner: { type: "array", items: { type: "string", "x-mcp-header": "Item" } } } };
+  for (const [keyword, value] of [["default", stray], ["examples", [stray, unsendable]], ["const", unsendable], ["enum", [stray, { nested: [stray] }]]]) {
+    const onProperty = { type: "object", properties: { region: { type: "string", "x-mcp-header": "Region", [keyword]: value } } };
+    assert.equal(mcpHeaderProblem(onProperty), undefined, `${keyword} on a property holds data, not schema`);
+    assert.equal(mcpHeaderProblem({ type: "object", [keyword]: value, properties: { a: { type: "string" } } }), undefined, `${keyword} at the root holds data, not schema`);
+  }
+  // A vendor annotation holds no schema either, as the SDK client's own check reads it.
+  assert.equal(mcpHeaderProblem({ type: "object", "x-ui": { hint: stray }, properties: { a: { type: "string" } } }), undefined, "an annotation is no schema");
+  for (const [keyword, schema] of [
+    ["items", { type: "object", properties: { list: { type: "array", items: { type: "string", "x-mcp-header": "Item" } } } }],
+    ["anyOf", { type: "object", anyOf: [{ type: "string", "x-mcp-header": "Any" }] }],
+    ["additionalProperties", { type: "object", additionalProperties: { type: "string", "x-mcp-header": "Extra" } }],
+    ["$defs", { type: "object", $defs: { region: { type: "string", "x-mcp-header": "Region" } } }],
+    ["patternProperties", { type: "object", patternProperties: { "^r": { type: "string", "x-mcp-header": "Region" } } }],
+  ]) assert.match(mcpHeaderProblem(schema) ?? "", /reached through properties alone/, keyword);
+});
+
 /** A schema `levels` deep in additionalProperties, every level also holding a property. */
 const deepSchema = (levels) => {
   let schema = { type: "string" };
