@@ -307,20 +307,21 @@ run then waits for the image, with one timeline row). The place is written on th
 show it. If that definition names no `tools` either, it gets `["bash", "bash_background", "bash_output", "bash_input",
 "bash_signal", "bash_list"]`, so the agent has a shell and can run a command in the background
 ([background processes](#background-processes)). A definition that
-names its tools keeps exactly those, an empty list included. Where docker is unavailable, a new agent is saved as before,
-with no place, and runs on the runner. So is one whose tools name one the box refuses (`browser`, runner-only for now). A
-workflow is never given a box.
+names its tools keeps exactly those, an empty list included. Where docker is unavailable, a new agent is saved with no
+place. So is one whose tools name one the box refuses (`browser`, runner-only for now). A workflow is never given a box.
 
-`capabilities.places` says both sides. `default_place` is the place a new agent gets here. When that is the runner,
+`capabilities.places.default_place` is the place a new agent gets here, and where a revision that names no place runs.
+It is worked out again at each run, the same way as at create: an agentic revision with no place runs in the Docker box
+wherever this server has docker now, and on the runner where it does not. A workflow, and a revision whose tools name
+one the box refuses, run on the runner. A save checks a revision with no place against where it would run, so `bash`
+with no place saves where docker is there and is `422` where it is not. When that is the runner,
 `default_reason` says why in docker's own words, such as `new agents run on the runner, because the docker box is
 unavailable here: Docker isn't running on this machine (no docker command on PATH): install or start Docker, then
-restart AgentRun`. The console's new-agent form says docker's reason too, under its place picker. `default` stays `runner`,
-because it means where a revision that names no place runs. An agent saved with no place (before this, where docker was
-unavailable, or a workflow) keeps running on the runner, whatever the server has now. The default is never worked out
-again at run time. The console's new-agent form starts on `default_place`, with bash ticked when that place is a sandbox.
+restart AgentRun`. The console's new-agent form says docker's reason too, under its place picker. The console's new-agent form starts on `default_place`, with bash ticked when that place is a sandbox.
 What a person picks or unticks there is what is sent.
 
-A run runs in its revision's place, else on the runner. A run request names no place: `POST /agents/{id}/runs`
+A run runs in its revision's place, else where `default_place` says at that run (a workflow, and a revision whose tools
+name one the box refuses, on the runner). A run request names no place: `POST /agents/{id}/runs`
 with `place` is `422 input_invalid`, as with any field the body does not keep. The run keeps the place it resolved to,
 and `GET /v2/runs/{id}` shows it as `place`. A harness's own tools in the box, when they come, will be an option of
 `sandbox` (such as `native_tools: true`), never a third mode.
@@ -334,7 +335,8 @@ each box's own reason) when no box this server has can run it.
 `preparing` while the server builds or pulls its image, or `unavailable`) and, when it is not ready, the `reason`.
 A definition naming a box this server does not have saves with a warning on `definition.place`, and a run of it is
 `409 agent_not_runnable` with `details.box`. `GET /v2/openapi.json` marks `definition.place`, the run's `place` and
-`capabilities.places` `x-agentrun-serve: "place/1"`, and `default_place` and `default_reason` `"place/3"`.
+`capabilities.places` `x-agentrun-serve: "place/1"`, `default_reason` `"place/3"`, and `default_place` `"place/4"`
+(it replaced `places.default`).
 
 ### A run in a Docker box
 
@@ -1985,21 +1987,28 @@ grader's verdict), cut of the server's secrets as they are then before the words
 list), so a value that became a secret after the run is never shown in part. Once it is proposed, merged or dropped (`seed_failed` included), the run's
 timeline has one row of kind `learning` whose summary is that detail.
 
-Three more fields say what the run used, learned and holds for the owner's OK (`learning/2`), on its read and in run
-lists alike, each absent when it holds no note: `used`, `[{file, name}]`, the notes its job read from `.learning/`,
+Four more fields say what the run was given, read, learned and holds for the owner's OK (`learning/2`), on its read and
+in run lists alike, each absent when it holds no note: `given`, `[{file, name}]`, the notes it started with (each its
+`# Learned` section names, whole or as an index line naming its file, as it was seeded; absent when it started with
+nothing learned); `read`, `[{file, name}]`, the notes its job read from `.learning/` (absent when it opened no note file),
 found once as the run settles from its timeline (each `read` call on any harness whose result was a success, of a note
 the run started from: never `MEMORY.md`, nor a read its end-of-run turn made, nor a note read through a command such as
 `bash`'s `cat`) and kept in `serve.json`, so a list never reads a timeline; `learned`, `[{file, name, supersedes}]`, the
 notes its merge added, once `merged`; and `pending`, `[{file, name}]`, the notes its merge holds for the owner's OK, once
 `merged`, never among `learned`. A name and a file are cut of the server's secrets as they are now, a file holding one
-`[redacted]`.
+`[redacted]`. Whether a run applied a note is not measured: `given` and `read` say what it had and what it opened. Each
+note on the agent's learning view and notes page counts its runs of each, `runs: {given, read}`, over the runs the server
+knows (held ones from memory, ended ones from the learning ledger).
 
 Each run's learning end is written once to the learning ledger, `DATA/learning-usage.jsonl`, one line `{run, agent,
-state, reason, at, cost, tokens, seed_notes, answered_at, job_cost_usd, look_back_usd}` (`cost` and `tokens` the
-grade's, null when unknown, 0 when nothing was graded; `seed_notes` how many notes the run started from; once it looked
-back, `answered_at` and `job_cost_usd`, when its job's answer was final and what it had cost then; `look_back_usd` what
+state, reason, at, cost, tokens, seed_notes, given, read, answered_at, job_cost_usd, look_back_usd}` (`cost` and
+`tokens` the grade's, null when unknown, 0 when nothing was graded; `seed_notes` how many notes the run started from;
+`given` and `read` the files of the notes it was given and read, each absent when there are none; once it looked back,
+`answered_at` and `job_cost_usd`, when its job's answer was final and what it had cost then; `look_back_usd` what
 looking back cost, 0 when it did not), after its `serve.json` holds it; a server that went between the two writes it at
-its next start. `GET /stats` counts the runs that tried to learn under `learning`, over its `from`, `to` and
+its next start. A run's notes are the one part that moves after its end (a follow-up reads another note): a line
+`{run, agent, notes: true, given, read}` then says them anew, the latest one winning, and counts neither the run nor its
+costs again. `GET /stats` counts the runs that tried to learn under `learning`, over its `from`, `to` and
 `agent`, from that ledger and from the runs the server holds (`in_progress`), never opening a run's files; the
 `learning` meter on `GET /usage` reads the same lines.
 
@@ -2055,7 +2064,7 @@ with the token, an archived agent's too:
   too (`Approved-Via: console`). The learning view gives each item `last_change` (`{kind, by, at}`: `approved`,
   `edited`, `created`, `retired` or `restored` by a `person`, or `learned` by a `run`) and each retired one `retired`
   (`{at, by}`, the time of its retire, which an edit since moves not).
-- `GET /runs/{run_id}/learning`: the run's learning whole (its `used` and `learned` as on its read, its seed, its merge, the grader's verdict with its item for
+- `GET /runs/{run_id}/learning`: the run's learning whole (its `given`, `read` and `learned` as on its read, its seed, its merge, the grader's verdict with its item for
   each new note, `{file, keep, question, why}`, `question` the rubric's question a dropped note failed, the checker's
   problems, what the grade cost), `null` for a run that does not learn; `verdict` is `null` until a grade ran.
   `GET /runs/{run_id}/learning/diff`: a merged run's merge commit against its parent, else its proposal against its

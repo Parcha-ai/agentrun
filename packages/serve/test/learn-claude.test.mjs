@@ -116,6 +116,6 @@ test("on claude-agent's real adapter, a run that reads a note its CLI names by t
   assert.deepEqual(calls, [[null, `${cwd}/.learning/check-units.md`], ["learning", ".learning/cite-sources.md"]], JSON.stringify(calls));
   assert.ok(rows.filter((row) => row.kind === "tool_result" && row.tool_name === "read").every((row) => row.tool_status === "success"));
   settled(view, rows, "dropped", "empty");
-  assert.deepEqual(view.learning.used, [{ file: "check-units.md", name: "Check units" }]);
-  assert.deepEqual((await api("GET", `/agents/${id}/runs`)).body.runs[0].learning.used, view.learning.used);
+  assert.deepEqual(view.learning.read, [{ file: "check-units.md", name: "Check units" }]);
+  assert.deepEqual((await api("GET", `/agents/${id}/runs`)).body.runs[0].learning.read, view.learning.read);
 });

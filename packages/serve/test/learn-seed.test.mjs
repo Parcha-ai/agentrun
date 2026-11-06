@@ -32,6 +32,8 @@ const WHOLE = [
   "## Prefers tables (prefers-tables.md)\n\nThe user reads results as tables\n\nThe user reads results as tables.",
   "## Refund policy path (refund-policy-path.md)\n\nShopify stores keep their policies at /policies/\n\nShopify stores keep their policies at /policies/.",
 ].join("\n\n");
+/** The notes a run given main's two active notes whole was given (its pin's `given`), in the order its section names them. */
+const GIVEN = [{ file: "prefers-tables.md", name: "Prefers tables" }, { file: "refund-policy-path.md", name: "Refund policy path" }];
 /** The line that tells an agent with the read tool where the notes not given whole are. */
 const TOLD = "The notes not given whole here are files in `.learning/` in your working directory: open one with the read tool when it applies.";
 
@@ -182,11 +184,11 @@ for (const harness of ["pi", "claude-agent", "codex"]) {
     assert.ok(!prompt.includes("uncommitted") && !prompt.includes("Loose") && !prompt.includes("Old refunds"), prompt);
     assert.deepEqual(readdirSync(learnedDir(data, runId)).sort(), ["MEMORY.md", "prefers-tables.md", "refund-policy-path.md"]);
     for (const file of ["MEMORY.md", "prefers-tables.md", "refund-policy-path.md"]) assert.equal(readFileSync(join(learnedDir(data, runId), file), "utf8"), MAIN[file], file);
-    assert.deepEqual(pinOf(data, runId), { seed: sha, section: WHOLE });
+    assert.deepEqual(pinOf(data, runId), { seed: sha, section: WHOLE, given: GIVEN });
     const skills = join(runDir(data, runId), "work", ".agents", "skills");
     assert.deepEqual(existsSync(skills) ? readdirSync(skills) : [], [], "no learned skill is written");
     const { whole, short } = await learningOf(api, id, runId);
-    assert.deepEqual([whole.state, whole.reason, short], ["dropped", "empty", { state: "dropped", reason: "empty", detail: whole.detail }], "seeded, and its end-of-run turn gave no note");
+    assert.deepEqual([whole.state, whole.reason, short], ["dropped", "empty", { state: "dropped", reason: "empty", detail: whole.detail, given: GIVEN }], "seeded, and its end-of-run turn gave no note");
   });
 }
 
@@ -438,7 +440,7 @@ test("two agents whose ids differ only in case: each has its own learning folder
   // The one that learned still starts from its own.
   const own = await ran(api, "Twin");
   assert.equal(learnedIn(own.prompt), WHOLE, own.prompt);
-  assert.deepEqual(pinOf(data, own.runId), { seed: sha, section: WHOLE });
+  assert.deepEqual(pinOf(data, own.runId), { seed: sha, section: WHOLE, given: GIVEN });
 });
 
 test("no hook runs on the host's git calls: neither the folder's own (its hooks folder, core.hooksPath, an fsmonitor) nor a template, hooks folder or config the environment names", { timeout: 120_000 }, async (t) => {
@@ -647,7 +649,7 @@ test("a claude-agent run on its real adapter: the notes are whole in the system 
   const run = await api("POST", "/agents/learner/runs", { input: { content: "Answer." } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
   await follow(api, run.body.run_id, ["completed"], { deadlineMs: 120_000 });
-  assert.deepEqual(pinOf(data, run.body.run_id), { seed: sha, section: WHOLE });
+  assert.deepEqual(pinOf(data, run.body.run_id), { seed: sha, section: WHOLE, given: GIVEN });
   const first = fake.messages().find((m) => m.tools.includes("Skill"));
   assert.ok(first, `the Skill tool is offered: ${JSON.stringify(fake.messages().map((m) => m.tools))}`);
   const system = systemText(first.body);

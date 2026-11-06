@@ -95,10 +95,11 @@ describe("demo: a person and an agent's notes, on a faux server's recorded answe
     expect(source.getAttribute("title")).toBe("Find this shop's refund policy page: https://www.brooklinen.com");
     // Who changed it, as the server names it (last_change): the person's own note, created by them.
     expect(page.card(MINE)!.textContent).toMatch(/Created by you · \S/);
-    // The later runs were given both notes whole under # Learned and read neither: a note counts as used only when a run
-    // reads it with the read tool (serve's learning-run.ts noteUsed), so no card says "Used in".
-    expect(first.textContent).not.toContain("Used in");
-    expect(page.card(MINE)!.textContent).not.toContain("Used in");
+    // Allbirds, Kith and Everlane were each given both notes whole under # Learned, and opened neither: given to 3 runs,
+    // read in none (the server's counts, each note's runs).
+    expect(first.textContent).toContain("Given to 3 runs");
+    expect(page.card(MINE)!.textContent).toContain("Given to 3 runs");
+    expect(first.textContent).not.toContain("Read in");
     expect(page.text()).toContain("Earlier notes1 no longer read");
     // What runs kept nothing, and why: Kith's note about its own portal, and three runs with nothing new.
     const notKept = page.host.querySelector('section[aria-label="Kept nothing"]')!;
@@ -179,19 +180,20 @@ describe("demo: a person and an agent's notes, on a faux server's recorded answe
     expect(page.text()).not.toMatch(/write tool/i);
   });
 
-  it("a run's header says what it read and kept, each a link to those notes in the agent's Learning tab", async () => {
+  it("a run's header says what it started with and kept, each a link to those notes in the agent's Learning tab", async () => {
     const s = replay(["learning.run-brooklinen", "learning.run-allbirds"]);
     const brooklinen = recorded<{ run_id: string }>("learning.run-brooklinen").body.run_id;
     const allbirds = recorded<{ run_id: string }>("learning.run-allbirds").body.run_id;
     const header = async (id: string) => renderToStaticMarkup(createElement(RunHeader, { run: await s.v2.getRun(id), agentName: "Refund policy finder" }));
     const b = await header(brooklinen);
-    // Each run was given its notes whole and read none, so no run says it used one (serve's learning-run.ts noteUsed
-    // counts only a note read with the read tool): Brooklinen's header says what it learned, Allbirds' says nothing.
-    expect(b).not.toContain('aria-label="Used');
+    // Each run says what it started with (its learning's given) and, since it opened no note file, nothing it read:
+    // Brooklinen started with the first note and learned the one that replaces it; Allbirds started with both.
+    expect(b).toContain('aria-label="Started with: 1 note: Shopify refund policy path"');
+    expect(b).not.toContain('aria-label="Read:');
     expect(b).toContain('aria-label="Learned 1 note: Try /policies/refund-policy first (replaces 1 older note)"');
     expect(b).toContain('href="#/agents/refund-finder/learning?note=try-policies-refund-policy-first.md"');
     const a = await header(allbirds);
-    expect(a).not.toContain('aria-label="Used');
+    expect(a).toContain('aria-label="Started with: 2 notes: Keep the summary to three lines, Try /policies/refund-policy first"');
     expect(a).not.toContain("Learned");
   });
   it("a run's page says what its learning changed, note by note, from the server's own answer", async () => {
