@@ -1109,41 +1109,6 @@ export const COMMANDS = [
   {
     "command": [
       "runs",
-      "hand-back-run-browser"
-    ],
-    "operationId": "handBackRunBrowser",
-    "method": "POST",
-    "path": "/runs/{run_id}/browser/hand-back",
-    "pathParams": [
-      "run_id"
-    ],
-    "multiSegment": [],
-    "query": [],
-    "headers": [],
-    "bodyFlags": [
-      {
-        "name": "outcome",
-        "type": "string",
-        "enum": [
-          "done",
-          "cancelled"
-        ],
-        "required": true,
-        "description": "`done`: the person did what the agent asked; `cancelled`: they will not."
-      }
-    ],
-    "hasBody": true,
-    "bodyRequired": true,
-    "bodyTypes": [
-      "application/json"
-    ],
-    "secretBody": false,
-    "raw": false,
-    "summary": "Answer the agent's ask for you in its browser"
-  },
-  {
-    "command": [
-      "runs",
       "learning"
     ],
     "operationId": "getRunLearning",
