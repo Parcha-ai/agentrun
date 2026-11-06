@@ -11,7 +11,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { AgentAdapter, SessionSpec } from "@parcha/agentrun-kernel";
-import { CLAUDE_SDK, harnessesOf, installedSdk, installLine, loadSdk, type LoadedSdk } from "./claude-sdk.js";
+import { CLAUDE_SDK, harnessesOf, installLine, lacking, loadSdk, type LoadedSdk } from "./claude-sdk.js";
 import { DATA_ENV, defaultData } from "./files.js";
 import { FAUX_HARNESS_ENV } from "./harness.js";
 import { chooseModel, FAUX_ENV, hostModel, type ModelRef, openRouterOnly } from "./model.js";
@@ -467,9 +467,10 @@ export async function claudePins(load: () => Promise<unknown> = loadClaude): Pro
   return { version: claude.CLAUDE_AGENT_SDK_VERSION, platform: claude.claudeAgentPlatform() };
 }
 
-/** Whether Claude Code is installed in this server's data (claude-sdk.ts installedSdk, at the pin). */
+/** Whether Claude Code is installed whole in this server's data (claude-sdk.ts lacking, at the pin). */
 export async function claudeInstalled(env: NodeJS.ProcessEnv): Promise<boolean> {
-  return Boolean(installedSdk(harnessesOf(dataOf(env)), await claudeSdkVersion()));
+  const { version, platform } = await claudePins();
+  return lacking(harnessesOf(dataOf(env)), version, platform) === undefined;
 }
 
 /** The installed claude-agent adapter's own check of the skills it would load (its skillProblems), from `load` (a test
@@ -523,8 +524,8 @@ export async function claudeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, load
     adapter = claude.claudeAgentAdapter({ model: { default: provider?.modelId ?? native.model.modelId }, provider: endpoint, price: priceOf(priced), log: harnessLog("claude-agent", env), sdk: sdk.sdk, sdkVersion: sdk.sdkVersion, cliPath: sdk.cliPath, mcp: sdk.mcp, ...(needs.confine ? { confine: needs.confine } : {}), ...(needs.skills?.length ? { skills: needs.skills } : {}), ...nativeOptions("claude-agent", env) });
   } catch (error) {
     // The adapter's own install line is a project's; here Claude Code is installed into the data's harnesses directory.
-    const message = (error as Error).message.split(claude.CLAUDE_AGENT_SDK_INSTALL).join(installLine(dir, version));
-    throw new HarnessUnavailable(message.includes(installLine(dir, version)) ? message : `${message.replace(/\.$/, "")}. Install ${CLAUDE_SDK}@${version} again with: ${installLine(dir, version)}`, fixOf(error));
+    const message = (error as Error).message.split(claude.CLAUDE_AGENT_SDK_INSTALL).join(installLine(dir));
+    throw new HarnessUnavailable(message.includes(installLine(dir)) ? message : `${message.replace(/\.$/, "")}. Install ${CLAUDE_SDK}@${version} again with: ${installLine(dir)}`, fixOf(error));
   }
   if (refused !== undefined) throw refused;
   return adapter;

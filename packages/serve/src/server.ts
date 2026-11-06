@@ -182,8 +182,8 @@ export type ServeOptions = {
   /** Under `faux` only: a module that stands in for the VM provider's SDK (its client class, by the SDK's name for it),
    *  so the VM box runs on the tests' fake, never the provider. */
   fauxVm?: string;
-  /** For tests: the lock Claude Code's first use installs by (claude-sdk.ts), in place of the one AgentRun ships, whose
-   *  packages a test's own registry serves. */
+  /** For tests: the lock Claude Code's first use installs by (claude-sdk.ts), with the package.json it locks beside it, in
+   *  place of the one AgentRun ships, whose packages a test's own registry serves. */
   claudeLock?: string;
   /** Under `faux`: a module whose default export gives a box's egress proxy its `lookup` and `dial` (box-egress.ts), the
    *  tests' fake network. */
@@ -866,7 +866,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   // Claude Code, installed on first use into the data's harnesses directory (claude-sdk.ts): one install at a time, which
   // every claude-agent run, and the save of an agent on claude-agent, waits for or starts; once it is in, the offers are
   // probed again, so capabilities no longer say it installs on first use. A faux harness needs none.
-  const claudeInstall = options.fauxHarness ? undefined : new ClaudeInstall(harnessesOf(data), () => import("./adapters.js").then((adapters) => adapters.claudePins()), (dir, pins) => npmInstall(dir, pins, options.claudeLock ? { lock: options.claudeLock } : {}), (ms) => {
+  const claudeInstall = options.fauxHarness ? undefined : new ClaudeInstall(harnessesOf(data), () => import("./adapters.js").then((adapters) => adapters.claudePins()), (dir, pins, signal) => npmInstall(dir, pins, { signal, ...(options.claudeLock ? { lock: options.claudeLock } : {}) }), (ms) => {
     log?.(logLine("claude_installed", { ms, dir: harnessesOf(data) }));
     void probe("claude_installed").catch(() => undefined);
   });
@@ -2205,6 +2205,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     // count writes nothing (it lists and reads), so it is ended at once: its listing of a big home checks for no stop.
     closing = true;
     stopping.abort();
+    // An install of Claude Code under way stops with the server: its npm gets SIGTERM, and nothing half installed stays.
+    const installStopped = claudeInstall?.stop();
     triggers.close();
     for (const [worker, { task }] of workers) {
       if (task === "plan") void worker.terminate();
@@ -2214,6 +2216,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     await importing;
     // Runs that end while their processes stop still give their notices; then the deliveries stop, before the lock goes.
     await runs.close();
+    await installStopped;
     await relay?.close();
     // Before the lock goes: the image's last record lands first (box-image.ts), never after the next server's start.
     await image?.close();
