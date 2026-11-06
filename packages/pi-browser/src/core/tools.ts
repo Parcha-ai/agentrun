@@ -247,8 +247,8 @@ export function pageTools({ guards = new Map<number, RepeatGuard>(), reconnect: 
         await pause(wait, call.signal);
         if (call.signal?.aborted) break;
       }
-      // The try's attach is bounded by what is left of the budget: one that waits on the browser (an earlier init still
-      // finishing in it) stops there instead of running past it. The timer is a ref'd one, cleared when the try ends, so a
+      // The try's attach is bounded by what is left of the budget: one that waits on the browser (a connection held on
+      // the way) stops there instead of running past it. The timer is a ref'd one, cleared when the try ends, so a
       // reconnect in progress keeps the process alive (AbortSignal.timeout's timer does not, and Node 22 then drains).
       const deadline = new AbortController();
       const timer = setTimeout(() => deadline.abort(new DOMException("the reconnect's budget ran out", "TimeoutError")), Math.max(0, until - Date.now()));
