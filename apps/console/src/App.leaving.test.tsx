@@ -375,3 +375,31 @@ describe("App, no edit can be made while Create is under way", () => {
     expect(page.instructions()!.value).toBe("Answer, then check the sum.");
   });
 });
+
+// Two more ways the editor holds unsaved changes, pinned against the one guard: a typed default spend cap, and an edit
+// left for the focused-tool address (#/agents/<id>/edit?tool=<name>), which opens the editor afresh.
+describe("App, the guard on a typed cap and on the focused-tool address", () => {
+  const rail = (page: Awaited<ReturnType<typeof open>>, label: RegExp) => [...page.host.querySelectorAll("main ol button")].find((b) => label.test(b.textContent ?? ""));
+
+  it("a typed default spend cap asks before leaving; Cancel keeps it", async () => {
+    const page = await editing();
+    await page.click(rail(page, /Settings/));
+    const cap = () => page.host.querySelector<HTMLInputElement>("#agent-max-cost");
+    await page.wait(() => !!cap(), "the cap field");
+    await page.type(cap(), "2.5");
+    await page.click(page.sidebar("Agents"));
+    expect(confirms).toEqual([LEAVE]);
+    await page.wait(() => location.hash === "#/agents/calc/edit", "still the editor");
+    expect(cap()?.value).toBe("2.5");
+  });
+
+  it("an edit asks before the focused-tool address opens the editor afresh; Cancel keeps the edit and the address", async () => {
+    const page = await editing();
+    await page.type(page.instructions(), "Answer, then check the sum.");
+    await act(async () => { location.hash = "#/agents/calc/edit?tool=read"; });
+    await page.settle();
+    expect(confirms).toEqual([LEAVE]);
+    await page.wait(() => location.hash === "#/agents/calc/edit", "the editor's address again");
+    expect(page.instructions()?.value).toBe("Answer, then check the sum.");
+  });
+});
