@@ -105,6 +105,22 @@ test("a run's read guard goes at its end: after runs that ended, the server keep
   assert.equal(reads.size, 0, "no ended run's reads are kept");
 });
 
+test("the take-back's checkpoint opens the run's database as its writer does: synchronous FULL, and on macOS F_FULLFSYNC at every sync and checkpoint", async (t) => {
+  const file = join(await scratch(t), "run.sqlite");
+  const made = new DatabaseSync(file);
+  made.exec("PRAGMA locking_mode = EXCLUSIVE; PRAGMA journal_mode = WAL; CREATE TABLE t(x)");
+  made.close();
+  const seen = [];
+  runDbTestHooks.beforeCheckpoint = (db) => seen.push(Object.fromEntries(["synchronous", "fullfsync", "checkpoint_fullfsync", "locking_mode", "journal_mode"].map((pragma) => [pragma, Object.values(db.prepare(`PRAGMA ${pragma}`).get())[0]])));
+  t.after(() => delete runDbTestHooks.beforeCheckpoint);
+  await checkpointRunDb(file, false, "darwin");
+  await checkpointRunDb(file, false, "linux");
+  assert.deepEqual(seen, [
+    { synchronous: 2, fullfsync: 1, checkpoint_fullfsync: 1, locking_mode: "exclusive", journal_mode: "wal" },
+    { synchronous: 2, fullfsync: 0, checkpoint_fullfsync: 0, locking_mode: "exclusive", journal_mode: "wal" },
+  ]);
+});
+
 test("the local disk adapter: mount gives a runner the folder itself, below the disk and through no link; sync and unmount; revoke bumps the run's epoch with the server as holder", async (t) => {
   const data = realpathSync(await scratch(t));
   const work = join(data, "disk", "agents", "a-0123456789abcdef", "runs", "r1", "work");

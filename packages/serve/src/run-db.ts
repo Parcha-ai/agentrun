@@ -8,6 +8,7 @@
 import { closeSync, openSync, readSync, statSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { forgetWalWalk, walHasCommit } from "@parcha/agentrun-pi/durable";
+import { profilePragmas } from "@parcha/pi-durable-disk/internals";
 
 /** One open of a run's database, as observeRunDbOpens reports it: `held`, whether a process held the run at the open. */
 /** `dropped`: a read of the file alone whose file changed during it, made again (readRunDbSync). */
@@ -38,8 +39,8 @@ function fileMark(file: string): string {
 }
 
 /** Tests' seams: `afterPlan`, called between a read's choice of how to open the file and its open; `madeReads`, called
- *  with each MonotonicReads made. */
-export const runDbTestHooks: { afterPlan?: (file: string) => void; madeReads?: (reads: MonotonicReads) => void } = {};
+ *  with each MonotonicReads made; `beforeCheckpoint`, called with the take-back's connection just before its close. */
+export const runDbTestHooks: { afterPlan?: (file: string) => void; madeReads?: (reads: MonotonicReads) => void; beforeCheckpoint?: (db: DatabaseSync) => void } = {};
 
 /** A read of a run's database file alone whose file changed during it (a run's process wrote and a take-back checkpointed
  *  meanwhile), every try: none of them is shown. */
@@ -131,17 +132,17 @@ export class HeldRunDbError extends Error {
 /** Checkpoints the run database at `file` into its database file and removes its WAL, once no process holds the run
  *  (`held` false; true throws HeldRunDbError before any open). A database with no WAL left is untouched but for the
  *  open. The one read-write open the server makes of a run's database. */
-export async function checkpointRunDb(file: string, held: boolean): Promise<void> {
+export async function checkpointRunDb(file: string, held: boolean, platform: NodeJS.Platform = process.platform): Promise<void> {
   for (const observer of observers) observer({ file, mode: "checkpoint", held });
   if (held) throw new HeldRunDbError(file);
   const db = new DatabaseSync(file, { timeout: 0 });
   try {
-    // As its writer opened it: the WAL index in heap, so no -shm is made.
-    db.exec("PRAGMA locking_mode = EXCLUSIVE");
-    db.exec("PRAGMA journal_mode = WAL");
-    // The checkpoint's copy is synced into the database file before the WAL that held it is removed.
-    db.exec("PRAGMA synchronous = FULL");
+    // As its writer opened it (pi-durable-disk's exclusive profile): the WAL index in heap, so no -shm is made;
+    // synchronous FULL, so the checkpoint's copy is synced into the database file before the WAL that held it is removed;
+    // and on macOS F_FULLFSYNC (`fullfsync`, `checkpoint_fullfsync`), as fsync there leaves the drive's cache unflushed.
+    for (const [pragma, value] of Object.entries(profilePragmas("exclusive", platform))) db.exec(`PRAGMA ${pragma} = ${value}`);
     db.prepare("SELECT count(*) FROM sqlite_schema").get();
+    runDbTestHooks.beforeCheckpoint?.(db);
   } finally {
     // The close checkpoints: it copies into the database file only pages the WAL holds too, so a lock-free reader still
     // reading the WAL reads the same bytes either way; then it removes the WAL, which a reader that holds it open goes on

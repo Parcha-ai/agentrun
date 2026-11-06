@@ -4,6 +4,9 @@
 export { createRunDir, findDelegations, mintMountToken, pathlessResolver, removeMountToken, runPath, unmountClaim } from "./claim.ts";
 export { LABEL_FLEET, LABEL_RUN, sandboxName, sandboxStatus, sweepSandboxes } from "./hosts/daytona.ts";
 export { isLeaseFresh, parseRunRecord, RUN_JSON } from "./status.ts";
+// What a run's database is opened with (the exclusive profile, and on macOS F_FULLFSYNC), for a host that checkpoints it
+// itself once the run's process is gone (agentrun-serve's take-back).
+export { profilePragmas } from "./store.ts";
 // The rule a door's snapshot of a run's inputs starts at, for a host that reads the snapshot (agentrun-serve's ledger),
 // and the snapshot itself, so a host's tests read the inputs a door would send.
 export { newestSettledInput, snapshotInputs } from "./serve.ts";
