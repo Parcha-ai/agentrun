@@ -283,6 +283,32 @@ test("the hinted command opens the store this server has: npx @parcha/agentrun's
   assert.equal(serve(home({ AGENTRUN_SERVE_DATA: `${HOME_DIR}/.agentrun` })), `${plain} --data ${HOME_DIR}/.agentrun`);
 });
 
+// A person who started AgentRun with `npx -y … --port 8123 --no-open` gets a hint that keeps those, so running it verbatim
+// starts the server they had: npx's own -y (npm hands it on as npm_config_yes), the port they named, and no browser.
+// The server records what it was started with (AGENTRUN_SERVE_PORT, the port when one was named; AGENTRUN_SERVE_OPEN, 1
+// with --open, 0 without); a flag the person did not give is never added.
+test("the hinted command keeps how AgentRun was started: npx's -y, the --port named, and --no-open; none added when not given", () => {
+  const spec = "opencode-ai@1.19.5";
+  const door = { AGENTRUN_NPX_PACKAGE: "@parcha/agentrun@0.3.0", AGENTRUN_SERVE_DATA: `${HOME_DIR}/.agentrun` };
+  const pkgs = `-p @parcha/agentrun@0.3.0 -p @parcha/agentrun-serve@${SERVE} -p ${spec}`;
+  // npx @parcha/agentrun: --open unless --no-open (its start.mjs), so the server's 0 is the person's --no-open.
+  assert.equal(adapters.npxLine?.(spec, home({ ...door, npm_config_yes: "true", AGENTRUN_SERVE_PORT: "8123", AGENTRUN_SERVE_OPEN: "0" }), none), `npx -y ${pkgs} agentrun --data ${HOME_DIR}/.agentrun --port 8123 --no-open`, "all three kept");
+  assert.equal(adapters.npxLine?.(spec, home({ ...door, AGENTRUN_SERVE_OPEN: "1" }), none), `npx ${pkgs} agentrun --data ${HOME_DIR}/.agentrun`, "none given: none added (the browser opens as it did)");
+  assert.equal(adapters.npxLine?.(spec, home({ ...door, npm_config_yes: "false", AGENTRUN_SERVE_PORT: "7340", AGENTRUN_SERVE_OPEN: "1" }), none), `npx ${pkgs} agentrun --data ${HOME_DIR}/.agentrun --port 7340`, "-y only when npx had it; the port when it was named, its default included");
+  // agentrun-serve itself: it opens no browser unless --open, which the hint then keeps.
+  const plain = `npx -y -p @parcha/agentrun-serve@${SERVE} -p ${spec} agentrun-serve`;
+  assert.equal(adapters.npxLine?.(spec, home({ npm_config_yes: "true", AGENTRUN_SERVE_PORT: "9000", AGENTRUN_SERVE_OPEN: "1" }), none), `${plain} --port 9000 --open`);
+  assert.equal(adapters.npxLine?.(spec, home({ npm_config_yes: "true", AGENTRUN_SERVE_OPEN: "0" }), none), plain, "no --open given: none added");
+  // A port that is not one is never put in a command.
+  assert.equal(adapters.npxLine?.(spec, home({ ...door, AGENTRUN_SERVE_PORT: "80; rm -rf ~", AGENTRUN_SERVE_OPEN: "1" }), none), `npx ${pkgs} agentrun --data ${HOME_DIR}/.agentrun`);
+});
+
+test("the server records how it was started for its hints: the port when --port named one, and whether --open was given", async () => {
+  const { startedWith } = await import("../dist/adapters.js");
+  assert.deepEqual(startedWith?.({ port: "8123", open: false }), { AGENTRUN_SERVE_PORT: "8123", AGENTRUN_SERVE_OPEN: "0" });
+  assert.deepEqual(startedWith?.({ open: true }), { AGENTRUN_SERVE_OPEN: "1" });
+});
+
 test("npx is told by where serve's files are: under npm's _npx cache, not a project's node_modules, and not this checkout", () => {
   assert.equal(startedByNpx("/var/cache/npm/_npx/one-run/node_modules/@parcha/agentrun-serve/dist/adapters.js"), true);
   assert.equal(startedByNpx("/work/app/node_modules/@parcha/agentrun-serve/dist/adapters.js"), false, "a project's install");
