@@ -1,4 +1,4 @@
-import type { Meta, StoryObj } from "@storybook/react";
+import type { Meta, StoryObj } from "@storybook/react-vite";
 import { RunDetail } from "@/components/RunDetail";
 import { Shell } from "@/components/Shell";
 import { failedWith, recorded, recordedFileText, runFixture, messageFeatures } from "@/fixtures";
@@ -49,4 +49,4 @@ export const ArtifactOpen: Story = {
     );
   },
 };
-export const Phone: Story = { ...story("run.input_required.waiting.1"), parameters: { viewport: { defaultViewport: "mobile1" } }, globals: { viewport: { value: "mobile1" } } };
+export const Phone: Story = { ...story("run.input_required.waiting.1"), globals: { viewport: { value: "mobile1" } } };

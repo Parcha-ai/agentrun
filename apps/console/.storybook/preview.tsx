@@ -1,11 +1,23 @@
-import type { Preview } from "@storybook/react";
+import type { Decorator, Preview } from "@storybook/react-vite";
+import { applyTheme } from "../src/lib/theme";
 import "../src/styles.css";
 
-// The console is dark by default, as the reference is: the variables hang off <html class="dark">.
-document.documentElement.classList.add("dark");
+// The console is dark by default, as the reference is. The toolbar's Theme puts `dark` or `light` on <html> through
+// the console's own applyTheme, so a story shows the tokens the console shows for that pick.
+const withTheme: Decorator = (Story, { globals }) => {
+  applyTheme(globals.theme === "light" ? "light" : "dark");
+  return <div className="min-h-screen bg-background font-sans text-foreground"><Story /></div>;
+};
 
 const preview: Preview = {
   parameters: { layout: "fullscreen", backgrounds: { disable: true } },
-  decorators: [(Story) => <div className="dark min-h-screen bg-background font-sans text-foreground"><Story /></div>],
+  globalTypes: {
+    theme: {
+      description: "The console's colour theme",
+      toolbar: { title: "Theme", icon: "mirror", items: [{ value: "dark", title: "Dark", icon: "moon" }, { value: "light", title: "Light", icon: "sun" }], dynamicTitle: true },
+    },
+  },
+  initialGlobals: { theme: "dark" },
+  decorators: [withTheme],
 };
 export default preview;
