@@ -1347,11 +1347,16 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   /** `capped`: the run must have a cap (a trigger's), its own or else its agent's default. */
   async function startRunOf(entry: AgentEntry, body: Json, { trigger, origin, capped = false }: { trigger?: RunTrigger; origin?: RunOrigin; capped?: boolean } = {}): Promise<Run> {
     const issues = runBodyIssues(body);
-    if (issues.length) throw told(invalid(await explainRun(issues, body, entry.revision)));
+    if (issues.length) {
+      // Told from the revision the run would start on (a pinned one, else the current), once it reads as one: a pin that
+      // is malformed or names no revision gets the refusal alone, no hint.
+      const on = issues.some((issue) => issue.field === "revision") ? undefined : await pinnedOf(entry, body);
+      throw told(invalid(on ? await explainRun(issues, body, on.revision) : issues));
+    }
     if (body.quote_id !== undefined) throw unsupported("quotes", "This server has no billing, so it takes no quotes.");
     // Each a ready file, before anything starts: copied into the run's work/inputs/ once its directory is made.
     const files = Array.isArray(body.file_ids) ? await uploads.readyFiles(body.file_ids) : [];
-    const pinned = typeof body.revision === "string" ? await agents.revision(entry.agent.id, body.revision) : entry.revision && { revision: entry.revision, version: entry.version };
+    const pinned = await pinnedOf(entry, body);
     if (!pinned) throw invalid([{ field: "revision", reason: "not_an_option", message: typeof body.revision === "string" ? `${body.revision} is not a revision of the agent ${entry.agent.id}` : `the agent ${entry.agent.id} has no current revision` }]);
     const { revision, version } = pinned;
     if (revision.kind === "workflow" && body.max_cost_usd !== undefined) throw invalid([{ field: "max_cost_usd", reason: "not_allowed", message: "A workflow run's spend is not capped here: its cost shows once it ends." }]);
@@ -1371,6 +1376,12 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     const shown = redactedOutput(input, learningSecrets());
     const title = revision.kind === "workflow" ? workflowTitle(entry.agent.name || entry.agent.id, isObject(shown) ? shown : {}) : typeof input.content === "string" ? input.content : (Object.values(input).find((v): v is string => typeof v === "string") ?? JSON.stringify(input));
     return runs.create(entry, revision, version, { input, title, place, ...(typeof body.effort === "string" ? { effort: body.effort } : {}), ...(cap !== undefined ? { maxCostUsd: cap } : {}), ...(capMode !== undefined ? { capMode } : {}), ...(trigger ? { trigger } : {}), ...(origin ? { origin } : {}), ...(files.length ? { inputs: (work: string) => uploads.copyInto(work, files) } : {}) });
+  }
+
+  /** The revision a run of `entry` starts on: the one `body.revision` pins, else the agent's current; undefined when the
+   *  pin names none, or the agent has no revision. */
+  async function pinnedOf(entry: AgentEntry, body: Json) {
+    return typeof body.revision === "string" ? await agents.revision(entry.agent.id, body.revision) : entry.revision && { revision: entry.revision, version: entry.version };
   }
 
   /** A run create's body as POST /agents/{id}/runs checks it before it reads the agent: each field issue. */
