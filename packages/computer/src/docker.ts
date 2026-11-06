@@ -5,7 +5,21 @@ import { randomBytes } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import { DaemonClient } from "./client.js";
-import { COMPUTER_LABEL, DAEMON_IN_COMPUTER, DEADLINE_LABEL, DEFAULT_PIDS, type DockerInspect, drift, helloDrift, networkOf } from "./drift.js";
+import {
+	COMPUTER_LABEL,
+	CPU_PERIOD_US,
+	DAEMON_IN_COMPUTER,
+	DEADLINE_LABEL,
+	DEFAULT_CPUS,
+	DEFAULT_MEMORY_MB,
+	DEFAULT_PIDS,
+	type DockerInspect,
+	drift,
+	helloDrift,
+	networkOf,
+	tmpfsOf,
+	WORK,
+} from "./drift.js";
 import type {
 	CallContext,
 	ComputerCapabilities,
@@ -34,15 +48,6 @@ const VERSION: string = JSON.parse(readFileSync(new URL("../package.json", impor
 const NAME = /^computer-[0-9a-f]{12}$/;
 /** A container id, whole or its first 12 or more hex digits. */
 const ID = /^[0-9a-f]{12,64}$/;
-/** The computer's home and default workdir: a tmpfs its user owns, since a non-root user can write nowhere else. */
-const WORK = "/work";
-/** Where init's socket lives (the daemon's DefaultSocket's directory): a tmpfs the computer's user owns, mode 0700. */
-const SOCKET_DIR = "/run/agentrun";
-/** Serve's box sizes, when the spec names none. */
-const DEFAULT_CPUS = 2;
-const DEFAULT_MEMORY_MB = 4096;
-/** CPUs are a CFS quota of each 100 ms, as serve gives them: Docker refuses a --cpus above its own CPU count. */
-const CPU_PERIOD_US = 100_000;
 /** A user in numbers, uid or uid:gid; (uid_t)-1 is no user. */
 const USER = /^(\d+)(?::(\d+))?$/;
 const MAX_ID = 4_294_967_294;
@@ -151,9 +156,8 @@ export class DockerProvider implements ComputerProvider {
 		const args = ["run", "--detach", "--name", name, "--label", `${COMPUTER_LABEL}=1`, "--label", `${DEADLINE_LABEL}=${deadline}`];
 		for (const [key, value] of Object.entries(spec.labels ?? {})) args.push("--label", `${key}=${value}`);
 		const user = userOf(spec.user) ?? this.#user;
-		const [uid, gid] = user.split(":");
-		args.push("--user", user, "--tmpfs", `${WORK}:rw,nosuid,nodev,exec,uid=${uid},gid=${gid},mode=0700`, "--env", `HOME=${WORK}`);
-		args.push("--tmpfs", `${SOCKET_DIR}:rw,noexec,nosuid,nodev,uid=${uid},gid=${gid},mode=0700`);
+		args.push("--user", user, "--env", `HOME=${WORK}`);
+		for (const [path, options] of Object.entries(tmpfsOf(user))) args.push("--tmpfs", `${path}:${options}`);
 		args.push("--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", String(spec.pids ?? DEFAULT_PIDS));
 		args.push("--network", spec.network === "none" ? "none" : "bridge");
 		args.push("--cpu-period", String(CPU_PERIOD_US), "--cpu-quota", String(Math.round((spec.cpus ?? DEFAULT_CPUS) * CPU_PERIOD_US)));
@@ -180,7 +184,7 @@ export class DockerProvider implements ComputerProvider {
 			return fail("docker", `the computer ${name} was not running after its start (${why}), so it was removed`);
 		}
 		const ref = { id: started.value.stdout.trim(), name };
-		const checked = await this.#check(spec, ref, report as DockerInspect, deadline);
+		const checked = await this.#check(spec, ref, report as DockerInspect, deadline, user);
 		if (checked.ok) return ok(ref);
 		// Fail closed: a computer that is not what was declared, or that cannot show it is, does not outlive create.
 		const removed = await this.release(ref, "delete");
@@ -189,13 +193,13 @@ export class DockerProvider implements ComputerProvider {
 	}
 
 	/** The drift check: the computer's own report, from inspect and from its daemon's hello, against the spec. */
-	async #check(spec: ComputerSpec, ref: ComputerRef, report: DockerInspect, deadline: string): Promise<Result<void>> {
+	async #check(spec: ComputerSpec, ref: ComputerRef, report: DockerInspect, deadline: string, user: string): Promise<Result<void>> {
 		const arch = await this.#hostArch();
 		if (!arch.ok) return arch;
 		const opened = await this.#open(ref);
 		if (!opened.ok) return opened;
 		await opened.value.close();
-		const expected = { version: VERSION, capabilities: this.capabilities().daemon, arch: arch.value, daemonPath: this.#daemonPath, deadline };
+		const expected = { version: VERSION, capabilities: this.capabilities().daemon, arch: arch.value, daemonPath: this.#daemonPath, deadline, user };
 		const found = drift(spec, report, opened.value.hello, expected);
 		return found.length === 0 ? ok(undefined) : fail("refused", `it did not match its spec: ${found.join("; ")}`);
 	}

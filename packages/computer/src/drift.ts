@@ -7,14 +7,32 @@ import type { ComputerSpec, NetworkPolicy } from "./provider.js";
 export const DAEMON_IN_COMPUTER = "/opt/agentrun/computerd";
 export const COMPUTER_LABEL = "agentrun.computer";
 export const DEADLINE_LABEL = "agentrun.computer.deadline";
+/** Serve's box sizes, when the spec names none. */
+export const DEFAULT_CPUS = 2;
+export const DEFAULT_MEMORY_MB = 4096;
 export const DEFAULT_PIDS = 1024;
+/** CPUs are a CFS quota of each 100 ms, as serve gives them: Docker refuses a --cpus above its own CPU count. */
+export const CPU_PERIOD_US = 100_000;
+/** The computer's home and default workdir: a tmpfs its user owns, since a non-root user can write nowhere else. */
+export const WORK = "/work";
+/** Where init's socket lives (the daemon's DefaultSocket's directory): a tmpfs the computer's user owns, mode 0700. */
+export const SOCKET_DIR = "/run/agentrun";
+
+/** The --tmpfs options of each tmpfs a computer gets, owned by its uid:gid. */
+export function tmpfsOf(user: string): Record<string, string> {
+	const [uid, gid] = user.split(":");
+	return {
+		[WORK]: `rw,nosuid,nodev,exec,uid=${uid},gid=${gid},mode=0700`,
+		[SOCKET_DIR]: `rw,noexec,nosuid,nodev,uid=${uid},gid=${gid},mode=0700`,
+	};
+}
 
 /** The parts of `docker inspect` a computer is checked by. */
 export interface DockerInspect {
 	Id?: string;
 	Name?: string;
 	State?: { Running?: boolean; Status?: string; ExitCode?: number; Error?: string };
-	Config?: { Entrypoint?: string[] | null; Cmd?: string[] | null; Labels?: Record<string, string> | null };
+	Config?: { User?: string; Entrypoint?: string[] | null; Cmd?: string[] | null; Labels?: Record<string, string> | null };
 	HostConfig?: {
 		NetworkMode?: string;
 		CapDrop?: string[] | null;
@@ -24,7 +42,9 @@ export interface DockerInspect {
 		PidsLimit?: number | null;
 		Memory?: number;
 		MemorySwap?: number;
-		NanoCpus?: number;
+		CpuPeriod?: number;
+		CpuQuota?: number;
+		Tmpfs?: Record<string, string> | null;
 	};
 	Mounts?: Array<{ Type?: string; Source?: string; Destination?: string; RW?: boolean }> | null;
 	NetworkSettings?: { Networks?: Record<string, unknown> | null };
@@ -43,11 +63,15 @@ export interface DriftExpected extends HelloExpected {
 	daemonPath: string;
 	/** The deadline label's value, as it was set. */
 	deadline: string;
+	/** The uid:gid the computer was asked to run as. */
+	user: string;
 }
 
 const show = (value: unknown) => (value === undefined ? "nothing" : JSON.stringify(value));
 const text = (value: unknown) => (typeof value === "string" ? value : show(value));
 const sameList = (a: unknown, b: string[]) => Array.isArray(a) && a.length === b.length && a.every((item, i) => item === b[i]);
+/** A mount's options as a set, so their order is no drift. */
+const optionSet = (options: unknown) => (typeof options === "string" ? options.split(",").sort().join(",") : undefined);
 
 /**
  * The network a computer is on, read back from inspect: `none` is network mode none on no network but Docker's own
@@ -95,12 +119,17 @@ export function drift(spec: ComputerSpec, inspected: DockerInspect | null | unde
 	}
 	const pids = spec.pids ?? DEFAULT_PIDS;
 	if (host.PidsLimit !== pids) mismatch("PidsLimit", pids, host.PidsLimit);
-	if (spec.memoryMb !== undefined) {
-		const bytes = spec.memoryMb * 1024 * 1024;
-		if (host.Memory !== bytes) mismatch("Memory", bytes, host.Memory);
-		if (host.MemorySwap !== bytes) mismatch("MemorySwap", bytes, host.MemorySwap);
+	const bytes = (spec.memoryMb ?? DEFAULT_MEMORY_MB) * 1024 * 1024;
+	if (host.Memory !== bytes) mismatch("Memory", bytes, host.Memory);
+	if (host.MemorySwap !== bytes) mismatch("MemorySwap", bytes, host.MemorySwap);
+	if (host.CpuPeriod !== CPU_PERIOD_US) mismatch("CpuPeriod", CPU_PERIOD_US, host.CpuPeriod);
+	const quota = Math.round((spec.cpus ?? DEFAULT_CPUS) * CPU_PERIOD_US);
+	if (host.CpuQuota !== quota) mismatch("CpuQuota", quota, host.CpuQuota);
+	if (config.User !== expected.user) mismatch("User", expected.user, config.User);
+	const tmpfs = host.Tmpfs ?? {};
+	for (const [path, options] of Object.entries(tmpfsOf(expected.user))) {
+		if (optionSet(tmpfs[path]) !== optionSet(options)) mismatch(`tmpfs ${path}`, options, tmpfs[path]);
 	}
-	if (spec.cpus !== undefined && host.NanoCpus !== Math.round(spec.cpus * 1e9)) mismatch("NanoCpus", Math.round(spec.cpus * 1e9), host.NanoCpus);
 
 	const mounts = inspected?.Mounts ?? [];
 	const daemon = mounts.filter((mount) => mount.Destination === DAEMON_IN_COMPUTER);
@@ -112,7 +141,8 @@ export function drift(spec: ComputerSpec, inspected: DockerInspect | null | unde
 		if (mount.Type === "bind" && mount.Destination !== DAEMON_IN_COMPUTER) found.push(`bind mount: none declared but the daemon's, read back ${show(mount)}`);
 	}
 	if (!sameList(config.Entrypoint, [DAEMON_IN_COMPUTER])) mismatch("Entrypoint", [DAEMON_IN_COMPUTER], config.Entrypoint);
-	if (!sameList(config.Cmd, ["init"])) mismatch("Cmd", ["init"], config.Cmd);
+	const cmd = ["init", "--deadline", expected.deadline];
+	if (!sameList(config.Cmd, cmd)) mismatch("Cmd", cmd, config.Cmd);
 
 	const labels = config.Labels ?? {};
 	if (labels[COMPUTER_LABEL] !== "1") mismatch(`label ${COMPUTER_LABEL}`, "1", labels[COMPUTER_LABEL]);

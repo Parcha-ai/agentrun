@@ -304,6 +304,20 @@ test("create() deletes a computer whose own report drifts from its spec, and say
 	assert.deepEqual(names(), []);
 });
 
+test("create() deletes a computer that runs as another user, without its tmpfs mounts, or on another CPU quota or command", async () => {
+	const { provider, calls, names } = fakeDocker({
+		patch: { Config: { User: "0:0", Cmd: ["init"] }, HostConfig: { Tmpfs: { "/work": "rw,uid=0,gid=0,mode=0777", "/run/agentrun": null }, CpuQuota: 0 } },
+	});
+	const result = await provider.create(SPEC);
+	assert.equal(result.ok, false);
+	assert.equal(result.error.code, "refused");
+	for (const words of [`User: declared "${DEFAULT_USER}", read back "0:0"`, "tmpfs /work", "tmpfs /run/agentrun", "CpuQuota: declared 200000, read back 0", "Cmd: declared"]) {
+		assert.ok(result.error.message.includes(words), `${words} in ${result.error.message}`);
+	}
+	assert.deepEqual(calls().at(-1), ["rm", "--force", "--volumes", valuesOf(calls()[0], "--name")[0]]);
+	assert.deepEqual(names(), []);
+});
+
 test("create() deletes a computer whose daemon reports another architecture than the Docker host", async () => {
 	const { provider, calls, names } = fakeDocker({ arch: "aarch64" });
 	const result = await provider.create(SPEC);
