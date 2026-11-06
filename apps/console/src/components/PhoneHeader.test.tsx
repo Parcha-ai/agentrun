@@ -52,7 +52,7 @@ describe("the agent page's header on a phone", () => {
   it("the revision's facts fold into one line that opens them; 640 px and up show the list as before", async () => {
     const host = await agentPage();
     const list = host.querySelector('dl[aria-label="Current revision"]')!;
-    const toggle = host.querySelector('button[aria-controls="agent-facts"]')!;
+    const toggle = host.querySelector('button[aria-controls~="agent-facts"]')!;
     expect(toggle).not.toBeNull();
     expect(classes(toggle)).toContain("sm:hidden");
     expect(list.id).toBe("agent-facts");
@@ -66,6 +66,18 @@ describe("the agent page's header on a phone", () => {
     act(() => (toggle as HTMLButtonElement).click());
     expect(toggle.getAttribute("aria-expanded")).toBe("true");
     expect(classes(list)).not.toContain("max-sm:hidden");
+  });
+
+  it("a description cut at two lines opens whole with the facts, from the same line", async () => {
+    const host = await agentPage();
+    const description = [...host.querySelectorAll("header p")].find((p) => p.textContent === agentFixture("invoice-checker").definition.description)!;
+    expect(description).toBeDefined();
+    const toggle = host.querySelector('button[aria-controls~="agent-facts"]')!;
+    expect(description.id).not.toBe("");
+    expect(toggle.getAttribute("aria-controls")!.split(" ")).toContain(description.id);
+    expect(classes(description)).toContain("max-sm:line-clamp-2");
+    act(() => (toggle as HTMLButtonElement).click());
+    expect(classes(description)).not.toContain("max-sm:line-clamp-2");
   });
 
   it("the tabs keep one row: no wrap, less padding below 640", async () => {
