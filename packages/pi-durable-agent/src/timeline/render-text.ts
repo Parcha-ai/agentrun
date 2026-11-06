@@ -26,6 +26,16 @@ function foldEntry(fold: Fold, options: PathName): { text: string; status: strin
   return { text, status, reasons: fold.calls.filter((call) => statusOf(call) === "failed") };
 }
 
+/** What the calls' rows say their browser charges came to (TimelineEvent.usage on a call's row): " · $0.0018", or
+ *  " · cost unknown" when one is; "" when none carries one. */
+function chargeOf(calls: readonly Call[]): string {
+  const usages = calls.flatMap((call) => (call.use.kind === "tool_use" && call.use.usage ? [call.use.usage] : []));
+  if (!usages.length) return "";
+  if (usages.some((usage) => usage.usd === null)) return " · cost unknown";
+  const usd = usages.reduce((sum, usage) => sum + (usage.usd ?? 0), 0);
+  return ` · ${usd === 0 ? "$0" : `$${usd.toFixed(4)}`}`;
+}
+
 function linesOf(groups: readonly Group[], depth: number, fold: boolean, options: PathName = {}): Line[] {
   const lines: Line[] = [];
   for (const group of groups) {
@@ -40,7 +50,7 @@ function linesOf(groups: readonly Group[], depth: number, fold: boolean, options
     for (const entry of folds) {
       const { text, status, reasons } = foldEntry(entry, options);
       const inner = nested ? depth + 1 : depth;
-      lines.push({ at: nested ? undefined : at, depth: inner, text: `${text.padEnd(58)}  ${status}` });
+      lines.push({ at: nested ? undefined : at, depth: inner, text: `${(text + chargeOf(entry.calls)).padEnd(58)}  ${status}` });
       for (const call of reasons) lines.push({ depth: inner + 1, text: call.result?.summary ?? statusOf(call) });
       for (const call of entry.calls) lines.push(...linesOf(call.inner, inner + 1, fold, options));
     }

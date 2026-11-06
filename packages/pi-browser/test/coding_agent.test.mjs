@@ -34,6 +34,18 @@ test("the coding agent lists the browser and web tools with the package's contra
   }
 });
 
+test("granted both, the model is told which one keeps cookies: web_fetch reads one page cold; run keeps cookies across pages, and saved sign-ins only with a session vault", async (t) => {
+  const descriptions = async (extra) => new Map((await startAgent(t, { extension: extensionOf(fake(), extra) })).session.getAllTools().map((tool) => [tool.name, tool.description]));
+  // No vault, as a local Chrome runs it: cookies across pages, and no sign-in claimed.
+  const plain = await descriptions();
+  assert.match(plain.get("web_fetch"), /It has no cookies, sign-ins or session: it reads one page cold\. /);
+  assert.match(plain.get("web_fetch"), /or the page is behind a sign-in or depends on an earlier page, drive it with run\/snapshot instead\./);
+  assert.ok(plain.get("run").includes("It keeps cookies across pages: use it for a page that depends on an earlier one, or one that sets cookies."), plain.get("run"));
+  assert.doesNotMatch(plain.get("run"), /sign-in/);
+  const vaulted = await descriptions({ sessionVault: { restore: async () => null, capture: async () => {}, forget: async () => {} } });
+  assert.ok(vaulted.get("run").includes("It keeps this agent's saved sign-ins and cookies: use it for anything behind a sign-in, or a page that depends on an earlier one."), vaulted.get("run"));
+});
+
 test("the static browser section is in the system prompt of every request", async (t) => {
   const agent = await startAgent(t, { extension: extensionOf(fake()) });
   await agent.run(turn(["snapshot"]));
