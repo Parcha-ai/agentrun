@@ -41,8 +41,11 @@ describe("the waiting row's chip, by what the run waits on", () => {
   it("a cap pause reads Paused at cap", () => {
     expect(chips([waiting("w1", 3, WAITING)], "budget")).toEqual(["Paused at cap"]);
   });
-  it("an approval reads Approval required", () => {
-    expect(chips([waiting("w1", 3, "Waiting for your approval")], "approval")).toEqual(["Approval required"]);
+  it("an approval relabels no waiting row: its own row carries Approval required, and an answered question keeps its chip", () => {
+    // An approval waits on a tool_approval_requested row (its own chip), never a `waiting` one: a question asked and
+    // answered before it is history, not the approval.
+    const approvalRow = row({ id: "a1", seq: 4, kind: "tool_approval_requested", summary: "Waiting for your approval: web_fetch", tool_name: "web_fetch" } as never);
+    expect(chips([waiting("w0", 3, "Asked you: which?"), approvalRow], "approval")).toEqual(["Input required", "Approval required"]);
   });
   it("a question, or a run not waiting now, reads Input required, and an earlier wait keeps its own", () => {
     expect(chips([waiting("w1", 3, "Asked you: which?")], "question")).toEqual(["Input required"]);
