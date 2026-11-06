@@ -15,7 +15,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { BOX_ENV } from "../dist/run-box.js";
-import { follow, jsonLines, scratch, serve, withEnv } from "./support.mjs";
+import { follow, jsonLines, runDir, scratch, serve, withEnv } from "./support.mjs";
 import { startServe } from "../dist/index.js";
 
 const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;
@@ -84,7 +84,7 @@ async function rowsOf(api, runId) {
 }
 
 function answers(data, runId) {
-  const db = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { readOnly: true });
+  const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true });
   try {
     return db.prepare("SELECT record FROM entries ORDER BY id").all()
       .flatMap((row) => JSON.parse(row.record).model ?? [])
@@ -185,7 +185,7 @@ test("an image with no socat: the box has no network, its run's timeline says so
 
 /** The run's proxy decisions and its start, as its process logged them. */
 function egressLines(data, runId) {
-  const log = join(data, "runs", runId, "process.log");
+  const log = join(runDir(data, runId), "process.log");
   if (!existsSync(log)) return [];
   return readFileSync(log, "utf8").split("\n").flatMap((line) => {
     try {
@@ -357,9 +357,12 @@ test("AGENTRUN_BOX_ALLOW=none: capabilities say none, with the setting as the re
 /** A `docker run`'s arguments with what changes from run to run named: the data root, the run's id, the box's start
  *  time, and serve's uid:gid. */
 const normalized = (args, data, runId) => args.map((arg) => arg.split(data).join("<DATA>").split(runId).join("<RUN>").replace(/"startedAt":"[^"]+"/, '"startedAt":"<TIME>"').replace(new RegExp(`^${process.getuid()}:${process.getgid()}$`), "<UID:GID>"));
+/** The probe agent's folder on the disk: its id in lower case and 16 hex digits of the id's SHA-256. */
+const BOXED = `boxed-${createHash("sha256").update("boxed", "utf8").digest("hex").slice(0, 16)}`;
 /** main's `docker run` of a box with no network, before boxes had any (captured on main at 46eb3968a with slice 1 merged,
- *  where the box code was main's): a box with `none` is made byte for byte as it was. */
-const NONE_GOLDEN = ["run", "--detach", "--init", "--rm", "--workdir", "/run/agentrun/run/work", "--label", "pi-transport.box=1", "--label", 'pi-transport.facts={"provider":"docker","isolation":"container","cpus":2,"memoryMb":4096,"gpu":null,"workspace":"/run/agentrun/run/work","maxLifetimeMs":86400000,"snapshot":null,"bulk":"stream","secretsVia":"fd","network":"none","ports":[],"startedAt":"<TIME>"}', "--label", "agentrun.run=<RUN>", "--label", "agentrun.box=run", "--env", "LANG=C.UTF-8", "--env", "HOME=/tmp", "--network", "none", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--user", "<UID:GID>", "--cpu-period", "100000", "--cpu-quota", "200000", "--memory", "4g", "--memory-swap", "4g", "--pids-limit", "1024", "--mount", "type=bind,source=<DATA>/runs/<RUN>/work,target=/run/agentrun/run/work", "--entrypoint", "sleep", "debian:bookworm-slim", "86400"];
+ *  where the box code was main's): a box with `none` is made byte for byte as it was, but for its work/'s place on the
+ *  disk (<DATA>/disk/agents/<agent>/runs/<run>, no longer <DATA>/runs/<run>). */
+const NONE_GOLDEN = ["run", "--detach", "--init", "--rm", "--workdir", "/run/agentrun/run/work", "--label", "pi-transport.box=1", "--label", 'pi-transport.facts={"provider":"docker","isolation":"container","cpus":2,"memoryMb":4096,"gpu":null,"workspace":"/run/agentrun/run/work","maxLifetimeMs":86400000,"snapshot":null,"bulk":"stream","secretsVia":"fd","network":"none","ports":[],"startedAt":"<TIME>"}', "--label", "agentrun.run=<RUN>", "--label", "agentrun.box=run", "--env", "LANG=C.UTF-8", "--env", "HOME=/tmp", "--network", "none", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--user", "<UID:GID>", "--cpu-period", "100000", "--cpu-quota", "200000", "--memory", "4g", "--memory-swap", "4g", "--pids-limit", "1024", "--mount", `type=bind,source=<DATA>/disk/agents/${BOXED}/runs/<RUN>/work,target=/run/agentrun/run/work`, "--entrypoint", "sleep", "debian:bookworm-slim", "86400"];
 
 test("golden: with AGENTRUN_BOX_ALLOW=none, a run's `docker run` is byte for byte main's", { timeout: 120_000 }, async (t) => {
   const docker = await fakeDocker(t, {}, { [BOX_ALLOW_ENV]: "none" });
@@ -391,7 +394,7 @@ test("a box an earlier process of the run made with another network (none) is ma
   const { api, data } = await serve(t, { faux: PROBE, fauxEgress: FAKE_EGRESS });
   const go = await holdFile(t);
   const runId = await boxedRun(api, [{ wait: go.hold }, { tool: "bash", args: { command: "printf again > out.txt" } }]);
-  const work = join(realpathSync(data), "runs", runId, "work");
+  const work = join(runDir(realpathSync(data), runId), "work");
   await until(() => existsSync(work), "the run's work/");
   // The box an earlier process of the run made under AGENTRUN_BOX_ALLOW=none, as Docker would list it: no network label.
   const id = "e".repeat(64);
@@ -467,7 +470,7 @@ test("a box bound to a proxy directory the start's sweep took (its run's process
   const { api, data } = await serve(t, { faux: PROBE, fauxEgress: FAKE_EGRESS });
   const go = await holdFile(t);
   const runId = await boxedRun(api, [{ wait: go.hold }, { tool: "bash", args: { command: "printf again > out.txt" } }]);
-  const work = join(realpathSync(data), "runs", runId, "work");
+  const work = join(runDir(realpathSync(data), runId), "work");
   await until(() => existsSync(work), "the run's work/");
   // The box an earlier process of the run made with this list, its proxy directory since swept (absent now).
   const id = "f".repeat(64);
@@ -488,7 +491,7 @@ test("a box's network label does not depend on the list's order: one an earlier 
   const { api, data } = await serve(t, { faux: PROBE, fauxEgress: FAKE_EGRESS });
   const go = await holdFile(t);
   const runId = await boxedRun(api, [{ wait: go.hold }, { tool: "bash", args: { command: "printf kept > out.txt" } }]);
-  const work = join(realpathSync(data), "runs", runId, "work");
+  const work = join(runDir(realpathSync(data), runId), "work");
   await until(() => existsSync(work), "the run's work/");
   // The box an earlier process of the run made with the same two hosts, the other way round: its label is theirs sorted.
   const id = "a".repeat(64);

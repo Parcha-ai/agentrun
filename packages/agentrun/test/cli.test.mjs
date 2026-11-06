@@ -17,11 +17,13 @@ const ROOT = new URL("../../../", import.meta.url).pathname;
 const GENERATOR = join(ROOT, "scripts", "generate-clients.mjs");
 const TABLE = join(ROOT, "packages", "agentrun", "lib", "commands.generated.mjs");
 const DROPPED = ["AGENTRUN_BASE_URL", "AGENTRUN_API_KEY", "AGENTRUN_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL", "AGENTRUN_BOXES"];
+/** No box: unset, AGENTRUN_BOXES turns Docker on where it answers, which a CI runner's does (boxes.ts). */
+const NO_BOXES = { AGENTRUN_BOXES: "none" };
 
 function scratch(t) {
   const dir = mkdtempSync(join(tmpdir(), "agentrun-cli-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !DROPPED.includes(name)));
+  const env = { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !DROPPED.includes(name))), ...NO_BOXES };
   return { dir, env: { ...env, HOME: dir, XDG_CONFIG_HOME: join(dir, ".config") } };
 }
 

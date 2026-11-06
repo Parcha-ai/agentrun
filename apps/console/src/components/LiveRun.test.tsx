@@ -49,7 +49,7 @@ describe("LiveRun's Archive", () => {
 describe("LiveRun, a run whose learning is still deciding", () => {
   it("reads the ended run again until its learning is kept, then shows Learned 1 note", async () => {
     let reads = 0;
-    const learning = (n: number): Run["learning"] => (n < 3 ? { state: n < 2 ? "reflecting" : "proposed", reason: null } : { state: "merged", reason: null, used: [], learned: [{ file: "b.md", name: "Try it first", supersedes: [] }] });
+    const learning = (n: number): Run["learning"] => (n < 3 ? { state: n < 2 ? "reflecting" : "proposed", reason: null } : { state: "merged", reason: null, learned: [{ file: "b.md", name: "Try it first", supersedes: [] }] });
     const v2 = {
       getRun: async () => ({ ...at("completed", false), learning: learning(++reads) }),
       listFiles: async () => ({ run_id: "r1", files: [], complete: true, truncated: false }),
@@ -76,7 +76,7 @@ describe("LiveRun, a run whose learning is still deciding", () => {
 describe("LiveRun, its header and its timeline", () => {
   it("reads the timeline again when the run's learning moves: the look-back's step and the header agree", async () => {
     let reads = 0, timelines = 0;
-    const learning = (n: number): Run["learning"] => (n < 3 ? { state: n < 2 ? "reflecting" : "proposed", reason: null } : { state: "merged", reason: null, used: [], learned: [{ file: "b.md", name: "Try it first", supersedes: [] }] });
+    const learning = (n: number): Run["learning"] => (n < 3 ? { state: n < 2 ? "reflecting" : "proposed", reason: null } : { state: "merged", reason: null, learned: [{ file: "b.md", name: "Try it first", supersedes: [] }] });
     // The run's learning row, as the server has it at each read of the timeline: it moves in place.
     const ending = (): TimelinePage["rows"] => {
       const merged = reads >= 3;

@@ -15,7 +15,7 @@ import { keptContexts, keptProfile, savedOnRelease } from "../dist/tools.js";
 import { openapiDocument } from "../dist/openapi.js";
 import { calls as bbCalls, contexts, KEY as BB_KEY } from "./fixtures/faux-browserbase-check.mjs";
 import { KEY as KERNEL_KEY } from "./fixtures/faux-kernel-check.mjs";
-import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
+import { agent, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
 
 const FAUX_BROWSER = new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname;
 const FAUX_BROWSERBASE = new URL("./fixtures/faux-browserbase-check.mjs", import.meta.url).pathname;
@@ -226,7 +226,7 @@ test("through the API: an agent's first run holds the sign-in and saves; one sta
   await writeFile(gate, "");
   const { rows } = await follow(api, first, ["completed"], { deadlineMs: 60_000 });
   assert.ok(rows.some((row) => JSON.stringify(row).includes("snapshot")), "it browsed");
-  for (const shown of [rows, (await api("GET", `/runs/${first}`)).body, await readFile(join(data, "runs", first, "serve.json"), "utf8")]) assert.ok(!JSON.stringify(shown).includes(handed.ref), "no pointer in its timeline, its view or its record");
+  for (const shown of [rows, (await api("GET", `/runs/${first}`)).body, await readFile(join(runDir(data, first), "serve.json"), "utf8")]) assert.ok(!JSON.stringify(shown).includes(handed.ref), "no pointer in its timeline, its view or its record");
   const ready = await until(() => signIns("alpha"), (list) => list[0]?.state === "ready");
   assert.equal(ready[0].held_by, null);
   assert.ok(Date.parse(ready[0].verified_at) > 0, JSON.stringify(ready));
@@ -363,7 +363,7 @@ test("a run whose process dies naming its sign-in's pointer in its log fails wit
   assert.deepEqual(kept.map((s) => [s.state, s.held_by]), [["held", started.body.run_id]]);
   const [entry] = JSON.parse(await readFile(join(homeOf(data, "alpha"), "sign-ins", "sign-ins.json"), "utf8")).sign_ins;
   assert.ok(Date.parse(entry.gone_at) > 0);
-  for (const shown of [JSON.stringify(view), JSON.stringify((await api("GET", "/runs")).body), await readFile(join(data, "runs", started.body.run_id, "serve.json"), "utf8")]) assert.ok(!shown.includes(ref), shown);
+  for (const shown of [JSON.stringify(view), JSON.stringify((await api("GET", "/runs")).body), await readFile(join(runDir(data, started.body.run_id), "serve.json"), "utf8")]) assert.ok(!shown.includes(ref), shown);
 });
 
 test("verified_at counts only a session that saved: one let go by the run, never one the vendor had lost or never made; and an agent's queue goes once it is empty", async (t) => {
@@ -392,7 +392,7 @@ test("a Kernel saving run whose session is refused in words that name its profil
   const handed = (await readFile(log, "utf8")).trim().split("\n").map((line) => JSON.parse(line)).find((op) => op.op === "sign-in");
   assert.deepEqual([handed.provider, handed.save], ["kernel", true]);
   // What the model was given, as its run's own store keeps it (before anything this server serves is cut).
-  const files = (await readdir(join(data, "runs", started.body.run_id), { recursive: true, withFileTypes: true })).filter((entry) => entry.isFile()).map((entry) => join(entry.parentPath, entry.name));
+  const files = (await readdir(join(runDir(data, started.body.run_id)), { recursive: true, withFileTypes: true })).filter((entry) => entry.isFile()).map((entry) => join(entry.parentPath, entry.name));
   const raw = Buffer.concat(await Promise.all(files.map((file) => readFile(file))));
   assert.ok(raw.includes("one session at a time may save to a profile"), "the refusal reached the model");
   assert.ok(!raw.includes(handed.ref), "with its pointer cut");

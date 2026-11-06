@@ -21,7 +21,7 @@ import { capBefore, capModels, capModeOf, capOf, spentIn } from "./cap.js";
 import { codingSource } from "./coding-tools.js";
 import { cancelledIn, markRequests } from "./request-start.js";
 import { decisionProvidersOf } from "./decisions.js";
-import { FOLLOW_UP_OPEN_ENV, readJson, RUN_META } from "./files.js";
+import { dataOfRun, FOLLOW_UP_OPEN_ENV, readJson, RUN_META } from "./files.js";
 import { adapterFor, claudeModel, claudePriceModel, claudeSkillCheck, codexModel, type ConfineChild, learnedRoute, learnedWorkflowsOff, openRouterOnly, thinkingFor } from "./adapters.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV } from "./harness.js";
 import { adapterRun } from "./harness-app.js";
@@ -93,7 +93,7 @@ async function codexModels(env: NodeJS.ProcessEnv, ref: string | undefined, harn
 
 /** The run's row and its pinned revision, read from the store the run's directory sits in. */
 function revisionOf(where: AppContext): { run: RunRow; revision: Revision } {
-  const reader = openStoreReader(resolve(where.root, "..", ".."));
+  const reader = openStoreReader(dataOfRun(where.root));
   try {
     const id = basename(resolve(where.root));
     const run = reader.readRun(id);
@@ -130,7 +130,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   // The run's place, as its start resolved and kept it (serve.json): in a box, its coding tools run there (run-box.ts).
   const meta = await readJson(join(where.root, RUN_META));
   const place = storedPlace(meta?.place);
-  const root = resolve(where.root, "..", "..");
+  const root = dataOfRun(where.root);
   // A remote box (Daytona) is the server's to make and seed, reached through its relay; Docker's is made here.
   const box = place.mode === "sandbox" ? runBox(remotePlace(place) ? { relay: root } : { provider: () => runBoxProvider(place, env, root) }, { id: run.id, root, dir: where.root, place }) : undefined;
   // What the run's host tools file in work/ is copied into a remote box too, which does not share this machine's work/.
@@ -171,7 +171,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   // A second guard beside the pin's (learning-run.ts): a run whose harness's requests go where a learned workflow's could
   // not follow gets no tool, whatever its pin says.
   const learnedTool = flows.length && revision.kind === "agentic" && !(await learnedWorkflowsOff(revision.body.harness, env, revision.body.model))
-    ? learnedWorkflowTool({ workflows: flows, granted: revision.body.tools, plane: planeOf(process.env), policy: toolGate.policy, env, work: where.work, models: models as never, modelOf: learnedModel, complete: completer(models as never, learnedModel, thinkingLevel) })
+    ? learnedWorkflowTool({ workflows: flows, granted: revision.body.tools, plane: planeOf(process.env), policy: toolGate.policy, denyFrom: toolGate.denyFrom, env, work: where.work, models: models as never, modelOf: learnedModel, complete: completer(models as never, learnedModel, thinkingLevel) })
     : undefined;
   // The run's effort, as its thinking level reads it: its note on how to work follows the instructions on every harness
   // (effort-guidance.ts). None without an effort.
@@ -282,9 +282,10 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   const loadImage = imageLoader(where.work);
   const log = nodeLog(where.root);
   // The receipts earlier processes recorded, read before this one opens the store, which then holds it exclusively.
+  // Lock-free, as the server reads it: nothing made beside the store (a plain read leaves a -shm there).
   const earlier = await (async () => {
     try {
-      return durableDecisions(join(where.store, RUN_STORE_FILE));
+      return durableDecisions(join(where.store, RUN_STORE_FILE), { unlocked: true });
     } catch {
       return (await readLiveView(where.root))?.receipts ?? [];
     }
@@ -307,7 +308,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
       // deny since the run started is refused in the gate's words, and one set to ask too, since a call node cannot wait
       // for an approval. Neither runs.
       const permission = toolGate.policy(node.tool!);
-      if (permission === "deny") throw new Error(deniedText(node.tool!));
+      if (permission === "deny") throw new Error(deniedText(node.tool!, undefined, toolGate.denyFrom(node.tool!)));
       if (permission === "ask") throw new Error(`This ${node.tool} call needs a person's approval, which a workflow's call node cannot wait for; it was not run.`);
       const durable = opened;
       const ledger = durable ? { call: `${node.label}@${executionPath ?? ""}${item ? `#${item.index}` : ""}`, record: rootRecordOf(durable.harness) } : undefined;

@@ -311,8 +311,10 @@ test("the tools a learned draft may name are the granted ones the gate allows: o
   assert.equal(typeof tools.learnedDraftTools, "function");
   const granted = ["read", "web_fetch", "web_search"];
   const permission = (name) => (name === "web_fetch" ? "ask" : name === "web_search" ? "deny" : "allow");
-  assert.deepEqual(tools.learnedDraftTools(granted, permission), { tools: tools.learnedWorkflowTools(granted).filter((name) => name !== "web_fetch" && name !== "web_search"), gated: { web_fetch: "ask", web_search: "deny" } });
-  assert.deepEqual(tools.learnedDraftTools(granted, () => "allow"), { tools: tools.learnedWorkflowTools(granted), gated: {} });
+  assert.deepEqual(tools.learnedDraftTools(granted, permission), { tools: tools.learnedWorkflowTools(granted).filter((name) => name !== "web_fetch" && name !== "web_search"), gated: { web_fetch: "ask", web_search: "deny" }, deniedBy: {} });
+  assert.deepEqual(tools.learnedDraftTools(granted, () => "allow"), { tools: tools.learnedWorkflowTools(granted), gated: {}, deniedBy: {} });
+  // With where each was set, a deny names it.
+  assert.deepEqual(tools.learnedDraftTools(granted, permission, undefined, () => "agent").deniedBy, { web_search: "agent" });
 });
 
 test("a composed workflow node whose child names no output path is refused at learn time too, never after its nodes ran", () => {
