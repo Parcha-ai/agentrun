@@ -203,9 +203,11 @@ test("writeFile of a read-only mode over many chunks writes them all, then sets 
 /**
  * A fake daemon for tar pulls and pushes that keeps sessions as the real one does: at most 8 of each a connection, a
  * pull reads `archive` in chunks of `chunk`, and its end is idempotent. What each push was sent is in `pushed`. With
- * `lateBegin`, a push's begin is answered on a later turn, as a real daemon over a real pipe answers.
+ * `lateBegin`, a push's begin is answered on a later turn, as a real daemon over a real pipe answers. With
+ * `refuseWrites`, every push write is refused and ends its push, as the daemon does when an entry is refused; with
+ * `holdWrites`, no push write is ever answered.
  */
-function tarDaemon({ archive = Buffer.alloc(0), chunk = MAX_CHUNK_BYTES, failRead, lateBegin = false } = {}) {
+function tarDaemon({ archive = Buffer.alloc(0), chunk = MAX_CHUNK_BYTES, failRead, lateBegin = false, refuseWrites = false, holdWrites = false } = {}) {
 	const pulls = new Map();
 	const pushes = new Map();
 	const pushed = [];
@@ -237,6 +239,11 @@ function tarDaemon({ archive = Buffer.alloc(0), chunk = MAX_CHUNK_BYTES, failRea
 				return daemon.reply(request, { id: `push-${next}` });
 			case "tar.push.write":
 				if (!pushes.has(id)) return daemon.error(request, "not_found", `no push "${id}" on this connection`);
+				if (refuseWrites) {
+					pushes.delete(id);
+					return daemon.error(request, "denied", "open /dst/a.bin: permission denied");
+				}
+				if (holdWrites) return;
 				pushes.get(id).push(bytesOf(request.params.data));
 				return daemon.reply(request, {});
 			case "tar.push.end":
@@ -448,5 +455,88 @@ test("a push aborted while it begins still ends what it began", async () => {
 	const deadline = Date.now() + 10_000;
 	while ((pushes.size > 0 || !seen.some((r) => r.method === "tar.push.end")) && Date.now() < deadline) await tick();
 	assert.equal(pushes.size, 0, "the begun push was never ended");
+	client.close();
+});
+
+/** Waits, a turn at a time, until check() holds; fails after ms. */
+async function until(check, ms, what) {
+	const deadline = Date.now() + ms;
+	while (!check()) {
+		if (Date.now() > deadline) throw new Error(`${what} did not happen within ${ms / 1000} s`);
+		await tick();
+	}
+}
+
+/** Begins 8 pulls on client at once and reads each one's first chunk, then leaves them: each gives false if it began. */
+async function eightPulls(client) {
+	const eight = Array.from({ length: 8 }, () => pullTarStream(client, "/src").chunks[Symbol.asyncIterator]());
+	const firsts = await within(
+		Promise.all(eight.map((it) => it.next().then((step) => step.done, (error) => error.message))),
+		10_000,
+		"8 pulls at once",
+	);
+	await within(Promise.all(eight.map((it) => it.return())), 10_000, "leaving the 8 pulls");
+	return firsts;
+}
+
+test("a pull piped into a push whose write is refused is ended, and 8 pulls follow on the connection", async () => {
+	const { client, seen, pulls } = tarDaemon({ archive: randomBytes(MAX_CHUNK_BYTES * 4), refuseWrites: true });
+	const { chunks, done } = pullTarStream(client, "/src");
+	const pushed = await within(pushTar(client, "/dst", chunks), 10_000, "the refused push");
+	assert.equal(pushed.ok, false);
+	assert.equal(pushed.error.code, "denied");
+	const ended = await within(done, 10_000, "the source pull's done");
+	assert.equal(ended.ok, false);
+	assert.equal(ended.error.code, "aborted");
+	assert.ok(seen.some((r) => r.method === "tar.pull.end"), "the source pull was never ended");
+	assert.equal(pulls.size, 0, "the source pull still holds a slot");
+	assert.deepEqual(await eightPulls(client), Array(8).fill(false));
+	client.close();
+});
+
+test("a pull piped into a push aborted during a write is ended, and 8 pulls follow on the connection", async () => {
+	const { client, seen, pulls, pushes } = tarDaemon({ archive: randomBytes(MAX_CHUNK_BYTES * 4), holdWrites: true });
+	const controller = new AbortController();
+	const { chunks, done } = pullTarStream(client, "/src");
+	const pushing = pushTar(client, "/dst", chunks, { signal: controller.signal });
+	await until(() => seen.some((r) => r.method === "tar.push.write"), 10_000, "the push's first write");
+	controller.abort();
+	const pushed = await within(pushing, 10_000, "the push aborted during a write");
+	assert.equal(pushed.ok, false);
+	assert.equal(pushed.error.code, "aborted");
+	const ended = await within(done, 10_000, "the source pull's done");
+	assert.equal(ended.ok, false);
+	assert.equal(ended.error.code, "aborted");
+	assert.ok(seen.some((r) => r.method === "tar.pull.end"), "the source pull was never ended");
+	assert.equal(pulls.size, 0, "the source pull still holds a slot");
+	assert.equal(pushes.size, 0, "the aborted push still holds a slot");
+	assert.deepEqual(await eightPulls(client), Array(8).fill(false));
+	client.close();
+});
+
+test("a push whose begin is refused never reads its source, and lets it go", async () => {
+	const { client, seen } = fake((request, daemon) => daemon.error(request, "not_dir", "/dst is not a directory"));
+	let read = false;
+	let released = false;
+	const source = {
+		[Symbol.asyncIterator]() {
+			return {
+				next() {
+					read = true;
+					return Promise.resolve({ value: Buffer.from("x"), done: false });
+				},
+				return() {
+					released = true;
+					return Promise.resolve({ value: undefined, done: true });
+				},
+			};
+		},
+	};
+	const pushed = await within(pushTar(client, "/dst", source), 10_000, "the refused push");
+	assert.equal(pushed.ok, false);
+	assert.equal(pushed.error.code, "not_dir");
+	assert.deepEqual(methods(seen), ["tar.push.begin"]);
+	assert.equal(read, false, "the source was read for a push that never began");
+	assert.equal(released, true, "the source was not let go");
 	client.close();
 });

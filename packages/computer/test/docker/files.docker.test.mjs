@@ -273,6 +273,24 @@ describe("move files in and out of a Docker computer", { skip: LIVE ? false : "s
 		assert.equal((await run(["/data/tree-copy/run"])).out, "copied\n");
 	});
 
+	it("a copy into a directory that refuses its writes ends the source pull, and 8 pulls follow on the same connection", async () => {
+		const src = await bigTree();
+		await call("files.mkdir", { path: "/data/read-only-dir", mode: 0o555, parents: true });
+		await onItsOwnConnection(async (one) => {
+			const { chunks, done } = pullTarStream(one, src);
+			const copied = await within(pushTar(one, "/data/read-only-dir", chunks), 60_000, "the refused copy");
+			assert.equal(copied.ok, false);
+			assert.equal(copied.error.code, "denied", JSON.stringify(copied.error));
+			const ended = await within(done, 60_000, "the source pull's done");
+			assert.equal(ended.ok, false);
+			const eight = Array.from({ length: 8 }, () => pullTarStream(one, src).chunks[Symbol.asyncIterator]());
+			const firsts = await within(Promise.all(eight.map((it) => it.next().then((step) => step.done, (error) => error.message))), 60_000, "8 pulls at once");
+			assert.deepEqual(firsts, Array(8).fill(false));
+			await within(Promise.all(eight.map((it) => it.return())), 60_000, "leaving the 8 pulls");
+		});
+		assert.equal((await run(["ls", "-A", "/data/read-only-dir"])).out, "");
+	});
+
 	it("answers other calls while a pull's chunks go unread", async () => {
 		const src = await bigTree();
 		await onItsOwnConnection(async (one) => {

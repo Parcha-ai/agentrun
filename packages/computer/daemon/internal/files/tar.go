@@ -109,6 +109,9 @@ func extractEntry(body io.Reader, hdr *tar.Header, dir string, dirs map[string]o
 		}
 		return false, fsError(err)
 	}
+	if rel := filepath.Dir(name); betweenCheckAndUse != nil && rel != "." {
+		betweenCheckAndUse(filepath.ToSlash(rel))
+	}
 	leaf := filepath.Join(parent, filepath.Base(name))
 	isDir := hdr.Typeflag == tar.TypeDir
 	if existing, err := os.Lstat(leaf); err == nil && existing.IsDir() != isDir {
@@ -131,6 +134,10 @@ func extractEntry(body io.Reader, hdr *tar.Header, dir string, dirs map[string]o
 		return true, replaceSymlink(leaf, hdr.Linkname)
 	}
 }
+
+// betweenCheckAndUse is nil outside tests: it runs once a directory an entry needs (rel, below the target) is checked,
+// before it is used, so a test can swap it.
+var betweenCheckAndUse func(rel string)
 
 var errEscapes = errors.New("the path leaves the target directory")
 
