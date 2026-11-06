@@ -5,4 +5,4 @@ This product includes software from E2B infra (https://github.com/e2b-dev/infra)
 
 This product includes software from Kubernetes agent-sandbox (https://github.com/kubernetes-sigs/agent-sandbox), sandboxd, Copyright 2026 The Kubernetes Authors, licensed under the Apache License 2.0.
 
-UPSTREAM.json records each copied file: where it came from, at which commit, and what changed.
+packages/computer/UPSTREAM.json in the source repository records each copied file: where it came from, at which commit, and what changed.

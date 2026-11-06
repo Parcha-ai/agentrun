@@ -1,0 +1,97 @@
+# @parcha/agentrun-computer
+
+Private for now: not published, and nothing else in the repository uses it yet.
+
+The open platform's computer protocol. A computer is anything an agent can run commands on: a container, a microVM, a
+full VM, a machine. The protocol has two layers:
+
+- **A daemon in every computer.** `computerd` is one small static Go program (Linux, amd64 and arm64, no cgo). It speaks
+  JSON-RPC 2.0 on stdin and stdout, one JSON object per line, so it works in a computer with no network.
+- **One provisioner per vendor.** A provisioner makes, finds and ends computers, and opens a stream to the daemon
+  inside. It never runs commands itself: the daemon does. This package has the first one, for Docker.
+
+## What it does today
+
+The daemon answers `hello`, `ping` and `exec.run`.
+
+```text
+→ {"jsonrpc":"2.0","id":1,"method":"hello","params":{"client":"me"}}
+← {"jsonrpc":"2.0","id":1,"result":{"version":"0.1.0-beta.30","os":"linux","arch":"arm64","capabilities":["exec"]}}
+→ {"jsonrpc":"2.0","id":2,"method":"exec.run","params":{"argv":["uname","-m"],"timeoutMs":5000}}
+← {"jsonrpc":"2.0","id":2,"result":{"exitCode":0,"stdout":"YWFyY2g2NAo=","stderr":"","timedOut":false,"truncated":false}}
+```
+
+- `exec.run` takes argv, never a shell string. A shell is the caller's choice: `["sh", "-c", "..."]`.
+- The program runs in a process group of its own. On timeout, or when the call is cancelled with
+  `$/cancelRequest {id}`, the whole group gets SIGTERM, then SIGKILL 2 s later. A timeout is a result with
+  `timedOut: true`; a cancel is an `aborted` error. When the program ends, anything it left in its group is killed.
+- `stdout` and `stderr` come back apart, in base64. Each keeps at most 360 KiB (`maxOutput`, the default and the most):
+  both, in base64, fit one 1 MiB line. The rest is read and dropped, and `truncated` is true.
+- The environment is PATH (the daemon's), HOME, USER and LOGNAME for the user, then `env` over them. Nothing else of the
+  daemon's environment is passed on.
+- `user` is a name or `uid[:gid]`. A daemon without CAP_SETUID and CAP_SETGID cannot switch users and answers `denied`.
+  A Docker computer drops every capability, so there a command runs as the daemon's own user.
+- Requests run at once; replies may come in any order. A line over 1 MiB gets an error reply and the connection goes
+  on. When the input ends, what still runs is cancelled.
+- Errors are `{code, message, data: {kind}}`, with kind `not_found`, `invalid`, `timeout`, `aborted`, `denied`, `limit`
+  or `unsupported`.
+
+`src/protocol.ts` and `daemon/internal/methods` are the two definitions of these methods, TypeScript and Go.
+
+## Docker
+
+```ts
+import { DockerProvider } from "@parcha/agentrun-computer";
+
+const docker = new DockerProvider({ daemonPath: "dist/computerd-linux-amd64" });
+const made = await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none" });
+if (!made.ok) throw new Error(made.error.message);
+const connected = await docker.connect(made.value);
+if (connected.ok) {
+	const ran = await connected.value.client.call("exec.run", { argv: ["uname", "-m"], timeoutMs: 5000 });
+	await connected.value.close();
+}
+await docker.release(made.value, "delete");
+```
+
+- `check(spec)` refuses in words, with no Docker call: no image, no or a bad `lifetimeMs`, a network allowlist (Docker
+  cannot enforce one yet: ask for `none` or `open`), and any field Docker does not support.
+- `create` runs `docker run` with every capability dropped (`--cap-drop ALL`), `--security-opt no-new-privileges`, a
+  pids limit (4096 unless `pids` says), `--network none` or `bridge`, and the daemon bind-mounted read-only at
+  `/opt/agentrun/computerd` as the entrypoint, `computerd init`, which is PID 1 and reaps orphans. The label
+  `agentrun.computer.deadline` holds the time `lifetimeMs` ends; the provider declares `lifetime: "janitor"`, since
+  Docker ends nothing on its own. A container that is not running after its start is removed.
+- `connect` runs `docker exec -i <name> /opt/agentrun/computerd stdio` and says hello.
+- `release(ref, "stop" | "delete")` runs `docker stop`, or `docker rm --force --volumes`. A computer already gone is ok.
+
+Expected failures are results (`{ ok: false, error: { code, message } }`), not throws.
+
+What a Docker computer cannot do: switch users, gain a capability, reach any network when asked for `none`, write the
+daemon, or outlive its deadline once the janitor (a later change) sweeps by label.
+
+## Build
+
+```sh
+npm run build -w @parcha/agentrun-computer          # the TypeScript, into dist/
+npm run build:daemon -w @parcha/agentrun-computer   # dist/computerd-linux-amd64 and -arm64; needs Go 1.24 or newer on PATH
+```
+
+## Tests
+
+```sh
+npm test -w @parcha/agentrun-computer               # unit tests: no Go, no Docker
+cd packages/computer/daemon && go vet ./... && go test ./...
+AGENTRUN_COMPUTER_LIVE_DOCKER=1 npm run test:docker -w @parcha/agentrun-computer
+```
+
+The live tests need Docker, `debian:bookworm-slim` pulled, and both builds. They use the daemon for Docker's own
+architecture, and remove every container they make by its exact name, pass or fail.
+
+## Acknowledgements
+
+The daemon copies code, with credit, from two Apache-2.0 projects. NOTICE names them; UPSTREAM.json records each copied
+file, the commit, and what changed.
+
+- [E2B infra](https://github.com/e2b-dev/infra), envd: the user, credential and environment setup of a process.
+- [Kubernetes agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox), sandboxd: the process group kill and
+  the bounded output of a run with limits.
