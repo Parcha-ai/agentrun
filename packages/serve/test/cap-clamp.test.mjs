@@ -158,17 +158,19 @@ const guarded = (cap) => capBefore(cap, model());
 
 test("the harnesses' guard admits a request with the output limit what is left buys, and refuses in words under 1,024 tokens", async () => {
   const guard = await guarded(0.5);
-  assert.deepEqual(guard.beforeRequest({ spentUsd: 0, inFlight: [], inputTokensMax: 0 }), { outputTokensMax: 5_000 });
-  assert.deepEqual(guard.beforeRequest({ spentUsd: 0.1, inFlight: [], inputTokensMax: 0 }), { outputTokensMax: 4_000 });
+  assert.equal(guard.beforeRequest({ spentUsd: 0, inFlight: [], inputTokensMax: 0 }).outputTokensMax, 5_000);
+  assert.equal(guard.beforeRequest({ spentUsd: 0.1, inFlight: [], inputTokensMax: 0 }).outputTokensMax, 4_000);
   assert.equal(guard.beforeRequest({ spentUsd: 0.45, inFlight: [], inputTokensMax: 0 }).refuse, "spend_cap_reached (out of budget): Not sent: the run has spent $0.45 of its $0.50 cap, and its next Model M request needs at least $0.11. Raise the cap to at least $0.56 to run it.");
   assert.equal((await guarded(0.05)).beforeRequest({ spentUsd: 0, inFlight: [], inputTokensMax: 0 }).refuse, "spend_cap_reached (out of budget): Not sent: this run's cap of $0.05 can't cover one Model M request (at least $0.11). Raise the cap to at least $0.11 to run it.");
-  assert.ok(Math.abs(guard.worstOf({ inputTokensMax: 0, outputTokensMax: 5_000 }) - 0.5) < 1e-9, "held at the limit it was admitted with");
+  assert.ok(Math.abs(guard.beforeRequest({ spentUsd: 0, inFlight: [], inputTokensMax: 0 }).holdUsd - 0.5) < 1e-9, "held at the limit it was admitted with");
 });
 
 test("the harnesses' guard holds a request in flight at the limit it was admitted with, not at the ceiling", async () => {
   const guard = await guarded(0.5);
   // One in flight admitted with 3,000 tokens holds $0.30: $0.20 is left, 2,000 tokens.
-  assert.deepEqual(guard.beforeRequest({ spentUsd: 0, inFlight: [{ inputTokensMax: 0, outputTokensMax: 3_000 }], inputTokensMax: 0 }), { outputTokensMax: 2_000 });
+  assert.equal(guard.beforeRequest({ spentUsd: 0, inFlight: [{ inputTokensMax: 0, outputTokensMax: 3_000 }], inputTokensMax: 0 }).outputTokensMax, 2_000);
+  // One the runner says it held at $0.10 (what its host admitted it at) holds that: $0.40 is left, 4,000 tokens.
+  assert.equal(guard.beforeRequest({ spentUsd: 0, inFlight: [{ inputTokensMax: 0, outputTokensMax: 3_000, holdUsd: 0.1 }], inputTokensMax: 0 }).outputTokensMax, 4_000);
 });
 
 test("a refusal is final to pi-ai's retry whatever digits its words hold: pi-ai's own check says so", async () => {

@@ -12,7 +12,7 @@ const model = { id: "gpt-6-luna", name: "gpt-6-luna", api: "openai-responses", p
 test("a request whose least and what was spent make the cap in decimal fits it, never refused by a float's tail", async () => {
   const cap = await capBefore(0.31, model);
   // $0.0028 spent; the least, 3,072 tokens, costs 0.30720000000000003 in a float, and 0.31 - 0.0028 is 0.3072.
-  assert.deepEqual(cap.beforeRequest({ spentUsd: 0.0028, inFlight: [], inputTokensMax: 0, outputTokensLeast: 3072 }), { outputTokensMax: 3072 });
+  assert.equal(cap.beforeRequest({ spentUsd: 0.0028, inFlight: [], inputTokensMax: 0, outputTokensLeast: 3072 }).outputTokensMax, 3072);
 });
 
 test("a request past the cap names a raise a cent above it, never the cap itself", async () => {
