@@ -93,10 +93,15 @@ export function notesRead(reflect: Reflect | undefined, rows: readonly TimelineE
 /** How much of a grader's answer the host could not read a run keeps: its start and its end, where such an answer goes
  *  wrong (words before its JSON, or JSON cut off). */
 const UNREAD_MAX = 2_000;
-/** `text` in size, cut of `values` (redactSecrets). A long answer is cut at whitespace first, so no word, a secret
- *  included, is left in part beside the cut, and then cut of secrets: redactSecrets reads no more than PRINT_MAX. */
-const unreadShown = (text: string, values: readonly string[]): string =>
-  redactSecrets(text.length <= UNREAD_MAX ? text : `${text.slice(0, 1_500).replace(/\S*$/, "")}\n…\n${text.slice(-(UNREAD_MAX - 1_503)).replace(/^\S*/, "")}`, values);
+/** How much of an answer redactSecrets reads before it gives up on it whole: more than the grader's answer can hold
+ *  (GRADE_MAX_TOKENS). */
+const UNREAD_SCAN = 256 * 1024;
+/** `text` cut of `values` (redactSecrets), whole, and then in size at whitespace. Cut of secrets first: a key may hold a
+ *  space, or be written in spaced parts, and a cut before could leave a part of it. */
+const unreadShown = (text: string, values: readonly string[]): string => {
+  const cut = redactSecrets(text, values, UNREAD_SCAN);
+  return cut.length <= UNREAD_MAX ? cut : `${cut.slice(0, 1_500).replace(/\S*$/, "")}\n…\n${cut.slice(-(UNREAD_MAX - 1_503)).replace(/^\S*/, "")}`;
+};
 
 /** `verdict` with its reason, and each item's question and why, cut of `values` (learn/secrets.ts redactSecrets). */
 const cutVerdict = (verdict: Verdict, values: readonly string[]): Verdict => ({
