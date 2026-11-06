@@ -600,13 +600,14 @@ test("a symbolic link at disk/agents/<key>, the agent's folder, there before its
   const { api, data } = await serve(t, { faux: SYSTEM });
   const target = await linkTarget(t);
   assert.equal((await api("POST", "/agents", agent("linked", { learning: true, instructions: "Answer the question." }))).status, 201);
+  const before = readdirSync(target).sort();
   mkdirSync(dirname(agentFolderOf(data, "linked")), { recursive: true });
   symlinkSync(target, agentFolderOf(data, "linked"));
   const run = await api("POST", "/agents/linked/runs", { input: { content: "hi" } });
   assert.equal(run.status, 422, JSON.stringify(run.body));
   assert.match(JSON.stringify(run.body), /disk\/agents\/linked-[0-9a-f]{16} is a symbolic link, and a run's folder is never made through one/);
   assert.ok(!JSON.stringify(run.body).includes(target), "the refusal names the link, not its target");
-  assert.deepEqual(readdirSync(target), [], "nothing made where the link points");
+  assert.deepEqual(readdirSync(target).sort(), before, "nothing made where the link points");
 });
 
 test("a link swapped in for the learning folder the host has just made is caught by the check after the mkdir, never followed", { timeout: 120_000 }, async (t) => {
