@@ -17,6 +17,7 @@ import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
 import { REQUEST_COST, REQUEST_ENDED, REQUEST_STARTED } from "@parcha/pi-durable-agent/timeline";
 import { capModels, spentIn } from "../dist/cap.js";
 import { END_MARK_WAIT_MS, markRequests } from "../dist/request-start.js";
+import { RequestBounds } from "../dist/bounds.js";
 
 /** A side request's marks without their request id, once each names one and the same one (request-start.ts). */
 const sameRequest = (marks) => {
@@ -363,4 +364,34 @@ test("an attempt the SDK's own timeout cuts (its controller fires, the run's sto
   const second = await run.streamSimple(MODEL, context, options(scripted([STEPS.ok]))).result();
   assert.match(second.errorMessage ?? "", /^spend_cap_reached/, "booked at its $0.001 hold, the timed-out attempt left: no room for another");
   assert.equal(spentIn(storeOf(t, [...marks.slice(0, upTo), { kind: "pi.assistant", model: [first] }])), 0.001, "a later process reads the hold too");
+});
+
+test("a lost attempt then pi-ai's retry that misses the cache: the request's bound stays open through its lost mark and ends with its answer, so the run's overshoot is within it, read live and after a restart", async () => {
+  // Priced as Claude Sonnet 5.5; a conversation of ~300 KB whose previous answer read 75,000 tokens from the cache, so the
+  // request goes at its expected cost with a bound. The retry reports 60,000 input tokens, none cached: $0.12 past a
+  // $0.10 cap.
+  const priced = { ...MODEL, cost: { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 } };
+  const previous = { role: "assistant", content: [{ type: "text", text: "Read it." }], api: priced.api, provider: priced.provider, model: priced.id, stopReason: "stop", timestamp: Date.now(), usage: { input: 3, output: 20, cacheRead: 70_000, cacheWrite: 5_000, totalTokens: 75_023, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.03 } } };
+  const warm = { messages: [{ role: "user", content: `Read this.\n${"The quarterly figures hold. ".repeat(11_000)}`, timestamp: 0 }, previous, { role: "user", content: "Go on.", timestamp: 0 }] };
+  const missed = EVENTS.map((event) => (event.type === "message_start" ? { ...event, message: { ...event.message, usage: { input_tokens: 60_000, output_tokens: 1 } } } : event));
+  const marks = [];
+  const run = await capped(marks, undefined, undefined, 0.1);
+  const answer = await run.streamSimple(priced, warm, options(scripted([STEPS.refused("ECONNRESET"), async () => new Response(frame(missed), { status: 200, headers: { "content-type": "text/event-stream" } })]))).result();
+  await settle();
+  assert.equal(answer.stopReason, "stop", answer.errorMessage);
+  assert.ok(answer.usage.cost.total > 0.1, `the retry's real cost passes the cap: ${answer.usage.cost.total}`);
+  const start = marks.find((m) => m.kind === REQUEST_STARTED);
+  assert.ok(start?.data?.boundUsd > 0, `sent with a bound: ${JSON.stringify(start?.data)}`);
+  assert.ok(marks.some((m) => m.kind === REQUEST_ENDED && m.data?.lost === true), "its lost attempt was marked before the retry");
+  // The run's root as the server reads it: the marks in order, then pi's entry for the answer.
+  const entries = [...marks, { kind: "pi.assistant", model: [answer] }].map((entry, at) => ({ ...entry, id: at + 1 }));
+  const live = new RequestBounds();
+  for (const entry of entries) live.note([entry], 0.1);
+  const replay = new RequestBounds();
+  replay.note(entries, 0.1);
+  for (const [how, bounds] of [["live", live], ["after a restart", replay]]) {
+    assert.equal(bounds.inFlight(), 0, how);
+    assert.ok(Math.abs(bounds.ended() - start.data.boundUsd) < 1e-12, `${how}: its bound ended with its answer: ${bounds.ended()}`);
+    assert.ok(answer.usage.cost.total - 0.1 <= bounds.ended(), `${how}: the overshoot is within it`);
+  }
 });

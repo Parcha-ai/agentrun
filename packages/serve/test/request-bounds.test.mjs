@@ -106,3 +106,20 @@ test("a full read after a restart keeps only the bounds since the run's cost las
   assert.ok(close(live.ended(), 0.3), `live: the crossing request's bound alone: ${live.ended()}`);
   assert.ok(close(replay.ended(), live.ended()), `after a restart, the same: ${replay.ended()} vs ${live.ended()}`);
 });
+
+test("pi: a lost attempt's end mark (written before pi-ai tries again, in the same request) closes nothing: the request's bound stays until its answer brings its cost, so a retry that misses the cache is within it, live and after a restart", () => {
+  const lost = () => ({ id: next(), kind: REQUEST_ENDED, data: { lost: true, heldUsd: 0.1 } });
+  const answered = (usd) => ({ id: next(), kind: "pi.assistant", model: [{ role: "assistant", stopReason: "toolUse", usage: { cost: { total: usd } } }] });
+  const entries = [charge(0.02), piStart(0.3), lost()];
+  const live = new RequestBounds();
+  for (const entry of entries) live.note([entry], CAP);
+  assert.ok(close(live.inFlight(), 0.3), `in flight through its retry: ${live.inFlight()}`);
+  // The retry answers: a miss that takes the run past its cap.
+  const answer = answered(0.1);
+  live.note([answer], CAP);
+  assert.equal(live.inFlight(), 0);
+  assert.ok(close(live.ended(), 0.3), `its bound ended with its answer: ${live.ended()}`);
+  const replay = new RequestBounds();
+  replay.note([...entries, answer], CAP);
+  assert.ok(close(replay.ended(), 0.3), `after a restart, the same: ${replay.ended()}`);
+});
