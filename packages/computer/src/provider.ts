@@ -15,6 +15,8 @@ export interface ComputerSpec {
 	pids?: number;
 	labels?: Record<string, string>;
 	workdir?: string;
+	/** uid or uid:gid, in numbers. Unset, the provider's non-root default; root ("0") only when asked here. */
+	user?: string;
 }
 
 export interface ComputerCapabilities {

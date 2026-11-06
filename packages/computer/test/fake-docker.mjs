@@ -38,9 +38,9 @@ export function container({ name, labels = {}, network = "none", running = true,
  * Options: `running` is what a new container's inspect reports; `gone` makes stop and rm answer "No such container";
  * `containers` are there from the start; `patch` is merged over each new container (to make drift); `hello` over the
  * daemon's hello; `arch` is what docker info reports; `vanish` names are listed by ps but gone by inspect; `noDaemon`
- * makes exec fail as when the daemon is missing.
+ * makes exec fail as when the daemon is missing; `user` is the provider's user option.
  */
-export function fakeDocker({ running = true, gone = false, containers = [], patch = {}, hello = {}, arch = "x86_64", vanish = [], noDaemon = false } = {}) {
+export function fakeDocker({ running = true, gone = false, containers = [], patch = {}, hello = {}, arch = "x86_64", vanish = [], noDaemon = false, user } = {}) {
 	const dir = mkdtempSync(join(tmpdir(), "computer-fake-docker-"));
 	dirs.push(dir);
 	const log = join(dir, "calls.jsonl");
@@ -148,7 +148,7 @@ switch (args[0]) {
 	);
 	const calls = () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)) : []);
 	const names = () => JSON.parse(readFileSync(state, "utf8")).map((c) => c.Name.slice(1));
-	return { provider: new DockerProvider({ daemonPath, docker: program }), calls, names, daemonPath };
+	return { provider: new DockerProvider({ daemonPath, docker: program, ...(user === undefined ? {} : { user }) }), calls, names, daemonPath };
 }
 
 /** The value after each occurrence of a flag. */

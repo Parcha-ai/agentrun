@@ -45,8 +45,11 @@ capabilities are `["exec", "files", "processes"]`.
 
 ### Init, the socket and the bridge
 
-- `computerd init` is the computer's first process. It listens on a unix socket, `/run/agentrun/computerd.sock` (or
-  `AGENTRUN_COMPUTERD_SOCKET`), in a directory it makes 0700; the socket is 0600, so only the daemon's user can connect.
+- `computerd init --deadline <time>` is the computer's first process. It listens on a unix socket,
+  `/run/agentrun/computerd.sock` (or `AGENTRUN_COMPUTERD_SOCKET`); the socket is 0600, so only the daemon's user can
+  connect. Init does not make the socket's directory, since a non-root init cannot write under `/run`: the provider
+  gives it, the daemon's user's alone (mode 0700). Init exits 1, saying why, when the directory is missing, is not the
+  user's alone, or is not writable by it.
   Every connection is served by the same daemon with one process table, which is how a process outlives the call and
   the connection that started it. A socket left by an init that is gone is replaced; a live one is refused.
 - `computerd stdio` is a thin bridge: it connects to the socket (waiting up to 3 s for a computer that has just
@@ -56,8 +59,9 @@ capabilities are `["exec", "files", "processes"]`.
   once a second: a child of its own that is not one of its guards can only be an orphan whose guard died (a program can
   kill its own guard, since both run as the same user), so it is killed with everything under it. A process orphaned by
   something run with `docker exec`, outside the daemon, is ended the same way.
-- On SIGTERM or SIGINT (`docker stop`), init sends SIGTERM to every guard, each of which ends its program's group and
-  descendants with SIGKILL 2 s later; whatever is still under init 5 s after the SIGTERM is killed, and init exits 0.
+- On SIGTERM or SIGINT (`docker stop`), and at its deadline, init sends SIGTERM to every guard, each of which ends its
+  program's group and descendants with SIGKILL 2 s later; whatever is still under init 5 s after the SIGTERM is killed,
+  and init exits 0. One shutdown serves all three.
 - A guard also ends its program when its control pipe from the daemon closes, so no program outlives the daemon.
 
 ### Processes
@@ -97,7 +101,8 @@ which pages `process.list` and returns every process.
 ### Files
 
 Every path is absolute, and the daemon cleans it; a relative path is `invalid`. Files are read and written as the
-daemon's user, and data is base64.
+daemon's user, and data is base64. In a Docker computer that is the computer's user, non-root by default, so it writes
+in `/work` (its home) and `/tmp`; the image's root-owned directories are `denied`.
 
 | Method | Params | Result |
 | --- | --- | --- |
@@ -121,11 +126,10 @@ Tar archives move whole trees without holding an archive in memory, and no line 
   next bytes (send each after the last one's reply), and extraction runs as they come; `tar.push.end {id}` returns
   `{entries}`. Files, directories and symlinks are extracted with their modes and never chowned; a directory keeps
   owner access until the archive ends, then gets its mode, deepest first, whether the push made it or found it. An
-  entry that is
-  absolute, has a `..` part, or would be written through a symlink that leads out of the directory is `denied`, and
-  ends the push; entries before it stay. A file is written beside its target and renamed into place, so a failed or
-  abandoned push leaves no half file. Hard links, devices and pipes are `invalid`. A connection has at most 8 pushes
-  open, and those still open when it ends are ended with it.
+  entry that is absolute, has a `..` part, or has a symlink or a file on its way is `denied`, and ends the push;
+  entries before it stay. A symlink at an entry's own name is replaced, never followed. A file is written beside its
+  target and renamed into place, so a failed or abandoned push leaves no half file. Hard links, devices and pipes are
+  `invalid`. A connection has at most 8 pushes open, and those still open when it ends are ended with it.
 
 `src/files.ts` has the helpers that go past one call: `readFile(client, path)`, `writeFile(client, path, bytes)` (a
 `mode` is set with the last chunk, so a read-only file over 512 KiB can be written),
@@ -133,7 +137,20 @@ Tar archives move whole trees without holding an archive in memory, and no line 
 `pullTarStream(client, path, {signal})` (`{chunks, done}`: one `tar.pull.read` each time the loop asks for a chunk,
 and how the pull ended). Every call is a request and its reply: a slow reader holds back only its own pull, so
 `pushTar(client, dir, pullTarStream(client, path).chunks)` copies a tree on one connection. A push or pull that began
-is always ended, whether it finished, failed, was left or was aborted.
+is always ended, whether it finished, failed, was left or was aborted. `pushTar` owns its source: unless the source is
+read to its end, the push calls its `return()` however it ends, so a pull piped into a push that fails is ended too.
+
+### Security
+
+- A push confines every write to its directory at the moment of the write, even while other pushes, or programs in
+  the computer running as another user, change the tree under it. The daemon opens the directory once and reaches
+  each entry from that descriptor one name at a time, never following a symlink (`openat` with `O_NOFOLLOW`, `mkdirat`,
+  `renameat`, `symlinkat`, `fchmod` on a descriptor). No path is checked and then used by name, so a directory swapped
+  for a symlink between two steps refuses the entry instead of redirecting it.
+- `files.write`, `files.mkdir`, `files.move` and `files.remove` act on the absolute path the caller chose and make no
+  promise to confine it: they resolve it by name, as any program in the computer would, and follow a symlink on the
+  way. The computer is their boundary. A caller that needs a write held inside one directory against a concurrent
+  actor pushes a tar into that directory.
 
 `src/protocol.ts` and `daemon/internal/methods` are the two definitions of these methods, TypeScript and Go (the Go
 params and results of `files.*` and `tar.*` sit beside their code in `daemon/internal/files`).
@@ -157,11 +174,24 @@ await docker.release(made.value, "delete");
 - `check(spec)` refuses in words, with no Docker call: no image, no or a bad `lifetimeMs` (at most 30 days), a network
   allowlist (Docker cannot enforce one yet: ask for `none` or `open`), a NUL byte in any string, and any field Docker
   does not support. `create` never throws on a spec `check` passes.
-- `create` runs `docker run` with every capability dropped (`--cap-drop ALL`), `--security-opt no-new-privileges`, a
-  pids limit (4096 unless `pids` says), `--network none` or `bridge`, and the daemon bind-mounted read-only at
-  `/opt/agentrun/computerd` as the entrypoint, `computerd init`, which is PID 1, holds every process and reaps orphans. The label
-  `agentrun.computer.deadline` holds the time `lifetimeMs` ends; the provider declares `lifetime: "janitor"`, since
-  Docker ends nothing on its own. A container that is not running after its start is removed.
+- `create` runs `docker run` as a non-root user (`--user`, below), with every capability dropped (`--cap-drop ALL`),
+  `--security-opt no-new-privileges`, `--network none` or `bridge`, serve's sizes unless the spec gives its own (2
+  CPUs as a quota, `--cpu-period 100000 --cpu-quota 200000`, so a host with fewer CPUs still runs one; 4 GiB with swap
+  the same; 1024 pids), and the daemon bind-mounted read-only at `/opt/agentrun/computerd` as
+  the entrypoint, `computerd init --deadline <time>`, which is PID 1, holds every process and reaps orphans. The label
+  `agentrun.computer.deadline` holds the time `lifetimeMs` ends, and init gets the same time: then it ends every
+  process as on SIGTERM (below) and exits 0, which stops the container. Init refuses to start with no deadline.
+  Deleting a stopped computer is the janitor's (`lifetime: "janitor"`). A container that is not running after its
+  start is removed.
+- **A computer runs as a non-root user by default; root must be asked for in the spec.** `user` is a uid or uid:gid
+  in numbers (a name is refused: the image may not have it; a uid alone is its own gid). The spec's `user` wins, then
+  the provider's `user` option, then this process's uid:gid, or `1000:1000` when this process is root. The provider
+  option refuses root; only a spec's `user: "0"` runs a computer as root, and that root has no capability either.
+- `/run/agentrun`, init's socket directory, is a tmpfs owned by the computer's user, mode 700, with `noexec`, `nosuid`
+  and `nodev`.
+- `/work` is the computer's home (`HOME=/work`) and its workdir unless the spec names one: a tmpfs owned by the
+  computer's user, mode 700, the one place a non-root user can surely write. It is memory: what it holds counts against
+  the memory limit, and it does not survive a stop. Storage that lasts is the agent disk's job, not this package's.
 - `create` ends with the drift check (below): a computer that is not what was declared is deleted, and `create`
   refuses with every mismatch in words.
 - `connect` runs `docker exec -i <name> /opt/agentrun/computerd stdio`, the bridge to init's socket, and says hello.
@@ -183,8 +213,8 @@ await docker.release(made.value, "delete");
 
 Expected failures are results (`{ ok: false, error: { code, message } }`), not throws.
 
-What a Docker computer cannot do: switch users, gain a capability, reach any network when asked for `none`, write the
-daemon, or outlive its deadline once the janitor sweeps.
+What a Docker computer cannot do: run as root unless its spec asks, switch users, gain a capability, reach any network
+when asked for `none`, write the daemon, or run past its deadline.
 
 ### The drift check
 

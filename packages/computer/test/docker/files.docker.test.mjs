@@ -1,5 +1,5 @@
 // The files demo on real Docker (AGENTRUN_COMPUTER_LIVE_DOCKER=1 only): files go in and out of a debian:bookworm-slim
-// computer with no network, one at a time and as tar archives. Needs `npm run build` and `npm run build:daemon` first,
+// computer with no network, as its non-root user under /work, one at a time and as tar archives. Needs `npm run build` and `npm run build:daemon` first,
 // the image pulled, and tar on this machine. Every container this file makes is removed by its exact name in the after
 // hook, pass or fail.
 import assert from "node:assert/strict";
@@ -14,6 +14,8 @@ import { DockerProvider, pullTar, pullTarStream, pushTar, readFile, writeFile } 
 
 const LIVE = process.env.AGENTRUN_COMPUTER_LIVE_DOCKER === "1";
 const IMAGE = "debian:bookworm-slim";
+/** The provider's default user, which the daemon and so every file it writes has: this process's, or 1000:1000 as root. */
+const [UID, GID] = (process.getuid() !== 0 ? `${process.getuid()}:${process.getgid()}` : "1000:1000").split(":").map(Number);
 const docker = (...args) => execFileSync("docker", args, { encoding: "utf8" });
 const decode = (base64) => Buffer.from(base64, "base64").toString("utf8");
 
@@ -118,15 +120,15 @@ describe("move files in and out of a Docker computer", { skip: LIVE ? false : "s
 			await connected.value.close();
 		}
 	};
-	/** A tree of 8 MiB and more at /data/tree in the computer, made once. */
+	/** A tree of 8 MiB and more at /work/data/tree in the computer, made once. */
 	let treeMade;
 	const bigTree = () =>
 		(treeMade ??= (async () => {
-			assert.equal((await writeFile(client, "/data/tree/a.bin", randomBytes(5 * 1024 * 1024), { parents: true })).ok, true);
-			assert.equal((await writeFile(client, "/data/tree/sub/b.bin", randomBytes(3 * 1024 * 1024 + 99), { parents: true })).ok, true);
-			assert.equal((await writeFile(client, "/data/tree/sub/run.sh", Buffer.from("#!/bin/sh\necho copied\n"), { mode: 0o755 })).ok, true);
-			await run(["ln", "-s", "sub/run.sh", "/data/tree/run"]);
-			return "/data/tree";
+			assert.equal((await writeFile(client, "/work/data/tree/a.bin", randomBytes(5 * 1024 * 1024), { parents: true })).ok, true);
+			assert.equal((await writeFile(client, "/work/data/tree/sub/b.bin", randomBytes(3 * 1024 * 1024 + 99), { parents: true })).ok, true);
+			assert.equal((await writeFile(client, "/work/data/tree/sub/run.sh", Buffer.from("#!/bin/sh\necho copied\n"), { mode: 0o755 })).ok, true);
+			await run(["ln", "-s", "sub/run.sh", "/work/data/tree/run"]);
+			return "/work/data/tree";
 		})());
 	const listing = async (dir) =>
 		(await run(["sh", "-c", `cd ${dir} && find . -mindepth 1 -printf '%y %m %p %l\\n' | sort && find . -type f -exec sha256sum {} + | sort -k2`])).out;
@@ -168,6 +170,15 @@ describe("move files in and out of a Docker computer", { skip: LIVE ? false : "s
 		assert.deepEqual((await run(["ls", "/sys/class/net"])).out.split("\n").filter(Boolean), ["lo"]);
 	});
 
+	it("writes as the computer's non-root user: /work is its own, the image's root-owned directories are not", async () => {
+		assert.equal((await run(["id", "-u"])).out.trim(), String(UID));
+		const home = await call("files.stat", { path: "/work" });
+		assert.deepEqual([home.type, home.mode, home.uid, home.gid], ["dir", 0o700, UID, GID]);
+		const refused = await client.call("files.write", { path: "/data/outside.txt", data: "", parents: true });
+		assert.equal(refused.ok, false);
+		assert.equal(refused.error.code, "denied", JSON.stringify(refused.error));
+	});
+
 	it("writes, reads, stats, lists, makes, moves and removes", async () => {
 		await call("files.mkdir", { path: "/tmp/work/sub", parents: true });
 		assert.deepEqual(await call("files.write", { path: "/tmp/work/a.txt", data: Buffer.from("alpha\n").toString("base64"), mode: 0o640 }), { size: 6 });
@@ -178,7 +189,8 @@ describe("move files in and out of a Docker computer", { skip: LIVE ? false : "s
 		assert.equal(stat.type, "file");
 		assert.equal(stat.size, 6);
 		assert.equal(stat.mode, 0o640);
-		assert.equal(stat.uid, 0);
+		assert.equal(stat.uid, UID);
+		assert.equal(stat.gid, GID);
 		const list = await call("files.list", { path: "/tmp/work" });
 		assert.deepEqual(
 			list.entries.map((e) => [e.path, e.type]),
@@ -225,13 +237,13 @@ describe("move files in and out of a Docker computer", { skip: LIVE ? false : "s
 		chmodSync(join(src, "nested", "data.bin"), 0o600);
 		symlinkSync("nested/deeper/leaf.txt", join(src, "leaf-link"));
 		const archive = execFileSync("tar", ["-C", src, "-cf", "-", "."], { maxBuffer: 64 * 1024 * 1024 });
-		const pushed = await pushTar(client, "/data/pushed", archive);
+		const pushed = await pushTar(client, "/work/data/pushed", archive);
 		assert.equal(pushed.ok, true, JSON.stringify(pushed.error));
-		assert.equal((await run(["/data/pushed/run.sh"])).out, "ran from a pushed tar\n");
-		assert.equal((await run(["stat", "-c", "%a %U", "/data/pushed/run.sh", "/data/pushed/nested/data.bin"])).out, "755 root\n600 root\n");
-		assert.equal((await run(["readlink", "/data/pushed/leaf-link"])).out, "nested/deeper/leaf.txt\n");
-		assert.equal((await run(["cat", "/data/pushed/leaf-link"])).out, "leaf\n");
-		const pulled = await pullTar(client, "/data/pushed");
+		assert.equal((await run(["/work/data/pushed/run.sh"])).out, "ran from a pushed tar\n");
+		assert.equal((await run(["stat", "-c", "%a %u:%g", "/work/data/pushed/run.sh", "/work/data/pushed/nested/data.bin"])).out, `755 ${UID}:${GID}\n600 ${UID}:${GID}\n`);
+		assert.equal((await run(["readlink", "/work/data/pushed/leaf-link"])).out, "nested/deeper/leaf.txt\n");
+		assert.equal((await run(["cat", "/work/data/pushed/leaf-link"])).out, "leaf\n");
+		const pulled = await pullTar(client, "/work/data/pushed");
 		assert.equal(pulled.ok, true, JSON.stringify(pulled.error));
 		const back = scratch();
 		execFileSync("tar", ["-C", back, "-xpf", "-"], { input: pulled.value });
@@ -239,38 +251,56 @@ describe("move files in and out of a Docker computer", { skip: LIVE ? false : "s
 	});
 
 	it("refuses a zip-slip tar, and nothing lands outside the target", async () => {
-		await call("files.mkdir", { path: "/data/slip", parents: true });
+		await call("files.mkdir", { path: "/work/data/slip", parents: true });
 		for (const [name, archive] of [
 			["dot-dot", tarOf(tarEntry("../escaped-dotdot", { body: Buffer.from("x") }))],
-			["absolute", tarOf(tarEntry("/data/escaped-absolute", { body: Buffer.from("x") }))],
-			["symlink", tarOf(tarEntry("out", { type: "2", link: "/data" }), tarEntry("out/escaped-symlink", { body: Buffer.from("x") }))],
+			["absolute", tarOf(tarEntry("/work/data/escaped-absolute", { body: Buffer.from("x") }))],
+			["symlink", tarOf(tarEntry("out", { type: "2", link: "/work/data" }), tarEntry("out/escaped-symlink", { body: Buffer.from("x") }))],
 		]) {
-			const pushed = await pushTar(client, "/data/slip/target", archive);
+			const pushed = await pushTar(client, "/work/data/slip/target", archive);
 			assert.equal(pushed.ok, false, `${name} was accepted`);
 			assert.equal(pushed.error.code, "denied", `${name}: ${JSON.stringify(pushed.error)}`);
 		}
-		const found = await run(["sh", "-c", "ls /data /data/slip; ls /data/slip/target"]);
+		const found = await run(["sh", "-c", "ls /work/data /work/data/slip; ls /work/data/slip/target"]);
 		assert.doesNotMatch(found.out, /escaped/, found.out);
 	});
 
 	it("writes a read-only file over 512 KiB, then sets its mode", async () => {
 		const bytes = randomBytes(1536 * 1024);
-		const wrote = await writeFile(client, "/data/read-only.bin", bytes, { mode: 0o400 });
+		const wrote = await writeFile(client, "/work/data/read-only.bin", bytes, { mode: 0o400 });
 		assert.deepEqual(wrote, { ok: true, value: { size: bytes.length } });
-		const back = await readFile(client, "/data/read-only.bin");
+		const back = await readFile(client, "/work/data/read-only.bin");
 		assert.equal(back.ok, true, JSON.stringify(back.error));
 		assert.ok(Buffer.from(back.value).equals(bytes), "the bytes read back differ");
-		assert.equal((await call("files.stat", { path: "/data/read-only.bin" })).mode, 0o400);
+		assert.equal((await call("files.stat", { path: "/work/data/read-only.bin" })).mode, 0o400);
 	});
 
 	it("copies a tree in the computer by piping a pull into a push on the same connection", async () => {
 		const src = await bigTree();
 		await onItsOwnConnection(async (one) => {
-			const copied = await within(pushTar(one, "/data/tree-copy", pullTarStream(one, src).chunks), 120_000, "the pull piped into the push");
+			const copied = await within(pushTar(one, "/work/data/tree-copy", pullTarStream(one, src).chunks), 120_000, "the pull piped into the push");
 			assert.equal(copied.ok, true, JSON.stringify(copied.error));
 		});
-		assert.equal(await listing("/data/tree-copy"), await listing(src));
-		assert.equal((await run(["/data/tree-copy/run"])).out, "copied\n");
+		assert.equal(await listing("/work/data/tree-copy"), await listing(src));
+		assert.equal((await run(["/work/data/tree-copy/run"])).out, "copied\n");
+	});
+
+	it("a copy into a directory that refuses its writes ends the source pull, and 8 pulls follow on the same connection", async () => {
+		const src = await bigTree();
+		await call("files.mkdir", { path: "/work/data/read-only-dir", mode: 0o555, parents: true });
+		await onItsOwnConnection(async (one) => {
+			const { chunks, done } = pullTarStream(one, src);
+			const copied = await within(pushTar(one, "/work/data/read-only-dir", chunks), 60_000, "the refused copy");
+			assert.equal(copied.ok, false);
+			assert.equal(copied.error.code, "denied", JSON.stringify(copied.error));
+			const ended = await within(done, 60_000, "the source pull's done");
+			assert.equal(ended.ok, false);
+			const eight = Array.from({ length: 8 }, () => pullTarStream(one, src).chunks[Symbol.asyncIterator]());
+			const firsts = await within(Promise.all(eight.map((it) => it.next().then((step) => step.done, (error) => error.message))), 60_000, "8 pulls at once");
+			assert.deepEqual(firsts, Array(8).fill(false));
+			await within(Promise.all(eight.map((it) => it.return())), 60_000, "leaving the 8 pulls");
+		});
+		assert.equal((await run(["ls", "-A", "/work/data/read-only-dir"])).out, "");
 	});
 
 	it("answers other calls while a pull's chunks go unread", async () => {
@@ -318,10 +348,10 @@ describe("move files in and out of a Docker computer", { skip: LIVE ? false : "s
 				yield tarOf(tarEntry("big.bin", { body: randomBytes(512 * 1024 - 1536) }));
 				controller.abort();
 			}
-			const aborted = await within(pushTar(one, "/data/aborted", source(), { signal: controller.signal }), 60_000, "the aborted push");
+			const aborted = await within(pushTar(one, "/work/data/aborted", source(), { signal: controller.signal }), 60_000, "the aborted push");
 			assert.equal(aborted.ok, false);
 			assert.equal(aborted.error.code, "aborted");
-			const eight = await within(eightAtOnce(one, "/data/eight", tarOf(tarEntry("one.txt", { body: Buffer.from("1") }))), 60_000, "8 pushes at once");
+			const eight = await within(eightAtOnce(one, "/work/data/eight", tarOf(tarEntry("one.txt", { body: Buffer.from("1") }))), 60_000, "8 pushes at once");
 			assert.deepEqual(
 				eight.map((r) => (r.ok ? "ok" : `${r.error.code}: ${r.error.message}`)),
 				Array(8).fill("ok"),

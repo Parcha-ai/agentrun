@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"net"
 	"os"
@@ -48,8 +49,9 @@ func SocketPath() string {
 
 // Init runs as the computer's first process. It is a child subreaper (PID 1 is one anyway), serves every connection on
 // socket with one process table, and sweeps: a child of its own that is not one of its guards is an orphan whose guard
-// died, and is killed with everything under it. SIGTERM or SIGINT ends every process, guards first, and returns 0.
-func Init(version, socket string, logger *log.Logger) int {
+// died, and is killed with everything under it. SIGTERM, SIGINT or the deadline ends every process, guards first, and
+// returns 0, which ends the computer.
+func Init(version, socket string, deadline time.Time, logger *log.Logger) int {
 	if _, _, errno := syscall.RawSyscall(syscall.SYS_PRCTL, prSetChildSubreaper, 1, 0); errno != 0 {
 		logger.Printf("init: cannot become a child subreaper: %v", errno)
 		return 1
@@ -85,6 +87,8 @@ func Init(version, socket string, logger *log.Logger) int {
 	}()
 	tick := time.NewTicker(sweepEvery)
 	defer tick.Stop()
+	end := time.NewTimer(time.Until(deadline))
+	defer end.Stop()
 	for {
 		select {
 		case <-signals:
@@ -96,23 +100,32 @@ func Init(version, socket string, logger *log.Logger) int {
 			_ = listener.Close()
 			shutdown()
 			return 0
+		case <-end.C:
+			logger.Printf("init: the deadline %s has come, ending every process and the computer", deadline.UTC().Format(time.RFC3339Nano))
+			_ = listener.Close()
+			shutdown()
+			return 0
 		}
 	}
 }
 
-// listen makes the socket's directory, 0700, when it is missing, refuses one that others may enter, and listens on a
-// socket only the daemon's user may use. A socket left by an init that is gone is replaced; a live one is refused.
+// listen listens on a socket only the daemon's user may use, in a directory that must already be there, the daemon's
+// user's alone (0700) and writable by it: a non-root init cannot make one under /run, so the provider mounts it. A
+// socket left by an init that is gone is replaced; a live one is refused.
 func listen(socket string) (net.Listener, error) {
 	dir := filepath.Dir(socket)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return nil, fmt.Errorf("cannot make %s: %w", dir, err)
-	}
 	info, err := os.Stat(dir)
-	if err != nil {
-		return nil, err
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("the socket's directory %s is missing; the computer's provider must make it, 0700 and owned by uid %d (Docker: --tmpfs %s:uid=%d,gid=%d,mode=0700), or %s must name a socket in one", dir, os.Geteuid(), dir, os.Geteuid(), os.Getegid(), SocketEnv)
 	}
-	if st, ok := info.Sys().(*syscall.Stat_t); !ok || int(st.Uid) != os.Geteuid() || info.Mode().Perm()&0o077 != 0 {
-		return nil, fmt.Errorf("the socket's directory %s must be the daemon's user's alone (mode 0700), not %v", dir, info.Mode().Perm())
+	if err != nil {
+		return nil, fmt.Errorf("cannot read the socket's directory %s: %w", dir, err)
+	}
+	if st, ok := info.Sys().(*syscall.Stat_t); !info.IsDir() || !ok || int(st.Uid) != os.Geteuid() || info.Mode().Perm()&0o077 != 0 {
+		return nil, fmt.Errorf("the socket's directory %s must be a directory of the daemon's user, uid %d, alone (mode 0700), not %v", dir, os.Geteuid(), info.Mode())
+	}
+	if err := syscall.Access(dir, 0o3); err != nil {
+		return nil, fmt.Errorf("the socket's directory %s is not writable by the daemon's user, uid %d (mode %v): %w", dir, os.Geteuid(), info.Mode().Perm(), err)
 	}
 	if conn, err := net.Dial("unix", socket); err == nil {
 		_ = conn.Close()

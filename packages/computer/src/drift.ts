@@ -7,7 +7,7 @@ import type { ComputerSpec, NetworkPolicy } from "./provider.js";
 export const DAEMON_IN_COMPUTER = "/opt/agentrun/computerd";
 export const COMPUTER_LABEL = "agentrun.computer";
 export const DEADLINE_LABEL = "agentrun.computer.deadline";
-export const DEFAULT_PIDS = 4096;
+export const DEFAULT_PIDS = 1024;
 
 /** The parts of `docker inspect` a computer is checked by. */
 export interface DockerInspect {
