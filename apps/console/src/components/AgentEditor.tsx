@@ -411,7 +411,8 @@ function Field({ label, id, required, optional, note, error, warning, aside, chi
 
 /** One tool in the editor's grid. Collapsed, every card is one height (h-32): its name, ONE human line (the served
  *  `blurb`; an MCP server's tool has none, so its description, clamped to two lines), its state as a short tag (the full reason its title), and Details.
- *  Details shows the model-facing description and the reason in place, and that card grows; Details never ticks it. */
+ *  Details shows the model-facing description, the reason and the whole name in place, and that card grows; Details never
+ *  ticks it. */
 function ToolCard({ name, blurb, summary, why, tag, on, disabled, onToggle }: { name: string; blurb?: string; summary?: string; why?: string; tag?: string; on: boolean; disabled: boolean; onToggle: () => void }) {
   const [open, setOpen] = useState(false);
   const toggle = (e: React.MouseEvent) => { e.preventDefault(); e.stopPropagation(); setOpen((v) => !v); };
@@ -419,7 +420,9 @@ function ToolCard({ name, blurb, summary, why, tag, on, disabled, onToggle }: { 
     <label title={why} className={cn("flex flex-col border px-3 py-2.5 font-mono text-[13px]", open ? "min-h-32" : "h-32 overflow-hidden", on && "border-foreground", disabled ? "cursor-not-allowed opacity-60" : "cursor-pointer")}>
       <span className="flex min-w-0 items-center gap-3">
         <input type="checkbox" value={name} checked={on} disabled={disabled} onChange={onToggle} className="shrink-0 accent-[hsl(var(--primary))]" />
-        <span className="min-w-0 truncate">{name}</span>
+        {/* Cut to one line on the card, whole in its title; whole, wrapping, once Details opens (an MCP tool's id has no
+            spaces, and tools from one server share a long prefix). */}
+        <span title={name} className={cn("min-w-0", open ? "break-all" : "truncate")}>{name}</span>
       </span>
       {blurb ? <span className="mt-1 truncate font-sans text-[12px] text-muted-foreground">{blurb}</span>
         : summary && !open ? <span className="mt-1 line-clamp-2 font-sans text-[11px] text-muted-foreground" title={summary}>{summary}</span> : null}
