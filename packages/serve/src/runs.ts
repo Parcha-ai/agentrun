@@ -501,7 +501,7 @@ function withApprovals(rows: readonly TimelineEvent[], run: Pick<Run, "approvals
   return rows.flatMap((row) => {
     // The gate's resume, the server's row: it says what came of the answer, never the head the model reads.
     const resumed = row.kind === "phase" && row.text?.startsWith(RESUME_PREFIX) ? resumedBy(row.text, byCall) : undefined;
-    if (resumed) return [{ ...row, summary: resumeSays(resumed, run.meta.approvals?.[resumed.id], row.text!), text: resumeShows(resumed, run.meta.approvals?.[resumed.id], row.text!) }];
+    if (resumed) return [{ ...row, summary: resumeSays(resumed, run.meta.approvals?.[resumed.id], row.text!), text: resumeShows(resumed, run.meta.approvals?.[resumed.id], row.text!, redact) }];
     const own = (row.kind === "tool_use" || row.kind === "tool_result") && row.tool_use_id ? byCall.get(row.tool_use_id) : undefined;
     // The call's own rows: what it answered at the park is not what it did, so they say what came of the approval.
     const called = own ? { ...row, summary: parkedCallSays(own, run, waiting), tool_status: null } : row;
@@ -544,10 +544,11 @@ function resumeSays(approval: Approval, given: { decision: string; by?: string }
  *  the gate wrote it (tool-gate.ts resumeHead, from the stored answer's arguments), never searched for, so arguments that
  *  quote the gate's words can't move it; a row whose text doesn't start with it shows the outcome alone. The model's own
  *  message is unchanged. */
-function resumeShows(approval: Approval, given: { decision: string; by?: string; args_shown?: string } | undefined, text: string): string {
+function resumeShows(approval: Approval, given: { decision: string; by?: string; args_shown?: string } | undefined, text: string, redact: (text: string) => string): string {
   const said = resumeSays(approval, given, text).replace(/^AgentRun: /, "");
-  const head = resumeHead(approval, given?.args_shown ?? "(not shown)");
-  if (!text.startsWith(head)) return `${said}.`;
+  // The row's text went through the run's redactor whole (redactGateMessages), so the head is compared as it did.
+  const head = [redact(resumeHead(approval, given?.args_shown ?? "(not shown)")), resumeHead(approval, given?.args_shown ?? "(not shown)")].find((h) => text.startsWith(h));
+  if (head === undefined) return `${said}.`;
   const rest = text.slice(head.length);
   if (given?.decision === "deny") return `${said}.${rest.trim() ? `\n${rest.trim()}` : ""}`;
   return `${said}. Its result:\n${rest.replace(/^ They allowed it, and it ran(?: and failed)?\. Its result:\n?/, "")}`;
