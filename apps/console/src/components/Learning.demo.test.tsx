@@ -99,7 +99,7 @@ describe("demo: a person and an agent's notes, on a faux server's recorded answe
     expect(page.card(MINE)!.textContent).toContain("Used in 3 runs");
     expect(page.text()).toContain("Earlier notes1 no longer read");
     // What runs kept nothing, and why: Kith's note about its own portal, and three runs with nothing new.
-    const notKept = page.host.querySelector('section[aria-label="Not kept"]')!;
+    const notKept = page.host.querySelector('section[aria-label="Kept nothing"]')!;
     expect(notKept.querySelector("li")!.textContent).toContain("https://www.kith.com");
     // In the server's own words, from the agent's run list: why Kith's note was not kept.
     expect(notKept.querySelector("li")!.textContent).toContain("It's about one shop's returns portal, not a rule other shops share.");
