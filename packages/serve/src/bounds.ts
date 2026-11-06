@@ -7,14 +7,17 @@
 // names its session `key` and `request`, harness-app.ts) closes when its own answer is booked, by the BOOKED marker that
 // names it, in whatever order answers come; one booked before its cost came in stays open until its late cost does. pi's
 // generation requests go one at a time on the root: one closes on its end mark or its answer (a second close, a stopped
-// request's aborted entry after its end mark, closes nothing), and a start while one is still open says that one was cut
+// request's aborted entry after its end mark, closes nothing), never on a lost attempt's end mark (`lost`, written before
+// pi-ai tries again within the same request: its answer, or its own end, still comes), and a start while one is still
+// open says that one was cut
 // (a crash: the next process sends the next request): pi-agent-core's loop awaits each answer before it runs that
 // answer's tool calls and sends the next (agent-loop.js runLoop). pi's side requests (a label for `request`: a summary, a
 // hosted search's, a learned workflow node's) run inside tool calls, which pi runs side by side (agent.js toolExecution
 // "parallel"): each closes by its own `requestId`, on its end mark or its cost. A refusal's own start mark holds none.
 //
 // The bounds that ended count from the newest entry at which what the run had spent (the cap's own reading of an entry's
-// cost, cap.ts costOf) fit its cap: read live or whole after a restart, the same entries keep the same bounds.
+// cost, cap.ts costOf) fit its cap with no request in flight: read live or whole after a restart, the same entries keep
+// the same bounds.
 import { REQUEST_COST, REQUEST_COST_LATE, REQUEST_ENDED, REQUEST_STARTED } from "@parcha/pi-durable-agent/timeline";
 import { BOUND_FIELD, CAP_REFUSED_FIELD, costOf, FIT_TOLERANCE } from "./cap.js";
 import { ADAPTER_API, BOOKED } from "./turn-end.js";
@@ -45,8 +48,9 @@ export class RequestBounds {
       }
       this.noteOne(value);
       this.spent += costOf(value as never);
-      // The run's cost fits its cap here: the bounds that ended so far explain no overshoot to come.
-      if (cap === undefined || this.spent <= cap + FIT_TOLERANCE) this.since = 0;
+      // The run's cost fits its cap here, and no request is in flight whose cost is still to come: the bounds that ended so
+      // far explain no overshoot to come.
+      if (cap === undefined || (this.spent <= cap + FIT_TOLERANCE && this.pi === undefined && this.harness.size === 0)) this.since = 0;
     }
   }
 
@@ -64,7 +68,7 @@ export class RequestBounds {
     } else if (value.kind === BOOKED && harnessKey) {
       if (data.unpriced !== true) this.closeHarness(harnessKey);
     } else if ((value.kind === REQUEST_COST_LATE || value.kind === REQUEST_COST || value.kind === REQUEST_ENDED) && harnessKey) this.closeHarness(harnessKey);
-    else if (value.kind === REQUEST_ENDED && !side && !harnessKey) this.closePi();
+    else if (value.kind === REQUEST_ENDED && !side && !harnessKey && data.lost !== true) this.closePi();
     // A harness answer is closed by its BOOKED marker; pi's answer (or pi's error for a request that never left, which
     // finds none open) closes pi's.
     else if (value.kind === "pi.assistant" && message && message.api !== ADAPTER_API) this.closePi();
