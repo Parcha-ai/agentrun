@@ -92,7 +92,8 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
   // The form as saved: as it opened, or as its last save left it. A form unlike it holds unsaved changes, and leaving the
   // page asks first (lib/leaving). The revision note is not one: a note alone saves nothing.
   const [base, setBase] = useState<AgentFields>(f);
-  const leaveSaved = useLeaveGuard(!same(f, base));
+  const dirty = !same(f, base);
+  const leaveSaved = useLeaveGuard(dirty);
   // On a new agent, picking another harness re-ticks that harness's tools, until a tool is changed by hand.
   const [toolsTouched, setToolsTouched] = useState(false);
   // The server's tools can arrive after the form opens (capabilities answer late): a new agent's untouched tools follow.
@@ -112,7 +113,9 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
   const [preview, setPreview] = useState(false);
   const [saving, setSaving] = useState(false);
   const [problem, setProblem] = useState<SaveProblem | null>(initialProblem);
-  const [saved, setSaved] = useState(false);
+  // The Save button, which keeps the focus after a save the server refused, where its reason shows.
+  const saveButton = useRef<HTMLButtonElement>(null);
+  useEffect(() => { if (problem?.kind === "invalid" || problem?.kind === "other") saveButton.current?.focus(); }, [problem]);
   // A workflow agent's past revision, opened from History as its read-only graph.
   const [viewing, setViewing] = useState<Revision | null>(null);
   const goTo = (s: Step) => { setViewing(null); setStep(s); };
@@ -123,13 +126,16 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
   const warnings = agent?.warnings ?? [];
   const fieldWarning = (field: string) => warningsFor(warnings, field).map((w) => w.message).join(" ") || undefined;
   // While a new agent's Create is under way its form takes no change (its fields are disabled too), so it stays what was sent.
-  const set = (patch: AgentFields) => { if (creating && saving) return; setF((x) => ({ ...x, ...patch })); setSaved(false); };
+  const set = (patch: AgentFields) => { if (creating && saving) return; setF((x) => ({ ...x, ...patch })); };
   const workflow = agent?.kind === "workflow";
   // A new agent made from a starter (Decision, Workflow): a workflow revision, so no instructions, tools, thinking or model.
   const starting = creating && isStarter(f.harness);
   const choices = harnessOptions(caps.harnesses, creating ? { available: !!caps.decisionProvider } : undefined);
   // `revisions` counts them; the current one is the agent's `revision`, which can be an earlier one after "Make current".
   const current = revisions.find((r) => r.revision === agent?.revision) ?? revisions.find((r) => r.current);
+  // The saved revision's number: the one the agent is at (the editor loaded it, or the save returned it), as its revisions
+  // name it; unknown until they are read.
+  const savedRev = agent ? revisions.find((r) => r.revision === agent.revision)?.version : undefined;
   const steps = STEPS.filter((s) => !(creating && s.id === "history") && (s.id !== "workflow" || workflow) && !(starting && s.id === "tools"));
   const at = steps.findIndex((s) => s.id === step);
   const save = async () => {
@@ -160,7 +166,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
     // A provider picked or reset while the save was under way is not in it: the form keeps that change, unsaved. Saved
     // and unchanged since, the tool settings are the agent's own: the form shows them as the definition has them.
     const unchanged = same(formNow.current.tool_settings ?? {}, fields.tool_settings ?? {});
-    setSaving(false); setProblem(p); setSaved(!p && unchanged); if (!p) setNote("");
+    setSaving(false); setProblem(p); if (!p) setNote("");
     if (!p && unchanged) setF(({ tool_settings: _saved, ...rest }) => rest);
     // Saved: the form as sent is the saved one (its tool settings now the definition's, when unchanged since).
     if (!p) setBase(unchanged ? (({ tool_settings: _saved, ...rest }) => rest)(sent) : sent);
@@ -202,8 +208,6 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
           </ul>
         </div>
       )}
-      {problem?.kind === "invalid" && <p className="border-b bg-card px-5 py-3 font-mono text-[13px] text-destructive-text md:px-8" role="alert">The server refused the save: {problem.message}</p>}
-      {problem?.kind === "other" && <p className="border-b bg-card px-5 py-3 font-mono text-[13px] text-destructive-text md:px-8" role="alert">{problem.message}</p>}
       <div className="flex min-h-0 flex-1 flex-col md:flex-row">
         <ol className={cn("relative flex shrink-0 gap-1 overflow-x-auto border-b p-3 md:flex-col md:gap-0 md:border-b-0 md:border-r md:p-4", step === "workflow" ? "md:w-[76px]" : "md:w-[240px]")}>
           {steps.map((s, i) => (
@@ -302,7 +306,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                   value={f.tool_settings ?? d?.tool_settings ?? {}} issues={problem?.kind === "invalid" ? problem.fields : {}}
                   // Settings equal to the definition's are no change of the form's. While a save is under way the definition is
                   // about to be what it sent, so every change is kept: the save's answer drops it only if it equals what was sent.
-                  onChange={(next) => (!saving && same(next, d?.tool_settings ?? {}) ? (setF(({ tool_settings: _gone, ...rest }) => rest), setSaved(false)) : set({ tool_settings: next }))} />
+                  onChange={(next) => (!saving && same(next, d?.tool_settings ?? {}) ? setF(({ tool_settings: _gone, ...rest }) => rest) : set({ tool_settings: next }))} />
               )}
               <Field label="Skills" note="Skill files are saved with each revision and kept as they are by an edit.">
                 {d?.skills?.length ? <ul className="border">{d.skills.map((s) => <li key={s} className="border-b px-3 py-2 font-mono text-[13px] last:border-b-0">{s}</li>)}</ul>
@@ -404,9 +408,12 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
         <Button size="sm" variant="ghost" disabled={at === 0} onClick={() => goTo(steps[at - 1].id)}><ArrowLeft aria-hidden /> Previous</Button>
         {step !== "history" && <input value={note} onChange={(e) => setNote(e.target.value)} placeholder={creating ? "" : "What changed (a note on this revision)"} aria-label="Revision note" className={cn(input, "h-9 min-w-0 flex-1 py-0", creating && "invisible")} />}
         {step === "history" && <span className="flex-1" />}
-        {saved && <span className="caps text-[11px] text-success-text">Saved</span>}
         {at < steps.length - 1 && <Button size="sm" onClick={() => goTo(steps[at + 1].id)}>Next <ArrowRight aria-hidden /></Button>}
-        {!viewing && <Button size="sm" variant="solid" onClick={save} disabled={!onSave || saving || !f.name?.trim() || (!workflow && !starting && !f.instructions?.trim())}>{saving ? (creating ? "Creating…" : "Saving") : creating ? "Create" : "Save revision"}</Button>}
+        {/* Off with nothing to save, saying which revision is saved (the served current one); on with an edit. */}
+        {!viewing && <Button ref={saveButton} size="sm" variant="solid" onClick={save} disabled={!onSave || saving || (!creating && !dirty) || !f.name?.trim() || (!workflow && !starting && !f.instructions?.trim())}>{creating ? (saving ? "Creating…" : "Create") : saving ? "Saving…" : dirty ? "Save revision" : savedRev ? `Saved · rev ${savedRev}` : "Saved"}</Button>}
+        {/* Why a save failed, under the button that made it. */}
+        {problem?.kind === "invalid" && <p className="w-full text-right font-mono text-[12px] text-destructive-text" role="alert">The server refused the save: {problem.message}</p>}
+        {problem?.kind === "other" && <p className="w-full text-right font-mono text-[12px] text-destructive-text" role="alert">{problem.message}</p>}
       </footer>
     </div>
   );

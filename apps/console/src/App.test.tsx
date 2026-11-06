@@ -380,10 +380,10 @@ describe("App, an agent's address", () => {
     const wait = async (ok: () => boolean) => { const end = Date.now() + 4000; while (!ok() && Date.now() < end) await act(async () => { await new Promise((r) => setTimeout(r, 25)); }); };
     await wait(() => !!host.textContent?.includes("No runs of this agent yet."));
     expect(host.querySelector('[role="tab"]')?.textContent).toBe("Runs");
-    expect(host.textContent).not.toContain("Save revision");
+    expect(host.querySelector("#agent-instructions")).toBeNull();
     await act(async () => { location.hash = "#/agents/calc/edit"; window.dispatchEvent(new HashChangeEvent("hashchange")); });
-    await wait(() => !!host.textContent?.includes("Save revision"));
-    expect(host.textContent).toContain("Save revision");
+    await wait(() => !!host.querySelector("#agent-instructions"));
+    expect(host.querySelector("#agent-instructions")).not.toBeNull();
     expect(host.querySelector('[role="tab"]')).toBeNull();
   });
 });

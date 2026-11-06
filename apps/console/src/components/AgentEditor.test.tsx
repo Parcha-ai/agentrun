@@ -130,8 +130,14 @@ describe("AgentEditor, tools a person chose by hand", () => {
     let saved: { tools?: string[] } | undefined;
     const { host, click, checked, done } = await setup({ agent, caps: both, step: "tools", onSave: async (fields: { tools?: string[] }) => { saved = fields; return null; } });
     expect(checked()).toEqual([]);
-    // A save sends none: it never widens what the agent can do.
+    // A save (of an edit to the instructions) sends none: it never widens what the agent can do.
     const { act } = await import("react");
+    click([...host.querySelectorAll("button")].find((b) => /Context/.test(b.textContent ?? "")));
+    act(() => {
+      const el = host.querySelector<HTMLTextAreaElement>("#agent-instructions")!;
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(el, "Answer, then check.");
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    });
     await act(async () => { [...host.querySelectorAll("button")].find((b) => /Save revision/i.test(b.textContent ?? ""))!.click(); });
     expect(saved?.tools ?? []).toEqual([]);
     done();

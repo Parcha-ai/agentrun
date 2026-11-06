@@ -26,7 +26,16 @@ function mount(props: Record<string, unknown>) {
   });
   const type = (value: string) => fill(host.querySelector<HTMLInputElement>("#agent-max-cost"), value);
   const button = (label: RegExp) => [...host.querySelectorAll("button")].find((b) => label.test(b.textContent?.trim() ?? ""));
-  const save = async () => { await act(async () => { button(/^(Save revision|Create)$/)!.click(); }); };
+  // A save needs something to save: with nothing else edited, the model is changed (a workflow's JSON gets a trailing
+  // newline on its step), which leaves the cap as the test set it.
+  const save = async () => {
+    if (!button(/^(Save revision|Create)$/)) {
+      const json = host.querySelector<HTMLTextAreaElement>("textarea[aria-label='Workflow JSON']");
+      if (json) fill(json, `${json.value}\n`);
+      else fill(host.querySelector<HTMLInputElement>("#agent-model"), "provider/other-model");
+    }
+    await act(async () => { button(/^(Save revision|Create)$/)!.click(); });
+  };
   return { host, fill, type, button, save };
 }
 
