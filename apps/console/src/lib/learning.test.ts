@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { approval, bodyOf, change, dropKind, dropWords, fileFor, impactWords, isPending, learnedBy, learningHash, learningLabel, learningSteps, type LearningDiff, lookedBack, money, noteChanges, noteParts, noteText, originOf, pendingBy, provenance, type RunLearning, shortTitle, shownImpact, took, typeLabel, underWay, givenBy, readBy, waitsForOk, waitWords } from "./learning";
+import { approval, bodyOf, change, dropKind, dropWords, fileFor, impactWords, isPending, learnedBy, learningHash, learningLabel, learningSteps, type LearningDiff, lookedBack, money, noteChanges, noteParts, noteText, originOf, pendingBy, provenance, type RunLearning, shownImpact, took, typeLabel, underWay, givenBy, readBy, waitsForOk, waitWords } from "./learning";
 import { recorded } from "@/fixtures";
 import type { TimelineRow } from "./v2";
 
@@ -114,11 +114,6 @@ describe("where a note came from", () => {
 describe("plain words for the machine's", () => {
   it("each type of note reads as what it is for; one the console does not know reads as sent", () => {
     expect(["user", "feedback", "project", "reference", "other"].map(typeLabel)).toEqual(["About you", "How to work", "About the work", "Where to look", "other"]);
-  });
-  it("a run's title is cut to about 40 characters at words' edges, its start and its end kept", () => {
-    expect(shortTitle("Find this shop's refund policy page: https://www.brooklinen.com")).toBe("Find this shop's…brooklinen.com");
-    expect(shortTitle("A short one")).toBe("A short one");
-    expect(shortTitle("x".repeat(80)).length).toBeLessThanOrEqual(40);
   });
   it("the timeline's learning rows: the end and the server's look-back message both read Learning, each without its chip", () => {
     const row = { id: "1", seq: 1, summary: "", text: null, timestamp: "2026-11-03T16:00:00Z", tool_name: null };

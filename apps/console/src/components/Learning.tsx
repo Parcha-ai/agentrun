@@ -9,7 +9,7 @@ import { type Client, ClientError } from "@/lib/client";
 import { markdown, runLabel, when } from "@/lib/format";
 import {
   type AgentLearning, bodyOf, type LearningChange, change, costsShown, dropKind, dropWords, fileFor, impactWords, learningCost, type LearningNote, money, type NoteParts, noteParts,
-  APPROVE_LATER, APPROVE_SIGN_IN, type Approval, approval, CHANGED, changeWords, HOST_RUNS, type LastChange, RESTORE_SIGN_IN, RESTORES, type Retired, isPending, NO_VERSION, type NoteProblem, originOf, WAITS_WHY, notes, noteText, NOTE_TYPES, provenance, runsWord, seenVersion, shortTitle, shownImpact, took, TYPE_HINT, typeLabel,
+  APPROVE_LATER, APPROVE_SIGN_IN, type Approval, approval, CHANGED, changeWords, HOST_RUNS, type LastChange, RESTORE_SIGN_IN, RESTORES, type Retired, isPending, NO_VERSION, type NoteProblem, originOf, WAITS_WHY, notes, noteText, NOTE_TYPES, provenance, runsWord, seenVersion, shownImpact, took, TYPE_HINT, typeLabel,
   counted, type LearnedItem, learnedItems, statusFile,
 } from "@/lib/learning";
 import { placeOf } from "@/lib/place";
@@ -518,11 +518,12 @@ function retiredLine(retired: Retired | undefined): string {
   return retired ? `${changeWords("retired", retired.by)} · ${when(retired.at)}` : "Retired";
 }
 
-/** "Learned in" the run that kept it, linked by its title, and when (`at`), with why it was kept as the hover (`reason`). */
+/** "Learned in" the run that kept it, linked by its short id (its whole title on hover), and when (`at`), with why it
+ *  was kept as the hover (`reason`). */
 function LearnedIn({ run, runs, at, reason }: { run: string; runs: Map<string, Run>; at?: string; reason?: string }) {
   return (
     <span className="flex min-w-0 items-center gap-1.5"><span className="flex shrink-0 items-center gap-1.5 whitespace-nowrap" title={reason ? `Kept because: ${reason}` : undefined}><Sparkles className="size-3 shrink-0 text-primary" aria-hidden />Learned in</span>
-      <a href={`#/runs/${encodeURIComponent(run)}`} className="min-w-0 truncate text-foreground/80 underline-offset-2 hover:text-foreground hover:underline" title={runTitle(runs, run)}>{shortTitle(runTitle(runs, run))}</a>
+      <a href={`#/runs/${encodeURIComponent(run)}`} className="shrink-0 font-mono text-foreground/80 underline-offset-2 hover:text-foreground hover:underline" title={runTitle(runs, run)}>{runLabel(run)}</a>
       {at && <span className="shrink-0">· {when(at)}</span>}
     </span>
   );
@@ -900,6 +901,9 @@ function NotKept({ runs }: { runs: Run[] }) {
 function NextRun({ index, skills, off }: { index: string; skills: string[]; off: boolean }) {
   const [open, setOpen] = useState(false);
   const lines = off ? 0 : index.split("\n").filter((l) => l.trim()).length;
+  // The index as Markdown, sanitized (markdown(): HTML a run wrote reads as text). A note's file is no address here, so
+  // its link reads as its name.
+  const rendered = useMemo(() => markdown(index.trim()), [index]);
   const active = off ? [] : skills;
   const given = active.length ? `${active.length} ${active.length === 1 ? "skill" : "skills"}` : "";
   return (
@@ -912,7 +916,7 @@ function NextRun({ index, skills, off }: { index: string; skills: string[]; off:
       {open && (
         <div className="border-t">
           {off ? <p className="px-4 py-3 text-[13px] text-muted-foreground">Learning is off: the next run gets no notes or skills.</p>
-            : lines ? <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words px-4 py-3 font-mono text-[11.5px] leading-[1.7]">{index.trim()}</pre>
+            : lines ? <div className={cn(PROSE, "max-h-72 overflow-auto break-words px-4 py-3 text-[13px]")} dangerouslySetInnerHTML={{ __html: rendered }} />
             : <p className="px-4 py-3 text-[13px] text-muted-foreground">{active.length ? "No note is in use." : "Nothing yet: no note is in use."}</p>}
           {active.length > 0 && <p className="break-words border-t px-4 py-3 font-mono text-[11.5px] leading-[1.7]">Active skills: {active.join(", ")}</p>}
           <p className="border-t px-4 py-2 text-[11px] text-muted-foreground">Read-only: the notes in use, one line each, and the agent's active skills.</p>

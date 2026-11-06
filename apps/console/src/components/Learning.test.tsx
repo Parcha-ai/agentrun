@@ -168,7 +168,9 @@ describe("the Learning tab's notes", () => {
     expect(t.text()).toContain("What the next run reads2 notes");
     expect(t.text()).not.toMatch(/\d lines?\b/);
     await t.click(/^What the next run reads/);
-    expect(t.host.querySelector("pre")?.textContent).toContain(`(${FIRST})`);
+    const shown = t.host.querySelector('section[aria-label="What the next run reads"]')!;
+    expect([...shown.querySelectorAll("li")].map((li) => li.textContent).join("\n")).toContain("Try /policies/refund-policy first");
+    expect(shown.textContent).not.toContain(`(${FIRST})`);
     expect(t.text()).toContain("Read-only");
   });
   it("says nothing in git's or the loop's own words", async () => {
