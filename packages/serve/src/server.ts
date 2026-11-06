@@ -434,12 +434,12 @@ const offersInputs = (env: NodeJS.ProcessEnv): readonly (string | undefined)[] =
 
 /** What a revision that names no model needs here (capabilities' `models.needs`): null when one runs, else chooseModel's
  *  `needs`, a provider's key or another model; and whether that model has a price here (`models.priced`: unpricedModels,
- *  a gateway id serve has no price for), which a run's spend cap needs. Made from `env` alone, so it is remade only when
- *  env is. */
-type ModelState = { needs: ModelNeeds | null; priced: boolean };
+ *  a gateway id serve has no price for), which a run's spend cap needs: null with no model, as nothing is there to price.
+ *  Made from `env` alone, so it is remade only when env is. */
+type ModelState = { needs: ModelNeeds | null; priced: boolean | null };
 async function needsOf(env: NodeJS.ProcessEnv): Promise<ModelState> {
   const chosen = await chooseModel(env, undefined);
-  if ("why" in chosen) return { needs: chosen.needs, priced: false };
+  if ("why" in chosen) return { needs: chosen.needs, priced: null };
   return { needs: null, priced: (await unpricedModels(env, undefined)).length === 0 };
 }
 

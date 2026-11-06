@@ -734,7 +734,7 @@ model ids (`agent-model`), which a client takes off to show the gateway's own id
 `models` also says `ready`, whether a revision that names no model runs here, and when it does not, `needs`: `key` (no
 model provider's key, or none for the default's provider) or `model` (`AGENT_MODEL` names one this server does not
 know); and `priced`, whether that model has a price here, which a run's `max_cost_usd` needs (false for a gateway
-model with no price set that the catalog does not list in any form, and while `ready` is false). Where the models come from:
+model with no price set that the catalog does not list in any form; null while `ready` is false, with no model to price). Where the models come from:
 
 - `--faux MODULE`: every model is the module's (below), with no key and no network: `faux-1`, or for a tier the model
   id its variable names.
