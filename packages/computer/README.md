@@ -69,8 +69,26 @@ capabilities are `["exec", "files", "processes"]`.
   gone is not dropped again, so a process started with an empty bounding set needs none. When a capability cannot be
   dropped (EPERM, such as a user with a bounding set and no CAP_SETPCAP, as `go test` runs on a host), or the binary
   links cgo (one call cannot reach every thread), init refuses to start, in words, and exits 1.
-  The Go tests of the root path need root with capabilities: on a host as another user they skip, and the daemon's
-  test binaries (`CGO_ENABLED=0 go test -c`) run them as root in a container.
+- **That refusal is policy: init fails closed.** A vendor that starts the daemon as a non-root user with a bounding
+  set it cannot empty (a Kubernetes `runAsUser` without `capabilities: drop: ["ALL"]`, say, or `docker run --user`
+  without `--cap-drop ALL`) gets no computer, not a computer that runs anyway. The line this package holds is that
+  every set reads back zero, so no program in a computer holds a capability or can gain one. `no_new_privs` already
+  stops a gain through `exec` (a setuid-root file, file capabilities); the empty bounding set is the second,
+  independent limit on the same gain, and init cannot prove from inside that a bounding set it was handed is harmless
+  on every kernel and vendor it runs on. So it does not run with capabilities it cannot prove gone. A refusal is said, in words naming the capability and EPERM, and is
+  fixed where it starts: drop every capability for the user, or start init as root holding CAP_SETPCAP so it drops
+  them itself. A start that went on would be silent, and every program in the computer would inherit it.
+- **The daemon's Go tests run without cgo, as computerd is built.** Go builds with cgo wherever it finds a C compiler,
+  so a plain `go test ./...` makes test binaries that link cgo, and in one of those init refuses to start for cgo
+  (ENOTSUP) alone. The test entry of `cmd/computerd` and `internal/daemon` (`internal/nocgo`, from `TestMain`) builds
+  such a package's test binary again with `CGO_ENABLED=0 go test -c`, runs it with the same arguments and
+  environment, and exits with its code; a binary without cgo runs its tests itself, and a `-race` build (which needs
+  cgo) skips the tests of the drop. On a host as another user the refusal for EPERM and both deadline tests run (init
+  takes its deadline and refuses for the bounding set). The root path (`TestBecome...`, `TestUnprivilegedLeavesRoot...`)
+  needs root with capabilities and skips there; CI's `computer-docker` job covers it with the Modal commands matrix
+  (`test/docker/modal-commands.docker.test.mjs`: root containers with Docker's default capabilities and `--cap-add
+  ALL`, as 0:0 and 1000:1000, and the refusal without CAP_SETPCAP), and computerd's end at its deadline with the
+  Docker live tests. The test binaries (`CGO_ENABLED=0 go test -c`) also run as root in a container by hand.
 - `computerd probe [--connect <host:port>]...` prints one JSON line: the uid and gid it runs as, the kernel's release,
   and which addresses a TCP connection reached, each tried for at most 3 s. A provider whose vendor reads nothing back
   runs it through `exec.run` (below, Modal).
