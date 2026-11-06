@@ -14,7 +14,7 @@ import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { doorTook } from "@parcha/pi-durable-disk";
 import { AgentHomeError, type Revision, type RevisionKind, type RunOrigin, type RunRow, type RunState, type StoredMetrics } from "@parcha/pi-durable-agent";
-import { chargedTool, isMessageRow, type MessageOrigin, registerLabel, registerTurnEnding, REQUEST_STARTED, type RunMetrics, runMetricsWithDecisions, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
+import { chargedTool, isMessageRow, MESSAGE_ORIGIN, type MessageOrigin, registerLabel, registerTurnEnding, REQUEST_STARTED, type RunMetrics, runMetricsWithDecisions, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { HARNESS_LOG_EVENT, harnessModelKeys, thinkingFor } from "./adapters.js";
 import { DEFAULT_HARNESS, harnessOfBody, steersMidTurn } from "./harness.js";
 import type { RUN_EVENTS, RunNotice } from "./webhooks.js";
@@ -431,9 +431,12 @@ const waitingApproval = (run: Pick<Run, "approvals" | "meta">): Approval | undef
  *  no cut leaves the head of a held key. */
 const shownArgs = (approval: Pick<Approval, "args_json">, redact: (text: string) => string): string => previewOf(redact(approval.args_json));
 /** `entries` with the gate's resume messages (RESUME_PREFIX) redacted whole with `redact`, before the timeline cuts
- *  them: the message carries a call's arguments and its result, which may hold a held key. */
+ *  them: the message carries a call's arguments and its result, which may hold a held key. The marker that names a
+ *  resume the server's (its origin, on pi) is redacted alike, so its text is still the message's, which it matches. */
 function redactGateMessages<T>(entries: readonly T[], redact: (text: string) => string): T[] {
   return entries.map((entry) => {
+    const data = isObject(entry) && entry.kind === MESSAGE_ORIGIN && isObject(entry.data) ? entry.data : undefined;
+    if (data && typeof data.text === "string" && data.text.startsWith(RESUME_PREFIX)) return { ...(entry as Json), data: { ...data, text: redact(data.text) } } as T;
     const first = isObject(entry) && Array.isArray(entry.model) ? entry.model[0] : undefined;
     if (!isObject(first) || first.role !== "user") return entry;
     const content = first.content;
@@ -457,7 +460,14 @@ function withApprovals(rows: readonly TimelineEvent[], run: Pick<Run, "approvals
   const byCall = new Map([...run.approvals.values()].map((approval) => [approval.call_id, approval]));
   const waiting = waitingApproval(run);
   return rows.flatMap((row) => {
-    const approval = row.kind === "tool_result" && row.tool_use_id ? byCall.get(row.tool_use_id) : undefined;
+    // The gate's resume, the server's row: it says what came of the answer, never the head the model reads.
+    const resumed = row.kind === "phase" && row.text?.startsWith(RESUME_PREFIX) ? resumedBy(row.text, byCall) : undefined;
+    if (resumed) return [{ ...row, summary: resumeSays(resumed, run.meta.approvals?.[resumed.id], row.text!) }];
+    const own = (row.kind === "tool_use" || row.kind === "tool_result") && row.tool_use_id ? byCall.get(row.tool_use_id) : undefined;
+    // The call's own rows: what it answered at the park is not what it did, so they say what came of the approval.
+    const called = own ? { ...row, summary: parkedCallSays(own, run, waiting), tool_status: null } : row;
+    if (row.kind === "tool_use") return [called];
+    const approval = own;
     if (!approval) return [row];
     const args = shownArgs(approval, redact);
     const said = run.meta.approvals?.[approval.id]?.decision;
@@ -468,8 +478,27 @@ function withApprovals(rows: readonly TimelineEvent[], run: Pick<Run, "approvals
     // the row says so (the record keeps them whole).
     const dropped = run.meta.approvals?.[approval.id]?.superseded;
     const text = dropped?.by === "message" && dropped.note !== undefined ? `${args}\n\nNot sent: the run was ${said === "canceled" ? "cancelled" : "stopped"}. Your message: ${redact(dropped.note)}` : args;
-    return [row, { ...row, id: `${row.id}:approval`, kind: APPROVAL_ROW, summary, text, tool_name: approval.tool, tool_status: null, tool_input_preview: clip(args, 500), tool_result_preview: null, tool_result_size_bytes: null }];
+    return [called, { ...row, id: `${row.id}:approval`, kind: APPROVAL_ROW, summary, text, tool_name: approval.tool, tool_status: null, tool_input_preview: clip(args, 500), tool_result_preview: null, tool_result_size_bytes: null }];
   });
+}
+/** What a call that waited for approval came to, as its own rows (its call's and its result's) say it: the park answered
+ *  it with the gate's waiting text, so they never say it ran while it had not (no tool verb, no outcome, no status). */
+function parkedCallSays(approval: Approval, run: Pick<Run, "meta">, waiting: Approval | undefined): string {
+  const given = run.meta.approvals?.[approval.id];
+  if (approval === waiting || !given) return approval.resolved ? "Not run" : "Not run yet: it waits for your approval";
+  const ended = given.decision === "canceled" ? "cancelled" : "stopped";
+  if (given.decision === "withdrawn" || given.decision === "canceled")
+    return given.superseded?.decision === "allow" ? `Allowed, then the run was ${ended}: no result of it reached the model` : `Not run: the run was ${ended} while it waited`;
+  if (given.decision === "deny") return given.by === "message" ? "Not run: your message declined it" : "Not run: you declined it";
+  return approval.resolved ? "Allowed: its result is in the message that resumed the run" : "Allowed: it runs now";
+}
+/** The call a resume (resumeText, its text as the row has it) answers: its head names the call's tool and id. */
+const resumedBy = (text: string, byCall: ReadonlyMap<string, Approval>): Approval | undefined =>
+  [...byCall.values()].find((approval) => text.startsWith(`${RESUME_PREFIX}This answers your ${approval.tool} call ${approval.call_id} `));
+/** A resume's row as the approval's outcome: what ran, or what was refused. Only the tool's name and fixed words. */
+function resumeSays(approval: Approval, given: { decision: string; by?: string } | undefined, text: string): string {
+  if (given?.decision === "deny") return `AgentRun: ${approval.tool} was refused: ${given.by === "message" ? "your message declined it" : "you declined it"}`;
+  return `AgentRun: ${approval.tool} ran once you allowed it${text.includes(" They allowed it, and it ran and failed.") ? ", and failed" : ""}`;
 }
 /** A dollar figure to a millionth, as the timeline's cost.usd is. */
 const micro = (usd: number): number => Math.round(usd * 1e6) / 1e6;

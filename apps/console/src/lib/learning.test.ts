@@ -93,7 +93,7 @@ describe("the before and after", () => {
 });
 
 describe("where a note came from", () => {
-  it("the run that first kept it, and the latest change a person made, from the changes newest first", () => {
+  it("the run that first kept it, from the changes newest first; a person's change names no one (the server's last_change does)", () => {
     const log = [
       { by: { user: true as const }, commit: "c3", at: "2026-11-03T16:55:00Z", reason: "edited by a person", files: ["b.md", "MEMORY.md"] },
       { by: { run: "r2" }, commit: "c2", at: "2026-11-03T16:52:30Z", reason: "General and new.", files: ["a.md", "b.md", "MEMORY.md"] },
@@ -101,7 +101,7 @@ describe("where a note came from", () => {
     ];
     const from = provenance(log);
     expect(from.get("a.md")).toEqual({ run: { id: "r1", at: "2026-11-03T16:52:00Z", reason: "Holds for other shops." } });
-    expect(from.get("b.md")).toEqual({ run: { id: "r2", at: "2026-11-03T16:52:30Z", reason: "General and new." }, edited: "2026-11-03T16:55:00Z" });
+    expect(from.get("b.md")).toEqual({ run: { id: "r2", at: "2026-11-03T16:52:30Z", reason: "General and new." } });
   });
   it("a link names the agent's Learning tab and each note to point at", () => {
     expect(learningHash("refund finder", ["a.md", "b.md"])).toBe("#/agents/refund%20finder/learning?note=a.md&note=b.md");

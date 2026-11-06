@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.1.0-beta.31 (2026-11-06)
+
+- `@parcha/pi-durable-disk` takes disk 1.12.0, whose undici (^8.12.3) carries the fixes for the October undici advisories, so a fresh install no longer holds disk's vulnerable copy.
+- A trigger's message never reaches a run parked on a tool call's approval. The door's `POST /submit` with `answers: false` takes `parks` (entry kinds): it is refused with `409 WAITING`, by pi's root and by a door hook alike, while a call waits in a park of one of those kinds (an entry `{phase: "requested", id}` with no `{phase: "resolved", id}` after it). Serve sends its tool gate's park with each message a trigger sends, so a run that comes to wait on an approval just before the message reaches its door has the firing skipped ("The run is waiting on a person."), instead of taking the message, or being retried every 5 s as busy, and the approval stays pending. The park is read in one transaction (a hook's in the commit that admits the input), and only for a new admission: a requestId the door already took answers its record, so a retry of a delivered message settles sent.
+
 ## 0.1.0-beta.30 (2026-11-05)
 
 - `doorKey(requestId, n)` names the submission keys the door records a request under in a run's store (`door <requestId>` for its admission, then `door <requestId> <n>`), and `doorTook(requestId, statusAt)` reads from them whether the door took it, so a host can find a request a run already took without its door: serve reads it before sending a trigger's message to a run that has no live process.
