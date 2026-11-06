@@ -49,8 +49,10 @@ const label = (row: TimelineRow) => fromServer(row) ? "AgentRun" : rowPaused(row
 /** One step. With one row per action, a call's row carries its own outcome: `running` until it ends (a spinner), a
  *  failed or interrupted one reads as failed, and a missing one (a read that found nothing the run wrote) is grey. */
 /** A waiting row's chip, by what the run waits on now (its `pending.kind`, the run page's to pass: a row carries no kind
- *  of its own), as the run header's status chip says it. */
-const WAITING_CHIP: Record<string, string> = { budget: "Paused at cap", approval: "Approval required" };
+ *  of its own), as the run header's status chip says it. Only a wait whose row is a `waiting` one: a cap pause's. An
+ *  approval waits on its own tool_approval_requested row, which carries "Approval required"; the newest waiting row
+ *  then is an earlier question, answered. */
+const WAITING_CHIP: Record<string, string> = { budget: "Paused at cap" };
 
 function Row({ step, last, waitingChip }: { step: Step; last: boolean; waitingChip?: string }) {
   // The row a step shows, and so its label: the one place a row is read for display.
