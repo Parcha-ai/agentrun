@@ -2233,9 +2233,11 @@ the $0.15 left of the run's $0.50 cap could buy."
 
 A refusal for room (what is left of the cap cannot buy the next request's least) pauses the run instead of ending it: the
 refused request was not sent, so the cap holds, and a higher cap would send it. The run is `input_required` and
-`waiting`, `error` null, with `pending: {kind: "budget", cap_usd, spent_usd, needs_usd, suggested_cap_usd, said, at}`:
+`waiting`, `error` null, with `pending: {kind: "budget", cap_usd, spent_usd, needs_usd, least_cap_usd, suggested_cap_usd, said, at}`:
 its cap, what the cap counted as taken (spent, and held for requests still answering) and the least the refused request
-needs (a cap above their sum sends it), the raise it is offered, the refusal's words above, and when it came. The
+needs (a cap above their sum sends it), the least cap that sends it, the raise it is offered, the refusal's words above,
+and when it came. `least_cap_usd` is the very figure the words name ("Raise the cap to at least $X"), in whole
+cents and above the cap, carried from the refusal that wrote them, so a client shows it without parsing the sentence. The
 offered raise, `suggested_cap_usd`, is `spent_usd` + 10 × `needs_usd` rounded up to a whole dollar, and always above the
 cap, so a `PATCH` with it (below) resumes the run; it is absent with the other figures. The figures come from the refusal's own start mark, so a
 server started again says them too, shown as `cost.usd` is (to a millionth of a dollar), except `spent_usd` once the paused process is gone: the refusal counted requests

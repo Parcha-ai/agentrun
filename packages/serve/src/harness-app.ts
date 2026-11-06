@@ -180,11 +180,11 @@ export function adapterRun(
     const paid = byCancel || !cap || request.spentUsd === null ? undefined : takePaidRefusal(spend);
     const model = (request as { model?: unknown }).model;
     const before = typeof model === "string" ? previous.get(model) : undefined;
-    const answer = byCancel ? { refuse: CANCELLED } : paid ? { refuse: `${CAP_REFUSAL_CODE}${paid.words}`, spentUsd: paid.figures.spentUsd, needsUsd: paid.figures.needsUsd } : cap?.beforeRequest({ ...request, spentUsd: plus(plus(request.spentUsd, charged), sideSpend()), ...(before ? { previous: before } : {}) });
+    const answer = byCancel ? { refuse: CANCELLED } : paid ? { refuse: `${CAP_REFUSAL_CODE}${paid.words}`, spentUsd: paid.figures.spentUsd, needsUsd: paid.figures.needsUsd, leastCapUsd: paid.figures.leastCapUsd } : cap?.beforeRequest({ ...request, spentUsd: plus(plus(request.spentUsd, charged), sideSpend()), ...(before ? { previous: before } : {}) });
     if (answer && "refuse" in answer) {
       refused = answer.refuse;
       capRefused = !byCancel;
-      refusedFigures = !byCancel && "needsUsd" in answer && typeof answer.needsUsd === "number" && typeof answer.spentUsd === "number" ? { spentUsd: answer.spentUsd, needsUsd: answer.needsUsd, ...("boundUsd" in answer && typeof answer.boundUsd === "number" && answer.boundUsd > 0 ? { boundUsd: answer.boundUsd } : {}) } : undefined;
+      refusedFigures = !byCancel && "needsUsd" in answer && typeof answer.needsUsd === "number" && typeof answer.spentUsd === "number" && typeof answer.leastCapUsd === "number" ? { spentUsd: answer.spentUsd, needsUsd: answer.needsUsd, leastCapUsd: answer.leastCapUsd, ...("boundUsd" in answer && typeof answer.boundUsd === "number" && answer.boundUsd > 0 ? { boundUsd: answer.boundUsd } : {}) } : undefined;
       return answer;
     }
     inFlight.admitted(answer?.holdUsd);
