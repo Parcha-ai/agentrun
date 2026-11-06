@@ -641,6 +641,9 @@ function processIdentity(pid: number | undefined): string | undefined {
   }
 }
 const pausedAt = (run: Run): string | undefined => (raisedSince(run) ? undefined : refusedAt(run));
+/** Raised at the pause it stands at, and that raise's follow-up still to go (continuationOf): the run goes on without a
+ *  person, once the follow-up opens its next process (resumeRaised). */
+const raisedToGo = (run: Run): boolean => raisedSince(run) && continuationOf(run) !== undefined;
 /** What a stop keeps of where the run stands: the person's last message, by its id, or the place before any. */
 export const stopMark = (rows: readonly TimelineEvent[]): { stopped_at: string } => ({ stopped_at: lastUserMessage(rows) ?? `${ROOT_CONVERSATION_ID}:0` });
 
@@ -683,8 +686,10 @@ export function statusOf(run: Run): { status: Status; state: State } {
   // Every message's turn is over and the newest one's ended interrupted, with no stop of the person's saying so (the
   // harness ended it on its own): the run waits for the person, as after a stop, never working for good.
   if (run.kind === "agentic" && run.submitted === 0 && run.turns.end()?.status === "interrupted") return { status: "input_required", state: "idle" };
-  // Paused at its cap: it waits for the cap to be raised; raised, for a message, if the raise's own follow-up did not go.
-  if (refusedAt(run) !== undefined) return pausedAt(run) !== undefined ? { status: "input_required", state: "waiting" } : { status: "input_required", state: "idle" };
+  // Paused at its cap: it waits for the cap to be raised. Raised, it is queued while the raise's follow-up is still to go
+  // (raisedToGo: from the moment the raise is taken, through its paused process's let-go and the follow-up's tries), since
+  // nothing waits on a person; for a message only if that follow-up will not go.
+  if (refusedAt(run) !== undefined) return pausedAt(run) !== undefined ? { status: "input_required", state: "waiting" } : raisedToGo(run) ? { status: "queued", state: "working" } : { status: "input_required", state: "idle" };
   if (run.working) return { status: "working", state: "working" };
   if (meaningful(run.rows)?.kind === "waiting") return { status: "input_required", state: "waiting" };
   return { status: "working", state: "idle" };
@@ -2134,7 +2139,8 @@ export class Runs {
     }
     if (!ended) {
       // Work left and no process: opened again. A run that waits for the person waits without one, until a message.
-      const stalled = run.kind === "workflow" || statusOf(run).status !== "input_required";
+      // A raised run whose follow-up is still to go let its process go as a paused one does: its sign-in's lease goes too.
+      const stalled = run.kind === "workflow" || (statusOf(run).status !== "input_required" && !raisedToGo(run));
       // Its sign-in's save lease stays with it until it ends (carryBack), through a relaunch or a restart: a session it
       // opened before its process went may still be live at the vendor, and would write back over another run's. One
       // that let go cleanly to wait for its person released its sessions first, so its lease goes now.

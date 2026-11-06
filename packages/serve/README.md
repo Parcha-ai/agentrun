@@ -2189,7 +2189,9 @@ next process opens under it, as does a server started again; a raise it could no
 and the same raise again is taken anew. A run paused at its cap goes on: the answer is `{run_id, max_cost_usd, resumed: true,
 message_id, status, state}` at once, and the pause gets one follow-up turn, "The cap was raised to $2; continue the
 task.", under that `message_id`, which the server sends once the process being let go is gone, and which runs under the
-new cap. A second raise before it goes raises the cap it names and answers the same `message_id`. It is sent once: a
+new cap. From the moment the raise is taken, the run reads `queued` (state `working`), in the answer's `status` and in
+every read after it, until the follow-up's turn runs: nothing waits on a person, so it is never `input_required` with no
+`pending` meanwhile. A second raise before it goes raises the cap it names and answers the same `message_id`. It is sent once: a
 server stopped before it went, or between starting its process and sending it, sends it when it starts again. One that
 cannot be sent is tried again (after 1 s, then 3 s); after 3 tries the run ends `failed`, saying the cap was raised but
 the run could not be sent on. The follow-up shows in the run's timeline as the server's, "AgentRun: The cap was raised…", never as the
