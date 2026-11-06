@@ -232,7 +232,10 @@ await docker.release(made.value, "delete");
   computer's own report (image, network, sizes, user, workdir, deadline) and held to what `check` allows (and the
   deadline to the ISO time create writes, at most 30 days away), then the whole inspect is checked as at create, and,
   when the computer runs, its daemon's hello. A computer that drifts is refused (`refused`) with every mismatch, and
-  left as it is: attach did not make it, so it does not delete it. A stopped computer is checked by inspect alone.
+  left as it is: attach did not make it, so it does not delete it. A stopped computer is checked by inspect alone. A
+  computer that passes is returned as its ref with `spec`, the spec read back (`{ image, user, network, cpus,
+  memoryMb, pids, workdir, deadline }`), so a caller sees what it attached to: `user` is `uid:gid` (`"0:0"` for a
+  computer whose spec asked for root) and `network` the policy read back. `list` keeps its own shape (`ComputerInfo`).
 - `list(labels)` runs `docker ps -a --filter label=agentrun.computer=1 --filter label=k=v ...`, then inspects the
   matches 50 at a time, reading only the fields it reports, so any number of computers is listed (a computer gone
   between the two is left out). It returns each computer's `ref`, `labels`, `deadline` (a `Date`, or `undefined` when the label is missing or is not
@@ -400,8 +403,9 @@ Core and Full follow the Kubernetes agent-sandbox conformance levels (KEP-539.2)
 - **Core** is what every computer does: hello and ping, `exec.run` as a user other than root with no effective or
   permitted capabilities (the run's spec asks for no user), a HOME that user owns and writes while `/` refuses it, the
   `files.*` and `tar.*` methods, the `process.*` methods, a computer with network `none` (`network:none`: a provider
-  that cannot make one fails Core, and the suite never asks for a wider network instead), `check`, `create`, `attach`,
-  `list`, `network` read-back and `release`, a change to a network the provider does not declare refused with the
+  that cannot make one fails Core, and the suite never asks for a wider network instead), `check`, `create`, `attach`
+  (with the spec it reads back: the network and image create asked for, and a non-root `user` as `uid:gid`), `list`,
+  `network` read-back and `release`, a change to a network the provider does not declare refused with the
   network unchanged (Core asks for no network the provider could give), a computer that does not run past its deadline
   (after a sweep, for a janitor provider), and the drift checks. Core passes when every Core case passes and the run leaves no computer
   behind.

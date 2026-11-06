@@ -3,7 +3,7 @@
 // declare is refused or applied truthfully (Full), a computer does not run past its deadline, and the janitor ends only
 // the expired, stopped or running.
 import { sweep } from "../../janitor.js";
-import type { ComputerSpec, NetworkSpec } from "../../provider.js";
+import type { ComputerRef, ComputerSpec, NetworkSpec } from "../../provider.js";
 import type { Case, CaseContext } from "../types.js";
 import { CASE_LABEL, delay } from "./util.js";
 
@@ -14,6 +14,8 @@ const names = async (t: CaseContext, labels: Record<string, string>) =>
 		.ok(await t.provider.list(labels), `list ${JSON.stringify(labels)}`)
 		.map((info) => info.ref.name)
 		.sort();
+/** What attach found, as a ref: its id and name alone. */
+const refOf = ({ id, name }: ComputerRef): ComputerRef => ({ id, name });
 const kindOf = (policy: NetworkSpec) => (typeof policy === "string" ? policy : "allow");
 const POLICIES: NetworkSpec[] = ["none", "open", { allow: ["example.com"] }];
 
@@ -70,11 +72,22 @@ export const providerCases: Case[] = [
 	}),
 	provider("attach", async (t) => {
 		const labels = own(t, "attach");
-		const a = await t.create({ labels: { ...labels, role: "a" } });
+		const spec = t.spec({ labels: { ...labels, role: "a" } });
+		const a = await t.create(spec);
 		const b = await t.create({ labels: { ...labels, role: "b" } });
-		t.deepEqual(t.ok(await t.provider.attach({ id: a.id }), "attach by id"), a, "attach by id");
+		const byId = t.ok(await t.provider.attach({ id: a.id }), "attach by id");
+		t.deepEqual(refOf(byId), a, "attach by id");
 		const byLabels = t.ok(await t.provider.attach({ labels: { ...labels, role: "b" } }), "attach by labels");
-		t.deepEqual(byLabels, b, "attach by labels");
+		t.deepEqual(refOf(byLabels), b, "attach by labels");
+		// What attach reports is read back from the computer: the network and image create asked for, and, since create
+		// asked for no user, the provider's non-root default.
+		for (const [how, attached] of [["by id", byId], ["by labels", byLabels]] as const) {
+			const read = t.present(attached.spec, `attach ${how} reports the spec it read back`);
+			t.deepEqual(read.network, spec.network, `attach ${how}: the network it reports`);
+			t.equal(read.image, spec.image, `attach ${how}: the image it reports`);
+			t.match(read.user, /^\d+:\d+$/, `attach ${how}: the user it reports, as uid:gid`);
+			t.assert(!read.user.startsWith("0:"), `attach ${how} reports user ${read.user}, root, though create asked for no user`);
+		}
 		const both = t.refused(await t.provider.attach({ labels }), "attach by labels two computers match");
 		t.assert(both.message !== "", "the refusal is in words");
 		t.refused(await t.provider.attach({ labels: { ...labels, role: "c" } }), "attach by labels no computer has", ["not_found"]);
@@ -213,7 +226,7 @@ export const providerCases: Case[] = [
 				"a sweep past two deadlines: the stopped and the running computer deleted, the third kept",
 			);
 			t.deepEqual(await names(t, labels), [long.name], "left after the sweep");
-			t.deepEqual(t.ok(await t.provider.attach({ id: t.ref.id }), "attach to the run's computer"), t.ref, "a computer outside the swept labels");
+			t.deepEqual(refOf(t.ok(await t.provider.attach({ id: t.ref.id }), "attach to the run's computer")), t.ref, "a computer outside the swept labels");
 			t.deepEqual(t.ok(await sweep(t.provider, { labels }), "a second sweep"), { deleted: [], kept: 1 }, "a second sweep, now");
 		},
 		{ level: "full", needs: ["lifetime:janitor"], computer: "shared" },
