@@ -1,0 +1,195 @@
+package execrun_test
+
+import (
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
+	"testing"
+	"time"
+
+	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/execrun"
+	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/rpc"
+)
+
+func run(t *testing.T, spec execrun.Spec) execrun.Result {
+	t.Helper()
+	if spec.Timeout == 0 {
+		spec.Timeout = 10 * time.Second
+	}
+	res, err := execrun.Run(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("Run(%q): %v", spec.Argv, err)
+	}
+	return res
+}
+
+func kindOf(t *testing.T, err error) rpc.Kind {
+	t.Helper()
+	var e *rpc.Error
+	if !errors.As(err, &e) {
+		t.Fatalf("want an *rpc.Error, got %v", err)
+	}
+	return e.Kind
+}
+
+// gone waits until pid is no process or a zombie, which is a process that has ended.
+func gone(t *testing.T, pid int) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if err := syscall.Kill(pid, 0); errors.Is(err, syscall.ESRCH) {
+			return
+		}
+		if stat, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat"); err == nil {
+			if fields := strings.Fields(string(stat[strings.LastIndexByte(string(stat), ')')+1:])); len(fields) > 0 && fields[0] == "Z" {
+				return
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("process %d is still running", pid)
+}
+
+func pidOf(t *testing.T, out []byte) int {
+	t.Helper()
+	pid, err := strconv.Atoi(strings.TrimSpace(string(out)))
+	if err != nil {
+		t.Fatalf("no pid in %q", out)
+	}
+	return pid
+}
+
+func TestExitCodeAndSplitStreams(t *testing.T) {
+	res := run(t, execrun.Spec{Argv: []string{"sh", "-c", "echo out; echo err >&2; exit 3"}})
+	if res.ExitCode == nil || *res.ExitCode != 3 || string(res.Stdout) != "out\n" || string(res.Stderr) != "err\n" || res.TimedOut || res.Truncated {
+		t.Fatalf("unexpected result %+v (stdout %q stderr %q)", res, res.Stdout, res.Stderr)
+	}
+}
+
+func TestArgvIsNeverAShell(t *testing.T) {
+	arg := "$(id) `id`; echo no > x | cat && *"
+	res := run(t, execrun.Spec{Argv: []string{"printf", "%s|%s", "a b", arg}, Cwd: t.TempDir()})
+	if want := "a b|" + arg; string(res.Stdout) != want {
+		t.Fatalf("stdout %q, want %q", res.Stdout, want)
+	}
+}
+
+func TestTimeoutKillsTheWholeGroup(t *testing.T) {
+	start := time.Now()
+	res := run(t, execrun.Spec{Argv: []string{"sh", "-c", "sleep 60 & echo $!; wait"}, Timeout: 300 * time.Millisecond})
+	if !res.TimedOut || res.ExitCode != nil || res.Signal != "SIGTERM" {
+		t.Fatalf("want timed out by SIGTERM, got %+v", res)
+	}
+	if time.Since(start) > 2*time.Second {
+		t.Fatalf("took %v, want the group to end on SIGTERM", time.Since(start))
+	}
+	gone(t, pidOf(t, res.Stdout))
+}
+
+func TestTimeoutEscalatesToSIGKILL(t *testing.T) {
+	start := time.Now()
+	res := run(t, execrun.Spec{Argv: []string{"sh", "-c", "trap '' TERM; sleep 60 & echo $!; wait"}, Timeout: 200 * time.Millisecond})
+	elapsed := time.Since(start)
+	if !res.TimedOut || res.Signal != "SIGKILL" || elapsed < 2*time.Second || elapsed > 5*time.Second {
+		t.Fatalf("want SIGKILL 2 s after SIGTERM, got %+v after %v", res, elapsed)
+	}
+	gone(t, pidOf(t, res.Stdout))
+}
+
+func TestCancelKillsTheGroupAndIsAborted(t *testing.T) {
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "pid")
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(300*time.Millisecond, cancel)
+	_, err := execrun.Run(ctx, execrun.Spec{Argv: []string{"sh", "-c", "sleep 60 & echo $! > " + pidFile + "; wait"}, Timeout: 10 * time.Second})
+	if kindOf(t, err) != rpc.KindAborted {
+		t.Fatalf("want aborted, got %v", err)
+	}
+	data, readErr := os.ReadFile(pidFile)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	gone(t, pidOf(t, data))
+}
+
+func TestWhatTheProgramLeavesBehindIsKilled(t *testing.T) {
+	start := time.Now()
+	res := run(t, execrun.Spec{Argv: []string{"sh", "-c", "sleep 60 >/dev/null 2>&1 & echo $!"}})
+	if res.ExitCode == nil || *res.ExitCode != 0 || time.Since(start) > 3*time.Second {
+		t.Fatalf("want exit 0 at once, got %+v after %v", res, time.Since(start))
+	}
+	gone(t, pidOf(t, res.Stdout))
+}
+
+func TestOutputIsTruncatedAndTheProgramStillEnds(t *testing.T) {
+	res := run(t, execrun.Spec{Argv: []string{"head", "-c", "200000", "/dev/zero"}, MaxOutput: 1000})
+	if len(res.Stdout) != 1000 || !res.Truncated || res.ExitCode == nil || *res.ExitCode != 0 {
+		t.Fatalf("want 1000 bytes, truncated, exit 0; got %d bytes %+v", len(res.Stdout), res)
+	}
+}
+
+func TestEnvAddsToAMinimalDefault(t *testing.T) {
+	t.Setenv("COMPUTERD_TEST_SECRET", "leak")
+	res := run(t, execrun.Spec{Argv: []string{"env"}, Env: map[string]string{"FOO": "bar baz", "HOME": "/tmp"}})
+	out := "\n" + string(res.Stdout)
+	for _, want := range []string{"\nFOO=bar baz\n", "\nHOME=/tmp\n", "\nPATH="} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("env lacks %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "COMPUTERD_TEST_SECRET") {
+		t.Fatalf("the daemon's own environment leaked:\n%s", out)
+	}
+}
+
+func TestPathComesFromTheGivenEnv(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "only-here"), []byte("#!/bin/sh\necho found\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	res := run(t, execrun.Spec{Argv: []string{"only-here"}, Env: map[string]string{"PATH": dir + ":/usr/bin:/bin"}})
+	if string(res.Stdout) != "found\n" {
+		t.Fatalf("stdout %q", res.Stdout)
+	}
+}
+
+func TestCwd(t *testing.T) {
+	dir := t.TempDir()
+	res := run(t, execrun.Spec{Argv: []string{"pwd"}, Cwd: dir})
+	if strings.TrimSpace(string(res.Stdout)) != dir {
+		t.Fatalf("pwd %q, want %q", res.Stdout, dir)
+	}
+	_, err := execrun.Run(context.Background(), execrun.Spec{Argv: []string{"pwd"}, Cwd: filepath.Join(dir, "missing"), Timeout: time.Second})
+	if kindOf(t, err) != rpc.KindNotFound {
+		t.Fatalf("want not_found for a missing cwd, got %v", err)
+	}
+}
+
+func TestMissingProgramIsNotFound(t *testing.T) {
+	_, err := execrun.Run(context.Background(), execrun.Spec{Argv: []string{"computerd-no-such-program"}, Timeout: time.Second})
+	if kindOf(t, err) != rpc.KindNotFound {
+		t.Fatalf("want not_found, got %v", err)
+	}
+}
+
+func TestUser(t *testing.T) {
+	_, err := execrun.Run(context.Background(), execrun.Spec{Argv: []string{"id"}, User: "computerd-no-such-user", Timeout: time.Second})
+	if kindOf(t, err) != rpc.KindNotFound {
+		t.Fatalf("want not_found for an unknown user, got %v", err)
+	}
+	res := run(t, execrun.Spec{Argv: []string{"id", "-u"}, User: strconv.Itoa(os.Getuid())})
+	if strings.TrimSpace(string(res.Stdout)) != strconv.Itoa(os.Getuid()) {
+		t.Fatalf("id -u %q as the daemon's own uid", res.Stdout)
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: switching users is allowed here")
+	}
+	_, err = execrun.Run(context.Background(), execrun.Spec{Argv: []string{"id"}, User: "0:0", Timeout: time.Second})
+	if kindOf(t, err) != rpc.KindDenied || !strings.Contains(err.Error(), "CAP_SETUID") {
+		t.Fatalf("want denied naming CAP_SETUID, got %v", err)
+	}
+}
