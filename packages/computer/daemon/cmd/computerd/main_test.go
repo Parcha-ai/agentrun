@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/daemon"
+	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/nocgo"
 )
 
 // argsEnv makes the test binary run computerd's main with these arguments (JSON), as a process of its own.
@@ -30,7 +31,9 @@ func TestMain(m *testing.M) {
 		main()
 		os.Exit(0)
 	}
-	os.Exit(m.Run())
+	// computerd is built without cgo, and init's start is tested in a test binary without it: a plain go test, with
+	// cgo on, runs these tests in one built again with CGO_ENABLED=0.
+	os.Exit(nocgo.Run(m))
 }
 
 // computerd runs main with args, not as PID 1, and returns its exit code and stderr; it is killed after bound.
@@ -84,6 +87,7 @@ func TestInitRefusesToStartWithoutADeadline(t *testing.T) {
 // The tests of init's start need a test binary without cgo, as computerd is built: with cgo, init refuses to start for
 // that (ENOTSUP), and the refusal for a capability it cannot drop (EPERM) and the deadline go untested.
 func TestThisTestBinaryLinksNoCgo(t *testing.T) {
+	nocgo.Require(t)
 	if cgoBuild {
 		t.Fatal("this test binary links cgo: init's start is tested only in one without cgo, as computerd is built")
 	}
@@ -93,6 +97,7 @@ func TestThisTestBinaryLinksNoCgo(t *testing.T) {
 // or has an empty bounding set. When it cannot, it refuses to start, and why is returned.
 func dropsHere(t *testing.T) (bool, string) {
 	t.Helper()
+	nocgo.Require(t)
 	status, err := os.ReadFile("/proc/self/status")
 	if err != nil {
 		t.Fatal(err)

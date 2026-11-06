@@ -12,6 +12,8 @@ import (
 	"syscall"
 	"testing"
 	"unsafe"
+
+	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/nocgo"
 )
 
 func ownerAndMode(t *testing.T, path string) (int, int, os.FileMode) {
@@ -285,6 +287,7 @@ func capabilitiesOfThisProcess(t *testing.T) (effective, bounding uint64) {
 
 // The drop needs a test binary without cgo, as computerd is built: with cgo every refusal is ENOTSUP, and none is tested.
 func TestThisTestBinaryLinksNoCgo(t *testing.T) {
+	nocgo.Require(t)
 	if cgoBuild {
 		t.Fatal("this test binary links cgo: the drop is tested only in one without cgo, as computerd is built")
 	}
@@ -294,6 +297,7 @@ func TestThisTestBinaryLinksNoCgo(t *testing.T) {
 // bounding set to empty. As another user the root path runs in a container (README: the daemon's tests as root).
 func needsRootWithCapabilities(t *testing.T) {
 	t.Helper()
+	nocgo.Require(t)
 	effective, bounding := capabilitiesOfThisProcess(t)
 	if os.Geteuid() != 0 || effective&(1<<capSetpcap) == 0 || bounding == 0 {
 		t.Skipf("runs as uid %d with CapEff %016x and CapBnd %016x: the root path needs root with CAP_SETPCAP and a bounding set, as a container gives one; run this test binary as root in a container", os.Geteuid(), effective, bounding)
@@ -377,6 +381,7 @@ func TestUnprivilegedLeavesRootNoCapabilityOnAnyThread(t *testing.T) {
 
 // As a user with a bounding set and no CAP_SETPCAP, as go test runs on a host: the drop cannot be done, so it is refused.
 func TestUnprivilegedRefusesABoundingSetItCannotEmpty(t *testing.T) {
+	nocgo.Require(t)
 	effective, bounding := capabilitiesOfThisProcess(t)
 	if effective&(1<<capSetpcap) != 0 || bounding == 0 {
 		t.Skipf("CapEff %016x, CapBnd %016x: this process can empty its bounding set", effective, bounding)
