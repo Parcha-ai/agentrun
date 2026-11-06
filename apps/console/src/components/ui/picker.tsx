@@ -21,7 +21,7 @@ export function Picker({ value, onChange, options, label, id, className }: { val
         className="z-50 max-h-72 w-[var(--button-width)] min-w-[12rem] overflow-auto border border-border-strong bg-background py-1 font-mono text-[13px] shadow-lg outline-none [--anchor-gap:2px] [--anchor-padding:8px]">
         {options.map((o) => (
           <ListboxOption key={o.value} value={o.value} className="group flex min-h-10 cursor-pointer items-center gap-2 px-3 py-2 data-[focus]:bg-accent data-[selected]:text-foreground">
-            <Check className="invisible size-3.5 shrink-0 text-primary group-data-[selected]:visible" aria-hidden />
+            <Check className="invisible size-3.5 shrink-0 text-brand-accent group-data-[selected]:visible" aria-hidden />
             <span className="min-w-0 break-words">{o.label}</span>
           </ListboxOption>
         ))}

@@ -4,8 +4,8 @@ import { cn } from "@/lib/utils";
 // A native button with shared AgentRun variants and host-supplied classes.
 const variants = {
   outline: "border-border bg-background hover:border-border-strong hover:bg-accent",
-  primary: "border-primary text-primary hover:bg-primary/10",
-  solid: "border-primary bg-primary text-black hover:bg-primary/90",
+  primary: "border-primary text-brand-accent hover:bg-primary/10",
+  solid: "border-primary bg-primary text-primary-foreground hover:bg-primary/90",
   destructive: "border-destructive/60 text-destructive-text hover:bg-destructive/10",
   ghost: "border-transparent hover:bg-accent",
 };

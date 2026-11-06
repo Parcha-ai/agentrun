@@ -75,7 +75,7 @@ export function ToolTable({ label, rows, settings, fallbackOf, permissionFallbac
                     {permissions && <td className="px-3 py-2">
                       {gate ? <>
                         <select aria-label={`${name} permission`} value={permission} disabled={busy} onChange={(e) => { const chosen = e.target.value as Permission; onEdit((current) => withPermission(current, name, chosen, gateFallback)); }}
-                          className={cn("border bg-background px-2 py-1.5 font-mono text-[12px] outline-none focus:border-border-strong disabled:opacity-60", permissionSet && "border-primary text-primary")}>
+                          className={cn("border bg-background px-2 py-1.5 font-mono text-[12px] outline-none focus:border-border-strong disabled:opacity-60", permissionSet && "border-primary text-brand-accent")}>
                           {gate.permissions.map((p) => <option key={p} value={p} disabled={p === "ask" && gate.ask_needs === "password"}>{p}{p === gateFallback ? " (default)" : ""}</option>)}
                         </select>
                         {permissionSet && <span className="mt-1 block font-mono text-[11px] text-muted-foreground">default: {gateFallback}</span>}
@@ -85,7 +85,7 @@ export function ToolTable({ label, rows, settings, fallbackOf, permissionFallbac
                     {providers && <td className="px-3 py-2">
                       {t ? <>
                         <select aria-label={`${name} provider`} value={provider} disabled={busy} onChange={(e) => pick(e.target.value)}
-                          className={cn("border bg-background px-2 py-1.5 font-mono text-[12px] outline-none focus:border-border-strong disabled:opacity-60", set && "border-primary text-primary")}>
+                          className={cn("border bg-background px-2 py-1.5 font-mono text-[12px] outline-none focus:border-border-strong disabled:opacity-60", set && "border-primary text-brand-accent")}>
                           {t.providers.map((p) => <option key={p} value={p}>{providerLabel(p, name)}{p === fallback ? " (default)" : ""}</option>)}
                         </select>
                         {providerHelp(provider, name) && <span className="mt-1 block max-w-[300px] text-[11px] text-muted-foreground">{providerHelp(provider, name)}</span>}

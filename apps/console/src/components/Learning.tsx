@@ -22,7 +22,7 @@ export type LearningProps = { agent: Agent; v2: Client; focus?: string[]; server
 const failed = (e: unknown, what: string, title: string) => ({ ...problem(e, what), title });
 const runTitle = (runs: Map<string, Run>, id: string) => runs.get(id)?.title || `run ${runLabel(id)}`;
 /** A rendered note body: markdown, sanitized, in the console's type at a note's size. */
-const PROSE = "text-[14px] leading-[1.65] [&_a]:text-primary [&_a]:underline [&_a]:underline-offset-2 [&_code]:bg-muted [&_code]:px-1 [&_code]:font-mono [&_code]:text-[12.5px] [&_h1]:mb-2 [&_h1]:text-[15px] [&_h1]:font-semibold [&_h2]:mb-2 [&_h2]:mt-3 [&_h2]:text-[14px] [&_h2]:font-semibold [&_h3]:mt-3 [&_h3]:font-semibold [&_li]:mb-0.5 [&_ol]:mb-2 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:mb-2 [&_p:last-child]:mb-0 [&_pre]:mb-2 [&_pre]:overflow-x-auto [&_pre]:border [&_pre]:bg-background [&_pre]:p-3 [&_pre]:font-mono [&_pre]:text-[12px] [&_ul]:mb-2 [&_ul]:list-disc [&_ul]:pl-5";
+const PROSE = "text-[14px] leading-[1.65] [&_a]:text-brand-accent [&_a]:underline [&_a]:underline-offset-2 [&_code]:bg-muted [&_code]:px-1 [&_code]:font-mono [&_code]:text-[12.5px] [&_h1]:mb-2 [&_h1]:text-[15px] [&_h1]:font-semibold [&_h2]:mb-2 [&_h2]:mt-3 [&_h2]:text-[14px] [&_h2]:font-semibold [&_h3]:mt-3 [&_h3]:font-semibold [&_li]:mb-0.5 [&_ol]:mb-2 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:mb-2 [&_p:last-child]:mb-0 [&_pre]:mb-2 [&_pre]:overflow-x-auto [&_pre]:border [&_pre]:bg-background [&_pre]:p-3 [&_pre]:font-mono [&_pre]:text-[12px] [&_ul]:mb-2 [&_ul]:list-disc [&_ul]:pl-5";
 /** Whether the keyboard's save is ⌘ or Ctrl, as the editor's hint names it (both save). */
 const MAC = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
 /** The most pages of notes, or of changes, the tab reads past the first on its own (for a link's note, or a note's source). */
@@ -276,7 +276,7 @@ function ImpactCard({ impact }: { impact: NonNullable<AgentLearning["impact"]> }
               <dd className="flex items-baseline gap-2 font-mono">
                 <span className="text-[22px] font-semibold leading-none">{s.now}</span>
                 <span className="text-[12px] text-muted-foreground">instead of {s.was}</span>
-                {s.delta !== null && s.delta !== 0 && <span className={cn("text-[12px]", s.delta < 0 ? "text-primary" : "text-warning-text")}>{s.delta > 0 ? "+" : "−"}{Math.abs(s.delta)}%</span>}
+                {s.delta !== null && s.delta !== 0 && <span className={cn("text-[12px]", s.delta < 0 ? "text-brand-accent" : "text-warning-text")}>{s.delta > 0 ? "+" : "−"}{Math.abs(s.delta)}%</span>}
               </dd>
             </div>
           ))}
@@ -330,7 +330,7 @@ function Empty({ on, lookedBack, switchRow, onAdd }: { on: boolean; lookedBack: 
   return (
     <section className="mx-auto max-w-xl border" aria-label="Learning">
       <div className="px-6 py-12 text-center">
-        <Sparkles className="mx-auto mb-3 size-5 text-primary" aria-hidden />
+        <Sparkles className="mx-auto mb-3 size-5 text-brand-accent" aria-hidden />
         <p className="font-mono text-[13px] text-muted-foreground">{on ? "Nothing learned yet." : "Learning is off for this agent."}</p>
         <p className="mx-auto mt-2 max-w-md text-[14px] text-muted-foreground">
           {on ? "After each run, it looks back and keeps a note when something will help next time. Its notes show here, and every later run reads them first."
@@ -411,7 +411,7 @@ function NoteCard({ note, v2, agentId, readOnly, focused, from, runs, usedIn, us
       {body.trim() && <Body text={body} />}
       {(from?.run || from?.edited || (usedIn ?? 0) > 0) && <footer className="flex flex-wrap items-center gap-x-5 gap-y-1.5 border-t px-5 py-2.5 font-mono text-[11px] text-muted-foreground">
         {from?.run ? (
-          <span className="flex min-w-0 items-center gap-1.5"><span className="flex shrink-0 items-center gap-1.5 whitespace-nowrap" title={`Kept because: ${from.run.reason}`}><Sparkles className="size-3 shrink-0 text-primary" aria-hidden />Learned in</span>
+          <span className="flex min-w-0 items-center gap-1.5"><span className="flex shrink-0 items-center gap-1.5 whitespace-nowrap" title={`Kept because: ${from.run.reason}`}><Sparkles className="size-3 shrink-0 text-brand-accent" aria-hidden />Learned in</span>
             <a href={`#/runs/${encodeURIComponent(from.run.id)}`} className="min-w-0 truncate text-foreground/80 underline-offset-2 hover:text-foreground hover:underline" title={runTitle(runs, from.run.id)}>{shortTitle(runTitle(runs, from.run.id))}</a>
             <span className="shrink-0">· {when(from.run.at)}</span>
           </span>
@@ -504,7 +504,7 @@ function LearnedCard({ item, kind, v2, agentId, readOnly, runs, approves, onChan
         : kind === "skill" ? <Body text={bodyOf(text)} />
         : <pre className="mx-5 mt-3 max-h-80 overflow-auto border bg-background p-3 font-mono text-[12px]">{text}</pre>)}
       <footer className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-1.5 border-t px-5 py-2.5 font-mono text-[11px] text-muted-foreground">
-        {item.run && <span className="flex min-w-0 items-center gap-1.5"><span className="flex shrink-0 items-center gap-1.5 whitespace-nowrap"><Sparkles className="size-3 shrink-0 text-primary" aria-hidden />Learned in</span>
+        {item.run && <span className="flex min-w-0 items-center gap-1.5"><span className="flex shrink-0 items-center gap-1.5 whitespace-nowrap"><Sparkles className="size-3 shrink-0 text-brand-accent" aria-hidden />Learned in</span>
           <a href={`#/runs/${encodeURIComponent(item.run)}`} className="min-w-0 truncate text-foreground/80 underline-offset-2 hover:text-foreground hover:underline" title={runTitle(runs, item.run)}>{shortTitle(runTitle(runs, item.run))}</a>
         </span>}
         <span>{item.bytes < 1024 ? `${item.bytes} B` : `${(item.bytes / 1024).toFixed(1)} KB`}</span>

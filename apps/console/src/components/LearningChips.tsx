@@ -49,7 +49,7 @@ function SkillsChip({ agentId, refs, link, kind, pending }: { agentId: string; r
   const said = `${label}: ${refs.map((r) => r.name).join(", ")}`;
   const Icon = pending ? Hourglass : kind === "skill" ? Wrench : Workflow;
   const chip = (
-    <Chip tone={pending ? "warning" : undefined} className={cn(!pending && "border-primary/50 bg-primary/10 text-primary", link && "cursor-pointer")}>
+    <Chip tone={pending ? "warning" : undefined} className={cn(!pending && "border-primary/50 bg-primary/10 text-brand-accent", link && "cursor-pointer")}>
       <Icon className="size-3" aria-hidden />{label}
     </Chip>
   );
@@ -64,7 +64,7 @@ function NotesChip({ agentId, refs, link, kind, replaces = 0 }: { agentId: strin
   const names = refs.map((r) => r.name).join(", ");
   const Icon = kind === "used" ? BookOpen : kind === "pending" ? Hourglass : Sparkles;
   const chip = (
-    <Chip tone={kind === "pending" ? "warning" : undefined} className={cn(kind === "learned" ? "border-primary/50 bg-primary/10 text-primary" : kind === "used" ? "border-border-strong/70 text-foreground/80" : "", link && "cursor-pointer transition-colors group-hover/tip:border-foreground/70")}>
+    <Chip tone={kind === "pending" ? "warning" : undefined} className={cn(kind === "learned" ? "border-primary/50 bg-primary/10 text-brand-accent" : kind === "used" ? "border-border-strong/70 text-foreground/80" : "", link && "cursor-pointer transition-colors group-hover/tip:border-foreground/70")}>
       <Icon className="size-3" aria-hidden />{label}
     </Chip>
   );

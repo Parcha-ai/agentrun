@@ -29,7 +29,7 @@ function ThemeSwitch() {
         const [label, Icon] = THEME_LABEL[t];
         return (
           <button key={t} type="button" aria-label={label} title={label} aria-pressed={theme === t} onClick={() => pick(t)}
-            className={cn("flex flex-1 items-center justify-center py-2 hover:bg-accent", theme === t && "bg-primary/[0.06] text-primary")}>
+            className={cn("flex flex-1 items-center justify-center py-2 hover:bg-accent", theme === t && "bg-primary/[0.06] text-brand-accent")}>
             <Icon className="size-4" aria-hidden />
           </button>
         );
@@ -60,12 +60,12 @@ export function Shell({ active, settings = true, schedules = false, agents = tru
         <nav aria-label="Navigation" className="flex flex-col gap-1">
           {NAV.filter((n) => (n.id !== "settings" || settings) && (n.id !== "schedules" || schedules) && (n.id !== "agents" || agents) && (n.id !== "playground" || agents) && (n.id !== "runs" || runs)).map(({ id, label, Icon }) => (
             <button key={id} type="button" onClick={() => { onNavigate?.(id); setOpen(false); }} aria-current={!activeExtension && active === id ? "page" : undefined}
-              className={cn("flex items-center gap-2.5 p-3 text-left text-[13px] hover:bg-accent", !activeExtension && active === id && "bg-primary/[0.06] font-semibold text-primary")}>
+              className={cn("flex items-center gap-2.5 p-3 text-left text-[13px] hover:bg-accent", !activeExtension && active === id && "bg-primary/[0.06] font-semibold text-brand-accent")}>
               <Icon className="size-4" aria-hidden /> {label}
             </button>
           ))}
           {extensions.map(({ id, label, path }) => <button key={`extension-${id}`} type="button" onClick={() => { onExtensionNavigate?.(path); setOpen(false); }} aria-current={activeExtension === id ? "page" : undefined}
-            className={cn("flex items-center gap-2.5 p-3 text-left text-[13px] hover:bg-accent", activeExtension === id && "bg-primary/[0.06] font-semibold text-primary")}><Puzzle className="size-4" aria-hidden /> {label}</button>)}
+            className={cn("flex items-center gap-2.5 p-3 text-left text-[13px] hover:bg-accent", activeExtension === id && "bg-primary/[0.06] font-semibold text-brand-accent")}><Puzzle className="size-4" aria-hidden /> {label}</button>)}
         </nav>
         <div className="mt-4 md:mt-auto"><ThemeSwitch /></div>
         {onSignOut && <button type="button" onClick={onSignOut} className="caps mt-2 flex items-center gap-2.5 border px-3 py-2.5 text-[12px] hover:bg-accent">

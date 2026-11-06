@@ -118,13 +118,13 @@ export function AgentFilter({ agents, value, onChange }: { agents: MissionView["
       onClick={() => open ? close(false) : show()}
       onKeyDown={(event) => { if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); show(); } }}
       className={cn("flex h-[38px] w-[220px] max-w-full items-center gap-2.5 rounded-lg border bg-card px-3 text-left font-mono text-[13px] shadow-sm transition-colors hover:border-primary/50 hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40", open ? "border-primary/60" : "border-border-strong/60")}>
-      <Bot className="size-4 shrink-0 text-primary" aria-hidden />
+      <Bot className="size-4 shrink-0 text-brand-accent" aria-hidden />
       <span id={selectionId} className="min-w-0 flex-1 truncate" title={selected}>{selected}</span>
       <ChevronDown className={cn("size-3.5 shrink-0 text-muted-foreground transition-transform", open && "rotate-180")} aria-hidden />
     </button>
     {open && createPortal(<div ref={panel} onKeyDown={keys} style={position} className="fixed z-50 flex flex-col overflow-hidden rounded-xl border border-border-strong/70 bg-card shadow-xl shadow-black/25">
       <div className="flex shrink-0 items-center gap-2.5 border-b bg-background/40 px-3 py-3">
-        <Search className="size-4 shrink-0 text-primary" aria-hidden />
+        <Search className="size-4 shrink-0 text-brand-accent" aria-hidden />
         <input ref={search} type="text" role="combobox" aria-label="Search agents" aria-expanded="true" aria-autocomplete="list" aria-controls={listId} aria-activedescendant={activeId}
           value={query} onChange={(event) => { setQuery(event.target.value); setActive(undefined); }} placeholder="Find an agent…" autoComplete="off" spellCheck={false}
           className="min-w-0 flex-1 bg-transparent font-mono text-[13px] text-foreground outline-none placeholder:text-muted-foreground focus-visible:outline-none" />
@@ -137,9 +137,9 @@ export function AgentFilter({ agents, value, onChange }: { agents: MissionView["
           return <button key={optionId(choice)} id={optionId(choice)} type="button" role="option" aria-label={choice.label} aria-selected={picked} tabIndex={-1}
             onMouseDown={(event) => event.preventDefault()} onMouseMove={() => setActive(choice.value)} onClick={() => choose(choice)}
             className={cn("flex w-full items-center gap-3 rounded-lg px-2.5 py-2.5 text-left transition-colors hover:bg-accent", picked && "bg-primary/[0.08]", index === activeIndex && "bg-accent")}>
-            <span className={cn("flex size-8 shrink-0 items-center justify-center rounded-lg border bg-background/60", picked ? "border-primary/30 text-primary" : "border-border text-muted-foreground")}><Icon className="size-3.5" aria-hidden /></span>
-            <span className="min-w-0 flex-1"><span className={cn("block truncate text-[13px] font-medium", picked && "text-primary")} title={choice.label}>{choice.label}</span><span className="block font-mono text-[10px] text-muted-foreground" aria-hidden>{choice.detail}</span></span>
-            <Check className={cn("size-4 shrink-0 text-primary", !picked && "invisible")} aria-hidden />
+            <span className={cn("flex size-8 shrink-0 items-center justify-center rounded-lg border bg-background/60", picked ? "border-primary/30 text-brand-accent" : "border-border text-muted-foreground")}><Icon className="size-3.5" aria-hidden /></span>
+            <span className="min-w-0 flex-1"><span className={cn("block truncate text-[13px] font-medium", picked && "text-brand-accent")} title={choice.label}>{choice.label}</span><span className="block font-mono text-[10px] text-muted-foreground" aria-hidden>{choice.detail}</span></span>
+            <Check className={cn("size-4 shrink-0 text-brand-accent", !picked && "invisible")} aria-hidden />
           </button>;
         })}
         {!matches.length && <p role="status" className="px-3 py-7 text-center text-[13px] text-muted-foreground">No agents found.</p>}
