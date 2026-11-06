@@ -6,7 +6,7 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { closeSync, existsSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { open as openFile, rm, stat } from "node:fs/promises";
+import { open as openFile, readFile, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
@@ -2348,7 +2348,7 @@ export class Runs {
     for (const row of await this.options.agents.request(() => this.store.listRuns({ agent: agentId }))) {
       if (row.state !== "running") continue;
       const held = this.runs.get(row.id);
-      const handed = held ? held.meta.sign_in_handed : await handedOnDisk(join(this.options.agents.dir, "runs", row.id, RUN_META));
+      const handed = held ? held.meta.sign_in_handed : await handedOnDisk(join(runDirIn(this.options.agents.dir, row.agent, row.id), RUN_META));
       if (handed !== undefined && (handed === true || hash === undefined || handed === hash)) return row.id;
     }
     return undefined;

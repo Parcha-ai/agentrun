@@ -1035,7 +1035,7 @@ test("a hidden run interrupted in its end-of-run learning turn still ends failed
   await until(async () => (await first.api("GET", `/runs/${runId}`)).body.learning?.state, (state) => state === "reflecting");
   // Killed only once serve.json on disk holds the end-of-run turn (`reflect`): a kill before it was saved would leave a
   // run the next server never finds reflecting, and this would pass whatever learning does with a hidden run.
-  const saved = await until(async () => JSON.parse(await readFile(join(data, "runs", runId, "serve.json"), "utf8").catch(() => "{}")).reflect, (reflect) => Boolean(reflect));
+  const saved = await until(async () => JSON.parse(await readFile(join(runDir(data, runId), "serve.json"), "utf8").catch(() => "{}")).reflect, (reflect) => Boolean(reflect));
   assert.equal(saved.outcome, "completed", "its job's outcome, which a hidden run must never end with");
   first.child.kill("SIGKILL");
   await new Promise((resolve) => first.child.once("exit", resolve));
@@ -1131,7 +1131,7 @@ test("a run still going whose save lease lapsed (its process went with its serve
   // A crash: the server and the run's process killed while it waits for its person, its sessions never let go.
   first.child.kill("SIGKILL");
   await new Promise((resolve) => first.child.once("exit", resolve));
-  const { holder } = JSON.parse(await readFile(join(data, "runs", runId, "run.json"), "utf8"));
+  const { holder } = runRecordOf(data, runId);
   process.kill(holder.pid, "SIGKILL");
   await until(async () => { try { process.kill(holder.pid, 0); return false; } catch { return true; } }, (gone) => gone);
   const { api } = await serve(t, { data, fauxBrowser: FAUX_BROWSER, fauxBrowserbase: FAUX_BROWSERBASE });
@@ -1191,7 +1191,7 @@ test("a run's error that holds its browser sign-in's pointer is served cut, in i
   const { ref } = (await readFile(log, "utf8")).trim().split("\n").map((line) => JSON.parse(line)).find((op) => op.op === "sign-in");
   await first.close();
   // Its error as a server that did not cut it kept it: the pointer in the clear.
-  const metaFile = join(first.data, "runs", runId, "serve.json");
+  const metaFile = join(runDir(first.data, runId), "serve.json");
   const meta = JSON.parse(await readFile(metaFile, "utf8"));
   await writeFile(metaFile, `${JSON.stringify({ ...meta, error: { code: "run_failed", message: `The browser died holding ${ref}.` } })}\n`);
   const { api } = await serve(t, { data: first.data, fauxBrowser: FAUX_BROWSER, fauxBrowserbase: FAUX_BROWSERBASE });
@@ -1217,10 +1217,10 @@ test("a run still going whose serve.json the next server cannot read, of an agen
   const { ref } = opened.find((op) => op.op === "sign-in");
   first.child.kill("SIGKILL");
   await new Promise((resolve) => first.child.once("exit", resolve));
-  const { holder } = JSON.parse(await readFile(join(data, "runs", runId, "run.json"), "utf8"));
+  const { holder } = runRecordOf(data, runId);
   t.after(() => { try { process.kill(holder.pid, "SIGKILL"); } catch {} });
   // Its serve.json damaged: which plane it ran on, and whether it was handed the sign-in, are lost with it.
-  await writeFile(join(data, "runs", runId, "serve.json"), "{\"title\": \"Browse");
+  await writeFile(join(runDir(data, runId), "serve.json"), "{\"title\": \"Browse");
   // Its gate open: its process answers with the pointer as soon as it may.
   await writeFile(`${gate}.echo`, `I kept ${ref} for you.`);
   await writeFile(gate, "");
@@ -1239,7 +1239,7 @@ test("a run still going whose serve.json the next server cannot read, of an agen
   const view = (await api("GET", `/runs/${runId}`)).body;
   assert.deepEqual([view.status, view.error?.message], ["failed", "This server can't read the run's record (its serve.json is damaged or can't be read), so it can't tell whether the run was handed its agent's browser sign-in: the run was stopped, so nothing it says can show it."]);
   // Its end wrote serve.json anew, hidden: a later server never reads its rows either.
-  const meta = await until(async () => JSON.parse(await readFile(join(data, "runs", runId, "serve.json"), "utf8").catch(() => "{}")), (kept) => kept.unshown === true);
+  const meta = await until(async () => JSON.parse(await readFile(join(runDir(data, runId), "serve.json"), "utf8").catch(() => "{}")), (kept) => kept.unshown === true);
   assert.equal(meta.error.message, view.error.message);
 });
 
@@ -1255,7 +1255,7 @@ test("an ended run a list reads from its row alone has its error withheld while 
   const { ref } = (await readFile(log, "utf8")).trim().split("\n").map((line) => JSON.parse(line)).find((op) => op.op === "sign-in");
   await first.close();
   // Its error as a server that did not cut it kept it: the pointer in the clear.
-  const metaFile = join(first.data, "runs", runId, "serve.json");
+  const metaFile = join(runDir(first.data, runId), "serve.json");
   const meta = JSON.parse(await readFile(metaFile, "utf8"));
   await writeFile(metaFile, `${JSON.stringify({ ...meta, error: { code: "run_failed", message: `The browser died holding ${ref}.` } })}\n`);
   const listed = async (api) => {
@@ -1392,7 +1392,7 @@ test("a list row of an ended run that was never handed a sign-in (no mark in its
   await follow(first.api, runId, ["failed"], { deadlineMs: 60_000 });
   await first.close();
   // As a run that browsed signed out keeps it: its plane, and no mark that it was handed a sign-in.
-  const metaFile = join(first.data, "runs", runId, "serve.json");
+  const metaFile = join(runDir(first.data, runId), "serve.json");
   const { sign_in_handed: _, ...meta } = JSON.parse(await readFile(metaFile, "utf8"));
   assert.ok(meta.tool_plane.browser);
   await writeFile(metaFile, `${JSON.stringify({ ...meta, error: { code: "run_failed", message: "The browser died." } })}\n`);
