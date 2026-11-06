@@ -374,10 +374,11 @@ core exec      argv streams exit-code cwd env timeout abort ✓ 11
                truncation setsid-escapee unprivileged user
 ...
 full exec      root-on-request user-uid                     ✓ 2
-full provider  network-switch network-open network-allow    ✓ 3 - 1
-               janitor
+full provider  network-switch network-switch-allow          ✓ 3 - 2
+               network-open network-allow janitor
+  - provider.network-switch-allow: the provider does not declare network:allow
   - provider.network-allow: the provider does not declare network:allow
-core PASS 52/52 · full 5/6 · network:allow not declared
+core PASS 52/52 · full 5/7 · network:allow not declared
 ```
 
 A module path is resolved from the directory npm was run in. It exits 0 when Core passes, 1 when it fails, 2 on a
@@ -411,9 +412,9 @@ Core and Full follow the Kubernetes agent-sandbox conformance levels (KEP-539.2)
   network unchanged (Core asks for no network the provider could give), a computer that does not run past its deadline
   (after a sweep, for a janitor provider), and the drift checks. Core passes when every Core case passes and the run leaves no computer
   behind.
-- **Full** is each optional capability a provider declares: network `open` (`network:open`), including a change of a
-  computer's network to each one it declares, refused or applied truthfully, on a computer of the case's own
-  (`provider.network-switch`), a network allowlist (`network:allow`), the janitor for a provider whose lifetime is `"janitor"` (`lifetime:janitor`), and a spec that
+- **Full** is each optional capability a provider declares: network `open` (`network:open`), a network allowlist
+  (`network:allow`), each with a change of a computer's network to it and back to `none`, refused or applied
+  truthfully, on a computer of the case's own (`provider.network-switch`, `provider.network-switch-allow`), the janitor for a provider whose lifetime is `"janitor"` (`lifetime:janitor`), and a spec that
   asks for root (`user:root`, from `capabilities().user` holding `"root"`) or another uid (`user:uid`), still with no
   capabilities.
 
@@ -428,7 +429,9 @@ that runs past 3 minutes fails and its computers are deleted. Every provider cal
 the shared computer that does not answer within 3 minutes fails the cases that need it, a release, sweep or list
 that does not answer within a minute is named in `cleanup.errors`, and a computer or connection that arrives after
 its case ended is deleted or closed as it arrives and named in `cleanup.late`; the run waits, bounded, for every
-create a case started, a refused one included, so a late computer is deleted before the report returns. A case calls
+create a case started, a refused one included, so a late computer is deleted before the report returns. A call still
+pending when that bound (a minute) runs out is named in `cleanup.errors`, since what it makes may be left, and Core
+fails, as it does for a computer left behind. A case calls
 `t.create(extra)` for a computer it needs, or `t.attempt(spec, by?)` for create's result as it is (a refusal it
 expects, or the drifted provider's computer). With `--provider docker`, a `docker
 version` that does not answer within 30 s is killed and the run fails, naming the call. The CLI exits once the report

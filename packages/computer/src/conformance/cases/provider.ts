@@ -34,6 +34,33 @@ const provider = (name: string, run: Case["run"], extra: Partial<Case> = {}): Ca
 	...extra,
 });
 
+/**
+ * A Full case for one wider policy the provider declares: on a computer of its own (never the run's shared one), a
+ * change from none to it and back to none is refused in words with the network unchanged, or applied, returned and
+ * read back as asked.
+ */
+const switchCase = (name: string, wider: NetworkSpec): Case =>
+	provider(
+		name,
+		async (t) => {
+			const ref = await t.create({ labels: own(t, name) });
+			for (const policy of [wider, "none" as const]) {
+				const was = t.ok(await t.provider.network(ref), "network read-back");
+				const changed = await t.provider.network(ref, policy);
+				const words = `a change from network ${JSON.stringify(was)} to ${JSON.stringify(policy)}`;
+				if (changed.ok) {
+					t.deepEqual(changed.value, policy, `${words}: what it returns`);
+					t.deepEqual(t.ok(await t.provider.network(ref), "network read-back"), policy, `${words}: the network read back after it`);
+				} else {
+					const error = t.refused(changed, words, ["refused"]);
+					t.assert(error.message !== "", `${words}: the refusal is in words`);
+					t.deepEqual(t.ok(await t.provider.network(ref), "network read-back"), was, `${words}, refused: the network read back after it`);
+				}
+			}
+		},
+		{ level: "full", needs: [`network:${kindOf(wider)}`] },
+	);
+
 export const providerCases: Case[] = [
 	provider("check-refuses", async (t) => {
 		t.deepEqual(t.provider.check(t.spec()), [], "check of the run's own spec");
@@ -141,29 +168,8 @@ export const providerCases: Case[] = [
 			t.deepEqual(t.ok(await t.provider.network(ref), "network read-back"), spec.network, `${words}, refused: the network read back after it`);
 		}
 	}),
-	provider(
-		"network-switch",
-		async (t) => {
-			// A computer of this case's own: the run's shared computer is never put on a wider network.
-			const ref = await t.create({ labels: own(t, "switch") });
-			const declared = t.provider.capabilities().network;
-			const wider = POLICIES.filter((p) => p !== "none" && declared.includes(kindOf(p)));
-			for (const policy of [...wider, "none" as const]) {
-				const was = t.ok(await t.provider.network(ref), "network read-back");
-				const changed = await t.provider.network(ref, policy);
-				const words = `a change from network ${JSON.stringify(was)} to ${JSON.stringify(policy)}`;
-				if (changed.ok) {
-					t.deepEqual(changed.value, policy, `${words}: what it returns`);
-					t.deepEqual(t.ok(await t.provider.network(ref), "network read-back"), policy, `${words}: the network read back after it`);
-				} else {
-					const error = t.refused(changed, words, ["refused"]);
-					t.assert(error.message !== "", `${words}: the refusal is in words`);
-					t.deepEqual(t.ok(await t.provider.network(ref), "network read-back"), was, `${words}, refused: the network read back after it`);
-				}
-			}
-		},
-		{ level: "full", needs: ["network:open"] },
-	),
+	switchCase("network-switch", "open"),
+	switchCase("network-switch-allow", { allow: ["example.com"] }),
 	provider(
 		"network-open",
 		async (t) => {
