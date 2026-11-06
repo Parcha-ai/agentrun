@@ -203,6 +203,7 @@ const TAKE_ENDED: Record<Exclude<HoldEnd, "answered" | "cap">, string> = {
   away: "The browser went back to the agent: the live view was closed",
   released: "The browser's session ended while you had it",
 };
+const CAP_ENDED = "The agent's hand-over ended at the run's spend cap";
 const ASK_ENDED: Record<AskOutcome, string> = { done: GIVEN_BACK, cancelled: "You cancelled the agent's hand-over", expired: "The agent's hand-over expired before you answered it" };
 
 /** A take-over's share of its session's person time (an ask's is `ask:<id>`). */
@@ -234,6 +235,8 @@ export function personHands(options: {
   const timers = options.timers ?? { set: (run: () => void, ms: number) => setTimeout(run, ms).unref(), clear: (handle: unknown) => clearTimeout(handle as NodeJS.Timeout) };
   const open = new Map<string, { tag: string; expiresAt: number; drop(): void }>();
   const settled = new Map<string, AskOutcome>();
+  /** Asks the run's cap ended (a refused re-hold), and its words. */
+  const capped = new Map<string, string>();
   let poll: NodeJS.Timeout | undefined;
   const note = (kind: string, data: Record<string, string>): Promise<void> => options.note(kind, data).catch(() => undefined);
 
@@ -241,11 +244,14 @@ export function personHands(options: {
    *  dropped when the last of them is over: a take then an ask, or an ask then a take, holds it once. `ready` settles when
    *  the first hold is taken, or refused. While anyone needs it, it is held again each holdMs (a take-over kept alive by
    *  input has no end of its own): with no room, a take-over gives the browser back (`cap`, in the cap's words). */
-  type Ledger = { holds: Array<{ drop(): void }>; users: Set<string>; ready: Promise<{ refused: string } | undefined>; timer?: unknown; refused?: string; since: number };
+  /** `until`: how far (ms, on this clock) what is held covers; an ask that joins needs it to reach its own expiry. */
+  type Ledger = { holds: Array<{ drop(): void }>; users: Set<string>; ready: Promise<{ refused: string } | undefined>; timer?: unknown; refused?: string; since: number; until: number };
   const now = options.now ?? Date.now;
   const ledgers = new Map<string, Ledger>();
-  /** `user`'s share of session `tag`'s person time: held now when nobody holds it (`what` names it in the cap's words). */
-  const acquire = async (tag: string, user: string, what: string, pauses: boolean): Promise<{ refused: string } | undefined> => {
+  /** `user`'s share of session `tag`'s person time: held now when nobody holds it (`what` names it in the cap's words), and,
+   *  with `reach` (an ask's expiry), held through it: what an earlier user holds falls short of a later ask's expiry, and
+   *  the stretch between is held for it, or it is refused. */
+  const acquire = async (tag: string, user: string, what: string, pauses: boolean, reach?: number): Promise<{ refused: string } | undefined> => {
     for (;;) {
       const known = ledgers.get(tag);
       if (known) {
@@ -263,13 +269,25 @@ export function personHands(options: {
           }
           known.holds.push(hold);
           known.refused = undefined;
+          known.until = Math.max(known.until, now() + holdMs);
           if (known.timer !== undefined) timers.clear(known.timer);
           again(tag, known);
+        }
+        // An ask whose expiry falls past what is held: the stretch between, held for it under the cap, or it is refused.
+        if (reach !== undefined && reach > known.until) {
+          const hold = await options.personTime(what, (reach - known.until) / 1000, { pauses }).catch(() => ({ refused: "the person's time could not be held" }));
+          if ("refused" in hold) return { refused: hold.refused };
+          if (ledgers.get(tag) !== known) {
+            hold.drop();
+            continue;
+          }
+          known.holds.push(hold);
+          known.until = reach;
         }
         known.users.add(user);
         return undefined;
       }
-      const ledger: Ledger = { holds: [], users: new Set([user]), ready: Promise.resolve(undefined), since: now() };
+      const ledger: Ledger = { holds: [], users: new Set([user]), ready: Promise.resolve(undefined), since: now(), until: now() + holdMs };
       ledger.ready = options.personTime(what, holdMs / 1000, { pauses }).then(
         (hold) => {
           if (!("refused" in hold)) {
@@ -298,12 +316,15 @@ export function personHands(options: {
       if (ledgers.get(tag) !== ledger) return void ("refused" in hold || hold.drop());
       if (!("refused" in hold)) {
         ledger.holds.push(hold);
+        ledger.until = Math.max(ledger.until, now() + holdMs);
         again(tag, ledger);
         return;
       }
-      // No room: a take-over ends here. An ask needs no more (it expires within the time already held for it).
+      // No room: everyone on the session ends here, so nothing outlives what is held: a take-over goes back to the agent
+      // (cap), and each ask open on it expires, the agent told the cap's words.
       ledger.refused = hold.refused;
       if (ledger.users.has(TAKE_USER)) options.gates(tag).give?.("cap", hold.refused);
+      for (const user of [...ledger.users]) if (user.startsWith("ask:")) capAsk(user.slice(4), hold.refused);
     })(), holdMs);
   };
   /** `user` is done with session `tag`: the last one out drops what was held. */
@@ -315,6 +336,15 @@ export function personHands(options: {
     // The time the person had is spent at the provider: it stays held until booked, before what was held up front goes.
     if (ledger.holds.length) options.carry?.(tag, (now() - ledger.since) / 1000);
     for (const hold of ledger.holds) hold.drop();
+  };
+
+  /** Ask `id` ended at the run's cap (`words`): expired, written as its answer (the first, as any is), its wait told why. */
+  const capAsk = (id: string, words: string): void => {
+    const dir = askDir(options.root);
+    if (!dir || settled.has(id)) return;
+    capped.set(id, words);
+    answerOnce(dir, id, "expired");
+    settle(id);
   };
 
   /** Ask `id` as its record on disk has it, taken up by this process: one an earlier process of the run made, whose wait
@@ -355,7 +385,8 @@ export function personHands(options: {
     open.delete(id);
     ask.drop();
     options.gates(ask.tag).give?.("answered");
-    void note(HOST_PHASE, { summary: ASK_ENDED[answered] });
+    const words = capped.get(id);
+    void note(HOST_PHASE, { summary: words !== undefined && answered === "expired" ? `${CAP_ENDED}: ${words}` : ASK_ENDED[answered] });
     if (!open.size && poll) (clearInterval(poll), (poll = undefined));
     return answered;
   };
@@ -404,7 +435,7 @@ export function personHands(options: {
         if (!TAG.test(ask.sessionTag)) return { refused: "the session's tag is not one this server takes" };
         // A take-over of the same session holds the person's time already: the ask shares it.
         const user = `ask:${id}`;
-        const refused = await acquire(ask.sessionTag, user, "handing the browser to you", true);
+        const refused = await acquire(ask.sessionTag, user, "handing the browser to you", true, now() + holdMs);
         if (refused) return refused;
         const hold = { drop: () => release(ask.sessionTag, user) };
         const at = Date.now();
@@ -421,8 +452,11 @@ export function personHands(options: {
         await note("agent.handover", { state: "waiting", reason: record.instruction, session: ask.sessionTag });
         return { interactionId: id };
       },
-      async outcome(interactionId: string): Promise<"pending" | AskOutcome> {
-        return (ID.test(interactionId) && settle(interactionId)) || "pending";
+      async outcome(interactionId: string): Promise<"pending" | AskOutcome | { outcome: AskOutcome; reason: string }> {
+        const answered = (ID.test(interactionId) && settle(interactionId)) || "pending";
+        // Ended at the cap: the agent is told so, in the cap's words.
+        const words = capped.get(interactionId);
+        return answered === "expired" && words !== undefined ? { outcome: answered, reason: words } : answered;
       },
     },
     /** The run's process lets go: its holds dropped, its poll stopped. */

@@ -1065,7 +1065,9 @@ browser back", or that it went back to the agent after the idle or away window).
 the next 15 minutes of session time at the provider's price under the run's cap first, and with no room it is refused in
 the cap's words, shown in the viewer. A take-over that input keeps alive is held again every 15 minutes, and with no room
 the browser goes back to the agent at the cap ("The browser went back to the agent at the run's spend cap", in the viewer
-and on the timeline, with the cap's words). A take-over and an ask on the same session share one hold. When the
+and on the timeline, with the cap's words). A take-over and an ask on the same session share one hold; an ask that joins it holds the extra stretch its own expiry needs
+(refused in the cap's words without room), and a re-hold the cap refuses ends both: the take-over goes back to the agent,
+and the ask expires, the agent told the cap's words. When the
 browser comes back, what was held up front goes, and the time the person had stays held, at the provider's price, until
 the session's next charge books it: take-overs given back with no browser call between them still meet the cap.
 
