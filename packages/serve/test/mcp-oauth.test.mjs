@@ -197,7 +197,7 @@ test("a run's launch refreshes a token near its expiry, once for launches at the
   holdsNone(readFileSync(join(data, "mcp-servers.json"), "utf8"), as.issued, "mcp-servers.json");
 
   as.revoke();
-  assert.equal(await store.headersForRun("docs"), undefined, "a refused refresh hands the run no credential");
+  assert.deepEqual(await store.headersForRun("docs"), { unopened: "its sign-in expired or was revoked: sign in again in Settings → MCP servers" }, "a refused refresh hands the run a credential that does not open, never none");
   const expired = (await api("GET", "/settings/mcp-servers/docs")).body;
   assert.equal(expired.credential, "expired");
   const preview = await api("POST", "/settings/mcp-servers/preview", { name: "docs" });
@@ -251,9 +251,11 @@ for (const name of ["docs", "constructor"]) test(`a run (server ${name}): its la
   assert.ok(mcp.log.some((entry) => entry.method === "tools/call" && entry.tool === "add" && entry.authorization));
 
   as.revoke();
+  const sent = mcp.log.filter((entry) => entry.method === "tools/call").length;
   const said = await run();
-  assert.ok(said.includes(`The MCP server ${name} refused its credential`), said);
-  assert.match(said, /sign in again in Settings → MCP servers/);
+  // The refused refresh marks the sign-in expired: the call is refused unsent, never sent with no credential.
+  assert.ok(said.includes(`The MCP server ${name}'s credential can't be opened on this server (its sign-in expired or was revoked: sign in again in Settings → MCP servers)`), said);
+  assert.equal(mcp.log.filter((entry) => entry.method === "tools/call").length, sent, "nothing more was sent");
   assert.equal((await api("GET", `/settings/mcp-servers/${name}`)).body.credential, "expired");
 });
 
@@ -328,7 +330,7 @@ test("a stop aborts a refresh waiting on its authorization server: it returns wi
 
   // The next start refreshes with the refresh token it kept, which the authorization server spent: a sign-in again.
   const next = new McpServers(data, { AGENTRUN_SEAL_KEY: key }, "test");
-  assert.equal(await next.headersForRun("docs"), undefined);
+  assert.deepEqual(await next.headersForRun("docs"), { unopened: "its sign-in expired or was revoked: sign in again in Settings → MCP servers" });
   const read = await api("GET", "/settings/mcp-servers/docs");
   assert.equal(read.body.credential, "expired");
 });

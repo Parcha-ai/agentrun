@@ -248,18 +248,20 @@ export class McpServers {
     }
   }
 
-  /** A run's launch: the server's credential as headers (headers), an OAuth access token refreshed first when it
-   *  expires within `margin`. Undefined when it takes none, none opens, or its sign-in expired. */
+  /** A run's launch: the server's credential (headers), an OAuth access token refreshed first when it expires within
+   *  `margin`. Undefined when it takes none; `{ unopened }` when it does not open, its sign-in expired among them. */
   async headersForRun(name: string, margin = REFRESH_MARGIN_MS): Promise<{ headers: HeaderMap } | { unopened: string } | undefined> {
     await this.freshen(name, margin);
     return this.headers(name);
   }
 
   /** The saved server's credential, opened, for a run's launch: its headers, or why it does not open, each under its own
-   *  tag; undefined when it has none, or an OAuth sign-in that expired. */
+   *  tag; undefined when it takes none. An OAuth sign-in that expired, or whose refresh was refused or had no refresh
+   *  token left, is a credential that does not open: its calls are refused unsent, saying to sign in again. */
   headers(name: string): { headers: HeaderMap } | { unopened: string } | undefined {
     const kept = this.saved(name);
-    if (!kept || kept.auth.type === "none" || kept.auth.oauth?.expired) return undefined;
+    if (!kept || kept.auth.type === "none") return undefined;
+    if (kept.auth.oauth?.expired) return { unopened: `its sign-in expired or was revoked: ${SIGN_IN_AGAIN}` };
     const opened = this.open(name, kept);
     // Tagged, never told apart by a key a saved header could also have (`unopened` is a header name like any other).
     if ("headers" in opened) return { headers: opened.headers };
