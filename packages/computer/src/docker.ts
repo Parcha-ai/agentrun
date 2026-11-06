@@ -27,7 +27,10 @@ const MAX_PIDS = 4_194_304;
 /** Docker's least --memory. */
 const MIN_MEMORY_MB = 6;
 const HELLO_TIMEOUT_MS = 30_000;
+/** The longest lifetime: 30 days. A computer meant to live longer is asked for again. */
+const MAX_LIFETIME_MS = 30 * 24 * 60 * 60 * 1000;
 const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "cpus", "memoryMb", "pids", "labels", "workdir"]);
+const NUL = "a NUL byte cannot be passed to docker run";
 const ALLOWLIST = "a Docker computer cannot enforce an allowlist yet; ask for network none or open";
 
 interface Ran {
@@ -66,9 +69,11 @@ export class DockerProvider implements ComputerProvider {
 		const { image, lifetimeMs, network, cpus, memoryMb, pids, labels, workdir } = given;
 		if (typeof image !== "string" || image.trim() === "" || image.startsWith("-")) {
 			refuse("image", "an image is required, such as debian:bookworm-slim");
-		}
+		} else if (image.includes("\0")) refuse("image", NUL);
 		if (!isWhole(lifetimeMs) || lifetimeMs <= 0) {
 			refuse("lifetimeMs", "lifetimeMs is required: a whole number of milliseconds above 0, after which the janitor deletes the computer");
+		} else if (lifetimeMs > MAX_LIFETIME_MS) {
+			refuse("lifetimeMs", `lifetimeMs is at most 30 days (${MAX_LIFETIME_MS} ms); ask for a new computer after that`);
 		}
 		if (typeof network === "object" && network !== null && "allow" in network) refuse("network", ALLOWLIST);
 		else if (network !== "none" && network !== "open") refuse("network", 'network is required: "none" or "open"');
@@ -86,7 +91,7 @@ export class DockerProvider implements ComputerProvider {
 		}
 		if (workdir !== undefined && !(typeof workdir === "string" && workdir.startsWith("/"))) {
 			refuse("workdir", "workdir must be an absolute path in the computer");
-		}
+		} else if (workdir?.includes("\0")) refuse("workdir", NUL);
 		for (const [field, value] of Object.entries(given)) {
 			if (!SPEC_FIELDS.has(field) && value !== undefined) refuse(field, `a Docker computer does not support ${field}`);
 		}
@@ -200,6 +205,7 @@ export class DockerProvider implements ComputerProvider {
 
 function labelProblem(key: string, value: unknown): string | undefined {
 	if (typeof value !== "string") return `the label ${key} must be a string`;
+	if (key.includes("\0") || value.includes("\0")) return `the label ${JSON.stringify(key)}: ${NUL}`;
 	if (key === "" || key.includes("=")) return `the label name "${key}" must be non-empty and have no "="`;
 	if (key === COMPUTER_LABEL || key.startsWith(`${COMPUTER_LABEL}.`)) return `the label ${key} is in the provider's own namespace (${COMPUTER_LABEL})`;
 	return undefined;

@@ -118,13 +118,43 @@ type session struct {
 	wg       sync.WaitGroup
 }
 
-// Serve reads requests from r and writes replies to w until r ends or ctx is done. At the end it cancels what still
-// runs and returns once every handler has.
+// Serve reads requests from r and writes replies to w until r ends or ctx is done, then cancels what still runs and
+// returns once every handler has. It returns nil at the end of r or on ctx; a read error otherwise. On ctx it closes r
+// when r is an io.Closer, which ends the read; the read of an r that cannot be closed ends when its input does, and any
+// line it reads after Serve returned is dropped.
 func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	sess := &session{server: s, ctx: ctx, out: w, inFlight: map[string]context.CancelFunc{}}
-	err := readLines(r, MaxLine, sess.handleLine)
+	type line struct {
+		data      []byte
+		oversized bool
+	}
+	lines := make(chan line)
+	readDone := make(chan error, 1)
+	go func() {
+		readDone <- readLines(r, MaxLine, func(data []byte, oversized bool) {
+			select {
+			case lines <- line{data, oversized}:
+			case <-ctx.Done():
+			}
+		})
+	}()
+	var err error
+loop:
+	for {
+		select {
+		case l := <-lines:
+			sess.handleLine(l.data, l.oversized)
+		case err = <-readDone:
+			break loop
+		case <-ctx.Done():
+			if closer, ok := r.(io.Closer); ok {
+				_ = closer.Close()
+			}
+			break loop
+		}
+	}
 	cancel()
 	sess.wg.Wait()
 	sess.closeLocals()

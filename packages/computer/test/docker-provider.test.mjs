@@ -96,6 +96,32 @@ test("check() refuses in words, field by field, with no docker call", () => {
 	assert.equal(calls().length, 0);
 });
 
+test("a lifetime is at most 30 days, and create() never throws on a spec check() passes", async () => {
+	const { provider, calls } = fakeDocker();
+	const days30 = 30 * 24 * 60 * 60 * 1000;
+	for (const lifetimeMs of [days30 + 1, 8.64e15, Number.MAX_SAFE_INTEGER]) {
+		const refusals = provider.check({ ...SPEC, lifetimeMs });
+		assert.deepEqual(refusals.map((r) => r.field), ["lifetimeMs"], `lifetimeMs ${lifetimeMs}`);
+		assert.match(refusals[0].message, /at most 30 days/);
+		const result = await provider.create({ ...SPEC, lifetimeMs });
+		assert.equal(result.ok, false);
+		assert.equal(result.error.code, "refused");
+	}
+	for (const spec of [{ ...SPEC, image: "debian\0" }, { ...SPEC, labels: { "team\0": "a" } }, { ...SPEC, labels: { team: "a\0" } }, { ...SPEC, workdir: "/work\0" }]) {
+		assert.equal(provider.check(spec).length, 1, JSON.stringify(spec));
+		const result = await provider.create(spec);
+		assert.equal(result.ok, false);
+		assert.equal(result.error.code, "refused");
+	}
+	assert.deepEqual(calls(), []);
+	assert.deepEqual(provider.check({ ...SPEC, lifetimeMs: days30 }), []);
+	const before = Date.now();
+	const made = await provider.create({ ...SPEC, lifetimeMs: days30 });
+	assert.equal(made.ok, true, JSON.stringify(made));
+	const deadline = valuesOf(calls()[0], "--label").find((label) => label.startsWith("agentrun.computer.deadline="))?.split("=")[1];
+	assert.ok(Math.abs(Date.parse(deadline) - (before + days30)) < 5000, deadline);
+});
+
 test("create() on a refused spec makes no docker call", async () => {
 	const { provider, calls } = fakeDocker();
 	for (const spec of [{ ...SPEC, network: { allow: ["example.com"] } }, { ...SPEC, lifetimeMs: undefined }, { ...SPEC, gpu: 1 }]) {

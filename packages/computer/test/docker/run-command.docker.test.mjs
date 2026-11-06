@@ -128,6 +128,16 @@ describe("run a command in a Docker computer", { skip: LIVE ? false : "set AGENT
 		assert.equal(check.out.trim(), "gone");
 	});
 
+	it("ends a child that left the program's session and group (setsid) when the program ends", async () => {
+		const script = `p=$(mktemp -u); mkfifo "$p"; setsid sh -c 'echo $$ > "$0"; exec sleep 302' "$p" >/dev/null 2>&1 </dev/null & read pid < "$p"; echo $pid`;
+		const result = await run(["sh", "-c", script]);
+		assert.equal(result.exitCode, 0, result.err);
+		const pid = Number(result.out.trim());
+		assert.ok(pid > 1, result.out);
+		const check = await run(["sh", "-c", `if [ -e /proc/${pid} ]; then cat /proc/${pid}/stat; else echo gone; fi`]);
+		assert.equal(check.out.trim(), "gone");
+	});
+
 	it("aborts through an AbortSignal, and the program is ended", async () => {
 		const controller = new AbortController();
 		setTimeout(() => controller.abort(), 500);

@@ -188,13 +188,27 @@ func resolveCwd(path string, acct account) (string, error) {
 	return path, nil
 }
 
-// lookPath finds argv[0] on the PATH the program gets, not the daemon's.
-func lookPath(name string, env []string) (string, error) {
-	if strings.Contains(name, "/") {
-		if isExecutable(name) {
-			return name, nil
+// lookPath finds argv[0] on the PATH the program gets, not the daemon's. A relative name with a slash, and a relative
+// PATH entry (an empty one is "."), are relative to dir, where the program runs; an empty dir is the daemon's own.
+func lookPath(name string, env []string, dir string) (string, error) {
+	if dir == "" {
+		wd, err := os.Getwd()
+		if err != nil {
+			return "", fmt.Errorf("cannot read the daemon's directory: %w", err)
 		}
-		return "", rpc.Errorf(rpc.KindNotFound, "%s is not an executable file in this computer", name)
+		dir = wd
+	}
+	inDir := func(path string) string {
+		if filepath.IsAbs(path) {
+			return path
+		}
+		return filepath.Join(dir, path)
+	}
+	if strings.Contains(name, "/") {
+		if path := inDir(name); isExecutable(path) {
+			return path, nil
+		}
+		return "", rpc.Errorf(rpc.KindNotFound, "%s is not an executable file in %s in this computer", name, dir)
 	}
 	path := defaultPath
 	for _, kv := range env {
@@ -202,11 +216,11 @@ func lookPath(name string, env []string) (string, error) {
 			path = value
 		}
 	}
-	for _, dir := range filepath.SplitList(path) {
-		if dir == "" {
-			dir = "."
+	for _, entry := range filepath.SplitList(path) {
+		if entry == "" {
+			entry = "."
 		}
-		if candidate := filepath.Join(dir, name); isExecutable(candidate) {
+		if candidate := inDir(filepath.Join(entry, name)); isExecutable(candidate) {
 			return candidate, nil
 		}
 	}

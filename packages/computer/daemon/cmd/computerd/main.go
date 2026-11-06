@@ -3,6 +3,8 @@
 //	computerd stdio     serve the protocol on stdin and stdout (stdout carries protocol lines only; stderr is the log)
 //	computerd init      run as the computer's first process: reap orphans until SIGTERM
 //	computerd version   print the version
+//
+// exec.run starts itself again as `computerd guard`, one per run, with no other caller (see execrun.Guard).
 package main
 
 import (
@@ -14,6 +16,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/execrun"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/methods"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/rpc"
 )
@@ -35,6 +38,8 @@ func main() {
 		}
 	case "init":
 		initProcess(logger)
+	case execrun.GuardCommand:
+		os.Exit(execrun.Guard())
 	default:
 		usage()
 	}
