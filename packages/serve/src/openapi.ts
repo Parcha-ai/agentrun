@@ -1335,7 +1335,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
   },
   InputIssue: {
     code: { type: "string", description: "A workflow definition's issue: the DSL's validation code (`STATE_PATH_UNPRODUCED`, say), with `field` the path to it under `definition.workflow`.", "x-agentrun-serve": "validate/1" },
-    example: { description: "A value the field accepts, read from the request body's schema (its first example, const or option, else made from its type: `true`, `\"…\"`, its least number, an object of its required properties), and said in `message`. For a field the body does not keep that an object inside it does, the body with the field where it belongs, as `fix` shows it: `{\"definition\": {\"name\": \"…\"}}`.", "x-agentrun-serve": "explain/1" },
+    example: { description: "A value the field accepts, said in `message` too: the operation's documented request body's value there, else the schema's example, const or option, else one made from its type; each is suggested only once the route's own check of the body takes it in place (else the schema, for a value the document gives), so this server never suggests a value it refuses. Absent when there is none. For a field the body does not keep that an object inside it does, the body with the field where it belongs, as `fix` shows it: `{\"definition\": {\"name\": \"Due diligence\"}}`.", "x-agentrun-serve": "explain/1" },
   },
   RunSummary: {
     ...RUN_FIELDS,

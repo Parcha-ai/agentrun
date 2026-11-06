@@ -27,7 +27,9 @@ test("every request example the document gives is a body this server takes: each
   }
 });
 
-test("the five wrong bodies of a coding agent's first tries: each 422 names the field and gives what it accepts, or where it belongs", async (t) => {
+const DOC = { name: "Due diligence", instructions: "Research the company you are given on the web and write a short brief: what it does, who runs it, red flags, and the sources you read.", content: "Research https://stripe.com and write the brief." };
+
+test("the five wrong bodies of a coding agent's first tries: each 422 names the field and gives what it accepts, or where it belongs, and what it gives clears the issue", async (t) => {
   const { api } = await serve(t);
   const refused = async (method, path, body) => {
     const answer = await api(method, path, body);
@@ -35,30 +37,53 @@ test("the five wrong bodies of a coding agent's first tries: each 422 names the 
     return answer.body.error;
   };
   const field = (error, name) => error.fields.find((f) => f.field === name) ?? assert.fail(`no issue at ${name}: ${JSON.stringify(error)}`);
+  /** The body sent again with the suggested value where the field is: the field's issue is gone. */
+  const cleared = async (method, path, body, at, value) => {
+    const keys = at.split(".");
+    const again = structuredClone(body);
+    let into = again;
+    for (const key of keys.slice(0, -1)) into = into[key] = typeof into[key] === "object" && into[key] !== null ? into[key] : {};
+    into[keys.at(-1)] = value;
+    const answer = await api(method, path, again);
+    assert.ok(!(answer.body?.error?.fields ?? []).some((f) => f.field === at), `${at} = ${JSON.stringify(value)}: ${JSON.stringify(answer.body)}`);
+  };
 
-  // 1. A definition's field at the top level: it belongs under definition, as the fix shows.
-  const top = await refused("POST", "/agents", { name: "Business due diligence" });
-  assert.deepEqual(field(top, "name"), { field: "name", reason: "not_allowed", message: "The body keeps no field name: name belongs under definition.", fix: 'name belongs under definition: {"definition":{"name":"…"}}', example: { definition: { name: "…" } } });
+  // 1. A definition's field at the top level: it belongs under definition, as the fix shows, with the documented name.
+  const sent = { name: "Business due diligence" };
+  const top = await refused("POST", "/agents", sent);
+  assert.deepEqual(field(top, "name"), { field: "name", reason: "not_allowed", message: "The body keeps no field name: name belongs under definition.", fix: `name belongs under definition: {"definition":{"name":"${DOC.name}"}}`, example: { definition: { name: DOC.name } } });
   assert.equal(top.message, "The body keeps no field name: name belongs under definition.");
-  assert.deepEqual(field(top, "definition").example, { version: 1, name: "…", instructions: "…", skills: [], tools: [] }, "definition gives its required fields");
+  const moved = await api("POST", "/agents", field(top, "name").example);
+  assert.ok(!moved.body.error.fields.some((f) => f.field === "name" || f.field === "definition.name"), JSON.stringify(moved.body));
+  const definition = field(top, "definition").example;
+  assert.equal(definition.name, DOC.name, "definition gives the documented definition");
+  assert.equal((await api("POST", "/agents", { definition })).status, 201, "which saves");
   const many = await refused("POST", "/agents", { name: "Business due diligence", harness: "claude-agent", learning: "on", instructions: "Research.", tools: ["web_search"] });
-  for (const name of ["name", "harness", "learning", "instructions", "tools"]) assert.match(field(many, name).fix, new RegExp(`^${name} belongs under definition: \\{"definition":\\{"${name}":`));
+  for (const name of ["name", "harness", "learning", "instructions", "tools"]) assert.match(field(many, name).fix, new RegExp(`^${name} belongs under definition`));
 
-  // 2. An empty definition: its name is required, and the issue says what a name is.
+  // 2. An empty definition: its name is required, and the issue gives one.
   const empty = await refused("POST", "/agents", { definition: {} });
-  assert.deepEqual(field(empty, "definition.name"), { field: "definition.name", reason: "missing", message: 'definition.name is required, e.g. "…"', example: "…" });
+  assert.deepEqual(field(empty, "definition.name"), { field: "definition.name", reason: "missing", message: `definition.name is required, e.g. "${DOC.name}"`, example: DOC.name });
+  await cleared("POST", "/agents", { definition: {} }, "definition.name", DOC.name);
+  await cleared("POST", "/agents", { definition: {} }, "definition.instructions", field(empty, "definition.instructions").example);
 
   // 3. A switch given a word: it is true or false.
-  const learning = await refused("POST", "/agents", { definition: { name: "Business due diligence", instructions: "Research.", tools: ["web_search", "web_fetch"], learning: "on" } });
+  const word = { definition: { name: "Business due diligence", instructions: "Research.", tools: ["web_search", "web_fetch"], learning: "on" } };
+  const learning = await refused("POST", "/agents", word);
   assert.deepEqual(field(learning, "definition.learning"), { field: "definition.learning", reason: "wrong_type", message: "definition.learning is true or false, e.g. true", example: true });
+  await cleared("POST", "/agents", word, "definition.learning", true);
 
   // 4 and 5. A run's input as a string, then under another name: it is an object, and content is what it needs.
   assert.equal((await api("POST", "/agents", agent("brief"))).status, 201);
-  const text = await refused("POST", "/agents/brief/runs", { input: "Research https://stripe.com and write the due-diligence brief." });
-  assert.deepEqual(field(text, "input"), { field: "input", reason: "wrong_type", message: 'input is an object, e.g. {"content":"…"}', example: { content: "…" } });
-  const named = await refused("POST", "/agents/brief/runs", { input: { message: "Research https://stripe.com and write the due-diligence brief." } });
-  assert.deepEqual(field(named, "input.content"), { field: "input.content", reason: "missing", message: 'input.content is required, e.g. "…"', example: "…" });
-  assert.equal(named.message, 'input.content is required, e.g. "…"');
+  const string = { input: "Research https://stripe.com and write the due-diligence brief." };
+  const text = await refused("POST", "/agents/brief/runs", string);
+  assert.deepEqual(field(text, "input"), { field: "input", reason: "wrong_type", message: `input is an object, e.g. {"content":"${DOC.content}"}`, example: { content: DOC.content } });
+  await cleared("POST", "/agents/brief/runs", string, "input", field(text, "input").example);
+  const other = { input: { message: "Research https://stripe.com and write the due-diligence brief." } };
+  const named = await refused("POST", "/agents/brief/runs", other);
+  assert.deepEqual(field(named, "input.content"), { field: "input.content", reason: "missing", message: `input.content is required, e.g. "${DOC.content}"`, example: DOC.content });
+  assert.equal(named.message, `input.content is required, e.g. "${DOC.content}"`);
+  await cleared("POST", "/agents/brief/runs", other, "input.content", DOC.content);
 });
 
 test("an option, a number and a field an object below keeps are told from the schema too", async (t) => {
@@ -68,7 +93,7 @@ test("an option, a number and a field an object below keeps are told from the sc
   const at = (name) => run.fields.find((f) => f.field === name);
   assert.match(at("effort").message, /, e\.g\. "[a-z]+"$/);
   assert.equal(at("max_cost_usd").message, "max_cost_usd is a number above 0, e.g. 1");
-  assert.equal(at("content").fix, 'content belongs under input: {"input":{"content":"…"}}');
+  assert.equal(at("content").fix, `content belongs under input: {"input":{"content":"${DOC.content}"}}`);
 });
 
 test("a suggested value is one the server takes: a bad id gets the documented one, a model no value at all, and every value a 422 suggests, sent in place of the wrong one, clears the field's issue", async (t) => {
