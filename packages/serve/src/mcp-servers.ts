@@ -275,15 +275,17 @@ export class McpServers {
   headers(name: string): { headers: HeaderMap } | { unopened: string } | undefined {
     const kept = this.saved(name);
     if (!kept || kept.auth.type === "none") return undefined;
+    // Opened first: a credential that does not open says so, whatever else is true of it (an expired token on a server
+    // without its seal key is a seal problem, which no retry fixes).
+    const opened = this.open(name, kept);
+    if (!("headers" in opened)) return { unopened: opened.unreadable === "seal_key_missing" ? UNUSABLE.noSealKey : UNUSABLE.damaged };
     if (kept.auth.oauth?.expired) return { unopened: UNUSABLE.signedOut };
     // An access token past its expiry whose refresh got no answer (freshen kept the refresh token for the next launch):
     // never handed over, so the server's 401 never reads as a sign-in to make again.
     const until = kept.auth.type === "oauth" && kept.auth.oauth?.expires_at ? Date.parse(kept.auth.oauth.expires_at) : NaN;
     if (until <= Date.now()) return { unopened: UNUSABLE.silent };
-    const opened = this.open(name, kept);
     // Tagged, never told apart by a key a saved header could also have (`unopened` is a header name like any other).
-    if ("headers" in opened) return { headers: opened.headers };
-    return { unopened: opened.unreadable === "seal_key_missing" ? UNUSABLE.noSealKey : UNUSABLE.damaged };
+    return { headers: opened.headers };
   }
 
   /** An OAuth server's token set refreshed when its access token expires within `margin`. Tried twice when its

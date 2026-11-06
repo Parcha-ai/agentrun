@@ -63,7 +63,7 @@ export const systemNetwork: OAuthNetwork = {
 
 /** What a sign-in's requests met, for its answer: the first refusal, else the last endpoint that failed (its status,
  *  when it answered). Never what an authorization server said: its words are not passed on. */
-type Seen = { refused?: string; failed?: { what: string; status?: number } };
+type Seen = { refused?: string; failed?: { what: string; status?: number; why?: string } };
 
 /** The authorization server's requests: no redirect followed (a code or secret goes only where discovery said), each
  *  held to REQUEST_MS, and stopped with `stop` (the server's own stop). None goes to a private or link-local address or
@@ -77,7 +77,15 @@ const guarded = (stop: AbortSignal | undefined, mcpUrl: string, network: OAuthNe
   const url = new URL(input instanceof Request ? input.url : String(input));
   const what = `endpoint ${url.origin}${url.pathname}`;
   if (onLoopback(mcpUrl) && LOOPBACK.test(url.hostname)) return noted(fetch(input, { ...init, redirect: "manual", signal }), what, seen);
-  const at = await checked(what, url.href, signal, network);
+  let at: Awaited<ReturnType<typeof checked>>;
+  try {
+    at = await checked(what, url.href, signal, network);
+  } catch (error) {
+    // Its address check outlived the request's time (a name lookup that never answered), or the server stopped: the
+    // endpoint is noted, never the error's own words.
+    seen.failed = { what, ...(signal.reason instanceof DOMException && signal.reason.name === "TimeoutError" ? { why: "DNS lookup timed out" } : {}) };
+    throw error;
+  }
   if ("refused" in at) {
     seen.refused ??= at.refused;
     throw new Error(at.refused);
@@ -205,7 +213,7 @@ export class McpSignIns {
     } catch (error) {
       // Named by the endpoint and its status, never by what the authorization server said: its answer is not passed on.
       const { OAuthError } = await sdk();
-      const why = seen.refused ?? (seen.failed ? `its authorization server's ${seen.failed.what} ${seen.failed.status ? `answered HTTP ${seen.failed.status}` : "could not be reached"}` : error instanceof OAuthError && /^[a-z_]{1,64}$/.test(String(error.code)) ? `its authorization server refused it (${error.code})` : "its authorization server's answer was not one it could use");
+      const why = seen.refused ?? (seen.failed ? `its authorization server's ${seen.failed.what} ${seen.failed.status ? `answered HTTP ${seen.failed.status}` : `could not be reached${seen.failed.why ? ` (${seen.failed.why})` : ""}`}` : error instanceof OAuthError && /^[a-z_]{1,64}$/.test(String(error.code)) ? `its authorization server refused it (${error.code})` : "its authorization server's answer was not one it could use");
       throw new ApiError("upstream_failed", `The sign-in to ${url.origin} did not start: ${why}.`);
     }
     if (!opened) throw new ApiError("upstream_failed", `The sign-in to ${url.origin} did not start: its authorization server gave no page to open.`);
