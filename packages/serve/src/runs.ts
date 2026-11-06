@@ -467,9 +467,11 @@ function noteTurns(run: Run, entries: readonly unknown[], submissions: readonly 
     if (data) run.capRefusal = typeof data.spentUsd === "number" && typeof data.needsUsd === "number" && typeof data.leastCapUsd === "number" ? { spentUsd: data.spentUsd, needsUsd: data.needsUsd, leastCapUsd: data.leastCapUsd, ...(typeof data.boundUsd === "number" && data.boundUsd > 0 ? { boundUsd: data.boundUsd } : {}) } : undefined;
     // What the person said, whole, by entry, each entry once (a snapshot sends them again): a user entry the server did
     // not write, or the person's own words in one it did (a declined approval). Its text parts only: an image or a file
-    // the message carries is no words.
+    // the message carries is no words. Kept only while the run's learning has yet to keep it (seeded or reflecting): a
+    // run that does not learn holds none, and learning-run.ts beforeSettle lets them go once kept.
     const by = (run.saidBy ??= originMatcher())(value as EntryLike);
-    if (isUserEntry(value as EntryLike) && !run.said?.has(value.id)) {
+    const learning = run.meta.learning?.state;
+    if ((learning === "seeded" || learning === "reflecting") && isUserEntry(value as EntryLike) && !run.said?.has(value.id)) {
       const words = by === undefined ? userText((value as EntryLike).model?.[0]) : by.reason === "approval_declined" ? by.said.trim() : undefined;
       if (words !== undefined) (run.said ??= new Map()).set(value.id, words);
     }
