@@ -224,6 +224,8 @@ console with the password, approves it; no API token can. [Learning](packages/se
 
 ## What's in it
 
+Each part is also a package you can use on its own: [the packages](docs/packages.md).
+
 ### Harnesses
 
 pi, Claude Code (the Claude Agent SDK), Codex (its app-server) and OpenCode, plus the workflow harness.

@@ -12,14 +12,14 @@ without sudo), and ssh from your laptop. Rather hand this to Claude Code? Paste 
 
    ```sh
    mkdir -p -m 700 ~/.config/agentrun && mkdir -p ~/.config/systemd/user
-   cp agentrun.env.example ~/.config/agentrun/agentrun.env && chmod 600 ~/.config/agentrun/agentrun.env
+   cp agentrun.env.txt ~/.config/agentrun/agentrun.env && chmod 600 ~/.config/agentrun/agentrun.env
    nano ~/.config/agentrun/agentrun.env
    ```
 
    The folder's mode matters: the server refuses its seal key in a folder others can read, and then keeps no key you
    save in the console.
 
-2. The unit. Copy [agentrun.service](agentrun.service) to `~/.config/systemd/user/agentrun.service` and replace
+2. The unit. Copy [agentrun.service.txt](agentrun.service.txt) to `~/.config/systemd/user/agentrun.service` and replace
    `<node bin>` with the directory `which node` prints. systemd does not load nvm, so that directory has to be on the
    `PATH` line. Running Codex agents? Swap `-p @anthropic-ai/claude-agent-sdk@0.3.286` for `-p @openai/codex@0.164.0`,
    or keep both.

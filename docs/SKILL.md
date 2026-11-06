@@ -22,6 +22,17 @@ On a server or VM, read step 3 before you start anything.
 
 ## 2. Start it
 
+```sh
+npx -y @parcha/agentrun --no-open > agentrun.log 2>&1 &    # or the Claude Code or Codex line
+pid=$!
+for i in $(seq 600); do
+  grep -q 'AgentRun is running at' agentrun.log && break
+  kill -0 "$pid" 2>/dev/null || break
+  sleep 1
+done
+grep 'AgentRun is running at' agentrun.log || { echo "AgentRun did not start:"; tail -20 agentrun.log; }
+```
+
 npm serves `@parcha/agentrun` 0.3.6 with the server 0.1.0-beta.31 today (`npm view @parcha/agentrun-serve version`
 says which). A Claude Code or Codex agent needs its harness beside the server, so the start line names it:
 
@@ -35,19 +46,7 @@ npx -y -p @parcha/agentrun@0.3.6 -p @parcha/agentrun-serve@0.1.0-beta.31 -p @ope
 ```
 
 Both `-p` flags on one line run all three harnesses. From beta.32 on the plain line is enough for Claude Code too: it
-installs Claude Code on first use. Codex keeps its `-p`. Start the line for their harness in the background and wait
-for its address:
-
-```sh
-npx -y @parcha/agentrun --no-open > agentrun.log 2>&1 &    # or the Claude Code or Codex line
-pid=$!
-for i in $(seq 600); do
-  grep -q 'AgentRun is running at' agentrun.log && break
-  kill -0 "$pid" 2>/dev/null || break
-  sleep 1
-done
-grep 'AgentRun is running at' agentrun.log || { echo "AgentRun did not start:"; tail -20 agentrun.log; }
-```
+installs Claude Code on first use. Codex keeps its `-p`. The block above starts the plain line; use the line for their harness in its place.
 
 It prints `AgentRun is running at http://127.0.0.1:<port>/`, where its data is (`~/.agentrun`) and where its token is
 (`~/.agentrun/.token`). Read the port off that line: it is 7340 unless 7340 was busy. On the first start with Docker it
