@@ -228,6 +228,8 @@ export function personHands(options: {
   timers?: { set(run: () => void, ms: number): unknown; clear(handle: unknown): void };
   /** For tests: the clock the person's time is measured by. */
   now?: () => number;
+  /** The run's held values cut from the ask's words, whole, before they are cut to their bound and written. */
+  redact?: (text: string) => string;
   /** The person's time on a session that just ended, `seconds` of it, to hold until a charge books it (browser-cost.ts
    *  carry): the up-front holds go as it ends, the time it took stays counted. */
   carry?(tag: string, seconds: number): void;
@@ -450,7 +452,9 @@ export function personHands(options: {
         if (refused) return refused;
         const hold = { drop: () => release(ask.sessionTag, user) };
         const at = Date.now();
-        const record: PendingAsk = { id, tag: ask.sessionTag, instruction: ask.instruction.slice(0, MAX_TEXT), completion_condition: ask.completionCondition.slice(0, MAX_TEXT), asked_at: new Date(at).toISOString(), expires_at: new Date(at + holdMs).toISOString() };
+        // Redacted whole, then cut to their bound: a held value the cut would split never leaves its head in the record.
+        const shown = (text: string) => (options.redact ? options.redact(text) : text).slice(0, MAX_TEXT);
+        const record: PendingAsk = { id, tag: ask.sessionTag, instruction: shown(ask.instruction), completion_condition: shown(ask.completionCondition), asked_at: new Date(at).toISOString(), expires_at: new Date(at + holdMs).toISOString() };
         try {
           writeOwn(dir, `${id}.json`, record, false);
         } catch (error) {

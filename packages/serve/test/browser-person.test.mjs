@@ -442,3 +442,14 @@ test("an ask the cap ended keeps the cap's words across a restart: the next proc
   t.after(() => after.person.close());
   assert.deepEqual(await after.person.handoff.outcome(asked.interactionId), { outcome: "expired", reason: refuse }, "the cap's words outlive the process");
 });
+
+test("an ask's words are redacted before they are cut to their bound: a held value that straddles the cut leaves no prefix of it in the record", async (t) => {
+  const root = await scratch(t);
+  const value = ["held", "value", "made", "in", "this", "test"].join("-");
+  const instruction = `${"x".repeat(1990)}${value} and more`;
+  const person = personHands({ root, gates: () => ({}), pollMs: 60_000, note: async () => {}, personTime: async () => ({ drop() {} }), redact: (text) => text.replaceAll(value, "[redacted]") });
+  t.after(() => person.close());
+  const asked = await person.handoff.request({ requestId: "00000000-0000-4000-8000-000000000099", sessionTag: "ar-run-27-1", instruction, completionCondition: `${"y".repeat(1995)}${value}` });
+  const record = readFileSync(join(root, "browser-ask", `${asked.interactionId}.json`), "utf8");
+  for (let k = 4; k <= value.length; k += 1) assert.ok(!record.includes(value.slice(0, k)), `no prefix of the held value (${k} chars) in the record`);
+});

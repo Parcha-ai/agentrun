@@ -31,7 +31,8 @@ import { browserNeeds, capabilityOf, explainsView, isUnavailable, NO_PARALLEL_KE
 import { defaultPermission, permissionOf, type SettingFrom } from "./tool-gate.js";
 import { PARALLEL_KEY_ENV } from "./decisions.js";
 import { keyNeeded } from "./key-words.js";
-import { handedSignIn } from "./secrets.js";
+import { handedSignIn, hostSecrets } from "./secrets.js";
+import { redactedAnswer } from "./key-refusal.js";
 import { SIGN_IN_KEY, SIGN_IN_SAVED } from "./sign-ins.js";
 
 export const ASK_TOOL = "ask_person";
@@ -257,6 +258,8 @@ const browserTool: ToolEntry = {
       gates,
       personTime: (what, seconds, options) => spend.personTime(what, seconds, options),
       carry: (tag, seconds) => spend.carry(tag, seconds),
+      // The model's words for the person, with every value this run holds cut, whole, before they are cut to their bound.
+      redact: (text) => redactedAnswer(text, [...hostSecrets(host.env), ...(kept ? [kept.ref] : [])]),
       note: async (kind, data) => void (await opened?.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind, data })), context)),
       holdMs: windows.holdMs,
     });
