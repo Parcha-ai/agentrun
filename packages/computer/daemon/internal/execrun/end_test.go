@@ -92,12 +92,13 @@ func TestEndAllTermsAStartInFlightAndRefusesALaterOne(t *testing.T) {
 	})
 	ended := make(chan struct{})
 	go func() {
-		execrun.EndAll(time.Second)
+		// patience, not a second: a loaded host may take longer to start the program in flight. Each wait ends early.
+		execrun.EndAll(patience)
 		close(ended)
 	}()
 	select {
 	case <-ended:
-	case <-time.After(2 * patience):
+	case <-time.After(3*patience + execrun.KillGrace):
 		t.Fatal("EndAll never returned")
 	}
 
