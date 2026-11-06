@@ -203,6 +203,8 @@ func Bridge(socket string, in io.Reader, out io.Writer, errOut io.Writer) int {
 		return 1
 	}
 	defer conn.Close()
+	// Read once here: the goroutine below may outlive this call.
+	halfClosed := afterHalfClose
 	inputEnded := make(chan struct{})
 	replies := make(chan struct{})
 	go func() {
@@ -210,8 +212,8 @@ func Bridge(socket string, in io.Reader, out io.Writer, errOut io.Writer) int {
 		// Marked before the half-close: the daemon's answering close can only come after it.
 		close(inputEnded)
 		_ = conn.CloseWrite()
-		if afterHalfClose != nil {
-			afterHalfClose()
+		if halfClosed != nil {
+			halfClosed()
 		}
 	}()
 	go func() {
