@@ -727,7 +727,7 @@ test("a sign-in whose authorization server fails says which endpoint and its sta
   const store = await storeOn(t, key, { network: { lookup: async () => [], fetch: async () => new Response("", { status: 404 }) } });
   await assert.rejects(store.oauthStart("loop", { url: mcp.url }), (error) => {
     assert.equal(error.code, "upstream_failed");
-    assert.match(error.message, /registration endpoint .*HTTP 500/);
+    assert.match(error.message, /its authorization server's endpoint http:\/\/127\.0\.0\.1:\d+\/register answered HTTP 500\.$/);
     assert.ok(!error.message.includes("NOT-FOR-THE-OWNER"), error.message);
     return true;
   });
