@@ -261,6 +261,12 @@ A submit with `answers: false` and `asks` (tool names) may not answer a question
 refuses it with 409 `WAITING` when its last model message is the result of a tool in `asks`, and both pi and a hook admit
 it only as `whenBusy: "reject"`, so a busy run refuses it (409 `BUSY`) and it is never queued behind a turn that may end on
 such a tool.
+With `parks` (entry kinds), it is refused with 409 `WAITING` too, by pi and a hook alike, while a call waits in a park
+of one of those kinds: an entry saying `{phase: "requested", id}` with no `{phase: "resolved", id}` after it, read back
+to the turn's last user message (a hook's conversation has none: back to its start). A tool call waiting on its owner's
+approval parks so on every harness. The park is read in one transaction: for a hook, the commit that admits the input;
+for pi, the one just before pi's own admission. Only a new admission is read for: a requestId the door or pi took already
+answers its record, whatever has parked since.
 
 With a hook, `POST /submit` (whose `whenBusy` defaults to `followUp`, as pi's) goes through, in this order: the bearer
 token (401); the lease (503 `OPENING`, `PARKING`, `RELEASED`), so nothing reaches the hook once the lease is lost; the
@@ -282,6 +288,7 @@ store when the run has no live door.
 | `ADMITTED` | only: the hook is running in this instance, on a record this instance admitted | 202 `{ status: "ADMITTED" }` |
 | `ACCEPTED` | the hook took the input | 200 `{ status: "ACCEPTED" }`; never submitted again |
 | `REJECTED_BUSY` | the hook refused it as busy | 409 `BUSY`, `status: "REJECTED_BUSY"`; sent again, it is admitted again |
+| `REJECTED_WAITING` | an input with `answers: false` came while a call waits in a park it names; never written | 409 `WAITING`; sent again, it is read again |
 | `FAILED` | `hook.submit` threw, before taking the input | 500 `FAILED`, `status: "FAILED"` |
 | `UNKNOWN` | the bound passed: the door aborted `ctx.signal`, called `hook.abort` (bounded at `doorTimeouts.abortMs`, 5 s) and stopped waiting; or the record was admitted by an earlier instance, or before the lease was lost, and no call here carries it | 504 `UNKNOWN`, `status: "UNKNOWN"`; never submitted again |
 

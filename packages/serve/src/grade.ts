@@ -38,7 +38,7 @@ export type Main = { sha: string; files: string[]; texts: Map<string, string>; o
 /** What a grade spent: the grader's calls. The dollars, null when any call's are unknown, and the tokens,
  *  null when any call's are. */
 export type GradeCost = { usd: number | null; tokens: Tokens | null };
-export type Judged = { cost: GradeCost } & ({ verdict: Verdict } | { reason: "grade_failed"; error: Error });
+export type Judged = { cost: GradeCost } & ({ verdict: Verdict; unread?: string } | { reason: "grade_failed"; error: Error });
 /** The agentic revision the run ran: its standing instructions, and what its model is. */
 export type Agent = { instructions: string; harness?: string; model?: string; thinking?: string };
 
@@ -208,19 +208,26 @@ async function graderModel(env: NodeJS.ProcessEnv, agent: Agent, cost: GradeCost
 }
 
 /** The grader, on `gradeModel` when the server names one (gradeModelOf), given `asked`, what the user said in the run:
- *  its verdict, or why it gave none; with what it spent. Rejects only when `signal` (the server closing) aborts it: nothing
- *  is decided then. */
+ *  its verdict, or why it gave none; with what it spent. An answer the host cannot read is asked once more, with the same
+ *  prompt and under the same bound, each ask counted once in `cost`; two such answers are a drop that could not be read,
+ *  with the last answer as it came (`unread`, for the caller to cut of secrets and keep). Rejects only when `signal` (the
+ *  server closing) aborts it: nothing is decided then. */
 export async function judgeProposal(input: { runId: string; agent: Agent; main: GradeMain; proposed: NoteText[]; files?: NoteText[]; asked?: readonly string[]; gradeModel?: string; env: NodeJS.ProcessEnv; signal: AbortSignal; gradeTimeoutMs?: number }): Promise<Judged> {
   const { runId, agent, main, proposed, env, signal } = input;
   const files = input.files ?? [];
   const cost: GradeCost = { usd: 0, tokens: { ...NO_TOKENS } };
   try {
-    const { gradePrompt, parseVerdict } = await import("./learn/index.js");
+    const { gradePrompt, parseVerdict, UNREADABLE_REASON } = await import("./learn/index.js");
     const prompt = gradePrompt({ run: runId, instructions: agent.instructions, active: main.active, superseded: main.superseded, proposed, ...(files.length ? { files } : {}), ...(input.asked ? { asked: input.asked } : {}) });
     const grader = await graderModel(env, agent, cost, input.gradeModel);
-    const answer = await bounded(input.gradeTimeoutMs ?? GRADE_TIMEOUT_MS, signal, cost, (grade) => grader({ prompt, maxTokens: GRADE_MAX_TOKENS }, grade));
+    const ask = () => bounded(input.gradeTimeoutMs ?? GRADE_TIMEOUT_MS, signal, cost, (grade) => grader({ prompt, maxTokens: GRADE_MAX_TOKENS }, grade));
     // The items with their texts: a note the run marked risky waits whatever the grader says (parseVerdict).
-    return { verdict: parseVerdict(answer.text, gradedItems(proposed, files)), cost };
+    const items = gradedItems(proposed, files);
+    const first = parseVerdict((await ask()).text, items);
+    if (first.reason !== UNREADABLE_REASON || first.items.length) return { verdict: first, cost };
+    const again = (await ask()).text;
+    const verdict = parseVerdict(again, items);
+    return verdict.reason === UNREADABLE_REASON && !verdict.items.length ? { verdict, unread: typeof again === "string" ? again : "", cost } : { verdict, cost };
   } catch (error) {
     signal.throwIfAborted();
     return { reason: "grade_failed", error: error as Error, cost };

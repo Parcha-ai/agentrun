@@ -58,7 +58,7 @@ describe("ToolsPage, each tool's permission", () => {
     expect(page.row("read")!.querySelector("select[aria-label='read provider']")).toBeNull();
     expect(page.row("web_search")!.querySelector("select[aria-label='web_search provider']")).toBeTruthy();
     expect(page.host.querySelector("table")!.parentElement!.className).toMatch(/overflow-x-auto/);
-    expect([...page.host.querySelectorAll("thead th")].map((th) => th.textContent)).toEqual(["Tool", "Provider", "Permission", "Resolves to", "Reset"]);
+    expect([...page.host.querySelectorAll("thead th")].map((th) => th.textContent)).toEqual(["Tool", "Permission", "Provider", "Resolves to", "Reset"]);
   });
 
   it("a permission set here is marked and saved with everything else the server holds, a catalog tool's and a wildcard's included", async () => {

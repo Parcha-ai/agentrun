@@ -166,7 +166,7 @@ export async function startBoxRelay(options: BoxRelayOptions): Promise<BoxRelay>
         remember(box.id, { run: runId });
         return answer(res, 200, { id: box.id, made: box.made, ...(options.apiKey ? { api_url: base } : {}) });
       }
-      if (path[2]!.startsWith("vm/")) return options.vm ? options.vm.handle(runId, path[2]!.slice(3), req, res) : answer(res, 404, { message: "this server has no VM box" });
+      if (path[2]!.startsWith("vm/")) return options.vm ? options.vm.handle(runId, path[2]!.slice(3), req, res) : answer(res, 404, { message: "this server has no Modal sandbox" });
       if (!options.apiKey) return answer(res, 404, { message: "this server has no Daytona box" });
       return forward(runId, req, res);
     })().catch((error: unknown) => {

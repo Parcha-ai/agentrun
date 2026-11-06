@@ -17,6 +17,7 @@ import { closeSync, readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import type { DecisionProvider } from "@parcha/agentrun-dsl";
 import { FAUX_ENV } from "./model.js";
+import { keyNeeded } from "./key-words.js";
 
 export const JEV_KEY_ENV = "TYPESAFE_API_KEY";
 export const JEV_OPENROUTER_KEY_ENV = "OPENROUTER_API_KEY";
@@ -102,17 +103,17 @@ export function decisionKeysFor(env: NodeJS.ProcessEnv, needs: DecisionNeeds): R
 }
 
 /** Why Jev does not run here, naming the variable to set. */
-export const jevMissing = `This server's environment does not set ${JEV_KEY_ENV} (or, for Jev through OpenRouter, ${JEV_OPENROUTER_KEY_ENV}, or ${JEV_GATEWAY_KEY_ENV} with AGENT_MODEL_BASE_URL on openrouter.ai), which a workflow's judge, pick, sift, route and ask nodes need.`;
+export const jevMissing = `A workflow's judge, pick, sift, route and ask nodes need ${keyNeeded([JEV_KEY_ENV])}. Jev also runs through OpenRouter, on ${keyNeeded([JEV_OPENROUTER_KEY_ENV])}, or on ${JEV_GATEWAY_KEY_ENV} with AGENT_MODEL_BASE_URL on openrouter.ai, set where the server starts.`;
 
 /** Why Parallel does not run here, naming the variable to set. */
-export const parallelMissing = `This server's environment does not set ${PARALLEL_KEY_ENV}, which a decision node naming the provider "parallel" needs.`;
+export const parallelMissing = `A decision node naming the provider "parallel" needs ${keyNeeded([PARALLEL_KEY_ENV])}.`;
 
 /** Why the OpenRouter route is worth a note, naming the variable Jev runs on: its key is also the model gateway's, which
  *  a run's process holds. */
 export const jevGatewayNote = (env: NodeJS.ProcessEnv) => `Jev runs on ${openRouterKeyEnv(env)}, the model gateway key on this server, which a run's processes hold in their environment for its model nodes. Set ${JEV_KEY_ENV} to keep the decision key out of them.`;
 
 /** Why OpenRouter's decision models do not run here, naming the variable to set. */
-export const openrouterMissing = `This server's environment does not set ${JEV_OPENROUTER_KEY_ENV} (or ${JEV_GATEWAY_KEY_ENV} with AGENT_MODEL_BASE_URL on openrouter.ai), which a decision node naming the provider "openrouter" needs.`;
+export const openrouterMissing = `A decision node naming the provider "openrouter" needs ${keyNeeded([JEV_OPENROUTER_KEY_ENV])}, or ${JEV_GATEWAY_KEY_ENV} with AGENT_MODEL_BASE_URL on openrouter.ai, set where the server starts.`;
 
 /** What to know of OpenRouter's decision models here: the key they run on, which a run's process holds as the model
  *  gateway's, and that images go only to a model the catalog lists with image input, untested live. */

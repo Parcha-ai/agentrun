@@ -20,7 +20,7 @@ const waiting: Run = {
 const movedOn: Run = { ...waiting, status: "working", state: "working", pending: null };
 const WORDS = "This call was already allowed, in another tab or by another answer. The run shows what happened next.";
 const host = () => document.body.appendChild(document.createElement("div"));
-const allow = (scope: ParentNode) => [...scope.querySelectorAll("button")].find((b) => b.textContent === "Allow") as HTMLButtonElement;
+const allow = (scope: ParentNode) => [...scope.querySelectorAll("button")].find((b) => b.textContent === "Allow once") as HTMLButtonElement;
 
 describe("a refused approval answer, once the run moved on", () => {
   it("the run page keeps the words after the card goes", async () => {

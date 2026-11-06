@@ -25,7 +25,7 @@ const MAX_BUFFERED_BYTES = 16 * 2 ** 20;
 /** How long a program the run's process stopped asking about is held, once it exited. A program is let go:
  *  - once its exit was read (or failed to be) and both its output replies ended, whole or broken (settle);
  *  - at once when a caller goes away mid-read (the reply's close);
- *  - at the run's end (drop), whatever it is doing;
+ *  - at the run's end (drop), whatever it is doing, a program still starting then included, as it lands;
  *  - else EXEC_KEEP_MS after its exit: an exit or an output not read yet is still the caller's to read.
  *  A program still running holds its slot until it exits or the run ends. */
 const EXEC_KEEP_MS = 10 * 60_000;
@@ -104,11 +104,25 @@ type Held = { run: string; process: VmProcess; streams: Record<"stdout" | "stder
 /** The relay's handler of a run's VM calls, over the server's client `sdk`: `handle(runId, path, req, res)` answers the
  *  call at `path` (what follows `/runs/<id>/vm/`), the caller's token already checked. `drop(runId)` lets go of the run's
  *  programs (at its end). */
-export function vmRelay(sdk: VmSdk, secrets: () => readonly string[] = () => []): { handle(runId: string, path: string, req: IncomingMessage, res: ServerResponse): Promise<void>; drop(runId: string): void } {
+export function vmRelay(sdk: VmSdk, secrets: () => readonly string[] = () => []): { handle(runId: string, path: string, req: IncomingMessage, res: ServerResponse): Promise<void>; drop(runId: string): void; footprint(): { programs: number; starting: number } } {
   const known = new Map<string, { sandbox: VmSandbox; run: string | undefined }>();
   const execs = new Map<string, Held>();
-  /** The programs each run is starting now: counted with those it holds, so starts at once cannot pass the limit. */
-  const starting = new Map<string, number>();
+  /** The program starts each run has under way, from the moment its request is taken (before the sandbox's lookup): each
+   *  counts toward the run's limit, and one its run's end (drop) marks is let go as it lands, never held. A run is here
+   *  only while it has one, so an ended run leaves nothing behind. */
+  const starting = new Map<string, Set<{ dropped: boolean }>>();
+  const startOf = (runId: string) => {
+    const start = { dropped: false };
+    const starts = starting.get(runId) ?? new Set();
+    starts.add(start);
+    starting.set(runId, starts);
+    return start;
+  };
+  const started = (runId: string, start: { dropped: boolean }) => {
+    const starts = starting.get(runId);
+    starts?.delete(start);
+    if (starts && !starts.size) starting.delete(runId);
+  };
 
   /** Sandbox `id` and the run its label names, as the provider says; undefined when it has none. */
   const sandboxOf = async (id: string) => {
@@ -147,9 +161,11 @@ export function vmRelay(sdk: VmSdk, secrets: () => readonly string[] = () => [])
   };
 
   async function handle(runId: string, path: string, req: IncomingMessage, res: ServerResponse): Promise<void> {
-    if (req.method !== "POST") return answer(res, 405, { message: "the VM relay takes POST" });
+    if (req.method !== "POST") return answer(res, 405, { message: "the Modal sandbox relay takes POST" });
     const onSandbox = /^sandbox\/([^/]+)\/(find|poll|tags|exec)$/.exec(path);
-    if (onSandbox) {
+    // A start is under way from here: a run's end while its sandbox is looked up, or its program started, still finds it.
+    const start = onSandbox?.[2] === "exec" ? startOf(runId) : undefined;
+    if (onSandbox) try {
       const id = decodeURIComponent(onSandbox[1]!);
       let found;
       try {
@@ -171,17 +187,14 @@ export function vmRelay(sdk: VmSdk, secrets: () => readonly string[] = () => [])
             const body = (await jsonOf(req)) as { command?: unknown; workdir?: unknown; timeoutMs?: unknown } | null;
             const command = body?.command;
             if (!Array.isArray(command) || !command.length || !command.every((part) => typeof part === "string")) return answer(res, 400, { message: "exec names its command: a list of strings" });
-            const pending = starting.get(runId) ?? 0;
-            if ([...execs.values()].filter((held) => held.run === runId).length + pending >= MAX_EXECS_PER_RUN) return answer(res, 429, { message: `a run holds at most ${MAX_EXECS_PER_RUN} programs in its box at once` });
-            // Its slot is taken before the start is awaited, and given back once the program is held or did not start.
-            starting.set(runId, pending + 1);
-            let process: VmProcess;
-            try {
-              process = await found.sandbox.exec(command as string[], { mode: "binary", ...(typeof body?.workdir === "string" ? { workdir: body.workdir } : {}), ...(typeof body?.timeoutMs === "number" ? { timeoutMs: body.timeoutMs } : {}) });
-            } finally {
-              const left = (starting.get(runId) ?? 1) - 1;
-              if (left > 0) starting.set(runId, left);
-              else starting.delete(runId);
+            // Its slot was taken as the request came (startOf), and is given back once the program is held or did not start.
+            const others = (starting.get(runId)?.size ?? 1) - 1;
+            if ([...execs.values()].filter((held) => held.run === runId).length + others >= MAX_EXECS_PER_RUN) return answer(res, 429, { message: `a run holds at most ${MAX_EXECS_PER_RUN} programs in its box at once` });
+            const process = await found.sandbox.exec(command as string[], { mode: "binary", ...(typeof body?.workdir === "string" ? { workdir: body.workdir } : {}), ...(typeof body?.timeoutMs === "number" ? { timeoutMs: body.timeoutMs } : {}) });
+            // The run's programs were let go while this one started (its end): it is let go too, its output never read.
+            if (start!.dropped) {
+              for (const stream of [process.stdout, process.stderr]) void Promise.resolve(stream[Symbol.asyncIterator]().return?.()).catch(() => undefined);
+              return answer(res, 410, { message: "the run ended while the program started: it is not held" });
             }
             const exec = randomUUID();
             const held: Held = { run: runId, process, streams: { stdout: pump(process.stdout), stderr: pump(process.stderr) }, waited: false, read: new Set(), finished: new Set() };
@@ -199,6 +212,8 @@ export function vmRelay(sdk: VmSdk, secrets: () => readonly string[] = () => [])
       } catch (error) {
         return failed(res, error);
       }
+    } finally {
+      if (start) started(runId, start);
     }
     const onExec = /^exec\/([^/]+)\/(stdin|stdin-close|stdout|stderr|wait)$/.exec(path);
     if (!onExec) return refused(res, path);
@@ -281,8 +296,11 @@ export function vmRelay(sdk: VmSdk, secrets: () => readonly string[] = () => [])
   return {
     handle,
     drop(runId) {
+      for (const start of starting.get(runId) ?? []) start.dropped = true;
       for (const [id, held] of execs) if (held.run === runId) forget(id);
     },
+    /** What the relay holds now, for the tests: its programs, and the runs with a start under way. */
+    footprint: () => ({ programs: execs.size, starting: starting.size }),
   };
 }
 

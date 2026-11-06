@@ -2,9 +2,13 @@
 // server's settings and probed once at its start. bwrap comes later. The registry says which boxes this server has, why
 // it lacks the others, and hands out an available box's provider (and the VM box's client, for the box relay).
 //
-// AGENTRUN_BOXES lists the boxes to set up. A box it does not list is never probed and is unavailable, its reason naming
-// the setting that lists it; a name in it that is no box refuses the start. Every reason says what to do next.
-// pi-transport is an optional peer of this package and the VM provider's SDK is the host's, so each is loaded by the
+// AGENTRUN_BOXES lists the boxes to set up. Not set at all, it is docker alone (DEFAULT_BOXES): a plain start probes
+// Docker and offers it when Docker answers, so a new agent lands in its box (place.ts); every other box is the operator's
+// to list. Set, it wins: a box it does not list is never probed and is unavailable, its reason naming the setting that
+// lists it, an empty value or `none` sets up no box, and a name in it that is no box refuses the start. Every reason says
+// what to do next.
+// pi-transport is a dependency of this package (a plain install has the Docker box) and the VM provider's SDK is the
+// host's; each is loaded by the
 // probe that needs it, and a box whose module is not installed says what to install. The keys are the server's own: the
 // launcher hands them over with its other secrets (secrets.ts), the probes read them here, and no run's process is
 // handed one (SERVER_ONLY in runs.ts).
@@ -17,7 +21,7 @@ import { withoutSecrets } from "./secrets.js";
 /** Why the VM box has no network, said in capabilities whenever the server's host list is set: its provider's SDK takes
  *  a domain list at a sandbox's create, but has no read of a sandbox's network back, so the server could not check that
  *  a box holds the list it asked for (as it does Daytona's), and it never leaves the provider's open default either. */
-export const VM_NO_LIST = "the VM box takes a host list, but this server cannot read a box's list back to check that it holds, so the VM box has no network";
+export const VM_NO_LIST = "the Modal sandbox takes a host list, but this server cannot read a sandbox's list back to check that it holds, so the Modal sandbox has no network";
 /** The VM provider: its box id, which is also its SDK's npm name, the SDK's client class and the token's names. */
 export const VM_PROVIDER = { id: "modal", client: "ModalClient", keys: ["MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET"] } as const;
 const VM = VM_PROVIDER.id;
@@ -52,8 +56,12 @@ export type BoxRegistry = {
  *  the VM provider's SDK (startServe's `fauxVm`, under --faux). */
 export type BoxRegistryOptions = { timeoutMs?: number; vmSdk?: () => Promise<Record<string, unknown>> };
 
-/** The setting that lists the boxes to set up: a comma list of box ids. */
+/** The setting that lists the boxes to set up: a comma list of box ids, empty or `none` for no box. */
 export const BOXES_ENV = "AGENTRUN_BOXES";
+/** The boxes a server sets up when AGENTRUN_BOXES is not set at all: Docker, probed as if listed. */
+export const DEFAULT_BOXES: readonly BoxId[] = ["docker"];
+/** The AGENTRUN_BOXES that sets up no box, as an empty one does. */
+const NO_BOXES = "none";
 /** The VM provider's app, which its sandboxes live in (made when missing). */
 export const BOX_APP_ENV = "AGENTRUN_BOX_APP";
 const DEFAULT_BOX_APP = "agentrun";
@@ -83,9 +91,18 @@ type Probed = { offer: BoxOffer; provider?: BoxProvider; client?: unknown };
 const unavailable = (id: BoxId, reason: string): Probed => ({ offer: { id, available: false, reason } });
 const available = (id: BoxId, provider: BoxProvider, reason?: string, client?: unknown): Probed => ({ offer: { id, available: true, ...(reason ? { reason } : {}) }, provider, ...(client === undefined ? {} : { client }) });
 
-/** The boxes `env` lists in AGENTRUN_BOXES; a name that is no box throws, naming it. */
+/** Whether `env` leaves the boxes to this server's default (DEFAULT_BOXES): AGENTRUN_BOXES is not set at all. */
+export const boxesByDefault = (env: NodeJS.ProcessEnv): boolean => env[BOXES_ENV] === undefined;
+
+/** The boxes `env` lists in AGENTRUN_BOXES, DEFAULT_BOXES when it is not set, none when it is empty or `none`; a name
+ *  that is no box throws, naming it, and so does `none` with another. */
 export function enabledBoxes(env: NodeJS.ProcessEnv): Set<BoxId> {
-  const names = (env[BOXES_ENV] ?? "").split(",").map((name) => name.trim()).filter(Boolean);
+  if (boxesByDefault(env)) return new Set(DEFAULT_BOXES);
+  const names = env[BOXES_ENV]!.split(",").map((name) => name.trim()).filter(Boolean);
+  if (names.includes(NO_BOXES)) {
+    if (names.length > 1) throw new Error(`${BOXES_ENV}=${NO_BOXES} sets up no box, so it names no other: list the boxes to set up, or ${NO_BOXES} alone`);
+    return new Set();
+  }
   const unknown = names.filter((name) => !(BOX_IDS as readonly string[]).includes(name));
   if (unknown.length) throw new Error(`${BOXES_ENV} names ${unknown.join(", ")}, which ${unknown.length === 1 ? "is not a box" : "are not boxes"}: list any of ${BOX_IDS.join(", ")}`);
   return new Set(names as BoxId[]);
@@ -125,7 +142,7 @@ async function bounded(id: BoxId, timeoutMs: number, probe: (signal: AbortSignal
   const late = new Promise<Probed>((resolve) => {
     timer = setTimeout(() => {
       controller.abort();
-      resolve(unavailable(id, `its probe did not finish within ${timeoutMs} ms`));
+      resolve(unavailable(id, id === "docker" ? `Docker isn't answering on this machine (docker version took over ${timeoutMs} ms): start Docker, then restart AgentRun` : `its probe did not finish within ${timeoutMs} ms`));
     }, timeoutMs);
   });
   try {
@@ -167,10 +184,11 @@ const PROBES: Record<Exclude<BoxId, "bwrap">, (env: NodeJS.ProcessEnv, signal: A
         resolve({ ...(error ? { failed: typeof code === "number" ? `exit ${code}` : errorName(error) } : {}), out: String(stdout) });
       }),
     );
-    // The probe runs once, at the start: each fix takes a restart.
-    if (answer.failed === "ENOENT") return unavailable("docker", "no docker command on this server's PATH: install Docker, then restart this server");
-    if (answer.failed) return unavailable("docker", `docker version failed (${answer.failed}): start Docker, or add this server's user to the docker group, then restart this server`);
-    if (!answer.out.trim()) return unavailable("docker", "docker version named no Docker daemon: start Docker, then restart this server");
+    // The probe runs once, at the start: each fix takes a restart. Docker is on by default, so its reason is often a
+    // first-time user's first read: what is wrong in plain words, what the probe saw, then what to do.
+    if (answer.failed === "ENOENT") return unavailable("docker", "Docker isn't running on this machine (no docker command on PATH): install or start Docker, then restart AgentRun");
+    if (answer.failed) return unavailable("docker", `Docker isn't running on this machine, or this user may not use it (docker version failed: ${answer.failed}): start Docker, or add this user to the docker group, then restart AgentRun`);
+    if (!answer.out.trim()) return unavailable("docker", "Docker isn't running on this machine (docker version named no daemon): start Docker, then restart AgentRun");
     return available("docker", boxes.value());
   },
 

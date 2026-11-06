@@ -174,7 +174,7 @@ test("a capped pi run whose auto search is Parallel, under a cap just short of o
   const run = await research(api, "auto-capped", {}, { max_cost_usd: 0.0009 }, ["input_required", "completed"]);
   const paused = (await api("GET", `/runs/${run.runId}`)).body;
   assert.deepEqual([paused.status, paused.state, paused.pending?.kind, paused.pending?.needs_usd], ["input_required", "waiting", "budget", 0.001], JSON.stringify(paused));
-  assert.equal(run.results.web_search, JSON.stringify({ error: "spend_cap_reached: Not sent: the run has spent $0 of its $0.0009 cap, and Parallel's search could cost up to $0.001 (Parallel's list price for a fast search). Raise the cap to at least $0.01 to run it." }));
+  assert.equal(run.results.web_search, JSON.stringify({ error: "spend_cap_reached: Not sent: this run has spent $0 of its $0.0009 cap, and the next step, Parallel's search, could cost up to $0.001 (Parallel's list price for a fast search). Raise the cap to at least $0.01 to continue." }));
   const calls = await seen();
   assert.deepEqual([calls.parallel.slice(checked), calls.exa], [[], []], "nothing sent to Parallel, nor to Exa instead");
 });
@@ -213,5 +213,5 @@ test("a pi run whose model goes through a gateway searches keyless Exa, as claud
   assert.deepEqual((await resolves(api)).web_search, each("unavailable: parallel picked, no PARALLEL_API_KEY"));
   const refused = await api("POST", "/agents/gateway-pi/runs", { input: { content: "Research widgets on the web and write report.md." } });
   assert.deepEqual([refused.status, refused.body.error?.code, refused.body.error?.details?.missing], [409, "agent_not_runnable", { web_search: ["PARALLEL_API_KEY"] }]);
-  assert.match(refused.body.error.message, /web_search does not run here on pi: parallel picked, no PARALLEL_API_KEY/);
+  assert.match(refused.body.error.message, /web_search\ does\ not\ run\ here\ on\ pi:\ parallel\ is\ picked,\ and\ it\ needs\ a\ Parallel\ key:\ save\ one\ in\ Settings\ →\ Tool\ keys\ \(or\ set\ PARALLEL_API_KEY\ where\ the\ server\ starts\)/);
 });
