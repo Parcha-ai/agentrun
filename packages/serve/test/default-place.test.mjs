@@ -246,7 +246,8 @@ test("a revision with no place and bash, saved while docker was there, is refuse
   const refused = await api("POST", "/agents/shell/runs", { input: { content: JSON.stringify({ probe: [{ tool: "bash", args: { command: "echo hi" } }] }) } });
   assert.equal(refused.status, 409, JSON.stringify(refused.body));
   assert.equal(refused.body.error.code, "agent_not_runnable");
-  assert.match(refused.body.error.message, /bash runs only in a box, and this agent names no place, so it runs on the runner, which has no shell/);
+  // The words name why the sandbox is not the default here (default_reason) and both ways out: fix that, or pin the runner.
+  assert.equal(refused.body.error.message, `bash runs only in a box, and this agent names no place, so it runs on the runner, which has no shell, and ${(await placesOf(api)).default_reason}. Do that, or keep this agent on the runner: name "place": {"mode": "runner"} and remove "bash" from definition.tools.`);
   assert.equal((await api("GET", "/runs?agent=shell")).body.runs.length, before, "no run was made");
   assert.deepEqual(docker.execs(), [], "no shell ran anywhere");
 });

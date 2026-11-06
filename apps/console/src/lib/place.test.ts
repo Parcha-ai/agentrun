@@ -14,9 +14,8 @@ describe("places", () => {
   });
 
   it("reads capabilities' places, each box with its availability and the server's reason as given", () => {
-    expect(placesOf({ places: PLACES })).toEqual({ modes: PLACES.modes, default: "runner", boxes: BOXES, defaultPlace: { mode: "runner" } });
     // default_place is the one field: where a new agent goes and where a revision with no place runs.
-    expect(placesOf({ places: { ...PLACES, default_place: { mode: "sandbox", box: "docker" } } })?.default).toBe("sandbox");
+    expect(placesOf({ places: PLACES })).toEqual({ modes: PLACES.modes, boxes: BOXES, defaultPlace: { mode: "runner" } });
     expect(placesOf({ harnesses: [] })).toBeNull();
   });
 

@@ -9,7 +9,7 @@ import { type InputIssue, sentence } from "./errors.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, type HarnessCapability, harnessOffers } from "./harness.js";
 import { chooseModel, llmTiers, type ModelRef, nodeTiers, workflowNodes } from "./model.js";
 import type { BoxOffer } from "./boxes.js";
-import { boxAvailability, placeFix, RUN_BOXES } from "./place.js";
+import { boxAvailability, newAgentPlace, placeFix, RUN_BOXES } from "./place.js";
 import { allows, BOUND_TOOLS, CALL_TOOLS, grantedTools, missingEnv, NODE_TOOLS, toolOf, workflowTools } from "./tools.js";
 import { capabilityOf, DENIED, isUnavailable, NO_PARALLEL_KEY, type Pickable, planeFor, type ToolSettingsMap, whyUnavailable } from "./tool-plane.js";
 import { permissionOf } from "./tool-gate.js";
@@ -94,6 +94,16 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
     // A box's reason says what to do, with no full stop of its own: the sentence ends in one, whatever the reason ends in.
     if (!box?.available) out.push({ field: "definition.place", reason: NOT_SET_UP, message: sentence(`This agent's place is ${place.mode} on ${place.box ?? "no box"}, and this server cannot run it there: ${box?.reason ?? "that is not a box this server has"}`), host: true, ...(place.box ? { box: place.box } : {}) });
   }
+  /** A shell on the runner: a box this server runs in is the fix; with none, why it has none (capabilities'
+   *  default_reason) and both ways out, fixing that or keeping the agent on the runner without the shell. */
+  const shellOnRunner = (tool: string, field: string, named: boolean): Blocker => {
+    const where = named ? "this agent's place is the runner" : "this agent names no place, so it runs on the runner";
+    const box = boxAvailability(boxes).find((b) => RUN_BOXES.includes(b.id) && b.available);
+    if (box) return { field, reason: "not_an_option", message: `${tool} runs only in a box, and ${where}, which has no shell: give it a sandbox place.`, fix: placeFix({ mode: "sandbox", box: box.id }), host: false, tool };
+    const fresh = newAgentPlace(boxes);
+    const why = "reason" in fresh ? fresh.reason : "no box runs execute in is available here";
+    return { field, reason: "not_an_option", message: `${tool} runs only in a box, and ${where}, which has no shell, and ${why}. Do that, or keep this agent on the runner: name "place": {"mode": "runner"} and remove "${tool}" from definition.tools.`, fix: `Remove "${tool}" from definition.tools.`, host: false, tool };
+  };
   if (revision.kind === "agentic") {
     if (!revision.instructions.trim()) out.push({ field: "definition.instructions", reason: "too_short", message: "definition.instructions is empty: an agentic revision needs instructions.", host: false });
     (revision.tools ?? []).forEach((tool, index) => {
@@ -125,7 +135,7 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
       }
       if (!allows(BOUND_TOOLS, tool)) out.push({ field: `definition.tools[${index}]`, reason: "not_an_option", message: `agentrun-serve binds the tools ${BOUND_TOOLS.join(", ")}; ${tool} is not one of them.`, host: false, tool });
       // A shell runs only in a box: no place, or the runner, has none.
-      else if (toolOf(tool)!.sandboxOnly && (place?.mode ?? "runner") === "runner") out.push({ field: `definition.tools[${index}]`, reason: "not_an_option", message: `${tool} runs only in a box, and ${place && !revision.unnamed ? "this agent's place is the runner" : "this agent names no place, so it runs on the runner"}, which has no shell: give it a sandbox place.`, fix: placeFix({ mode: "sandbox", box: RUN_BOXES[0]! }), host: false, tool });
+      else if (toolOf(tool)!.sandboxOnly && (place?.mode ?? "runner") === "runner") out.push(shellOnRunner(tool, `definition.tools[${index}]`, !!place && !revision.unnamed));
       // Its writes into work/ go by path from this machine, and a box's command could swap a link in on their way.
       else if (toolOf(tool)!.runnerOnly && place?.mode === "sandbox") out.push({ field: `definition.tools[${index}]`, reason: "not_an_option", message: `${tool} does not run in a sandbox place yet: it saves files into the run's work/ from this server, outside the box, and a command in the box could point those writes elsewhere on this server. Give it to an agent whose place is the runner.`, fix: `Remove "${tool}" from definition.tools.`, host: false, tool });
       // Another harness gets the host tools only (host-tools.ts: the file tools, fetch_page, web_fetch, web_search and

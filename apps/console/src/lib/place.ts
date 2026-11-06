@@ -3,8 +3,8 @@
 export type Place = { mode: "runner" } | { mode: "sandbox"; box: string };
 export type BoxOffer = { id: string; available: boolean; reason?: string };
 /** `defaultPlace`: the server's `default_place`, the place a NEW agent is given and where a revision that names no place
- *  runs. `default`: its mode, which the editor's picker starts on for an agent that names none. */
-export type Places = { modes: string[]; default: string; boxes: BoxOffer[]; defaultPlace?: Place };
+ *  runs (agentForm.ts defaultPlaceOf). */
+export type Places = { modes: string[]; boxes: BoxOffer[]; defaultPlace?: Place };
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
@@ -23,7 +23,7 @@ export function placesOf(caps: unknown): Places | null {
   const boxes = p.boxes.filter(isObject).filter((b) => typeof b.id === "string")
     .map((b) => ({ id: b.id as string, available: b.available === true, ...(typeof b.reason === "string" ? { reason: b.reason } : {}) }));
   const defaultPlace = placeOf(p.default_place);
-  return { modes: p.modes.filter((m): m is string => typeof m === "string"), default: defaultPlace?.mode ?? "runner", boxes, ...(defaultPlace ? { defaultPlace } : {}) };
+  return { modes: p.modes.filter((m): m is string => typeof m === "string"), boxes, ...(defaultPlace ? { defaultPlace } : {}) };
 }
 
 /** The place a new agent's form starts on: the served default when it is a sandbox; else none, as before (the server

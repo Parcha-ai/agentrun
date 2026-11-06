@@ -12,7 +12,7 @@ import { placesOf } from "@/lib/place";
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 
-const places = placesOf({ places: { modes: ["runner", "sandbox"], default: "runner", boxes: [{ id: "bwrap", available: false, reason: "fixture: no bwrap" }, { id: "docker", available: true }] } });
+const places = placesOf({ places: { modes: ["runner", "sandbox"], boxes: [{ id: "bwrap", available: false, reason: "fixture: no bwrap" }, { id: "docker", available: true }] } });
 const tools = toolOffers([{ name: "read", available: true }, { name: "bash", available: true, sandbox_only: true }]);
 const caps = { harnesses: [{ id: "pi", available: true }], thinking: ["low"], tools, places };
 const agent = (place?: unknown, tools: string[] = ["read"]): Agent => ({

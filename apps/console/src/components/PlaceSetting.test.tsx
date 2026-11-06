@@ -11,7 +11,7 @@ import type { Place, Places } from "@/lib/place";
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 
-const PLACES: Places = { modes: ["runner", "sandbox"], default: "runner", boxes: [{ id: "bwrap", available: false, reason: "fixture: bwrap is not here" }, { id: "docker", available: true }] };
+const PLACES: Places = { modes: ["runner", "sandbox"], boxes: [{ id: "bwrap", available: false, reason: "fixture: bwrap is not here" }, { id: "docker", available: true }] };
 const TOOLS: ToolOffer[] = [{ name: "read", available: true }, { name: "bash", available: true, sandbox_only: true }];
 
 function mount(props: { value?: Place; saved?: unknown; picked?: string[]; places?: Places }) {
@@ -32,7 +32,7 @@ describe("PlaceSetting", () => {
   });
 
   it("opens an agent that names no place where the server runs it: default_place, or the runner for the browser, which runs only there", () => {
-    const docker: Places = { ...PLACES, default: "sandbox", defaultPlace: { mode: "sandbox", box: "docker" } };
+    const docker: Places = { ...PLACES, defaultPlace: { mode: "sandbox", box: "docker" } };
     const boxed = mount({ places: docker });
     expect(boxed.radio("place", "sandbox")!.checked).toBe(true);
     expect(boxed.radio("box", "docker")!.checked).toBe(true);
@@ -76,7 +76,7 @@ describe("PlaceSetting", () => {
 
 describe("PlaceSetting, a server with no box it can run", () => {
   it("keeps the server picked: Sandbox can't be picked, and each box's reason says why", () => {
-    const none: Places = { modes: ["runner", "sandbox"], default: "runner", boxes: [{ id: "bwrap", available: false, reason: "fixture: no bwrap" }, { id: "docker", available: false, reason: "fixture: docker isn't set up" }] };
+    const none: Places = { modes: ["runner", "sandbox"], boxes: [{ id: "bwrap", available: false, reason: "fixture: no bwrap" }, { id: "docker", available: false, reason: "fixture: docker isn't set up" }] };
     const changes: { place: Place }[] = [];
     const host = document.body.appendChild(document.createElement("div"));
     root = createRoot(host);
