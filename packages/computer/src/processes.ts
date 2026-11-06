@@ -43,10 +43,12 @@ export async function readAll(
 /** Lists every process the daemon holds, in start order, page by page. */
 export async function listProcesses(client: DaemonClient, options: { signal?: AbortSignal } = {}): Promise<Result<ProcessInfo[]>> {
 	const processes: ProcessInfo[] = [];
+	let params: { from?: number } = {};
 	for (;;) {
-		const page = await client.call("process.list", { offset: processes.length }, options);
+		const page = await client.call("process.list", params, options);
 		if (!page.ok) return page;
 		processes.push(...page.value.processes);
 		if (!page.value.truncated) return ok(processes);
+		params = { from: page.value.next };
 	}
 }

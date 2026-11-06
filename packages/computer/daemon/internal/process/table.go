@@ -28,6 +28,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"sync"
 	"syscall"
@@ -52,13 +53,15 @@ const (
 var signals = map[string]syscall.Signal{"TERM": syscall.SIGTERM, "INT": syscall.SIGINT, "KILL": syscall.SIGKILL, "HUP": syscall.SIGHUP}
 
 // Table is every process the daemon holds, shared by all its connections. It holds at most MaxEntries, running or
-// ended; a start into a full table drops the process that ended first, and is refused as limit when all of them run.
+// ended; a start into a full table drops the process that ended first once the new one runs, and is refused as limit
+// when all of them run.
 type Table struct {
 	opts    Options
 	startMu sync.Mutex
 	mu      sync.Mutex
+	// procs is in start order, which is seq order.
 	procs   []*proc
-	nextID  int
+	lastSeq int64
 }
 
 func NewTable(opts Options) *Table {
@@ -72,14 +75,17 @@ func NewTable(opts Options) *Table {
 }
 
 type proc struct {
-	id      string
+	id string
+	// seq is the number in id: 1 for the table's first start, and up by one for each start since.
+	seq     int64
 	pid     int
 	argv    []string
 	pty     bool
 	started time.Time
 	g       *execrun.Guarded
 
-	writeMu sync.Mutex
+	// writing is a lock on input, held by one write at a time; a channel so that a write can stop waiting for it.
+	writing chan struct{}
 	// input is stdin or the terminal; nil when the process takes none, or no longer does.
 	input     *os.File
 	takesNone bool
@@ -106,6 +112,9 @@ func (p *proc) notify() {
 	p.changed = make(chan struct{})
 }
 
+func (p *proc) lockInput()   { p.writing <- struct{}{} }
+func (p *proc) unlockInput() { <-p.writing }
+
 func (p *proc) hasEnded() bool {
 	select {
 	case <-p.ended:
@@ -123,10 +132,10 @@ func (t *Table) Start(params StartParams) (StartResult, error) {
 	}
 	t.startMu.Lock()
 	defer t.startMu.Unlock()
-	if err := t.makeRoom(); err != nil {
+	if err := t.checkRoom(); err != nil {
 		return StartResult{}, err
 	}
-	p := &proc{argv: params.Argv, pty: params.Pty != nil, streams: map[string]*stream{}, changed: make(chan struct{}), ended: make(chan struct{})}
+	p := &proc{argv: params.Argv, pty: params.Pty != nil, writing: make(chan struct{}, 1), streams: map[string]*stream{}, changed: make(chan struct{}), ended: make(chan struct{})}
 	var stdin, stdout, stderr *os.File
 	var theirs []*os.File
 	if params.Pty != nil {
@@ -169,10 +178,15 @@ func (t *Table) Start(params StartParams) (StartResult, error) {
 		return StartResult{}, err
 	}
 	t.mu.Lock()
-	t.nextID++
-	p.id, p.pid, p.g, p.started = "p"+strconv.Itoa(t.nextID), g.Pid, g, time.Now()
+	dropped := t.dropOldestEnded()
+	t.lastSeq++
+	p.seq, p.pid, p.g, p.started = t.lastSeq, g.Pid, g, time.Now()
+	p.id = "p" + strconv.FormatInt(p.seq, 10)
 	t.procs = append(t.procs, p)
 	t.mu.Unlock()
+	if dropped != nil {
+		dropped.release()
+	}
 	for _, s := range p.streams {
 		go p.collect(s)
 	}
@@ -180,13 +194,19 @@ func (t *Table) Start(params StartParams) (StartResult, error) {
 	return StartResult{ID: p.id, Pid: p.pid}, nil
 }
 
-// makeRoom drops the process that ended first when the table is full, or refuses the start when every one runs.
-func (t *Table) makeRoom() error {
+// checkRoom refuses a start into a full table whose every process runs. It drops nothing: a start drops an ended
+// process only once its own program runs. Hold t.startMu, so that no start fills the room between the two.
+func (t *Table) checkRoom() error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if len(t.procs) < t.opts.MaxEntries {
+	if len(t.procs) < t.opts.MaxEntries || t.oldestEnded() >= 0 {
 		return nil
 	}
+	return rpc.Errorf(rpc.KindLimit, "%d processes are running, the most this daemon holds: end one first", len(t.procs))
+}
+
+// oldestEnded is the index of the process that ended first, or -1 when every one runs. Hold t.mu.
+func (t *Table) oldestEnded() int {
 	oldest := -1
 	for i, p := range t.procs {
 		p.mu.Lock()
@@ -195,12 +215,19 @@ func (t *Table) makeRoom() error {
 		}
 		p.mu.Unlock()
 	}
-	if oldest < 0 {
-		return rpc.Errorf(rpc.KindLimit, "%d processes are running, the most this daemon holds: end one first", len(t.procs))
+	return oldest
+}
+
+// dropOldestEnded takes the process that ended first out of a full table, for the caller to release once it has let
+// go of t.mu. Hold t.mu and t.startMu, after checkRoom: a process that has ended never runs again, so there is one.
+func (t *Table) dropOldestEnded() *proc {
+	if len(t.procs) < t.opts.MaxEntries {
+		return nil
 	}
-	t.procs[oldest].release()
+	oldest := t.oldestEnded()
+	p := t.procs[oldest]
 	t.procs = append(t.procs[:oldest], t.procs[oldest+1:]...)
-	return nil
+	return p
 }
 
 // collect reads one stream into its ring until the stream ends: every writer closed it, or (for a terminal) EIO.
@@ -218,7 +245,7 @@ func (p *proc) collect(s *stream) {
 			break
 		}
 	}
-	p.writeMu.Lock()
+	p.lockInput()
 	p.mu.Lock()
 	_ = s.reader.Close()
 	if p.pty {
@@ -227,7 +254,7 @@ func (p *proc) collect(s *stream) {
 	s.eof = true
 	p.notify()
 	p.mu.Unlock()
-	p.writeMu.Unlock()
+	p.unlockInput()
 }
 
 // watch records how the process ended once its guard is done, and closes its stdin.
@@ -235,12 +262,12 @@ func (p *proc) watch() {
 	<-p.g.Done()
 	code, signal, _ := p.g.Exit()
 	p.g.Close()
-	p.writeMu.Lock()
+	p.lockInput()
 	if !p.pty && p.input != nil {
 		_ = p.input.Close()
 		p.input = nil
 	}
-	p.writeMu.Unlock()
+	p.unlockInput()
 	p.mu.Lock()
 	p.exitCode, p.signal, p.endedAt = code, signal, time.Now()
 	close(p.ended)
@@ -250,8 +277,8 @@ func (p *proc) watch() {
 
 // release closes what the daemon holds of a process that is dropped from the table, or never started.
 func (p *proc) release() {
-	p.writeMu.Lock()
-	defer p.writeMu.Unlock()
+	p.lockInput()
+	defer p.unlockInput()
 	if p.input != nil {
 		_ = p.input.Close()
 	}
@@ -337,8 +364,21 @@ func (t *Table) Write(ctx context.Context, params WriteParams) (Empty, error) {
 	if p.pty && params.Close {
 		return Empty{}, rpc.Errorf(rpc.KindInvalid, `a terminal has no stdin to close: write "\x04" for the end of input, or signal HUP`)
 	}
-	p.writeMu.Lock()
-	defer p.writeMu.Unlock()
+	// The bound counts from here: a write's wait for its turn, behind another write to the same process, is in it.
+	by := time.Now().Add(writeTimeout)
+	turn := time.NewTimer(writeTimeout)
+	defer turn.Stop()
+	select {
+	case p.writing <- struct{}{}:
+	case <-ctx.Done():
+		return Empty{}, rpc.Errorf(rpc.KindAborted, "process.write was cancelled while an earlier write to process %s was in progress", p.id)
+	case <-turn.C:
+		return Empty{}, rpc.Errorf(rpc.KindTimeout, "process %s did not read its input: an earlier write still waited on it after %v, and none of this one's %d bytes were written", p.id, writeTimeout, len(params.Data))
+	}
+	defer p.unlockInput()
+	if ctx.Err() != nil {
+		return Empty{}, rpc.Errorf(rpc.KindAborted, "process.write was cancelled before it began")
+	}
 	switch {
 	case p.takesNone:
 		return Empty{}, rpc.Errorf(rpc.KindInvalid, "process %s was started without stdin", p.id)
@@ -348,10 +388,17 @@ func (t *Table) Write(ctx context.Context, params WriteParams) (Empty, error) {
 		return Empty{}, rpc.Errorf(rpc.KindInvalid, "process %s's stdin is closed", p.id)
 	}
 	if len(params.Data) > 0 {
-		_ = p.input.SetWriteDeadline(time.Now().Add(writeTimeout))
-		stop := context.AfterFunc(ctx, func() { _ = p.input.SetWriteDeadline(time.Now()) })
+		_ = p.input.SetWriteDeadline(by)
+		cut := make(chan struct{})
+		stop := context.AfterFunc(ctx, func() {
+			defer close(cut)
+			_ = p.input.SetWriteDeadline(time.Now())
+		})
 		n, err := p.input.Write(params.Data)
-		stop()
+		if !stop() {
+			// The cancel came: its deadline must be set before the next write sets its own.
+			<-cut
+		}
 		switch {
 		case err == nil:
 		case ctx.Err() != nil:
@@ -408,19 +455,21 @@ func (t *Table) Resize(params ResizeParams) (Empty, error) {
 	return Empty{}, setSize(p.terminal, size)
 }
 
-// List answers the processes in start order from offset, as many as fit maxListBytes of JSON; truncated says more
-// follow. An argv over maxListedArgv of JSON is listed by its first arguments that fit, with ArgvClipped set.
+// List answers the processes in start order whose seq is from on, as many as fit maxListBytes of JSON; truncated says
+// more follow, from next. Paging by seq, not by place in the table, a process dropped between two pages moves no other
+// past the cursor. An argv over maxListedArgv of JSON is listed by its first arguments that fit, with ArgvClipped set.
 func (t *Table) List(params ListParams) (ListResult, error) {
-	offset := 0
+	from := int64(0)
 	if params.From != nil {
-		if offset = int(*params.From); offset < 0 {
-			return ListResult{}, rpc.Errorf(rpc.KindInvalid, "from must be 0 or more")
+		if from = *params.From; from < 0 {
+			return ListResult{}, rpc.Errorf(rpc.KindInvalid, "from must be 0 or more: the next of the page before")
 		}
 	}
 	t.mu.Lock()
-	procs := append([]*proc(nil), t.procs[min(offset, len(t.procs)):]...)
+	first := sort.Search(len(t.procs), func(i int) bool { return t.procs[i].seq >= from })
+	procs := append([]*proc(nil), t.procs[first:]...)
 	t.mu.Unlock()
-	res := ListResult{Processes: []Info{}}
+	res := ListResult{Processes: []Info{}, Next: from}
 	size := 0
 	for _, p := range procs {
 		p.mu.Lock()
@@ -441,8 +490,8 @@ func (t *Table) List(params ListParams) (ListResult, error) {
 			break
 		}
 		res.Processes = append(res.Processes, info)
+		res.Next = p.seq + 1
 	}
-	res.Next = int64(offset + len(res.Processes))
 	return res, nil
 }
 
