@@ -569,6 +569,14 @@ const micro = (usd: number): number => Math.round(usd * 1e6) / 1e6;
 const microUp = (usd: number): number => Math.ceil(usd * 1e6 - 1e-9) / 1e6;
 /** For tests only: how long each launch path waits where it refreshes a run's MCP OAuth tokens (mcpFresh). */
 export const REFRESH_DELAY_ENV = "AGENTRUN_SERVE_TEST_REFRESH_DELAY_MS";
+/** The refresh step's test-only wait, in ms: none unless the server runs under a test runner (NODE_TEST_CONTEXT, or
+ *  NODE_ENV=test, as the stand-ins' guards read it), so a value set by mistake in a server holds no launch; within one,
+ *  REFRESH_DELAY_ENV's value, at most a second. */
+export function refreshDelayMs(env: NodeJS.ProcessEnv = process.env): number {
+  if (!env.NODE_TEST_CONTEXT && env.NODE_ENV !== "test") return 0;
+  const ms = Number(env[REFRESH_DELAY_ENV]);
+  return Number.isFinite(ms) && ms > 0 ? Math.min(ms, 1_000) : 0;
+}
 /** How many tries a raised run's follow-up gets, and the waits between them, before the run fails with why. */
 const CONTINUE_TRIES = 3;
 const CONTINUE_RETRY_MS = [1_000, 3_000];
@@ -2167,10 +2175,9 @@ export class Runs {
    *  refresh token. Never on a path that only reaches a live process, nor on a stop's: an authorization server that is
    *  slow to answer never holds an abort. */
   private mcpFresh(run: Run): Promise<void> | undefined {
-    // A test's seam, unset in a server (REFRESH_DELAY_ENV): every launch path waits this long here, as one whose
-    // authorization server is slow to answer does.
-    // Capped, so a stray value never holds a launch for long; inert unless set.
-    const delay = Math.min(Number(process.env[REFRESH_DELAY_ENV]) || 0, 1_000);
+    // A test's seam (refreshDelayMs): every launch path waits this long here, as one whose authorization server is slow
+    // to answer does. Nothing outside a test runner.
+    const delay = refreshDelayMs();
     if (delay > 0) return new Promise<void>((resolve) => setTimeout(resolve, delay)).then(() => this.mcpFreshNow(run));
     return this.mcpFreshNow(run);
   }
