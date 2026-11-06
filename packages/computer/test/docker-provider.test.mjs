@@ -9,6 +9,8 @@ import { DockerProvider } from "../dist/index.js";
 
 const SPEC = { image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none" };
 const ALLOWLIST = "a Docker computer cannot enforce an allowlist yet; ask for network none or open";
+/** The user a computer runs as when neither the spec nor the provider names one: this process's, or 1000:1000 for root. */
+const DEFAULT_USER = process.getuid() !== 0 ? `${process.getuid()}:${process.getgid()}` : "1000:1000";
 
 const dirs = [];
 after(() => {
@@ -16,7 +18,7 @@ after(() => {
 });
 
 /** A fake docker: `running` is what inspect reports, `gone` makes stop and rm answer "No such container". */
-function fakeDocker({ running = true, gone = false } = {}) {
+function fakeDocker({ running = true, gone = false, user } = {}) {
 	const dir = mkdtempSync(join(tmpdir(), "computer-fake-docker-"));
 	dirs.push(dir);
 	const log = join(dir, "calls.jsonl");
@@ -57,7 +59,7 @@ switch (args[0]) {
 		{ mode: 0o755 },
 	);
 	const calls = () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)) : []);
-	return { provider: new DockerProvider({ daemonPath, docker: program }), calls, daemonPath };
+	return { provider: new DockerProvider({ daemonPath, docker: program, ...(user === undefined ? {} : { user }) }), calls, daemonPath };
 }
 
 /** The value after each occurrence of a flag. */
@@ -155,12 +157,11 @@ test("create() runs a hardened container with the daemon as its first process an
 	assert.ok(Math.abs(Date.parse(deadline) - (before + SPEC.lifetimeMs)) < 5000);
 	assert.deepEqual(valuesOf(run, "--cap-drop"), ["ALL"]);
 	assert.deepEqual(valuesOf(run, "--security-opt"), ["no-new-privileges"]);
-	assert.deepEqual(valuesOf(run, "--pids-limit"), ["4096"]);
 	assert.deepEqual(valuesOf(run, "--network"), ["none"]);
 	assert.deepEqual(valuesOf(run, "--mount"), [`type=bind,src=${daemonPath},dst=/opt/agentrun/computerd,readonly`]);
 	assert.deepEqual(valuesOf(run, "--entrypoint"), ["/opt/agentrun/computerd"]);
-	assert.deepEqual(run.slice(-2), ["debian:bookworm-slim", "init"]);
-	for (const flag of ["--cpus", "--memory", "--workdir"]) assert.equal(run.includes(flag), false, `${flag} only when asked`);
+	assert.deepEqual(run.slice(-4), ["debian:bookworm-slim", "init", "--deadline", deadline], "PID 1 ends the computer at the deadline the label holds");
+	assert.equal(run.includes("--workdir"), false, "--workdir only when asked");
 	assert.deepEqual(inspect.slice(0, 1), ["inspect"]);
 	assert.equal(inspect.at(-1), name);
 });
@@ -173,8 +174,58 @@ test("create() passes the sizes, an open network and the workdir", async () => {
 	assert.deepEqual(valuesOf(run, "--network"), ["bridge"]);
 	assert.deepEqual(valuesOf(run, "--cpus"), ["1.5"]);
 	assert.deepEqual(valuesOf(run, "--memory"), ["512m"]);
+	assert.deepEqual(valuesOf(run, "--memory-swap"), ["512m"]);
 	assert.deepEqual(valuesOf(run, "--pids-limit"), ["64"]);
 	assert.deepEqual(valuesOf(run, "--workdir"), ["/work"]);
+});
+
+test("create() with no sizes gives serve's: 2 CPUs, 4 GiB with swap the same, 1024 pids", async () => {
+	const { provider, calls } = fakeDocker();
+	assert.equal((await provider.create(SPEC)).ok, true);
+	const [run] = calls();
+	assert.deepEqual(valuesOf(run, "--cpus"), ["2"]);
+	assert.deepEqual(valuesOf(run, "--memory"), ["4096m"]);
+	assert.deepEqual(valuesOf(run, "--memory-swap"), ["4096m"]);
+	assert.deepEqual(valuesOf(run, "--pids-limit"), ["1024"]);
+});
+
+test("create() runs a computer as a non-root user unless its spec asks for root", async () => {
+	const userOf = async (spec, options) => {
+		const { provider, calls } = fakeDocker(options);
+		const result = await provider.create(spec);
+		assert.equal(result.ok, true, JSON.stringify(result));
+		return valuesOf(calls()[0], "--user");
+	};
+	assert.notEqual(DEFAULT_USER.split(":")[0], "0");
+	assert.deepEqual(await userOf(SPEC), [DEFAULT_USER]);
+	assert.deepEqual(await userOf(SPEC, { user: "1234:5678" }), ["1234:5678"]);
+	assert.deepEqual(await userOf(SPEC, { user: "1234" }), ["1234:1234"], "a uid alone is its own gid, never root's group 0");
+	assert.deepEqual(await userOf({ ...SPEC, user: "2000:3000" }, { user: "1234:5678" }), ["2000:3000"], "the spec wins");
+	assert.deepEqual(await userOf({ ...SPEC, user: "2000" }), ["2000:2000"]);
+	assert.deepEqual(await userOf({ ...SPEC, user: "0" }), ["0:0"]);
+	assert.deepEqual(await userOf({ ...SPEC, user: "0:0" }), ["0:0"]);
+});
+
+test("check() takes a user as numbers, uid or uid:gid, and refuses a name in words", () => {
+	const { provider } = fakeDocker();
+	for (const user of ["0", "0:0", "1000", "1000:1000", "65534:65534", "4294967294"]) assert.deepEqual(provider.check({ ...SPEC, user }), [], user);
+	for (const user of ["root", "nobody:nogroup", "1000:users", "", "1000:", ":1000", "-1", "1.5", "1000:1000:1000", "4294967295", " 1000", 1000, null]) {
+		const refusals = provider.check({ ...SPEC, user });
+		assert.deepEqual(refusals.map((r) => r.field), ["user"], JSON.stringify(user));
+		assert.match(refusals[0].message, /uid or uid:gid in numbers/);
+	}
+	assert.match(provider.check({ ...SPEC, user: "root" })[0].message, /name.*image may not have/);
+});
+
+test("a provider refuses root, or a user that is not numbers, as its default: root is asked for per computer, in the spec", () => {
+	const daemonPath = fakeDocker().daemonPath;
+	for (const user of ["0", "0:0", "0:1000", "00"]) {
+		assert.throws(() => new DockerProvider({ daemonPath, user }), /root.*spec/, user);
+	}
+	for (const user of ["root", "1000:", "x"]) {
+		assert.throws(() => new DockerProvider({ daemonPath, user }), /uid or uid:gid in numbers/, user);
+	}
+	assert.ok(new DockerProvider({ daemonPath, user: "1000:1000" }));
 });
 
 test("create() removes a container that is not running and says why", async () => {

@@ -12,6 +12,9 @@ const LIVE = process.env.AGENTRUN_COMPUTER_LIVE_DOCKER === "1";
 const IMAGE = "debian:bookworm-slim";
 const docker = (...args) => execFileSync("docker", args, { encoding: "utf8" });
 const decode = (base64) => Buffer.from(base64, "base64").toString("utf8");
+/** The provider's default user: this process's, or 1000:1000 when this process is root. */
+const DEFAULT_USER = process.getuid() !== 0 ? `${process.getuid()}:${process.getgid()}` : "1000:1000";
+const NO_CAPABILITIES = "0000000000000000";
 
 describe("run a command in a Docker computer", { skip: LIVE ? false : "set AGENTRUN_COMPUTER_LIVE_DOCKER=1 to run on real Docker" }, () => {
 	const made = [];
@@ -57,20 +60,24 @@ describe("run a command in a Docker computer", { skip: LIVE ? false : "set AGENT
 		assert.match(ref.name, /^computer-[0-9a-f]{12}$/);
 	});
 
-	it("is hardened as asked: no capabilities, no new privileges, no network, the daemon read-only, a deadline", () => {
+	it("is hardened as asked: a non-root user, no capabilities, no new privileges, no network, serve's sizes, the daemon read-only, a deadline", () => {
 		const [inspected] = JSON.parse(docker("inspect", ref.name));
 		assert.equal(inspected.State.Running, true);
+		assert.equal(inspected.Config.User, DEFAULT_USER);
 		assert.deepEqual(inspected.HostConfig.CapDrop, ["ALL"]);
 		assert.ok(inspected.HostConfig.SecurityOpt.includes("no-new-privileges"), JSON.stringify(inspected.HostConfig.SecurityOpt));
 		assert.equal(inspected.HostConfig.NetworkMode, "none");
-		assert.equal(inspected.HostConfig.PidsLimit, 4096);
+		assert.equal(inspected.HostConfig.PidsLimit, 1024);
+		assert.equal(inspected.HostConfig.Memory, 4 * 1024 ** 3);
+		assert.equal(inspected.HostConfig.MemorySwap, 4 * 1024 ** 3);
+		assert.equal(inspected.HostConfig.NanoCpus, 2e9);
 		assert.equal(inspected.HostConfig.AutoRemove, false);
 		const mount = inspected.Mounts.find((m) => m.Destination === "/opt/agentrun/computerd");
 		assert.ok(mount, "the daemon is mounted");
 		assert.equal(mount.RW, false);
 		assert.deepEqual(inspected.Config.Entrypoint, ["/opt/agentrun/computerd"]);
-		assert.deepEqual(inspected.Config.Cmd, ["init"]);
 		const labels = inspected.Config.Labels;
+		assert.deepEqual(inspected.Config.Cmd, ["init", "--deadline", labels["agentrun.computer.deadline"]]);
 		assert.equal(labels["agentrun.computer"], "1");
 		const deadline = Date.parse(labels["agentrun.computer.deadline"]);
 		assert.ok(deadline > Date.now() + 9 * 60_000 && deadline <= Date.now() + 10 * 60_000, labels["agentrun.computer.deadline"]);
@@ -109,6 +116,16 @@ describe("run a command in a Docker computer", { skip: LIVE ? false : "set AGENT
 	it("has no network", async () => {
 		const result = await run(["sh", "-c", "ls /sys/class/net"]);
 		assert.deepEqual(result.out.split("\n").filter(Boolean), ["lo"]);
+	});
+
+	it("runs commands as the default non-root user with no capability: effective, permitted or bounding", async () => {
+		const [uid, gid] = DEFAULT_USER.split(":");
+		assert.equal((await run(["id", "-u"])).out.trim(), uid);
+		assert.equal((await run(["id", "-g"])).out.trim(), gid);
+		const status = (await run(["cat", "/proc/self/status"])).out;
+		for (const set of ["CapEff", "CapPrm", "CapBnd"]) assert.match(status, new RegExp(`^${set}:\\t${NO_CAPABILITIES}$`, "m"), set);
+		const init = (await run(["cat", "/proc/1/status"])).out;
+		assert.match(init, new RegExp(`^Uid:\\t${uid}\\t`, "m"), "PID 1, the daemon, is not root either");
 	});
 
 	it("cannot switch users with every capability dropped, and says so", async () => {
@@ -167,6 +184,45 @@ describe("run a command in a Docker computer", { skip: LIVE ? false : "set AGENT
 		assert.deepEqual(await provider.release(ref, "delete"), { ok: true, value: undefined });
 		assert.deepEqual(await provider.release(ref, "delete"), { ok: true, value: undefined });
 		assert.equal(ours().includes(ref.name), false);
+	});
+
+	it("runs as root only when the spec asks, and root has no capability either", async () => {
+		const created = await provider.create({ image: IMAGE, lifetimeMs: 10 * 60_000, network: "none", user: "0", labels: { "agentrun.test": "run-command" } });
+		assert.equal(created.ok, true, JSON.stringify(created));
+		made.push(created.value.name);
+		const [inspected] = JSON.parse(docker("inspect", created.value.name));
+		assert.equal(inspected.Config.User, "0:0");
+		const connected = await provider.connect(created.value);
+		assert.equal(connected.ok, true, JSON.stringify(connected));
+		try {
+			const call = async (argv) => {
+				const result = await connected.value.client.call("exec.run", { argv, timeoutMs: 20_000 });
+				assert.equal(result.ok, true, JSON.stringify(result));
+				return decode(result.value.stdout);
+			};
+			assert.equal((await call(["id", "-u"])).trim(), "0");
+			const status = await call(["cat", "/proc/self/status"]);
+			for (const set of ["CapEff", "CapPrm", "CapBnd"]) assert.match(status, new RegExp(`^${set}:\\t${NO_CAPABILITIES}$`, "m"), set);
+		} finally {
+			await connected.value.close();
+		}
+		assert.deepEqual(await provider.release(created.value, "delete"), { ok: true, value: undefined });
+	});
+
+	it("ends itself at its deadline: PID 1 exits 0 with no janitor", async () => {
+		const created = await provider.create({ image: IMAGE, lifetimeMs: 3000, network: "none", labels: { "agentrun.test": "run-command" } });
+		assert.equal(created.ok, true, JSON.stringify(created));
+		made.push(created.value.name);
+		const bound = Date.now() + 60_000;
+		let state;
+		do {
+			[{ State: state }] = JSON.parse(docker("inspect", created.value.name));
+			if (!state.Running) break;
+			await new Promise((resolve) => setTimeout(resolve, 500));
+		} while (Date.now() < bound);
+		assert.equal(state.Running, false, "still running 60 s after a 3 s lifetime");
+		assert.equal(state.ExitCode, 0);
+		assert.deepEqual(await provider.release(created.value, "delete"), { ok: true, value: undefined });
 	});
 
 	it("refuses an allowlist and makes no container", async () => {
