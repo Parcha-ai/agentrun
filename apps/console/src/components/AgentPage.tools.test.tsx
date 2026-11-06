@@ -76,6 +76,46 @@ describe("AgentPage, the agent's tools", () => {
     expect(reads.length).toBeGreaterThanOrEqual(3);
   });
 
+  it("a save whose re-read fails shows the saved setting at once, says the page couldn't refresh, and Retry reads it again", async () => {
+    // The page's read and the switch's read before its save answer; the read after the save fails; Retry's answers.
+    let current: Agent = { ...agentFixture("invoice-checker"), tools: [WEB_FETCH, BASH] };
+    let reads = 0;
+    const v2 = {
+      getAgent: async () => { if (++reads === 3) throw new Error("the network went away"); return { agent: current, etag: '"r1"' }; },
+      listAgentRuns: async () => ({ runs: [], next_cursor: null }),
+      statsOver: async () => { throw new Error("no stats here"); },
+      agentLearning: async () => EMPTY,
+      updateDefinition: async (_id: string, body: { definition: Agent["definition"] }) => {
+        const { tools: _served, ...saved } = { ...current, revision: "r2", revisions: current.revisions + 1, definition: body.definition };
+        // What the server serves once the save is in: here its tools as Retry will read them.
+        current = { ...saved, tools: [BASH] };
+        return { agent: saved, etag: '"r2"' };
+      },
+    };
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(AgentPage, { v2: v2 as never, agentId: current.agent_id, go: () => {}, tab: "learning", learning: "on" })));
+    const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
+    await settle();
+    const toolsShown = () => {
+      const facts = host.querySelector('dl[aria-label="Current revision"]')!;
+      return [...[...facts.querySelectorAll("dt")].find((t) => t.textContent === "Tools")!.nextElementSibling!.querySelectorAll("li")].map((li) => li.textContent);
+    };
+    expect(host.querySelector('[role="switch"]')!.getAttribute("aria-checked")).toBe("false");
+    await act(async () => { (host.querySelector('[role="switch"]') as HTMLButtonElement).click(); });
+    await settle();
+    // The save went in: its setting shows, and the tools shown before stay until a read brings the server's.
+    expect(host.querySelector('[role="switch"]')!.getAttribute("aria-checked")).toBe("true");
+    expect(toolsShown()).toEqual(["web_fetch · Parallel · ask", "bash · allow"]);
+    const alert = host.querySelector('[role="alert"]');
+    expect(alert?.textContent).toContain("Couldn't refresh this agent.");
+    const retry = [...alert!.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Retry")!;
+    await act(async () => { retry.click(); });
+    await settle();
+    expect(toolsShown()).toEqual(["bash · allow"]);
+    expect(host.querySelector('[role="alert"]')).toBeNull();
+  });
+
   it("a workflow has no Tools fact", async () => {
     const { dd } = await open({ ...agentFixture("lead-scorer"), tools: [] });
     expect(dd).toBeNull();
