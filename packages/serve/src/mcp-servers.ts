@@ -24,6 +24,8 @@ export const MCP_SERVER_NAME = /^[a-z][a-z0-9-]{0,31}$/;
 export const RESERVED_MCP_NAMES: readonly string[] = ["hands", "monid"];
 export const MCP_AUTH_TYPES = ["none", "bearer", "headers", "oauth"] as const;
 /** A run's launch refreshes an OAuth access token that expires within this. */
+/** Why an access token past its expiry is not handed over when its refresh got no answer: try again later. */
+export const SIGN_IN_SERVER_SILENT = "the sign-in server didn't answer; try again";
 export const REFRESH_MARGIN_MS = 5 * 60_000;
 /** How long a stop waits for the refreshes and code exchanges it aborted. */
 const CLOSE_MS = 2_000;
@@ -262,13 +264,18 @@ export class McpServers {
     const kept = this.saved(name);
     if (!kept || kept.auth.type === "none") return undefined;
     if (kept.auth.oauth?.expired) return { unopened: `its sign-in expired or was revoked: ${SIGN_IN_AGAIN}` };
+    // An access token past its expiry whose refresh got no answer (freshen kept the refresh token for the next launch):
+    // never handed over, so the server's 401 never reads as a sign-in to make again.
+    const until = kept.auth.type === "oauth" && kept.auth.oauth?.expires_at ? Date.parse(kept.auth.oauth.expires_at) : NaN;
+    if (until <= Date.now()) return { unopened: SIGN_IN_SERVER_SILENT };
     const opened = this.open(name, kept);
     // Tagged, never told apart by a key a saved header could also have (`unopened` is a header name like any other).
     if ("headers" in opened) return { headers: opened.headers };
     return { unopened: opened.unreadable === "seal_key_missing" ? `this server was handed no seal key, ${SEAL_KEY_ENV}` : "sealed under another seal key, or damaged" };
   }
 
-  /** An OAuth server's token set refreshed when its access token expires within `margin`. A refusal (revoked, expired)
+  /** An OAuth server's token set refreshed when its access token expires within `margin`. Tried twice when its
+   *  authorization server does not answer, which writes nothing. A refusal (revoked, expired)
    *  marks the sign-in expired; an authorization server out of reach leaves it as it is. It runs on exactly these
    *  paths: before a run's process is spawned (runs.ts mcpFresh: a start, a reopen, a relaunch after a crash, a
    *  message that brings the process up, an approval's answer that does), and before a preview by name, a PUT that keeps the token set, and a POST
@@ -286,7 +293,8 @@ export class McpServers {
     const run = (async () => {
       let next: TokenSet | undefined;
       let no = !set.tokens.refresh_token && !!set.expires_at && Date.parse(set.expires_at) <= Date.now();
-      if (set.tokens.refresh_token) {
+      // Tried twice when the authorization server does not answer (a timeout, a 5xx, the network): only a refusal is final.
+      for (let tries = 0; set.tokens.refresh_token && !next && !no && tries < 2 && !this.stopped.signal.aborted; tries++) {
         try {
           next = await refreshed(set, kept.url, this.stopped.signal, this.network);
         } catch (error) {
