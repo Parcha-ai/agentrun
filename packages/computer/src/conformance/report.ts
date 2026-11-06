@@ -47,6 +47,7 @@ export function formatReport(report: ConformanceReport): string {
 		const [first = "", ...rest] = wrap(notRun);
 		lines.push(`core ${"not run".padEnd(9)} ${first}`, ...rest.map((more) => `${INDENT}${more}`));
 	}
+	for (const note of report.notes ?? []) lines.push(`note: ${note}`);
 	const core = results.filter((r) => r.level === "core");
 	const full = results.filter((r) => r.level === "full");
 	const passed = (rs: CaseResult[]) => rs.filter((r) => r.status === "pass").length;

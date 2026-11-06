@@ -74,6 +74,17 @@ export interface DaytonaProviderOptions {
 	target?: string;
 	/** Who the daemon runs as, uid:gid in numbers, never root. Default 1000:1000. */
 	daemonUser?: string;
+	/**
+	 * Daytona's autoStopInterval: minutes without outside activity after which Daytona stops the sandbox, whatever runs in
+	 * it; 0 (default) is never. A whole number, 0 or more.
+	 */
+	autoStopMinutes?: number;
+	/**
+	 * Daytona's autoDeleteInterval: minutes a sandbox may stay stopped before Daytona deletes it; 0 deletes it as soon as it
+	 * stops, so a stopped computer is never kept. A whole number, 0 or more; unset, Daytona never deletes a stopped one
+	 * (-1 is sent) and the TTL ends it.
+	 */
+	autoDeleteMinutes?: number;
 	/** For tests: every request goes through it. Default the global fetch. */
 	fetch?: typeof fetch;
 	/** For tests: every log stream opens through it. Default Node's global WebSocket. */
@@ -120,10 +131,16 @@ interface CallInit {
 	timeoutMs?: number;
 	/** Retry no answer, 429 and 5xx: only for a call that may run twice. */
 	retry?: boolean;
+	/** Any answer below 500 but 429 is a value, with its status, not a failure. */
+	anyStatus?: boolean;
 }
 
 const VERSION: string = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 const DEFAULT_API_URL = "https://app.daytona.io/api";
+/** The image that asks for Daytona's default snapshot: the create sends no snapshot field. */
+export const DAYTONA_DEFAULT_SNAPSHOT = "default";
+/** autoDeleteInterval when autoDeleteMinutes is unset: negative is disabled. */
+const NO_AUTO_DELETE = -1;
 const DEFAULTS: DaytonaTimeouts = {
 	requestMs: 30_000,
 	createMs: 120_000,
@@ -397,7 +414,7 @@ class Rest {
 					signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
 				});
 				const bytes = new Uint8Array(await response.arrayBuffer());
-				if (response.ok) return ok({ status: response.status, bytes });
+				if (response.ok || (init.anyStatus === true && response.status < 500 && response.status !== 429)) return ok({ status: response.status, bytes });
 				const text = decoder.decode(bytes).replace(/\s+/g, " ").slice(0, 300);
 				retryable = response.status === 429 || response.status >= 500;
 				failure = { code: codeOf(response.status, text), message: `${what}: ${response.status} ${text}` };
@@ -469,21 +486,24 @@ async function daemonDrift(connection: ComputerConnection, expected: DaemonExpec
 interface SandboxExpected {
 	deadline: string;
 	sandboxClass: string;
+	autoStopInterval: number;
+	autoDeleteInterval: number;
 }
 
 /** Every way a sandbox, as Daytona reads it back, differs from what create asked for. Pure: no call. */
 function sandboxDrift(spec: ComputerSpec, sb: Sandbox, expected: SandboxExpected): string[] {
 	const found: string[] = [];
 	const mismatch = (field: string, declared: unknown, actual: unknown) => found.push(`${field}: declared ${show(declared)}, read back ${show(actual)}`);
-	if (sb.snapshot !== spec.image) mismatch("snapshot", spec.image, sb.snapshot);
+	// Daytona's default snapshot is whichever it names: a computer made from it is not held to a name.
+	if (spec.image !== DAYTONA_DEFAULT_SNAPSHOT && sb.snapshot !== spec.image) mismatch("snapshot", spec.image, sb.snapshot);
 	const network = networkOf(sb);
 	if (!samePolicy(network, spec.network)) found.push(`network: declared ${policyWords(spec.network)}, read back ${policyWords(network)}`);
 	const labels = sb.labels ?? {};
 	if (labels[COMPUTER_LABEL] !== "1") mismatch(`label ${COMPUTER_LABEL}`, "1", labels[COMPUTER_LABEL]);
 	if (labels[DEADLINE_LABEL] !== expected.deadline) mismatch(`label ${DEADLINE_LABEL}`, expected.deadline, labels[DEADLINE_LABEL]);
 	for (const [key, value] of Object.entries(spec.labels ?? {})) if (labels[key] !== value) mismatch(`label ${key}`, value, labels[key]);
-	if (sb.autoStopInterval !== 0) mismatch("autoStopInterval", 0, sb.autoStopInterval);
-	if (!(typeof sb.autoDeleteInterval === "number" && sb.autoDeleteInterval < 0)) mismatch("autoDeleteInterval", -1, sb.autoDeleteInterval);
+	if (sb.autoStopInterval !== expected.autoStopInterval) mismatch("autoStopInterval", expected.autoStopInterval, sb.autoStopInterval);
+	if (sb.autoDeleteInterval !== expected.autoDeleteInterval) mismatch("autoDeleteInterval", expected.autoDeleteInterval, sb.autoDeleteInterval);
 	const ends = typeof sb.autoDestroyAt === "string" ? Date.parse(sb.autoDestroyAt) : Number.NaN;
 	if (Number.isNaN(ends)) found.push(`autoDestroyAt: declared a TTL ending by ${expected.deadline}, read back ${show(sb.autoDestroyAt)}: Daytona would not end the computer`);
 	else if (ends > Date.parse(expected.deadline) + LIFETIME_SLACK_MS) found.push(`autoDestroyAt: ${sb.autoDestroyAt} is past the deadline ${expected.deadline} by more than the TTL's minute and ${(LIFETIME_SLACK_MS - 60_000) / 60_000} minutes of clock skew`);
@@ -585,8 +605,23 @@ export class DaytonaProvider implements ComputerProvider {
 	readonly #gid: string;
 	readonly #webSocket: WebSocketFactory;
 	readonly #timeouts: DaytonaTimeouts;
+	readonly #autoStop: number;
+	readonly #autoDelete: number;
 
-	constructor({ apiKey, apiUrl = DEFAULT_API_URL, daemonPath, arch = "amd64", sandboxClass = "container", target, daemonUser = "1000:1000", fetch: fetcher, webSocket, timeouts }: DaytonaProviderOptions) {
+	constructor({
+		apiKey,
+		apiUrl = DEFAULT_API_URL,
+		daemonPath,
+		arch = "amd64",
+		sandboxClass = "container",
+		target,
+		daemonUser = "1000:1000",
+		autoStopMinutes = 0,
+		autoDeleteMinutes,
+		fetch: fetcher,
+		webSocket,
+		timeouts,
+	}: DaytonaProviderOptions) {
 		if (typeof apiKey !== "string" || apiKey === "") throw new Error("a Daytona API key is required");
 		const base = new URL(apiUrl);
 		if (base.protocol !== "https:") throw new Error(`the Daytona API URL must be https, so the key never crosses in the clear: ${base.protocol}`);
@@ -594,6 +629,13 @@ export class DaytonaProvider implements ComputerProvider {
 		const user = USER.exec(daemonUser);
 		if (user === null || Number(user[1]) > MAX_ID || Number(user[2]) > MAX_ID) throw new Error(`the daemon user ${daemonUser} must be uid:gid in numbers, such as 1000:1000`);
 		if (user[1] === "0" || user[2] === "0") throw new Error(`the daemon user ${daemonUser} is root or in root's group; a Daytona computer's daemon runs as neither`);
+		const minutes = (name: string, value: unknown) => {
+			if (!isWhole(value) || value < 0) throw new Error(`${name} is a whole number of minutes, 0 or more, not ${String(value)}`);
+		};
+		minutes("autoStopMinutes", autoStopMinutes);
+		if (autoDeleteMinutes !== undefined) minutes("autoDeleteMinutes", autoDeleteMinutes);
+		this.#autoStop = autoStopMinutes;
+		this.#autoDelete = autoDeleteMinutes ?? NO_AUTO_DELETE;
 		this.#timeouts = { ...DEFAULTS, ...timeouts };
 		this.#rest = new Rest(apiUrl, apiKey, fetcher ?? fetch, this.#timeouts);
 		this.#daemonPath = resolve(daemonPath);
@@ -620,7 +662,7 @@ export class DaytonaProvider implements ComputerProvider {
 		const refuse = (field: string, message: string) => refusals.push({ field, message });
 		const given = (typeof spec === "object" && spec !== null ? spec : {}) as unknown as Record<string, unknown>;
 		const { image, lifetimeMs, network, labels } = given;
-		if (typeof image !== "string" || image.trim() === "") refuse("image", "an image is required: the id or name of a Daytona snapshot");
+		if (typeof image !== "string" || image.trim() === "") refuse("image", `an image is required: the id or name of a Daytona snapshot, or "${DAYTONA_DEFAULT_SNAPSHOT}" for Daytona's default snapshot`);
 		else if (/[\0-\x1f]/.test(image)) refuse("image", "a snapshot name has no control characters");
 		if (!isWhole(lifetimeMs) || lifetimeMs <= 0) {
 			refuse("lifetimeMs", "lifetimeMs is required: a whole number of milliseconds above 0, after which Daytona deletes the computer");
@@ -659,14 +701,15 @@ export class DaytonaProvider implements ComputerProvider {
 		const deadline = new Date(Date.now() + spec.lifetimeMs).toISOString();
 		const body = {
 			name,
-			snapshot: spec.image,
+			// "default" sends no snapshot, and Daytona makes the sandbox from its default snapshot.
+			...(spec.image === DAYTONA_DEFAULT_SNAPSHOT ? {} : { snapshot: spec.image }),
 			labels: { ...spec.labels, [COMPUTER_LABEL]: "1", [DEADLINE_LABEL]: deadline },
 			env: {},
 			public: false,
 			...(this.#target === undefined ? {} : { target: this.#target }),
 			ttlMinutes: Math.max(1, Math.ceil(spec.lifetimeMs / 60_000)),
-			autoStopInterval: 0,
-			autoDeleteInterval: -1,
+			autoStopInterval: this.#autoStop,
+			autoDeleteInterval: this.#autoDelete,
 			...(networkBody(spec.network) ?? { networkBlockAll: true }),
 		};
 		const posted = await this.#rest.json("POST", this.#rest.sandbox(), { json: body, timeoutMs: this.#timeouts.createMs }, signal);
@@ -699,7 +742,7 @@ export class DaytonaProvider implements ComputerProvider {
 		const started = await this.#waitStarted(made, signal);
 		if (!started.ok) return started;
 		const sb = started.value;
-		const vendor = sandboxDrift(spec, sb, { deadline, sandboxClass: this.#class });
+		const vendor = sandboxDrift(spec, sb, this.#sandboxExpected(deadline));
 		if (vendor.length > 0) return fail("refused", `it did not match its spec: ${vendor.join("; ")}`);
 		const toolbox = await this.#toolbox(sb, signal);
 		if (!toolbox.ok) return toolbox;
@@ -735,6 +778,10 @@ export class DaytonaProvider implements ComputerProvider {
 		if (!daemonFound.ok) return daemonFound;
 		if (daemonFound.value.length > 0) return fail("refused", `it did not match its spec: ${daemonFound.value.join("; ")}`);
 		return this.#waitListed(ref.id, signal);
+	}
+
+	#sandboxExpected(deadline: string): SandboxExpected {
+		return { deadline, sandboxClass: this.#class, autoStopInterval: this.#autoStop, autoDeleteInterval: this.#autoDelete };
 	}
 
 	#daemonExpected(): DaemonExpected {
@@ -953,7 +1000,7 @@ export class DaytonaProvider implements ComputerProvider {
 		const labels = Object.fromEntries(Object.entries(sb.labels ?? {}).filter(([key]) => key !== COMPUTER_LABEL && !key.startsWith(`${COMPUTER_LABEL}.`)));
 		const spec = { image: sb.snapshot, lifetimeMs: 1, network: typeof network === "object" && "other" in network ? "none" : network, labels } as ComputerSpec;
 		found.push(...this.check(spec).map(({ field, message }) => `${field}: ${message}, read back from the computer`));
-		const vendor = sandboxDrift(spec, sb, { deadline: sb.labels?.[DEADLINE_LABEL] ?? "", sandboxClass: this.#class });
+		const vendor = sandboxDrift(spec, sb, this.#sandboxExpected(sb.labels?.[DEADLINE_LABEL] ?? ""));
 		found.push(...vendor.filter((line) => !line.startsWith("network:") && !line.startsWith(`label ${DEADLINE_LABEL}`) && !(deadline === undefined && line.startsWith("autoDestroyAt"))));
 		let user = `${this.#uid}:${this.#gid}`;
 		let workdir: string | undefined;
@@ -1004,6 +1051,25 @@ export class DaytonaProvider implements ComputerProvider {
 			cursor = next;
 		}
 		return fail("daytona", `GET /sandbox: the listing ran past ${MAX_PAGES} pages`);
+	}
+
+	/**
+	 * For the sweep after a live run: every sandbox Daytona lists with agentrun.computer=1, whatever its name or state, as
+	 * Daytona reports it. list() keeps only this provider's computers; this keeps everything the label query returns.
+	 */
+	async listLabelled({ signal }: CallContext = {}): Promise<Result<Array<{ id: string; name?: string; state?: string }>>> {
+		const listed = await this.#listOwn(signal);
+		if (!listed.ok) return listed;
+		return ok(listed.value.filter((sb) => typeof sb?.id === "string").map((sb) => ({ id: sb.id, ...(typeof sb.name === "string" ? { name: sb.name } : {}), ...(typeof sb.state === "string" ? { state: sb.state } : {}) })));
+	}
+
+	/** For the sweep: GET /sandbox/{id} once, retried as every read is, and the status Daytona answered (404: none). */
+	async probe(id: string, { signal }: CallContext = {}): Promise<Result<{ status: number; state?: string }>> {
+		if (typeof id !== "string" || id === "" || id.includes("/")) return fail("invalid", `${String(id)} is not a Daytona sandbox's id`);
+		const answer = await this.#rest.call("GET", this.#rest.sandbox(id), { retry: true, anyStatus: true }, signal);
+		if (!answer.ok) return answer;
+		const state = (parseJson(answer.value.bytes) as { state?: unknown } | null)?.state;
+		return ok({ status: answer.value.status, ...(typeof state === "string" ? { state } : {}) });
 	}
 
 	async list(labels: Record<string, string>, { signal }: CallContext = {}): Promise<Result<ComputerInfo[]>> {

@@ -1,5 +1,7 @@
-// Daytona for the conformance CLI: `--provider packages/computer/dist/conformance/daytona.js --image <snapshot>`. The
+// Daytona for the conformance CLI: `--provider packages/computer/dist/conformance/daytona.js [--image <snapshot>]`. The
 // provider's settings come from the environment, by these names alone; the key is read only when createProvider() runs.
+// Every sandbox of a run has a bounded life besides its TTL: Daytona stops one after 30 minutes with no outside activity
+// and deletes it as soon as it stops, so a stop deletes (see conformanceNotes).
 // Every name is COMPUTER_DAYTONA_*: a bare DAYTONA_API_KEY may hold another organization's key on a host that runs other
 // Daytona work, so it is never read here, not even as a fallback.
 import { execFile } from "node:child_process";
@@ -7,7 +9,7 @@ import { chmodSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { DaytonaProvider, type DaytonaProviderOptions } from "../daytona.js";
+import { DAYTONA_DEFAULT_SNAPSHOT, DaytonaProvider, type DaytonaProviderOptions } from "../daytona.js";
 
 /** The environment variables createProvider() reads, by name. */
 export const DAYTONA_ENV = {
@@ -25,7 +27,22 @@ export const DAYTONA_ENV = {
 	sandboxClass: "COMPUTER_DAYTONA_CLASS",
 	/** uid:gid the daemon runs as; default 1000:1000. */
 	user: "COMPUTER_DAYTONA_USER",
+	/** The snapshot every computer of the run starts from; default "default", Daytona's default snapshot. */
+	snapshot: "COMPUTER_DAYTONA_SNAPSHOT",
 } as const;
+
+/** Minutes without outside activity before Daytona stops a run's sandbox: at most 30, so none outlives a run for long. */
+export const CONFORMANCE_AUTO_STOP_MINUTES = 30;
+/** Minutes a run's sandbox may stay stopped: 0, Daytona deletes it as soon as it stops. */
+export const CONFORMANCE_AUTO_DELETE_MINUTES = 0;
+
+/**
+ * For the run's report: what this configuration means for the suite. The provider has no capability that says it keeps
+ * no stopped computer, so the note says it.
+ */
+export const conformanceNotes: string[] = [
+	`daytona: every sandbox runs with autoStopMinutes ${CONFORMANCE_AUTO_STOP_MINUTES} and autoDeleteMinutes ${CONFORMANCE_AUTO_DELETE_MINUTES}, besides its TTL: Daytona deletes a sandbox as soon as it stops, so this configuration keeps no stopped computer. Core provider.stop is expected to fail (a stopped computer is gone, not listed as stopped); Full provider.janitor is skipped, the lifetime being vendor, and would fail for the same reason.`,
+];
 
 export interface DaytonaModuleOptions {
 	/** Where the settings are read; default process.env. */
@@ -50,6 +67,8 @@ function optionsOf({ env = process.env, fetch, webSocket }: DaytonaModuleOptions
 		...(env[DAYTONA_ENV.url] ? { apiUrl: env[DAYTONA_ENV.url] } : {}),
 		...(env[DAYTONA_ENV.target] ? { target: env[DAYTONA_ENV.target] } : {}),
 		...(env[DAYTONA_ENV.user] ? { daemonUser: env[DAYTONA_ENV.user] } : {}),
+		autoStopMinutes: CONFORMANCE_AUTO_STOP_MINUTES,
+		autoDeleteMinutes: CONFORMANCE_AUTO_DELETE_MINUTES,
 		...(fetch ? { fetch } : {}),
 		...(webSocket ? { webSocket } : {}),
 	};
@@ -64,6 +83,11 @@ function goEnv(arch: string): Record<string, string> {
 		if (value !== undefined) env[name] = value;
 	}
 	return env;
+}
+
+/** The image every computer of the run starts from: COMPUTER_DAYTONA_SNAPSHOT, or Daytona's default snapshot. */
+export function conformanceImage({ env = process.env }: Pick<DaytonaModuleOptions, "env"> = {}): string {
+	return env[DAYTONA_ENV.snapshot] || DAYTONA_DEFAULT_SNAPSHOT;
 }
 
 /** The provider the CLI runs; throws in words when a setting is missing or wrong. */

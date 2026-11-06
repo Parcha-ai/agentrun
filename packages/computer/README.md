@@ -369,7 +369,25 @@ A Daytona computer is a sandbox made through Daytona's v0 REST API with `fetch`,
 no SDK, and no package beyond this one. `fetch` and the WebSocket factory are options, so the tests run against a fake.
 The key is the caller's to pass: the provider never reads the environment, never sends the key over a redirect or to a
 toolbox URL that is not https, and never puts it in a computer. `image` is a Daytona snapshot, by id or name: the
-snapshot gives the sandbox its class and its size.
+snapshot gives the sandbox its class and its size. `image: "default"` sends no snapshot field at all, and Daytona makes
+the sandbox from its default snapshot; the provider never guesses a snapshot's name. (A snapshot that is itself named
+`default` is reached by its id.)
+
+### Lifetimes
+
+Every sandbox ends at its TTL (`ttlMinutes`, from `lifetimeMs`). Two options bound it further, each sent on every create
+and read back by the drift check:
+
+| Option | Daytona field | Meaning | Unset |
+| --- | --- | --- | --- |
+| `autoStopMinutes` | `autoStopInterval` | Daytona stops the sandbox after this many minutes with no outside activity, whatever runs inside it; 0 is never | 0 |
+| `autoDeleteMinutes` | `autoDeleteInterval` | Daytona deletes the sandbox after it has been stopped this long; 0 deletes it as soon as it stops | never (`-1` is sent) |
+
+Each is a whole number, 0 or more; the constructor refuses anything else in words. Daytona's idle timer counts toolbox
+calls (the daemon's connections are toolbox calls) but not the daemon's own work, so a computer left with no connection
+for `autoStopMinutes` stops. With `autoDeleteMinutes: 0` a stop deletes: the provider then keeps no stopped computer,
+`release(ref, "stop")` returns once the sandbox is gone, and `list()` never shows a stopped one. The capabilities have
+no field that says so yet; the conformance module says it in its note (below).
 
 ### How the daemon gets in, and how it is reached
 
@@ -422,10 +440,11 @@ Daytona's container class runs code as root, and the open runner runs it privile
   an IPv6 entry, a domain with a scheme, path or port, a CIDR that is not `A.B.C.D/N`, a label in the provider's own
   namespace (`agentrun.computer`), `cpus`, `memoryMb` or `pids` (a snapshot's size is its own), `user`, `workdir`
   (the daemon works in `/work`), and any other field.
-- `create` sends `POST /sandbox` with the name `computer-<12 hex digits>`, the snapshot, the labels with
-  `agentrun.computer=1` and `agentrun.computer.deadline=<ISO time>`, `public: false`, `ttlMinutes`,
-  `autoStopInterval: 0` (Daytona's idle timer counts only outside traffic, so a daemon at work would be stopped), and
-  `autoDeleteInterval: -1` (a stop keeps the sandbox, which the TTL then ends). `POST /sandbox` is never retried. A
+- `create` sends `POST /sandbox` with the name `computer-<12 hex digits>`, the snapshot (none for `"default"`), the
+  labels with `agentrun.computer=1` and `agentrun.computer.deadline=<ISO time>`, `public: false`, `ttlMinutes`,
+  `autoStopInterval` (`autoStopMinutes`; unset, 0, since Daytona's idle timer counts only outside traffic and a daemon
+  at work would be stopped), and `autoDeleteInterval` (`autoDeleteMinutes`; unset, -1: a stop keeps the sandbox, which
+  the TTL then ends). `POST /sandbox` is never retried. A
   create that fails without a 4xx answer, or is aborted, may still have made the sandbox, so the provider deletes the
   name it chose. Then it waits for `started` (polling `GET /sandbox/{id}`), runs the drift check on that read, pushes
   in and starts the daemon, checks the daemon, and waits until the label listing shows the new computer steadily
@@ -456,10 +475,10 @@ From Daytona's read of the sandbox:
 
 | Field | Must be |
 | --- | --- |
-| `snapshot` | the spec's image |
+| `snapshot` | the spec's image; for `"default"`, whatever Daytona names, unchecked |
 | `networkBlockAll`, `networkAllowList`, `domainAllowList`, `outboundProxyUrl` | the network declared; an outbound proxy, both lists, or block-all with a list is drift |
 | `labels` | `agentrun.computer=1`, the deadline as written, every label the spec asked for |
-| `autoStopInterval`, `autoDeleteInterval` | `0`, negative |
+| `autoStopInterval`, `autoDeleteInterval` | `autoStopMinutes` (0 unset), `autoDeleteMinutes` (-1 unset), exactly |
 | `autoDestroyAt` | set, and no later than the deadline plus the TTL's minute and 2 minutes of clock skew |
 | `sandboxClass` | the provider's class |
 | `public`, `kvm`, `gpu`, `volumes`, `linkedSandboxId` | false, not true, 0, none, none |
@@ -474,13 +493,39 @@ capability), `/proc/self/status` (Uid and Gid the daemon user's four times, no g
 `dist/conformance/daytona.js` exports `createProvider()` and `createDriftedProvider()` (which builds a daemon of
 another version with Go). It reads these variables, by name, when it runs: `COMPUTER_DAYTONA_API_KEY` (required),
 `COMPUTER_DAYTONA_API_URL`, `COMPUTER_DAYTONA_DAEMON`, `COMPUTER_DAYTONA_ARCH` (`amd64` or `arm64`),
-`COMPUTER_DAYTONA_TARGET`, `COMPUTER_DAYTONA_CLASS` (`container` or `linux-vm`) and `COMPUTER_DAYTONA_USER`. It never
-reads `DAYTONA_API_KEY` or `DAYTONA_API_URL`, not even as a fallback: on a host that runs other Daytona work they may
-hold another organization's key.
+`COMPUTER_DAYTONA_TARGET`, `COMPUTER_DAYTONA_CLASS` (`container` or `linux-vm`), `COMPUTER_DAYTONA_USER` and
+`COMPUTER_DAYTONA_SNAPSHOT` (the run's image; unset, `"default"`, Daytona's default snapshot). It never reads
+`DAYTONA_API_KEY` or `DAYTONA_API_URL`, not even as a fallback: on a host that runs other Daytona work they may hold
+another organization's key.
+
+Every sandbox of a run has a bounded life besides its TTL: the module always sets `autoStopMinutes: 30` and
+`autoDeleteMinutes: 0`, whatever the environment says. A stop therefore deletes, and the run is expected to show it:
+Core `provider.stop` fails (the stopped computer is gone, not listed as stopped), and Full `provider.janitor` is skipped
+(the lifetime is `vendor`) and would fail for the same reason. The module exports `conformanceImage()` and
+`conformanceNotes`; the CLI takes the image from it when `--image` names none, and prints the note above the verdict
+(`notes` in `--json`).
 
 ```sh
-npm run conformance -w @parcha/agentrun-computer -- --provider packages/computer/dist/conformance/daytona.js --image <snapshot>
+npm run conformance -w @parcha/agentrun-computer -- --provider packages/computer/dist/conformance/daytona.js [--image <snapshot>]
 ```
+
+### The sweep around a live run
+
+`dist/conformance/daytona-sweep.js` reads the same `COMPUTER_DAYTONA_API_KEY` and `COMPUTER_DAYTONA_API_URL`:
+
+```sh
+node packages/computer/dist/conformance/daytona-sweep.js --before /tmp/daytona-before.json   # before the run
+node packages/computer/dist/conformance/daytona-sweep.js --after /tmp/daytona-before.json    # after it
+```
+
+`--before <file>` writes the id of every sandbox carrying `agentrun.computer=1`, whatever its name or state, into the
+file. `--after <file>` lists them again and deletes (`release(ref, "delete")`) every one whose id is not in the file,
+then reads each with `GET /sandbox/{id}` until Daytona answers 404, up to 60 s each, and prints one JSON line,
+`{"swept":n,"notFound":m,"stillThere":[ids]}`, where `swept` counts the sandboxes not there before and `notFound` plus
+`stillThere`'s length is `swept`. A sandbox in the file is never named by any call. A new sandbox without a computer's
+name is not this provider's: release refuses it, and it is reported still there. Exit 0 when every swept sandbox reads
+404, 1 when one is still there, 2 on a usage error, a before file it cannot read, no key, or a listing Daytona refused
+(nothing is deleted then). Anything else that creates a labelled sandbox between the two runs is swept too.
 
 ### Not yet known
 
@@ -491,7 +536,9 @@ Nothing here has run against real Daytona. These need a live probe once a key is
   command running between calls;
 - whether a session's labeller (a shell `read` per line) carries 1 MiB lines at a usable speed, and how big a
   connection's log may grow: every reply stays in the session's log on the sandbox's disk until `close()`;
-- `autoDeleteInterval: -1` and `autoDestroyAt` as read back, and how soon after `autoDestroyAt` Daytona destroys;
+- `autoStopInterval` and `autoDeleteInterval` as read back, how soon after a stop `autoDeleteInterval: 0` deletes,
+  which snapshot Daytona names for a sandbox made with none, and how soon after `autoDestroyAt` Daytona destroys;
+- how soon `GET /sandbox/{id}` answers 404 after a delete;
 - how soon the label listing shows a new sandbox, and hides a deleted one;
 - the ports a CIDR list opens on the production runner, and whether a domain list blocks every port but 80 and 443;
 - `network: none` against the live bypass cases (ruling 9), on each class;
@@ -525,7 +572,12 @@ repository's main; the docs were read on 2026-11-05.
 | `DELETE /process/session/{sessionId}` ends the session's process group and tree | `daytona/clients@8006f63e:openapi-specs/toolbox.json:3770`; `daytonaio/daytona@b5a5d9e7:apps/daemon/pkg/session/delete.go:18-70` |
 | `ttlMinutes` destroys in any state; `autoStopInterval: 0` runs indefinitely and keeps the TTL | https://www.daytona.io/docs/en/sandboxes.md#wall-clock-ttl, https://www.daytona.io/docs/en/sandboxes.md#running-indefinitely |
 | the idle timer ignores processes inside the sandbox | https://www.daytona.io/docs/en/sandboxes.md#auto-stop-sandboxes ("What does not reset the timer") |
-| `autoDeleteInterval` negative is disabled | `daytona/clients@8006f63e:openapi-specs/api.json:12199` |
+| `autoDeleteInterval` negative is disabled, 0 deletes as soon as the sandbox stops; in minutes | `daytona/clients@8006f63e:openapi-specs/api.json:12199`; https://www.daytona.io/docs/en/sandboxes.md#auto-delete-interval |
+| `autoStopInterval` in minutes, 0 is disabled; a negative one is refused | `daytona/clients@8006f63e:openapi-specs/api.json:12184`; `daytonaio/daytona@b5a5d9e7:apps/api/src/sandbox/services/sandbox.service.ts:3290-3295` |
+| auto-stop triggers even with processes running inside; toolbox requests reset the timer | https://www.daytona.io/docs/en/sandboxes.md#auto-stop-interval |
+| both intervals are kept as sent | `daytonaio/daytona@b5a5d9e7:apps/api/src/sandbox/services/sandbox.service.ts:663-673` |
+| a create with no snapshot uses the default snapshot | https://www.daytona.io/docs/en/linux-sandboxes.md#create-a-linux-sandbox; `daytonaio/daytona@b5a5d9e7:apps/api/src/sandbox/services/sandbox.service.ts:471-475` |
+| `GET /sandbox/{id}` of a destroyed sandbox is a 404 | `daytonaio/daytona@b5a5d9e7:apps/api/src/sandbox/services/sandbox.service.ts:1744`, `daytonaio/daytona@b5a5d9e7:apps/api/src/sandbox/services/sandbox.service.ts:1777-1783` |
 | block-all, the CIDR list and the domain list are mutually exclusive, a conflict is a 400 | https://www.daytona.io/docs/en/network-limits.md#create-sandboxes-with-network-restrictions |
 | at most 10 IPv4 CIDRs, `A.B.C.D/N`, N 0 to 32 | https://www.daytona.io/docs/en/network-limits.md#network-allow-list-format |
 | at most 100 domains, `*.` wildcards, no scheme, path or port | https://www.daytona.io/docs/en/network-limits.md#domain-allow-list-format |
@@ -639,7 +691,7 @@ npm run build:daemon -w @parcha/agentrun-computer   # dist/computerd-linux-amd64
 npm test -w @parcha/agentrun-computer               # unit tests: no Go, no Docker
 cd packages/computer/daemon && go vet ./... && go test ./...
 AGENTRUN_COMPUTER_LIVE_DOCKER=1 npm run test:docker -w @parcha/agentrun-computer
-AGENTRUN_COMPUTER_LIVE_DAYTONA=1 COMPUTER_DAYTONA_API_KEY=... COMPUTER_DAYTONA_SNAPSHOT=<snapshot> npm run test:daytona -w @parcha/agentrun-computer
+AGENTRUN_COMPUTER_LIVE_DAYTONA=1 COMPUTER_DAYTONA_API_KEY=... [COMPUTER_DAYTONA_SNAPSHOT=<snapshot>] npm run test:daytona -w @parcha/agentrun-computer
 ```
 
 The live tests run the conformance suite on Docker, one test per case, and the CLI against `alpine:3.20`; the rest of
