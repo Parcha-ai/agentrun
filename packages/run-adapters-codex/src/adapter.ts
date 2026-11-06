@@ -25,6 +25,7 @@ import { verifyCodex } from "./verify.js";
 import { codexHarness, type CodexHarnessOptions, owedSubmissions } from "./harness.js";
 import { isRolloutPath, isSessionMeta, rolloutStream, summarizeRollout, THREAD_STREAM } from "./rollout.js";
 import { type ConfineChild, localMachine, type MachineSeed, sessionDir } from "./host/machine.js";
+import type { AcquireMachine, SessionMachine } from "./host/process.js";
 import { serialWriter, type ModelProxyOptions } from "@parcha/agentrun-kernel/host";
 
 /** A name app-server accepts for a dynamic tool. */
@@ -191,6 +192,9 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
       const tools: HostTool[] = skills.length ? [...spec.tools, readSkillFileTool(join(sessionDir(dir, "codex-home"), SKILLS_DIR), skills.map((skill) => ({ name: skill.name, files: Object.keys(skill.files) })))] : spec.tools;
 
       const effort = spec.effort ?? spec.thinking;
+      // The machine the drive of the moment runs on, once one is attached: its model proxy is the session's one route.
+      let machine: SessionMachine | undefined;
+      const tracked = (acquire: AcquireMachine): AcquireMachine => async (request) => (machine = await acquire(request));
       const harnessOptions: CodexHarnessOptions = {
         tools: tools.map(kernelTool),
         builtins: false,
@@ -211,7 +215,8 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
         ...(options.standIn ? { test: { command: options.standIn.command, args: options.standIn.args ?? [] } } : {}),
         machine: {
           ...(options.standIn?.env ? { env: options.standIn.env } : {}),
-          acquire: localMachine({
+          // The machine of the drive of the moment: its proxy is the session's one model route (port, below).
+          acquire: tracked(localMachine({
             dir,
             // The host's workspace, when it names one: Codex works where the host's file tools write (io.cwd).
             ...(io.cwd ? { cwd: io.cwd } : {}),
@@ -228,7 +233,7 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
               ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}),
               ...(options.fetch ? { fetch: options.fetch } : {}),
             },
-          }),
+          })),
         },
       };
       const harness = checked === undefined ? codexHarness(harnessOptions) : withCheckedBinary(checked, () => codexHarness(harnessOptions));
@@ -327,6 +332,8 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
           drive.halt?.(new SessionHalt("closed"));
           await running?.catch(() => {});
         },
+        // The session's one model route, for the host's own request beside Codex's: the attached machine's proxy.
+        port: (label: string) => (closed || !machine?.port ? undefined : machine.port(label)),
       };
     },
   };

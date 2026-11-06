@@ -285,6 +285,7 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
       signal: lost.signal,
       modelUrl: proxy.url,
       modelKey: key,
+      port: (label) => ({ url: proxy.url, key: proxy.sideKey(label), model: route.models.model, api: "openai-responses" }),
       announcedExec: () => announced,
       onRolloutLine: (listener) => void rolloutListeners.push(listener),
       onCalls: (given) => void (calls = given),

@@ -12,9 +12,11 @@
 //     its paid requests booked under the tool's call (paid-calls.ts), each node's under a call of its own; web_search
 //     where it resolves native on the provider's hosted search through the run's models (hosted-search.ts), on a harness
 //     whose own search it is too (harness-app.ts gives that harness no host tool of the name).
-// Each model request goes through the run's models as a side request (request-start.ts, cap.ts: under the run's cap,
-// marked, and costed on the run's timeline as `learned_workflow`), so what the workflow spends is the run's cost. A call
-// a crash cut off is never run again (`replay: "never"`): it is answered interrupted.
+// Each model request is a request on the run's one route, so what the workflow spends is the run's cost, under its cap:
+// on pi the run's models, as a side request (request-start.ts, cap.ts: marked, and costed on the run's timeline as
+// `learned_workflow`); on another harness the session's model proxy, under a side key (port-models.ts): the harness's
+// own policy, provider, key and price, booked on the session's records labelled `learned_workflow`. A call a crash cut
+// off is never run again (`replay: "never"`): it is answered interrupted.
 import type { TSchema } from "@earendil-works/pi-ai";
 import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
 import { registerLabel, registerOutcome } from "@parcha/pi-durable-agent/timeline";
@@ -75,7 +77,8 @@ registerOutcome(LEARNED_WORKFLOW_TOOL, (result) => {
   return line === undefined ? undefined : { failed: false, text: line };
 });
 
-/** The models a learned workflow's model nodes run on: the run's own (capped and marked: app.ts), as pi-ai's. */
+/** The models a learned workflow's model nodes run on, as pi-ai's: on pi the run's own (capped and marked: app.ts), on
+ *  another harness the session's port (port-models.ts). */
 type RunModels = {
   getModel(provider: string, id: string): unknown;
   getModels(): readonly unknown[];
@@ -130,8 +133,9 @@ export const learnedWorkflowDescription = (workflows: readonly LearnedWorkflow[]
     ...workflows.map(workflowLine),
   ].join("\n");
 
-/** One model request as a pi-ai event stream, sent as a side request through `models.completeSimple`: marked and costed
- *  on the run's timeline under `learned_workflow`, and under the run's cap. */
+/** One model request as a pi-ai event stream, sent through `models.completeSimple` as the run's own request, under its
+ *  cap: on pi marked and costed on the run's timeline under `learned_workflow` (sideRequests), on another harness booked
+ *  by the session's proxy, labelled by the side key it goes under. */
 async function sideStream(models: RunModels, model: unknown, context: object, options: object | undefined) {
   const { createAssistantMessageEventStream } = await import("@earendil-works/pi-ai");
   const stream = createAssistantMessageEventStream();

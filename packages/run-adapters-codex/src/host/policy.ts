@@ -44,6 +44,10 @@ const SCHEMA_FORMAT_KEYS = new Set(["type", "name", "schema", "strict"]);
 const DROPPED_KEYS = new Set(["client_metadata"]);
 /** What `include` may ask for: the encrypted reasoning the CLI sends back on its next request (`store` is false). */
 const INCLUDE = new Set(["reasoning.encrypted_content"]);
+/** What the host's own side request (ProxyRequestContext.host) may carry beside: a native search's limit on its hosted
+ *  calls (`max_tool_calls`, which only narrows it) and the sources its results cite. */
+const SIDE_KEYS = new Set(["max_tool_calls"]);
+const SIDE_INCLUDE = new Set(["web_search_call.action.sources"]);
 /** Provider-hosted tools the CLI adds to every request whatever its config says: dropped, never offered. */
 const DROPPED_TOOLS = new Set(["web_search", "web_search_preview"]);
 /** The web search tool the pinned CLI sends with `web_search = "live"` through the session's provider, recorded
@@ -133,6 +137,9 @@ function ownTools(tools: unknown, allowed: ReadonlySet<string>, search = false, 
   }
   return out;
 }
+
+/** The function and custom tools a side request offers, by name (its own client tools). */
+const sideToolNames = (tools: unknown): ReadonlySet<string> => new Set(Array.isArray(tools) ? tools.filter((tool) => isPlain(tool) && (tool.type === "function" || tool.type === "custom") && typeof tool.name === "string").map((tool) => (tool as { name: string }).name) : []);
 
 /** `tool_choice` as the provider gets it: a mode, a function of the session's own, or the web search when it is on. */
 function toolChoice(choice: unknown, allowed: ReadonlySet<string>, search = false): unknown {
@@ -560,22 +567,25 @@ export function codexPolicy(options: CodexPolicyOptions): ProviderPolicy {
       return auth.startsWith("Bearer ") ? auth.slice(7) : "";
     },
     authHeaders: (credential) => ({ authorization: `Bearer ${credential}` }),
-    apply(body) {
+    apply(body, _route, context) {
       if (!isPlain(body)) throw new ProxyRefusal(400, "the body is not a JSON object");
+      // The host's own request beside Codex's (ProxyRequestContext.host) offers its own client tools (a learned workflow
+      // node's `submit`); every other rule is the session's, a provider-hosted tool refused as ever.
+      const own = context?.host !== undefined ? sideToolNames(body.tools) : allowed;
       const out: Record<string, unknown> = {};
       for (const [key, value] of Object.entries(body)) {
         if (DROPPED_KEYS.has(key)) continue;
-        if (!BODY_KEYS.has(key)) throw new ProxyRefusal(400, "the body has a field the Codex policy does not allow");
+        if (!BODY_KEYS.has(key) && !(context?.host !== undefined && SIDE_KEYS.has(key))) throw new ProxyRefusal(400, "the body has a field the Codex policy does not allow");
         out[key] = value;
       }
-      if (out.include !== undefined && (!Array.isArray(out.include) || !out.include.every((item) => typeof item === "string" && INCLUDE.has(item)))) {
+      if (out.include !== undefined && (!Array.isArray(out.include) || !out.include.every((item) => typeof item === "string" && (INCLUDE.has(item) || (context?.host !== undefined && SIDE_INCLUDE.has(item)))))) {
         throw new ProxyRefusal(400, "include asks for an item the Codex policy does not allow");
       }
       if (out.stream !== undefined && typeof out.stream !== "boolean") throw new ProxyRefusal(400, "stream is not a boolean");
       if (out.reasoning !== undefined && !isPlain(out.reasoning)) throw new ProxyRefusal(400, "reasoning is not an object");
       if (out.text !== undefined) out.text = textOptions(out.text);
-      if (out.tools !== undefined) out.tools = ownTools(out.tools, allowed, search, mcp);
-      if (out.tool_choice !== undefined) out.tool_choice = toolChoice(out.tool_choice, allowed, search);
+      if (out.tools !== undefined) out.tools = ownTools(out.tools, own, search, mcp);
+      if (out.tool_choice !== undefined) out.tool_choice = toolChoice(out.tool_choice, own, search);
       if (Array.isArray(out.input) && out.input.some((item) => isPlain(item) && item.type === "additional_tools")) {
         // While a script that yielded still runs, the model is offered `wait` and not `exec`: one script is live at a time.
         const offerExec = !cellRunning(out.input);

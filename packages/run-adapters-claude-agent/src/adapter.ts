@@ -21,7 +21,7 @@ import { findClaudeExecutable, platformSuffix } from "./binary.js";
 import { CLAUDE_AGENT_PACKAGE, ClaudeAgentNotInstalled, ClaudeAgentPinMismatch, ClaudeAgentThinkingOff } from "./errors.js";
 import { type ClaudeAgentSdk, claudeCodeHarness, lostPrompts } from "./harness.js";
 import { JournalSessionStore } from "./store.js";
-import { CLAUDE_MCP_CLIENT, type ConfineChild, localMachine } from "./host/machine.js";
+import { CLAUDE_MCP_CLIENT, type ConfineChild, type LocalSessionMachine, localMachine } from "./host/machine.js";
 import { serialWriter } from "./serial.js";
 import { MCP_SERVER } from "./transcript.js";
 import type { ToolServerModules } from "./host/tool-server.js";
@@ -399,6 +399,8 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
       const mcpNames = new Set(mcpServers.flatMap((server) => server.tools.map((tool) => `mcp__${server.name}__${tool.name}`)));
       // The CLI's own tools offered to the model: Skill only when the session has skills, WebSearch only when it is on.
       const builtins = [...(skills.length ? ["Skill"] : []), ...(webSearch ? ["WebSearch"] : [])];
+      // The machine the CLI's drive of the moment runs on, once one is attached: its model proxy is the session's one route.
+      let machine: LocalSessionMachine | undefined;
       const acquire = localMachine({
         dir,
         // The host's workspace, when it names one: the CLI works where the host's file tools write (io.cwd).
@@ -425,7 +427,8 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
       const harness = claudeCodeHarness({
         name: CLAUDE_AGENT_ID,
         sandbox: {
-          attach: (ctx, request) => acquire({ ctx, ...(request.model ? { model: request.model } : {}), ...(request.deadline === undefined ? {} : { deadline: request.deadline }) }),
+          // The machine of the drive of the moment: its proxy is the session's one model route (port, below).
+          attach: async (ctx, request) => (machine = (await acquire({ ctx, ...(request.model ? { model: request.model } : {}), ...(request.deadline === undefined ? {} : { deadline: request.deadline }) })) as LocalSessionMachine),
           // No command of its own: the CLI reaches nothing but its model proxy (a web search, when on, is the provider's).
           network: "deny-all",
           // The runner's turn cap and the host's beforeRequest bound the spend.
@@ -581,6 +584,8 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
           drive.halt?.(new SessionHalt("closed"));
           await running?.catch(() => {});
         },
+        // The session's one model route, for the host's own request beside the CLI's: the attached machine's proxy.
+        port: (label: string) => (closed || !machine ? undefined : machine.port(label)),
       };
     },
   };

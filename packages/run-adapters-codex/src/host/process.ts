@@ -3,6 +3,7 @@
 // harness describes for its model proxy (the policy), and model-step tracking (nothing to track locally).
 import type { TomlValue } from "../config.js";
 import type { DriveContext } from "./kernel.js";
+import type { SessionPort } from "@parcha/agentrun-kernel";
 
 export {
   boundResult, BuiltinCalls, failureText, Mutex, NativeJournal, openTurn, placeSubmissions, recoveryNote, recoverySystemNote, recoveryUserTurn, restartEvent, toolBridge, toolKey, transcriptOf,
@@ -83,6 +84,9 @@ export interface SessionMachine {
   configure?(config: Record<string, TomlValue>): void;
   fsync(): Promise<void>;
   close(): Promise<void>;
+  /** The session's own model route for the host's request beside Codex's (AdapterSession.port): this machine's proxy
+   *  with a side key minted for `label`, the model its policy takes and the API it serves. A local machine has one. */
+  port?(label: string): SessionPort;
 }
 
 /** The drive's hooks for a call Codex runs without the harness (code-mode.ts gives them, mcp.ts uses them). */

@@ -6,7 +6,9 @@ import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { dirname, join } from "node:path";
+import { createServer } from "node:http";
 import { test } from "node:test";
+import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
 import { agentFolderOf } from "../dist/files.js";
 import { seedOf } from "../dist/learning.js";
 import * as learning from "../dist/learning.js";
@@ -69,6 +71,39 @@ async function ran(api, data, id, harness, files, tools = [], { extra = {}, fiel
 /** The learned_workflow call's result row in `rows`. */
 const learnedResult = (rows) => rows.find((row) => row.kind === "tool_result" && row.tool_name === LEARNED_WORKFLOW_TOOL);
 
+/** The node's submit, when a request offers the node's submit tool and carries no tool result yet. */
+const submitsAnswer = ({ body }) => {
+  const offers = (body?.tools ?? []).some((tool) => tool?.name === "submit");
+  const answered = (body?.messages ?? []).some((m) => Array.isArray(m.content) && m.content.some((b) => b?.type === "tool_result")) || (body?.input ?? []).some((item) => item?.type === "function_call_output");
+  return offers && !answered ? { name: "submit", input: { value: { answer: 42 } } } : undefined;
+};
+/** A CLI harness run's model route for `t`, a faux gateway on loopback: claude-agent behind ANTHROPIC_BASE_URL, codex
+ *  and opencode behind AGENT_MODEL_BASE_URL. Its learned nodes go there through the session's proxy, as the harness's own
+ *  requests would; the serve options that leave pi's faux model off. */
+async function routed(t, harness) {
+  const gw = await startFauxGateway({ call: submitsAnswer });
+  t.after(() => gw.close());
+  const key = ["not-a-secret", "gateway"].join("-");
+  if (harness === "claude-agent") withEnv(t, { ANTHROPIC_API_KEY: key, ANTHROPIC_BASE_URL: gw.url, AGENT_MODEL: "anthropic/claude-sonnet-4-5" }, ["AGENT_MODEL_BASE_URL", "OPENROUTER_API_KEY", "AGENT_MODEL_PRICE"]);
+  else withEnv(t, { AGENT_MODEL_BASE_URL: gw.url, AGENT_MODEL: "gpt-test", AGENT_MODEL_API_KEY: key, AGENT_MODEL_PRICE: "1,2,0.5" }, ["ANTHROPIC_BASE_URL", "OPENROUTER_API_KEY"]);
+  return { faux: undefined };
+}
+/** faux-upstream.mjs (the provider's hosted search, as each provider streams it) served on loopback, as an operator's
+ *  gateway: its origin. */
+async function upstreamAt(t) {
+  const send = (await import("./fixtures/faux-upstream.mjs")).default;
+  const server = createServer(async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    const answer = await send(`http://upstream.invalid${req.url}`, { method: req.method, headers: req.headers, body: Buffer.concat(chunks).toString("utf8") });
+    res.writeHead(answer.status, { "content-type": answer.headers.get("content-type") ?? "application/json" });
+    res.end(Buffer.from(await answer.arrayBuffer()));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => { server.closeAllConnections?.(); server.close(resolve); }));
+  return `http://127.0.0.1:${server.address().port}`;
+}
+
 test("learned_workflow is never run again after a crash, on any harness, and says each workflow and what it does", () => {
   assert.equal(LEARNED_WORKFLOW_TOOL, "learned_workflow");
   assert.equal(REPLAY[LEARNED_WORKFLOW_TOOL], "never");
@@ -99,7 +134,7 @@ for (const harness of ["pi", "claude-agent", "codex"]) {
   test(`a ${harness} run calls the workflow its agent learned as learned_workflow and gets its output, with no edit of its definition; its model requests are the run's, as side requests`, { timeout: 120_000 }, async (t) => {
     const opened = join(await scratch(t), "opened.jsonl");
     withEnv(t, { AGENTRUN_TEST_FAUX_HARNESS_OPENED: opened });
-    const { api, data } = await serve(t, { learning: "on", fauxHarness: FAUX_HARNESS });
+    const { api, data } = await serve(t, { learning: "on", fauxHarness: FAUX_HARNESS, ...(harness === "pi" ? {} : await routed(t, harness)) });
     const { runId, rows, view } = await ran(api, data, `flow-${harness}`, harness, flowFiles("answer", answerFlow()));
     assert.equal(view.status, "completed", JSON.stringify(view));
     assert.deepEqual(pinOf(data, runId).workflows, ["answer"], "the pin names the learned workflow");
@@ -110,9 +145,11 @@ for (const harness of ["pi", "claude-agent", "codex"]) {
     assert.match(JSON.stringify(result), /\{\\?"answer\\?":42\}/, "the workflow's output");
     if (harness === "pi") assert.match(view.result.final_answer, /\{"answer":42\}/);
     else assert.ok(readFileSync(opened, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)).some((entry) => entry.tools?.includes(LEARNED_WORKFLOW_TOOL)), "the harness was given the tool");
-    // Its node's request went through the run's models: marked and costed as a side request of its own.
+    // Its node's request is the run's: on pi through the run's models, marked and costed as a side request of its own; on
+    // another harness through the session's proxy, a request of the session's booking labelled learned_workflow.
     const side = entries(data, runId, ["agentrun.request_started", "agentrun.request_cost"]).filter((entry) => entry.request === LEARNED_WORKFLOW_TOOL);
-    assert.deepEqual(side.map((entry) => entry.kind), ["agentrun.request_started", "agentrun.request_cost"], JSON.stringify(side));
+    if (harness === "pi") assert.deepEqual(side.map((entry) => entry.kind), ["agentrun.request_started", "agentrun.request_cost"], JSON.stringify(side));
+    else assert.deepEqual([side, entries(data, runId, ["runner.request"]).filter((entry) => entry.host === LEARNED_WORKFLOW_TOOL).length], [[], 1], JSON.stringify(entries(data, runId, ["runner.request"])));
   });
 }
 
@@ -308,11 +345,11 @@ test("a learned workflow's call node through a paid web tool is booked under the
   assert.equal(view.cost.usd, 0.001, "the faux model is $0: the run's cost is Parallel's fee");
 });
 
-test("a claude-agent run's learned workflow searches natively through the run's models: its call node's web_search on the provider's hosted search", { timeout: 120_000 }, async (t) => {
+test("a claude-agent run's learned workflow searches natively through the session's proxy: its call node's web_search on the provider's hosted search, at the operator's gateway", { timeout: 120_000 }, async (t) => {
   const dir = await scratch(t);
   const upstream = join(dir, "upstream.jsonl");
-  withEnv(t, { ANTHROPIC_API_KEY: "not-a-secret", AGENT_MODEL: "anthropic/claude-sonnet-4-5", AGENTRUN_TEST_FAUX_UPSTREAM_CALLS: upstream }, ["PARALLEL_API_KEY", "AGENT_MODEL_BASE_URL", "AGENTRUN_TEST_FAUX_UPSTREAM"]);
-  const { api, data } = await serve(t, { learning: "on", fauxHarness: FAUX_HARNESS, fauxUpstream: new URL("./fixtures/faux-upstream.mjs", import.meta.url).pathname });
+  withEnv(t, { ANTHROPIC_API_KEY: "not-a-secret", ANTHROPIC_BASE_URL: await upstreamAt(t), AGENT_MODEL: "anthropic/claude-sonnet-4-5", AGENTRUN_TEST_FAUX_UPSTREAM_CALLS: upstream }, ["PARALLEL_API_KEY", "AGENT_MODEL_BASE_URL", "AGENTRUN_TEST_FAUX_UPSTREAM"]);
+  const { api, data } = await serve(t, { learning: "on", fauxHarness: FAUX_HARNESS, faux: undefined });
   assert.equal((await api("PUT", "/settings/tools", { web_search: { provider: "native" } })).status, 200);
   const { rows } = await ran(api, data, "native-flow", "claude-agent", flowFiles("answer", searchFlow()), ["web_search"]);
   const result = learnedResult(rows);
@@ -325,8 +362,8 @@ test("a claude-agent run's learned workflow searches natively through the run's 
 test("a claude-agent run on Claude's dotted name (anthropic/claude-sonnet-4.5) with a direct key searches natively on the model its run prepared: the dashed one its models hold", { timeout: 120_000 }, async (t) => {
   const dir = await scratch(t);
   const upstream = join(dir, "upstream.jsonl");
-  withEnv(t, { ANTHROPIC_API_KEY: "not-a-secret", AGENT_MODEL: "anthropic/claude-sonnet-4.5", AGENTRUN_TEST_FAUX_UPSTREAM_CALLS: upstream }, ["PARALLEL_API_KEY", "AGENT_MODEL_BASE_URL", "AGENTRUN_TEST_FAUX_UPSTREAM"]);
-  const { api, data } = await serve(t, { learning: "on", fauxHarness: FAUX_HARNESS, fauxUpstream: new URL("./fixtures/faux-upstream.mjs", import.meta.url).pathname });
+  withEnv(t, { ANTHROPIC_API_KEY: "not-a-secret", ANTHROPIC_BASE_URL: await upstreamAt(t), AGENT_MODEL: "anthropic/claude-sonnet-4.5", AGENTRUN_TEST_FAUX_UPSTREAM_CALLS: upstream }, ["PARALLEL_API_KEY", "AGENT_MODEL_BASE_URL", "AGENTRUN_TEST_FAUX_UPSTREAM"]);
+  const { api, data } = await serve(t, { learning: "on", fauxHarness: FAUX_HARNESS, faux: undefined });
   assert.equal((await api("PUT", "/settings/tools", { web_search: { provider: "native" } })).status, 200);
   const { rows } = await ran(api, data, "dotted-flow", "claude-agent", flowFiles("answer", searchFlow()), ["web_search"]);
   const result = learnedResult(rows);
@@ -336,56 +373,8 @@ test("a claude-agent run on Claude's dotted name (anthropic/claude-sonnet-4.5) w
   assert.deepEqual(sent.map((call) => call.path), ["/v1/messages"], "one request to the provider's hosted search");
 });
 
-const OUTPUT_PRICED = new URL("./fixtures/faux-output-priced.mjs", import.meta.url).pathname;
-/** The run's harness requests' records, from its store: each with the worst case its cap held it at. */
-function harnessRequests(data, runId) {
-  const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
-  try {
-    return db.prepare("SELECT record FROM entries").all().map((row) => JSON.parse(String(row.record))).filter((entry) => entry.kind === "runner.request").map((entry) => entry.data);
-  } finally {
-    db.close();
-  }
-}
-
 // The faux model priced on output alone, $100 a million tokens: a request's least (1,024 tokens) is $0.1024. The faux
 // harness books each of its requests at $0.001. Under the faux harness claude-agent and codex run one path.
-test("a capped codex run's learned workflow is held to what the harness left of the cap: its node's request is refused when the harness's spend leaves less than its least, and the run pauses at the cap on the one total", { timeout: 120_000 }, async (t) => {
-  const { api, data } = await serve(t, { learning: "on", fauxHarness: FAUX_HARNESS, faux: OUTPUT_PRICED });
-  // $0.103 less the harness's $0.001 leaves $0.102: not the node's $0.1024, which the cap alone would hold.
-  const { runId, rows, view } = await ran(api, data, "capped-flow", "codex", flowFiles("answer", answerFlow()), [], { fields: { max_cost_usd: 0.103 }, ends: ["completed", "failed", "input_required"] });
-  // A run that reaches its cap pauses until it is raised: on the run's one total (the harness's $0.001 and its own
-  // requests'), the node's least what it needs.
-  assert.deepEqual([view.status, view.state, view.error, view.pending?.kind, view.pending?.cap_usd, view.pending?.spent_usd, view.pending?.needs_usd], ["input_required", "waiting", null, "budget", 0.103, 0.001, 0.1024], JSON.stringify(view));
-  const result = learnedResult(rows);
-  assert.equal(result?.tool_status, "failed", JSON.stringify(result));
-  assert.match(JSON.stringify(result), /model_error/, JSON.stringify(result));
-  assert.equal(entries(data, runId, ["agentrun.request_started"]).filter((entry) => entry.capRefused === true).length, 1, "the cap refused its node's request: its own start mark");
-  assert.deepEqual(entries(data, runId, ["agentrun.request_started", "agentrun.request_cost"]).filter((entry) => entry.request === LEARNED_WORKFLOW_TOOL), [], "no learned request was sent");
-});
-
-test("a capped codex run's harness counts its learned workflow's cost: its next request is held to what is left after it", { timeout: 120_000 }, async (t) => {
-  const { api, data } = await serve(t, { learning: "on", fauxHarness: FAUX_HARNESS, faux: OUTPUT_PRICED });
-  const cap = 0.25;
-  const { runId, rows } = await ran(api, data, "counted-flow", "codex", flowFiles("answer", answerFlow()), [], { fields: { max_cost_usd: cap } });
-  assert.equal(learnedResult(rows)?.tool_status, "success", JSON.stringify(learnedResult(rows)));
-  const side = entries(data, runId, ["agentrun.request_cost"]).filter((entry) => entry.request === LEARNED_WORKFLOW_TOOL).map((entry) => entry.usd);
-  assert.equal(side.length, 1, JSON.stringify(side));
-  assert.ok(side[0] >= 0.0002, `the learned request cost something: ${side[0]}`);
-  const held = harnessRequests(data, runId).map((request) => request.heldUsd);
-  assert.equal(held.length, 2, JSON.stringify(held));
-  // The second is limited to what is left of the cap after the first ($0.001) and the learned request, to the token.
-  const left = cap - 0.001 - side[0];
-  assert.ok(held[1] <= left + 1e-9 && held[1] > left - 0.0001 - 1e-9, `the harness's next request held at ${held[1]}, what is left after the learned workflow's $${side[0]} is ${left}`);
-});
-
-test("a run whose harness would send a learned workflow's requests around the operator's gateway is not offered its learned workflows: the pin leaves each out and names why", { timeout: 60_000 }, async (t) => {
-  const files = { ...flowFiles("answer", answerFlow()), ...flowFiles("other", answerFlow()) };
-  const why = "a learned workflow's requests would not go through the gateway";
-  const { pin } = await pinned(t, "gated", files, [], { workflowsOff: why });
-  assert.deepEqual([pin.workflows, pin.workflows_left_out, pin.workflows_off], [undefined, ["answer", "other"], why], JSON.stringify(pin));
-  assert.deepEqual(await learning.pinnedWorkflows(join(await scratch(t), "none"), pin), []);
-});
-
 test("learned_workflow is a tool the gate holds like any: its settings key is learned_workflow, it defaults to allow, and an agent may set it to ask or deny", async () => {
   const { settingsKeyOf, defaultPermission } = await import("../dist/tool-gate.js");
   const { settingsIssues, SERVE_OWN_TOOLS } = await import("../dist/tool-plane.js");
@@ -406,7 +395,7 @@ test("on pi, learned_workflow set to deny for the agent is refused by the gate i
 });
 
 test("on codex, learned_workflow set to ask parks the run; the owner's allow runs it once and the run resumes with its output", { timeout: 180_000 }, async (t) => {
-  const server = await serve(t, { learning: "on", fauxHarness: FAUX_HARNESS, accounts: true, openSetup: true });
+  const server = await serve(t, { learning: "on", fauxHarness: FAUX_HARNESS, accounts: true, openSetup: true, ...(await routed(t, "codex")) });
   const { api, data } = server;
   const origin = `http://127.0.0.1:${server.port}`;
   const setup = await call(server.port, { method: "POST", path: "/v2/setup", headers: { "content-type": "application/json", origin }, body: { password: SIGN_IN_PHRASE } });
@@ -428,7 +417,7 @@ test("on codex, learned_workflow set to ask parks the run; the owner's allow run
   assert.match(resumed.text, /^learned_workflow ran once you allowed it\. Its result:\n\{\\?"answer\\?":42\}/, resumed.text);
   assert.ok(!resumed.text.includes(view.pending.call_id), "no call id in the row's text");
   assert.equal(rows.some((row) => row.kind === "user_message" && String(row.text).startsWith("[tool approval]")), false, "never shown as the person's message");
-  assert.equal(entries(data, runId, ["agentrun.request_started"]).filter((entry) => entry.request === LEARNED_WORKFLOW_TOOL).length, 1, "its one node ran once");
+  assert.equal(entries(data, runId, ["runner.request"]).filter((entry) => entry.host === LEARNED_WORKFLOW_TOOL).length, 1, "its one node ran once, through the session's proxy");
 });
 
 /** A learned workflow of one call node on `tool`, or that node inside a composed workflow node (`nested`). */

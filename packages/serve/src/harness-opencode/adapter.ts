@@ -288,6 +288,8 @@ export function openCodeAdapter(options: OpenCodeAdapterOptions): AgentAdapter {
           drive.halt?.(new SessionHalt("closed"));
           await running?.catch(() => {});
         },
+        // The session's one model route, for the host's own request beside OpenCode's: the running drive's proxy.
+        port: (label: string) => (closed || !control ? undefined : control.port(label)),
       };
     },
   };

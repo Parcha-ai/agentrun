@@ -4,7 +4,9 @@
 // answered interrupted, never run again.
 import { SessionFenced } from "./errors.js";
 import { abortedOutcome, SessionHalt } from "./kernel/halt.js";
-import type { AdapterSession, AgentAdapter, HostTool, JsonValue, SessionRecord, SessionSpec, SessionState, SessionStore, TurnStatus } from "./types.js";
+import type { AdapterSession, AgentAdapter, HostTool, JsonValue, SessionPort, SessionRecord, SessionSpec, SessionState, SessionStore, TurnStatus } from "./types.js";
+import { type ModelProxy, type ModelProxyOptions, startModelProxy } from "./host/proxy.js";
+import { randomBytes } from "node:crypto";
 
 export { SCHEMA_CHECK_CASES, type SchemaCheckCase } from "./schema-check-cases.js";
 
@@ -74,6 +76,11 @@ export interface FauxOptions {
   refuse?: (spec: SessionSpec) => string[];
   /** How long `open` takes, ignoring the session's signal, as a slow harness start does (default 0). */
   openDelayMs?: number;
+  /** A real model proxy for each session, as a real adapter's machine starts one (its hooks the session's booking,
+   *  io.models), whose side keys the session's `port` hands the host: the host's own requests then go through the same
+   *  policy, origin and credential as a real harness's. The faux harness's own scripted requests stay booked directly.
+   *  `api`: what the proxy serves. */
+  proxy?: { options: Omit<ModelProxyOptions, "hooks">; api: SessionPort["api"] };
 }
 
 export interface FauxAdapter extends AgentAdapter {
@@ -105,6 +112,9 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
       if (options.openDelayMs) await new Promise((resolve) => setTimeout(resolve, options.openDelayMs));
       const script = options.script(spec);
       const records = await io.writer.read();
+      // The session's model proxy, when the faux harness is given one: up for the session's life, its key never used here.
+      const proxy: ModelProxy | undefined = options.proxy ? await startModelProxy({ ...options.proxy.options, hooks: io.models as never }, randomBytes(32).toString("base64url")) : undefined;
+      io.signal.addEventListener("abort", () => void proxy?.close(), { once: true });
       const append = (kind: string, data: JsonValue) => io.writer.append([{ kind, data }]);
       let cursor = records.filter((r) => r.kind === FAUX_RECORDS.request).length;
       const turnsStarted = records.filter((r) => r.kind === FAUX_RECORDS.turn).length;
@@ -151,7 +161,8 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
             if ("halt" in action) { turnSignal!.abort(new Error(action.halt)); return await hang(signal); }
             // Measured as a real adapter's proxy measures its body: the prompt's UTF-8 bytes, with nothing a provider adds.
             const measured = "inputTokensMax" in action && typeof action.inputTokensMax === "number" ? action.inputTokensMax : Buffer.byteLength(JSON.stringify({ system: spec.system, user: prompt }), "utf8");
-            const ticket = await io.models.beforeRequest({ model: "faux", inputTokensMax: measured });
+            // On the session's model: the proxy's, when it has one (the host's own requests go there on that model too).
+            const ticket = await io.models.beforeRequest({ model: options.proxy?.options.model ?? "faux", inputTokensMax: measured });
             if ("cut" in action) { stats.requests += 1; return await hang(signal); }
             if ("cutBooked" in action) {
               stats.requests += 1;
@@ -225,7 +236,8 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
         },
         turnEnd: () => ending ? ending.promise : Promise.resolve({ status: "completed" }),
         async interrupt() { turnSignal?.abort(new SessionHalt("interrupted")); },
-        async close() { turnSignal?.abort(new SessionHalt("closed")); stats.closed.push(spec.key); },
+        async close() { turnSignal?.abort(new SessionHalt("closed")); stats.closed.push(spec.key); await proxy?.close(); },
+        port: (label) => (proxy && options.proxy ? { url: proxy.url, key: proxy.sideKey(label), model: options.proxy.options.model, api: options.proxy.api } : undefined),
       };
       return session;
     },

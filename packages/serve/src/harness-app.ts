@@ -36,7 +36,7 @@ import { existsSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import type { Context } from "@earendil-works/chord";
 import { AssistantEntry, type Cursor, type JsonObject, ROOT_CONVERSATION_ID, type ToolRegistration, ToolResultEntry, type Tx, UserEntry } from "@earendil-works/pi-durable";
-import { type AdapterEvent, type AdapterSession, type AgentAdapter, type ModelPortEvent, type ModelUsage, modelPortFor, RUNNER_RECORDS, type SessionSpec, type TurnStatus } from "@parcha/agentrun-kernel";
+import { type AdapterEvent, type AdapterSession, type AgentAdapter, type ModelPortEvent, type ModelUsage, modelPortFor, RUNNER_RECORDS, type SessionPort, type SessionSpec, type TurnStatus } from "@parcha/agentrun-kernel";
 import { foldSession, INTERRUPTED_TEXT } from "@parcha/agentrun-kernel/kernel";
 import { failureText } from "@parcha/agentrun-kernel/process";
 import type { DoorContext, DoorEvent, DoorHook, DurableRun } from "@parcha/pi-durable-disk";
@@ -44,7 +44,7 @@ import { type ConfineChild, confineOf } from "./adapters.js";
 import { hostTools, type ToolResults } from "./host-tools.js";
 import { endsTurn, type Park, type ParkedCall, type Resume, type RunGate } from "./tool-gate.js";
 import type { McpGateway } from "./mcp-gateway.js";
-import { BOUND_FIELD, CAP_REFUSAL_CODE, CAP_REFUSED_FIELD, type CapGuard, capToolSpend, holdsInFlight, type Previous, previousOf, type RefusalFigures, refusalFields, type RunSpend, sideSpend, takePaidRefusal, useSpend } from "./cap.js";
+import { BOUND_FIELD, CAP_REFUSAL_CODE, CAP_REFUSED_FIELD, type CapGuard, capToolSpend, holdsInFlight, type Previous, previousOf, type RefusalFigures, refusalFields, type RunSpend, takePaidRefusal, useSpend } from "./cap.js";
 import { durableSessions } from "./sessions.js";
 import { handsParallel, planeOf } from "./tool-plane.js";
 import { parallelOf } from "./web-fetch.js";
@@ -128,6 +128,9 @@ function assistantMessage(harness: string, model: string | undefined, request: P
 export interface AdapterRun {
   readonly door: DoorHook;
   onOpen(run: DurableRun): Promise<void>;
+  /** The session's one model route for the run's own requests beside the harness's (AdapterSession.port), under a side
+   *  key minted for `label`: undefined until the session is open with a proxy up. */
+  port(label: string): SessionPort | undefined;
 }
 
 /** The door and the open of a run whose session is `spec` on `adapter`, with the host tools `tools` names (built at the
@@ -175,8 +178,8 @@ export function adapterRun(
   // The session's previous request on each model, as the cap prices the next one by it (cap.ts Previous): each admitted
   // request's input bound and bound, from the guard (one slot: admissions run one at a time) to its start, by turn, until
   // it answers with its usage. In this process only: a new process prices its first request with nothing cached.
-  let admittedNext: { model: string; inputTokensMax?: number; boundUsd: number } | undefined;
-  const sentOf = new Map<number, { model: string; inputTokensMax?: number }>();
+  let admittedNext: { model: string; inputTokensMax?: number; boundUsd: number; host?: true } | undefined;
+  const sentOf = new Map<number, { model: string; inputTokensMax?: number; host?: true }>();
   const previous = new Map<string, Previous>();
   // The run's spend as a paid tool's check reads it (useSpend, set at the open): a paid call refused under it pauses the
   // run at this run's next request (guard).
@@ -184,14 +187,18 @@ export function adapterRun(
   const plus = (a: number | null, b: number | null) => (a === null || b === null ? null : a + b);
   const guard = (request: Parameters<CapGuard["beforeRequest"]>[0]) => {
     const byCancel = cancelled();
-    // What the run spent: the booking's, its paid tools' charges, and its own model requests' beside the harness's (a
-    // learned workflow's: cap.ts sideSpend); theirs in flight are held with the paid calls' (paidHolds, capBefore).
+    // What the run spent: the booking's (every model request of the session's, the harness's and the run's own beside it,
+    // a learned workflow node's: one meter) and its paid tools' charges; theirs in flight are held with the paid calls'
+    // (paidHolds, capBefore).
     // A paid call the cap just refused for room (cap.ts takePaidRefusal): this request is refused in its words, so the
     // turn ends there and the run waits on a raise, as at a model request's refusal. A refusal no cap fixes comes first.
     const paid = byCancel || !cap || request.spentUsd === null ? undefined : takePaidRefusal(spend);
     const model = (request as { model?: unknown }).model;
-    const before = typeof model === "string" ? previous.get(model) : undefined;
-    const answer = byCancel ? { refuse: CANCELLED } : paid ? { refuse: `${CAP_REFUSAL_CODE}${paid.words}`, spentUsd: paid.figures.spentUsd, needsUsd: paid.figures.needsUsd, leastCapUsd: paid.figures.leastCapUsd } : cap?.beforeRequest({ ...request, spentUsd: plus(plus(request.spentUsd, charged), sideSpend()), ...(before ? { previous: before } : {}) });
+    // A request the run sends beside the harness's (its host label) is priced with nothing cached by the harness's own, and
+    // never stands for the harness's previous one: its prompt is another conversation's.
+    const host = typeof request.host === "string";
+    const before = typeof model === "string" && !host ? previous.get(model) : undefined;
+    const answer = byCancel ? { refuse: CANCELLED } : paid ? { refuse: `${CAP_REFUSAL_CODE}${paid.words}`, spentUsd: paid.figures.spentUsd, needsUsd: paid.figures.needsUsd, leastCapUsd: paid.figures.leastCapUsd } : cap?.beforeRequest({ ...request, spentUsd: plus(request.spentUsd, charged), ...(before ? { previous: before } : {}) });
     if (answer && "refuse" in answer) {
       refused = answer.refuse;
       capRefused = !byCancel;
@@ -199,7 +206,7 @@ export function adapterRun(
       return answer;
     }
     inFlight.admitted(answer?.holdUsd);
-    admittedNext = typeof model === "string" ? { model, ...(request.inputTokensMax === undefined ? {} : { inputTokensMax: request.inputTokensMax }), boundUsd: answer?.boundUsd ?? 0 } : undefined;
+    admittedNext = typeof model === "string" ? { model, ...(request.inputTokensMax === undefined ? {} : { inputTokensMax: request.inputTokensMax }), boundUsd: answer?.boundUsd ?? 0, ...(host ? { host: true as const } : {}) } : undefined;
     if (!answer) return undefined;
     // Admitted, limited to the output what is left of the cap buys (which the runner hands the model proxy): what the cap
     // holds it at, which the runner records, and counts it at if its cost never comes in; stopped part way by its client,
@@ -257,6 +264,8 @@ export function adapterRun(
   // Requests admitted and not yet booked, by turn: the proxy answers the harness before it books a response, so a turn
   // can end with its last request's cost still on its way.
   const open = new Set<number>();
+  // The requests in flight that the run sent beside the harness's (their host label), each booked on its own.
+  const hosts = new Set<number>();
   // The model each request asked for, by number: its entry names it.
   const models = new Map<number, string>();
   let booked: () => void = () => {};
@@ -307,7 +316,8 @@ export function adapterRun(
       calls = [];
       // At a turn's end with no cost in: the request still unbooked is the one this content answers. It is written at
       // unknown cost and marked booked, so a later open never writes it again.
-      const unbooked = !request && final && open.size ? Math.min(...open) : undefined;
+      const ownOpen = [...open].filter((n) => !hosts.has(n));
+      const unbooked = !request && final && ownOpen.length ? Math.min(...ownOpen) : undefined;
       if (unbooked !== undefined) open.delete(unbooked);
       const marked = request?.request ?? unbooked;
       if (marked !== undefined) answered.add(marked);
@@ -349,23 +359,45 @@ export function adapterRun(
       admittedNext = undefined;
       if (admitted) sentOf.set(event.turn, admitted);
       const bound: Record<string, number> = admitted && admitted.boundUsd > 0 ? { [BOUND_FIELD]: admitted.boundUsd } : {};
-      current = event.turn;
       open.add(event.turn);
       models.set(event.turn, event.model);
-      void flush();
+      // A request the run sends beside the harness's (its host label: a learned workflow's node) is the session's like
+      // any, marked as it leaves and booked once it answers, but it is never the harness's current request: the harness's
+      // text and calls are never its content, and its entry holds its cost alone (below).
+      if (event.host !== undefined) hosts.add(event.turn);
+      else {
+        current = event.turn;
+        void flush();
+      }
       // Marked on the root as it leaves, as a pi run's request is (request-start.ts): one never answered, a run that ends
       // without opening again (cancelled, or failed) reads as cut, its cost unknown, never as the sum without it.
       // A store that refuses it has refused a write already, and the process ends on that.
-      later(() => commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: REQUEST_STARTED, data: { key: spec.key, request: event.turn, ...bound } })))).catch(() => undefined);
+      later(() => commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: REQUEST_STARTED, data: { key: spec.key, request: event.turn, ...bound, ...(event.host === undefined ? {} : { host: event.host }) } })))).catch(() => undefined);
     } else {
       open.delete(event.turn);
       inFlight.ended(event.turn);
       // The previous request on its model, now: its usage, as the cap reads it (none when its cost or usage is unknown,
-      // or it was cut: nothing cached to count on).
+      // or it was cut: nothing cached to count on). A host request's is never the harness's previous one.
       const sent = sentOf.get(event.turn);
       sentOf.delete(event.turn);
-      const last = sent && event.usage.usd !== null && !event.usage.cut ? previousOf(event.usage, sent.inputTokensMax, now()) : undefined;
-      if (sent) last ? previous.set(sent.model, last) : previous.delete(sent.model);
+      const last = sent && !sent.host && event.usage.usd !== null && !event.usage.cut ? previousOf(event.usage, sent.inputTokensMax, now()) : undefined;
+      if (sent && !sent.host) last ? previous.set(sent.model, last) : previous.delete(sent.model);
+      if (event.host !== undefined || hosts.has(event.turn)) {
+        // Its own entry, its cost alone, and its BOOKED marker (which closes its bound, bounds.ts), once: never the
+        // content of the harness's request.
+        hosts.delete(event.turn);
+        booked();
+        if (written.has(event.turn)) return;
+        written.add(event.turn);
+        answered.add(event.turn);
+        priced.add(event.turn);
+        const host = event.host;
+        later(() => commit(async (tx) => {
+          await tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [assistantMessage(harness, models.get(event.turn), { request: event.turn, usage: event.usage }, "", []) as never] });
+          await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: BOOKED, data: { key: spec.key, request: event.turn, ...(host === undefined ? {} : { host }) } });
+        })).catch(() => undefined);
+        return;
+      }
       costed.push({ request: event.turn, usage: event.usage });
       booked();
       // A cost that came in after its answer was written goes in now, not at some later flush, and so does one that came
@@ -627,6 +659,7 @@ export function adapterRun(
 
   return {
     door,
+    port: (label) => session?.port?.(label),
     async onOpen(durable) {
       run = durable;
       const sessions = durableSessions(durable.harness, context);
@@ -699,15 +732,14 @@ export function adapterRun(
       });
       // A request a crash cut off is booked once, unknown, before anything is sent.
       await booking.bookCut();
-      // A paid tool's check before it spends: the session's requests, each booked once the proxy has answered (waited
-      // for, as at a turn's end), one still in flight at the worst case the cap held for it (as pi's spend counts it),
-      // with the run's charges and its own model requests' (sideSpend); its charge joins them. The run's own model
-      // requests read the same total at once (`now`: capModels' `joined`), a request in flight held, never less.
+      // A paid tool's check before it spends: the session's requests (the run's own beside the harness's among them), each
+      // booked once the proxy has answered (waited for, as at a turn's end), one still in flight at the worst case the cap
+      // held for it (as pi's spend counts it), with the run's charges; its charge joins them.
       if (budgetUsd !== undefined) {
-        const now = () => plus(plus(plus(booking.spentUsd(), charged), sideSpend()), inFlight.total());
+        const now = () => plus(plus(booking.spentUsd(), charged), inFlight.total());
         spend = {
           cap: budgetUsd,
-          spent: async () => (await bookings(BOOKING_WAIT_MS), plus(plus(booking.spentUsd(), charged), sideSpend())),
+          spent: async () => (await bookings(BOOKING_WAIT_MS), plus(booking.spentUsd(), charged)),
           held: () => inFlight.total(),
           add: (usd) => void (charged = plus(charged, usd)),
           now,

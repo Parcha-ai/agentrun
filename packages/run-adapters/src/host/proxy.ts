@@ -14,7 +14,7 @@
 //    response's usage once it completes (`afterRequest`). Every paid request forwarded is booked exactly once: a response
 //    cut short, or one that says no usage, is booked at an unknown cost.
 // Model spend is accounted only there, by the runner: the proxy keeps no ledger of its own.
-import { createHash, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingHttpHeaders, type IncomingMessage, type ServerResponse } from "node:http";
 import { type McpHandler, mcpRoute } from "./mcp-route.js";
 import { CONTENT_FILTERED, type McpClient, type SessionMcp } from "../types.js";
@@ -53,8 +53,10 @@ export interface ProviderPolicy {
   /** A listed request header's value as forwarded, or undefined to drop it; a `ProxyRefusal` refuses the request before
    *  the runner is asked (a beta the policy does not know). Default: as sent. */
   header?(name: string, value: string): string | undefined;
-  /** The body the provider gets for a request on `route`: throw a `ProxyRefusal` to refuse it. */
-  apply(body: unknown, route: ProxyRoute): Record<string, unknown>;
+  /** The body the provider gets for a request on `route`: throw a `ProxyRefusal` to refuse it. `context.host`: the
+   *  request is the host's own, beside the harness's (ModelProxy.sideKey), whose tools are its own client-side ones, not
+   *  the session's. */
+  apply(body: unknown, route: ProxyRoute, context?: ProxyRequestContext): Record<string, unknown>;
   /** The usage a completed response reports, if it reports one: from its whole text, or, for a long one, its first and
    *  last 64 KiB (a provider may report input tokens as a stream starts and output tokens as it ends). */
   usageOf(text: string): ProxyUsage | undefined;
@@ -181,6 +183,8 @@ export interface ProxyRequest {
   outputTokensAsked?: number;
   /** The least output it may be limited to and still answer (the policy's `outputLeast`). */
   outputTokensLeast?: number;
+  /** The label of the side key it came under (ModelProxy.sideKey): the host's own request, beside the harness's. */
+  host?: string;
 }
 
 export interface ModelProxyHooks {
@@ -250,7 +254,20 @@ export interface ModelProxy {
   readonly url: string;
   /** The key the harness sends, which the proxy admits. */
   readonly key: string;
+  /** A key of the host's own for the requests it sends beside the harness's on this session's route (a learned
+   *  workflow's model node, `label` "learned_workflow"): one per label, random, minted here and never handed to the
+   *  harness. A request under it goes through the same policy, origin, credential, price and hooks as the harness's;
+   *  its admission names the label (ModelRequest.host), the policy applies it as the host's (`ProxyRequestContext`),
+   *  it is never the turn's answer request (a content-filter stop on it never halts the turn) and never watched. It opens
+   *  the model routes only: the session's MCP door stays behind the session's key. */
+  sideKey(label: string): string;
   close(): Promise<void>;
+}
+
+/** What a policy is told of the request it applies: the label of the side key it came under (ModelProxy.sideKey), when
+ *  it is the host's own request. */
+export interface ProxyRequestContext {
+  readonly host?: string;
 }
 
 /** A server's endpoint, `/mcp/<server>`, with no query. */
@@ -444,6 +461,14 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
   const draining = new Map<AbortController, Promise<void>>();
   /** Set by close(): nothing is admitted or sent after it. */
   let closing = false;
+  /** The side keys minted (sideKey), each with its label. */
+  const sideKeys = new Map<string, string>();
+  /** The label of the side key `sent`, compared in constant time against each minted one; undefined for any other. */
+  const sideOf = (sent: string): string | undefined => {
+    let found: string | undefined;
+    for (const [label, minted] of sideKeys) if (sameKey(sent, minted)) found = label;
+    return found;
+  };
 
   /** The host's log, which must never break a request (a throw from it is dropped). */
   const say = (message: string, detail?: Record<string, unknown>) => {
@@ -492,7 +517,10 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       res.writeHead(route.local, { "content-length": "0" });
       return res.end();
     }
-    if (!sameKey(policy.keyOf(req.headers), key)) return refuse(res, 401, "this session's key is required", req);
+    // The session's key (the harness's requests), or a side key the host holds (its own, labelled).
+    const sentKey = policy.keyOf(req.headers);
+    const host = sameKey(sentKey, key) ? undefined : sideOf(sentKey);
+    if (host === undefined && !sameKey(sentKey, key)) return refuse(res, 401, "this session's key is required", req);
     const chunks: Buffer[] = [];
     let size = 0;
     for await (const chunk of req) {
@@ -503,7 +531,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     let body: Record<string, unknown>;
     const headers: Record<string, string> = { "content-type": "application/json" };
     try {
-      body = policy.apply(parseStrict(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks))), route);
+      body = policy.apply(parseStrict(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks))), route, host === undefined ? {} : { host });
       // The listed headers, as the policy keeps them (or refuses them), before the runner is asked.
       for (const name of route.headers ?? []) {
         const value = req.headers[name.toLowerCase()];
@@ -580,6 +608,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
         model: asked, inputTokensMax,
         ...(outputTokensAsked === undefined ? {} : { outputTokensAsked }),
         ...(outputTokensLeast === undefined ? {} : { outputTokensLeast }),
+        ...(host === undefined ? {} : { host }),
       });
     } catch (error) {
       // Not 429: clients retry that, and the runner already refused this request (a turn cap, the host's budget).
@@ -646,9 +675,9 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     /** Whether the provider's content-filter stop was read (once an answer). */
     let filteredTold = false;
     /** Whether this request is the turn's answer request (`ProviderPolicy.answers`): a side call's stop ends nothing. */
-    let answering = true;
+    let answering = host === undefined;
     try {
-      answering = policy.answers ? policy.answers(body) : true;
+      if (host === undefined) answering = policy.answers ? policy.answers(body) : true;
     } catch (error) {
       say(`model proxy (${policy.id}): whether the request is the turn's could not be read; taken as the turn's`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
     }
@@ -714,7 +743,8 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       const decoder = new TextDecoder();
       let watcher: { chunk(text: string): void; failed?(): void; end?(): void } | undefined;
       try {
-        watcher = policy.watch?.();
+        // The host's own side requests are never the harness's to watch.
+        watcher = host === undefined ? policy.watch?.() : undefined;
         watchEnd = watcher?.end?.bind(watcher);
       } catch (error) {
         say(`model proxy (${policy.id}): the response watcher could not start`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
@@ -874,6 +904,12 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
   return {
     url: `http://127.0.0.1:${address.port}`,
     key,
+    sideKey: (label: string) => {
+      if (!label) throw new Error("agentrun-kernel: a side key needs a label");
+      let minted = sideKeys.get(label);
+      if (!minted) sideKeys.set(label, (minted = randomBytes(32).toString("base64url")));
+      return minted;
+    },
     close: async () => {
       closing = true;
       for (const c of inflight) if (!draining.has(c)) c.abort();

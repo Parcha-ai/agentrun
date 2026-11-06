@@ -198,9 +198,8 @@ export type Turn = { answer: string; asked: string[] };
  *  `workflows`: the names of the learned workflows the run may run (its `learned_workflow` tool), each written whole in
  *  LEARNED_WORKFLOWS_FILE in the run's directory, outside its work; `workflows_left_out`: the learned workflows it does
  *  not get, their lines over what is left of the tool's description budget (LEARNED_WORKFLOWS_BUDGET), or holding a
- *  secret, or every one when `workflows_off` says why the run is offered none (its harness's requests go where a learned
- *  workflow's could not follow: learnedWorkflowsOff). */
-export type Pin = { seed: string; section?: string; given?: NoteUsed[]; skills?: string[]; skills_left_out?: string[]; workflows?: string[]; workflows_left_out?: string[]; workflows_off?: string };
+ *  secret. Every harness runs them, on the run's one model route. */
+export type Pin = { seed: string; section?: string; given?: NoteUsed[]; skills?: string[]; skills_left_out?: string[]; workflows?: string[]; workflows_left_out?: string[] };
 /** What a run is seeded from: main's commit, its index and its active notes by file, and the name of every entry at its
  *  top. `skipped` names what was there and not read. `recent`, when seedOf read it: the active notes' files, the one
  *  changed last on main first. `skills`, when seedOf read them: the skills the agent wrote, the one changed last on main
@@ -809,7 +808,7 @@ export async function layLearned(dir: string, seed: Seed, shown: Shown): Promise
 
 /** How a run reads what it learned (learnedOf): the server's learning budget, in bytes; whether its agent has the read
  *  tool; the host's secrets, which every text is cut of. */
-export type LearnedOptions = { budget: number; read: boolean; shown: Shown; workflowsOff?: string };
+export type LearnedOptions = { budget: number; read: boolean; shown: Shown };
 /** The lines before what a run learned, under `# Learned` after LEARNS, and the one that names `.learning/` to an agent
  *  that can read it. */
 const KEPT = "Follow a note when it applies to what you are doing.";
@@ -952,11 +951,6 @@ export async function pinSeed(runDir: string, work: string, seed: Seed, options:
     const flowsLeft: string[] = [];
     let room = LEARNED_WORKFLOWS_BUDGET;
     for (const flow of seed.workflows ?? []) {
-      // None, when the run is offered none (learnedWorkflowsOff): each is named, but for a name that is itself a secret.
-      if (options.workflowsOff !== undefined) {
-        if (!options.shown.holds(flow.name)) flowsLeft.push(flow.name);
-        continue;
-      }
       if (options.shown.holds(flow.workflow) || options.shown.holds(flow.description) || options.shown.holds(flow.name)) {
         // Named, but for a name that is itself a secret.
         if (!options.shown.holds(flow.name)) flowsLeft.push(flow.name);
@@ -967,7 +961,7 @@ export async function pinSeed(runDir: string, work: string, seed: Seed, options:
       else (room -= bytes), flows.push(flow);
     }
     if (flows.length) await writeDurable(join(runDir, LEARNED_WORKFLOWS_FILE), `${JSON.stringify(flows)}\n`);
-    const pin: Pin = { seed: seed.sha, ...(section ? { section } : {}), ...(given.length ? { given: given.map(({ file, name }) => ({ file, name })) } : {}), ...(skills.length ? { skills } : {}), ...(left.length ? { skills_left_out: left } : {}), ...(flows.length ? { workflows: flows.map(({ name }) => name) } : {}), ...(options.workflowsOff !== undefined && flowsLeft.length ? { workflows_off: options.workflowsOff } : {}), ...(flowsLeft.length ? { workflows_left_out: flowsLeft } : {}) };
+    const pin: Pin = { seed: seed.sha, ...(section ? { section } : {}), ...(given.length ? { given: given.map(({ file, name }) => ({ file, name })) } : {}), ...(skills.length ? { skills } : {}), ...(left.length ? { skills_left_out: left } : {}), ...(flows.length ? { workflows: flows.map(({ name }) => name) } : {}), ...(flowsLeft.length ? { workflows_left_out: flowsLeft } : {}) };
     // The pin names the skills before they are laid: a server that goes down while they are takes them back (dropSeed).
     await writeDurable(pinFile, `${JSON.stringify(pin)}\n`);
     await laySkills(work, taken, made);
@@ -1022,7 +1016,7 @@ export async function readPin(runDir: string): Promise<Pin | undefined> {
   const pin = JSON.parse(text) as unknown;
   const names = (value: unknown, shape: (entry: string) => boolean) => value === undefined || (Array.isArray(value) && value.every((entry) => typeof entry === "string" && shape(entry)));
   const skillFile = (entry: string) => SKILL_NAME.test(entry.split("/")[0]!) && SKILL_FILE_PATH.test(entry.slice(entry.indexOf("/") + 1)) && entry.includes("/");
-  if (!isObject(pin) || typeof pin.seed !== "string" || (pin.section !== undefined && typeof pin.section !== "string") || (pin.given !== undefined && !(Array.isArray(pin.given) && pin.given.every((entry: unknown) => isObject(entry) && typeof entry.file === "string" && typeof entry.name === "string"))) || !names(pin.skills, skillFile) || !names(pin.skills_left_out, () => true) || !names(pin.workflows, (entry) => WORKFLOW_NAME.test(entry)) || !names(pin.workflows_left_out, (entry) => WORKFLOW_NAME.test(entry)) || (pin.workflows_off !== undefined && typeof pin.workflows_off !== "string")) throw new Error(`the run's ${LEARNING_PIN} is not a learning pin`);
+  if (!isObject(pin) || typeof pin.seed !== "string" || (pin.section !== undefined && typeof pin.section !== "string") || (pin.given !== undefined && !(Array.isArray(pin.given) && pin.given.every((entry: unknown) => isObject(entry) && typeof entry.file === "string" && typeof entry.name === "string"))) || !names(pin.skills, skillFile) || !names(pin.skills_left_out, () => true) || !names(pin.workflows, (entry) => WORKFLOW_NAME.test(entry)) || !names(pin.workflows_left_out, (entry) => WORKFLOW_NAME.test(entry))) throw new Error(`the run's ${LEARNING_PIN} is not a learning pin`);
   return pin as Pin;
 }
 
