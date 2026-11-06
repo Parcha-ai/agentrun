@@ -81,7 +81,7 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
   const body: StartBody = built.ok ? built.body : { input: kind === "agentic" ? { content: text } : text, ...(attachments.fileIds.length ? { file_ids: attachments.fileIds } : {}) };
   const key = agentId ? keys.keyFor(agentId, body) : "";
   const code = lang === "curl" ? curlFor(origin, agentId, body, key)
-    : `const res = await fetch(${JSON.stringify(`${origin}/v2/agents/${agentId}/runs`)}, {\n  method: "POST",\n  headers: {\n    Authorization: \`Bearer \${process.env.AGENTRUN_TOKEN}\`,\n    "Content-Type": "application/json",\n    "Idempotency-Key": ${JSON.stringify(key)},\n  },\n  body: JSON.stringify(${JSON.stringify(body, null, 2).replace(/\n/g, "\n  ")}),\n});\nconsole.log(res.status, await res.json());`;
+    : `const res = await fetch(${JSON.stringify(`${origin}/v2/agents/${agentId}/runs`)}, {\n  method: "POST",\n  headers: {\n    Authorization: \`Bearer \${process.env.AGENTRUN_API_KEY}\`,\n    "Content-Type": "application/json",\n    "Idempotency-Key": ${JSON.stringify(key)},\n  },\n  body: JSON.stringify(${JSON.stringify(body, null, 2).replace(/\n/g, "\n  ")}),\n});\nconsole.log(res.status, await res.json());`;
   const send = async () => {
     if (!built.ok || !onSend || attachments.busy) return;
     setSending(true);
@@ -167,7 +167,7 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
             <>
               <div className="flex gap-5 border-b px-5 text-[12px] md:px-6">{(["curl", "fetch"] as const).map((l) => <button key={l} type="button" onClick={() => setLang(l)} className={cn("-mb-px border-b-2 py-2.5", lang === l ? "border-primary" : "border-transparent text-muted-foreground")}>{l === "curl" ? "cURL" : "JavaScript"}</button>)}</div>
               <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words px-5 py-5 font-mono text-[12px] leading-[1.8] md:px-6">{code}</pre>
-              <footer className="border-t px-5 py-3 text-[12px] text-muted-foreground md:px-6">The same request from your code: set AGENTRUN_TOKEN in your environment.</footer>
+              <footer className="border-t px-5 py-3 text-[12px] text-muted-foreground md:px-6">The same request from your code: set AGENTRUN_API_KEY in your environment.</footer>
             </>
           ) : result && (
             <>
