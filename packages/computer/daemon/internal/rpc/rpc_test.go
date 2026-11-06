@@ -254,50 +254,6 @@ func TestHandlerErrorsKeepTheirKind(t *testing.T) {
 	}
 }
 
-func TestNotificationsLeaveBeforeTheReplyAndNameTheRequest(t *testing.T) {
-	c := start(t, map[string]rpc.Handler{
-		"count": func(ctx context.Context, _ json.RawMessage) (any, error) {
-			for i := range 3 {
-				if err := rpc.Notify(ctx, "count.tick", map[string]any{"request": rpc.RequestID(ctx), "n": i}); err != nil {
-					return nil, err
-				}
-			}
-			return "done", nil
-		},
-	})
-	c.send(`{"jsonrpc":"2.0","id":"c1","method":"count"}` + "\n")
-	for i := range 3 {
-		line := <-c.lines
-		var note struct {
-			JSONRPC string          `json:"jsonrpc"`
-			ID      json.RawMessage `json:"id"`
-			Method  string          `json:"method"`
-			Params  struct {
-				Request json.RawMessage `json:"request"`
-				N       int             `json:"n"`
-			} `json:"params"`
-		}
-		if err := json.Unmarshal(line, &note); err != nil || note.JSONRPC != "2.0" || note.ID != nil || note.Method != "count.tick" || string(note.Params.Request) != `"c1"` || note.Params.N != i {
-			t.Fatalf("want notification %d for c1, got %s", i, line)
-		}
-	}
-	if r := c.next(); string(r.ID) != `"c1"` || string(r.Result) != `"done"` {
-		t.Fatalf("want the reply after the notifications, got %+v", r)
-	}
-}
-
-func TestANotificationOverTheLineLimitIsRefused(t *testing.T) {
-	c := start(t, map[string]rpc.Handler{
-		"big": func(ctx context.Context, _ json.RawMessage) (any, error) {
-			return nil, rpc.Notify(ctx, "big.data", strings.Repeat("z", rpc.MaxLine))
-		},
-	})
-	c.send(`{"jsonrpc":"2.0","id":1,"method":"big"}` + "\n")
-	if r := c.next(); string(r.ID) != "1" || r.Error == nil || r.Error.Data.Kind != "limit" {
-		t.Fatalf("want a limit error and no notification, got %+v", r)
-	}
-}
-
 type closer struct{ closed chan struct{} }
 
 func (c *closer) Close() error { close(c.closed); return nil }

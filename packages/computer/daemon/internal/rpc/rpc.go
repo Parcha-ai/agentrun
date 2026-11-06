@@ -258,7 +258,7 @@ func (sess *session) handleLine(line []byte, oversized bool) {
 		return
 	}
 	key := canonical(req.ID)
-	ctx, cancel := context.WithCancel(context.WithValue(sess.ctx, callKey{}, &call{sess: sess, id: req.ID}))
+	ctx, cancel := context.WithCancel(context.WithValue(sess.ctx, callKey{}, &call{sess: sess}))
 	sess.mu.Lock()
 	if _, busy := sess.inFlight[key]; busy {
 		sess.mu.Unlock()
@@ -353,43 +353,11 @@ func (sess *session) writeLine(data []byte) error {
 	return err
 }
 
-type notification struct {
-	JSONRPC string `json:"jsonrpc"`
-	Method  string `json:"method"`
-	Params  any    `json:"params"`
-}
-
 type callKey struct{}
 
 // call is what a handler's context knows of its request.
 type call struct {
 	sess *session
-	id   json.RawMessage
-}
-
-// Notify sends a notification on the connection of the request ctx belongs to. The handler's own goroutine writes it,
-// so its notifications leave in order and before its reply. It waits while the client does not read.
-func Notify(ctx context.Context, method string, params any) error {
-	c, ok := ctx.Value(callKey{}).(*call)
-	if !ok {
-		return errors.New("rpc: Notify outside a request")
-	}
-	data, err := json.Marshal(notification{JSONRPC: "2.0", Method: method, Params: params})
-	if err != nil {
-		return err
-	}
-	if len(data) > MaxLine {
-		return Errorf(KindLimit, "the %s notification is %d bytes, over the %d-byte line limit", method, len(data), MaxLine)
-	}
-	return c.sess.writeLine(data)
-}
-
-// RequestID is the id of the request ctx belongs to.
-func RequestID(ctx context.Context) json.RawMessage {
-	if c, ok := ctx.Value(callKey{}).(*call); ok {
-		return c.id
-	}
-	return nullID
 }
 
 // Local returns the value the connection of ctx keeps under key, made by create on its first use. When the connection

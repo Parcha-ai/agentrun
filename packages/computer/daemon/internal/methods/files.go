@@ -9,14 +9,6 @@ import (
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/rpc"
 )
 
-// TarDataMethod is the notification that carries a tar.pull's bytes, naming the pull's request id.
-const TarDataMethod = "tar.data"
-
-type TarData struct {
-	Request json.RawMessage `json:"request"`
-	Data    []byte          `json:"data"`
-}
-
 // fileHandlers are the files.* and tar.* methods. Their params and results are in package files, beside what answers
 // them.
 func fileHandlers() map[string]rpc.Handler {
@@ -28,13 +20,14 @@ func fileHandlers() map[string]rpc.Handler {
 		"files.mkdir":  handle(files.Mkdir),
 		"files.move":   handle(files.Move),
 		"files.remove": handle(files.Remove),
-		"tar.pull": func(ctx context.Context, raw json.RawMessage) (any, error) {
-			return handle(func(params files.PullParams) (files.PullResult, error) {
-				id := rpc.RequestID(ctx)
-				return files.Pull(ctx, params, func(chunk []byte) error {
-					return rpc.Notify(ctx, TarDataMethod, TarData{Request: id, Data: chunk})
-				})
-			})(ctx, raw)
+		"tar.pull.begin": func(ctx context.Context, raw json.RawMessage) (any, error) {
+			return handle(pulls(ctx).Begin)(ctx, raw)
+		},
+		"tar.pull.read": func(ctx context.Context, raw json.RawMessage) (any, error) {
+			return handle(pulls(ctx).Read)(ctx, raw)
+		},
+		"tar.pull.end": func(ctx context.Context, raw json.RawMessage) (any, error) {
+			return handle(pulls(ctx).End)(ctx, raw)
 		},
 		"tar.push.begin": func(ctx context.Context, raw json.RawMessage) (any, error) {
 			return handle(pushes(ctx).Begin)(ctx, raw)
@@ -65,7 +58,14 @@ func handle[P, R any](fn func(P) (R, error)) rpc.Handler {
 
 type pushesKey struct{}
 
+type pullsKey struct{}
+
 // pushes are the connection's open tar pushes: what is unfinished when it ends is ended with it.
 func pushes(ctx context.Context) *files.Pushes {
 	return rpc.Local(ctx, pushesKey{}, func() io.Closer { return files.NewPushes() }).(*files.Pushes)
+}
+
+// pulls are the connection's open tar pulls, ended with it.
+func pulls(ctx context.Context) *files.Pulls {
+	return rpc.Local(ctx, pullsKey{}, func() io.Closer { return files.NewPulls() }).(*files.Pulls)
 }

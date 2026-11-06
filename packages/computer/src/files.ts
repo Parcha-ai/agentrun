@@ -111,63 +111,52 @@ async function abandon<T>(client: DaemonClient, id: string, why: Result<T>): Pro
 	return why;
 }
 
-/** Pulls the tar of a file or directory in the computer, as chunks while they come. */
+/**
+ * Pulls the tar of a file or directory in the computer, a chunk each time the loop asks. The pull is ended, which frees
+ * it in the daemon, when the archive ends, the loop is left, a read fails, or the signal aborts.
+ */
 export function pullTarStream(client: DaemonClient, path: string, options: { signal?: AbortSignal } = {}): PulledTar {
-	const stop = new AbortController();
-	const signal = options.signal ? AbortSignal.any([options.signal, stop.signal]) : stop.signal;
-	const queue: Buffer[] = [];
-	let received = 0;
-	let finished = false;
-	let wake: (() => void) | undefined;
-	let room: (() => void) | undefined;
-	const nudge = () => {
-		wake?.();
-		wake = undefined;
-	};
-	const free = () => {
-		room?.();
-		room = undefined;
-	};
-	const done = client
-		.call(
-			"tar.pull",
-			{ path },
-			{
-				signal,
-				onNotification: ({ method, params }) => {
-					if (method !== TAR_DATA_METHOD) return;
-					const data = Buffer.from((params as TarDataParams).data, "base64");
-					received += data.length;
-					queue.push(data);
-					nudge();
-					if (queue.length >= HIGH_WATER) return new Promise<void>((resolve) => (room = resolve));
-				},
-			},
-		)
-		.then((result): Result<TarPullResult> => {
-			finished = true;
-			nudge();
-			if (result.ok && result.value.bytes !== received) {
-				return fail("invalid", `the pull of ${path} sent ${received} bytes, and its reply says ${result.value.bytes}`);
-			}
-			return result;
-		});
+	const { signal } = options;
+	let settle!: (result: Result<{ bytes: number }>) => void;
+	const done = new Promise<Result<{ bytes: number }>>((resolve) => (settle = resolve));
+	const aborted: ComputerError = { code: "aborted", message: `the pull of ${path} was aborted` };
+	const thrown = (error: ComputerError) => new Error(error.message, { cause: error });
 	async function* chunks(): AsyncGenerator<Uint8Array> {
+		if (signal?.aborted) {
+			settle({ ok: false, error: aborted });
+			throw thrown(aborted);
+		}
+		const begun = await client.call("tar.pull.begin", { path });
+		if (!begun.ok) {
+			settle(begun);
+			throw thrown(begun.error);
+		}
+		const { id } = begun.value;
+		const end = () => client.call("tar.pull.end", { id });
+		const onAbort = () => void end().then(() => settle({ ok: false, error: aborted }));
+		signal?.addEventListener("abort", onAbort, { once: true });
+		let ended: Result<{ bytes: number }> = fail("aborted", `the loop over the pull of ${path} was left before its end`);
+		let bytes = 0;
 		try {
 			for (;;) {
-				const next = queue.shift();
-				if (next !== undefined) {
-					if (queue.length < HIGH_WATER) free();
-					yield next;
-				} else if (finished) {
+				// An aborted signal, even one aborted while the pull began, fails this read before it is sent.
+				const read = await client.call("tar.pull.read", { id }, { signal });
+				if (!read.ok) {
+					ended = read;
+					throw thrown(read.error);
+				}
+				const data = Buffer.from(read.value.data, "base64");
+				bytes += data.length;
+				if (data.length > 0) yield data;
+				if (read.value.eof) {
+					ended = ok({ bytes });
 					return;
-				} else {
-					await new Promise<void>((resolve) => (wake = resolve));
 				}
 			}
 		} finally {
-			if (!finished) stop.abort();
-			free();
+			signal?.removeEventListener("abort", onAbort);
+			await end();
+			settle(ended);
 		}
 	}
 	return { chunks: chunks(), done };
@@ -177,7 +166,11 @@ export function pullTarStream(client: DaemonClient, path: string, options: { sig
 export async function pullTar(client: DaemonClient, path: string, options: { signal?: AbortSignal } = {}): Promise<Result<Uint8Array>> {
 	const { chunks, done } = pullTarStream(client, path, options);
 	const parts: Uint8Array[] = [];
-	for await (const chunk of chunks) parts.push(chunk);
+	try {
+		for await (const chunk of chunks) parts.push(chunk);
+	} catch {
+		// done says why.
+	}
 	const ended = await done;
 	return ended.ok ? ok(Buffer.concat(parts)) : ended;
 }

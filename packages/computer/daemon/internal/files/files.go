@@ -13,14 +13,15 @@ import (
 )
 
 const (
-	// MaxChunk is the most bytes one files.read returns and one tar.data carries: in base64, it fits a line.
+	// MaxChunk is the most bytes one files.read or tar.pull.read returns: in base64, it fits a line.
 	MaxChunk = 512 << 10
 	// MaxListDepth is the deepest files.list walks.
 	MaxListDepth = 16
 	// MaxListEntries is the most entries one files.list returns.
 	MaxListEntries = 1000
-	// MaxPushes is how many tar pushes one connection may have open.
+	// MaxPushes and MaxPulls are how many tar pushes and pulls one connection may have open.
 	MaxPushes = 8
+	MaxPulls  = 8
 	// maxListBytes keeps a files.list reply, in JSON, well inside a line.
 	maxListBytes = 768 << 10
 )
