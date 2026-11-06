@@ -73,7 +73,7 @@ describe("run a command in a Docker computer", { skip: LIVE ? false : "set AGENT
 		assert.equal(inspected.HostConfig.CpuPeriod, 100_000);
 		assert.equal(inspected.HostConfig.CpuQuota, 200_000);
 		assert.equal(inspected.HostConfig.NanoCpus, 0);
-		assert.deepEqual(Object.keys(inspected.HostConfig.Tmpfs ?? {}), ["/work"]);
+		assert.deepEqual(Object.keys(inspected.HostConfig.Tmpfs ?? {}).sort(), ["/run/agentrun", "/work"]);
 		assert.equal(inspected.Config.WorkingDir, "/work");
 		assert.ok(inspected.Config.Env.includes("HOME=/work"), JSON.stringify(inspected.Config.Env));
 		assert.equal(inspected.HostConfig.AutoRemove, false);
