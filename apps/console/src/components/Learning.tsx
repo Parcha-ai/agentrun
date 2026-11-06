@@ -852,9 +852,12 @@ function ShowButton({ open, label, onClick }: { open: boolean; label: string; on
 function FileText({ v2, agentId, file, etag, kind, label }: { v2: Client; agentId: string; file: string; etag: string; kind: "skill" | "workflow"; label: string }) {
   const [text, setText] = useState<string | null>(null);
   const [error, setError] = useState<unknown>(null);
+  // The newest read wins: one started before (an older version's, or a retry's) that answers late is dropped.
+  const reads = useRef(0);
   const load = async () => {
+    const n = ++reads.current;
     setError(null); setText(null);
-    try { setText((await v2.readNote(agentId, file)).note); } catch (e) { setError(e ?? new Error("unknown")); }
+    try { const read = await v2.readNote(agentId, file); if (n === reads.current) setText(read.note); } catch (e) { if (n === reads.current) setError(e ?? new Error("unknown")); }
   };
   useEffect(() => { void load(); }, [file, etag]); // eslint-disable-line react-hooks/exhaustive-deps
   if (error !== null) return <div className="px-5 pt-3"><ProblemCard problem={problem(error, label)} onRetry={() => void load()} className="" /></div>;
