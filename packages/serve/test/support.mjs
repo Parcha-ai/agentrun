@@ -45,12 +45,18 @@ export async function scratch(t) {
   return dir;
 }
 
-/** Every directory under `dir` (no link followed) made writable by its owner, so the tree can be removed. */
+/** Every directory under `dir` (no link followed) made writable by its owner, so the tree can be removed. A directory
+ *  that goes while the walk is in it (a server still closing, or a fake box's command, removes its own spool) is already
+ *  removed: it is passed over, never a failure. */
 export async function writableTree(dir) {
+  const gone = (error) => {
+    if (error.code !== "ENOENT") throw error;
+  };
   const st = await lstat(dir).catch(() => undefined);
   if (!st?.isDirectory()) return;
-  await chmod(dir, st.mode | 0o700);
-  for (const name of await readdir(dir)) await writableTree(join(dir, name));
+  if ((await chmod(dir, st.mode | 0o700).then(() => true, gone)) !== true) return;
+  const names = await readdir(dir).catch(gone);
+  for (const name of names ?? []) await writableTree(join(dir, name));
 }
 
 /** Resolves once `child`, a server in a process of its own, has printed a whole line on stdout that `ready` matches (the
