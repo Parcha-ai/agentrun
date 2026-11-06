@@ -1,10 +1,12 @@
 // A server on a fresh data directory with the faux model, and a client for its /v2 routes. No key, no network.
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer, request } from "node:http";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { claudeAgentExecutable } from "@parcha/agentrun-harness-claude";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { openStoreReader } from "@parcha/pi-durable-agent";
 import { startServe } from "../dist/index.js";
@@ -85,10 +87,44 @@ export async function builtConsole(t) {
   return root;
 }
 
-/** A server for test `t`, stopped after it, before its scratch directory goes. */
-export async function serve(t, options = {}) {
+/** The packages a first use installs into `<data>/harnesses` (claude-sdk.ts), linked there from this repository's own
+ *  (the Claude Agent SDK, a dev dependency, its CLI's platform package and the MCP library), so a server on `data` runs
+ *  claude-agent as one whose Claude Code is installed, with no npm. `cli`: the file its platform package holds as the
+ *  CLI instead (one off its pins, or a path where nothing is). Nothing when the pinned CLI is not here. */
+export async function linkClaudeSdk(data, { cli } = {}) {
+  const pinned = claudeAgentExecutable();
+  if (!pinned) return;
+  const from = fileURLToPath(new URL("../../../node_modules/", import.meta.url));
+  const to = join(data, "harnesses", "node_modules");
+  const platform = `@anthropic-ai/${basename(dirname(pinned))}`;
+  const link = (target, path) => symlink(target, path).catch((error) => (error.code === "EEXIST" ? undefined : Promise.reject(error)));
+  for (const name of ["@anthropic-ai/claude-agent-sdk", "@modelcontextprotocol/sdk", ...(cli ? [] : [platform])]) {
+    await mkdir(dirname(join(to, name)), { recursive: true });
+    await link(join(from, name), join(to, name));
+  }
+  if (cli) {
+    await mkdir(join(to, platform), { recursive: true });
+    await writeFile(join(to, platform, "package.json"), readFileSync(join(from, platform, "package.json")));
+    await link(cli, join(to, platform, basename(pinned)));
+  }
+}
+
+/** A data directory for test `t` holding Claude Code as a first use installs it (linkClaudeSdk), for a test that makes
+ *  claude-agent's adapter itself (adapters.ts claudeOf, which loads the SDK from the data its env names). */
+export async function claudeData(t) {
+  const data = await scratch(t);
+  await linkClaudeSdk(data);
+  return data;
+}
+
+/** A server for test `t`, stopped after it, before its scratch directory goes. On the real models (`faux: undefined`) its
+ *  data holds Claude Code as a first use installs it (linkClaudeSdk; `claudeSdk: { cli }` with that CLI); `claudeSdk`
+ *  says so for any server, `false` for none. */
+export async function serve(t, { claudeSdk: asked, ...options } = {}) {
+  const claudeSdk = asked ?? (Object.hasOwn(options, "faux") && options.faux === undefined);
   const dir = options.data ? undefined : await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "agentrun-serve-"));
   const data = options.data ?? join(dir, "agents");
+  if (claudeSdk) await linkClaudeSdk(data, claudeSdk === true ? {} : claudeSdk);
   const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", ...options });
   t.after(async () => {
     await server.close();
