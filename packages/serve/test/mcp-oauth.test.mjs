@@ -649,3 +649,16 @@ test("pi: a run whose process went while its call was parked: the owner's allow 
   assert.equal(sent.length, 1, "run once");
   assert.ok(sent[0].authorization);
 });
+
+test("the refresh step's test-only wait has no effect outside a test runner, and is capped at a second within one", async () => {
+  const { refreshDelayMs, REFRESH_DELAY_ENV } = await import("../dist/runs.js");
+  assert.equal(REFRESH_DELAY_ENV, "AGENTRUN_SERVE_TEST_REFRESH_DELAY_MS");
+  // A server's environment: the variable set by mistake, no test runner.
+  assert.equal(refreshDelayMs({ [REFRESH_DELAY_ENV]: "500" }), 0);
+  assert.equal(refreshDelayMs({ [REFRESH_DELAY_ENV]: "500", NODE_ENV: "production" }), 0);
+  // Under a test runner (node --test sets NODE_TEST_CONTEXT; NODE_ENV=test, as the stand-ins' guards read it).
+  assert.equal(refreshDelayMs({ [REFRESH_DELAY_ENV]: "500", NODE_TEST_CONTEXT: "child-v8" }), 500);
+  assert.equal(refreshDelayMs({ [REFRESH_DELAY_ENV]: "500", NODE_ENV: "test" }), 500);
+  assert.equal(refreshDelayMs({ [REFRESH_DELAY_ENV]: "600000", NODE_TEST_CONTEXT: "child-v8" }), 1_000, "capped");
+  for (const stray of [undefined, "", "soon", "-5"]) assert.equal(refreshDelayMs({ ...(stray === undefined ? {} : { [REFRESH_DELAY_ENV]: stray }), NODE_TEST_CONTEXT: "child-v8" }), 0, String(stray));
+});
