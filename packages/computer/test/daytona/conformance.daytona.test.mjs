@@ -30,7 +30,7 @@ describe("the conformance suite on Daytona", { skip }, () => {
 			if (created.ok) made.set(created.value.id, created.value);
 			return created;
 		};
-		report = await runConformance(provider, { image: SNAPSHOT, notes: conformanceNotes, drifted: () => createDriftedProvider() });
+		report = await runConformance(provider, { image: SNAPSHOT, cleanupTimeoutMs: 150_000, notes: conformanceNotes, drifted: () => createDriftedProvider() });
 		console.log(formatReport(report));
 	});
 
