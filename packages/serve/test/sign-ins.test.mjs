@@ -1266,7 +1266,8 @@ test("an ended run a list reads from its row alone has its error withheld while 
   // Another seal key: the sign-in does not open, so the pointer can't be cut: the error is withheld, saying why.
   process.env.AGENTRUN_SEAL_KEY = randomBytes(32).toString("base64");
   const rotated = await serve(t, { data: first.data, fauxBrowser: FAUX_BROWSER, fauxBrowserbase: FAUX_BROWSERBASE });
-  for (const error of await listed(rotated.api)) assert.deepEqual([error.code, /can't read the run's browser sign-in/.test(error.message)], ["run_failed", true], JSON.stringify(error));
+  // In the words the run's own view withholds them with (WITHHELD_SIGN_IN).
+  for (const error of await listed(rotated.api)) assert.deepEqual([error.code, error.message], ["run_failed", "This server can't read the run's browser sign-in (its seal key changed or is missing, or the sign-in is damaged), so nothing the run said is shown."]);
   await rotated.close();
   // The right key back: the error is shown, cut.
   process.env.AGENTRUN_SEAL_KEY = seal;
