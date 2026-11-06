@@ -123,3 +123,51 @@ test("pi: a lost attempt's end mark (written before pi-ai tries again, in the sa
   replay.note([...entries, answer], CAP);
   assert.ok(close(replay.ended(), 0.3), `after a restart, the same: ${replay.ended()}`);
 });
+
+/** Feeds `entries`, numbered in their order as the store numbers them, one at a time (live) and all at once (a restart's
+ *  full read) against `cap`: both ledgers. */
+const both = (listed, cap) => {
+  const entries = listed.map((entry) => ({ ...entry, id: next() }));
+  const live = new RequestBounds();
+  for (const entry of entries) live.note([entry], cap);
+  const replay = new RequestBounds();
+  replay.note(entries, cap);
+  return [["live", live], ["after a restart", replay]];
+};
+
+test("pi: a side request its process died inside (an OOM kill in the tool call, before its cost mark) is over at the run's next request: it pins nothing, and a run past its cap with no miss ends as the control run does", () => {
+  // A $5 cap and $1.00 spent; the answer calls hosted web_search (its own request, bound $0.30), and the process dies
+  // inside the tool call. After the resume: 40 requests at $0.098 (bound $0.10 each), then a $0.40 paid tool charge:
+  // $5.32, past the cap with no cache miss.
+  const sideStart = { id: next(), kind: REQUEST_STARTED, data: { request: "web_search", requestId: "dead", heldUsd: 0.31, boundUsd: 0.3 } };
+  const head = [piStart(0), piAnswer("toolUse", 1.0), sideStart];
+  const resumed = [];
+  for (let k = 0; k < 40; k++) resumed.push(piStart(0.1), piAnswer("toolUse", 0.098));
+  resumed.push(charge(0.4));
+  // The control: the same run, the search's cost landed ($0, so the totals match).
+  const landed = { id: next(), kind: "agentrun.request_cost", data: { request: "web_search", requestId: "dead", usd: 0 } };
+  for (const [how, bounds] of both([...head, ...resumed], 5)) {
+    assert.equal(bounds.inFlight(), 0, `${how}: nothing in flight once the run sent its next request`);
+    assert.equal(bounds.ended(), 0, `${how}: no bound explains the overshoot, as in the control: ${bounds.ended()}`);
+  }
+  for (const [how, bounds] of both([...head, landed, ...resumed], 5)) {
+    assert.deepEqual([bounds.inFlight(), bounds.ended()], [0, 0], `control, ${how}`);
+  }
+});
+
+test("a harness request booked before its cost, whose late cost never comes, pins nothing: it is not in flight, the ended bounds start afresh past it, and a run past its cap with no miss ends as it would", () => {
+  const entries = [harnessStart(1, 0.2), ...harnessAnswer(1, { unpriced: true })];
+  for (let request = 2; request <= 6; request++) entries.push(harnessStart(request, 0.2), ...harnessAnswer(request, { usd: 0.15 }));
+  entries.push(charge(0.3));
+  for (const [how, bounds] of both(entries, 1)) {
+    assert.equal(bounds.inFlight(), 0, `${how}: its answer is in; only its cost is not`);
+    assert.equal(bounds.ended(), 0, `${how}: $1.05 spent of a $1 cap, by a charge, no miss: ${bounds.ended()}`);
+  }
+});
+
+test("a harness request booked before its cost whose late cost does come, a miss past the cap: its bound counts when its cost does, in whatever order requests came between", () => {
+  const entries = [harnessStart(1, 0.2), ...harnessAnswer(1, { unpriced: true }), harnessStart(2, 0.1), ...harnessAnswer(2, { usd: 0.01 }), { id: next(), kind: REQUEST_COST_LATE, data: { key: KEY, request: 1, usd: 0.2 } }];
+  for (const [how, bounds] of both(entries, CAP)) {
+    assert.ok(bounds.ended() >= 0.2 - 1e-12 && 0.21 - CAP <= bounds.ended(), `${how}: its bound covers the overshoot: ${bounds.ended()}`);
+  }
+});
