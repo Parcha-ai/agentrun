@@ -16,6 +16,7 @@ const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => 
 
 const FETCH_SUMMARY = "Read one public web page from a public host through the guarded direct fetch, or through Parallel's extract where Parallel is picked, a part at a time.";
 const LONG_NAME = "a_very_long_tool_name_for_the_worst_case_card";
+const MCP_NAME = "mcp:github-enterprise/list_repository_collaborators_with_permissions";
 const LONG_SUMMARY = "A tool with no blurb, whose description is the model's and runs well past two lines of a card: it says what it takes, what it returns, and every limit it has, at length.";
 const RAW = [
   { name: "web_fetch", available: true, summary: FETCH_SUMMARY, blurb: "Read a public web page", harnesses: ["pi"] },
@@ -24,6 +25,8 @@ const RAW = [
   { name: LONG_NAME, available: true, summary: LONG_SUMMARY, sandbox_only: true, harnesses: ["pi"] },
   // Unavailable for a long reason: the tag is that reason, cut to one line by CSS, never a word in its place.
   { name: "browser", available: false, missing: ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"], summary: "Drive a hosted browser.", blurb: "Browse the web", harnesses: ["pi"] },
+  // An MCP server's tool: a long id with no spaces and no blurb, which tools from the same server share a prefix of.
+  { name: MCP_NAME, available: true, summary: "List a repository's collaborators and their permissions.", harnesses: ["pi"] },
 ];
 const agent: Agent = { agent_id: "a1", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "A", instructions: "x", harness: "pi", skills: [], tools: [] } };
 
@@ -40,7 +43,7 @@ async function open() {
 
 describe("the editor's tool cards", () => {
   it("reads the served blurb", () => {
-    expect(toolOffers(RAW).map((t) => t.blurb)).toEqual(["Read a public web page", "Run shell commands", undefined, "Browse the web"]);
+    expect(toolOffers(RAW).map((t) => t.blurb)).toEqual(["Read a public web page", "Run shell commands", undefined, "Browse the web", undefined]);
   });
 
   it("are one fixed height, top-aligned in their row, with no description while collapsed", async () => {
@@ -85,5 +88,21 @@ describe("the editor's tool cards", () => {
     expect([...card("bash").querySelectorAll("button")].some((b) => b.textContent === "Hide details")).toBe(true);
     expect(card("web_fetch").classList.contains("h-32")).toBe(true);
     expect(host.querySelector<HTMLInputElement>("input[value='bash']")!.checked).toBe(false);
+  });
+
+  it("a long name is cut to one line on the card, whole in its title, and whole, wrapping, in Details", async () => {
+    const { card } = await open();
+    const name = () => [...card(MCP_NAME).querySelectorAll("span")].find((s) => s.textContent === MCP_NAME && !s.querySelector("span"))!;
+    expect(name().classList.contains("truncate")).toBe(true);
+    expect(name().getAttribute("title")).toBe(MCP_NAME);
+    expect(card(MCP_NAME).classList.contains("h-32")).toBe(true);
+    const details = [...card(MCP_NAME).querySelectorAll("button")].find((b) => b.textContent === "Details")!;
+    await act(async () => { details.click(); });
+    expect(name().classList.contains("truncate")).toBe(false);
+    expect(name().classList.contains("break-all")).toBe(true);
+    expect(name().textContent).toBe(MCP_NAME);
+    // Only the open card wraps its name: the others keep theirs to one line.
+    const other = [...card(LONG_NAME).querySelectorAll("span")].find((s) => s.textContent === LONG_NAME && !s.querySelector("span"))!;
+    expect(other.classList.contains("truncate")).toBe(true);
   });
 });
