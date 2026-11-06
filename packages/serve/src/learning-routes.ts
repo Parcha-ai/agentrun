@@ -20,7 +20,7 @@ import { existsSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { join } from "node:path";
-import { approve, buildIndex, CAPS, checkNote, frontKeys, INDEX_FILE, INDEX_LINES, isHeld, LEARNED_KEYS, type LearnedNote, learnedFront, learnedName, learnedPlace, learnedStatus, NOTE_FILE, NOTE_STATUSES, parseNoteFile, type Problem, printable, released, retire, retiredLearned, skillProblems, SKILLS_DIR, supersede, unstorable, WORKFLOWS_DIR } from "./learn/index.js";
+import { approve, buildIndex, CAPS, checkNote, draftProblems, frontKeys, INDEX_FILE, INDEX_LINES, isHeld, LEARNED_KEYS, type LearnedNote, learnedFront, learnedName, learnedPlace, learnedStatus, NOTE_FILE, NOTE_STATUSES, parseNoteFile, type Problem, printable, released, retire, retiredLearned, skillProblems, SKILLS_DIR, supersede, unstorable, WORKFLOWS_DIR } from "./learn/index.js";
 import { ApiError, invalid } from "./errors.js";
 import { agentFolderOf, readJson } from "./files.js";
 import { agentFolder, changedOrder, checkOut, detailShown, git, line, mainOf, notesView, openAgentRepo, PROPOSAL, readBlobs, readFolder, readPin, secretsShown, type Shown, withAgentRepo } from "./learning.js";
@@ -50,7 +50,7 @@ type NoteView = { file: string; name: string; description: string; type: string;
 type Retired = { at: string; by: "person" | "run" };
 /** The newest change to a note, skill or draft (its file: the note, a SKILL.md, a draft's README.md): what it was, by
  *  whom and when. A person's is named by its commit (`learning: <kind> by a person: <file>`); a run's merge is `learned`. */
-type LastChange = { kind: "approved" | "edited" | "created" | "retired" | "restored" | "learned"; by: "person" | "run"; at: string };
+type LastChange = { kind: "approved" | "edited" | "created" | "retired" | "restored" | "learned" | "superseded"; by: "person" | "run"; at: string };
 const PERSON_KINDS = ["approved", "edited", "created", "retired", "restored"] as const;
 type Change = { by: { run: string } | { user: true; via?: string }; commit: string; at: string; reason: string; files: string[] };
 /** A note on main: its text, and its blob id there, whose ETag its file's GET answers. */
@@ -227,19 +227,28 @@ function changeOf(at: string, subject: string, runId: string): LastChange | unde
 const LAST_FORMAT = "%cI%x1f%s%x1f%(trailers:key=Run-Id,valueonly,separator=%x2C)";
 /** A file's history as the view reads it: its newest commit's time and change (none when that commit is neither a
  *  person's nor a run's), and its newest retire by a person (a retired one's `retired`: an edit since moves it not). */
-type History = { at: string; last?: LastChange; retire?: LastChange };
+type History = { at: string; last?: LastChange; retire?: LastChange; person?: LastChange };
 /** Folds one record of a LAST_FORMAT walk (newest first) into `out`, for the files it changed. */
 function foldHistory(out: Map<string, History>, head: string, files: readonly string[]): void {
   const [at = "", subject = "", runId = ""] = head.split("\x1f");
-  const change = changeOf(at, subject, runId);
+  const commit = changeOf(at, subject, runId);
+  // A person's action is the named file's alone (the subject's `learning: <kind> by a person: <file>`): any other file
+  // that commit changed is a note it superseded (an approval or a restore marks those), so it says that.
+  const named = commit?.by === "person" ? subject.slice(`learning: ${commit.kind} by a person: `.length) : undefined;
   for (const file of files) {
+    const change: LastChange | undefined = named !== undefined && file !== named ? { kind: "superseded", by: "person", at } : commit;
     const known = out.get(file);
-    if (!known) out.set(file, { at, ...(change ? { last: change } : {}), ...(change?.kind === "retired" ? { retire: change } : {}) });
-    else if (!known.retire && change?.kind === "retired") known.retire = change;
+    if (!known) out.set(file, { at, ...(change ? { last: change } : {}), ...(change?.kind === "retired" ? { retire: change } : {}), ...(change?.by === "person" ? { person: change } : {}) });
+    else {
+      if (!known.retire && change?.kind === "retired") known.retire = change;
+      if (!known.person && change?.by === "person") known.person = change;
+    }
   }
 }
-/** A retired item's `retired`: its newest retire by a person, else (retired some other way) its newest change's time. */
-const retiredOf = (history: History | undefined): Retired | undefined => (history ? (history.retire ? { at: history.retire.at, by: "person" } : { at: history.at, by: "run" }) : undefined);
+/** A retired item's `retired`: its newest retire by a person; else, one a person made retired another way (an edit to
+ *  status: retired, or created so), their newest change; else (retired by none of theirs) its newest change's time. */
+const retiredOf = (history: History | undefined): Retired | undefined =>
+  history ? (history.retire ? { at: history.retire.at, by: "person" } : history.person ? { at: history.person.at, by: "person" } : { at: history.at, by: "run" }) : undefined;
 
 /** Commit `sha`'s first-parent history, read in one walk: each file's place by its newest change (0 for the newest
  *  commit's, as learning.ts changedOrder orders a run's notes) and that change (changeOf). */
@@ -500,7 +509,11 @@ function conditionOf(ifMatch: string | undefined, ifNoneMatch: string | undefine
 
 /** Whether `file` waited for its owner's OK (status pending) just before a person last retired it on `main`'s line. */
 async function heldBeforeRetire(home: string, repo: string, main: string, file: string, learned: boolean): Promise<boolean> {
-  const retire = line(await git(home, repo, ["log", "--first-parent", "-1", "--format=%H", "--fixed-strings", `--grep=learning: retired by a person: ${file}`, main, "--", file]));
+  // The newest commit whose SUBJECT is a person's retire of the file: never a match in a message's body (a merge's body
+  // is the grader's text).
+  const wanted = `learning: retired by a person: ${file}`;
+  const walk = (await git(home, repo, ["log", "--first-parent", "--format=%H%x1f%s", main, "--", file])).toString("utf8").split("\n");
+  const retire = walk.map((entry) => entry.split("\x1f")).find(([, subject]) => subject === wanted)?.[0];
   if (!retire) return false;
   const before = await git(home, repo, ["cat-file", "blob", `${retire}^:${file}`]).then((out) => out.toString("utf8"), () => undefined);
   if (before === undefined) return false;
@@ -517,7 +530,7 @@ async function heldBeforeRetire(home: string, repo: string, main: string, file: 
  *  only from the commit it was made on (once more on a main that moved meanwhile), then the checked-out files. A note
  *  the checks refuse is never written to git. A retire of a note that is not active, and an edit that changes nothing,
  *  commit nothing. `refuse`: the host's secrets. */
-export async function writeNote(data: string, agentId: string, raw: string, input: { ifMatch?: string; ifNoneMatch?: string; body?: Buffer; refuse: readonly string[]; approve?: boolean; restore?: boolean }): Promise<{ status: 200 | 201; file: string; text: string; etag: string }> {
+export async function writeNote(data: string, agentId: string, raw: string, input: { ifMatch?: string; ifNoneMatch?: string; body?: Buffer; refuse: readonly string[]; approve?: boolean; restore?: boolean; draftTools?: () => Promise<{ tools: string[]; gated: Record<string, string> }> }): Promise<{ status: 200 | 201; file: string; text: string; etag: string }> {
   const file = fileOf(raw, input.approve ? "approve" : input.restore ? "restore" : input.body === undefined ? "retire" : "write");
   // A skill's SKILL.md or a draft's README.md: only ever approved or retired here.
   const learned = learnedPlace(file);
@@ -579,6 +592,14 @@ export async function writeNote(data: string, agentId: string, raw: string, inpu
           const others = (await git(home, repo, ["ls-tree", "-r", "-z", "--name-only", main!, "--", folder])).toString("utf8").split("\0").filter((path) => path && path !== file);
           const changes = [{ path: file, status: "modified" as const, bytes: Buffer.from(text, "utf8") }, ...(await Promise.all(others.map(async (path) => ({ path, status: "modified" as const, bytes: await git(home, repo, ["cat-file", "blob", `${main}:${path}`]) }))))];
           problems.push(...unstorable(changes, input.refuse));
+          // A draft's workflow.json passes the learning checker as a run's would (its tools and the gate's settings), so
+          // a restore never brings back a draft no run could run.
+          const body = changes.find(({ path }) => path === `${folder}workflow.json`);
+          if (learned.kind !== "skill" && body && input.draftTools) {
+            const { tools, gated } = await input.draftTools();
+            const dsl = await import("@parcha/agentrun-dsl");
+            for (const { rule, detail } of draftProblems(dsl as never, body.bytes.toString("utf8"), tools, gated)) problems.push(printable({ rule, path: body.path, detail }, input.refuse));
+          }
           if (problems.length) throw refused(problems);
         } else {
           const note = parseNoteFile(file, current!.text);

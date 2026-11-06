@@ -420,8 +420,12 @@ test("on codex, learned_workflow set to ask parks the run; the owner's allow run
   assert.equal(answered.status, 204, answered.text);
   const { rows } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 90_000 });
   assert.equal((await api("GET", `/runs/${runId}`)).body.status, "completed");
-  const resume = rows.find((row) => row.kind === "user_message" && String(row.text).startsWith("[tool approval]"))?.text ?? "";
-  assert.match(resume, /This answers your learned_workflow call .*They allowed it, and it ran\. Its result:\n\{\\?"answer\\?":42\}/s, resume);
+  // The gate's resume is AgentRun's row (origin "server"), never the person's message, and it carries the call's result.
+  const resumed = rows.find((row) => String(row.text).startsWith("[tool approval]"));
+  assert.deepEqual([resumed?.kind, resumed?.origin], ["phase", "server"], JSON.stringify(resumed));
+  assert.match(resumed.summary, /^AgentRun: learned_workflow ran once you allowed it$/, resumed.summary);
+  assert.match(resumed.text, /This answers your learned_workflow call .*They allowed it, and it ran\. Its result:\n\{\\?"answer\\?":42\}/s, resumed.text);
+  assert.equal(rows.some((row) => row.kind === "user_message" && String(row.text).startsWith("[tool approval]")), false, "never shown as the person's message");
   assert.equal(entries(data, runId, ["agentrun.request_started"]).filter((entry) => entry.request === LEARNED_WORKFLOW_TOOL).length, 1, "its one node ran once");
 });
 
