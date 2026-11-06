@@ -9,6 +9,7 @@ import { claudeModel, claudeModelId, claudeOf, claudeProvider, codexOf, codexPro
 import * as adapters from "../dist/adapters.js";
 import * as files from "../dist/files.js";
 import { installLine } from "../dist/claude-sdk.js";
+import { fileURLToPath } from "node:url";
 
 const openai = { provider: "openai", modelId: "gpt-5.4-mini" };
 const refused = (pattern) => (error) => error instanceof HarnessUnavailable && pattern.test(error.message);
@@ -130,7 +131,9 @@ test("claude-agent with Claude Code not installed in the data, and no key: the r
     assert.ok(error instanceof HarnessUnavailable, String(error));
     assert.match(error.message, /not installed/);
     assert.ok(error.message.includes(installLine(join(data, "harnesses"))), error.message);
-    assert.match(installLine(join(data, "harnesses")), /^mkdir -p \S+ && cp \S+\/harnesses\/claude-agent\/package\.json \S+\/harnesses\/claude-agent\/package-lock\.json \S+\/ && npm ci --prefix \S+ --ignore-scripts$/, "the locked install, no script");
+    // The locked install, exactly: npm ci in a fresh directory with no script, then that put in place of the harnesses.
+    const [dir, shipped] = [join(data, "harnesses"), fileURLToPath(new URL("../harnesses/claude-agent/", import.meta.url))];
+    assert.equal(installLine(dir), `rm -rf ${dir}.new && mkdir -p ${dir}.new && cp ${join(shipped, "package.json")} ${join(shipped, "package-lock.json")} ${dir}.new/ && npm ci --prefix ${dir}.new --ignore-scripts && (chmod -R u+w ${dir} 2>/dev/null || true) && rm -rf ${dir} && mv ${dir}.new ${dir}`);
     assert.doesNotMatch(error.message, /ANTHROPIC_API_KEY/);
     return true;
   });
