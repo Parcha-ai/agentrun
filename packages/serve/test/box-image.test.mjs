@@ -472,7 +472,7 @@ test("the start's banner says of the Docker box what capabilities say: preparing
 
 test("with no Docker box (none listed, or the tests' faux box), no image is asked for, and a record an earlier start left is removed", async (t) => {
   const docker = await fakeDocker(t);
-  withEnv(t, {}, ["AGENTRUN_BOXES"]);
+  withEnv(t, { AGENTRUN_BOXES: "none" });
   const dir = await scratch(t);
   const data = join(dir, "agents");
   await mkdir(data, { recursive: true });
