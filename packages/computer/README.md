@@ -22,9 +22,13 @@ The daemon answers `hello`, `ping` and `exec.run`.
 ```
 
 - `exec.run` takes argv, never a shell string. A shell is the caller's choice: `["sh", "-c", "..."]`.
-- The program runs in a process group of its own. On timeout, or when the call is cancelled with
-  `$/cancelRequest {id}`, the whole group gets SIGTERM, then SIGKILL 2 s later. A timeout is a result with
-  `timedOut: true`; a cancel is an `aborted` error. When the program ends, anything it left in its group is killed.
+- Each run has a guard: the daemon starts itself again as `computerd guard`, a child subreaper for that one run, and
+  the guard starts the program in a process group of its own. Whatever the program starts stays under the guard, even
+  a child that calls `setsid` or double-forks, since the kernel hands an orphan to its nearest subreaper. When the
+  program ends, the guard kills and reaps every process left under it, then reports the program's exit code or signal.
+  On timeout, or when the call is cancelled with `$/cancelRequest {id}`, the guard sends SIGTERM to the group and
+  every process under it, then SIGKILL 2 s later. A timeout is a result with `timedOut: true`; a cancel is an
+  `aborted` error. Nothing a run starts outlives it.
 - `stdout` and `stderr` come back apart, in base64. Each keeps at most 360 KiB (`maxOutput`, the default and the most):
   both, in base64, fit one 1 MiB line. The rest is read and dropped, and `truncated` is true.
 - The environment is PATH (the daemon's), HOME, USER and LOGNAME for the user, then `env` over them. Nothing else of the
@@ -54,8 +58,9 @@ if (connected.ok) {
 await docker.release(made.value, "delete");
 ```
 
-- `check(spec)` refuses in words, with no Docker call: no image, no or a bad `lifetimeMs`, a network allowlist (Docker
-  cannot enforce one yet: ask for `none` or `open`), and any field Docker does not support.
+- `check(spec)` refuses in words, with no Docker call: no image, no or a bad `lifetimeMs` (at most 30 days), a network
+  allowlist (Docker cannot enforce one yet: ask for `none` or `open`), a NUL byte in any string, and any field Docker
+  does not support. `create` never throws on a spec `check` passes.
 - `create` runs `docker run` with every capability dropped (`--cap-drop ALL`), `--security-opt no-new-privileges`, a
   pids limit (4096 unless `pids` says), `--network none` or `bridge`, and the daemon bind-mounted read-only at
   `/opt/agentrun/computerd` as the entrypoint, `computerd init`, which is PID 1 and reaps orphans. The label
@@ -93,5 +98,5 @@ The daemon copies code, with credit, from two Apache-2.0 projects. NOTICE names 
 file, the commit, and what changed.
 
 - [E2B infra](https://github.com/e2b-dev/infra), envd: the user, credential and environment setup of a process.
-- [Kubernetes agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox), sandboxd: the process group kill and
-  the bounded output of a run with limits.
+- [Kubernetes agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox), sandboxd: the exit status and the
+  bounded output of a run with limits.

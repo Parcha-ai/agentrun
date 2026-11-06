@@ -253,3 +253,47 @@ func TestHandlerErrorsKeepTheirKind(t *testing.T) {
 		t.Fatalf("want a server error, got %+v", r)
 	}
 }
+
+func TestCancellingServeReturnsWhileTheInputIsIdle(t *testing.T) {
+	for _, closable := range []bool{true, false} {
+		t.Run(fmt.Sprintf("closable=%v", closable), func(t *testing.T) {
+			pr, pw := io.Pipe()
+			t.Cleanup(func() { _ = pw.Close() })
+			var r io.Reader = pr
+			if !closable {
+				r = struct{ io.Reader }{pr}
+			}
+			started, ended := make(chan struct{}), make(chan struct{})
+			server := rpc.NewServer(map[string]rpc.Handler{
+				"wait": func(ctx context.Context, _ json.RawMessage) (any, error) {
+					close(started)
+					<-ctx.Done()
+					time.Sleep(50 * time.Millisecond)
+					close(ended)
+					return nil, ctx.Err()
+				},
+			}, log.New(io.Discard, "", 0))
+			ctx, cancel := context.WithCancel(context.Background())
+			done := make(chan error, 1)
+			go func() { done <- server.Serve(ctx, r, io.Discard) }()
+			if _, err := pw.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"wait"}` + "\n")); err != nil {
+				t.Fatal(err)
+			}
+			<-started
+			cancel()
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatalf("Serve returned %v on cancel", err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("Serve did not return within 1 s of its context being cancelled")
+			}
+			select {
+			case <-ended:
+			default:
+				t.Fatal("Serve returned before the request in flight ended")
+			}
+		})
+	}
+}
