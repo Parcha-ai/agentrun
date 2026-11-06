@@ -1268,7 +1268,11 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       const key = (b: Blocker) => `${b.field}\n${b.message}`;
       const plain = new Set((await blockersOf(env, shape, {}, { boxes: boxOffers, offers, mcp: mcpTools })).map(key));
       const capped = await blockersOf(env, shape, {}, { capped: true, boxes: boxOffers, offers, mcp: mcpTools });
-      blockers.push(...capped.filter((b) => !plain.has(key(b))).map((b) => ({ ...b, reason: "not_an_option", fix: b.fix ?? "Pick another provider for this tool in definition.tool_settings, or clear the agent's default cap (max_cost_usd: 0).", host: false })));
+      // A model with no price (`unpriced`) is a setting this host fixes (AGENT_MODEL_PRICE): a warning, as it is; the
+      // agent saves and updates, and only a run under the cap is refused (409). A tool's pick a cap rules out refuses it.
+      const added = capped.filter((b) => !plain.has(key(b)));
+      blockers.push(...added.filter((b) => b.unpriced));
+      blockers.push(...added.filter((b) => !b.unpriced).map((b) => ({ ...b, reason: "not_an_option", fix: "Pick another provider for this tool in definition.tool_settings, or clear the agent's default cap (max_cost_usd: 0).", host: false })));
     }
     const never = blockers.filter((b) => !b.host);
     if (never.length) throw invalid(never.map(issueOf));
