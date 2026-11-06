@@ -167,13 +167,13 @@ describe("move files in and out of a Docker computer", { skip: LIVE ? false : "s
 		chmodSync(join(src, "nested", "data.bin"), 0o600);
 		symlinkSync("nested/deeper/leaf.txt", join(src, "leaf-link"));
 		const archive = execFileSync("tar", ["-C", src, "-cf", "-", "."], { maxBuffer: 64 * 1024 * 1024 });
-		const pushed = await pushTar(client, "/srv/pushed", archive);
+		const pushed = await pushTar(client, "/data/pushed", archive);
 		assert.equal(pushed.ok, true, JSON.stringify(pushed.error));
-		assert.equal((await run(["/srv/pushed/run.sh"])).out, "ran from a pushed tar\n");
-		assert.equal((await run(["stat", "-c", "%a %U", "/srv/pushed/run.sh", "/srv/pushed/nested/data.bin"])).out, "755 root\n600 root\n");
-		assert.equal((await run(["readlink", "/srv/pushed/leaf-link"])).out, "nested/deeper/leaf.txt\n");
-		assert.equal((await run(["cat", "/srv/pushed/leaf-link"])).out, "leaf\n");
-		const pulled = await pullTar(client, "/srv/pushed");
+		assert.equal((await run(["/data/pushed/run.sh"])).out, "ran from a pushed tar\n");
+		assert.equal((await run(["stat", "-c", "%a %U", "/data/pushed/run.sh", "/data/pushed/nested/data.bin"])).out, "755 root\n600 root\n");
+		assert.equal((await run(["readlink", "/data/pushed/leaf-link"])).out, "nested/deeper/leaf.txt\n");
+		assert.equal((await run(["cat", "/data/pushed/leaf-link"])).out, "leaf\n");
+		const pulled = await pullTar(client, "/data/pushed");
 		assert.equal(pulled.ok, true, JSON.stringify(pulled.error));
 		const back = scratch();
 		execFileSync("tar", ["-C", back, "-xpf", "-"], { input: pulled.value });
@@ -181,17 +181,17 @@ describe("move files in and out of a Docker computer", { skip: LIVE ? false : "s
 	});
 
 	it("refuses a zip-slip tar, and nothing lands outside the target", async () => {
-		await call("files.mkdir", { path: "/srv/slip", parents: true });
+		await call("files.mkdir", { path: "/data/slip", parents: true });
 		for (const [name, archive] of [
 			["dot-dot", tarOf(tarEntry("../escaped-dotdot", { body: Buffer.from("x") }))],
-			["absolute", tarOf(tarEntry("/srv/escaped-absolute", { body: Buffer.from("x") }))],
-			["symlink", tarOf(tarEntry("out", { type: "2", link: "/srv" }), tarEntry("out/escaped-symlink", { body: Buffer.from("x") }))],
+			["absolute", tarOf(tarEntry("/data/escaped-absolute", { body: Buffer.from("x") }))],
+			["symlink", tarOf(tarEntry("out", { type: "2", link: "/data" }), tarEntry("out/escaped-symlink", { body: Buffer.from("x") }))],
 		]) {
-			const pushed = await pushTar(client, "/srv/slip/target", archive);
+			const pushed = await pushTar(client, "/data/slip/target", archive);
 			assert.equal(pushed.ok, false, `${name} was accepted`);
 			assert.equal(pushed.error.code, "denied", `${name}: ${JSON.stringify(pushed.error)}`);
 		}
-		const found = await run(["sh", "-c", "ls /srv /srv/slip; ls /srv/slip/target"]);
+		const found = await run(["sh", "-c", "ls /data /data/slip; ls /data/slip/target"]);
 		assert.doesNotMatch(found.out, /escaped/, found.out);
 	});
 });
