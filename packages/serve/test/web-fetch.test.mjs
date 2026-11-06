@@ -420,7 +420,7 @@ test("web_fetch takes its provider from the run's plane: none or kernel is the d
     assert.deepEqual([page.via, "parallel" in page, net.dialled], ["direct", false, [PUBLIC]], "a kernel fetch says nothing of Parallel");
   }
   const net = network();
-  assert.deepEqual(await fetchFor(plane("unavailable: parallel picked, no PARALLEL_API_KEY"), PUBLIC, net), { ok: false, url: PUBLIC, status: 0, title: "", text: "", links: [], error: "web_fetch does not run here: parallel picked, no PARALLEL_API_KEY" }, "no via: nothing was read");
+  assert.deepEqual(await fetchFor(plane("unavailable: parallel picked, no PARALLEL_API_KEY"), PUBLIC, net), { ok: false, url: PUBLIC, status: 0, title: "", text: "", links: [], error: "web_fetch does not run here: parallel is picked, and it needs a Parallel key: save one in Settings → Tool keys (or set PARALLEL_API_KEY where the server starts)" }, "no via: nothing was read");
   assert.deepEqual(net.dialled, [], "nothing fetched");
 });
 

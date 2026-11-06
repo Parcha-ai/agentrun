@@ -108,7 +108,7 @@ test("OpenCode's <server>_<tool> is an MCP tool only for a server the run has co
   assert.equal(keyOf("opencode", "ask_person", ["ask"]), "ask_person");
 });
 
-test("an MCP-named call reaches no enter() of this gate's on any harness: the MCP gateway enters it once, itself", async (t) => {
+test("an MCP call enters this gate once on every harness: the host tools bind none, and pi's extension skips only a registration the MCP gateway marks as gated by itself", async (t) => {
   const { hostTools } = await import("../dist/host-tools.js");
   const [root, work, data] = [await scratch(t), await scratch(t), await scratch(t)];
   const runGate = new RunGate({ root, work, data, runId: "r1", harness: "claude-agent" });
@@ -118,9 +118,10 @@ test("an MCP-named call reaches no enter() of this gate's on any harness: the MC
   // claude-agent and codex: the host tools bind no MCP tool, by any of its names.
   const bound = hostTools({}, ["mcp:srv/echo", "mcp__srv__echo", "srv_echo"], {}, new Map(), [], { gate: runGate, park });
   assert.deepEqual(bound.map((tool) => tool.name), []);
-  // pi: the gate's extension wraps no MCP tool.
+  // pi: a registration the gateway marks (it enters the gate itself) is not wrapped again; an unmarked one is wrapped.
   const registration = { name: "mcp__srv__echo", description: "", parameters: {}, execute: async () => ({ content: [] }) };
-  assert.deepEqual(runGate.extension([registration]).wraps, []);
+  assert.deepEqual(runGate.extension([{ ...registration, [gate.GATED_BY_GATEWAY]: true }]).wraps, [], "the gateway's own: gated there");
+  assert.deepEqual(runGate.extension([registration]).wraps.map((wrap) => wrap.tool), ["mcp__srv__echo"], "unmarked: wrapped here");
   assert.equal(entered, 0);
 });
 
