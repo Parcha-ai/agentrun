@@ -102,6 +102,12 @@ test("the whole skill first in three backticks, its own code example inside, the
   // A fenced example of the format in five backticks holds a four-backtick skill block: an example, never a skill.
   const example = parseReflection(`\`\`\`\`\`markdown\n${block("skill", "shown-only", SKILL)}\n\`\`\`\`\`\n\nNo notes.`);
   assert.deepEqual([example.ok, example.skills], [false, undefined], JSON.stringify(example));
+  // A three-backtick example after a note that shows a four-backtick skill's opening line: an example, as it always was.
+  // Only the first fence after a skill, holding that skill's own name, gives way to it.
+  const shown = parseReflection([`\`\`\`note a.md\n${note()}\`\`\``, "The format for a skill looks like this:", "```markdown\n````skill x\nThe steps.\n```", "Nothing else."].join("\n\n"));
+  assert.deepEqual([shown.ok, shown.notes?.map(({ file }) => file), shown.skills], [true, ["a.md"], undefined], JSON.stringify(shown));
+  const other = parseReflection([`\`\`\`skill find-policies\n${SKILL}\`\`\``, "```markdown\n````skill x\nThe steps.\n```"].join("\n\n"));
+  assert.deepEqual([other.ok, other.skills?.map(({ name }) => name)], [true, ["find-policies"]], "another name inside the stray fence is part of it");
   // A stray unnamed fence that never closes, with no learning block after it, is prose.
   assert.deepEqual(parseReflection(`${block("skill", "find-policies", SKILL)}\n\n\`\`\`\nstray`).skills, [{ name: "find-policies", text: SKILL }]);
 });
