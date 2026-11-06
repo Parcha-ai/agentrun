@@ -53,8 +53,9 @@ config=${XDG_CONFIG_HOME:-${HOME:+$HOME/.config}}
 if [ -z "${agentrun_secret_AGENTRUN_SEAL_KEY+x}" ] && [ -n "$config" ]; then
   keys=$config/agentrun
   # Its own directory, when the person made it with a plain mkdir (0755) and no key is there yet: tightened to 0700
-  # before a key is written in it, only when it is this user's. An existing key's directory is never changed.
-  if [ ! -e "$keys/seal.key" ] && [ -d "$keys" ] && [ -O "$keys" ]; then
+  # before a key is written in it, only when it is this user's. An existing key's directory is never changed, nor a
+  # symlink's target, which may be shared (the key check below refuses a linked directory anyway).
+  if [ ! -e "$keys/seal.key" ] && [ ! -L "$keys" ] && [ -d "$keys" ] && [ -O "$keys" ]; then
     case $(ls -ld "$keys" 2>/dev/null) in d???------*) ;; *) chmod 700 "$keys" 2>/dev/null || : ;; esac
   fi
   # Made whole beside its name, then linked to it, which fails if another start made it first: each start reads one.
