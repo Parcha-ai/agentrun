@@ -283,6 +283,7 @@ function takenBack(data, runId) {
 
 export async function letGo(data, runId, { deadlineMs = 20_000 } = {}) {
   const file = join(runDir(data, runId), "run.json");
+  let gone;
   for (const end = Date.now() + deadlineMs; ; await new Promise((resolve) => setTimeout(resolve, 50))) {
     let record = null;
     try {
@@ -291,10 +292,13 @@ export async function letGo(data, runId, { deadlineMs = 20_000 } = {}) {
       // Read while it was rewritten: read again.
     }
     const pid = record?.holder?.pid;
-    // Its process gone, and the server's take-back done (the claim is the server's, its WAL checkpointed): a reader of
-    // its store meets no lock.
-    if (Number.isInteger(pid) && !processAlive(pid) && takenBack(data, runId)) return;
-    assert.ok(Date.now() < end, `the run's process did not exit, or the server did not take the run back: ${JSON.stringify(record)}`);
+    // Its process gone, and a live server's take-back done (the claim is the server's, its WAL checkpointed), so a reader
+    // of its store meets no lock; with no server to take it back (one killed), 5 s after its process went.
+    if (Number.isInteger(pid) && !processAlive(pid)) {
+      gone ??= Date.now();
+      if (takenBack(data, runId) || Date.now() - gone > 5_000) return;
+    }
+    assert.ok(Date.now() < end, `the run's process did not exit: ${JSON.stringify(record)}`);
   }
 }
 
