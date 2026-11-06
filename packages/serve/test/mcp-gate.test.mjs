@@ -285,7 +285,8 @@ test("claude-agent: a priced call through the CLI's own MCP client is held and b
 function pausedForRoom(view, fake) {
   assert.deepEqual([view.state, view.pending?.kind, view.pending?.cap_usd], ["waiting", "budget", 0.04], JSON.stringify(view.pending));
   assert.ok(view.pending.needs_usd >= 0.05, JSON.stringify(view.pending));
-  assert.match(view.pending.said, /Not sent: the run has spent \$[\d.]+ of its \$0\.04 cap, and mcp:fake\/paid could cost up to \$0\.05 \(the price its owner set for mcp:fake\/paid\)/);
+  // The cap's words, as main says them (#1768).
+  assert.match(view.pending.said, /Not sent: this run has spent \$[\d.]+ of its \$0\.04 cap, and the next step, mcp:fake\/paid, could cost up to \$0\.05 \(the price its owner set for mcp:fake\/paid\)/);
   assert.equal(calls(fake).length, 0, "refused unsent");
 }
 
