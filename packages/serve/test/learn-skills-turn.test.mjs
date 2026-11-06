@@ -4,6 +4,7 @@
 // and shapes; one grader judges every note, skill and draft by one rubric with its Workflow case question, one item
 // each; a risky one is held; and a person reads each refusal in a skill's or a workflow's own words.
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import * as dsl from "@parcha/agentrun-dsl";
 import * as checks from "../dist/learn/check.js";
@@ -52,7 +53,7 @@ test("an answer's skill and workflow blocks are read beside its notes, by name a
   assert.notEqual(parseReflection(block("skill", "find-policies", SKILL, "```")).skills?.[0]?.text, SKILL);
 });
 
-test("a skill's or a draft's block out of format is unparsed: not closed, no name or two, a name given twice", () => {
+test("a skill's or a draft's block out of format is unparsed: not closed, no name or two, two different ones under one name", () => {
   const detail = (answer) => {
     const parsed = parseReflection(answer);
     assert.deepEqual([parsed.ok, parsed.reason], [false, "unparsed"], answer.slice(0, 60));
@@ -61,8 +62,25 @@ test("a skill's or a draft's block out of format is unparsed: not closed, no nam
   assert.match(detail(`\`\`\`\`skill find-policies\n${SKILL}`), /skill's block is not closed/);
   assert.match(detail(block("skill", "", SKILL).replace("skill ", "skill")), /skill's block names no name/);
   assert.match(detail(block("workflow", "a b", "{}")), /workflow's block names more than one name/);
-  assert.match(detail(`${block("skill", "x", SKILL)}\n${block("skill", "x", SKILL)}`), /two of the answer's skills have one name/);
+  assert.match(detail(`${block("skill", "x", SKILL)}\n${block("skill", "x", `${SKILL}One more step.\n`)}`), /two of the answer's skills have one name/, "two different skills under one name are ambiguous");
   assert.ok(reflect.ANSWER_MAX >= 8 * CAPS.runNote + 2 * CAPS.file + CAPS.readme, "room for every note, a skill and a draft at their caps");
+});
+
+test("an answer that gives one skill twice, first in a three-backtick block and then in the four-backtick block the prompt asks for, is read as that skill once (a Claude Code run's own answer); a stray fenced block of another kind is left alone", () => {
+  const answer = readFileSync(new URL("./fixtures/answer-skill-twice.txt", import.meta.url), "utf8");
+  const parsed = parseReflection(answer);
+  assert.equal(parsed.ok, true, JSON.stringify(parsed));
+  assert.deepEqual(parsed.skills.map(({ name }) => name), ["ops-status-report"]);
+  assert.match(parsed.skills[0].text, /^---\nname: ops-status-report\n[\s\S]*Add no preamble or closing remarks outside these lines\.\n$/);
+  // The four-backtick block is the one the format asks for: a three-backtick one under the same name that differs (cut
+  // short by a code block inside it) gives way to it.
+  const cutShort = `\`\`\`skill find-policies\n${SKILL.split("```sh")[0]}\`\`\`\n\n${block("skill", "find-policies", SKILL)}`;
+  const kept = parseReflection(cutShort);
+  assert.equal(kept.ok, true, JSON.stringify(kept));
+  assert.deepEqual(kept.skills, [{ name: "find-policies", text: SKILL }]);
+  // A fenced block that is no learning block, beside the skill, is prose.
+  const stray = parseReflection(`\`\`\`text\nSTATUS: OK\n\`\`\`\n\n${block("skill", "find-policies", SKILL)}`);
+  assert.deepEqual([stray.ok, stray.skills?.map(({ name }) => name)], [true, ["find-policies"]]);
 });
 
 test("the host writes a draft's README from the description its block gives, and the JSON after it is the workflow.json", () => {

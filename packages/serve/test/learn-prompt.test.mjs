@@ -66,6 +66,11 @@ test("an answer's notes are its ```note blocks, in order, each the file it names
   assert.deepEqual(parseReflection(`  ${block("check-units.md", units).replace("\n```", "\n   ```")}`).notes?.[0]?.file, "check-units.md", "indented up to three spaces");
 });
 
+test("a note given twice, word for word, is that note once", () => {
+  const parsed = parseReflection(`${block("a.md")}\n\n${block("a.md")}`);
+  assert.deepEqual([parsed.ok, parsed.notes?.map(({ file }) => file)], [true, ["a.md"]]);
+});
+
 test("an answer with no note is empty: nothing, 'No notes.', prose, or blocks of another kind", () => {
   for (const answer of ["", "   \n", "No notes.", "Nothing new from this run.", "```json\n{}\n```", "```\nplain\n```", undefined, null, 7]) assert.deepEqual(parseReflection(answer), { ok: false, reason: "empty" }, JSON.stringify(answer));
 });
@@ -81,7 +86,7 @@ test("an answer that tries and is out of format is unparsed: a note's block not 
   assert.match(unparsed(`${block("a.md")}\n\`\`\`note b.md\n${note()}`), /not closed/);
   assert.match(unparsed(`\`\`\`note\n${note()}\`\`\``), /no file/);
   assert.match(unparsed(`\`\`\`note a.md b.md\n${note()}\`\`\``), /more than one file/);
-  assert.match(unparsed(`${block("a.md")}\n${block("a.md")}`), /one file name/);
+  assert.match(unparsed(`${block("a.md")}\n${block("a.md", note({ name: "Other" }))}`), /one file name/, "two different notes under one file name");
   assert.match(unparsed(`Here is my note:\n\n${note()}`), /outside a ```note block/);
   assert.match(unparsed(`\`\`\`markdown\n${note()}\`\`\``), /outside a ```note block/, "a note in a block of another kind");
   assert.match(unparsed(`${block("a.md")}\n${"x".repeat(ANSWER_MAX)}`), /over/);
