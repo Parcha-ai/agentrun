@@ -354,7 +354,7 @@ way (`/proc/self/fd`). On a host without it (macOS), where a link swapped in mid
 these files: monid's long answers say they could not be saved, and the browser's evidence is not filed. `browser` is runner-only for now (`422` in a sandbox place): its downloads
 go through `work/` by path.
 
-- The container binds the run's `work/` alone, read-write, at `/run/agentrun/run/work`, where the tools start. Nothing
+- The container binds the run's `work/` alone, read-write, at `/workspace`, where the tools start. Nothing
   else of the data directory enters it. `read`, `write` and `edit` take a path in that directory, relative or absolute,
   or under the run's own `work/` on this machine, which names the same file there (another harness's cwd may name
   one); any other (another path of this machine, `..` out of it, `~`) is refused as outside the workspace, and their
@@ -563,7 +563,7 @@ since nothing binds `work/` there):
 - A sandbox Daytona does not report blocked, when blocked was asked, is deleted, and the tool call fails saying so. An
   organization on Daytona's tier 1 or 2 keeps its own network policy, which a sandbox cannot override, so a run there
   gets no Daytona box unless that policy blocks it.
-- A sandbox cannot bind `work/`. The server copies `work/` into it at `/run/agentrun/run/work` when it makes it, and
+- A sandbox cannot bind `work/`. The server copies `work/` into it at `/workspace` when it makes it, and
   copies what changed back at each turn's end (a read of the run's files waits for that copy) and once more before the
   run's end is recorded. Daytona's answer is never trusted: the copy back writes regular files and directories only,
   never a link and nothing outside `work/`, and a file this server changed since the last copy stays as this server
@@ -587,7 +587,7 @@ since nothing binds `work/` there):
   needs it: for the run's next tool call, a copy back, or the start's sweep. One still stopping, pausing or archiving
   is waited for (a minute at most) first. It is never replaced by a new one, so
   what only it holds stays.
-- The sandbox is Daytona's default snapshot, made as its user, with `sudo -n` making `/run/agentrun/run/work`.
+- The sandbox is Daytona's default snapshot, made as its user, with `sudo -n` making `/workspace`.
 
 ### A run in a Modal sandbox
 
@@ -598,7 +598,7 @@ is Modal's default sandbox runtime (gVisor), not a virtual machine: the server d
 `edit` run in the sandbox too. What differs:
 
 - The token and the SDK's client are this server's alone. The server makes the sandbox, copies `work/` into it at
-  `/run/agentrun/run/work`, copies what changed back at each turn's end and once more before the run's end is recorded,
+  `/workspace`, copies what changed back at each turn's end and once more before the run's end is recorded,
   and ends it after that last copy, at the run's end, a cancel included, and at an archive. The copy rules (no link,
   nothing outside `work/`, a file this server changed stays as it has it) are Daytona's.
 - The run's process holds no token. Its calls to its sandbox go through the server's box relay, on loopback, with that

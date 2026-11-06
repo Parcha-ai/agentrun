@@ -567,9 +567,9 @@ after each turn. `@parcha/pi-transport/sync` does both through any `Box`, with t
 import { pullAgentHome, pullDir, seedAgentHome, seedDir } from "@parcha/pi-transport/sync";
 
 await seedAgentHome(box, { from: "/data/homes/a1", to: "/run/agentrun/home" }, ctx); // learning/ goes read-only
-const seeded = await seedDir(box, { from: "/data/runs/r1/work", to: "/run/agentrun/run/work" }, ctx);
+const seeded = await seedDir(box, { from: "/data/runs/r1/work", to: "/workspace" }, ctx);
 let mark = seeded.ok ? seeded.value.mark : undefined; // the box's listing, with the SHA-256 of each file sent
-const pulled = await pullDir(box, { from: "/run/agentrun/run/work", to: "/data/runs/r1/work", since: mark, mirrorDeletes: true }, ctx);
+const pulled = await pullDir(box, { from: "/workspace", to: "/data/runs/r1/work", since: mark, mirrorDeletes: true }, ctx);
 if (pulled.ok) mark = pulled.value.mark; // kept for the next pull
 ```
 
