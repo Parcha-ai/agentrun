@@ -43,10 +43,19 @@ const zodChain = (overrides = {}) => ({
   ...overrides,
 });
 const chainNames = ['zod', '@browserbasehq/stagehand', '@parcha/pi-browser', '@parcha/agentrun-harness'];
-const blocked = (vulnerabilities, now = before) => auditBlockers(audit(vulnerabilities), now).blocking.map(entry => entry.package).sort();
+// How a chain is judged is tested on a fixture list: the real one, plus an exception for Stagehand's own zod as the gate
+// carried until Stagehand 4.4.0 (zod 4.6.6, fixed) removed it.
+const ZOD = { package: 'zod', under: 'node_modules/@browserbasehq/stagehand/', advisories: ['GHSA-mrhx-c7xc-m3w5'], expires: '2026-11-06' };
+const withZod = [...AUDIT_EXCEPTIONS, ZOD];
+const blocked = (vulnerabilities, now = before, exceptions = withZod) => auditBlockers(audit(vulnerabilities), now, exceptions).blocking.map(entry => entry.package).sort();
 
-test("stagehand's own zod, and each package vulnerable only through it, are accepted until 2026-11-06", () => {
-  assert.deepEqual(auditBlockers(audit(zodChain()), before), {
+test("the real list accepts no zod: Stagehand's own zod, and each package it reaches, block", () => {
+  assert.equal(AUDIT_EXCEPTIONS.some(exception => exception.package === 'zod'), false);
+  assert.deepEqual(blocked(zodChain(), before, AUDIT_EXCEPTIONS), [...chainNames].sort());
+});
+
+test("an exception for one nested copy accepts it, and each package vulnerable only through it, until it expires", () => {
+  assert.deepEqual(auditBlockers(audit(zodChain()), before, withZod), {
     accepted: chainNames.map(name => ({ package: name, severity: 'high', advisories: ['GHSA-mrhx-c7xc-m3w5'], expires: '2026-11-06' })),
     blocking: [],
   });
@@ -74,12 +83,11 @@ test('any other cause anywhere in the chain blocks every package it reaches', ()
 
 test('a package reached through two accepted exceptions carries both advisories and the earlier expiry', () => {
   const both = { ...zodChain(), 'brace-expansion': braceExpansion(), '@parcha/agentrun-harness': dependent('@parcha/agentrun-harness', ['@parcha/pi-browser', 'brace-expansion']) };
-  assert.deepEqual(auditBlockers(audit(both), before).accepted.find(entry => entry.package === '@parcha/agentrun-harness'),
+  assert.deepEqual(auditBlockers(audit(both), before, withZod).accepted.find(entry => entry.package === '@parcha/agentrun-harness'),
     { package: '@parcha/agentrun-harness', severity: 'high', advisories: ['GHSA-mrhx-c7xc-m3w5', 'GHSA-q2hr-2g5m-vwhr', 'GHSA-qhr7-859c-m2p7', 'GHSA-6j4f-fj2g-mc7p'], expires: '2026-11-06' });
 });
 
 test('a moderate or low package beside the accepted chain blocks nothing, and is never accepted or merged into it', () => {
-  // As main's consumer has it: undici's moderate advisories reach pi-browser and the harness through other packages.
   const moderate = (name, via) => ({ ...dependent(name, via), severity: 'moderate' });
   const vulnerabilities = zodChain({
     '@parcha/pi-browser': dependent('@parcha/pi-browser', ['@browserbasehq/stagehand', '@earendil-works/pi-coding-agent']),
@@ -88,66 +96,65 @@ test('a moderate or low package beside the accepted chain blocks nothing, and is
     '@parcha/agentrun-pi': moderate('@parcha/agentrun-pi', ['@earendil-works/pi-coding-agent']),
     undici: { name: 'undici', severity: 'moderate', isDirect: false, effects: [], nodes: ['node_modules/undici'], via: [advisory('GHSA-dddd-eeee-ffff', 'moderate')] },
   });
-  assert.deepEqual(auditBlockers(audit(vulnerabilities), before), {
+  assert.deepEqual(auditBlockers(audit(vulnerabilities), before, withZod), {
     accepted: chainNames.map(name => ({ package: name, severity: 'high', advisories: ['GHSA-mrhx-c7xc-m3w5'], expires: '2026-11-06' })),
     blocking: [],
   });
 });
 
-const undiciNodes = ['node_modules/@earendil-works/pi-coding-agent/node_modules/undici', 'node_modules/disk/node_modules/undici'];
+const codingAgentUndici = 'node_modules/@earendil-works/pi-coding-agent/node_modules/undici';
+const diskUndici = 'node_modules/disk/node_modules/undici';
 // The three from 2026-10-24, then the five published by 2026-10-27, all fixed in 8.12.2.
 const undiciAdvisories = [advisory('GHSA-4qv8-2p9j-2685', 'moderate'), advisory('GHSA-f72v-6w45-q472', 'moderate'), advisory('GHSA-xjj6-f33q-929c', 'high'),
   advisory('GHSA-4w7w-5xrc-9h26', 'high'), advisory('GHSA-2m5v-pch6-74hx', 'high'), advisory('GHSA-qrxm-fqhp-jwvm', 'high'), advisory('GHSA-9fm3-97px-rjf6', 'moderate'),
   advisory('GHSA-55wc-3pg8-jfw6', 'moderate')];
 const undiciIds = undiciAdvisories.map(via => via.title);
 const moderatePackage = (name, via) => ({ ...dependent(name, via), severity: 'moderate' });
-// As the package check's consumer had it on 2026-10-27: both upstreams' own undici, next to Stagehand's own zod.
+// As the package check's consumer has it with disk 1.12.0 and Stagehand 4.4.0: only pi-coding-agent's own undici is left.
 const withUndici = (overrides = {}) => ({
-  ...zodChain(),
-  undici: { name: 'undici', severity: 'high', isDirect: false, effects: ['@earendil-works/pi-coding-agent', 'disk'], nodes: undiciNodes, via: undiciAdvisories },
-  disk: moderatePackage('disk', ['undici']),
+  undici: { name: 'undici', severity: 'high', isDirect: false, effects: ['@earendil-works/pi-coding-agent'], nodes: [codingAgentUndici], via: undiciAdvisories },
   '@earendil-works/pi-coding-agent': moderatePackage('@earendil-works/pi-coding-agent', ['undici']),
-  '@parcha/pi-durable-disk': moderatePackage('@parcha/pi-durable-disk', ['disk']),
   '@parcha/agentrun-pi': moderatePackage('@parcha/agentrun-pi', ['@earendil-works/pi-coding-agent']),
-  '@parcha/pi-browser': dependent('@parcha/pi-browser', ['@browserbasehq/stagehand', '@earendil-works/pi-coding-agent']),
-  '@parcha/agentrun-harness': dependent('@parcha/agentrun-harness', ['@parcha/agentrun-pi', '@parcha/pi-browser', '@parcha/pi-durable-disk']),
+  '@parcha/pi-browser': dependent('@parcha/pi-browser', ['@earendil-works/pi-coding-agent', 'undici']),
+  '@parcha/agentrun-harness': dependent('@parcha/agentrun-harness', ['@parcha/agentrun-pi', '@parcha/pi-browser']),
   ...overrides,
 });
+const undiciChain = ['undici', '@parcha/pi-browser', '@parcha/agentrun-harness'];
+const realBlocked = (vulnerabilities, now = before) => blocked(vulnerabilities, now, AUDIT_EXCEPTIONS);
 
-test("the disk SDK's and pi-coding-agent's own undici are accepted, beside Stagehand's zod, until 2026-11-06", () => {
+test("pi-coding-agent's own undici, and each package vulnerable only through it, are accepted until 2026-11-13", () => {
   const { accepted, blocking } = auditBlockers(audit(withUndici()), before);
   assert.deepEqual(blocking, []);
-  assert.deepEqual(accepted.find(entry => entry.package === 'undici'),
-    { package: 'undici', severity: 'high', advisories: undiciIds, expires: '2026-11-06' });
-  assert.deepEqual(accepted.map(entry => entry.package).sort(), [...chainNames, 'undici'].sort(), 'nothing else is accepted');
-  assert.deepEqual(blocked(withUndici(), Date.parse('2026-11-06T00:00:00Z')), [...chainNames, 'undici'].sort(), 'an expired exception accepts neither');
+  assert.deepEqual(accepted.find(entry => entry.package === 'undici'), { package: 'undici', severity: 'high', advisories: undiciIds, expires: '2026-11-13' });
+  assert.deepEqual(accepted.map(entry => entry.package).sort(), [...undiciChain].sort(), 'nothing else is accepted');
+  assert.deepEqual(realBlocked(withUndici(), Date.parse('2026-11-12T23:59:59Z')), [], 'still accepted the second before it expires');
+  assert.deepEqual(realBlocked(withUndici(), Date.parse('2026-11-13T00:00:00Z')), [...undiciChain].sort(), 'an expired exception accepts nothing');
 });
 
-test('undici anywhere else, with another advisory, or under one parent only blocks', () => {
+test("the disk SDK's undici is no longer accepted (disk 1.12.0 takes the fixed one): a copy there blocks", () => {
+  assert.ok(realBlocked(withUndici({ undici: { ...withUndici().undici, nodes: [codingAgentUndici, diskUndici] } })).includes('undici'));
+  assert.ok(realBlocked(withUndici({ undici: { ...withUndici().undici, nodes: [diskUndici] } })).includes('undici'));
+});
+
+test('undici anywhere else, or with another advisory, blocks; the exception narrowed by any one advisory accepts nothing', () => {
   const undici = withUndici().undici;
   const cases = [
-    ['a copy at the top level', withUndici({ undici: { ...undici, nodes: [...undiciNodes, 'node_modules/undici'] } })],
-    ['a copy under another parent', withUndici({ undici: { ...undici, nodes: [...undiciNodes, 'node_modules/@parcha/pi-transport/node_modules/undici'] } })],
+    ['a copy at the top level', withUndici({ undici: { ...undici, nodes: [codingAgentUndici, 'node_modules/undici'] } })],
+    ['a copy under another parent', withUndici({ undici: { ...undici, nodes: [codingAgentUndici, 'node_modules/@parcha/pi-transport/node_modules/undici'] } })],
     ['another undici advisory', withUndici({ undici: { ...undici, via: [...undiciAdvisories, advisory('GHSA-pppp-qqqq-rrrr', 'high')] } })],
   ];
-  for (const [label, vulnerabilities] of cases) assert.ok(blocked(vulnerabilities).includes('undici'), label);
-  // Narrowed to either parent alone, or without any one of its advisories, the exception accepts nothing.
+  for (const [label, vulnerabilities] of cases) assert.ok(realBlocked(vulnerabilities).includes('undici'), label);
   const undiciException = AUDIT_EXCEPTIONS.find(exception => exception.package === 'undici');
-  const narrowed = [
-    ...undiciException.under.map(parent => ({ under: undiciException.under.filter(other => other !== parent) })),
-    ...undiciException.advisories.map(id => ({ advisories: undiciException.advisories.filter(other => other !== id) })),
-  ];
-  for (const change of narrowed) {
-    const exceptions = AUDIT_EXCEPTIONS.map(exception => (exception === undiciException ? { ...exception, ...change } : exception));
-    assert.ok(auditBlockers(audit(withUndici()), before, exceptions).blocking.some(entry => entry.package === 'undici'), JSON.stringify(change));
+  assert.deepEqual([undiciException.under].flat(), ['node_modules/@earendil-works/pi-coding-agent/'], 'only the one nested copy');
+  for (const id of undiciException.advisories) {
+    const exceptions = AUDIT_EXCEPTIONS.map(exception => (exception === undiciException ? { ...exception, advisories: exception.advisories.filter(other => other !== id) } : exception));
+    assert.ok(auditBlockers(audit(withUndici()), before, exceptions).blocking.some(entry => entry.package === 'undici'), id);
   }
 });
 
-test('if npm rates the disk SDK or pi-coding-agent high through undici, the chain carries them too', () => {
-  const vulnerabilities = withUndici({ disk: { ...withUndici().disk, severity: 'high' }, '@earendil-works/pi-coding-agent': { ...withUndici()['@earendil-works/pi-coding-agent'], severity: 'high' } });
+test('if npm rates pi-coding-agent high through undici, the chain carries it too', () => {
+  const vulnerabilities = withUndici({ '@earendil-works/pi-coding-agent': { ...withUndici()['@earendil-works/pi-coding-agent'], severity: 'high' } });
   const { accepted, blocking } = auditBlockers(audit(vulnerabilities), before);
   assert.deepEqual(blocking, []);
-  for (const name of ['disk', '@earendil-works/pi-coding-agent']) {
-    assert.deepEqual(accepted.find(entry => entry.package === name), { package: name, severity: 'high', advisories: undiciIds, expires: '2026-11-06' });
-  }
+  assert.deepEqual(accepted.find(entry => entry.package === '@earendil-works/pi-coding-agent'), { package: '@earendil-works/pi-coding-agent', severity: 'high', advisories: undiciIds, expires: '2026-11-13' });
 });

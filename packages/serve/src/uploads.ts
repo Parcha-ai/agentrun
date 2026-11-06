@@ -7,6 +7,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { type FileHandle, lstat, mkdir, open, readdir, rename, rm, unlink } from "node:fs/promises";
+import { DISK_DIR } from "@parcha/pi-durable-agent";
 import { dirname, join } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { ApiError, type InputIssue, invalid } from "./errors.js";
@@ -33,6 +34,8 @@ const NAME_MAX = 255;
 const PATH_MAX = process.platform === "darwin" ? 1024 : 4096;
 /** A run id's room in a run's copy of a file: a UUIDv7's 36 characters. */
 const RUN_ID_ROOM = "x".repeat(36);
+/** An agent's folder's room on the disk: an id of up to 128 characters, a dash and 16 hex digits (agentDirName). */
+const AGENT_DIR_ROOM = "x".repeat(128 + 17);
 /** The room a run's copy may add to each segment: a suffix, at most one past the most files a run names. */
 const SUFFIX_ROOM = `-${MAX_FILES_PER_RUN + 1}`.length;
 const SHA256 = /^[0-9a-f]{64}$/;
@@ -150,7 +153,7 @@ export class Uploads {
   private problemOf(path: string): string | undefined {
     const problem = pathProblem(path);
     if (problem) return problem;
-    const longest = Buffer.byteLength(join(dirname(this.root), "runs", RUN_ID_ROOM, "work", INPUTS_DIR, path)) + path.split("/").length * SUFFIX_ROOM + 1;
+    const longest = Buffer.byteLength(join(dirname(this.root), DISK_DIR, "agents", AGENT_DIR_ROOM, "runs", RUN_ID_ROOM, "work", INPUTS_DIR, path)) + path.split("/").length * SUFFIX_ROOM + 1;
     return longest > PATH_MAX ? `path is too long for this server's disk: a run's copy of it would take up to ${longest} bytes, over ${PATH_MAX}` : undefined;
   }
 

@@ -17,7 +17,7 @@ const agent = (kind: Agent["kind"] = "agentic"): Agent => ({
 const run: Run = {
   run_id: "run-b", agent_id: "refunds", agent_version: 1, revision: "r1", kind: "agentic", status: "completed", state: "idle", title: "brooklinen.com",
   created_at: "2026-11-03T16:52:00Z", ended_at: "2026-11-03T16:52:04Z", result: null, error: null, cost: null, archived_at: null,
-  learning: { state: "merged", reason: null, used: [{ file: "a.md", name: "Shopify refund policy path" }], learned: [{ file: "b.md", name: "Try it first", supersedes: ["a.md"] }] },
+  learning: { state: "merged", reason: null, read: [{ file: "a.md", name: "Shopify refund policy path" }], learned: [{ file: "b.md", name: "Try it first", supersedes: ["a.md"] }] },
 };
 const EMPTY: AgentLearning = { agent: "refunds", main: null, index: "", notes: { items: [], total: 0, next_cursor: null }, log: { items: [], total: 0, next_cursor: null }, counts: { merged: 0, dropped: {}, in_progress: 0 } };
 const ended: TimelinePage = { run_id: "run-b", status: "completed", state: "idle", rows: [], drop: [], reset: true, unchanged: false, final: true, has_more: false, next_after: 1 };
@@ -90,7 +90,7 @@ describe("AgentPage's Learning tab", () => {
   it("on the Runs tab, a run's row says what it read and kept", async () => {
     const p = await open(agent(), { learning: "on" });
     const row = p.host.querySelector('ul[aria-label="Runs"] a')!;
-    expect(row.textContent).toContain("Used 1 note");
+    expect(row.textContent).toContain("Read: 1 note");
     expect(row.textContent).toContain("Learned 1 note");
   });
   it("an ended latest run whose learning is still deciding is read again until it settles: its row then says what it kept", async () => {

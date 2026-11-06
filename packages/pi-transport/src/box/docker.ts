@@ -66,6 +66,14 @@ export type DockerBoxesOptions = {
 	 */
 	readonly pidsLimit?: number;
 	/**
+	 * Named Docker volumes every box mounts, after the spec's binds: `--mount type=volume,source=<name>,target=<target>`
+	 * (`,readonly` when asked). A volume lives on the daemon's own disk, so it needs no path of this machine, which a
+	 * daemon in a VM shares across a file-sharing layer that carries files but not sockets. A name is Docker's (a letter
+	 * or digit, then letters, digits, `_`, `.` and `-`), a target an absolute path in normal form; anything else throws
+	 * here, before any box. A spec whose mount names a volume's target is refused `invalid`.
+	 */
+	readonly volumes?: readonly { readonly name: string; readonly target: string; readonly readOnly?: boolean }[];
+	/**
 	 * Where the daemon has this machine's files, for a caller that runs in a container of that daemon's own (given its
 	 * socket): the daemon cannot bind a path of the caller's, only the named volume it mounted into the caller's container
 	 * at `at`. A spec's mount whose source is below `at` becomes that volume's subpath (`--mount
@@ -76,6 +84,9 @@ export type DockerBoxesOptions = {
 	 */
 	readonly paths?: { readonly at: string; readonly volume: string };
 };
+
+/** A Docker volume's name, as Docker takes one. */
+const VOLUME_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
 
 /** A Docker volume's name, as Docker takes one. */
 const DOCKER_VOLUME_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
@@ -380,6 +391,20 @@ export function dockerBoxes(options: DockerBoxesOptions = {}): BoxProvider {
 	) {
 		throw new Error(`the docker pidsLimit ${shown(options.pidsLimit)} is not a whole number from 1 to ${MAX_PIDS}`);
 	}
+	const volumes = (options.volumes ?? []).map((volume) => {
+		if (typeof volume?.name !== "string" || !VOLUME_NAME.test(volume.name)) {
+			throw new Error(
+				`the docker volume name ${shown(volume?.name)} is not a letter or digit, then letters, digits, _, . or -`,
+			);
+		}
+		const target = parseMounts([{ source: "/", target: volume.target }]);
+		if (target instanceof BoxError || volume.target === "/") {
+			throw new Error(
+				`the docker volume ${volume.name}'s target ${shown(volume.target)} is not an absolute path in normal form below /`,
+			);
+		}
+		return { name: volume.name, target: volume.target, readOnly: volume.readOnly === true };
+	});
 	const paths = options.paths === undefined ? undefined : checkPaths(options.paths);
 	const docker = new Docker(options.docker ?? "docker");
 
@@ -403,6 +428,9 @@ export function dockerBoxes(options: DockerBoxesOptions = {}): BoxProvider {
 			const network = parseNetwork(spec.network) as { kind: "open" | "none" };
 			const mounts = parseMounts(spec.mounts);
 			if (mounts instanceof BoxError) return err(mounts);
+			const covered = mounts.find((mount) => volumes.some((volume) => volume.target === mount.target));
+			if (covered !== undefined)
+				return err(new BoxError("invalid", `the mount target ${covered.target} is a volume's`));
 			// Checked again at each create: a `docker context use` since the provider was made moves every later call.
 			const now = dockerDaemon(process.env);
 			const away = !daemon.local ? daemon : !now.local ? now : undefined;
@@ -454,6 +482,9 @@ export function dockerBoxes(options: DockerBoxesOptions = {}): BoxProvider {
 			for (const { source, target, readOnly } of mounts) {
 				const mount = paths ? mapped(paths, source, target) : `type=bind,source=${source},target=${target}`;
 				args.push("--mount", `${mount}${readOnly ? ",readonly" : ""}`);
+			}
+			for (const { name, target, readOnly } of volumes) {
+				args.push("--mount", `type=volume,source=${name},target=${target}${readOnly ? ",readonly" : ""}`);
 			}
 			// The sleep replaces the image's own entrypoint, so the lifetime holds whatever the image would run.
 			args.push("--entrypoint", "sleep", spec.image ?? options.image ?? DEFAULT_IMAGE);

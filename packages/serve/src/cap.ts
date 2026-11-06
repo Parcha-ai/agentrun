@@ -32,7 +32,7 @@
 // fits the cap, and whenever the spend is unknown; paid calls go one at a time, so each check sees the charge before
 // it. A call sent holds its figure until its charge joins the spend (paidHolds), so a model request judged meanwhile, on
 // pi or on another harness, counts it beside the spend, as a paid call's check counts the model requests in flight.
-import { DatabaseSync } from "node:sqlite";
+import { readRunDbSync } from "./run-db.js";
 import { existsSync } from "node:fs";
 import { providerInputOverhead } from "@parcha/agentrun-kernel/host";
 import { bookRequest, type Ended, isConnectCode, isGatewayTimeout, rejectionCode } from "@parcha/agentrun-kernel";
@@ -300,20 +300,20 @@ function openFigures(entries: readonly EntryLike[]): { generation: Figure[]; com
  *  harness spent beside its harness's own requests and its paid tools, which that harness's booking does not hold. */
 export function spentIn(storeFile: string, { sides = false }: { sides?: boolean } = {}): number | null {
   if (!existsSync(storeFile)) return 0;
-  const db = new DatabaseSync(storeFile, { readOnly: true });
+  // Fresh, read-only and lock-free (run-db.ts): its process may hold it.
   const entries: EntryLike[] = [];
   // The store's own entries, as read (without the answers written below for a stopped request): openFigures reads them.
   const read: EntryLike[] = [];
   let marked = false;
   const rows: EntryLike[] = [];
-  try {
+  readRunDbSync(storeFile, false, (db) => {
+    // A read made again (its file changed during it) starts from none.
+    rows.length = 0;
     for (const row of db.prepare("SELECT record FROM entries ORDER BY rowid").iterate()) {
       const entry = JSON.parse(String((row as { record: string }).record)) as EntryLike;
       if (!sides || ([REQUEST_STARTED, REQUEST_ENDED, REQUEST_COST, REQUEST_COST_LATE].includes(entry.kind) && typeof (entry.data as { request?: unknown } | undefined)?.request === "string")) rows.push(entry);
     }
-  } finally {
-    db.close();
-  }
+  });
   // pi's error entry for a request that ended on an error after its response began is left out, as an aborted one is: its
   // end mark (`error`) counts it at its hold. pi writes the entry as the mark is written, before it or after, so each such
   // mark takes the nearest error entry not yet taken among those after the earliest start holding its figure (a request's
@@ -423,9 +423,9 @@ export function spentIn(storeFile: string, { sides = false }: { sides?: boolean 
 /** /usage's meters for a run that ended, from its store: `tools`, each TOOL_COST's `usd`, unknown (null) when one is,
  *  or when a call was cut (marked, never settled: what it charged no one knows); and `tokens`, the rest of its root
  *  conversation as its settled timeline prices it; `browser`, the part of `tools` that is browser session time
- *  (browser-cost.ts), with its seconds; and `others`, the rest of `tools`, each unknown (null) apart. A mark is never a charge here (the cap's alone). Never for a live run: its process
+ *  (browser-cost.ts), with its seconds; and `others`, the rest of `tools`, each unknown (null) apart; and `notMetered`, the tool calls it ran with no price (TOOL_UNMETERED, an MCP tool its owner set none for), outside every figure here (absent when none). A mark is never a charge here (the cap's alone). Never for a live run: its process
  *  holds the store exclusively. */
-export type Meters = { tools: number | null; tokens: number | null; browser: { usd: number | null; seconds: number }; others: number | null };
+export type Meters = { tools: number | null; tokens: number | null; browser: { usd: number | null; seconds: number }; others: number | null; notMetered?: number };
 export function metersIn(storeFile: string): Meters {
   const { known: _, ...meters } = meterFiguresIn(storeFile);
   return meters;
@@ -436,8 +436,7 @@ export function metersIn(storeFile: string): Meters {
  *  unknown cost is known to have spent on each (server.ts /usage). */
 export function meterFiguresIn(storeFile: string): Meters & { known: { tokens: number; browser: number; others: number } } {
   if (!existsSync(storeFile)) return { tools: 0, tokens: null, browser: { usd: 0, seconds: 0 }, others: 0, known: { tokens: 0, browser: 0, others: 0 } };
-  const db = new DatabaseSync(storeFile, { readOnly: true, timeout: 2_000 });
-  try {
+  return readRunDbSync(storeFile, false, (db) => {
     const rows = db.prepare("SELECT conversation_id AS conversation, record FROM entries ORDER BY rowid").all().map((row) => ({ conversation: Number(row.conversation), entry: JSON.parse(String(row.record)) as EntryLike }));
     const root = rows.reduce((min, row) => Math.min(min, row.conversation), Infinity);
     const marks = new Set<unknown>();
@@ -463,10 +462,9 @@ export function meterFiguresIn(storeFile: string): Meters & { known: { tokens: n
     const usage = timelineOf(rest, { settled: true }).find((row) => row.kind === "usage");
     const otherTools = marks.size || others.some((usd) => usd === undefined) ? null : (others as number[]).reduce((sum, usd) => sum + usd, 0);
     known.tokens = usage ? (usage.usage?.usd ?? usage.usage?.so_far_usd ?? 0) : 0;
-    return { tools, tokens: usage ? (usage.usage?.usd ?? null) : 0, browser, others: otherTools, known };
-  } finally {
-    db.close();
-  }
+    const notMetered = usage?.usage?.not_metered;
+    return { tools, tokens: usage ? (usage.usage?.usd ?? null) : 0, browser, others: otherTools, known, ...(notMetered ? { notMetered } : {}) };
+  });
 }
 
 /** What the paid tools of `entries` (TOOL_STARTED and TOOL_COST) spent, as the cap counts it: each charge, and a call
@@ -659,10 +657,6 @@ export type RefusalFigures = { spentUsd: number; needsUsd: number };
  *  no output ceiling, an input not measured: the bare `spend_cap_reached: ` code). The one reader of that difference. */
 export const roomRefusal = (text: string | undefined): string | undefined => (text?.startsWith(CAP_REFUSAL_CODE) ? text.slice(CAP_REFUSAL_CODE.length) : undefined);
 
-/** A model's name as the words say it: the catalog's, without a vendor's prefix ("Anthropic: Claude Sonnet 5.5" reads
- *  "Claude Sonnet 5.5"), else its id. */
-export const nameOf = (model: Pick<Model<Api>, "name" | "id">): string => (model.name || model.id).replace(/^[^:]{1,40}:\s+(?=\S)/, "");
-
 /** A least in words: rounded up to the cent, so that it is enough ($0.1024 is $0.11). */
 // Cents rounded up within the tail the fit check allows (FIT_TOLERANCE), no wider: a total past a cent by more than a
 // float's own tail rounds to the cent above, so the cap a refusal names admits what it refused.
@@ -675,27 +669,36 @@ export const raiseTo = (cap: number, total: number): string => {
 };
 
 
-/** The cap's refusal of a request what is left of it cannot buy the least of, in plain words with the numbers: what
- *  the run spent (and holds for requests still answering) of its cap, what the request needs at the least, and the cap
- *  that would run it (spent, held and that least, rounded up to the cent, so that it is enough). After its code
- *  (CAP_REFUSAL_CODE), which keeps it final to pi-ai's retry. */
-function capRefusal(cap: number, spent: number, held: number, name: string, least: number): string {
+/** The cap's refusal of a request what is left of it cannot buy the least of, in plain words with the numbers, as a
+ *  person who has never seen a model request reads them: what the run spent (and holds for steps still running) of its
+ *  cap, what the next step needs at the least, and the cap that lets it continue (spent, held and that least, rounded
+ *  up to the cent, so that it is enough). No model's name: a run is many requests, and "the next step" is the one that
+ *  waits. After its code (CAP_REFUSAL_CODE), which keeps it final to pi-ai's retry. */
+function capRefusal(cap: number, spent: number, held: number, least: number): string {
   const [need, raise] = [leastMoney(least), raiseTo(cap, spent + held + least)];
-  if (spent === 0 && held === 0) return `${CAP_REFUSAL_CODE}Not sent: this run's cap of ${money(cap)} can't cover one ${name} request (at least ${need}). Raise the cap to at least ${raise} to run it.`;
-  const owes = held > 0 ? `spent ${money(spent)} and holds ${money(held)} for requests still answering, of its ${money(cap)} cap` : `spent ${money(spent)} of its ${money(cap)} cap`;
-  return `${CAP_REFUSAL_CODE}Not sent: the run has ${owes}, and its next ${name} request needs at least ${need}. Raise the cap to at least ${raise} to run it.`;
+  if (spent === 0 && held === 0) return `${CAP_REFUSAL_CODE}Not sent: the next step needs at least ${need}, and this run's cap is ${money(cap)}. Raise the cap to at least ${raise} to continue.`;
+  return `${CAP_REFUSAL_CODE}Not sent: this run has ${spentOf(spent, held, cap)}, and the next step needs at least ${need}. Raise the cap to at least ${raise} to continue.`;
 }
+/** What a run has spent of its cap, in a refusal's words: and what it holds for steps still running, when that is a cent
+ *  or more. Each in cents (centsMoney), as the figures after it are; the exact amounts are the refusal's figures
+ *  (RefusalFigures, the pause's spent_usd). */
+const spentOf = (spent: number, held: number, cap: number): string => {
+  const holds = centsMoney(held);
+  return holds !== "$0" ? `spent ${centsMoney(spent)} and holds ${holds} for steps still running, of its ${money(cap)} cap` : `spent ${centsMoney(spent)} of its ${money(cap)} cap`;
+};
+/** An amount in words, to the nearest cent ($0.0237416 is $0.02), as money says it ($1, $0.20, $0). */
+export const centsMoney = (usd: number): string => money(Math.round(usd * 100) / 100);
 
 /** The cap's refusal of a paid call (paidCall) what is left of it cannot hold, in one sentence, as capRefusal says a model
  *  request's: what the run spent (and holds for requests and calls still answering) of its cap, what the call could cost
  *  and why, and the cap that would run it: spent, held and the call's figure, rounded up to the cent, and a cent above the
- *  cap at the least, since a figure past the cap by less than a cent still needs more than the cap. Every amount by money,
- *  the raise by leastMoney. */
+ *  cap at the least, since a figure past the cap by less than a cent still needs more than the cap. What was spent and held
+ *  in cents (spentOf), the call's figure and the cap by money, the raise by raiseTo. */
 function paidRefusal(cap: number, spent: number, held: number, name: string, hold: { usd: number; basis: string }): string {
-  const holds = held > 0 ? ` and holds ${money(held)} for calls still answering` : "";
-  // The model refusal's rule (raiseTo): a cent at least, and above the cap, never the cap itself.
+  // The model refusal's rule (raiseTo): a cent at least, and above the cap, never the cap itself. The same words: the
+  // call is the next step, named as the tool.
   const raise = raiseTo(cap, spent + held + hold.usd);
-  return `${SPEND_CAP_REACHED}: Not sent: the run has spent ${money(spent)}${holds} of its ${money(cap)} cap, and ${name} could cost up to ${money(hold.usd)} (${hold.basis}). Raise the cap to at least ${raise} to run it.`;
+  return `${SPEND_CAP_REACHED}: Not sent: this run has ${spentOf(spent, held, cap)}, and the next step, ${name}, could cost up to ${money(hold.usd)} (${hold.basis}). Raise the cap to at least ${raise} to continue.`;
 }
 
 /** The most output tokens from `least` to `asked` whose request costs no more than `left` (`cost`, its price at that
@@ -759,7 +762,6 @@ export async function capBefore(cap: number | undefined, model: Model<Api> | und
   const output = outputBound(model);
   if (output === undefined) return { beforeRequest: () => ({ refuse: noCeiling(cap) }) };
   const price = worstOf((await import("@earendil-works/pi-ai")).calculateCost, model);
-  const name = nameOf(model);
   const held = (request: { inputTokensMax?: number; outputTokensMax?: number }) => price(request.inputTokensMax!, request.outputTokensMax ?? output);
   return {
     beforeRequest({ spentUsd, inFlight, inputTokensMax, outputTokensAsked, outputTokensLeast }) {
@@ -771,11 +773,11 @@ export async function capBefore(cap: number | undefined, model: Model<Api> | und
       const left = cap - spentUsd - holding;
       const cost = (tokens: number) => price(inputTokensMax!, tokens);
       // A model whose output costs nothing and names no ceiling: nothing to limit, only its input to fit.
-      if (output === 0) return cost(0) <= left + FIT_TOLERANCE ? undefined : { refuse: capRefusal(cap, spentUsd, holding, name, cost(0)), spentUsd: spentUsd + holding, needsUsd: cost(0) };
+      if (output === 0) return cost(0) <= left + FIT_TOLERANCE ? undefined : { refuse: capRefusal(cap, spentUsd, holding, cost(0)), spentUsd: spentUsd + holding, needsUsd: cost(0) };
       const asked = Math.min(outputTokensAsked ?? output, output);
       const least = Math.min(outputTokensLeast ?? ANSWER_TOKENS_LEAST, asked);
       const most = mostOutput(cost, least, asked, left);
-      return most === undefined ? { refuse: capRefusal(cap, spentUsd, holding, name, cost(least)), spentUsd: spentUsd + holding, needsUsd: cost(least) } : { outputTokensMax: most };
+      return most === undefined ? { refuse: capRefusal(cap, spentUsd, holding, cost(least)), spentUsd: spentUsd + holding, needsUsd: cost(least) } : { outputTokensMax: most };
     },
     worstOf: (request) => (typeof request.inputTokensMax === "number" && Number.isFinite(request.inputTokensMax) ? held(request) : undefined),
     stoppedOf: (request, streamed) => (typeof request.inputTokensMax === "number" && Number.isFinite(request.inputTokensMax) && Number.isFinite(streamed) && streamed >= 0
@@ -846,9 +848,8 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
     // each paid call under way at what it is held at.
     const holding = held + paidHolds();
     const left = cap - spentUsd - holding;
-    const name = nameOf(model);
     // A model whose output costs nothing and names no ceiling: nothing to limit, only its input and fee to fit.
-    if (ceiling === 0) return cost(0) <= left + FIT_TOLERANCE ? { worst: cost(0), stopped: () => cost(0) } : { why: capRefusal(cap, spentUsd, holding, name, cost(0)), figures: { spentUsd: spentUsd + holding, needsUsd: cost(0) } };
+    if (ceiling === 0) return cost(0) <= left + FIT_TOLERANCE ? { worst: cost(0), stopped: () => cost(0) } : { why: capRefusal(cap, spentUsd, holding, cost(0)), figures: { spentUsd: spentUsd + holding, needsUsd: cost(0) } };
     // What the request would send as it stands, thinking included: pi-ai clamps its maxTokens (or the model's) to what its
     // context leaves, and on an API whose thinking takes a budget adds the budget to it.
     const transcript = context as unknown as Parameters<typeof simple.clampMaxTokensToContext>[1];
@@ -863,7 +864,7 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
     const asked = Math.min(ceiling, budgeted ? simple.clampMaxTokensToContext(model, transcript, simple.adjustMaxTokensForThinking(base, ceilingTokens(model), thinking, options?.thinkingBudgets).maxTokens) : base);
     const least = Math.min(leastOutput(model, thinking, (level) => simple.thinkingBudgetForLevel(level as never, options?.thinkingBudgets)), asked);
     const most = mostOutput(cost, least, asked, left);
-    if (most === undefined) return { why: capRefusal(cap, spentUsd, holding, name, cost(least)), figures: { spentUsd: spentUsd + holding, needsUsd: cost(least) } };
+    if (most === undefined) return { why: capRefusal(cap, spentUsd, holding, cost(least)), figures: { spentUsd: spentUsd + holding, needsUsd: cost(least) } };
     // The reasoning a stop leaves unseen: a model's reasoning streams as a summary or not at all (the Responses API; Claude
     // 4-class thinking), so a request that reasons counts its level's budget (the budget it was sent with, on a budget
     // API), or its whole limit when it gives no level and its API reasons by default; none on a budget API with thinking

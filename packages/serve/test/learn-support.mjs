@@ -5,8 +5,8 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { mergedNote } from "../dist/learn/notes.js";
-import { homeOf } from "../dist/files.js";
-import { agent, follow } from "./support.mjs";
+import { agentFolderOf } from "../dist/files.js";
+import { agent, follow, runDir } from "./support.mjs";
 
 /** A run's new note as main keeps it once merged: with the host's `origin: you` line when it keeps the user's own words
  *  (the run's, the default, adds none). */
@@ -15,7 +15,7 @@ export const onMain = (text, origin = "run") => mergedNote(text, { origin });
 /** The faux model and faux harness that plan an end-of-run turn's notes (fixtures/faux-learn.mjs). */
 export const LEARN = new URL("./fixtures/faux-learn.mjs", import.meta.url).pathname;
 /** What every run that learns is told first under `# Learned`, notes or none: that it learns, and how. */
-export const KEEPS = "You learn from your runs. When this run ends you are asked what to keep for later runs, anything the person asked you to remember included, and only your answer then is kept: a file you write is not. So when the person asks you to remember something, don't put it in a file or say you can't: tell them you will keep it for later runs. A secret (a password, key or token) is never kept, so say so instead.";
+export const KEEPS = "You learn from your runs. When this run ends you are asked what to keep for later runs, anything the person asked you to remember included, and only your answer then is kept: a file you write is not. So when the person asks you to remember something, don't put it in a file or say you can't: tell them you will keep it for later runs, in one short sentence at the start of your reply, never after a closing line or sign-off they asked you to end with. A secret (a password, key or token) is never kept, so say so instead.";
 /** What `# Learned` says after KEEPS when the run starts with no note. */
 export const NOTHING_YET = "Nothing learned yet.";
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -52,7 +52,7 @@ export async function ended(api, runId, until = ["completed"]) {
  *  shows the end first, the file follows, and the line after it. */
 export async function savedOf(data, runId) {
   for (let i = 0; ; i++) {
-    const meta = JSON.parse(readFileSync(join(data, "runs", runId, "serve.json"), "utf8"));
+    const meta = JSON.parse(readFileSync(join(runDir(data, runId), "serve.json"), "utf8"));
     if (["merged", "dropped"].includes(meta.learning?.state) && ledgerOf(data).some((line) => line.run === runId)) return meta;
     assert.ok(i < 200, `the run's learning end is saved: ${JSON.stringify(meta.learning)}`);
     await sleep(50);
@@ -74,11 +74,11 @@ export function git(cwd, args) {
 /** Every object of the repository, read whole: what a scan for a value must search. */
 export const objects = (repo) => spawnSync("git", ["cat-file", "--batch-all-objects", "--batch"], { cwd: repo, env: { PATH: process.env.PATH, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" }, maxBuffer: 1 << 26 }).stdout.toString("latin1");
 
-/** The agent's learning folder: `learning/` in its home, as files.ts homeOf names the home. */
-export const repoOf = (data, agentId) => join(homeOf(data, agentId), "learning");
-export const copyOf = (data, runId) => join(data, "runs", runId, "work", ".learning");
+/** The agent's learning folder: `learning/` in its folder on the disk, as files.ts agentFolderOf names it. */
+export const repoOf = (data, agentId) => join(agentFolderOf(data, agentId), "learning");
+export const copyOf = (data, runId) => join(runDir(data, runId), "work", ".learning");
 /** What the run's end-of-run turn answered, and what the user said, as its directory kept them when the run settled. */
-export const turnOf = (data, runId) => JSON.parse(readFileSync(join(data, "runs", runId, "learning-turn.json"), "utf8"));
+export const turnOf = (data, runId) => JSON.parse(readFileSync(join(runDir(data, runId), "learning-turn.json"), "utf8"));
 /** The commits on main that name run `runId` in a Run-Id trailer. */
 export const mergesOf = (repo, runId) => git(repo, ["log", "--format=%H %(trailers:key=Run-Id,valueonly)", "main"]).split("\n").filter((entry) => entry.split(" ")[1] === runId);
 

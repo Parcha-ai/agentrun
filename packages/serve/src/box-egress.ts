@@ -102,7 +102,7 @@ async function ownParent(dir: string): Promise<void> {
  *  seam between the box's side, which is the same wherever the proxy runs (the mount, the relay, the proxy variables),
  *  and where the proxy runs. Today that is hostEgress: the run's own process, its socket's directory on this machine
  *  bound into the box. */
-export type BoxEgress = (runId: string) => Promise<{ mount: { source: string; target: typeof EGRESS_MOUNT; readOnly: true }; socket: string; fresh: boolean }>;
+export type BoxEgress = (runId: string) => Promise<{ mount?: { source: string; target: typeof EGRESS_MOUNT; readOnly: true }; socket: string; fresh: boolean }>;
 
 /** The proxy in the run's process (hostEgress): for a Docker daemon on this Linux machine, which can reach a socket in a
  *  directory of this machine bound into a container. */
@@ -262,7 +262,7 @@ function answers(path: string): Promise<boolean> {
 }
 
 /** What a server's Docker boxes reach, resolved once at its start (run-box.ts boxNetworkOf): the list, or none and why. */
-export type DockerNetwork = { allow: readonly string[] } | { allow: "none"; reason: string };
+export type DockerNetwork = { allow: readonly string[]; /** On a Mac, the VM runtime whose proxy container serves the list (box-egress-vm.ts). */ vm?: string } | { allow: "none"; reason: string };
 
 /** What the server hands a run's process: the list its box reaches, resolved (boxNetworkOf), or `none`. The run's
  *  process reads this, never AGENTRUN_BOX_ALLOW: unset, it is none. */
