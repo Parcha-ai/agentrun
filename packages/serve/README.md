@@ -627,14 +627,25 @@ of one saved before is refused 409 `agent_not_runnable`.
   `revoke` (a mount with `--force`, which takes the folder back from a box that is gone) with the disk, region and
   folder, `sync` and `checkin`. It checks every argument itself: any other folder, a `.` or `..`, an absolute path, a
   link, a mountpoint that is not empty, or a token of any other shape refuses and runs nothing.
+- **A stopped box comes back locked and mounted, or not at all.** A box its provider stopped (an idle stop, an archive)
+  starts again as a fresh machine, with no firewall and no mount. A turn's end never wakes one: it holds nothing to
+  sync. The run's next tool call on it fails, and the one after has the server wake it, lock it and mount the
+  folder again, taking it back from the client that went with the stop. A running box found with nothing mounted at a turn's end is destroyed, so the
+  next call makes it again.
 - **The tools have no network yet.** Capabilities say so for each remote box: "remote boxes on an Archil disk: tools
   have no network yet", with how it is held. The Modal sandbox's provider holds it: the box is made with
   `AGENTRUN_ARCHIL_ALLOW`, Archil's IPv4 ranges, as its whole CIDR allowlist, and without that setting it is
   unavailable. A Daytona box is made with its provider network open, and locks it itself before the mount and before
-  any tool runs: the helper's `netlock` puts a chain first in OUTPUT, for IPv4 and IPv6, in which the tool user sends
-  nothing (loopback and replies pass), and root sends DNS, TCP 8100 to the region's mount endpoint alone (resolved at
-  the lock), and TCP 32050 to any address: the file servers, whose addresses the endpoint gives only at the mount (the
-  one wide rule, root's alone). The rules are read back whole. A box with no `iptables` and `ip6tables`, whose root has
+  any tool runs: the helper's `netlock` puts a chain first in OUTPUT, for IPv4 and IPv6. Its first rule drops every
+  packet of the tool user, loopback and replies included. A box's loopback is not the tools' own: Daytona's toolbox
+  daemon listens there (port 2280) with no authentication and runs commands as the box's own user, who has sudo and an
+  open network; and a reply to an inbound connection (a provider's preview address) is the tool user answering the
+  outside. The tools need no port today, since they have no network yet. So a tool's own local server cannot be
+  reached either, not even by another tool. Then loopback and replies pass for the other users, and root sends DNS, TCP
+  8100 to the region's mount endpoint alone (resolved at the lock), and TCP 32050 to any address: the file servers,
+  whose addresses the endpoint gives only at the mount (the one wide rule, root's alone). IPv6 is locked when the box
+  has it (any address in `/proc/net/if_inet6`, `::1` included); a box with none has no IPv6 rules to lock. The rules
+  are read back whole. A box with no `iptables` (or no `ip6tables` while it has IPv6), whose root has
   no `CAP_NET_ADMIN`, or whose rules read back otherwise keeps no run folder: the tool call says why, and the box goes.
   The snapshot installs `iptables`. Reaching the package registries again through a proxy in the box comes next.
 - **The token never reaches a tool.** It goes into the box only on the helper's fd 0, which hands it to the archil

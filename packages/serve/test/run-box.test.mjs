@@ -306,6 +306,36 @@ test("a remote box found at its run's next call: one with no network is kept whe
   assert.deepEqual(calls, [["mount", "closed"], ["unmount", "listed"], ["mount", "made-1"], ["unmount", "open"], ["mount", "made-2"]]);
 });
 
+test("a turn's end never wakes a box its provider stopped: a woken box has no firewall and no mount, and the run's next call makes it ready instead", async (t) => {
+  const { syncRemoteBox } = await import("../dist/run-box.js");
+  const { calls, folder } = await remoteFolder();
+  let running;
+  let woken = 0;
+  const boxes = {
+    list: async () => ({ ok: true, value: running ? [{ id: running.id, labels: {} }] : [] }),
+    attach: async (id) => ({ ok: true, value: running && running.id === id ? running : undefined }),
+  };
+  // Stopped: a wake starts it again as a fresh machine (its firewall and its mount gone).
+  const wake = async () => ((woken += 1), (running = { id: "stopped", facts: () => ({ provider: "fake", workspace: "/workspace" }) }), 1);
+  assert.equal(await syncRemoteBox(boxes, { id: "r" }, folder, BACKGROUND_CONTEXT, wake), false, "nothing to sync");
+  assert.equal(woken, 0, "never woken");
+  assert.deepEqual(calls, []);
+});
+
+test("a turn's end in a running box with nothing mounted (a restart took its mount and its firewall) destroys the box and fails, saying so", async (t) => {
+  const { syncRemoteBox } = await import("../dist/run-box.js");
+  const { NotMounted } = await import("../dist/archil.js");
+  const destroyed = [];
+  let running = { id: "restarted", facts: () => ({ provider: "fake", workspace: "/workspace" }), destroy: async () => ((destroyed.push("restarted"), (running = undefined)), { ok: true, value: undefined }) };
+  const boxes = {
+    list: async () => ({ ok: true, value: running ? [{ id: running.id, labels: {} }] : [] }),
+    attach: async (id) => ({ ok: true, value: running && running.id === id ? running : undefined }),
+  };
+  const adapter = { sync: async () => { throw new NotMounted("the box has nothing mounted at /workspace"); } };
+  await assert.rejects(syncRemoteBox(boxes, { id: "r" }, { adapter, disk: "dsk-00000000000baf76", subpath: "agents/a/runs/r/work" }, BACKGROUND_CONTEXT), /nothing mounted at \/workspace.*destroyed: the run's next call makes it again, locked and mounted/);
+  assert.deepEqual(destroyed, ["restarted"]);
+});
+
 test("a remote box made when boxes had the run's work/ at /run/agentrun/run/work lets go of the folder, then is destroyed and made again at /workspace", async (t) => {
   const { ensureRemoteBox } = await import("../dist/run-box.js");
   const { calls, folder } = await remoteFolder();

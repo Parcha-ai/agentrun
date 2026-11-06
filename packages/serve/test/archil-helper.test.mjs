@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { userInfo } from "node:os";
-import { fakeGetent, fakeIptables, fakeStatus } from "./fixtures/fake-iptables.mjs";
+import { fakeConnect, fakeGetent, fakeInet6, fakeIptables, fakeStatus } from "./fixtures/fake-iptables.mjs";
 import { scratch } from "./support.mjs";
 
 export const HELPER = fileURLToPath(new URL("../box/agentrun-archil", import.meta.url));
@@ -34,7 +34,7 @@ async function box(t) {
   writeFileSync(archil, `#!/bin/sh\n{ printf 'argv %s\\n' "$*"; [ "\${ARCHIL_MOUNT_TOKEN-}" = '${TOKEN}' ] && echo 'env token'; ps -eo args | awk 'index($0, ENVIRON["ARCHIL_MOUNT_TOKEN"]) { n++ } END { print "ps " n + 0 }'; } >> '${calls}'\n`);
   chmodSync(archil, 0o755);
   const source = readFileSync(HELPER, "utf8");
-  const fixed = { ARCHIL: ["/usr/bin/archil", archil], MP: ["/workspace", mp], MOUNTS: ["/proc/self/mounts", mounts], IPTABLES: ["/usr/sbin/iptables", fakeIptables(dir, "iptables")], IP6TABLES: ["/usr/sbin/ip6tables", fakeIptables(dir, "ip6tables")], GETENT: ["/usr/bin/getent", fakeGetent(dir)], STATUS: ["/proc/self/status", fakeStatus(dir)], TOOL: ["agentrun-tool", userInfo().username] };
+  const fixed = { ARCHIL: ["/usr/bin/archil", archil], MP: ["/workspace", mp], MOUNTS: ["/proc/self/mounts", mounts], IPTABLES: ["/usr/sbin/iptables", fakeIptables(dir, "iptables")], IP6TABLES: ["/usr/sbin/ip6tables", fakeIptables(dir, "ip6tables")], GETENT: ["/usr/bin/getent", fakeGetent(dir)], STATUS: ["/proc/self/status", fakeStatus(dir)], IF_INET6: ["/proc/net/if_inet6", fakeInet6(dir)], TOOL: ["agentrun-tool", userInfo().username] };
   let copy = source;
   for (const [name, [shipped, here]] of Object.entries(fixed)) {
     assert.ok(source.includes(`\n${name}=${shipped}\n`), `the helper fixes ${name}=${shipped}`);
@@ -185,9 +185,9 @@ test("refuses a mount or revoke while the box's /proc lets a user see another's 
 
 const CHAIN_RULES = (uid, address, prefix) => [
   "-N AGENTRUN-NET",
+  `-A AGENTRUN-NET -m owner --uid-owner ${uid} -j DROP`,
   "-A AGENTRUN-NET -o lo -j ACCEPT",
   "-A AGENTRUN-NET -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT",
-  `-A AGENTRUN-NET -m owner --uid-owner ${uid} -j DROP`,
   "-A AGENTRUN-NET -p udp -m owner --uid-owner 0 -m udp --dport 53 -j ACCEPT",
   "-A AGENTRUN-NET -p tcp -m owner --uid-owner 0 -m tcp --dport 53 -j ACCEPT",
   `-A AGENTRUN-NET -d ${address}/${prefix} -p tcp -m owner --uid-owner 0 -m tcp --dport 8100 -j ACCEPT`,
@@ -211,7 +211,8 @@ test("netlock: the tool user sends nothing, root reaches the region's mount endp
 
 const NETLOCK_REFUSED = [
   ["no CAP_NET_ADMIN", (b) => writeFileSync(join(b.dir, "status"), "CapEff:\t000001ffffffefff\n"), /no CAP_NET_ADMIN/],
-  ["no ip6tables", (b) => rmSync(join(b.dir, "ip6tables")), /iptables and ip6tables are not both installed/],
+  ["no ip6tables in a box with IPv6", (b) => rmSync(join(b.dir, "ip6tables")), /the box has IPv6, and ip6tables is not installed/],
+  ["no iptables", (b) => rmSync(join(b.dir, "iptables")), /iptables is not installed/],
   ["an ip6tables that answers yes to everything", (b) => writeFileSync(join(b.dir, "ip6tables"), "#!/bin/sh\nexit 0\n"), /cannot move its jump|reads back other rules/],
   ["a read-back that differs", (b) => writeFileSync(join(b.dir, "iptables.tamper"), ""), /reads back other rules than it was given/],
   ["no address for the endpoint", (b) => writeFileSync(join(b.dir, "getent"), "#!/bin/sh\nexit 2\n"), /has no address/],
@@ -225,6 +226,33 @@ for (const [what, spoil, said] of NETLOCK_REFUSED) {
     assert.match(ran.stderr, said);
   });
 }
+
+test("netlock: the tool user's drop is the chain's first rule, so a tool reaches no loopback port either (the provider's daemon on 2280 included), for IPv4 and IPv6", async (t) => {
+  const b = await box(t);
+  const ran = b.run(["netlock", REGION], "");
+  assert.equal(ran.status, 0, ran.stderr);
+  const uid = process.getuid();
+  for (const name of ["iptables", "ip6tables"]) {
+    const [first] = readFileSync(join(b.dir, `${name}.chain.AGENTRUN-NET`), "utf8").split("\n");
+    assert.equal(first, `-A AGENTRUN-NET -m owner --uid-owner ${uid} -j DROP`, `${name}: before loopback and replies pass`);
+  }
+  const connect = fakeConnect(b.dir, join(b.dir, "iptables.chain.AGENTRUN-NET"), uid, join(b.dir, "ip6tables.chain.AGENTRUN-NET"));
+  for (const [host, port] of [["127.0.0.1", "2280"], ["::1", "2280"], ["127.0.0.1", "8080"], ["203.0.113.10", "8100"]]) {
+    const tried = spawnSync(connect, [host, port], { encoding: "utf8" });
+    assert.equal(tried.status, 1, `${host}:${port} is refused the tool: ${tried.stdout}`);
+  }
+});
+
+test("netlock in a box with no IPv6: the IPv4 rules alone, and no ip6tables needed", async (t) => {
+  const b = await box(t);
+  writeFileSync(join(b.dir, "if_inet6"), "");
+  rmSync(join(b.dir, "ip6tables"));
+  const ran = b.run(["netlock", REGION], "");
+  assert.equal(ran.status, 0, ran.stderr);
+  assert.match(ran.stderr, /the box has no IPv6, so there are no IPv6 rules to lock/);
+  assert.deepEqual(readFileSync(join(b.dir, "iptables.chain.AGENTRUN-NET"), "utf8").split("\n").filter(Boolean), CHAIN_RULES(process.getuid(), "203.0.113.10", 32).slice(1));
+  assert.equal(existsSync(join(b.dir, "ip6tables.chain.AGENTRUN-NET")), false);
+});
 
 test("netlock takes the region alone, of its shape: anything else exits 2 and touches no rule", async (t) => {
   for (const args of [["netlock"], ["netlock", REGION, "extra"], ["netlock", "us"], ["netlock", "aws-us east"], ["netlock", "aws-us-east-1;id"], ["netlock", `${REGION}\naws-x-1`]]) {

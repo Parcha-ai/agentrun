@@ -104,6 +104,10 @@ async function mountedHere(table: string, at: string, disk: string): Promise<boo
  *  still alive. */
 export class FolderHeld extends Error {}
 
+/** A sync in a box that has nothing mounted at /workspace (the helper's exit 3): a restart took its mount, and its
+ *  firewall with it, so what its tools write there never reaches the disk. */
+export class NotMounted extends Error {}
+
 /** One program in `box`, its stdin `input` when given: its exit code and what it printed (both streams, cut). */
 async function ran(box: Box, command: readonly string[], context: Context, input?: string): Promise<{ code: number; said: string }> {
   const started = await box.exec(command, { timeoutMs: 120_000 }, context);
@@ -128,8 +132,10 @@ async function ran(box: Box, command: readonly string[], context: Context, input
 export async function helper(box: Box, archil: Archil, verb: "netlock" | "mount" | "revoke" | "sync" | "checkin", context: Context, folder?: string): Promise<void> {
   const args = verb === "mount" || verb === "revoke" ? [verb, archil.disk, archil.region, folder!] : verb === "netlock" ? [verb, archil.region] : [verb];
   const answer = verb === "mount" || verb === "revoke" ? await withToken(box, archil.token, args, context) : await ran(box, ["sudo", "-n", HELPER_PATH, ...args], context);
-  // A sync or checkin with nothing mounted (exit 3): nothing is held, so nothing is lost.
-  if (answer.code === 0 || (answer.code === 3 && (verb === "sync" || verb === "checkin"))) return;
+  // A checkin with nothing mounted (exit 3): nothing is held, so nothing is lost. A sync with nothing mounted is a box
+  // whose tools' writes do not reach the disk: its caller decides (the adapter's unmount takes it as let go).
+  if (answer.code === 0 || (answer.code === 3 && verb === "checkin")) return;
+  if (answer.code === 3 && verb === "sync") throw new NotMounted("the box has nothing mounted at /workspace (a restart took its mount and its firewall)");
   // A checkin by a client that holds no delegation on the folder (it checked in already, or a revoke forced its hold
   // off): archil exits 1 with its checkin operation's EROFS, measured on client 0.10.1 (it has no exit code of its own
   // for this). It holds nothing, so it has let go.

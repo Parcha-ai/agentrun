@@ -17,7 +17,7 @@ import { isAbsolute, join, relative, sep } from "node:path";
 import type { Context } from "@earendil-works/chord";
 import { DISK_DIR } from "@parcha/pi-durable-agent";
 import type { Box } from "@parcha/pi-transport";
-import { type Archil, helper } from "./archil.js";
+import { type Archil, helper, NotMounted } from "./archil.js";
 import { fenceHolder, holderOfClaim } from "./run-holder.js";
 
 /** Who works in a mounted folder: a box's tools alone (`tools`: a run's work/), or its loop and tools (`loop`: the run's
@@ -121,7 +121,10 @@ export function archilDisk(data: string, archil: Archil, claims: Pick<Claims, "r
     async unmount(mounted) {
       // A box may have no unmount: the writes go first, then the folder is checked in, and the box is destroyed after.
       const { box, context } = boxed(mounted);
-      await helper(box, archil, "sync", context);
+      // Nothing mounted holds nothing: it has let go.
+      await helper(box, archil, "sync", context).catch((error: Error) => {
+        if (!(error instanceof NotMounted)) throw error;
+      });
       await helper(box, archil, "checkin", context);
     },
     async revoke(runId) {

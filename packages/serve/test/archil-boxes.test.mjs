@@ -224,15 +224,15 @@ test("a box whose /proc lets its tool user see the root archil client's processe
   assert.equal(fake.sandboxes.size, 0, "the box that could not have the folder is destroyed");
 });
 
-test("a Daytona box's tools have no network: its firewall, locked before the mount, refuses them every host but loopback (Archil itself and the metadata address included)", { timeout: 180_000 }, async (t) => {
+test("a Daytona box's tools have no network: its firewall, locked before the mount, refuses them every host, loopback too (the provider's daemon on 2280, Archil itself and the metadata address included)", { timeout: 180_000 }, async (t) => {
   const { server } = await onArchil(t);
   const { api, data } = server;
   await agent(api, "remote");
   const reach = (host, port) => `connect ${host} ${port} >/dev/null 2>&1 && echo "${host} reached" || echo "${host} refused"`;
-  const plan = [{ tool: "bash", args: { command: [reach("169.254.169.254", 80), reach("pypi.org", 443), reach("mount.green.us-east-1.aws.prod.archil.com", 8100), reach("203.0.113.10", 32050), reach("127.0.0.1", 9)].join("; ") } }];
+  const plan = [{ tool: "bash", args: { command: [reach("169.254.169.254", 80), reach("pypi.org", 443), reach("mount.green.us-east-1.aws.prod.archil.com", 8100), reach("203.0.113.10", 32050), reach("127.0.0.1", 2280), reach("::1", 2280), reach("127.0.0.1", 9)].join("; ") } }];
   const run = (await api("POST", "/agents/remote/runs", { input: { content: JSON.stringify({ probe: plan }) } })).body;
   await follow(api, run.run_id, ["completed"], { deadlineMs: 120_000 });
-  assert.deepEqual(answers(data, run.run_id)[0].text.trim().split("\n"), ["169.254.169.254 refused", "pypi.org refused", "mount.green.us-east-1.aws.prod.archil.com refused", "203.0.113.10 refused", "127.0.0.1 reached"]);
+  assert.deepEqual(answers(data, run.run_id)[0].text.trim().split("\n"), ["169.254.169.254 refused", "pypi.org refused", "mount.green.us-east-1.aws.prod.archil.com refused", "203.0.113.10 refused", "127.0.0.1 refused", "::1 refused", "127.0.0.1 refused"]);
 });
 
 for (const [what, spoil, said] of [

@@ -218,6 +218,19 @@ test("the Archil disk adapter: a box mounts its run's work/ alone, through the h
   await assert.rejects(disk.mount(archil.disk, folder, { ...target, box: bare.box }, "tools"), /the box has no Archil helper its user may run as root at \/usr\/local\/sbin\/agentrun-archil: use an image or snapshot that ships it/);
 });
 
+test("the Archil disk adapter: a sync in a box with nothing mounted fails (its tools' writes would not reach the disk); an unmount there has let go", async (t) => {
+  const data = realpathSync(await scratch(t));
+  const folder = "agents/a-0123456789abcdef/runs/r1/work";
+  const archil = { disk: "dsk-00000000000baf76", region: "aws-us-east-1", token: "planted-archil-token-0123456789", gid: process.getgid() };
+  const disk = archilDisk(data, archil, { runClaim: () => ({ epoch: 4, holder: "launch" }) });
+  const bare = notingBox((command) => (command[3] === "sync" || command[3] === "checkin" ? 3 : 0), "agentrun-archil: nothing is mounted at /workspace");
+  const mounted = { subpath: folder, path: "/workspace", mode: "tools", box: bare.box, context: BACKGROUND_CONTEXT };
+  const { NotMounted } = await import("../dist/archil.js");
+  await assert.rejects(disk.sync(mounted), (error) => typeof NotMounted === "function" && error instanceof NotMounted && /nothing mounted at \/workspace/.test(error.message));
+  await disk.unmount(mounted);
+  assert.deepEqual(bare.ran.map((r) => r.command.slice(3)), [["sync"], ["sync"], ["checkin"]]);
+});
+
 test("an agent's learning folder is on the disk, in its folder: <data>/disk/agents/<agent>/learning", () => {
   assert.equal(learningRepo("/var/lib/agentrun", "Notes"), join("/var/lib/agentrun", "disk", "agents", folderOf("Notes"), "learning"));
 });

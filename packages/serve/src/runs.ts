@@ -1685,7 +1685,7 @@ export class Runs {
       try {
         await this.syncing(run);
         const folder = this.folderOf(run.dir);
-        if (folder) await releaseRemoteBox(boxes, run, folder, boxContext(REMOTE_SYNC_MS), this.wakeOf(run.id, place));
+        if (folder) await releaseRemoteBox(boxes, run, folder, boxContext(REMOTE_SYNC_MS));
       } catch (error) {
         // Kept, never destroyed with writes it has not made durable; the run ends all the same, and the next start's
         // sweep has it let go, then destroys it (its 24-hour lifetime bounds it).
@@ -1719,7 +1719,7 @@ export class Runs {
     if (!boxes || !place || !folder) return Promise.resolve();
     // After any sync already running, and after the box's making and mount when one is under way.
     const settled = Promise.all([run.syncing, run.boxing?.catch(() => undefined)])
-      .then(() => syncRemoteBox(boxes, run, folder, boxContext(REMOTE_SYNC_MS), this.wakeOf(run.id, place)))
+      .then(() => syncRemoteBox(boxes, run, folder, boxContext(REMOTE_SYNC_MS)))
       .then(
         (synced) => void (synced && this.options.log?.("box_synced", { run: run.id })),
         (error: Error) => warn(run.id, `its box did not sync the run's folder at its turn's end (${error.message}); the next sync makes it durable`),

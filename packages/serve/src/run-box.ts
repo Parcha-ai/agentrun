@@ -30,7 +30,7 @@ import { awaitImage, boxImageOf } from "./box-image.js";
 import { egressParentOf, runBoxPathsOf } from "./box-paths.js";
 import { RELAYED_KEY, relayedBox, relayFetch } from "./box-relay.js";
 import { asToolUser } from "./tool-user.js";
-import { FolderHeld } from "./archil.js";
+import { FolderHeld, NotMounted } from "./archil.js";
 import { VM_PROVIDER } from "./boxes.js";
 import type { DiskAdapter } from "./disk.js";
 import { FAUX_ENV } from "./model.js";
@@ -561,19 +561,30 @@ async function mountIn(boxes: BoxProvider, run: { id: string }, folder: RemoteFo
 }
 
 /** The server's side of a remote box at a turn's end: what the box wrote in the run's folder made durable (the adapter's
- *  sync), so the server reads it. Nothing when the run has no running box. */
-export async function syncRemoteBox(boxes: BoxProvider, run: { id: string }, folder: RemoteFolder, context: Context, wake?: () => Promise<number>): Promise<boolean> {
-  const box = await runningRunBox(boxes, run.id, context, wake);
+ *  sync), so the server reads it. Nothing when the run has no running box. A box its provider stopped is never woken
+ *  here: it holds nothing to sync (its client went with it), and one woken here comes back with no firewall and no
+ *  mount, which the run's process would run its next tools in; that process's next call finds it stopped and has it
+ *  made ready again (ensureRemoteBox), locked and mounted. A running box with nothing mounted (a restart took its mount
+ *  and its firewall) is destroyed, so the run's next call makes it again, and the sync fails, saying so. */
+export async function syncRemoteBox(boxes: BoxProvider, run: { id: string }, folder: RemoteFolder, context: Context): Promise<boolean> {
+  const box = await runningRunBox(boxes, run.id, context);
   if (!box) return false;
-  await folder.adapter.sync(mountedIn(folder, box, context));
+  try {
+    await folder.adapter.sync(mountedIn(folder, box, context));
+  } catch (error) {
+    if (!(error instanceof NotMounted)) throw error;
+    await destroyRunBoxes(boxes, run.id, context);
+    throw new Error(`${error.message}, so it is destroyed: the run's next call makes it again, locked and mounted`);
+  }
   return true;
 }
 
 /** The server's side of a remote box at its run's end, before it is destroyed: its writes made durable and the run's
- *  folder let go (the adapter's unmount: a sync, then a checkin). Nothing when the run has no running box: one that is gone
- *  left its hold, which the run's next box takes back. Throws when the box could not let go: a caller then keeps it. */
-export async function releaseRemoteBox(boxes: BoxProvider, run: { id: string }, folder: RemoteFolder, context: Context, wake?: () => Promise<number>): Promise<boolean> {
-  const box = await runningRunBox(boxes, run.id, context, wake);
+ *  folder let go (the adapter's unmount: a sync, then a checkin). Nothing when the run has no running box: one that is
+ *  gone, or that its provider stopped, left its hold, which the run's next box takes back. Throws when the box could not
+ *  let go: a caller then keeps it. */
+export async function releaseRemoteBox(boxes: BoxProvider, run: { id: string }, folder: RemoteFolder, context: Context): Promise<boolean> {
+  const box = await runningRunBox(boxes, run.id, context);
   if (!box) return false;
   await folder.adapter.unmount(mountedIn(folder, box, context));
   return true;

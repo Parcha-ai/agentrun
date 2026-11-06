@@ -11,7 +11,7 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { userInfo } from "node:os";
 import { join } from "node:path";
-import { fakeConnect, fakeGetent, fakeIptables, fakeStatus } from "./fake-iptables.mjs";
+import { fakeConnect, fakeGetent, fakeInet6, fakeIptables, fakeStatus } from "./fake-iptables.mjs";
 import { fileURLToPath } from "node:url";
 import { scratch } from "../support.mjs";
 
@@ -109,7 +109,7 @@ export async function fakeArchil(t, { data, token = TOKEN } = {}) {
       if (flags.tamperIptables) writeFileSync(join(net, "iptables.tamper"), "");
       const toolBin = join(dir, ".tool-bin");
       mkdirSync(toolBin, { recursive: true });
-      fakeConnect(toolBin, join(net, "iptables.chain.AGENTRUN-NET"), process.getuid());
+      fakeConnect(toolBin, join(net, "iptables.chain.AGENTRUN-NET"), process.getuid(), join(net, "ip6tables.chain.AGENTRUN-NET"));
       const helper = join(dir, ".agentrun-archil");
       const source = readFileSync(HELPER, "utf8")
         .replace("\nARCHIL=/usr/bin/archil\n", `\nARCHIL=${client}\n`)
@@ -119,6 +119,7 @@ export async function fakeArchil(t, { data, token = TOKEN } = {}) {
         .replace("\nIP6TABLES=/usr/sbin/ip6tables\n", `\nIP6TABLES=${ip6tables}\n`)
         .replace("\nGETENT=/usr/bin/getent\n", `\nGETENT=${fakeGetent(net)}\n`)
         .replace("\nSTATUS=/proc/self/status\n", `\nSTATUS=${fakeStatus(net, !flags.noNetAdmin)}\n`)
+        .replace("\nIF_INET6=/proc/net/if_inet6\n", `\nIF_INET6=${fakeInet6(net)}\n`)
         .replace("\nTOOL=agentrun-tool\n", `\nTOOL=${userInfo().username}\n`);
       writeFileSync(helper, source);
       chmodSync(helper, 0o755);

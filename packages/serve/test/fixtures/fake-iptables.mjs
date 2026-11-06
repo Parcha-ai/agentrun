@@ -39,6 +39,13 @@ export function fakeGetent(dir, v4 = ["203.0.113.10"], v6 = ["2001:db8::10"]) {
   return path;
 }
 
+/** A /proc/net/if_inet6 with loopback's ::1 (the box has IPv6), or empty (it has none). */
+export function fakeInet6(dir, on = true) {
+  const path = join(dir, "if_inet6");
+  writeFileSync(path, on ? "00000000000000000000000000000001 01 80 10 80       lo\n" : "");
+  return path;
+}
+
 /** A /proc/self/status whose CapEff has CAP_NET_ADMIN (bit 12), or lacks it. */
 export function fakeStatus(dir, netAdmin = true) {
   const path = join(dir, "status");
@@ -47,15 +54,25 @@ export function fakeStatus(dir, netAdmin = true) {
 }
 
 /**
- * `connect <host> <port>` as a tool runs it: refused when the box's IPv4 firewall (`rules`, its chain file) drops the
- * tool user's packets, which is every destination but loopback; else it connects. It models the firewall the netlock
- * applied, for a box whose programs all run as one user here.
+ * `connect <host> <port>` as a tool runs it, a new connection of the tool user: its packet walks the box's chain (`v4`
+ * or, for an IPv6 host, `v6`: the chain files the netlock wrote) in order, and the first rule that matches it decides,
+ * as the kernel's would. Loopback (127.*, localhost, ::1) is the `-o lo` interface. With no chain, it connects. It
+ * models the firewall the netlock applied, for a box whose programs all run as one user here.
  */
-export function fakeConnect(dir, rules, uid) {
+export function fakeConnect(dir, v4, uid, v6 = v4) {
   const path = join(dir, "connect");
   writeFileSync(path, `#!/bin/sh
-case "$1" in 127.*|localhost|::1) echo connected; exit 0 ;; esac
-if grep -qxF -- '-A AGENTRUN-NET -m owner --uid-owner ${uid} -j DROP' '${rules}' 2>/dev/null; then echo "connect: $1:$2 refused by the box's firewall" >&2; exit 1; fi
+case "$1" in 127.*|localhost|::1) lo=1 ;; *) lo=0 ;; esac
+case "$1" in *:*) rules='${v6}' ;; *) rules='${v4}' ;; esac
+refused() { echo "connect: $1:$2 refused by the box's firewall" >&2; exit 1; }
+if [ -e "$rules" ]; then
+  while IFS= read -r rule; do
+    case "$rule" in
+      "-A AGENTRUN-NET -m owner --uid-owner ${uid} -j DROP") refused "$1" "$2" ;;
+      "-A AGENTRUN-NET -o lo -j ACCEPT") [ "$lo" = 1 ] && { echo connected; exit 0; } ;;
+    esac
+  done < "$rules"
+fi
 echo connected
 `);
   chmodSync(path, 0o755);

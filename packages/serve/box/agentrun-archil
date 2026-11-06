@@ -9,7 +9,7 @@
 #   sync
 #   checkin
 #
-# netlock the box's firewall, run first: the tool user sends nothing, root reaches Archil alone (below).
+# netlock the box's firewall, run first: the tool user sends nothing, loopback included; root reaches Archil alone.
 # mount   archil mount <disk>:/<path> /workspace --region <region>: exclusive, so no other client writes the folder.
 # revoke  the same with --force: takes the folder back from a box that is gone and left its delegation behind.
 # sync    archil sync /workspace: every write so far is durable when it returns.
@@ -41,6 +41,7 @@ IPTABLES=/usr/sbin/iptables
 IP6TABLES=/usr/sbin/ip6tables
 GETENT=/usr/bin/getent
 STATUS=/proc/self/status
+IF_INET6=/proc/net/if_inet6
 TOOL=agentrun-tool
 CHAIN=AGENTRUN-NET
 
@@ -105,11 +106,17 @@ held() {
 }
 
 # netlock <region>: the box's firewall, before any tool runs and before the mount. In a chain of its own, jumped to
-# first from OUTPUT, for IPv4 and IPv6 alike: loopback and replies pass; the tool user sends nothing; root sends DNS,
-# TCP 8100 to the region's mount endpoint alone (resolved here, from the region) and TCP 32050 (the file servers, whose
-# addresses the endpoint gives only at the mount, so any address: root's one wide rule); everything else of root's is
-# dropped; other users are left as they are. The rules are read back whole. No CAP_NET_ADMIN, no iptables or
-# ip6tables, no such user, no address for the endpoint, or a read-back that differs exits 4.
+# first from OUTPUT, for IPv4 and IPv6 alike. Its first rule: the tool user sends nothing at all, loopback and replies
+# included. A box's loopback is not the tools' own: the provider's control daemon may listen there with no
+# authentication (Daytona's toolbox, on 2280), and it runs commands as the box's own user, who has sudo and an open
+# network; and a reply to an inbound connection (a provider's preview address) is the tool user answering the outside.
+# The tools need no port of their own: they have no network yet. Then loopback and replies pass for everyone else; root
+# sends DNS, TCP 8100 to the region's mount endpoint alone (resolved here, from the region) and TCP 32050 (the file
+# servers, whose addresses the endpoint gives only at the mount, so any address: root's one wide rule); everything else
+# of root's is dropped; other users (the box's own, which holds sudo anyway) are left as they are. IPv6 is locked when
+# the box has it (an address in /proc/net/if_inet6, ::1 included); a box with none has no IPv6 to lock. The rules are
+# read back whole. No CAP_NET_ADMIN, no iptables (or no ip6tables in a box with IPv6), no such user, no address for
+# the endpoint, or a read-back that differs exits 4.
 lockfail() {
   printf 'agentrun-archil: the box cannot lock its tools'"'"' network: %s\n' "$1" >&2
   exit 4
@@ -118,9 +125,9 @@ lockfail() {
 rules() {
   # $1 iptables or ip6tables, $2 the endpoint's addresses, $3 their prefix length. One rule a line, as -S prints it.
   printf '%s\n' "-N $CHAIN" \
+    "-A $CHAIN -m owner --uid-owner $uid -j DROP" \
     "-A $CHAIN -o lo -j ACCEPT" \
     "-A $CHAIN -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT" \
-    "-A $CHAIN -m owner --uid-owner $uid -j DROP" \
     "-A $CHAIN -p udp -m owner --uid-owner 0 -m udp --dport 53 -j ACCEPT" \
     "-A $CHAIN -p tcp -m owner --uid-owner 0 -m tcp --dport 53 -j ACCEPT"
   for a in $2; do printf '%s\n' "-A $CHAIN -d $a/$3 -p tcp -m owner --uid-owner 0 -m tcp --dport 8100 -j ACCEPT"; done
@@ -154,15 +161,24 @@ netlock() {
   cap=$(awk '$1 == "CapEff:" { print $2 }' "$STATUS")
   matches "$cap" '[0-9a-f]{1,16}' || lockfail "its capabilities cannot be read"
   [ $(( (0x$cap >> 12) & 1 )) -eq 1 ] || lockfail "root has no CAP_NET_ADMIN here"
-  [ -x "$IPTABLES" ] && [ -x "$IP6TABLES" ] || lockfail "iptables and ip6tables are not both installed"
+  [ -x "$IPTABLES" ] || lockfail "iptables is not installed"
+  v6on=
+  # Read, never sized: a /proc file's size is 0 whatever it holds.
+  [ -n "$(cat "$IF_INET6" 2>/dev/null)" ] && v6on=1
+  [ -z "$v6on" ] || [ -x "$IP6TABLES" ] || lockfail "the box has IPv6, and ip6tables is not installed"
   uid=$(id -u "$TOOL" 2>/dev/null) || lockfail "there is no user $TOOL"
   matches "$uid" '[1-9][0-9]{0,9}' || lockfail "the user $TOOL is root"
   endpoint="mount.green.${region#*-}.${region%%-*}.prod.archil.com"
   v4=$("$GETENT" ahostsv4 "$endpoint" 2>/dev/null | awk '$1 ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ { print $1 }' | sort -u | tr '\n' ' ')
   v6=$("$GETENT" ahostsv6 "$endpoint" 2>/dev/null | awk '$1 ~ /^[0-9a-f:]+$/ && $1 !~ /^::ffff:/ { print $1 }' | sort -u | tr '\n' ' ')
+  [ -n "$v6on" ] || v6=
   [ -n "$v4$v6" ] || lockfail "$endpoint has no address"
   lockwith "$IPTABLES" "$v4" 32
-  lockwith "$IP6TABLES" "$v6" 128
+  if [ -n "$v6on" ]; then
+    lockwith "$IP6TABLES" "$v6" 128
+  else
+    printf 'agentrun-archil: the box has no IPv6, so there are no IPv6 rules to lock\n' >&2
+  fi
   printf 'agentrun-archil: the tools'"'"' network is locked; root reaches %s on 8100 and any address on 32050\n' "$endpoint" >&2
 }
 
