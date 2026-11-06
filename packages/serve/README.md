@@ -1590,7 +1590,7 @@ when the pin moves (`--check` checks it).
 Every run that needs it waits for that one install, its ready time counted from the install's end, and shows a `phase`
 row, `Installing Claude Code (first use)…`, while it does. Each run then loads the SDK, its CLI and the MCP library from
 there and nowhere else. Until it is installed, capabilities list claude-agent with `installs: "on_first_use"`. When npm fails, the run fails and its error names the command that installs it by hand, the same locked install: the
-shipped `package.json` and `package-lock.json` copied into a fresh `<data>/harnesses.new`, `npm ci --ignore-scripts` there,
+shipped `package.json` and `package-lock.json` copied into a fresh `<data>/harnesses.new`, `npm ci --ignore-scripts --include=optional` there,
 then that directory put in place of `<data>/harnesses` (made writable first: the server leaves its install read-only). Each run loads the SDK, its CLI and the MCP library only from their own packages inside
 `<data>/harnesses`, never from a `node_modules` above it; a tree that is not whole is installed again. A server that stops
 mid-install stops its npm (SIGTERM). `opencode` needs `opencode-ai@1.19.5` installed beside the server (an exact optional peer of

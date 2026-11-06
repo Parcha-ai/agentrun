@@ -49,12 +49,13 @@ export const harnessesOf = (data: string): string => join(data, HARNESSES_DIR);
 const shellWord = (word: string): string => (/^[\w@%+=:,./-]+$/.test(word) ? word : `'${word.replaceAll("'", "'\\''")}'`);
 
 /** The command that installs Claude Code by hand into `dir`, as a first use does: the lock and the package.json it locks
- *  copied into a fresh directory beside `dir`, `npm ci` there with no package's install script, and only then that
+ *  copied into a fresh directory beside `dir`, `npm ci` there with no package's install script and with the optional
+ *  platform package that holds the CLI (whatever the person's npm config omits), and only then that
  *  directory put in place of `dir`, made writable first (an install this server made is read-only). A step that fails
  *  stops it, `dir` as it was. */
 export function installLine(dir: string, lock: string = CLAUDE_LOCK): string {
   const [at, next] = [shellWord(dir), shellWord(`${dir}.new`)];
-  return `rm -rf ${next} && mkdir -p ${next} && cp ${shellWord(join(dirname(lock), "package.json"))} ${shellWord(lock)} ${next}/ && npm ci --prefix ${next} --ignore-scripts && (chmod -R u+w ${at} 2>/dev/null || true) && rm -rf ${at} && mv ${next} ${at}`;
+  return `rm -rf ${next} && mkdir -p ${next} && cp ${shellWord(join(dirname(lock), "package.json"))} ${shellWord(lock)} ${next}/ && npm ci --prefix ${next} --ignore-scripts --include=optional && (chmod -R u+w ${at} 2>/dev/null || true) && rm -rf ${at} && mv ${next} ${at}`;
 }
 
 /** Where `specifier` (a package, or a file of one) resolves from `dir`'s node_modules, only when it is that package's own
@@ -158,7 +159,8 @@ export async function npmInstall(dir: string, pins: ClaudePins, { lock = CLAUDE_
   try {
     await copyFile(manifest, join(staging, "package.json"));
     await copyFile(lock, join(staging, "package-lock.json"));
-    await runNpm(["ci", "--prefix", staging, "--ignore-scripts", "--no-audit", "--no-fund", "--loglevel=error"], env, timeoutMs, signal).catch((why: Error) => Promise.reject(fail(why.message)));
+    // --include=optional: the CLI is the SDK's optional platform package, which a person's omit=optional would leave out.
+    await runNpm(["ci", "--prefix", staging, "--ignore-scripts", "--include=optional", "--no-audit", "--no-fund", "--loglevel=error"], env, timeoutMs, signal).catch((why: Error) => Promise.reject(fail(why.message)));
     const missing = lacking(staging, version, platform);
     if (missing) throw fail(`npm ended, and the install lacks ${missing}`);
     // Into place whole: what was there (an install cut short, one by hand) goes aside first, then away.
