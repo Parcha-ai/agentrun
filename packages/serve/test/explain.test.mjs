@@ -149,3 +149,28 @@ test("a workflow agent's run is told from its workflow's input schema: never the
   }
   assert.equal(offered, 4, "each of the four is offered an input the workflow takes");
 });
+
+test("a run pinned to an older revision is told from that revision's workflow input, the current one's without a pin", async (t) => {
+  const { api } = await serve(t);
+  const asking = (field) => ({ v: 2, name: "answer", schemas: { In: { type: "object", required: [field], properties: { [field]: { type: "string" } } }, Answer: { type: "object", required: ["answer"], properties: { answer: { type: "number" } } } }, input: { schemaId: "In" }, output: { schemaId: "Answer", path: "answer" }, root: { node: "chain", steps: [{ node: "extract", label: "answer", instructions: "Answer.", out: "Answer", as: "answer" }] } });
+  const first = await api("POST", "/agents", flowAgent("pinned", asking("question")));
+  assert.equal(first.status, 201, JSON.stringify(first.body));
+  const second = await api("PUT", "/agents/pinned/definition", { definition: { name: "pinned", workflow: asking("topic") } });
+  assert.equal(second.status, 200, JSON.stringify(second.body));
+  assert.notEqual(second.body.revision, first.body.revision);
+  const hinted = async (body) => {
+    const answer = await api("POST", "/agents/pinned/runs", body);
+    assert.equal(answer.status, 422, JSON.stringify(answer.body));
+    return answer.body.error.fields.find((f) => f.field === "input") ?? assert.fail(JSON.stringify(answer.body));
+  };
+  for (const input of [undefined, "What is 2 + 2?"]) {
+    const pinned = await hinted({ revision: first.body.revision, ...(input === undefined ? {} : { input }) });
+    assert.deepEqual(pinned.example, { question: "…" }, "revision 1's input");
+    assert.equal((await api("POST", "/agents/pinned/runs", { revision: first.body.revision, input: pinned.example })).status, 202, "which starts the pinned run");
+    const current = await hinted(input === undefined ? {} : { input });
+    assert.deepEqual(current.example, { topic: "…" }, "the current revision's input");
+  }
+  const missing = await api("POST", "/agents/pinned/runs", { revision: "no-such-revision", input: "x" });
+  assert.equal(missing.status, 422);
+  assert.ok(missing.body.error.fields.every((f) => f.example === undefined), `no hint for a revision that is not there: ${JSON.stringify(missing.body)}`);
+});
