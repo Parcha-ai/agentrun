@@ -768,7 +768,15 @@ export class LearningRuns {
         // Kept cut of every secret the run's notes were checked against, the keys its launches handed it included, which a
         // read no longer knows: its reason and its items' words are what the run's words are said from again (wordsOf).
         kept.verdict = cutVerdict(judged.verdict, this.refused(run));
-        if (!kept.verdict.merge) return await end("dropped", "grader", notKept(kept.verdict));
+        if (!kept.verdict.merge) {
+          // What it proposed is lost whole: its skill and its draft are named, from the proposal (a verdict the host
+          // refused has no items), and the line cut of every secret the verdict was.
+          const lost = (proposal.files ?? []).flatMap(({ file }) => {
+            const place = /^(?:skills\/([^/]+)\/SKILL\.md|workflows\/([^/]+)\/workflow\.json)$/.exec(file);
+            return place ? [{ file, name: (place[1] ?? place[2])! }] : [];
+          });
+          return await end("dropped", "grader", redactSecrets(notKept(kept.verdict, lost), this.refused(run)), lost.length ? { lost } : {});
+        }
         // Kept before the merge, with the blobs it judged superseded: a restart merges on this verdict, never asks the
         // grader again, and checks the same blobs.
         kept.graded = main.graded;

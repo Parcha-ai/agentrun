@@ -112,6 +112,9 @@ export type Learning = {
    *  for a person's OK (`status: pending` in its SKILL.md or README.md), and no run is given it until approved. */
   skills?: LearnedFile[];
   workflows?: LearnedFile[];
+  /** A grader's drop's skill and workflow draft, from what the run proposed: lost with the rest, and named when its
+   *  learning is said (learning-words.ts notKept). */
+  lost?: LearnedFile[];
 };
 /** A skill or a workflow draft a merge added or changed. */
 export type LearnedFile = { file: string; name: string; pending?: true };

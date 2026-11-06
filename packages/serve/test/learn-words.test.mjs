@@ -242,7 +242,7 @@ test("a run whose learning the grader dropped names the skill it proposed, first
   }
   // A why of over 400 characters: the run's view (300) and a list's row (140) still name the skill, before the why.
   const longRun = views.long.run_id;
-  assert.match((await api("GET", `/runs/${longRun}`)).body.learning.detail, /^Not kept, with the skill weekly-summary: A note is about longpage/);
+  assert.match((await api("GET", `/runs/${longRun}`)).body.learning.detail, /^Not kept, with the skill weekly-summary: It is about longpage/);
   const listed = (await api("GET", `/agents/long/runs`)).body.runs.find((one) => one.run_id === longRun).learning.detail;
   assert.ok(listed.length <= 140 && listed.startsWith("Not kept, with the skill weekly-summary: "), listed);
 
