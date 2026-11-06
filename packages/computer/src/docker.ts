@@ -28,6 +28,8 @@ const NAME = /^computer-[0-9a-f]{12}$/;
 const DEFAULT_CPUS = 2;
 const DEFAULT_MEMORY_MB = 4096;
 const DEFAULT_PIDS = 1024;
+/** CPUs are a CFS quota of each 100 ms, as serve gives them: Docker refuses a --cpus above its own CPU count. */
+const CPU_PERIOD_US = 100_000;
 /** A user in numbers, uid or uid:gid; (uid_t)-1 is no user. */
 const USER = /^(\d+)(?::(\d+))?$/;
 const MAX_ID = 4_294_967_294;
@@ -135,7 +137,7 @@ export class DockerProvider implements ComputerProvider {
 		args.push("--user", userOf(spec.user) ?? this.#user);
 		args.push("--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", String(spec.pids ?? DEFAULT_PIDS));
 		args.push("--network", spec.network === "none" ? "none" : "bridge");
-		args.push("--cpus", String(spec.cpus ?? DEFAULT_CPUS));
+		args.push("--cpu-period", String(CPU_PERIOD_US), "--cpu-quota", String(Math.round((spec.cpus ?? DEFAULT_CPUS) * CPU_PERIOD_US)));
 		// Memory and swap together are the memory: swap never adds to it.
 		const memory = `${spec.memoryMb ?? DEFAULT_MEMORY_MB}m`;
 		args.push("--memory", memory, "--memory-swap", memory);
