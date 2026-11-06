@@ -83,13 +83,15 @@ test("an image of this serve passes, by the harnesses this serve really reports 
   assert.match(r.stdout, /codex: unavailable \(codex needs OPENAI_API_KEY/);
 });
 
-const claude = { id: "claude-agent", available: false, reason: "The Claude Agent SDK 0.3.286 is not installed; npm install --save-exact @anthropic-ai/claude-agent-sdk@0.3.286" };
+const claude = { id: "claude-agent", available: false, reason: "claude-agent needs ANTHROPIC_API_KEY.", installs: "on_first_use" };
 
-test("an image that serves passes: health 200 ok, pi available, claude-agent not installed with its install line, another harness available or set-up-able", async (t) => {
+test("an image that serves passes: health 200 ok, pi available, claude-agent installing on first use, another harness available or set-up-able", async (t) => {
   const r = await smoke(t, serving([pi, claude, { id: "codex", available: false, reason: "No model key is set: set AGENT_MODEL_API_KEY" }]), "-e", "AGENT_MODEL=m");
   assert.equal(r.code, 0, r.stderr);
   assert.match(r.stdout, /health 200 ok; capabilities 200, contract agentrun\.v2\/0/);
-  assert.match(r.stdout, /claude-agent: unavailable \(The Claude Agent SDK 0\.3\.286 is not installed/);
+  assert.match(r.stdout, /claude-agent: unavailable \(claude-agent needs ANTHROPIC_API_KEY\.\), installs on first use/);
+  // With a key, available, still installing on first use.
+  assert.equal((await smoke(t, serving([pi, { id: "claude-agent", available: true, installs: "on_first_use" }, { id: "codex", available: true }]))).code, 0);
   assert.match(r.stdout, /codex: unavailable/);
   // Another harness may be available: only claude-agent's SDK is held back.
   assert.equal((await smoke(t, serving([pi, claude, { id: "codex", available: true }]))).code, 0);
@@ -131,8 +133,8 @@ for (const [why, answer, said] of [
   ["pi not available", serving([{ id: "pi", available: false, reason: "no model" }]), /pi is not available/],
   ["a harness whose reason is an import error", serving([pi, { id: "claude-agent", available: false, reason: "Cannot find package '@anthropic-ai/claude-agent-sdk'" }]), /claude-agent's reason is an error/],
   ["a harness not installed with no install line", serving([pi, { id: "codex", available: false, reason: "Codex is not installed" }]), /codex says it is not installed but gives no install line/],
-  ["claude-agent available, though the image carries no Claude Agent SDK", serving([pi, { id: "claude-agent", available: true }]), /claude-agent is available, but the image carries no Claude Agent SDK/],
-  ["claude-agent unavailable for another reason than not installed or not run yet", serving([pi, { id: "claude-agent", available: false, reason: "No model key is set" }]), /claude-agent is unavailable, but neither as not installed nor as a harness this server does not run yet/],
+  ["claude-agent not saying it installs on first use, though the image carries no Claude Agent SDK", serving([pi, { id: "claude-agent", available: true }]), /claude-agent does not say it installs on first use, but the image carries no Claude Agent SDK/],
+  ["claude-agent unavailable for another reason than a model key or not run yet", serving([pi, { id: "claude-agent", available: false, reason: "Claude Code is broken", installs: "on_first_use" }]), /claude-agent is unavailable, but neither for a model key nor as a harness this server does not run yet/],
 ]) {
   test(`the smoke fails on ${why}, says so, shows the log with its keys withheld, and removes the container`, { timeout: 30_000 }, async (t) => {
     const r = await smoke(t, answer);

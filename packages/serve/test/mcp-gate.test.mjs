@@ -18,7 +18,7 @@ import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { noApproverText } from "../dist/tool-gate.js";
 import { schemaProblems } from "./schema-support.mjs";
 import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
-import { agent, call, cookieOf, follow, scratch, serve as serveOf, withEnv } from "./support.mjs";
+import { agent, call, cookieOf, follow, runDir, runRecordOf, scratch, serve as serveOf, withEnv } from "./support.mjs";
 
 const FAUX_MCP = new URL("./fixtures/faux-mcp.mjs", import.meta.url).pathname;
 const TOKEN = `not-a-secret-${"mcp-gate-bearer-0123"}`;
@@ -98,7 +98,7 @@ test("pi: an MCP tool set to deny is refused, the model reads why, and the serve
   const runId = await started(api, "denied", ["mcp:fake/add"], ADD, { extra: { tool_settings: { "mcp:fake/add": { permission: "deny" } } } });
   const { last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 60_000 });
   assert.equal(last.status, "completed");
-  assert.equal(await answerOf(api, runId), "The tool said: Permission denied: mcp:fake/add is set to deny on this server. Don't retry it.");
+  assert.equal(await answerOf(api, runId), "The tool said: Permission denied: mcp:fake/add is set to deny for this agent. Don't retry it.");
   assert.equal(calls(fake).length, 0, "nothing was sent");
 });
 
@@ -161,7 +161,7 @@ test("pi: the run's process killed while a call is parked loses nothing: the sam
   const fake = await addFake(t, api);
   const runId = await started(api, "crash", ["mcp:fake/add"], ADD);
   const pending = await parked(api, runId);
-  const record = JSON.parse(await readFile(join(data, "runs", runId, "run.json"), "utf8"));
+  const record = runRecordOf(data, runId);
   if (record.holder?.pid) process.kill(record.holder.pid, "SIGKILL");
   const again = await parked(api, runId);
   assert.equal(again.id, pending.id, "the same approval");

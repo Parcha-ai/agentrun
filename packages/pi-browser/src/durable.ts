@@ -98,7 +98,8 @@ export type BrowserExtensionHandle = {
   reconcile(harness: Harness, isActive: (conversationId: ConversationId) => boolean, context: Context): Promise<ReconcileReport>;
   /** Shutdown is release, `waitForIdle`, `drain`, close: resolves when none of this extension's release tasks is live. */
   drain(harness: Harness, context: Context, signal?: AbortSignal): Promise<void>;
-  /** Drop in-memory driver attachments and idle timers (process exit). Over a healthy store it releases nothing; over
+  /** Drop in-memory driver attachments and idle timers (process exit). It first waits (30 s at most) for this process's
+   *  `close` releases that no `drain` since covered to reach the provider. Over a healthy store it releases nothing; over
    *  one that failed (a release commit of this process threw, or the Session ended failed) it releases every session
    *  this process still owns at the provider. */
   close(): Promise<void>;
@@ -143,6 +144,9 @@ const CHILD_TOOLS = new Set<string>([...BROWSER_TOOL_NAMES, ...WEB_TOOL_NAMES].f
 const DIRECT_RELEASE_MS = 30_000;
 /** How long close waits to learn whether a Session that began closing failed. */
 const FAILED_END_MS = 5_000;
+/** How long close, with no drain before it, waits for this process's close releases to reach the provider, as a direct
+ *  release may take. */
+const CLOSE_STOP_MS = DIRECT_RELEASE_MS;
 
 type Scope = { cid: ConversationId; plane: string; context: Context; read: DocumentReader; signal: AbortSignal; commit<T>(change: (tx: Tx) => Promise<T>): Promise<T>; keep(slot: string, value: string): Promise<string> };
 /** A session this process attached, until its release is confirmed: what a release the store cannot record lets go of. */
@@ -172,6 +176,9 @@ type Custody<D extends PageDriver> = Readers<D> & {
   owned: Map<string, Owned>;
   /** A release commit of this process threw: the store is not trusted to record one, so close releases what is owned. */
   failed: boolean;
+  /** By tag, a close release this process committed whose task has not yet had the provider release the session.
+   *  `drained`: a drain the host called after it was recorded covered it, so close does not wait for it again. */
+  stops: Map<string, { stopped: Promise<void>; stop: () => void; drained: boolean }>;
   /** pi-durable 1.2 on: whether the Session ended because a storage error failed it, once it has begun closing. */
   ending: { closing: boolean; failed: Promise<boolean> } | null;
   opened: { harness: Harness; context: Context } | null;
@@ -725,10 +732,12 @@ async function releasePlane<D extends PageDriver>(c: Custody<D>, conversation: P
       kept.tag = record.tag;
       if (kept.gate) return [];
       await c.store.requestRelease(tx, rowOf(conversation.id, record), reason, now());
+      if (reason === "close" && !c.stops.has(record.tag)) { let stop = () => {}; const stopped = new Promise<void>((resolve) => { stop = resolve; }); c.stops.set(record.tag, { stopped, stop, drained: false }); }
       if (reason === "idle" || reason === "close") c.store.addNotice(state, notices.released(reason, record.lastUrl, idleS));
       return [record.tag];
     }, context).catch(async (error: unknown) => {
       c.failed = true;
+      c.stops.delete(kept.tag);
       await closing;
       for (const tag of mine()) await c.held.detach(tag);
       await releaseDirectly(c, leasesOf(c, conversation.id));
@@ -929,10 +938,11 @@ export function createBrowserExtension<D extends PageDriver>(options: BrowserExt
     },
     handoff: options.handoff,
     handedBack: (tag, fence) => c.fences.set(tag, { fence, failure: HANDED_BACK }),
+    stopped: (tag) => { c.stops.get(tag)?.stop(); c.stops.delete(tag); },
   });
 
   const c: Custody<D> = {
-    ...readers, name, Sessions, Children, store, bill, held: new Attachments<D>(), vault, fences: new Map(), leaving, serial: keyedSerializer(), childTurns: oneAtATime(), guards: new Map(), owned, failed: false, ending: null, opened: null, incarnation: randomUUID(),
+    ...readers, name, Sessions, Children, store, bill, held: new Attachments<D>(), vault, fences: new Map(), leaving, serial: keyedSerializer(), childTurns: oneAtATime(), guards: new Map(), owned, failed: false, stops: new Map(), ending: null, opened: null, incarnation: randomUUID(),
     idle: idleTracker<ConversationId>({ idleMs: DEFAULT_BROWSER_POLICY.idleReleaseS * 1000, onIdle: (cid, fired, idleMs) => void releaseIdle(c, cid, fired, idleMs).catch(() => undefined) }),
   };
   // Every browser tool is a model call on its session's driving gate: refused while a person drives the live view, and the viewer's input is held while it runs. The host's own
@@ -960,7 +970,8 @@ export function createBrowserExtension<D extends PageDriver>(options: BrowserExt
       }
       return report;
     },
-    drain: (harness, context, signal) => drainReleases(name, harness, context, signal),
+    // The releases recorded so far are the drain's, however it ends (the host's signal may cut it short); a later one is not.
+    drain: (harness, context, signal) => { for (const wait of c.stops.values()) wait.drained = true; return drainReleases(name, harness, context, signal); },
     async close() {
       c.idle.clear();
       c.fences.clear();
@@ -968,6 +979,12 @@ export function createBrowserExtension<D extends PageDriver>(options: BrowserExt
       c.leaving.clear();
       // A session whose driver was let go and not yet replaced still has its observer attached: close both kinds.
       await Promise.all(c.held.tags().map((tag) => c.held.detach(tag)));
+      // Closing the Harness cancels a release task that has not released yet. A host that closes with no drain after its
+      // close releases (the crash-and-resume example) gets them at the provider all the same: close waits for their tasks,
+      // at most CLOSE_STOP_MS, rather than counting on a slow driver close to have given them time. One a drain covered is
+      // not waited for again (the host bounded that wait itself); a Harness that runs no task leaves them to the next run.
+      await Promise.all([...c.stops.values()].filter((wait) => !wait.drained).map((wait) => settleWithin(wait.stopped, CLOSE_STOP_MS, undefined)));
+      c.stops.clear();
       // A store that failed runs no release task again, so what this process still holds is released at the provider.
       // Over a healthy store it is kept, for the next run to resume or reconcile.
       if (c.failed || (c.ending?.closing && await settleWithin(c.ending.failed, FAILED_END_MS, false))) await releaseDirectly(c, [...c.owned.keys()]);

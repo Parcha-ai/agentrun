@@ -22,11 +22,8 @@ const RUN_CODE = "run code";
 /** An extension's pages (its offscreen document, its wake page) send nothing a model chose; its service worker is where
  *  run code executes, and is watched like a page. */
 const ownsExtensionPage = (type: string, url: string): boolean => url.startsWith(EXTENSION) && type !== "service_worker";
-/** Where Stagehand's trace exporter, which cannot be turned off, is pointed: a closed loopback port, so a request to it
- *  arrives nowhere and is neither held nor journaled. */
-export const INERT_TRACE_ENDPOINT = "http://127.0.0.1:9/v1/traces";
-/** A request to an extension's own files, or to the closed trace port, goes nowhere a model chose. */
-const isOwnTraffic = (url: string): boolean => url.startsWith(EXTENSION) || url === INERT_TRACE_ENDPOINT;
+/** A request to an extension's own files goes nowhere a model chose. */
+const isOwnTraffic = (url: string): boolean => url.startsWith(EXTENSION);
 
 /** Judgments are memoized per request shape, so a page that beacons every second costs one question; `ask` approvals
  *  are not. No judge, a null answer or a failure leaves the request judged irreversible. */

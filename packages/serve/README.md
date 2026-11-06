@@ -61,7 +61,7 @@ An edit is a new revision: `PUT $AGENTRUN_BASE_URL/agents/calc/definition` with
 
 | Flag | Default | What |
 | --- | --- | --- |
-| `--data DIR` | `~/.local/share/agentrun/agents` | The agent store (`DIR/store.sqlite`) and its runs (`DIR/runs/<id>/`). The token is `DIR/.token`, mode 0600, made once and kept, unless `AGENTRUN_TOKEN` gives it. |
+| `--data DIR` | `~/.local/share/agentrun/agents` | The agent store (`DIR/store.sqlite`) and its runs (`DIR/disk/agents/<agent>/runs/<id>/`). The token is `DIR/.token`, mode 0600, made once and kept, unless `AGENTRUN_TOKEN` gives it. |
 | `--listen ADDR` | `127.0.0.1` | The address to listen on. On any other, every `Host` name is served and the token is the only lock: put TLS in front of it. |
 | `--port N` | the first free port from `7340` | The port. `0` is any free port. |
 | `--open` | off | Open the console in this machine's browser once the server listens; not in CI, nor on Linux with no display. |
@@ -205,9 +205,28 @@ the address people open before the first start; without it, whoever opens the co
 `AGENT_MODEL` and the provider's key there too. Render waits 30 s after SIGTERM, above the image's 6 s drain; it does not
 let a service with a disk change that.
 
+## The disk, and earlier data directories
+
+The data directory has two parts. Its own files, the control plane, hold the agent store (`DIR/store.sqlite`, where
+each run's row keeps its claim: an epoch and its holder), the token and the server's settings; only the server opens
+them. Everything the agents make is on the disk, `DIR/disk/`: one folder per agent, `DIR/disk/agents/<agent>/` (its id
+in lower case, a dash and 16 hex digits of its SHA-256), with its learning folder (`learning/`) and its runs
+(`runs/<id>/`, each with `store/run.sqlite`, its log, and `work/`, where its tools work). Nothing is copied in or out of
+a run's folder: where it works, it works in that folder.
+
+A run's own process writes its `run.sqlite` in WAL, under an exclusive lock, with no automatic checkpoint, and ends
+with its WAL in place. The server reads it with a fresh read-only open per read, never shows a read older than one
+before, and never opens it for writing while the run's process holds it. Once that process is gone the server takes
+the run back (its epoch bumped, the server its holder) and checkpoints its WAL into the database file.
+
+A data directory an earlier version wrote, with its runs under `DIR/runs/` (or a store of store version 1), is refused
+at start, saying so: this version neither reads nor moves it. Keep it with that version, or start this one on a new data
+directory (an empty folder, or a new volume).
+
 ## Upgrading from 0.1.0-beta.26
 
-0.1.0-beta.27 keeps every agent in one store, `DIR/store.sqlite`, with its revisions, and each run under `DIR/runs/<id>/`.
+0.1.0-beta.27 keeps every agent in one store, `DIR/store.sqlite`, with its revisions (and this version each run on the
+disk, above).
 0.1.0-beta.26 and earlier kept one agent home per agent, `DIR/<agent>/agent.sqlite`, and this version does not read
 those. So it refuses to start on a data directory that holds one, and names each home it found, instead of serving
 it as if it had no agents.
@@ -257,8 +276,10 @@ and a 200 says it can work, and the platforms here take one path.
 
 A run whose end the agent store cannot take (a full disk) still ends: a cancel makes it `cancelled`, with its cost from
 its rows, and the server writes the end to the store again every 30 s until it lands; a restart before then reads the
-run as the store last had it. A run whose process was killed is opened again on its next message at once: a heartbeat
-of a process that is gone is not trusted.
+run as the store last had it. A run whose process was killed is opened again on its next message at once: the run's row
+names its process (its pid, that process's start and this boot), and a process that is gone holds nothing. One server
+serves a data root, and the agent disk under it (`<data>/disk`): a second server on the same root is refused at start
+(`server.lock`), so the row's claim never has two servers claiming it at once.
 
 ## Sandbox
 
@@ -285,21 +306,24 @@ place keeps it, `runner` included. An edit that names no place keeps the agent's
 The box is a new agent's default machine. A new agentic agent whose definition names no place is saved in the Docker box
 (`{"mode": "sandbox", "box": "docker"}`) wherever this server has docker, ready or still preparing its image (its first
 run then waits for the image, with one timeline row). The place is written on the agent's first revision, so its answers
-show it. If that definition names no `tools` either, it gets `["bash"]`, so the agent has a shell. A definition that
-names its tools keeps exactly those, an empty list included. Where docker is unavailable, a new agent is saved as before,
-with no place, and runs on the runner. So is one whose tools name one the box refuses (`browser`, runner-only for now). A
-workflow is never given a box.
+show it. If that definition names no `tools` either, it gets `["bash", "bash_background", "bash_output", "bash_input",
+"bash_signal", "bash_list"]`, so the agent has a shell and can run a command in the background
+([background processes](#background-processes)). A definition that
+names its tools keeps exactly those, an empty list included. Where docker is unavailable, a new agent is saved with no
+place. So is one whose tools name one the box refuses (`browser`, runner-only for now). A workflow is never given a box.
 
-`capabilities.places` says both sides. `default_place` is the place a new agent gets here. When that is the runner,
+`capabilities.places.default_place` is the place a new agent gets here, and where a revision that names no place runs.
+It is worked out again at each run, the same way as at create: an agentic revision with no place runs in the Docker box
+wherever this server has docker now, and on the runner where it does not. A workflow, and a revision whose tools name
+one the box refuses, run on the runner. A save checks a revision with no place against where it would run, so `bash`
+with no place saves where docker is there and is `422` where it is not. When that is the runner,
 `default_reason` says why in docker's own words, such as `new agents run on the runner, because the docker box is
 unavailable here: Docker isn't running on this machine (no docker command on PATH): install or start Docker, then
-restart AgentRun`. The console's new-agent form says docker's reason too, under its place picker. `default` stays `runner`,
-because it means where a revision that names no place runs. An agent saved with no place (before this, where docker was
-unavailable, or a workflow) keeps running on the runner, whatever the server has now. The default is never worked out
-again at run time. The console's new-agent form starts on `default_place`, with bash ticked when that place is a sandbox.
+restart AgentRun`. The console's new-agent form says docker's reason too, under its place picker. The console's new-agent form starts on `default_place`, with bash ticked when that place is a sandbox.
 What a person picks or unticks there is what is sent.
 
-A run runs in its revision's place, else on the runner. A run request names no place: `POST /agents/{id}/runs`
+A run runs in its revision's place, else where `default_place` says at that run (a workflow, and a revision whose tools
+name one the box refuses, on the runner). A run request names no place: `POST /agents/{id}/runs`
 with `place` is `422 input_invalid`, as with any field the body does not keep. The run keeps the place it resolved to,
 and `GET /v2/runs/{id}` shows it as `place`. A harness's own tools in the box, when they come, will be an option of
 `sandbox` (such as `native_tools: true`), never a third mode.
@@ -313,7 +337,8 @@ each box's own reason) when no box this server has can run it.
 `preparing` while the server builds or pulls its image, or `unavailable`) and, when it is not ready, the `reason`.
 A definition naming a box this server does not have saves with a warning on `definition.place`, and a run of it is
 `409 agent_not_runnable` with `details.box`. `GET /v2/openapi.json` marks `definition.place`, the run's `place` and
-`capabilities.places` `x-agentrun-serve: "place/1"`, and `default_place` and `default_reason` `"place/3"`.
+`capabilities.places` `x-agentrun-serve: "place/1"`, `default_reason` `"place/3"`, and `default_place` `"place/4"`
+(it replaced `places.default`).
 
 ### A run in a Docker box
 
@@ -467,16 +492,25 @@ where `bash`'s setting came from:
   console and the API show each log, during the run and after it.
 - Those files are for people to read: the run's own file tools can write anything in `work/`, so no call trusts one.
   The group a signal goes to, the exit code, the start time, the command and the run's-end mark are kept in the box's
-  own directory (its `TMPDIR`, else `/tmp`), out of `work/`; a copy in `work/` is written in that directory and moved
-  over its name from inside `work/background/<id>`, entered and checked by its real path, so a link planted at the name
-  or at the directory is never followed (a failed check skips the copy). `output.log` is opened first and then checked as opened
-  (through `/proc`: the file reached is `work/background/<id>/output.log` itself, by its real path, and a regular file),
-  and every read is of that open file, so a link swapped in after the check is never read. A link planted at it is
-  refused, saying so; so is any log in a box with no `/proc` to check it by. A directory made in `work/background/` that this box
-  did not start reads as gone, and is never signalled.
+  own directory (its `TMPDIR`, else `/tmp`), out of `work/`. A copy in `work/` is written from inside
+  `work/background/<id>`, entered and checked by its real path, to a new file of a name no one can guess, created and
+  written in one exclusive open, then renamed over its name; so a link planted at the name or at the directory is never
+  followed, and a real directory standing at the name skips that copy (as does a failed check). At the run's end every
+  copy (`command` and `started` among them) is written again, so a link planted at one since its start does not stay.
+  `output.log` is opened first and then checked as opened (through `/proc`: the file reached is
+  `work/background/<id>/output.log` itself, by its real path, and a regular file), and every read is of that open file,
+  so a link swapped in after the check is never read. A link planted at it is refused, saying so; a box with no `/proc`
+  to check by refuses every log, saying that instead. A directory made in `work/background/` that this box did not
+  start reads as "not started in this box", and is never signalled.
 - A process runs until no live process of its group is left: a child the command starts with `&` (a server, its
   output sent elsewhere) keeps it running, counted against the cap, signalled with it and ended at the run's end; its
   exit code is the shell's.
+- A child that leaves the process group (one that calls `setsid`, a daemon that detaches) is not tracked: it is not
+  counted against the cap, no `bash_signal` reaches it, and the run's end does not end it. Only the box's end (its
+  destroy at the run's end) or its 24-hour lifetime ends it; the box's process limit (`AGENTRUN_BOX_PIDS`) only bounds
+  how many processes there can be.
+- A process whose runner ended before it did (its box was replaced, or the runner was killed) reads as gone, its exit
+  code not known.
 - At most 8 run at once in a run's box: a ninth start is refused, saying so, until one ends. Each log keeps the first
   16 MiB of the output; later output is dropped while the process runs on, and `bash_output` says so.
 - `bash_background {command, tty: true}` runs the command on a terminal instead: `script -qfec` (util-linux) in the box
@@ -486,7 +520,8 @@ where `bash`'s setting came from:
   interactive shell's running command stops and the shell runs on; `TERM` and `KILL` go to every process group of the
   terminal's session. That session is tracked as the process: a child its command leaves running on the terminal keeps
   the process running, counted against the cap, reached by `bash_signal` and ended at the run's end, after `script`
-  itself is gone. A box with no `script` refuses `tty: true`, saying so, and starts nothing. `bash_list` marks such a
+  itself is gone. A box with no `script`, or with another `script` than util-linux's (busybox's takes no `-e`, and without it
+  always exits 0, so the command's exit code would be lost), refuses `tty: true`, saying so, and starts nothing. `bash_list` marks such a
   process `(tty)`.
 - `bash_output {id, offset?, max_bytes?}` reads the log from a byte offset (0 when absent), at most 48 KiB a call (the
   default), never splitting a character (a page too small for the character it starts at is refused, saying so): whether the process still runs, its exit code once it ended, the log's size,
@@ -510,7 +545,7 @@ since nothing binds `work/` there):
 
 - The key is this server's alone. The server makes, copies to and from, and destroys the sandbox itself. The run's
   process holds no key: it reaches its sandbox only through the server's box relay, on loopback, which takes a call for
-  a run only with that run's own door token (`DIR/runs/<id>/door-token`, handed to that run's process alone) and adds
+  a run only with that run's own door token (`DIR/disk/agents/<agent>/runs/<id>/door-token`, handed to that run's process alone) and adds
   the key to the calls a run's tools make of their own sandbox (a read of it, and its toolbox's programs and files). It
   refuses every other call (a create, a listing, a stop, a delete, another run's sandbox or token, any other host), and
   it never follows a redirect, nor does the server's own Daytona client: a redirect would carry the key.
@@ -1550,7 +1585,22 @@ model). A definition naming a
 harness this server does not run yet saves with a warning on `definition.harness`, and a run of it is
 `409 agent_not_runnable` with `details.harness`; it never runs on pi instead. This server runs pi always, and
 `claude-agent`, `codex` and `opencode` when each adapter's package, pins and provider endpoint check out; the harness's
-`reason` says what is missing. `opencode` needs `opencode-ai@1.19.5` installed beside the server (an exact optional peer of
+`reason` says what is missing. `claude-agent` installs Claude Code on first use: AgentRun never ships the Claude Agent
+SDK, and the first run on claude-agent (or the first agent saved on it) installs the version AgentRun pins
+(`@anthropic-ai/claude-agent-sdk@0.3.286`) from npm into `<data>/harnesses`, with the npm that runs the server, once.
+The install is pinned by the lock the server ships, `harnesses/claude-agent/` (a package.json that names the SDK at the pin, and npm's lock for it: every package of the tree, its
+CLI's platform packages and its peers' dependencies included, by sha512), which `npm ci --ignore-scripts` holds every
+tarball to, from whichever registry the person's npm config names. It lands whole or not at all: npm writes into a fresh
+directory beside `<data>/harnesses`, the result is checked there (the SDK at the pin, its entry, this platform's CLI and
+the MCP library), then it is renamed into place and made read-only. `node scripts/claude-lock.mjs` makes the lock again
+when the pin moves (`--check` checks it).
+Every run that needs it waits for that one install, its ready time counted from the install's end, and shows a `phase`
+row, `Installing Claude Code (first use)…`, while it does. Each run then loads the SDK, its CLI and the MCP library from
+there and nowhere else. Until it is installed, capabilities list claude-agent with `installs: "on_first_use"`. When npm fails, the run fails and its error names the command that installs it by hand, the same locked install: the
+shipped `package.json` and `package-lock.json` copied into a fresh `<data>/harnesses.new`, `npm ci --ignore-scripts --include=optional` there,
+then that directory put in place of `<data>/harnesses` (made writable first: the server leaves its install read-only). Each run loads the SDK, its CLI and the MCP library only from their own packages inside
+`<data>/harnesses`, never from a `node_modules` above it; a tree that is not whole is installed again. A server that stops
+mid-install stops its npm (SIGTERM). `opencode` needs `opencode-ai@1.19.5` installed beside the server (an exact optional peer of
 it), and its model goes where codex's does: the gateway at `AGENT_MODEL_BASE_URL`, or
 OpenAI with `OPENAI_API_KEY`, on the Responses API. The packages and pins are checked once, at the start
 (`event=harness_offers why=start`): a harness
@@ -1732,7 +1782,7 @@ left out: 2 sessions still being written: they come in next time
 ## A run's life
 
 1. `POST /agents/{id}/runs` starts the run in the store (`startRun`, which pins the revision and seeds
-   `DIR/runs/<id>/`), then its process: `pi-durable-disk run --dir DIR/runs/<id> --app <this package's app> --serve 0` on
+   `DIR/disk/agents/<agent>/runs/<id>/`), then its process: `pi-durable-disk run --dir DIR/disk/agents/<agent>/runs/<id> --app <this package's app> --serve 0` on
    loopback, behind a token of its own (`DIR/.door-token`), with its stderr in `runs/<id>/process.log`. The run's input
    is in `runs/<id>/serve.json`.
 2. The app reads the run's revision from the store.
@@ -1770,7 +1820,8 @@ left out: 2 sessions still being written: they come in next time
    page says `final`. v2's `cancelled` is the store's `stopped`; a workflow that escalated ends `failed` with
    `error: {code: "escalated", message: <its summary>}`, in the run and in the lists.
 4. When the server starts, it reads every run the store says is running. A run process an earlier server started and
-   that still serves the run is supervised again, by its `run.json` and its pid; a run that already ended is carried
+   that still serves the run is supervised again, by the holder its row names (its pid, its start, its door); a run
+   that already ended is carried
    back; a run whose process is gone before it ended is opened again on its directory and resumes from its store (an
    agentic run waiting for an answer waits without one, until a message). A carry back that finds the store held by
    another writer is tried again with backoff, and at the next start.
@@ -1791,7 +1842,7 @@ definition that sets it keeps it on its revision, `false` included, and an edit 
 that never sets it stores nothing, so its revision id is the one it had before the switch. The server's `--learning off`
 turns learning off for every run it starts, whatever the agent says.
 
-An agent that learns has a learning folder, `learning/` in its home (`DATA/homes/<key>/learning/`), in Claude Code's
+An agent that learns has a learning folder, `learning/` in its folder on the disk (`DATA/disk/agents/<key>/learning/`), in Claude Code's
 auto-memory format:
 
 - `MEMORY.md`, the index a run reads, one line per active note: `- [name](file.md) — description`, built by the server;
@@ -1929,9 +1980,8 @@ The run's `learning` (on `GET /runs/{run_id}`, and `{state, reason, detail}` in 
 characters and no time) says how it went: `seeded`, then
 `reflecting` during the turn and until what it answered is checked, `proposed` while it is graded, and `merged`, or
 `dropped` with a reason from a closed list (`seed_failed`, `no_budget`, `unknown_cost`, `cancelled`, `crashed`,
-`reflect_timeout`, `reflect_failed`, `empty`, `unparsed`, `propose_failed`, `checker`, `grader`, `grade_failed`;
-`no_write_tool`, `tool_denied`, `screen` and `screen_down` are an older server's, still read and counted, and no run
-gets them now). It is `null` for a
+`reflect_timeout`, `reflect_failed`, `empty`, `unparsed`, `propose_failed`, `checker`, `grader`, `grade_failed`; a run
+record or ledger line with any other reason is not counted). It is `null` for a
 run that does not learn (its agent's `learning` is not true, the server's switch was off when it started, or it is a
 workflow's or an imported run). Its `detail` says the same in a person's words, never the machine's: "Started from 2
 notes.", "Looking back on this run…", "Checking 1 new note…", "Learned: Check units (replaces 1 older note)", "Learned:
@@ -1944,21 +1994,28 @@ grader's verdict), cut of the server's secrets as they are then before the words
 list), so a value that became a secret after the run is never shown in part. Once it is proposed, merged or dropped (`seed_failed` included), the run's
 timeline has one row of kind `learning` whose summary is that detail.
 
-Three more fields say what the run used, learned and holds for the owner's OK (`learning/2`), on its read and in run
-lists alike, each absent when it holds no note: `used`, `[{file, name}]`, the notes its job read from `.learning/`,
+Four more fields say what the run was given, read, learned and holds for the owner's OK (`learning/2`), on its read and
+in run lists alike, each absent when it holds no note: `given`, `[{file, name}]`, the notes it started with (each its
+`# Learned` section names, whole or as an index line naming its file, as it was seeded; absent when it started with
+nothing learned); `read`, `[{file, name}]`, the notes its job read from `.learning/` (absent when it opened no note file),
 found once as the run settles from its timeline (each `read` call on any harness whose result was a success, of a note
 the run started from: never `MEMORY.md`, nor a read its end-of-run turn made, nor a note read through a command such as
 `bash`'s `cat`) and kept in `serve.json`, so a list never reads a timeline; `learned`, `[{file, name, supersedes}]`, the
 notes its merge added, once `merged`; and `pending`, `[{file, name}]`, the notes its merge holds for the owner's OK, once
 `merged`, never among `learned`. A name and a file are cut of the server's secrets as they are now, a file holding one
-`[redacted]`.
+`[redacted]`. Whether a run applied a note is not measured: `given` and `read` say what it had and what it opened. Each
+note on the agent's learning view and notes page counts its runs of each, `runs: {given, read}`, over the runs the server
+knows (held ones from memory, ended ones from the learning ledger).
 
 Each run's learning end is written once to the learning ledger, `DATA/learning-usage.jsonl`, one line `{run, agent,
-state, reason, at, cost, tokens, seed_notes, answered_at, job_cost_usd, look_back_usd}` (`cost` and `tokens` the
-grade's, null when unknown, 0 when nothing was graded; `seed_notes` how many notes the run started from; once it looked
-back, `answered_at` and `job_cost_usd`, when its job's answer was final and what it had cost then; `look_back_usd` what
+state, reason, at, cost, tokens, seed_notes, given, read, answered_at, job_cost_usd, look_back_usd}` (`cost` and
+`tokens` the grade's, null when unknown, 0 when nothing was graded; `seed_notes` how many notes the run started from;
+`given` and `read` the files of the notes it was given and read, each absent when there are none; once it looked back,
+`answered_at` and `job_cost_usd`, when its job's answer was final and what it had cost then; `look_back_usd` what
 looking back cost, 0 when it did not), after its `serve.json` holds it; a server that went between the two writes it at
-its next start. `GET /stats` counts the runs that tried to learn under `learning`, over its `from`, `to` and
+its next start. A run's notes are the one part that moves after its end (a follow-up reads another note): a line
+`{run, agent, notes: true, given, read}` then says them anew, the latest one winning, and counts neither the run nor its
+costs again. `GET /stats` counts the runs that tried to learn under `learning`, over its `from`, `to` and
 `agent`, from that ledger and from the runs the server holds (`in_progress`), never opening a run's files; the
 `learning` meter on `GET /usage` reads the same lines.
 
@@ -2014,7 +2071,7 @@ with the token, an archived agent's too:
   too (`Approved-Via: console`). The learning view gives each item `last_change` (`{kind, by, at}`: `approved`,
   `edited`, `created`, `retired` or `restored` by a `person`, or `learned` by a `run`) and each retired one `retired`
   (`{at, by}`, the time of its retire, which an edit since moves not).
-- `GET /runs/{run_id}/learning`: the run's learning whole (its `used` and `learned` as on its read, its seed, its merge, the grader's verdict with its item for
+- `GET /runs/{run_id}/learning`: the run's learning whole (its `given`, `read` and `learned` as on its read, its seed, its merge, the grader's verdict with its item for
   each new note, `{file, keep, question, why}`, `question` the rubric's question a dropped note failed, the checker's
   problems, what the grade cost), `null` for a run that does not learn; `verdict` is `null` until a grade ran.
   `GET /runs/{run_id}/learning/diff`: a merged run's merge commit against its parent, else its proposal against its
@@ -2285,7 +2342,7 @@ carries no cost at all, as from a provider that does not price the model. The te
   browser's cookie under the rules of [the console](#the-console). The console's own files (its HTML, scripts, styles
   and fonts) hold no data; everything it shows comes through those routes. It loads nothing from the network, and its
   CSP allows this origin only.
-- Each run's door listens on loopback and takes only that run's own door token (`DIR/runs/<id>/door-token`, 0600, made
+- Each run's door listens on loopback and takes only that run's own door token (`DIR/disk/agents/<agent>/runs/<id>/door-token`, 0600, made
   at its first launch); a run's process an older server started keeps the server-wide one (`DIR/.door-token`).
 - A run's process gets the server's environment (the `AGENT_MODEL` variables among it) without the server's token or any
   key: no `AGENTRUN_TOKEN`, no `AGENTRUN_API_KEY`, no variable whose value is the token, and no variable named like a key

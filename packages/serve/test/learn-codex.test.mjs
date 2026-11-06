@@ -47,6 +47,6 @@ test("on codex's real adapter, a run whose job reads a note through the host's r
   const reads = rows.filter((row) => row.tool_name === "read").map((row) => [row.kind, row.tool_input_preview, row.tool_status]);
   assert.deepEqual(reads, [["tool_use", ".learning/check-units.md", null], ["tool_result", null, "success"]], JSON.stringify(rows.map((row) => [row.kind, row.tool_name, row.summary])));
   settled(view, rows, "dropped", "empty");
-  assert.deepEqual(view.learning.used, [{ file: "check-units.md", name: "Check units" }]);
-  assert.deepEqual((await api("GET", "/runs")).body.runs.find((run) => run.run_id === runId).learning.used, view.learning.used);
+  assert.deepEqual(view.learning.read, [{ file: "check-units.md", name: "Check units" }]);
+  assert.deepEqual((await api("GET", "/runs")).body.runs.find((run) => run.run_id === runId).learning.read, view.learning.read);
 });
