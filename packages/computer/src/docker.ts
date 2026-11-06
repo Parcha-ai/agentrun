@@ -21,6 +21,8 @@ export interface DockerProviderOptions {
 const VERSION: string = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 /** Where the daemon is mounted in each computer, read-only. */
 const DAEMON_IN_COMPUTER = "/opt/agentrun/computerd";
+/** The computer's home and default workdir: a tmpfs its user owns, since a non-root user can write nowhere else. */
+const WORK = "/work";
 const COMPUTER_LABEL = "agentrun.computer";
 const DEADLINE_LABEL = "agentrun.computer.deadline";
 const NAME = /^computer-[0-9a-f]{12}$/;
@@ -134,7 +136,9 @@ export class DockerProvider implements ComputerProvider {
 		const deadline = new Date(Date.now() + spec.lifetimeMs).toISOString();
 		args.push("--label", `${DEADLINE_LABEL}=${deadline}`);
 		for (const [key, value] of Object.entries(spec.labels ?? {})) args.push("--label", `${key}=${value}`);
-		args.push("--user", userOf(spec.user) ?? this.#user);
+		const user = userOf(spec.user) ?? this.#user;
+		const [uid, gid] = user.split(":");
+		args.push("--user", user, "--tmpfs", `${WORK}:rw,nosuid,nodev,exec,uid=${uid},gid=${gid},mode=0700`, "--env", `HOME=${WORK}`);
 		args.push("--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", String(spec.pids ?? DEFAULT_PIDS));
 		args.push("--network", spec.network === "none" ? "none" : "bridge");
 		args.push("--cpu-period", String(CPU_PERIOD_US), "--cpu-quota", String(Math.round((spec.cpus ?? DEFAULT_CPUS) * CPU_PERIOD_US)));
@@ -142,7 +146,7 @@ export class DockerProvider implements ComputerProvider {
 		const memory = `${spec.memoryMb ?? DEFAULT_MEMORY_MB}m`;
 		args.push("--memory", memory, "--memory-swap", memory);
 		args.push("--mount", `type=bind,src=${this.#daemonPath},dst=${DAEMON_IN_COMPUTER},readonly`, "--entrypoint", DAEMON_IN_COMPUTER);
-		if (spec.workdir !== undefined) args.push("--workdir", spec.workdir);
+		args.push("--workdir", spec.workdir ?? WORK);
 		// PID 1 ends the computer at the deadline the label holds, so a computer the janitor misses still stops.
 		args.push(spec.image, "init", "--deadline", deadline);
 
