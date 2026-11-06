@@ -286,17 +286,17 @@ The box is a new agent's default machine. A new agentic agent whose definition n
 (`{"mode": "sandbox", "box": "docker"}`) wherever this server has docker, ready or still preparing its image (its first
 run then waits for the image, with one timeline row). The place is written on the agent's first revision, so its answers
 show it. If that definition names no `tools` either, it gets `["bash"]`, so the agent has a shell. A definition that
-names its tools keeps exactly those, an empty list included. Where docker is unavailable, a new agent is saved as before,
-with no place, and runs on the runner. So is one whose tools name one the box refuses (`browser`, runner-only for now). A
-workflow is never given a box.
+names its tools keeps exactly those, an empty list included. Where docker is unavailable, a new agent is saved with no
+place. So is one whose tools name one the box refuses (`browser`, runner-only for now). A workflow is never given a box.
 
-`capabilities.places` says both sides. `default_place` is the place a new agent gets here. When that is the runner,
+`capabilities.places.default_place` is the place a new agent gets here, and where a revision that names no place runs.
+It is worked out again at each run, the same way as at create: an agentic revision with no place runs in the Docker box
+wherever this server has docker now, and on the runner where it does not. A workflow, and a revision whose tools name
+one the box refuses, run on the runner. A save checks a revision with no place against where it would run, so `bash`
+with no place saves where docker is there and is `422` where it is not. When that is the runner,
 `default_reason` says why in docker's own words, such as `new agents run on the runner, because the docker box is
 unavailable here: Docker isn't running on this machine (no docker command on PATH): install or start Docker, then
-restart AgentRun`. The console's new-agent form says docker's reason too, under its place picker. `default` stays `runner`,
-because it means where a revision that names no place runs. An agent saved with no place (before this, where docker was
-unavailable, or a workflow) keeps running on the runner, whatever the server has now. The default is never worked out
-again at run time. The console's new-agent form starts on `default_place`, with bash ticked when that place is a sandbox.
+restart AgentRun`. The console's new-agent form says docker's reason too, under its place picker. The console's new-agent form starts on `default_place`, with bash ticked when that place is a sandbox.
 What a person picks or unticks there is what is sent.
 
 A run runs in its revision's place, else on the runner. A run request names no place: `POST /agents/{id}/runs`
@@ -313,7 +313,8 @@ each box's own reason) when no box this server has can run it.
 `preparing` while the server builds or pulls its image, or `unavailable`) and, when it is not ready, the `reason`.
 A definition naming a box this server does not have saves with a warning on `definition.place`, and a run of it is
 `409 agent_not_runnable` with `details.box`. `GET /v2/openapi.json` marks `definition.place`, the run's `place` and
-`capabilities.places` `x-agentrun-serve: "place/1"`, and `default_place` and `default_reason` `"place/3"`.
+`capabilities.places` `x-agentrun-serve: "place/1"`, `default_reason` `"place/3"`, and `default_place` `"place/4"`
+(it replaced `places.default`).
 
 ### A run in a Docker box
 

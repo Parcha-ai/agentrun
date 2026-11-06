@@ -2,8 +2,8 @@
  *  (capabilities `places`). The server's words for a box it lacks (`reason`) are shown as it gives them. */
 export type Place = { mode: "runner" } | { mode: "sandbox"; box: string };
 export type BoxOffer = { id: string; available: boolean; reason?: string };
-/** `default`: where a revision that names no place runs (the runner). `defaultPlace`: the place a NEW agent is given,
- *  as the server serves it (`default_place`); absent on an older server, whose form stays as it was. */
+/** `defaultPlace`: the server's `default_place`, the place a NEW agent is given and where a revision that names no place
+ *  runs. `default`: its mode, which the editor's picker starts on for an agent that names none. */
 export type Places = { modes: string[]; default: string; boxes: BoxOffer[]; defaultPlace?: Place };
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -23,23 +23,23 @@ export function placesOf(caps: unknown): Places | null {
   const boxes = p.boxes.filter(isObject).filter((b) => typeof b.id === "string")
     .map((b) => ({ id: b.id as string, available: b.available === true, ...(typeof b.reason === "string" ? { reason: b.reason } : {}) }));
   const defaultPlace = placeOf(p.default_place);
-  return { modes: p.modes.filter((m): m is string => typeof m === "string"), default: typeof p.default === "string" ? p.default : "runner", boxes, ...(defaultPlace ? { defaultPlace } : {}) };
+  return { modes: p.modes.filter((m): m is string => typeof m === "string"), default: defaultPlace?.mode ?? "runner", boxes, ...(defaultPlace ? { defaultPlace } : {}) };
 }
 
 /** The place a new agent's form starts on: the served default when it is a sandbox; else none, as before (the server
  *  keeps no place for it, and it runs on the runner). */
 export const newAgentPlace = (places: Places | null | undefined): Place | undefined => (places?.defaultPlace?.mode === "sandbox" ? places.defaultPlace : undefined);
 
-/** Where a place runs, in words: "Runs in a docker box" or "Runs on the server". None is the server's default. */
+/** Where a place runs, in words: "Runs in a docker box" or "Runs on the server". None is the server's default place. */
 export function placeWords(place: Place | undefined, places: Places | null): string {
-  const p = place ?? (places?.default === "sandbox" ? undefined : { mode: "runner" as const });
+  const p = place ?? places?.defaultPlace;
   if (!p) return "Runs where this server's default puts it";
   return p.mode === "sandbox" ? `Runs in a ${p.box} box` : "Runs on the server";
 }
 
-/** Where an agent runs, as its page's fact: "In a docker box", or "On the server" (none is the runner, this server's
- *  default). */
-export const placeLabel = (place: Place | undefined) => (place?.mode === "sandbox" ? `In a ${place.box} box` : "On the server");
+/** Where an agent runs, as its page's fact: "In a docker box", "On the server", or, for an agent that names no place,
+ *  this server's default place (capabilities' default_place, which the page does not read). */
+export const placeLabel = (place: Place | undefined) => (!place ? "Where this server's default place is" : place.mode === "sandbox" ? `In a ${place.box} box` : "On the server");
 
 /** Where a run ran, as its header says it: "in a docker box" or "on the server". Nothing for a run kept without a place
  *  (an older server). */
