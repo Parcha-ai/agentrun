@@ -92,7 +92,10 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
   // The form as saved: as it opened, or as its last save left it. A form unlike it holds unsaved changes, and leaving the
   // page asks first (lib/leaving). The revision note is not one: a note alone saves nothing.
   const [base, setBase] = useState<AgentFields>(f);
-  const dirty = !same(f, base);
+  // The form with its effective tool settings: its own, else the definition's (the form drops settings equal to the
+  // definition's, while the form as saved keeps the ones a save sent). Both sides of the unsaved check read them so.
+  const effective = (x: AgentFields): AgentFields => ({ ...x, tool_settings: x.tool_settings ?? d?.tool_settings ?? {} });
+  const dirty = !same(effective(f), effective(base));
   const leaveSaved = useLeaveGuard(dirty);
   // On a new agent, picking another harness re-ticks that harness's tools, until a tool is changed by hand.
   const [toolsTouched, setToolsTouched] = useState(false);
