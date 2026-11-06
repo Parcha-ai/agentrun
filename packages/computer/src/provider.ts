@@ -19,10 +19,27 @@ export interface ComputerSpec {
 	user?: string;
 }
 
+/** One kind of allowlist entry a provider takes: how many a list may hold, and the ports an entry opens. */
+export interface AllowRule {
+	max: number;
+	/** The ports an entry opens: these, or "any". */
+	ports: number[] | "any";
+}
+
+/** What a network allowlist may hold, for a provider that declares network "allow". */
+export interface AllowCapability {
+	domains?: AllowRule;
+	cidrs?: AllowRule;
+	/** Whether one allowlist may hold domains and CIDRs together. */
+	mixed: boolean;
+}
+
 export interface ComputerCapabilities {
 	/** Who ends a computer at its deadline: the vendor, or our janitor by label. */
 	lifetime: "vendor" | "janitor";
 	network: Array<"none" | "open" | "allow">;
+	/** With network "allow": what an allowlist may hold and which ports it opens. */
+	allow?: AllowCapability;
 	isolation: "container" | "gvisor" | "microvm" | "vm" | "machine";
 	os: "linux" | "windows" | "macos" | "android" | "ios";
 	/** What the daemon in each computer must offer. */
