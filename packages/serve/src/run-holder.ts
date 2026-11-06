@@ -1,6 +1,6 @@
 // Who holds a run, as its row's claim names it (store.sqlite claim_holder): the run's process by its pid, the start of
-// that process (so a pid a later process reuses is never taken for it) and this machine's boot, and, once it serves, its
-// door. The row's epoch is the whole lock: the server claims a run only from the epoch it read, and kills a holder that
+// that process (so a pid a later process reuses is never taken for it) and this machine's boot, its launch's door nonce,
+// and, once its door has proven that nonce (door-line.ts), its door. The row's epoch is the whole lock: the server claims a run only from the epoch it read, and kills a holder that
 // still lives before it claims over it, so no process of a lower epoch runs (or commits to the run's store) after the
 // bump. The server writes the holder (launch, then the door its process names on stdout); the run's process never
 // opens store.sqlite.
@@ -19,7 +19,7 @@ export const LAUNCH_HOLDER = "launching";
 export const RUN_LAUNCH_ENV = "AGENTRUN_RUN_LAUNCH";
 
 /** A run's process as its row names it. */
-export type RunHolder = { pid: number; start: number; boot: string | null; door?: string };
+export type RunHolder = { pid: number; start: number; boot: string | null; door?: string; nonce?: string };
 
 /** The holder a row's claim names, or undefined for none, the server (a take-back) or anything that is not one. */
 export function holderOf(claim: string | null | undefined): RunHolder | undefined {
@@ -34,7 +34,8 @@ export function holderOf(claim: string | null | undefined): RunHolder | undefine
   if (!Number.isSafeInteger(holder.pid) || holder.pid! <= 0 || !Number.isSafeInteger(holder.start)) return undefined;
   if (holder.boot !== null && typeof holder.boot !== "string") return undefined;
   if (holder.door !== undefined && typeof holder.door !== "string") return undefined;
-  return { pid: holder.pid!, start: holder.start!, boot: holder.boot ?? null, ...(holder.door === undefined ? {} : { door: holder.door }) };
+  if (holder.nonce !== undefined && typeof holder.nonce !== "string") return undefined;
+  return { pid: holder.pid!, start: holder.start!, boot: holder.boot ?? null, ...(holder.door === undefined ? {} : { door: holder.door }), ...(holder.nonce === undefined ? {} : { nonce: holder.nonce }) };
 }
 
 /** Process `pid` as a holder: its start and this boot, read now; undefined once it is gone. */

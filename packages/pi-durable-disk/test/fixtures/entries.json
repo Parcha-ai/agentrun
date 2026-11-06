@@ -272,6 +272,7 @@
       "RUN_STATUS_TABLE",
       "confineTestHooks",
       "createRunDir",
+      "doorProof",
       "findDelegations",
       "isLeaseFresh",
       "mintMountToken",

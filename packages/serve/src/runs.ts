@@ -59,6 +59,10 @@ import { BACKGROUND_DIR, endBackground } from "./background.js";
 import { removeEgressDir, RUN_BOX_ALLOW_ENV } from "./box-egress.js";
 import { BehindReadError, checkpointRunDb, MonotonicReads, readRunDb } from "./run-db.js";
 import { holderLives, holderOfClaim, holderOfProcess, killHolder, LAUNCH_HOLDER, RUN_LAUNCH_ENV, type RunHolder } from "./run-holder.js";
+import { firstDoorLine, verifyDoor } from "./door-line.js";
+
+/** `holder` with this launch's door nonce, which the row keeps so a next server can prove the door too. */
+const withNonce = (holder: RunHolder | undefined, nonce: string): RunHolder | undefined => holder && { ...holder, nonce };
 import { type DiskAdapter, localDisk } from "./disk.js";
 import { RUN_BOX_VOLUME_ENV } from "./box-egress-vm.js";
 import type { BoxProvider } from "@parcha/pi-transport";
@@ -1496,7 +1500,7 @@ export class Runs {
       reading = true;
       const lives = holderLives(holder);
       void this.runRecord(run)
-        .then((now) => {
+        .then(async (now) => {
           const released = RELEASED.has(String(now?.status));
           if (!lives) return done(released);
           // Its door, when the server that launched it went before it read the line: the one this process keeps in its
@@ -1505,8 +1509,10 @@ export class Runs {
             const claim = this.store.runClaim(run.id);
             const own = isObject(now?.holder) && now.holder.pid === holder.pid ? now.holder : undefined;
             const serve = own?.serve;
-            if (now?.generation === claim.epoch && typeof serve === "string") {
-              this.nameHolder(run, claim.epoch, { ...holder, door: serve });
+            // Proven with the nonce the launching server kept on the row, as that server would have.
+            const proven = now?.generation === claim.epoch && typeof serve === "string" && holder.nonce !== undefined && (await verifyDoor(serve, holder.nonce, this.headers(run)));
+            if (proven) {
+              this.nameHolder(run, claim.epoch, { ...holder, door: serve as string });
               this.connect(run);
             } else if (Date.now() > doorBy) {
               warn(run.id, `its process ${pid} named no door within ${(this.options.readyTimeoutMs ?? READY_TIMEOUT_MS) / 1000} s; it is killed and the run taken over`);
@@ -2143,6 +2149,7 @@ export class Runs {
     // first (CLAIM_RETRY_MS) and then every settle retry, until it is written: a run never stays without a process for
     // want of one.
     let epoch: number;
+    const nonce = randomBytes(32).toString("hex");
     try {
       const claim = this.store.runClaim(run.id);
       const held = holderOfClaim(run.id, claim);
@@ -2151,6 +2158,7 @@ export class Runs {
       env[RUN_EPOCH_ENV] = String(epoch);
       // Its mark: should the row still name the launch when this server goes, the next one finds the process by it.
       env[RUN_LAUNCH_ENV] = `${run.id}:${epoch}`;
+
       run.claimTries = undefined;
     } catch (error) {
       // Soon at first (a store another writer holds for a moment), then every settle retry.
@@ -2174,6 +2182,10 @@ export class Runs {
       stdio.push("pipe");
       env[DECISION_KEY_FD_ENV] = String(keyFd);
     }
+    // This launch's door nonce, on a pipe of its own, never in an environment (which stays readable by the user's other
+    // processes): the process reads it first and closes it, and its door proves it (door-line.ts).
+    const nonceFd = stdio.length;
+    stdio.push("pipe");
     // A workflow run resumes from its journal when it opens again, so SIGTERM lets it go at once, undrained.
     const drain = run.kind === "workflow" ? "0s" : (this.options.drainTimeout ?? DRAIN);
     // Its own door token, which its door takes and its calls to the box relay carry: no other run's process holds it.
@@ -2183,31 +2195,25 @@ export class Runs {
       // secrets.ts first, as a preload: the pipe is read and closed before pi-durable-disk's CLI loads or starts anything.
       "--no-warnings=ExperimentalWarning", "--import", SECRETS_MODULE, this.cli, "run", "--dir", run.dir, "--app", this.app,
       "--serve", "0", "--serve-host", "127.0.0.1", "--serve-token-file", doorTokenFile, "--drain-timeout", drain, // key-gate: loopback-rule the door of a run listens on loopback only, for this server
-      "--epoch", String(epoch),
+      "--epoch", String(epoch), "--door-nonce-fd", String(nonceFd),
     ], { stdio, env });
+    const noncePipe = (child.stdio as unknown as readonly (Writable | null | undefined)[])[nonceFd];
+    // A process that dies before it reads the nonce closes the pipe: that is its exit to settle, not an error here.
+    noncePipe?.on("error", () => undefined);
+    noncePipe?.end(nonce);
     // The row names the process (its pid, its start and this boot) under the epoch it was given, and its door once it
     // says, on stdout, where it serves: its one line there (pi-durable-disk's run under its host's epoch).
-    this.nameHolder(run, epoch, child.pid === undefined ? undefined : holderOfProcess(child.pid));
-    if (child.stdout) {
-      child.stdout.setEncoding("utf8");
-      let buffered = "";
-      child.stdout.on("data", (chunk: string) => {
-        buffered += chunk;
-        for (let at = buffered.indexOf("\n"); at >= 0; at = buffered.indexOf("\n")) {
-          const line = buffered.slice(0, at);
-          buffered = buffered.slice(at + 1);
-          let said: Json;
-          try {
-            said = JSON.parse(line) as Json;
-          } catch {
-            continue;
-          }
-          if (said?.event !== "running" || said.epoch !== epoch || typeof said.serve !== "string" || child.pid === undefined) continue;
-          if (run.child === child) run.door = said.serve;
-          const holder = holderOfProcess(child.pid);
-          if (holder) this.nameHolder(run, epoch, { ...holder, door: said.serve });
-        }
-        if (buffered.length > 65_536) buffered = "";
+    this.nameHolder(run, epoch, child.pid === undefined ? undefined : withNonce(holderOfProcess(child.pid), nonce));
+    // Its door: the first line it prints, before any harness or agent code of it runs, proven with this launch's nonce
+    // before it is recorded; no later line is read (door-line.ts).
+    if (child.stdout && child.pid !== undefined) {
+      const pid = child.pid;
+      void firstDoorLine(child.stdout, epoch).then(async (door) => {
+        if (door === undefined || !isLoopback(new URL(door).hostname)) return warn(run.id, `its process ${pid} named no loopback door first on stdout; none is recorded`);
+        if (!(await verifyDoor(door, nonce, this.headers(run)))) return warn(run.id, `its process ${pid}'s first line named a door that did not answer this launch's nonce; none is recorded`);
+        if (run.child === child) run.door = door;
+        const holder = holderOfProcess(pid);
+        if (holder) this.nameHolder(run, epoch, { ...holder, nonce, door });
       });
     }
     closeSync(log);

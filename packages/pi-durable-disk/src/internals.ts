@@ -15,6 +15,8 @@ export type { ProcessInfo, ProcessOrigin, ProcessSnapshot, ProcessTable } from "
 // The rule a door's snapshot of a run's inputs starts at, for a host that reads the snapshot (agentrun-serve's ledger),
 // and the snapshot itself, so a host's tests read the inputs a door would send.
 export { newestSettledInput, snapshotInputs } from "./serve.ts";
+// A host's proof that a door is the one it launched (a nonce handed on `run --door-nonce-fd`, answered at POST /door-proof).
+export { doorProof } from "./serve.ts";
 export type { InputRecord } from "./serve.ts";
 // The workspace confinement, for a host that reads a run's files itself (agentrun-serve), and its process-wide TEST seam
 // (confineTestHooks: runs after a path is checked and before it is opened; tests only, never a production hook).
