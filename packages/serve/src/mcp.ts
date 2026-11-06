@@ -47,16 +47,14 @@ const optionalText = (args: Json, name: string): string | undefined => (args[nam
 const id = encodeURIComponent;
 const pick = (args: Json, keys: string[]): Json => Object.fromEntries(keys.filter((k) => args[k] !== undefined).map((k) => [k, args[k]]));
 const without = (args: Json, keys: string[]): Json => Object.fromEntries(Object.entries(args).filter(([k]) => !keys.includes(k)));
-const runLink = (origin: string, run: string) => `${origin}/#/runs/${id(run)}`;
 
 /** A route's JSON answer as a tool's result: the body as structured content and, for a client without it, as text; a
- *  refusal (4xx, 5xx) as an error result holding the route's error envelope. `extra` is added to a body that is no
- *  refusal. */
-function resultOf(answer: Answered, extra: Json = {}): Json {
+ *  refusal (4xx, 5xx) as an error result holding the route's error envelope. */
+function resultOf(answer: Answered): Json {
   if (answer.tooBig) return { content: [{ type: "text", text: `The answer is over ${MAX_ANSWER >> 20} MiB.` }], isError: true };
   const refused = answer.status >= 400;
   const parsed = answer.bytes.length ? (JSON.parse(answer.bytes.toString("utf8")) as unknown) : {};
-  const body = isObject(parsed) ? { ...parsed, ...(refused ? {} : extra) } : { value: parsed };
+  const body = isObject(parsed) ? parsed : { value: parsed };
   return { content: [{ type: "text", text: JSON.stringify(body) }], structuredContent: body, ...(refused ? { isError: true } : {}) };
 }
 const json = (answer: Answered): Json => JSON.parse(answer.bytes.toString("utf8")) as Json;
@@ -160,14 +158,9 @@ export const TOOLS: Tool[] = [
   },
   {
     name: "runs_get", title: "Get a run", annotations: READ,
-    description: "A run's status and outcome (GET /v2/runs/{run_id}), and console_url (added here), the run's page. pending is what it waits on while its status is input_required, by kind: {kind: \"question\", question} for a question it asked, {kind: \"budget\", cap_usd, spent_usd, needs_usd, suggested_cap_usd, said, at} for a run paused at its spend cap (it waits for its cap to be raised, PATCH /v2/runs/{run_id} {max_cost_usd}, which a person decides; suggested_cap_usd is a raise that resumes it; said is why), else null. status is queued, working, input_required, completed, failed, cancelled or paused. A completed run's answer is result.final_answer (agentic) or result.output (workflow); a failed run's reason is error; cost.usd is null while unknown, never $0.",
+    description: "A run's status and outcome (GET /v2/runs/{run_id}), with console_url, the run's page. pending is what it waits on while its status is input_required, by kind: {kind: \"question\", question} for a question it asked, {kind: \"budget\", cap_usd, spent_usd, needs_usd, suggested_cap_usd, said, at} for a run paused at its spend cap (it waits for its cap to be raised, PATCH /v2/runs/{run_id} {max_cost_usd}, which a person decides; suggested_cap_usd is a raise that resumes it; said is why), else null. status is queued, working, input_required, completed, failed, cancelled or paused. A completed run's answer is result.final_answer (agentic) or result.output (workflow); a failed run's reason is error; cost.usd is null while unknown, never $0.",
     inputSchema: { type: "object", required: ["run_id"], properties: { run_id: RUN_ID } },
-    run: async (args, context) => {
-      const run = text(args, "run_id");
-      const answer = await context.call({ method: "GET", path: `/runs/${id(run)}` });
-      if (answer.status >= 400) return resultOf(answer);
-      return resultOf(answer, { console_url: runLink(context.origin, run) });
-    },
+    run: routed((args) => ({ method: "GET", path: `/runs/${id(text(args, "run_id"))}` })),
   },
   {
     name: "runs_events", title: "Read a run's events", annotations: READ,
