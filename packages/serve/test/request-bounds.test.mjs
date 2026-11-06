@@ -55,10 +55,11 @@ test("harness answers out of order: each closes its own request's bound (its BOO
   assert.equal(bounds.ended(), 0);
 });
 
-test("a harness answer booked before its cost keeps its bound in flight until the late cost comes in", () => {
+test("a harness answer booked before its cost is no longer in flight; its bound waits apart and ends with its late cost", () => {
   const bounds = new RequestBounds();
   bounds.note([harnessStart(1, 0.2), ...harnessAnswer(1, { unpriced: true })], CAP);
-  assert.ok(close(bounds.inFlight(), 0.2), `its cost not in yet: ${bounds.inFlight()}`);
+  assert.equal(bounds.inFlight(), 0, "its answer is in: only its cost is not");
+  assert.equal(bounds.ended(), 0, "nor has its bound ended: its cost has not come");
   bounds.note([{ id: next(), kind: REQUEST_COST_LATE, data: { key: KEY, request: 1, usd: 0.3 } }], CAP);
   assert.equal(bounds.inFlight(), 0);
   assert.ok(close(bounds.ended(), 0.2));

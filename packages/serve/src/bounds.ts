@@ -15,6 +15,14 @@
 // hosted search's, a learned workflow node's) run inside tool calls, which pi runs side by side (agent.js toolExecution
 // "parallel"): each closes by its own `requestId`, on its end mark or its cost. A refusal's own start mark holds none.
 //
+// A request that will never end must not pin the bounds for the run's life. A pi side request is over once the run sends
+// its next turn or harness request: pi-agent-core awaits the turn's tool calls (agent-loop.js:165, `await
+// executeToolCalls`, inside which every side request runs) before it sends the next (:141), so one still open then died
+// with its process (an OOM kill inside the tool call, before its cost mark): its hold is booked, it has no cost to come, and
+// its bound is dropped, never summed. A harness request booked before its cost is no longer in flight (its answer is in):
+// its bound waits apart for its late cost, and joins the ended bounds in the very entry that brings that cost, so it
+// counts when, and only when, its cost does, whatever came between (harness answers and late costs come in any order).
+//
 // The bounds that ended count from the newest entry at which what the run had spent (the cap's own reading of an entry's
 // cost, cap.ts costOf) fit its cap with no request in flight: read live or whole after a restart, the same entries keep
 // the same bounds.
@@ -31,6 +39,8 @@ export class RequestBounds {
   /** Each request in flight that names itself: a harness request, by `<key>:<request>`, and a pi side request, by
    *  `side:<requestId>`; its bound. */
   private harness = new Map<string, number>();
+  /** Each harness request booked before its cost, by `<key>:<request>`: its bound, until its late cost comes. */
+  private awaiting = new Map<string, number>();
   /** pi's one generation request in flight: its bound. */
   private pi: number | undefined;
   /** The bounds of the requests that ended since the run's cost last fit its cap, together. */
@@ -61,12 +71,21 @@ export class RequestBounds {
     const message = Array.isArray(value.model) && isObject(value.model[0]) ? value.model[0] : undefined;
     if (value.kind === REQUEST_STARTED) {
       if (data[CAP_REFUSED_FIELD] === true) return;
+      // A turn or harness request: every side request still open died with its process (above).
+      if (!side) for (const key of [...this.harness.keys()]) if (key.startsWith("side:")) this.harness.delete(key);
       if (harnessKey) this.harness.set(harnessKey, boundOf(data[BOUND_FIELD]));
       else if (side) return;
       // A pi request still open when the next starts was cut by a crash: booked at its hold, it ends with no cost of its own.
       else this.pi = boundOf(data[BOUND_FIELD]);
     } else if (value.kind === BOOKED && harnessKey) {
       if (data.unpriced !== true) this.closeHarness(harnessKey);
+      else if (this.harness.has(harnessKey)) {
+        this.awaiting.set(harnessKey, this.harness.get(harnessKey)!);
+        this.harness.delete(harnessKey);
+      }
+    } else if (value.kind === REQUEST_COST_LATE && harnessKey && this.awaiting.has(harnessKey)) {
+      this.since += this.awaiting.get(harnessKey)!;
+      this.awaiting.delete(harnessKey);
     } else if ((value.kind === REQUEST_COST_LATE || value.kind === REQUEST_COST || value.kind === REQUEST_ENDED) && harnessKey) this.closeHarness(harnessKey);
     else if (value.kind === REQUEST_ENDED && !side && !harnessKey && data.lost !== true) this.closePi();
     // A harness answer is closed by its BOOKED marker; pi's answer (or pi's error for a request that never left, which
