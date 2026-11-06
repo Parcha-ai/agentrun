@@ -358,6 +358,8 @@ export type Run = {
   pulling?: Promise<void>;
   /** Its launch waits on its claim, tried again later (launch): it keeps its place in the server's limits (takePlace). */
   claimWait?: boolean;
+  /** Why that claim waits, in words, for a request's 503 (notUp). */
+  claimWaitWhy?: string;
   /** The door the process this server started said it serves (its stdout line): this server's own record of it, so a
    *  row the agent store cannot take yet never keeps the door from it. */
   door?: string;
@@ -2004,13 +2006,13 @@ export class Runs {
         if (run.settles > 0) {
           // Within the time left: a settle waiting on a busy store must not hold this caller past its deadline.
           await untilDeadline(run.settling, deadline);
-          if (Date.now() > deadline) throw new ApiError("unavailable", "the run did not come up in time", { retry_after_ms: 1000 }, { "retry-after": "1" });
+          if (Date.now() > deadline) throw this.notUp(run);
           continue;
         }
         // A launch waiting on its claim has no process yet, and tries again on its own (launch): waited for, within the time
         // left, never launched a second time nor read as a process that exited.
         if (run.claimWait) {
-          if (Date.now() > deadline) throw new ApiError("unavailable", "the run did not come up in time", { retry_after_ms: 1000 }, { "retry-after": "1" });
+          if (Date.now() > deadline) throw this.notUp(run);
           continue;
         }
         if (launched) throw new ApiError("internal", `the run's process exited before it served: ${await this.lastLine(run)}`);
@@ -2029,8 +2031,20 @@ export class Runs {
           launched = true;
         }
       }
-      if (Date.now() > deadline) throw new ApiError("unavailable", "the run did not come up in time", { retry_after_ms: 1000 }, { "retry-after": "1" });
+      if (Date.now() > deadline) throw this.notUp(run);
     }
+  }
+
+  /** A request's 503 for a run that did not come up in time, naming why, as far as this server can tell: the process
+   *  listing cannot be read (who holds it is unknown), the agent store is busy (its claim waits on it), or the run never
+   *  opened (its process is up, its door not serving). */
+  private notUp(run: Run): ApiError {
+    const why = run.claimWait
+      ? (run.claimWaitWhy ?? "its claim could not be written yet")
+      : this.holderView(run).unknown
+        ? "the process listing cannot be read, so who holds it is not known"
+        : "its process has not opened it yet (its door does not serve)";
+    return new ApiError("unavailable", `the run did not come up in time: ${why}`, { retry_after_ms: 1000 }, { "retry-after": "1" });
   }
 
   /** The refusal of a message to an imported run: it was run elsewhere, and is kept as history. */
@@ -2143,6 +2157,7 @@ export class Runs {
     // A launch that waited on its claim lets go of the place it kept (takePlace) as it tries again: from here it is a live
     // run again, or not one at all.
     run.claimWait = undefined;
+    run.claimWaitWhy = undefined;
     if (run.child || this.closing || run.cancel || run.outcome || run.finishing || run.preparing || run.installing) return;
     // Every launch of a claude-agent run (its start, a recovery after a restart, a relaunch, a wake) waits for Claude Code
     // to be installed whole first (harnessReady), holding its place meanwhile (waitsInstall), and launches once it is:
@@ -2283,6 +2298,7 @@ export class Runs {
       if (followUp) run.followUpOpen = true;
       if (first) run.firstLaunch = true;
       run.claimWait = true;
+      run.claimWaitWhy = storeBusy(error) ? "the agent store is busy (another writer holds it)" : /cannot be (checked|looked for)/.test((error as Error).message) ? "the process listing cannot be read, so its holder cannot be checked" : (error as Error).message;
       warn(run.id, `its process is not started: its claim was not written (${(error as Error).message}); trying again in ${every / 1000} s`);
       setTimeout(() => {
         if (this.closing) return;
@@ -2357,8 +2373,20 @@ export class Runs {
       void firstDoorLine(child.stdout, epoch).then(async (door) => {
         if (door === undefined || !isLoopback(new URL(door).hostname)) return warn(run.id, `its process ${pid} named no loopback door first on stdout; none is recorded`);
         if (!(await verifyDoor(door, nonce, this.headers(run)))) return warn(run.id, `its process ${pid}'s first line named a door that did not answer this launch's nonce; none is recorded`);
-        // Recorded once its run serves: a door listens before its run opens, and the run is up only then.
-        if (!(await untilOpened(door, this.headers(run), () => run.child !== child))) return;
+        // Recorded once its run serves: a door listens before its run opens, and the run is up only then. One that never
+        // serves within the ready time is said once, by its cause, and stopped: its exit settles the run, which opens it
+        // again (up to MAX_RELAUNCHES) as for any process that went before the run ended.
+        const readyMs = this.options.readyTimeoutMs ?? READY_TIMEOUT_MS;
+        const opened = await untilOpened(door, this.headers(run), () => run.child !== child, Date.now() + readyMs);
+        if (!opened.opened) {
+          if (opened.why === "deadline" && run.child === child) {
+            warn(run.id, `its process ${pid} did not open the run within ${readyMs / 1000} s (its door last answered ${opened.last}); it is stopped, and the run opened again`);
+            // Its launch came through (the server is up): its stop is no launch that took the server down.
+            this.reportedBack(run);
+            child.kill("SIGKILL");
+          }
+          return;
+        }
         if (run.child === child) run.door = door;
         const holder = holderOfProcess(pid);
         if (holder) this.nameHolder(run, epoch, { ...holder, nonce, door });

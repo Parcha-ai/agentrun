@@ -10,11 +10,12 @@ import { PassThrough } from "node:stream";
 import { test } from "node:test";
 import { doorProof } from "@parcha/pi-durable-disk/internals";
 import { serveRun } from "../../pi-durable-disk/dist/serve.js";
-import { firstDoorLine, verifyDoor } from "../dist/door-line.js";
+import { firstDoorLine, untilOpened, verifyDoor } from "../dist/door-line.js";
 import { follow, runDir, serve } from "./support.mjs";
 
 const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;
 const FAUX_BOX = new URL("./fixtures/faux-box.mjs", import.meta.url).pathname;
+const NEVER_OPENS = new URL("./fixtures/faux-never-opens.mjs", import.meta.url).pathname;
 const SANDBOX = { mode: "sandbox", box: "docker" };
 const TOKEN = "door-token-for-the-test";
 const headers = { authorization: `Bearer ${TOKEN}` };
@@ -110,4 +111,46 @@ test("through a run: the row's holder names the door its process proved, with th
   const seen = readFileSync(join(runDir(data, run.body.run_id), "work", "seen-env.txt"), "utf8");
   assert.ok(seen.length > 0, "the tool ran");
   assert.ok(!seen.includes("PI_DURABLE_DISK_DOOR_NONCE") && !seen.includes(holder.nonce), "the tool's process has no nonce");
+});
+
+test("a door that never serves its run (GET /status answers 503 OPENING for good) is waited for only until the deadline: the wait ends there with the last answer, and polls no more", { timeout: 30_000 }, async (t) => {
+  const asked = [];
+  const server = createServer((req, res) => {
+    asked.push(Date.now());
+    res.writeHead(503, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: "OPENING", message: "the run is still opening" }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => server.close());
+  const door = `http://127.0.0.1:${server.address().port}`;
+  const deadline = Date.now() + 800;
+  const ended = await Promise.race([untilOpened(door, {}, () => false, deadline, 50), new Promise((resolve) => setTimeout(() => resolve("still waiting"), 5_000))]);
+  assert.deepEqual(ended, { opened: false, why: "deadline", last: "503 OPENING" });
+  const count = asked.length;
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  assert.equal(asked.length, count, "no poll after the wait ended");
+  assert.ok(asked.every((at) => at <= deadline + 100), "none past the deadline");
+});
+
+test("through a run whose process never opens it: one line naming the cause, its process stopped at the ready time, and a request's 503 says why", { timeout: 120_000 }, async (t) => {
+  const lines = [];
+  const write = process.stderr.write;
+  process.stderr.write = function (chunk, ...rest) {
+    lines.push(String(chunk));
+    return write.call(this, chunk, ...rest);
+  };
+  t.after(() => (process.stderr.write = write));
+  const { api } = await serve(t, { faux: NEVER_OPENS, readyTimeoutMs: 2_000 });
+  assert.equal((await api("POST", "/agents", { definition: { id: "slow", name: "slow", instructions: "Answer." } })).status, 201);
+  const run = await api("POST", "/agents/slow/runs", { input: { content: "Answer soon." } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  const said = () => lines.filter((line) => line.includes(run.body.run_id) && line.includes("did not open the run"));
+  for (let i = 0; said().length === 0; i++) {
+    assert.ok(i < 200, "the server said it, at the ready time");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  assert.match(said()[0], /did not open the run within 2 s \(its door last answered 503 OPENING\); it is stopped, and the run opened again/);
+  const asked = await api("POST", `/runs/${run.body.run_id}/messages`, { content: "And now?" });
+  assert.equal(asked.status, 503, JSON.stringify(asked.body));
+  assert.match(asked.body.error.message, /the run did not come up in time: its process has not opened it yet/);
 });
