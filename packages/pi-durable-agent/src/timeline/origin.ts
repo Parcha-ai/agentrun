@@ -80,12 +80,17 @@ export function originMatcher(): (entry: EntryLike) => MessageOrigin | undefined
 }
 
 /** Whether a Timeline row is a message its run took: a person's (`user_message`), the server's (`origin: "server"`), or a
- *  trigger's (`origin: "trigger"`). A host that counts a run's messages (their arrival, where a stop stands) counts these,
- *  never the kind alone. */
-export const isMessageRow = (row: { id?: string; kind: string; origin?: string }): boolean => row.kind === "user_message" || ((row.origin === "server" || row.origin === "trigger") && !row.id?.endsWith(BESIDE_SUFFIX));
+ *  trigger's (`origin: "trigger"`); never the server's row beside the person's words (BESIDE_SUFFIX) or a note it told the
+ *  model (NOTE_SUFFIX). A host that counts a run's messages (their arrival, where a stop stands) counts these, never the
+ *  kind alone. */
+export const isMessageRow = (row: { id?: string; kind: string; origin?: string }): boolean =>
+  row.kind === "user_message" || ((row.origin === "server" || row.origin === "trigger") && !row.id?.endsWith(BESIDE_SUFFIX) && !row.id?.endsWith(NOTE_SUFFIX));
 /** The id suffix of a server's row shown beside a person's message that its turn took (a declined approval's resume):
  *  the server's, as its origin says, and never a second message of that turn. */
 export const BESIDE_SUFFIX = ":server";
+/** The id suffix of the server's row for a note it told the run's model (the spend cap's wrap-up, CAP_WRAPUP): the
+ *  server's, as its origin says, and never a message any turn took. */
+export const NOTE_SUFFIX = ":note";
 
 /** The user entries of `entries` that the server wrote, with their origin (originMatcher, read in order). */
 export function messageOrigins(entries: readonly EntryLike[]): Map<EntryLike, MessageOrigin> {

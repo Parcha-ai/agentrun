@@ -129,9 +129,11 @@ test("max_cost_usd applies to a gateway model the catalog prices: its response p
   const expected = calculateCost(builtinModels().getModel("openai", "gpt-4o"), usage).total;
   assert.ok(Math.abs(priced.cost.usd - expected) < 1e-9, `the run's cost is openai's list price for its usage: ${priced.cost.usd} vs ${expected}`);
   const asked = endpoint.models.length;
-  const unpriced = await run("unpriced", "agent-model/not-a-catalog-model");
-  assert.deepEqual([unpriced.status, unpriced.error?.code, unpriced.cost.usd], ["failed", "spend_cap_reached", 0], JSON.stringify(unpriced));
-  assert.match(unpriced.error?.message ?? "", /no price/, JSON.stringify(unpriced.error));
+  // An id the catalog does not know has no price: under the cap the run is refused before it starts (409, the cap's words).
+  assert.equal((await api("POST", "/agents", agent("unpriced", { model: "agent-model/not-a-catalog-model" }))).status, 201);
+  const refused = await api("POST", "/agents/unpriced/runs", { input: { content: "What is six times seven?" }, max_cost_usd: 1 });
+  assert.equal(refused.status, 409, JSON.stringify(refused.body));
+  assert.match(JSON.stringify(refused.body), /The model agent-model\/not-a-catalog-model has no price here, so a run's spend cap cannot be kept on it/);
   assert.equal(endpoint.models.length, asked, "the gateway was asked nothing for it");
   // With no cap the same model runs, and its answer has no price: the run's cost is unknown, never $0.
   const free = await run("free", "agent-model/not-a-catalog-model", {});

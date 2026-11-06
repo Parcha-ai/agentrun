@@ -4,7 +4,7 @@ export { skillProblems } from "@parcha/agentrun-kernel";
 export type { HostSkill } from "@parcha/agentrun-kernel";
 export type { CodexAdapterOptions, CodexProvider, CodexWebSearch } from "./adapter.js";
 export type { ChildCommand, ConfineChild } from "./host/machine.js";
-export { CODEX_VERSION, codexBinary } from "./binary.js";
+export { CODEX_VERSION, codexBinary, codexTarget } from "./binary.js";
 /** The shapes of a tool's schema Codex 0.164 drops or retypes (schema.ts): a host may refuse them sooner (an MCP grant, at its save). */
 export { codexSchemaProblems } from "./schema.js";
 export { verifyCodex, verifyCodexBinary } from "./verify.js";

@@ -37,11 +37,15 @@ test("no route but POST /v2/hooks/{id} (and capabilities, the document and healt
   await made(api, "triage");
   const { id, secret } = (await api("POST", "/triggers", hooked("triage"))).body;
   const at = port(baseUrl);
-  const open = new Set(["getCapabilities", "getOpenapi", "getHealth", "receiveHook"]);
+  // mcpOAuthClient: the OAuth client metadata document an authorization server fetches, public by design (mcp-oauth.ts).
+  const open = new Set(["getCapabilities", "getOpenapi", "getHealth", "receiveHook", "mcpOAuthClient"]);
   for (const route of ROUTES) {
     const path = `/v2${route.pattern.source.replace(/^\^|\$$/g, "").replace(/\\\//g, "/").replace(/\\\./g, ".").replace(/\(\[\^\/\]\+\)|\(\.\+\)/g, "x-id")}`;
     const answer = await raw(at, { method: route.method, path, headers: { "content-type": "application/json" }, body: ["POST", "PUT", "PATCH"].includes(route.method) ? "{}" : undefined });
     if (open.has(route.name)) assert.notEqual(answer.status, 500, `${route.name} ${path}`);
+    // The OAuth callback takes no token, only the cookie its own start set in the browser that started it (mcp-oauth.ts):
+    // without that cookie it is 403, and it is served to nothing else.
+    else if (route.name === "mcpOAuthCallback") assert.equal(answer.status, 403, `${route.method} ${path} (${route.name}): ${answer.text.slice(0, 200)}`);
     else assert.equal(answer.status, 401, `${route.method} ${path} (${route.name}) needs the token: ${answer.text.slice(0, 200)}`);
   }
   const body = "{}";

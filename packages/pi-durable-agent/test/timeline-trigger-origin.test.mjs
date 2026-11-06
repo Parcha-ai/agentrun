@@ -57,3 +57,18 @@ test("a withdrawn marker takes back the open one of its text and origin: its inp
   const other = [custom(MESSAGE_ORIGIN, { origin: SCHEDULE, text }), custom(MESSAGE_ORIGIN, { origin: WEBHOOK, text, withdrawn: true }), user(text)];
   assert.deepEqual([...messageOrigins(other).values()], [SCHEDULE], "a withdrawal takes back only its own origin's marker");
 });
+
+test("isMessageRow counts a trigger's row and the server's, and never the server's row beside a person's words (:server) or a note it told the model (:note)", () => {
+  const { NOTE_SUFFIX } = timeline;
+  assert.equal(NOTE_SUFFIX, ":note");
+  const rows = [
+    { id: "e1", kind: "user_message" },
+    { id: "e2", kind: "phase", origin: "trigger" },
+    { id: "e3", kind: "phase", origin: "server" },
+    { id: "e4:server", kind: "phase", origin: "server" },
+    { id: "e5:note", kind: "phase", origin: "server" },
+    { id: "e6:note", kind: "phase", origin: "trigger" },
+    { id: "e7", kind: "phase" },
+  ];
+  assert.deepEqual(rows.filter(isMessageRow).map((row) => row.id), ["e1", "e2", "e3"]);
+});
