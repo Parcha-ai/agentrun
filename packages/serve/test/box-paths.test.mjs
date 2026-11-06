@@ -9,8 +9,9 @@ import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { request } from "node:http";
 import { release } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { test } from "node:test";
+import { runDirIn } from "@parcha/pi-durable-agent";
 import { follow, jsonLines, scratch, serve, withEnv } from "./support.mjs";
 
 const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;
@@ -130,8 +131,10 @@ test("demo through the API: the server in a container, its data a named volume: 
   await until(() => fake.runs().length === 1 && fake.relays().length === 1, "the box and its relay");
   const [run] = fake.runs();
   const hash = createHash("sha256").update(runId).digest("hex").slice(0, 16);
+  // The run's work/ on the agent's disk: `disk/agents/<key>/runs/<run>/work` below the data directory, and nothing above it.
+  const work = join(runDirIn(data, "boxed", runId), "work");
   assert.deepEqual(flags(run, "--mount"), [
-    `type=volume,source=agentrun_agentrun-data,target=/run/agentrun/run/work,volume-subpath=runs/${runId}/work,volume-nocopy`,
+    `type=volume,source=agentrun_agentrun-data,target=/run/agentrun/run/work,volume-subpath=${relative(data, work)},volume-nocopy`,
     `type=volume,source=agentrun_agentrun-data,target=/run/agentrun/egress,volume-subpath=box-egress/${hash},volume-nocopy,readonly`,
   ]);
   assert.equal(flags(run, "--network")[0], "none");
@@ -146,8 +149,18 @@ test("demo through the API: the server in a container, its data a named volume: 
   assert.equal(refused.reason, `example.com is not on this box's network list: ${ALLOW_HINT}`);
   await writeFile(hold, "");
   await follow(api, runId, ["completed"], { deadlineMs: 60_000 });
-  assert.equal(readFileSync(join(data, "runs", runId, "work", "out.txt"), "utf8"), "from the box", "the box's write is in the run's files");
+  assert.equal(readFileSync(join(work, "out.txt"), "utf8"), "from the box", "the box's write is in the run's files");
   await until(() => !existsSync(join(data, "box-egress", hash)), "the run's egress directory removed with its box");
+});
+
+test("a Mac server is never in a container of its Docker's: even given a container's mountinfo, it asks Docker nothing of its own container, and docker is not compose's one way in (its box's network is the Mac's proxy container's, box-egress-vm.ts)", { timeout: 120_000 }, async (t) => {
+  const data = await dataDir(t);
+  const fake = await containerDocker(t, { mounts: [{ Type: "volume", Name: "v", Source: "/var/lib/docker/volumes/v/_data", Destination: data, RW: true }], volumes: { v: data } });
+  const { api } = await serve(t, { data, faux: PROBE, fauxEgress: FAKE_EGRESS, fauxMountinfo: fake.mountinfo, fauxPlatform: "darwin" });
+  const offer = await docker(api);
+  assert.equal(offer.available, true, JSON.stringify(offer));
+  const asked = jsonLines(join(fake.state, "argv.jsonl")).filter((args) => args[0] === "inspect" && args.includes("container"));
+  assert.deepEqual(asked, [], "no inspect of its own container");
 });
 
 test("the server in a container that this Docker does not have, its data not on a named volume, or on an engine that can't mount a volume's subpath: docker is unavailable at start, saying why, and no box is made", { timeout: 120_000 }, async (t) => {

@@ -799,7 +799,10 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   // Where Docker has this server's files (box-paths.ts): its own, on a host; its container's mount of the data directory,
   // for a server in a container given Docker's socket; or none, and docker is unavailable, saying why. Under --faux, a
   // host's unless the test gives a container's mountinfo.
-  const dockerPaths: DockerPaths = fauxBox || !boxes.provider("docker") ? { here: true } : options.faux ? (fauxMountinfo ? await dockerPathsOf(env, data, { mountinfo: await readFile(fauxMountinfo, "utf8"), inContainer: true }) : { here: true }) : await dockerPathsOf(env, data);
+  // Only on Linux: a container of a Docker's own is a Linux one, and a Mac server's boxes take its proxy container's network
+  // (box-egress-vm.ts), never a volume's subpath of its data.
+  const platform = options.faux && options.fauxPlatform ? options.fauxPlatform : process.platform;
+  const dockerPaths: DockerPaths = fauxBox || !boxes.provider("docker") || platform !== "linux" ? { here: true } : options.faux ? (fauxMountinfo ? await dockerPathsOf(env, data, { mountinfo: await readFile(fauxMountinfo, "utf8"), inContainer: true }) : { here: true }) : await dockerPathsOf(env, data);
   const boxPaths = "paths" in dockerPaths ? dockerPaths.paths : undefined;
   const egressParent = boxPaths ? egressParentOf(data) : undefined;
   if ("reason" in dockerPaths) log?.(logLine("box_paths", { reason: dockerPaths.reason }));

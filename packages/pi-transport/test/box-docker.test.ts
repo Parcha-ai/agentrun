@@ -593,7 +593,7 @@ describe("docker boxes: a server in a container, whose files the daemon has only
 	it("with a named volume at `at`: a source under it becomes that volume's subpath, read-only where asked, never its root and never a bind", async () => {
 		const directory = realpathSync(mkdtempSync(join(tmpdir(), "pi-transport-docker-paths-")));
 		try {
-			const work = join(directory, "runs", "r1", "work");
+			const work = join(directory, "disk", "agents", "a-0123456789abcdef", "runs", "r1", "work");
 			const egress = join(directory, "box-egress", "0123456789abcdef");
 			mkdirSync(work, { recursive: true });
 			mkdirSync(egress, { recursive: true });
@@ -615,7 +615,7 @@ describe("docker boxes: a server in a container, whose files the daemon has only
 					const { run, mounts } = mountsOf(calls);
 					expect(run).toBe(true);
 					expect(mounts).toEqual([
-						"type=volume,source=agentrun_agentrun-data,target=/run/agentrun/run/work,volume-subpath=runs/r1/work,volume-nocopy",
+						"type=volume,source=agentrun_agentrun-data,target=/run/agentrun/run/work,volume-subpath=disk/agents/a-0123456789abcdef/runs/r1/work,volume-nocopy",
 						"type=volume,source=agentrun_agentrun-data,target=/run/agentrun/egress,volume-subpath=box-egress/0123456789abcdef,volume-nocopy,readonly",
 					]);
 				},

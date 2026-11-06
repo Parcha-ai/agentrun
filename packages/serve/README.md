@@ -662,7 +662,7 @@ has the Docker client (Debian's `docker-cli`) and no daemon; `group_add` gives t
   start the server reads its own container's id from `/proc/self/mountinfo`, asks Docker for that container's mounts
   (`docker inspect`), and takes the named volume that holds the data directory. A box mounts that run's `work/` from it,
   and the run's egress proxy's directory (`<data>/box-egress/<16 hex>/`, read-only), as the volume's subpaths
-  (`--mount type=volume,...,volume-subpath=runs/<id>/work`), never the rest. The run's files and the box's are the same
+  (`--mount type=volume,...,volume-subpath=disk/agents/<key>/runs/<run>/work`), never the rest. The run's files and the box's are the same
   files, as on a host.
 - **Any other layout** (the data directory not on a read-write named volume of the server's own container, the socket of
   another Docker than the one that runs the server, a container whose id `/proc/self/mountinfo` does not name) makes
