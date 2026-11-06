@@ -180,7 +180,9 @@ const BAD = [
 test("the closed check: every field create does not ask for is Docker's default, and each bad value is named", () => {
 	for (const [path, value] of BAD) {
 		const field = path.split(".").at(-1);
-		one(after((i) => set(i, path, value)), new RegExp(`\\b${field}\\b`));
+		const found = after((i) => set(i, path, value));
+		assert.equal(found.length, 1, `${path} = ${JSON.stringify(value)}: ${JSON.stringify(found)}`);
+		assert.match(found[0], new RegExp(`\\b${field}\\b`));
 	}
 });
 

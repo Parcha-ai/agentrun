@@ -20,14 +20,15 @@ const seeded = (options = {}) =>
 		...options,
 	});
 
-test("attach() by name or by container id finds the computer and checks it: docker info once, then an inspect and a hello each", async () => {
+test("attach() by name or by container id finds the computer and checks it: an inspect and a hello each, and docker info once", async () => {
 	const { provider, calls } = seeded();
 	const want = { id: idOf(A), name: A };
 	assert.deepEqual(await provider.attach({ id: A }), { ok: true, value: want });
 	assert.deepEqual(await provider.attach({ id: idOf(A) }), { ok: true, value: want });
 	assert.deepEqual(await provider.attach({ id: idOf(A).slice(0, 12) }), { ok: true, value: want });
 	const hello = ["exec", "-i", A, "/opt/agentrun/computerd", "stdio"];
-	assert.deepEqual(calls().slice(1), [
+	assert.equal(calls()[1][0], "info");
+	assert.deepEqual(calls().toSpliced(1, 1), [
 		["inspect", "--type", "container", "--format", "{{json .}}", A],
 		hello,
 		["inspect", "--type", "container", "--format", "{{json .}}", idOf(A)],
@@ -35,7 +36,6 @@ test("attach() by name or by container id finds the computer and checks it: dock
 		["inspect", "--type", "container", "--format", "{{json .}}", idOf(A).slice(0, 12)],
 		hello,
 	]);
-	assert.equal(calls()[0][0], "info");
 });
 
 const D = "computer-0000000000dd";

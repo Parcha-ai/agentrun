@@ -11,6 +11,8 @@ import { fakeDocker, idOf, valuesOf, VERSION } from "./fake-docker.mjs";
 const SPEC = { image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none" };
 const ALLOWLIST = "a Docker computer cannot enforce an allowlist yet; ask for network none or open";
 /** The user a computer runs as when neither the spec nor the provider names one: this process's, or 1000:1000 when its uid or gid is 0. */
+/** docker run's argv: create reads the host with docker info first. */
+const runOf = (all) => all.find((args) => args[0] === "run");
 const DEFAULT_USER = process.getuid() !== 0 && process.getgid() !== 0 ? `${process.getuid()}:${process.getgid()}` : "1000:1000";
 
 test("capabilities: a container whose lifetime the janitor enforces, network none or open, and a daemon with exec, files and processes", () => {
@@ -68,7 +70,7 @@ test("a lifetime is at most 30 days, and create() never throws on a spec check()
 	const before = Date.now();
 	const made = await provider.create({ ...SPEC, lifetimeMs: days30 });
 	assert.equal(made.ok, true, JSON.stringify(made));
-	const deadline = valuesOf(calls()[0], "--label").find((label) => label.startsWith("agentrun.computer.deadline="))?.split("=")[1];
+	const deadline = valuesOf(runOf(calls()), "--label").find((label) => label.startsWith("agentrun.computer.deadline="))?.split("=")[1];
 	assert.ok(Math.abs(Date.parse(deadline) - (before + days30)) < 5000, deadline);
 });
 
@@ -132,7 +134,7 @@ test("create() passes the sizes, an open network and the workdir", async () => {
 	const { provider, calls } = fakeDocker();
 	const result = await provider.create({ ...SPEC, network: "open", cpus: 1.5, memoryMb: 512, pids: 64, workdir: "/app" });
 	assert.equal(result.ok, true);
-	const [run] = calls();
+	const run = runOf(calls());
 	assert.deepEqual(valuesOf(run, "--network"), ["bridge"]);
 	assert.deepEqual(valuesOf(run, "--cpu-period"), ["100000"]);
 	assert.deepEqual(valuesOf(run, "--cpu-quota"), ["150000"]);
@@ -150,13 +152,13 @@ test("create() passes the sizes, an open network and the workdir", async () => {
 	);
 	const odd = fakeDocker();
 	assert.equal((await odd.provider.create({ ...SPEC, memoryMb: 7 })).ok, true);
-	assert.ok(valuesOf(odd.calls()[0], "--tmpfs")[0].endsWith(",size=3m"), "half of an odd memoryMb rounds down");
+	assert.ok(valuesOf(runOf(odd.calls()), "--tmpfs")[0].endsWith(",size=3m"), "half of an odd memoryMb rounds down");
 });
 
 test("create() with no sizes gives serve's: 2 CPUs, 4 GiB with swap the same, 1024 pids", async () => {
 	const { provider, calls } = fakeDocker();
 	assert.equal((await provider.create(SPEC)).ok, true);
-	const [run] = calls();
+	const run = runOf(calls());
 	assert.deepEqual(valuesOf(run, "--cpu-period"), ["100000"]);
 	assert.deepEqual(valuesOf(run, "--cpu-quota"), ["200000"]);
 	assert.equal(run.includes("--cpus"), false);
@@ -170,7 +172,7 @@ test("create() runs a computer as a non-root user unless its spec asks for root"
 		const { provider, calls } = fakeDocker(options);
 		const result = await provider.create(spec);
 		assert.equal(result.ok, true, JSON.stringify(result));
-		return valuesOf(calls()[0], "--user");
+		return valuesOf(runOf(calls()), "--user");
 	};
 	assert.notEqual(DEFAULT_USER.split(":")[0], "0");
 	assert.deepEqual(await userOf(SPEC), [DEFAULT_USER]);
@@ -184,13 +186,13 @@ test("create() runs a computer as a non-root user unless its spec asks for root"
 	const { provider, calls } = fakeDocker({ user: "1234:5678" });
 	assert.equal((await provider.create({ ...SPEC, user: "2000:3000" })).ok, true);
 	assert.deepEqual(
-		valuesOf(calls()[0], "--tmpfs"),
+		valuesOf(runOf(calls()), "--tmpfs"),
 		["/work:rw,nosuid,nodev,exec,uid=2000,gid=3000,mode=0700,size=2048m", "/run/agentrun:rw,noexec,nosuid,nodev,uid=2000,gid=3000,mode=0700,size=1m"],
 		"/work and init's socket directory belong to the user the computer runs as",
 	);
 	const root = fakeDocker();
 	assert.equal((await root.provider.create({ ...SPEC, user: "0" })).ok, true);
-	assert.deepEqual(valuesOf(root.calls()[0], "--tmpfs"), ["/work:rw,nosuid,nodev,exec,uid=0,gid=0,mode=0700,size=2048m", "/run/agentrun:rw,noexec,nosuid,nodev,uid=0,gid=0,mode=0700,size=1m"]);
+	assert.deepEqual(valuesOf(runOf(root.calls()), "--tmpfs"), ["/work:rw,nosuid,nodev,exec,uid=0,gid=0,mode=0700,size=2048m", "/run/agentrun:rw,noexec,nosuid,nodev,uid=0,gid=0,mode=0700,size=1m"]);
 });
 
 test("check() takes a user as numbers, uid or uid:gid, and refuses a name in words", () => {
@@ -236,7 +238,7 @@ test("the default user is never in root's group: a process with uid or gid 0 giv
 			process.getgid = getgid;
 		}
 		assert.equal((await made.provider.create(SPEC)).ok, true);
-		return valuesOf(made.calls()[0], "--user")[0];
+		return valuesOf(runOf(made.calls()), "--user")[0];
 	};
 	assert.equal(await defaultOf(1234, 5678), "1234:5678");
 	assert.equal(await defaultOf(0, 0), "1000:1000");
@@ -250,7 +252,7 @@ test("create() removes a container that is not running and says why", async () =
 	assert.equal(result.ok, false);
 	assert.equal(result.error.code, "docker");
 	assert.match(result.error.message, /exec format error/);
-	const [run, , remove] = calls();
+	const [, run, , remove] = calls();
 	assert.deepEqual(remove, ["rm", "--force", "--volumes", valuesOf(run, "--name")[0]]);
 });
 
@@ -338,7 +340,7 @@ test("create() deletes a computer whose own report drifts from its spec, and say
 	const result = await provider.create(SPEC);
 	assert.equal(result.ok, false);
 	assert.equal(result.error.code, "refused");
-	const name = valuesOf(calls()[0], "--name")[0];
+	const name = valuesOf(runOf(calls()), "--name")[0];
 	assert.match(result.error.message, new RegExp(`${name}.*deleted`));
 	assert.match(result.error.message, /PidsLimit/);
 	assert.match(result.error.message, /CapDrop/);
@@ -361,7 +363,7 @@ test("create() deletes a computer whose /work or socket tmpfs drifts on size", a
 		assert.equal(result.error.code, "refused");
 		const [path] = Object.keys(Tmpfs);
 		assert.match(result.error.message, new RegExp(`deleted: .*tmpfs ${path}: declared "[^"]*size=${path === "/work" ? 2048 : 1}m"`));
-		assert.deepEqual(calls().at(-1), ["rm", "--force", "--volumes", valuesOf(calls()[0], "--name")[0]]);
+		assert.deepEqual(calls().at(-1), ["rm", "--force", "--volumes", valuesOf(runOf(calls()), "--name")[0]]);
 		assert.deepEqual(names(), []);
 	}
 });
@@ -376,7 +378,7 @@ test("create() deletes a computer that runs as another user, without its tmpfs m
 	for (const words of [`User: declared "${DEFAULT_USER}", read back "0:0"`, "tmpfs /work", "tmpfs /run/agentrun", "CpuQuota: declared 200000, read back 0", "Cmd: declared"]) {
 		assert.ok(result.error.message.includes(words), `${words} in ${result.error.message}`);
 	}
-	assert.deepEqual(calls().at(-1), ["rm", "--force", "--volumes", valuesOf(calls()[0], "--name")[0]]);
+	assert.deepEqual(calls().at(-1), ["rm", "--force", "--volumes", valuesOf(runOf(calls()), "--name")[0]]);
 	assert.deepEqual(names(), []);
 });
 

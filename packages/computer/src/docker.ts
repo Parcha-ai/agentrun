@@ -13,9 +13,12 @@ import {
 	DEFAULT_CPUS,
 	DEFAULT_MEMORY_MB,
 	DEFAULT_PIDS,
+	type DockerHost,
 	type DockerInspect,
 	drift,
 	helloDrift,
+	hostOf,
+	inspectDrift,
 	networkOf,
 	tmpfsOf,
 	WORK,
@@ -72,8 +75,10 @@ const NUL = "a NUL byte cannot be passed to docker run";
 const ALLOWLIST = "a Docker computer cannot enforce an allowlist yet; ask for network none or open";
 /** Docker cannot move a container with no network onto one, nor take one off a network without a restart. */
 const FIXED = "a Docker computer's network is fixed at create; create a new computer";
-/** docker info names the kernel's architecture; hello names Go's. */
-const GO_ARCH: Record<string, string> = { x86_64: "amd64", aarch64: "arm64" };
+/** Only the fields hostOf reads, as JSON. */
+const INFO_FORMAT =
+	'{"Architecture":{{json .Architecture}},"SecurityOptions":{{json .SecurityOptions}},"MemoryLimit":{{json .MemoryLimit}},' +
+	'"SwapLimit":{{json .SwapLimit}},"PidsLimit":{{json .PidsLimit}},"CPUCfsQuota":{{json .CPUCfsQuota}},"CPUCfsPeriod":{{json .CPUCfsPeriod}}}';
 
 interface Ran {
 	exitCode: number;
@@ -95,6 +100,8 @@ export class DockerProvider implements ComputerProvider {
 	readonly #daemonPath: string;
 	readonly #docker: string;
 	readonly #user: string;
+	/** The host as docker info first read it: a host's enforcement does not change under a running provider. */
+	#host: DockerHost | undefined;
 
 	constructor({ daemonPath, docker = "docker", user }: DockerProviderOptions) {
 		this.#daemonPath = resolve(daemonPath);
@@ -112,7 +119,12 @@ export class DockerProvider implements ComputerProvider {
 		return { lifetime: "janitor", network: ["none", "open"], isolation: "container", os: "linux", daemon: ["exec", "files", "processes"] };
 	}
 
+	/** The spec's refusals, and the host's once create, attach or host() has read it. */
 	check(spec: ComputerSpec): Refusal[] {
+		return [...this.#checkSpec(spec), ...(this.#host?.problems ?? []).map((message) => ({ field: "host", message }))];
+	}
+
+	#checkSpec(spec: ComputerSpec): Refusal[] {
 		const refusals: Refusal[] = [];
 		const refuse = (field: string, message: string) => refusals.push({ field, message });
 		const given = spec as unknown as Record<string, unknown>;
@@ -162,6 +174,10 @@ export class DockerProvider implements ComputerProvider {
 		}
 		if (this.#daemonPath.includes(",")) return fail("invalid", `the daemon path ${this.#daemonPath} has a comma, which a Docker mount cannot hold`);
 		if (signal?.aborted) return fail("aborted", "create was aborted before Docker was called");
+		const host = await this.host({ signal });
+		if (!host.ok) return host;
+		if (host.value.problems.length > 0) return fail("refused", `host: ${host.value.problems.join("; ")}`);
+		if (signal?.aborted) return fail("aborted", "create was aborted before docker run");
 		const name = `computer-${randomBytes(6).toString("hex")}`;
 		const deadline = new Date(Date.now() + spec.lifetimeMs).toISOString();
 		const args = ["run", "--detach", "--name", name, "--label", `${COMPUTER_LABEL}=1`, "--label", `${DEADLINE_LABEL}=${deadline}`];
@@ -171,6 +187,8 @@ export class DockerProvider implements ComputerProvider {
 		args.push("--user", user, "--env", `HOME=${WORK}`);
 		for (const [path, options] of Object.entries(tmpfsOf(user, memoryMb))) args.push("--tmpfs", `${path}:${options}`);
 		args.push("--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", String(spec.pids ?? DEFAULT_PIDS));
+		// Not the daemon's defaults, which a host may set to shareable IPC or, on cgroup v1, the host's cgroup namespace.
+		args.push("--ipc", "private", "--cgroupns", "private");
 		args.push("--network", spec.network === "none" ? "none" : "bridge");
 		args.push("--cpu-period", String(CPU_PERIOD_US), "--cpu-quota", String(Math.round((spec.cpus ?? DEFAULT_CPUS) * CPU_PERIOD_US)));
 		// Memory and swap together are the memory: swap never adds to it.
@@ -198,7 +216,7 @@ export class DockerProvider implements ComputerProvider {
 			const why = state ? `status ${state.Status}, exit code ${state.ExitCode}${state.Error ? `: ${state.Error}` : ""}` : "it could not be inspected";
 			return fail("docker", `the computer ${name} was not running after its start (${why}), so it was removed`);
 		}
-		const checked = await this.#check(spec, ref, report as DockerInspect, deadline, user, signal);
+		const checked = await this.#check(spec, ref, report as DockerInspect, host.value, deadline, user, signal);
 		// Fail closed: no create returns ok once its signal has aborted.
 		if (signal?.aborted) return this.#abandon(ref);
 		if (checked.ok) return ok(ref);
@@ -216,23 +234,76 @@ export class DockerProvider implements ComputerProvider {
 	}
 
 	/** The drift check: the computer's own report, from inspect and from its daemon's hello, against the spec. */
-	async #check(spec: ComputerSpec, ref: ComputerRef, report: DockerInspect, deadline: string, user: string, signal?: AbortSignal): Promise<Result<void>> {
-		const arch = await this.#hostArch(signal);
-		if (!arch.ok) return arch;
+	async #check(spec: ComputerSpec, ref: ComputerRef, report: DockerInspect, host: DockerHost, deadline: string, user: string, signal?: AbortSignal): Promise<Result<void>> {
 		const opened = await this.#open(ref, signal);
 		if (!opened.ok) return opened;
 		await opened.value.close();
-		const expected = { version: VERSION, capabilities: this.capabilities().daemon, arch: arch.value, daemonPath: this.#daemonPath, deadline, user };
-		const found = drift(spec, report, opened.value.hello, expected);
+		const found = drift(spec, report, opened.value.hello, this.#expected(host, deadline, user));
 		return found.length === 0 ? ok(undefined) : fail("refused", `it did not match its spec: ${found.join("; ")}`);
 	}
 
-	async #hostArch(signal?: AbortSignal): Promise<Result<string>> {
-		const ran = await this.#run(["info", "--format", "{{.Architecture}}"], signal);
+	#expected(host: DockerHost, deadline: string, user: string) {
+		const { arch, apparmor, selinux } = host;
+		return { version: VERSION, capabilities: this.capabilities().daemon, arch, apparmor, selinux, daemonPath: this.#daemonPath, deadline, user };
+	}
+
+	/** The Docker host's architecture and enforcement (hostOf), read by docker info once per provider. */
+	async host({ signal }: CallContext = {}): Promise<Result<DockerHost>> {
+		if (this.#host) return ok(this.#host);
+		const ran = await this.#run(["info", "--format", INFO_FORMAT], signal);
 		if (!ran.ok) return ran;
 		if (ran.value.exitCode !== 0) return fail("docker", `docker info failed: ${ran.value.stderr.trim()}`);
-		const machine = ran.value.stdout.trim();
-		return ok(GO_ARCH[machine] ?? machine);
+		let info: unknown;
+		try {
+			info = JSON.parse(ran.value.stdout);
+		} catch {
+			return fail("docker", `docker info wrote what is not JSON: ${ran.value.stdout.slice(0, 200)}`);
+		}
+		this.#host = hostOf(info as Parameters<typeof hostOf>[0]);
+		return ok(this.#host);
+	}
+
+	/**
+	 * The drift check of a computer attach did not make: the spec it was made with, read back from its own report and
+	 * held to what check() allows, then inspect and, when it runs, hello, as at create.
+	 */
+	async #attached(report: DockerInspect, signal?: AbortSignal): Promise<Result<ComputerRef>> {
+		const ref = { id: report.Id ?? "", name: nameOf(report) };
+		const host = await this.host({ signal });
+		if (!host.ok) return host;
+		if (host.value.problems.length > 0) return fail("refused", `host: ${host.value.problems.join("; ")}`);
+		const config = report.Config ?? {};
+		const limits = report.HostConfig ?? {};
+		const found: string[] = [];
+		const network = networkOf(report);
+		if (typeof network !== "string") found.push(`network: ${"other" in network ? network.other : JSON.stringify(network)}, which this provider never makes`);
+		const deadline = config.Labels?.[DEADLINE_LABEL] ?? "";
+		const at = Date.parse(deadline);
+		if (Number.isNaN(at) || new Date(at).toISOString() !== deadline) {
+			found.push(`deadline: the label ${DEADLINE_LABEL} reads ${JSON.stringify(deadline)}, not the ISO time create writes`);
+		} else if (at > Date.now() + MAX_LIFETIME_MS + 60_000) found.push(`deadline: ${deadline} is past the 30 days create allows`);
+		const spec = {
+			image: config.Image,
+			lifetimeMs: 1,
+			network: typeof network === "string" ? network : "none",
+			cpus: typeof limits.CpuQuota === "number" ? limits.CpuQuota / CPU_PERIOD_US : limits.CpuQuota,
+			memoryMb: typeof limits.Memory === "number" ? limits.Memory / (1024 * 1024) : limits.Memory,
+			pids: limits.PidsLimit,
+			workdir: config.WorkingDir,
+			user: config.User,
+		} as ComputerSpec;
+		found.push(...this.#checkSpec(spec).map(({ field, message }) => `${field}: ${message}, read back from the computer`));
+		const user = userOf(config.User) ?? String(config.User);
+		const expected = this.#expected(host.value, deadline, user);
+		found.push(...inspectDrift(spec, report, expected).filter((line) => typeof network === "string" || !line.startsWith("network:")));
+		if (report.State?.Running === true) {
+			const opened = await this.#open(ref, signal);
+			if (!opened.ok) return opened;
+			await opened.value.close();
+			found.push(...helloDrift(opened.value.hello, expected));
+		}
+		if (found.length === 0) return ok(ref);
+		return fail("refused", `the computer ${ref.name} does not match this provider, so attach refuses it and it is left as it is: ${found.join("; ")}`);
 	}
 
 	async connect(ref: ComputerRef): Promise<Result<ComputerConnection>> {
@@ -291,7 +362,7 @@ export class DockerProvider implements ComputerProvider {
 			// Docker resolves a name before an id prefix, so what it found must be what was asked for.
 			const same = report !== undefined && (NAME.test(id) ? nameOf(report) === id : report.Id?.startsWith(id) === true);
 			if (!same || !ours(report) || typeof report.Id !== "string") return fail("not_found", `no Docker computer has the id ${id}`);
-			return ok({ id: report.Id, name: nameOf(report) });
+			return this.#attached(report, signal);
 		}
 		const problem = filterProblem(given.labels);
 		if (problem) return fail("invalid", problem);
@@ -303,7 +374,12 @@ export class DockerProvider implements ComputerProvider {
 		const words = JSON.stringify(labels);
 		if (matches.length === 0) return fail("not_found", `no Docker computer has the labels ${words}`);
 		if (matches.length > 1) return fail("invalid", `${matches.length} computers match the labels ${words}: ${matches.map((m) => m.name).join(", ")}`);
-		return ok(matches[0] as ComputerRef);
+		const match = matches[0] as ComputerRef;
+		const found = await this.#inspect([match.id], signal);
+		if (!found.ok) return found;
+		const [report] = found.value;
+		if (report === undefined || report.Id !== match.id || !ours(report)) return fail("not_found", `no Docker computer has the labels ${words}`);
+		return this.#attached(report, signal);
 	}
 
 	async list(labels: Record<string, string>, { signal }: CallContext = {}): Promise<Result<ComputerInfo[]>> {
