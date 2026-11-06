@@ -19,6 +19,7 @@ import { cost, soFar, when } from "@/lib/format";
 import { appendRuns } from "@/lib/idempotency";
 import { harnessDefault, type HarnessInfo, modelLabel, NO_MODEL_YET } from "@/lib/models";
 import { placeLabel, placeOf } from "@/lib/place";
+import { providerLabel } from "@/lib/toolSettings";
 import { type Problem, problem } from "@/lib/problem";
 import { elapsed, metaOf } from "@/lib/runGraph";
 import { cn } from "@/lib/utils";
@@ -117,6 +118,23 @@ export function AgentPage({ v2, agentId, defaultModel, modelSource, routePrefix,
           {facts.map(([k, v, title]) => (
             <div key={k} className="flex items-baseline gap-2"><dt className="caps text-[10px] text-muted-foreground">{k}</dt><dd className="font-mono text-[12px]" title={title}>{v}</dd></div>
           ))}
+          {/* The tools the current revision grants, as GET /v2/agents/{id} serves them (the provider and permission in force,
+              the agent's own setting over the server's): the name (its line for people as its title), the provider where
+              it has a choice of one, the permission. A workflow's tools are its call nodes', which its editor shows. */}
+          {!workflow && (
+            <div className="flex items-baseline gap-2">
+              <dt className="caps text-[10px] text-muted-foreground">Tools</dt>
+              <dd className="font-mono text-[12px]">
+                {agent.tools?.length ? (
+                  <ul className="flex flex-wrap gap-x-4 gap-y-1">
+                    {agent.tools.map((t) => (
+                      <li key={t.name}><span title={t.blurb}>{t.name}</span>{t.provider ? ` · ${providerLabel(t.provider, t.name)}` : ""}{t.permission ? ` · ${t.permission}` : ""}</li>
+                    ))}
+                  </ul>
+                ) : "none"}
+              </dd>
+            </div>
+          )}
         </dl>
         {offText && <p className="mt-3 font-mono text-[12px] text-warning-text" role="status" aria-label="Harness not available">{offText}</p>}
       </header>

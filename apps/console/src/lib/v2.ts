@@ -20,9 +20,10 @@ export type ToolSettings = Record<string, { provider?: string; permission?: Perm
 /** GET /v2/agents/{id}'s `tools`: each tool the agent grants, with its permission in force, where it came from and the
  *  one that applies when the agent sets none (the server's); one with a provider choice with the provider in force, where
  *  it came from (the agent's own setting, the server's, or the built-in default), the one that applies when the agent
- *  sets none (the server's), and what it resolves to on the agent's harness and model. */
+ *  sets none (the server's), and what it resolves to on the agent's harness and model. `blurb`: its one line for people
+ *  (serve's tool-blurbs.ts), absent for an MCP server's tool. */
 export type AgentTool = {
-  name: string; provider?: string; provider_from?: "agent" | "server" | "default"; default_provider?: string; resolved?: string;
+  name: string; blurb?: string; provider?: string; provider_from?: "agent" | "server" | "default"; default_provider?: string; resolved?: string;
   permission?: Permission; permission_from?: "agent" | "server" | "default"; default_permission?: Permission; permissions?: Permission[];
 };
 
