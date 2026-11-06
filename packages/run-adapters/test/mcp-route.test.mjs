@@ -120,3 +120,9 @@ test("the proxy mounts /mcp/<server> itself from the session's MCP and its harne
   }
   assert.deepEqual(seen, { 'claude-agent': ['toolu_9', 'toolu_1', undefined], codex: ['call_9', 'call_1', undefined] });
 });
+
+test("tools/call: the client reads the answer's content and whether it failed, never the host's parked flag", async (t) => {
+  const { p } = await proxy(t, async () => ({ content: [{ type: 'text', text: 'This mcp:fake/add call waits for a person\'s approval.' }], parked: true }));
+  const answer = JSON.parse((await send(p.url, { accept: 'application/json', body: rpc('tools/call', { name: 'add', arguments: { a: 2, b: 3 } }) })).text);
+  assert.deepEqual(answer.result, { content: [{ type: 'text', text: 'This mcp:fake/add call waits for a person\'s approval.' }] });
+});
