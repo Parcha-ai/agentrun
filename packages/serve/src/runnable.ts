@@ -12,7 +12,7 @@ import type { BoxOffer } from "./boxes.js";
 import { boxAvailability, newAgentPlace, placeFix, RUN_BOXES } from "./place.js";
 import { allows, BOUND_TOOLS, CALL_TOOLS, grantedTools, missingEnv, NODE_TOOLS, toolOf, workflowTools } from "./tools.js";
 import { capabilityOf, DENIED, isUnavailable, NO_PARALLEL_KEY, type Pickable, planeFor, type ToolSettingsMap, whyUnavailable } from "./tool-plane.js";
-import { permissionOf } from "./tool-gate.js";
+import { denyPlace, permissionFrom, permissionOf } from "./tool-gate.js";
 import { PARALLEL_KEY_ENV } from "./decisions.js";
 import { keyNeeded } from "./key-words.js";
 import { wireName } from "./catalog.js";
@@ -196,7 +196,7 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
     // ask (which it could never get), would be refused mid-run (app.ts runEffect), so the run never starts.
     // Held to its settings key: a legacy name (fetch_page) takes its capability's permission (web_fetch's), as the gate does.
     else if (permissionOf(capabilityOf(tool), settings as never, (revision.toolSettings ?? {}) as never) === "ask") out.push({ field: "definition.workflow", reason: NOT_SET_UP, message: `This workflow's call node calls ${capabilityOf(tool) === tool ? tool : `${tool} (${capabilityOf(tool)})`}, which is set to ask, and a workflow's call node can't wait for an approval: set it to allow for this agent.`, host: true, asks: capabilityOf(tool) });
-    else if (permissionOf(capabilityOf(tool), settings as never, (revision.toolSettings ?? {}) as never) === "deny") out.push({ field: "definition.workflow", reason: NOT_SET_UP, message: `This workflow's call node calls ${capabilityOf(tool) === tool ? tool : `${tool} (${capabilityOf(tool)})`}, which is set to deny on this server.`, host: true, denied: capabilityOf(tool) });
+    else if (permissionOf(capabilityOf(tool), settings as never, (revision.toolSettings ?? {}) as never) === "deny") out.push({ field: "definition.workflow", reason: NOT_SET_UP, message: `This workflow's call node calls ${capabilityOf(tool) === tool ? tool : `${tool} (${capabilityOf(tool)})`}, which is set to deny ${denyPlace(permissionFrom(capabilityOf(tool), settings as never, (revision.toolSettings ?? {}) as never).from)}.`, host: true, denied: capabilityOf(tool) });
   }
   const granted = await grantedTools(revision);
   for (const tool of new Set([...named.nodes.filter((name) => allows(NODE_TOOLS, name)), ...named.calls.filter((name) => allows(CALL_TOOLS, name))])) {

@@ -285,7 +285,9 @@ place keeps it, `runner` included. An edit that names no place keeps the agent's
 The box is a new agent's default machine. A new agentic agent whose definition names no place is saved in the Docker box
 (`{"mode": "sandbox", "box": "docker"}`) wherever this server has docker, ready or still preparing its image (its first
 run then waits for the image, with one timeline row). The place is written on the agent's first revision, so its answers
-show it. If that definition names no `tools` either, it gets `["bash"]`, so the agent has a shell. A definition that
+show it. If that definition names no `tools` either, it gets `["bash", "bash_background", "bash_output", "bash_input",
+"bash_signal", "bash_list"]`, so the agent has a shell and can run a command in the background
+([background processes](#background-processes)). A definition that
 names its tools keeps exactly those, an empty list included. Where docker is unavailable, a new agent is saved with no
 place. So is one whose tools name one the box refuses (`browser`, runner-only for now). A workflow is never given a box.
 
@@ -469,16 +471,25 @@ where `bash`'s setting came from:
   console and the API show each log, during the run and after it.
 - Those files are for people to read: the run's own file tools can write anything in `work/`, so no call trusts one.
   The group a signal goes to, the exit code, the start time, the command and the run's-end mark are kept in the box's
-  own directory (its `TMPDIR`, else `/tmp`), out of `work/`; a copy in `work/` is written in that directory and moved
-  over its name from inside `work/background/<id>`, entered and checked by its real path, so a link planted at the name
-  or at the directory is never followed (a failed check skips the copy). `output.log` is opened first and then checked as opened
-  (through `/proc`: the file reached is `work/background/<id>/output.log` itself, by its real path, and a regular file),
-  and every read is of that open file, so a link swapped in after the check is never read. A link planted at it is
-  refused, saying so; so is any log in a box with no `/proc` to check it by. A directory made in `work/background/` that this box
-  did not start reads as gone, and is never signalled.
+  own directory (its `TMPDIR`, else `/tmp`), out of `work/`. A copy in `work/` is written from inside
+  `work/background/<id>`, entered and checked by its real path, to a new file of a name no one can guess, created and
+  written in one exclusive open, then renamed over its name; so a link planted at the name or at the directory is never
+  followed, and a real directory standing at the name skips that copy (as does a failed check). At the run's end every
+  copy (`command` and `started` among them) is written again, so a link planted at one since its start does not stay.
+  `output.log` is opened first and then checked as opened (through `/proc`: the file reached is
+  `work/background/<id>/output.log` itself, by its real path, and a regular file), and every read is of that open file,
+  so a link swapped in after the check is never read. A link planted at it is refused, saying so; a box with no `/proc`
+  to check by refuses every log, saying that instead. A directory made in `work/background/` that this box did not
+  start reads as "not started in this box", and is never signalled.
 - A process runs until no live process of its group is left: a child the command starts with `&` (a server, its
   output sent elsewhere) keeps it running, counted against the cap, signalled with it and ended at the run's end; its
   exit code is the shell's.
+- A child that leaves the process group (one that calls `setsid`, a daemon that detaches) is not tracked: it is not
+  counted against the cap, no `bash_signal` reaches it, and the run's end does not end it. Only the box's end (its
+  destroy at the run's end) or its 24-hour lifetime ends it; the box's process limit (`AGENTRUN_BOX_PIDS`) only bounds
+  how many processes there can be.
+- A process whose runner ended before it did (its box was replaced, or the runner was killed) reads as gone, its exit
+  code not known.
 - At most 8 run at once in a run's box: a ninth start is refused, saying so, until one ends. Each log keeps the first
   16 MiB of the output; later output is dropped while the process runs on, and `bash_output` says so.
 - `bash_background {command, tty: true}` runs the command on a terminal instead: `script -qfec` (util-linux) in the box
@@ -488,7 +499,8 @@ where `bash`'s setting came from:
   interactive shell's running command stops and the shell runs on; `TERM` and `KILL` go to every process group of the
   terminal's session. That session is tracked as the process: a child its command leaves running on the terminal keeps
   the process running, counted against the cap, reached by `bash_signal` and ended at the run's end, after `script`
-  itself is gone. A box with no `script` refuses `tty: true`, saying so, and starts nothing. `bash_list` marks such a
+  itself is gone. A box with no `script`, or with another `script` than util-linux's (busybox's takes no `-e`, and without it
+  always exits 0, so the command's exit code would be lost), refuses `tty: true`, saying so, and starts nothing. `bash_list` marks such a
   process `(tty)`.
 - `bash_output {id, offset?, max_bytes?}` reads the log from a byte offset (0 when absent), at most 48 KiB a call (the
   default), never splitting a character (a page too small for the character it starts at is refused, saying so): whether the process still runs, its exit code once it ended, the log's size,

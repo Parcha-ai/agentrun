@@ -37,7 +37,7 @@ import { boxesLine, defaultPlaceOf, NEW_AGENT_TOOLS, newAgentPlace, noBoxReason,
 import { BOX_ALLOW_ENV, boxAllowOf, boxLimitsOf, boxNetworkOf, FAUX_BOX_ENV, fauxBoxes } from "./run-box.js";
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
 import { answerPage, byOwnerSession, isJson, ownerCookie, ownOrigin, sendHostRefused, signedIn } from "./page.js";
-import { HOST_FIX, hostName, loopbackNames } from "./host-check.js";
+import { hostFix, hostName, loopbackNames } from "./host-check.js";
 import { durationMs, logLine } from "./print.js";
 import { type CarryBackRetry, knownToolCostOf, type Run, Runs, STATUSES, type Status, statusOf, toolCostOf, WAITS_ON_A_PERSON } from "./runs.js";
 import { runLines } from "./usage-lines.js";
@@ -832,6 +832,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     const egressLog = (state: ReturnType<EgressContainer["state"]>) => log?.(logLine("box_egress", { runtime: boxNetwork.vm!, state: state.state, ...("reason" in state ? { reason: state.reason } : {}) }));
     egress = await startEgressContainer({
       env, data, allow, uid: process.getuid?.() ?? 0, gid: process.getgid?.() ?? 0,
+      warn: (message) => (log ? log(logLine("box_egress", { runtime: boxNetwork.vm!, warning: message })) : void process.stderr.write(`agentrun-serve: ${message}\n`)),
       onChange: (state) => {
         egressLog(state);
         boxOffers = offersNow();
@@ -2141,7 +2142,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     // address. A browser is shown a page that says which names work; a script, the same in the error.
     if (names && !names.has(hostName(req.headers.host) ?? "")) {
       if (/\btext\/html\b/i.test(String(req.headers.accept ?? ""))) return sendHostRefused(req, res);
-      return fail(new ApiError("forbidden", `unexpected Host header: ${HOST_FIX}`));
+      return fail(new ApiError("forbidden", `unexpected Host header: ${hostFix(req.socket.localPort ?? 0)}`));
     }
     // Routed on the path as sent: a parsed URL folds `..` and `%2E%2E` segments away, and a file path must see them.
     const raw = (req.url ?? "/").split("?")[0]!;

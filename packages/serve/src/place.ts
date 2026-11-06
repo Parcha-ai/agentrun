@@ -53,9 +53,11 @@ export function defaultPlaceOf(kind: "agentic" | "workflow", tools: readonly unk
   return "place" in fresh ? fresh.place : { mode: "runner" };
 }
 
-/** The tools a new agent in the default box is given when its definition names none: a shell. A definition that names its
- *  tools, an empty list included, keeps exactly those. */
-export const NEW_AGENT_TOOLS: readonly string[] = Object.freeze(["bash"]);
+/** The tools a new agent in the default box is given when its definition names none: a shell, and the background tools
+ *  that start, read, feed, signal and list commands that outlive one call (background.ts SHELL_TOOLS, which a test holds
+ *  this list to; written out here, since background.ts reads this module). A definition that names its tools, an empty
+ *  list included, keeps exactly those. */
+export const NEW_AGENT_TOOLS: readonly string[] = Object.freeze(["bash", "bash_background", "bash_output", "bash_input", "bash_signal", "bash_list"]);
 
 /** Why a sandbox-only tool (bash) cannot run on this server: no box runs execute in is available, each with its reason.
  *  Undefined when one is. */
