@@ -135,11 +135,18 @@ for (const named of ["its pid", "a launch not yet named"]) test(`a takeover kill
   const epochNow = claimOf(data, runId).claim_epoch;
   const holder = standIn(t, named === "its pid" ? undefined : { AGENTRUN_RUN_LAUNCH: `${runId}:${epochNow}` }, `
     const { DatabaseSync } = require("node:sqlite");
-    const db = new DatabaseSync(${JSON.stringify(store)});
+    const { writeFileSync } = require("node:fs");
+    const db = new DatabaseSync(${JSON.stringify(store)}, { timeout: 10_000 });
     db.exec("PRAGMA locking_mode = EXCLUSIVE; PRAGMA journal_mode = WAL; CREATE TABLE IF NOT EXISTS stale_holder(at INTEGER)");
+    db.prepare("INSERT INTO stale_holder VALUES (?)").run(Date.now());
+    writeFileSync(${JSON.stringify(`${store}.held`)}, "");
     setInterval(() => db.prepare("INSERT INTO stale_holder VALUES (?)").run(Date.now()), 100);
   `);
-  for (let i = 0; !existsSync(`${store}-wal`) || i < 5; i++) await sleep(100);
+  // Up and holding the store, its first row committed: only then is it named.
+  for (let i = 0; !existsSync(`${store}.held`); i++) {
+    assert.ok(i < 300 && alive(holder.pid), "the stand-in holds the run's store");
+    await sleep(50);
+  }
   const start = readFileSync(`/proc/${holder.pid}/stat`, "utf8").split(") ")[1].split(" ")[19];
   const boot = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
   const db = new DatabaseSync(join(data, "store.sqlite"));
