@@ -31,7 +31,12 @@ const PLATFORM = CLI ? `@anthropic-ai/${basename(dirname(CLI))}` : undefined;
 const skip = (!CLI && "no pinned Claude CLI here") || (!existsSync("/usr/bin/setpriv") && "no setpriv here");
 
 /** The command a person runs when the install fails, naming the data's harnesses directory. */
-const manualLine = (data) => `npm install --prefix ${join(data, "harnesses")} ${SDK}@${PIN}`;
+/** The command a person runs when the install fails: the lock's package.json and lock copied into the data's harnesses
+ *  directory, then `npm ci` with no install script, as the server installs. `lock`: the lock the server installs by. */
+const manualLine = (data, lock) => {
+  const dir = join(data, "harnesses");
+  return `mkdir -p ${dir} && cp ${join(dirname(lock), "package.json")} ${lock} ${dir}/ && npm ci --prefix ${dir} --ignore-scripts`;
+};
 /** The SDK's version as installed in the data's harnesses, or undefined. */
 const installedIn = (data) => {
   try {
@@ -65,7 +70,8 @@ async function packages() {
   const dir = (madeIn = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "agentrun-registry-")));
   const reexport = (specifier) => `export * from ${JSON.stringify(import.meta.resolve(specifier))};\n`;
   const sdkManifest = { name: SDK, version: PIN, type: "module", main: "sdk.mjs", exports: { ".": { default: "./sdk.mjs" } }, peerDependencies: { [MCP]: "^1.29.0" }, optionalDependencies: { [PLATFORM]: PIN } };
-  const mcpManifest = { name: MCP, version: "1.32.2", type: "module", exports: { "./server/mcp.js": "./server/mcp.js", "./types.js": "./types.js" } };
+  // Its install script leaves a mark where SCRIPT_MARKER names (when set): no install of AgentRun's ever runs it.
+  const mcpManifest = { name: MCP, version: "1.32.2", type: "module", exports: { "./server/mcp.js": "./server/mcp.js", "./types.js": "./types.js" }, scripts: { postinstall: "node -e \"process.env.SCRIPT_MARKER && require('fs').writeFileSync(process.env.SCRIPT_MARKER, 'ran')\"" } };
   const cliManifest = { name: PLATFORM, version: PIN, os: [process.platform], cpu: [process.arch] };
   made = {
     [SDK]: { versions: { [PIN]: { manifest: sdkManifest, ...tarball(dir, SDK, { "package.json": JSON.stringify(sdkManifest), "sdk.mjs": reexport(SDK) }) } }, latest: LATER },
@@ -85,7 +91,9 @@ async function packages() {
  *  `hits` lists every path asked after it; `hold` keeps the SDK's tarball until it resolves, `holdMcp` the MCP
  *  library's; `missing` answers 404 to everything; `tamper` serves other bytes for that package's tarball than the lock
  *  names. */
-async function fakeRegistry(t, { hold, holdMcp, missing = false, tamper, later } = {}) {
+async function fakeRegistry(t, { hold, holdMcp, ...given } = {}) {
+  // How it answers once the lock is made; `answer` changes it.
+  const mode = { missing: false, tamper: undefined, later: undefined, ...given };
   const served = await packages();
   const hits = [];
   let ready = false;
@@ -93,13 +101,13 @@ async function fakeRegistry(t, { hold, holdMcp, missing = false, tamper, later }
     hits.push(req.url);
     const path = decodeURIComponent(req.url.split("?")[0]).slice(1);
     const tgz = /^-\/(.+)\/(\d[^/]*)\.tgz$/.exec(path);
-    const gone = ready && missing;
+    const gone = ready && mode.missing;
     if (!gone && tgz && served[tgz[1]]?.versions[tgz[2]] && existsSync(served[tgz[1]].versions[tgz[2]].file)) {
       if (tgz[1] === SDK && hold) await hold;
       if (tgz[1] === MCP && holdMcp) await holdMcp;
       res.writeHead(200, { "content-type": "application/octet-stream" });
       // Tampered: another package's bytes, which npm reads as this one's, against the lock's sha512.
-      return res.end(readFileSync(served[ready && tamper === tgz[1] ? SDK : tgz[1]].versions[ready && tamper === tgz[1] ? PIN : tgz[2]].file));
+      return res.end(readFileSync(served[ready && mode.tamper === tgz[1] ? SDK : tgz[1]].versions[ready && mode.tamper === tgz[1] ? PIN : tgz[2]].file));
     }
     const pkg = !gone && !tgz ? served[path] : undefined;
     if (!pkg) {
@@ -108,7 +116,7 @@ async function fakeRegistry(t, { hold, holdMcp, missing = false, tamper, later }
     }
     // `later`: once the lock is made, a newer release of that package is published (the registry's latest, a range in the
     // tree takes it): a well-formed tarball with its own sha512, as a compromised release would be.
-    const published = Object.fromEntries(Object.entries(pkg.versions).filter(([version]) => version !== LATE_MCP || (ready && later === path)));
+    const published = Object.fromEntries(Object.entries(pkg.versions).filter(([version]) => version !== LATE_MCP || (ready && mode.later === path)));
     const versions = Object.fromEntries(Object.entries(published).map(([version, { manifest, integrity }]) => [version, { ...manifest, dist: { tarball: `${url}/-/${path}/${version}.tgz`, integrity } }]));
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify({ name: path, "dist-tags": { latest: versions[LATE_MCP] ? LATE_MCP : (pkg.latest ?? Object.keys(versions)[0]) }, versions }));
@@ -132,7 +140,7 @@ async function fakeRegistry(t, { hold, holdMcp, missing = false, tamper, later }
   await new Promise((resolve, reject) => execFile("npm", ["install", "--package-lock-only", "--ignore-scripts", "--no-audit", "--no-fund", `--registry=${url}/`, `--cache=${join(dir, "cache")}`], { cwd: dir, env: npmEnv }, (error, stdout, stderr) => (error ? reject(new Error(`the lock: ${stderr}`)) : resolve())));
   hits.length = 0;
   ready = true;
-  return { url, hits, lock: join(dir, "package-lock.json"), tarballs: () => hits.filter((hit) => decodeURIComponent(hit).startsWith(`/-/${SDK}/`)) };
+  return { url, hits, lock: join(dir, "package-lock.json"), answer: (changes) => void Object.assign(mode, { missing: false, tamper: undefined, later: undefined }, changes), tarballs: () => hits.filter((hit) => decodeURIComponent(hit).startsWith(`/-/${SDK}/`)) };
 }
 
 
@@ -265,7 +273,7 @@ test("a registry that fails ends the run with the one command that installs Clau
   assert.equal(run.status, 202, JSON.stringify(run.body));
   const { last } = await follow(api, run.body.run_id, ["completed", "failed"], { deadlineMs: 120_000 });
   const view = (await api("GET", `/runs/${run.body.run_id}`)).body;
-  assert.ok(String(view.error?.message ?? "").includes(manualLine(data)), `the run's error names the manual install: ${JSON.stringify(view.error)}`);
+  assert.ok(String(view.error?.message ?? "").includes(manualLine(data, registry.lock)), `the run's error names the manual install: ${JSON.stringify(view.error)}`);
   assert.equal(last.status, "failed");
   assert.equal(installedIn(data), undefined);
 });
@@ -333,8 +341,9 @@ async function npmOn(data) {
 }
 
 test("AgentRun ships the install's lock: the SDK at the pin, and every package of the tree, platform and transitive, by sha512", () => {
-  const file = new URL("../harnesses/claude-agent.lock.json", import.meta.url);
-  assert.ok(existsSync(file), "serve ships harnesses/claude-agent.lock.json");
+  const file = new URL("../harnesses/claude-agent/package-lock.json", import.meta.url);
+  assert.ok(existsSync(file), "serve ships harnesses/claude-agent/package-lock.json");
+  assert.deepEqual(JSON.parse(readFileSync(new URL("../harnesses/claude-agent/package.json", import.meta.url), "utf8")).dependencies, { [SDK]: CLAUDE_AGENT_SDK_VERSION }, "and the package.json it locks");
   const lock = JSON.parse(readFileSync(file, "utf8"));
   assert.equal(lock.lockfileVersion, 3);
   assert.deepEqual(lock.packages[""].dependencies, { [SDK]: CLAUDE_AGENT_SDK_VERSION }, "the root names the SDK at the pin, and nothing else");
@@ -356,7 +365,7 @@ test("a tarball whose bytes are not the lock's fails the install, names the comm
   assert.equal(installedIn(data), undefined, "no SDK installed from a tarball off the lock");
   assert.equal(await sdkAnywhere(data), undefined, "nor one left beside the harnesses");
   assert.equal(last.status, "failed");
-  assert.ok(String(view.error?.message ?? "").includes(manualLine(data)), `the run's error names the manual install: ${JSON.stringify(view.error)}`);
+  assert.ok(String(view.error?.message ?? "").includes(manualLine(data, registry.lock)), `the run's error names the manual install: ${JSON.stringify(view.error)}`);
 });
 
 test("a release of a package in the tree published after the lock is not taken: the install is the lock's, version for version", { timeout: 300_000, skip }, async (t) => {
@@ -387,9 +396,70 @@ test("an install killed part way leaves nothing that reads as installed, and the
   await until("npm is gone", async () => (await npmOn(data)).length === 0, 30_000);
   letGo();
   assert.equal(installedIn(data), undefined, "a killed install leaves no SDK that reads as installed");
+  // The cut install's directory goes as that install ends; a run started after it installs anew.
+  await until("the cut install is cleared away", async () => (await sdkAnywhere(data)) === undefined, 30_000);
   const run = await api("POST", "/agents/claude/runs", { input: { content: "Say hello." } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
   const { rows, last } = await follow(api, run.body.run_id, ["completed", "failed"], { deadlineMs: 240_000 });
   assert.equal(last.status, "completed", JSON.stringify(rows.slice(-3)));
   assert.equal(installedIn(data), PIN);
+});
+
+/** The command a run's failed install names, as its error gives it. */
+const manualOf = (message) => /Install it by hand with: (.*); then run the agent again\./.exec(message)?.[1];
+
+test("the manual command the error names installs as the server does: the lock's tree, version for version, and no package's install script", { timeout: 300_000, skip }, async (t) => {
+  const registry = await fakeRegistry(t, { missing: true });
+  const anthropic = await anthropicEndpoint(t);
+  await firstUseEnv(t, registry, anthropic.fake);
+  const { api, data } = await firstUseServe(t, registry);
+  const run = await api("POST", "/agents/claude/runs", { input: { content: "Say hello." } });
+  await follow(api, run.body.run_id, ["completed", "failed"], { deadlineMs: 120_000 });
+  const line = manualOf(String((await api("GET", `/runs/${run.body.run_id}`)).body.error?.message ?? ""));
+  assert.ok(line, "the error names a command");
+  // The person's registry answers now, and has published a later MCP library since the lock.
+  registry.answer({ later: MCP });
+  const marker = join(await scratch(t), "script-ran");
+  // Not execFileSync: the registry answers from this process.
+  await new Promise((resolve, reject) => execFile("sh", ["-c", line], { env: { ...process.env, SCRIPT_MARKER: marker } }, (error, stdout, stderr) => (error ? reject(new Error(`${line}: ${stderr}`)) : resolve())));
+  assert.equal(existsSync(marker), false, "no package's install script ran");
+  assert.equal(JSON.parse(readFileSync(join(data, "harnesses", "node_modules", ...MCP.split("/"), "package.json"), "utf8")).version, "1.32.2", "the lock's MCP library, not the later release");
+  assert.equal(installedIn(data), PIN);
+});
+
+test("a server that closes while it installs stops npm, and leaves nothing installed", { timeout: 300_000, skip }, async (t) => {
+  let letGo;
+  const holdMcp = new Promise((resolve) => (letGo = resolve));
+  t.after(() => letGo());
+  const registry = await fakeRegistry(t, { holdMcp });
+  const anthropic = await anthropicEndpoint(t);
+  await firstUseEnv(t, registry, anthropic.fake);
+  const { data, close } = await firstUseServe(t, registry);
+  await until("npm runs on the data", async () => (await npmOn(data)).length > 0, 120_000);
+  await close();
+  await until("npm is stopped with the server", async () => (await npmOn(data)).length === 0, 10_000);
+  letGo();
+  assert.equal(installedIn(data), undefined);
+  assert.equal(await sdkAnywhere(data), undefined, "nothing left beside the harnesses either");
+});
+
+test("a partial tree is not Claude Code: one whose MCP library would resolve from above it (the data's own node_modules) is installed again whole, and the run starts on that", { timeout: 300_000, skip }, async (t) => {
+  const registry = await fakeRegistry(t);
+  const anthropic = await anthropicEndpoint(t);
+  await firstUseEnv(t, registry, anthropic.fake);
+  // A data path with a space, which no part of the install may split.
+  const data = join(await scratch(t), "agents here");
+  const repo = new URL("../../../node_modules/", import.meta.url).pathname;
+  // The SDK alone in the harnesses, with no CLI and no MCP library; the MCP library one level up, where a walk would find it.
+  for (const [name, at] of [[SDK, join(data, "harnesses", "node_modules")], [MCP, join(data, "node_modules")]]) {
+    mkdirSync(dirname(join(at, name)), { recursive: true });
+    symlinkSync(join(repo, name), join(at, name));
+  }
+  const { api } = await firstUseServe(t, registry, data);
+  const run = await api("POST", "/agents/claude/runs", { input: { content: "Say hello." } });
+  assert.equal(run.status, 202, `a partial tree does not make claude-agent unrunnable: ${JSON.stringify(run.body)}`);
+  const { rows, last } = await follow(api, run.body.run_id, ["completed", "failed"], { deadlineMs: 240_000 });
+  assert.equal(registry.tarballs().length, 1, "installed again: the SDK's tarball asked");
+  assert.equal(last.status, "completed", JSON.stringify(rows.slice(-3)));
+  assert.ok(existsSync(join(data, "harnesses", "node_modules", ...MCP.split("/"), "package.json")), "the MCP library is in the harnesses now");
 });
