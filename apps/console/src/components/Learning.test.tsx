@@ -163,18 +163,18 @@ describe("the Learning tab's notes", () => {
 describe("what runs did not keep", () => {
   it("lists a refused note and a skip with their words, newest first, and counts the runs with nothing new", async () => {
     const t = await open(agent(true));
-    const list = t.host.querySelector('section[aria-label="Not kept"]')!;
+    const list = t.host.querySelector('section[aria-label="Kept nothing"]')!;
     const rows = [...list.querySelectorAll("li")].map((li) => li.textContent);
-    expect(rows[0]).toContain("It's about one shop's returns portal.");
-    expect(rows[0]).not.toContain("Not kept:");
+    // The server's sentence as it is, under a title that does not say "Not kept" again.
+    expect(rows[0]).toContain("Not kept: It's about one shop's returns portal.");
     expect(rows[0]).toContain("kith.com");
     expect(rows[1]).toContain("Skipped: no budget left in this run to look back.");
     expect(rows).toHaveLength(2);
     expect(list.textContent).toContain("2 more runs had nothing new to remember.");
   });
-  it("an older server's list, with no sentence, says the reason in the console's words", async () => {
+  it("a run with no sentence says the reason in the console's words", async () => {
     const t = await open(agent(true), { runs: [runOf("run-k", "kith.com", { state: "dropped", reason: "grader" })] });
-    expect(t.host.querySelector('section[aria-label="Not kept"]')!.textContent).toContain("It wouldn't help later runs enough.");
+    expect(t.host.querySelector('section[aria-label="Kept nothing"]')!.textContent).toContain("Not kept: it wouldn't help later runs enough.");
   });
 });
 
