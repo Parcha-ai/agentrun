@@ -37,7 +37,7 @@ capabilities are `["exec", "files", "processes"]`.
 - The environment is PATH (the daemon's), HOME, USER and LOGNAME for the user, then `env` over them. Nothing else of the
   daemon's environment is passed on.
 - `user` is a name or `uid[:gid]`. A daemon without CAP_SETUID and CAP_SETGID cannot switch users and answers `denied`.
-  A Docker computer drops every capability, so there a command runs as the daemon's own user.
+  Init leaves itself no capability (below), so a command runs as the daemon's own user.
 - Requests run at once; replies may come in any order. A line over 1 MiB gets an error reply and the connection goes
   on. When the input ends, what still runs on that connection is cancelled: an `exec.run`, never a process.
 - Errors are `{code, message, data: {kind}}`, with kind `not_found`, `invalid`, `timeout`, `aborted`, `denied`, `limit`,
@@ -54,9 +54,23 @@ capabilities are `["exec", "files", "processes"]`.
   the connection that started it. A socket left by an init that is gone is replaced; a live one is refused.
 - `computerd init --deadline <time> --user <uid:gid>` is for a vendor that runs every computer as root and has no user
   of its own to give (Modal). Init starts as root, makes `$HOME` and the socket's directory that user's alone (0700,
-  never through a symbolic link), sets `no_new_privs` on every thread, and becomes uid:gid, which drops every
-  capability: from there it is the daemon a Docker computer runs. `--user 0:0` only prepares the directories. Without
+  never through a symbolic link), and becomes uid:gid with no supplementary groups, dropping its privileges on the way
+  as below: from there it is the daemon a Docker computer runs. `--user 0:0` is root with no capability. Without
   root, init refuses `--user` in words; a Docker computer is given its user by `docker run --user` and never passes it.
+- **Init drops its privileges itself, as any user, root included,** before it listens, so the line holds on every
+  vendor and not only where the provider drops capabilities (Docker: `--cap-drop ALL`). On every thread it sets
+  `no_new_privs`; drops from the bounding set each capability up to the kernel's last
+  (`/proc/sys/kernel/cap_last_cap`) that is still there; makes the uid change, with `--user`; empties the ambient set
+  and, by `capset`, the effective, permitted and inheritable sets (a uid of 0 keeps them through any uid change); and
+  reads all of it back. So init, every program it starts and every program those start hold no capability in any set
+  (`CapInh`, `CapPrm`, `CapEff`, `CapBnd` and `CapAmb` all `0000000000000000`, `NoNewPrivs` 1), and with the bounding
+  set empty not even a program root starts gains one. Root without a capability is root to the file system's
+  permission bits only: it owns what uid 0 owns. Emptying the bounding set needs CAP_SETPCAP; a capability already
+  gone is not dropped again, so a process started with an empty bounding set needs none. When a capability cannot be
+  dropped (EPERM, such as a user with a bounding set and no CAP_SETPCAP, as `go test` runs on a host), or the binary
+  links cgo (one call cannot reach every thread), init refuses to start, in words, and exits 1.
+  The Go tests of the root path need root with capabilities: on a host as another user they skip, and the daemon's
+  test binaries (`CGO_ENABLED=0 go test -c`) run them as root in a container.
 - `computerd probe [--connect <host:port>]...` prints one JSON line: the uid and gid it runs as, the kernel's release,
   and which addresses a TCP connection reached, each tried for at most 3 s. A provider whose vendor reads nothing back
   runs it through `exec.run` (below, Modal).
@@ -365,6 +379,16 @@ const swept = await sweep(new DockerProvider({ daemonPath: "dist/computerd-linux
 if (swept.ok) console.log(`deleted ${swept.value.deleted.join(", ") || "none"}; kept ${swept.value.kept}`);
 ```
 
+### Waiting for a vendor: `waitUntil`
+
+`waitUntil(read, done, { boundMs, signal?, minMs?, maxMs?, what?, describe? })` (in `src/wait.ts`) is the one bounded
+wait a provider uses when the vendor reads a state back later than it acted, such as a computer ended by a release. It
+reads at once, then after pauses that double from `minMs` (250 ms) to `maxMs` (5 s), never past `boundMs`, and
+returns the first state `done` accepts. Each read gets a signal that aborts at the bound or on the caller's abort; a
+read still pending then is not waited for, and one that throws is not done. Past the bound it returns a `timeout`, on
+the caller's abort an `aborted`, each naming `what` was waited for and the last state read (`describe`). It has no
+vendor's types: Modal's release and the Modal sweep use it.
+
 ## Modal
 
 ```ts
@@ -417,7 +441,9 @@ of that slice, and the live conformance file waits for a key (below).
   its daemon.
 - **The daemon becomes the computer's user.** Modal containers always run as root and ignore an image's `USER`, so
   `--user` is how a Modal computer gets the non-root default the protocol asks for (`1000:1000`, or the `user` option),
-  or root when the spec asks for `"0"`.
+  or root when the spec asks for `"0"`. Either way init leaves itself and every program no capability in any set (see
+  Init, above): Modal starts the container with every one, and a live run read `CapEff` `000001ffffffffff` from a root
+  computer before the daemon dropped them itself.
 - **The stream** is `computerd stdio` through `sandbox.exec([...], { mode: "binary" })`: its stdin and stdout are the
   `DaemonClient`'s stream. Modal has no kill for an exec, so `close()` ends the bridge's stdin and waits up to 5 s for
   it to exit.
@@ -444,15 +470,22 @@ of that slice, and the live conformance file waits for a key (below).
 - **Tags.** A sandbox carries `agentrun.computer`, `agentrun.computer.name`, `agentrun.computer.deadline` and
   `agentrun.computer.spec` (what create recorded), so a computer takes at most 6 labels of its own. `list(labels)` is
   `sandboxes.list({ appId, tags })` over the provider's app: running sandboxes only, so every one is `running`, and its
-  network is the one create recorded (`network(ref)` probes it).
+  network is the one create recorded (`network(ref)` probes it). Modal still lists a sandbox for a while after its
+  terminate, so each one listed is polled, and one `poll()` reads finished, or that Modal no longer knows, is left out.
 - **attach** by id or labels runs the same drift check on what it finds and refuses a drifted computer in words, left
   running. Its `spec.user` is the probe's uid:gid; the rest is as recorded.
 - **release** `delete` is `terminate()`, idempotent: a sandbox that has finished, or that Modal no longer knows, is ok.
+  Modal ends a sandbox asynchronously, so after the terminate `release` polls (`waitUntil`, above) until `poll()` reads
+  an exit code or Modal no longer knows the sandbox, with pauses that double from `releasePollMs` (500 ms) to 5 s,
+  within `releaseMs` (120 s) and the caller's signal. Past the bound it is a `timeout` that says what `poll()` last
+  read; it never reports a delete done that it did not read back. A caller that bounds release (the conformance
+  runner's `cleanupTimeoutMs`) gives it more than 120 s: the live suite passes 150 s.
   `capabilities().release` is `["delete"]`, so `stop` is refused as `unsupported`, in words, and the sandbox runs on:
   terminate is a sandbox's only end, and Modal has no stopped state. `release`, `connect` and
   `network` act only on a sandbox whose tags name it as this provider's, with the ref's name.
 - **Every call is bounded** (`timeouts`: create 10 min, which covers the layer's build and scheduling; the upload 5
-  min; other calls 60 s; hello and the probe 30 s; a whole list 120 s) and takes the caller's signal. A create that gives up has its
+  min; other calls 60 s; hello and the probe 30 s; a whole list 120 s; release's wait 120 s) and takes the caller's
+  signal. A create that gives up has its
   sandbox terminated if one lands later.
 - **GPU** is refused: this provider makes VM sandboxes, and Modal offers GPUs on gVisor only.
 
@@ -487,6 +520,9 @@ unless they start with `modal_proto/`. Docs: modal.com, read 2026-11-05.
 | `sandboxes.fromId(id)` makes a handle with no call | `sandbox.ts:960-962` |
 | `sandboxes.list({ appId, tags })`: running sandboxes only (`includeFinished: false`), with at least those tags | `sandbox.ts:1116-1159`, `1223-1230` |
 | `getTags()`, `poll()` (null while running, else the exit code), `terminate()` | `sandbox.ts:1813-1838`, `2761-2772`, `2238-2252` |
+| `terminate()` returns once the request is sent; it waits for the sandbox to finish only with `{ wait: true }` | `sandbox.ts:1292-1296`, `2238-2251` |
+| `poll()` is `SandboxWait` with timeout 0: null until the server reports a result, then its exit code (137 when terminated) | `sandbox.ts:1491-1511`, `1974-1980`, `2761-2771` |
+| `sandboxes.fromId(id)` makes a handle with no call | `sandbox.ts:960-962` |
 | terminate sends SIGKILL: a terminated sandbox's code is 137 | [guide/sandboxes#return-codes](https://modal.com/docs/guide/sandboxes#return-codes) |
 | A sandbox carries up to 10 tags | [guide/sandboxes#tagging](https://modal.com/docs/guide/sandboxes#tagging) |
 | `apps.fromName(name, { createIfMissing })` | `app.ts:32-61` |
@@ -518,7 +554,8 @@ Nothing here has run against Modal. Once the lead OKs a key by name, `AGENTRUN_C
   (init says so on stderr when it is not, and still reaps as a subreaper);
 - that a workdir other than `/work` exists before the command starts, and `/run` is writable there;
 - the tag value's longest length (the spec tag is JSON) and whether `getTags` answers for a terminated sandbox;
-- that `terminate` of a finished sandbox does not throw, and how long `list` keeps a terminated sandbox out;
+- that `terminate` of a finished sandbox does not throw; a live run saw `list` still yield a sandbox right after its
+  terminate, which `release` and `list` now wait out and leave out (above);
 - the probe's view of `blockNetwork`, and the bypass cases before any allowlist is declared.
 
 Core `provider.stop` expects Modal's refusal (it declares no stop), and the Full `provider.janitor` case is skipped
@@ -602,8 +639,9 @@ What a provider module implements:
 
 Core and Full follow the Kubernetes agent-sandbox conformance levels (KEP-539.2):
 
-- **Core** is what every computer does: hello and ping, `exec.run` as a user other than root with no effective or
-  permitted capabilities (the run's spec asks for no user), a HOME that user owns and writes while `/` refuses it, the
+- **Core** is what every computer does: hello and ping, `exec.run` as a user other than root with no capability in
+  any set and `no_new_privs` (`CapEff`, `CapPrm`, `CapInh`, `CapBnd` and `CapAmb` all zero and `NoNewPrivs` 1 in
+  `/proc/self/status`, a field not reported failing; the run's spec asks for no user), a HOME that user owns and writes while `/` refuses it, the
   `files.*` and `tar.*` methods, the `process.*` methods, a computer with network `none` (`network:none`: a provider
   that cannot make one fails Core, and the suite never asks for a wider network instead), `check`, `create`, `attach`
   (with the spec it reads back: the network and image create asked for, and a non-root `user` as `uid:gid`), `list`,
@@ -618,7 +656,7 @@ Core and Full follow the Kubernetes agent-sandbox conformance levels (KEP-539.2)
   truthfully, on a computer of the case's own (`provider.network-switch`, `provider.network-switch-allow`), the janitor for a provider whose lifetime is `"janitor"` and that stops computers
   (`lifetime:janitor`, `release:stop`), and a spec that
   asks for root (`user:root`, from `capabilities().user` holding `"root"`) or another uid (`user:uid`), still with no
-  capabilities.
+  capability in any set and `no_new_privs`, read as in Core.
 
 A case whose needs the provider does not declare (in `capabilities()`), or the daemon does not declare (in hello), is
 skipped with the reason and never fails. A skipped Full case is reported as not declared; a skipped Core case means
@@ -668,7 +706,10 @@ and `alpine:3.20` pulled, both builds, and Go on PATH (the drift case builds a d
 the daemon for Docker's own architecture, and remove every container they make by its exact name, pass or fail. One of
 them, `test/docker/modal-commands.docker.test.mjs`, runs the Modal provider's entrypoint and upload exactly as sent, in
 a Debian and an Alpine root container with no network, and checks that init comes up as uid 1000 with no capabilities
-and `no_new_privs`, and answers hello over `computerd stdio`.
+and `no_new_privs`, and answers hello over `computerd stdio`. Those root containers keep Docker's default
+capabilities, or every one (`--cap-add ALL`), with no `--cap-drop`, as Modal runs them: with `--user 0:0` and
+`--user 1000:1000`, `exec.run` reads every thread of init and its own status with all five sets zero and
+`NoNewPrivs` 1, and a root container without CAP_SETPCAP has init refuse to start, in words.
 
 ## Acknowledgements
 
