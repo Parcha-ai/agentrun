@@ -548,7 +548,7 @@ test("a run that mixes browser and monid charges, as serve books them, reads fro
     answer([{ type: "text", text: "Done." }], 7), browser(0.0016, "b2", true),
   ], { settled: true });
   assert.equal(costOf(rows), 0.0448, "$0.04 of requests and $0.0048 of charges");
-  assert.equal(rows.at(-1).summary, "Cost so far: $0.0448 over 4 model requests and 4 paid tool calls");
+  assert.equal(rows.at(-1).summary, "Cost so far: $0.0448 over 4 model requests and 3 paid tool calls", "b1, monid and b2: three calls, the release under b2 adding a charge, never a call");
   assert.equal(pico(toolCostOf(rows)), 0.0048);
   assert.equal(pico(toolCostOf(rows, "browser")), 0.0018, "the browser's rows: /usage's browser_time");
   assert.equal(pico(toolCostOf(rows, "browser", true)), 0.003, "every other tool's: /usage's tools");

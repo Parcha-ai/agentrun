@@ -110,7 +110,7 @@ test("other tools' counts do not change: one monid call is 1 paid tool call, two
   assert.match(timelineOf([assistant([call("m1", "monid_run"), call("m2", "monid_run")], 0), monid("m1"), monid("m2"), result("m1", "monid_run", "ok", 1), result("m2", "monid_run", "ok", 1)]).at(-1).summary, / and 2 paid tool calls$/);
 });
 
-test("a run that mixes browser and monid charges: the browser's fold into its calls' rows ($0.0018), monid's keeps its own Tool cost row ($0.003), and the run's cost counts each once: $0.0448 over 4 paid tool calls", () => {
+test("a run that mixes browser and monid charges: the browser's fold into its calls' rows ($0.0018), monid's keeps its own Tool cost row ($0.003), and the run's cost counts each once: $0.0448 over 3 paid tool calls", () => {
   // Four model requests at $0.01 each (timeline-support's assistant) and four charges: b1 $0.0001, monid $0.003, b2 $0.0001,
   // the release $0.0016. $0.04 + $0.0048 = $0.0448.
   const monid = custom(TOOL_COST, { tool: "monid.run", charged_by: "monid", call: "m1", usd: 0.003 });
@@ -129,7 +129,7 @@ test("a run that mixes browser and monid charges: the browser's fold into its ca
     charge(0.0016, "b2", { final: true }),
   ]);
   const usage = rows.at(-1);
-  assert.deepEqual([usage.kind, usage.usage, usage.summary], ["usage", { usd: 0.0448, requests: 4 }, "Cost so far: $0.0448 over 4 model requests and 4 paid tool calls"]);
+  assert.deepEqual([usage.kind, usage.usage, usage.summary], ["usage", { usd: 0.0448, requests: 4 }, "Cost so far: $0.0448 over 4 model requests and 3 paid tool calls"], "b1, monid and b2: three calls, the release under b2 adding a charge, never a call");
   const browser = rows.filter((row) => row.kind === "tool_use" && row.usage);
   assert.deepEqual(browser.map((row) => [row.tool_name, row.usage.usd]), [["snapshot", 0.0001], ["browser_read", 0.0017]]);
   assert.equal(pico(browser.reduce((sum, row) => sum + row.usage.usd, 0)), 0.0018);
