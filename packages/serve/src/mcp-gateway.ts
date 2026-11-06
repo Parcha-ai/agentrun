@@ -52,8 +52,9 @@ export type McpCredentials = Record<string, { url: string; headers?: Record<stri
 /** The servers saved on this server (mcp-servers.ts), as a launch reads them. */
 export interface McpServerSource {
   server(name: string): { url: string; tools: readonly McpTool[]; prices?: Readonly<Record<string, number>> } | undefined;
-  /** The server's credential, opened now: its headers, why it does not open, or undefined when it has none. */
-  headers(name: string): Record<string, string> | { unopened: string } | undefined;
+  /** The server's credential, opened now: its headers, or why it does not open, each under its own tag; undefined when
+   *  it has none. */
+  headers(name: string): { headers: Record<string, string> } | { unopened: string } | undefined;
 }
 
 /** `mcp:<server>/<tool>` read, or undefined for a name that is not one. */
@@ -143,8 +144,8 @@ export function mcpCredentialsOf(pin: McpPin, source: McpServerSource): McpCrede
   for (const [name, pinned] of Object.entries(pin)) {
     const saved = source.server(name);
     if (!saved) continue;
-    const headers = saved.url === pinned.url ? source.headers(name) : undefined;
-    out[name] = { url: saved.url, ...(headers && typeof headers.unopened === "string" ? { unopened: headers.unopened } : headers ? { headers: headers as Record<string, string> } : {}) };
+    const credential = saved.url === pinned.url ? source.headers(name) : undefined;
+    out[name] = { url: saved.url, ...(credential && "unopened" in credential ? { unopened: credential.unopened } : credential ? { headers: credential.headers } : {}) };
   }
   return out;
 }

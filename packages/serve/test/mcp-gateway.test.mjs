@@ -92,11 +92,12 @@ test("a redirect is never followed: the credential goes nowhere else", async (t)
 
 test("names that are an object's own properties are servers and tools like any other: the pin and the credentials hold them", async () => {
   const listed = [{ name: "toString", inputSchema: schema }];
-  const source = { server: (name) => (name === "constructor" ? { url: "http://127.0.0.1:9/mcp", tools: listed } : undefined), headers: () => ({ authorization: `Bearer ${TOKEN}` }) };
+  const source = { server: (name) => (name === "constructor" ? { url: "http://127.0.0.1:9/mcp", tools: listed } : undefined), headers: () => ({ headers: { authorization: `Bearer ${TOKEN}` } }) };
   const pin = mcpPinOf(["mcp:constructor/toString", "mcp:toString/add"], source);
   assert.deepEqual(Object.keys(pin), ["constructor"]);
   assert.deepEqual(pin.constructor.tools.map((tool) => tool.name), ["toString"]);
   assert.deepEqual(Object.keys(mcpCredentialsOf(pin, source)), ["constructor"]);
+  assert.deepEqual(mcpCredentialsOf(pin, source).constructor.headers, { authorization: `Bearer ${TOKEN}` });
   const none = mcpGateway({ pin: {}, credentials: {}, work: () => tmpdir() });
   assert.match(textOf(await none.call("constructor", "toString", {}, { signal: signal() })), /not a tool of the MCP server constructor/);
   assert.match(textOf(await none.call("__proto__", "toString", {}, { signal: signal() })), /not a tool/);
