@@ -61,10 +61,38 @@ func Guards() []int {
 	return pids
 }
 
+// afterAdmit and afterStarted are nil outside tests: they run in Start once it is let in, and once its program runs.
+var afterAdmit, afterStarted func(p Program)
+
+// endingBegan and guardsTermed are nil outside tests: they run in EndAll as it begins, and once every guard it found has
+// been sent SIGTERM.
+var endingBegan, guardsTermed func()
+
+// EndAll ends every program, as the computer shuts down: it sends every guard SIGTERM (each sends SIGKILL to what is
+// left of its program KillGrace later), and waits up to KillGrace plus slack for every guard to end.
+func EndAll(slack time.Duration) {
+	if endingBegan != nil {
+		endingBegan()
+	}
+	for _, guard := range Guards() {
+		_ = syscall.Kill(guard, syscall.SIGTERM)
+	}
+	if guardsTermed != nil {
+		guardsTermed()
+	}
+	deadline := time.Now().Add(KillGrace + slack)
+	for len(Guards()) > 0 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
 // Start starts p under a guard of its own (guard.go), with stdin (nil is /dev/null), stdout and stderr, and returns once
 // the program has started. The caller closes its own copies of the three files. A program that cannot start is an
 // error of the protocol's kinds.
 func Start(p Program, stdin, stdout, stderr *os.File) (*Guarded, error) {
+	if afterAdmit != nil {
+		afterAdmit(p)
+	}
 	if len(p.Argv) == 0 || p.Argv[0] == "" {
 		return nil, rpc.Errorf(rpc.KindInvalid, "argv needs at least a program")
 	}
@@ -128,6 +156,9 @@ func Start(p Program, stdin, stdout, stderr *os.File) (*Guarded, error) {
 	}
 	select {
 	case <-started:
+		if afterStarted != nil {
+			afterStarted(p)
+		}
 		return g, nil
 	case <-g.done:
 	}

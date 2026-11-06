@@ -171,14 +171,8 @@ func sweep() {
 // shutdown asks every guard to end its program (SIGTERM, then the guard's SIGKILL KillGrace later), waits for them,
 // then kills whatever is left under init and reaps it.
 func shutdown() {
-	for _, guard := range execrun.Guards() {
-		_ = syscall.Kill(guard, syscall.SIGTERM)
-	}
-	deadline := time.Now().Add(execrun.KillGrace + stopSlack)
-	for len(execrun.Guards()) > 0 && time.Now().Before(deadline) {
-		time.Sleep(20 * time.Millisecond)
-	}
-	deadline = time.Now().Add(stopSlack)
+	execrun.EndAll(stopSlack)
+	deadline := time.Now().Add(stopSlack)
 	for time.Now().Before(deadline) {
 		left := proctree.Descendants(os.Getpid())
 		for _, pid := range left {

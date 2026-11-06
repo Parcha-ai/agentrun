@@ -315,6 +315,22 @@ func TestStdinWriteAndClose(t *testing.T) {
 	}
 }
 
+// A program that closes its stdin leaves the pipe no reader: a write fails as invalid, not after the write's bound, and
+// the program runs on.
+func TestAWriteToAProgramThatClosedItsStdinFails(t *testing.T) {
+	tbl := table(t, process.Options{})
+	p := start(t, tbl, process.StartParams{Argv: []string{"sh", "-c", "exec 0<&-; echo closed; exec sleep 300"}, Stdin: true})
+	offset := int64(0)
+	readUntil(t, tbl, p.ID, "stdout", &offset, "closed\n")
+	_, err := tbl.Write(context.Background(), process.WriteParams{ID: p.ID, Data: []byte("x\n")})
+	if err == nil || kindOf(t, err) != rpc.KindInvalid {
+		t.Fatalf("a write to a program that closed its stdin: %v", err)
+	}
+	if res, err := tbl.Wait(context.Background(), process.WaitParams{ID: p.ID, TimeoutMs: ms(0)}); err != nil || !res.Running {
+		t.Fatalf("the program after the write: %+v, %v", res, err)
+	}
+}
+
 func TestWithoutStdinTheProgramReadsNothingAndAWriteIsRefused(t *testing.T) {
 	tbl := table(t, process.Options{})
 	p := start(t, tbl, process.StartParams{Argv: []string{"sh", "-c", "cat; echo end"}})
