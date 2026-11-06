@@ -270,7 +270,8 @@ test("web_fetch set to ask on pi, claude-agent and codex at once: each run parks
     // Never the person's, on every harness (claude-agent included): no "[tool approval]" user_message, and no row's summary
     // carries the call's id (the id is the model's, in its message only).
     assert.equal(rows.some((r) => r.kind === "user_message" && String(r.text ?? r.summary ?? "").includes("[tool approval]")), false, `${at}: never a "You" row`);
-    assert.deepEqual(rows.filter((r) => String(r.summary ?? "").includes(run.callId)).map((r) => r.summary), [], `${at}: no summary names the call id`);
+    // The model's own words may quote what it read (pi's faux model echoes the message); every row the server writes may not.
+    assert.deepEqual(rows.filter((r) => r.kind !== "final_answer" && r.kind !== "text_block" && String(r.summary ?? "").includes(run.callId)).map((r) => r.summary), [], `${at}: no summary of the server's names the call id`);
     assert.equal(resumeRows(rows).length, 1, `${at}: one message resumed it`);
     ownRowsSay(rows, run.callId, run.decision === "allow" ? "Allowed: its result is in the message that resumed the run" : "Not run: you declined it", at);
     assert.equal(view.pending, null);
