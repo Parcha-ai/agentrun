@@ -412,9 +412,9 @@ func (t *Table) Resize(params ResizeParams) (Empty, error) {
 // follow. An argv over maxListedArgv of JSON is listed by its first arguments that fit, with ArgvClipped set.
 func (t *Table) List(params ListParams) (ListResult, error) {
 	offset := 0
-	if params.Offset != nil {
-		if offset = *params.Offset; offset < 0 {
-			return ListResult{}, rpc.Errorf(rpc.KindInvalid, "offset must be 0 or more")
+	if params.From != nil {
+		if offset = int(*params.From); offset < 0 {
+			return ListResult{}, rpc.Errorf(rpc.KindInvalid, "from must be 0 or more")
 		}
 	}
 	t.mu.Lock()
@@ -442,6 +442,7 @@ func (t *Table) List(params ListParams) (ListResult, error) {
 		}
 		res.Processes = append(res.Processes, info)
 	}
+	res.Next = int64(offset + len(res.Processes))
 	return res, nil
 }
 

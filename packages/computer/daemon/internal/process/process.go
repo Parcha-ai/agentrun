@@ -69,13 +69,16 @@ type ResizeParams struct {
 	Rows int    `json:"rows"`
 }
 
+// ListParams pages a listing: From is the Next of the page before, 0 for the first page.
 type ListParams struct {
-	Offset *int `json:"offset,omitempty"`
+	From *int64 `json:"from,omitempty"`
 }
 
 type ListResult struct {
 	Processes []Info `json:"processes"`
 	Truncated bool   `json:"truncated"`
+	// Next is where the page after this one starts: list again with from set to it.
+	Next int64 `json:"next"`
 }
 
 type WaitParams struct {
