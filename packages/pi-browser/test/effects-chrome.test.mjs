@@ -34,6 +34,50 @@ function recorder(observer) {
   return { rows, decided, until, stop };
 }
 
+/** One case, run until the journal has every effect it expects. Chrome for Testing 155 under load sometimes drops a
+ *  cross-origin request around its preflight: the driver sees the drop, that attempt had no effect, and the case runs
+ *  again (twice at most). `attempts` is how many runs it took. */
+async function journalCase({ driver, observer, server, mode, c }) {
+  const want = c.expected.length;
+  let journal;
+  let attempts = 0;
+  for (;;) {
+    attempts += 1;
+    server.reset();
+    journal = recorder(observer);
+    const drops = driver.aborted();
+    await driver.run({ code: JSON.stringify(c.steps) });
+    await journal.until(() => journal.decided().length >= want, 10_000).catch(() => undefined);
+    if (mode === "journal" && want) await server.nonGetReached(want, 10_000).catch(() => undefined);
+    await observer.flush();
+    journal.stop();
+    const complete = journal.decided().length >= want && (mode !== "journal" || server.nonGet().length >= want);
+    if (complete || driver.aborted() === drops || attempts === 3) break;
+  }
+  return { rows: journal.rows, attempts };
+}
+
+test("a cross-origin POST whose preflight the network drops is run again, not read as an effect the observer missed: under deny the retry is journaled and denied", { skip: NO_CHROME, timeout: 120_000 }, async (t) => {
+  const server = await startServer();
+  const root = await mkdtemp(path.join(process.env.TMPDIR || tmpdir(), "effects-"));
+  const provider = cdpProvider({ chrome: { executablePath: CHROME, profileRoot: root, args: [LOOPBACK] } });
+  let ref = null;
+  t.after(async () => { if (ref) await provider.release(ref); await server.close(); await rm(root, { recursive: true, force: true }); }, { timeout: 30_000 });
+  ref = await provider.create(spec("effects-drop"), new AbortController().signal);
+  const target = await provider.attach(ref);
+  const driver = await cdpDriver(server.base)(target);
+  t.after(() => driver.close(), { timeout: 30_000 });
+  const observer = await EffectObserver.open(target, effectDecider("deny"));
+  t.after(() => observer.close(), { timeout: 30_000 });
+  // As Chrome under load does (net::ERR_EMPTY_RESPONSE here): the preflight fails, the POST is never sent, so never paused.
+  server.cutPreflights("/api/xorigin", 1);
+  const c = CASES.find((each) => each.name.startsWith("G3"));
+  const { rows, attempts } = await journalCase({ driver, observer, server, mode: "deny", c });
+  assert.equal(attempts, 2, "the dropped attempt was seen and the case ran again");
+  assert.deepEqual([...rows.values()].map((row) => `${label(row)} ${row.held}`), ["POST /api/xorigin denied"]);
+  assert.deepEqual(server.nonGet(), [], "nothing reached the server");
+});
+
 test("the observer journals every effect of S3's twelve fixtures; under deny it holds every one and none reaches the server", { skip: NO_CHROME, timeout: 240_000 }, async (t) => {
   const server = await startServer();
   const root = await mkdtemp(path.join(process.env.TMPDIR || tmpdir(), "effects-"));
@@ -50,25 +94,8 @@ test("the observer journals every effect of S3's twelve fixtures; under deny it 
   for (const mode of ["journal", "deny"]) {
     const observer = await EffectObserver.open(target, mode === "deny" ? effectDecider("deny") : null);
     for (const c of CASES) {
-      // Chrome for Testing 155 under load sometimes drops a cross-origin fetch after its preflight (net::ERR_ABORTED):
-      // the driver sees it, that attempt had no effect, and the case runs again (twice at most).
-      const want = c.expected.length;
-      let journal;
-      let complete;
-      for (let attempt = 0; ; attempt += 1) {
-        server.reset();
-        journal = recorder(observer);
-        const aborts = driver.aborted();
-        await driver.run({ code: JSON.stringify(c.steps) });
-        await journal.until(() => journal.decided().length >= want, 10_000).catch(() => undefined);
-        if (mode === "journal" && want) await server.nonGetReached(want, 10_000).catch(() => undefined);
-        await observer.flush();
-        journal.stop();
-        complete = journal.decided().length >= want && (mode !== "journal" || server.nonGet().length >= want);
-        if (complete || driver.aborted() === aborts || attempt === 2) break;
-      }
-      const { rows } = journal;
-      assert.deepEqual([...rows.values()].map(label).sort(), c.expected, `${mode}, ${c.name}: the journal`);
+      const { rows } = await journalCase({ driver, observer, server, mode, c });
+      assert.deepEqual([...rows.values()].map(label).sort(), c.expected, `${mode}, ${c.name}: the journal (the server got ${JSON.stringify(server.nonGet())})`);
       assert.deepEqual(server.nonGet(), mode === "deny" ? [] : c.expected, `${mode}, ${c.name}: what reached the server`);
       if (mode === "deny") assert.ok([...rows.values()].every((row) => row.held === "denied"), `${mode}, ${c.name}: every effect held and denied`);
       for (const row of rows.values()) assert.equal(Object.keys(row).sort().join(","), "at,held,irreversible,method,origin,path,requestId", "a row holds no body, header or query");

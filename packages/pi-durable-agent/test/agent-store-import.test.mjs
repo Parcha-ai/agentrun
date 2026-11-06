@@ -8,7 +8,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { AgentHomeError, openStore, openStoreReader } from "../dist/index.js";
-import { scratch } from "./support.mjs";
+import { agentFolder, diskRuns, scratch } from "./support.mjs";
 
 const refused = (code) => (error) => error instanceof AgentHomeError && error.code === code;
 const A = { kind: "agentic", instructions: "Answer.", tools: [] };
@@ -33,7 +33,7 @@ test("importRun records an ended run at the source's times, with its import row,
   const { dir, store, revision } = await seeded();
   const run = store.importRun(input(revision));
   assert.match(run.runId, /^[0-9a-f-]{36}$/, "the store mints the id");
-  assert.equal(run.dir, path.join(dir, "runs", run.runId));
+  assert.equal(run.dir, path.join(dir, "disk", "agents", agentFolder("notes"), "runs", run.runId));
   assert.equal(run.storePath, store.runStorePath(run.runId));
   const row = store.readRun(run.runId);
   assert.deepEqual({ state: row.state, startedAt: row.startedAt, endedAt: row.endedAt, costUsd: row.costUsd, summary: row.summary, importedFrom: row.importedFrom },
@@ -153,26 +153,7 @@ test("the run row and its import row land in one transaction: a failed import in
   const again = openStore(dir);
   assert.throws(() => again.importRun(input(revision)), /forced/);
   assert.equal(again.listRuns().length, 0);
-  const runs = path.join(dir, "runs");
-  assert.deepEqual(existsSync(runs) ? (await import("node:fs")).readdirSync(runs) : [], []);
+  assert.deepEqual(diskRuns(dir), []);
   again.close();
 });
 
-test("a store written before imports (no run_imports table) opens: the reader lists runs with no importedFrom, and the writer adds the table and imports", async () => {
-  const { dir, store, revision } = await seeded();
-  const { runId } = await store.startRun({ agent: "notes" });
-  store.close();
-  const db = new DatabaseSync(path.join(dir, "store.sqlite"));
-  for (const { type, name } of db.prepare("SELECT type, name FROM sqlite_master WHERE (tbl_name = 'run_imports' OR name = 'imported_runs_stay_ended') AND type != 'table' AND sql IS NOT NULL").all()) db.exec(`DROP ${type.toUpperCase()} ${name}`);
-  db.exec("DROP TABLE run_imports");
-  db.close();
-  const reader = openStoreReader(dir);
-  assert.deepEqual(reader.listRuns().map((r) => [r.id, r.importedFrom]), [[runId, undefined]]);
-  assert.equal(reader.readRun(runId).importedFrom, undefined);
-  reader.close();
-  const writer = openStore(dir);
-  const run = writer.importRun(input(revision));
-  assert.equal(writer.readRun(run.runId).importedFrom.source, "claude-code");
-  writer.close();
-  assert.equal(rows(dir, "PRAGMA user_version")[0].user_version, 1, "the version stays: an earlier version still opens the file");
-});

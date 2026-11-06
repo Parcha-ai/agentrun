@@ -8,7 +8,7 @@ import { test } from "node:test";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { BOX_IDS } from "../dist/boxes.js";
 import { startServe } from "../dist/index.js";
-import { agent, client, FAUX, follow, printed, scratch, withEnv } from "./support.mjs";
+import { agent, client, FAUX, follow, printed, runDir, runRecordOf, scratch, withEnv } from "./support.mjs";
 
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 const DOCKER = new URL("../docker/", import.meta.url);
@@ -40,7 +40,7 @@ test("on SIGTERM with a run busy, the bin exits within its --drain-timeout, and 
   assert.equal((await api("POST", "/agents", agent("busy"))).status, 201);
   const { body: run } = await api("POST", "/agents/busy/runs", { input: { content: `Answer once ${go} exists.` } });
   await follow(api, run.run_id, ["working"]);
-  const pid = JSON.parse(await readFile(join(data, "runs", run.run_id, "run.json"), "utf8")).holder.pid;
+  const pid = runRecordOf(data, run.run_id).holder.pid;
   const from = Date.now();
   server.child.kill("SIGTERM");
   const code = await Promise.race([server.exited, sleep(40_000).then(() => "still running")]);
@@ -48,7 +48,7 @@ test("on SIGTERM with a run busy, the bin exits within its --drain-timeout, and 
   assert.equal(code, 0, server.seen.err);
   assert.ok(took < 2_000 + 3_000, `it exited ${took} ms after SIGTERM, past its 2 s drain`);
   assert.equal(alive(pid), false, "the run's process exited with it");
-  const left = JSON.parse(await readFile(join(data, "runs", run.run_id, "run.json"), "utf8"));
+  const left = runRecordOf(data, run.run_id);
   assert.deepEqual([left.status, left.detail?.reason], ["sleeping", "drained"], "drained, not crashed");
   const next = await startServe({ data, port: 0, faux: FAUX });
   t.after(() => next.close());

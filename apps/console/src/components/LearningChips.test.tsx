@@ -25,35 +25,35 @@ describe("LearningChips", () => {
     expect(renderToStaticMarkup(createElement(LearningChips, { run: run({ state: "merged", reason: null }) }))).toBe("");
   });
   it("says how many notes it read and kept, names them on hover, and says what a kept note replaces", () => {
-    const html = renderToStaticMarkup(createElement(LearningChips, { run: run({ state: "merged", reason: null, used: USED, learned: LEARNED }), link: true }));
-    expect(text(html)).toContain("Used 1 note");
+    const html = renderToStaticMarkup(createElement(LearningChips, { run: run({ state: "merged", reason: null, read: USED, learned: LEARNED }), link: true }));
+    expect(text(html)).toContain("Read: 1 note");
     expect(text(html)).toContain("Learned 1 note");
     expect(text(html)).toContain("This run read Shopify refund policy path");
     expect(text(html)).toContain("This run kept Try /policies/refund-policy first");
     expect(text(html)).toContain("Replaces 1 older note.");
     expect(html).toContain('href="#/agents/refunds/learning?note=shopify-refund-policy-path.md"');
     expect(html).toContain('href="#/agents/refunds/learning?note=try-policies-refund-policy-first.md"');
-    expect(html).toContain('aria-label="Used 1 note: Shopify refund policy path"');
+    expect(html).toContain('aria-label="Read: 1 note: Shopify refund policy path"');
     // The tooltip describes the link, the focusable element, not a span around it.
-    const link = /<a [^>]*aria-label="Used 1 note[^>]*>/.exec(html)?.[0] ?? "";
+    const link = /<a [^>]*aria-label="Read: 1 note[^>]*>/.exec(html)?.[0] ?? "";
     const id = /aria-describedby="([^"]+)"/.exec(link)?.[1];
     expect(id).toBeTruthy();
     expect(html).toContain(`role="tooltip" id="${id}"`);
   });
   it("counts in words: 2 notes", () => {
     const two = [...USED, { file: "keep-it-short.md", name: "Keep it short" }];
-    expect(text(renderToStaticMarkup(createElement(LearningChips, { run: run({ state: "dropped", reason: "empty", used: two }) })))).toContain("Used 2 notes");
+    expect(text(renderToStaticMarkup(createElement(LearningChips, { run: run({ state: "dropped", reason: "empty", read: two }) })))).toContain("Read: 2 notes");
   });
   it("in a row, which is itself a link, the chips are text that names the notes in its title, with no tooltip", () => {
-    const html = renderToStaticMarkup(createElement(LearningChips, { run: run({ state: "merged", reason: null, used: USED, learned: LEARNED }) }));
+    const html = renderToStaticMarkup(createElement(LearningChips, { run: run({ state: "merged", reason: null, read: USED, learned: LEARNED }) }));
     expect(html).not.toContain("<a ");
     expect(html).not.toContain('role="tooltip"');
-    expect(html).toContain('title="Used 1 note: Shopify refund policy path"');
+    expect(html).toContain('title="Read: 1 note: Shopify refund policy path"');
     expect(html).toContain('title="Learned 1 note: Try /policies/refund-policy first (replaces 1 older note)"');
   });
   it("a note whose name the server cut of a secret is named as it was cut, and never linked", () => {
-    const html = renderToStaticMarkup(createElement(LearningChips, { run: run({ state: "merged", reason: null, used: [{ file: "[redacted]", name: "[redacted]" }], learned: LEARNED }), link: true }));
-    expect(html).toContain('title="Used 1 note: [redacted]"');
+    const html = renderToStaticMarkup(createElement(LearningChips, { run: run({ state: "merged", reason: null, read: [{ file: "[redacted]", name: "[redacted]" }], learned: LEARNED }), link: true }));
+    expect(html).toContain('title="Read: 1 note: [redacted]"');
     expect(html).not.toContain("redacted%5D");
     expect(html).toContain('href="#/agents/refunds/learning?note=try-policies-refund-policy-first.md"');
   });
@@ -61,7 +61,7 @@ describe("LearningChips", () => {
     for (const state of ["reflecting", "proposed"] as const) expect(text(renderToStaticMarkup(createElement(LearningChips, { run: run({ state, reason: null }) })))).toContain("Looking back");
   });
   it("the run header carries them, as links", () => {
-    const html = renderToStaticMarkup(createElement(RunHeader, { run: run({ state: "merged", reason: null, used: USED, learned: LEARNED }), agentName: "Refunds" }));
+    const html = renderToStaticMarkup(createElement(RunHeader, { run: run({ state: "merged", reason: null, read: USED, learned: LEARNED }), agentName: "Refunds" }));
     expect(html).toContain('href="#/agents/refunds/learning?note=try-policies-refund-policy-first.md"');
     expect(text(html)).toContain("Learned 1 note");
   });
