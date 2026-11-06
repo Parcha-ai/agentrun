@@ -322,6 +322,8 @@ export type Run = {
   installing?: Promise<boolean>;
   /** It shows the install's row (INSTALLING_CLAUDE) while it waits for an install that runs. */
   installRow?: string;
+  /** Its first launch, once its harness is installed (start): its place is held until it is done. */
+  afterInstall?: Promise<void>;
   settled: boolean;
   settling?: Promise<void>;
   /** The newest write of its serve.json: one at a time, in order. */
@@ -2413,13 +2415,21 @@ export class Runs {
   async create(entry: AgentEntry, revision: Revision, version: number, options: StartOptions): Promise<Run> {
     await this.sweepOnce();
     const release = await this.takePlace(harnessOfBody(revision.body));
+    let held = false;
     try {
       // Read again: the place may have been waited for, and the agent archived meanwhile.
       const now = await this.options.agents.get(entry.agent.id);
       if (now?.agent.archivedAt) throw new ApiError("agent_not_runnable", `The agent ${entry.agent.id} is archived: unarchive it to run it.`, { details: { archived_at: now.agent.archivedAt } });
-      return await this.start(entry, revision, version, options);
+      const run = await this.start(entry, revision, version, options);
+      // A run waiting for its harness's install has no process yet: it keeps its place until its launch (start's
+      // `afterInstall`), so no other start takes it meanwhile and no two launch past the limit once the install is in.
+      if (run.afterInstall) {
+        held = true;
+        void run.afterInstall.finally(release);
+      }
+      return run;
     } finally {
-      release();
+      if (!held) release();
     }
   }
 
@@ -2488,7 +2498,7 @@ export class Runs {
     // A harness installed on first use (claude-agent's Claude Code) is installed first, in the background: the start
     // answers now, and the run shows the install while it waits.
     const installing = this.harnessReady(run);
-    if (installing) void installing.then((installed) => installed && this.launch(run));
+    if (installing) run.afterInstall = installing.then((installed) => void (installed && this.launch(run)), () => undefined).finally(() => void (run.afterInstall = undefined));
     else this.launch(run);
     if (revision.kind === "workflow") return run;
     // The first message names the files given to the run (run-manifest.ts), on every harness.

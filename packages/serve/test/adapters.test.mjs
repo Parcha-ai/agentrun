@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { claudeModel, claudeModelId, claudeOf, claudeProvider, codexOf, codexProvider, HarnessUnavailable, installHint, priceOf, startedByNpx } from "../dist/adapters.js";
 import * as adapters from "../dist/adapters.js";
 import * as files from "../dist/files.js";
+import { installLine } from "../dist/claude-sdk.js";
 
 const openai = { provider: "openai", modelId: "gpt-5.4-mini" };
 const refused = (pattern) => (error) => error instanceof HarnessUnavailable && pattern.test(error.message);
@@ -128,7 +129,8 @@ test("claude-agent with Claude Code not installed in the data, and no key: the r
   await assert.rejects(claudeOf({ AGENTRUN_SERVE_DATA: data }, needs), (error) => {
     assert.ok(error instanceof HarnessUnavailable, String(error));
     assert.match(error.message, /not installed/);
-    assert.ok(error.message.includes(`npm install --prefix ${join(data, "harnesses")} @anthropic-ai/claude-agent-sdk@0.3.286`), error.message);
+    assert.ok(error.message.includes(installLine(join(data, "harnesses"))), error.message);
+    assert.match(installLine(join(data, "harnesses")), /^mkdir -p \S+ && cp \S+\/harnesses\/claude-agent\/package\.json \S+\/harnesses\/claude-agent\/package-lock\.json \S+\/ && npm ci --prefix \S+ --ignore-scripts$/, "the locked install, no script");
     assert.doesNotMatch(error.message, /ANTHROPIC_API_KEY/);
     return true;
   });
@@ -153,7 +155,7 @@ test("claude-agent's adapter is handed the SDK, its CLI and the MCP library as t
   for (const broken of [unpinned, pinned]) {
     await assert.rejects(claudeOf(env, needs, broken, async () => sdk), (error) => {
       assert.ok(error instanceof HarnessUnavailable, String(error));
-      assert.ok(error.message.includes("npm install --prefix /d/harnesses @anthropic-ai/claude-agent-sdk@0.3.286"), error.message);
+      assert.ok(error.message.includes(installLine("/d/harnesses")), error.message);
       assert.ok(!error.message.includes(real.CLAUDE_AGENT_SDK_INSTALL), error.message);
       return true;
     });

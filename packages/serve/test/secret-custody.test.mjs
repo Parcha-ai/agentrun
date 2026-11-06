@@ -18,7 +18,7 @@ import { BOX_KEYS } from "../dist/boxes.js";
 import { ToolKeys } from "../dist/tool-keys.js";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
-import { agent, answerFlow, client, FAUX, flowAgent, follow, printed, responsesEndpoint, scratch } from "./support.mjs";
+import { agent, answerFlow, client, FAUX, flowAgent, follow, linkClaudeSdk, printed, responsesEndpoint, scratch } from "./support.mjs";
 import { CANARY as JEV_CANARY } from "./fixtures/faux-jev.mjs";
 import { CANARY as PARALLEL_CANARY } from "./fixtures/faux-parallel.mjs";
 import { reported } from "./fixtures/custody-report.mjs";
@@ -149,6 +149,8 @@ async function launched(t, env, args = ["--faux", CUSTODY]) {
   // of its own, which a kill of the launcher's group does not reach, and it may still be writing there.
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-serve-"));
   const data = join(dir, "agents");
+  // Its data holds Claude Code as a first use installs it: no test downloads it.
+  await linkClaudeSdk(data);
   // The launcher's own temporary directory, where its FIFO is made: the test's, so it can see that nothing is left.
   const tmp = join(dir, "tmp");
   mkdirSync(tmp);

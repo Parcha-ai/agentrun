@@ -164,13 +164,16 @@ test("each key unlocks only what capabilities bind, a tool or a decision provide
 
 test("before any model key is saved, a model key's row names every harness the key runs that this server could run: OpenRouter's all four, Anthropic's pi and claude-agent; one not installed, one that does not fit and one the key alone does not fix are left out", { timeout: 180_000 }, async (t) => {
   const standIn = await codexStandIn(t);
-  // A path where nothing is installed.
+  // A path where nothing is installed, and a CLI that is not the pinned build.
   const nothing = join(await scratch(t), "nothing");
+  const unpinned = join(await scratch(t), "claude");
+  writeFileSync(unpinned, "#!/bin/sh\necho 0.0.1\n", { mode: 0o755 });
   const cases = [
     ["claude-agent installed, codex stood in", ROOMY_MIB, { AGENTRUN_SERVE_CODEX_STANDIN: standIn }, OWN],
     // Claude Code not installed yet installs on first use: the key still runs it.
     ["claude-agent not installed yet", ROOMY_MIB, { AGENTRUN_SERVE_CODEX_STANDIN: standIn }, OWN, false],
-    ["claude-agent's CLI not installed", ROOMY_MIB, { AGENTRUN_SERVE_CODEX_STANDIN: standIn }, { anthropic: ["pi"], openai: ["pi", "codex", "opencode"], openrouter: ["pi", "codex", "opencode"] }, { cli: nothing }],
+    // Claude Code's CLI off its pins: no key runs it.
+    ["claude-agent's CLI off its pins", ROOMY_MIB, { AGENTRUN_SERVE_CODEX_STANDIN: standIn }, { anthropic: ["pi"], openai: ["pi", "codex", "opencode"], openrouter: ["pi", "codex", "opencode"] }, { cli: unpinned }],
     ["codex not installed", ROOMY_MIB, { CODEX_BIN: nothing }, { anthropic: ["pi", "claude-agent"], openai: ["pi", "opencode"], openrouter: ["pi", "claude-agent", "opencode"] }],
     // 384 MiB holds the server's 128 and one codex run (192), never a claude-agent run (288) or an opencode run (704): no
     // key would run them.

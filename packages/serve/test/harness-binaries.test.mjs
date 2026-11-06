@@ -103,21 +103,19 @@ test("a harness whose binary is missing or off its pins at the start says to res
   };
   const INSTALL = /; once it is installed, restart AgentRun to pick it up\.$/;
   const PINS = /; once the pinned build is installed, restart AgentRun\.$/;
-  // claude-agent's reason is its CLI's: Claude Code installed in the data, with its CLI missing or off its pins.
-  const restartOf = (reason) => (/not installed/.test(reason) ? INSTALL : PINS);
-  // Not installed: no file where each binary is named.
+  // Not installed: no file where each binary is named. Claude Code without its CLI is not whole: it installs again on
+  // first use, so claude-agent runs and names no restart.
   const missing = await offers({ CODEX_BIN: join(dir, "nothing") }, { cli: join(dir, "nothing") });
   assert.equal(missing.codex.available, false, JSON.stringify(missing.codex));
   assert.match(missing.codex.reason, /is not installed/);
   assert.match(missing.codex.reason, INSTALL, "codex not installed: restart once it is installed");
-  assert.equal(missing["claude-agent"].available, false, JSON.stringify(missing["claude-agent"]));
-  assert.match(missing["claude-agent"].reason, restartOf(missing["claude-agent"].reason), "claude-agent not installed: the restart is named");
+  assert.deepEqual([missing["claude-agent"].available, missing["claude-agent"].installs, missing["claude-agent"].reason], [true, "on_first_use", undefined], "claude-agent's tree without its CLI installs again");
   // Off its pins: a binary that is not the pinned build.
   const off = await offers({ CODEX_BIN: unpinned }, { cli: unpinned });
   assert.match(off.codex.reason, /is not the pinned build/);
   assert.match(off.codex.reason, PINS, "codex off its pins: restart once the pinned build is installed");
   assert.equal(off["claude-agent"].available, false, JSON.stringify(off["claude-agent"]));
-  assert.match(off["claude-agent"].reason, restartOf(off["claude-agent"].reason), "claude-agent off its pins: the restart is named");
+  assert.match(off["claude-agent"].reason, PINS, "claude-agent's CLI off its pins: the restart is named");
   // Claude Code not installed in the data at all: it installs on first use, so it runs, and names no restart.
   const fresh = await offers({}, false);
   assert.deepEqual([fresh["claude-agent"].available, fresh["claude-agent"].installs, fresh["claude-agent"].reason], [true, "on_first_use", undefined]);

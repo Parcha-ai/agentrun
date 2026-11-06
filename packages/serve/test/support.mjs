@@ -1,6 +1,6 @@
 // A server on a fresh data directory with the faux model, and a client for its /v2 routes. No key, no network.
 import assert from "node:assert/strict";
-import { chmod, lstat, mkdir, mkdtemp, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, copyFile, lstat, mkdir, mkdtemp, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer, request } from "node:http";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -18,6 +18,10 @@ export const FAUX = new URL("./fixtures/faux-model.mjs", import.meta.url).pathna
 // set, boxes.ts): a test that wants a box lists it itself, with its endpoint on loopback (boxes.test.mjs), or unsets the
 // setting over a fake docker (docker-by-default.test.mjs).
 process.env.AGENTRUN_BOXES = "none";
+// No test reaches npm's registry: a server whose data holds no Claude Code would install it on first use (claude-sdk.ts)
+// from the registry npm is configured for. A test that installs names its own fake (claude-first-use.test.mjs); any other
+// such install fails at once on this closed port rather than downloading Claude Code.
+for (const name of ["npm_config_registry", "NPM_CONFIG_REGISTRY"]) process.env[name] = "http://127.0.0.1:9/";
 
 /** The records of a log another process appends to (a line of JSON each, as the fake docker's): only its whole lines,
  *  each ended by its newline. A file just made and still empty, or a last line still being written, is read as the
@@ -112,9 +116,10 @@ export async function linkClaudeSdk(data, { cli } = {}) {
     await link(join(from, name), join(to, name));
   }
   if (cli) {
+    // Its own file in the tree, as an install would leave it (one that is not there is a tree without its CLI).
     await mkdir(join(to, platform), { recursive: true });
     await writeFile(join(to, platform, "package.json"), readFileSync(join(from, platform, "package.json")));
-    await link(cli, join(to, platform, basename(pinned)));
+    if (existsSync(cli)) await copyFile(cli, join(to, platform, basename(pinned)));
   }
 }
 
