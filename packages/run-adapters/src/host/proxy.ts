@@ -107,6 +107,10 @@ export interface ProviderPolicy {
    *  can buy): never more than it asked for, and never longer as sent, since its input bound was measured on it. A host
    *  that limits a request's output needs it: without it such a request is refused, never sent unlimited. */
   limitOutput?(body: Record<string, unknown>, max: number): Record<string, unknown>;
+  /** `body` with `text` added as a note the provider reads after everything the client sent (the spend cap's wrap-up),
+   *  carrying no cache marker of its own, so the prefix the client built, and cached, stays byte for byte as sent. Absent:
+   *  the policy cannot place one, and a note waits for a request whose policy can. */
+  addNote?(body: Record<string, unknown>, text: string): Record<string, unknown>;
   /** The status a request the runner refused gets: one the client does not retry. Default 400. */
   readonly refusedStatus?: number;
 }
@@ -181,6 +185,10 @@ export interface ProxyRequest {
   outputTokensAsked?: number;
   /** The least output it may be limited to and still answer (the policy's `outputLeast`). */
   outputTokensLeast?: number;
+  /** A request on another model than the session's (a client's small-model side call: a title, a summary). */
+  side?: true;
+  /** It carries the host's note (`ModelProxyHooks.note`), placed in its body: the host's to record once it is admitted. */
+  noted?: true;
 }
 
 export interface ModelProxyHooks {
@@ -194,6 +202,9 @@ export interface ModelProxyHooks {
   /** When a paid request's response headers arrive, before its body: the ids they give it (`providerIdsOf`), so a
    *  request a crash cuts off after this point is known to have reached the provider, under those ids. */
   responded?(ids: Record<string, string>, ticket?: unknown): Promise<void>;
+  /** A note the host has for the session's next main-model request (the spend cap's wrap-up), taken by this call: the
+   *  proxy asks only for a paid request on the session's model whose policy can place one (`addNote`). */
+  note?(model: string): string | undefined;
 }
 
 export interface ModelProxyOptions {
@@ -523,6 +534,25 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     } catch (error) {
       say(`model proxy (${policy.id}): the policy could not name the request's model; it is booked as the session's`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
     }
+    // A note the host has for the session's next main-model request (the spend cap's wrap-up): a paid request on the
+    // session's model whose policy can place it takes it, once, before the body is measured, so the cap admits its bytes.
+    // One the policy fails to place is dropped, said once; the request goes as the client sent it. The body as the client
+    // sent it is kept (`plain`): a request the cap admits only without the note's bytes goes as that (ModelTicket.noteDropped).
+    let noted = false;
+    let plain: Record<string, unknown> | undefined;
+    if (!route.free && asked === model && policy.addNote && hooks.note) {
+      const note = hooks.note(asked);
+      if (note) {
+        try {
+          const without = body;
+          body = policy.addNote(body, note);
+          plain = without;
+          noted = true;
+        } catch (error) {
+          say(`model proxy (${policy.id}): the host's note could not be placed; the request goes without it`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
+        }
+      }
+    }
     // The body as it is sent, and the most input tokens it can be billed for, measured before the runner is asked.
     let sent: string;
     try {
@@ -532,6 +562,17 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       return refuse(res, 500, "the body could not be serialized", req);
     }
     let inputTokensMax = inputTokensMaxOf(policy, body, sent, say);
+    // The same, of the body as the client sent it, when a note was placed: the cap checks the request without the note.
+    let plainSent: string | undefined;
+    let inputTokensMaxWithoutNote: number | undefined;
+    if (plain) {
+      try {
+        plainSent = JSON.stringify(plain);
+        inputTokensMaxWithoutNote = inputTokensMaxOf(policy, plain, plainSent, say);
+      } catch {
+        plainSent = undefined;
+      }
+    }
     // What the body asks for at most, and the least it may be limited to, as the policy reads them. One the policy cannot
     // read leaves the request's worst case unknown: its input is unmeasured.
     const figure = (value: unknown): number | undefined => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined);
@@ -577,7 +618,8 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     let ticket: unknown;
     try {
       if (!route.free) ticket = await hooks.beforeRequest({
-        model: asked, inputTokensMax,
+        model: asked, inputTokensMax, ...(asked !== model ? { side: true as const } : {}),
+        ...(noted ? { noted: true as const, ...(inputTokensMaxWithoutNote === undefined ? {} : { inputTokensMaxWithoutNote }) } : {}),
         ...(outputTokensAsked === undefined ? {} : { outputTokensAsked }),
         ...(outputTokensLeast === undefined ? {} : { outputTokensLeast }),
       });
@@ -599,6 +641,12 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     };
     // Admitted while the proxy was closing, and never sent.
     if (closing) return release(503, "the model proxy is closing");
+    // Admitted only without the note (its bytes did not fit what is left of the cap): the body as the client sent it.
+    if (typeof ticket === "object" && ticket !== null && (ticket as { noteDropped?: unknown }).noteDropped === true) {
+      if (!plain || plainSent === undefined) return release(500, "the request was admitted without its note, which this proxy cannot take back out");
+      body = plain;
+      sent = plainSent;
+    }
     // Admitted with an output limit (what is left of a spend cap can buy): written into the body, which is never sent
     // unlimited, nor longer than the body its input bound was measured on.
     const limit = typeof ticket === "object" && ticket !== null ? (ticket as { outputTokensMax?: unknown }).outputTokensMax : undefined;
