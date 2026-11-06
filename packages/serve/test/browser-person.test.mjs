@@ -392,3 +392,52 @@ test("an ask a restarted process takes up holds through its own expiry: joining 
   assert.equal(held[1][0], "handing the browser to you");
   assert.ok(Math.abs(held[1][1] - 600) <= 2, `the ten minutes from T+15 to its expiry at T+25 are held: ${JSON.stringify(held)}`);
 });
+
+test("a re-hold holds only past what is held already: take at 0, an ask at 10 (held through 25), the re-hold at 15 holds 5 minutes (through 30), and a cap of exactly that time is never refused", async (t) => {
+  const { createDrivingGates } = await import("@parcha/pi-browser/live-view");
+  const root = await scratch(t);
+  const clock = fakeClock(Date.now());
+  const holdMs = 15 * 60_000;
+  const gates = createDrivingGates({ timers: clock.timers, holdIdleMs: holdMs });
+  // A cap with room for 30 minutes of the person's time, no more.
+  let room = 30 * 60;
+  const held = [];
+  const person = personHands({ root, gates, timers: clock.timers, now: clock.now, holdMs, pollMs: 60_000, note: async () => {}, personTime: async (what, seconds) => {
+    if (Math.round(seconds) > room) return { refused: `no room for ${Math.round(seconds)} s` };
+    room -= Math.round(seconds);
+    held.push([what, Math.round(seconds)]);
+    return { drop() {} };
+  } });
+  t.after(() => person.close());
+  const tag = "ar-run-25-1";
+  gates(tag).setPresent(true);
+  const take = await person.take(tag);
+  const ends = [];
+  gates(tag).take((why) => { ends.push(why); take.end(why); });
+  for (let minute = 0; minute < 10; minute += 1) { gates(tag).input(); await clock.tick(60_000); }
+  await person.handoff.request(ask(25, tag));
+  for (let minute = 0; minute < 6; minute += 1) { gates(tag).input(); await clock.tick(60_000); }
+  assert.deepEqual(held, [["taking over the browser", 900], ["handing the browser to you", 600], ["more of your time in the browser", 300]], "each minute held once");
+  assert.deepEqual(ends, [], "the cap with room for the real time refuses nothing");
+});
+
+test("an ask the cap ended keeps the cap's words across a restart: the next process's wait hears expired, with them", async (t) => {
+  const { createDrivingGates } = await import("@parcha/pi-browser/live-view");
+  const root = await scratch(t);
+  const clock = fakeClock(Date.now());
+  const holdMs = 15 * 60_000;
+  const gates = createDrivingGates({ timers: clock.timers, holdIdleMs: holdMs });
+  let refuse = null;
+  const before = personHands({ root, gates, timers: clock.timers, now: clock.now, holdMs, pollMs: 60_000, note: async () => {}, personTime: async () => (refuse ? { refused: refuse } : { drop() {} }) });
+  const tag = "ar-run-26-1";
+  gates(tag).setPresent(true);
+  const asked = await before.handoff.request(ask(26, tag));
+  refuse = "spend_cap_reached: no room for more of your time";
+  await clock.tick(holdMs);
+  await sleep(10);
+  assert.deepEqual(await before.handoff.outcome(asked.interactionId), { outcome: "expired", reason: refuse });
+  before.close();
+  const after = hands(root);
+  t.after(() => after.person.close());
+  assert.deepEqual(await after.person.handoff.outcome(asked.interactionId), { outcome: "expired", reason: refuse }, "the cap's words outlive the process");
+});

@@ -36,7 +36,8 @@ export const FAUX_PERSON_MS_ENV = "FAUX_BROWSER_PERSON_MS";
 export type AskOutcome = "done" | "cancelled" | "expired";
 /** An ask's pending record, as the server reads it. */
 export type PendingAsk = { id: string; tag: string; instruction: string; completion_condition: string; asked_at: string; expires_at: string };
-type Answer = { outcome: AskOutcome; at: string };
+/** `reason`: why, for the agent, when the run's cap ended the ask (kept with the answer, so a restart still tells it). */
+type Answer = { outcome: AskOutcome; at: string; reason?: string };
 
 const ID = /^[A-Za-z0-9_-]{22}$/;
 const TAG = /^[A-Za-z0-9._:-]{1,200}$/;
@@ -114,7 +115,7 @@ const pendingOf = (value: unknown, id: string): PendingAsk | undefined => {
 };
 const answerOf = (value: unknown): Answer | undefined => {
   const v = value as Partial<Answer> | undefined;
-  return v && OUTCOMES.includes(String(v.outcome)) && typeof v.at === "string" ? { outcome: v.outcome as AskOutcome, at: v.at } : undefined;
+  return v && OUTCOMES.includes(String(v.outcome)) && typeof v.at === "string" ? { outcome: v.outcome as AskOutcome, at: v.at, ...(typeof v.reason === "string" ? { reason: v.reason } : {}) } : undefined;
 };
 
 /** Every ask the run's directory holds, newest first, each with its answer when it has one. */
@@ -163,8 +164,8 @@ export function askShown(runDir: string, rows: readonly { kind: string; session?
 }
 
 /** The answer to ask `id`, or the first answer written now: `outcome` unless one is there already. */
-function answerOnce(dir: string, id: string, outcome: AskOutcome): AskOutcome {
-  if (writeOwn(dir, `${id}.answer.json`, { outcome, at: new Date().toISOString() }, true)) return outcome;
+function answerOnce(dir: string, id: string, outcome: AskOutcome, reason?: string): AskOutcome {
+  if (writeOwn(dir, `${id}.answer.json`, { outcome, at: new Date().toISOString(), ...(reason ? { reason } : {}) }, true)) return outcome;
   return answerOf(readOwn(dir, `${id}.answer.json`))?.outcome ?? outcome;
 }
 
@@ -312,7 +313,10 @@ export function personHands(options: {
   const again = (tag: string, ledger: Ledger): void => {
     ledger.timer = timers.set(() => void (async () => {
       if (ledgers.get(tag) !== ledger) return;
-      const hold = await options.personTime("more of your time in the browser", holdMs / 1000, { pauses: false }).catch(() => ({ refused: "the person's time could not be held" }));
+      // Only past what is held already (an ask that joined may have held further): every minute held once.
+      const seconds = Math.max(0, now() + holdMs - ledger.until) / 1000;
+      if (seconds <= 0) return void again(tag, ledger);
+      const hold = await options.personTime("more of your time in the browser", seconds, { pauses: false }).catch(() => ({ refused: "the person's time could not be held" }));
       if (ledgers.get(tag) !== ledger) return void ("refused" in hold || hold.drop());
       if (!("refused" in hold)) {
         ledger.holds.push(hold);
@@ -343,7 +347,7 @@ export function personHands(options: {
     const dir = askDir(options.root);
     if (!dir || settled.has(id)) return;
     capped.set(id, words);
-    answerOnce(dir, id, "expired");
+    answerOnce(dir, id, "expired", words);
     settle(id);
   };
 
@@ -380,8 +384,11 @@ export function personHands(options: {
     const ask = adopt(id);
     const dir = askDir(options.root);
     if (!ask || !dir) return undefined;
-    const answered = answerOf(readOwn(dir, `${id}.answer.json`))?.outcome ?? (Date.now() >= ask.expiresAt ? answerOnce(dir, id, "expired") : undefined);
+    const written = answerOf(readOwn(dir, `${id}.answer.json`));
+    const answered = written?.outcome ?? (Date.now() >= ask.expiresAt ? answerOnce(dir, id, "expired") : undefined);
     if (!answered) return undefined;
+    // The cap's words, kept with the answer: a process that takes the ask up after a restart tells them too.
+    if (written?.reason !== undefined && !capped.has(id)) capped.set(id, written.reason);
     settled.set(id, answered);
     open.delete(id);
     ask.drop();
