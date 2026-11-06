@@ -14,8 +14,8 @@ import { DockerProvider, pullTar, pullTarStream, pushTar, readFile, writeFile } 
 
 const LIVE = process.env.AGENTRUN_COMPUTER_LIVE_DOCKER === "1";
 const IMAGE = "debian:bookworm-slim";
-/** The provider's default user, which the daemon and so every file it writes has: this process's, or 1000:1000 as root. */
-const [UID, GID] = (process.getuid() !== 0 ? `${process.getuid()}:${process.getgid()}` : "1000:1000").split(":").map(Number);
+/** The provider's default user, which the daemon and so every file it writes has: this process's, or 1000:1000 when its uid or gid is 0. */
+const [UID, GID] = (process.getuid() !== 0 && process.getgid() !== 0 ? `${process.getuid()}:${process.getgid()}` : "1000:1000").split(":").map(Number);
 const docker = (...args) => execFileSync("docker", args, { encoding: "utf8" });
 const decode = (base64) => Buffer.from(base64, "base64").toString("utf8");
 

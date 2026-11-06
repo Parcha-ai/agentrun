@@ -10,8 +10,8 @@ import { fakeDocker, idOf, valuesOf, VERSION } from "./fake-docker.mjs";
 
 const SPEC = { image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none" };
 const ALLOWLIST = "a Docker computer cannot enforce an allowlist yet; ask for network none or open";
-/** The user a computer runs as when neither the spec nor the provider names one: this process's, or 1000:1000 for root. */
-const DEFAULT_USER = process.getuid() !== 0 ? `${process.getuid()}:${process.getgid()}` : "1000:1000";
+/** The user a computer runs as when neither the spec nor the provider names one: this process's, or 1000:1000 when its uid or gid is 0. */
+const DEFAULT_USER = process.getuid() !== 0 && process.getgid() !== 0 ? `${process.getuid()}:${process.getgid()}` : "1000:1000";
 
 test("capabilities: a container whose lifetime the janitor enforces, network none or open, and a daemon with exec, files and processes", () => {
 	const { provider } = fakeDocker();
@@ -112,8 +112,8 @@ test("create() runs a hardened container with the daemon as its first process an
 	const [uid, gid] = DEFAULT_USER.split(":");
 	assert.deepEqual(
 		valuesOf(run, "--tmpfs"),
-		[`/work:rw,nosuid,nodev,exec,uid=${uid},gid=${gid},mode=0700`, `/run/agentrun:rw,noexec,nosuid,nodev,uid=${uid},gid=${gid},mode=0700`],
-		"a home the computer's user can write, and init's socket directory, the user's alone",
+		[`/work:rw,nosuid,nodev,exec,uid=${uid},gid=${gid},mode=0700,size=2048m`, `/run/agentrun:rw,noexec,nosuid,nodev,uid=${uid},gid=${gid},mode=0700,size=1m`],
+		"a home the computer's user can write, half its memory, and init's socket directory, the user's alone, 1 MiB",
 	);
 	assert.deepEqual(valuesOf(run, "--workdir"), ["/work"]);
 	assert.deepEqual(valuesOf(run, "--env"), ["HOME=/work"]);
@@ -137,6 +137,15 @@ test("create() passes the sizes, an open network and the workdir", async () => {
 	assert.deepEqual(valuesOf(run, "--pids-limit"), ["64"]);
 	assert.deepEqual(valuesOf(run, "--workdir"), ["/app"]);
 	assert.equal(valuesOf(run, "--tmpfs").filter((tmpfs) => tmpfs.startsWith("/work:")).length, 1, "/work is mounted even when the spec names another workdir");
+	const [uid, gid] = DEFAULT_USER.split(":");
+	assert.deepEqual(
+		valuesOf(run, "--tmpfs"),
+		[`/work:rw,nosuid,nodev,exec,uid=${uid},gid=${gid},mode=0700,size=256m`, `/run/agentrun:rw,noexec,nosuid,nodev,uid=${uid},gid=${gid},mode=0700,size=1m`],
+		"/work is half of memoryMb, so a full /work is ENOSPC before the memory limit; the socket directory stays 1 MiB",
+	);
+	const odd = fakeDocker();
+	assert.equal((await odd.provider.create({ ...SPEC, memoryMb: 7 })).ok, true);
+	assert.ok(valuesOf(odd.calls()[0], "--tmpfs")[0].endsWith(",size=3m"), "half of an odd memoryMb rounds down");
 });
 
 test("create() with no sizes gives serve's: 2 CPUs, 4 GiB with swap the same, 1024 pids", async () => {
@@ -166,16 +175,17 @@ test("create() runs a computer as a non-root user unless its spec asks for root"
 	assert.deepEqual(await userOf({ ...SPEC, user: "2000" }), ["2000:2000"]);
 	assert.deepEqual(await userOf({ ...SPEC, user: "0" }), ["0:0"]);
 	assert.deepEqual(await userOf({ ...SPEC, user: "0:0" }), ["0:0"]);
+	assert.deepEqual(await userOf({ ...SPEC, user: "1000:0" }), ["1000:0"], "root's group only when the spec asks for it");
 	const { provider, calls } = fakeDocker({ user: "1234:5678" });
 	assert.equal((await provider.create({ ...SPEC, user: "2000:3000" })).ok, true);
 	assert.deepEqual(
 		valuesOf(calls()[0], "--tmpfs"),
-		["/work:rw,nosuid,nodev,exec,uid=2000,gid=3000,mode=0700", "/run/agentrun:rw,noexec,nosuid,nodev,uid=2000,gid=3000,mode=0700"],
+		["/work:rw,nosuid,nodev,exec,uid=2000,gid=3000,mode=0700,size=2048m", "/run/agentrun:rw,noexec,nosuid,nodev,uid=2000,gid=3000,mode=0700,size=1m"],
 		"/work and init's socket directory belong to the user the computer runs as",
 	);
 	const root = fakeDocker();
 	assert.equal((await root.provider.create({ ...SPEC, user: "0" })).ok, true);
-	assert.deepEqual(valuesOf(root.calls()[0], "--tmpfs"), ["/work:rw,nosuid,nodev,exec,uid=0,gid=0,mode=0700", "/run/agentrun:rw,noexec,nosuid,nodev,uid=0,gid=0,mode=0700"]);
+	assert.deepEqual(valuesOf(root.calls()[0], "--tmpfs"), ["/work:rw,nosuid,nodev,exec,uid=0,gid=0,mode=0700,size=2048m", "/run/agentrun:rw,noexec,nosuid,nodev,uid=0,gid=0,mode=0700,size=1m"]);
 });
 
 test("check() takes a user as numbers, uid or uid:gid, and refuses a name in words", () => {
@@ -198,6 +208,35 @@ test("a provider refuses root, or a user that is not numbers, as its default: ro
 		assert.throws(() => new DockerProvider({ daemonPath, user }), /uid or uid:gid in numbers/, user);
 	}
 	assert.ok(new DockerProvider({ daemonPath, user: "1000:1000" }));
+});
+
+test("a provider refuses root's group, gid 0, as its default too: a computer is in group 0 only when its spec asks", () => {
+	const daemonPath = fakeDocker().daemonPath;
+	for (const user of ["1000:0", "65534:00"]) {
+		assert.throws(() => new DockerProvider({ daemonPath, user }), /root's group \(gid 0\).*spec/, user);
+	}
+	assert.throws(() => new DockerProvider({ daemonPath, user: "0:0" }), /root.*spec/);
+});
+
+test("the default user is never in root's group: a process with uid or gid 0 gives 1000:1000", async () => {
+	const { getuid, getgid } = process;
+	const defaultOf = async (uid, gid) => {
+		process.getuid = () => uid;
+		process.getgid = () => gid;
+		let made;
+		try {
+			made = fakeDocker();
+		} finally {
+			process.getuid = getuid;
+			process.getgid = getgid;
+		}
+		assert.equal((await made.provider.create(SPEC)).ok, true);
+		return valuesOf(made.calls()[0], "--user")[0];
+	};
+	assert.equal(await defaultOf(1234, 5678), "1234:5678");
+	assert.equal(await defaultOf(0, 0), "1000:1000");
+	assert.equal(await defaultOf(1234, 0), "1000:1000", "a process in root's group does not hand group 0 to its computers");
+	assert.equal(await defaultOf(0, 5678), "1000:1000");
 });
 
 test("create() removes a container that is not running and says why", async () => {
@@ -302,6 +341,24 @@ test("create() deletes a computer whose own report drifts from its spec, and say
 	assert.deepEqual(calls().map((args) => args[0]), ["run", "inspect", "info", "exec", "rm"]);
 	assert.deepEqual(calls().at(-1), ["rm", "--force", "--volumes", name]);
 	assert.deepEqual(names(), []);
+});
+
+test("create() deletes a computer whose /work or socket tmpfs drifts on size", async () => {
+	const [uid, gid] = DEFAULT_USER.split(":");
+	for (const Tmpfs of [
+		{ "/work": `rw,nosuid,nodev,exec,uid=${uid},gid=${gid},mode=0700` },
+		{ "/work": `rw,nosuid,nodev,exec,uid=${uid},gid=${gid},mode=0700,size=4096m` },
+		{ "/run/agentrun": `rw,noexec,nosuid,nodev,uid=${uid},gid=${gid},mode=0700` },
+	]) {
+		const { provider, calls, names } = fakeDocker({ patch: { HostConfig: { Tmpfs } } });
+		const result = await provider.create(SPEC);
+		assert.equal(result.ok, false, JSON.stringify(Tmpfs));
+		assert.equal(result.error.code, "refused");
+		const [path] = Object.keys(Tmpfs);
+		assert.match(result.error.message, new RegExp(`deleted: .*tmpfs ${path}: declared "[^"]*size=${path === "/work" ? 2048 : 1}m"`));
+		assert.deepEqual(calls().at(-1), ["rm", "--force", "--volumes", valuesOf(calls()[0], "--name")[0]]);
+		assert.deepEqual(names(), []);
+	}
 });
 
 test("create() deletes a computer that runs as another user, without its tmpfs mounts, or on another CPU quota or command", async () => {

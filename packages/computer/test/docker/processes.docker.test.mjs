@@ -11,8 +11,8 @@ import { DockerProvider, listProcesses, readAll } from "../../dist/index.js";
 
 const LIVE = process.env.AGENTRUN_COMPUTER_LIVE_DOCKER === "1";
 const IMAGE = "debian:bookworm-slim";
-/** The provider's default user, which init and so every process runs as: this process's, or 1000:1000 as root. */
-const DEFAULT_USER = process.getuid() !== 0 ? `${process.getuid()}:${process.getgid()}` : "1000:1000";
+/** The provider's default user, which init and so every process runs as: this process's, or 1000:1000 when its uid or gid is 0. */
+const DEFAULT_USER = process.getuid() !== 0 && process.getgid() !== 0 ? `${process.getuid()}:${process.getgid()}` : "1000:1000";
 /** Bounds each wait on a program. The host may be loaded: it is never a claim about speed. */
 const PATIENCE_MS = 30_000;
 const docker = (...args) => execFileSync("docker", args, { encoding: "utf8" });
