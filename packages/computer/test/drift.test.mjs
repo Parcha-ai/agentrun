@@ -9,6 +9,9 @@ const SIZED = { ...SPEC, network: "open", cpus: 1.5, memoryMb: 512, pids: 64 };
 const EXPECTED = { version: "1.2.3", capabilities: ["exec", "files", "processes"], arch: "amd64", daemonPath: "/data/computerd", deadline: DEADLINE, user: "1000:1000" };
 const MIB = 1024 * 1024;
 const HELLO = { version: "1.2.3", os: "linux", arch: "amd64", capabilities: ["exec", "files", "processes"] };
+/** The tmpfs options create gives 1000:1000, before their sizes. */
+const WORK_OPTIONS = "rw,nosuid,nodev,exec,uid=1000,gid=1000,mode=0700";
+const SOCKET_OPTIONS = "rw,noexec,nosuid,nodev,uid=1000,gid=1000,mode=0700";
 
 /** What docker inspect reports for SPEC (or SIZED), as create makes it. */
 function inspected(sized = false) {
@@ -34,7 +37,7 @@ function inspected(sized = false) {
 			NanoCpus: 0,
 			CpuPeriod: 100_000,
 			CpuQuota: sized ? 150_000 : 200_000,
-			Tmpfs: { "/run/agentrun": "rw,noexec,nosuid,nodev,uid=1000,gid=1000,mode=0700", "/work": "rw,nosuid,nodev,exec,uid=1000,gid=1000,mode=0700" },
+			Tmpfs: { "/run/agentrun": `${SOCKET_OPTIONS},size=1m`, "/work": `${WORK_OPTIONS},size=${sized ? 256 : 2048}m` },
 		},
 		Mounts: [{ Type: "bind", Source: "/data/computerd", Destination: "/opt/agentrun/computerd", RW: false, Mode: "", Propagation: "rprivate" }],
 		NetworkSettings: { Networks: { [sized ? "bridge" : "none"]: { EndpointID: "e" } } },
@@ -62,7 +65,7 @@ test("a computer made as declared has no drift", () => {
 	assert.deepEqual(after((i) => (i.Config.Labels.extra = "x")), [], "labels Docker or the image adds are no drift");
 	assert.deepEqual(after((i) => i.Mounts.push({ Type: "volume", Source: "", Destination: "/var/lib/data", RW: true })), [], "a volume the image declares");
 	assert.deepEqual(drift(SPEC, inspected(), { ...HELLO, capabilities: [...HELLO.capabilities, "display"] }, EXPECTED), [], "a daemon may offer more");
-	assert.deepEqual(after((i) => (i.HostConfig.Tmpfs["/work"] = "mode=0700,gid=1000,uid=1000,exec,nodev,nosuid,rw")), [], "a tmpfs's options in another order");
+	assert.deepEqual(after((i) => (i.HostConfig.Tmpfs["/work"] = "size=2048m,mode=0700,gid=1000,uid=1000,exec,nodev,nosuid,rw")), [], "a tmpfs's options in another order");
 	assert.deepEqual(after((i) => (i.HostConfig.Tmpfs["/tmp"] = "rw")), [], "a tmpfs the computer was not given is no widening");
 });
 
@@ -120,21 +123,33 @@ test("User: the uid:gid asked for, never another or none", () => {
 	const root = { ...EXPECTED, user: "0:0" };
 	const rooted = structuredClone(inspected());
 	rooted.Config.User = "0:0";
-	rooted.HostConfig.Tmpfs = { "/work": "rw,nosuid,nodev,exec,uid=0,gid=0,mode=0700", "/run/agentrun": "rw,noexec,nosuid,nodev,uid=0,gid=0,mode=0700" };
+	rooted.HostConfig.Tmpfs = { "/work": "rw,nosuid,nodev,exec,uid=0,gid=0,mode=0700,size=2048m", "/run/agentrun": "rw,noexec,nosuid,nodev,uid=0,gid=0,mode=0700,size=1m" };
 	assert.deepEqual(drift({ ...SPEC, user: "0" }, rooted, HELLO, root), [], "root, when asked, is no drift");
 });
 
 test("the tmpfs mounts: /work and /run/agentrun, the asked user's, mode 0700, /run/agentrun noexec", () => {
-	one(after((i) => delete i.HostConfig.Tmpfs["/work"]), /tmpfs \/work: declared "rw,nosuid,nodev,exec,uid=1000,gid=1000,mode=0700", read back nothing/);
+	one(after((i) => delete i.HostConfig.Tmpfs["/work"]), /tmpfs \/work: declared "rw,nosuid,nodev,exec,uid=1000,gid=1000,mode=0700,size=2048m", read back nothing/);
 	one(after((i) => delete i.HostConfig.Tmpfs["/run/agentrun"]), /tmpfs \/run\/agentrun: declared .*read back nothing/);
 	assert.equal(after((i) => (i.HostConfig.Tmpfs = null)).filter((m) => m.startsWith("tmpfs ")).length, 2);
-	one(after((i) => (i.HostConfig.Tmpfs["/work"] = "rw,nosuid,nodev,exec,uid=0,gid=1000,mode=0700")), /tmpfs \/work: .*uid=0/);
-	one(after((i) => (i.HostConfig.Tmpfs["/work"] = "rw,nosuid,nodev,exec,uid=1000,gid=0,mode=0700")), /tmpfs \/work: .*gid=0/);
-	one(after((i) => (i.HostConfig.Tmpfs["/work"] = "rw,nosuid,nodev,exec,uid=1000,gid=1000,mode=0777")), /tmpfs \/work: .*mode=0777/);
-	one(after((i) => (i.HostConfig.Tmpfs["/run/agentrun"] = "rw,noexec,nosuid,nodev,uid=1000,gid=1000,mode=0755")), /tmpfs \/run\/agentrun: .*mode=0755/);
-	one(after((i) => (i.HostConfig.Tmpfs["/run/agentrun"] = "rw,nosuid,nodev,uid=1000,gid=1000,mode=0700")), /tmpfs \/run\/agentrun/);
-	one(after((i) => (i.HostConfig.Tmpfs["/run/agentrun"] = "rw,noexec,nosuid,nodev,uid=2000,gid=2000,mode=0700")), /tmpfs \/run\/agentrun: .*uid=2000/);
+	one(after((i) => (i.HostConfig.Tmpfs["/work"] = "rw,nosuid,nodev,exec,uid=0,gid=1000,mode=0700,size=2048m")), /tmpfs \/work: .*uid=0/);
+	one(after((i) => (i.HostConfig.Tmpfs["/work"] = "rw,nosuid,nodev,exec,uid=1000,gid=0,mode=0700,size=2048m")), /tmpfs \/work: .*gid=0/);
+	one(after((i) => (i.HostConfig.Tmpfs["/work"] = "rw,nosuid,nodev,exec,uid=1000,gid=1000,mode=0777,size=2048m")), /tmpfs \/work: .*mode=0777/);
+	one(after((i) => (i.HostConfig.Tmpfs["/run/agentrun"] = "rw,noexec,nosuid,nodev,uid=1000,gid=1000,mode=0755,size=1m")), /tmpfs \/run\/agentrun: .*mode=0755/);
+	one(after((i) => (i.HostConfig.Tmpfs["/run/agentrun"] = "rw,nosuid,nodev,uid=1000,gid=1000,mode=0700,size=1m")), /tmpfs \/run\/agentrun/);
+	one(after((i) => (i.HostConfig.Tmpfs["/run/agentrun"] = "rw,noexec,nosuid,nodev,uid=2000,gid=2000,mode=0700,size=1m")), /tmpfs \/run\/agentrun: .*uid=2000/);
 	one(after((i) => (i.HostConfig.Tmpfs["/work"] = "")), /tmpfs \/work/);
+});
+
+test("the tmpfs sizes: /work half the spec's memoryMb (or of 4096 MiB), so a full /work is ENOSPC, never an OOM; /run/agentrun 1 MiB", () => {
+	one(after((i) => (i.HostConfig.Tmpfs["/work"] = WORK_OPTIONS)), /tmpfs \/work: declared "[^"]*size=2048m", read back "rw,nosuid,nodev,exec,uid=1000,gid=1000,mode=0700"$/);
+	one(after((i) => (i.HostConfig.Tmpfs["/work"] = `${WORK_OPTIONS},size=4096m`)), /tmpfs \/work: declared "[^"]*size=2048m", read back "[^"]*size=4096m"/);
+	one(after((i) => (i.HostConfig.Tmpfs["/work"] = `${WORK_OPTIONS},size=0`)), /tmpfs \/work: .*size=0"/);
+	one(after((i) => (i.HostConfig.Tmpfs["/work"] = `${WORK_OPTIONS},size=2048m,size=8g`)), /tmpfs \/work: .*size=8g/);
+	one(after((i) => (i.HostConfig.Tmpfs["/work"] = `${WORK_OPTIONS},size=2048m`), { spec: SIZED }), /tmpfs \/work: declared "[^"]*size=256m", read back "[^"]*size=2048m"/);
+	one(after((i) => (i.HostConfig.Tmpfs["/run/agentrun"] = SOCKET_OPTIONS)), /tmpfs \/run\/agentrun: declared "[^"]*size=1m", read back "rw,noexec,nosuid,nodev,uid=1000,gid=1000,mode=0700"$/);
+	one(after((i) => (i.HostConfig.Tmpfs["/run/agentrun"] = `${SOCKET_OPTIONS},size=64m`)), /tmpfs \/run\/agentrun: declared "[^"]*size=1m", read back "[^"]*size=64m"/);
+	const odd = { ...SPEC, memoryMb: 7 };
+	one(after((i) => (i.HostConfig.Memory = i.HostConfig.MemorySwap = 7 * MIB), { spec: odd }), /tmpfs \/work: declared "[^"]*size=3m"/);
 });
 
 test("the daemon is the declared binary, bind-mounted read-only at /opt/agentrun/computerd, and no other bind mount", () => {

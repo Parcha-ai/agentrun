@@ -31,7 +31,7 @@ export function container({ name, labels = {}, network = "none", running = true,
 		HostConfig: {
 			NetworkMode: network, CapDrop: ["ALL"], CapAdd: null, Privileged: false, SecurityOpt: ["no-new-privileges"], PidsLimit: 1024,
 			Memory: 4096 * 1024 * 1024, MemorySwap: 4096 * 1024 * 1024, CpuPeriod: 100_000, CpuQuota: 200_000,
-			Tmpfs: { "/work": "rw,nosuid,nodev,exec,uid=1000,gid=1000,mode=0700", "/run/agentrun": "rw,noexec,nosuid,nodev,uid=1000,gid=1000,mode=0700" },
+			Tmpfs: { "/work": "rw,nosuid,nodev,exec,uid=1000,gid=1000,mode=0700,size=2048m", "/run/agentrun": "rw,noexec,nosuid,nodev,uid=1000,gid=1000,mode=0700,size=1m" },
 		},
 		Mounts: [{ Type: "bind", Source: "/data/computerd", Destination: "/opt/agentrun/computerd", RW: false }],
 		NetworkSettings: { Networks: { [network]: {} } },

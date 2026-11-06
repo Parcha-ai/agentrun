@@ -185,13 +185,16 @@ await docker.release(made.value, "delete");
   start is removed.
 - **A computer runs as a non-root user by default; root must be asked for in the spec.** `user` is a uid or uid:gid
   in numbers (a name is refused: the image may not have it; a uid alone is its own gid). The spec's `user` wins, then
-  the provider's `user` option, then this process's uid:gid, or `1000:1000` when this process is root. The provider
-  option refuses root; only a spec's `user: "0"` runs a computer as root, and that root has no capability either.
+  the provider's `user` option, then this process's uid:gid, or `1000:1000` when this process's uid or gid is 0. The
+  provider option refuses root and root's group (`"1000:0"` throws); only a spec's `user: "0"` runs a computer as
+  root, and only a spec's gid 0 (such as `"1000:0"`) puts it in root's group. That root has no capability either.
 - `/run/agentrun`, init's socket directory, is a tmpfs owned by the computer's user, mode 700, with `noexec`, `nosuid`
-  and `nodev`.
+  and `nodev`, and `size=1m`: it holds only the socket.
 - `/work` is the computer's home (`HOME=/work`) and its workdir unless the spec names one: a tmpfs owned by the
   computer's user, mode 700, the one place a non-root user can surely write. It is memory: what it holds counts against
-  the memory limit, and it does not survive a stop. Storage that lasts is the agent disk's job, not this package's.
+  the memory limit, and it does not survive a stop. So it holds at most half of `memoryMb` (`size=2048m` by default): a
+  full `/work` fails a write with "No space left on device" instead of letting the memory limit OOM-kill a process,
+  PID 1 included. Storage that lasts is the agent disk's job, not this package's.
 - `create` ends with the drift check (below): a computer that is not what was declared is deleted, and `create`
   refuses with every mismatch in words.
 - `connect` runs `docker exec -i <name> /opt/agentrun/computerd stdio`, the bridge to init's socket, and says hello.
@@ -213,7 +216,7 @@ await docker.release(made.value, "delete");
 
 Expected failures are results (`{ ok: false, error: { code, message } }`), not throws.
 
-What a Docker computer cannot do: run as root unless its spec asks, switch users, gain a capability, reach any network
+What a Docker computer cannot do: run as root or in root's group unless its spec asks, switch users, gain a capability, reach any network
 when asked for `none`, write the daemon, or run past its deadline.
 
 ### The drift check
@@ -230,7 +233,7 @@ hello, expected)`, a pure function that returns one sentence per mismatch. From 
 | `HostConfig.Memory`, `MemorySwap` | both `memoryMb` MiB, or 4096 MiB |
 | `HostConfig.CpuPeriod`, `CpuQuota` | 100000, and `cpus` (or 2) times 100000 |
 | `Config.User` | the uid:gid asked for: the spec's, the provider's, or the default |
-| `HostConfig.Tmpfs` | `/work` and `/run/agentrun`, each with that uid and gid, `mode=0700`, `nosuid` and `nodev` (`/work` `exec`, `/run/agentrun` `noexec`); options in any order |
+| `HostConfig.Tmpfs` | `/work` and `/run/agentrun`, each with that uid and gid, `mode=0700`, `nosuid` and `nodev` (`/work` `exec` and `size=` half of `memoryMb` in MiB, `/run/agentrun` `noexec` and `size=1m`); options in any order, and a missing or other size is drift |
 | `Mounts` | the provider's daemon binary bound read-only at `/opt/agentrun/computerd`, and no other bind mount |
 | `Config.Entrypoint`, `Cmd` | `["/opt/agentrun/computerd"]`, `["init", "--deadline", <the deadline label's value>]` |
 | `Config.Labels` | `agentrun.computer=1`, the deadline as written, and every label the spec asked for |

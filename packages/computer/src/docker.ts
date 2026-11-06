@@ -40,7 +40,8 @@ export interface DockerProviderOptions {
 	/** The docker CLI. */
 	docker?: string;
 	/** Who a computer runs as when its spec does not say: uid or uid:gid, in numbers. Default: this process's uid:gid, or
-	 *  1000:1000 when this process is root. Root is refused here: a computer runs as root only when its spec asks. */
+	 *  1000:1000 when its uid or gid is 0. Root and root's group are refused here: a computer runs as either only when
+	 *  its spec asks. */
 	user?: string;
 }
 
@@ -94,6 +95,9 @@ export class DockerProvider implements ComputerProvider {
 		const given = user === undefined ? defaultUser() : userOf(user);
 		if (given === undefined) throw new Error(`the provider's user ${JSON.stringify(user)} must be ${USER_FORM}`);
 		if (given.startsWith("0:")) throw new Error(`the provider's user ${user} is root; a computer runs as root only when its spec asks for user "0"`);
+		if (given.endsWith(":0")) {
+			throw new Error(`the provider's user ${user} is in root's group (gid 0); a computer is in group 0 only when its spec asks, such as user "${given}"`);
+		}
 		this.#user = given;
 	}
 
@@ -156,13 +160,14 @@ export class DockerProvider implements ComputerProvider {
 		const args = ["run", "--detach", "--name", name, "--label", `${COMPUTER_LABEL}=1`, "--label", `${DEADLINE_LABEL}=${deadline}`];
 		for (const [key, value] of Object.entries(spec.labels ?? {})) args.push("--label", `${key}=${value}`);
 		const user = userOf(spec.user) ?? this.#user;
+		const memoryMb = spec.memoryMb ?? DEFAULT_MEMORY_MB;
 		args.push("--user", user, "--env", `HOME=${WORK}`);
-		for (const [path, options] of Object.entries(tmpfsOf(user))) args.push("--tmpfs", `${path}:${options}`);
+		for (const [path, options] of Object.entries(tmpfsOf(user, memoryMb))) args.push("--tmpfs", `${path}:${options}`);
 		args.push("--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", String(spec.pids ?? DEFAULT_PIDS));
 		args.push("--network", spec.network === "none" ? "none" : "bridge");
 		args.push("--cpu-period", String(CPU_PERIOD_US), "--cpu-quota", String(Math.round((spec.cpus ?? DEFAULT_CPUS) * CPU_PERIOD_US)));
 		// Memory and swap together are the memory: swap never adds to it.
-		const memory = `${spec.memoryMb ?? DEFAULT_MEMORY_MB}m`;
+		const memory = `${memoryMb}m`;
 		args.push("--memory", memory, "--memory-swap", memory);
 		args.push("--mount", `type=bind,src=${this.#daemonPath},dst=${DAEMON_IN_COMPUTER},readonly`, "--entrypoint", DAEMON_IN_COMPUTER);
 		args.push("--workdir", spec.workdir ?? WORK);
@@ -389,10 +394,10 @@ function userOf(value: unknown): string | undefined {
 	return uid <= MAX_ID && gid <= MAX_ID ? `${uid}:${gid}` : undefined;
 }
 
-/** This process's uid:gid, or 1000:1000 when it is root or has no uid. */
+/** This process's uid:gid, or 1000:1000 when either is 0 (root, or root's group) or unknown. */
 function defaultUser(): string {
-	const uid = process.getuid?.();
-	return uid === undefined || uid === 0 ? "1000:1000" : `${uid}:${process.getgid?.() ?? uid}`;
+	const [uid, gid] = [process.getuid?.(), process.getgid?.()];
+	return uid === undefined || gid === undefined || uid === 0 || gid === 0 ? "1000:1000" : `${uid}:${gid}`;
 }
 
 /** The mode of a regular file, or undefined when there is none. */
