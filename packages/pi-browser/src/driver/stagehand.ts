@@ -3,9 +3,8 @@
 import { type DriverFactory } from "../core/custody.js";
 import { INERT_TRACE_ENDPOINT } from "../core/effects.js";
 import type { PageDriver } from "../core/tools.js";
-import { installedExtension } from "./extension-worker.js";
 import { pageDriver } from "./page-driver.js";
-import { attachStep, createSealed, IN_FLIGHT_INIT_MS, INIT_IN_PROGRESS } from "./sealed.js";
+import { attachStep, throwIfCancelled, untilCancelled } from "./sealed.js";
 
 /** A closed loopback port, so no span leaves the host: Stagehand 4.1.0 cannot turn its trace exporter off. */
 export const STAGEHAND_TELEMETRY = { traces: { endpoint: INERT_TRACE_ENDPOINT } } as const;
@@ -17,20 +16,22 @@ export const SEALED_STAGEHAND = {
   telemetry: STAGEHAND_TELEMETRY,
 } as const;
 
-/** What Stagehand's extension answers an init while another is still running in it. */
-export const STAGEHAND_INIT_IN_PROGRESS = INIT_IN_PROGRESS;
-
-/** The batch deadline comes from `DriverOptions`; a caller that passes none gets the facade's 60 s. */
+/** The batch deadline comes from `DriverOptions`; a caller that passes none gets the facade's 60 s. Stagehand allows one
+ *  client per browser: an attach that fails or is cancelled after it connected disconnects again, so it never refuses the
+ *  next. */
 export function stagehandDriver(): DriverFactory<PageDriver> {
   return async (target, signal, options) => {
     const { localBrowser, Stagehand } = await import("@browserbasehq/stagehand");
     const host = new URL(target.dial?.url ?? target.sdkCdpUrl).host;
-    const step = attachStep(host);
-    // Stagehand 4.4 ignores an extension id and finds its extension by name: the provider leaves the browser one.
-    const extensionId = await step(installedExtension(target.sdkCdpUrl, signal));
-    const browser = await step(localBrowser.connect({ cdpUrl: target.sdkCdpUrl }));
-    const stagehand = await createSealed(() => Stagehand.create({ browser, ...SEALED_STAGEHAND }),
-      () => step(installedExtension(target.sdkCdpUrl, signal, extensionId ?? undefined, IN_FLIGHT_INIT_MS)), host, signal);
-    return pageDriver(stagehand, { batchMs: options?.batchTimeoutMs ?? 60_000 });
+    throwIfCancelled(signal);
+    const connecting = localBrowser.connect({ cdpUrl: target.sdkCdpUrl, ...(target.extensionCdpUrl ? { extensionCdpUrl: target.extensionCdpUrl } : {}) });
+    const browser = await untilCancelled(attachStep(host)(connecting), signal, (late) => late.disconnect());
+    try {
+      const stagehand = await untilCancelled(Stagehand.create({ browser, ...SEALED_STAGEHAND }), signal, () => undefined);
+      return pageDriver(stagehand, { batchMs: options?.batchTimeoutMs ?? 60_000 });
+    } catch (error) {
+      await browser.disconnect().catch(() => undefined);
+      throw error;
+    }
   };
 }

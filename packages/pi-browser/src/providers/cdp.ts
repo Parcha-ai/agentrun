@@ -450,7 +450,8 @@ export function cdpProvider(options: CdpOptions, internals: { remove?: RemoveDir
       // Stagehand attaches to the one extension carrying its name: on every attach, any other (one loaded since the last) goes.
       const extensionId = await confinedExtension(local.tag, url);
       if (extensionId) await soleStagehand(url, extensionId);
-      return { sdkCdpUrl: url };
+      // The extension lives in this browser and dials it on loopback, never through whatever the host puts in front of the driver.
+      return { sdkCdpUrl: url, extensionCdpUrl: url };
     },
 
     async release(ref) {
