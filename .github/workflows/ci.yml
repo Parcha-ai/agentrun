@@ -480,14 +480,10 @@ jobs:
       - run: node scripts/npm-ci-retry.mjs --ignore-scripts
       - name: The daemon's vet and tests
         working-directory: packages/computer/daemon
-        # As the daemon is built (scripts/build-daemon.mjs): without cgo, under which Go can make a call on every thread.
-        env:
-          CGO_ENABLED: '0'
         run: go vet ./... && go test ./...
       - run: npm run build -w @parcha/agentrun-computer
       - run: npm run build:daemon -w @parcha/agentrun-computer
       - run: docker pull debian:bookworm-slim
-      - run: docker pull alpine:3.20
       - run: npm run test:docker -w @parcha/agentrun-computer
         env:
           AGENTRUN_COMPUTER_LIVE_DOCKER: '1'
