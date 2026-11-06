@@ -469,13 +469,16 @@ where `bash`'s setting came from:
   console and the API show each log, during the run and after it.
 - Those files are for people to read: the run's own file tools can write anything in `work/`, so no call trusts one.
   The group a signal goes to, the exit code, the start time, the command and the run's-end mark are kept in the box's
-  own directory (its `TMPDIR`, else `/tmp`), out of `work/`; a copy in `work/` is written in that directory and moved
-  over its name from inside `work/background/<id>`, entered and checked by its real path, so a link planted at the name
-  or at the directory is never followed (a failed check skips the copy). `output.log` is opened first and then checked as opened
-  (through `/proc`: the file reached is `work/background/<id>/output.log` itself, by its real path, and a regular file),
-  and every read is of that open file, so a link swapped in after the check is never read. A link planted at it is
-  refused, saying so; so is any log in a box with no `/proc` to check it by. A directory made in `work/background/` that this box
-  did not start reads as gone, and is never signalled.
+  own directory (its `TMPDIR`, else `/tmp`), out of `work/`. A copy in `work/` is written from inside
+  `work/background/<id>`, entered and checked by its real path, to a new file of a name no one can guess, created and
+  written in one exclusive open, then renamed over its name; so a link planted at the name or at the directory is never
+  followed, and a real directory standing at the name skips that copy (as does a failed check). At the run's end every
+  copy (`command` and `started` among them) is written again, so a link planted at one since its start does not stay.
+  `output.log` is opened first and then checked as opened (through `/proc`: the file reached is
+  `work/background/<id>/output.log` itself, by its real path, and a regular file), and every read is of that open file,
+  so a link swapped in after the check is never read. A link planted at it is refused, saying so; a box with no `/proc`
+  to check by refuses every log, saying that instead. A directory made in `work/background/` that this box did not
+  start reads as "not started in this box", and is never signalled.
 - A process runs until no live process of its group is left: a child the command starts with `&` (a server, its
   output sent elsewhere) keeps it running, counted against the cap, signalled with it and ended at the run's end; its
   exit code is the shell's.
