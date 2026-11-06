@@ -13,6 +13,9 @@ export interface DockerProviderOptions {
 	daemonPath: string;
 	/** The docker CLI. */
 	docker?: string;
+	/** Who a computer runs as when its spec does not say: uid or uid:gid, in numbers. Default: this process's uid:gid, or
+	 *  1000:1000 when this process is root. Root is refused here: a computer runs as root only when its spec asks. */
+	user?: string;
 }
 
 const VERSION: string = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
@@ -22,6 +25,10 @@ const COMPUTER_LABEL = "agentrun.computer";
 const DEADLINE_LABEL = "agentrun.computer.deadline";
 const NAME = /^computer-[0-9a-f]{12}$/;
 const DEFAULT_PIDS = 4096;
+/** A user in numbers, uid or uid:gid; (uid_t)-1 is no user. */
+const USER = /^(\d+)(?::(\d+))?$/;
+const MAX_ID = 4_294_967_294;
+const USER_FORM = "a uid or uid:gid in numbers, such as 1000:1000; a name is refused, since the image may not have it";
 /** The kernel's PID_MAX_LIMIT: a larger --pids-limit fails the create. */
 const MAX_PIDS = 4_194_304;
 /** Docker's least --memory. */
@@ -29,7 +36,7 @@ const MIN_MEMORY_MB = 6;
 const HELLO_TIMEOUT_MS = 30_000;
 /** The longest lifetime: 30 days. A computer meant to live longer is asked for again. */
 const MAX_LIFETIME_MS = 30 * 24 * 60 * 60 * 1000;
-const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "cpus", "memoryMb", "pids", "labels", "workdir"]);
+const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "cpus", "memoryMb", "pids", "labels", "workdir", "user"]);
 const NUL = "a NUL byte cannot be passed to docker run";
 const ALLOWLIST = "a Docker computer cannot enforce an allowlist yet; ask for network none or open";
 
@@ -52,10 +59,15 @@ export class DockerProvider implements ComputerProvider {
 	readonly version = VERSION;
 	readonly #daemonPath: string;
 	readonly #docker: string;
+	readonly #user: string;
 
-	constructor({ daemonPath, docker = "docker" }: DockerProviderOptions) {
+	constructor({ daemonPath, docker = "docker", user }: DockerProviderOptions) {
 		this.#daemonPath = resolve(daemonPath);
 		this.#docker = docker;
+		const given = user === undefined ? defaultUser() : userOf(user);
+		if (given === undefined) throw new Error(`the provider's user ${JSON.stringify(user)} must be ${USER_FORM}`);
+		if (given.startsWith("0:")) throw new Error(`the provider's user ${user} is root; a computer runs as root only when its spec asks for user "0"`);
+		this.#user = given;
 	}
 
 	capabilities(): ComputerCapabilities {
@@ -66,7 +78,7 @@ export class DockerProvider implements ComputerProvider {
 		const refusals: Refusal[] = [];
 		const refuse = (field: string, message: string) => refusals.push({ field, message });
 		const given = spec as unknown as Record<string, unknown>;
-		const { image, lifetimeMs, network, cpus, memoryMb, pids, labels, workdir } = given;
+		const { image, lifetimeMs, network, cpus, memoryMb, pids, labels, workdir, user } = given;
 		if (typeof image !== "string" || image.trim() === "" || image.startsWith("-")) {
 			refuse("image", "an image is required, such as debian:bookworm-slim");
 		} else if (image.includes("\0")) refuse("image", NUL);
@@ -92,6 +104,7 @@ export class DockerProvider implements ComputerProvider {
 		if (workdir !== undefined && !(typeof workdir === "string" && workdir.startsWith("/"))) {
 			refuse("workdir", "workdir must be an absolute path in the computer");
 		} else if (workdir?.includes("\0")) refuse("workdir", NUL);
+		if (user !== undefined && userOf(user) === undefined) refuse("user", `user must be ${USER_FORM}`);
 		for (const [field, value] of Object.entries(given)) {
 			if (!SPEC_FIELDS.has(field) && value !== undefined) refuse(field, `a Docker computer does not support ${field}`);
 		}
@@ -105,9 +118,9 @@ export class DockerProvider implements ComputerProvider {
 		if (mode === undefined) {
 			return fail("not_found", `no daemon binary at ${this.#daemonPath}: run npm run build:daemon -w @parcha/agentrun-computer`);
 		}
-		// A computer drops every capability, so its root runs the mounted daemon only if every user may.
+		// A computer's user, root or not, has no capabilities, so it runs the mounted daemon only if every user may.
 		if ((mode & 0o005) !== 0o005) {
-			return fail("invalid", `the daemon at ${this.#daemonPath} has mode ${(mode & 0o777).toString(8)}; a computer's root, with no capabilities, cannot run it: chmod 755 it`);
+			return fail("invalid", `the daemon at ${this.#daemonPath} has mode ${(mode & 0o777).toString(8)}; a computer's user, with no capabilities, cannot run it: chmod 755 it`);
 		}
 		if (this.#daemonPath.includes(",")) return fail("invalid", `the daemon path ${this.#daemonPath} has a comma, which a Docker mount cannot hold`);
 		if (signal?.aborted) return fail("aborted", "create was aborted before Docker was called");
@@ -115,6 +128,7 @@ export class DockerProvider implements ComputerProvider {
 		const args = ["run", "--detach", "--name", name, "--label", `${COMPUTER_LABEL}=1`];
 		args.push("--label", `${DEADLINE_LABEL}=${new Date(Date.now() + spec.lifetimeMs).toISOString()}`);
 		for (const [key, value] of Object.entries(spec.labels ?? {})) args.push("--label", `${key}=${value}`);
+		args.push("--user", userOf(spec.user) ?? this.#user);
 		args.push("--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", String(spec.pids ?? DEFAULT_PIDS));
 		args.push("--network", spec.network === "none" ? "none" : "bridge");
 		if (spec.cpus !== undefined) args.push("--cpus", String(spec.cpus));
@@ -209,6 +223,20 @@ function labelProblem(key: string, value: unknown): string | undefined {
 	if (key === "" || key.includes("=")) return `the label name "${key}" must be non-empty and have no "="`;
 	if (key === COMPUTER_LABEL || key.startsWith(`${COMPUTER_LABEL}.`)) return `the label ${key} is in the provider's own namespace (${COMPUTER_LABEL})`;
 	return undefined;
+}
+
+/** "uid:gid" for a user in numbers (a uid alone is its own gid, never root's group 0), or undefined when it is not one. */
+function userOf(value: unknown): string | undefined {
+	const match = typeof value === "string" ? USER.exec(value) : null;
+	if (match === null) return undefined;
+	const [uid, gid] = [Number(match[1]), Number(match[2] ?? match[1])];
+	return uid <= MAX_ID && gid <= MAX_ID ? `${uid}:${gid}` : undefined;
+}
+
+/** This process's uid:gid, or 1000:1000 when it is root or has no uid. */
+function defaultUser(): string {
+	const uid = process.getuid?.();
+	return uid === undefined || uid === 0 ? "1000:1000" : `${uid}:${process.getgid?.() ?? uid}`;
 }
 
 /** The mode of a regular file, or undefined when there is none. */
