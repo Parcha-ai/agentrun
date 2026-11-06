@@ -1,0 +1,8 @@
+AgentRun
+Copyright 2026 Parcha Labs, Inc.
+
+This product includes software from E2B infra (https://github.com/e2b-dev/infra), envd, Copyright 2023 FoundryLabs, Inc., licensed under the Apache License 2.0.
+
+This product includes software from Kubernetes agent-sandbox (https://github.com/kubernetes-sigs/agent-sandbox), sandboxd, Copyright 2026 The Kubernetes Authors, licensed under the Apache License 2.0.
+
+UPSTREAM.json records each copied file: where it came from, at which commit, and what changed.

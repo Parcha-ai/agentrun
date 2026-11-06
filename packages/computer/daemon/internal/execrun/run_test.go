@@ -126,7 +126,8 @@ func TestWhatTheProgramLeavesBehindIsKilled(t *testing.T) {
 }
 
 func TestOutputIsTruncatedAndTheProgramStillEnds(t *testing.T) {
-	res := run(t, execrun.Spec{Argv: []string{"head", "-c", "200000", "/dev/zero"}, MaxOutput: 1000})
+	thousand := 1000
+	res := run(t, execrun.Spec{Argv: []string{"head", "-c", "200000", "/dev/zero"}, MaxOutput: &thousand})
 	if len(res.Stdout) != 1000 || !res.Truncated || res.ExitCode == nil || *res.ExitCode != 0 {
 		t.Fatalf("want 1000 bytes, truncated, exit 0; got %d bytes %+v", len(res.Stdout), res)
 	}

@@ -1,0 +1,47 @@
+{
+  "about": "Code this package copies, one record per upstream file. Each copied Go file keeps its upstream copyright and license header and says what changed.",
+  "files": [
+    {
+      "path": "daemon/internal/execrun/kill.go",
+      "from": "kubernetes-sigs/agent-sandbox@bfc85052f8dbc3414c366a1bc86621ea19d0779b:packages/sandboxd/pkg/server/process.go",
+      "lines": "760-829, 845-853",
+      "license": "Apache-2.0",
+      "changes": "killProcessTree, killDescendants and readProcChildren as functions, not ProcessServer methods, with no logger and the signal as a parameter, so one walk sends SIGTERM and later SIGKILL; exitStatus reports the signal by name instead of 128+n."
+    },
+    {
+      "path": "daemon/internal/execrun/stream.go",
+      "from": "kubernetes-sigs/agent-sandbox@bfc85052f8dbc3414c366a1bc86621ea19d0779b:packages/sandboxd/pkg/server/process.go",
+      "lines": "379-423",
+      "license": "Apache-2.0",
+      "changes": "executionStream as outputStream: the limit is always set, the reader is closed by its owner, and the kept bytes are never nil so they marshal as an empty base64 string."
+    },
+    {
+      "path": "daemon/internal/execrun/stream.go",
+      "from": "kubernetes-sigs/agent-sandbox@bfc85052f8dbc3414c366a1bc86621ea19d0779b:packages/sandboxd/pkg/server/execution_policy.go",
+      "lines": "88-102",
+      "license": "Apache-2.0",
+      "changes": "resolveByteLimit on ints with one maximum, returning the protocol's invalid error instead of a gRPC status."
+    },
+    {
+      "path": "daemon/internal/execrun/credential.go",
+      "from": "e2b-dev/infra@ff3922213f0201299602ad7fad4d6ca367363710:packages/envd/internal/services/process/handler/handler.go",
+      "lines": "215-238, 254-275",
+      "license": "Apache-2.0",
+      "changes": "The credential with supplementary groups, and the environment (PATH, HOME, USER, LOGNAME, then the request's variables over them). No credential when the user is the daemon's own; a switch without CAP_SETUID and CAP_SETGID is refused as denied; no cgroup, no oom/nice shell wrapper, no default variables from a service; Connect errors replaced by the protocol's kinds."
+    },
+    {
+      "path": "daemon/internal/execrun/credential.go",
+      "from": "e2b-dev/infra@ff3922213f0201299602ad7fad4d6ca367363710:packages/envd/internal/permissions/user.go",
+      "lines": "9-21",
+      "license": "Apache-2.0",
+      "changes": "GetUserIdUints unexported; the user may also be a uid[:gid] that /etc/passwd lacks."
+    },
+    {
+      "path": "daemon/internal/execrun/credential.go",
+      "from": "e2b-dev/infra@ff3922213f0201299602ad7fad4d6ca367363710:packages/envd/internal/permissions/path.go",
+      "lines": "14-50",
+      "license": "Apache-2.0",
+      "changes": "expand kept; ExpandAndResolve as resolveCwd with no default workdir, and a missing or non-directory cwd answered as not_found or invalid."
+    }
+  ]
+}
