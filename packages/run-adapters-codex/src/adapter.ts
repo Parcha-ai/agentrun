@@ -19,6 +19,7 @@ import { NativeJournal, recoveryNote, settleTurn, transcriptOf } from "@parcha/a
 import { CODEX_VERSION } from "./binary.js";
 import { CODEX_MCP_CLIENT } from "./mcp.js";
 import { codexSchemaProblems, describedDescription } from "./schema.js";
+import { markParked } from "./scripts.js";
 import { withCheckedBinary } from "./host/sandbox.js";
 import { verifyCodex } from "./verify.js";
 import { codexHarness, type CodexHarnessOptions, owedSubmissions } from "./harness.js";
@@ -83,7 +84,7 @@ export interface CodexAdapterOptions {
  *  The call runs as a kernel effect, whose intent is durable in the session's records before `execute` is entered, so a
  *  crash inside a `never` tool is always reported, never repeated. The copied harness's wait for Codex's own `function_call`
  *  line before it runs such a tool is a second guard (the transcript Codex resumes from), not the one that protects it. */
-function kernelTool(tool: HostTool): KernelTool {
+export function kernelTool(tool: HostTool): KernelTool {
   return {
     name: tool.name,
     // Codex strips some keywords from the schema its model is given: they are said in plain words in the description
@@ -95,6 +96,8 @@ function kernelTool(tool: HostTool): KernelTool {
       // The effect's step is `tool:<Codex call id>#<attempt>`: the host sees Codex's call id.
       const callId = (io.stepId ?? "").replace(/^tool:/, "").replace(/#\d+$/, "");
       const result = await tool.call(input, { callId, signal: io.signal });
+      // A call the host parked for a person's approval did not run: recorded so before its answer, the waiting text.
+      if (result.parked) await markParked(io.ctx, callId);
       if (result.isError) throw new Error(result.text);
       return result.text;
     },

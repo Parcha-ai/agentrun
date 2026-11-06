@@ -1195,7 +1195,8 @@ Streamable HTTP with the official MCP SDK client (`@modelcontextprotocol/client`
 `instructions` and every tool `tools/list` gives, all pages, each with its name, title, description, `input_schema`,
 `output_schema` and `annotations` (the server's own claims, not checked). It stores nothing. `auth` is `{type: "none"}`
 (or absent), `{type: "bearer", token}` (sent as `Authorization: Bearer <token>`) or `{type: "headers", headers: {Name:
-value}}` (up to 8). `oauth` is refused for now (`422`, reason `not_yet`). `url` is `https`, or `http` on loopback.
+value}}` (up to 8). An `oauth` server is signed in to first ([below](#signing-in-with-oauth)), then previewed by name.
+`url` is `https`, or `http` on loopback.
 
 What can go wrong, told apart:
 
@@ -1229,6 +1230,46 @@ annotations differ. `DELETE .../{name}` forgets the server and its credential. A
 another format) is never written over: the list answers `servers: []` with `file_unreadable: true`, and every other
 route is `409 store_unreadable` until the file is restored or removed. Capabilities' `features.mcp_client`
 says `transports: ["streamable-http"]`, the `auth` types and `at_rest` (`sealed`, or `unavailable` with no seal key).
+
+### Signing in with OAuth
+
+A server whose preview answers `details.auth: "oauth"` is signed in to by this server, which keeps the tokens: the
+agent's machine never sees one. `POST /v2/settings/mcp-servers/{name}/oauth/start` with `{url, scopes?, client_id?,
+client_secret?}` answers `{authorization_url}`, the page the owner opens. It runs the official MCP SDK's OAuth: the
+server's protected-resource metadata (RFC 9728), then its authorization server's (RFC 8414); PKCE S256; the server's URL
+as the RFC 8707 `resource`. The client is, in this order, the `client_id` (and `client_secret`) you give; else, signing in again to the same
+origin, the client kept sealed from the last sign-in (so a pre-registered client's id and secret are given once); else this
+server's client metadata document, `GET /v2/settings/mcp-servers/oauth/client.json`, when this server's address
+(`AGENTRUN_PUBLIC_URL`) is public `https` and the authorization server takes one; else dynamic client registration.
+
+The authorization server sends the browser back to `GET /v2/settings/mcp-servers/oauth/callback`, which takes no token:
+its `state` is random, bound to the server's name, used once and good for 10 minutes (else `400`), and the PKCE verifier
+never left this server. It finishes only in the browser that started the sign-in: the start's answer sets a cookie
+for that sign-in alone (named by its state, so two tabs do not replace each other's; `HttpOnly; SameSite=Lax`, path
+the callback, 10 minutes, cleared when it finishes), and a callback without it is `403` with nothing exchanged. So a
+start must come to the address the callback is under: one that came to another (the console opened under another
+name for this machine than the server's own address) is `409 wrong_origin`, with `details.open` the console's MCP
+page there.
+The redirect URI never changes with the address a request came to, so a registered client's stays valid. Behind a
+proxy on a public https address, set `AGENTRUN_PUBLIC_URL` to that address and have the proxy pass the `Host` header
+and `X-Forwarded-Proto: https`: without them a start reads as another address (or plain http) than the callback's,
+and every start answers `409 wrong_origin`. For an MCP server whose URL is not loopback, every endpoint its authorization server names (and
+every request to one) must be `https` and resolve to no private, loopback or link-local address, or the sign-in or
+refresh is refused with words and nothing is sent; a loopback MCP server may name loopback endpoints. The callback exchanges the code, seals the token set (access and refresh tokens, expiry,
+scopes, the client and its secret) under `AGENTRUN_SEAL_KEY`, bound to the server's name, lists the tools as a `PUT`
+does, and redirects to the console's MCP servers page, `/#/settings/mcp?server=<name>&sign_in=ok` (or
+`sign_in=failed&error=<code>`). The redirect URI is this server's own callback under its address: on loopback, the
+plain `http` address and port it listens on.
+
+Reads show `auth.type: "oauth"`, `credential: "sealed"` and `oauth: {expires_at, scopes, client, client_id}`, where
+`client` is `pre-registered`, `metadata-document` or `dynamic`; never a token or a client secret. A `PUT` with `auth: {type: "oauth"}` keeps the token
+set. Refresh tokens never leave this server: a run's launch refreshes an access token that expires within 5 minutes
+(one refresh at a time per server, so a rotating refresh token is spent once; one given with no expiry is taken to last an hour) and hands the run the access token
+alone. A refresh the authorization server refuses (revoked, expired) makes the server read `credential: "expired"`,
+and a preview, refresh or run says to sign in again in Settings → MCP servers. A token that expires during a run is not
+refreshed in that run: its calls fail as unauthorized, and the run's next launch refreshes it. A server that stops aborts any
+refresh or code exchange under way and writes nothing after; if the authorization server had already rotated that
+refresh token, the next start reads `credential: "expired"` and asks for a sign-in again.
 
 `test/fixtures/fake-mcp-server.mjs` is a loopback MCP server for trying this: `startFakeMcp({era, token, oauth})`
 answers `{url, log, tools, close}`; it serves `add`, `slow_write`, `delete_thing` and `paid`, and logs each request's
@@ -1282,8 +1323,9 @@ asked by default.
   redirect is followed, at most 4 MiB is read, and it may take 120 s. The
   model reads the text blocks joined; past 60,000 characters, or with blocks that are not text, the whole answer is
   filed under the run's `evidence/mcp/<server>/` and the text says where. A tool's own error (`isError`) reaches the
-  model as its error. A refused credential (401, 403) reads "the MCP server <name> refused its credential; update it
-  in Settings → MCP servers"; another failure names the server and the HTTP status, never a header. A stop, or a
+  model as its error. A refused credential (401, 403) reads "the MCP server <name> refused its credential (its sign-in
+  expired or was revoked, or its key changed): sign in again in Settings → MCP servers, or update its credential
+  there"; another failure names the server and the HTTP status, never a header. A stop, or a
   client that goes away, cancels the call at the server. A call a crash cut off is answered interrupted on the
   resumed run and never sent again.
 - **The gate.** Every call passes the run's one tool gate as `mcp:<server>/<tool>`, on every harness. Set
@@ -1462,7 +1504,7 @@ with `Retry-After: 30`, recording nothing, and a schedule's time is `skipped`.
 | `POST /runs/{id}/pause`, `POST /runs/{id}/resume` | A workflow run: what is in flight finishes, and no node, model call or decision starts until it is resumed. Its status reads `paused`, and stays so across a server restart. An agentic run is `501`, an ended one `409`. |
 | `POST /workflows/validate` | `{workflow, tools?}`: every issue a save would refuse (`[{path, code, message}]`, the DSL's validation with code not run) and what this host lacks as `warnings`. Writes nothing. A refused save's `422` carries each issue as a field under `definition.workflow`, with its `code`. |
 | `GET /settings/tool-keys`, `PUT` and `DELETE /settings/tool-keys/{id}` | [Tool keys](#tool-keys), this server's own routes (`x-agentrun-serve: "toolkeys/1"`): each key's fields by name and where each is set, never a value; save one sealed, or forget it. |
-| `GET /settings/mcp-servers`, `POST /settings/mcp-servers/preview`, `GET`, `PUT` and `DELETE /settings/mcp-servers/{name}`, `POST .../{name}/refresh` | [MCP servers](#mcp-servers), this server's own routes (`x-agentrun-serve: "mcpservers/1"`): preview a remote MCP server's tools, save it with its credential sealed, read it back without the credential, refresh its tools, or forget it. |
+| `GET /settings/mcp-servers`, `POST /settings/mcp-servers/preview`, `GET`, `PUT` and `DELETE /settings/mcp-servers/{name}`, `POST .../{name}/refresh`, `POST .../{name}/oauth/start`, `GET /settings/mcp-servers/oauth/callback` and `GET .../oauth/client.json` | [MCP servers](#mcp-servers), this server's own routes (`x-agentrun-serve: "mcpservers/1"`): preview a remote MCP server's tools, save it with its credential sealed, read it back without the credential, refresh its tools, forget it, or [sign in to it with OAuth](#signing-in-with-oauth) (the callback and the client document take no token). |
 | `GET /settings/tools`, `PUT /settings/tools` | This server's own: the providers of `web_search`, `web_fetch` and `browser` ([search and fetch](#search-and-fetch)). |
 | `GET`, `PUT` and `DELETE /settings/webhook`, `POST /settings/webhook/test`, `GET /settings/webhook/deliveries` and `POST .../deliveries/{webhook_id}/redeliver` | [Webhooks](#webhooks), this server's own routes (`x-agentrun-serve: "webhook/1"`): the URL run notices are POSTed to, signed by the Standard Webhooks spec; never its secret but once. |
 | `GET` and `POST /triggers`, `GET`, `PATCH` and `DELETE /triggers/{id}`, `POST /triggers/{id}/fire`, `GET /triggers/{id}/firings`, `POST /triggers/{id}/secret`, `POST /hooks/{id}` (no token: [signed](#webhook-triggers)) | [Schedules](#schedules), this server's own routes (`x-agentrun-serve: "trigger/1"`): schedules that start an agent's capped runs, each firing once, and their history. |
@@ -1661,17 +1703,23 @@ typed answers and their probabilities.
   for Jev through OpenRouter, and so does a model gateway on OpenRouter: with `AGENT_MODEL_BASE_URL` on the host
   `openrouter.ai` and neither key set, Jev runs on `AGENT_MODEL_API_KEY`.
 - Parallel Decisions, through `@parcha/agentrun-decisions`, answers a node that says `provider: "parallel"`, with web
-  citations as its evidence. Set `PARALLEL_API_KEY`. Each request is booked at Parallel's list price as an estimate,
-  and one whose outcome was lost after sending is never sent again: the run escalates it as interrupted.
+  citations as its evidence. It runs on one of two routes. With `PARALLEL_API_KEY` set, on Parallel's own API: each
+  request is booked at Parallel's list price as an estimate. Without it, on Parallel's model through OpenRouter,
+  `parallel/decisions-fast`, on the OpenRouter key (below): only an OpenRouter key is needed. Its citations (OpenRouter's
+  `url_citation` annotations) are the same evidence, and its cost is the one OpenRouter reports. A request whose outcome
+  was lost after sending is never sent again on either route: the run escalates it as interrupted. Capabilities say which
+  route it runs on (`route: "parallel"` or `"openrouter"`).
 - OpenRouter's Decisions models answer a node that says `provider: "openrouter"` and names its model in `model`
   (`liquid/d1`, `perplexity/pplx-decider-v1.2`, `cloudflare/clef`, `typesafe/jev-1.14`). They run on the OpenRouter key
   Jev's OpenRouter route reads (`OPENROUTER_API_KEY`, else `AGENT_MODEL_API_KEY` with `AGENT_MODEL_BASE_URL` on
   openrouter.ai), handed to the run's process on the decision descriptor as Jev's is. That key is also the model
-  gateway's, which a run's process holds. Images to them are experimental.
+  gateway's, which a run's process holds. Images to them are experimental. A model that cites the web returns
+  `url_citation` annotations, which become the node's evidence. A cost OpenRouter reports above 0 is booked; 0 (a model its
+  catalog prices at 0) or none is unknown, never $0.
 - A decision node's `images` are files of the run's `work/`, such as the pages `pdf_pages` draws: the run's process
   reads them and sends them with the request. The receipt keeps each image's SHA-256, never its bytes.
 - `GET /capabilities` lists the providers in `workflows.decisions.providers` (`[{id: "jev" | "parallel" | "openrouter", available,
-  reason?, note?}]`), and `runJudge` is among `workflows.adapters` once any of them runs here. On the OpenRouter route,
+  reason?, note?, route?}]`, `route` on parallel), and `runJudge` is among `workflows.adapters` once any of them runs here. On the OpenRouter route,
   jev's `note` names the variable Jev runs on (`OPENROUTER_API_KEY` or `AGENT_MODEL_API_KEY`) and says that it is the
   model gateway's key.
 - With no key for a provider a workflow's nodes name, the workflow saves with a `not_set_up_here` warning on

@@ -313,10 +313,15 @@ export const RESUME_PREFIX = "[tool approval] ";
 
 /** The one message that resumes a session once a person answered: it names the call it answers (its tool, call id and
  *  arguments), so the model tells it from a person's new input, and carries the call's result, or the refusal. */
-export function resumeText(request: Pick<ApprovalRequest, "tool" | "call_id">, shown: string, decision: "allow" | "deny", result: ToolAnswer): string {
-  // `shown`: the arguments as the server shows them, redacted whole then cut (runs.ts): never the call's own.
+/** The head of the gate's resume message: the call it answers, its arguments as shown (`shown`, redacted whole then cut,
+ *  runs.ts) cut again at 300 characters, and the words that say it is not the person's. The one source of it: the resume
+ *  writes it, and the Timeline strips exactly it from the row a person opens (runs.ts resumeShows). */
+export function resumeHead(request: Pick<ApprovalRequest, "tool" | "call_id">, shown: string): string {
   const args = shown.length > 300 ? `${shown.slice(0, 299)}…` : shown;
-  const head = `${RESUME_PREFIX}This answers your ${request.tool} call ${request.call_id} (arguments ${args}), which waited for a person's approval; it is not a new message from them.`;
+  return `${RESUME_PREFIX}This answers your ${request.tool} call ${request.call_id} (arguments ${args}), which waited for a person's approval; it is not a new message from them.`;
+}
+export function resumeText(request: Pick<ApprovalRequest, "tool" | "call_id">, shown: string, decision: "allow" | "deny", result: ToolAnswer): string {
+  const head = resumeHead(request, shown);
   return decision === "allow" ? `${head} They allowed it, and it ran${result.isError ? " and failed" : ""}. Its result:\n${result.text}` : `${head}\n${result.text}`;
 }
 
