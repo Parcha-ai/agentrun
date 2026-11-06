@@ -17,7 +17,7 @@ import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
 import { McpServers } from "../dist/mcp-servers.js";
 import { systemNetwork } from "../dist/mcp-oauth.js";
 import { network as fakeNetwork } from "./fixtures/fake-network.mjs";
-import { agent, call, cookieOf, follow, scratch, serve, withEnv } from "./support.mjs";
+import { agent, call, cookieOf, follow, runRecordOf, scratch, serve, withEnv } from "./support.mjs";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { startFakeOAuth } from "./fixtures/fake-oauth-server.mjs";
 
@@ -607,3 +607,41 @@ for (const harness of ["pi", ...(existsSync("/usr/bin/setpriv") ? ["claude-agent
     assert.match(view.result?.final_answer ?? "", /The MCP server docs's credential can't be opened on this server \(its sign-in expired or was revoked: sign in again in Settings → MCP servers\)/);
   });
 }
+
+test("pi: a run whose process went while its call was parked: the owner's allow launches it again, and that launch refreshes a token near its expiry first", { timeout: 180_000 }, async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() });
+  const server = await serve(t, { faux: FAUX_MCP, accounts: true, openSetup: true });
+  const { api, data } = server;
+  // Every access token is within the launch's refresh margin: each launch refreshes it.
+  const { as, mcp } = await fakes(t, { expiresIn: 60 });
+  const origin = `http://127.0.0.1:${server.port}`;
+  const owner = await call(server.port, { method: "POST", path: "/v2/setup", headers: { "content-type": "application/json", origin }, body: { password: "the owner signs in with this phrase" } });
+  assert.equal(owner.status, 201, owner.text);
+  const started = await api("POST", "/settings/mcp-servers/docs/oauth/start", { url: mcp.url });
+  assert.equal((await approve(started)).status, 302);
+  assert.equal((await api("POST", "/agents", agent("parker", { tools: ["mcp:docs/add"] }))).status, 201);
+  const made = await api("POST", "/agents/parker/runs", { input: { content: 'Call mcp__docs__add with {"a":2,"b":3}' } });
+  assert.equal(made.status, 202, JSON.stringify(made.body));
+  const runId = made.body.run_id;
+  await follow(api, runId, ["input_required"], { deadlineMs: 120_000 });
+  const pending = (await api("GET", `/runs/${runId}`)).body.pending;
+  assert.equal(pending?.kind, "approval", JSON.stringify(pending));
+  const refreshes = () => as.log.filter((entry) => entry.form.grant_type === "refresh_token").length;
+  // Its process goes while the call waits; the same approval still waits, with no process.
+  const { holder } = runRecordOf(data, runId);
+  process.kill(holder.pid, "SIGKILL");
+  for (let i = 0; runRecordOf(data, runId).holder?.pid === holder.pid; i++) {
+    assert.ok(i < 300, "the process's end is settled");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  await new Promise((resolve) => setTimeout(resolve, 1_000));
+  assert.equal((await api("GET", `/runs/${runId}`)).body.pending?.id, pending.id, "the same approval waits");
+  const before = refreshes();
+  const allowed = await call(server.port, { method: "POST", path: `/v2/runs/${runId}/approvals/${pending.id}`, headers: { "content-type": "application/json", cookie: cookieOf(owner), origin }, body: { decision: "allow" } });
+  assert.equal(allowed.status, 204, allowed.text);
+  await follow(api, runId, ["completed", "failed"], { deadlineMs: 120_000 });
+  assert.ok(refreshes() > before, `the launch the allow made refreshed the token first (${before} refreshes before it, ${refreshes()} after)`);
+  const sent = mcp.log.filter((entry) => entry.method === "tools/call");
+  assert.equal(sent.length, 1, "run once");
+  assert.ok(sent[0].authorization);
+});
