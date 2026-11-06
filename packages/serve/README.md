@@ -733,7 +733,8 @@ to `AGENT_MODEL`. Capabilities show the mapping in `models` (`{source, route_pre
 model ids (`agent-model`), which a client takes off to show the gateway's own id, and null with any other source.
 `models` also says `ready`, whether a revision that names no model runs here, and when it does not, `needs`: `key` (no
 model provider's key, or none for the default's provider) or `model` (`AGENT_MODEL` names one this server does not
-know). Where the models come from:
+know); and `priced`, whether that model has a price here, which a run's `max_cost_usd` needs (false for a gateway
+model with no price set that the catalog does not list in any form; null while `ready` is false, with no model to price). Where the models come from:
 
 - `--faux MODULE`: every model is the module's (below), with no key and no network: `faux-1`, or for a tier the model
   id its variable names.
@@ -751,8 +752,13 @@ know). Where the models come from:
   `null`, never $0. A model the catalog lists at $0, or one `AGENT_MODEL_PRICE=0,0` prices, is a known $0. A revision's `provider/model-id` takes that provider's
   entry when it is paid; a bare id, a provider the catalog does not list for it, or one it lists at $0 takes the highest
   price any provider lists (one entry's whole price, the most input plus output; a $0 entry never wins over a paid one),
-  as the gateway does not say whose model answers. A run's `max_cost_usd` therefore now stops a gateway run on such a model with
-  `spend_cap_reached`; at $0 it never did.
+  as the gateway does not say whose model answers. A run with `max_cost_usd` on a model with no price is refused before it
+  starts: 409 `agent_not_runnable`, whose `error.fields` entry names `definition.model`, the reason `not_set_up_here`, "The
+  model <id> has no price here, so a run's spend cap cannot be kept on it." and the `fix` naming `AGENT_MODEL_PRICE`, as
+  every 409 `agent_not_runnable` names each thing that keeps a run from starting; an agent saved with a default cap on one
+  gets that as a warning. One
+  without a cap runs, on every harness, with each request's cost unknown: codex's and opencode's proxy books it unknown,
+  never $0, so the run's `cost.usd` is `null` and `/usage` counts it in `unpriced_runs`.
 - Otherwise pi-ai's providers serve them, each with its key from the environment (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`,
   `GEMINI_API_KEY`, `DEEPSEEK_API_KEY`, Bedrock's `AWS_*` keys, ...), and its catalog prices the run. The `AGENT_MODEL`
   variables are then `provider/model-id` too. The launcher holds every key pi-ai reads, as it holds the rest, and a run's
