@@ -147,7 +147,9 @@ try {
     data, port, ...(values.port === undefined ? { nextFreePort: true } : {}), ...(values.listen ? { host: values.listen } : {}), ...(given ? { token: given } : {}), ...(values.faux ? { faux: values.faux } : {}), allowHosts: values["allow-host"],
     ...(values["max-runs"] !== undefined ? { maxRuns: Number(values["max-runs"]) } : {}),
     ...(values["drain-timeout"] ? { drainTimeout: values["drain-timeout"] } : {}), ...(values.documents ? { documents: values.documents } : {}), ...(values["allow-code-nodes"] ? { allowCodeNodes: true } : {}), ...(values.learning !== undefined ? { learning: values.learning as LearningMode } : {}), ...(values["grade-model"] ? { gradeModel: values["grade-model"] } : {}), ...(budget !== undefined ? { learningBudget: Number(budget) } : {}), log: (line) => void process.stdout.write(`${line}\n`),
-    ...(accounts ? { accounts, openSetup: !publicUrl, countSessions: true, ...(publicUrl ? { publicUrl } : {}) } : {}),
+    // The public address is the server's with accounts on or off: the Host names it serves, the webhook URLs it gives.
+    ...(publicUrl ? { publicUrl } : {}),
+    ...(accounts ? { accounts, openSetup: !publicUrl, countSessions: true } : {}),
   });
 } catch (error) {
   console.error(`agentrun-serve: ${(error as Error).message}`);
