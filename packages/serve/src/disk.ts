@@ -101,9 +101,12 @@ export function archilDisk(data: string, archil: Archil, claims: Pick<Claims, "r
       if (mode !== "tools" || !BOX_FOLDER.test(subpath)) throw new Error(`a box mounts its run's work/ alone (agents/<a>/runs/<r>/work), not ${subpath}`);
       if (typeof target !== "object") throw new Error(`the Archil disk mounts ${subpath} in a box, not at a path of this machine`);
       const path = await folderOf(disk, subpath);
-      // The box's tool user and this server's share the group (Archil keeps ids as they are); no one else enters.
+      // The box's tool user and this server's share the group (Archil keeps ids as they are); no one else enters. Every
+      // folder above it, up to the agent's, is this server's user's alone, so the shared group reaches work/ and nothing
+      // beside it (the run's store, another run).
       await chown(path, -1, archil.gid);
       await chmod(path, 0o2770);
+      for (const above of [join(path, ".."), join(path, "..", ".."), join(path, "..", "..", "..")]) await chmod(above, 0o700);
       const run = runOf(subpath);
       const force = revoked.has(run);
       await helper(target.box, archil, force ? "revoke" : "mount", target.context, subpath);

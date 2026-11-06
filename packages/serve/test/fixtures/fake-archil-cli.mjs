@@ -2,7 +2,7 @@
 // `sync <mountpoint>` and `checkin <mountpoint>`, as the root helper calls them. The disk's state (who holds which
 // folder, every call) is one JSON file every box's client shares; the calls of one test are one after another.
 import { execFileSync } from "node:child_process";
-import { appendFileSync, lstatSync, readdirSync, readFileSync, renameSync, rmdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const env = process.env;
@@ -14,6 +14,18 @@ const DISK = env.FAKE_ARCHIL_DISK;
 const MOUNTS = env.FAKE_ARCHIL_MOUNTS;
 const EXPECTED_TOKEN = "planted-archil-mount-token-sentinel-0123456789";
 
+// One client at a time: boxes of two runs mount at once, and the state is one file every client reads and writes.
+const LOCK = `${STATE}.lock`;
+for (let tries = 0; ; tries++) {
+  try {
+    mkdirSync(LOCK);
+    break;
+  } catch (error) {
+    if (error.code !== "EEXIST" || tries > 3000) throw error;
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+  }
+}
+process.on("exit", () => rmSync(LOCK, { recursive: true, force: true }));
 const state = JSON.parse(readFileSync(STATE, "utf8"));
 const save = () => {
   writeFileSync(`${STATE}.next`, JSON.stringify(state));

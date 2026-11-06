@@ -8,7 +8,7 @@
 // refused as Archil refuses it, until a checkin or a revoke. A mount is a link of the box's /workspace to the folder on
 // the disk, so what the box writes there is the run's work/. While it mounts, it notes how many processes show the
 // token in their arguments (`ps -eo args`) and which files of the box hold it.
-import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { scratch } from "../support.mjs";
@@ -34,6 +34,25 @@ export async function fakeArchil(t, { data, token = TOKEN } = {}) {
   const serverMounts = join(root, "server-mounts");
   writeFileSync(serverMounts, `proc /proc proc rw 0 0\n${DISK} ${disk} fuse.archil rw,allow_other 0 0\n`);
   const read = () => JSON.parse(readFileSync(state, "utf8"));
+  // A change of the state under the lock every box's client takes (fake-archil-cli.mjs): a client mid-call never loses it.
+  const change = (fields) => {
+    const lock = `${state}.lock`;
+    for (let tries = 0; ; tries++) {
+      try {
+        mkdirSync(lock);
+        break;
+      } catch (error) {
+        if (error.code !== "EEXIST" || tries > 3000) throw error;
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+      }
+    }
+    try {
+      writeFileSync(`${state}.next`, JSON.stringify({ ...read(), ...fields }));
+      renameSync(`${state}.next`, state);
+    } finally {
+      rmSync(lock, { recursive: true, force: true });
+    }
+  };
   return {
     root,
     disk,
@@ -46,12 +65,11 @@ export async function fakeArchil(t, { data, token = TOKEN } = {}) {
     /** Boxes made from now on have a /proc in which any user sees every process (no hidepid), as an image that does
      *  not mount it so. */
     noHidepid() {
-      writeFileSync(state, JSON.stringify({ ...read(), noHidepid: true }));
+      change({ noHidepid: true });
     },
     /** Every box's sync fails while `on`, as one whose writes cannot reach the disk: such a box cannot let go. */
     failSyncs(on) {
-      const now = read();
-      writeFileSync(state, JSON.stringify({ ...now, failSync: on }));
+      change({ failSync: on });
     },
     /**
      * Sets up box `id`, whose box paths are below `dir`: its client, its helper and its `sudo`. Answers the directory to

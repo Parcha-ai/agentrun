@@ -14,6 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
+import { fakeArchil } from "./fixtures/fake-archil.mjs";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { awaitImage, BOX_RECIPE, DEFAULT_DOCKER_IMAGE, dockerImage, IMAGE_STATE_FILE, RECIPE_HASH, RECIPE_LABEL, STALE_AFTER_MS } from "../dist/box-image.js";
 import { startTimeOf } from "../dist/box/sweep.js";
@@ -423,9 +424,12 @@ test("the server's close waits for the image's last record to be saved before it
 
 test("a Daytona box is the server's to make, and never waits on the Docker box's image: while that image is still being built, a Daytona run makes its box at once with no preparing row, and a Docker run on the same server waits for it", { timeout: 180_000 }, async (t) => {
   const key = "planted-daytona-key-sentinel";
-  const daytona = await daytonaSandboxes(t, { key });
-  const docker = await fakeDocker(t, { "build-hold": "" }, { AGENTRUN_BOXES: "docker,daytona", DAYTONA_API_KEY: key, DAYTONA_API_URL: daytona.url });
-  const { api, data } = await serve(t, { faux: PROBE });
+  // A Daytona box keeps its run's folder on an Archil disk: a fake one, at the data directory's disk/.
+  const data = join(await scratch(t), "agents");
+  const disk = await fakeArchil(t, { data });
+  const daytona = await daytonaSandboxes(t, { key, archil: disk });
+  const docker = await fakeDocker(t, { "build-hold": "" }, { AGENTRUN_BOXES: "docker,daytona", DAYTONA_API_KEY: key, DAYTONA_API_URL: daytona.url, ...disk.env });
+  const { api } = await serve(t, { faux: PROBE, data, archilMounts: disk.serverMounts });
   const offers = (await api("GET", "/capabilities")).body.places.boxes;
   assert.deepEqual(offers.find((b) => b.id === "docker"), { id: "docker", available: true, state: "preparing", reason: "building the box image (python, git, curl, node, npm, rg)", ...DOCKER_NET });
   assert.deepEqual(offers.find((b) => b.id === "daytona"), { id: "daytona", available: true, state: "ready", network: "allowlist" });

@@ -51,7 +51,7 @@ async function onArchil(t, { archil = true, daytona = {}, env = {} } = {}) {
   const data = join(await mkdtemp(join(await scratch(t), "data-")), "agents");
   const disk = await fakeArchil(t, { data });
   const fake = await daytonaSandboxes(t, { key: KEY, ...(archil ? { archil: disk } : {}), ...daytona });
-  withEnv(t, { AGENTRUN_BOXES: "daytona", DAYTONA_API_KEY: KEY, DAYTONA_API_URL: fake.url, OPENAI_API_KEY: "planted-model-sentinel", ...(archil ? disk.env : {}), ...env }, ARCHIL_NAMES);
+  withEnv(t, { AGENTRUN_BOXES: "daytona", DAYTONA_API_KEY: KEY, DAYTONA_API_URL: fake.url, OPENAI_API_KEY: "fake-test-key", ...(archil ? disk.env : {}), ...env }, ARCHIL_NAMES);
   const server = await serve(t, { faux: PROBE, data, ...(archil ? { archilMounts: disk.serverMounts } : {}) });
   return { server, fake, disk };
 }
@@ -82,7 +82,7 @@ test("a run of a remote place saved while Archil was there is refused 409 once i
   const data = join(await mkdtemp(join(await scratch(t), "data-")), "agents");
   const disk = await fakeArchil(t, { data });
   const fake = await daytonaSandboxes(t, { key: KEY, archil: disk });
-  withEnv(t, { AGENTRUN_BOXES: "daytona", DAYTONA_API_KEY: KEY, DAYTONA_API_URL: fake.url, OPENAI_API_KEY: "planted-model-sentinel", ...disk.env }, ARCHIL_NAMES);
+  withEnv(t, { AGENTRUN_BOXES: "daytona", DAYTONA_API_KEY: KEY, DAYTONA_API_URL: fake.url, OPENAI_API_KEY: "fake-test-key", ...disk.env }, ARCHIL_NAMES);
   const first = await serve(t, { faux: PROBE, data, archilMounts: disk.serverMounts });
   await agent(first.api, "remote");
   await first.close();
