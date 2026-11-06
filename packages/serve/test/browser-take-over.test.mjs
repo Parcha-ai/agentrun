@@ -14,7 +14,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { ASK } from "./fixtures/faux-browse-handoff.mjs";
 import { connect } from "./fixtures/ws-client.mjs";
-import { builtConsole, call, cookieOf, follow, scratch, serve, withEnv } from "./support.mjs";
+import { builtConsole, call, cookieOf, follow, runDir as runFolder, runRecordOf, scratch, serve, withEnv } from "./support.mjs";
 
 const FAUX_BROWSER = new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname;
 const BROWSE_ASK = new URL("./fixtures/faux-browse-ask.mjs", import.meta.url).pathname;
@@ -50,7 +50,7 @@ async function watched(t, { faux, cap, env = {}, hook } = {}) {
   assert.equal(started.status, 202, JSON.stringify(started.body));
   const runId = started.body.run_id;
   const followed = await follow(server.api, runId, ["input_required"]);
-  const dir = join(server.data, "runs", runId, "browser-live");
+  const dir = join(runFolder(server.data, runId), "browser-live");
   assert.ok(await until(() => readdir(dir).then((names) => names.some((name) => name.endsWith(".json")), () => false)), "the run's process handed its viewer over");
   const handed = JSON.parse(readFileSync(join(dir, (await readdir(dir)).find((name) => name.endsWith(".json"))), "utf8"));
   const wsPath = `/v2/runs/${runId}/browser/live/v/${handed.id}/ws`;
@@ -143,11 +143,16 @@ test("cap: Take over holds the owner's 15 minutes of session time first, and wit
   const { ws } = await tight.viewer();
   ws.sendJson({ type: "take" });
   const refused = await tight.next(ws, "take_refused");
-  assert.match(refused?.message ?? "", /^spend_cap_reached: Not sent: the run has spent \$[\d.]+( and holds \$[\d.]+ for calls still answering)? of its \$0\.03 cap, and taking over the browser could cost up to \$0\.03 \(browserbase's session time at \$0\.12 an hour for the 15 minutes it may last\)\. Raise the cap to at least \$0\.04 to run it\.$/);
+  assert.match(refused?.message ?? "", /^spend_cap_reached: Not sent: this run has spent \$[\d.]+( and holds \$[\d.]+ for steps still running)?, of its \$0\.03 cap, and the next step, taking over the browser, could cost up to \$0\.03 \(browserbase's session time at \$0\.12 an hour for the 15 minutes it may last\)\. Raise the cap to at least \$0\.04 to continue\.$/);
   ws.sendJson({ type: "text", text: "x" });
   assert.deepEqual(await tight.next(ws, "held"), { type: "held", reason: "not_taken" }, "no hold started");
   assert.ok(!summaries(await tight.rows()).includes("You took over the browser"));
   ws.destroy();
+  // The owner's refused take-over is no step of the agent's: the run is not paused at its cap for it, and the person's next
+  // message has its turn.
+  assert.equal((await tight.server.api("POST", `/runs/${tight.runId}/messages`, { content: "That is all." })).status, 202);
+  const ended = await follow(tight.server.api, tight.runId, ["completed", "input_required"], { after: tight.after });
+  assert.equal(ended.last.status, "completed", `not paused for the owner's take-over: ${JSON.stringify((await tight.view()).pending)}`);
 
   // $0.05: the take fits beside the reserve; were its $0.03 still held after the hand back, the agent's next call
   // ($0.018 beside the reserve) would not.
@@ -184,7 +189,7 @@ test("the agent asks: input_required with pending.kind browser, a waiting row an
   // The record is the run's directory's alone (0600 in 0700, outside work/): its bytes are in no other file, and nothing the
   // API serves names its id. (pi-browser's own store keeps the id, a digest of the model's request id, to resume its wait.)
   const id = askIdOf(ASK.request_id);
-  const recordFile = join(w.server.data, "runs", w.runId, "browser-ask", `${id}.json`);
+  const recordFile = join(runFolder(w.server.data, w.runId), "browser-ask", `${id}.json`);
   const record = readFileSync(recordFile, "utf8").trim();
   assert.deepEqual([statSync(recordFile).mode & 0o777, statSync(join(recordFile, "..")).mode & 0o777], [0o600, 0o700]);
   assert.deepEqual(Object.keys(JSON.parse(record)).sort(), ["asked_at", "completion_condition", "expires_at", "id", "instruction", "tag"], "no live view link, no token");
@@ -215,7 +220,7 @@ test("the agent asks: input_required with pending.kind browser, a waiting row an
   assert.equal(got.filter((m) => m.type === "run.needs_input" && m.data.pending?.kind === "browser").length, 1, "one run.needs_input for the ask");
 
   // The viewer's token, and the ask's record, are in no file but their own.
-  assert.deepEqual(filesUnder(w.server.data).filter(([, bytes]) => bytes.includes(w.handed.token)).map(([path]) => path), [join(w.server.data, "runs", w.runId, "browser-live", `${w.handed.tag}.json`)]);
+  assert.deepEqual(filesUnder(w.server.data).filter(([, bytes]) => bytes.includes(w.handed.token)).map(([path]) => path), [join(runFolder(w.server.data, w.runId), "browser-live", `${w.handed.tag}.json`)]);
   assert.equal((await w.server.api("POST", `/runs/${w.runId}/messages`, { content: "That is all." })).status, 202);
   await follow(w.server.api, w.runId, ["completed"], { after: after.after });
   assert.deepEqual(filesUnder(w.server.data).filter(([, bytes]) => bytes.includes(record) || bytes.includes(w.handed.token)), [], "gone with the run's process");
@@ -236,7 +241,7 @@ test("an ask nobody answers expires: the agent hears expired, the timeline says 
 /** Kills the run's process while its agent's ask is open (its session kept at the vendor), and waits for the run's next
  *  process: the server opens the run again, since its turn is still open. */
 async function restartedMidAsk(w) {
-  const holderOf = () => JSON.parse(readFileSync(join(w.server.data, "runs", w.runId, "run.json"), "utf8")).holder?.pid;
+  const holderOf = () => runRecordOf(w.server.data, w.runId).holder?.pid;
   const first = holderOf();
   process.kill(first, "SIGKILL");
   assert.ok(await until(() => { const pid = holderOf(); return pid !== undefined && pid !== first; }, 60_000), "the run's process was started again");
@@ -281,8 +286,11 @@ test("an ask whose words echo a value the server holds as a key shows it cut, ne
 test("cap: the agent's ask holds the person's 15 minutes first; with no room no ask is made and the tool's result says why", { timeout: 180_000 }, async (t) => {
   const w = await watched(t, { faux: BROWSE_HANDOFF, cap: 0.03 });
   const view = await w.view();
-  assert.equal(view.pending?.kind, "question", "the run went on to its question: no browser ask");
-  assert.match(view.pending.question, /No person could take the browser: spend_cap_reached: Not sent: .* handing the browser to you could cost up to \$0\.03 /);
+  // The agent's own step the cap refused: its tool's result says so, and the run waits on a raise, as for any paid call.
+  assert.equal(view.pending?.kind, "budget", `no browser ask; paused at the cap: ${JSON.stringify(view.pending)}`);
+  assert.match(view.pending.said, /the next step, handing the browser to you, could cost up to \$0\.03 /);
+  const result = (await w.rows()).findLast((row) => row.kind === "tool_result" && row.tool_name === "browser_request_handoff");
+  assert.match(JSON.stringify(result), /No person could take the browser: spend_cap_reached/);
   assert.ok(!(await w.rows()).some((row) => row.kind === "waiting" && row.summary?.startsWith("Waiting for you: Sign in")));
   assert.equal((await w.handBack("done")).status, 404);
 });

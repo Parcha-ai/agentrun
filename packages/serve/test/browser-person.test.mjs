@@ -234,7 +234,7 @@ test("take-over time counts: what the person used stays held until a charge book
     taken.push("held");
   }
   assert.deepEqual(taken.slice(0, 2), ["held", "held"]);
-  assert.match(taken[2] ?? "", /^spend_cap_reached: Not sent: the run has spent \$0 and holds \$0\.04 for calls still answering of its \$0\.05 cap, and taking over the browser could cost up to \$0\.03 /, "the third is refused: the 20 minutes used are held");
+  assert.match(taken[2] ?? "", /^spend_cap_reached: Not sent: this run has spent \$0 and holds \$0\.04 for steps still running, of its \$0\.05 cap, and the next step, taking over the browser, could cost up to \$0\.03 /, "the third is refused: the 20 minutes used are held");
   assert.ok(Math.abs(paidHolds() - base - 0.04) < 1e-9, `held: ${paidHolds() - base}`);
 });
 
@@ -314,4 +314,14 @@ test("a take-over's row is written when its hold goes live, and a take whose hol
   never.cancel();
   await sleep(5);
   assert.deepEqual([held.notes.length, held.taken, held.dropped], [2, 2, 2], "cancelled: its hold dropped, no row");
+});
+
+test("the person's time a take-over holds never pauses the agent's run when the cap refuses it; an ask's does", async (t) => {
+  const root = await scratch(t);
+  const seen = [];
+  const person = personHands({ root, gates: () => ({ give: () => false }), pollMs: 60_000, note: async () => {}, personTime: async (what, _seconds, options) => { seen.push([what, options?.pauses ?? true]); return { refused: "no room" }; } });
+  t.after(() => person.close());
+  await person.take("ar-run-20-1");
+  await person.handoff.request(ask(20, "ar-run-21-1"));
+  assert.deepEqual(seen, [["taking over the browser", false], ["handing the browser to you", true]]);
 });

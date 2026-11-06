@@ -216,7 +216,9 @@ type Note = (kind: string, data: Record<string, string>) => Promise<void>;
 export function personHands(options: {
   root: string;
   gates: (tag: string) => { give?(why: "answered" | "cap", message?: string): boolean };
-  personTime(what: string, seconds: number): Promise<{ refused: string } | { drop(): void }>;
+  /** `pauses: false`: a refusal does not pause the agent's run (the person's own take-over, a re-hold): only the agent's own
+   *  step, its ask, does (cap.ts paidCall). */
+  personTime(what: string, seconds: number, options?: { pauses?: boolean }): Promise<{ refused: string } | { drop(): void }>;
   note: Note;
   holdMs?: number;
   pollMs?: number;
@@ -243,7 +245,7 @@ export function personHands(options: {
   const now = options.now ?? Date.now;
   const ledgers = new Map<string, Ledger>();
   /** `user`'s share of session `tag`'s person time: held now when nobody holds it (`what` names it in the cap's words). */
-  const acquire = async (tag: string, user: string, what: string): Promise<{ refused: string } | undefined> => {
+  const acquire = async (tag: string, user: string, what: string, pauses: boolean): Promise<{ refused: string } | undefined> => {
     for (;;) {
       const known = ledgers.get(tag);
       if (known) {
@@ -253,7 +255,7 @@ export function personHands(options: {
         // The cap refused to hold more of the person's time here: whoever comes now (a take-over, a new ask) needs more of
         // it, so asks the cap itself, in its own words; with room again, it holds the next stretch and the holding goes on.
         if (known.refused) {
-          const hold = await options.personTime(what, holdMs / 1000).catch(() => ({ refused: "the person's time could not be held" }));
+          const hold = await options.personTime(what, holdMs / 1000, { pauses }).catch(() => ({ refused: "the person's time could not be held" }));
           if ("refused" in hold) return { refused: hold.refused };
           if (ledgers.get(tag) !== known) {
             hold.drop();
@@ -268,7 +270,7 @@ export function personHands(options: {
         return undefined;
       }
       const ledger: Ledger = { holds: [], users: new Set([user]), ready: Promise.resolve(undefined), since: now() };
-      ledger.ready = options.personTime(what, holdMs / 1000).then(
+      ledger.ready = options.personTime(what, holdMs / 1000, { pauses }).then(
         (hold) => {
           if (!("refused" in hold)) {
             ledger.holds.push(hold);
@@ -292,7 +294,7 @@ export function personHands(options: {
   const again = (tag: string, ledger: Ledger): void => {
     ledger.timer = timers.set(() => void (async () => {
       if (ledgers.get(tag) !== ledger) return;
-      const hold = await options.personTime("more of your time in the browser", holdMs / 1000).catch(() => ({ refused: "the person's time could not be held" }));
+      const hold = await options.personTime("more of your time in the browser", holdMs / 1000, { pauses: false }).catch(() => ({ refused: "the person's time could not be held" }));
       if (ledgers.get(tag) !== ledger) return void ("refused" in hold || hold.drop());
       if (!("refused" in hold)) {
         ledger.holds.push(hold);
@@ -331,7 +333,7 @@ export function personHands(options: {
     // room it still waits, unheld, until its own expiry (within the hold's window of its asking): the person may be partway
     // through it, and that time is spent at the vendor either way. A take-over of the session asks the cap itself.
     const user = `ask:${id}`;
-    void acquire(kept.tag, user, "handing the browser to you").then((refused) => {
+    void acquire(kept.tag, user, "handing the browser to you", false).then((refused) => {
       if (refused) return;
       if (settled.has(id) || open.get(id) !== ask) return release(kept.tag, user);
       ask.drop = () => release(kept.tag, user);
@@ -366,7 +368,7 @@ export function personHands(options: {
     /** The live view's take: the person's time held, unless an ask open on the same session holds it already (its answer
      *  ends the take); refused in the cap's words when there is no room. */
     async take(tag: string): Promise<{ refused: string } | { end(why: HoldEnd): void; started(): void; cancel(): void }> {
-      const refused = await acquire(tag, TAKE_USER, "taking over the browser");
+      const refused = await acquire(tag, TAKE_USER, "taking over the browser", false);
       if (refused) return refused;
       let ended = false;
       return {
@@ -402,7 +404,7 @@ export function personHands(options: {
         if (!TAG.test(ask.sessionTag)) return { refused: "the session's tag is not one this server takes" };
         // A take-over of the same session holds the person's time already: the ask shares it.
         const user = `ask:${id}`;
-        const refused = await acquire(ask.sessionTag, user, "handing the browser to you");
+        const refused = await acquire(ask.sessionTag, user, "handing the browser to you", true);
         if (refused) return refused;
         const hold = { drop: () => release(ask.sessionTag, user) };
         const at = Date.now();

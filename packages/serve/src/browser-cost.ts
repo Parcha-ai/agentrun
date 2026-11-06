@@ -223,13 +223,15 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
    *  `seconds` of session time at the provider's price, the most the person's time may last before it expires, held before it starts and refused
    *  in the cap's words when the cap has no room for it. The hold is the caller's to drop when the person's time ends; the time itself is booked
    *  as any session time is, at the session's next charge. A free provider's time holds nothing. */
-  async function personTime(what: string, seconds: number): Promise<{ refused: string } | { drop(): void }> {
+  async function personTime(what: string, seconds: number, options: { pauses?: boolean } = {}): Promise<{ refused: string } | { drop(): void }> {
     const cap = runCap();
     if (cap !== undefined && rate === null) return { refused: `${SPEND_CAP_REACHED}: ${what} did not start. ${provider}'s session time has no price here (${priceEnvOf(provider)} gives one), so the run's cap of $${cap} cannot be kept.` };
     // Up to the millionth of a dollar, so the cap's words name a figure never below the hold.
     const usd = Math.ceil(Math.round(usdOf(seconds) * 1e12) / 1e6) / 1e6;
     const basis = `${provider}'s session time at $${rate} an hour for the ${Math.round(seconds / 60)} minutes it may last`;
-    const paid = await paidCall(what, async () => keepHold(usd), () => undefined, { usd, basis });
+    // A refusal pauses the run at its next request (paidCall) only for the agent's own step (an ask); `pauses: false` for a
+    // person's take-over, which is no step of the agent's.
+    const paid = await paidCall(what, async () => keepHold(usd), () => undefined, { usd, basis }, options);
     return "refused" in paid ? { refused: paid.refused } : paid.result;
   }
 

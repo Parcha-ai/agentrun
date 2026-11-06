@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import { BROWSER_PRICES, browserPrice, browserSpend, priceEnvOf } from "../dist/browser-cost.js";
-import { paidHolds, useSpend } from "../dist/cap.js";
+import { paidHolds, takePaidRefusal, useSpend } from "../dist/cap.js";
 import { agent, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
 
 const START = "https://example.test/start";
@@ -283,6 +283,19 @@ test("a person's minutes are held once: the next browser call's hold leaves out 
   assert.ok(Math.abs(paidHolds() - base - 0.014) < 1e-9, `the reserve, and the carried time after the charge's own through: ${paidHolds() - base}`);
   await harness.commit((tx) => spend.onCharge(charge(150, 0.005, true), tx), ctx);
   assert.ok(Math.abs(paidHolds() - base) < 1e-9, "the release's charge books the rest: nothing left held");
+});
+
+test("a person's time the cap refuses pauses the run only when it is the agent's own step: an ask's does, the owner's take-over's does not", async (t) => {
+  const spend = { cap: 0.01, spent: () => 0, add: () => {} };
+  useSpend(spend);
+  t.after(() => useSpend(undefined));
+  const browser = browserSpend("browserbase", BROWSERBASE, 180, async () => undefined);
+  const take = await browser.personTime("taking over the browser", 900, { pauses: false });
+  assert.match(take.refused ?? "", /taking over the browser/);
+  assert.equal(takePaidRefusal(spend), undefined, "the owner's refused take-over leaves the run's next request alone");
+  const ask = await browser.personTime("handing the browser to you", 900);
+  assert.match(ask.refused ?? "", /handing the browser to you/);
+  assert.match(takePaidRefusal(spend)?.words ?? "", /handing the browser to you/, "the agent's refused ask pauses the run at its next request");
 });
 
 test("prices by provider: Browserbase, Kernel and local Chrome, each overridden by its own variable; one unknown or unreadable has none", async (t) => {

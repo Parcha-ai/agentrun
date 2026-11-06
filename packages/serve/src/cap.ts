@@ -630,7 +630,7 @@ export function takePaidRefusal(owner: RunSpend | undefined): { words: string; f
   return { words: refusal.words, figures: refusal.figures };
 }
 
-export async function paidCall<T>(name: string, call: () => Promise<T>, charge: (result: T) => number | null | undefined, hold: { usd: number; basis: string }): Promise<{ refused: string; leastCapUsd?: number } | { result: T }> {
+export async function paidCall<T>(name: string, call: () => Promise<T>, charge: (result: T) => number | null | undefined, hold: { usd: number; basis: string }, options: { pauses?: boolean } = {}): Promise<{ refused: string; leastCapUsd?: number } | { result: T }> {
   const spend = runSpend;
   if (!spend) return { result: await call() };
   const turn = paying.then(async () => {
@@ -643,7 +643,8 @@ export async function paidCall<T>(name: string, call: () => Promise<T>, charge: 
       // Refused for room: a raise would send it, so the run pauses at the model's next request (takePaidRefusal). Its
       // words and the least cap that sends it (leastCapUsd) are one figure, which the pause carries to its mark and serves.
       const refusal = paidRefusal(spend.cap, read, holding, name, hold);
-      paidRoomRefusal = { owner: spend, words: refusal.text.slice(`${SPEND_CAP_REACHED}: `.length), figures: { spentUsd: read + holding, needsUsd: hold.usd, leastCapUsd: refusal.leastCapUsd } };
+      // `pauses: false`: no step of the run's own (a person's take-over of its browser), so the run goes on unpaused.
+      if (options.pauses !== false) paidRoomRefusal = { owner: spend, words: refusal.text.slice(`${SPEND_CAP_REACHED}: `.length), figures: { spentUsd: read + holding, needsUsd: hold.usd, leastCapUsd: refusal.leastCapUsd } };
       return { refused: refusal.text, leastCapUsd: refusal.leastCapUsd };
     }
     // Held from here; settled into the spend in the same step that lets the hold go, so no check between sees neither.
