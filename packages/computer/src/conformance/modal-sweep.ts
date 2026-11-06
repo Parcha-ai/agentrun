@@ -20,8 +20,7 @@
 import { readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { COMPUTER_LABEL } from "../drift.js";
-import type { ModalSandbox, ModalSdk } from "../modal.js";
-import { waitUntil } from "../wait.js";
+import { type ModalSandbox, type ModalSdk, untilFinished } from "../modal.js";
 import { MODAL_ENV, type ModalModuleOptions, modalClient } from "./modal.js";
 
 /** A stream as main writes to it: done is called once the text is handed on. */
@@ -166,15 +165,11 @@ export async function main(argv: string[], io: SweepIo = {}): Promise<number> {
 		const ended = await bounded(`terminate of ${sandbox.sandboxId}`, () => sandbox.terminate(), callMs);
 		if (!ended.ok && !notFound(ended.error)) await write(stderr, `${sandbox.sandboxId} was not terminated: ${words(ended.error)}\n`);
 	}
-	// Each read back on its own, at once, through a new handle: an exit code, or a sandbox Modal no longer knows, is gone.
+	// Each read back on its own, at once, through a new handle and the provider's own wait after a terminate
+	// (untilFinished): an exit code, or a sandbox Modal no longer knows, is gone.
 	const gone = await Promise.all(
 		fresh.map(async ({ sandboxId: id }) => {
-			const end = Date.now() + waitMs;
-			const waited = await waitUntil(
-				() => bounded(`poll of ${id}`, async () => (await sdk.sandboxes.fromId(id)).poll(), Math.max(1, Math.min(callMs, end - Date.now()))),
-				(polled) => (polled.ok && polled.value !== null) || (!polled.ok && notFound(polled.error)),
-				{ boundMs: waitMs, minMs: pollMs, maxMs: pollMs, what: `${id} to finish`, describe: (polled) => (polled.ok ? "poll answered null, so it runs" : words(polled.error)) },
-			);
+			const waited = await untilFinished(async () => (await sdk.sandboxes.fromId(id)).poll(), { name: id, boundMs: waitMs, callMs, minMs: pollMs, maxMs: pollMs });
 			if (!waited.ok) await write(stderr, `${id} is still running after ${waitMs / 1000} s: ${waited.error.message}\n`);
 			return waited.ok;
 		}),

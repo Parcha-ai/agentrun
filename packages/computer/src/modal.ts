@@ -97,11 +97,11 @@ export interface ModalTimeouts {
 	/** The daemon's upload, from the exec's start to its exit. The entrypoint waits this long and one call more. */
 	uploadMs: number;
 	/**
-	 * How long release delete waits, after the terminate, for poll to read the sandbox finished: Modal ends a sandbox
-	 * asynchronously, and lists it until then.
+	 * How long release delete, and a create that refuses its sandbox (drift, an abort, a failed upload), wait after the
+	 * terminate for poll to read the sandbox finished: Modal ends a sandbox asynchronously, and lists it until then.
 	 */
 	releaseMs: number;
-	/** The first pause between two of release's polls; the pauses double up to 5 s. */
+	/** The first pause between two of those polls; the pauses double up to 5 s. */
 	releasePollMs: number;
 }
 
@@ -337,6 +337,44 @@ function call<T>(what: string, run: () => Promise<T>, ms: number, signal?: Abort
 		return Promise.resolve(fail(codeOf(error), `${what} failed: ${words(error)}`));
 	}
 	return race(promise, what, ms, signal);
+}
+
+export interface UntilFinishedOptions {
+	/** The sandbox in words, for the errors, such as its name or id. */
+	name: string;
+	/** The longest the whole wait takes, in ms. */
+	boundMs: number;
+	/** The longest one poll may take, in ms. */
+	callMs: number;
+	/** The first pause between two polls, in ms; each pause doubles up to maxMs. */
+	minMs: number;
+	/** The longest pause between two polls, in ms. */
+	maxMs: number;
+	/** Ends the wait early, as aborted; a wait that must finish whatever its caller does is given none. */
+	signal?: AbortSignal;
+}
+
+/**
+ * The one wait after a terminate, which returns before Modal has ended the sandbox (sandbox.ts:1292-1296, 2238-2251):
+ * polls through waitUntil until poll reads an exit code (null while it runs, sandbox.ts:2761-2771) or Modal no longer
+ * knows the sandbox. Past boundMs it is a timeout, and on the signal's abort an abort, each saying what poll last read;
+ * it never reports a sandbox finished that it did not read finished. release delete, a create that refuses its
+ * sandbox, and modal-sweep --after all wait through it.
+ */
+export async function untilFinished(poll: () => Promise<number | null>, { name, boundMs, callMs, minMs, maxMs, signal }: UntilFinishedOptions): Promise<Result<void>> {
+	const finished = await waitUntil(
+		(readSignal) => call(`poll of ${name}`, poll, callMs, readSignal),
+		(polled) => (polled.ok && polled.value !== null) || (!polled.ok && polled.error.code === "not_found"),
+		{
+			boundMs,
+			signal,
+			minMs,
+			maxMs,
+			what: `${name} to finish after its terminate`,
+			describe: (polled) => (!polled.ok ? polled.error.message : polled.value === null ? "poll read null: it still runs" : `poll read exit code ${polled.value}`),
+		},
+	);
+	return finished.ok ? ok(undefined) : finished;
 }
 
 /** Bytes as Buffers, which the daemon client reads lines from. */
@@ -608,7 +646,7 @@ export class ModalProvider implements ComputerProvider {
 		if (!created.ok) {
 			if (created.error.code === "timeout" || created.error.code === "aborted") {
 				// The SDK's create goes on without us: a sandbox it makes after this is terminated as it lands.
-				creating.then((sandbox) => sandbox.terminate()).catch(() => {});
+				creating.then((sandbox) => this.#terminate(sandbox, name)).catch(() => {});
 				return fail(created.error.code, `${created.error.message}; a sandbox it makes after this is terminated`);
 			}
 			return created;
@@ -619,11 +657,11 @@ export class ModalProvider implements ComputerProvider {
 		const uploaded = daemon === undefined ? ok(undefined) : await this.#upload(sandbox, name, daemon, signal);
 		const checked = uploaded.ok ? await this.#checkCreated(sandbox, ref, tags, recorded, signal) : uploaded;
 		if (signal?.aborted) {
-			const after = await this.#terminate(sandbox);
+			const after = await this.#terminate(sandbox, name);
 			return fail("aborted", `create was aborted after Modal made the sandbox; the computer ${name} ${after}`);
 		}
 		if (checked.ok) return ok(ref);
-		const after = await this.#terminate(sandbox);
+		const after = await this.#terminate(sandbox, name);
 		return fail(checked.error.code, `the computer ${name} ${after}: ${checked.error.message}`);
 	}
 
@@ -662,10 +700,22 @@ export class ModalProvider implements ComputerProvider {
 		return ok(undefined);
 	}
 
-	/** Terminates a sandbox create gives up on, and says how that went. */
-	async #terminate(sandbox: ModalSandbox): Promise<string> {
-		const ended = await call(`terminate of ${sandbox.sandboxId}`, () => sandbox.terminate(), this.#timeouts.callMs);
-		return ended.ok ? "was terminated" : `could not be terminated (${ended.error.message})`;
+	/**
+	 * Terminates a sandbox create gives up on and waits, as release delete does, until poll reads it finished, so a
+	 * refused create leaves nothing listed; and says how that went. Neither the terminate nor the wait takes the caller's
+	 * signal: an aborted create still finishes its cleanup, within callMs and releaseMs.
+	 */
+	async #terminate(sandbox: ModalSandbox, name: string): Promise<string> {
+		const ended = await call(`terminate of ${name}`, () => sandbox.terminate(), this.#timeouts.callMs);
+		if (!ended.ok && ended.error.code !== "not_found") return `could not be terminated (${ended.error.message})`;
+		const finished = await this.#untilFinished(sandbox, name);
+		return finished.ok ? "was terminated" : `was terminated, and may still be ending (${finished.error.message})`;
+	}
+
+	/** untilFinished on sandbox, bounded by releaseMs, its pauses from releasePollMs. */
+	#untilFinished(sandbox: ModalSandbox, name: string, signal?: AbortSignal): Promise<Result<void>> {
+		const { releaseMs, releasePollMs, callMs } = this.#timeouts;
+		return untilFinished(() => sandbox.poll(), { name, boundMs: releaseMs, callMs, minMs: Math.min(releasePollMs, RELEASE_POLL_MAX_MS), maxMs: RELEASE_POLL_MAX_MS, signal });
 	}
 
 	/** The drift check after create: the sandbox runs, its tags read back as given, and the daemon and probe match. */
@@ -955,9 +1005,10 @@ export class ModalProvider implements ComputerProvider {
 	/**
 	 * delete terminates, and is idempotent: a sandbox already finished, or one Modal no longer knows, is ok. Modal ends a
 	 * sandbox asynchronously (terminate returns before it has finished unless asked to wait, sandbox.ts:1292-1296 and
-	 * 2238-2251), so delete then polls, with pauses that double from releasePollMs to 5 s, until poll reads an exit code
-	 * (null while it runs, sandbox.ts:2761-2771) or Modal no longer knows it, within releaseMs and the caller's signal.
-	 * Past releaseMs it is a timeout that says what poll last read, never done.
+	 * 2238-2251), so delete then polls through untilFinished, as a refusing create does, with pauses that double from
+	 * releasePollMs to 5 s, until poll reads an exit code (null while it runs, sandbox.ts:2761-2771) or Modal no longer
+	 * knows it, within releaseMs and the caller's signal. Past releaseMs it is a timeout that says what poll last read,
+	 * never done.
 	 */
 	async release(ref: ComputerRef, how: "stop" | "delete", { signal }: CallContext = {}): Promise<Result<void>> {
 		const problem = refProblem(ref);
@@ -975,18 +1026,7 @@ export class ModalProvider implements ComputerProvider {
 			const polled = await call(`poll of ${ref.name}`, () => sandbox.poll(), this.#timeouts.callMs, signal);
 			return polled.ok && polled.value !== null ? ok(undefined) : ended;
 		}
-		const finished = await waitUntil(
-			(readSignal) => call(`poll of ${ref.name}`, () => sandbox.poll(), this.#timeouts.callMs, readSignal),
-			(polled) => (polled.ok && polled.value !== null) || (!polled.ok && polled.error.code === "not_found"),
-			{
-				boundMs: this.#timeouts.releaseMs,
-				signal,
-				minMs: Math.min(this.#timeouts.releasePollMs, RELEASE_POLL_MAX_MS),
-				maxMs: RELEASE_POLL_MAX_MS,
-				what: `${ref.name} to finish after its terminate`,
-				describe: (polled) => (!polled.ok ? polled.error.message : polled.value === null ? "poll read null: it still runs" : `poll read exit code ${polled.value}`),
-			},
-		);
+		const finished = await this.#untilFinished(sandbox, ref.name, signal);
 		if (finished.ok) return ok(undefined);
 		return fail(finished.error.code, `release delete of ${ref.name} is not done: ${finished.error.message}`);
 	}

@@ -387,7 +387,8 @@ reads at once, then after pauses that double from `minMs` (250 ms) to `maxMs` (5
 returns the first state `done` accepts. Each read gets a signal that aborts at the bound or on the caller's abort; a
 read still pending then is not waited for, and one that throws is not done. Past the bound it returns a `timeout`, on
 the caller's abort an `aborted`, each naming `what` was waited for and the last state read (`describe`). It has no
-vendor's types: Modal's release and the Modal sweep use it.
+vendor's types: Modal's `untilFinished`, its one wait after a terminate, is built on it, and Modal's release, a create
+that refuses its sandbox, and the Modal sweep all wait through that.
 
 ## Modal
 
@@ -475,7 +476,7 @@ of that slice, and the live conformance file waits for a key (below).
 - **attach** by id or labels runs the same drift check on what it finds and refuses a drifted computer in words, left
   running. Its `spec.user` is the probe's uid:gid; the rest is as recorded.
 - **release** `delete` is `terminate()`, idempotent: a sandbox that has finished, or that Modal no longer knows, is ok.
-  Modal ends a sandbox asynchronously, so after the terminate `release` polls (`waitUntil`, above) until `poll()` reads
+  Modal ends a sandbox asynchronously, so after the terminate `release` polls (`untilFinished`, on `waitUntil` above) until `poll()` reads
   an exit code or Modal no longer knows the sandbox, with pauses that double from `releasePollMs` (500 ms) to 5 s,
   within `releaseMs` (120 s) and the caller's signal. Past the bound it is a `timeout` that says what `poll()` last
   read; it never reports a delete done that it did not read back. A caller that bounds release (the conformance
@@ -486,7 +487,10 @@ of that slice, and the live conformance file waits for a key (below).
 - **Every call is bounded** (`timeouts`: create 10 min, which covers the layer's build and scheduling; the upload 5
   min; other calls 60 s; hello and the probe 30 s; a whole list 120 s; release's wait 120 s) and takes the caller's
   signal. A create that gives up has its
-  sandbox terminated if one lands later.
+  sandbox terminated if one lands later. A create that refuses its sandbox (drift, an abort, a failed upload)
+  terminates it and waits as release does, within `releaseMs`, so nothing is left listed when it returns; that wait
+  does not take the caller's signal, since an aborted create still cleans up, and past the bound the refusal says the
+  sandbox may still be ending and what `poll()` last read.
 - **GPU** is refused: this provider makes VM sandboxes, and Modal offers GPUs on gVisor only.
 
 ### What every Modal fact rests on
