@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync, lstatSync, readdirSync, readFileSync } from "node:fs";
-import { writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
@@ -58,15 +58,25 @@ function decoy(t) {
   return child.pid;
 }
 
-async function boxedRun(t, plan) {
+async function boxedRun(t, plan, { before } = {}) {
   const server = await serve(t, { faux: PROBE, fauxBox: FAUX_BOX });
   const { api } = server;
+  await before?.(server.data);
   const made = await api("POST", "/agents", { definition: { id: "bg", name: "bg", instructions: "Probe.", place: SANDBOX, tools: TOOLS } });
   assert.equal(made.status, 201, JSON.stringify(made.body));
   const run = await api("POST", "/agents/bg/runs", { input: { content: JSON.stringify({ probe: plan }) } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
   await follow(api, run.body.run_id, ["completed"], { deadlineMs: 90_000 });
   return { ...server, runId: run.body.run_id, said: answers(server.data, run.body.run_id), work: join(server.data, "runs", run.body.run_id, "work") };
+}
+/** A box whose display copy of `exit` lands slowly: an `mv` first on its PATH that waits 2 s before it renames over
+ *  `./exit`, the display copy's own rename. The run's end must not destroy the box before that copy has landed. */
+async function slowExitCopy(t, data) {
+  const bin = join(await scratch(t), "bin");
+  await mkdir(bin);
+  await writeFile(join(bin, "mv"), '#!/bin/sh\nfor a; do last=$a; done\ncase "$last" in ./exit) sleep 2;; esac\nexec /bin/mv "$@"\n', { mode: 0o755 });
+  await mkdir(fauxRoot(data), { recursive: true });
+  await writeFile(join(fauxRoot(data), "path-prefix"), bin);
 }
 const groupOf = (started) => Number(/\(process group (\d+)\)/.exec(started)?.[1]);
 
@@ -129,7 +139,8 @@ test("a link planted at ended truncates nothing at the run's end", { timeout: 12
     { tool: "bash_background", args: { command: "sleep 30" } },
     { tool: "bash", args: { command: `ln -s ${victim} background/1/ended` } },
   ];
-  const { said, data, work } = await boxedRun(t, plan);
+  // Its display copy of exit lands 2 s after the trusted one would have: the box must outlast it.
+  const { said, data, work } = await boxedRun(t, plan, { before: (data) => slowExitCopy(t, data) });
   assert.deepEqual(said.map((a) => [a.tool, a.error]), plan.map((step) => [step.tool, false]), JSON.stringify(said));
   await until(() => liveBoxes(data).length === 0, "the box's destroy at the run's end");
   assert.equal(readFileSync(victim, "utf8"), "KEEP-THIS\n", "the file the planted links name is as it was");
@@ -162,10 +173,38 @@ test("a link to a directory planted at a display name is replaced, never moved i
     { tool: "bash_background", args: { command: "sleep 30" } },
     { tool: "bash", args: { command: `ln -s ${outside} background/1/ended; ln -s ${outside} background/1/exit` } },
   ];
-  const { said, data, work } = await boxedRun(t, plan);
+  const { said, data, work } = await boxedRun(t, plan, { before: (data) => slowExitCopy(t, data) });
   assert.deepEqual(said.map((a) => [a.tool, a.error]), plan.map((step) => [step.tool, false]), JSON.stringify(said));
   await until(() => liveBoxes(data).length === 0, "the box's destroy at the run's end");
   assert.deepEqual(readdirSync(outside), [], "nothing was moved into the directory the links name");
   for (const name of ["ended", "exit"]) assert.equal(lstatSync(join(work, "background", "1", name)).isFile(), true, `${name} is a file of its own now`);
   assert.deepEqual(readdirSync(join(work, "background", "1")).filter((name) => name.startsWith(".put.")), [], "no temporary file is left");
+});
+
+test("on a terminal too, a pid written into work/ is no group a signal goes to: TERM ends process 1's own terminal command, and the forged group lives on", { timeout: 120_000 }, async (t) => {
+  const other = decoy(t);
+  const plan = [
+    { tool: "bash_background", args: { command: "sleep 30", tty: true } },
+    { tool: "write", args: { path: "background/1/pid", content: String(other) } },
+    { tool: "write", args: { path: "background/1/tty", content: "" } },
+    { tool: "bash_signal", args: { id: "1", signal: "TERM" } },
+  ];
+  const { said, data } = await boxedRun(t, plan);
+  assert.deepEqual(said.map((a) => [a.tool, a.error]), plan.map((step) => [step.tool, false]), JSON.stringify(said));
+  assert.equal(said[3].text, "Sent TERM to background process 1: it ended by signal TERM (exit code 143).");
+  await until(() => liveBoxes(data).length === 0, "the box's destroy at the run's end");
+  assert.equal(groupAlive(other), true, "the forged group was never signalled, by the call or by the run's end");
+});
+
+test("a tty mark written into work/ makes no plain process a terminal one: its signal goes to its own group", { timeout: 120_000 }, async (t) => {
+  const plan = [
+    { tool: "bash_background", args: { command: "sleep 30" } },
+    { tool: "write", args: { path: "background/1/tty", content: "" } },
+    { tool: "bash_list", args: {} },
+    { tool: "bash_signal", args: { id: "1", signal: "INT" } },
+  ];
+  const { said } = await boxedRun(t, plan);
+  assert.deepEqual(said.map((a) => [a.tool, a.error]), plan.map((step) => [step.tool, false]), JSON.stringify(said));
+  assert.ok(!said[2].text.includes("(tty)"), said[2].text);
+  assert.equal(said[3].text, "Sent INT to background process 1: it ended by signal INT (exit code 130).");
 });

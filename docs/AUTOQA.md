@@ -274,7 +274,7 @@ the run's files go to. It gives back:
   `{mode: "sandbox", box}`, checked by `placeIssues`; `GET /v2/capabilities` answers `places` (`placesOf`). A sandbox
   place saves with a warning at `definition.place`, and its run is 409 `agent_not_runnable` with `details.box`.
 - Serve, the box registry (`packages/serve/src/boxes.ts`): `AGENTRUN_BOXES` lists the boxes to probe once at start
-  (`boxRegistry`), and the start log's `event=boxes` line says which are available and why the others aren't. Box
+  (`boxRegistry`); not set at all, it is `docker` (`DEFAULT_BOXES`), and empty or `none` is no box; and the start log's `event=boxes` line says which are available and why the others aren't. Box
   keys (`BOX_KEYS`) stay with the server. The registry feeds `places` (`boxAvailability`): `docker` and `daytona` are
   available when they are, and every other box says runs in it are not available yet.
 - Serve, a run's place and its box: a run takes its revision's place or the default (`resolvePlace`), and the run keeps
