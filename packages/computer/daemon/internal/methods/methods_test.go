@@ -129,3 +129,11 @@ func TestExecRunRefusesBadParams(t *testing.T) {
 		}
 	}
 }
+
+func TestExecRunNamesTheSignalWithoutSIG(t *testing.T) {
+	r := call(t, `{"jsonrpc":"2.0","id":5,"method":"exec.run","params":{"argv":["sh","-c","kill -KILL $$"],"timeoutMs":5000}}`)
+	var res map[string]any
+	if r.Error != nil || json.Unmarshal(r.Result, &res) != nil || res["signal"] != "KILL" || res["exitCode"] != nil {
+		t.Fatalf("exec.run result %s %+v", r.Result, r.Error)
+	}
+}

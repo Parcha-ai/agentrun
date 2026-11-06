@@ -122,6 +122,7 @@ describe("run a command in a Docker computer", { skip: LIVE ? false : "set AGENT
 		const result = await run(["sh", "-c", "sleep 300 & echo $!; wait"], { timeoutMs: 1000 });
 		assert.equal(result.timedOut, true);
 		assert.equal(result.exitCode, null);
+		assert.equal(result.signal, "TERM");
 		const pid = Number(result.out.trim());
 		assert.ok(pid > 1, result.out);
 		const check = await run(["sh", "-c", `if [ -e /proc/${pid} ]; then cat /proc/${pid}/stat; else echo gone; fi`]);

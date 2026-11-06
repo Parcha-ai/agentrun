@@ -401,7 +401,7 @@ func (t *Table) Resize(params ResizeParams) (Empty, error) {
 	return Empty{}, setSize(p.terminal, size)
 }
 
-func (t *Table) List(ListParams) ([]Info, error) {
+func (t *Table) List(ListParams) (ListResult, error) {
 	t.mu.Lock()
 	procs := append([]*proc(nil), t.procs...)
 	t.mu.Unlock()
@@ -417,7 +417,7 @@ func (t *Table) List(ListParams) ([]Info, error) {
 		p.mu.Unlock()
 		infos = append(infos, info)
 	}
-	return infos, nil
+	return ListResult{Processes: infos}, nil
 }
 
 // exit is how p ended, or that it runs. Hold p.mu.

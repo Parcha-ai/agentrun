@@ -31,7 +31,7 @@ func table(t *testing.T, opts process.Options) *process.Table {
 	tbl := process.NewTable(opts)
 	t.Cleanup(func() {
 		list, _ := tbl.List(process.ListParams{})
-		for _, p := range list {
+		for _, p := range list.Processes {
 			if p.Running {
 				_, _ = tbl.Signal(process.SignalParams{ID: p.ID, Signal: "KILL"})
 				_, _ = tbl.Wait(context.Background(), process.WaitParams{ID: p.ID, TimeoutMs: ms(patience)})
@@ -453,10 +453,10 @@ func TestListAndWait(t *testing.T) {
 		t.Fatalf("wait on a running process: %+v %v", res, err)
 	}
 	list, err := tbl.List(process.ListParams{})
-	if err != nil || len(list) != 1 {
+	if err != nil || len(list.Processes) != 1 || list.Truncated {
 		t.Fatalf("list %+v %v", list, err)
 	}
-	if got := list[0]; got.ID != p.ID || got.Pid != p.Pid || strings.Join(got.Argv, " ") != "sleep 300" || got.Pty || !got.Running || got.StartedAt < before || got.EndedAt != nil {
+	if got := list.Processes[0]; got.ArgvClipped || got.ID != p.ID || got.Pid != p.Pid || strings.Join(got.Argv, " ") != "sleep 300" || got.Pty || !got.Running || got.StartedAt < before || got.EndedAt != nil {
 		t.Fatalf("list entry %+v", got)
 	}
 	if _, err := tbl.Signal(process.SignalParams{ID: p.ID, Signal: "KILL"}); err != nil {
@@ -464,7 +464,7 @@ func TestListAndWait(t *testing.T) {
 	}
 	wait(t, tbl, p.ID)
 	list, _ = tbl.List(process.ListParams{})
-	if got := list[0]; got.Running || got.Signal == nil || *got.Signal != "KILL" || got.EndedAt == nil || *got.EndedAt < got.StartedAt {
+	if got := list.Processes[0]; got.Running || got.Signal == nil || *got.Signal != "KILL" || got.EndedAt == nil || *got.EndedAt < got.StartedAt {
 		t.Fatalf("list entry after the end %+v", got)
 	}
 	if _, err := tbl.Wait(context.Background(), process.WaitParams{ID: p.ID}); err == nil || kindOf(t, err) != rpc.KindInvalid {
@@ -500,7 +500,7 @@ func TestTheTableIsBounded(t *testing.T) {
 		t.Fatalf("a start past the bound with every process running: %v", err)
 	}
 	list, _ := tbl.List(process.ListParams{})
-	if len(list) != 2 || list[0].ID != third.ID || list[1].ID != fourth.ID {
+	if len(list.Processes) != 2 || list.Processes[0].ID != third.ID || list.Processes[1].ID != fourth.ID {
 		t.Fatalf("list %+v", list)
 	}
 }
@@ -519,7 +519,7 @@ func TestStartRefusals(t *testing.T) {
 			t.Errorf("%s: want %s, got %v", name, c.kind, err)
 		}
 	}
-	if list, _ := tbl.List(process.ListParams{}); len(list) != 0 {
+	if list, _ := tbl.List(process.ListParams{}); len(list.Processes) != 0 {
 		t.Fatalf("a refused start left %+v", list)
 	}
 }

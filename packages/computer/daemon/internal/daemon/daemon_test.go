@@ -187,6 +187,11 @@ type listed struct {
 	Running bool     `json:"running"`
 }
 
+type listResult struct {
+	Processes []listed `json:"processes"`
+	Truncated bool     `json:"truncated"`
+}
+
 // readUntil reads a process's stdout from offset 0 until it holds want.
 func (c *client) readUntil(id, want string) string {
 	c.t.Helper()
@@ -268,9 +273,9 @@ func TestAProcessOutlivesItsConnectionAndTwoConnectionsShareOneTable(t *testing.
 	_ = a.w.Close()
 
 	b := dial(t, in.socket)
-	var list []listed
+	var list listResult
 	b.ok("process.list", map[string]any{}, &list)
-	if len(list) != 1 || list[0].ID != p.ID || list[0].Pid != p.Pid || !list[0].Running {
+	if len(list.Processes) != 1 || list.Truncated || list.Processes[0].ID != p.ID || list.Processes[0].Pid != p.Pid || !list.Processes[0].Running {
 		t.Fatalf("list from a second connection %+v", list)
 	}
 	b.readUntil(p.ID, "tick 3")
@@ -327,9 +332,9 @@ func TestTheBridgeCarriesAConnection(t *testing.T) {
 	}
 	// The process outlives the bridge.
 	d := dial(t, in.socket)
-	var list []listed
+	var list listResult
 	d.ok("process.list", map[string]any{}, &list)
-	if len(list) != 1 || list[0].ID != p.ID || !list[0].Running {
+	if len(list.Processes) != 1 || list.Processes[0].ID != p.ID || !list.Processes[0].Running {
 		t.Fatalf("list %+v", list)
 	}
 }

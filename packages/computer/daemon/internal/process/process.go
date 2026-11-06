@@ -69,7 +69,14 @@ type ResizeParams struct {
 	Rows int    `json:"rows"`
 }
 
-type ListParams struct{}
+type ListParams struct {
+	Offset *int `json:"offset,omitempty"`
+}
+
+type ListResult struct {
+	Processes []Info `json:"processes"`
+	Truncated bool   `json:"truncated"`
+}
 
 type WaitParams struct {
 	ID        string `json:"id"`
@@ -84,15 +91,17 @@ type WaitResult struct {
 
 // Info is one process as process.list reports it. Times are milliseconds since the epoch.
 type Info struct {
-	ID        string   `json:"id"`
-	Pid       int      `json:"pid"`
-	Argv      []string `json:"argv"`
-	Pty       bool     `json:"pty"`
-	Running   bool     `json:"running"`
-	ExitCode  *int     `json:"exitCode"`
-	Signal    *string  `json:"signal"`
-	StartedAt int64    `json:"startedAt"`
-	EndedAt   *int64   `json:"endedAt"`
+	ID   string   `json:"id"`
+	Pid  int      `json:"pid"`
+	Argv []string `json:"argv"`
+	// ArgvClipped says argv was cut to its first arguments to keep a listing small.
+	ArgvClipped bool    `json:"argvClipped"`
+	Pty         bool    `json:"pty"`
+	Running     bool    `json:"running"`
+	ExitCode    *int    `json:"exitCode"`
+	Signal      *string `json:"signal"`
+	StartedAt   int64   `json:"startedAt"`
+	EndedAt     *int64  `json:"endedAt"`
 }
 
 type Empty struct{}

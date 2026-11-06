@@ -7,7 +7,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { after, before, describe, it } from "node:test";
-import { DockerProvider, readAll } from "../../dist/index.js";
+import { DockerProvider, listProcesses, readAll } from "../../dist/index.js";
 
 const LIVE = process.env.AGENTRUN_COMPUTER_LIVE_DOCKER === "1";
 const IMAGE = "debian:bookworm-slim";
@@ -102,7 +102,9 @@ describe("keep a process running across calls and connections in a Docker comput
 
 	it("connection B lists it running, and reads it by offset with nextOffset growing", async () => {
 		b = await connect();
-		const list = await call(b, "process.list", {});
+		const listed = await listProcesses(b.client);
+		assert.equal(listed.ok, true, JSON.stringify(listed));
+		const list = listed.value;
 		const entry = list.find((p) => p.id === ticker.id);
 		assert.ok(entry, JSON.stringify(list));
 		assert.equal(entry.running, true);
@@ -145,7 +147,9 @@ describe("keep a process running across calls and connections in a Docker comput
 	it("signals TERM to the loop, and wait reports TERM", async () => {
 		await call(b, "process.signal", { id: ticker.id, signal: "TERM" });
 		assert.deepEqual(await call(b, "process.wait", { id: ticker.id, timeoutMs: PATIENCE_MS }), { running: false, exitCode: null, signal: "TERM" });
-		const entry = (await call(b, "process.list", {})).find((p) => p.id === ticker.id);
+		const { processes, truncated } = await call(b, "process.list", {});
+		assert.equal(truncated, false);
+		const entry = processes.find((p) => p.id === ticker.id);
 		assert.equal(entry.running, false);
 		assert.equal(entry.signal, "TERM");
 		assert.ok(entry.endedAt >= entry.startedAt);

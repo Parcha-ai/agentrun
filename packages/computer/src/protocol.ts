@@ -57,7 +57,7 @@ export interface ExecRunParams {
 export interface ExecRunResult {
 	/** null when a signal ended the program. */
 	exitCode: number | null;
-	/** The signal that ended it, such as "SIGKILL". */
+	/** The signal that ended it, without SIG, such as "KILL". */
 	signal?: string;
 	/** base64. */
 	stdout: string;
@@ -284,10 +284,24 @@ export interface ProcessInfo extends ProcessExit {
 	id: string;
 	pid: number;
 	argv: string[];
+	/** argv was cut to its first arguments to keep the listing small. */
+	argvClipped: boolean;
 	pty: boolean;
 	/** Milliseconds since the epoch. */
 	startedAt: number;
 	endedAt: number | null;
+}
+
+export interface ProcessListParams {
+	/** Skip this many processes: pass the count already listed to get the next page. */
+	offset?: number;
+}
+
+export interface ProcessListResult {
+	/** In start order. */
+	processes: ProcessInfo[];
+	/** More follow: list again with offset + processes.length. */
+	truncated: boolean;
 }
 
 export interface ProcessWaitParams {
@@ -319,7 +333,7 @@ export interface DaemonMethods {
 	"process.write": { params: ProcessWriteParams; result: Empty };
 	"process.signal": { params: ProcessSignalParams; result: Empty };
 	"process.resize": { params: ProcessResizeParams; result: Empty };
-	"process.list": { params: Empty; result: ProcessInfo[] };
+	"process.list": { params: ProcessListParams; result: ProcessListResult };
 	"process.wait": { params: ProcessWaitParams; result: ProcessExit };
 }
 

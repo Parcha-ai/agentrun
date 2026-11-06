@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { PassThrough } from "node:stream";
 import test from "node:test";
-import { DaemonClient, MAX_CHUNK_BYTES, MAX_PROCESSES, MAX_READ_WAIT_MS, PROCESS_RING_BYTES, readAll } from "../dist/index.js";
+import { DaemonClient, listProcesses, MAX_CHUNK_BYTES, MAX_PROCESSES, MAX_READ_WAIT_MS, PROCESS_RING_BYTES, readAll } from "../dist/index.js";
 
 /** A fake daemon: `answer(request, daemon)` handles each request the client writes; every request is kept in `seen`. */
 function fake(answer) {
@@ -102,5 +102,36 @@ test("readAll stops when aborted, and sends the daemon a cancel", async () => {
 		seen.map((m) => m.method),
 		["process.read", "$/cancelRequest"],
 	);
+	client.close();
+});
+
+test("listProcesses pages by offset until a page is not truncated", async () => {
+	const p = (id) => ({ id, pid: 10, argv: ["sh"], argvClipped: false, pty: false, running: true, exitCode: null, signal: null, startedAt: 1, endedAt: null });
+	const pages = [
+		{ processes: [p("p1"), p("p2")], truncated: true },
+		{ processes: [p("p3")], truncated: true },
+		{ processes: [], truncated: false },
+	];
+	const { client, seen } = fake((request, daemon) => daemon.reply(request, pages.shift()));
+	const listed = await listProcesses(client);
+	assert.equal(listed.ok, true, JSON.stringify(listed));
+	assert.deepEqual(
+		listed.value.map((x) => x.id),
+		["p1", "p2", "p3"],
+	);
+	assert.deepEqual(
+		seen.map((r) => [r.method, r.params.offset]),
+		[
+			["process.list", 0],
+			["process.list", 2],
+			["process.list", 3],
+		],
+	);
+	client.close();
+});
+
+test("listProcesses returns the daemon's error as a result", async () => {
+	const { client } = fake((request, daemon) => daemon.error(request, "invalid", "bad offset"));
+	assert.deepEqual(await listProcesses(client), { ok: false, error: { code: "invalid", message: "bad offset" } });
 	client.close();
 });
