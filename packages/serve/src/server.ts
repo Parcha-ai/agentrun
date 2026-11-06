@@ -1490,7 +1490,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       // ended (a call a crash cut makes `tools` unknown, never `tokens`). An unknown meter counts the run as unpriced on it.
       // An ended run's are its store's figures (metersOf keeps them, never its timeline), read for its lines by meter and,
       // by any group, for what a run of unknown cost is known to have spent.
-      const read = (group === "meter" && usd !== 0) || usd === null ? (live ? { tools: toolCostOf(live.rows), tokens: null, browser: { usd: toolCostOf(live.rows, "browser"), seconds: null }, others: toolCostOf(live.rows.filter((r) => r.tool_name !== "browser")), known: { tokens: 0, browser: knownToolCostOf(live.rows, "browser"), others: knownToolCostOf(live.rows, "browser", true) } } : metersOf(row)) : undefined;
+      const read = (group === "meter" && usd !== 0) || usd === null ? (live ? { tools: toolCostOf(live.rows), tokens: null, browser: { usd: toolCostOf(live.rows, "browser"), seconds: null }, others: toolCostOf(live.rows, "browser", true), known: { tokens: 0, browser: knownToolCostOf(live.rows, "browser"), others: knownToolCostOf(live.rows, "browser", true) } } : metersOf(row)) : undefined;
       // A run whose cost is unknown still spent what is known of it (so_far: each meter's known dollars): that is in the
       // total and its lines, and the run is counted unpriced, so a total is never below a line of its own and reads as
       // the lower bound unpriced_runs says it is.
