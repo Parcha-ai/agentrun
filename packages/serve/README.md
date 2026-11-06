@@ -31,9 +31,16 @@ agentrun-serve on http://127.0.0.1:7340/v2 (agent store in ~/.local/share/agentr
 AGENTRUN_BASE_URL=http://127.0.0.1:7340/v2
 AGENTRUN_API_KEY=ar_local_...
 Open http://127.0.0.1:7340/
-Boxes: none is ready, so sandbox agents do not run here. docker: not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker.
+Boxes: docker (on by default; set AGENTRUN_BOXES to change).
 Set your password: http://127.0.0.1:7340/setup (the first visit sets it)
 ```
+
+When the box image is not built yet, a line after the banner says its first build is under way (`Preparing the Docker
+box image (first start only, a few minutes); agents can be made now, and their first run waits for it.`), and another
+when it ends (`The Docker box image is ready.`, or why it failed). `npx @parcha/agentrun` prints the `Boxes:` line and
+these two on stderr, after its own line on stdout. On a machine where Docker is not running, the `Boxes:` line says so instead (`Boxes: none, so new agents run on the
+runner. Docker isn't running on this machine (no docker command on PATH): install or start Docker, then restart
+AgentRun.`); see [Boxes](#boxes).
 
 `Open` is [the console](#the-console), which takes [your password](#your-password). For a client, export the two lines before
 it, then make an agent, start a run, and read its timeline until a page says `final`:
@@ -59,7 +66,7 @@ An edit is a new revision: `PUT $AGENTRUN_BASE_URL/agents/calc/definition` with
 | `--port N` | the first free port from `7340` | The port. `0` is any free port. |
 | `--open` | off | Open the console in this machine's browser once the server listens; not in CI, nor on Linux with no display. |
 | `--faux MODULE` | none | Answer every model request from the module's default export (below). |
-| `--allow-host NAME` | none | Another `Host` name to accept. Repeat it. |
+| `--allow-host NAME` | none | Another `Host` name to accept on a loopback address, on any port. Repeat it. |
 | `--max-runs N` | `AGENTRUN_MAX_RUNS`, else as many pi runs as fit | The most runs at once, beside the memory each run's harness reserves ([capacity](#capacity-and-health)). Over either, a new run is `429 rate_limited`. |
 | `--documents DIR` | `AGENTRUN_SERVE_DOCUMENTS` | A read-only directory of documents a workflow's `pdf_pages` calls read by file name, confined to it. |
 | `--allow-code-nodes` | off (`AGENTRUN_SERVE_CODE_NODES=1` turns it on) | Run workflows' `code` nodes. They run in the run's process through the DSL's `new Function` transform, which is no sandbox, so only turn it on for workflows you wrote. Off, a workflow with a code node saves with a `not_set_up_here` warning and its runs are `409 agent_not_runnable` with `details.code: true`. A call `via: "shell"` or `"executor"` is refused either way. |
@@ -78,15 +85,15 @@ use it.
 ## Sandbox in 60 seconds
 
 An agent with a shell, in a Docker container of its own: on a machine with Docker, in a checkout built as above, with
-a model key. Start the server with the Docker box on:
+a model key. Start the server; the Docker box is on by default wherever Docker answers:
 
 ```sh
 export AGENT_MODEL=openrouter/anthropic/claude-sonnet-5.5 OPENROUTER_API_KEY=...
-AGENTRUN_BOXES=docker node packages/serve/dist/cli.js
+node packages/serve/dist/cli.js
 ```
 
-Its log says `event=boxes available=docker`, and its banner's last line `Boxes: docker is ready, so sandbox agents run
-their tools there. docker boxes reach only pypi.org, files.pythonhosted.org, registry.npmjs.org, registry.yarnpkg.com,
+Its log says `event=boxes available=docker`, and its banner's last line `Boxes: docker (on by default; set
+AGENTRUN_BOXES to change). docker boxes reach only pypi.org, files.pythonhosted.org, registry.npmjs.org, registry.yarnpkg.com,
 github.com, and codeload.github.com.` (on Linux; elsewhere it says why the box has no
 network: [Sandbox](#sandbox)). The first start builds [the box's image](#the-boxs-image) (python 3.12, git, curl, node, npm and rg,
 about 300 MB, a minute or two, the build alone on the network): its banner then says `Boxes: docker is preparing
@@ -116,7 +123,7 @@ cat > box.mjs <<'JS'
 export default (context, faux) => context.messages.some((m) => m.role === "toolResult") ? faux.message("Saved out.txt.")
   : faux.message(faux.toolCall("bash", { command: "cat /etc/os-release | tee out.txt" }), { stopReason: "toolUse" });
 JS
-AGENTRUN_BOXES=docker node packages/serve/dist/cli.js --faux box.mjs
+node packages/serve/dist/cli.js --faux box.mjs
 ```
 
 The box has python 3.12, git, curl, node, npm and rg. On Linux it reaches Python's and npm's package registries and
@@ -285,7 +292,8 @@ workflow is never given a box.
 
 `capabilities.places` says both sides. `default_place` is the place a new agent gets here. When that is the runner,
 `default_reason` says why in docker's own words, such as `new agents run on the runner, because the docker box is
-unavailable here: not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker`. `default` stays `runner`,
+unavailable here: Docker isn't running on this machine (no docker command on PATH): install or start Docker, then
+restart AgentRun`. The console's new-agent form says docker's reason too, under its place picker. `default` stays `runner`,
 because it means where a revision that names no place runs. An agent saved with no place (before this, where docker was
 unavailable, or a workflow) keeps running on the runner, whatever the server has now. The default is never worked out
 again at run time. The console's new-agent form starts on `default_place`, with bash ticked when that place is a sandbox.
@@ -309,7 +317,8 @@ A definition naming a box this server does not have saves with a warning on `def
 
 ### A run in a Docker box
 
-With `AGENTRUN_BOXES=docker` and a Docker daemon this server's user may use, a run whose place is
+With docker on (by default, when `AGENTRUN_BOXES` is not set; or listed in it) and a Docker daemon this server's user
+may use, a run whose place is
 `{"mode": "sandbox", "box": "docker"}` gets one container, made on its first `bash` call (a run with none gets no
 container). Those four tools are pi's own, on every harness. `bash` runs in the container. `read`, `write` and `edit`
 run on this server, on the `work/` the container binds, because a `docker exec` costs half a second or more per call:
@@ -553,7 +562,7 @@ never runs; the box's first process is a `sleep` of its lifetime.
 ### In the published image
 
 The published image, `ghcr.io/parcha-ai/agentrun-server`, cannot host boxes yet. It has no `docker` command and no
-Docker daemon, so with `AGENTRUN_BOXES=docker` capabilities and the start's `event=boxes` line say docker is
+Docker daemon, so capabilities and the start's `event=boxes` line say docker is
 unavailable, and a sandbox agent's runs are `409 agent_not_runnable`. Runner agents work as before. Do not mount the
 host's Docker socket into the container to get around it: whatever can reach that socket is root on the host, and a
 box's bind of `work/` names a path in the server's container, which the host's daemon does not have. For sandboxes, run
@@ -563,18 +572,29 @@ inside the image itself (bwrap, on Linux) comes in a later release.
 ### Boxes
 
 A box is a machine apart from this one where a run's tools run. Runs execute in `docker`, `daytona` and `modal` boxes
-([place](#place)); the others are set up and probed, and say runs in them are not available yet. `AGENTRUN_BOXES` lists the boxes to set up, as a comma list of the ids below
-(`AGENTRUN_BOXES=docker,daytona`). The server never probes a box the list does not name, and a name that is no box
+([place](#place)); the others are set up and probed, and say runs in them are not available yet.
+
+Docker is on by default. With `AGENTRUN_BOXES` not set at all (a plain `npx @parcha/agentrun`), the server probes
+`docker` as if it were listed, and offers it when Docker answers (`ready`, or `preparing` while its image comes), so a
+new agent lands in the Docker box with a shell. When Docker does not answer, new agents run on the runner, and the
+banner, `capabilities.places.default_reason`, docker's own `reason` and the console's new-agent form say why. Every
+other box is yours to list.
+
+`AGENTRUN_BOXES`, when set, wins: it lists the boxes to set up, as a comma list of the ids below
+(`AGENTRUN_BOXES=docker,daytona`), and the server never probes a box the list does not name, Docker included. An empty
+value (`AGENTRUN_BOXES=`) or `AGENTRUN_BOXES=none` sets up no box. `none` stands alone, and a name that is no box
 refuses the start. At start the server probes each listed box once. The probes run at once, each within 5 s. Then one
 log line says what the server found:
 
     event=boxes available=<ids or none> unavailable=<ids> <id>="<why>" ...
 
 The line gives a reason for each listed box that is unavailable, and the banner says the same in words
-(`Boxes: docker is ready, so sandbox agents run their tools there.`). Each reason says what to do next: a box the list
+(`Boxes: docker is ready, so sandbox agents run their tools there.` with a list; `Boxes: docker (on by default; set
+AGENTRUN_BOXES to change).` without one). Each reason says what to do next: a box the list
 does not name says `not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker` (keeping the boxes it already
-lists), and a `docker` whose daemon does not answer says to start Docker or add this server's user to the `docker`
-group, then restart the server, since the probe runs once. A reason never holds a key, a command's output or a
+lists), a missing `docker` command says `Docker isn't running on this machine (no docker command on PATH): install or
+start Docker, then restart AgentRun`, and a `docker` whose daemon does not answer says to start Docker or add this
+user to the `docker` group, then restart AgentRun, since the probe runs once. A reason never holds a key, a command's output or a
 provider's answer.
 
 - `docker`: the `docker` command on PATH, with a daemon that answers `docker version` for this server's user. It needs no key.
@@ -599,7 +619,8 @@ provider's answer.
   and the token is set. It asks nothing of the provider. Runs execute in it: [a run in a Modal sandbox](#a-run-in-a-modal-sandbox).
 - `bwrap` is not in this release yet.
 
-The boxes come from `@parcha/pi-transport`, an optional peer of this package; install it beside the server to use any.
+The boxes come from `@parcha/pi-transport`, a dependency of this package, so every install of the server, `npx
+@parcha/agentrun`'s included, has the Docker box's provider.
 The keys belong to the server alone. The launcher hands them over with the server's other secrets, and no run's process
 gets them, in its environment or on its pipe.
 
@@ -1058,8 +1079,8 @@ not known, so not cut, and the import says so.
 
 ## MCP servers
 
-Add a remote MCP server once, with its credential, and see its tools before you keep it. Agents granting its tools
-come in a later version; this is the API that saves the server.
+Add a remote MCP server once, with its credential, and see its tools before you keep it. An agent that grants one of
+its tools calls it on pi and on claude-agent ([below](#agents-call-a-servers-tools)).
 
 ```sh
 curl -X POST "$BASE/v2/settings/mcp-servers/preview" -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
@@ -1112,6 +1133,56 @@ says `transports: ["streamable-http"]`, the `auth` types and `at_rest` (`sealed`
 `test/fixtures/fake-mcp-server.mjs` is a loopback MCP server for trying this: `startFakeMcp({era, token, oauth})`
 answers `{url, log, tools, close}`; it serves `add`, `slow_write`, `delete_thing` and `paid`, and logs each request's
 method, tool and whether an `Authorization` header came, never its value.
+
+### Agents call a server's tools
+
+An agent grants a saved server's tool by its catalog name, `mcp:<server>/<tool>`, in `definition.tools`
+(`"tools": ["mcp:github/list_issues"]`). A save checks each one against the server's saved tools: a server that is not
+saved, or a tool it did not list, is `422` naming the server's tools, and so is a name whose wire name,
+`mcp__<server>__<tool>`, is over 52 characters, or a tool whose `x-mcp-header` declaration cannot be sent (on a
+property not reached through `properties` alone, not a string, integer or boolean, not a header name, or declared twice). pi and claude-agent run them (`features.mcp_client.harnesses`); on
+another harness the save warns that they are not bound there yet, and a run is refused.
+
+- **Pinned.** A run's first launch keeps each granted tool as the server listed it when you saved it (its description
+  and schema) and the server's URL then, in the run's directory (`mcp-tools.json`). A refresh or a new save never
+  changes a running agent's tools. If the server's URL has changed since, that run's calls answer "the server's
+  address changed since this run started" and nothing is sent, the new credential least of all.
+- **The credential.** A run whose revision grants a server's tool is handed that server's credential at each launch
+  (so a new one counts at the next), over its secrets pipe, never its environment; a run that grants none of a
+  server's tools gets none of it. It stays in the run's process: no harness's CLI, file or log holds it, and a run
+  that writes it into a learned note is refused by the secret scan.
+- **pi** binds each granted tool in the run's process as `mcp__<server>__<tool>`, with the pinned description and
+  schema, and calls the server from there.
+- **claude-agent** uses the Claude CLI's own MCP client: one HTTP server entry per granted server at the session's
+  model proxy, `/mcp/<server>`, behind the session's key, sent over the CLI's stdin (never its arguments), with only
+  those servers (`strictMcpConfig`) and only the granted tools allowed. The proxy answers the MCP exchange itself and
+  makes the call with the credential. The CLI's tool search is off in such a session, so the granted tools are
+  offered whole. A server the CLI cannot connect to fails the turn, never a turn without its tools.
+- **A call** goes to the pinned URL alone, the 2026-07-28 revision first and a 2025-era server through its
+  `initialize`; on 2026-07-28 each `x-mcp-header` parameter of the pinned tool is sent as its `Mcp-Param-*` header. No
+  redirect is followed, at most 4 MiB is read, and it may take 120 s. The
+  model reads the text blocks joined; past 60,000 characters, or with blocks that are not text, the whole answer is
+  filed under the run's `evidence/mcp/<server>/` and the text says where. A tool's own error (`isError`) reaches the
+  model as its error. A refused credential (401, 403) reads "the MCP server <name> refused its credential; update it
+  in Settings → MCP servers"; another failure names the server and the HTTP status, never a header. A stop, or a
+  client that goes away, cancels the call at the server. A call a crash cut off is answered interrupted on the
+  resumed run and never sent again.
+- **The gate.** Every call passes the run's one tool gate as `mcp:<server>/<tool>`, on every harness. Set
+  `mcp:<server>/<tool>` or, for all of a server's tools, `mcp:<server>/*` to `allow`, `ask` or `deny` in
+  `PUT /v2/settings/tools` or an agent's `definition.tool_settings` (the agent's exact key, then its server-wide key,
+  then the server's two, then the default). An MCP tool with no setting asks. A denied call is refused and the model
+  reads why; nothing is sent. An asked call parks, as any tool's does: its turn ends, nothing is sent, and the run
+  reads `input_required` with `pending.kind: "approval"`, the tool, its arguments and its price (or "not metered"),
+  until the owner answers `POST /v2/runs/{id}/approvals/{approval_id}` from their password session. Allowed, the run
+  sends the call once and resumes with its result; denied, it resumes with the refusal. A restart while a call is
+  parked loses nothing.
+- **Prices.** `PUT /v2/settings/mcp-servers/{name}` takes `prices`, each tool's price in USD a call
+  (`{"prices": {"search": 0.01}}`; a finite number, 0 or more, for a tool the server lists; else `422`). A priced call
+  is held at its price under the run's `max_cost_usd`, refused unsent when the cap cannot take it, and booked as the
+  run's tool cost (a `Tool cost` row, the `tools` meter of `GET /usage`). A tool with no price runs "not metered": a
+  row says so, the run's usage row counts it (`not_metered`), and `GET /usage`'s `tools` line counts the calls
+  (`not_metered_calls`); it is outside the run's cost and its cap. A run keeps the prices its first launch saw.
+- **The timeline** shows each call as `<server> · <tool>`.
 
 ## Webhooks
 
@@ -2122,8 +2193,11 @@ carries no cost at all, as from a provider that does not price the model. The te
   in the run's `work/`. An agent's saved sign-in stays at the vendor; this server keeps a sealed pointer to it, which a
   run's process gets over its pipe and its tools and model never see. Anyone holding the vendor's key can open that
   context or profile there.
-- It binds 127.0.0.1 by default, and there refuses a request whose `Host` is not a loopback name (DNS rebinding). On
-  another address (`--listen`, the container's `0.0.0.0`) it serves every `Host` name, and the token is its only lock.
+- It binds 127.0.0.1 by default, and there refuses a request whose `Host` names something other than this machine
+  (DNS rebinding): `localhost`, `127.0.0.1`, `[::1]`, the `AGENTRUN_PUBLIC_URL` name and each `--allow-host` name are
+  served, on any port, so a tunnel (`ssh -L 8080:localhost:7340`) or a proxy in front works; any other name is `403`, a
+  page in a browser and a JSON error for a script, each saying which names work. On another address (`--listen`, the
+  container's `0.0.0.0`) it serves every `Host` name, and the token is its only lock.
   It sends no CORS headers, so a page on another origin cannot read an answer.
 - Every route but `GET /capabilities` needs `Authorization: Bearer <the token>`, compared in constant time, or the
   browser's cookie under the rules of [the console](#the-console). The console's own files (its HTML, scripts, styles

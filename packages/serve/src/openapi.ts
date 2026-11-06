@@ -220,6 +220,11 @@ const MCP_LISTING = {
   tools: { type: "array", items: MCP_TOOL, description: "Every tool it lists, all pages." },
 };
 const MCP_PREVIEW = { type: "object", additionalProperties: false, required: ["protocol", "server_info", "tools"], properties: MCP_LISTING };
+/** The owner's declared prices of a server's tools. */
+const MCP_PRICES = {
+  type: "object", additionalProperties: { type: "number", minimum: 0 },
+  description: "Each tool's price in USD a call, as the owner declared it, for tools the server lists (a refresh drops the price of a tool it no longer lists). A priced call is held at its price under a run's cap (refused unsent when the cap cannot take it) and booked as the run's tool cost, as any paid call; a tool with none runs, shown \"not metered\" on the run's timeline and in GET /usage, outside the run's cost and its cap. A run keeps the prices its first launch saw.",
+};
 const MCP_SERVER_VIEW = {
   type: "object", additionalProperties: false, required: ["name", "url", "auth", "credential", "protocol", "server_info", "tools", "listed_at", "updated_at"],
   properties: {
@@ -227,6 +232,7 @@ const MCP_SERVER_VIEW = {
     auth: { type: "object", additionalProperties: false, required: ["type"], properties: { type: { enum: [...MCP_AUTH_TYPES] }, headers: { type: "array", items: { type: "string" }, description: "For `headers`: the names of the headers kept (lowercase), never a value." } } },
     credential: { enum: ["sealed", "seal_key_missing", "unreadable", null], description: "`sealed`: kept sealed and opens here; `seal_key_missing`: the server was handed no seal key, so it does not open; `unreadable`: sealed under another seal key, or damaged: a PUT with the credential seals it again. Null for `auth.type` none. Never a value." },
     ...MCP_LISTING,
+    prices: MCP_PRICES,
     listed_at: { type: "string", format: "date-time", description: "When its tools were last listed (a PUT or a refresh)." },
     updated_at: { type: "string", format: "date-time", description: "When it was last saved." },
   },
@@ -958,9 +964,9 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     put: {
       operationId: "saveMcpServer", tags: ["local"], summary: "Preview a remote MCP server, then save it with the tools listed and its credential sealed",
-      description: `Each credential header's value is sealed under the server's seal key and bound to the server's name and the header, and kept in the data directory as ciphertext alone. 409 no_sealing_key when the server was handed no seal key and \`auth.type\` is not none (nothing is contacted). A body with no credential keeps the sealed one while the type and the URL's origin stay the same; else it is 422. 422 too for a bad name, URL or auth. ${MCP_CONNECTS} Nothing is saved unless the listing succeeds.`,
+      description: `Each credential header's value is sealed under the server's seal key and bound to the server's name and the header, and kept in the data directory as ciphertext alone. 409 no_sealing_key when the server was handed no seal key and \`auth.type\` is not none (nothing is contacted). A body with no credential keeps the sealed one while the type and the URL's origin stay the same; else it is 422. 422 too for a bad name, URL or auth, or a price that is not a finite number 0 or more or names a tool the server does not list. ${MCP_CONNECTS} Nothing is saved unless the listing succeeds.`,
       parameters: [MCP_NAME],
-      requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["url"], properties: { url: MCP_URL, auth: MCP_AUTH } } } } },
+      requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["url"], properties: { url: MCP_URL, auth: MCP_AUTH, prices: MCP_PRICES } } } } },
       responses: { "200": json(MCP_SERVER_VIEW, "The server, as saved."), ...errors(400, 401, 409, 415, 422, 429, 500), ...MCP_FAILED },
       "x-agentrun-serve": "mcpservers/1",
     },
@@ -1292,7 +1298,8 @@ const SO_FAR = {
 };
 const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
   Cost: SO_FAR,
-  TimelineUsage: SO_FAR,
+  TimelineUsage: { ...SO_FAR, not_metered: { type: "integer", minimum: 1, description: "Set when the run made tool calls with no price (an MCP tool its owner set none for): how many. They ran outside the run's cost and its cap, and never make `usd` unknown.", "x-agentrun-serve": "mcpservers/1" } },
+  UsageLine: { unpriced_runs: { type: "integer", minimum: 0, description: "How many of the runs counted on this line have a cost no one knows on it: they add no dollars to `usd`, so no sum passes them off as $0.", "x-agentrun-serve": "costsofar/1" }, not_metered_calls: { type: "integer", minimum: 1, description: "On the `tools` meter's line, set when the runs counted made tool calls with no price (an MCP tool its owner set none for): how many. They are outside `usd`.", "x-agentrun-serve": "mcpservers/1" } },
   Run: {
     ...RUN_FIELDS,
     last_progress_at: {
@@ -1383,6 +1390,14 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     revision: { type: ["string", "null"], description: "The current revision's id; null before the agent has one.", "x-agentrun-serve": "serve/1" },
     revisions: { type: "integer", minimum: 0, description: "How many revisions the agent has.", "x-agentrun-serve": "serve/1" },
     archived_at: { type: ["string", "null"], description: "When the agent was archived, while it is; else null.", "x-agentrun-serve": "serve/1" },
+    learning: {
+      type: "object", additionalProperties: false, required: ["pending"],
+      description: "For an agent that learns (its current revision `learning: true`, on a server whose learning is on): what waits on it. Absent for any other agent, and from an older server.",
+      properties: {
+        pending: { type: "integer", minimum: 0, description: "How many of its learned items wait for its owner's OK: notes, skills and workflow drafts held with `status: pending` on its learning folder's main (approve them on GET /agents/{agent_id}/learning)." },
+      },
+      "x-agentrun-serve": "serve/1",
+    },
   },
   Capabilities: {
     learning: {
@@ -1401,7 +1416,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       properties: {
         modes: { type: "array", items: { enum: [...PLACE_MODES] } },
         default: { enum: [...PLACE_MODES], description: "Where a revision that names no place runs: `runner`. It stays `runner` because a revision saved with no place (an agent made before new agents were given a box, or where docker was unavailable, or a workflow) keeps running where it ran. What a NEW agent gets is `default_place`." },
-        boxes: { type: "array", items: { type: "object", additionalProperties: false, required: ["id", "available", "state"], properties: { id: { enum: [...BOX_IDS] }, available: { type: "boolean" }, state: { enum: [...BOX_STATES], description: "`ready`; `preparing`, available while the server builds (or pulls) the Docker box's image at its start (a sandbox run's first box waits for it, with a timeline row); `unavailable`, with the `reason`." }, reason: { type: "string", description: "Why the box is unavailable, or what a preparing one waits for." }, network: { enum: [...BOX_NETWORKS], description: "What an available box reaches: `allowlist`, the hosts in `allow`, and nothing else (a Docker box through its egress proxy, on Linux with a daemon of that machine's own; a program that skips the proxy has no route; a Daytona box through Daytona's domain list, whose proxy re-signs TLS with Daytona's CA), or `none`. A Docker box's `none` comes with `network_reason`, and so does a Daytona box's when Daytona could not keep a list here (a tier that takes none); neither has one when AGENTRUN_BOX_ALLOW is `none`.", "x-agentrun-serve": "place/2" }, network_reason: { type: "string", description: "Why an available box has no network for a cause of its own, naming what the server found: a Docker in a VM, a daemon on another machine, docker info that did not answer; or a Daytona that could not keep its domain list.", "x-agentrun-serve": "place/2" } } } },
+        boxes: { type: "array", items: { type: "object", additionalProperties: false, required: ["id", "available", "state"], properties: { id: { enum: [...BOX_IDS] }, available: { type: "boolean" }, state: { enum: [...BOX_STATES], description: "`ready`; `preparing`, available while the server builds (or pulls) the Docker box's image at its start (a sandbox run's first box waits for it, with a timeline row); `unavailable`, with the `reason`." }, reason: { type: "string", description: "Why the box is unavailable, or what a preparing one waits for. Docker is set up by default (AGENTRUN_BOXES not set), so docker's reason says first, in plain words, what is wrong on this machine, then what to do (`Docker isn't running on this machine (no docker command on PATH): install or start Docker, then restart AgentRun`); every other box AGENTRUN_BOXES does not list says the setting that lists it." }, network: { enum: [...BOX_NETWORKS], description: "What an available box reaches: `allowlist`, the hosts in `allow`, and nothing else (a Docker box through its egress proxy, on Linux with a daemon of that machine's own; a program that skips the proxy has no route; a Daytona box through Daytona's domain list, whose proxy re-signs TLS with Daytona's CA), or `none`. A Docker box's `none` comes with `network_reason`, and so does a Daytona box's when Daytona could not keep a list here (a tier that takes none); neither has one when AGENTRUN_BOX_ALLOW is `none`.", "x-agentrun-serve": "place/2" }, network_reason: { type: "string", description: "Why an available box has no network for a cause of its own, naming what the server found: a Docker in a VM, a daemon on another machine, docker info that did not answer; or a Daytona that could not keep its domain list.", "x-agentrun-serve": "place/2" } } } },
       },
       description: "The places a revision may name, this host's default, each box (whether this server has it, its state: ready, preparing or unavailable, and when not, why) and the hosts a box may reach.",
       "x-agentrun-serve": "place/1",
@@ -1474,7 +1489,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       description: "The place a NEW agentic agent that names none is saved with, written on its revision at its create: the Docker box (`{\"mode\": \"sandbox\", \"box\": \"docker\"}`) where this server has docker, ready or preparing (its first run waits for the image, with a timeline row), with tools [\"bash\"] when the definition names no tools; else the runner, with `default_reason`. It is not `default`: that one is where a revision saved with no place runs, and stays `runner`, so an agent made before keeps running where it ran.",
       "x-agentrun-serve": "place/3",
     },
-    default_reason: { type: "string", description: "Why a new agent is not given a box here, when `default_place` is the runner, in docker's own words: `new agents run on the runner, because the docker box is unavailable here: <docker's reason>`.", "x-agentrun-serve": "place/3" },
+    default_reason: { type: "string", description: "Why a new agent is not given a box here, when `default_place` is the runner, in docker's own words: `new agents run on the runner, because the docker box is unavailable here: <docker's reason>`, such as `Docker isn't running on this machine (no docker command on PATH): install or start Docker, then restart AgentRun`, or, with AGENTRUN_BOXES set to a list without docker, empty or `none`, the setting that turns it on.", "x-agentrun-serve": "place/3" },
     allow: { type: "array", items: { type: "string" }, description: "The hosts a box whose `network` is `allowlist` may reach: AGENTRUN_BOX_ALLOW's, else the package registries and GitHub; empty when it is `none`.", "x-agentrun-serve": "place/2" },
   },
   "Capabilities/workflows": {
@@ -1510,8 +1525,8 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       "x-agentrun-serve": "toolkeys/1",
     },
     mcp_client: {
-      type: "object", additionalProperties: false, required: ["routes", "transports", "auth", "at_rest"],
-      properties: { routes: { type: "boolean" }, transports: { type: "array", items: { const: "streamable-http" } }, auth: { type: "array", items: { enum: [...MCP_AUTH_TYPES] } }, at_rest: { enum: ["sealed", "unavailable"] } },
+      type: "object", additionalProperties: false, required: ["routes", "transports", "auth", "at_rest", "harnesses"],
+      properties: { routes: { type: "boolean" }, transports: { type: "array", items: { const: "streamable-http" } }, auth: { type: "array", items: { enum: [...MCP_AUTH_TYPES] } }, at_rest: { enum: ["sealed", "unavailable"] }, harnesses: { type: "array", items: { type: "string" }, description: "The harnesses whose agents call a saved server's tools, each granted as mcp:<server>/<tool> in definition.tools."} },
       description: "/settings/mcp-servers: remote MCP servers over Streamable HTTP, previewed and saved with the auth types listed; a credential kept `sealed` under the seal key the server was handed, `unavailable` with none, when only servers that take no credential are kept.",
       "x-agentrun-serve": "mcpservers/1",
     },

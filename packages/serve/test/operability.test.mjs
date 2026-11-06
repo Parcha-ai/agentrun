@@ -139,7 +139,7 @@ test("one log line per request (method, path without its query, status, ms), per
   assert.deepEqual(of("auth_failed").map((a) => [a.route, a.reason]), [["/v2/agents", "wrong_token"], ["/v2/runs", "no_credential"], ["/", "wrong_link_token"]]);
   assert.deepEqual(of("run_started").map((r) => [r.run, r.agent, r.kind]), [[run.run_id, "calc", "agentic"]]);
   assert.deepEqual(of("run_ended").map((r) => [r.run, r.agent, r.status, r.cost_usd]), [[run.run_id, "calc", "completed", "0"]]);
-  // One line at start says which boxes this server has (boxes.ts): with AGENTRUN_BOXES unset, none.
+  // One line at start says which boxes this server has (boxes.ts): with AGENTRUN_BOXES=none (the tests', support.mjs), none.
   assert.deepEqual(of("boxes").map((b) => [b.available, b.unavailable]), [["none", BOX_IDS.join(",")]]);
 });
 
