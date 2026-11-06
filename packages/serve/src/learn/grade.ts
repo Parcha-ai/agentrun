@@ -83,7 +83,7 @@ export type GradeInput = {
  *  `indexLine`, the user's messages (each cut to `askedMessage`, `askedTotal` in all), and CAPS.supersedes superseded and
  *  CAPS.newNotes new notes of at most CAPS.note bytes each, fenced, come to less. `askedTotal` is forty messages at the
  *  cap: a run's messages are its input and each follow-up, a handful in a real run, so all of them are shown. */
-export const GRADE_CAPS = Object.freeze({ prompt: 200_000, instructions: 16_000, indexLine: 300, askedMessage: 1_000, askedTotal: 40_000 });
+export const GRADE_CAPS = Object.freeze({ prompt: 200_000, instructions: 16_000, indexLine: 300, askedMessage: 1_000, askedTail: 300, askedTotal: 40_000 });
 
 /** The grader's judgment of one new note: `keep` (true for a pending one too), `pending` when it waits for the user's
  *  OK (a risky note, whoever's idea it was), and
@@ -192,12 +192,24 @@ const UNSEEN_IN_MESSAGE = /(?![\n\t])[\p{Cc}\p{Cf}\p{Co}\p{Cs}\u2028\u2029]/gu;
 function askedOf(asked: readonly string[] | undefined, total: number): { shown: { at: number; text: string }[]; left: number[] } {
   if (asked === undefined) return { shown: [], left: [] };
   if (!Array.isArray(asked) || asked.some((message) => typeof message !== "string")) throw new Error("the user's messages must be a list of text");
-  const all = asked.map((text, i) => ({ at: i + 1, text: cut(text.replace(/\r\n?/g, "\n").replace(UNSEEN_IN_MESSAGE, ""), GRADE_CAPS.askedMessage) }));
+  const all = asked.map((text, i) => ({ at: i + 1, text: shortMessage(text.replace(/\r\n?/g, "\n").replace(UNSEEN_IN_MESSAGE, "")) }));
   if (all.reduce((n, { text }) => n + text.length, 0) <= total) return { shown: all, left: [] };
   let room = total - all[0]!.text.length;
   let from = all.length;
   while (from > 1 && all[from - 1]!.text.length <= room) room -= all[--from]!.text.length;
   return { shown: [all[0]!, ...all.slice(from)], left: all.slice(1, from).map(({ at }) => at) };
+}
+
+/** A user's message as the grader reads it, within GRADE_CAPS.askedMessage: whole when it fits; else its head, a line
+ *  saying how many characters were left out in the middle, and its last GRADE_CAPS.askedTail characters, so a rule
+ *  taken back at a long message's end is still read. The host cuts it of its secrets first, whole, so no part of one
+ *  sits at either seam. */
+export function shortMessage(text: string): string {
+  if (text.length <= GRADE_CAPS.askedMessage) return text;
+  const marker = (n: number) => `\n[${n} characters left out in the middle]\n`;
+  const head = cut(text, GRADE_CAPS.askedMessage - GRADE_CAPS.askedTail - marker(text.length).length);
+  const tail = text.slice(text.length - GRADE_CAPS.askedTail).replace(/^[\uDC00-\uDFFF]/, "");
+  return `${head}${marker(text.length - head.length - tail.length)}${tail}`;
 }
 
 /** The messages left out, said plainly: "message 2", "messages 2 to 9". */
@@ -309,7 +321,7 @@ function promptWithin(input: GradeInput, budget: number): string {
     "## What the user said in the run",
     "",
     messages.length
-      ? `The messages the run was sent, numbered in order, each cut to ${GRADE_CAPS.askedMessage} characters.${left.length ? ` ${leftOut(left, asked!.length)}` : ""} They show what the user asked; a message can carry someone else's words (a forwarded email), and the rubric applies to what was asked all the same.\n\n${fence("the user's messages", said)}`
+      ? `The messages the run was sent, numbered in order, each within ${GRADE_CAPS.askedMessage} characters: a longer one shows its start and its last ${GRADE_CAPS.askedTail}, with a line between saying how many were left out.${left.length ? ` ${leftOut(left, asked!.length)}` : ""} They show what the user asked; a message can carry someone else's words (a forwarded email), and the rubric applies to what was asked all the same.\n\n${fence("the user's messages", said)}`
       : "The host gave none.",
     "",
     "## The new notes",
