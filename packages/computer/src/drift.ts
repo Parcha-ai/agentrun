@@ -18,12 +18,16 @@ export const WORK = "/work";
 /** Where init's socket lives (the daemon's DefaultSocket's directory): a tmpfs the computer's user owns, mode 0700. */
 export const SOCKET_DIR = "/run/agentrun";
 
-/** The --tmpfs options of each tmpfs a computer gets, owned by its uid:gid. */
-export function tmpfsOf(user: string): Record<string, string> {
+/**
+ * The --tmpfs options of each tmpfs a computer gets, owned by its uid:gid. A tmpfs's pages count against the
+ * computer's memory, so /work holds half of it: a full /work is ENOSPC before the memory limit could OOM-kill a
+ * process. /run/agentrun holds only init's socket.
+ */
+export function tmpfsOf(user: string, memoryMb: number): Record<string, string> {
 	const [uid, gid] = user.split(":");
 	return {
-		[WORK]: `rw,nosuid,nodev,exec,uid=${uid},gid=${gid},mode=0700`,
-		[SOCKET_DIR]: `rw,noexec,nosuid,nodev,uid=${uid},gid=${gid},mode=0700`,
+		[WORK]: `rw,nosuid,nodev,exec,uid=${uid},gid=${gid},mode=0700,size=${Math.floor(memoryMb / 2)}m`,
+		[SOCKET_DIR]: `rw,noexec,nosuid,nodev,uid=${uid},gid=${gid},mode=0700,size=1m`,
 	};
 }
 
@@ -119,7 +123,8 @@ export function drift(spec: ComputerSpec, inspected: DockerInspect | null | unde
 	}
 	const pids = spec.pids ?? DEFAULT_PIDS;
 	if (host.PidsLimit !== pids) mismatch("PidsLimit", pids, host.PidsLimit);
-	const bytes = (spec.memoryMb ?? DEFAULT_MEMORY_MB) * 1024 * 1024;
+	const memoryMb = spec.memoryMb ?? DEFAULT_MEMORY_MB;
+	const bytes = memoryMb * 1024 * 1024;
 	if (host.Memory !== bytes) mismatch("Memory", bytes, host.Memory);
 	if (host.MemorySwap !== bytes) mismatch("MemorySwap", bytes, host.MemorySwap);
 	if (host.CpuPeriod !== CPU_PERIOD_US) mismatch("CpuPeriod", CPU_PERIOD_US, host.CpuPeriod);
@@ -127,7 +132,7 @@ export function drift(spec: ComputerSpec, inspected: DockerInspect | null | unde
 	if (host.CpuQuota !== quota) mismatch("CpuQuota", quota, host.CpuQuota);
 	if (config.User !== expected.user) mismatch("User", expected.user, config.User);
 	const tmpfs = host.Tmpfs ?? {};
-	for (const [path, options] of Object.entries(tmpfsOf(expected.user))) {
+	for (const [path, options] of Object.entries(tmpfsOf(expected.user, memoryMb))) {
 		if (optionSet(tmpfs[path]) !== optionSet(options)) mismatch(`tmpfs ${path}`, options, tmpfs[path]);
 	}
 
