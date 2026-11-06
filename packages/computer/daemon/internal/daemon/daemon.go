@@ -48,8 +48,9 @@ func SocketPath() string {
 
 // Init runs as the computer's first process. It is a child subreaper (PID 1 is one anyway), serves every connection on
 // socket with one process table, and sweeps: a child of its own that is not one of its guards is an orphan whose guard
-// died, and is killed with everything under it. SIGTERM or SIGINT ends every process, guards first, and returns 0.
-func Init(version, socket string, logger *log.Logger) int {
+// died, and is killed with everything under it. SIGTERM, SIGINT or the deadline ends every process, guards first, and
+// returns 0, which ends the computer.
+func Init(version, socket string, deadline time.Time, logger *log.Logger) int {
 	if _, _, errno := syscall.RawSyscall(syscall.SYS_PRCTL, prSetChildSubreaper, 1, 0); errno != 0 {
 		logger.Printf("init: cannot become a child subreaper: %v", errno)
 		return 1
@@ -85,6 +86,8 @@ func Init(version, socket string, logger *log.Logger) int {
 	}()
 	tick := time.NewTicker(sweepEvery)
 	defer tick.Stop()
+	end := time.NewTimer(time.Until(deadline))
+	defer end.Stop()
 	for {
 		select {
 		case <-signals:
@@ -93,6 +96,11 @@ func Init(version, socket string, logger *log.Logger) int {
 			sweep()
 		case sig := <-stop:
 			logger.Printf("init: %v, ending every process", sig)
+			_ = listener.Close()
+			shutdown()
+			return 0
+		case <-end.C:
+			logger.Printf("init: the deadline %s has come, ending every process and the computer", deadline.UTC().Format(time.RFC3339Nano))
 			_ = listener.Close()
 			shutdown()
 			return 0

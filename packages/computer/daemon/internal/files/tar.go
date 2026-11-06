@@ -13,40 +13,59 @@
 // limitations under the License.
 //
 // From kubernetes-sigs/agent-sandbox@bfc8505 packages/sandboxd/pkg/server/filesystem.go (extractTar, extractEntry,
-// replaceSymlink, writeViaTemp, writeExtractError) and packages/sandboxd/pkg/pathutil/sandbox.go (SanitizePath,
-// dirPrefix). Changed for the open platform: the target directory is the root entries are confined to; an entry that is
-// absolute or has a ".." part is refused before it is cleaned; a dangling symlink on the way to an entry is refused
-// instead of resolved lexically; no gzip and no entry or byte cap (the disk is the limit); no fsync per file; the
-// count of entries written is returned; directory modes are applied once the archive ends; errors are the protocol's
-// kinds, naming the entry.
+// writeViaTemp, writeExtractError). Changed for the open platform: the target directory is held open as a directory
+// descriptor, and every write goes through descriptors opened from it one name at a time, never following a symlink,
+// instead of a path checked (SanitizePath) and then used by name; an entry that is absolute or has a ".." part is
+// refused before it is cleaned; no gzip and no entry or byte cap (the disk is the limit); no fsync per file; the count
+// of entries written is returned; directory modes are applied once the archive ends; errors are the protocol's kinds,
+// naming the entry.
 
 package files
 
 import (
 	"archive/tar"
 	"errors"
-	"fmt"
 	"io"
 	"io/fs"
 	"maps"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
+	"syscall"
+	"unsafe"
 
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/rpc"
 )
 
-// tmpPattern names the temporary files extraction makes beside a target.
-const tmpPattern = ".computerd-tmp-*"
+const (
+	// tmpPrefix names the temporary entries extraction makes beside a target.
+	tmpPrefix = ".computerd-tmp-"
+	// oPath is O_PATH, which the syscall package lacks on amd64. A directory opened with it can be walked with search
+	// permission alone.
+	oPath    = 0x200000
+	atFDCWD  = -100
+	dirFlags = oPath | syscall.O_DIRECTORY | syscall.O_NOFOLLOW | syscall.O_CLOEXEC
+)
+
+// betweenCheckAndUse is nil outside tests: it runs once a directory an entry needs (rel, below the target) is checked,
+// before it is used, so a test can swap it.
+var betweenCheckAndUse func(rel string)
 
 // extractTar writes the entries of the tar stream src below dir, which is absolute and resolved, and returns how many
 // it wrote. It is not atomic: on an error, the entries written so far stay. Directories keep owner access until the
 // end, then get their archived modes, deepest first, so a read-only directory never blocks what goes in it.
 func extractTar(src io.Reader, dir string) (entries int, err error) {
+	root, err := openDir(atFDCWD, dir)
+	if err != nil {
+		return 0, fsError(&fs.PathError{Op: "open", Path: dir, Err: err})
+	}
+	defer syscall.Close(root)
 	dirs := map[string]os.FileMode{}
 	defer func() {
-		if modeErr := applyDirModes(dirs); err == nil {
+		if modeErr := applyDirModes(root, dirs); err == nil {
 			err = modeErr
 		}
 	}()
@@ -59,7 +78,7 @@ func extractTar(src io.Reader, dir string) (entries int, err error) {
 		if err != nil {
 			return entries, rpc.Errorf(rpc.KindInvalid, "the archive cannot be read after %d entries: %v", entries, err)
 		}
-		wrote, err := extractEntry(tr, hdr, dir, dirs)
+		wrote, err := extractEntry(tr, hdr, root, dirs)
 		if err != nil {
 			return entries, err
 		}
@@ -69,22 +88,26 @@ func extractTar(src io.Reader, dir string) (entries int, err error) {
 	}
 }
 
-func applyDirModes(dirs map[string]os.FileMode) error {
-	paths := slices.Collect(maps.Keys(dirs))
-	slices.SortFunc(paths, func(a, b string) int {
-		return strings.Count(b, string(filepath.Separator)) - strings.Count(a, string(filepath.Separator))
-	})
-	for _, path := range paths {
-		if err := os.Chmod(path, dirs[path]); err != nil {
-			return fsError(err)
+func applyDirModes(root int, dirs map[string]os.FileMode) error {
+	names := slices.Collect(maps.Keys(dirs))
+	slices.SortFunc(names, func(a, b string) int { return strings.Count(b, "/") - strings.Count(a, "/") })
+	for _, name := range names {
+		parts := strings.Split(name, "/")
+		parent, err := walk(root, parts[:len(parts)-1], false)
+		if err == nil {
+			err = chmodDir(parent, parts[len(parts)-1], dirs[name])
+			_ = syscall.Close(parent)
+		}
+		if err != nil {
+			return entryError(name+"/", err)
 		}
 	}
 	return nil
 }
 
-// extractEntry writes one entry below dir: a regular file, a directory or a symlink. Hard links, which could alias a
-// file outside dir, and devices and pipes are refused. A directory is left with owner access, its mode put in dirs.
-func extractEntry(body io.Reader, hdr *tar.Header, dir string, dirs map[string]os.FileMode) (bool, error) {
+// extractEntry writes one entry below root: a regular file, a directory or a symlink. Hard links, which could alias a
+// file outside root, and devices and pipes are refused. A directory is left with owner access, its mode put in dirs.
+func extractEntry(body io.Reader, hdr *tar.Header, root int, dirs map[string]os.FileMode) (bool, error) {
 	if hdr.Typeflag == tar.TypeXGlobalHeader {
 		return false, nil // git archive writes one that carries the commit id.
 	}
@@ -94,140 +117,202 @@ func extractEntry(body io.Reader, hdr *tar.Header, dir string, dirs map[string]o
 		return false, rpc.Errorf(rpc.KindInvalid, "entry %q has type %q: a push makes only files, directories and symlinks", hdr.Name, hdr.Typeflag)
 	}
 	if filepath.IsAbs(hdr.Name) || slices.Contains(strings.Split(filepath.ToSlash(hdr.Name), "/"), "..") {
-		return false, escapes(hdr.Name)
+		return false, rpc.Errorf(rpc.KindDenied, "entry %q is outside the target directory", hdr.Name)
 	}
-	name := filepath.Clean(filepath.FromSlash(hdr.Name))
+	name := filepath.ToSlash(filepath.Clean(hdr.Name))
 	if name == "." {
 		return false, nil
 	}
-	// Resolve only the parent, so a symlink at the entry's own path is replaced, never followed. Resolving the parent
-	// also stops an entry from writing through a symlink an earlier entry planted.
-	parent, err := sanitizePath(dir, filepath.Dir(name))
+	parts := strings.Split(name, "/")
+	parent, err := walk(root, parts[:len(parts)-1], true)
 	if err != nil {
-		if errors.Is(err, errEscapes) {
-			return false, escapes(hdr.Name)
-		}
-		return false, fsError(err)
+		return false, entryError(hdr.Name, err)
 	}
-	leaf := filepath.Join(parent, filepath.Base(name))
+	defer syscall.Close(parent)
+	leaf := parts[len(parts)-1]
 	isDir := hdr.Typeflag == tar.TypeDir
-	if existing, err := os.Lstat(leaf); err == nil && existing.IsDir() != isDir {
-		return false, rpc.Errorf(rpc.KindExists, "entry %q meets a %s already there", hdr.Name, typeOf(existing.Mode()))
+	if there, err := lstatAt(parent, leaf); err == nil && there.IsDir() != isDir {
+		return false, rpc.Errorf(rpc.KindExists, "entry %q meets a %s already there", hdr.Name, typeOf(there))
 	}
 	perm := hdr.FileInfo().Mode().Perm()
 	switch hdr.Typeflag {
 	case tar.TypeDir:
-		if err := makeDirectory(leaf, perm|0o700, true); err != nil {
-			return false, err
+		err = syscall.Mkdirat(parent, leaf, 0o700)
+		if err == nil || errors.Is(err, syscall.EEXIST) {
+			err = chmodDir(parent, leaf, perm|0o700)
 		}
-		if err := os.Chmod(leaf, perm|0o700); err != nil {
-			return false, fsError(err)
+		if err == nil {
+			dirs[name] = perm
 		}
-		dirs[leaf] = perm
-		return true, nil
 	case tar.TypeReg:
-		return true, writeViaTemp(leaf, body, perm)
+		err = writeFileAt(parent, leaf, body, perm)
 	default:
-		return true, replaceSymlink(leaf, hdr.Linkname)
+		err = symlinkAt(parent, leaf, hdr.Linkname)
 	}
-}
-
-var errEscapes = errors.New("the path leaves the target directory")
-
-func escapes(name string) error {
-	return rpc.Errorf(rpc.KindDenied, "entry %q is outside the target directory", name)
-}
-
-// sanitizePath joins rel onto root (absolute and resolved) and resolves its symlinks, or those of its nearest existing
-// ancestor when it does not exist yet, re-attaching the rest lexically. A result outside root is errEscapes.
-func sanitizePath(root, rel string) (string, error) {
-	joined := filepath.Join(root, rel)
-	resolved, err := filepath.EvalSymlinks(joined)
 	if err != nil {
-		if !os.IsNotExist(err) {
-			return "", err
-		}
-		ancestor := joined
-		var suffix []string
-		for {
-			if _, err := os.Lstat(ancestor); err == nil {
-				return "", errEscapes // A dangling symlink: where it would lead is not known.
-			}
-			suffix = append([]string{filepath.Base(ancestor)}, suffix...)
-			ancestor = filepath.Dir(ancestor)
-			resolvedAncestor, err := filepath.EvalSymlinks(ancestor)
-			if err == nil {
-				resolved = filepath.Join(append([]string{resolvedAncestor}, suffix...)...)
-				break
-			}
-			if !os.IsNotExist(err) {
-				return "", err
-			}
-			if ancestor == filepath.Dir(ancestor) {
-				return "", errEscapes
-			}
-		}
+		return false, entryError(hdr.Name, err)
 	}
-	if resolved != root && !strings.HasPrefix(resolved, dirPrefix(root)) {
-		return "", errEscapes
-	}
-	return resolved, nil
+	return true, nil
 }
 
-// dirPrefix is dir with one trailing separator, the prefix of every path strictly inside it.
-func dirPrefix(dir string) string {
-	if strings.HasSuffix(dir, string(os.PathSeparator)) {
-		return dir
+// entryError names the entry an error is for. A symlink or a file where a directory is needed is denied: a push
+// writes only through directories.
+func entryError(name string, err error) error {
+	if errors.Is(err, syscall.ENOTDIR) || errors.Is(err, syscall.ELOOP) {
+		return rpc.Errorf(rpc.KindDenied, "entry %q is outside the target directory: a symlink or a file is on its way", name)
 	}
-	return dir + string(os.PathSeparator)
+	var e *rpc.Error
+	if errors.As(err, &e) {
+		return e
+	}
+	return fsError(&fs.PathError{Op: "extract", Path: name, Err: err})
 }
 
-// writeViaTemp writes src to a temporary file beside target, then renames it over target. On any failure, the
-// connection's end included, the temporary file is removed.
-func writeViaTemp(target string, src io.Reader, perm os.FileMode) (err error) {
-	dir := filepath.Dir(target)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fsError(err)
-	}
-	tmp, err := os.CreateTemp(dir, tmpPattern)
+// walk opens the directory that parts name below root, one name at a time from root's descriptor, never following a
+// symlink; with create, a missing directory is made (0755 less the umask). The caller closes what it returns.
+func walk(root int, parts []string, create bool) (int, error) {
+	dir, err := openDir(root, ".")
 	if err != nil {
-		return fsError(err)
+		return -1, err
 	}
+	for i, part := range parts {
+		next, err := openDir(dir, part)
+		if create && errors.Is(err, syscall.ENOENT) {
+			if err = syscall.Mkdirat(dir, part, 0o755); err == nil || errors.Is(err, syscall.EEXIST) {
+				if betweenCheckAndUse != nil {
+					betweenCheckAndUse(strings.Join(parts[:i+1], "/"))
+				}
+				next, err = openDir(dir, part)
+			}
+		}
+		_ = syscall.Close(dir)
+		if err != nil {
+			return -1, err
+		}
+		dir = next
+	}
+	return dir, nil
+}
+
+// openDir opens name in the directory dirfd as a directory, never following a symlink: a symlink or anything else
+// that is not a directory is ENOTDIR or ELOOP.
+func openDir(dirfd int, name string) (int, error) {
+	fd, err := openat(dirfd, name, dirFlags, 0)
+	if err != nil {
+		return -1, err
+	}
+	var st syscall.Stat_t
+	if err := syscall.Fstat(fd, &st); err != nil || st.Mode&syscall.S_IFMT != syscall.S_IFDIR {
+		_ = syscall.Close(fd)
+		if err == nil {
+			err = syscall.ENOTDIR
+		}
+		return -1, err
+	}
+	return fd, nil
+}
+
+// chmodDir sets the mode of the directory name in dirfd, through a descriptor opened without following a symlink.
+func chmodDir(dirfd int, name string, mode os.FileMode) error {
+	fd, err := openat(dirfd, name, syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+	if err != nil {
+		return err
+	}
+	defer syscall.Close(fd)
+	return syscall.Fchmod(fd, uint32(mode.Perm()))
+}
+
+// lstatAt is the type of name in dirfd, a symlink as itself.
+func lstatAt(dirfd int, name string) (fs.FileMode, error) {
+	fd, err := openat(dirfd, name, oPath|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+	if err != nil {
+		return 0, err
+	}
+	defer syscall.Close(fd)
+	var st syscall.Stat_t
+	if err := syscall.Fstat(fd, &st); err != nil {
+		return 0, err
+	}
+	switch st.Mode & syscall.S_IFMT {
+	case syscall.S_IFREG:
+		return 0, nil
+	case syscall.S_IFDIR:
+		return fs.ModeDir, nil
+	case syscall.S_IFLNK:
+		return fs.ModeSymlink, nil
+	}
+	return fs.ModeIrregular, nil
+}
+
+func openat(dirfd int, name string, flags int, mode uint32) (int, error) {
+	for {
+		fd, err := syscall.Openat(dirfd, name, flags, mode)
+		if !errors.Is(err, syscall.EINTR) {
+			return fd, err
+		}
+	}
+}
+
+func tempName() string { return tmpPrefix + strconv.FormatUint(rand.Uint64(), 36) }
+
+// writeFileAt writes src to a new temporary file in dirfd, then renames it over name, which replaces a file or a
+// symlink there (the link itself, never what it points to). On any failure, the connection's end included, the
+// temporary file is removed.
+func writeFileAt(dirfd int, name string, src io.Reader, perm os.FileMode) (err error) {
+	tmp := tempName()
+	fd, err := openat(dirfd, tmp, syscall.O_CREAT|syscall.O_EXCL|syscall.O_WRONLY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0o600)
+	if err != nil {
+		return err
+	}
+	f := os.NewFile(uintptr(fd), name)
 	defer func() {
 		if err != nil {
-			_ = tmp.Close()
-			_ = os.Remove(tmp.Name())
+			_ = f.Close()
+			_ = syscall.Unlinkat(dirfd, tmp)
 		}
 	}()
-	if err = tmp.Chmod(perm); err != nil {
-		return fsError(err)
+	if err = f.Chmod(perm); err != nil {
+		return err
 	}
-	if _, err = io.Copy(tmp, src); err != nil {
+	if _, err = io.Copy(f, src); err != nil {
 		var written *fs.PathError
 		if errors.As(err, &written) {
-			return fsError(err)
+			return err
 		}
-		return rpc.Errorf(rpc.KindInvalid, "the archive cannot be read in %s: %v", filepath.Base(target), err)
+		return rpc.Errorf(rpc.KindInvalid, "the archive cannot be read in %s: %v", name, err)
 	}
-	if err = tmp.Close(); err != nil {
-		return fsError(err)
+	if err = f.Close(); err != nil {
+		return err
 	}
-	if err = os.Rename(tmp.Name(), target); err != nil {
-		return fsError(err)
+	return syscall.Renameat(dirfd, tmp, dirfd, name)
+}
+
+// symlinkAt makes name in dirfd a symlink to target: a temporary link, renamed over what is there.
+func symlinkAt(dirfd int, name, target string) error {
+	tmp := tempName()
+	if err := symlinkat(target, dirfd, tmp); err != nil {
+		return err
+	}
+	if err := syscall.Renameat(dirfd, tmp, dirfd, name); err != nil {
+		_ = syscall.Unlinkat(dirfd, tmp)
+		return err
 	}
 	return nil
 }
 
-// replaceSymlink makes link a symlink to target, replacing a file or symlink there.
-func replaceSymlink(link, target string) error {
-	if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
-		return fsError(err)
+// symlinkat is symlinkat(2), which the syscall package does not export.
+func symlinkat(target string, dirfd int, name string) error {
+	targetPtr, err := syscall.BytePtrFromString(target)
+	if err != nil {
+		return err
 	}
-	if err := os.Remove(link); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fsError(fmt.Errorf("cannot replace %s: %w", link, err))
+	namePtr, err := syscall.BytePtrFromString(name)
+	if err != nil {
+		return err
 	}
-	if err := os.Symlink(target, link); err != nil {
-		return fsError(err)
+	_, _, errno := syscall.Syscall(syscall.SYS_SYMLINKAT, uintptr(unsafe.Pointer(targetPtr)), uintptr(dirfd), uintptr(unsafe.Pointer(namePtr)))
+	if errno != 0 {
+		return errno
 	}
 	return nil
 }

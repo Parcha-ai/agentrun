@@ -27,11 +27,16 @@ func TestMain(m *testing.M) {
 		switch os.Args[1] {
 		case execrun.GuardCommand:
 			os.Exit(execrun.Guard())
-		case "init":
-			os.Exit(daemon.Init("0.0.0-test", daemon.SocketPath(), log.New(os.Stderr, "computerd: ", 0)))
 		case "stdio":
 			os.Exit(daemon.Bridge(daemon.SocketPath(), os.Stdin, os.Stdout, os.Stderr))
 		}
+	}
+	if len(os.Args) == 3 && os.Args[1] == "init" {
+		deadline, err := time.Parse(time.RFC3339Nano, os.Args[2])
+		if err != nil {
+			os.Exit(99)
+		}
+		os.Exit(daemon.Init("0.0.0-test", daemon.SocketPath(), deadline, log.New(os.Stderr, "computerd: ", 0)))
 	}
 	os.Exit(m.Run())
 }
@@ -51,7 +56,7 @@ func startInit(t *testing.T) *initProcess {
 	t.Helper()
 	socket := filepath.Join(t.TempDir(), "run", "computerd.sock")
 	in := &initProcess{socket: socket, log: &bytes.Buffer{}, ended: make(chan error, 1)}
-	in.cmd = exec.Command(os.Args[0], "init")
+	in.cmd = exec.Command(os.Args[0], "init", time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano))
 	in.cmd.Env = append(os.Environ(), daemon.SocketEnv+"="+socket)
 	in.cmd.Stderr = in.log
 	if err := in.cmd.Start(); err != nil {
