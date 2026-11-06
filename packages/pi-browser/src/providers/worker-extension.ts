@@ -44,8 +44,8 @@ export const HEARTBEAT = "offscreen/service-worker-heartbeat.html";
  *  run code go around a DevTools guard are replaced by the few calls Stagehand's worker makes (its heartbeat, its tab
  *  focus), each held to what it uses. Gone: opening, moving or scripting a tab or a window (on any URL, a file:// one
  *  among them; every extension may, with no permission), driving a tab over the debugger API, moving one of its own
- *  pages (the worker's clients), an offscreen document but the heartbeat (a fresh extension context), and every other
- *  API that opens or captures a page. The originals stay in this closure alone; each replaced property is fixed, so run
+ *  pages (the worker's clients), an offscreen document but the heartbeat (a fresh extension context), a request rule
+ *  that does more than allow or block (Stagehand 4.4's domain policy), and every other API that opens or captures a page. The originals stay in this closure alone; each replaced property is fixed, so run
  *  code can neither restore nor reach them. A lock that cannot take hold throws, and the worker does not start. */
 export const WORKER_LOCK = `/* pi-browser: run code in this worker reaches the browser through its DevTools guard alone. */
 (() => {
@@ -53,11 +53,21 @@ export const WORKER_LOCK = `/* pi-browser: run code in this worker reaches the b
   const only = (keys, props) => props !== null && typeof props === "object" && Object.keys(props).every((key) => keys.includes(key));
   const refused = (what) => Promise.reject(new Error("pi-browser: this browser's extension does not " + what));
   const { tabs, windows, offscreen } = api;
+  const dnr = api.declarativeNetRequest;
   const debuggerApi = api.debugger;
   const replace = {
     tabs: Object.freeze({ query: (query) => tabs.query(query), update: (id, props) => (only(["active"], props) ? tabs.update(id, props) : refused("move or reload a tab")), onCreated: tabs.onCreated }),
     windows: Object.freeze({ update: (id, props) => (only(["focused"], props) ? windows.update(id, props) : refused("change a window")) }),
     debugger: Object.freeze({ getTargets: () => debuggerApi.getTargets() }),
+    // Stagehand 4.4's domain policy: its session rules, each one that allows or blocks a request and does nothing else (no
+    // redirect, no header changed).
+    declarativeNetRequest: dnr ? Object.freeze({
+      getSessionRules: () => dnr.getSessionRules(),
+      isRegexSupported: (options) => dnr.isRegexSupported(options),
+      updateSessionRules: (options) => (only(["removeRuleIds", "addRules"], options) && (options.addRules ?? []).every((rule) => rule && rule.action && only(["type"], rule.action) && ["allow", "block"].includes(rule.action.type)) ? dnr.updateSessionRules(options) : refused("change a request but to allow or block it")),
+      MAX_NUMBER_OF_SESSION_RULES: dnr.MAX_NUMBER_OF_SESSION_RULES,
+      MAX_NUMBER_OF_REGEX_RULES: dnr.MAX_NUMBER_OF_REGEX_RULES,
+    }) : undefined,
     // Stagehand's heartbeat page alone, the one document it makes: no other page of the extension's own.
     offscreen: offscreen ? Object.freeze({ createDocument: (params) => (only(["url", "reasons", "justification"], params) && params.url === ${JSON.stringify(HEARTBEAT)} ? offscreen.createDocument(params) : refused("open a page of its own")) }) : undefined,
   };

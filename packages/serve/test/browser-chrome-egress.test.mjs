@@ -296,6 +296,12 @@ await step("nested_command_line", () => raw([() => ["Target.createTarget", { url
 // An offscreen document but Stagehand's heartbeat: a fresh extension context, refused; the rest of the API is gone.
 await step("offscreen_other", () => chrome.offscreen.createDocument({ url: "wake-service-worker.html", reasons: ["BLOBS"], justification: "a page of its own" }));
 await step("offscreen_close", () => chrome.offscreen.closeDocument());
+// Stagehand 4.4's request rules (declarativeNetRequest): its domain policy allows or blocks; a rule that redirects or
+// changes a request is refused, and the rest of the API is gone.
+await step("dnr_redirect", () => chrome.declarativeNetRequest.updateSessionRules({ addRules: [{ id: 9001, priority: 1, action: { type: "redirect", redirect: { url: ${SECRET} } }, condition: { urlFilter: "steer.example/again", resourceTypes: ["main_frame"] } }] }));
+await step("dnr_headers", () => chrome.declarativeNetRequest.updateSessionRules({ addRules: [{ id: 9002, priority: 1, action: { type: "modifyHeaders", requestHeaders: [{ header: "x-run-code", operation: "set", value: "1" }] }, condition: { urlFilter: "steer.example", resourceTypes: ["main_frame"] } }] }));
+await step("dnr_block", async () => { await chrome.declarativeNetRequest.updateSessionRules({ addRules: [{ id: 9003, priority: 1, action: { type: "block" }, condition: { urlFilter: "blocked.example", resourceTypes: ["main_frame"] } }] }); const rules = await chrome.declarativeNetRequest.getSessionRules(); await chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds: [9003] }); return rules.map((rule) => rule.action.type).join(","); });
+await step("dnr_dynamic", () => chrome.declarativeNetRequest.updateDynamicRules({ addRules: [] }));
 await step("upload_path", async () => { await page.goto(${STEER} + "/upload"); await page.locator("#pick").setInputFiles(${JSON.stringify(secret.url.slice("file://".length))}); await sleep(1000); return String(await page.locator("body").innerText()).slice(0, 300); });
 await step("worker_fetch", async () => (await fetch(${SECRET})).text());
 await step("worker_tabs", async () => { const tab = await chrome.tabs.create({ url: ${SECRET} }); await sleep(1500); const got = await chrome.tabs.get(tab.id); return String(got.url) + " " + String(got.status); });
@@ -324,6 +330,10 @@ return out;`;
   // Nothing of this machine's layout or its ports came back by any path.
   assert.doesNotMatch(answer, /--user-data-dir|\/srv\/|\/home\/|proxy-server|remote-debugging|127\.0\.0\.1:\d/, "no host detail");
   assert.match(out.offscreen_other.error ?? "", /does not open a page of its own/);
+  assert.match(out.dnr_redirect.error ?? "", /does not change a request but to allow or block it/);
+  assert.match(out.dnr_headers.error ?? "", /does not change a request but to allow or block it/);
+  assert.equal(out.dnr_block.value, "block", "an allow or block rule, as Stagehand's domain policy makes, goes in");
+  assert.match(out.dnr_dynamic.error ?? "", /updateDynamicRules is not a function/);
   assert.match(out.offscreen_close.error ?? "", /closeDocument is not a function/);
   // The extension's own APIs and a public page's script: Chrome's own rules hold (no file access for the extension, no
   // web page may open a local resource); none reads the file.
