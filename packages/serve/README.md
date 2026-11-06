@@ -1039,7 +1039,7 @@ session ends: a session's end never touches another's, so a relaunch's old sessi
 answers `{state: "live", viewer}` while a session is open (`viewer`, a link on this server with its token in the fragment),
 `{state: "none"}` when the run has a browser but no session is open, and `{state: "off", reason}` when it has none: its agent
 has no `browser` tool, or its browser resolves unavailable here (the tool plane's words, `a local Chrome is not set up on this
-server`, `kernel picked, no KERNEL_API_KEY`). It takes the owner's password session in the console: a token, which a run's process, an MCP client or a
+server`, or for Kernel with no key, that it needs a Kernel key). It takes the owner's password session in the console: a token, which a run's process, an MCP client or a
 script may hold, is `403`. The viewer's page and its WebSocket are under `/v2/runs/{id}/browser/live/`, proxied to that run's
 port alone: the page is framed by this server's own origin alone (`frame-ancestors 'self'`, the console's `'none'` everywhere
 else), and the WebSocket is taken only from this server's own origin (as the request reaches it, or the public address,
