@@ -18,11 +18,11 @@ after(() => {
 
 export const idOf = (name) => createHash("sha256").update(name).digest("hex");
 
-/** A container as docker inspect reports it, made the way DockerProvider.create makes one. */
+/** A container as docker inspect reports it, made the way DockerProvider.create makes one; a null deadline is no label. */
 export function container({ name, labels = {}, network = "none", running = true, deadline = new Date(Date.now() + 600_000).toISOString(), computer = true }) {
 	const all = { ...labels };
 	if (computer) all["agentrun.computer"] = "1";
-	if (computer && deadline !== undefined) all["agentrun.computer.deadline"] = deadline;
+	if (computer && deadline !== null) all["agentrun.computer.deadline"] = deadline;
 	return {
 		Id: idOf(name),
 		Name: `/${name}`,

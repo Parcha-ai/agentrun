@@ -108,7 +108,7 @@ test("list() reads back every computer with the labels: its labels, deadline, st
 
 test("list() reports a missing or unreadable deadline as undefined", async () => {
 	const { provider } = fakeDocker({
-		containers: [container({ name: A, deadline: undefined }), container({ name: B, deadline: "soon" })],
+		containers: [container({ name: A, deadline: null }), container({ name: B, deadline: "soon" })],
 	});
 	const listed = await provider.list({});
 	assert.equal(listed.ok, true);
