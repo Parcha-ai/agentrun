@@ -18,6 +18,8 @@ export async function startServer() {
   const failPreflights = new Map();
   /** By path, how long to keep the next preflight's answer back, once: the request it precedes waits that long to be sent. */
   const slowPreflights = new Map();
+  // A delayed reply's timer, cancelled at close so it never outlives the test or answers a closed connection.
+  const delayed = new Set();
   let port = 0;
   const server = http.createServer((req, res) => {
     let url = null;
@@ -31,7 +33,7 @@ export async function startServer() {
       for (const w of watchers.splice(0)) if (!w.done()) watchers.push(w);
       const answer = () => respond(req, res, url, `http://localhost:${port}`);
       const slow = req.method === "OPTIONS" ? slowPreflights.get(url.pathname) : undefined;
-      if (slow !== undefined) { slowPreflights.delete(url.pathname); setTimeout(answer, slow); }
+      if (slow !== undefined) { slowPreflights.delete(url.pathname); const timer = setTimeout(() => { delayed.delete(timer); answer(); }, slow); delayed.add(timer); }
       else if (held.has(url.pathname)) waiting.push(answer); else answer();
     });
   });
@@ -52,7 +54,7 @@ export async function startServer() {
     failPreflights: (path, n) => failPreflights.set(path, n),
     slowPreflight: (path, ms) => slowPreflights.set(path, ms),
     release: () => { held.clear(); for (const answer of waiting.splice(0)) answer(); },
-    close: () => new Promise((resolve) => { held.clear(); waiting.length = 0; server.closeAllConnections?.(); server.close(() => resolve()); }),
+    close: () => new Promise((resolve) => { for (const timer of delayed) clearTimeout(timer); delayed.clear(); held.clear(); waiting.length = 0; server.closeAllConnections?.(); server.close(() => resolve()); }),
   };
 }
 
