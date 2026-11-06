@@ -1,6 +1,7 @@
 // ModalProvider against a fake of the Modal SDK slice it takes (test/fake-modal.mjs): every call is recorded and
 // answered as the SDK documents. No Modal client is constructed, no token is read and nothing reaches the network.
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { ModalProvider, sweep } from "../dist/index.js";
@@ -572,10 +573,68 @@ test("no real Modal client: the provider and the conformance module import nothi
 	assert.equal(typeof module.createDriftedProvider, "function");
 	assert.deepEqual(module.MODAL_ENV, {
 		live: "AGENTRUN_COMPUTER_LIVE_MODAL",
-		tokenId: "MODAL_TOKEN_ID",
-		tokenSecret: "MODAL_TOKEN_SECRET",
-		app: "AGENTRUN_COMPUTER_MODAL_APP",
-		daemonImage: "AGENTRUN_COMPUTER_MODAL_DAEMON_IMAGE",
-		driftedDaemonImage: "AGENTRUN_COMPUTER_MODAL_DRIFTED_DAEMON_IMAGE",
+		tokenId: "COMPUTER_MODAL_TOKEN_ID",
+		tokenSecret: "COMPUTER_MODAL_TOKEN_SECRET",
+		app: "COMPUTER_MODAL_APP",
+		daemonImage: "COMPUTER_MODAL_DAEMON_IMAGE",
+		driftedDaemonImage: "COMPUTER_MODAL_DRIFTED_DAEMON_IMAGE",
 	});
+});
+
+/** The names a host running the Grep platform may hold a production token under, with values that must never be used. */
+const PROD_TOKEN = { MODAL_TOKEN_ID: "prod-id-must-not-be-used", MODAL_TOKEN_SECRET: "prod-token-must-not-be-used" };
+const DEV_TOKEN = { COMPUTER_MODAL_TOKEN_ID: "fake-dev-id", COMPUTER_MODAL_TOKEN_SECRET: "fake-dev-secret" };
+const MODAL_SETTINGS = {
+	AGENTRUN_COMPUTER_LIVE_MODAL: "1",
+	COMPUTER_MODAL_APP: APP,
+	COMPUTER_MODAL_DAEMON_IMAGE: DAEMON_IMAGE,
+	COMPUTER_MODAL_DRIFTED_DAEMON_IMAGE: DAEMON_IMAGE,
+};
+
+/** A stand-in for the SDK's ModalClient constructor: it records the params it is given and answers with the fake slice. */
+function fakeClient() {
+	const made = [];
+	function ModalClient(params) {
+		made.push(params);
+		return fakeModal().sdk;
+	}
+	return { ModalClient, made };
+}
+
+test("the conformance module refuses MODAL_TOKEN_ID and MODAL_TOKEN_SECRET: it names the COMPUTER_MODAL_ token it needs", async () => {
+	const { createProvider, createDriftedProvider } = await import("../dist/conformance/modal.js");
+	for (const make of [createProvider, createDriftedProvider]) {
+		const { ModalClient, made } = fakeClient();
+		await assert.rejects(make({ env: { ...MODAL_SETTINGS, ...PROD_TOKEN }, ModalClient }), (error) => {
+			assert.match(error.message, /needs COMPUTER_MODAL_TOKEN_ID and COMPUTER_MODAL_TOKEN_SECRET/);
+			assert.match(error.message, /never MODAL_TOKEN_ID or MODAL_TOKEN_SECRET/);
+			assert.doesNotMatch(error.message, /prod-(id|token)-must-not-be-used/);
+			return true;
+		});
+		assert.deepEqual(made, [], "no client is made without the COMPUTER_MODAL_ token");
+	}
+});
+
+test("the conformance module passes the COMPUTER_MODAL_ token to the client explicitly, so an ambient MODAL_TOKEN_ cannot win", async () => {
+	const { createProvider, createDriftedProvider } = await import("../dist/conformance/modal.js");
+	for (const make of [createProvider, createDriftedProvider]) {
+		const { ModalClient, made } = fakeClient();
+		const provider = await make({ env: { ...MODAL_SETTINGS, ...PROD_TOKEN, ...DEV_TOKEN }, ModalClient });
+		assert.equal(provider.id, "modal");
+		assert.deepEqual(made, [{ tokenId: "fake-dev-id", tokenSecret: "fake-dev-secret" }]);
+		assert.doesNotMatch(JSON.stringify(made), /prod-(id|token)-must-not-be-used/);
+	}
+});
+
+test("the live Modal suite skips when only MODAL_TOKEN_ID and MODAL_TOKEN_SECRET are set", () => {
+	const live = new URL("./modal/conformance.modal.test.mjs", import.meta.url).pathname;
+	const run = spawnSync(process.execPath, ["--test", "--test-reporter=tap", live], {
+		env: { PATH: process.env.PATH, AGENTRUN_COMPUTER_LIVE_MODAL: "1", ...PROD_TOKEN },
+		encoding: "utf8",
+		timeout: 60_000,
+	});
+	assert.equal(run.status, 0, run.stdout + run.stderr);
+	assert.match(run.stdout, /# SKIP .*COMPUTER_MODAL_TOKEN_ID and COMPUTER_MODAL_TOKEN_SECRET/);
+	assert.match(run.stdout, /^# fail 0$/m);
+	assert.match(run.stdout, /^# pass 0$/m);
 });
