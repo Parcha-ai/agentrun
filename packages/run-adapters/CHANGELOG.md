@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## 0.1.0-beta.31 (2026-11-06)
+
+- Agents call a saved MCP server's tools on pi and claude-agent: grant `mcp:<server>/<tool>` in `definition.tools`. A save checks the name against the server's saved tools (`422` naming them). A run's first launch pins the granted tools as saved and the server's URL; its credential reaches only runs that grant one of its tools, over the run's secrets pipe. pi binds each tool in the run's process; claude-agent's own MCP client calls it at the session's model proxy (`/mcp/<server>`, behind the session key), so the CLI never holds the credential. A call follows no redirect, a crash-cut call is answered interrupted and never sent again, a moved server is sent nothing, and the timeline reads `<server> · <tool>`. `features.mcp_client.harnesses` lists the harnesses that run them. Every call passes the run's tool gate and its spend cap.
+
 ## 0.1.0-beta.30 (2026-11-05)
 
 - A Codex run stopped just after its message was sent to Codex no longer loses the message. Codex answers `turn/start` before it writes the message to its rollout: on the real app-server, killed at the answer or 20 ms after it, the rollout held no user message; 100 ms after, it did. A stop in that window kills Codex with the message sent and never recorded, and the next Codex, resumed from the session's rollout, never has it. The stop's settle now reads Codex's rollout as the session keeps it, the rollout the next Codex is resumed from, and carries a placed message it lacks into the next one, as claude-agent's settle reads its CLI's transcript. The `turn/start` send mark is gone (the kernel's `markSent` and `sentMarks` with it); a stopped drive still starts no turn.
