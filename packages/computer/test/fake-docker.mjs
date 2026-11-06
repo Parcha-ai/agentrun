@@ -1,6 +1,6 @@
 // A fake docker program under a temp dir, for DockerProvider's unit tests: it records each call's argv, keeps its
 // containers in a JSON file, and answers run, inspect, ps, stop, rm, info and exec (with the daemon's hello) as the
-// docker CLI does. No Docker and no daemon binary are needed.
+// docker CLI does. An inspect --format renders each {{json .Path}} in it. No Docker and no daemon binary are needed.
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -42,9 +42,10 @@ export function container({ name, labels = {}, network = "none", running = true,
  * Options: `running` is what a new container's inspect reports; `gone` makes stop and rm answer "No such container";
  * `containers` are there from the start; `patch` is merged over each new container (to make drift); `hello` over the
  * daemon's hello; `arch` is what docker info reports; `vanish` names are listed by ps but gone by inspect; `noDaemon`
- * makes exec fail as when the daemon is missing; `user` is the provider's user option.
+ * makes exec fail as when the daemon is missing; `user` is the provider's user option; `hold` names steps ("inspect",
+ * "info", "hello") that wait, once called, until `proceed(step)`.
  */
-export function fakeDocker({ running = true, gone = false, containers = [], patch = {}, hello = {}, arch = "x86_64", vanish = [], noDaemon = false, user } = {}) {
+export function fakeDocker({ running = true, gone = false, containers = [], patch = {}, hello = {}, arch = "x86_64", vanish = [], noDaemon = false, user, hold = [] } = {}) {
 	const dir = mkdtempSync(join(tmpdir(), "computer-fake-docker-"));
 	dirs.push(dir);
 	const log = join(dir, "calls.jsonl");
@@ -54,11 +55,11 @@ export function fakeDocker({ running = true, gone = false, containers = [], patc
 	writeFileSync(daemonPath, "not a real daemon");
 	chmodSync(daemonPath, 0o755);
 	const program = join(dir, "docker");
-	const config = JSON.stringify({ log, state, running, gone, patch, hello: { ...HELLO, ...hello }, arch, vanish, noDaemon });
+	const config = JSON.stringify({ dir, log, state, running, gone, patch, hello: { ...HELLO, ...hello }, arch, vanish, noDaemon, hold });
 	writeFileSync(
 		program,
 		`#!${process.execPath}
-const { appendFileSync, readFileSync, writeFileSync } = require("node:fs");
+const { appendFileSync, existsSync, readFileSync, writeFileSync } = require("node:fs");
 const { createHash } = require("node:crypto");
 const config = ${config};
 const args = process.argv.slice(2);
@@ -67,6 +68,18 @@ const load = () => JSON.parse(readFileSync(config.state, "utf8"));
 const save = (all) => writeFileSync(config.state, JSON.stringify(all));
 const find = (all, key) => all.find((c) => c.Name === "/" + key) ?? all.find((c) => /^[0-9a-f]{12,64}$/.test(key) && c.Id.startsWith(key));
 const noSuch = (key) => { process.stderr.write("Error response from daemon: No such container: " + key + "\\n"); process.exit(1); };
+// A held step waits for its proceed file, at most a minute.
+const held = (step, then) => {
+	if (!config.hold.includes(step)) return then();
+	const bound = Date.now() + 60_000;
+	const timer = setInterval(() => {
+		if (!existsSync(config.dir + "/proceed-" + step) && Date.now() < bound) return;
+		clearInterval(timer);
+		then();
+	}, 20);
+};
+const pick = (value, path) => path.split(".").filter(Boolean).reduce((at, key) => (at == null ? undefined : at[key]), value);
+const render = (format, found) => format.replace(/\\{\\{json ([.A-Za-z]+)\\}\\}/g, (_, path) => JSON.stringify(pick(found, path) ?? null));
 const merge = (base, over) => {
 	for (const [key, value] of Object.entries(over)) {
 		base[key] = value && typeof value === "object" && !Array.isArray(value) && base[key] && typeof base[key] === "object" ? merge(base[key], value) : value;
@@ -102,17 +115,16 @@ switch (args[0]) {
 		process.stdout.write(made.Id + "\\n");
 		break;
 	}
-	case "inspect": {
+	case "inspect": held("inspect", () => {
 		const all = load();
 		let missing;
 		for (const key of args.slice(5)) {
 			const found = config.vanish.includes(key) ? undefined : find(all, key);
-			if (found) process.stdout.write(JSON.stringify(found) + "\\n");
+			if (found) process.stdout.write(render(args[4], found) + "\\n");
 			else missing = key;
 		}
 		if (missing) noSuch(missing);
-		break;
-	}
+	}); break;
 	case "ps": {
 		const filters = args.flatMap((arg, i) => (arg === "--filter" ? [args[i + 1].slice("label=".length)] : []));
 		for (const c of load()) {
@@ -130,7 +142,7 @@ switch (args[0]) {
 		process.stdout.write(args.at(-1) + "\\n");
 		break;
 	}
-	case "info": process.stdout.write(config.arch + "\\n"); break;
+	case "info": held("info", () => process.stdout.write(config.arch + "\\n")); break;
 	case "exec": {
 		if (config.noDaemon) { process.stderr.write("OCI runtime exec failed: no such file or directory\\n"); process.exit(126); }
 		let buffered = "";
@@ -140,7 +152,7 @@ switch (args[0]) {
 			while ((at = buffered.indexOf("\\n")) >= 0) {
 				const request = JSON.parse(buffered.slice(0, at));
 				buffered = buffered.slice(at + 1);
-				if (request.method === "hello") process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: request.id, result: config.hello }) + "\\n");
+				if (request.method === "hello") held("hello", () => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: request.id, result: config.hello }) + "\\n"));
 				if (request.method === "ping") process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: request.id, result: {} }) + "\\n");
 			}
 		});
@@ -154,7 +166,8 @@ switch (args[0]) {
 	);
 	const calls = () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)) : []);
 	const names = () => JSON.parse(readFileSync(state, "utf8")).map((c) => c.Name.slice(1));
-	return { provider: new DockerProvider({ daemonPath, docker: program, ...(user === undefined ? {} : { user }) }), calls, names, daemonPath };
+	const proceed = (step) => writeFileSync(join(dir, `proceed-${step}`), "");
+	return { provider: new DockerProvider({ daemonPath, docker: program, ...(user === undefined ? {} : { user }) }), calls, names, daemonPath, proceed };
 }
 
 /** The value after each occurrence of a flag. */

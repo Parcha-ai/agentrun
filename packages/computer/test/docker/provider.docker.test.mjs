@@ -1,13 +1,13 @@
 // Find, check and sweep computers on real Docker (AGENTRUN_COMPUTER_LIVE_DOCKER=1 only): attach by id and by labels,
 // list by label, network read-back, a drifted computer deleted at create, and the janitor deleting only the expired,
-// stopped or running.
+// stopped or running, and a create aborted right after docker run leaving nothing.
 // Needs `npm run build` and `npm run build:daemon` first, Go on PATH (for the drifted daemon), and the images pulled.
 // Every computer this file makes carries a label with this run's id; each is removed by its exact name in the after
 // hook, pass or fail. The janitor sweeps only this run's label.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { chmodSync, existsSync, mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -33,6 +33,7 @@ describe("find, check and sweep Docker computers", { skip: LIVE ? false : "set A
 	const made = [];
 	const dirs = [];
 	let provider;
+	let daemonPath;
 	let arch;
 	let a;
 	let b;
@@ -46,7 +47,7 @@ describe("find, check and sweep Docker computers", { skip: LIVE ? false : "set A
 
 	before(() => {
 		arch = docker("version", "--format", "{{.Server.Arch}}").trim();
-		const daemonPath = fileURLToPath(new URL(`../../dist/computerd-linux-${arch}`, import.meta.url));
+		daemonPath = fileURLToPath(new URL(`../../dist/computerd-linux-${arch}`, import.meta.url));
 		assert.ok(existsSync(daemonPath), `no daemon for Docker's arch at ${daemonPath}: run npm run build:daemon`);
 		provider = new DockerProvider({ daemonPath });
 	});
@@ -222,5 +223,50 @@ describe("find, check and sweep Docker computers", { skip: LIVE ? false : "set A
 		assert.equal(exists(long.value.name), true);
 		assert.equal(exists(a.name), true, "a computer outside the swept label is never touched");
 		assert.deepEqual(await sweep(provider, { labels: sweepLabel }), { ok: true, value: { deleted: [], kept: 1 } });
+	});
+
+	it("a create aborted right after docker run returns aborted, and nothing with its label is left", async () => {
+		// A docker CLI that holds create's first inspect, the step right after run, until the test says go.
+		const dir = mkdtempSync(join(tmpdir(), "computer-abort-"));
+		dirs.push(dir);
+		const held = join(dir, "held");
+		const go = join(dir, "go");
+		const wrapper = join(dir, "docker");
+		writeFileSync(
+			wrapper,
+			`#!${process.execPath}
+const { existsSync, writeFileSync } = require("node:fs");
+const { spawnSync } = require("node:child_process");
+const args = process.argv.slice(2);
+const run = () => process.exit(spawnSync("docker", args, { stdio: "inherit" }).status ?? 1);
+if (args[0] !== "inspect" || existsSync(${JSON.stringify(go)})) run();
+writeFileSync(${JSON.stringify(held)}, "");
+const bound = Date.now() + 120_000;
+setInterval(() => (existsSync(${JSON.stringify(go)}) || Date.now() > bound) && run(), 50);
+`,
+			{ mode: 0o755 },
+		);
+		const holding = new DockerProvider({ daemonPath, docker: wrapper });
+		const controller = new AbortController();
+		const pending = holding.create(
+			{ image: "alpine:3.20", network: "none", lifetimeMs: 10 * 60_000, labels: { [RUN_LABEL]: run, role: "abort" } },
+			{ signal: controller.signal },
+		);
+		const bound = Date.now() + 120_000;
+		while (!existsSync(held)) {
+			assert.ok(Date.now() < bound, "create never reached the inspect after docker run");
+			await new Promise((resolve) => setTimeout(resolve, 50));
+		}
+		const name = docker("ps", "-a", "--filter", `label=${RUN_LABEL}=${run}`, "--filter", "label=role=abort", "--format", "{{.Names}}").trim();
+		assert.match(name, /^computer-[0-9a-f]{12}$/, "docker run made the computer before the abort");
+		controller.abort();
+		writeFileSync(go, "");
+		const created = await pending;
+		if (created.ok) made.push(created.value.name);
+		assert.equal(created.ok, false, JSON.stringify(created));
+		assert.equal(created.error.code, "aborted");
+		assert.match(created.error.message, new RegExp(`${name} was deleted`));
+		assert.equal(exists(name), false, `${name} was deleted`);
+		assert.equal(docker("ps", "-a", "--filter", `label=${RUN_LABEL}=${run}`, "--filter", "label=role=abort", "--format", "{{.Names}}").trim(), "");
 	});
 });
