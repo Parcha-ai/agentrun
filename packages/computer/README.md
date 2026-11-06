@@ -369,9 +369,10 @@ core exec      argv streams exit-code cwd env timeout abort ✓ 11
                truncation setsid-escapee unprivileged user
 ...
 full exec      root-on-request user-uid                     ✓ 2
-full provider  network-open network-allow janitor           ✓ 2 - 1
+full provider  network-switch network-open network-allow    ✓ 3 - 1
+               janitor
   - provider.network-allow: the provider does not declare network:allow
-core PASS 52/52 · full 4/5 · network:allow not declared
+core PASS 52/52 · full 5/6 · network:allow not declared
 ```
 
 A module path is resolved from the directory npm was run in. It exits 0 when Core passes, 1 when it fails, and 2 on a usage error; `--json` prints the report object
@@ -393,11 +394,13 @@ Core and Full follow the Kubernetes agent-sandbox conformance levels (KEP-539.2)
   permitted capabilities (the run's spec asks for no user), a HOME that user owns and writes while `/` refuses it, the
   `files.*` and `tar.*` methods, the `process.*` methods, a computer with network `none` (`network:none`: a provider
   that cannot make one fails Core, and the suite never asks for a wider network instead), `check`, `create`, `attach`,
-  `list`, `network` read-back and `release`, a computer that does not run past its deadline (after a sweep, for a
-  janitor provider), and the drift checks. Core passes when every Core case passes and the run leaves no computer
+  `list`, `network` read-back and `release`, a change to a network the provider does not declare refused with the
+  network unchanged (Core asks for no network the provider could give), a computer that does not run past its deadline
+  (after a sweep, for a janitor provider), and the drift checks. Core passes when every Core case passes and the run leaves no computer
   behind.
-- **Full** is each optional capability a provider declares: network `open` (`network:open`), a network allowlist
-  (`network:allow`), the janitor for a provider whose lifetime is `"janitor"` (`lifetime:janitor`), and a spec that
+- **Full** is each optional capability a provider declares: network `open` (`network:open`), including a change of a
+  computer's network to each one it declares, refused or applied truthfully, on a computer of the case's own
+  (`provider.network-switch`), a network allowlist (`network:allow`), the janitor for a provider whose lifetime is `"janitor"` (`lifetime:janitor`), and a spec that
   asks for root (`user:root`, from `capabilities().user` holding `"root"`) or another uid (`user:uid`), still with no
   capabilities.
 
