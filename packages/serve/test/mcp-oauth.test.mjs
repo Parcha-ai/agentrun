@@ -185,10 +185,10 @@ test("a run's launch refreshes a token near its expiry, once for launches at the
   const store = new McpServers(data, { AGENTRUN_SEAL_KEY: key }, "test");
   const [one, two] = await Promise.all([store.headersForRun("docs"), store.headersForRun("docs")]);
   assert.deepEqual(one, two);
-  assert.match(one.authorization, /^Bearer access-/);
-  assert.notEqual(one.authorization, `Bearer ${signedIn}`, "a fresh access token");
+  assert.match(one.headers.authorization, /^Bearer access-/);
+  assert.notEqual(one.headers.authorization, `Bearer ${signedIn}`, "a fresh access token");
   assert.equal(as.log.filter((entry) => entry.form.grant_type === "refresh_token").length, 1, "one refresh, so a rotating refresh token is spent once");
-  assert.ok(as.accepts(one.authorization));
+  assert.ok(as.accepts(one.headers.authorization));
   const after = (await api("GET", "/settings/mcp-servers/docs")).body;
   assert.equal(after.credential, "sealed");
   assert.ok(Date.parse(after.oauth.expires_at) >= Date.parse(first.oauth.expires_at));
@@ -271,7 +271,7 @@ test("a token given with no expiry is taken to last an hour: a launch after that
   const headers = await store.headersForRun("docs");
   t.mock.timers.reset();
   assert.equal(refreshes(), 1, "within the margin of an hour: refreshed");
-  assert.ok(as.accepts(headers.authorization));
+  assert.ok(as.accepts(headers.headers.authorization));
 });
 
 test("a stop never waits on a token refresh: with the authorization server hanging, a running run's abort answers at once and asks it nothing", { timeout: 120_000 }, async (t) => {
