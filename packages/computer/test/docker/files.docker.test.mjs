@@ -341,6 +341,27 @@ describe("move files in and out of a Docker computer", { skip: LIVE ? false : "s
 		});
 	});
 
+	it("a FIFO in /work: files.read, files.write and a pull of its directory return, and the connection still answers ping", async () => {
+		await onItsOwnConnection(async (one) => {
+			await run(["sh", "-c", "mkdir -p /work/fifo && printf a > /work/fifo/a.txt && mkfifo /work/fifo/pipe"]);
+			for (const [method, params] of [
+				["files.read", { path: "/work/fifo/pipe" }],
+				["files.write", { path: "/work/fifo/pipe", data: Buffer.from("x").toString("base64") }],
+			]) {
+				const refused = await within(one.call(method, params), 60_000, `${method} of a FIFO`);
+				assert.equal(refused.ok, false, `${method}: ${JSON.stringify(refused)}`);
+				assert.equal(refused.error.code, "invalid", JSON.stringify(refused.error));
+			}
+			const pulled = await within(pullTar(one, "/work/fifo"), 60_000, "the pull of a directory holding a FIFO");
+			assert.equal(pulled.ok, true, JSON.stringify(pulled.error));
+			const into = scratch();
+			execFileSync("tar", ["-C", into, "-xf", "-"], { input: Buffer.from(pulled.value) });
+			assert.deepEqual(readdirSync(into), ["a.txt"]);
+			assert.equal(readFileSync(join(into, "a.txt"), "utf8"), "a");
+			assert.deepEqual(await within(one.call("ping", {}), 60_000, "a ping after the FIFO calls"), { ok: true, value: {} });
+		});
+	});
+
 	it("a push aborted after its source ends still ends, and 8 pushes at once follow on the same connection", async () => {
 		await onItsOwnConnection(async (one) => {
 			const controller = new AbortController();

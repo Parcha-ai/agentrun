@@ -153,6 +153,12 @@ read to its end, the push calls its `return()` however it ends, so a pull piped 
   promise to confine it: they resolve it by name, as any program in the computer would, and follow a symlink on the
   way. The computer is their boundary. A caller that needs a write held inside one directory against a concurrent
   actor pushes a tar into that directory.
+- `files.read`, `files.write` and a pull open a file first and then check what they opened (`fstat` on the
+  descriptor), never a path checked and then opened by name. The open carries `O_NONBLOCK`, so a FIFO or a device,
+  there from the start or swapped in by another program, never makes it wait: `files.read` and `files.write` refuse
+  it as `invalid` (a directory is `is_dir`), and a pull leaves it out. A pull opens each file with `O_NOFOLLOW` and
+  writes its tar header from that descriptor's `fstat`, so the header matches the bytes it reads; a file that became
+  a symlink is left out too.
 
 `src/protocol.ts` and `daemon/internal/methods` are the two definitions of these methods, TypeScript and Go (the Go
 params and results of `files.*` and `tar.*` sit beside their code in `daemon/internal/files`).
