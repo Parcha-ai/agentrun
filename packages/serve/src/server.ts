@@ -2045,13 +2045,18 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         const rows = await agents.request(() => agents.store.listRuns({ agent: id }));
         // Counted as GET /stats counts (learning-run.ts counts): a held run from memory, any other's end from the ledger;
         // what learning changed, from the same rows and ledger (learningImpact).
-        const { counts, impact } = await runs.learning.ofAgent(rows, id);
-        return send(res, 200, await agentLearning(data, id, secretsShown(learningSecrets()), counts, impact));
+        const { counts, impact, notes } = await runs.learning.ofAgent(rows, id);
+        return send(res, 200, await agentLearning(data, id, secretsShown(learningSecrets()), counts, impact, notes));
       }
       case "listLearningNotes":
       case "listLearningLog":
         await needAgent(id);
-        return send(res, 200, await (found.name === "listLearningNotes" ? learningNotes : learningLog)(data, id, url.searchParams, secretsShown(learningSecrets())));
+        if (found.name === "listLearningNotes") {
+          // Each note's runs (given it, read it), counted as the agent's learning view counts them (learning-run.ts ofAgent).
+          const { notes } = await runs.learning.ofAgent(await agents.request(() => agents.store.listRuns({ agent: id })), id);
+          return send(res, 200, await learningNotes(data, id, url.searchParams, secretsShown(learningSecrets()), notes));
+        }
+        return send(res, 200, await learningLog(data, id, url.searchParams, secretsShown(learningSecrets())));
       case "readLearningFile":
         await needAgent(id);
         return sendNote(res, 200, await readNote(data, id, second!, secretsShown(learningSecrets())));

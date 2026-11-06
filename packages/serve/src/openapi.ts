@@ -375,6 +375,10 @@ const LEARNING_NOTE_REQUIRED = closed({
   superseded_by: { ...NULL_STRING, description: "The note that superseded it, on a superseded note; `[redacted]` as `file` is." },
   text: { type: "string", description: "The note's whole file, front matter included." },
   etag: { type: "string", description: "The note's version on main, the same ETag as `GET .../learning/files/{file}` answers: send it as `If-Match` to edit or retire the version shown, and a 412 means it changed since.", "x-agentrun-serve": "learning/2" },
+  runs: closed({
+    given: { ...COUNT, description: "How many of the agent's runs were given this note: named in the run's # Learned section, whole or as an index line (each run's `given`)." },
+    read: { ...COUNT, description: "How many of the agent's runs opened this note's file with the read tool (each run's `read`). 0 when none did." },
+  }, "This note's runs, counted over the agent's runs the server knows (held ones from memory, ended ones from the learning ledger): given it, and read it. Whether a run applied a note is not measured."),
 });
 /** When a retired note, skill or draft was retired, and by whom: on a retired one alone. */
 const RETIRED = closed({
@@ -457,10 +461,16 @@ const NOTE_NAME_FILE = { type: "string", description: "The note's file name, `<s
 /** The notes a run read and learned, on its learning block (runs.ts, learning.ts notesView): each present only when it
  *  holds a note. */
 const LEARNING_NOTES: Record<string, Json> = {
-  used: {
+  given: {
     type: "array", minItems: 1,
     items: closed({ file: NOTE_NAME_FILE, name: { type: "string", description: "The note's front-matter `name`, cut of the host's secrets as they are now." } }),
-    description: "The notes this run read from `.learning/` in its working directory, in the order it first read each: every `read` call of its job (on any harness) whose result was a success and that names a note the run started from. A note read another way, through a command (`bash`'s `cat .learning/<file>`, say), is not counted. MEMORY.md, the index every run gets in its instructions, is not one; nor is a read the run's end-of-run turn made. Found once, as the run settles, and kept with the run: absent while it runs (a follow-up included) and when it read none.",
+    description: "The notes this run started with: every active note its # Learned section names, given whole or as an index line naming its file in `.learning/`, as it was seeded. Absent when the run started with nothing learned. Whether the run applied a note is not measured.",
+    "x-agentrun-serve": "learning/2",
+  },
+  read: {
+    type: "array", minItems: 1,
+    items: closed({ file: NOTE_NAME_FILE, name: { type: "string", description: "The note's front-matter `name`, cut of the host's secrets as they are now." } }),
+    description: "The notes this run read from `.learning/` in its working directory, in the order it first read each: every `read` call of its job (on any harness) whose result was a success and that names a note the run started from. A note read another way, through a command (`bash`'s `cat .learning/<file>`, say), is not counted. MEMORY.md, the index every run gets in its instructions, is not one; nor is a read the run's end-of-run turn made. Found once, as the run settles, and kept with the run: absent while it runs (a follow-up included) and when it read none. Absent when the run opened no note file.",
     "x-agentrun-serve": "learning/2",
   },
   learned: {
