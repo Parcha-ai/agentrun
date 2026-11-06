@@ -90,6 +90,24 @@ async function serve(t, args, env = {}, data = undefined) {
   return { home, base: /AGENTRUN_BASE_URL=(\S+)\/v2/.exec(out)[1], out, stop };
 }
 
+test("with accounts off (AGENTRUN_ACCOUNTS=0), the AGENTRUN_PUBLIC_URL name is served on loopback as with them on, and another name is still refused", { timeout: 120_000 }, async (t) => {
+  const free = createServer();
+  await new Promise((resolve) => free.listen(0, "127.0.0.1", resolve));
+  const port = free.address().port;
+  await new Promise((resolve) => free.close(resolve));
+  const { out } = await serve(t, ["--port", String(port)], { AGENTRUN_ACCOUNTS: "0", AGENTRUN_PUBLIC_URL: "https://agentrun.example.com" });
+  assert.match(out, /^Open https:\/\/agentrun\.example\.com\//m, out);
+  const { request } = await import("node:http");
+  const status = (name) =>
+    new Promise((resolve, reject) => {
+      const req = request({ host: "127.0.0.1", port, path: "/v2/capabilities", headers: { host: name } }, (res) => (res.resume(), resolve(res.statusCode)));
+      req.once("error", reject).end();
+    });
+  assert.equal(await status("agentrun.example.com"), 200, "the public name, as a proxy in front sends it");
+  assert.equal(await status(`localhost:${port + 1}`), 200);
+  assert.equal(await status("evil.example"), 403);
+});
+
 test("demo: with no --port the server takes the first free port from its default", { timeout: 120_000 }, async (t) => {
   const busy = await heldFirstFree(t);
   const { base } = await serve(t, []);

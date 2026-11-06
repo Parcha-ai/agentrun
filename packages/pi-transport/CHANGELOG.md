@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+## 0.1.0-beta.30 (2026-11-05)
+
+- **A Daytona box reaches the package registries and GitHub, through Daytona's domain list**
+  - pi-transport: `daytonaBoxes` takes `network: { allow: [...] }` when every entry is a domain (a `*.` wildcard allowed), sends it as Daytona's `domainAllowList`, and reports `network: "allowlist"` only once the sandbox's own read carries that list. A sandbox whose read lacks it is deleted and the create refused as `unsupported`, as `networkBlockAll` is checked. A CIDR in the list is still refused.
+  - serve: a run's Daytona box gets the hosts `AGENTRUN_BOX_ALLOW` names. Unset, `pypi.org`, `files.pythonhosted.org`, `registry.npmjs.org`, `registry.yarnpkg.com`, `github.com` and `codeload.github.com`; a comma list replaces them; `none` blocks the network as before. `*`, an IP address or a CIDR refuses the start. Where Daytona keeps or takes no domain list (its tier 1 and 2), the box is made again with its network blocked, never open, and capabilities say why. Capabilities show the hosts in `places.allow` and each Daytona box's `network`.
+- **Deprecated: the session home, the launcher and the placer. They are removed in 0.1.0-beta.31.** Nothing is removed in this release, and nothing behaves differently. To run an agent in a box, use `@parcha/agentrun-serve`: it uses this package's boxes, `./hands` and `./sync`, which stay.
+  - Every export of `@parcha/pi-transport/home`, `@parcha/pi-transport/launch` and `@parcha/pi-transport/place` is marked `@deprecated`, so an editor and a linter flag it where it is imported.
+  - From the root: `BoxLauncher`, `Box.launcher`, and the placer's `jevPlacer`, `jevClassifier`, `environmentFacts`, `PlacementsDoc`, `writePlacement`, `isPlacementRecord`, `PlacementError` and the `Placement*` and `Placer` types.
+  - From `@parcha/pi-transport/testing`: `registerMoveConformance`, `registerRestoreConformance`, `moveConformanceApp`, `registerStoreConformance`, `createStoreConformance`, `replayClassifier`, the other exports of those modules, and `FakeLaunch`.
+  - The config keys `home`, `auto` and `environments.<id>.purpose`. From 0.1.0-beta.31 a config that sets one of them fails to parse.
+  - `Manifest`, `ManifestEntry`, `Pipe`, `WorkspaceError` and `WorkspaceErrorCode` stay: import them from `@parcha/pi-transport/sync`, which exports the same types.
+- **A Daytona box's host list holds after a restart, and an odd read of it never leaves a sandbox behind**
+  - serve: a run's Daytona box found at its next call is kept only when its domain list is the one `AGENTRUN_BOX_ALLOW` names now (the same hosts, in any order). A box made under a wider list, or one whose list Daytona does not say, is destroyed and made again, so a narrowed setting holds for a run whose server restarted.
+  - pi-transport: a box's facts carry its hosts in `allow`. A `domainAllowList` read back as a list of hosts is taken; any value that is neither a string nor a list deletes the sandbox and refuses the create as `unsupported`, where it threw before and left the sandbox.
+  - serve: a Daytona box with no network after Daytona refused its list says why in `network_reason` (`reason` stays for an unavailable box), and the log line gives Daytona's own words (`event=box_network ... message="..."`).
+
 ## 0.1.0-beta.29 (2026-11-04)
 
 - **A checkpoint is never unpacked on the host: a box's links stay data, made again only inside the box a restore goes to**
