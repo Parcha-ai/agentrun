@@ -149,6 +149,19 @@ test("a poll the deadline cuts short keeps the door's answer before it: a slow d
   assert.deepEqual(ended, { opened: false, why: "deadline", last: "503 OPENING" });
 });
 
+test("a door that answers nothing until the deadline (its process busy) is waited for until then, and its last answer is no answer", { timeout: 30_000 }, async (t) => {
+  // It takes each connection and never answers: as a door whose thread is held by its app's loading.
+  const held = [];
+  const server = createServer((req) => void held.push(req));
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => (server.closeAllConnections(), server.close()));
+  const started = Date.now();
+  const ended = await untilOpened(`http://127.0.0.1:${server.address().port}`, {}, () => false, started + 800, 50);
+  assert.deepEqual(ended, { opened: false, why: "deadline", last: "no answer" });
+  assert.ok(Date.now() - started >= 790, "waited for the deadline");
+  assert.ok(held.length >= 1, "it was asked");
+});
+
 test("through a run whose process never opens it: one line naming the cause, its process stopped at the ready time, and a request's 503 says why", { timeout: 120_000 }, async (t) => {
   const lines = [];
   const write = process.stderr.write;
@@ -167,7 +180,10 @@ test("through a run whose process never opens it: one line naming the cause, its
     assert.ok(i < 200, "the server said it, at the ready time");
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
-  assert.match(said()[0], /did not open the run within 2 s \(its door last answered 503 OPENING\); it is stopped/);
+  // The line names the door's last answer as it was: 503 OPENING when the door answered within the open time, or no
+  // answer when it did not. After its proof, the run's process opens its store and loads its app on the door's own
+  // thread, and on a loaded machine that can hold the door past 2 s. Which of the two each is, the unit tests above pin.
+  assert.match(said()[0], /did not open the run within 2 s \(its door last answered (503 OPENING|no answer)\); it is stopped/);
   const asked = await api("POST", `/runs/${run.body.run_id}/messages`, { content: "And now?" });
   assert.equal(asked.status, 503, JSON.stringify(asked.body));
   assert.match(asked.body.error.message, /the run did not come up in time: its process has not opened it yet/);
