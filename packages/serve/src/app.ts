@@ -17,7 +17,7 @@ import { openStoreReader, type Revision, RUN_STORE_FILE, type RunRow } from "@pa
 import { RUN_RESUMED } from "@parcha/pi-durable-agent/timeline";
 import { settleIn } from "./paid-calls.js";
 import type { AppContext, AppOptions, BeforeResume, DurableRun } from "@parcha/pi-durable-disk";
-import { capBefore, capModels, capOf, spentIn } from "./cap.js";
+import { capBefore, capModels, capModeOf, capOf, spentIn } from "./cap.js";
 import { codingSource } from "./coding-tools.js";
 import { cancelledIn, markRequests } from "./request-start.js";
 import { decisionProvidersOf } from "./decisions.js";
@@ -112,6 +112,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   const { model, byTier } = chosen;
   // Read before the run opens its store: what it spent in earlier processes counts against its cap.
   const cap = capOf(process.env);
+  const mode = capModeOf(process.env);
   // Each request is marked as it leaves (request-start.ts), inside the cap: a request the cap refuses never leaves, and
   // gets a start mark of its own, which its error entry answers.
   const marked = await markRequests(chosen.models, cancelledIn(where.root));
@@ -119,7 +120,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   // the run's one total, which the harness keeps (cap.ts capModels' `joined`): what they cost in earlier processes is
   // read here, as the harness's booking does not hold it.
   const joined = revision.kind === "agentic" && Boolean(revision.body.harness) && revision.body.harness !== DEFAULT_HARNESS;
-  const models = cap === undefined ? marked.models : await capModels(marked.models, cap, spentIn(join(where.store, RUN_STORE_FILE), { sides: joined }), { unpriced: chosen.unpriced, refused: marked.refused, joined });
+  const models = cap === undefined ? marked.models : await capModels(marked.models, cap, spentIn(join(where.store, RUN_STORE_FILE), { sides: joined }), { unpriced: chosen.unpriced, refused: marked.refused, joined, mode });
   // web_search's own request to the model provider, when it resolves native, goes through the run's models (hosted-search.ts):
   // on another harness too, for a learned workflow's call node.
   searchOn(models);
@@ -196,7 +197,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     // The run's cap, checked before each of the harness's requests: the same ceiling rule as pi's (cap.ts).
     // claude-agent's run is capped at the price of whoever bills it (claudeProvider's priceModel), as its adapter prices it.
     const priced = harness === "claude-agent" && !env[FAUX_HARNESS_ENV] ? claudePriceModel(env, model!) : model!;
-    const guard = await capBefore(cap, chosen.models.getModel(priced.provider, priced.modelId) as never, { listed: !chosen.unpriced.has(priced.modelId) });
+    const guard = await capBefore(cap, chosen.models.getModel(priced.provider, priced.modelId) as never, { listed: !chosen.unpriced.has(priced.modelId), mode });
     // The cancel mark serve writes is read here too, as pi's model wrapper reads it (request-start.ts).
     // The run's stop record (serve.json, as serve saved it before a stop's abort): a turn it names is not resumed.
     const stopRecord = { ...(typeof meta?.stopped_at === "string" ? { stopped_at: meta.stopped_at } : {}), ...(typeof meta?.stopped_after === "number" ? { stopped_after: meta.stopped_after } : {}) };
