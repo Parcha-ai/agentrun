@@ -1371,16 +1371,16 @@ test("an agent keeps its newest 32 forgotten pointers, sealed under their own bi
   }
   assert.equal(MAX_FORGOTTEN, 32);
   const kept = await store.forgotten("alpha", "browserbase");
-  assert.deepEqual(kept, { refs: made.slice(1), unreadable: false }, "the oldest dropped");
-  assert.deepEqual(await store.forgotten("alpha", "kernel"), { refs: [], unreadable: false });
+  assert.deepEqual(kept, { refs: made.slice(1), unreadable: false, dropped: true }, "the oldest dropped, and that one was");
+  assert.deepEqual(await store.forgotten("alpha", "kernel"), { refs: [], unreadable: false, dropped: true });
   assert.deepEqual(await store.view("alpha"), []);
   assert.equal(await store.peek("alpha", "browserbase"), undefined, "no sign-in");
   // Never another agent's, nor under another seal key.
   await mkdir(join(homeOf(data, "beta"), "sign-ins"), { recursive: true });
   await cp(join(homeOf(data, "alpha"), "sign-ins", "sign-ins.json"), join(homeOf(data, "beta"), "sign-ins", "sign-ins.json"));
-  assert.deepEqual(await store.forgotten("beta", "browserbase"), { refs: [], unreadable: true });
+  assert.deepEqual(await store.forgotten("beta", "browserbase"), { refs: [], unreadable: true, dropped: true });
   const rotated = new SignIns(data, randomBytes(32), {}, async () => false);
-  assert.deepEqual(await rotated.forgotten("alpha", "browserbase"), { refs: [], unreadable: true });
+  assert.deepEqual(await rotated.forgotten("alpha", "browserbase"), { refs: [], unreadable: true, dropped: true });
   assert.deepEqual((await new SignIns(data, key, {}, async () => false).forgotten("alpha", "browserbase")).refs.length, MAX_FORGOTTEN);
 });
 
@@ -1400,4 +1400,42 @@ test("a list row of an ended run that was never handed a sign-in (no mark in its
   process.env.AGENTRUN_SEAL_KEY = randomBytes(32).toString("base64");
   const { api } = await serve(t, { data: first.data, fauxBrowser: FAUX_BROWSER, fauxBrowserbase: FAUX_BROWSERBASE });
   for (const path of ["/runs", "/agents/alpha/runs"]) assert.equal((await api("GET", path)).body.runs.find((r) => r.run_id === runId).error.message, "The browser died.", path);
+});
+
+test("a forgotten sign-in under another seal key is read as one that does not open: the run that was handed it is withheld, then shown, cut, once the key is back", { timeout: 300_000 }, async (t) => {
+  const dir = await scratch(t);
+  const log = join(dir, "browser.jsonl");
+  const seal = randomBytes(32).toString("base64");
+  withEnv(t, { BROWSERBASE_API_KEY: BB_KEY, BROWSERBASE_PROJECT_ID: "proj-1", AGENTRUN_SEAL_KEY: seal, FAUX_BROWSER_LOG: log }, KEYS);
+  const first = await forgottenAfterEnd(t, dir, log);
+  await first.close();
+  process.env.AGENTRUN_SEAL_KEY = randomBytes(32).toString("base64");
+  const rotated = await serve(t, { data: first.data, fauxBrowser: FAUX_BROWSER, fauxBrowserbase: FAUX_BROWSERBASE });
+  const timeline = await servedCut(rotated.api, first.runId, first.ref);
+  assert.ok(!timeline.includes("I kept"), timeline);
+  const view = (await rotated.api("GET", `/runs/${first.runId}`)).body;
+  assert.deepEqual([view.status, view.result?.final_answer ?? null], ["completed", null], "it ended as it ended; its words withheld");
+  await rotated.close();
+  process.env.AGENTRUN_SEAL_KEY = seal;
+  const { api } = await serve(t, { data: first.data, fauxBrowser: FAUX_BROWSER, fauxBrowserbase: FAUX_BROWSERBASE });
+  assert.ok((await servedCut(api, first.runId, first.ref)).includes("I kept [redacted] for you."));
+});
+
+test("a run handed a sign-in forgotten so long ago that it is no longer kept (past the newest 32) is withheld: its pointer can't be cut", { timeout: 300_000 }, async (t) => {
+  const dir = await scratch(t);
+  const log = join(dir, "browser.jsonl");
+  const seal = randomBytes(32);
+  withEnv(t, { BROWSERBASE_API_KEY: BB_KEY, BROWSERBASE_PROJECT_ID: "proj-1", AGENTRUN_SEAL_KEY: seal.toString("base64"), FAUX_BROWSER_LOG: log }, KEYS);
+  const first = await forgottenAfterEnd(t, dir, log);
+  await first.close();
+  // 32 more of the agent's sign-ins forgotten since: the one the run was handed is dropped.
+  const store = new SignIns(first.data, seal, { create: async () => `ctx-later-${randomBytes(6).toString("hex")}`, remove: async () => {} }, async () => false);
+  for (let i = 0; i < MAX_FORGOTTEN; i++) {
+    await store.forRun("alpha", `later-${i}`, "browserbase");
+    await store.forget("alpha", "default");
+  }
+  const { api } = await serve(t, { data: first.data, fauxBrowser: FAUX_BROWSER, fauxBrowserbase: FAUX_BROWSERBASE });
+  const timeline = await servedCut(api, first.runId, first.ref);
+  assert.ok(!timeline.includes("I kept"), timeline);
+  assert.equal((await api("GET", `/runs/${first.runId}`)).body.result?.final_answer ?? null, null);
 });

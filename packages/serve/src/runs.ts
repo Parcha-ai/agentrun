@@ -1177,7 +1177,8 @@ export class Runs {
     if (row.state !== "running" && signIn === "unreadable" && run.meta.sign_in_handed && !run.meta.unshown) run.meta.unshown = true;
     // Hidden under a key that did not open its sign-in, and that very sign-in opens again now (not one made since in its
     // place, which would not cut the pointer its rows hold): its rows are read, cut of it.
-    if (run.meta.unshown && typeof signIn === "object" && typeof run.meta.sign_in_handed === "string" && pointerHash(signIn.ref) === run.meta.sign_in_handed) {
+    // That very pointer, live or forgotten since, is read back (peekSignIn, by its hash).
+    if (run.meta.unshown && signIn === "read" && typeof run.meta.sign_in_handed === "string") {
       delete run.meta.unshown;
       // Unsaved, the next server finds it hidden and this same sign-in open, and shows it again as this one does.
       await this.saveMeta(run).catch((error: Error) => warn(run.id, `that it is shown again is not saved: ${error.message}`));
@@ -1502,7 +1503,7 @@ export class Runs {
    *  it is; every one, live and forgotten, for `true` (handed several). `unreadable` when what it was handed can't be read
    *  back here: no vendor browser kept beside the mark, the sign-ins file can't be read, the pointer (or, for `true`,
    *  any of them) does not open under this server's seal key, or its hash matches none kept (a forgotten one dropped
-   *  past MAX_FORGOTTEN). */
+   *  past MAX_FORGOTTEN; for `true`, once any was dropped, since which it held is not known). */
   private async handedPointers(agentId: string, browser: string | undefined, handed: true | string | undefined): Promise<{ refs: string[] } | "unreadable"> {
     const signIns = this.options.signIns;
     if (handed === undefined || !signIns) return { refs: [] };
@@ -1510,7 +1511,7 @@ export class Runs {
     const live = await signIns.peek(agentId, browser).catch(() => "unreadable" as const);
     const gone = await signIns.forgotten(agentId, browser).catch(() => "unreadable" as const);
     if (live === "unreadable" && handed === true) return "unreadable";
-    if (gone === "unreadable" || (handed === true && gone.unreadable)) return "unreadable";
+    if (gone === "unreadable" || (handed === true && (gone.unreadable || gone.dropped))) return "unreadable";
     const all = [...(typeof live === "object" ? [live.ref] : []), ...gone.refs];
     if (handed === true) return { refs: all };
     const match = all.find((ref) => pointerHash(ref) === handed);
@@ -1521,7 +1522,7 @@ export class Runs {
    *  this server's secrets and tokens and of what the run was handed of its agent's sign-in (handedPointers); `withheld`
    *  when that can't be read back here, as a load would hide the run. */
   private async rowShown(agentId: string, meta: Partial<RunMeta> | null): Promise<((text: string) => string) | "withheld"> {
-    const browser = isObject(meta?.tool_plane) && typeof meta.tool_plane.browser === "string" ? meta.tool_plane.browser : undefined;
+    const browser = isObject(meta?.tool_plane) ? keptVendor(meta.tool_plane as Plane).browser : undefined;
     const handed = meta?.sign_in_handed === true || (typeof meta?.sign_in_handed === "string" && /^[0-9a-f]{64}$/.test(meta.sign_in_handed)) ? meta.sign_in_handed : undefined;
     const pointers = await this.handedPointers(agentId, browser, handed);
     if (pointers === "unreadable") return "withheld";
@@ -2354,16 +2355,19 @@ export class Runs {
   /** The pointer of the sign-in a run this server loads was handed, among the values its rows, errors and answers never
    *  show: read only, with no lease taken (pinSignIn takes one at its next launch). `unreadable` when its agent keeps
    *  one that does not open under this server's seal key. */
-  private async peekSignIn(run: Run): Promise<"unreadable" | { ref: string } | undefined> {
-    const browser = run.meta.tool_plane?.browser;
+  private async peekSignIn(run: Run): Promise<"unreadable" | "read"> {
+    // Its plane's vendor as a launch reads it (keptVendor: a missing-key refusal an earlier server saved is that vendor).
+    const browser = run.meta.tool_plane && keptVendor(run.meta.tool_plane).browser;
     const peeked = browser ? await this.options.signIns?.peek(run.agentId, browser).catch(() => "unreadable" as const) : undefined;
+    // The agent's live pointer, which a launch of it may hand it next.
+    if (typeof peeked === "object" && peeked.ref.length >= MIN_SECRET) (run.handed ??= new Set()).add(peeked.ref);
     // What it was handed, forgotten since or not (sign-ins.ts Forgotten): a sign-in forgotten after the run ended, or
-    // replaced since, is still cut from what it said. A run with no mark was never handed one.
+    // replaced since, is still cut from what it said. A run with no mark was never handed one. `unreadable` when what it
+    // was handed can't be read back here (handedPointers), and the run is hidden (load).
     const pointers = await this.handedPointers(run.agentId, browser, run.meta.sign_in_handed);
-    if (typeof pointers === "object") for (const ref of pointers.refs) if (ref.length >= MIN_SECRET) (run.handed ??= new Set()).add(ref);
-    if (peeked === "unreadable" || peeked === undefined) return peeked;
-    if (peeked.ref.length >= MIN_SECRET) (run.handed ??= new Set()).add(peeked.ref);
-    return peeked;
+    if (pointers === "unreadable") return pointers;
+    for (const ref of pointers.refs) if (ref.length >= MIN_SECRET) (run.handed ??= new Set()).add(ref);
+    return "read";
   }
 
   /** Lets go of the save lease the run holds on its agent's sign-in, if any: at once when its process let its sessions go
