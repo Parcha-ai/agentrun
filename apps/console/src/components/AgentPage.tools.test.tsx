@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { AgentPage } from "./AgentPage";
 import { agentFixture } from "@/fixtures";
 import type { Agent } from "@/lib/agentForm";
+import type { AgentLearning } from "@/lib/learning";
 import type { AgentTool } from "@/lib/v2";
 
 // An agent's page lists the tools its current revision grants, among its facts, each as GET /v2/agents/{id} serves it
@@ -32,6 +33,8 @@ async function open(agent: Agent) {
   return { dd };
 }
 
+const EMPTY: AgentLearning = { agent: "invoice-checker", main: null, index: "", notes: { items: [], total: 0, next_cursor: null }, log: { items: [], total: 0, next_cursor: null }, counts: { merged: 0, dropped: {}, in_progress: 0 } };
+
 describe("AgentPage, the agent's tools", () => {
   it("lists each granted tool with its provider (where it has one) and its permission", async () => {
     const { dd } = await open({ ...agentFixture("invoice-checker"), tools: [WEB_FETCH, BASH] });
@@ -45,6 +48,34 @@ describe("AgentPage, the agent's tools", () => {
     const { dd } = await open({ ...agentFixture("meeting-notes"), tools: [] });
     expect(dd?.textContent).toBe("none");
   });
+  it("after a save on the page (the Learning switch), still lists them: the agent is read again, never taken from the save's answer", async () => {
+    // The definition save (PUT) answers the agent without `tools`, which only GET /v2/agents/{id} serves.
+    let current: Agent = { ...agentFixture("invoice-checker"), tools: [WEB_FETCH, BASH] };
+    const reads: string[] = [];
+    const v2 = {
+      getAgent: async () => { reads.push("agent"); return { agent: current, etag: '"r1"' }; },
+      listAgentRuns: async () => ({ runs: [], next_cursor: null }),
+      statsOver: async () => { throw new Error("no stats here"); },
+      agentLearning: async () => EMPTY,
+      updateDefinition: async (_id: string, body: { definition: Agent["definition"] }) => {
+        const { tools: _served, ...saved } = { ...current, revision: "r2", revisions: current.revisions + 1, definition: body.definition };
+        current = { ...saved, tools: [WEB_FETCH, BASH] };
+        return { agent: saved, etag: '"r2"' };
+      },
+    };
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(AgentPage, { v2: v2 as never, agentId: current.agent_id, go: () => {}, tab: "learning", learning: "on" })));
+    for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    await act(async () => { (host.querySelector('[role="switch"]') as HTMLButtonElement).click(); });
+    for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    const facts = host.querySelector('dl[aria-label="Current revision"]')!;
+    const dd = [...facts.querySelectorAll("dt")].find((t) => t.textContent === "Tools")!.nextElementSibling!;
+    expect([...dd.querySelectorAll("li")].map((li) => li.textContent)).toEqual(["web_fetch · Parallel · ask", "bash · allow"]);
+    // The page's own read, the switch's read before its save, and the page's read again after it.
+    expect(reads.length).toBeGreaterThanOrEqual(3);
+  });
+
   it("a workflow has no Tools fact", async () => {
     const { dd } = await open({ ...agentFixture("lead-scorer"), tools: [] });
     expect(dd).toBeNull();
