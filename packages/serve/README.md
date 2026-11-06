@@ -59,7 +59,7 @@ An edit is a new revision: `PUT $AGENTRUN_BASE_URL/agents/calc/definition` with
 | `--port N` | the first free port from `7340` | The port. `0` is any free port. |
 | `--open` | off | Open the console in this machine's browser once the server listens; not in CI, nor on Linux with no display. |
 | `--faux MODULE` | none | Answer every model request from the module's default export (below). |
-| `--allow-host NAME` | none | Another `Host` name to accept. Repeat it. |
+| `--allow-host NAME` | none | Another `Host` name to accept on a loopback address, on any port. Repeat it. |
 | `--max-runs N` | `AGENTRUN_MAX_RUNS`, else as many pi runs as fit | The most runs at once, beside the memory each run's harness reserves ([capacity](#capacity-and-health)). Over either, a new run is `429 rate_limited`. |
 | `--documents DIR` | `AGENTRUN_SERVE_DOCUMENTS` | A read-only directory of documents a workflow's `pdf_pages` calls read by file name, confined to it. |
 | `--allow-code-nodes` | off (`AGENTRUN_SERVE_CODE_NODES=1` turns it on) | Run workflows' `code` nodes. They run in the run's process through the DSL's `new Function` transform, which is no sandbox, so only turn it on for workflows you wrote. Off, a workflow with a code node saves with a `not_set_up_here` warning and its runs are `409 agent_not_runnable` with `details.code: true`. A call `via: "shell"` or `"executor"` is refused either way. |
@@ -406,6 +406,15 @@ input as it goes. Each call is one short command in the run's box, on the same p
   stderr go together to `work/background/<id>/output.log`, beside `command`, `started`, `pid` (its process group) and,
   once it ends, `exit` (its code; 128 + n for signal n). The run's files show them (`GET /v2/runs/{id}/files`), so the
   console and the API show each log, during the run and after it.
+- Those files are for people to read: the run's own file tools can write anything in `work/`, so no call trusts one.
+  The group a signal goes to, the exit code, the start time, the command and the run's-end mark are kept in the box's
+  own directory (its `TMPDIR`, else `/tmp`), out of `work/`; a copy in `work/` is written in that directory and moved
+  over its name from inside `work/background/<id>`, entered and checked by its real path, so a link planted at the name
+  or at the directory is never followed (a failed check skips the copy). `output.log` is opened first and then checked as opened
+  (through `/proc`: the file reached is `work/background/<id>/output.log` itself, by its real path, and a regular file),
+  and every read is of that open file, so a link swapped in after the check is never read. A link planted at it is
+  refused, saying so; so is any log in a box with no `/proc` to check it by. A directory made in `work/background/` that this box
+  did not start reads as gone, and is never signalled.
 - A process runs until no live process of its group is left: a child the command starts with `&` (a server, its
   output sent elsewhere) keeps it running, counted against the cap, signalled with it and ended at the run's end; its
   exit code is the shell's.
@@ -482,10 +491,11 @@ since nothing binds `work/` there):
   what only it holds stays.
 - The sandbox is Daytona's default snapshot, made as its user, with `sudo -n` making `/run/agentrun/run/work`.
 
-### A run in the VM box
+### A run in a Modal sandbox
 
-With the VM box listed in `AGENTRUN_BOXES` (its id is under [Boxes](#boxes)), its token set and its SDK installed, a run
-whose place is the VM box gets one VM sandbox, made on its first `read`, `write`, `edit` or `bash` call. It works like a
+With `modal` listed in `AGENTRUN_BOXES`, its token set and its SDK installed, a run whose place is
+`{"mode": "sandbox", "box": "modal"}` gets one Modal sandbox, made on its first `read`, `write`, `edit` or `bash` call. It
+is Modal's default sandbox runtime (gVisor), not a virtual machine: the server does not ask Modal for its VM runtime. It works like a
 [Daytona box](#a-run-in-a-daytona-box): the same tools, path rules, environment and labels, and its `read`, `write` and
 `edit` run in the sandbox too. What differs:
 
@@ -503,7 +513,7 @@ whose place is the VM box gets one VM sandbox, made on its first `read`, `write`
   show the box's `network` as `none`, with `network_reason`, unless the setting is `none`.
 - A sandbox that is gone (it ended, or its lifetime ran out) is made again on the run's next tool call and seeded
   with the run's `work/`. The call that met the gone box fails, saying so.
-- Each VM box reserves 2 CPUs and 4 GiB of memory by default, which the provider bills for while the box lives:
+- Each Modal sandbox reserves 2 CPUs and 4 GiB of memory by default, which the provider bills for while the box lives:
   the Docker box's defaults, asked of the provider as the sandbox's CPU and memory. `AGENTRUN_BOX_CPUS` and
   `AGENTRUN_BOX_MEMORY` change both boxes alike (such as `AGENTRUN_BOX_CPUS=1 AGENTRUN_BOX_MEMORY=1g`). The provider has
   no process limit, so `AGENTRUN_BOX_PIDS` does not apply. Its lifetime is 24 hours, as every box's is.
@@ -552,8 +562,8 @@ inside the image itself (bwrap, on Linux) comes in a later release.
 
 ### Boxes
 
-A box is a machine apart from this one where a run's tools run. Runs execute in `docker` and `daytona` boxes and in the
-VM box ([place](#place)); the others are set up and probed, and say runs in them are not available yet. `AGENTRUN_BOXES` lists the boxes to set up, as a comma list of the ids below
+A box is a machine apart from this one where a run's tools run. Runs execute in `docker`, `daytona` and `modal` boxes
+([place](#place)); the others are set up and probed, and say runs in them are not available yet. `AGENTRUN_BOXES` lists the boxes to set up, as a comma list of the ids below
 (`AGENTRUN_BOXES=docker,daytona`). The server never probes a box the list does not name, and a name that is no box
 refuses the start. At start the server probes each listed box once. The probes run at once, each within 5 s. Then one
 log line says what the server found:
@@ -586,7 +596,7 @@ provider's answer.
   The probe makes one authenticated read, of a box that does not exist. If Daytona refuses the key, the box is unavailable.
 - `modal`: needs `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` and the SDK, which the host installs (`npm install modal`).
   Its sandboxes live in the app that `AGENTRUN_BOX_APP` names (default `agentrun`). The probe checks that the SDK loads
-  and the token is set. It asks nothing of the provider. Runs execute in it: [a run in the VM box](#a-run-in-the-vm-box).
+  and the token is set. It asks nothing of the provider. Runs execute in it: [a run in a Modal sandbox](#a-run-in-a-modal-sandbox).
 - `bwrap` is not in this release yet.
 
 The boxes come from `@parcha/pi-transport`, an optional peer of this package; install it beside the server to use any.
@@ -1067,8 +1077,8 @@ not known, so not cut, and the import says so.
 
 ## MCP servers
 
-Add a remote MCP server once, with its credential, and see its tools before you keep it. Agents granting its tools
-come in a later version; this is the API that saves the server.
+Add a remote MCP server once, with its credential, and see its tools before you keep it. An agent that grants one of
+its tools calls it on pi and on claude-agent ([below](#agents-call-a-servers-tools)).
 
 ```sh
 curl -X POST "$BASE/v2/settings/mcp-servers/preview" -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
@@ -1121,6 +1131,56 @@ says `transports: ["streamable-http"]`, the `auth` types and `at_rest` (`sealed`
 `test/fixtures/fake-mcp-server.mjs` is a loopback MCP server for trying this: `startFakeMcp({era, token, oauth})`
 answers `{url, log, tools, close}`; it serves `add`, `slow_write`, `delete_thing` and `paid`, and logs each request's
 method, tool and whether an `Authorization` header came, never its value.
+
+### Agents call a server's tools
+
+An agent grants a saved server's tool by its catalog name, `mcp:<server>/<tool>`, in `definition.tools`
+(`"tools": ["mcp:github/list_issues"]`). A save checks each one against the server's saved tools: a server that is not
+saved, or a tool it did not list, is `422` naming the server's tools, and so is a name whose wire name,
+`mcp__<server>__<tool>`, is over 52 characters, or a tool whose `x-mcp-header` declaration cannot be sent (on a
+property not reached through `properties` alone, not a string, integer or boolean, not a header name, or declared twice). pi and claude-agent run them (`features.mcp_client.harnesses`); on
+another harness the save warns that they are not bound there yet, and a run is refused.
+
+- **Pinned.** A run's first launch keeps each granted tool as the server listed it when you saved it (its description
+  and schema) and the server's URL then, in the run's directory (`mcp-tools.json`). A refresh or a new save never
+  changes a running agent's tools. If the server's URL has changed since, that run's calls answer "the server's
+  address changed since this run started" and nothing is sent, the new credential least of all.
+- **The credential.** A run whose revision grants a server's tool is handed that server's credential at each launch
+  (so a new one counts at the next), over its secrets pipe, never its environment; a run that grants none of a
+  server's tools gets none of it. It stays in the run's process: no harness's CLI, file or log holds it, and a run
+  that writes it into a learned note is refused by the secret scan.
+- **pi** binds each granted tool in the run's process as `mcp__<server>__<tool>`, with the pinned description and
+  schema, and calls the server from there.
+- **claude-agent** uses the Claude CLI's own MCP client: one HTTP server entry per granted server at the session's
+  model proxy, `/mcp/<server>`, behind the session's key, sent over the CLI's stdin (never its arguments), with only
+  those servers (`strictMcpConfig`) and only the granted tools allowed. The proxy answers the MCP exchange itself and
+  makes the call with the credential. The CLI's tool search is off in such a session, so the granted tools are
+  offered whole. A server the CLI cannot connect to fails the turn, never a turn without its tools.
+- **A call** goes to the pinned URL alone, the 2026-07-28 revision first and a 2025-era server through its
+  `initialize`; on 2026-07-28 each `x-mcp-header` parameter of the pinned tool is sent as its `Mcp-Param-*` header. No
+  redirect is followed, at most 4 MiB is read, and it may take 120 s. The
+  model reads the text blocks joined; past 60,000 characters, or with blocks that are not text, the whole answer is
+  filed under the run's `evidence/mcp/<server>/` and the text says where. A tool's own error (`isError`) reaches the
+  model as its error. A refused credential (401, 403) reads "the MCP server <name> refused its credential; update it
+  in Settings → MCP servers"; another failure names the server and the HTTP status, never a header. A stop, or a
+  client that goes away, cancels the call at the server. A call a crash cut off is answered interrupted on the
+  resumed run and never sent again.
+- **The gate.** Every call passes the run's one tool gate as `mcp:<server>/<tool>`, on every harness. Set
+  `mcp:<server>/<tool>` or, for all of a server's tools, `mcp:<server>/*` to `allow`, `ask` or `deny` in
+  `PUT /v2/settings/tools` or an agent's `definition.tool_settings` (the agent's exact key, then its server-wide key,
+  then the server's two, then the default). An MCP tool with no setting asks. A denied call is refused and the model
+  reads why; nothing is sent. An asked call parks, as any tool's does: its turn ends, nothing is sent, and the run
+  reads `input_required` with `pending.kind: "approval"`, the tool, its arguments and its price (or "not metered"),
+  until the owner answers `POST /v2/runs/{id}/approvals/{approval_id}` from their password session. Allowed, the run
+  sends the call once and resumes with its result; denied, it resumes with the refusal. A restart while a call is
+  parked loses nothing.
+- **Prices.** `PUT /v2/settings/mcp-servers/{name}` takes `prices`, each tool's price in USD a call
+  (`{"prices": {"search": 0.01}}`; a finite number, 0 or more, for a tool the server lists; else `422`). A priced call
+  is held at its price under the run's `max_cost_usd`, refused unsent when the cap cannot take it, and booked as the
+  run's tool cost (a `Tool cost` row, the `tools` meter of `GET /usage`). A tool with no price runs "not metered": a
+  row says so, the run's usage row counts it (`not_metered`), and `GET /usage`'s `tools` line counts the calls
+  (`not_metered_calls`); it is outside the run's cost and its cap. A run keeps the prices its first launch saw.
+- **The timeline** shows each call as `<server> · <tool>`.
 
 ## Webhooks
 
@@ -1287,7 +1347,7 @@ with `Retry-After: 30`, recording nothing, and a schedule's time is `skipped`.
 | `GET`, `PUT` and `DELETE /settings/webhook`, `POST /settings/webhook/test`, `GET /settings/webhook/deliveries` and `POST .../deliveries/{webhook_id}/redeliver` | [Webhooks](#webhooks), this server's own routes (`x-agentrun-serve: "webhook/1"`): the URL run notices are POSTed to, signed by the Standard Webhooks spec; never its secret but once. |
 | `GET` and `POST /triggers`, `GET`, `PATCH` and `DELETE /triggers/{id}`, `POST /triggers/{id}/fire`, `GET /triggers/{id}/firings`, `POST /triggers/{id}/secret`, `POST /hooks/{id}` (no token: [signed](#webhook-triggers)) | [Schedules](#schedules), this server's own routes (`x-agentrun-serve: "trigger/1"`): schedules that start an agent's capped runs, each firing once, and their history. |
 | `POST /mcp` | This server's own route (`x-agentrun-serve: "mcp/1"`): the [MCP endpoint](#for-coding-agents), Streamable HTTP with one JSON-RPC message per POST (`initialize`, `ping`, `tools/list`, `tools/call`), answered as JSON, stateless. Its ten tools call these routes in process with the caller's token. The Bearer token only, never the page's cookie; a browser `Origin` other than this server's own is `403`; any other method is `405`. |
-| `GET /usage` | The runs' cost estimates, by meter, agent, key, day or region (`key` and `region` are one line, `local`). A run of unknown cost adds no dollars, so no sum is ever null, and is counted in `unpriced_runs` (in the total and in each line) so it never passes as $0. |
+| `GET /usage` | The runs' cost estimates, by meter, agent, key, day or region (`key` and `region` are one line, `local`). A run of unknown cost adds what it is known to have spent so far (its `so_far_usd`: each priced charge, browser time and paid tools included) and is counted in `unpriced_runs` (in the total and in each line it is unknown on), so no sum is ever null, it never passes as $0, and a total is never below a line of its own: with `unpriced_runs` above 0 the total is a lower bound. |
 
 Home export and import, quotes and `POST /runs/{id}/kill` answer `501 unsupported_here` naming the feature, and
 capabilities declare each one false. No run waits out `input_wait_s` here (`null`). `limits.max_cost_usd` is the highest cap a run may name: `null` here, as any cap
@@ -1703,6 +1763,31 @@ Each run of an agent that learns starts from `main` as it is when the run is mad
   follow-up gets them laid again, fresh, whatever the run wrote over them; one the work no longer holds whole when the
   run's process starts is left out of what its harness gets, and the run goes on. A skill whose name or files are out
   of shape is not read, and a symbolic link or a submodule at `skills/` or anywhere under it is a learning fault.
+- The workflows the agent learned, each a folder `workflows/<name>/` on `main` with its `workflow.json` and its
+  `README.md`, are the run's as one tool, `learned_workflow {name, input}`, on every harness (pi, claude-agent, codex),
+  with no edit of the agent's definition. Only an active one is, by a skill's rule: its `README.md` sets no status, or
+  `active`. Its description names each workflow with the line its README gives, 8 KiB of lines in all: by name, each
+  while its line fits, and one that does not, or holds one of the server's secrets, is left out. A README whose front
+  matter does not read one way (not closed, or a line that is no key at its left edge) is not read. The pin names the
+  ones the run gets (`workflows`), each kept whole in the run's directory (`learned-workflows.json`), outside its work,
+  and the ones left out (`workflows_left_out`). The list is fixed when the run starts: a workflow approved or retired
+  while it runs is the next run's to get or not, as a note or a skill is. A call checks the workflow again against the
+  agent's own tools as its run resolves them, as the merge did: one whose call node names a tool the agent was not
+  granted (or one its run resolves unavailable), whose model node names any tool (a learned model node runs without
+  tools, so the merge refuses one too), or that holds a code node or a shell or executor call, is refused before any of
+  its nodes runs. It runs with the workflow DSL: each model node on the run's own model (the one the run was made with
+  and handed the key of; a tier the run has no model of runs there too), in a session of its own with no tool of its
+  own, each call node `via: "tool"` on a tool the agent has, its paid requests booked under
+  the `learned_workflow` call, and web_search on the provider's own search where it resolves native, through the run's
+  models. Its model requests are the run's, under its cap and on its timeline as side requests labelled
+  `learned_workflow`: on claude-agent and codex, the harness's requests and the workflow's count against one total, and
+  each holds its worst case in flight where the other's check sees it, and the workflow's go where the harness's go (on
+  OPENROUTER_API_KEY alone, through OpenRouter, by OpenRouter's name for the run's model; claude-agent through the
+  operator's own gateway at ANTHROPIC_BASE_URL, or any harness at an origin its requests could not follow, is offered
+  none, which its pin names in `workflows_off`; opencode takes codex's route). A call a crash cut off is answered interrupted,
+  never run again. The tool gate holds
+  `learned_workflow` like any tool: its settings key is `learned_workflow`, allowed by default (the agent's own graded
+  workflow, each node checked), and tool settings may set it to ask (the run parks until an owner answers) or deny.
 
 The server reads the commit with git plumbing, never the working tree. What it holds that is not a regular UTF-8 file of
 1 MiB or less, or a note out of shape, is not read, and the server's stderr names it. A learning fault never blocks a
@@ -2102,8 +2187,11 @@ carries no cost at all, as from a provider that does not price the model. The te
   which takes the owner's password session alone. The viewer is served and its WebSocket taken only under the run's path, from
   this server's own origin, framed by it alone; its input never reaches the browser; the vendors' own live-view links never leave
   the run's process.
-- It binds 127.0.0.1 by default, and there refuses a request whose `Host` is not a loopback name (DNS rebinding). On
-  another address (`--listen`, the container's `0.0.0.0`) it serves every `Host` name, and the token is its only lock.
+- It binds 127.0.0.1 by default, and there refuses a request whose `Host` names something other than this machine
+  (DNS rebinding): `localhost`, `127.0.0.1`, `[::1]`, the `AGENTRUN_PUBLIC_URL` name and each `--allow-host` name are
+  served, on any port, so a tunnel (`ssh -L 8080:localhost:7340`) or a proxy in front works; any other name is `403`, a
+  page in a browser and a JSON error for a script, each saying which names work. On another address (`--listen`, the
+  container's `0.0.0.0`) it serves every `Host` name, and the token is its only lock.
   It sends no CORS headers, so a page on another origin cannot read an answer.
 - Every route but `GET /capabilities` needs `Authorization: Bearer <the token>`, compared in constant time, or the
   browser's cookie under the rules of [the console](#the-console). The console's own files (its HTML, scripts, styles

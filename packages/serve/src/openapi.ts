@@ -220,6 +220,11 @@ const MCP_LISTING = {
   tools: { type: "array", items: MCP_TOOL, description: "Every tool it lists, all pages." },
 };
 const MCP_PREVIEW = { type: "object", additionalProperties: false, required: ["protocol", "server_info", "tools"], properties: MCP_LISTING };
+/** The owner's declared prices of a server's tools. */
+const MCP_PRICES = {
+  type: "object", additionalProperties: { type: "number", minimum: 0 },
+  description: "Each tool's price in USD a call, as the owner declared it, for tools the server lists (a refresh drops the price of a tool it no longer lists). A priced call is held at its price under a run's cap (refused unsent when the cap cannot take it) and booked as the run's tool cost, as any paid call; a tool with none runs, shown \"not metered\" on the run's timeline and in GET /usage, outside the run's cost and its cap. A run keeps the prices its first launch saw.",
+};
 const MCP_SERVER_VIEW = {
   type: "object", additionalProperties: false, required: ["name", "url", "auth", "credential", "protocol", "server_info", "tools", "listed_at", "updated_at"],
   properties: {
@@ -227,6 +232,7 @@ const MCP_SERVER_VIEW = {
     auth: { type: "object", additionalProperties: false, required: ["type"], properties: { type: { enum: [...MCP_AUTH_TYPES] }, headers: { type: "array", items: { type: "string" }, description: "For `headers`: the names of the headers kept (lowercase), never a value." } } },
     credential: { enum: ["sealed", "seal_key_missing", "unreadable", null], description: "`sealed`: kept sealed and opens here; `seal_key_missing`: the server was handed no seal key, so it does not open; `unreadable`: sealed under another seal key, or damaged: a PUT with the credential seals it again. Null for `auth.type` none. Never a value." },
     ...MCP_LISTING,
+    prices: MCP_PRICES,
     listed_at: { type: "string", format: "date-time", description: "When its tools were last listed (a PUT or a refresh)." },
     updated_at: { type: "string", format: "date-time", description: "When it was last saved." },
   },
@@ -947,9 +953,9 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     put: {
       operationId: "saveMcpServer", tags: ["local"], summary: "Preview a remote MCP server, then save it with the tools listed and its credential sealed",
-      description: `Each credential header's value is sealed under the server's seal key and bound to the server's name and the header, and kept in the data directory as ciphertext alone. 409 no_sealing_key when the server was handed no seal key and \`auth.type\` is not none (nothing is contacted). A body with no credential keeps the sealed one while the type and the URL's origin stay the same; else it is 422. 422 too for a bad name, URL or auth. ${MCP_CONNECTS} Nothing is saved unless the listing succeeds.`,
+      description: `Each credential header's value is sealed under the server's seal key and bound to the server's name and the header, and kept in the data directory as ciphertext alone. 409 no_sealing_key when the server was handed no seal key and \`auth.type\` is not none (nothing is contacted). A body with no credential keeps the sealed one while the type and the URL's origin stay the same; else it is 422. 422 too for a bad name, URL or auth, or a price that is not a finite number 0 or more or names a tool the server does not list. ${MCP_CONNECTS} Nothing is saved unless the listing succeeds.`,
       parameters: [MCP_NAME],
-      requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["url"], properties: { url: MCP_URL, auth: MCP_AUTH } } } } },
+      requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["url"], properties: { url: MCP_URL, auth: MCP_AUTH, prices: MCP_PRICES } } } } },
       responses: { "200": json(MCP_SERVER_VIEW, "The server, as saved."), ...errors(400, 401, 409, 415, 422, 429, 500), ...MCP_FAILED },
       "x-agentrun-serve": "mcpservers/1",
     },
@@ -1271,7 +1277,7 @@ const RUN_PLACE: Json = {
     { type: "object", additionalProperties: false, required: ["mode"], properties: { mode: { const: "runner" } } },
     { type: "object", additionalProperties: false, required: ["mode", "box"], properties: { mode: { const: "sandbox" }, box: { enum: [...BOX_IDS] } } },
   ],
-  description: "Where the run executes, as its start resolved it: its revision's place, else runner. In a sandbox place the agent's bash runs in the box, which binds only the run's work/ and has no network and no key; read, write and edit run in the box too, or on this server's copy of that work/ where the box binds it and this server holds directory handles (Docker on Linux), following no link. Its loop, its log and every key stay on the server. The VM box never has a network: its provider takes a host list, but this server cannot read a box's list back to check that it holds, so each is made blocked, and capabilities.places.boxes says so in its network_reason (unless AGENTRUN_BOX_ALLOW is none).",
+  description: "Where the run executes, as its start resolved it: its revision's place, else runner. In a sandbox place the agent's bash runs in the box, which binds only the run's work/ and has no network and no key; read, write and edit run in the box too, or on this server's copy of that work/ where the box binds it and this server holds directory handles (Docker on Linux), following no link. Its loop, its log and every key stay on the server. The Modal sandbox (box `modal`, Modal's default gVisor runtime, not a VM) never has a network: Modal takes a host list, but this server cannot read a sandbox's list back to check that it holds, so each is made blocked, and capabilities.places.boxes says so in its network_reason (unless AGENTRUN_BOX_ALLOW is none).",
   "x-agentrun-serve": "place/1",
 };
 /** costsofar/1: a cost no one fully knows, said as what is known and how much is not, with no ceiling claimed. */
@@ -1281,7 +1287,8 @@ const SO_FAR = {
 };
 const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
   Cost: SO_FAR,
-  TimelineUsage: SO_FAR,
+  TimelineUsage: { ...SO_FAR, not_metered: { type: "integer", minimum: 1, description: "Set when the run made tool calls with no price (an MCP tool its owner set none for): how many. They ran outside the run's cost and its cap, and never make `usd` unknown.", "x-agentrun-serve": "mcpservers/1" } },
+  UsageLine: { unpriced_runs: { type: "integer", minimum: 0, description: "How many of the runs counted on this line have a cost no one knows on it: they add no dollars to `usd`, so no sum passes them off as $0.", "x-agentrun-serve": "costsofar/1" }, not_metered_calls: { type: "integer", minimum: 1, description: "On the `tools` meter's line, set when the runs counted made tool calls with no price (an MCP tool its owner set none for): how many. They are outside `usd`.", "x-agentrun-serve": "mcpservers/1" } },
   Run: {
     ...RUN_FIELDS,
     last_progress_at: {
@@ -1505,8 +1512,8 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       "x-agentrun-serve": "toolkeys/1",
     },
     mcp_client: {
-      type: "object", additionalProperties: false, required: ["routes", "transports", "auth", "at_rest"],
-      properties: { routes: { type: "boolean" }, transports: { type: "array", items: { const: "streamable-http" } }, auth: { type: "array", items: { enum: [...MCP_AUTH_TYPES] } }, at_rest: { enum: ["sealed", "unavailable"] } },
+      type: "object", additionalProperties: false, required: ["routes", "transports", "auth", "at_rest", "harnesses"],
+      properties: { routes: { type: "boolean" }, transports: { type: "array", items: { const: "streamable-http" } }, auth: { type: "array", items: { enum: [...MCP_AUTH_TYPES] } }, at_rest: { enum: ["sealed", "unavailable"] }, harnesses: { type: "array", items: { type: "string" }, description: "The harnesses whose agents call a saved server's tools, each granted as mcp:<server>/<tool> in definition.tools."} },
       description: "/settings/mcp-servers: remote MCP servers over Streamable HTTP, previewed and saved with the auth types listed; a credential kept `sealed` under the seal key the server was handed, `unavailable` with none, when only servers that take no credential are kept.",
       "x-agentrun-serve": "mcpservers/1",
     },
