@@ -14,6 +14,9 @@ import * as host from "../dist/host.js";
 import { startServe } from "../dist/index.js";
 import * as model from "../dist/model.js";
 
+// A server here, or one the CLI starts, asks no Docker (on by default when AGENTRUN_BOXES is not set): support.mjs's rule.
+process.env.AGENTRUN_BOXES = "none";
+
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 const FAUX = new URL("./fixtures/faux-model.mjs", import.meta.url).pathname;
 
@@ -73,11 +76,13 @@ test("--open opens a browser unless in CI or on a Linux with no display", () => 
  *  resolves with its base URL once its banner is out. */
 async function serve(t, args, env = {}, data = undefined) {
   const home = mkdtempSync(join(tmpdir(), "serve-defaults-"));
-  t.after(() => rmSync(home, { recursive: true, force: true }));
   const clean = Object.fromEntries(Object.entries(process.env).filter(([name]) => !MODEL_KEYS.includes(name)));
   const child = spawn(process.execPath, [CLI, "--data", data ?? join(home, "agents"), ...args], { env: { ...clean, HOME: home, XDG_CONFIG_HOME: join(home, ".config"), ...env }, stdio: ["ignore", "pipe", "pipe"] });
   const exited = new Promise((resolve) => child.on("exit", resolve));
+  // The stop first, then the removal: node:test runs a test's after-hooks in the order they were added, and the server
+  // writes into its home until it has stopped.
   t.after(() => stopChild(child, exited));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
   let out = "";
   let err = "";
   child.stdout.on("data", (chunk) => (out += chunk));
@@ -89,6 +94,24 @@ async function serve(t, args, env = {}, data = undefined) {
   const stop = () => stopChild(child, exited);
   return { home, base: /AGENTRUN_BASE_URL=(\S+)\/v2/.exec(out)[1], out, stop };
 }
+
+test("with accounts off (AGENTRUN_ACCOUNTS=0), the AGENTRUN_PUBLIC_URL name is served on loopback as with them on, and another name is still refused", { timeout: 120_000 }, async (t) => {
+  // Port 0: the server's own listen picks the port, so no other process can take it between a pick and the listen. The
+  // banner's first line names the local address; AGENTRUN_BASE_URL names the public one.
+  const { out } = await serve(t, ["--port", "0"], { AGENTRUN_ACCOUNTS: "0", AGENTRUN_PUBLIC_URL: "https://agentrun.example.com" });
+  assert.match(out, /^Open https:\/\/agentrun\.example\.com\//m, out);
+  const port = Number(/^agentrun-serve on http:\/\/127\.0\.0\.1:(\d+)\/v2 /m.exec(out)?.[1]);
+  assert.ok(port > 0, `the banner names the local port: ${out}`);
+  const { request } = await import("node:http");
+  const status = (name) =>
+    new Promise((resolve, reject) => {
+      const req = request({ host: "127.0.0.1", port, path: "/v2/capabilities", headers: { host: name } }, (res) => (res.resume(), resolve(res.statusCode)));
+      req.once("error", reject).end();
+    });
+  assert.equal(await status("agentrun.example.com"), 200, "the public name, as a proxy in front sends it");
+  assert.equal(await status(`localhost:${port + 1}`), 200);
+  assert.equal(await status("evil.example"), 403);
+});
 
 test("demo: with no --port the server takes the first free port from its default", { timeout: 120_000 }, async (t) => {
   const busy = await heldFirstFree(t);

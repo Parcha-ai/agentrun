@@ -83,7 +83,9 @@ function commandHelp(entry) {
     flags.push([BODY, entry.secretBody ? "the body, from stdin or a file only: it holds a secret" : "the body, inline, from a file or from stdin; flags win over a JSON body's fields"]);
     flags.push(["--body-type TYPE", `the body's type: ${entry.bodyTypes.join(", ")} (default ${defaultType(entry.bodyTypes)}); any other than JSON is sent as given`]);
   }
-  return helpOf(entry, [...flags, ...(FLAGS[entry.operationId]?.help ?? [])]);
+  const help = helpOf(entry, [...flags, ...(FLAGS[entry.operationId]?.help ?? [])]);
+  // The document's working body, ready to paste: single-quoted for a POSIX shell.
+  return entry.example === undefined ? help : `${help}\n\nExample:\n  ${usageOf(entry)} --body '${JSON.stringify(entry.example).replace(/'/g, "'\\''")}'`;
 }
 
 const nounHelp = (noun, entries) => [`Usage: agentrun ${noun} <verb> [args]`, "", ...entries.map((entry) => `  ${usageOf(entry).padEnd(40)}  ${entry.summary}`)].join("\n");

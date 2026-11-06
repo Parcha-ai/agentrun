@@ -1,4 +1,4 @@
-// The page APIs 4.1.0 cannot serve (the facade calls page.sendCDP and page.onCDP, which no v4 page has) are asserted to
+// The page APIs Stagehand 4.4.0 cannot serve (the facade calls page.sendCDP and page.onCDP, which no v4 page has) are asserted to
 // fail, so a fixed upstream flips this test.
 import assert from "node:assert/strict";
 import { rm } from "node:fs/promises";
@@ -86,7 +86,7 @@ test("the Stagehand driver serves the page tools' contract on a real Chrome", { 
       'on("response")': `page.on("response", () => undefined); return "listening";`,
     };
     for (const [api, code] of Object.entries(unavailable)) {
-      await t.test(`${api} throws on Stagehand 4.1.0's page`, async () => {
+      await t.test(`${api} throws on Stagehand 4.4.0's page`, async () => {
         await assert.rejects(driver.run({ code }), /(sendCDP|onCDP) is not a function/, `${api} works now: the browser section can stop calling it unavailable`);
       });
     }
@@ -107,18 +107,18 @@ test("the Stagehand driver serves the page tools' contract on a real Chrome", { 
       assert.match(await again.url(), /^http:\/\/127\.0\.0\.1:\d+\//, "a second attach finds the same browser, its extension already loaded");
       await again.close();
     });
-    await t.test("an extension id the provider supplies is reset as well: an attach while another instance holds the runtime succeeds", async () => {
+    await t.test("one client at a time: an attach while another driver holds the browser is refused, and succeeds once that driver closes", async () => {
       const target = await provider.attach(ref);
       const holder = await stagehandDriver()(target, signal);
-      const socket = new WebSocket(target.sdkCdpUrl);
-      await new Promise((resolve) => { socket.onopen = resolve; });
-      const { extensions } = await new Promise((resolve) => { socket.onmessage = (e) => resolve(JSON.parse(String(e.data)).result); socket.send(JSON.stringify({ id: 1, method: "Extensions.getExtensions" })); });
-      socket.close();
-      const id = extensions.find((extension) => extension.name === "Stagehand Runtime").id;
-      const second = await stagehandDriver()({ ...target, extensionId: id }, signal);
-      assert.match(await second.url(), /^http:\/\/127\.0\.0\.1:\d+\//);
-      await second.close();
-      await holder.close().catch(() => undefined);
+      try {
+        await assert.rejects(stagehandDriver()(target, signal), /A Stagehand client is already connected/);
+        assert.match(await holder.url(), /^http:\/\/127\.0\.0\.1:\d+\//, "the refused attach left the holder's session working");
+      } finally { await holder.close(); }
+      for (let attach = 1; attach <= 2; attach += 1) {
+        const next = await stagehandDriver()(await provider.attach(ref), signal);
+        assert.match(await next.url(), /^http:\/\/127\.0\.0\.1:\d+\//, `attach ${attach} after the holder closed`);
+        await next.close();
+      }
     });
   } finally {
     await driver?.close().catch(() => undefined);

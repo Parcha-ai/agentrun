@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+## 0.1.0-beta.31 (2026-11-06)
+
+- On a Mac whose Docker runs in a VM (Docker Desktop, OrbStack or colima), a Docker box reaches the server's host list too, through one proxy container inside the VM. Linux keeps its own path, unchanged.
+  - The server runs the kernel's egress proxy in one container per server, `agentrun-egress-<12 hex>`, labelled `agentrun.egress`: `node:22-bookworm-slim` pinned by digest, the proxy's code bound read-only from the data root, the list as its one variable, a read-only root, no capability, the server's uid:gid. It listens on a Unix socket in a tmpfs volume owned by the server's uid, which the box mounts read-only at `/run/agentrun/egress/`. The box keeps `--network none`; the proxy container is the only container with a network, and it publishes no port.
+  - It turns on only when `docker info` names a VM runtime the server knows (`Docker Desktop`, `OrbStack`, or a colima host name), on a kernel that is not the Mac's. Anything else stays offline, with `network_reason` saying what was seen.
+  - At start the server sweeps the containers of its own label, pulls the image once if needed, starts the proxy and waits up to 10 s for it; until it is ready, or if it never is, the box's network is `none` with why. Docker restarts a proxy that dies, the server starts one that is gone again, and the server's stop removes it.
+  - pi-transport's `dockerBoxes` takes `volumes: [{ name, target, readOnly }]`, named volumes every box mounts with `--mount type=volume`.
+
+## 0.1.0-beta.30 (2026-11-05)
+
+- **A Daytona box reaches the package registries and GitHub, through Daytona's domain list**
+  - pi-transport: `daytonaBoxes` takes `network: { allow: [...] }` when every entry is a domain (a `*.` wildcard allowed), sends it as Daytona's `domainAllowList`, and reports `network: "allowlist"` only once the sandbox's own read carries that list. A sandbox whose read lacks it is deleted and the create refused as `unsupported`, as `networkBlockAll` is checked. A CIDR in the list is still refused.
+  - serve: a run's Daytona box gets the hosts `AGENTRUN_BOX_ALLOW` names. Unset, `pypi.org`, `files.pythonhosted.org`, `registry.npmjs.org`, `registry.yarnpkg.com`, `github.com` and `codeload.github.com`; a comma list replaces them; `none` blocks the network as before. `*`, an IP address or a CIDR refuses the start. Where Daytona keeps or takes no domain list (its tier 1 and 2), the box is made again with its network blocked, never open, and capabilities say why. Capabilities show the hosts in `places.allow` and each Daytona box's `network`.
+- **Deprecated: the session home, the launcher and the placer. They are removed in 0.1.0-beta.31.** Nothing is removed in this release, and nothing behaves differently. To run an agent in a box, use `@parcha/agentrun-serve`: it uses this package's boxes, `./hands` and `./sync`, which stay.
+  - Every export of `@parcha/pi-transport/home`, `@parcha/pi-transport/launch` and `@parcha/pi-transport/place` is marked `@deprecated`, so an editor and a linter flag it where it is imported.
+  - From the root: `BoxLauncher`, `Box.launcher`, and the placer's `jevPlacer`, `jevClassifier`, `environmentFacts`, `PlacementsDoc`, `writePlacement`, `isPlacementRecord`, `PlacementError` and the `Placement*` and `Placer` types.
+  - From `@parcha/pi-transport/testing`: `registerMoveConformance`, `registerRestoreConformance`, `moveConformanceApp`, `registerStoreConformance`, `createStoreConformance`, `replayClassifier`, the other exports of those modules, and `FakeLaunch`.
+  - The config keys `home`, `auto` and `environments.<id>.purpose`. From 0.1.0-beta.31 a config that sets one of them fails to parse.
+  - `Manifest`, `ManifestEntry`, `Pipe`, `WorkspaceError` and `WorkspaceErrorCode` stay: import them from `@parcha/pi-transport/sync`, which exports the same types.
+- **A Daytona box's host list holds after a restart, and an odd read of it never leaves a sandbox behind**
+  - serve: a run's Daytona box found at its next call is kept only when its domain list is the one `AGENTRUN_BOX_ALLOW` names now (the same hosts, in any order). A box made under a wider list, or one whose list Daytona does not say, is destroyed and made again, so a narrowed setting holds for a run whose server restarted.
+  - pi-transport: a box's facts carry its hosts in `allow`. A `domainAllowList` read back as a list of hosts is taken; any value that is neither a string nor a list deletes the sandbox and refuses the create as `unsupported`, where it threw before and left the sandbox.
+  - serve: a Daytona box with no network after Daytona refused its list says why in `network_reason` (`reason` stays for an unavailable box), and the log line gives Daytona's own words (`event=box_network ... message="..."`).
+
 ## 0.1.0-beta.29 (2026-11-04)
 
 - **A checkpoint is never unpacked on the host: a box's links stay data, made again only inside the box a restore goes to**

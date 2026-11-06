@@ -76,6 +76,8 @@ export interface AnthropicPolicyOptions {
   tools: readonly string[];
   /** The CLI's own tools the session has, offered by their own names beside its tools (`Skill`, when it has skills). */
   builtins?: readonly string[];
+  /** The granted tools of the session's remote MCP servers, as the CLI names them (`mcp__<server>__<tool>`). */
+  mcpTools?: readonly string[];
   /** The most output tokens one request may ask for. Default 128 000, what the pinned CLI asks for on current models. */
   maxOutputTokens?: number;
   /** Admit Anthropic's web search server tool (`CLAUDE_WEB_SEARCH_TOOL`), exactly as the pinned CLI asks for it; every
@@ -270,7 +272,7 @@ export function applyAnthropic(body: unknown, route: ProxyRoute, options: Anthro
     blocks((message as Record<string, unknown>).content, "a message's content");
   }
   blocks(body.system, "system");
-  const allowed = new Set([...options.tools.map((name) => `${OWN_TOOL_PREFIX}${name}`), ...(options.builtins ?? [])]);
+  const allowed = new Set([...options.tools.map((name) => `${OWN_TOOL_PREFIX}${name}`), ...(options.builtins ?? []), ...(options.mcpTools ?? [])]);
   const tools = ownTools(body.tools, allowed, options.webSearch);
   const choice = body.tool_choice;
   const chosen = isPlain(choice) && typeof choice.name === "string" && (allowed.has(choice.name) || (options.webSearch === true && choice.name === "web_search"));
@@ -403,10 +405,26 @@ export function anthropicServerInputOverhead(body: Record<string, unknown>, sear
   return (providerInputOverhead("anthropic-messages", shape) as number) + (searches ? searchAllowance! : 0);
 }
 
+/** `body` (a Messages body) with `text` as a note the model reads after everything the Claude CLI sent: one text block, in
+ *  a <system-reminder>, at the end of the last user message (after its tool results), or a user message of its own after
+ *  a last message that is not one. It carries no cache_control: every cache marker stays on the block it was on, so the
+ *  cached prefix ends where it did. The CLI's transcript never holds it. */
+export function addAnthropicNote(body: Record<string, unknown>, text: string): Record<string, unknown> {
+  const messages = Array.isArray(body.messages) ? body.messages : [];
+  const note = { type: "text", text: `<system-reminder>${text}</system-reminder>` };
+  const last = messages.at(-1);
+  if (isPlain(last) && last.role === "user") {
+    const content = typeof last.content === "string" ? [{ type: "text", text: last.content }] : Array.isArray(last.content) ? last.content : [];
+    return { ...body, messages: [...messages.slice(0, -1), { ...last, content: [...content, note] }] };
+  }
+  return { ...body, messages: [...messages, { role: "user", content: [note] }] };
+}
+
 export function anthropicPolicy(options: AnthropicPolicyOptions): ProviderPolicy {
   return {
     id: "anthropic",
     routes: CLAUDE_MESSAGES_ROUTES,
+    addNote: addAnthropicNote,
     keyOf: (headers) => {
       const auth = String(headers.authorization ?? "");
       return auth.startsWith("Bearer ") ? auth.slice(7) : "";

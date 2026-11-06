@@ -9,7 +9,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { openStore, openStoreReader } from "@parcha/pi-durable-agent";
 import { schemaProblems } from "./schema-support.mjs";
-import { follow, scratch, serve, startRun } from "./support.mjs";
+import { follow, runDir, scratch, serve, startRun } from "./support.mjs";
 import { statsView } from "../dist/stats.js";
 
 const at = (i) => new Date(Date.UTC(2026, 0, 1) + i * 1000).toISOString();
@@ -230,17 +230,17 @@ test("a running run this server does not hold is status_unknown: never counted a
   assert.deepEqual(schemaProblems(doc, schema, body), []);
 });
 
-test("GET /v2/stats over 1,000 runs across several agents answers within 500 ms, and opens nothing under runs/", async (t) => {
+test("GET /v2/stats over 1,000 runs across several agents answers within 500 ms, and opens nothing on the disk", async (t) => {
   const agents = ["a1", "a2", "a3", "a4", "a5"].map((id) => [id, id.toUpperCase()]);
   const { data } = await seeded(t, agents, Array.from({ length: 1_000 }, (_, i) => [agents[i % 5][0], ["completed", "failed", "stopped", "escalated"][i % 4], i % 2 ? 0.01 : null]), Array.from({ length: 20 }, (_, i) => ["run", `run-${i * 50}`]));
   // The newest run's own file, which GET /runs reads for its title.
-  await mkdir(join(data, "runs", "run-999"), { recursive: true });
-  await writeFile(join(data, "runs", "run-999", "serve.json"), JSON.stringify({ title: "Seeded", created_at: at(999) }));
+  await mkdir(runDir(data, "run-999"), { recursive: true });
+  await writeFile(join(runDir(data, "run-999"), "serve.json"), JSON.stringify({ title: "Seeded", created_at: at(999) }));
   const { api } = await serve(t, { data });
   assert.equal((await api("GET", "/runs?limit=1")).body.runs[0].title, "Seeded");
-  await chmod(join(data, "runs"), 0o000);
+  await chmod(join(data, "disk"), 0o000);
   try {
-    // The positive control: with runs/ unreadable, a route that reads a run's file no longer sees it.
+    // The positive control: with the disk unreadable, a route that reads a run's file no longer sees it.
     assert.equal((await api("GET", "/runs?limit=1")).body.runs[0].title, "");
     const times = [];
     let stats;
@@ -259,7 +259,7 @@ test("GET /v2/stats over 1,000 runs across several agents answers within 500 ms,
     assert.deepEqual(stats.body.per_agent.map((a) => a.runs), [180, 200, 200, 200, 200], "a1 lost its 20 archived runs");
     assert.deepEqual(stats.body.archived, { agents: 0, runs: 20 });
   } finally {
-    await chmod(join(data, "runs"), 0o700);
+    await chmod(join(data, "disk"), 0o700);
   }
 });
 

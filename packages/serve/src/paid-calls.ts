@@ -74,7 +74,7 @@ export const settleOnRoot = (kind: string, data: Record<string, string | number 
 
 /** The ledger of a tool call: its id, and its commits to the run's store. Its mark (TOOL_STARTED) is the call's own
  *  commit, so a stopped turn sends nothing new; its settle goes to the run's root when that is set (settleIn). */
-const ledgerOf = (api: ToolExecutionApi, context: Context): Ledger => ({ call: api.callId, record: (kind, data) => ((kind === TOOL_COST ? settleOnRoot(kind, data) : undefined) ?? api.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind, data })), context)) });
+export const ledgerOf = (api: ToolExecutionApi, context: Context): Ledger => ({ call: api.callId, record: (kind, data) => ((kind === TOOL_COST ? settleOnRoot(kind, data) : undefined) ?? api.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind, data })), context)) });
 
 /** `tool` with each call's paid requests booked under it: its execute runs with the call's ledger set. */
 export function booking<T extends ToolRegistration>(tool: T): T {

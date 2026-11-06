@@ -15,7 +15,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { KEY as MONID_KEY } from "./fixtures/faux-monid.mjs";
 import { daytonaSandboxes, tarOf } from "./fixtures/fake-daytona.mjs";
 import { startServe } from "../dist/index.js";
-import { client, follow, scratch, serve, withEnv } from "./support.mjs";
+import { client, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
 
 const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;
 const FAUX_MONID = new URL("./fixtures/faux-monid.mjs", import.meta.url).pathname;
@@ -27,7 +27,7 @@ const ENV_PROBE = "env; cat /proc/self/environ 2>/dev/null | tr '\\0' '\\n'";
 
 /** Each tool call of run `runId` and its answer, in order, from its released store. */
 function answers(data, runId) {
-  const db = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { readOnly: true });
+  const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true });
   try {
     return db.prepare("SELECT record FROM entries ORDER BY id").all()
       .flatMap((row) => JSON.parse(row.record).model ?? [])
@@ -126,7 +126,7 @@ test("demo: a Daytona place runs read, write, edit and bash in the run's box: wo
   assert.equal(said[7].text.trim(), "1", "the file monid's answer was filed in is in the box");
   // The box's environment: the fixed one, and no key, token or door token.
   const door = (await readFile(join(data, ".door-token"), "utf8")).trim();
-  const runDoor = (await readFile(join(data, "runs", run.run_id, "door-token"), "utf8")).trim();
+  const runDoor = (await readFile(join(runDir(data, run.run_id), "door-token"), "utf8")).trim();
   for (const [name, value] of Object.entries({ KEY, model: planted("model"), token: server.token, door, runDoor, monid: MONID_KEY })) assert.ok(!said[5].text.includes(value), `${name} reached the box`);
   // The run's files: what the box wrote, pulled back; what it removed, removed.
   assert.deepEqual((await fileList(api, run.run_id)).filter((path) => !path.startsWith("evidence/")), ["note.txt", "out.txt"]);
@@ -146,9 +146,9 @@ test("demo: a Daytona place runs read, write, edit and bash in the run's box: wo
   assert.ok(provider.length > 0);
   assert.deepEqual(provider.filter((r) => r.authorization !== `Bearer ${KEY}`).map((r) => `${r.method} ${r.path}`), []);
   assert.ok(fake.requests.some((r) => r.path.endsWith("/process/execute")));
-  const log = readFileSync(join(data, "runs", run.run_id, "process.log"), "utf8");
+  const log = readFileSync(join(runDir(data, run.run_id), "process.log"), "utf8");
   assert.ok(!log.includes(KEY), "the key is in no line of the run's process");
-  assert.ok(existsSync(join(data, "runs", run.run_id, BOX_SYNC_FILE)), "the pull's mark is kept beside the run");
+  assert.ok(existsSync(join(runDir(data, run.run_id), BOX_SYNC_FILE)), "the pull's mark is kept beside the run");
 });
 
 test("demo (claude-agent, codex): the faux harness's bash, write and read run in the run's Daytona box; an absolute path under its cwd is the box's same file; out.txt comes back", { timeout: 240_000 }, async (t) => {
@@ -223,13 +223,13 @@ test("a pull takes nothing from a lying box but the files it listed: an archive'
   assert.equal((await api("POST", "/agents", { definition: { id: "liar", name: "liar", instructions: "Probe.", place: DAYTONA, tools: ["bash"] } })).status, 201);
   const run = await probe(api, "liar", [{ tool: "bash", args: { command: "printf real > out.txt" } }]);
   await follow(api, run.run_id, ["completed"], { deadlineMs: 120_000 });
-  const runDir = join(data, "runs", run.run_id);
-  assert.equal(readFileSync(join(runDir, "work", "out.txt"), "utf8"), "the listed file");
+  const dir = runDir(data, run.run_id);
+  assert.equal(readFileSync(join(dir, "work", "out.txt"), "utf8"), "the listed file");
   assert.deepEqual(readdirSync(outside), [], "nothing was written outside work/");
-  for (const name of ["escape.txt", "escape2.txt"]) assert.equal(existsSync(join(runDir, name)), false, `${name} is not beside work/`);
-  assert.equal(existsSync(join(runDir, "work", "link")), false, "no link was made");
-  assert.deepEqual(readdirSync(join(runDir, "work")).sort(), ["out.txt"]);
-  assert.ok(!lstatSync(join(runDir, "work", "out.txt")).isSymbolicLink());
+  for (const name of ["escape.txt", "escape2.txt"]) assert.equal(existsSync(join(dir, name)), false, `${name} is not beside work/`);
+  assert.equal(existsSync(join(dir, "work", "link")), false, "no link was made");
+  assert.deepEqual(readdirSync(join(dir, "work")).sort(), ["out.txt"]);
+  assert.ok(!lstatSync(join(dir, "work", "out.txt")).isSymbolicLink());
 });
 
 test("a pull a box's archive stops (unreadable) is not a whole copy: the run ends, and its box is kept, never destroyed with what it holds", { timeout: 180_000 }, async (t) => {
@@ -243,7 +243,7 @@ test("a pull a box's archive stops (unreadable) is not a whole copy: the run end
   assert.equal(fake.sandboxes.size, 1, "the box that holds out.txt is kept");
   const [kept] = fake.sandboxes.keys();
   assert.equal(readFileSync(fake.pathOf(kept, "run/agentrun/run/work/out.txt"), "utf8"), "kept");
-  assert.ok(existsSync(join(data, "runs", run.run_id, BOX_SYNC_FILE)), "the mark of what did come back is kept");
+  assert.ok(existsSync(join(runDir(data, run.run_id), BOX_SYNC_FILE)), "the mark of what did come back is kept");
   assert.equal(fake.sandboxes.get(kept).autoStopInterval, 15, "a kept box stops after 15 idle minutes: its disk stays, its compute stops");
   assert.equal(fake.sandboxes.get(kept).autoDeleteInterval, -1, "and is never deleted as it stops (a box is made with auto-delete 0, which would)");
 });
@@ -373,9 +373,9 @@ test("an agent's edit to a file the host filed and mirrored into the box comes b
   ];
   const run = await probe(api, "editor", plan);
   await follow(api, run.run_id, ["completed"], { deadlineMs: 120_000 });
-  const filed = readdirSync(join(data, "runs", run.run_id, "work", "evidence", "monid"));
+  const filed = readdirSync(join(runDir(data, run.run_id), "work", "evidence", "monid"));
   assert.equal(filed.length, 2, filed.join(", "));
-  for (const name of filed) assert.equal(readFileSync(join(data, "runs", run.run_id, "work", "evidence", "monid", name), "utf8"), "edited", `the box's edit of ${name} came back`);
+  for (const name of filed) assert.equal(readFileSync(join(runDir(data, run.run_id), "work", "evidence", "monid", name), "utf8"), "edited", `the box's edit of ${name} came back`);
 });
 
 test("a Daytona that neither keeps a domain list nor blocks a box's network gets no run's tool: the call fails naming why, and no box is left", { timeout: 120_000 }, async (t) => {
@@ -534,7 +534,7 @@ test("a start pulls and destroys the box of a run that ended while its box was l
   fake.state.failDeletes = 0;
   const second = await serve(t, { data, faux: PROBE });
   await until(() => fake.sandboxes.size === 0, "the start's sweep");
-  assert.equal(readFileSync(join(data, "runs", run.run_id, "work", "late.txt"), "utf8"), "late");
+  assert.equal(readFileSync(join(runDir(data, run.run_id), "work", "late.txt"), "utf8"), "late");
   assert.deepEqual(await fileList(second.api, run.run_id), ["late.txt", "out.txt"]);
 });
 
@@ -583,7 +583,7 @@ test("a run's relay call takes only that run's own token: run A's process, with 
   await follow(api, b.run_id, ["input_required"], { deadlineMs: 120_000 });
   const boxOf = (id) => [...fake.sandboxes.values()].find((s) => s.labels["agentrun.run"] === id).id;
   // The token run A's process was handed: its own file when it has one, else the server-wide one.
-  const own = join(data, "runs", a.run_id, "door-token");
+  const own = join(runDir(data, a.run_id), "door-token");
   const tokenA = readFileSync(existsSync(own) ? own : join(data, ".door-token"), "utf8").trim();
   const relayUrl = JSON.parse(readFileSync(join(data, BOX_RELAY_FILE), "utf8")).url;
   const asA = (run) => fetch(`${relayUrl}/runs/${run}/daytona`, { headers: { authorization: `Bearer ${tokenA}`, "x-agentrun-target": `${fake.url}/sandbox/${boxOf(run)}` } });

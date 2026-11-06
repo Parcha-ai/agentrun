@@ -53,7 +53,7 @@ function scrubberOf(secrets) {
 const quietStderr = (io, scrub) => ({ ...io, stderr: { isTTY: io.stderr.isTTY, write: (chunk) => io.stderr.write(scrub.text(String(chunk))) } });
 
 /** The string values of a secret route's JSON body, but for its public fields (`publicFields`, full paths such as
- *  `auth.type`, from the table), or the whole body when it is not JSON: the secrets to cut from what is printed. A value
+ *  `auth.type`, or `scopes.[]` for each item of a list, from the table), or the whole body when it is not JSON: the secrets to cut from what is printed. A value
  *  under a map (a header's, a tool key field's) is never public, whatever its key. */
 function secretsOf(body, publicFields = []) {
   const text = body === undefined ? "" : String(body);
@@ -67,7 +67,7 @@ function secretsOf(body, publicFields = []) {
   const found = [];
   const walk = (node, path) => {
     if (typeof node === "string") return void (open.has(JSON.stringify(path)) || found.push(node));
-    if (node && typeof node === "object") for (const [key, child] of Object.entries(node)) walk(child, Array.isArray(node) ? [...path, "*"] : [...path, key]);
+    if (node && typeof node === "object") for (const [key, child] of Object.entries(node)) walk(child, Array.isArray(node) ? [...path, "[]"] : [...path, key]);
   };
   walk(value, []);
   return found;

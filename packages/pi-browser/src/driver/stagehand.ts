@@ -1,36 +1,37 @@
 // Stagehand is created sealed: no inference leaves through it (act, extract and observe are refused), nothing is cached
 // server side, and the driver never ends the browser: custody releases it through the provider.
 import { type DriverFactory } from "../core/custody.js";
-import { INERT_TRACE_ENDPOINT } from "../core/effects.js";
 import type { PageDriver } from "../core/tools.js";
-import { installedExtension } from "./extension-worker.js";
 import { pageDriver } from "./page-driver.js";
-import { attachStep, createSealed, IN_FLIGHT_INIT_MS, INIT_IN_PROGRESS } from "./sealed.js";
+import { attachStep, throwIfCancelled, untilCancelled } from "./sealed.js";
 
-/** A closed loopback port, so no span leaves the host: Stagehand 4.1.0 cannot turn its trace exporter off. */
-export const STAGEHAND_TELEMETRY = { traces: { endpoint: INERT_TRACE_ENDPOINT } } as const;
 export const STAGEHAND_INFERENCE_REFUSED = "Stagehand inference is off in this harness: act, extract and observe are unavailable. Drive the page with run code or snapshot IDs.";
+/** No telemetry is given, and Stagehand 4.4 starts its trace exporter only for an endpoint it is given: no span is sent. */
 export const SEALED_STAGEHAND = {
   logging: { level: "off" },
   cache: false,
   model: { generate: async (): Promise<never> => { throw new Error(STAGEHAND_INFERENCE_REFUSED); } },
-  telemetry: STAGEHAND_TELEMETRY,
 } as const;
 
-/** What Stagehand's extension answers an init while another is still running in it. */
-export const STAGEHAND_INIT_IN_PROGRESS = INIT_IN_PROGRESS;
+type StagehandModule = Pick<typeof import("@browserbasehq/stagehand"), "localBrowser" | "Stagehand">;
 
-/** The batch deadline comes from `DriverOptions`; a caller that passes none gets the facade's 60 s. */
-export function stagehandDriver(): DriverFactory<PageDriver> {
+/** The batch deadline comes from `DriverOptions`; a caller that passes none gets the facade's 60 s. Stagehand allows one
+ *  client per browser: an attach that fails or is cancelled after it connected disconnects again, and only then fails, so
+ *  the next attach never meets its slot still taken (Stagehand bounds the disconnect: 10 s for the detach). `internals` is
+ *  for tests: the Stagehand module the driver uses. */
+export function stagehandDriver(internals: { stagehand?: () => Promise<StagehandModule> } = {}): DriverFactory<PageDriver> {
   return async (target, signal, options) => {
-    const { localBrowser, Stagehand } = await import("@browserbasehq/stagehand");
+    const { localBrowser, Stagehand } = await (internals.stagehand ?? (() => import("@browserbasehq/stagehand")))();
     const host = new URL(target.dial?.url ?? target.sdkCdpUrl).host;
-    const step = attachStep(host);
-    // An id the provider supplies names a held extension too, so its worker is reset as well.
-    const extensionId = await step(installedExtension(target.sdkCdpUrl, signal, target.extensionId));
-    const browser = await step(localBrowser.connect({ cdpUrl: target.sdkCdpUrl, ...(extensionId ? { extensionId } : {}) }));
-    const stagehand = await createSealed(() => Stagehand.create({ browser, ...SEALED_STAGEHAND }),
-      () => step(installedExtension(target.sdkCdpUrl, signal, extensionId ?? undefined, IN_FLIGHT_INIT_MS)), host, signal);
-    return pageDriver(stagehand, { batchMs: options?.batchTimeoutMs ?? 60_000 });
+    throwIfCancelled(signal);
+    const connecting = localBrowser.connect({ cdpUrl: target.sdkCdpUrl, ...(target.extensionCdpUrl ? { extensionCdpUrl: target.extensionCdpUrl } : {}) });
+    const browser = await untilCancelled(attachStep(host)(connecting), signal, (late) => late.disconnect());
+    try {
+      const stagehand = await untilCancelled(Stagehand.create({ browser, ...SEALED_STAGEHAND }), signal, () => undefined);
+      return pageDriver(stagehand, { batchMs: options?.batchTimeoutMs ?? 60_000 });
+    } catch (error) {
+      await browser.disconnect().catch(() => undefined);
+      throw error;
+    }
   };
 }
