@@ -17,8 +17,8 @@
 // writeMakeDirectoryError, makeDirectory, handleDeleteFile, handleFileAction, isWithin) and e2b-dev/infra@ff3922213f02
 // packages/envd/internal/services/filesystem/move.go (Move). Changed for the open platform: errors are the protocol's
 // kinds instead of HTTP statuses or Connect codes; a directory already there fails mkdir unless parents is set; move
-// makes no missing parent and replaces as rename(2) does; there is no sandbox root to confine to or clear, and the
-// filesystem root is never removed.
+// makes no missing parent, replaces as rename(2) does only with overwrite, and otherwise never replaces (renameat2 with
+// RENAME_NOREPLACE); there is no sandbox root to confine to or clear, and the filesystem root is never removed.
 
 package files
 
@@ -29,6 +29,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"unsafe"
 
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/rpc"
 )
@@ -131,16 +132,62 @@ func Move(params MoveParams) (Empty, error) {
 	if src.IsDir() && isWithin(from, to) {
 		return Empty{}, rpc.Errorf(rpc.KindInvalid, "cannot move %s into itself", from)
 	}
-	if _, err := os.Lstat(to); err == nil && !params.Overwrite {
+	if params.Overwrite {
+		err = os.Rename(from, to)
+	} else {
+		err = renameNoReplace(from, to, src.IsDir())
+	}
+	switch {
+	case err == nil:
+		return Empty{}, nil
+	case errors.Is(err, syscall.EEXIST):
 		return Empty{}, rpc.Errorf(rpc.KindExists, "%s exists: pass overwrite to replace it", to)
+	case errors.Is(err, syscall.EXDEV):
+		return Empty{}, rpc.Errorf(rpc.KindUnsupported, "cannot move %s to %s across filesystems: copy it, then remove it", from, to)
 	}
-	if err := os.Rename(from, to); err != nil {
-		if errors.Is(err, syscall.EXDEV) {
-			return Empty{}, rpc.Errorf(rpc.KindUnsupported, "cannot move %s to %s across filesystems: copy it, then remove it", from, to)
-		}
-		return Empty{}, fsError(err)
+	return Empty{}, fsError(err)
+}
+
+// renameNoReplace renames from to to only if nothing is at to, in one step: renameat2 with RENAME_NOREPLACE. Where the
+// kernel or filesystem lacks it, a file is linked to its new name (which fails if one is there) and its old name
+// removed; a directory, which cannot be linked, is refused.
+func renameNoReplace(from, to string, isDir bool) error {
+	err := renameat2(from, to, renameNoReplaceFlag)
+	if !errors.Is(err, syscall.EINVAL) && !errors.Is(err, syscall.ENOSYS) {
+		return err
 	}
-	return Empty{}, nil
+	if isDir {
+		return rpc.Errorf(rpc.KindUnsupported, "cannot move the directory %s without overwrite: this filesystem cannot rename without replacing; pass overwrite", from)
+	}
+	return linkMove(from, to)
+}
+
+const renameNoReplaceFlag = 1 // RENAME_NOREPLACE
+
+func renameat2(from, to string, flags uintptr) error {
+	fromPtr, err := syscall.BytePtrFromString(from)
+	if err != nil {
+		return err
+	}
+	toPtr, err := syscall.BytePtrFromString(to)
+	if err != nil {
+		return err
+	}
+	cwd := -100 // AT_FDCWD
+	atCwd := uintptr(cwd)
+	_, _, errno := syscall.Syscall6(sysRenameat2, atCwd, uintptr(unsafe.Pointer(fromPtr)), atCwd, uintptr(unsafe.Pointer(toPtr)), flags, 0)
+	if errno != 0 {
+		return &os.LinkError{Op: "rename", Old: from, New: to, Err: errno}
+	}
+	return nil
+}
+
+// linkMove moves a file that is not a directory by a hard link and the removal of its old name.
+func linkMove(from, to string) error {
+	if err := os.Link(from, to); err != nil {
+		return err
+	}
+	return os.Remove(from)
 }
 
 func isWithin(dir, path string) bool {
