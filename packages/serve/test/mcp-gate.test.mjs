@@ -169,6 +169,28 @@ test("pi: the run's process killed while a call is parked loses nothing: the sam
   assert.equal(calls(fake, "add").length, 1, "run once");
 });
 
+test("pi: a priced MCP call is never sent or charged on any deny, and the model reads so plainly: the owner's deny, a deny setting, and a declining message", { timeout: 180_000 }, async (t) => {
+  const NOT_RUN = "It was not run: nothing was sent and nothing was charged.";
+  const server = await serve(t);
+  const { api } = server;
+  const answer = await owner(server);
+  const fake = await addFake(t, api, { paid: 0.05 });
+  const asked = await started(api, "deny-paid", ["mcp:fake/paid"], PAID);
+  const pending = await parked(api, asked);
+  assert.equal(await answer(asked, pending.id, { decision: "deny" }), 204);
+  const set = await started(api, "set-deny-paid", ["mcp:fake/paid"], PAID, { extra: { tool_settings: { "mcp:fake/paid": { permission: "deny" } } } });
+  const declined = await started(api, "msg-paid", ["mcp:fake/paid"], PAID);
+  await parked(api, declined);
+  assert.equal((await api("POST", `/runs/${declined}/messages`, { content: "skip the paid lookup" })).status, 202);
+  for (const [runId, how] of [[asked, "the owner's deny"], [set, "a deny setting"], [declined, "a declining message"]]) {
+    const { rows } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 90_000 });
+    const said = (await answerOf(api, runId)) ?? "";
+    assert.ok(said.includes(NOT_RUN), `${how}: the model reads that nothing was sent or charged: ${said}`);
+    assert.ok(!rows.some((row) => /^Tool cost:/.test(row.summary ?? "")), `${how}: no tool cost is booked`);
+  }
+  assert.equal(calls(fake).length, 0, "the server saw nothing");
+});
+
 test("pi: a tool priced $0.05 under a $0.04 cap is refused unsent in the cap's words and the run waits on a raise; under a $1 cap it is sent and booked as a $0.05 tool cost", { timeout: 150_000 }, async (t) => {
   const { api } = await serve(t);
   const fake = await addFake(t, api, { paid: 0.05 });
