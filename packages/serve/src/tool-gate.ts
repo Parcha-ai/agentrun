@@ -281,6 +281,10 @@ export const TURN_ORIGIN_FILE = "turn-origin.json";
 /** The run's store's record of a call that waits for approval (`phase: "requested"`), and of its answer acted on
  *  (`phase: "resolved"`), on its root conversation. */
 export const APPROVAL_ENTRY = "agentrun.tool_approval";
+/** The run's store's record that the gate let a replay-safe pi call through (`{ callId }`), written before the tool runs.
+ *  pi-durable reruns a cut replay-safe call with the same call id and no sign that it is a rerun: this mark is how the
+ *  gate knows an earlier attempt may have been sent, so a deny of the rerun never says nothing was charged. */
+export const GATE_PASSED_ENTRY = "agentrun.tool_gate_passed";
 
 /** The refusal of the end-of-run turn's write or edit under work/.learning/: its notes are kept only from its answer's
  *  note blocks (learn/reflect.ts parseReflection), which the host merges in its own store; a file there is never kept. */
@@ -340,6 +344,8 @@ export function runGate(where: { root: string; work: string }, runId: string, re
 /** The gate in a run's process, park mode: its policy, the turn's origin, the calls that wait, and the answers acted on. */
 export class RunGate {
   private readonly requests = new Map<string, ApprovalRequest & { resolved?: true }>();
+  /** The replay-safe pi calls the gate let through (GATE_PASSED_ENTRY), by call id: a rerun of one is a replay. */
+  private readonly passed = new Set<string>();
   private durable?: DurableRun;
   private context?: Context;
   private coding?: readonly ToolRegistration[];
@@ -456,9 +462,18 @@ export class RunGate {
     return {
       ...tool,
       async execute(args, api, context) {
-        const answer = await gate.enter(tool.name, args, api.callId, { commit: (change) => api.commit(change as never, context) as never });
+        const commit = (change: unknown) => api.commit(change as never, context) as never;
+        // A rerun of a replay-safe call the gate let through before (pi-durable reruns it with the same call id after a
+        // crash, with no sign of it): an earlier attempt may have been sent, which the gate's refusal must not deny.
+        const answer = await gate.enter(tool.name, args, api.callId, { commit }, gate.passed.has(api.callId) ? { replayed: true } : {});
         // A parked call ends the turn, as ask_person's does.
         if (answer) return forModel(answer.text, answer.parked ? { control: { terminate: true } } : { isError: true });
+        // Let through: a replay-safe call's mark goes in the store before the tool runs, so a crash after it leaves a rerun
+        // the gate knows for one. A mark that fails to commit stops the call (nothing has been sent).
+        if (tool.replay === "safe" && !gate.passed.has(api.callId)) {
+          await commit((tx: Tx) => tx.appendEntry(ROOT_CONVERSATION_ID, { kind: GATE_PASSED_ENTRY, data: { callId: api.callId } }));
+          gate.passed.add(api.callId);
+        }
         return tool.execute(args, api, context);
       },
     } as ToolRegistration;
@@ -499,6 +514,11 @@ export class RunGate {
   }
 
   private note(entry: { kind: string; data?: unknown }): void {
+    if (entry.kind === GATE_PASSED_ENTRY) {
+      const callId = (entry.data as { callId?: unknown } | undefined)?.callId;
+      if (typeof callId === "string") this.passed.add(callId);
+      return;
+    }
     const data = entry.data as (ApprovalRequest & { phase?: string }) | undefined;
     if (entry.kind !== APPROVAL_ENTRY || typeof data?.id !== "string") return;
     const held = this.requests.get(data.id);
