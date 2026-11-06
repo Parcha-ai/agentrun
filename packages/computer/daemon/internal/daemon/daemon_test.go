@@ -363,6 +363,20 @@ func TestTheBridgeCarriesAConnection(t *testing.T) {
 	}
 }
 
+func TestTheBridgeExits0WhenTheDaemonClosesAfterItsInputEnded(t *testing.T) {
+	in := startInit(t)
+	// Hold the bridge right after it half-closes, so the daemon's answering close lands before the bridge goes on.
+	daemon.SetAfterHalfClose(t, func() { time.Sleep(300 * time.Millisecond) })
+	var out, errOut bytes.Buffer
+	code := daemon.Bridge(in.socket, strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"ping"}`+"\n"), &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit %d at the end of its input, want 0: %s", code, errOut.String())
+	}
+	if !strings.Contains(out.String(), `"id":1`) {
+		t.Fatalf("no reply to the ping: %q", out.String())
+	}
+}
+
 func TestTheBridgeWithNoDaemonFailsInWords(t *testing.T) {
 	socket := filepath.Join(t.TempDir(), "computerd.sock")
 	bridge := exec.Command(os.Args[0], "stdio")

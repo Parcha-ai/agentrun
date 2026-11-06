@@ -197,6 +197,9 @@ func shutdown() {
 	}
 }
 
+// afterHalfClose is nil outside tests: it runs right after the bridge half-closes the connection.
+var afterHalfClose func()
+
 // Bridge copies in to the daemon at socket and the daemon's replies to out, until either side ends. With no daemon to
 // reach it says so on errOut and returns 1; it returns 0 when its input ended first.
 func Bridge(socket string, in io.Reader, out io.Writer, errOut io.Writer) int {
@@ -211,6 +214,9 @@ func Bridge(socket string, in io.Reader, out io.Writer, errOut io.Writer) int {
 	go func() {
 		_, _ = io.Copy(conn, in)
 		_ = conn.CloseWrite()
+		if afterHalfClose != nil {
+			afterHalfClose()
+		}
 		close(inputEnded)
 	}()
 	go func() {
