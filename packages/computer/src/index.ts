@@ -19,4 +19,5 @@ export {
 } from "./modal.js";
 export { drift, helloDrift, hostOf, inspectDrift, networkOf, type DockerHost, type DockerInfo, type DockerInspect, type DriftExpected, type HelloExpected } from "./drift.js";
 export { sweep, type SweepOptions, type Swept } from "./janitor.js";
+export { waitUntil, type WaitOptions } from "./wait.js";
 export * from "./conformance/index.js";
