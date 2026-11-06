@@ -266,7 +266,7 @@ export type Run = {
    *  notes learning reads (learning-run.ts). */
   turnText?: Map<number, string>;
   child?: ChildProcess;
-  /** The pid of a run process an earlier server started that still serves the run: supervised by its run.json. */
+  /** The pid of a run process an earlier server started that still serves the run: supervised by the holder its row names. */
   orphan?: number;
   /** Adopted with a saved stop: its first snapshot is checked once, and a turn still working is aborted. */
   finishStop?: boolean;
