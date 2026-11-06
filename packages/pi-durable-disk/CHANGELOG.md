@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+## 0.1.0-beta.30 (2026-11-05)
+
+- `doorKey(requestId, n)` names the submission keys the door records a request under in a run's store (`door <requestId>` for its admission, then `door <requestId> <n>`), and `doorTook(requestId, statusAt)` reads from them whether the door took it, so a host can find a request a run already took without its door: serve reads it before sending a trigger's message to a run that has no live process.
+  A busy refusal is no longer a request's final outcome. A `whenBusy: "reject"` input to a busy hook is refused with nothing written, and one the hook refuses after its admission is admitted again when it is sent again, so a retry reaches the hook once the run is idle.
+  The door's `POST /submit` takes `answers: false` with `asks` (tool names): such an input never answers a question the conversation waits on. It is refused with `409 WAITING` when the conversation's last model message is the result of a tool in `asks`, and with `409 BUSY` while a turn runs (a door hook, another harness, takes the busy refusal), so it is never queued behind a turn that may end on such a tool. Such an input takes no `origin` (`400`): refused while busy, it would leave the origin's marker with no message after it.
+- A message the server writes into a run, a raised cap's follow-up or an approval's resume, can carry its origin
+  (`{ kind: "server", reason: "cap_raised" | "approval" }`, or `"approval_declined"` with `said`, the words of the person's
+  message that declined the call). The Timeline then shows it as a phase row, "AgentRun: <its first line>", never as
+  "You: …", and a declined approval's words as the person's own row beside it; the model reads the same text. A run door's `POST /submit` takes `origin`. On a harness run the
+  origin is written on the message's user entry. On pi, whose user entry carries no data, a marker entry
+  (`agentrun.message_origin`, its text) goes first, and the Timeline matches it to the next user entry with that exact text.
+  The server's row carries `origin: "server"` (a new optional field of a Timeline row), and it counts, as a person's
+  message does, as the message its turn took: serve reads a run's messages (their arrival, where a stop stands) through one
+  predicate. pi-durable-agent's timeline exports `MessageOrigin`, `MESSAGE_ORIGIN`, `originOf`, `messageOrigins` (the one
+  reader) and `isMessageRow`, and pi-durable-disk exports `MESSAGE_ORIGIN_KIND`. A door's `POST /submit` takes exactly the
+  reasons `cap_raised`, `approval` and `approval_declined`.
+- A server-written message's origin marker no longer takes a request id a caller may send. It was written as the message's
+  id plus `:origin`, so after the server's `foo`, a caller's own `foo:origin` was refused as already used and never reached
+  the model. The marker's id now has a space in it, which no caller id may contain.
+  A server message retried once its input is in writes no second marker, so a message first sent before this change and
+  retried after it still has one, and a later person's message with the same words stays theirs.
+
 ## 0.1.0-beta.29 (2026-11-04)
 
 - **The archil wrapper runs archil as root only in the shapes the claim uses, under a mount root that root owns**
