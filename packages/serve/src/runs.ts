@@ -508,7 +508,8 @@ const BUDGET_WAITING = "Waiting for you to raise the cap";
 function withPaused(rows: readonly TimelineEvent[]): TimelineEvent[] {
   const at = rows.findLastIndex((row) => row.kind === "error");
   if (at < 0) return [...rows];
-  const error = rows[at]!;
+  // The refusal's own marker (`paused`, servedError) stays on the refusal's row: the waiting row is no refusal.
+  const { paused: _marker, ...error } = rows[at]!;
   const paused: TimelineEvent = { ...error, id: `${error.id}:paused`, kind: "waiting", summary: BUDGET_WAITING, text: BUDGET_WAITING, tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null };
   return [...rows.slice(0, at + 1), paused, ...rows.slice(at + 1)];
 }
