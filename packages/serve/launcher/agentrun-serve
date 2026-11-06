@@ -52,6 +52,11 @@ LC_ALL=C
 config=${XDG_CONFIG_HOME:-${HOME:+$HOME/.config}}
 if [ -z "${agentrun_secret_AGENTRUN_SEAL_KEY+x}" ] && [ -n "$config" ]; then
   keys=$config/agentrun
+  # Its own directory, when the person made it with a plain mkdir (0755) and no key is there yet: tightened to 0700
+  # before a key is written in it, only when it is this user's. An existing key's directory is never changed.
+  if [ ! -e "$keys/seal.key" ] && [ -d "$keys" ] && [ -O "$keys" ]; then
+    case $(ls -ld "$keys" 2>/dev/null) in d???------*) ;; *) chmod 700 "$keys" 2>/dev/null || : ;; esac
+  fi
   # Made whole beside its name, then linked to it, which fails if another start made it first: each start reads one.
   if [ ! -e "$keys/seal.key" ] && (umask 077 && mkdir -p "$keys") && made=$(head -c 32 /dev/urandom | base64) && [ ${#made} -eq 44 ]; then
     (umask 077 && printf '%s\n' "$made" >"$keys/seal.key.$$" && { ln "$keys/seal.key.$$" "$keys/seal.key" 2>/dev/null || :; }) || :
