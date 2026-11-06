@@ -56,7 +56,10 @@ test("the grader's verdict decides: a drop, a merge that keeps no note and an an
 test("an answer the host cannot read is asked once more with the same prompt: a readable second answer decides, and each ask's spend is booked once; two unreadable answers drop, with the last kept on the run cut of secrets and in size, and never served", { timeout: 150_000 }, async (t) => {
   const calls = join(await scratch(t), "calls.jsonl");
   // A value saved as a tool key before the runs: the grader's answer holds it, and the run's learning never does.
-  const value = `zq${process.pid}${Date.now().toString(36)}${randomBytes(16).toString("hex")}`.slice(0, 64);
+  // It holds a space, as a tool key may: an answer cut before it is cut of secrets could keep one half of it.
+  const half = () => `zq${process.pid}${Date.now().toString(36)}${randomBytes(16).toString("hex")}`.slice(0, 32);
+  const [front, back] = [half(), half()];
+  const value = `${front} ${back}`;
   withEnv(t, { AGENTRUN_TEST_FAUX_CALLS: calls, AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, ["AGENTRUN_SEAL_KEY", "PARALLEL_API_KEY", "AGENTRUN_TEST_FAUX_GRADE_HOLD", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY"]);
   const { api, data } = await serve(t, { learning: "on", faux: LEARN });
   assert.equal((await api("PUT", "/settings/tool-keys/parallel", { values: { PARALLEL_API_KEY: value } })).status, 204);
@@ -79,9 +82,10 @@ test("an answer the host cannot read is asked once more with the same prompt: a 
   const booked = ledgerOf(data).filter((line) => line.run === once.view.run_id);
   assert.deepEqual(booked.map(({ cost, tokens }) => ({ cost, tokens })), [{ cost: two.cost_usd.grade, tokens: two.tokens.grade }], "one ledger line, with both asks");
 
-  // Unreadable twice, past any bound, holding the key at its start and across where its start is cut: dropped, with the
-  // last answer kept in size, cut at whitespace, and cut of the key, in whole and in part.
-  const babble = `${value}_${"word_".repeat(277)}${value}_${"word_".repeat(1_000)}end`;
+  // Unreadable twice, past any bound, holding the key at its start and again with its space before the 1,500th character
+  // and its back half across it: dropped, with the last answer kept cut of the key, in whole and in part, then in size.
+  const spaced = value.replace(" ", "_");
+  const babble = `${spaced}_${"word_".repeat(271)}${spaced}_${"word_".repeat(1_000)}end`;
   await made(api, learner("babble", { instructions: `Grade: garbage saying ${babble}.`, plan: PLAN }));
   const dropped = await ended(api, await started(api, "babble"));
   settled(dropped.view, dropped.rows, "dropped", "grader");
@@ -91,7 +95,8 @@ test("an answer the host cannot read is asked once more with the same prompt: a 
   assert.ok(learning.unread.startsWith("Looks fine to me. [redacted] word word") && learning.unread.endsWith("word word end"), learning.unread.slice(0, 80));
   assert.match(learning.unread, /word \n…\n word/);
   assert.ok(learning.unread.length <= 2_000, `${learning.unread.length} characters`);
-  for (const part of [value.slice(0, 8), value.slice(8, 16), value.slice(-8)]) assert.ok(!learning.unread.includes(part), "no part of the key");
+  for (const part of [front.slice(0, 8), front.slice(-8), back.slice(0, 8), back.slice(-8)]) assert.ok(!learning.unread.includes(part), "no part of the key");
+  assert.equal(learning.unread.split("[redacted]").length - 1, 2, "the key, twice");
   // Kept on the run's file for a person to diagnose; no read serves it.
   const served = JSON.stringify([(await api("GET", `/runs/${dropped.view.run_id}`)).body, (await api("GET", `/runs/${dropped.view.run_id}/learning`)).body, (await api("GET", "/runs")).body, (await api("GET", "/agents/babble/runs")).body, dropped.rows]);
   assert.ok(!served.includes("Looks fine to me") && !served.includes("word word"), "the answer is never served");
