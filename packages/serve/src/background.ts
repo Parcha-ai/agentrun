@@ -88,7 +88,9 @@ const RUNNER = [
   // is left.
   `g=$(cat "$C/pgid" 2>/dev/null); live() { [ -n "$g" ] || return 1; s=$(cat "$C/tsid" 2>/dev/null); if [ -r /proc/self/stat ]; then cat /proc/[0-9]*/stat 2>/dev/null | awk -v g="$g" -v s="$s" '{ sub(/^[0-9]+ \\(.*\\) /, ""); if ($1 != "Z" && ($3 == g || (s != "" && $4 == s))) n++ } END { exit n > 0 ? 0 : 1 }'; else kill -0 "-$g" 2>/dev/null; fi; }; while live; do sleep 0.5; done`,
   'kill "$h" 2>/dev/null; code=$(cat "$C/code" 2>/dev/null); [ -n "$code" ] || code=255',
-  'printf \'%s\\n\' "$code" > "$C/.exit" && mv -f "$C/.exit" "$C/exit"; put exit "$code"; rm -f "$C/in"',
+  // The display copy first, then the trusted exit code: a reader that sees the process ended (the run's end among them,
+  // which then destroys the box) finds its display copy in work/ already, never cut off by the box's end.
+  'put exit "$code"; printf \'%s\\n\' "$code" > "$C/.exit" && mv -f "$C/.exit" "$C/exit"; rm -f "$C/in"',
 ].join("\n");
 
 /**
