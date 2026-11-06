@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import * as start from "../lib/start.mjs";
 import { openLineUrl, openUrl } from "../lib/start.mjs";
+import { removeAtEnd } from "./support.mjs";
 
 const PACKAGE = new URL("..", import.meta.url).pathname;
 const BIN = join(PACKAGE, "bin", "agentrun.mjs");
@@ -44,7 +45,7 @@ async function stopChild(child, exited) {
 /** This environment with a fresh home, no model key, no box, and no browser. */
 function bare(t) {
   const home = mkdtempSync(join(tmpdir(), "agentrun-npx-"));
-  t.after(() => rmSync(home, { recursive: true, force: true }));
+  removeAtEnd(home);
   const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !MODEL_KEYS.includes(name)));
   // AGENTRUN_BOXES=none: the server it starts asks no Docker (on by default when the setting is not set).
   return { home, env: { ...env, HOME: home, XDG_CONFIG_HOME: join(home, ".config"), XDG_DATA_HOME: join(home, ".local", "share"), CI: "1", AGENTRUN_BOXES: "none" } };
@@ -84,7 +85,7 @@ test("with AGENTRUN_BOXES not set and Docker answering (a fake docker first on P
   const { env } = bare(t);
   delete env.AGENTRUN_BOXES;
   const dir = mkdtempSync(join(tmpdir(), "agentrun-npx-docker-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  removeAtEnd(dir);
   mkdirSync(join(dir, "bin"));
   mkdirSync(join(dir, "state"));
   writeFileSync(join(dir, "bin", "docker"), `#!/bin/sh\nexec '${process.execPath}' '${FAKE_DOCKER}' "$@"\n`, { mode: 0o755 });
@@ -121,7 +122,7 @@ test("a terminal that closes its pipes after the address (`| head -n 1`) ends no
   const { home, env } = bare(t);
   delete env.AGENTRUN_BOXES;
   const dir = mkdtempSync(join(tmpdir(), "agentrun-npx-pipe-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  removeAtEnd(dir);
   mkdirSync(join(dir, "bin"));
   mkdirSync(join(dir, "state"));
   writeFileSync(join(dir, "bin", "docker"), `#!/bin/sh\nexec '${process.execPath}' '${FAKE_DOCKER}' "$@"\n`, { mode: 0o755 });
@@ -181,7 +182,7 @@ test("a subcommand is the server's own, on ~/.agentrun: import --dry-run", { tim
 
 test("npm exec of the packed package runs this package's own agentrun bin", { timeout: 120_000 }, (t) => {
   const dir = mkdtempSync(join(tmpdir(), "agentrun-pack-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  removeAtEnd(dir);
   // npm's own settings from the npm that runs this suite (a workspace, a -c command) are not this npm's.
   const clean = Object.fromEntries(Object.entries(process.env).filter(([name]) => !/^npm_/i.test(name)));
   const npm = (args) => execFileSync("npm", args, { cwd: dir, encoding: "utf8", env: { ...clean, npm_config_cache: join(dir, "cache"), npm_config_update_notifier: "false" } });
@@ -207,7 +208,7 @@ test("the server is this package's one dependency, at the exact version of the s
 // A stand-in server installed beside a copy of this package records what it was started with.
 async function throughStub(t, args, env = {}) {
   const dir = mkdtempSync(join(tmpdir(), "agentrun-stub-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  removeAtEnd(dir);
   for (const part of ["bin", "lib", "package.json"]) cpSync(join(PACKAGE, part), join(dir, "pkg", part), { recursive: true });
   const serve = join(dir, "pkg", "node_modules", "@parcha", "agentrun-serve");
   mkdirSync(join(serve, "launcher"), { recursive: true });
@@ -297,7 +298,7 @@ test("the command passes its arguments through to the server, with its store (~/
 
 test("with the server missing from beside it, the command says so in one line and exits 1", (t) => {
   const dir = mkdtempSync(join(tmpdir(), "agentrun-alone-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  removeAtEnd(dir);
   for (const part of ["bin", "lib", "package.json"]) cpSync(join(PACKAGE, part), join(dir, part), { recursive: true });
   const run = spawnSync(process.execPath, [join(dir, "bin", "agentrun.mjs"), "--no-open"], { encoding: "utf8", env: bare(t).env });
   assert.deepEqual([run.status, run.stdout, run.stderr], [1, "", `AgentRun's server (@parcha/agentrun-serve) is not installed beside this command; run it as npx @parcha/agentrun@${VERSION}.\n`]);
