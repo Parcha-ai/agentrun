@@ -80,10 +80,15 @@ func resolveUser(spec string) (account, error) {
 	return acct, nil
 }
 
+// selfAccount is the daemon's own user. Its HOME is the one the computer was given (a provider sets it); the image's
+// passwd entry only fills it when none was.
 func selfAccount() account {
 	acct := account{uid: uint32(os.Getuid()), gid: uint32(os.Getgid()), home: os.Getenv("HOME")}
 	if u, err := user.LookupId(strconv.Itoa(os.Getuid())); err == nil {
-		acct.name, acct.home = u.Username, u.HomeDir
+		acct.name = u.Username
+		if acct.home == "" {
+			acct.home = u.HomeDir
+		}
 	}
 	return acct
 }
