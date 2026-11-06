@@ -127,6 +127,21 @@ test("pi: the previous request's cache counts only when it ended less than 4 min
   assert.equal(cold.bound, 0, "cold has nothing to overshoot");
 });
 
+test("pi: a request on another model than the previous answer's counts on no cache: it is held at its worst case, as strict holds it, with no bound", async (t) => {
+  t.after(() => useSpend(undefined));
+  const { models, sent } = sonnetModels();
+  const capped = await capModels(models, 5, 0);
+  const context = conversation();
+  const first = await capped.streamSimple(SONNET, context).result();
+  await settle();
+  context.messages.push(first, resultOf(0));
+  const other = { ...SONNET, id: "claude-opus-5-5", name: "Claude Opus 5.5" };
+  await capped.streamSimple(other, context).result();
+  await settle();
+  assert.equal(sent[1].options[BOUND_USD] ?? 0, 0, "no bound: nothing cached to count on");
+  assert.ok(Math.abs(sent[1].options[HELD_USD] - (worstOf(context, 64_000))) < 1e-12, `held at its worst case: ${sent[1].options[HELD_USD]}`);
+});
+
 test("pi: a cache miss on a request admitted at its expected cost books its real cost, past the cap, by no more than the bound it was sent with", async (t) => {
   t.after(() => useSpend(undefined));
   // Every request reads the cache until the run has spent $0.40 of its $0.50; the next finds none.

@@ -68,7 +68,7 @@ test("claude-agent: a $0.50 cap on a Sonnet-priced model whose requests read ~90
   const runId = await started("grow", "Grow a cached context.", 0.5);
   await follow(api, runId, ["input_required", "completed", "failed"], { deadlineMs: 150_000 });
   const run = (await api("GET", `/runs/${runId}`)).body;
-  assert.deepEqual([run.status, run.pending?.kind], ["input_required", "budget"], JSON.stringify(run.error));
+  assert.deepEqual([run.status, run.pending?.kind, run.cap_mode], ["input_required", "budget", "expected"], JSON.stringify(run.error));
   assert.ok(run.cost.usd >= 0.45, `spent $${run.cost.usd} of the $0.50 cap before it paused`);
   assert.ok(run.cost.usd <= 0.5, `never past it: $${run.cost.usd}`);
 });
@@ -127,4 +127,31 @@ test("claude-agent: a restart mid-request reads the request in flight at the exp
   assert.ok(Math.abs(run.pending.spent_usd - (grown(0).usd + held)) < 1e-6, `after the restart the spend reads the same: ${run.pending.spent_usd}`);
   const start = records(runId, REQUEST_STARTED).find((entry) => entry.data?.request === 2);
   assert.ok(Math.abs(start?.data?.boundUsd - (worstInput(1) - expectedInput(1))) < 1e-9, `its start mark keeps its bound: ${JSON.stringify(start)}`);
+  // Nothing is in flight: the cut request was booked by the next process, and the server's reads of the whole store (its
+  // settle, a reconnect's snapshot) read each entry once.
+  assert.equal(run.cost.overshoot_bound_usd, 0, "paused, nothing in flight");
+  // Raised as offered, the run goes on in a new process and ends: still nothing in flight.
+  assert.equal((await api("PATCH", `/runs/${runId}`, { max_cost_usd: run.pending.suggested_cap_usd })).status, 200);
+  await follow(api, runId, ["completed", "failed"], { deadlineMs: 120_000 });
+  const ended = (await api("GET", `/runs/${runId}`)).body;
+  assert.deepEqual([ended.status, ended.cost.overshoot_bound_usd], ["completed", 0], JSON.stringify(ended.error));
+});
+
+test("claude-agent strict (cap_mode \"strict\" on the run): every input priced uncached, as before: the run pauses far short of its cap, serves no bound, and its view says its mode", { timeout: 180_000 }, async () => {
+  const { api } = server;
+  assert.equal((await api("POST", "/agents", agent("grow-strict", { harness: "claude-agent", instructions: "Grow a cached context." }))).status, 201);
+  const started = await api("POST", "/agents/grow-strict/runs", { input: { content: "go" }, max_cost_usd: 0.5, cap_mode: "strict" });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  const runId = started.body.run_id;
+  await follow(api, runId, ["input_required", "completed", "failed"], { deadlineMs: 150_000 });
+  const run = (await api("GET", `/runs/${runId}`)).body;
+  assert.deepEqual([run.status, run.pending?.kind, run.cap_mode], ["input_required", "budget", "strict"], JSON.stringify(run.error));
+  // Today's rule, by hand: the first request whose input uncached ($2.50 a million, a token a byte) and least output do
+  // not fit beside what was spent.
+  let paid = 0;
+  let k = 0;
+  while (paid + worstInput(k) + FLOOR_USD <= 0.5 + 1e-12) paid += grown(k++).usd;
+  assert.ok(Math.abs(run.cost.usd - paid) < 1e-6, `paused where the worst case says: $${run.cost.usd} vs $${paid} after ${k} requests`);
+  assert.equal(run.cost.overshoot_bound_usd, 0);
+  assert.equal(run.pending.overshoot_bound_usd, 0, "strict: the refused request has no bound");
 });
