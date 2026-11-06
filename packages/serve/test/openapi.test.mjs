@@ -9,6 +9,7 @@ import { decisionRows } from "../dist/decision-rows.js";
 import { agentFolderOf, homeOf } from "../dist/files.js";
 import { ROUTES } from "../dist/server.js";
 import { DEFINITION_FIELDS } from "../dist/validate.js";
+import { REQUEST_EXAMPLES } from "../dist/openapi.js";
 import { schemaProblems } from "./schema-support.mjs";
 import { capabilities } from "../dist/index.js";
 import { note } from "./fixtures/faux-learn.mjs";
@@ -87,8 +88,19 @@ test("the contract's operations are as vendored; this server's own are added and
       own.push(`${method.toUpperCase()} ${path}`);
       continue;
     }
-    const { "x-agentrun-serve-unsupported": _, "x-agentrun-serve-changed": changes, ...rest } = op;
+    let { "x-agentrun-serve-unsupported": _, "x-agentrun-serve-changed": changes, ...rest } = op;
     assert.equal(op["x-agentrun-serve"], undefined);
+    // examples/1: the JSON body's working examples (REQUEST_EXAMPLES), added and listed; without them, the operation is
+    // what its other marks say.
+    if (changes?.requestBody === "examples/1") {
+      assert.ok(doc.info["x-agentrun-serve"].changed.includes(`${method.toUpperCase()} ${path}`), `${op.operationId} is listed as changed`);
+      assert.deepEqual(rest.requestBody.content["application/json"].examples, REQUEST_EXAMPLES[op.operationId]);
+      assert.equal(original.requestBody.content["application/json"].examples, undefined);
+      rest = structuredClone(rest);
+      delete rest.requestBody.content["application/json"].examples;
+      const { requestBody: _examples, ...others } = changes;
+      changes = Object.keys(others).length ? others : undefined;
+    }
     if (!changes) {
       assert.ok(isDeepStrictEqual(rest, original), `${op.operationId} is the contract's, unchanged`);
       continue;
@@ -347,10 +359,11 @@ test("capabilities(), the exported helper, gives a document that passes the publ
   assert.notDeepEqual(schemaProblems(doc, shape, { ...caps, harnesses: caps.harnesses.map(({ default_model, ...offer }) => offer) }), []);
 });
 
-test("the decision providers' widening to parallel is its own addition, decisions/2, and info lists it", async (t) => {
+test("the decision providers' widening is its own addition, decisions/3 (parallel, then its route), and info lists it", async (t) => {
   const { doc } = await served(t);
   const decisions = doc.components.schemas.Capabilities.properties.workflows.properties.decisions;
-  assert.equal(decisions["x-agentrun-serve"], "decisions/2", "a client that validates against decisions/1 refuses parallel, so the widening is a new mark");
+  assert.equal(decisions["x-agentrun-serve"], "decisions/3", "a client that validates against decisions/2 refuses route, so the widening is a new mark");
+  assert.deepEqual(decisions.properties.providers.items.properties.route.enum, ["parallel", "openrouter"]);
   assert.deepEqual(decisions.properties.providers.items.properties.id.enum, ["jev", "parallel", "openrouter"]);
   assert.ok(doc.info["x-agentrun-serve"].fields.includes("Capabilities.workflows.decisions"), "info names it among the marked properties");
 });

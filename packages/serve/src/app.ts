@@ -19,7 +19,7 @@ import { settleIn } from "./paid-calls.js";
 import type { AppContext, AppOptions, BeforeResume, DurableRun } from "@parcha/pi-durable-disk";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { BUDGET_HOLD_ENV, BUDGET_HOLD_MS, budgetWaits, type StepAt } from "./budget.js";
-import { capBefore, capModels, capModeOf, capOf, type CapRefusal, capRefusals, DECISION_COST, decisionSpentIn, runSpendNow, spentIn } from "./cap.js";
+import { capBefore, capModels, capModeOf, capOf, costsIn, type CapRefusal, capRefusals, DECISION_COST, decisionSpentIn, runSpendNow, spentIn, wrapUpSentIn } from "./cap.js";
 import { cappedDecisions } from "./decision-cap.js";
 import { codingSource } from "./coding-tools.js";
 import { cancelledIn, markRequests } from "./request-start.js";
@@ -126,13 +126,17 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   // the run's one total, which the harness keeps (cap.ts capModels' `joined`): what they cost in earlier processes is
   // read here, as the harness's booking does not hold it.
   const joined = revision.kind === "agentic" && Boolean(revision.body.harness) && revision.body.harness !== DEFAULT_HARNESS;
-  // A workflow's decisions are its spend too, as the cap counted each in an earlier process (decision-cap.ts).
+  // The wrap-up on pi (cap.ts WrapUp): near its cap the run's own model is told once, under this cap, to finish. Not on
+  // another harness: its guard tells the harness's model (harness-app.ts). Nor on a workflow run, whose model nodes each
+  // deliver a record their node's instructions ask for: a step its cap has no room for waits for a raise instead (budget.ts).
   const storeFile = join(where.store, RUN_STORE_FILE);
+  const wrapUp = cap === undefined || joined || !model || revision.kind === "workflow" ? undefined : { model: model.modelId, costs: costsIn(storeFile, model.modelId), sent: wrapUpSentIn(storeFile, cap), record: marked.wrapUp };
+  // A workflow's decisions are its spend too, as the cap counted each in an earlier process (decision-cap.ts).
   const spentBefore = (() => {
     const spent = spentIn(storeFile, { sides: joined });
     return spent === null || revision.kind !== "workflow" ? spent : spent + decisionSpentIn(storeFile);
   })();
-  const models = cap === undefined ? marked.models : await capModels(marked.models, cap, spentBefore, { unpriced: chosen.unpriced, refused: marked.refused, joined, mode });
+  const models = cap === undefined ? marked.models : await capModels(marked.models, cap, spentBefore, { unpriced: chosen.unpriced, refused: marked.refused, joined, mode, ...(wrapUp ? { wrapUp } : {}) });
   // web_search's own request to the model provider, when it resolves native, goes through the run's models (hosted-search.ts):
   // on another harness too, for a learned workflow's call node.
   searchOn(models);
@@ -205,7 +209,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     const dir = join(where.root, "harness");
     await mkdir(dir, { recursive: true, mode: 0o700 });
     // Built at the open: the harness's own process runs under the run's confinement, the prefix pi's commands get there.
-    const make = (confine?: ConfineChild) => adapterFor(harness, env, { model: model!, models: chosen.models as never, ...(confine ? { confine } : {}), ...(native.length ? { skills: native } : {}) });
+    const make = (confine?: ConfineChild) => adapterFor(harness, env, { model: model!, models: chosen.models as never, unpriced: chosen.unpriced, ...(confine ? { confine } : {}), ...(native.length ? { skills: native } : {}) });
     // The run's cap, checked before each of the harness's requests: the same ceiling rule as pi's (cap.ts).
     // claude-agent's run is capped at the price of whoever bills it (claudeProvider's priceModel), as its adapter prices it.
     const priced = harness === "claude-agent" && !env[FAUX_HARNESS_ENV] ? claudePriceModel(env, model!) : model!;

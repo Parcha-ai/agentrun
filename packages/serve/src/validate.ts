@@ -115,17 +115,23 @@ export function skillIssues(named: unknown, files: Iterable<string>): InputIssue
 
 export type DefinitionBody = { definition: Json; skills?: Record<string, string>; note?: string };
 
+/** What is wrong with `{definition, skills?, note?}`, as checkDefinitionBody refuses it: every field issue. */
+export function definitionBodyIssues(body: Json, { creating = true } = {}): InputIssue[] {
+  const out: InputIssue[] = [];
+  for (const key of Object.keys(body)) if (!["definition", "skills", "note"].includes(key)) out.push(issue(key, "not_allowed", `The body keeps no field ${key}.`, `Remove ${key}.`));
+  out.push(...definitionIssues(body.definition, { creating }));
+  if (body.skills !== undefined || creating) skillFileIssues(body.skills ?? {}, out);
+  if (body.note !== undefined && !(typeof body.note === "string" && body.note.length <= 2_000)) out.push(issue("note", "wrong_type", "note is text of at most 2000 characters"));
+  return out;
+}
+
 /**
  * `{definition, skills?, note?}`, as `POST /agents` and `PUT .../definition` take it. `skills` are the revision's skill
  * files (absent on an edit: the current revision's); `note` says what the revision changes. Throws `422 input_invalid`
  * naming every field that is wrong.
  */
 export function checkDefinitionBody(body: Json, { creating = true } = {}): DefinitionBody {
-  const out: InputIssue[] = [];
-  for (const key of Object.keys(body)) if (!["definition", "skills", "note"].includes(key)) out.push(issue(key, "not_allowed", `The body keeps no field ${key}.`, `Remove ${key}.`));
-  out.push(...definitionIssues(body.definition, { creating }));
-  if (body.skills !== undefined || creating) skillFileIssues(body.skills ?? {}, out);
-  if (body.note !== undefined && !(typeof body.note === "string" && body.note.length <= 2_000)) out.push(issue("note", "wrong_type", "note is text of at most 2000 characters"));
+  const out = definitionBodyIssues(body, { creating });
   if (out.length) throw invalid(out);
   return { definition: body.definition as Json, ...(body.skills !== undefined || creating ? { skills: (body.skills ?? {}) as Record<string, string> } : {}), ...(typeof body.note === "string" ? { note: body.note } : {}) };
 }

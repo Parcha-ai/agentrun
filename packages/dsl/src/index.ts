@@ -35,6 +35,7 @@ export type {
 } from "./system-one.js";
 
 export { judgeFromProvider, judgeFromProviders, checkCapabilities, chargedCost, DecisionProviderError, imageDimensions } from "./decision-provider.js";
+export { evidenceOf, EVIDENCE_EXCERPT_MAX, EVIDENCE_EXCERPTS_PER_ITEM, EVIDENCE_ITEMS_MAX, EVIDENCE_TEXT_MAX, EVIDENCE_TITLE_MAX, type EvidenceOptions } from "./evidence.js";
 export type {
   DecisionProvider, DecisionCapabilities, DecisionInput, DecisionRequest, DecisionContext, DecisionEvidence, DecisionOutcome,
   ProviderAnswer, CostBasis, DecisionProviderErrorCode, DecisionImage, LoadImage, JudgeFromProviderOptions,

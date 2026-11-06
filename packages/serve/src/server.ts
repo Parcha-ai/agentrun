@@ -21,9 +21,10 @@ import { FAUX_MONID_ENV } from "./monid.js";
 import { FAUX_EXA_ENV } from "./exa-keyless.js";
 import { FAUX_BROWSER_ENV, NODE_TOOLS, toolingOf, toolOf, toolsView } from "./tools.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
+import { deref, explain } from "./explain.js";
 import { DATA_ENV, DOOR_TOKEN_FILE, HOME_HOST_OWNED, HOMES_DIR, homeOf, readJson, RUN_META, SETUP_LOST, syncDir, TOKEN_FILE, writeDurable } from "./files.js";
 import { checkedPath, decodedPath, homePath, hostOwnedOf, hostOwnedRefusal, type OwnedReadAt, ownedByIdentity } from "./home-path.js";
-import { chooseModel, EFFORTS, FAUX_ENV, FAUX_UPSTREAM_ENV, MODEL_NODES, type ModelNeeds, modelSource, THINKING_LEVELS, withoutFaux } from "./model.js";
+import { chooseModel, EFFORTS, FAUX_ENV, FAUX_UPSTREAM_ENV, MODEL_NODES, type ModelNeeds, modelSource, THINKING_LEVELS, unpricedModels, withoutFaux } from "./model.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, type HarnessCapability, harnessOfBody, harnessOffers } from "./harness.js";
 import { ClaudeInstall, harnessesOf, npmInstall } from "./claude-sdk.js";
 import { healthOf, hostMemory, maxRunsOf, MIN_FREE_MIB, runsThatFit } from "./host.js";
@@ -37,7 +38,7 @@ import { openapiDocument, servedOpenapi, UNSUPPORTED } from "./openapi.js";
 import { boxesLine, defaultPlaceOf, NEW_AGENT_TOOLS, newAgentPlace, noBoxReason, type Place, placesOf, resolvePlace } from "./place.js";
 import { BOX_ALLOW_ENV, boxAllowOf, boxLimitsOf, boxNetworkOf, FAUX_BOX_ENV, fauxBoxes } from "./run-box.js";
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
-import { answerPage, byOwnerSession, isJson, ownerCookie, ownOrigin, sendHostRefused, signedIn } from "./page.js";
+import { answerPage, byOwnerSession, isJson, overHttps, ownerCookie, ownOrigin, sendHostRefused, signedIn } from "./page.js";
 import { hostFix, hostName, loopbackNames } from "./host-check.js";
 import { durationMs, logLine } from "./print.js";
 import { type CarryBackRetry, knownToolCostOf, type Run, Runs, STATUSES, type Status, statusOf, toolCostOf, WAITS_ON_A_PERSON } from "./runs.js";
@@ -61,11 +62,12 @@ import { keyOf, SEAL_KEY_ENV, sealKeyOf, TOOL_FIELDS, ToolKeys } from "./tool-ke
 import { SIGN_INS_DIR, SignIns, vendorsOver } from "./sign-ins.js";
 import { MCP_AUTH_TYPES, McpServers } from "./mcp-servers.js";
 import { metaToolOf } from "./mcp-meta.js";
+import { MCP_SETTINGS_PAGE, signInCookie, startedHere } from "./mcp-oauth.js";
 import type { McpServerSource } from "./mcp-gateway.js";
 import { WEBHOOK_EVENTS, Webhooks } from "./webhooks.js";
 import { HOOK_TOLERANCE_S, hookHeadersRefusal, hookRefusal, TriggerSecrets } from "./trigger-secrets.js";
 import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, OVERLAP, PAYLOAD_KEPT_BYTES, type RunTrigger, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
-import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, ID, IDEMPOTENCY_TTL_S, inputIssues, isObject, type Json, stable, unknownFields } from "./validate.js";
+import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, definitionBodyIssues, ID, IDEMPOTENCY_TTL_S, inputIssues, isObject, type Json, stable, unknownFields } from "./validate.js";
 import { agentTools, browserKeyRow, settingsIssues, ToolSettings, type ToolSettingsMap, withDefaults } from "./tool-plane.js";
 import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, Uploads, UPLOADS_DIR } from "./uploads.js";
 import { INLINE_TYPES, openWorkFile, removeWorkFile, typeOf, WALK_DEPTH, walkWork, WorkRefused, writesHeld, writeWorkFile } from "./workspace.js";
@@ -279,7 +281,9 @@ function fauxEnvOf(options: ServeOptions): NodeJS.ProcessEnv {
 /** `tokenFile` is null when `options.token` gave the token; `tokenMade` says this start made the token in it. */
 /** `setupUrl`: with accounts and no password yet, the page that sets it (with its code when setup needs one). */
 /** `boxesLine`: what the start's banner says of the boxes, in words (place.ts boxesLine). */
-export type Serve = { url: string; baseUrl: string; port: number; token: string; tokenFile: string | null; tokenMade: boolean; setupUrl?: string; boxesLine: string; close(): Promise<void> };
+export type Serve = { url: string; baseUrl: string; port: number; token: string; tokenFile: string | null; tokenMade: boolean; setupUrl?: string; boxesLine: string; close(): Promise<void>;
+  /** What a stop waits on: the runs whose processes still finish their turn, and the longest it waits on them. */
+  stopping(): { runs: number; boundMs: number } };
 
 const isLoopback = (host: string) => host === "localhost" || host === "::1" || /^127\./.test(host);
 
@@ -291,8 +295,8 @@ async function tokenIn(file: string): Promise<{ token: string; made: boolean }> 
     return { token: known, made: false };
   }
   const token = `ar_local_${randomBytes(24).toString("base64url")}`;
-  await writeFile(file, `${token}\n`, { mode: 0o600, flag: "w" });
-  await chmod(file, 0o600);
+  // Whole or not there: a reader (the token file a server's record names, a script) never finds it made but empty.
+  await writeDurable(file, `${token}\n`, 0o600, undefined, true);
   return { token, made: true };
 }
 
@@ -369,6 +373,9 @@ export const ROUTES: readonly Route[] = [
   { method: "PUT", pattern: /^\/settings\/mcp-servers\/([^/]+)$/, name: "saveMcpServer" },
   { method: "DELETE", pattern: /^\/settings\/mcp-servers\/([^/]+)$/, name: "deleteMcpServer" },
   { method: "POST", pattern: /^\/settings\/mcp-servers\/([^/]+)\/refresh$/, name: "refreshMcpServer" },
+  { method: "POST", pattern: /^\/settings\/mcp-servers\/([^/]+)\/oauth\/start$/, name: "startMcpOAuth" },
+  { method: "GET", pattern: /^\/settings\/mcp-servers\/oauth\/callback$/, name: "mcpOAuthCallback" },
+  { method: "GET", pattern: /^\/settings\/mcp-servers\/oauth\/client\.json$/, name: "mcpOAuthClient" },
   { method: "GET", pattern: /^\/settings\/tools$/, name: "getToolSettings" },
   { method: "PUT", pattern: /^\/settings\/tools$/, name: "putToolSettings" },
   { method: "GET", pattern: /^\/settings\/webhook$/, name: "getWebhook" },
@@ -436,10 +443,14 @@ export function offersEnvOf(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 const offersInputs = (env: NodeJS.ProcessEnv): readonly (string | undefined)[] => SECRET_NAMES.filter((name) => !TOOL_FIELDS.includes(name)).map((name) => env[name]);
 
 /** What a revision that names no model needs here (capabilities' `models.needs`): null when one runs, else chooseModel's
- *  `needs`, a provider's key or another model. Made from `env` alone, so it is remade only when env is. */
-async function needsOf(env: NodeJS.ProcessEnv): Promise<ModelNeeds | null> {
+ *  `needs`, a provider's key or another model; and whether that model has a price here (`models.priced`: unpricedModels,
+ *  a gateway id serve has no price for), which a run's spend cap needs: null with no model, as nothing is there to price.
+ *  Made from `env` alone, so it is remade only when env is. */
+type ModelState = { needs: ModelNeeds | null; priced: boolean | null };
+async function needsOf(env: NodeJS.ProcessEnv): Promise<ModelState> {
   const chosen = await chooseModel(env, undefined);
-  return "why" in chosen ? chosen.needs : null;
+  if ("why" in chosen) return { needs: chosen.needs, priced: null };
+  return { needs: null, priced: (await unpricedModels(env, undefined)).length === 0 };
 }
 
 /** The server's reading of `base`, whole: its secrets, saved keys among them (`env`), the harnesses' offers, probed from
@@ -481,8 +492,8 @@ export function forCaller<T extends { learning: LearningCaps }>(caps: T, ownerSe
 /** The capabilities document from offers already resolved, under the server's learning switch, tool settings and box
  *  offers: cheap, made again after each key or tool-settings write with the offers the server holds; and `needs` as
  *  needsOf says it for a revision that names no model (null when it runs). */
-function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: HarnessCapability[], learning: LearningMode, needs: ModelNeeds | null, toolSettings: ToolSettingsMap, boxes: readonly BoxOffer[], gradeModel?: string, refused: Readonly<Record<string, string>> = {}) {
-  const models = { ...modelSource(env), ready: needs === null, needs };
+function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: HarnessCapability[], learning: LearningMode, { needs, priced }: ModelState, toolSettings: ToolSettingsMap, boxes: readonly BoxOffer[], gradeModel?: string, refused: Readonly<Record<string, string>> = {}) {
+  const models = { ...modelSource(env), ready: needs === null, needs, priced };
   // Both limits apply: the cap on the count, and the memory each run reserves (host.ts).
   const memory = hostMemory();
   // The browser's key is its vendor's row: Kernel's where Kernel is picked or resolved (tool-plane.ts browserKeyRow).
@@ -727,6 +738,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       }
     },
     headers: (name) => mcpServers.headers(name),
+    refresh: (name) => mcpServers.headersForRun(name).then(() => undefined, () => undefined),
   };
   // Each with whether it can be granted: a known meta tool can't (mcp-meta.ts).
   const mcpTools = (server: string) => {
@@ -749,7 +761,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   let offers!: HarnessCapability[];
   let caps!: ReturnType<typeof capabilitiesWith>;
   // Whether a revision that names no model runs (needsOf): made from env alone, so remade with it, before the caps.
-  let needs: ModelNeeds | null = await needsOf(env);
+  let needs: ModelState = await needsOf(env);
   // The box offers are probed once, below, before the first reading is made.
   // With accounts off no one can answer an ask (the answer route takes the owner's session alone): each tool ask is
   // offered for says it needs the password sign-in, as learning's approve does.
@@ -983,7 +995,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       if (!entry) return [{ field: "target.agent_id", reason: "not_found", message: `no agent ${target.agent_id}` }];
       if (!entry.revision) return [{ field: "target.agent_id", reason: "invalid", message: `the agent ${target.agent_id} has no current revision` }];
       const uncapped = target.max_cost_usd === undefined && entry.revision.body.maxCostUsd === undefined ? [{ field: "target.max_cost_usd", reason: "missing", message: `Every run a trigger starts is capped: give the target a max_cost_usd or set the agent's (the agent ${target.agent_id} has none).` }] : [];
-      return [...uncapped, ...(await inputIssuesOf(entry.revision, target.input)).map((issue) => ({ ...issue, field: `target.${issue.field}` }))];
+      return [...uncapped, ...(await explainRun(await inputIssuesOf(entry.revision, target.input), { input: target.input }, entry.revision)).map((issue) => ({ ...issue, field: `target.${issue.field}` }))];
     },
     async start(target, input, trigger) {
       const entry = await needAgent(target.agent_id);
@@ -1156,6 +1168,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       throw new ApiError("bad_request", "the body is not JSON");
     }
     if (!isObject(value)) throw new ApiError("bad_request", "the body is not a JSON object");
+    bodies.set(req, value);
     return value;
   }
 
@@ -1233,6 +1246,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     const blockers = await blockersOf(env, shape, settings.get(), { capped, boxes: boxOffers, offers, mcp: mcpTools });
     if (!blockers.length) return;
     const message = blockers.map((b) => b.message).join(" ");
+    // Each blocker as a 422 names its issue: its field, reason and message, and the fix when it has one.
+    const fields = blockers.map(issueOf);
     const unbound = blockers.flatMap((b) => (b.tool ? [b.tool] : []));
     // A known MCP meta tool is no server or tool that is missing: it has a key of its own, with why it is not granted.
     const notGrantable = blockers.flatMap((b) => (b.notGrantable ? [b.notGrantable] : []));
@@ -1240,12 +1255,12 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     const harness = blockers.find((b) => b.harness)?.harness;
     const box = blockers.find((b) => b.box)?.box;
     const named = { ...(harness ? { harness } : {}), ...(box ? { box } : {}), ...(notGrantable.length ? { not_grantable: notGrantable } : {}) };
-    if (revision.kind === "agentic") throw new ApiError("agent_not_runnable", message, { details: { unbound, missing, ...named } });
+    if (revision.kind === "agentic") throw new ApiError("agent_not_runnable", message, { fields, details: { unbound, missing, ...named } });
     const tier = blockers.find((b) => b.tier)?.tier;
     const decisions = Object.fromEntries(blockers.flatMap((b) => (b.decision ? [[b.decision.provider, { reason: b.reason, needs: b.decision.needs }]] : [])));
     const denied = blockers.flatMap((b) => (b.denied ? [b.denied] : []));
     const asks = blockers.flatMap((b) => (b.asks ? [b.asks] : []));
-    throw new ApiError("agent_not_runnable", message, { details: { adapters: [...new Set(blockers.flatMap((b) => (b.adapter ? [b.adapter] : [])))], unbound, missing, code: blockers.some((b) => b.codeNodes || b.shell), ...(tier ? { tier } : {}), ...(Object.keys(decisions).length ? { decisions } : {}), ...(denied.length ? { denied } : {}), ...(asks.length ? { asks } : {}), ...named } });
+    throw new ApiError("agent_not_runnable", message, { fields, details: { adapters: [...new Set(blockers.flatMap((b) => (b.adapter ? [b.adapter] : [])))], unbound, missing, code: blockers.some((b) => b.codeNodes || b.shell), ...(tier ? { tier } : {}), ...(Object.keys(decisions).length ? { decisions } : {}), ...(denied.length ? { denied } : {}), ...(asks.length ? { asks } : {}), ...named } });
   }
 
   /** Where a revision of `kind` naming `tools` and no place runs here: the place a new agent would be saved with. */
@@ -1268,17 +1283,46 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       const key = (b: Blocker) => `${b.field}\n${b.message}`;
       const plain = new Set((await blockersOf(env, shape, {}, { boxes: boxOffers, offers, mcp: mcpTools })).map(key));
       const capped = await blockersOf(env, shape, {}, { capped: true, boxes: boxOffers, offers, mcp: mcpTools });
-      blockers.push(...capped.filter((b) => !plain.has(key(b))).map((b) => ({ ...b, reason: "not_an_option", fix: "Pick another provider for this tool in definition.tool_settings, or clear the agent's default cap (max_cost_usd: 0).", host: false })));
+      // A model with no price (`unpriced`) is a setting this host fixes (AGENT_MODEL_PRICE): a warning, as it is; the
+      // agent saves and updates, and only a run under the cap is refused (409). A tool's pick a cap rules out refuses it.
+      const added = capped.filter((b) => !plain.has(key(b)));
+      blockers.push(...added.filter((b) => b.unpriced));
+      blockers.push(...added.filter((b) => !b.unpriced).map((b) => ({ ...b, reason: "not_an_option", fix: "Pick another provider for this tool in definition.tool_settings, or clear the agent's default cap (max_cost_usd: 0).", host: false })));
     }
     const never = blockers.filter((b) => !b.host);
     if (never.length) throw invalid(never.map(issueOf));
     return blockers.map(issueOf);
   }
 
+  /** A run create's issues told from the input this server checks (explain.ts): an agentic run's `{content: string}`,
+   *  with the documented run bodies; a workflow run's its workflow's input schema, never the agentic example. Each value
+   *  suggested must pass this route's own checks of the body, the workflow's input check among them. */
+  async function explainRun(issues: InputIssue[], body: Json, revision: Revision | null | undefined): Promise<InputIssue[]> {
+    const dsl = revision?.kind === "workflow" ? await import("@parcha/agentrun-dsl") : undefined;
+    const workflow = dsl && revision?.kind === "workflow" ? revision.body.workflow : undefined;
+    const declared = workflow?.input?.schemaId === undefined ? undefined : workflow.schemas[workflow.input.schemaId];
+    const input = !dsl ? DEFAULT_INPUT_SCHEMA : declared ? (dsl.resolveSchemaForWorkflow(workflow!, declared) as Json) : { type: "object" };
+    const base = deref(openapi, { $ref: "#/components/schemas/RunCreate" }) ?? {};
+    const schema = { ...base, properties: { ...(base.properties as Json), input } };
+    const check = (sent: unknown) => {
+      const value = isObject(sent) ? sent : {};
+      const issues = runBodyIssues(value);
+      if (!revision || !isObject(value.input)) return issues;
+      return [...issues, ...(dsl ? workflowInputIssues(dsl.validateWorkflow, revision, value.input) : inputIssues(value.input, DEFAULT_INPUT_SCHEMA as Json))];
+    };
+    return explain(issues, openapi, schema, { examples: dsl ? [] : examplesOf("createRun"), body, check });
+  }
+
   /** A run's input: an agentic run's `{content: string}`, a workflow run's what its workflow's input schema takes. */
   async function inputIssuesOf(revision: Revision, input: Json) {
     if (revision.kind === "agentic") return inputIssues(input, DEFAULT_INPUT_SCHEMA as Json);
     const { validateWorkflow } = await import("@parcha/agentrun-dsl");
+    return workflowInputIssues(validateWorkflow, revision, input);
+  }
+
+  /** A workflow run's input against its workflow's input schema, as the DSL checks it before the first node. */
+  function workflowInputIssues(validateWorkflow: typeof import("@parcha/agentrun-dsl").validateWorkflow, revision: Revision, input: Json): InputIssue[] {
+    if (revision.kind !== "workflow") return [];
     const checked = validateWorkflow(revision.body.workflow, { executeCode: false, input });
     return checked.ok ? [] : checked.issues.map((i) => ({ field: `input${i.path ? ` at ${i.path}` : ""}`, reason: "invalid", message: `the workflow does not take this input: ${i.code}${i.path ? ` at ${i.path}` : ""}` }));
   }
@@ -1313,23 +1357,22 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
    *  gets that run (the agent store's run_origins). */
   /** `capped`: the run must have a cap (a trigger's), its own or else its agent's default. */
   async function startRunOf(entry: AgentEntry, body: Json, { trigger, origin, capped = false }: { trigger?: RunTrigger; origin?: RunOrigin; capped?: boolean } = {}): Promise<Run> {
-    const issues = unknownFields(body, ["input", "revision", "file_ids", "effort", "max_cost_usd", "cap_mode", "quote_id"]);
-    if (!isObject(body.input)) issues.push({ field: "input", reason: body.input === undefined ? "missing" : "wrong_type", message: "input is an object" });
-    if (body.revision !== undefined && (typeof body.revision !== "string" || !ID.test(body.revision))) issues.push({ field: "revision", reason: "wrong_type", message: "revision is a revision id of this agent" });
-    if (body.effort !== undefined && !(EFFORTS as readonly unknown[]).includes(body.effort)) issues.push({ field: "effort", reason: "not_an_option", message: `effort is one of ${EFFORTS.join(", ")}` });
-    if (body.max_cost_usd !== undefined && !(typeof body.max_cost_usd === "number" && body.max_cost_usd > 0 && Number.isFinite(body.max_cost_usd))) issues.push({ field: "max_cost_usd", reason: "wrong_type", message: "max_cost_usd is a number above 0" });
-    if (body.cap_mode !== undefined && !(CAP_MODES as readonly unknown[]).includes(body.cap_mode)) issues.push({ field: "cap_mode", reason: "not_an_option", message: `cap_mode is one of ${CAP_MODES.join(", ")}` });
-    if (body.file_ids !== undefined && !Array.isArray(body.file_ids)) issues.push({ field: "file_ids", reason: "wrong_type", message: "file_ids is a list of file ids" });
-    if (issues.length) throw invalid(issues);
+    const issues = runBodyIssues(body);
+    if (issues.length) {
+      // Told from the revision the run would start on (a pinned one, else the current), once it reads as one: a pin that
+      // is malformed or names no revision gets the refusal alone, no hint.
+      const on = issues.some((issue) => issue.field === "revision") ? undefined : await pinnedOf(entry, body);
+      throw told(invalid(on ? await explainRun(issues, body, on.revision) : issues));
+    }
     if (body.quote_id !== undefined) throw unsupported("quotes", "This server has no billing, so it takes no quotes.");
     // Each a ready file, before anything starts: copied into the run's work/inputs/ once its directory is made.
     const files = Array.isArray(body.file_ids) ? await uploads.readyFiles(body.file_ids) : [];
-    const pinned = typeof body.revision === "string" ? await agents.revision(entry.agent.id, body.revision) : entry.revision && { revision: entry.revision, version: entry.version };
+    const pinned = await pinnedOf(entry, body);
     if (!pinned) throw invalid([{ field: "revision", reason: "not_an_option", message: typeof body.revision === "string" ? `${body.revision} is not a revision of the agent ${entry.agent.id}` : `the agent ${entry.agent.id} has no current revision` }]);
     const { revision, version } = pinned;
     const input = body.input as Json;
     const wrong = await inputIssuesOf(revision, input);
-    if (wrong.length) throw invalid(wrong);
+    if (wrong.length) throw told(invalid(await explainRun(wrong, body, revision)));
     // The run's own cap, else the agent's default: the caller chose its own.
     const cap = typeof body.max_cost_usd === "number" ? body.max_cost_usd : revision.body.maxCostUsd;
     if (capped && cap === undefined) throw invalid([{ field: "max_cost_usd", reason: "missing", message: "Every run a trigger starts is capped: give the trigger's target a max_cost_usd or set the agent's." }]);
@@ -1343,6 +1386,24 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     const shown = redactedOutput(input, learningSecrets());
     const title = revision.kind === "workflow" ? workflowTitle(entry.agent.name || entry.agent.id, isObject(shown) ? shown : {}) : typeof input.content === "string" ? input.content : (Object.values(input).find((v): v is string => typeof v === "string") ?? JSON.stringify(input));
     return runs.create(entry, revision, version, { input, title, place, ...(typeof body.effort === "string" ? { effort: body.effort } : {}), ...(cap !== undefined ? { maxCostUsd: cap } : {}), ...(capMode !== undefined ? { capMode } : {}), ...(trigger ? { trigger } : {}), ...(origin ? { origin } : {}), ...(files.length ? { inputs: (work: string) => uploads.copyInto(work, files) } : {}) });
+  }
+
+  /** The revision a run of `entry` starts on: the one `body.revision` pins, else the agent's current; undefined when the
+   *  pin names none, or the agent has no revision. */
+  async function pinnedOf(entry: AgentEntry, body: Json) {
+    return typeof body.revision === "string" ? await agents.revision(entry.agent.id, body.revision) : entry.revision && { revision: entry.revision, version: entry.version };
+  }
+
+  /** A run create's body as POST /agents/{id}/runs checks it before it reads the agent: each field issue. */
+  function runBodyIssues(body: Json): InputIssue[] {
+    const issues = unknownFields(body, ["input", "revision", "file_ids", "effort", "max_cost_usd", "cap_mode", "quote_id"]);
+    if (!isObject(body.input)) issues.push({ field: "input", reason: body.input === undefined ? "missing" : "wrong_type", message: "input is an object" });
+    if (body.revision !== undefined && (typeof body.revision !== "string" || !ID.test(body.revision))) issues.push({ field: "revision", reason: "wrong_type", message: "revision is a revision id of this agent" });
+    if (body.effort !== undefined && !(EFFORTS as readonly unknown[]).includes(body.effort)) issues.push({ field: "effort", reason: "not_an_option", message: `effort is one of ${EFFORTS.join(", ")}` });
+    if (body.max_cost_usd !== undefined && !(typeof body.max_cost_usd === "number" && body.max_cost_usd > 0 && Number.isFinite(body.max_cost_usd))) issues.push({ field: "max_cost_usd", reason: "wrong_type", message: "max_cost_usd is a number above 0" });
+    if (body.cap_mode !== undefined && !(CAP_MODES as readonly unknown[]).includes(body.cap_mode)) issues.push({ field: "cap_mode", reason: "not_an_option", message: `cap_mode is one of ${CAP_MODES.join(", ")}` });
+    if (body.file_ids !== undefined && !Array.isArray(body.file_ids)) issues.push({ field: "file_ids", reason: "wrong_type", message: "file_ids is a list of file ids" });
+    return issues;
   }
 
   /** A page of runs from the store, newest first: `agent`, `revision` and `status` narrow it. */
@@ -1705,7 +1766,55 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
 
   // ---- routing --------------------------------------------------------------------------------------------------------
 
+  /** A route's answer; a 422's field issues told from the operation's request body schema (explain.ts). */
   async function route(req: IncomingMessage, res: ServerResponse, url: URL, path: string): Promise<void> {
+    try {
+      return await routeOf(req, res, url, path);
+    } catch (error) {
+      const name = ROUTES.find((r) => r.pattern.test(path) && r.method === req.method)?.name;
+      if (!(error instanceof ApiError) || error.code !== "input_invalid" || !error.extra.fields?.length || !name || explained.has(error)) throw error;
+      const body = bodies.get(req);
+      const fields = explain(error.extra.fields, openapi, bodySchemaOf(name), { examples: examplesOf(name), body, check: body && BODY_CHECKS[name]?.(body) });
+      throw new ApiError(error.code, error.message === error.extra.fields[0]!.message ? fields[0]!.message : error.message, { ...error.extra, fields }, error.headers);
+    }
+  }
+
+  /** The 422s already told where they were thrown, with the checks only that place has (a run's, its agent's input). */
+  const explained = new WeakSet<ApiError>();
+  const told = (error: ApiError) => (explained.add(error), error);
+  /** Each request's body as bodyOf read it, for the 422's suggestions to be checked against. */
+  const bodies = new WeakMap<IncomingMessage, Json>();
+  /** The check of a whole body a route makes before anything else, by operation, for the body sent: what a suggested
+   *  value must pass. PUT .../definition's contract body (the definition itself) has none here. */
+  const definitionCheck = (creating: boolean) => (body: unknown) => definitionBodyIssues(isObject(body) ? body : {}, { creating });
+  const BODY_CHECKS: Record<string, (sent: Json) => ((body: unknown) => readonly InputIssue[]) | undefined> = {
+    createAgent: () => definitionCheck(true),
+    updateDefinition: (sent) => ("definition" in sent ? definitionCheck(false) : undefined),
+  };
+
+  /** An operation's documented request bodies (its JSON media type's examples), each its value. */
+  function examplesOf(operationId: string): unknown[] {
+    for (const item of Object.values(openapi.paths as Record<string, Record<string, Json>>)) {
+      for (const op of Object.values(item)) {
+        if (op.operationId !== operationId) continue;
+        const media = (((op.requestBody as Json | undefined)?.content as Json | undefined)?.["application/json"] as Json | undefined) ?? {};
+        return Object.values((media.examples as Record<string, Json> | undefined) ?? {}).map((example) => example.value);
+      }
+    }
+    return [];
+  }
+
+  /** An operation's JSON request body schema in the served document, if it has one. */
+  function bodySchemaOf(operationId: string): Json | undefined {
+    for (const item of Object.values(openapi.paths as Record<string, Record<string, Json>>)) {
+      for (const op of Object.values(item)) {
+        if (op.operationId === operationId) return deref(openapi, (((op.requestBody as Json | undefined)?.content as Json | undefined)?.["application/json"] as Json | undefined)?.schema);
+      }
+    }
+    return undefined;
+  }
+
+  async function routeOf(req: IncomingMessage, res: ServerResponse, url: URL, path: string): Promise<void> {
     const matching = ROUTES.filter((r) => r.pattern.test(path));
     // `/v2` twice: a path an answer gives (upload.url, a Location) appended to the /v2 base, where it starts at the root.
     if (!matching.length) throw new ApiError("not_found", path.startsWith("/v2/") ? `no route /v2${path}: /v2 is in it twice. A path an answer gives (upload.url, a Location) starts at the server's root: send it to the server's address, not after the /v2 base.` : `no route ${path}`);
@@ -1715,6 +1824,17 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     if (found.name === "getOpenapi") return send(res, 200, servedOpenapi(openapi, req.socket.localPort));
     // The one route with no token: a webhook trigger's request, checked by its signature before anything else is read.
     if (found.name === "receiveHook") return hook(req, res, path);
+    // An MCP server's OAuth sign-in: the browser coming back from its authorization server carries no token (the state
+    // it brings is the check, mcp-oauth.ts), and the client metadata document is for that server to fetch.
+    if (found.name === "mcpOAuthCallback") {
+      // Its state's start set a cookie in the browser that started it: no other browser finishes that sign-in.
+      const state = url.searchParams.get("state");
+      if (!startedHere(req.headers.cookie, req.socket.localPort, state)) throw new ApiError("forbidden", "This sign-in was started in another browser, or its 10 minutes are over: start it again in Settings → MCP servers, in this browser.");
+      const location = await mcpServers.oauthCallback(url.searchParams, stopping.signal);
+      // Its sign-in is over: its cookie goes.
+      return void res.writeHead(302, { location, "cache-control": "no-store", "set-cookie": signInCookie(req.socket.localPort, state!, overHttps(req), 0) }).end();
+    }
+    if (found.name === "mcpOAuthClient") return send(res, 200, mcpServers.clientDocument(), { "cache-control": "public, max-age=3600" });
     if (found.name === "getHealth") {
       const health = await healthOf(data, minFreeBytes);
       return send(res, health.status === "ok" ? 200 : 503, health);
@@ -2064,6 +2184,16 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         return send(res, 200, await mcpServers.save(id, await bodyOf(req), stopping.signal));
       case "refreshMcpServer":
         return send(res, 200, await mcpServers.refresh(id, stopping.signal));
+      case "startMcpOAuth": {
+        // The cookie is set on the address the request came to, and the authorization server sends the browser back
+        // to the callback's: they must be the one origin, or the callback never sees the cookie. The redirect URI
+        // stays that one address (a registered client names it), and a start from another answers where to go.
+        const origin = mcpServers.callbackOrigin;
+        if (ownOrigin(req) !== origin) throw new ApiError("wrong_origin", `This server's sign-in comes back to ${origin}, and finishes only in a browser that started it there: open the console at ${origin}${MCP_SETTINGS_PAGE} and sign in from it.`, { details: { open: `${origin}${MCP_SETTINGS_PAGE}` } });
+        const started = await mcpServers.oauthStart(id, await bodyOf(req));
+        const state = new URL(started.authorization_url).searchParams.get("state") ?? "";
+        return send(res, 200, started, { "set-cookie": signInCookie(req.socket.localPort, state, overHttps(req)) });
+      }
       case "deleteMcpServer":
         mcpServers.remove(id);
         return void res.writeHead(204, { "cache-control": "no-store" }).end();
@@ -2254,6 +2384,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const url = `http://${shown.includes(":") ? `[${shown}]` : shown}:${address.port}`;
   owner?.attach(options.publicUrl ?? url);
   webhooks.attach(options.publicUrl ?? url);
+  mcpServers.attach(options.publicUrl ?? url);
   const setupUrl = owner && !owner.hasPassword() ? owner.setupLink() : undefined;
   /** The server's stop: once (`close` keeps its promise). */
   let stopped: Promise<void> | undefined;
@@ -2275,6 +2406,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     stopping.abort();
     // An install of Claude Code under way stops with the server: its npm gets SIGTERM, and nothing half installed stays.
     const installStopped = claudeInstall?.stop();
+    // Aborted now, so nothing it writes races the next server on the same refresh token; drained before the lock goes.
+    const mcpStopped = mcpServers.close();
     triggers.close();
     for (const [worker, { task }] of workers) {
       if (task === "plan") void worker.terminate();
@@ -2293,6 +2426,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     await webhooks.close();
     await new Promise((done) => (server.close(done), server.closeAllConnections()));
     agents.close();
+    await mcpStopped;
     // The record stays: the next server rewrites it as it starts, and a stopped one whose time has passed is no stop.
     lock.release();
   }
@@ -2308,5 +2442,6 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     // Once: a second call, at any time, is the first one's promise, so a close repeated after the next server started
     // never writes this data root's record again (the next server's, by then).
     close: () => (stopped ??= stop()),
+    stopping: () => runs.stopping(),
   };
 }

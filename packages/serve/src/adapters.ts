@@ -184,7 +184,7 @@ export type ConfineChild = (child: Readonly<{ command: string; args: string[] }>
 /** What a run's adapter needs of serve: its model, the catalog that prices it as it prices pi's runs, the run's
  *  confinement for the harness's own process, and the skills it loads itself (claude-agent's, which its own check took:
  *  skills.ts). */
-export type AdapterNeeds = { model: ModelRef; models: { getModel(provider: string, id: string): { cost?: Partial<ModelCost> } | undefined }; confine?: ConfineChild; skills?: readonly SkillFiles[] };
+export type AdapterNeeds = { model: ModelRef; models: { getModel(provider: string, id: string): { cost?: Partial<ModelCost> } | undefined }; confine?: ConfineChild; skills?: readonly SkillFiles[]; unpriced?: ReadonlySet<string> };
 
 /** The ConfineChild that starts a child under `prefix` (the argv pi's commands start under, ending in "--"); none when
  *  the run confines nothing, since an adapter refuses a confinement that adds nothing. */
@@ -284,6 +284,8 @@ export async function codexModel(env: NodeJS.ProcessEnv, ref: string | undefined
  *  usage's input is net of the cached tokens, which are priced at their own rate. */
 export function priceOf(needs: AdapterNeeds) {
   return (_model: string, usage: { input: number; output: number; cacheRead?: number; cacheWrite?: number }): number | null => {
+    // A model serve has no price for (runModels' `unpriced`) carries a placeholder cost of zeros: unknown, never $0.
+    if (needs.unpriced?.has(needs.model.modelId)) return null;
     const cost = needs.models.getModel(needs.model.provider, needs.model.modelId)?.cost;
     if (!cost || typeof cost.input !== "number" || typeof cost.output !== "number") return null;
     return (usage.input * cost.input + usage.output * cost.output + (usage.cacheRead ?? 0) * (cost.cacheRead ?? 0) + (usage.cacheWrite ?? 0) * (cost.cacheWrite ?? 0)) / 1e6;

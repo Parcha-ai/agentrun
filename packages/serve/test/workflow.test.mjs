@@ -69,7 +69,7 @@ test("each model node runs on its tier's model: fast on AGENT_MODEL_FAST, the re
   process.env.AGENT_MODEL_FAST = "faux-fast";
   t.after(() => (saved === undefined ? delete process.env.AGENT_MODEL_FAST : (process.env.AGENT_MODEL_FAST = saved)));
   const { api, baseUrl, data } = await serve(t);
-  assert.deepEqual((await client(baseUrl)("GET", "/capabilities")).body.models, { source: "faux", route_prefix: null, fast: "faux/faux-fast", default: "faux/faux-1", strong: "faux/faux-1", ready: true, needs: null });
+  assert.deepEqual((await client(baseUrl)("GET", "/capabilities")).body.models, { source: "faux", route_prefix: null, fast: "faux/faux-fast", default: "faux/faux-1", strong: "faux/faux-1", ready: true, needs: null, priced: true });
   const tiered = answerFlow();
   tiered.root.steps.unshift({ node: "extract", label: "draft", instructions: "Draft an answer.", out: "Answer", as: "draft", tier: "fast" });
   const started = await start(api, "tiered", { question: "What is six times seven?" }, tiered);

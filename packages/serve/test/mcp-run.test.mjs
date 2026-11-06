@@ -310,10 +310,22 @@ test("claude-agent: a run killed mid-call resumes with the call reported interru
     assert.ok(i < 1200, "the call reaches the server");
     await sleep(100);
   }
+  // While the call runs, the Timeline has its row, as on codex.
+  const isCall = (row) => row.tool_name === "mcp__fake__slow_write";
+  let running = [];
+  for (let i = 0; i < 50 && !running.some((row) => row.kind === "tool_use" && isCall(row)); i++) {
+    if (i) await sleep(100);
+    running = (await api("GET", `/runs/${runId}/timeline`)).body.rows ?? [];
+  }
+  assert.ok(running.some((row) => row.kind === "tool_use" && isCall(row)), `the running call has its row: ${JSON.stringify(running.map((row) => [row.kind, row.summary]))}`);
   const record = async () => runRecordOf(data, runId);
   process.kill((await record()).holder.pid, "SIGKILL");
   const { rows, last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 180_000 });
   assert.equal(last.status, "completed", JSON.stringify(rows.filter((row) => row.kind === "error" || row.kind.startsWith("tool"))));
+  // After the cut, its row stays, once, and its result reads interrupted.
+  const tools = rows.filter((row) => row.kind.startsWith("tool") && isCall(row));
+  assert.equal(tools.filter((row) => row.kind === "tool_use").length, 1, JSON.stringify(tools));
+  assert.match(JSON.stringify(tools.find((row) => row.kind === "tool_result") ?? null), /interrupted/i, JSON.stringify(tools));
   // The resumed session's model is told the call was cut and not run again, in the harness's recovery note.
   const resumed = anthropic.messages().filter((request) => request.tools.includes("mcp__fake__slow_write")).slice(1);
   assert.ok(resumed.some((request) => /interrupted[\s\S]*none was run again[\s\S]*mcp__fake__slow_write/.test(JSON.stringify(request.body.system ?? ""))), "the recovery note names the interrupted call");
@@ -336,7 +348,7 @@ test("pi: a saved credential that can't be opened refuses the call before anythi
   const runId = await runOf(api, "unopened", 'Call mcp__fake__add with {"a":2,"b":3}');
   const { last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 60_000 });
   assert.equal(last.status, "completed");
-  assert.equal((await api("GET", `/runs/${runId}`)).body.result?.final_answer, "The tool said: The MCP server fake's credential can't be opened on this server (sealed under another seal key, or damaged); update it in Settings → MCP servers.");
+  assert.equal((await api("GET", `/runs/${runId}`)).body.result?.final_answer, "The tool said: The MCP server fake's credential can't be used right now: it was sealed under another seal key, or damaged; update it in Settings → MCP servers.");
   // A save's own preview may still be closing its exchange: what the run would send is a call or a handshake.
   assert.deepEqual(fake.log.slice(before).filter((entry) => ["tools/call", "initialize", "server/discover"].includes(entry.method)), [], "nothing reached the server");
   assert.equal((await api("POST", `/runs/${runId}/messages`, { content: 'Call mcp__open__add with {"a":2,"b":3}' })).status, 202);
@@ -451,7 +463,7 @@ test("codex: a door Codex's client can't reach fails the run, naming the server,
   assert.match(JSON.stringify(view.error ?? view), /MCP servers failed to initialize: fake\b/);
 });
 
-test("codex: a run killed mid-call resumes with the call answered interrupted, and the server saw the call once", { timeout: 120_000 }, async (t) => {
+test("codex: a run killed mid-call shows the call's row while it runs and its interrupted result after, resumes with the call answered interrupted, and the server saw the call once", { timeout: 120_000 }, async (t) => {
   const { api, data } = await codexServe(t);
   const fake = await addFake(t, api);
   assert.equal((await api("POST", "/agents", agent("codex-writer", { harness: "codex", tools: ["mcp:fake/slow_write"], tool_settings: ALLOW_FAKE }))).status, 201);
@@ -460,10 +472,23 @@ test("codex: a run killed mid-call resumes with the call answered interrupted, a
     assert.ok(i < 600, "the call reaches the server");
     await sleep(100);
   }
+  // While the call runs, the Timeline has its row: the call's intent is in the session before it is sent.
+  const isCall = (row) => row.tool_name === "mcp__fake__slow_write";
+  let running = [];
+  for (let i = 0; i < 50 && !running.some((row) => row.kind === "tool_use" && isCall(row)); i++) {
+    if (i) await sleep(100);
+    running = (await api("GET", `/runs/${runId}/timeline`)).body.rows ?? [];
+  }
+  assert.ok(running.some((row) => row.kind === "tool_use" && isCall(row) && row.summary === "fake · slow_write"), `the running call has its row: ${JSON.stringify(running.map((row) => [row.kind, row.summary]))}`);
   const { holder } = runRecordOf(data, runId);
   process.kill(holder.pid, "SIGKILL");
   const { rows, last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 90_000 });
   assert.equal(last.status, "completed", JSON.stringify(rows.at(-1)));
+  // After the cut, the call's row stays, once, and its result reads interrupted, from the session's record of the call.
+  const tools = rows.filter((row) => row.kind.startsWith("tool") && isCall(row));
+  assert.equal(tools.filter((row) => row.kind === "tool_use").length, 1, JSON.stringify(tools));
+  const result = tools.find((row) => row.kind === "tool_result");
+  assert.match(`${result?.summary} ${result?.tool_result_preview}`, /interrupted[\s\S]*may or may not have taken effect/i, JSON.stringify(tools));
   // What the model reads of the call in the resumed thread: Codex was told it was interrupted.
   assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "outputs" })).status, 202);
   await sleep(500);
