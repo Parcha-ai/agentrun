@@ -17,6 +17,7 @@
 // a crash cut off is never run again (`replay: "never"`): it is answered interrupted.
 import type { TSchema } from "@earendil-works/pi-ai";
 import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
+import { registerLabel, registerOutcome } from "@parcha/pi-durable-agent/timeline";
 import { sideRequests } from "./cap.js";
 import { draftProblems, LEARNED_MAX_TURNS } from "./learn/index.js";
 import { type LearnedWorkflow, workflowLine } from "./learning.js";
@@ -29,6 +30,50 @@ import { allows, CALL_TOOLS, learnedDraftTools, toolOf } from "./tools.js";
 import type { Complete } from "./llm.js";
 
 export const LEARNED_WORKFLOW_TOOL = "learned_workflow";
+
+/** The most of a learned workflow's output its result line shows, and the longest value it shows as written. */
+const LINE_MAX = 120;
+const VALUE_MAX = 60;
+
+/** One line of a learned workflow's output for its row: an object's fields as `name value`, each value whole or, when
+ *  longer than VALUE_MAX, only as its size, and whole fields only until LINE_MAX. Nothing is ever cut inside a value:
+ *  the timeline redacts the line as it says it (its summary's words), and its redactor matches a held value only whole,
+ *  so a cut value could leave a prefix it would not find. Newlines are flattened, so the one line it keeps holds every
+ *  field. An output already cut for the model (learnedText) says so. */
+export function outputLine(text: string): string | undefined {
+  const clipped = /\n\[the workflow's output is cut at (\d+) of (\d+) characters\]$/.exec(text);
+  if (clipped) return `its output is long, cut at ${clipped[1]} of ${clipped[2]} characters`;
+  let output: unknown;
+  try {
+    output = JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+  const said = (value: unknown): string => {
+    const flat = (typeof value === "string" ? value : JSON.stringify(value) ?? String(value)).replace(/\s+/g, " ").trim();
+    return flat.length > VALUE_MAX ? `(${flat.length} characters)` : flat;
+  };
+  if (!output || typeof output !== "object" || Array.isArray(output)) return said(output);
+  const fields: string[] = [];
+  let length = 0;
+  for (const [key, value] of Object.entries(output as Record<string, unknown>)) {
+    const field = `${key} ${said(value)}`;
+    if (fields.length && length + 2 + field.length > LINE_MAX) {
+      fields.push("…");
+      break;
+    }
+    fields.push(field);
+    length += (fields.length > 1 ? 2 : 0) + field.length;
+  }
+  return fields.length ? fields.join(", ") : undefined;
+}
+
+// The timeline's words for a learned workflow's call: the workflow it ran (its name), and, once it returns, its output.
+registerLabel(LEARNED_WORKFLOW_TOOL, (a) => (typeof a.name === "string" && a.name ? `Ran the learned workflow ${a.name}` : "Ran a learned workflow"), undefined, { name: "Run a learned workflow" });
+registerOutcome(LEARNED_WORKFLOW_TOOL, (result) => {
+  const line = outputLine(result.text);
+  return line === undefined ? undefined : { failed: false, text: line };
+});
 
 /** The models a learned workflow's model nodes run on: the run's own (capped and marked: app.ts), as pi-ai's. */
 type RunModels = {
