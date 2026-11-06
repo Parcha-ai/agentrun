@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"syscall"
 
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/rpc"
 )
@@ -197,10 +198,27 @@ func writeTar(w io.Writer, root, name string, info fs.FileInfo) error {
 	return tw.Close()
 }
 
+// addEntry writes path's entry, found by the walk at info. A file is opened first, without following a link, and its
+// header comes from what was opened; one that is no longer a regular file by then is left out, as a pipe the walk
+// found would be.
 func addEntry(tw *tar.Writer, path, name string, info fs.FileInfo) error {
+	var f *os.File
 	link := ""
 	switch {
-	case info.Mode().IsRegular(), info.IsDir():
+	case info.IsDir():
+	case info.Mode().IsRegular():
+		var err error
+		f, err = openRegular(path, syscall.O_RDONLY|syscall.O_NOFOLLOW, 0)
+		if errors.Is(err, errNotRegular) || errors.Is(err, syscall.EISDIR) || errors.Is(err, syscall.ELOOP) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		if info, err = f.Stat(); err != nil {
+			return err
+		}
 	case info.Mode()&fs.ModeSymlink != 0:
 		var err error
 		if link, err = os.Readlink(path); err != nil {
@@ -220,17 +238,9 @@ func addEntry(tw *tar.Writer, path, name string, info fs.FileInfo) error {
 	if err := tw.WriteHeader(hdr); err != nil {
 		return err
 	}
-	if !info.Mode().IsRegular() {
+	if f == nil {
 		return nil
 	}
-	if beforeOpen != nil {
-		beforeOpen(path)
-	}
-	f, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
 	if _, err := io.CopyN(tw, f, hdr.Size); err != nil {
 		return fmt.Errorf("%s changed while it was read: %w", path, err)
 	}
