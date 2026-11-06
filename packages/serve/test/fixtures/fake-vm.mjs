@@ -55,6 +55,9 @@ function hostileBin() {
   return bin;
 }
 
+/** How many sandboxes this process made, across every reset. */
+let made = 0;
+
 class FakeSandbox {
   constructor(sandboxId, params) {
     this.sandboxId = sandboxId;
@@ -159,7 +162,9 @@ class FakeClient {
     this.images = { fromRegistry: (tag) => ({ registry: tag }), fromId: async (id) => ({ id }) };
     this.sandboxes = {
       create: async (_app, _image, params) => {
-        const sandbox = new FakeSandbox(`sb-${process.pid}-${vm.sandboxes.length + 1}`, params);
+        // Never reused within the process: a server a test left still finishing its end-of-run work can never reach the
+        // next test's sandbox, or its directory, by a stale id.
+        const sandbox = new FakeSandbox(`sb-${process.pid}-${++made}`, params);
         vm.sandboxes.push(sandbox);
         return sandbox;
       },
