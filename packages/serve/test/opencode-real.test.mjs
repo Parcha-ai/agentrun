@@ -6,7 +6,7 @@
 //
 // Without the pinned binary this skips; with AGENTRUN_OPENCODE_REQUIRE_BINARY=1 (CI) it fails.
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -129,14 +129,19 @@ test("twenty follow-ups on the pinned OpenCode, each a new process that took the
   const io = { writer: await store.open("loop"), models: { beforeRequest: async () => {}, afterRequest: async () => {} }, signal: new AbortController().signal, cwd: mkdtempSync(join(ROOT, "loop-work-")), onEvent: (e) => events.push(e) };
   const session = await a.open({ key: "loop", label: "task", system: ["You answer."], tools: [], context: "fresh" }, io);
   const ends = [];
+  // Each drive that did not complete, with its error: a failure names its cause (a start, a stream, a request).
+  const failed = [];
   for (let i = 1; i <= 20; i++) {
     await session.send(`Message ${i}.`);
-    ends.push((await session.turnEnd()).status);
+    const end = await session.turnEnd();
+    ends.push(end.status);
+    if (end.status !== "completed") failed.push({ drive: i, ...end });
   }
   await session.close();
   const reopened = said.filter((m) => m.includes("event stream is opened again")).length;
   t.diagnostic(`${ends.filter((e) => e === "completed").length}/20 drives completed on the pinned binary; ${reopened} event streams opened again`);
-  assert.deepEqual(ends, Array(20).fill("completed"));
+  if (failed.length) t.diagnostic(`drives that did not complete: ${JSON.stringify(failed)}`);
+  assert.deepEqual(ends, Array(20).fill("completed"), `every drive completed: ${JSON.stringify(failed)}`);
   assert.equal(reopened, 0, "every drive's stream opened at the first try");
   assert.equal(seen.length, 20, "one request per turn");
   const last = JSON.stringify(seen[19].input);
@@ -144,17 +149,52 @@ test("twenty follow-ups on the pinned OpenCode, each a new process that took the
   assert.equal(events.filter((e) => e.type === "text").map((e) => e.delta).join(" "), Array.from({ length: 20 }, (_, i) => `Answer ${i + 1}.`).join(" "));
 });
 
-/** A port free on 127.0.0.1 now. */
-const freePort = () => new Promise((resolve, reject) => {
+/** Whether `port` is free on 127.0.0.1 now. */
+const isFree = (port) => new Promise((resolve) => {
   const probe = createServer();
-  probe.once("error", reject);
-  probe.listen(0, "127.0.0.1", () => {
-    const { port } = probe.address();
-    probe.close(() => resolve(port));
-  });
+  probe.once("error", () => resolve(false));
+  probe.listen(port, "127.0.0.1", () => probe.close(() => resolve(true)));
 });
 
-test("twenty follow-ups on the pinned OpenCode, every drive's process on the SAME port (as where 4096 is free: OpenCode takes it each time): every event stream opens at the first try", { skip: skip || (process.env.CI && !process.env.AGENTRUN_RUN_QUARANTINED && "quarantined F36 (tl-jobs) until 2026-11-06T02:47Z, scripts/quarantine.json"), timeout: 600_000 }, async (t) => {
+/** A port free on 127.0.0.1 now, BELOW the kernel's ephemeral range (Linux's ip_local_port_range, 32768 to 60999 by
+ *  default): no listen(0) and no outbound connection on this machine is ever handed it, so between two drives nothing
+ *  else takes it unless it binds that port by name, as with 4096, the port OpenCode takes when it is free. A port from
+ *  listen(0) is in that range: on a busy machine (CI's test runs side by side) another test's listen(0) or connection
+ *  could be handed it in the moment between one drive's OpenCode and the next, and the next would fail to bind it
+ *  ("OpenCode exited before it listened", ServeError: F36, twice on CI). */
+async function freePort(low = ephemeralLow()) {
+  // Every candidate is strictly below `low` (and below Linux's default start): from 20000, or from 1,000 below `low` when
+  // the range starts lower, never into the privileged ports. A host whose range leaves none fails, never takes one in it.
+  const to = Math.min(low, 32768);
+  const from = Math.max(1024, Math.min(20000, to - 1000));
+  if (to <= from) throw new Error(`no port below the ephemeral range: it starts at ${low}`);
+  for (let tries = 0; tries < 200; tries++) {
+    const port = from + Math.floor(Math.random() * (to - from));
+    if (await isFree(port)) return port;
+  }
+  throw new Error(`no free port below the ephemeral range: none in ${from}-${to - 1} (it starts at ${low})`);
+}
+
+/** The first port of this host's ephemeral range: Linux's ip_local_port_range, read now, or its default off Linux. */
+function ephemeralLow() {
+  try {
+    return Number(readFileSync("/proc/sys/net/ipv4/ip_local_port_range", "utf8").trim().split(/\s+/)[0]) || 32768;
+  } catch {
+    return 32768;
+  }
+}
+
+test("the drives' port is below the host's ephemeral range wherever it starts: under a range from 20000 every pick is below 20000, and a range that leaves no port below it fails by name", async () => {
+  for (let i = 0; i < 20; i++) {
+    const port = await freePort(20000);
+    assert.ok(port >= 1024 && port < 20000, `below a range from 20000: ${port}`);
+  }
+  const low = ephemeralLow();
+  assert.ok((await freePort()) < low, `below this host's range, from ${low}`);
+  await assert.rejects(freePort(1024), /^Error: no port below the ephemeral range: it starts at 1024$/);
+});
+
+test("twenty follow-ups on the pinned OpenCode, every drive's process on the SAME port (as where 4096 is free: OpenCode takes it each time): every event stream opens at the first try", { skip, timeout: 600_000 }, async (t) => {
   // The pinned binary, started by the adapter's stand-in hook on one port for every drive: each new process listens where
   // the killed one before it did. A connection kept from an earlier drive is then a connection to a dead process.
   process.env.AGENTRUN_OPENCODE_STANDIN = "1";
@@ -173,13 +213,18 @@ test("twenty follow-ups on the pinned OpenCode, every drive's process on the SAM
   const io = { writer: await store.open("same-port"), models: { beforeRequest: async () => {}, afterRequest: async () => {} }, signal: new AbortController().signal, cwd: mkdtempSync(join(ROOT, "same-port-work-")), onEvent: () => {} };
   const session = await a.open({ key: "same-port", label: "task", system: ["You answer."], tools: [], context: "fresh" }, io);
   const ends = [];
+  // Each drive that did not complete, with its error: a failure names its cause (a start, a stream, a request).
+  const failed = [];
   for (let i = 1; i <= 20; i++) {
     await session.send(`Message ${i}.`);
-    ends.push((await session.turnEnd()).status);
+    const end = await session.turnEnd();
+    ends.push(end.status);
+    if (end.status !== "completed") failed.push({ drive: i, ...end });
   }
   await session.close();
   t.diagnostic(`${ends.filter((e) => e === "completed").length}/20 drives completed on one port; ${reopened.length} event streams opened again`);
-  assert.deepEqual(ends, Array(20).fill("completed"));
+  if (failed.length) t.diagnostic(`drives that did not complete: ${JSON.stringify(failed)}`);
+  assert.deepEqual(ends, Array(20).fill("completed"), `every drive completed: ${JSON.stringify(failed)}`);
   assert.deepEqual(reopened, [], "every drive's stream opened at the first try");
   assert.equal(seen.length, 20, "one request per turn");
 });
