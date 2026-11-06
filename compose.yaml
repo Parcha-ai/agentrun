@@ -1,6 +1,7 @@
-# AgentRun Server in a container, with Docker sandboxes, on a Linux host with Docker Engine 26 or later. One command, in
-# the directory that holds this file:
-#   DOCKER_GID=$(stat -c %g /var/run/docker.sock) docker compose up -d
+# AgentRun Server in a container, with Docker sandboxes, on a Linux host with Docker Engine 26 or later. In the directory
+# that holds this file, once, then every later compose command in any shell:
+#   echo "DOCKER_GID=$(stat -c %g /var/run/docker.sock)" >> .env
+#   docker compose up -d
 # Then open the link `docker compose logs agentrun` prints. From a checkout, `--build` builds the image from it
 # (packages/serve/docker/Dockerfile) in place of the published one.
 #
@@ -37,7 +38,8 @@ services:
       # The hosts a box may reach, as a comma list; empty, the package registries and GitHub; none for no network.
       AGENTRUN_BOX_ALLOW: ${AGENTRUN_BOX_ALLOW:-}
       AGENTRUN_TOKEN: ${AGENTRUN_TOKEN:-}
-      AGENTRUN_PUBLIC_URL: "${AGENTRUN_PUBLIC_URL:-http://127.0.0.1:7340/}" # key-gate: loopback-rule the published loopback port, the printed link
+      # The printed link: the published port, AGENTRUN_PORT's when it is set.
+      AGENTRUN_PUBLIC_URL: "${AGENTRUN_PUBLIC_URL:-http://127.0.0.1:${AGENTRUN_PORT:-7340}/}" # key-gate: loopback-rule the published loopback port, the printed link
       AGENT_MODEL: ${AGENT_MODEL:-}
       AGENT_MODEL_FAST: ${AGENT_MODEL_FAST:-}
       AGENT_MODEL_STRONG: ${AGENT_MODEL_STRONG:-}

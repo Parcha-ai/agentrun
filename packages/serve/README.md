@@ -171,9 +171,13 @@ On a Linux host with Docker Engine 26 or later, with no checkout:
 ```sh
 curl -fsSLO https://raw.githubusercontent.com/Parcha-ai/agentrun/main/compose.yaml
 export AGENT_MODEL=openrouter/anthropic/claude-sonnet-5.5 OPENROUTER_API_KEY=...
-DOCKER_GID=$(stat -c %g /var/run/docker.sock) docker compose up -d
+echo "DOCKER_GID=$(stat -c %g /var/run/docker.sock)" >> .env
+docker compose up -d
 docker compose logs agentrun | grep Open
 ```
+
+The `.env` beside `compose.yaml` keeps the socket's group (`DOCKER_GID`) for every later `docker compose` command, in any
+shell: compose reads it each time, and `compose.yaml` needs it to be read at all.
 
 From a checkout, the same command in its root, with `--build` to build the image from it.
 `packages/serve/docker/Dockerfile` builds that image: the server and the open packages it runs, on Node 22 and Debian 13
@@ -183,7 +187,7 @@ the runs and the token.
 The token is in the log of the start that made it. On a stop the server gives a busy run 6 s
 (`--drain-timeout 6s`) to finish its turn, so a busy `docker stop` ends in about 7.5 s, inside Docker's default 10 s
 grace, and Compose's `stop_grace_period` is 15 s; a turn cut off resumes at the next start. Compose publishes the port
-on this machine's loopback only (port 7340, or `AGENTRUN_PORT`; set `AGENTRUN_PUBLIC_URL` with it, so the printed link names that port), and
+on this machine's loopback only (port 7340, or `AGENTRUN_PORT`, which the printed link follows unless `AGENTRUN_PUBLIC_URL` is set), and
 the volume `agentrun-data` keeps `/data` across `down` and `up`. In the container the server listens on `0.0.0.0`, and
 every route but `GET /v2/capabilities` and `GET /v2/health` still needs the token. Compose's `healthcheck` and
 `render.yaml`'s `healthCheckPath` are `GET /v2/health`.

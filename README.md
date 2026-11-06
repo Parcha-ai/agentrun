@@ -38,9 +38,12 @@ Save it in the console (Settings → Tool keys → Model keys), which takes effe
    ```sh
    curl -fsSLO https://raw.githubusercontent.com/Parcha-ai/agentrun/main/compose.yaml
    export OPENROUTER_API_KEY=...
-   DOCKER_GID=$(stat -c %g /var/run/docker.sock) docker compose up -d
+   echo "DOCKER_GID=$(stat -c %g /var/run/docker.sock)" >> .env
+   docker compose up -d
    docker compose logs agentrun | grep Open
    ```
+
+   The `.env` beside `compose.yaml` keeps the socket's group for every later `docker compose` command, in any shell.
 
    Open the link it prints; the named volume `agentrun-data` keeps every agent and run. Each run's `bash` runs in a
    Docker container of its own beside the server, with no network but the package registries and GitHub, and only that
