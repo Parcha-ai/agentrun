@@ -5,10 +5,12 @@ import { test } from "node:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { claudeModel, claudeModelId, claudeOf, claudeProvider, codexOf, codexProvider, HarnessUnavailable, installHint, priceOf, startedByNpx } from "../dist/adapters.js";
+import { claudeModel, claudeModelId, claudeOf, claudeProvider, codexOf, codexProvider, HarnessUnavailable, priceOf, startedByNpx, startReason } from "../dist/adapters.js";
+import { linkHarnesses } from "./support.mjs";
 import * as adapters from "../dist/adapters.js";
 import * as files from "../dist/files.js";
-import { installLine } from "../dist/claude-sdk.js";
+import { HARNESS_INSTALLS, installLine } from "../dist/harness-install.js";
+const CLAUDE_LOCK = HARNESS_INSTALLS["claude-agent"].lock;
 import { fileURLToPath } from "node:url";
 
 const openai = { provider: "openai", modelId: "gpt-5.4-mini" };
@@ -120,7 +122,7 @@ test("a gateway base that could send a key somewhere else than it reads is refus
   assert.equal(claudeProvider({ ANTHROPIC_API_KEY: key, ANTHROPIC_BASE_URL: "http://localhost:5000" }, anthropic).origin, "http://localhost:5000");
 });
 
-/** An installed SDK as claudeOf loads it (claude-sdk.ts loadSdk): a test's, which no adapter here runs. */
+/** An installed SDK as claudeOf loads it (harness-install.ts loadSdk): a test's, which no adapter here runs. */
 const loadedSdk = async (version) => ({ sdk: { query() {} }, sdkVersion: version, cliPath: "/nowhere/claude", mcp: { server: {}, types: {} } });
 
 test("claude-agent with Claude Code not installed in the data, and no key: the reason is the install, with the command that installs it into the data's harnesses, never the key a person would set first", async (t) => {
@@ -130,10 +132,10 @@ test("claude-agent with Claude Code not installed in the data, and no key: the r
   await assert.rejects(claudeOf({ AGENTRUN_SERVE_DATA: data }, needs), (error) => {
     assert.ok(error instanceof HarnessUnavailable, String(error));
     assert.match(error.message, /not installed/);
-    assert.ok(error.message.includes(installLine(join(data, "harnesses"))), error.message);
+    assert.ok(error.message.includes(installLine(join(data, "harnesses", "claude-agent"), CLAUDE_LOCK)), error.message);
     // The locked install, exactly: npm ci in a fresh directory with no script, then that put in place of the harnesses.
-    const [dir, shipped] = [join(data, "harnesses"), fileURLToPath(new URL("../harnesses/claude-agent/", import.meta.url))];
-    assert.equal(installLine(dir), `rm -rf ${dir}.new && mkdir -p ${dir}.new && cp ${join(shipped, "package.json")} ${join(shipped, "package-lock.json")} ${dir}.new/ && npm ci --prefix ${dir}.new --ignore-scripts --include=optional && (chmod -R u+w ${dir} 2>/dev/null || true) && rm -rf ${dir} && mv ${dir}.new ${dir}`);
+    const [dir, shipped] = [join(data, "harnesses", "claude-agent"), fileURLToPath(new URL("../harnesses/claude-agent/", import.meta.url))];
+    assert.equal(installLine(dir, CLAUDE_LOCK), `rm -rf ${dir}.new && mkdir -p ${dir}.new && cp ${join(shipped, "package.json")} ${join(shipped, "package-lock.json")} ${dir}.new/ && npm ci --prefix ${dir}.new --ignore-scripts --include=optional && (chmod -R u+w ${dir} 2>/dev/null || true) && rm -rf ${dir} && mv ${dir}.new ${dir}`);
     assert.doesNotMatch(error.message, /ANTHROPIC_API_KEY/);
     return true;
   });
@@ -158,7 +160,7 @@ test("claude-agent's adapter is handed the SDK, its CLI and the MCP library as t
   for (const broken of [unpinned, pinned]) {
     await assert.rejects(claudeOf(env, needs, broken, async () => sdk), (error) => {
       assert.ok(error instanceof HarnessUnavailable, String(error));
-      assert.ok(error.message.includes(installLine("/d/harnesses")), error.message);
+      assert.ok(error.message.includes(installLine("/d/harnesses/claude-agent", CLAUDE_LOCK)), error.message);
       assert.ok(!error.message.includes(real.CLAUDE_AGENT_SDK_INSTALL), error.message);
       return true;
     });
@@ -191,45 +193,34 @@ test("claude-agent's check of skills is the installed adapter's own skillProblem
 const SERVE = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 
 // What a run from npx says to do about a missing harness: one command that starts this same AgentRun again with the
-// harness's package beside it. `none` and `codexHere` stand in for what is installed beside the server.
+// harness's package beside it (OpenCode's alone: claude-agent and codex install themselves into the data). `none` stands in
+// for nothing installed beside the server.
 const none = () => undefined;
-const codexHere = (name) => (name === "@openai/codex" ? "0.164.0" : undefined);
 /** A home directory for the hints to name: any absolute path. */
 const HOME_DIR = "/h/person";
 const home = (more = {}) => ({ HOME: HOME_DIR, ...more });
 
-test("demo: run from npx, a missing Codex says the npx line that starts this server again with it; installed in a project, the npm line", async () => {
+test("codex with Codex not installed in the data, or not its pinned build: the reason names the command that installs it into the data's harnesses, never an npx or npm line beside the server", async (t) => {
+  const data = mkdtempSync(join(tmpdir(), "agentrun-adapters-"));
+  t.after(() => rmSync(data, { recursive: true, force: true }));
   const codex = await import("@parcha/agentrun-harness-codex");
-  const missing = new codex.CodexNotInstalled("no binary for this platform").message;
-  assert.ok(missing.endsWith(`; ${codex.CODEX_INSTALL}`), missing);
-  const spec = `@openai/codex@${codex.CODEX_VERSION}`;
-  assert.equal(installHint(missing, codex.CODEX_INSTALL, spec, true, {}, none), missing.replace(codex.CODEX_INSTALL, `restart AgentRun with it: npx -p @parcha/agentrun-serve@${SERVE} -p @openai/codex@0.164.0 agentrun-serve`));
-  assert.equal(installHint(missing, codex.CODEX_INSTALL, spec, false), missing, "in a project: the adapter's npm line");
-  // Through serve's own check of the harness: the reason a person reads, under npx and in a project.
-  const absent = async () => ({ ...codex, verifyCodex: () => { throw new codex.CodexNotInstalled("no binary for this platform"); } });
   const needs = { model: { provider: "openai", modelId: "gpt-5.4-mini" }, models: { getModel: () => undefined } };
-  const reason = async (npx, env = {}) => codexOf(env, needs, absent, npx).then(() => assert.fail("refused"), (error) => (assert.ok(error instanceof HarnessUnavailable, String(error)), error.message));
-  const opencode = adapters.installedHere?.("opencode-ai");
-  assert.equal(opencode, "1.19.5", "this checkout installs OpenCode beside serve");
-  // The Claude Agent SDK this checkout has beside serve (a dev dependency) is never named: Claude Code installs itself.
-  assert.ok((await reason(true)).endsWith(`; restart AgentRun with it: npx -p @parcha/agentrun-serve@${SERVE} -p opencode-ai@${opencode} -p ${spec} agentrun-serve`));
-  assert.ok((await reason(true, { AGENTRUN_NPX_PACKAGE: "@parcha/agentrun@0.3.0" })).endsWith(`; restart AgentRun with it: npx -p @parcha/agentrun@0.3.0 -p @parcha/agentrun-serve@${SERVE} -p opencode-ai@${opencode} -p ${spec} agentrun`));
-  assert.ok((await reason(false)).endsWith(`; ${codex.CODEX_INSTALL}`));
-  // As the start's probe says it (startReason): in a project, the restart that shows the install; under npx, the npx
-  // line alone, since running it is the restart.
-  const { startReason } = await import("../dist/adapters.js");
-  const said = async (npx) => startReason(await codexOf({}, needs, absent, npx).then(() => assert.fail("refused"), (error) => error));
-  assert.equal(await said(false), `${await reason(false)}; once it is installed, restart AgentRun to pick it up.`);
-  assert.equal(await said(true), await reason(true), "under npx: the npx line, no restart clause");
+  const line = installLine(join(data, "harnesses", "codex"), HARNESS_INSTALLS.codex.lock);
+  assert.match(line, / npm ci --prefix \S+ --ignore-scripts --include=optional && /);
+  const reason = (load) => codexOf({ AGENTRUN_SERVE_DATA: data, OPENAI_API_KEY: `not-a-secret-${"k"}` }, needs, load).then(() => assert.fail("refused"), (error) => (assert.ok(error instanceof HarnessUnavailable, String(error)), error.message));
+  const missing = await reason(async () => codex);
+  assert.match(missing, /^Codex \(@openai\/codex@0\.164\.0\) is not installed in /);
+  assert.ok(missing.includes(line), missing);
+  assert.doesNotMatch(missing, /npx -p|npm install /);
+  // Installed, but not the pinned build: the adapter's own words, with the line that installs it into the data.
+  await linkHarnesses(data);
   const unpinned = async () => ({ ...codex, verifyCodex: () => { throw new codex.CodexPinMismatch("version", codex.CODEX_VERSION, "0.0.1", "/x/codex"); } });
-  assert.match(startReason(await codexOf({}, needs, unpinned, false).catch((error) => error)), /is not the pinned build[^]*; once the pinned build is installed, restart AgentRun\.$/);
+  const off = await reason(unpinned);
+  assert.match(off, /is not the pinned build/);
+  assert.ok(off.includes(line) && !off.includes(codex.CODEX_INSTALL), off);
   assert.equal(startReason(new HarnessUnavailable("codex needs OPENAI_API_KEY, or a gateway in AGENT_MODEL_BASE_URL.")), "codex needs OPENAI_API_KEY, or a gateway in AGENT_MODEL_BASE_URL.", "a reason a setting fixes: as it is");
 });
 
-test("an npx line for another harness keeps OpenCode's package when it is here, as it keeps theirs, so following one hint never takes OpenCode away", () => {
-  const opencodeHere = (name) => (name === "opencode-ai" ? "1.19.5" : undefined);
-  assert.equal(adapters.npxLine?.("@openai/codex@0.164.0", {}, opencodeHere), `npx -p @parcha/agentrun-serve@${SERVE} -p opencode-ai@1.19.5 -p @openai/codex@0.164.0 agentrun-serve`, "codex's line");
-});
 
 test("demo: run from npx, a missing OpenCode says the npx line that starts this same AgentRun with it, on this server's store, keeping the other harnesses here", async () => {
   const opencode = await import("../dist/harness-opencode/index.js");
@@ -237,20 +228,15 @@ test("demo: run from npx, a missing OpenCode says the npx line that starts this 
   const needs = { model: { provider: "openai", modelId: "gpt-5.4-mini" }, models: { getModel: () => undefined } };
   const store = `${HOME_DIR}/store`;
   const reason = await adapters.opencodeOf({ AGENTRUN_SERVE_DATA: store }, needs, absent, true).then(() => assert.fail("refused"), (error) => (assert.ok(error instanceof HarnessUnavailable, String(error)), error.message));
-  const kept = ["@openai/codex"].flatMap((name) => {
-    const version = adapters.installedHere?.(name);
-    return version ? [`-p ${name}@${version}`] : [];
-  });
-  assert.ok(reason.endsWith(`; restart AgentRun with it: npx -p @parcha/agentrun-serve@${SERVE} ${[...kept, "-p opencode-ai@1.19.5"].join(" ")} agentrun-serve --data ${store}`), reason);
+  assert.ok(reason.endsWith(`; restart AgentRun with it: npx -p @parcha/agentrun-serve@${SERVE} -p opencode-ai@1.19.5 agentrun-serve --data ${store}`), reason);
 });
 
 test("demo: a server started by npx @parcha/agentrun hints that same command, one line for an OpenCode user: the server at its version and OpenCode beside it, on ~/.agentrun", () => {
   const sdk = "opencode-ai@1.19.5";
   const env = home({ AGENTRUN_NPX_PACKAGE: "@parcha/agentrun@0.3.0", AGENTRUN_SERVE_DATA: `${HOME_DIR}/.agentrun` });
   assert.equal(adapters.npxLine?.(sdk, env, none), `npx -p @parcha/agentrun@0.3.0 -p @parcha/agentrun-serve@${SERVE} -p ${sdk} agentrun --data ${HOME_DIR}/.agentrun`);
-  // Following one harness's hint never takes away another already beside the server.
-  assert.equal(adapters.npxLine?.(sdk, env, codexHere), `npx -p @parcha/agentrun@0.3.0 -p @parcha/agentrun-serve@${SERVE} -p @openai/codex@0.164.0 -p ${sdk} agentrun --data ${HOME_DIR}/.agentrun`);
-  assert.equal(adapters.npxLine?.("@openai/codex@0.164.0", env, codexHere), `npx -p @parcha/agentrun@0.3.0 -p @parcha/agentrun-serve@${SERVE} -p @openai/codex@0.164.0 agentrun --data ${HOME_DIR}/.agentrun`, "the harness's own package is named once");
+  // A Codex beside the server (an older install) is never kept: Codex installs itself into the data.
+  assert.equal(adapters.npxLine?.(sdk, env, (name) => (name === "@openai/codex" ? "0.164.0" : undefined)), `npx -p @parcha/agentrun@0.3.0 -p @parcha/agentrun-serve@${SERVE} -p ${sdk} agentrun --data ${HOME_DIR}/.agentrun`);
   // Every version of the command gets the server pinned: 0.3.1 fetches the server on its own, and only the pin puts the
   // harness's package beside the server that runs.
   assert.equal(adapters.npxLine?.(sdk, { ...env, AGENTRUN_NPX_PACKAGE: "@parcha/agentrun@0.3.1" }, none), `npx -p @parcha/agentrun@0.3.1 -p @parcha/agentrun-serve@${SERVE} -p ${sdk} agentrun --data ${HOME_DIR}/.agentrun`);

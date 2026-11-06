@@ -10,6 +10,7 @@ import { spawn } from "node:child_process";
 import { chmodSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { defaultData, removeOwnRecord, SERVER_FILE } from "./files.js";
+import { startedWith } from "./adapters.js";
 import { canOpen } from "./host.js";
 import { resetPassword } from "./owner.js";
 import type { ImageState } from "./box-image.js";
@@ -156,6 +157,8 @@ const onBoxImage = (state: ImageState) => {
   if (bannered) console.log(line);
   else early.push(line);
 };
+// How it was started, for the hints that start it again (adapters.ts npxLine): itself and its runs read it.
+Object.assign(process.env, startedWith({ ...(values.port !== undefined ? { port: values.port } : {}), open: values.open === true }));
 let serve: Serve;
 try {
   serve = await startServe({

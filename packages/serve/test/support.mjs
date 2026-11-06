@@ -9,6 +9,7 @@ import { DatabaseSync } from "node:sqlite";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { claudeAgentExecutable } from "@parcha/agentrun-harness-claude";
+import { codexTarget } from "../../run-adapters-codex/dist/binary.js";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { openStoreReader } from "@parcha/pi-durable-agent";
 import { startServe } from "../dist/index.js";
@@ -21,9 +22,9 @@ export const FAUX = new URL("./fixtures/faux-model.mjs", import.meta.url).pathna
 // set, boxes.ts): a test that wants a box lists it itself, with its endpoint on loopback (boxes.test.mjs), or unsets the
 // setting over a fake docker (docker-by-default.test.mjs).
 process.env.AGENTRUN_BOXES = "none";
-// No test reaches npm's registry: a server whose data holds no Claude Code would install it on first use (claude-sdk.ts)
-// from the registry npm is configured for. A test that installs names its own fake (claude-first-use.test.mjs); any other
-// such install fails at once on this closed port rather than downloading Claude Code.
+// No test reaches npm's registry: a server whose data holds no Claude Code or Codex would install it on first use
+// (harness-install.ts) from the registry npm is configured for. A test that installs names its own fake (fake-npm.mjs);
+// any other such install fails at once on this closed port rather than downloading a CLI.
 for (const name of ["npm_config_registry", "NPM_CONFIG_REGISTRY"]) process.env[name] = "http://127.0.0.1:9/";
 // And gives up there at once: no retry with npm's backoff, a short timeout, so a test can never wait on such an install.
 for (const [name, value] of [["fetch_retries", "0"], ["fetch_timeout", "5000"]]) for (const spelling of [`npm_config_${name}`, `NPM_CONFIG_${name.toUpperCase()}`]) process.env[spelling] = value;
@@ -40,7 +41,7 @@ export function jsonLines(file) {
 export async function scratch(t) {
   const dir = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "agentrun-serve-"));
   // Retried: a server that is still closing can write into it during the rm (ENOTEMPTY). Writable first: a first use
-  // leaves Claude Code read-only (claude-sdk.ts).
+  // leaves its CLI read-only (harness-install.ts).
   t.after(() => writableTree(dir).then(() => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })));
   return dir;
 }
@@ -111,45 +112,64 @@ export async function builtConsole(t) {
   return root;
 }
 
-/** The packages a first use installs into `<data>/harnesses` (claude-sdk.ts), linked there from this repository's own
- *  (the Claude Agent SDK, a dev dependency, its CLI's platform package and the MCP library), so a server on `data` runs
- *  claude-agent as one whose Claude Code is installed, with no npm. `cli`: the file its platform package holds as the
- *  CLI instead (one off its pins, or a path where nothing is). Nothing when the pinned CLI is not here. */
-export async function linkClaudeSdk(data, { cli } = {}) {
-  const pinned = claudeAgentExecutable();
-  if (!pinned) return;
+/** The packages the first-use installs put into `<data>/harnesses/<harness>` (harness-install.ts), linked there from this
+ *  repository's own (the Claude Agent SDK, a dev dependency, with its CLI's platform package and the MCP library; Codex's
+ *  launcher with this platform's binary package), so a server on `data` runs claude-agent and codex as one where both are
+ *  installed, with no npm. `cli`: the file Claude's platform package holds as its CLI instead (one off its pins, or a
+ *  path where nothing is); `codexBin`, the same for Codex's binary; `codex: false` leaves Codex out. A harness whose pinned
+ *  CLI is not here is left out. */
+export async function linkHarnesses(data, { cli, codex = true, codexBin } = {}) {
   const from = fileURLToPath(new URL("../../../node_modules/", import.meta.url));
-  const to = join(data, "harnesses", "node_modules");
-  const platform = `@anthropic-ai/${basename(dirname(pinned))}`;
   const link = (target, path) => symlink(target, path).catch((error) => (error.code === "EEXIST" ? undefined : Promise.reject(error)));
-  for (const name of ["@anthropic-ai/claude-agent-sdk", "@modelcontextprotocol/sdk", ...(cli ? [] : [platform])]) {
-    await mkdir(dirname(join(to, name)), { recursive: true });
-    await link(join(from, name), join(to, name));
+  const pinned = claudeAgentExecutable();
+  if (pinned) {
+    const to = join(data, "harnesses", "claude-agent", "node_modules");
+    const platform = `@anthropic-ai/${basename(dirname(pinned))}`;
+    for (const name of ["@anthropic-ai/claude-agent-sdk", "@modelcontextprotocol/sdk", ...(cli ? [] : [platform])]) {
+      await mkdir(dirname(join(to, name)), { recursive: true });
+      await link(join(from, name), join(to, name));
+    }
+    if (cli) {
+      // Its own file in the tree, as an install would leave it (one that is not there is a tree without its CLI).
+      await mkdir(join(to, platform), { recursive: true });
+      await writeFile(join(to, platform, "package.json"), readFileSync(join(from, platform, "package.json")));
+      if (existsSync(cli)) await copyFile(cli, join(to, platform, basename(pinned)));
+    }
   }
-  if (cli) {
-    // Its own file in the tree, as an install would leave it (one that is not there is a tree without its CLI).
-    await mkdir(join(to, platform), { recursive: true });
-    await writeFile(join(to, platform, "package.json"), readFileSync(join(from, platform, "package.json")));
-    if (existsSync(cli)) await copyFile(cli, join(to, platform, basename(pinned)));
+  const target = codexTarget();
+  if (codex && target && existsSync(join(from, "@openai", `codex-${target.pkg}`))) {
+    const to = join(data, "harnesses", "codex", "node_modules");
+    const platform = `@openai/codex-${target.pkg}`;
+    for (const name of ["@openai/codex", ...(codexBin ? [] : [platform])]) {
+      await mkdir(dirname(join(to, name)), { recursive: true });
+      await link(join(from, name), join(to, name));
+    }
+    if (codexBin) {
+      // Its own file in the tree, as an install would leave it (one that is not there is a tree without its binary).
+      const bin = join(to, platform, "vendor", target.target, "bin");
+      await mkdir(bin, { recursive: true });
+      await writeFile(join(to, platform, "package.json"), readFileSync(join(from, platform, "package.json")));
+      if (existsSync(codexBin)) await copyFile(codexBin, join(bin, "codex"));
+    }
   }
 }
 
-/** A data directory for test `t` holding Claude Code as a first use installs it (linkClaudeSdk), for a test that makes
- *  claude-agent's adapter itself (adapters.ts claudeOf, which loads the SDK from the data its env names). */
-export async function claudeData(t) {
+/** A data directory for test `t` holding Claude Code and Codex as the first-use installs put them (linkHarnesses), for a
+ *  test that makes an adapter itself (adapters.ts claudeOf, codexOf, which load from the data their env names). */
+export async function harnessData(t) {
   const data = await scratch(t);
-  await linkClaudeSdk(data);
+  await linkHarnesses(data);
   return data;
 }
 
 /** A server for test `t`, stopped after it, before its scratch directory goes. On the real models (`faux: undefined`) its
- *  data holds Claude Code as a first use installs it (linkClaudeSdk; `claudeSdk: { cli }` with that CLI); `claudeSdk`
- *  says so for any server, `false` for none. */
-export async function serve(t, { claudeSdk: asked, ...options } = {}) {
-  const claudeSdk = asked ?? (Object.hasOwn(options, "faux") && options.faux === undefined);
+ *  data holds Claude Code and Codex as the first-use installs put them (linkHarnesses; `harnesses: { cli, codex }` to vary
+ *  them); `harnesses` says so for any server, `false` for none. */
+export async function serve(t, { harnesses: asked, ...options } = {}) {
+  const harnesses = asked ?? (Object.hasOwn(options, "faux") && options.faux === undefined);
   const dir = options.data ? undefined : await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "agentrun-serve-"));
   const data = options.data ?? join(dir, "agents");
-  if (claudeSdk) await linkClaudeSdk(data, claudeSdk === true ? {} : claudeSdk);
+  if (harnesses) await linkHarnesses(data, harnesses === true ? {} : harnesses);
   const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", ...options });
   t.after(async () => {
     await server.close();
