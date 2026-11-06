@@ -1074,8 +1074,18 @@ picks which one a run gets, never the model.
   `held` with the run's id while a run holds the lease, else `ready`; `verified_at` is when a saving session last ended.
   `unreadable` (this server's own state, marked `signins/1` in the served contract) is a pointer that does not open
   under the seal key the server has now (none, or another): runs start signed out, and none is made in its place until
-  you forget it, since the vendor's object it points to would be left behind. Its `held_by` still names a run that
-  holds its lease, as a held one does.
+  you forget it, since the vendor's object it points to would be left behind. A run still going when the server
+  starts that was handed the sign-in, which now does not open (or whose sign-ins file can't be read or is damaged), is
+  not taken up: it is stopped (or, its process already gone, never opened again) and ends failed ("This server can't
+  read the run's browser sign-in (its seal key changed or is missing, or the sign-in is damaged): …"), and its rows are
+  not read, since what it says could repeat the pointer, which the server could not cut. Once the sign-in opens again
+  (the right seal key back), its rows are read and shown, cut of it. A run that had already ended keeps how it ended,
+  but while the sign-in does not open none of what it said is served (rows, answer, output, error words, a workflow
+  run's graph, which answers 403 `forbidden`), it can't be continued, and what its end-of-run learning turn wrote is
+  not checked, graded or merged (it waits as it was for a server that reads the sign-in). It is shown again, cut, once
+  the sign-in opens. A run that was never handed the sign-in (one launched signed out since the key changed) is taken
+  up as any other. That a run was handed it is kept in its `serve.json`; a launch that can't save that hands it none,
+  and the run browses signed out. Its `held_by` still names a run that holds its lease, as a held one does.
   Never the pointer. `DELETE /v2/agents/{id}/sign-ins/{key}` forgets one: the vendor's context or profile is deleted,
   then the pointer. A delete the vendor does not answer is said in the answer (`at_vendor: "not_deleted"`), and the
   pointer goes all the same. It is `409 sign_in_held` while a run holds the lease. A run of the agent that is still
@@ -2203,7 +2213,19 @@ an edit that leaves it out), else `expected`; only a run with a cap takes one (`
   stopped, lost) counts at what it was held at, its expected cost, in this process and after a restart alike.
 - `strict`: every input token at the higher of the input and cache-write prices (the provider may bill any of the input as
   a cache write), the worst case: no request passes the cap, and a run whose requests read the cache pauses well before
-  it has spent its cap. Under a cap each request is limited to the
+  it has spent its cap.
+
+Near its cap, a run's model is told once to finish: when what is left (the cap less what was spent and what requests
+in flight are held at) is under three times the run's typical request, the next request of the run's own model carries
+"About $X left of this run's budget: finish now with your answer." at its end, and the Timeline shows it as the server's
+row ("AgentRun: About $X left …"). The typical request is the median of the run's own model's priced requests after the
+first (the first writes the cache), else that one, else the next request's expected cost; side calls on another model
+and paid tools count in what is left, never in the typical request. On pi the words go into that one request's context;
+on claude-agent, codex and opencode the model proxy adds them to the body (after everything the CLI sent, so its cached
+prefix is unchanged). Neither CLI nor pi keeps them in its transcript, and no message is queued, so nothing runs after
+the model's answer. Once per cap, across restarts; a raise re-arms it.
+
+Under a cap each request is limited to the
 output tokens what is left of the cap can buy, thinking included, never more than it asks for or than the model's
 ceiling (its max output tokens, else its context window, clamped to what the window leaves): on pi through the request's
 own options (its max tokens, and on Anthropic's API its thinking budget), on claude-agent, codex and opencode written into its body

@@ -891,9 +891,9 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/runs/{run_id}/graph": {
     get: {
       operationId: "getRunGraph", tags: ["runs"], summary: "A workflow run's graph, live",
-      description: "The revision's workflow and its graph, each node's state (a map's items, a route's branch taken), the decisions with their receipts, the calls with their input and output, and the totals. Readable while the run goes. 404 for an agentic run.",
+      description: "The revision's workflow and its graph, each node's state (a map's items, a route's branch taken), the decisions with their receipts, the calls with their input and output, and the totals. Readable while the run goes. 404 for an agentic run. 403 `forbidden` while this server can't read the browser sign-in the run was handed (its seal key changed or is missing): what its nodes said could repeat the sign-in's pointer, so none of it is served until the sign-in opens again.",
       parameters: [ref("parameters/RunId")],
-      responses: { "200": json(RUN_GRAPH, "The run's graph as it stands."), ...errors(401, 404, 429, 500) },
+      responses: { "200": json(RUN_GRAPH, "The run's graph as it stands."), ...errors(401, 403, 404, 429, 500) },
     },
   },
   "/workflows/validate": {
