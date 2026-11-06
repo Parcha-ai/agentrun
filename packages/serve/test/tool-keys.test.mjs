@@ -319,7 +319,7 @@ test("a key saved is read by name with no restart: capabilities lose the tool's 
   const browser = async () => {
     const caps = (await api("GET", "/capabilities")).body;
     for (const value of Object.values(values)) holdsNone(JSON.stringify(caps), formsOf(value), "capabilities");
-    const { summary: _, providers: __, resolves, why: ___, ...tool } = caps.tools.find((entry) => entry.name === "browser");
+    const { summary: _, blurb: ____, providers: __, resolves, why: ___, ...tool } = caps.tools.find((entry) => entry.name === "browser");
     return { ...tool, resolves: resolves.pi };
   };
   const refused = async () => {

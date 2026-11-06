@@ -19,7 +19,7 @@ test("a request past the cap names a raise a cent above it, never the cap itself
   const cap = await capBefore(0.31, model);
   for (const spentUsd of [0.0029, 0.0028 + 2e-9]) {
     const refused = cap.beforeRequest({ spentUsd, inFlight: [], inputTokensMax: 0, outputTokensLeast: 3072 })?.refuse ?? "";
-    assert.match(refused, /Raise the cap to at least \$0\.32 to run it\.$/, `${spentUsd}: ${refused}`);
+    assert.match(refused, /Raise the cap to at least \$0\.32 to continue\.$/, `${spentUsd}: ${refused}`);
   }
 });
 

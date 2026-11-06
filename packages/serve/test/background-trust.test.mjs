@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync, lstatSync, readdirSync, readFileSync } from "node:fs";
-import { writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
@@ -58,15 +58,25 @@ function decoy(t) {
   return child.pid;
 }
 
-async function boxedRun(t, plan) {
+async function boxedRun(t, plan, { before } = {}) {
   const server = await serve(t, { faux: PROBE, fauxBox: FAUX_BOX });
   const { api } = server;
+  await before?.(server.data);
   const made = await api("POST", "/agents", { definition: { id: "bg", name: "bg", instructions: "Probe.", place: SANDBOX, tools: TOOLS } });
   assert.equal(made.status, 201, JSON.stringify(made.body));
   const run = await api("POST", "/agents/bg/runs", { input: { content: JSON.stringify({ probe: plan }) } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
   await follow(api, run.body.run_id, ["completed"], { deadlineMs: 90_000 });
   return { ...server, runId: run.body.run_id, said: answers(server.data, run.body.run_id), work: join(server.data, "runs", run.body.run_id, "work") };
+}
+/** A box whose display copy of `exit` lands slowly: an `mv` first on its PATH that waits 2 s before it renames over
+ *  `./exit`, the display copy's own rename. The run's end must not destroy the box before that copy has landed. */
+async function slowExitCopy(t, data) {
+  const bin = join(await scratch(t), "bin");
+  await mkdir(bin);
+  await writeFile(join(bin, "mv"), '#!/bin/sh\nfor a; do last=$a; done\ncase "$last" in ./exit) sleep 2;; esac\nexec /bin/mv "$@"\n', { mode: 0o755 });
+  await mkdir(fauxRoot(data), { recursive: true });
+  await writeFile(join(fauxRoot(data), "path-prefix"), bin);
 }
 const groupOf = (started) => Number(/\(process group (\d+)\)/.exec(started)?.[1]);
 
@@ -129,7 +139,8 @@ test("a link planted at ended truncates nothing at the run's end", { timeout: 12
     { tool: "bash_background", args: { command: "sleep 30" } },
     { tool: "bash", args: { command: `ln -s ${victim} background/1/ended` } },
   ];
-  const { said, data, work } = await boxedRun(t, plan);
+  // Its display copy of exit lands 2 s after the trusted one would have: the box must outlast it.
+  const { said, data, work } = await boxedRun(t, plan, { before: (data) => slowExitCopy(t, data) });
   assert.deepEqual(said.map((a) => [a.tool, a.error]), plan.map((step) => [step.tool, false]), JSON.stringify(said));
   await until(() => liveBoxes(data).length === 0, "the box's destroy at the run's end");
   assert.equal(readFileSync(victim, "utf8"), "KEEP-THIS\n", "the file the planted links name is as it was");
@@ -162,7 +173,7 @@ test("a link to a directory planted at a display name is replaced, never moved i
     { tool: "bash_background", args: { command: "sleep 30" } },
     { tool: "bash", args: { command: `ln -s ${outside} background/1/ended; ln -s ${outside} background/1/exit` } },
   ];
-  const { said, data, work } = await boxedRun(t, plan);
+  const { said, data, work } = await boxedRun(t, plan, { before: (data) => slowExitCopy(t, data) });
   assert.deepEqual(said.map((a) => [a.tool, a.error]), plan.map((step) => [step.tool, false]), JSON.stringify(said));
   await until(() => liveBoxes(data).length === 0, "the box's destroy at the run's end");
   assert.deepEqual(readdirSync(outside), [], "nothing was moved into the directory the links name");

@@ -85,7 +85,7 @@ test("a codex run whose cap can't cover one request's least is refused before an
   await follow(api, run.body.run_id, ["input_required", "failed"], { deadlineMs: 60_000 });
   const ended = (await api("GET", `/runs/${run.body.run_id}`)).body;
   assert.deepEqual([ended.status, ended.state, ended.error, ended.pending?.kind], ["input_required", "waiting", null, "budget"], JSON.stringify(ended));
-  const words = /^Not sent: this run's cap of \$0\.001 can't cover one .+ request \(at least \$(\d+\.\d+)\)\. Raise the cap to at least \$(\d+\.\d+) to run it\.$/.exec(ended.pending.said);
+  const words = /^Not sent: the next step needs at least \$(\d+\.\d+), and this run's cap is \$0\.001\. Raise the cap to at least \$(\d+\.\d+) to continue\.$/.exec(ended.pending.said);
   assert.ok(words, ended.pending.said);
   assert.equal(words[2], words[1], "nothing spent or held: the cap to raise to is the least");
   assert.ok(Number(words[1]) >= 0.002048, `the least covers the answer's 1,024 tokens: $${words[1]}`);

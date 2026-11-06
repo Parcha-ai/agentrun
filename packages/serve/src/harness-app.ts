@@ -510,10 +510,11 @@ export function adapterRun(
   const CRASH_SEAM = process.env.AGENTRUN_SERVE_TEST_CRASH_AFTER_ANSWER;
   let answerRecorded: (() => void) | undefined;
   const answerIn = new Promise<void>((resolve) => (answerRecorded = resolve));
-  const resume: Resume = async (id, content, mark) => {
+  const resume: Resume = async (id, content, mark, origin) => {
     await opened;
-    const message: Message = { id: `approval-${id}`, content, recorded: commit(async (tx) => {
-      await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: MESSAGE, data: { key: spec.key, id: `approval-${id}`, content } });
+    // The server's message: its origin is written on its user entry, so the Timeline never shows it as the person's.
+    const message: Message = { id: `approval-${id}`, content, ...(origin ? { origin } : {}), recorded: commit(async (tx) => {
+      await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: MESSAGE, data: { key: spec.key, id: `approval-${id}`, content, ...(origin ? { origin } : {}) } });
       await mark(tx);
     }) };
     await message.recorded;

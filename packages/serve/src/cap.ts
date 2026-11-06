@@ -663,10 +663,6 @@ export type RefusalFigures = { spentUsd: number; needsUsd: number; leastCapUsd: 
  *  no output ceiling, an input not measured: the bare `spend_cap_reached: ` code). The one reader of that difference. */
 export const roomRefusal = (text: string | undefined): string | undefined => (text?.startsWith(CAP_REFUSAL_CODE) ? text.slice(CAP_REFUSAL_CODE.length) : undefined);
 
-/** A model's name as the words say it: the catalog's, without a vendor's prefix ("Anthropic: Claude Sonnet 5.5" reads
- *  "Claude Sonnet 5.5"), else its id. */
-export const nameOf = (model: Pick<Model<Api>, "name" | "id">): string => (model.name || model.id).replace(/^[^:]{1,40}:\s+(?=\S)/, "");
-
 /** A least in words: rounded up to the cent, so that it is enough ($0.1024 is $0.11). */
 // Cents rounded up within the tail the fit check allows (FIT_TOLERANCE), no wider: a total past a cent by more than a
 // float's own tail rounds to the cent above, so the cap a refusal names admits what it refused.
@@ -681,35 +677,43 @@ export const raiseFigure = (cap: number, total: number): number => {
 };
 
 
-/** The cap's refusal of a request what is left of it cannot buy the least of, in plain words with the numbers: what
- *  the run spent (and holds for requests still answering) of its cap, what the request needs at the least, and the cap
- *  that would run it (spent, held and that least, rounded up to the cent, so that it is enough). After its code
- *  (CAP_REFUSAL_CODE), which keeps it final to pi-ai's retry. */
-function capRefusal(cap: number, spent: number, held: number, name: string, least: number): { text: string; figures: RefusalFigures } {
+/** The cap's refusal of a request what is left of it cannot buy the least of, in plain words with the numbers, as a
+ *  person who has never seen a model request reads them: what the run spent (and holds for steps still running) of its
+ *  cap, what the next step needs at the least, and the cap that lets it continue (spent, held and that least, rounded
+ *  up to the cent, so that it is enough). No model's name: a run is many requests, and "the next step" is the one that
+ *  waits. After its code (CAP_REFUSAL_CODE), which keeps it final to pi-ai's retry. Its figures beside the words. */
+function capRefusal(cap: number, spent: number, held: number, least: number): { text: string; figures: RefusalFigures } {
   // The raise its words name and the figure it carries are one number (leastCapUsd), so the two never drift.
   const leastCapUsd = raiseFigure(cap, spent + held + least);
   const figures = { spentUsd: spent + held, needsUsd: least, leastCapUsd };
   const [need, raise] = [leastMoney(least), `$${leastCapUsd.toFixed(2)}`];
-  if (spent === 0 && held === 0) return { text: `${CAP_REFUSAL_CODE}Not sent: this run's cap of ${money(cap)} can't cover one ${name} request (at least ${need}). Raise the cap to at least ${raise} to run it.`, figures };
-  const owes = held > 0 ? `spent ${money(spent)} and holds ${money(held)} for requests still answering, of its ${money(cap)} cap` : `spent ${money(spent)} of its ${money(cap)} cap`;
-  return { text: `${CAP_REFUSAL_CODE}Not sent: the run has ${owes}, and its next ${name} request needs at least ${need}. Raise the cap to at least ${raise} to run it.`, figures };
+  if (spent === 0 && held === 0) return { text: `${CAP_REFUSAL_CODE}Not sent: the next step needs at least ${need}, and this run's cap is ${money(cap)}. Raise the cap to at least ${raise} to continue.`, figures };
+  return { text: `${CAP_REFUSAL_CODE}Not sent: this run has ${spentOf(spent, held, cap)}, and the next step needs at least ${need}. Raise the cap to at least ${raise} to continue.`, figures };
 }
 /** A guard's answer for a refusal for room: its words, and its figures beside them (harness-app.ts keeps them on its mark). */
 const refuseFor = ({ text, figures }: ReturnType<typeof capRefusal>) => ({ refuse: text, ...figures });
 /** capModels' judgement for a refusal for room: its words, and its figures for its start mark (request-start.ts). */
 const whyOf = ({ text, figures }: ReturnType<typeof capRefusal>) => ({ why: text, figures });
+/** What a run has spent of its cap, in a refusal's words: and what it holds for steps still running, when that is a cent
+ *  or more. Each in cents (centsMoney), as the figures after it are; the exact amounts are the refusal's figures
+ *  (RefusalFigures, the pause's spent_usd). */
+const spentOf = (spent: number, held: number, cap: number): string => {
+  const holds = centsMoney(held);
+  return holds !== "$0" ? `spent ${centsMoney(spent)} and holds ${holds} for steps still running, of its ${money(cap)} cap` : `spent ${centsMoney(spent)} of its ${money(cap)} cap`;
+};
+/** An amount in words, to the nearest cent ($0.0237416 is $0.02), as money says it ($1, $0.20, $0). */
+export const centsMoney = (usd: number): string => money(Math.round(usd * 100) / 100);
 
 /** The cap's refusal of a paid call (paidCall) what is left of it cannot hold, in one sentence, as capRefusal says a model
  *  request's: what the run spent (and holds for requests and calls still answering) of its cap, what the call could cost
  *  and why, and the cap that would run it: spent, held and the call's figure, rounded up to the cent, and a cent above the
- *  cap at the least, since a figure past the cap by less than a cent still needs more than the cap. Every amount by money,
- *  the raise by leastMoney. */
+ *  cap at the least, since a figure past the cap by less than a cent still needs more than the cap. What was spent and held
+ *  in cents (spentOf), the call's figure and the cap by money, the raise by raiseFigure. */
 function paidRefusal(cap: number, spent: number, held: number, name: string, hold: { usd: number; basis: string }): { text: string; leastCapUsd: number } {
-  const holds = held > 0 ? ` and holds ${money(held)} for calls still answering` : "";
   // The model refusal's rule (raiseFigure): a cent at least, and above the cap, never the cap itself; one number, which its
-  // words name and its refusal carries.
+  // words name and its refusal carries. The same words: the call is the next step, named as the tool.
   const leastCapUsd = raiseFigure(cap, spent + held + hold.usd);
-  return { text: `${SPEND_CAP_REACHED}: Not sent: the run has spent ${money(spent)}${holds} of its ${money(cap)} cap, and ${name} could cost up to ${money(hold.usd)} (${hold.basis}). Raise the cap to at least $${leastCapUsd.toFixed(2)} to run it.`, leastCapUsd };
+  return { text: `${SPEND_CAP_REACHED}: Not sent: this run has ${spentOf(spent, held, cap)}, and the next step, ${name}, could cost up to ${money(hold.usd)} (${hold.basis}). Raise the cap to at least $${leastCapUsd.toFixed(2)} to continue.`, leastCapUsd };
 }
 
 /** The most output tokens from `least` to `asked` whose request costs no more than `left` (`cost`, its price at that
@@ -773,7 +777,6 @@ export async function capBefore(cap: number | undefined, model: Model<Api> | und
   const output = outputBound(model);
   if (output === undefined) return { beforeRequest: () => ({ refuse: noCeiling(cap) }) };
   const price = worstOf((await import("@earendil-works/pi-ai")).calculateCost, model);
-  const name = nameOf(model);
   const held = (request: { inputTokensMax?: number; outputTokensMax?: number }) => price(request.inputTokensMax!, request.outputTokensMax ?? output);
   return {
     beforeRequest({ spentUsd, inFlight, inputTokensMax, outputTokensAsked, outputTokensLeast }) {
@@ -785,11 +788,11 @@ export async function capBefore(cap: number | undefined, model: Model<Api> | und
       const left = cap - spentUsd - holding;
       const cost = (tokens: number) => price(inputTokensMax!, tokens);
       // A model whose output costs nothing and names no ceiling: nothing to limit, only its input to fit.
-      if (output === 0) return cost(0) <= left + FIT_TOLERANCE ? undefined : refuseFor(capRefusal(cap, spentUsd, holding, name, cost(0)));
+      if (output === 0) return cost(0) <= left + FIT_TOLERANCE ? undefined : refuseFor(capRefusal(cap, spentUsd, holding, cost(0)));
       const asked = Math.min(outputTokensAsked ?? output, output);
       const least = Math.min(outputTokensLeast ?? ANSWER_TOKENS_LEAST, asked);
       const most = mostOutput(cost, least, asked, left);
-      return most === undefined ? refuseFor(capRefusal(cap, spentUsd, holding, name, cost(least))) : { outputTokensMax: most };
+      return most === undefined ? refuseFor(capRefusal(cap, spentUsd, holding, cost(least))) : { outputTokensMax: most };
     },
     worstOf: (request) => (typeof request.inputTokensMax === "number" && Number.isFinite(request.inputTokensMax) ? held(request) : undefined),
     stoppedOf: (request, streamed) => (typeof request.inputTokensMax === "number" && Number.isFinite(request.inputTokensMax) && Number.isFinite(streamed) && streamed >= 0
@@ -860,9 +863,8 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
     // each paid call under way at what it is held at.
     const holding = held + paidHolds();
     const left = cap - spentUsd - holding;
-    const name = nameOf(model);
     // A model whose output costs nothing and names no ceiling: nothing to limit, only its input and fee to fit.
-    if (ceiling === 0) return cost(0) <= left + FIT_TOLERANCE ? { worst: cost(0), stopped: () => cost(0) } : whyOf(capRefusal(cap, spentUsd, holding, name, cost(0)));
+    if (ceiling === 0) return cost(0) <= left + FIT_TOLERANCE ? { worst: cost(0), stopped: () => cost(0) } : whyOf(capRefusal(cap, spentUsd, holding, cost(0)));
     // What the request would send as it stands, thinking included: pi-ai clamps its maxTokens (or the model's) to what its
     // context leaves, and on an API whose thinking takes a budget adds the budget to it.
     const transcript = context as unknown as Parameters<typeof simple.clampMaxTokensToContext>[1];
@@ -877,7 +879,7 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
     const asked = Math.min(ceiling, budgeted ? simple.clampMaxTokensToContext(model, transcript, simple.adjustMaxTokensForThinking(base, ceilingTokens(model), thinking, options?.thinkingBudgets).maxTokens) : base);
     const least = Math.min(leastOutput(model, thinking, (level) => simple.thinkingBudgetForLevel(level as never, options?.thinkingBudgets)), asked);
     const most = mostOutput(cost, least, asked, left);
-    if (most === undefined) return whyOf(capRefusal(cap, spentUsd, holding, name, cost(least)));
+    if (most === undefined) return whyOf(capRefusal(cap, spentUsd, holding, cost(least)));
     // The reasoning a stop leaves unseen: a model's reasoning streams as a summary or not at all (the Responses API; Claude
     // 4-class thinking), so a request that reasons counts its level's budget (the budget it was sent with, on a budget
     // API), or its whole limit when it gives no level and its API reasons by default; none on a budget API with thinking
