@@ -766,3 +766,35 @@ for (const down of ["503", "timeout"]) {
     assert.equal(calls(), 1);
   });
 }
+
+test("an expired access token on a server started without its seal key reads the seal key's words, not an outage's, and no refresh is sent", async (t) => {
+  const key = sealKey();
+  withEnv(t, { AGENTRUN_SEAL_KEY: key });
+  const { api, data } = await serve(t);
+  const { as, mcp } = await fakes(t, { expiresIn: 2 });
+  const started = await api("POST", "/settings/mcp-servers/docs/oauth/start", { url: mcp.url });
+  assert.equal((await approve(started)).status, 302);
+  await new Promise((resolve) => setTimeout(resolve, 2_500));
+  const { UNUSABLE } = await import("../dist/mcp-servers.js");
+  const tries = () => as.log.filter((entry) => entry.form.grant_type === "refresh_token").length;
+  const before = tries();
+  // The same data, read by a server started without its seal key: retrying can never fix that.
+  const keyless = new McpServers(data, {}, "test");
+  assert.deepEqual(await keyless.headersForRun("docs"), { unopened: UNUSABLE.noSealKey });
+  assert.equal(tries(), before, "no refresh was sent");
+});
+
+test("a sign-in whose endpoint's name lookup outlives the request's time says that endpoint could not be reached, and why", { timeout: 120_000 }, async (t) => {
+  const key = sealKey();
+  // A resolver that never answers: each request's own timeout ends its lookup (an unreferenced timer, as in a server that
+  // has other work: this test keeps the process up meanwhile).
+  const up = setInterval(() => {}, 1_000);
+  t.after(() => clearInterval(up));
+  const net = { network: { lookup: () => new Promise(() => {}), fetch: async () => new Response("", { status: 404 }) } };
+  const store = await storeOn(t, key, net);
+  await assert.rejects(store.oauthStart("pub", { url: "https://mcp.example.test/mcp" }), (error) => {
+    assert.equal(error.code, "upstream_failed");
+    assert.match(error.message, /its authorization server's endpoint https:\/\/mcp\.example\.test\/\S+ could not be reached \(DNS lookup timed out\)\.$/);
+    return true;
+  });
+});
