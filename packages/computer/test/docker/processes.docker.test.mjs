@@ -1,7 +1,7 @@
-// The processes demo on real Docker (AGENTRUN_COMPUTER_LIVE_DOCKER=1 only): a process started on one connection keeps
-// running after it closes, and a second connection lists it, reads it by offset, types into it and signals it. Needs
-// `npm run build` and `npm run build:daemon` first, and debian:bookworm-slim pulled. Every container this file makes is
-// removed by its exact name in the after hook, pass or fail.
+// The processes demo on real Docker (AGENTRUN_COMPUTER_LIVE_DOCKER=1 only), as the default non-root user: a process
+// started on one connection keeps running after it closes, and a second connection lists it, reads it by offset, types
+// into it and signals it. Needs `npm run build` and `npm run build:daemon` first, and debian:bookworm-slim pulled. Every
+// container this file makes is removed by its exact name in the after hook, pass or fail.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -11,6 +11,8 @@ import { DockerProvider, listProcesses, readAll } from "../../dist/index.js";
 
 const LIVE = process.env.AGENTRUN_COMPUTER_LIVE_DOCKER === "1";
 const IMAGE = "debian:bookworm-slim";
+/** The provider's default user, which init and so every process runs as: this process's, or 1000:1000 as root. */
+const DEFAULT_USER = process.getuid() !== 0 ? `${process.getuid()}:${process.getgid()}` : "1000:1000";
 /** Bounds each wait on a program. The host may be loaded: it is never a claim about speed. */
 const PATIENCE_MS = 30_000;
 const docker = (...args) => execFileSync("docker", args, { encoding: "utf8" });
@@ -100,6 +102,28 @@ describe("keep a process running across calls and connections in a Docker comput
 		await a.close();
 	});
 
+	it("runs init and its processes as the non-root user, with the socket in a directory only that user may enter", async () => {
+		const a = await connect();
+		try {
+			const ran = await call(a, "exec.run", {
+				argv: ["sh", "-c", "id -u; id -g; stat -c '%a %u:%g %F' /run/agentrun /run/agentrun/computerd.sock; grep ' /run/agentrun ' /proc/mounts; grep '^Uid:' /proc/1/status"],
+				timeoutMs: 20_000,
+			});
+			const [uid, gid, dir, socket, mount, init] = decode(ran.stdout).trim().split("\n");
+			assert.equal(`${uid}:${gid}`, DEFAULT_USER);
+			assert.notEqual(uid, "0");
+			assert.equal(dir, `700 ${DEFAULT_USER} directory`);
+			assert.equal(socket, `600 ${DEFAULT_USER} socket`);
+			assert.match(mount, /^tmpfs \/run\/agentrun tmpfs /, mount);
+			for (const option of ["rw", "nosuid", "nodev", "noexec"]) assert.ok(mount.split(" ")[3].split(",").includes(option), `${option} in ${mount}`);
+			assert.match(init, new RegExp(`^Uid:\\t${uid}\\t${uid}\\t`), "PID 1, init, is the same user");
+			const pid = await call(a, "exec.run", { argv: ["sh", "-c", `stat -c %u /proc/${ticker.pid}`], timeoutMs: 20_000 });
+			assert.equal(decode(pid.stdout).trim(), uid, "the loop runs as the user too");
+		} finally {
+			await a.close();
+		}
+	});
+
 	it("connection B lists it running, and reads it by offset with nextOffset growing", async () => {
 		b = await connect();
 		const listed = await listProcesses(b.client);
@@ -174,6 +198,27 @@ describe("keep a process running across calls and connections in a Docker comput
 		const [inspected] = JSON.parse(docker("inspect", ref.name));
 		assert.equal(inspected.State.Running, false);
 		assert.equal(inspected.State.ExitCode, 0);
+	});
+
+	it("ends at its deadline with a process that ignores TERM still running: init ends every process and exits 0", async () => {
+		// Long enough to connect and start the process on a loaded host; the test asserts the end, not its timing.
+		const created = await provider.create({ image: IMAGE, lifetimeMs: 15_000, network: "none", labels: { "agentrun.test": "processes" } });
+		assert.equal(created.ok, true, JSON.stringify(created));
+		made.push(created.value.name);
+		const connected = await provider.connect(created.value);
+		assert.equal(connected.ok, true, JSON.stringify(connected));
+		open.push(connected.value);
+		await call(connected.value, "process.start", { argv: ["sh", "-c", "trap '' TERM; sleep 600"] });
+		const bound = Date.now() + 120_000;
+		let state;
+		do {
+			[{ State: state }] = JSON.parse(docker("inspect", created.value.name));
+			if (!state.Running) break;
+			await new Promise((resolve) => setTimeout(resolve, 500));
+		} while (Date.now() < bound);
+		assert.equal(state.Running, false, "still running 120 s after a 15 s lifetime");
+		assert.equal(state.ExitCode, 0, "init ended the computer, not Docker's SIGKILL");
+		assert.deepEqual(await provider.release(created.value, "delete"), { ok: true, value: undefined });
 	});
 
 	it("deletes the computer", async () => {

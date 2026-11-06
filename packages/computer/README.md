@@ -45,8 +45,11 @@ capabilities are `["exec", "files", "processes"]`.
 
 ### Init, the socket and the bridge
 
-- `computerd init` is the computer's first process. It listens on a unix socket, `/run/agentrun/computerd.sock` (or
-  `AGENTRUN_COMPUTERD_SOCKET`), in a directory it makes 0700; the socket is 0600, so only the daemon's user can connect.
+- `computerd init --deadline <time>` is the computer's first process. It listens on a unix socket,
+  `/run/agentrun/computerd.sock` (or `AGENTRUN_COMPUTERD_SOCKET`); the socket is 0600, so only the daemon's user can
+  connect. Init does not make the socket's directory, since a non-root init cannot write under `/run`: the provider
+  gives it, the daemon's user's alone (mode 0700). Init exits 1, saying why, when the directory is missing, is not the
+  user's alone, or is not writable by it.
   Every connection is served by the same daemon with one process table, which is how a process outlives the call and
   the connection that started it. A socket left by an init that is gone is replaced; a live one is refused.
 - `computerd stdio` is a thin bridge: it connects to the socket (waiting up to 3 s for a computer that has just
@@ -56,8 +59,9 @@ capabilities are `["exec", "files", "processes"]`.
   once a second: a child of its own that is not one of its guards can only be an orphan whose guard died (a program can
   kill its own guard, since both run as the same user), so it is killed with everything under it. A process orphaned by
   something run with `docker exec`, outside the daemon, is ended the same way.
-- On SIGTERM or SIGINT (`docker stop`), and at its `--deadline`, init sends SIGTERM to every guard, each of which ends its program's group and
-  descendants with SIGKILL 2 s later; whatever is still under init 5 s after the SIGTERM is killed, and init exits 0.
+- On SIGTERM or SIGINT (`docker stop`), and at its deadline, init sends SIGTERM to every guard, each of which ends its
+  program's group and descendants with SIGKILL 2 s later; whatever is still under init 5 s after the SIGTERM is killed,
+  and init exits 0. One shutdown serves all three.
 - A guard also ends its program when its control pipe from the daemon closes, so no program outlives the daemon.
 
 ### Processes
@@ -182,6 +186,8 @@ await docker.release(made.value, "delete");
   in numbers (a name is refused: the image may not have it; a uid alone is its own gid). The spec's `user` wins, then
   the provider's `user` option, then this process's uid:gid, or `1000:1000` when this process is root. The provider
   option refuses root; only a spec's `user: "0"` runs a computer as root, and that root has no capability either.
+- `/run/agentrun`, init's socket directory, is a tmpfs owned by the computer's user, mode 700, with `noexec`, `nosuid`
+  and `nodev`.
 - `/work` is the computer's home (`HOME=/work`) and its workdir unless the spec names one: a tmpfs owned by the
   computer's user, mode 700, the one place a non-root user can surely write. It is memory: what it holds counts against
   the memory limit, and it does not survive a stop. Storage that lasts is the agent disk's job, not this package's.
