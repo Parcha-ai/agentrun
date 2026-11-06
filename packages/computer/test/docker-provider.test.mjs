@@ -161,29 +161,37 @@ test("create() runs a hardened container with the daemon as its first process an
 	assert.deepEqual(valuesOf(run, "--mount"), [`type=bind,src=${daemonPath},dst=/opt/agentrun/computerd,readonly`]);
 	assert.deepEqual(valuesOf(run, "--entrypoint"), ["/opt/agentrun/computerd"]);
 	assert.deepEqual(run.slice(-4), ["debian:bookworm-slim", "init", "--deadline", deadline], "PID 1 ends the computer at the deadline the label holds");
-	assert.equal(run.includes("--workdir"), false, "--workdir only when asked");
+	const [uid, gid] = DEFAULT_USER.split(":");
+	assert.deepEqual(valuesOf(run, "--tmpfs"), [`/work:rw,nosuid,nodev,exec,uid=${uid},gid=${gid},mode=0700`], "a home the computer's user can write");
+	assert.deepEqual(valuesOf(run, "--workdir"), ["/work"]);
+	assert.deepEqual(valuesOf(run, "--env"), ["HOME=/work"]);
 	assert.deepEqual(inspect.slice(0, 1), ["inspect"]);
 	assert.equal(inspect.at(-1), name);
 });
 
 test("create() passes the sizes, an open network and the workdir", async () => {
 	const { provider, calls } = fakeDocker();
-	const result = await provider.create({ ...SPEC, network: "open", cpus: 1.5, memoryMb: 512, pids: 64, workdir: "/work" });
+	const result = await provider.create({ ...SPEC, network: "open", cpus: 1.5, memoryMb: 512, pids: 64, workdir: "/app" });
 	assert.equal(result.ok, true);
 	const [run] = calls();
 	assert.deepEqual(valuesOf(run, "--network"), ["bridge"]);
-	assert.deepEqual(valuesOf(run, "--cpus"), ["1.5"]);
+	assert.deepEqual(valuesOf(run, "--cpu-period"), ["100000"]);
+	assert.deepEqual(valuesOf(run, "--cpu-quota"), ["150000"]);
+	assert.equal(run.includes("--cpus"), false, "a quota, never --cpus, which Docker refuses above its own CPU count");
 	assert.deepEqual(valuesOf(run, "--memory"), ["512m"]);
 	assert.deepEqual(valuesOf(run, "--memory-swap"), ["512m"]);
 	assert.deepEqual(valuesOf(run, "--pids-limit"), ["64"]);
-	assert.deepEqual(valuesOf(run, "--workdir"), ["/work"]);
+	assert.deepEqual(valuesOf(run, "--workdir"), ["/app"]);
+	assert.equal(valuesOf(run, "--tmpfs").length, 1, "/work is mounted even when the spec names another workdir");
 });
 
 test("create() with no sizes gives serve's: 2 CPUs, 4 GiB with swap the same, 1024 pids", async () => {
 	const { provider, calls } = fakeDocker();
 	assert.equal((await provider.create(SPEC)).ok, true);
 	const [run] = calls();
-	assert.deepEqual(valuesOf(run, "--cpus"), ["2"]);
+	assert.deepEqual(valuesOf(run, "--cpu-period"), ["100000"]);
+	assert.deepEqual(valuesOf(run, "--cpu-quota"), ["200000"]);
+	assert.equal(run.includes("--cpus"), false);
 	assert.deepEqual(valuesOf(run, "--memory"), ["4096m"]);
 	assert.deepEqual(valuesOf(run, "--memory-swap"), ["4096m"]);
 	assert.deepEqual(valuesOf(run, "--pids-limit"), ["1024"]);
@@ -204,6 +212,9 @@ test("create() runs a computer as a non-root user unless its spec asks for root"
 	assert.deepEqual(await userOf({ ...SPEC, user: "2000" }), ["2000:2000"]);
 	assert.deepEqual(await userOf({ ...SPEC, user: "0" }), ["0:0"]);
 	assert.deepEqual(await userOf({ ...SPEC, user: "0:0" }), ["0:0"]);
+	const { provider, calls } = fakeDocker({ user: "1234:5678" });
+	assert.equal((await provider.create({ ...SPEC, user: "2000:3000" })).ok, true);
+	assert.deepEqual(valuesOf(calls()[0], "--tmpfs"), ["/work:rw,nosuid,nodev,exec,uid=2000,gid=3000,mode=0700"], "/work belongs to the user the computer runs as");
 });
 
 test("check() takes a user as numbers, uid or uid:gid, and refuses a name in words", () => {

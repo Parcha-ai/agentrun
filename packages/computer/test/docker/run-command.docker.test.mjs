@@ -70,7 +70,12 @@ describe("run a command in a Docker computer", { skip: LIVE ? false : "set AGENT
 		assert.equal(inspected.HostConfig.PidsLimit, 1024);
 		assert.equal(inspected.HostConfig.Memory, 4 * 1024 ** 3);
 		assert.equal(inspected.HostConfig.MemorySwap, 4 * 1024 ** 3);
-		assert.equal(inspected.HostConfig.NanoCpus, 2e9);
+		assert.equal(inspected.HostConfig.CpuPeriod, 100_000);
+		assert.equal(inspected.HostConfig.CpuQuota, 200_000);
+		assert.equal(inspected.HostConfig.NanoCpus, 0);
+		assert.deepEqual(Object.keys(inspected.HostConfig.Tmpfs ?? {}), ["/work"]);
+		assert.equal(inspected.Config.WorkingDir, "/work");
+		assert.ok(inspected.Config.Env.includes("HOME=/work"), JSON.stringify(inspected.Config.Env));
 		assert.equal(inspected.HostConfig.AutoRemove, false);
 		const mount = inspected.Mounts.find((m) => m.Destination === "/opt/agentrun/computerd");
 		assert.ok(mount, "the daemon is mounted");
@@ -126,6 +131,13 @@ describe("run a command in a Docker computer", { skip: LIVE ? false : "set AGENT
 		for (const set of ["CapEff", "CapPrm", "CapBnd"]) assert.match(status, new RegExp(`^${set}:\\t${NO_CAPABILITIES}$`, "m"), set);
 		const init = (await run(["cat", "/proc/1/status"])).out;
 		assert.match(init, new RegExp(`^Uid:\\t${uid}\\t`, "m"), "PID 1, the daemon, is not root either");
+	});
+
+	it("has a home and work directory the default user can write: /work, its own, mode 700", async () => {
+		const result = await run(["sh", "-c", "echo ok > ~/x && cat ~/x && pwd"]);
+		assert.equal(result.exitCode, 0, result.err);
+		assert.equal(result.out, "ok\n/work\n");
+		assert.equal((await run(["stat", "-c", "%u:%g %a", "/work"])).out.trim(), `${DEFAULT_USER} 700`);
 	});
 
 	it("cannot switch users with every capability dropped, and says so", async () => {
