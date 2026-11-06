@@ -96,7 +96,7 @@ test("pi: an MCP tool set to deny is refused, the model reads why, and the serve
   const runId = await started(api, "denied", ["mcp:fake/add"], ADD, { extra: { tool_settings: { "mcp:fake/add": { permission: "deny" } } } });
   const { last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 60_000 });
   assert.equal(last.status, "completed");
-  assert.equal(await answerOf(api, runId), "The tool said: Permission denied: mcp:fake/add is set to deny on this server. Don't retry it.");
+  assert.equal(await answerOf(api, runId), "The tool said: Permission denied: mcp:fake/add is set to deny for this agent. Don't retry it.");
   assert.equal(calls(fake).length, 0, "nothing was sent");
 });
 
@@ -178,7 +178,7 @@ test("pi: a tool priced $0.05 under a $0.04 cap is refused unsent in the cap's w
   // A paid call the cap refuses pauses the run for a raise, as any paid tool's does: its price is what it needs.
   const paused = (await api("GET", `/runs/${tight}`)).body;
   assert.deepEqual([paused.state, paused.pending?.kind, paused.pending?.cap_usd, paused.pending?.needs_usd], ["waiting", "budget", 0.04, 0.05], JSON.stringify(paused.pending));
-  assert.match(paused.pending.said, /Not sent: the run has spent \$0 of its \$0\.04 cap, and mcp:fake\/paid could cost up to \$0\.05 \(the price its owner set for mcp:fake\/paid\)/);
+  assert.match(paused.pending.said, /Not sent: this run has spent \$0 of its \$0\.04 cap, and the next step, mcp:fake\/paid, could cost up to \$0\.05 \(the price its owner set for mcp:fake\/paid\)/);
   assert.equal(calls(fake).length, 0, "refused unsent");
   const roomy = await started(api, "roomy", ["mcp:fake/paid"], PAID, { run: { max_cost_usd: 1 } });
   const { rows } = await follow(api, roomy, ["completed"], { deadlineMs: 60_000 });

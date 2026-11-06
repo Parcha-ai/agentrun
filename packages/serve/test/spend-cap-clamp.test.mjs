@@ -76,7 +76,7 @@ test("pi: a cap that cannot buy its first request's least is refused before anyt
   const { api, posts } = await gateway(t, "0,1");
   const { run, rows } = await ended(api, (await start(api, "tiny", "What is six times seven?", { max_cost_usd: 0.0005 })).run_id);
   assert.deepEqual([run.status, run.state, run.error, run.pending?.kind, posts()], ["input_required", "waiting", null, "budget", 0], JSON.stringify(run));
-  assert.match(run.pending.said, /^Not sent: this run's cap of \$0\.0005 can't cover one \S+ request \(at least \$0\.01\)\. Raise the cap to at least \$0\.01 to run it\.$/);
+  assert.match(run.pending.said, /^Not sent: the next step needs at least \$0\.01, and this run's cap is \$0\.0005\. Raise the cap to at least \$0\.01 to continue\.$/);
   assert.equal(run.cost.usd, 0);
   noPhantomRequest(rows);
 });
@@ -101,7 +101,7 @@ for (const harness of ["claude-agent", "codex"]) {
     const { run, rows } = await ended(api, run_id);
     assert.deepEqual([run.status, run.state, run.error, run.pending?.kind], ["input_required", "waiting", null, "budget"], JSON.stringify(run));
     // 1,024 tokens at $0.0001 are $0.1024: the least cap is $0.11 in the words.
-    assert.match(run.pending.said, /^Not sent: this run's cap of \$0\.05 can't cover one \S+ request \(at least \$0\.11\)\. Raise the cap to at least \$0\.11 to run it\.$/);
+    assert.match(run.pending.said, /^Not sent: the next step needs at least \$0\.11, and this run's cap is \$0\.05\. Raise the cap to at least \$0\.11 to continue\.$/);
     assert.equal(records(data, run_id, "faux.request").length, 0, "nothing was sent");
     noPhantomRequest(rows);
   });
@@ -114,7 +114,7 @@ for (const harness of ["claude-agent", "codex"]) {
     const { run, rows } = await ended(api, run_id);
     assert.deepEqual([run.status, run.state, run.error, run.pending?.kind], ["input_required", "waiting", null, "budget"], JSON.stringify(run));
     // To run it the cap would have to be what was spent and the next request's least: $0.003 + $0.1024, $0.11 up to the cent.
-    assert.match(run.pending.said, /^Not sent: the run has spent \$0\.003 of its \$0\.105 cap, and its next \S+ request needs at least \$0\.11\. Raise the cap to at least \$0\.11 to run it\.$/);
+    assert.match(run.pending.said, /^Not sent: this run has spent \$0 of its \$0\.105 cap, and the next step needs at least \$0\.11\. Raise the cap to at least \$0\.11 to continue\.$/);
     assert.equal(records(data, run_id, "faux.request").length, 2, "two were sent");
     const usage = rows.findLast((r) => r.kind === "usage")?.usage;
     assert.equal(usage?.requests, 2, JSON.stringify(usage));

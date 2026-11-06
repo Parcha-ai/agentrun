@@ -39,7 +39,7 @@ import type { Context } from "@earendil-works/chord";
 import { type Cursor, defineExtension, type Extension, ROOT_CONVERSATION_ID, type ToolRegistration, type Tx, wrapTool } from "@earendil-works/pi-durable";
 import { type Drive, EffectFailure, INTERRUPTED_TEXT, openDrive } from "@parcha/agentrun-kernel/kernel";
 import { boundResult } from "@parcha/agentrun-kernel/process";
-import type { DurableRun } from "@parcha/pi-durable-disk";
+import { type DurableRun, MESSAGE_ORIGIN_KIND } from "@parcha/pi-durable-disk";
 import { readJson, RUN_META } from "./files.js";
 import { LEARNED_DIR } from "./learning.js";
 import { BOX_WORK } from "./place.js";
@@ -217,10 +217,14 @@ export interface Gate {
   spill(callId: string, text: string): string;
 }
 
+/** Where a permission was set (permissionFrom's `from`): the agent's own tool settings, the server's, or the default. */
+export type SettingFrom = "agent" | "server" | "default";
+/** Where a deny was set, in words: the place a person changes it. */
+export const denyPlace = (from: SettingFrom = "server"): string => (from === "agent" ? "for this agent" : from === "default" ? "by default" : "on this server");
 /** The refusal of a call whose tool is set to deny; of one held to another tool's setting (`heldTo`, a shell tool's
- *  bash), naming the setting to change. */
-export const deniedText = (tool: string, heldTo?: string): string =>
-  heldTo && heldTo !== tool ? `Permission denied: ${tool} follows ${heldTo}'s setting, which is deny on this server. Don't retry it.` : `Permission denied: ${tool} is set to deny on this server. Don't retry it.`;
+ *  bash), naming the setting to change and where it was set (`from`: this agent's settings or this server's). */
+export const deniedText = (tool: string, heldTo?: string, from: SettingFrom = "server"): string =>
+  heldTo && heldTo !== tool ? `Permission denied: ${tool} follows ${heldTo}'s setting, which is deny ${denyPlace(from)}. Don't retry it.` : `Permission denied: ${tool} is set to deny ${denyPlace(from)}. Don't retry it.`;
 /** The refusal of an ask where no one can approve it: a server with accounts off, whose answer route takes no token. */
 export const noApproverText = (tool: string): string => `Permission denied: ${tool} needs the owner's approval, and this server has accounts off (AGENTRUN_ACCOUNTS=0), so no one can give it: set the tool to allow or deny in the agent's Tools.`;
 /** Set by the server in a run's environment when no one can approve here (accounts off): the gate refuses each ask. */
@@ -282,7 +286,11 @@ export function underLearning(work: string, args: unknown): boolean {
 /** One call that waits for approval, as the run's store keeps it. */
 export type ApprovalRequest = { id: string; tool: string; call_id: string; args: unknown; args_preview: string; requested_at: string; /** The message the turn that parked it took: a reopen settles that turn, answered or not. */ turn?: string; price?: ApprovalPrice };
 /** Resumes the session with `content` as one message of its own (`approval-<id>`), writing `mark` with it or after it. */
-export type Resume = (id: string, content: string, mark: (tx: Tx) => Promise<unknown>) => Promise<void>;
+export type Resume = (id: string, content: string, mark: (tx: Tx) => Promise<unknown>, origin?: ResumeOrigin) => Promise<void>;
+/** Who wrote a resume, for the Timeline (pi-durable-agent's MessageOrigin): the server, carrying an answer, so it never
+ *  shows as the person's message. A person's message that declined the call: `said`, their words, which the Timeline
+ *  shows as theirs beside the server's row. */
+export type ResumeOrigin = { kind: "server"; reason: "approval" } | { kind: "server"; reason: "approval_declined"; said: string };
 
 /** `text` cut to at most ARGS_PREVIEW_BYTES. What is shown of a call's arguments is the whole of them redacted first, then
  *  cut (runs.ts), so a cut never leaves the head of a key no redaction recognizes. */
@@ -332,18 +340,24 @@ export class RunGate {
 
   /** A tool's permission now (permissionOf): the revision's own over the server's setting, read at each call, so a change
    *  reaches a live run at its next call. */
-  readonly policy = (tool: string): Permission => {
+  readonly policy = (tool: string): Permission => this.setting(tool).permission;
+  /** Where the permission `policy` gives `tool` was set: the agent's own tool settings, the server's, or the default. */
+  readonly denyFrom = (tool: string): SettingFrom => this.setting(tool).from;
+  private setting(tool: string): { permission: Permission; from: SettingFrom } {
     const key = settingsKeyOf(this.where.harness ?? "pi", tool, this.where.mcpServers);
     // A name nothing maps fails closed: it asks (refused where no one can approve), never allows.
-    if (key === undefined) return "ask";
+    if (key === undefined) return { permission: "ask", from: "default" };
     const server = this.serverSettings();
     // No settings ever read: every tool asks, the shell watchers too (fail closed: an ask nothing read is never lifted),
     // or keeps the revision's own deny.
-    if (server === undefined) return permissionOf(key, {}, this.overrides) === "deny" ? "deny" : "ask";
+    if (server === undefined) {
+      const own = permissionFrom(key, {}, this.overrides);
+      return own.permission === "deny" ? own : { permission: "ask", from: "default" };
+    }
     // A shell tool under every harness's name for it is read as its own name, by bash's key (permissionFrom): a watcher's
     // ask is allow only where bash's ask is set as written.
-    return permissionOf(shellToolOf(tool) ?? key, server, this.overrides);
-  };
+    return permissionFrom(shellToolOf(tool) ?? key, server, this.overrides);
+  }
 
   private lastGood?: PermissionSettings;
   private readonly told = new Set<string>();
@@ -382,7 +396,7 @@ export class RunGate {
     if ((key === "write" || key === "edit") && this.turnOrigin() === "reflect" && underLearning(this.where.work, args)) return { text: NOTE_ONLY_TEXT, isError: true };
     const verdict = this.policy(name);
     if (verdict === "allow") return undefined;
-    if (verdict === "deny") return { text: deniedText(tool, key), isError: true };
+    if (verdict === "deny") return { text: deniedText(tool, key, this.denyFrom(name)), isError: true };
     // No one can answer here: refused at once with why, never parked until a cancel.
     if (!this.approvers) return { text: noApproverText(tool), isError: true };
     if (!this.parks) return { text: `This ${tool} call needs a person's approval, which a workflow's model node cannot wait for; it was not run.`, isError: true };
@@ -483,9 +497,15 @@ export class RunGate {
 
   /** pi's resume: an input to the root conversation under the request's own id, which pi takes once however often it
    *  is sent, then the mark. */
-  private readonly submit: Resume = async (id, content, mark) => {
+  private readonly submit: Resume = async (id, content, mark, origin) => {
     const root = await this.durable!.harness.root(this.context!);
-    await root.submit({ type: "input", requestId: `approval-${id}`, content, whenBusy: "followUp" }, this.context!);
+    const requestId = `approval-${id}`;
+    // pi writes its user entry with no data, so the resume's origin goes first as an entry of its own, which the Timeline
+    // matches to it by its text (pi-durable-disk's serve does the same). Once only: a resume tried again whose input is
+    // in already writes no second marker, which would be left open for a later message with the same text.
+    if (origin && (await root.commit((tx) => tx.submissionByRequest(root.id, requestId), this.context!)) === undefined)
+      await root.submit({ type: "write", requestId: `origin of ${requestId}`, entry: { kind: MESSAGE_ORIGIN_KIND, data: { origin, text: content } } }, this.context!);
+    await root.submit({ type: "input", requestId, content, whenBusy: "followUp" }, this.context!);
     await this.durable!.harness.commit(mark, this.context!);
   };
 
@@ -500,7 +520,7 @@ export class RunGate {
     }
     this.settling = true;
     try {
-      const answers = (await readJson(join(this.where.root, RUN_META)))?.approvals as Record<string, { decision?: string; note?: string; args_shown?: string }> | undefined;
+      const answers = (await readJson(join(this.where.root, RUN_META)))?.approvals as Record<string, { decision?: string; note?: string; args_shown?: string; by?: string }> | undefined;
       for (const held of open) {
         const answer = answers?.[held.id];
         // Withdrawn with its run (a cancel, or a stop while it waited): never run and nothing resumed; resolved, so the
@@ -519,7 +539,7 @@ export class RunGate {
           continue;
         }
         // An allow runs the call, unless its tool was set to deny since it asked.
-        const result = decision === "deny" ? { text: refusedText(held.tool, answer.note), isError: true } : this.policy(held.tool) === "deny" ? { text: deniedText(held.tool, settingsKeyOf(this.where.harness ?? "pi", held.tool, this.where.mcpServers)), isError: true } : await this.run(held);
+        const result = decision === "deny" ? { text: refusedText(held.tool, answer.note), isError: true } : this.policy(held.tool) === "deny" ? { text: deniedText(held.tool, settingsKeyOf(this.where.harness ?? "pi", held.tool, this.where.mcpServers), this.denyFrom(held.tool)), isError: true } : await this.run(held);
         // And again once the call is done: a stop or a cancel while it ran drops its result, which never reaches the model.
         const after = ((await readJson(join(this.where.root, RUN_META)))?.approvals as Record<string, { decision?: string }> | undefined)?.[held.id];
         if (after?.decision === "canceled" || after?.decision === "withdrawn") {
@@ -529,7 +549,9 @@ export class RunGate {
         // The arguments the message names are the server's redacted ones: the gate never writes a held value there. The
         // result is cut as every host tool's is (boundResult, HOST_RESULT_MAX_CHARS, in its words): an executor's (an
         // MCP call's) comes uncut, and its journal keeps it whole.
-        await this.resume!(held.id, resumeText(held, answer.args_shown ?? "(not shown)", decision, { ...result, text: boundResult(result.text).text }), (tx) => tx.appendEntry(ROOT_CONVERSATION_ID, { kind: APPROVAL_ENTRY, data: { phase: "resolved", id: held.id, decision } }));
+        // The server's message, never the person's: a declining message's words are theirs, beside it.
+        const origin: ResumeOrigin = decision === "deny" && answer.by === "message" && answer.note?.trim() ? { kind: "server", reason: "approval_declined", said: answer.note } : { kind: "server", reason: "approval" };
+        await this.resume!(held.id, resumeText(held, answer.args_shown ?? "(not shown)", decision, { ...result, text: boundResult(result.text).text }), (tx) => tx.appendEntry(ROOT_CONVERSATION_ID, { kind: APPROVAL_ENTRY, data: { phase: "resolved", id: held.id, decision } }), origin);
         held.resolved = true;
       }
     } catch (error) {

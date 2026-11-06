@@ -10,7 +10,7 @@
   "body": {
     "runs": [
       {
-        "run_id": "01a1a2bf-c440-7e22-ac0d-b11aa7be56e9",
+        "run_id": "01a1ada4-a7c3-7cc5-8227-5802b3493834",
         "agent_id": "refund-finder",
         "agent_version": 1,
         "revision": "c5556e160672df38c594257f29053130d928130c0c4c850337bc5254db369b6f",
@@ -19,37 +19,28 @@
         "status": "completed",
         "state": "idle",
         "title": "Find this shop's refund policy page: https://www.everlane.com",
-        "created_at": "2026-11-03T18:50:39.053Z",
-        "ended_at": "2026-11-03T18:50:42.758Z",
+        "created_at": "2026-11-05T21:36:51.662Z",
+        "ended_at": "2026-11-05T21:36:54.721Z",
         "error": null,
         "review": null,
         "pending": null,
         "cost": {
-          "usd": 0.011444,
+          "usd": 0.017113,
           "basis": "estimate",
           "charge_state": null,
           "cap_usd": null
         },
         "archived_at": null,
         "imported_from": null,
+        "trigger": null,
         "learning": {
           "state": "dropped",
           "reason": "empty",
-          "detail": "Nothing new to remember from this run.",
-          "used": [
-            {
-              "file": "keep-it-to-three-lines.md",
-              "name": "Keep the summary to three lines"
-            },
-            {
-              "file": "try-policies-refund-policy-first.md",
-              "name": "Try /policies/refund-policy first"
-            }
-          ]
+          "detail": "Nothing new to remember from this run."
         }
       },
       {
-        "run_id": "01a1a2bf-b045-7754-8fa1-2862d6507f6f",
+        "run_id": "01a1ada4-9996-7dbb-9b5a-ecd6055db1d4",
         "agent_id": "refund-finder",
         "agent_version": 1,
         "revision": "c5556e160672df38c594257f29053130d928130c0c4c850337bc5254db369b6f",
@@ -58,37 +49,28 @@
         "status": "completed",
         "state": "idle",
         "title": "Find this shop's refund policy page: https://www.kith.com",
-        "created_at": "2026-11-03T18:50:33.936Z",
-        "ended_at": "2026-11-03T18:50:38.523Z",
+        "created_at": "2026-11-05T21:36:48.032Z",
+        "ended_at": "2026-11-05T21:36:51.027Z",
         "error": null,
         "review": null,
         "pending": null,
         "cost": {
-          "usd": 0.013437,
+          "usd": 0.017924,
           "basis": "estimate",
           "charge_state": null,
           "cap_usd": null
         },
         "archived_at": null,
         "imported_from": null,
+        "trigger": null,
         "learning": {
           "state": "dropped",
           "reason": "grader",
-          "detail": "Not kept: It's about one shop's returns portal, not a rule other shops share.",
-          "used": [
-            {
-              "file": "keep-it-to-three-lines.md",
-              "name": "Keep the summary to three lines"
-            },
-            {
-              "file": "try-policies-refund-policy-first.md",
-              "name": "Try /policies/refund-policy first"
-            }
-          ]
+          "detail": "Not kept: It's about one shop's returns portal, not a rule other shops share."
         }
       },
       {
-        "run_id": "01a1a2bf-a037-772b-af55-a290a195670d",
+        "run_id": "01a1ada4-8d4b-71c8-903b-27d91ed77b83",
         "agent_id": "refund-finder",
         "agent_version": 1,
         "revision": "c5556e160672df38c594257f29053130d928130c0c4c850337bc5254db369b6f",
@@ -97,37 +79,28 @@
         "status": "completed",
         "state": "idle",
         "title": "Find this shop's refund policy page: https://www.allbirds.com",
-        "created_at": "2026-11-03T18:50:29.823Z",
-        "ended_at": "2026-11-03T18:50:33.590Z",
+        "created_at": "2026-11-05T21:36:44.887Z",
+        "ended_at": "2026-11-05T21:36:47.749Z",
         "error": null,
         "review": null,
         "pending": null,
         "cost": {
-          "usd": 0.011444,
+          "usd": 0.017113,
           "basis": "estimate",
           "charge_state": null,
           "cap_usd": null
         },
         "archived_at": null,
         "imported_from": null,
+        "trigger": null,
         "learning": {
           "state": "dropped",
           "reason": "empty",
-          "detail": "Nothing new to remember from this run.",
-          "used": [
-            {
-              "file": "keep-it-to-three-lines.md",
-              "name": "Keep the summary to three lines"
-            },
-            {
-              "file": "try-policies-refund-policy-first.md",
-              "name": "Try /policies/refund-policy first"
-            }
-          ]
+          "detail": "Nothing new to remember from this run."
         }
       },
       {
-        "run_id": "01a1a2bf-8ddd-71cc-b780-5e9b78b9f063",
+        "run_id": "01a1ada4-7e7e-7ab8-ab93-46673681a0c8",
         "agent_id": "refund-finder",
         "agent_version": 1,
         "revision": "c5556e160672df38c594257f29053130d928130c0c4c850337bc5254db369b6f",
@@ -136,29 +109,24 @@
         "status": "completed",
         "state": "idle",
         "title": "Find this shop's refund policy page: https://www.brooklinen.com",
-        "created_at": "2026-11-03T18:50:25.126Z",
-        "ended_at": "2026-11-03T18:50:29.276Z",
+        "created_at": "2026-11-05T21:36:41.101Z",
+        "ended_at": "2026-11-05T21:36:44.194Z",
         "error": null,
         "review": null,
         "pending": null,
         "cost": {
-          "usd": 0.013566,
+          "usd": 0.018522,
           "basis": "estimate",
           "charge_state": null,
           "cap_usd": null
         },
         "archived_at": null,
         "imported_from": null,
+        "trigger": null,
         "learning": {
           "state": "merged",
           "reason": null,
           "detail": "Learned: Try /policies/refund-policy first (replaces 1 older note)",
-          "used": [
-            {
-              "file": "shopify-refund-policy-path.md",
-              "name": "Shopify refund policy path"
-            }
-          ],
           "learned": [
             {
               "file": "try-policies-refund-policy-first.md",
@@ -171,7 +139,37 @@
         }
       },
       {
-        "run_id": "01a1a2bf-600d-7a8b-b32a-0db5b1d7559c",
+        "run_id": "01a1ada4-529b-719e-8474-6b9662bc92bf",
+        "agent_id": "refund-finder",
+        "agent_version": 1,
+        "revision": "c5556e160672df38c594257f29053130d928130c0c4c850337bc5254db369b6f",
+        "kind": "agentic",
+        "sha": null,
+        "status": "completed",
+        "state": "idle",
+        "title": "Find this shop's refund policy page: https://www.patagonia.com",
+        "created_at": "2026-11-05T21:36:29.857Z",
+        "ended_at": "2026-11-05T21:36:40.431Z",
+        "error": null,
+        "review": null,
+        "pending": null,
+        "cost": {
+          "usd": 0.059678,
+          "basis": "estimate",
+          "charge_state": null,
+          "cap_usd": null
+        },
+        "archived_at": null,
+        "imported_from": null,
+        "trigger": null,
+        "learning": {
+          "state": "dropped",
+          "reason": "empty",
+          "detail": "Nothing new to remember from this run."
+        }
+      },
+      {
+        "run_id": "01a1ada4-5260-70be-99d0-9eebe5086a42",
         "agent_id": "refund-finder",
         "agent_version": 1,
         "revision": "c5556e160672df38c594257f29053130d928130c0c4c850337bc5254db369b6f",
@@ -180,19 +178,20 @@
         "status": "completed",
         "state": "idle",
         "title": "Find this shop's refund policy page: https://www.taylorstitch.com",
-        "created_at": "2026-11-03T18:50:13.398Z",
-        "ended_at": "2026-11-03T18:50:24.543Z",
+        "created_at": "2026-11-05T21:36:29.818Z",
+        "ended_at": "2026-11-05T21:36:40.212Z",
         "error": null,
         "review": null,
         "pending": null,
         "cost": {
-          "usd": 0.055238,
+          "usd": 0.061088,
           "basis": "estimate",
           "charge_state": null,
           "cap_usd": null
         },
         "archived_at": null,
         "imported_from": null,
+        "trigger": null,
         "learning": {
           "state": "merged",
           "reason": null,
@@ -204,35 +203,6 @@
               "supersedes": []
             }
           ]
-        }
-      },
-      {
-        "run_id": "01a1a2bf-5fa1-72a3-a143-aaea6c2a7fad",
-        "agent_id": "refund-finder",
-        "agent_version": 1,
-        "revision": "c5556e160672df38c594257f29053130d928130c0c4c850337bc5254db369b6f",
-        "kind": "agentic",
-        "sha": null,
-        "status": "completed",
-        "state": "idle",
-        "title": "Find this shop's refund policy page: https://www.patagonia.com",
-        "created_at": "2026-11-03T18:50:13.376Z",
-        "ended_at": "2026-11-03T18:50:23.674Z",
-        "error": null,
-        "review": null,
-        "pending": null,
-        "cost": {
-          "usd": 0.051923,
-          "basis": "estimate",
-          "charge_state": null,
-          "cap_usd": null
-        },
-        "archived_at": null,
-        "imported_from": null,
-        "learning": {
-          "state": "dropped",
-          "reason": "empty",
-          "detail": "Nothing new to remember from this run."
         }
       }
     ],
