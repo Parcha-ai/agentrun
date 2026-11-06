@@ -115,6 +115,9 @@ export type Learning = {
   /** A grader's drop's skill and workflow draft, from what the run proposed: lost with the rest, and named when its
    *  learning is said (learning-words.ts notKept). */
   lost?: LearnedFile[];
+  /** A grader's drop on two answers the host could not read: the last, cut of secrets and in size (UNREAD_MAX), kept on the
+   *  run's file to diagnose it by, and served by no read. */
+  unread?: string;
 };
 /** A skill or a workflow draft a merge added or changed. */
 export type LearnedFile = { file: string; name: string; pending?: true };

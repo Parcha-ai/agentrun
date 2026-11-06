@@ -90,6 +90,14 @@ export function notesRead(reflect: Reflect | undefined, rows: readonly TimelineE
   return [...read];
 }
 
+/** How much of a grader's answer the host could not read a run keeps: its start and its end, where such an answer goes
+ *  wrong (words before its JSON, or JSON cut off). */
+const UNREAD_MAX = 2_000;
+/** `text` in size, cut of `values` (redactSecrets). A long answer is cut at whitespace first, so no word, a secret
+ *  included, is left in part beside the cut, and then cut of secrets: redactSecrets reads no more than PRINT_MAX. */
+const unreadShown = (text: string, values: readonly string[]): string =>
+  redactSecrets(text.length <= UNREAD_MAX ? text : `${text.slice(0, 1_500).replace(/\S*$/, "")}\n…\n${text.slice(-(UNREAD_MAX - 1_503)).replace(/^\S*/, "")}`, values);
+
 /** `verdict` with its reason, and each item's question and why, cut of `values` (learn/secrets.ts redactSecrets). */
 const cutVerdict = (verdict: Verdict, values: readonly string[]): Verdict => ({
   ...verdict,
@@ -775,7 +783,9 @@ export class LearningRuns {
             const place = /^(?:skills\/([^/]+)\/SKILL\.md|workflows\/([^/]+)\/workflow\.json)$/.exec(file);
             return place ? [{ file, name: (place[1] ?? place[2])! }] : [];
           });
-          return await end("dropped", "grader", redactSecrets(notKept(kept.verdict, lost), this.refused(run)), lost.length ? { lost } : {});
+          // Two answers it could not read: the last kept, in size and cut of every secret, to diagnose it by.
+          const unread = "unread" in judged && judged.unread !== undefined ? { unread: unreadShown(judged.unread, this.refused(run)) } : {};
+          return await end("dropped", "grader", redactSecrets(notKept(kept.verdict, lost), this.refused(run)), { ...(lost.length ? { lost } : {}), ...unread });
         }
         // Kept before the merge, with the blobs it judged superseded: a restart merges on this verdict, never asks the
         // grader again, and checks the same blobs.
