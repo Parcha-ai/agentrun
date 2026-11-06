@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { unseal } from "@parcha/pi-durable-agent";
@@ -466,6 +466,20 @@ test("under its launcher, a key that already exists in a directory another user 
   assert.equal(statSync(keys).mode & 0o777, 0o755, "an existing key's directory is never changed");
   assert.equal(readFileSync(join(keys, "seal.key"), "utf8").trim(), key, "the key is untouched");
   assert.ok(out.includes(`no seal key in ${join(keys, "seal.key")}`) && out.includes(`chmod 700 ${keys}; chmod 600 ${join(keys, "seal.key")}`), out);
+});
+
+test("under its launcher, a key directory that is a symlink is never chmod-ed: a shared target keeps its mode, even when the user owns it", { timeout: 60_000 }, async (t) => {
+  const dir = await scratch(t);
+  const [data, config, shared] = [join(dir, "agents"), join(dir, "config"), join(dir, "shared")];
+  const keys = join(config, "agentrun");
+  mkdirSync(config, { recursive: true });
+  mkdirSync(shared, { recursive: true });
+  chmodSync(shared, 0o755);
+  symlinkSync(shared, keys);
+  const token = `not-a-secret-token-${randomBytes(16).toString("hex")}`;
+  const server = await launched(t, data, config, token);
+  await server.stop();
+  assert.equal(statSync(shared).mode & 0o777, 0o755, "the symlink's shared target keeps its mode");
 });
 
 test("a key a harness reads, saved later, makes the harness available with no restart: the server's reading probes the harnesses' offers with it", async (t) => {
