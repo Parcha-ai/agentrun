@@ -486,7 +486,8 @@ where `bash`'s setting came from:
   interactive shell's running command stops and the shell runs on; `TERM` and `KILL` go to every process group of the
   terminal's session. That session is tracked as the process: a child its command leaves running on the terminal keeps
   the process running, counted against the cap, reached by `bash_signal` and ended at the run's end, after `script`
-  itself is gone. A box with no `script` refuses `tty: true`, saying so, and starts nothing. `bash_list` marks such a
+  itself is gone. A box with no `script`, or with another `script` than util-linux's (busybox's takes no `-e`, and without it
+  always exits 0, so the command's exit code would be lost), refuses `tty: true`, saying so, and starts nothing. `bash_list` marks such a
   process `(tty)`.
 - `bash_output {id, offset?, max_bytes?}` reads the log from a byte offset (0 when absent), at most 48 KiB a call (the
   default), never splitting a character (a page too small for the character it starts at is refused, saying so): whether the process still runs, its exit code once it ended, the log's size,
