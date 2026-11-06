@@ -78,8 +78,9 @@ func pidAfter(t *testing.T, tbl *process.Table, id string, offset *int64, name s
 	return 0
 }
 
-// inForeground waits until pid's group is its terminal's foreground group, as /proc/<pid>/stat's tpgid says.
-func inForeground(t *testing.T, pid int) {
+// foregroundGroup waits until pid's group is its terminal's foreground group, as /proc/<pid>/stat's pgrp and tpgid
+// say, and returns the group.
+func foregroundGroup(t *testing.T, pid int) int {
 	t.Helper()
 	deadline := time.Now().Add(patience)
 	for time.Now().Before(deadline) {
@@ -88,12 +89,45 @@ func inForeground(t *testing.T, pid int) {
 			t.Fatalf("process %d: %v", pid, err)
 		}
 		fields := strings.Fields(string(stat[strings.LastIndexByte(string(stat), ')')+1:]))
-		if fields[2] == strconv.Itoa(pid) && fields[5] == strconv.Itoa(pid) {
-			return
+		if fields[2] == fields[5] {
+			group, _ := strconv.Atoi(fields[2])
+			return group
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("process %d's group never became its terminal's foreground group", pid)
+	return 0
+}
+
+// reaped waits until pid is no process at all, not even a zombie.
+func reaped(t *testing.T, pid int) {
+	t.Helper()
+	deadline := time.Now().Add(patience)
+	for time.Now().Before(deadline) {
+		if _, ok := stateOf(pid); !ok {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("process %d was never reaped", pid)
+}
+
+// interrupt sends INT to a pty shell running a foreground job, which must end it with an empty reply; the shell must
+// then report status 130 and read on.
+func interrupt(t *testing.T, tbl *process.Table, id string, offset *int64, job int) {
+	t.Helper()
+	res, err := tbl.Signal(process.SignalParams{ID: id, Signal: "INT"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := reply(t, res); len(got) != 0 {
+		t.Fatalf("the reply to INT with a foreground job: %v", got)
+	}
+	gone(t, job)
+	typeLine(t, tbl, id, "echo status=$?\n")
+	readUntil(t, tbl, id, "pty", offset, "status=130")
+	typeLine(t, tbl, id, "echo al''ive\n")
+	readUntil(t, tbl, id, "pty", offset, "alive")
 }
 
 // reply is a result as the daemon sends it, in JSON.
@@ -119,20 +153,16 @@ func TestINTOnATerminalEndsItsForegroundJobAndNotTheShell(t *testing.T) {
 	bg := pidAfter(t, tbl, p.ID, &offset, "bg")
 	typeLine(t, tbl, p.ID, "sh -c 'echo fg=$$; exec sleep 301'\n")
 	fg := pidAfter(t, tbl, p.ID, &offset, "fg")
-	inForeground(t, fg)
+	if group := foregroundGroup(t, fg); group != fg {
+		t.Fatalf("the foreground group is %d, not the job's, %d", group, fg)
+	}
+	interrupt(t, tbl, p.ID, &offset, fg)
 
-	res, err := tbl.Signal(process.SignalParams{ID: p.ID, Signal: "INT"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := reply(t, res); len(got) != 0 {
-		t.Fatalf("the reply to INT with a foreground job: %v", got)
-	}
-	gone(t, fg)
-	typeLine(t, tbl, p.ID, "echo status=$?\n")
-	readUntil(t, tbl, p.ID, "pty", &offset, "status=130")
-	typeLine(t, tbl, p.ID, "echo al''ive\n")
-	readUntil(t, tbl, p.ID, "pty", &offset, "alive")
+	// A pipeline's group is named for its first process; once that has ended and been reaped, INT still reaches the rest.
+	typeLine(t, tbl, p.ID, "true | sh -c 'echo last=$$; exec sleep 302'\n")
+	last := pidAfter(t, tbl, p.ID, &offset, "last")
+	reaped(t, foregroundGroup(t, last))
+	interrupt(t, tbl, p.ID, &offset, last)
 	if state, ok := stateOf(bg); !ok || state == "Z" {
 		t.Fatalf("the background job %d was signalled: state %q", bg, state)
 	}

@@ -1,6 +1,7 @@
 package execrun
 
 import (
+	"cmp"
 	"encoding/json"
 	"errors"
 	"os"
@@ -20,7 +21,8 @@ import (
 // The daemon starts it as `computerd guard` from /proc/self/exe, in a process group of its own, with an empty
 // environment, and stdin, stdout and stderr that the program inherits: /dev/null or a pipe and two output pipes, or one
 // terminal. Once the program runs, the guard lets go of its copies of the pipes; a terminal it keeps. The spec comes as
-// one JSON line on fd 3, the control pipe; later lines there ask for a signal to the program's group, and its end (the
+// one JSON line on fd 3, the control pipe; later lines there ask for a signal to the program's group, or to another group
+// the daemon named (a terminal's foreground job, which it checked is in the program's session), and its end (the
 // daemon let go, or died) ends the program. Status leaves on fd 4 as JSON lines: the
 // program's pid once it has started, then how it ended, after the last descendant is reaped. Both fds are closed on
 // exec, so the program never holds them. SIGTERM or SIGINT asks the guard to end the program: it sends SIGTERM to the
@@ -47,9 +49,10 @@ type guardSpec struct {
 	Terminal bool `json:"terminal,omitempty"`
 }
 
-// guardCommand is a control line after the spec.
+// guardCommand is a control line after the spec: a signal, to the program's group or, when Group is set, to that group.
 type guardCommand struct {
 	Signal int `json:"signal"`
+	Group  int `json:"group,omitempty"`
 }
 
 // guardStatus is the program's pid once it started, then how it ended: an exit code, a signal number, or the errno of
@@ -101,7 +104,7 @@ func Guard() int {
 		releaseStdio()
 	}
 	report(guardStatus{Pid: pid})
-	commands := make(chan syscall.Signal, 8)
+	commands := make(chan guardCommand, 8)
 	go func() {
 		for {
 			var c guardCommand
@@ -109,7 +112,7 @@ func Guard() int {
 				stop <- syscall.SIGTERM
 				return
 			}
-			commands <- syscall.Signal(c.Signal)
+			commands <- c
 		}
 	}()
 	ws := supervise(pid, childEnded, stop, commands)
@@ -124,8 +127,9 @@ func Guard() int {
 
 // supervise reaps every child of the guard until none is left, and returns the program's own wait status. The program
 // ending, or the grace after a SIGTERM running out, sends SIGKILL to every descendant, again on each pass, so one that
-// forks while it is being killed is caught on the next. A command's signal goes to the program's group while it runs.
-func supervise(pid int, childEnded, stop <-chan os.Signal, commands <-chan syscall.Signal) syscall.WaitStatus {
+// forks while it is being killed is caught on the next. A command's signal goes to its group, or the program's, while
+// the program runs.
+func supervise(pid int, childEnded, stop <-chan os.Signal, commands <-chan guardCommand) syscall.WaitStatus {
 	var status syscall.WaitStatus
 	exited, ending, graceOver := false, false, false
 	var grace <-chan time.Time
@@ -163,9 +167,9 @@ func supervise(pid int, childEnded, stop <-chan os.Signal, commands <-chan sysca
 				signalRun(pid, exited, syscall.SIGTERM)
 				grace = time.After(KillGrace)
 			}
-		case sig := <-commands:
+		case c := <-commands:
 			if !exited {
-				_ = syscall.Kill(-pid, sig)
+				_ = syscall.Kill(-cmp.Or(c.Group, pid), syscall.Signal(c.Signal))
 			}
 		case <-grace:
 			graceOver, grace = true, nil

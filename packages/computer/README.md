@@ -77,7 +77,7 @@ Its whole tree ends when the program ends or is signalled to its end. Ids are `p
 | `process.start` | `argv, cwd?, env?, user?, pty?: {cols, rows}, stdin?` | `{id, pid}`: `pid` is the program's. `cwd`, `env` and `user` are as for `exec.run`. Without `stdin` (and without a pty) stdin is /dev/null |
 | `process.read` | `id, stream, offset, maxBytes?, waitMs?` | `{data, nextOffset, dropped, exited}`: `stream` is `stdout` or `stderr`, or `pty`; at most 512 KiB a call (more is `limit`) |
 | `process.write` | `id, data?, close?` | `{}`: to stdin, or the terminal; `close` closes stdin after the data |
-| `process.signal` | `id, signal` | `{}`: `TERM`, `INT`, `KILL` or `HUP`, to the program's process group; to a process that has ended it does nothing |
+| `process.signal` | `id, signal` | `{}`: `TERM`, `INT`, `KILL` or `HUP`, to the program's process group, except `INT` with a pty (below); to a process that has ended it does nothing |
 | `process.resize` | `id, cols, rows` | `{}`: the terminal's new size; the program gets SIGWINCH |
 | `process.list` | `from?` | `{processes, truncated, next}`: `processes` are `{id, pid, argv, argvClipped, pty, running, exitCode, signal, startedAt, endedAt}` in start order, times in milliseconds since the epoch; at most 768 KiB a reply: when `truncated`, list again with `from` set to `next`. Pages follow start order, not places in the table, so a process dropped between two pages makes the next skip none |
 | `process.wait` | `id, timeoutMs` | `{running, exitCode, signal}`: waits up to `timeoutMs` (0 to a day) for the end; `running` is true on timeout |
@@ -93,6 +93,12 @@ Its whole tree ends when the program ends or is signalled to its end. Ids are `p
 - With `pty`, stdout and stderr are one `pty` stream, and the program runs in a session of its own with the terminal
   as its controlling terminal (setsid and TIOCSCTTY in the guard). A terminal has no stdin to close: write `"\x04"`
   for the end of input, or signal `HUP`.
+- `INT` to a process with a pty is ^C: it goes to the terminal's foreground process group, as the terminal driver
+  sends it, so it ends the job a shell runs in the foreground and the shell reads on. The daemon reads that group on
+  the terminal it holds (TIOCGPGRP) and has the guard signal it only when it is in the program's own session (and so
+  under the guard); a terminal the program handed to another session is refused as `denied`, and nothing is
+  signalled. A terminal with no foreground group left (the program let go of it, or is ending) has `INT` go to the
+  program's group, and the reply says so: `{note}`. `TERM`, `KILL` and `HUP` always go to the program's group.
 - Writes to one process take turns. A write waits at most 10 s, its turn included, for the program to read; the rest is
   a `timeout` error that says how much was written. A cancelled write, waiting for its turn or writing, is `aborted`.
 - The guard keeps no copy of a program's stdin, stdout or stderr pipes once the program runs. So when the program, and
