@@ -7,6 +7,7 @@
 // guard). The one read-write open is the checkpoint when the server takes the run back (runs.ts), with no process left.
 import { closeSync, openSync, readSync, statSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
+import { walHasCommit } from "@parcha/agentrun-pi/durable";
 
 /** One open of a run's database, as observeRunDbOpens reports it: `held`, whether a process held the run at the open. */
 /** `dropped`: a read of the file alone whose file changed during it, made again (readRunDbSync). */
@@ -20,19 +21,6 @@ export function observeRunDbOpens(observer: (open: RunDbOpen) => void): () => vo
 
 /** `file` as a SQLite URI path: each segment percent-encoded, so a `?`, `#` or `%` in it is never read as a parameter. */
 const uriPath = (file: string): string => file.split("/").map(encodeURIComponent).join("/");
-
-/** The size below which a WAL holds no frame: its 32-byte header, and one frame's 24-byte header and a page of at least
- *  512 bytes. */
-const ONE_FRAME = 32 + 24 + 512;
-
-/** Whether run database `file`'s WAL holds a frame. */
-function walHasFrame(file: string): boolean {
-  try {
-    return statSync(`${file}-wal`).size >= ONE_FRAME;
-  } catch {
-    return false;
-  }
-}
 
 /** What says run database `file` changed: its inode, size and modification time, and its header's file change counter and
  *  page count (bytes 24 to 31). In WAL mode SQLite does not bump the counter at each commit, but a checkpoint writes the
@@ -49,8 +37,9 @@ function fileMark(file: string): string {
   return `${at.ino}:${at.size}:${at.mtimeNs}:${header.toString("hex")}`;
 }
 
-/** Tests' seam: called between a read's choice of how to open the file and its open. */
-export const runDbTestHooks: { afterPlan?: (file: string) => void } = {};
+/** Tests' seams: `afterPlan`, called between a read's choice of how to open the file and its open; `madeReads`, called
+ *  with each MonotonicReads made. */
+export const runDbTestHooks: { afterPlan?: (file: string) => void; madeReads?: (reads: MonotonicReads) => void } = {};
 
 /** A read of a run's database file alone whose file changed during it (a run's process wrote and a take-back checkpointed
  *  meanwhile), every try: none of them is shown. */
@@ -64,19 +53,23 @@ export class ChangedReadError extends Error {
 const READ_TRIES = 3;
 
 /**
- * One read of run database `file`: `read(db)` on a fresh read-only, lock-free connection, closed after it. A WAL with a
- * frame in it: opened with no locking (`vfs=unix-none`), the WAL read too. No WAL, or one with no frame yet: the
+ * One read of run database `file`: `read(db)` on a fresh read-only, lock-free connection, closed after it. A WAL that
+ * holds a commit SQLite's recovery takes (walHasCommit): opened with no locking (`vfs=unix-none`), the WAL read too. No
+ * WAL, or one with no verified commit yet (a fresh WAL's first transaction, its frames written and no commit): the
  * database file alone, as an immutable file, which is whole then; its read is kept only when the file did not change
- * during it (fileMark), else it is dropped and made again. SQLite's reader of a WAL-mode database makes a WAL file when
- * there is none and removes an empty one at its close: a run's process that opened that same file meanwhile would write
- * its frames into a file the reader then removes. A reader that never opens an empty WAL never does either, and a
- * read-only close removes no WAL with frames in it. A read-only close checkpoints nothing. `held`: whether a process
- * holds the run now (reported to observers).
+ * during it (fileMark), else it is dropped and made again. SQLite's lock-free reader of a WAL with no commit recovers no
+ * frame, and its close, a checkpoint with nothing to copy, removes the WAL (sqlite3WalClose) under the writer still
+ * writing it, whose commits are then lost; with a commit, that close's checkpoint must write the database file, which
+ * this read-only connection cannot, so it fails and removes nothing. Every read and the take-back's checkpoint run in one
+ * turn of this process's event loop, and the run's process only appends to its WAL, so the WAL a read opens holds at
+ * least the commit its check saw. A read-only close checkpoints nothing it can write. `held`: whether a process holds the
+ * run now (reported to observers).
  */
 export function readRunDbSync<T>(file: string, held: boolean, read: (db: DatabaseSync) => T): T {
   for (let attempt = 1; ; attempt++) {
     for (const observer of observers) observer({ file, mode: "read", held });
-    const immutable = !walHasFrame(file);
+    // A WAL is opened only once it holds a commit SQLite's recovery takes (agentrun-pi walHasCommit).
+    const immutable = !walHasCommit(`${file}-wal`);
     const before = immutable ? fileMark(file) : undefined;
     runDbTestHooks.afterPlan?.(file);
     const db = new DatabaseSync(immutable ? `file:${uriPath(file)}?mode=ro&immutable=1` : `file:${uriPath(file)}?mode=ro&vfs=unix-none`, { readOnly: true });
@@ -109,6 +102,13 @@ export class BehindReadError extends Error {
 /** The highest entry id each run's reads have seen: a read below it is refused (BehindReadError). */
 export class MonotonicReads {
   readonly #seen = new Map<string, number>();
+  constructor() {
+    runDbTestHooks.madeReads?.(this);
+  }
+  /** How many runs' reads it keeps. */
+  get size(): number {
+    return this.#seen.size;
+  }
   /** Accepts run `runId`'s read that ends at entry `last` (0 for none), or throws BehindReadError. */
   accept(runId: string, last: number): void {
     const seen = this.#seen.get(runId) ?? 0;
@@ -139,6 +139,8 @@ export async function checkpointRunDb(file: string, held: boolean): Promise<void
     // As its writer opened it: the WAL index in heap, so no -shm is made.
     db.exec("PRAGMA locking_mode = EXCLUSIVE");
     db.exec("PRAGMA journal_mode = WAL");
+    // The checkpoint's copy is synced into the database file before the WAL that held it is removed.
+    db.exec("PRAGMA synchronous = FULL");
     db.prepare("SELECT count(*) FROM sqlite_schema").get();
   } finally {
     // The close checkpoints: it copies into the database file only pages the WAL holds too, so a lock-free reader still

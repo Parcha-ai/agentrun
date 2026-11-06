@@ -9,6 +9,7 @@ import { apply } from "@earendil-works/chord/delta";
 import type { RecoveryEffect, RecoveryNote } from "@parcha/agentrun-dsl/recovery";
 import { decisionKey } from "./decisions.js";
 import { effectKey } from "./store.js";
+import { walHasCommit } from "./wal.js";
 
 type Database = import("node:sqlite").DatabaseSync;
 type Json = any;
@@ -33,11 +34,11 @@ export function withDurableFile<T>(file: string, read: (db: Database) => T, opti
   if (!fs.existsSync(file)) return null;
   const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite") as typeof import("node:sqlite");
   for (let attempt = 1; ; attempt++) {
-    // Unlocked, a WAL with no frame yet is never opened: SQLite's reader makes one where there is none and removes an
-    // empty one at its close, under a writer that may have opened it meanwhile. With none, the database file is whole:
-    // immutable, and its read kept only when the file did not change during it (a run's process wrote and its
-    // checkpoint landed meanwhile), else dropped and made again.
-    const walFrames = options.unlocked && (() => { try { return fs.statSync(`${file}-wal`).size >= 32 + 24 + 512; } catch { return false; } })();
+    // Unlocked, a WAL with no verified commit yet is never opened (wal.ts): SQLite's lock-free reader recovers no frame
+    // from it and removes it at its close, under a writer that may still be writing its first transaction there. Then
+    // the database file is whole: immutable, and its read kept only when the file did not change during it (a run's
+    // process wrote and its checkpoint landed meanwhile), else dropped and made again.
+    const walFrames = options.unlocked && walHasCommit(`${file}-wal`);
     const alone = options.unlocked && !walFrames;
     const before = alone ? fileMark(file) : undefined;
     const at = options.immutable || alone ? `${pathToFileURL(file).href}?mode=ro&immutable=1` : options.unlocked ? `${pathToFileURL(file).href}?mode=ro&vfs=unix-none` : file;
