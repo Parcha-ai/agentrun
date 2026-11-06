@@ -178,7 +178,12 @@ test("a trigger's message that reaches a run while a tool call waits for its own
   await said;
   if (seen.error) throw seen.error;
   assert.deepEqual(seen.approvals, {}, "no approval answered: none declined by the trigger's message");
-  assert.notEqual(seen.firing.status, "sent", `the firing sent nothing: ${JSON.stringify(seen.firing)}`);
+  assert.deepEqual([seen.firing.status, seen.firing.reason], ["skipped", "The run is waiting on a person."], JSON.stringify(seen.firing));
+  // Once the person's message is in, the call still waits for its owner: the same one, the only one, unanswered.
+  let read;
+  for (const end = Date.now() + 30_000; (read = (await api("GET", `/runs/${run.run_id}`)).body).pending?.kind !== "approval"; await new Promise((resolve) => setTimeout(resolve, 50))) assert.ok(Date.now() < end, `the approval still waits: ${JSON.stringify(read.pending)}`);
+  assert.deepEqual([read.status, read.state, read.pending.tool], ["input_required", "waiting", "web_fetch"]);
+  assert.deepEqual(JSON.parse(await readFile(join(runDir(server.data, run.run_id), "serve.json"), "utf8")).approvals ?? {}, {}, "and never answered");
   assert.equal((await api("POST", `/runs/${run.run_id}/cancel`)).status, 202);
 });
 
