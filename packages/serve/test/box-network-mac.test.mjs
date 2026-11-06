@@ -298,8 +298,12 @@ test("the proxy's entry refuses to start with no list, or one that is not names;
     assert.equal(existsSync(socket), false);
   }
   const child = spawn(process.execPath, ["--import", PRELOAD, join(code, "main.js"), socket], { env: { PATH: process.env.PATH, AGENTRUN_BOX_ALLOW: "pypi.org" }, stdio: ["ignore", "pipe", "inherit"] });
-  t.after(() => child.kill("SIGKILL"));
-  // After the stop: a test's after-hooks run in the order they were added, and the proxy keeps its socket in `dir`.
+  const gone = new Promise((resolve) => child.once("exit", resolve));
+  t.after(async () => {
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    await gone;
+  });
+  // After the stop, to its exit: a test's after-hooks run in the order they were added, and the proxy keeps its socket in `dir`.
   t.after(() => rm(dir, { recursive: true, force: true }));
   let said = "";
   child.stdout.setEncoding("utf8").on("data", (chunk) => (said += chunk));

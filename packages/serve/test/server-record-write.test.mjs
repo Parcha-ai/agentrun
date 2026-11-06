@@ -19,7 +19,10 @@ test("the server's record is whole the moment it is there: a reader that finds t
   const env = { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !DROPPED.includes(name))), AGENTRUN_BOXES: "none", HOME: dir, AGENTRUN_ACCOUNTS: "0", NODE_OPTIONS: `--import=${pathToFileURL(SLOW).href}` };
   const child = spawn(process.execPath, [CLI, "--data", data, "--port", "0"], { stdio: ["ignore", "ignore", "pipe"], env });
   const exited = new Promise((resolve) => child.once("exit", (code) => resolve(code)));
-  t.after(() => child.exitCode === null && child.kill("SIGKILL"));
+  t.after(async () => {
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    await exited;
+  });
   // After the stop: a test's after-hooks run in the order they were added.
   t.after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   let err = "";

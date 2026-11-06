@@ -13,15 +13,17 @@ test("a scratch directory is still there when the process that writes into it, s
   const dir = await scratch(t);
   const child = spawn(process.execPath, ["-e", 'const fs = require("node:fs"); setInterval(() => fs.writeFileSync(require("node:path").join(process.argv[1], "alive"), String(Date.now())), 10);', dir], { stdio: "ignore" });
   const exited = new Promise((resolve) => child.once("exit", resolve));
-  for (let i = 0; !existsSync(join(dir, "alive")); i++) {
-    assert.ok(i < 3000 && child.exitCode === null, "the child writes into the directory");
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  // The stop, added after the directory was made, as every helper adds a server's or child's stop.
+  // The stop, added after the directory was made, as every helper adds a server's or child's stop, and before anything
+  // that could fail: a stop never added would leave the child writing while the file's end removes the directory.
+  let there;
   t.after(async () => {
-    const there = existsSync(dir);
+    there = existsSync(dir);
     child.kill("SIGKILL");
     await exited;
     assert.ok(there, "the directory was still there when its writer was stopped");
   });
+  for (let i = 0; !existsSync(join(dir, "alive")); i++) {
+    assert.ok(i < 3000 && child.exitCode === null, "the child writes into the directory");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
 });

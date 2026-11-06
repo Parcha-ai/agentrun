@@ -18,10 +18,13 @@ async function serve(t) {
   const data = join(dir, "data");
   const env = { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !DROPPED.includes(name))), ...NO_BOXES, HOME: dir, AGENTRUN_ACCOUNTS: "0" };
   const child = spawn(process.execPath, [CLI, "--data", data, "--port", "0"], { stdio: ["ignore", "ignore", "pipe"], env });
-  // The stop first, then the removal: a test's after-hooks run in the order they were added.
-  t.after(() => child.exitCode === null && child.kill("SIGKILL"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
   const exited = new Promise((resolve) => child.once("exit", (code) => resolve(code)));
+  // The stop first, to its exit, then the removal: a test's after-hooks run in the order they were added.
+  t.after(async () => {
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    await exited;
+  });
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
   let err = "";
   child.stderr.on("data", (chunk) => (err += chunk));
   const record = join(data, ".server.json");
@@ -47,9 +50,12 @@ test("a SIGTERM the moment the record appears is a clean stop: exit 0, the recor
     const data = join(dir, "data");
     const env = { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !DROPPED.includes(name))), ...NO_BOXES, HOME: dir, AGENTRUN_ACCOUNTS: "0" };
     const child = spawn(process.execPath, [CLI, "--data", data, "--port", "0"], { stdio: "ignore", env });
-    t.after(() => child.exitCode === null && child.kill("SIGKILL"));
-    t.after(() => rmSync(dir, { recursive: true, force: true }));
     const exited = new Promise((resolve) => child.once("exit", (code, signal) => resolve({ code, signal })));
+    t.after(async () => {
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+      await exited;
+    });
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
     for (let j = 0; !existsSync(data); j++) {
       assert.ok(j < 6000 && child.exitCode === null, "the server made its data directory");
       await new Promise((resolve) => setTimeout(resolve, 10));
