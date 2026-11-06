@@ -1,13 +1,14 @@
 // What only Docker names of a computer, on real Docker (AGENTRUN_COMPUTER_LIVE_DOCKER=1 only): attach by the container's
-// name and by its id or a 12-digit prefix of it, a computer's name that no container has, and a create aborted right
-// after docker run (held there by a docker CLI wrapper) leaving nothing; and a full /work is ENOSPC, not an OOM kill.
+// name and by its id or a 12-digit prefix of it, a computer's name that no container has, the host's enforcement from
+// docker info, attach refusing (and leaving) a computer made with another daemon, and a create aborted right after
+// docker run (held there by a docker CLI wrapper) leaving nothing; and a full /work is ENOSPC, not an OOM kill.
 // Attach by id and labels, list, network read-back, release, the drift check and the janitor are in the conformance
 // suite (conformance.docker.test.mjs). Needs `npm run build` and `npm run build:daemon` first, and alpine:3.20 pulled. Every
 // computer this file makes carries a label with this run's id and is removed by its exact name in the after hook.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -33,12 +34,13 @@ describe("attach to a Docker computer by Docker's names for it", { skip: LIVE ? 
 	const dirs = [];
 	let provider;
 	let daemonPath;
+	let arch;
 	let ref;
 
 	const ours = () => docker("ps", "-a", "--filter", `label=${RUN_LABEL}=${run}`, "--format", "{{.Names}}").split("\n").filter(Boolean);
 
 	before(async () => {
-		const arch = docker("version", "--format", "{{.Server.Arch}}").trim();
+		arch = docker("version", "--format", "{{.Server.Arch}}").trim();
 		daemonPath = fileURLToPath(new URL(`../../dist/computerd-linux-${arch}`, import.meta.url));
 		assert.ok(existsSync(daemonPath), `no daemon for Docker's arch at ${daemonPath}: run npm run build:daemon`);
 		provider = new DockerProvider({ daemonPath });
@@ -65,6 +67,45 @@ describe("attach to a Docker computer by Docker's names for it", { skip: LIVE ? 
 		assert.deepEqual(await provider.attach({ id: ref.name }), { ok: true, value: ref });
 		assert.deepEqual(await provider.attach({ id: ref.id }), { ok: true, value: ref });
 		assert.deepEqual(await provider.attach({ id: ref.id.slice(0, 12) }), { ok: true, value: ref });
+	});
+
+	it("reads the Docker host's enforcement: every limit, and seccomp", async () => {
+		const host = await provider.host();
+		assert.equal(host.ok, true, JSON.stringify(host));
+		assert.deepEqual(host.value.problems, []);
+		assert.equal(host.value.arch, arch);
+		const options = JSON.parse(docker("info", "--format", "{{json .SecurityOptions}}"));
+		assert.equal(host.value.apparmor, options.some((option) => option.startsWith("name=apparmor")));
+		assert.equal(host.value.selinux, options.some((option) => option.startsWith("name=selinux")));
+	});
+
+	it("attach refuses a computer that drifts from this provider, by name and by labels, and leaves it running", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "computer-other-"));
+		dirs.push(dir);
+		chmodSync(dir, 0o755);
+		const other = join(dir, "computerd");
+		copyFileSync(daemonPath, other);
+		chmodSync(other, 0o755);
+		const created = await new DockerProvider({ daemonPath: other }).create({
+			image: "debian:bookworm-slim",
+			lifetimeMs: 10 * 60_000,
+			network: "none",
+			labels: { [RUN_LABEL]: run, role: "other" },
+		});
+		assert.equal(created.ok, true, JSON.stringify(created));
+		const { name } = created.value;
+		made.push(name);
+		for (const target of [{ id: name }, { labels: { [RUN_LABEL]: run, role: "other" } }]) {
+			const attached = await provider.attach(target);
+			assert.equal(attached.ok, false, JSON.stringify(attached));
+			assert.equal(attached.error.code, "refused");
+			assert.ok(attached.error.message.includes(name), attached.error.message);
+			assert.ok(attached.error.message.includes(`daemon mount: declared ${daemonPath}`), attached.error.message);
+			assert.ok(attached.error.message.includes(other), attached.error.message);
+		}
+		assert.equal(docker("inspect", "--format", "{{.State.Running}}", name).trim(), "true", "attach did not make it, so it leaves it");
+		docker("rm", "--force", "--volumes", name);
+		assert.deepEqual(ours(), [ref.name]);
 	});
 
 	it("a computer's name no container has is not_found", async () => {

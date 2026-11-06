@@ -101,13 +101,13 @@ describe("a Docker computer's init and its processes", { skip: LIVE ? false : "s
 
 	it("ends at its deadline with a process that ignores TERM still running: init ends every process and exits 0", async () => {
 		// Long enough to connect and start the process on a loaded host; the test asserts the end, not its timing.
-		const created = await provider.create({ image: IMAGE, lifetimeMs: 15_000, network: "none", labels: { "agentrun.test": "processes" } });
+		const created = await provider.create({ image: IMAGE, lifetimeMs: 45_000, network: "none", labels: { "agentrun.test": "processes" } });
 		assert.equal(created.ok, true, JSON.stringify(created));
 		made.push(created.value.name);
 		const connected = await connect(created.value);
 		await call(connected, "process.start", { argv: ["sh", "-c", "trap '' TERM; sleep 600"] });
 		const state = await stopped(created.value.name, 120_000);
-		assert.equal(state.Running, false, "still running 120 s after a 15 s lifetime");
+		assert.equal(state.Running, false, "still running 120 s after a 45 s lifetime");
 		assert.equal(state.ExitCode, 0, "init ended the computer, not Docker's SIGKILL");
 		assert.deepEqual(await provider.release(created.value, "delete"), { ok: true, value: undefined });
 	});

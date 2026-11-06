@@ -5,6 +5,6 @@ export { type CallOptions, DaemonClient, type DaemonStream } from "./client.js";
 export { pullTar, pullTarStream, pushTar, readFile, writeFile, type PulledTar } from "./files.js";
 export { listProcesses, readAll, type ReadAllResult } from "./processes.js";
 export { DockerProvider, type DockerProviderOptions } from "./docker.js";
-export { drift, helloDrift, networkOf, type DockerInspect, type DriftExpected, type HelloExpected } from "./drift.js";
+export { drift, helloDrift, hostOf, inspectDrift, networkOf, type DockerHost, type DockerInfo, type DockerInspect, type DriftExpected, type HelloExpected } from "./drift.js";
 export { sweep, type SweepOptions, type Swept } from "./janitor.js";
 export * from "./conformance/index.js";

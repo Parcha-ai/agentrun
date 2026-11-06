@@ -59,9 +59,12 @@ capabilities are `["exec", "files", "processes"]`.
   once a second: a child of its own that is not one of its guards can only be an orphan whose guard died (a program can
   kill its own guard, since both run as the same user), so it is killed with everything under it. A process orphaned by
   something run with `docker exec`, outside the daemon, is ended the same way.
-- On SIGTERM or SIGINT (`docker stop`), and at its deadline, init sends SIGTERM to every guard, each of which ends its
+- On SIGTERM or SIGINT (`docker stop`), and at its deadline, init first stops taking new programs: from then on
+  `process.start` and `exec.run` are refused as `unsupported` ("the computer is shutting down"). It waits (up to 3 s)
+  for the starts already under way to start their program, then sends SIGTERM to every guard, each of which ends its
   program's group and descendants with SIGKILL 2 s later; whatever is still under init 5 s after the SIGTERM is killed,
-  and init exits 0. One shutdown serves all three.
+  and init exits 0. So every program that started gets SIGTERM before any SIGKILL. Connections stay open until init
+  exits, so reads, waits and lists still answer. One shutdown serves all three.
 - A guard also ends its program when its control pipe from the daemon closes, so no program outlives the daemon.
 
 ### Processes
@@ -92,6 +95,9 @@ Its whole tree ends when the program ends or is signalled to its end. Ids are `p
   for the end of input, or signal `HUP`.
 - Writes to one process take turns. A write waits at most 10 s, its turn included, for the program to read; the rest is
   a `timeout` error that says how much was written. A cancelled write, waiting for its turn or writing, is `aborted`.
+- The guard keeps no copy of a program's stdin, stdout or stderr pipes once the program runs. So when the program, and
+  everything it started, have closed stdin (`exec 0<&-`), a write fails at once as `invalid`, while the program runs
+  on. A terminal is kept open by the guard until the program ends.
 - The table holds at most 256 processes, running or ended. A start into a full table drops the process that ended
   first (its output with it) once the new program runs; a start that is refused drops nothing. When all 256 run, the
   start is refused as `limit`.
@@ -151,8 +157,9 @@ read to its end, the push calls its `return()` however it ends, so a pull piped 
   for a symlink between two steps refuses the entry instead of redirecting it.
 - `files.write`, `files.mkdir`, `files.move` and `files.remove` act on the absolute path the caller chose and make no
   promise to confine it: they resolve it by name, as any program in the computer would, and follow a symlink on the
-  way. The computer is their boundary. A caller that needs a write held inside one directory against a concurrent
-  actor pushes a tar into that directory.
+  way. The daemon does not confine them: the container is the only boundary. A provider that runs the daemon as root
+  and programs as a lesser user must confine these calls first. A caller that needs a write held inside one directory
+  against a concurrent actor pushes a tar into that directory.
 - `files.read`, `files.write` and a pull open a file first and then check what they opened (`fstat` on the
   descriptor), never a path checked and then opened by name. The open carries `O_NONBLOCK`, so a FIFO or a device,
   there from the start or swapped in by another program, never makes it wait: `files.read` and `files.write` refuse
@@ -181,9 +188,13 @@ await docker.release(made.value, "delete");
 
 - `check(spec)` refuses in words, with no Docker call: no image, no or a bad `lifetimeMs` (at most 30 days), a network
   allowlist (Docker cannot enforce one yet: ask for `none` or `open`), a NUL byte in any string, and any field Docker
-  does not support. `create` never throws on a spec `check` passes.
+  does not support. Once the host has been read (below), it also refuses with `field: "host"` for each enforcement
+  the host lacks. `create` never throws on a spec `check` passes.
+- Before `docker run`, `create` reads the host's enforcement once per provider (`host()`, from `docker info`; see
+  below), and refuses a host that lacks any of it in words, having made nothing.
 - `create` runs `docker run` as a non-root user (`--user`, below), with every capability dropped (`--cap-drop ALL`),
-  `--security-opt no-new-privileges`, `--network none` or `bridge`, serve's sizes unless the spec gives its own (2
+  `--security-opt no-new-privileges`, `--ipc private --cgroupns private` (never the daemon's defaults, which a host can
+  set to `shareable` or, on cgroup v1, the host's cgroup namespace), `--network none` or `bridge`, serve's sizes unless the spec gives its own (2
   CPUs as a quota, `--cpu-period 100000 --cpu-quota 200000`, so a host with fewer CPUs still runs one; 4 GiB with swap
   the same; 1024 pids), and the daemon bind-mounted read-only at `/opt/agentrun/computerd` as
   the entrypoint, `computerd init --deadline <time>`, which is PID 1, holds every process and reaps orphans. The label
@@ -205,15 +216,19 @@ await docker.release(made.value, "delete");
   PID 1 included. Storage that lasts is the agent disk's job, not this package's.
 - `create` ends with the drift check (below): a computer that is not what was declared is deleted, and `create`
   refuses with every mismatch in words.
-- `create(spec, { signal })` passes the signal to every step: `docker run`, and after it inspect, `docker info` and
-  hello (hello also has its own 30 s limit). An abort at any step after `docker run` deletes the computer and returns
+- `create(spec, { signal })` passes the signal to every step: `docker info` before `docker run` (an abort there makes
+  nothing), `docker run`, and after it inspect and hello (hello also has its own 30 s limit). An abort at any step after `docker run` deletes the computer and returns
   `aborted`; `create` never returns ok once its signal has aborted.
 - `connect` runs `docker exec -i <name> /opt/agentrun/computerd stdio`, the bridge to init's socket, and says hello.
   Each `connect` is a connection of its own; processes are shared by all of them. A daemon whose version is not the
   provider's, or that lacks a capability the provider declares, is refused (`refused`) and the stream closed.
 - `attach({ id })` finds a computer by its name (`computer-<12 hex digits>`) or its container id (12 to 64 hex digits);
   `attach({ labels })` by labels, which must match exactly one computer: none is `not_found`, more is `invalid`
-  ("2 computers match ...").
+  ("2 computers match ..."). Then `attach` runs the drift check on what it found: the spec is read back from the
+  computer's own report (image, network, sizes, user, workdir, deadline) and held to what `check` allows (and the
+  deadline to the ISO time create writes, at most 30 days away), then the whole inspect is checked as at create, and,
+  when the computer runs, its daemon's hello. A computer that drifts is refused (`refused`) with every mismatch, and
+  left as it is: attach did not make it, so it does not delete it. A stopped computer is checked by inspect alone.
 - `list(labels)` runs `docker ps -a --filter label=agentrun.computer=1 --filter label=k=v ...`, then inspects the
   matches 50 at a time, reading only the fields it reports, so any number of computers is listed (a computer gone
   between the two is left out). It returns each computer's `ref`, `labels`, `deadline` (a `Date`, or `undefined` when the label is missing or is not
@@ -234,27 +249,81 @@ when asked for `none`, write the daemon, or run past its deadline.
 ### The drift check
 
 After `docker run`, `create` reads the computer's own report and compares it with the spec, in `drift(spec, inspected,
-hello, expected)`, a pure function that returns one sentence per mismatch. From `docker inspect`:
+hello, expected)`, a pure function that returns one sentence per mismatch (`inspectDrift` is its inspect half). The
+check is closed: every field of `HostConfig` and `Config` is either one create asks for, one with a stated default,
+or one that widens nothing the box bounds; any other field, one a later Docker adds included, must be empty (absent,
+null, `""`, 0, false, `[]` or `{}`), or it is drift naming it. The table below was made from `docker inspect` of a
+computer this provider made on Docker 29.
+
+From `docker inspect`, what create asks for:
 
 | Field | Must be |
 | --- | --- |
-| network | `none` or `open` as declared, read back as `network(ref)` does |
+| network (`HostConfig.NetworkMode`, `NetworkSettings.Networks`) | `none` or `open` as declared, read back as `network(ref)` does |
 | `HostConfig.CapDrop`, `CapAdd`, `Privileged` | `["ALL"]`, nothing added, false |
-| `HostConfig.SecurityOpt` | holds `no-new-privileges` |
+| `HostConfig.SecurityOpt` | exactly `["no-new-privileges"]`: `seccomp=unconfined`, `apparmor=unconfined`, `label=disable`, `systempaths=unconfined` or any other option is drift |
+| `HostConfig.IpcMode`, `CgroupnsMode` | `private`, `private` |
+| `HostConfig.Runtime` | `runc` |
+| `HostConfig.MaskedPaths`, `ReadonlyPaths` | hold Docker's own since 20.10 (`/proc/acpi`, `/proc/asound`, `/proc/kcore`, `/proc/keys`, `/proc/latency_stats`, `/proc/sched_debug`, `/proc/scsi`, `/proc/timer_list`, `/proc/timer_stats`, `/sys/firmware`; `/proc/bus`, `/proc/fs`, `/proc/irq`, `/proc/sys`, `/proc/sysrq-trigger`); a newer Docker's extra masked paths are fine |
 | `HostConfig.PidsLimit` | `pids`, or 1024 |
 | `HostConfig.Memory`, `MemorySwap` | both `memoryMb` MiB, or 4096 MiB |
 | `HostConfig.CpuPeriod`, `CpuQuota` | 100000, and `cpus` (or 2) times 100000 |
+| `HostConfig.Tmpfs` | exactly `/work` and `/run/agentrun`, each with that uid and gid, `mode=0700`, `nosuid` and `nodev` (`/work` `exec` and `size=` half of `memoryMb` in MiB, `/run/agentrun` `noexec` and `size=1m`); options in any order; a missing or other size, or another tmpfs, is drift |
+| `HostConfig.Mounts`, `Mounts` | the provider's daemon binary bound read-only at `/opt/agentrun/computerd` (propagation `rprivate`), and no other mount of any type: an image's `VOLUME` is drift too, so an image that declares one is refused |
 | `Config.User` | the uid:gid asked for: the spec's, the provider's, or the default |
-| `HostConfig.Tmpfs` | `/work` and `/run/agentrun`, each with that uid and gid, `mode=0700`, `nosuid` and `nodev` (`/work` `exec` and `size=` half of `memoryMb` in MiB, `/run/agentrun` `noexec` and `size=1m`); options in any order, and a missing or other size is drift |
-| `Mounts` | the provider's daemon binary bound read-only at `/opt/agentrun/computerd`, and no other bind mount |
+| `Config.Image`, `WorkingDir` | the spec's image; its `workdir`, or `/work` |
+| `Config.Env` | one `HOME`, `HOME=/work`; the image's other variables are its own |
 | `Config.Entrypoint`, `Cmd` | `["/opt/agentrun/computerd"]`, `["init", "--deadline", <the deadline label's value>]` |
-| `Config.Labels` | `agentrun.computer=1`, the deadline as written, and every label the spec asked for |
+| `Config.Labels` | `agentrun.computer=1`, the deadline as written, and every label the spec asked for; others are the image's |
+| `AppArmorProfile` | `docker-default` when the host has AppArmor, else empty |
+| `ProcessLabel` | of type `container_t` when the host has SELinux, else empty |
+
+Defaults other than empty: `HostConfig.RestartPolicy` no restart (`{"Name": "no"}`; a restart policy would bring a
+computer back after its deadline), `Isolation` empty or `default`, `MemorySwappiness` null or -1.
+
+Must be empty, each a mismatch by name: `Binds`, `VolumeDriver`, `VolumesFrom`, `PortBindings`, `PublishAllPorts`,
+`Links`, `ExtraHosts`, `Dns`, `DnsOptions`, `DnsSearch`, `PidMode`, `UTSMode`, `UsernsMode`, `Cgroup`, `CgroupParent`,
+`GroupAdd`, `Devices`, `DeviceCgroupRules`, `DeviceRequests`, `Sysctls`, `OomKillDisable`, `OomScoreAdj`,
+`CpuShares`, `NanoCpus`, `CpuRealtimePeriod`, `CpuRealtimeRuntime`, `CpusetCpus`, `CpusetMems`, `CpuCount`,
+`CpuPercent`, `MemoryReservation`, `KernelMemory`, `KernelMemoryTCP`, `BlkioWeight`, `BlkioWeightDevice`,
+`BlkioDeviceReadBps`, `BlkioDeviceWriteBps`, `BlkioDeviceReadIOps`, `BlkioDeviceWriteIOps`, `IOMaximumIOps`,
+`IOMaximumBandwidth`, `StorageOpt`, `Init`, `Annotations`, `AutoRemove`, `ReadonlyRootfs`; `Config.Volumes`; and
+every field not named in this section.
+
+Irrelevant, not checked: `HostConfig.LogConfig` (the host's log driver), `ConsoleSize`, `ContainerIDFile` (a
+client-side file), `ShmSize` (`/dev/shm` is charged to the computer's memory), `Ulimits` (an rlimit cannot raise a
+cgroup limit); `Config.Hostname`, `Domainname`, `AttachStdin`, `AttachStdout`, `AttachStderr`, `Tty`, `OpenStdin`,
+`StdinOnce`, `ExposedPorts` (nothing is published), `Healthcheck`, `ArgsEscaped`, `OnBuild`, `StopSignal`,
+`StopTimeout`, `Shell`, `MacAddress`, `NetworkDisabled`: the image's settings, which act only inside the computer.
+The rest of the report (`State`, `NetworkSettings` past its networks, paths, `Driver`) is Docker's own bookkeeping.
 
 From the daemon's `hello`, over one short connection: the provider's version, `os` linux, every capability in
 `capabilities().daemon`, and `arch` the Docker host's architecture (`docker info`, x86_64 as amd64, aarch64 as arm64).
 
 Any mismatch, or a computer that cannot be inspected or whose daemon does not answer, and the computer is deleted
 before `create` returns `refused` with every mismatch. A computer is never left running wider than it was declared.
+`attach` runs the same check and refuses, but never deletes.
+
+### The host's enforcement
+
+A computer's sizes are cgroup limits, which only a host that enforces them makes real. `host()` reads `docker info`
+once per provider (a failed read is not kept, so the next call reads again), and `hostOf(info)` turns it into the
+host's architecture, its security modules, and each enforcement it lacks:
+
+| `docker info` | Required | Refusal |
+| --- | --- | --- |
+| `MemoryLimit` | true | this Docker host does not enforce memory limits, so a computer's memory size is only configuration |
+| `SwapLimit` | true | ... swap limits, so a computer could swap past its memory size |
+| `PidsLimit` | true | ... pids limits, so a computer's pids limit is only configuration |
+| `CPUCfsQuota`, `CPUCfsPeriod` | true | ... CPU quotas (periods), so a computer's cpus are only configuration |
+| `SecurityOptions` seccomp | present, its profile not `unconfined` | this Docker host has no seccomp (its default seccomp profile is unconfined), so a computer could make any system call |
+| `SecurityOptions` apparmor, selinux | reported | none: the drift check expects the profile or label Docker then gives every container |
+
+Seccomp is required: it is a computer's only system call filter, and every Linux Docker has it. AppArmor and SELinux
+are reported, not required: a host has the one its distribution ships, or neither, and a computer's confinement does
+not rest on them (no capabilities, no-new-privileges, seccomp, its own namespaces); where the host has one, a computer
+without its profile or label is drift. `create` and `attach` refuse on a host that lacks any requirement, before any
+other Docker call; `check` refuses too once the host has been read.
 
 ### The janitor
 
@@ -298,7 +367,7 @@ core exec      argv streams exit-code cwd env timeout abort ✓ 11
 full exec      root-on-request user-uid                     ✓ 2
 full provider  network-open network-allow janitor           ✓ 2 - 1
   - provider.network-allow: the provider does not declare network:allow
-core PASS 51/51 · full 4/5 · network:allow not declared
+core PASS 52/52 · full 4/5 · network:allow not declared
 ```
 
 A module path is resolved from the directory npm was run in. It exits 0 when Core passes, 1 when it fails, and 2 on a usage error; `--json` prints the report object

@@ -20,17 +20,103 @@ const seeded = (options = {}) =>
 		...options,
 	});
 
-test("attach() by name or by container id finds the computer, with one inspect", async () => {
+test("attach() by name or by container id finds the computer and checks it: an inspect and a hello each, and docker info once", async () => {
 	const { provider, calls } = seeded();
 	const want = { id: idOf(A), name: A };
 	assert.deepEqual(await provider.attach({ id: A }), { ok: true, value: want });
 	assert.deepEqual(await provider.attach({ id: idOf(A) }), { ok: true, value: want });
 	assert.deepEqual(await provider.attach({ id: idOf(A).slice(0, 12) }), { ok: true, value: want });
-	assert.deepEqual(calls(), [
+	const hello = ["exec", "-i", A, "/opt/agentrun/computerd", "stdio"];
+	assert.equal(calls()[1][0], "info");
+	assert.deepEqual(calls().toSpliced(1, 1), [
 		["inspect", "--type", "container", "--format", "{{json .}}", A],
+		hello,
 		["inspect", "--type", "container", "--format", "{{json .}}", idOf(A)],
+		hello,
 		["inspect", "--type", "container", "--format", "{{json .}}", idOf(A).slice(0, 12)],
+		hello,
 	]);
+});
+
+const D = "computer-0000000000dd";
+
+/** A computer this provider would not have made: seeded with the given changes over a good one. */
+function drifted(change, options = {}) {
+	const made = container({ name: D, labels: { team: "d" } });
+	change(made);
+	return seeded({ containers: [made], ...options });
+}
+
+test("attach() refuses a computer that drifts, names every mismatch, and leaves it as it is", async () => {
+	const { provider, calls, names } = drifted((c) => {
+		c.HostConfig.PidMode = "host";
+		c.HostConfig.SecurityOpt = ["no-new-privileges", "seccomp=unconfined"];
+		c.HostConfig.Privileged = true;
+		c.HostConfig.Devices = [{ PathOnHost: "/dev/mem", PathInContainer: "/dev/mem", CgroupPermissions: "rwm" }];
+	});
+	for (const ref of [{ id: D }, { id: idOf(D) }, { labels: { team: "d" } }]) {
+		const attached = await provider.attach(ref);
+		assert.equal(attached.ok, false, JSON.stringify(ref));
+		assert.equal(attached.error.code, "refused");
+		for (const words of [D, "PidMode", "seccomp=unconfined", "Privileged", "Devices", "/dev/mem"]) {
+			assert.ok(attached.error.message.includes(words), `${words} in ${attached.error.message}`);
+		}
+		assert.match(attached.error.message, /left as it is/);
+	}
+	assert.ok(names().includes(D), "attach did not make it, so it does not delete it");
+	assert.ok(!calls().some((args) => args[0] === "rm" || args[0] === "stop"));
+});
+
+test("attach() refuses a computer on another daemon, sized past what check() allows, or with a deadline create never writes", async () => {
+	const cases = [
+		[(c) => (c.Mounts[0].Source = c.HostConfig.Mounts[0].Source = "/data/other-computerd"), /daemon mount.*other-computerd/],
+		[(c) => (c.HostConfig.Memory = c.HostConfig.MemorySwap = 0), /memoryMb/],
+		[(c) => (c.HostConfig.PidsLimit = -1), /pids/],
+		[(c) => (c.HostConfig.CpuQuota = -1), /cpus/],
+		[(c) => (c.Config.User = "root"), /user/],
+		[(c) => (c.HostConfig.NetworkMode = "host"), /network mode host/],
+		[
+			(c) => {
+				const far = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString();
+				c.Config.Labels["agentrun.computer.deadline"] = far;
+				c.Config.Cmd = ["init", "--deadline", far];
+			},
+			/deadline/,
+		],
+		[(c) => (c.Config.Cmd = ["init", "--deadline", "2099-01-01T00:00:00.000Z"]), /Cmd/],
+	];
+	for (const [change, words] of cases) {
+		const { provider, names } = drifted(change);
+		const attached = await provider.attach({ id: D });
+		assert.equal(attached.ok, false, String(change));
+		assert.equal(attached.error.code, "refused", attached.error.message);
+		assert.match(attached.error.message, words);
+		assert.ok(names().includes(D));
+	}
+});
+
+test("attach() refuses a computer whose daemon is not this provider's, and does not delete it", async () => {
+	const { provider, names } = seeded({ hello: { version: "0.0.1" } });
+	const attached = await provider.attach({ id: A });
+	assert.equal(attached.ok, false);
+	assert.equal(attached.error.code, "refused");
+	assert.match(attached.error.message, /version 0\.0\.1/);
+	assert.ok(names().includes(A));
+});
+
+test("attach() checks a stopped computer by inspect alone: there is no daemon to say hello", async () => {
+	const { provider, calls } = seeded();
+	assert.deepEqual(await provider.attach({ id: B }), { ok: true, value: { id: idOf(B), name: B } });
+	assert.ok(!calls().some((args) => args[0] === "exec"));
+});
+
+test("attach() refuses every computer on a Docker host that does not enforce its limits", async () => {
+	const { provider, calls } = seeded({ info: { MemoryLimit: false } });
+	const attached = await provider.attach({ id: A });
+	assert.equal(attached.ok, false);
+	assert.equal(attached.error.code, "refused");
+	assert.match(attached.error.message, /does not enforce memory limits/);
+	assert.ok(!calls().some((args) => args[0] === "exec"));
 });
 
 test("attach() by id is not_found for a container that is gone or not a computer", async () => {

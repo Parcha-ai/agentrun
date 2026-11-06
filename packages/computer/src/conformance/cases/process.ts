@@ -77,6 +77,14 @@ export const processCases: Case[] = [
 		const read = t.ok(await readAll(t.client, cat.id, "stdout"), "readAll");
 		t.equal(Buffer.from(read.data).toString(), "hello from the suite\nbye\n", "what cat wrote back");
 	}),
+	processCase("stdin-closed", async (t) => {
+		const closed = await t.call("process.start", { argv: ["sh", "-c", "exec 0<&-; echo closed; exec sleep 307"], stdin: true });
+		await readUntil(t, t.client, closed.id, "stdout", 0, "closed\n");
+		t.refused(await t.client.call("process.write", { id: closed.id, data: b64("x\n") }), "a write to a program that closed its stdin, which must fail at once", ["invalid"]);
+		t.deepEqual(await t.call("process.wait", { id: closed.id, timeoutMs: 0 }), { running: true, exitCode: null, signal: null }, "the program after the failed write: running");
+		await kill(t, closed.id);
+		t.deepEqual(await t.call("process.wait", { id: closed.id, timeoutMs: t.patience }), { running: false, exitCode: null, signal: "KILL" }, "wait after KILL");
+	}),
 	processCase("pty", async (t) => {
 		const sh = await t.call("process.start", { argv: ["sh"], pty: { cols: 80, rows: 24 } });
 		let offset = 0;

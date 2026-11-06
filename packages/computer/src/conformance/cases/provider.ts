@@ -158,7 +158,8 @@ export const providerCases: Case[] = [
 		"deadline",
 		async (t) => {
 			const labels = own(t, "deadline");
-			const lifetimeMs = 15_000;
+			// Long enough for create's checks on a loaded host; the case asserts the end, not its timing.
+			const lifetimeMs = 45_000;
 			const ref = await t.create({ lifetimeMs, labels });
 			const created = Date.now();
 			const connected = await t.connect(ref);

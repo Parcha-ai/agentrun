@@ -171,14 +171,8 @@ func sweep() {
 // shutdown asks every guard to end its program (SIGTERM, then the guard's SIGKILL KillGrace later), waits for them,
 // then kills whatever is left under init and reaps it.
 func shutdown() {
-	for _, guard := range execrun.Guards() {
-		_ = syscall.Kill(guard, syscall.SIGTERM)
-	}
-	deadline := time.Now().Add(execrun.KillGrace + stopSlack)
-	for len(execrun.Guards()) > 0 && time.Now().Before(deadline) {
-		time.Sleep(20 * time.Millisecond)
-	}
-	deadline = time.Now().Add(stopSlack)
+	execrun.EndAll(stopSlack)
+	deadline := time.Now().Add(stopSlack)
 	for time.Now().Before(deadline) {
 		left := proctree.Descendants(os.Getpid())
 		for _, pid := range left {
@@ -197,6 +191,9 @@ func shutdown() {
 	}
 }
 
+// afterHalfClose is nil outside tests: it runs right after the bridge half-closes the connection.
+var afterHalfClose func()
+
 // Bridge copies in to the daemon at socket and the daemon's replies to out, until either side ends. With no daemon to
 // reach it says so on errOut and returns 1; it returns 0 when its input ended first.
 func Bridge(socket string, in io.Reader, out io.Writer, errOut io.Writer) int {
@@ -206,12 +203,18 @@ func Bridge(socket string, in io.Reader, out io.Writer, errOut io.Writer) int {
 		return 1
 	}
 	defer conn.Close()
+	// Read once here: the goroutine below may outlive this call.
+	halfClosed := afterHalfClose
 	inputEnded := make(chan struct{})
 	replies := make(chan struct{})
 	go func() {
 		_, _ = io.Copy(conn, in)
-		_ = conn.CloseWrite()
+		// Marked before the half-close: the daemon's answering close can only come after it.
 		close(inputEnded)
+		_ = conn.CloseWrite()
+		if halfClosed != nil {
+			halfClosed()
+		}
 	}()
 	go func() {
 		_, _ = io.Copy(out, conn)
@@ -223,6 +226,11 @@ func Bridge(socket string, in io.Reader, out io.Writer, errOut io.Writer) int {
 		<-replies
 		return 0
 	case <-replies:
+		select {
+		case <-inputEnded:
+			return 0
+		default:
+		}
 		fmt.Fprintln(errOut, "computerd stdio: the daemon closed the connection")
 		return 1
 	}

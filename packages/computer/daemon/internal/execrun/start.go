@@ -61,10 +61,73 @@ func Guards() []int {
 	return pids
 }
 
+// afterAdmit and afterStarted are nil outside tests: they run in Start once it is let in, and once its program runs.
+var afterAdmit, afterStarted func(p Program)
+
+// endingBegan and guardsTermed are nil outside tests: they run in EndAll once it refuses new starts, and once every
+// guard has been sent SIGTERM.
+var endingBegan, guardsTermed func()
+
+// admission lets starts in until EndAll begins, and counts those in flight.
+var admission struct {
+	sync.Mutex
+	closed   bool
+	inFlight sync.WaitGroup
+}
+
+func admit() bool {
+	admission.Lock()
+	defer admission.Unlock()
+	if admission.closed {
+		return false
+	}
+	admission.inFlight.Add(1)
+	return true
+}
+
+// EndAll ends every program, as the computer shuts down. It refuses every start from then on, waits up to slack for the
+// starts in flight to start their program (or fail), then sends every guard SIGTERM (each sends SIGKILL to what is left
+// of its program KillGrace later), and waits up to KillGrace plus slack for every guard to end. So every program that
+// started gets SIGTERM before any SIGKILL.
+func EndAll(slack time.Duration) {
+	admission.Lock()
+	admission.closed = true
+	admission.Unlock()
+	if endingBegan != nil {
+		endingBegan()
+	}
+	started := make(chan struct{})
+	go func() {
+		admission.inFlight.Wait()
+		close(started)
+	}()
+	select {
+	case <-started:
+	case <-time.After(slack):
+	}
+	for _, guard := range Guards() {
+		_ = syscall.Kill(guard, syscall.SIGTERM)
+	}
+	if guardsTermed != nil {
+		guardsTermed()
+	}
+	deadline := time.Now().Add(KillGrace + slack)
+	for len(Guards()) > 0 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
 // Start starts p under a guard of its own (guard.go), with stdin (nil is /dev/null), stdout and stderr, and returns once
 // the program has started. The caller closes its own copies of the three files. A program that cannot start is an
-// error of the protocol's kinds.
+// error of the protocol's kinds; once EndAll has begun, every start is refused as unsupported.
 func Start(p Program, stdin, stdout, stderr *os.File) (*Guarded, error) {
+	if !admit() {
+		return nil, rpc.Errorf(rpc.KindUnsupported, "the computer is shutting down: it starts no program now")
+	}
+	defer admission.inFlight.Done()
+	if afterAdmit != nil {
+		afterAdmit(p)
+	}
 	if len(p.Argv) == 0 || p.Argv[0] == "" {
 		return nil, rpc.Errorf(rpc.KindInvalid, "argv needs at least a program")
 	}
@@ -128,6 +191,9 @@ func Start(p Program, stdin, stdout, stderr *os.File) (*Guarded, error) {
 	}
 	select {
 	case <-started:
+		if afterStarted != nil {
+			afterStarted(p)
+		}
 		return g, nil
 	case <-g.done:
 	}

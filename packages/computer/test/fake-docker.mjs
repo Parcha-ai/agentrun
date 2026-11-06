@@ -18,50 +18,92 @@ after(() => {
 
 export const idOf = (name) => createHash("sha256").update(name).digest("hex");
 
+/** The paths Docker 29 masks and makes read-only in a container that is not privileged. */
+export const MASKED_PATHS = ["/proc/acpi", "/proc/asound", "/proc/interrupts", "/proc/kcore", "/proc/keys", "/proc/latency_stats", "/proc/sched_debug", "/proc/scsi", "/proc/timer_list", "/proc/timer_stats", "/sys/devices/virtual/powercap", "/sys/firmware"];
+export const READONLY_PATHS = ["/proc/bus", "/proc/fs", "/proc/irq", "/proc/sys", "/proc/sysrq-trigger"];
+/** Stands for the provider's daemon path in a seeded container; fakeDocker puts the real path in. */
+export const DAEMON = "@daemon";
+
+/**
+ * What Docker 29 inspect reports for a container made as DockerProvider.create makes one. Self-contained: the fake
+ * docker program runs a copy of it for each docker run.
+ */
+export function report({
+	id, name, image = "debian:bookworm-slim", labels = {}, cmd, user = "1000:1000", workdir = "/work", env = ["HOME=/work"], network = "none", running = true,
+	capDrop = ["ALL"], securityOpt = ["no-new-privileges"], pids = 1024, memory = 4096 * 1024 * 1024, swap = memory, period = 100_000, quota = 200_000,
+	tmpfs, ipc = "private", cgroupns = "private", daemonPath = "@daemon", apparmor = false, masked, readonly,
+}) {
+	const [uid, gid] = user.split(":");
+	return {
+		Id: id,
+		Name: `/${name}`,
+		State: { Running: running, Status: running ? "running" : "exited", ExitCode: 0, Error: "" },
+		AppArmorProfile: apparmor ? "docker-default" : "",
+		ProcessLabel: "",
+		MountLabel: "",
+		Config: {
+			Hostname: id.slice(0, 12), Domainname: "", User: user, AttachStdin: false, AttachStdout: false, AttachStderr: false, Tty: false, OpenStdin: false, StdinOnce: false,
+			Env: [...env, "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"], Cmd: cmd, Image: image, Volumes: null, WorkingDir: workdir,
+			Entrypoint: ["/opt/agentrun/computerd"], Labels: labels,
+		},
+		HostConfig: {
+			Binds: null, ContainerIDFile: "", LogConfig: { Type: "json-file", Config: {} }, NetworkMode: network, PortBindings: {}, RestartPolicy: { Name: "no", MaximumRetryCount: 0 },
+			AutoRemove: false, VolumeDriver: "", VolumesFrom: null, ConsoleSize: [0, 0], CapAdd: null, CapDrop: capDrop, CgroupnsMode: cgroupns, Dns: null, DnsOptions: [], DnsSearch: [],
+			ExtraHosts: null, GroupAdd: null, IpcMode: ipc, Cgroup: "", Links: null, OomScoreAdj: 0, PidMode: "", Privileged: false, PublishAllPorts: false, ReadonlyRootfs: false,
+			SecurityOpt: securityOpt,
+			Tmpfs: tmpfs ?? {
+				"/run/agentrun": `rw,noexec,nosuid,nodev,uid=${uid},gid=${gid},mode=0700,size=1m`,
+				"/work": `rw,nosuid,nodev,exec,uid=${uid},gid=${gid},mode=0700,size=${Math.floor(memory / 1024 / 1024 / 2)}m`,
+			},
+			UTSMode: "", UsernsMode: "", ShmSize: 67108864, Runtime: "runc", Isolation: "", CpuShares: 0, Memory: memory, NanoCpus: 0, CgroupParent: "", BlkioWeight: 0,
+			BlkioWeightDevice: [], BlkioDeviceReadBps: [], BlkioDeviceWriteBps: [], BlkioDeviceReadIOps: [], BlkioDeviceWriteIOps: [], CpuPeriod: period, CpuQuota: quota,
+			CpuRealtimePeriod: 0, CpuRealtimeRuntime: 0, CpusetCpus: "", CpusetMems: "", Devices: [], DeviceCgroupRules: null, DeviceRequests: null, MemoryReservation: 0,
+			MemorySwap: swap, MemorySwappiness: null, OomKillDisable: null, PidsLimit: pids, Ulimits: [], CpuCount: 0, CpuPercent: 0, IOMaximumIOps: 0, IOMaximumBandwidth: 0,
+			Mounts: [{ Type: "bind", Source: daemonPath, Target: "/opt/agentrun/computerd", ReadOnly: true }],
+			MaskedPaths: masked ?? ["/proc/acpi", "/proc/asound", "/proc/interrupts", "/proc/kcore", "/proc/keys", "/proc/latency_stats", "/proc/sched_debug", "/proc/scsi", "/proc/timer_list", "/proc/timer_stats", "/sys/devices/virtual/powercap", "/sys/firmware"],
+			ReadonlyPaths: readonly ?? ["/proc/bus", "/proc/fs", "/proc/irq", "/proc/sys", "/proc/sysrq-trigger"],
+		},
+		Mounts: [{ Type: "bind", Source: daemonPath, Destination: "/opt/agentrun/computerd", Mode: "", RW: false, Propagation: "rprivate" }],
+		NetworkSettings: { Networks: { [network]: {} } },
+	};
+}
+
 /** A container as docker inspect reports it, made the way DockerProvider.create makes one; a null deadline is no label. */
-export function container({ name, labels = {}, network = "none", running = true, deadline = new Date(Date.now() + 600_000).toISOString(), computer = true }) {
+export function container({ name, labels = {}, network = "none", running = true, deadline = new Date(Date.now() + 600_000).toISOString(), computer = true, ...rest }) {
 	const all = { ...labels };
 	if (computer) all["agentrun.computer"] = "1";
 	if (computer && deadline !== null) all["agentrun.computer.deadline"] = deadline;
-	return {
-		Id: idOf(name),
-		Name: `/${name}`,
-		State: { Running: running, Status: running ? "running" : "exited", ExitCode: 0, Error: "" },
-		Config: { User: "1000:1000", Entrypoint: ["/opt/agentrun/computerd"], Cmd: ["init", "--deadline", deadline ?? ""], Labels: all },
-		HostConfig: {
-			NetworkMode: network, CapDrop: ["ALL"], CapAdd: null, Privileged: false, SecurityOpt: ["no-new-privileges"], PidsLimit: 1024,
-			Memory: 4096 * 1024 * 1024, MemorySwap: 4096 * 1024 * 1024, CpuPeriod: 100_000, CpuQuota: 200_000,
-			Tmpfs: { "/work": "rw,nosuid,nodev,exec,uid=1000,gid=1000,mode=0700,size=2048m", "/run/agentrun": "rw,noexec,nosuid,nodev,uid=1000,gid=1000,mode=0700,size=1m" },
-		},
-		Mounts: [{ Type: "bind", Source: "/data/computerd", Destination: "/opt/agentrun/computerd", RW: false }],
-		NetworkSettings: { Networks: { [network]: {} } },
-	};
+	return report({ id: idOf(name), name, labels: all, network, running, cmd: ["init", "--deadline", deadline ?? ""], ...rest });
 }
 
 /**
  * Options: `running` is what a new container's inspect reports; `gone` makes stop and rm answer "No such container";
  * `containers` are there from the start; `patch` is merged over each new container (to make drift); `hello` over the
- * daemon's hello; `arch` is what docker info reports; `vanish` names are listed by ps but gone by inspect; `noDaemon`
+ * daemon's hello; `arch` is the architecture docker info reports, and `info` is merged over the rest of what it reports
+ * (every limit enforced, seccomp builtin, no AppArmor); `vanish` names are listed by ps but gone by inspect; `noDaemon`
  * makes exec fail as when the daemon is missing; `user` is the provider's user option; `hold` names steps ("inspect",
  * "info", "hello") that wait, once called, until `proceed(step)`.
  */
-export function fakeDocker({ running = true, gone = false, containers = [], patch = {}, hello = {}, arch = "x86_64", vanish = [], noDaemon = false, user, hold = [] } = {}) {
+export function fakeDocker({ running = true, gone = false, containers = [], patch = {}, hello = {}, arch = "x86_64", info = {}, vanish = [], noDaemon = false, user, hold = [] } = {}) {
 	const dir = mkdtempSync(join(tmpdir(), "computer-fake-docker-"));
 	dirs.push(dir);
 	const log = join(dir, "calls.jsonl");
 	const state = join(dir, "containers.json");
-	writeFileSync(state, JSON.stringify(containers));
 	const daemonPath = join(dir, "computerd");
+	writeFileSync(state, JSON.stringify(containers).replaceAll(JSON.stringify(DAEMON), JSON.stringify(daemonPath)));
 	writeFileSync(daemonPath, "not a real daemon");
 	chmodSync(daemonPath, 0o755);
 	const program = join(dir, "docker");
-	const config = JSON.stringify({ dir, log, state, running, gone, patch, hello: { ...HELLO, ...hello }, arch, vanish, noDaemon, hold });
+	const config = JSON.stringify({ dir, log, state, running, gone, patch, hello: { ...HELLO, ...hello },
+		info: { Architecture: arch, SecurityOptions: ["name=seccomp,profile=builtin", "name=cgroupns"], MemoryLimit: true, SwapLimit: true, PidsLimit: true, CPUCfsQuota: true, CPUCfsPeriod: true, ...info },
+		vanish, noDaemon, hold });
 	writeFileSync(
 		program,
 		`#!${process.execPath}
 const { appendFileSync, existsSync, readFileSync, writeFileSync } = require("node:fs");
 const { createHash } = require("node:crypto");
 const config = ${config};
+const report = ${report.toString()};
 const args = process.argv.slice(2);
 appendFileSync(config.log, JSON.stringify(args) + "\\n");
 const load = () => JSON.parse(readFileSync(config.state, "utf8"));
@@ -79,7 +121,8 @@ const held = (step, then) => {
 	}, 20);
 };
 const pick = (value, path) => path.split(".").filter(Boolean).reduce((at, key) => (at == null ? undefined : at[key]), value);
-const render = (format, found) => format.replace(/\\{\\{json ([.A-Za-z]+)\\}\\}/g, (_, path) => JSON.stringify(pick(found, path) ?? null));
+const render = (format, found) =>
+	format.replace(/\\{\\{(json )?([.A-Za-z]+)\\}\\}/g, (_, json, path) => (json ? JSON.stringify(pick(found, path) ?? null) : String(pick(found, path) ?? "")));
 const merge = (base, over) => {
 	for (const [key, value] of Object.entries(over)) {
 		base[key] = value && typeof value === "object" && !Array.isArray(value) && base[key] && typeof base[key] === "object" ? merge(base[key], value) : value;
@@ -97,20 +140,18 @@ switch (args[0]) {
 		const network = flags["--network"][0];
 		const memory = flags["--memory"] ? Number.parseInt(flags["--memory"][0], 10) * 1024 * 1024 : 0;
 		const swap = flags["--memory-swap"] ? Number.parseInt(flags["--memory-swap"][0], 10) * 1024 * 1024 : 0;
-		const made = {
-			Id: createHash("sha256").update(name).digest("hex"),
-			Name: "/" + name,
-			State: { Running: config.running, Status: config.running ? "running" : "exited", ExitCode: config.running ? 0 : 127, Error: config.running ? "" : "exec format error" },
-			Config: { User: flags["--user"]?.[0] ?? "", Entrypoint: flags["--entrypoint"], Cmd: args.slice(i + 1), Labels: labels },
-			HostConfig: {
-				NetworkMode: network, CapDrop: flags["--cap-drop"], CapAdd: null, Privileged: false, SecurityOpt: flags["--security-opt"],
-				PidsLimit: Number(flags["--pids-limit"][0]), Memory: memory, MemorySwap: swap, NanoCpus: flags["--cpus"] ? Math.round(Number(flags["--cpus"][0]) * 1e9) : 0,
-				CpuPeriod: Number(flags["--cpu-period"]?.[0] ?? 0), CpuQuota: Number(flags["--cpu-quota"]?.[0] ?? 0),
-				Tmpfs: Object.fromEntries((flags["--tmpfs"] ?? []).map((t) => [t.slice(0, t.indexOf(":")), t.slice(t.indexOf(":") + 1)])),
-			},
-			Mounts: [{ Type: mount.type, Source: mount.src, Destination: mount.dst, RW: !("readonly" in mount) }],
-			NetworkSettings: { Networks: { [network]: {} } },
-		};
+		const made = report({
+			id: createHash("sha256").update(name).digest("hex"), name, image: args[i], labels, cmd: args.slice(i + 1), user: flags["--user"]?.[0] ?? "", workdir: flags["--workdir"]?.[0] ?? "",
+			env: flags["--env"] ?? [], network, running: config.running, capDrop: flags["--cap-drop"], securityOpt: flags["--security-opt"], pids: Number(flags["--pids-limit"][0]),
+			memory, swap, period: Number(flags["--cpu-period"]?.[0] ?? 0), quota: Number(flags["--cpu-quota"]?.[0] ?? 0),
+			tmpfs: Object.fromEntries((flags["--tmpfs"] ?? []).map((t) => [t.slice(0, t.indexOf(":")), t.slice(t.indexOf(":") + 1)])),
+			ipc: flags["--ipc"]?.[0] ?? "private", cgroupns: flags["--cgroupns"]?.[0] ?? "private", daemonPath: mount.src,
+			apparmor: config.info.SecurityOptions.some((option) => option.startsWith("name=apparmor")),
+		});
+		made.HostConfig.Mounts[0].ReadOnly = "readonly" in mount;
+		made.Mounts[0].RW = !("readonly" in mount);
+		if (!config.running) Object.assign(made.State, { ExitCode: 127, Error: "exec format error" });
+		if (flags["--cpus"]) made.HostConfig.NanoCpus = Math.round(Number(flags["--cpus"][0]) * 1e9);
 		save([...load(), merge(made, config.patch)]);
 		process.stdout.write(made.Id + "\\n");
 		break;
@@ -142,7 +183,7 @@ switch (args[0]) {
 		process.stdout.write(args.at(-1) + "\\n");
 		break;
 	}
-	case "info": held("info", () => process.stdout.write(config.arch + "\\n")); break;
+	case "info": held("info", () => process.stdout.write(args[1] === "--format" ? render(args[2], config.info) + "\\n" : JSON.stringify(config.info) + "\\n")); break;
 	case "exec": {
 		if (config.noDaemon) { process.stderr.write("OCI runtime exec failed: no such file or directory\\n"); process.exit(126); }
 		let buffered = "";
