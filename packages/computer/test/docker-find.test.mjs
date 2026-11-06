@@ -101,7 +101,8 @@ test("list() reads back every computer with the labels: its labels, deadline, st
 	assert.deepEqual(ps.slice(0, 1), ["ps"]);
 	assert.ok(ps.includes("-a") && ps.includes("--no-trunc"), JSON.stringify(ps));
 	assert.deepEqual(valuesOf(ps, "--filter"), ["label=agentrun.computer=1"]);
-	assert.deepEqual(inspect.slice(0, 5), ["inspect", "--type", "container", "--format", "{{json .}}"]);
+	assert.deepEqual(inspect.slice(0, 4), ["inspect", "--type", "container", "--format"]);
+	assert.notEqual(inspect[4], "{{json .}}", "list reads only the fields it reports, not the whole inspect");
 	const team = await provider.list({ team: "b" });
 	assert.deepEqual(team.value.map((info) => info.ref.name), [B]);
 	assert.deepEqual(valuesOf(calls()[2], "--filter"), ["label=agentrun.computer=1", "label=team=b"]);
@@ -185,4 +186,36 @@ test("sweep() on Docker deletes the stopped computer past its deadline, since li
 	assert.deepEqual(swept, { ok: true, value: { deleted: [B], kept: 1 } });
 	assert.ok(calls().some((args) => args[0] === "rm" && args.at(-1) === B));
 	assert.deepEqual(names().sort(), [A, "computer-0000000000cc", "postgres"].sort(), "only the expired computer is gone");
+});
+
+test("list() inspects at most 50 computers a call, and only the fields it reports, so a fleet past one inspect's 16 MiB is listed whole", async () => {
+	// Each container's whole inspect is over 40 KB here: 500 of them in one inspect would pass 16 MiB.
+	const pad = "x".repeat(40_000);
+	const fleet = Array.from({ length: 500 }, (_, i) => {
+		const made = container({ name: `computer-${i.toString(16).padStart(12, "0")}`, labels: { fleet: "1" }, deadline: i < 5 ? PAST : undefined });
+		made.Config.Env = [`PAD=${pad}`];
+		return made;
+	});
+	const vanished = fleet[7].Name.slice(1);
+	const { provider, calls, names } = fakeDocker({ containers: fleet, vanish: [vanished] });
+	const listed = await provider.list({ fleet: "1" });
+	assert.equal(listed.ok, true, listed.ok ? "" : listed.error.message.slice(0, 300));
+	assert.equal(listed.value.length, 499);
+	assert.ok(!listed.value.some((info) => info.ref.name === vanished), "a computer gone between ps and inspect is left out");
+	const first = listed.value.find((info) => info.ref.name === fleet[0].Name.slice(1));
+	assert.deepEqual(first.ref, { id: fleet[0].Id, name: fleet[0].Name.slice(1) });
+	assert.equal(first.labels.fleet, "1");
+	assert.equal(first.deadline.toISOString(), PAST);
+	assert.equal(first.state, "running");
+	assert.equal(first.network, "none");
+	const inspects = calls().filter((args) => args[0] === "inspect");
+	assert.ok(inspects.every((args) => args.length - 5 <= 50), `batch sizes ${inspects.map((args) => args.length - 5)}`);
+	assert.equal(inspects.reduce((sum, args) => sum + args.length - 5, 0), 500);
+	const swept = await sweep(provider, { labels: { fleet: "1" }, now: new Date("2026-06-01T00:00:00.000Z") });
+	assert.equal(swept.ok, true, swept.ok ? "" : swept.error.message.slice(0, 300));
+	const expired = fleet.slice(0, 5).map((made) => made.Name.slice(1));
+	assert.deepEqual(swept.value.deleted.sort(), expired);
+	assert.equal(swept.value.kept, 494);
+	assert.equal(names().length, 495);
+	assert.ok(!names().some((name) => expired.includes(name)));
 });

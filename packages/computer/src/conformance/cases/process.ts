@@ -129,6 +129,10 @@ export const processCases: Case[] = [
 		const running = listed[at(term.id)];
 		t.deepEqual([ended?.argv, ended?.running, ended?.exitCode, ended?.pty], [["echo", "listed"], false, 0, false], "the ended process");
 		t.deepEqual([running?.argv, running?.running, running?.pty, running?.pid], [["sleep", "304"], true, true, term.pid], "the running one, in a terminal");
+		const page = await t.call("process.list", {});
+		t.equal(page.truncated, false, "one page holds them all");
+		t.assert(Number.isSafeInteger(page.next), `next is where a page after would start: ${JSON.stringify(page.next)}`);
+		t.deepEqual((await t.call("process.list", { from: page.next })).processes, [], "the page from next, after the last");
 		await kill(t, term.id);
 	}),
 	processCase(

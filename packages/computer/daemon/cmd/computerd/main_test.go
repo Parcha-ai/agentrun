@@ -35,8 +35,13 @@ func computerd(t *testing.T, bound time.Duration, args ...string) (int, string) 
 	encoded, _ := json.Marshal(append([]string{"computerd"}, args...))
 	ctx, cancel := context.WithTimeout(context.Background(), bound)
 	defer cancel()
+	// Init refuses a socket directory others may enter; t.TempDir's mode follows the umask.
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	cmd := exec.CommandContext(ctx, os.Args[0])
-	cmd.Env = append(os.Environ(), argsEnv+"="+string(encoded), daemon.SocketEnv+"="+filepath.Join(t.TempDir(), "computerd.sock"))
+	cmd.Env = append(os.Environ(), argsEnv+"="+string(encoded), daemon.SocketEnv+"="+filepath.Join(dir, "computerd.sock"))
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	err := cmd.Run()

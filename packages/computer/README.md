@@ -76,7 +76,7 @@ Its whole tree ends when the program ends or is signalled to its end. Ids are `p
 | `process.write` | `id, data?, close?` | `{}`: to stdin, or the terminal; `close` closes stdin after the data |
 | `process.signal` | `id, signal` | `{}`: `TERM`, `INT`, `KILL` or `HUP`, to the program's process group; to a process that has ended it does nothing |
 | `process.resize` | `id, cols, rows` | `{}`: the terminal's new size; the program gets SIGWINCH |
-| `process.list` | `offset?` | `{processes, truncated}`: `processes` are `{id, pid, argv, argvClipped, pty, running, exitCode, signal, startedAt, endedAt}` in start order, times in milliseconds since the epoch; at most 768 KiB a reply: when `truncated`, list again with `offset` plus the processes read |
+| `process.list` | `from?` | `{processes, truncated, next}`: `processes` are `{id, pid, argv, argvClipped, pty, running, exitCode, signal, startedAt, endedAt}` in start order, times in milliseconds since the epoch; at most 768 KiB a reply: when `truncated`, list again with `from` set to `next`. Pages follow start order, not places in the table, so a process dropped between two pages makes the next skip none |
 | `process.wait` | `id, timeoutMs` | `{running, exitCode, signal}`: waits up to `timeoutMs` (0 to a day) for the end; `running` is true on timeout |
 
 - Each stream keeps its last 8 MiB in a ring. Offsets count bytes since the process started; `nextOffset` is where the
@@ -90,9 +90,11 @@ Its whole tree ends when the program ends or is signalled to its end. Ids are `p
 - With `pty`, stdout and stderr are one `pty` stream, and the program runs in a session of its own with the terminal
   as its controlling terminal (setsid and TIOCSCTTY in the guard). A terminal has no stdin to close: write `"\x04"`
   for the end of input, or signal `HUP`.
-- A write waits at most 10 s for the program to read; the rest is a `timeout` error that says how much was written.
+- Writes to one process take turns. A write waits at most 10 s, its turn included, for the program to read; the rest is
+  a `timeout` error that says how much was written. A cancelled write, waiting for its turn or writing, is `aborted`.
 - The table holds at most 256 processes, running or ended. A start into a full table drops the process that ended
-  first (its output with it); when all 256 run, the start is refused as `limit`.
+  first (its output with it) once the new program runs; a start that is refused drops nothing. When all 256 run, the
+  start is refused as `limit`.
 
 `src/processes.ts` has `readAll(client, id, stream, {offset?, waitMs?, signal?})`, which pages a stream by offset
 until the process ends and returns its bytes, where it ended and what the ring dropped, and `listProcesses(client)`,
@@ -151,6 +153,12 @@ read to its end, the push calls its `return()` however it ends, so a pull piped 
   promise to confine it: they resolve it by name, as any program in the computer would, and follow a symlink on the
   way. The computer is their boundary. A caller that needs a write held inside one directory against a concurrent
   actor pushes a tar into that directory.
+- `files.read`, `files.write` and a pull open a file first and then check what they opened (`fstat` on the
+  descriptor), never a path checked and then opened by name. The open carries `O_NONBLOCK`, so a FIFO or a device,
+  there from the start or swapped in by another program, never makes it wait: `files.read` and `files.write` refuse
+  it as `invalid` (a directory is `is_dir`), and a pull leaves it out. A pull opens each file with `O_NOFOLLOW` and
+  writes its tar header from that descriptor's `fstat`, so the header matches the bytes it reads; a file that became
+  a symlink is left out too.
 
 `src/protocol.ts` and `daemon/internal/methods` are the two definitions of these methods, TypeScript and Go (the Go
 params and results of `files.*` and `tar.*` sit beside their code in `daemon/internal/files`).
@@ -197,14 +205,18 @@ await docker.release(made.value, "delete");
   PID 1 included. Storage that lasts is the agent disk's job, not this package's.
 - `create` ends with the drift check (below): a computer that is not what was declared is deleted, and `create`
   refuses with every mismatch in words.
+- `create(spec, { signal })` passes the signal to every step: `docker run`, and after it inspect, `docker info` and
+  hello (hello also has its own 30 s limit). An abort at any step after `docker run` deletes the computer and returns
+  `aborted`; `create` never returns ok once its signal has aborted.
 - `connect` runs `docker exec -i <name> /opt/agentrun/computerd stdio`, the bridge to init's socket, and says hello.
   Each `connect` is a connection of its own; processes are shared by all of them. A daemon whose version is not the
   provider's, or that lacks a capability the provider declares, is refused (`refused`) and the stream closed.
 - `attach({ id })` finds a computer by its name (`computer-<12 hex digits>`) or its container id (12 to 64 hex digits);
   `attach({ labels })` by labels, which must match exactly one computer: none is `not_found`, more is `invalid`
   ("2 computers match ...").
-- `list(labels)` runs `docker ps -a --filter label=agentrun.computer=1 --filter label=k=v ...`, then inspect, and
-  returns each computer's `ref`, `labels`, `deadline` (a `Date`, or `undefined` when the label is missing or is not
+- `list(labels)` runs `docker ps -a --filter label=agentrun.computer=1 --filter label=k=v ...`, then inspects the
+  matches 50 at a time, reading only the fields it reports, so any number of computers is listed (a computer gone
+  between the two is left out). It returns each computer's `ref`, `labels`, `deadline` (a `Date`, or `undefined` when the label is missing or is not
   the ISO time the provider writes), `state` (`running` or `stopped`) and `network` as read back.
 - `network(ref)` reads the network back: `none` (network mode none, on no network but Docker's own `none`), `open`
   (the default bridge alone), or `{ other: "<words>" }` for anything else, which is never reported as a policy.
@@ -286,7 +298,7 @@ core exec      argv streams exit-code cwd env timeout abort ✓ 11
 full exec      root-on-request user-uid                     ✓ 2
 full provider  network-open network-allow janitor           ✓ 2 - 1
   - provider.network-allow: the provider does not declare network:allow
-core PASS 50/50 · full 4/5 · network:allow not declared
+core PASS 51/51 · full 4/5 · network:allow not declared
 ```
 
 A module path is resolved from the directory npm was run in. It exits 0 when Core passes, 1 when it fails, and 2 on a usage error; `--json` prints the report object

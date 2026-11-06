@@ -1,12 +1,15 @@
 // What only Docker names of a computer, on real Docker (AGENTRUN_COMPUTER_LIVE_DOCKER=1 only): attach by the container's
-// name and by its id or a 12-digit prefix of it, and a computer's name that no container has. Attach by id and labels,
+// name and by its id or a 12-digit prefix of it, a computer's name that no container has, and a create aborted right
+// after docker run (held there by a docker CLI wrapper) leaving nothing. Attach by id and labels,
 // list, network read-back, release, the drift check and the janitor are in the conformance suite
 // (conformance.docker.test.mjs). Needs `npm run build` and `npm run build:daemon` first, and alpine:3.20 pulled. Every
 // computer this file makes carries a label with this run's id and is removed by its exact name in the after hook.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { after, before, describe, it } from "node:test";
 import { DockerProvider } from "../../dist/index.js";
@@ -16,18 +19,28 @@ const RUN_LABEL = "agentrun.test.run";
 /** The uid of the provider's default user: this process's, or 1000 when this process's uid or gid is 0. */
 const DEFAULT_UID = process.getuid() !== 0 && process.getgid() !== 0 ? String(process.getuid()) : "1000";
 const docker = (...args) => execFileSync("docker", args, { encoding: "utf8" });
+const exists = (name) => {
+	try {
+		execFileSync("docker", ["inspect", "--type", "container", name], { stdio: "ignore" });
+		return true;
+	} catch {
+		return false;
+	}
+};
 
 describe("attach to a Docker computer by Docker's names for it", { skip: LIVE ? false : "set AGENTRUN_COMPUTER_LIVE_DOCKER=1 to run on real Docker" }, () => {
 	const run = randomBytes(6).toString("hex");
 	const made = [];
+	const dirs = [];
 	let provider;
+	let daemonPath;
 	let ref;
 
 	const ours = () => docker("ps", "-a", "--filter", `label=${RUN_LABEL}=${run}`, "--format", "{{.Names}}").split("\n").filter(Boolean);
 
 	before(async () => {
 		const arch = docker("version", "--format", "{{.Server.Arch}}").trim();
-		const daemonPath = fileURLToPath(new URL(`../../dist/computerd-linux-${arch}`, import.meta.url));
+		daemonPath = fileURLToPath(new URL(`../../dist/computerd-linux-${arch}`, import.meta.url));
 		assert.ok(existsSync(daemonPath), `no daemon for Docker's arch at ${daemonPath}: run npm run build:daemon`);
 		provider = new DockerProvider({ daemonPath });
 		const created = await provider.create({ image: "alpine:3.20", lifetimeMs: 10 * 60_000, network: "none", labels: { [RUN_LABEL]: run } });
@@ -44,6 +57,7 @@ describe("attach to a Docker computer by Docker's names for it", { skip: LIVE ? 
 				// Already removed by the test.
 			}
 		}
+		for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
 	});
 
 	it("attaches by the container's name, its whole id and its first 12 digits", async () => {
@@ -114,5 +128,50 @@ describe("a Docker computer's /work is bounded", { skip: LIVE ? false : "set AGE
 		assert.equal(state.Running, true, "PID 1 is alive");
 		assert.equal(state.OOMKilled, false, "nothing in the computer was OOM-killed");
 		assert.deepEqual(await provider.release(created.value, "delete"), { ok: true, value: undefined });
+	});
+
+	it("a create aborted right after docker run returns aborted, and nothing with its label is left", async () => {
+		// A docker CLI that holds create's first inspect, the step right after run, until the test says go.
+		const dir = mkdtempSync(join(tmpdir(), "computer-abort-"));
+		dirs.push(dir);
+		const held = join(dir, "held");
+		const go = join(dir, "go");
+		const wrapper = join(dir, "docker");
+		writeFileSync(
+			wrapper,
+			`#!${process.execPath}
+const { existsSync, writeFileSync } = require("node:fs");
+const { spawnSync } = require("node:child_process");
+const args = process.argv.slice(2);
+const run = () => process.exit(spawnSync("docker", args, { stdio: "inherit" }).status ?? 1);
+if (args[0] !== "inspect" || existsSync(${JSON.stringify(go)})) run();
+writeFileSync(${JSON.stringify(held)}, "");
+const bound = Date.now() + 120_000;
+setInterval(() => (existsSync(${JSON.stringify(go)}) || Date.now() > bound) && run(), 50);
+`,
+			{ mode: 0o755 },
+		);
+		const holding = new DockerProvider({ daemonPath, docker: wrapper });
+		const controller = new AbortController();
+		const pending = holding.create(
+			{ image: "alpine:3.20", network: "none", lifetimeMs: 10 * 60_000, labels: { [RUN_LABEL]: run, role: "abort" } },
+			{ signal: controller.signal },
+		);
+		const bound = Date.now() + 120_000;
+		while (!existsSync(held)) {
+			assert.ok(Date.now() < bound, "create never reached the inspect after docker run");
+			await new Promise((resolve) => setTimeout(resolve, 50));
+		}
+		const name = docker("ps", "-a", "--filter", `label=${RUN_LABEL}=${run}`, "--filter", "label=role=abort", "--format", "{{.Names}}").trim();
+		assert.match(name, /^computer-[0-9a-f]{12}$/, "docker run made the computer before the abort");
+		controller.abort();
+		writeFileSync(go, "");
+		const created = await pending;
+		if (created.ok) made.push(created.value.name);
+		assert.equal(created.ok, false, JSON.stringify(created));
+		assert.equal(created.error.code, "aborted");
+		assert.match(created.error.message, new RegExp(`${name} was deleted`));
+		assert.equal(exists(name), false, `${name} was deleted`);
+		assert.equal(docker("ps", "-a", "--filter", `label=${RUN_LABEL}=${run}`, "--filter", "label=role=abort", "--format", "{{.Names}}").trim(), "");
 	});
 });

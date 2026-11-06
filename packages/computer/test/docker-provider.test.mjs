@@ -402,3 +402,30 @@ test("create() deletes a computer whose daemon does not answer hello", async () 
 	assert.deepEqual(calls().map((args) => args[0]), ["run", "inspect", "info", "exec", "rm"]);
 	assert.deepEqual(names(), []);
 });
+
+/** Waits until check() holds, polling; fails after a minute. */
+async function until(check, what) {
+	const bound = Date.now() + 60_000;
+	while (!check()) {
+		assert.ok(Date.now() < bound, `still waiting for ${what}`);
+		await new Promise((resolve) => setTimeout(resolve, 20));
+	}
+}
+
+for (const [step, call] of [["inspect", "inspect"], ["info", "info"], ["hello", "exec"]]) {
+	test(`create() aborted while its ${step} after docker run is pending returns aborted and deletes the computer`, async () => {
+		const { provider, calls, names, proceed } = fakeDocker({ hold: [step] });
+		const controller = new AbortController();
+		const pending = provider.create(SPEC, { signal: controller.signal });
+		await until(() => calls().some((args) => args[0] === call), `docker ${call}`);
+		controller.abort();
+		// Unsignalled, the held step now answers, and create would go on to ok.
+		proceed(step);
+		const result = await pending;
+		assert.equal(result.ok, false, JSON.stringify(result));
+		assert.equal(result.error.code, "aborted");
+		assert.match(result.error.message, /computer-[0-9a-f]{12} was deleted/);
+		assert.equal(calls().at(-1)[0], "rm");
+		assert.deepEqual(names(), [], "nothing is left running");
+	});
+}

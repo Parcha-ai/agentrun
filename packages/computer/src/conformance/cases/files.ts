@@ -253,6 +253,23 @@ export const filesCases: Case[] = [
 		await Promise.all(eight.map((it) => it.return?.()));
 		t.deepEqual((await t.call("files.list", { path: target })).entries, [], "what the refused copy left in the directory");
 	}),
+	files(
+		"fifo",
+		async (t) => {
+			const dir = await t.dir();
+			await t.call("files.write", { path: `${dir}/a.txt`, data: b64("a") });
+			t.equal((await t.exec(["mkfifo", `${dir}/pipe`])).exitCode, 0, "mkfifo");
+			const one = await t.connect();
+			t.refused(await one.client.call("files.read", { path: `${dir}/pipe` }), "files.read of a FIFO, which must return, not wait for a writer", ["invalid"]);
+			t.refused(await one.client.call("files.write", { path: `${dir}/pipe`, data: b64("x") }), "files.write of a FIFO, which must return, not wait for a reader", [
+				"invalid",
+			]);
+			const pulled = untar(t.ok(await pullTar(one.client, dir), "a pull of a directory that holds a FIFO"));
+			t.deepEqual(sorted(pulled), sorted([{ name: "a.txt", type: "file", mode: 0o644, body: Buffer.from("a") }]), "the pull: the file, and no FIFO");
+			t.deepEqual(t.ok(await one.client.call("ping", {}), "ping"), {}, "ping after the FIFO calls");
+		},
+		["files", "exec"],
+	),
 	files("pull-unread", async (t) => {
 		const src = await bigTree(t);
 		const one = await t.connect();

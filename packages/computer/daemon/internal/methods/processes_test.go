@@ -17,6 +17,7 @@ type listedProcess struct {
 type listPage struct {
 	Processes []listedProcess `json:"processes"`
 	Truncated bool            `json:"truncated"`
+	Next      int64           `json:"next"`
 }
 
 // A full table of processes with large argvs is listed in pages that each fit a line: every entry once, in start
@@ -40,18 +41,20 @@ func TestAFullTableWithLargeArgvsIsListedInPagesUnderTheLineLimit(t *testing.T) 
 	}
 	var seen []listedProcess
 	pages := 0
+	params := map[string]any{}
 	for {
 		var page listPage
 		// c.call fails the test on any line over rpc.MaxLine; a reply over it would come back as a limit error.
-		c.ok("process.list", map[string]any{"offset": len(seen)}, &page)
+		c.ok("process.list", params, &page)
 		pages++
 		if len(page.Processes) == 0 && page.Truncated {
-			t.Fatalf("an empty page that says it is truncated, at offset %d", len(seen))
+			t.Fatalf("an empty page that says it is truncated, from %v", params["from"])
 		}
 		seen = append(seen, page.Processes...)
 		if !page.Truncated {
 			break
 		}
+		params = map[string]any{"from": page.Next}
 	}
 	if len(seen) != process.MaxEntries || pages < 2 {
 		t.Fatalf("listed %d processes in %d pages", len(seen), pages)
@@ -67,9 +70,10 @@ func TestAFullTableWithLargeArgvsIsListedInPagesUnderTheLineLimit(t *testing.T) 
 			t.Fatalf("entry %d should be clipped to its first arguments: clipped %v, %.40q", i, p.ArgvClipped, p.Argv)
 		}
 	}
-	c.fails("process.list", map[string]any{"offset": -1}, "invalid")
+	c.fails("process.list", map[string]any{"from": -1}, "invalid")
+	c.fails("process.list", map[string]any{"offset": 0}, "invalid")
 	var past listPage
-	c.ok("process.list", map[string]any{"offset": 1000}, &past)
+	c.ok("process.list", map[string]any{"from": 1000}, &past)
 	if len(past.Processes) != 0 || past.Truncated || past.Processes == nil {
 		t.Fatalf("a list past the end: %+v", past)
 	}

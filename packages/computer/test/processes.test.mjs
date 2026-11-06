@@ -105,33 +105,34 @@ test("readAll stops when aborted, and sends the daemon a cancel", async () => {
 	client.close();
 });
 
-test("listProcesses pages by offset until a page is not truncated", async () => {
+test("listProcesses pages from each page's next until a page is not truncated", async () => {
 	const p = (id) => ({ id, pid: 10, argv: ["sh"], argvClipped: false, pty: false, running: true, exitCode: null, signal: null, startedAt: 1, endedAt: null });
+	// p4 was dropped between the second and third pages: next comes from the daemon, not from a count of entries.
 	const pages = [
-		{ processes: [p("p1"), p("p2")], truncated: true },
-		{ processes: [p("p3")], truncated: true },
-		{ processes: [], truncated: false },
+		{ processes: [p("p1"), p("p2")], truncated: true, next: 3 },
+		{ processes: [p("p5")], truncated: true, next: 6 },
+		{ processes: [], truncated: false, next: 6 },
 	];
 	const { client, seen } = fake((request, daemon) => daemon.reply(request, pages.shift()));
 	const listed = await listProcesses(client);
 	assert.equal(listed.ok, true, JSON.stringify(listed));
 	assert.deepEqual(
 		listed.value.map((x) => x.id),
-		["p1", "p2", "p3"],
+		["p1", "p2", "p5"],
 	);
 	assert.deepEqual(
-		seen.map((r) => [r.method, r.params.offset]),
+		seen.map((r) => [r.method, r.params]),
 		[
-			["process.list", 0],
-			["process.list", 2],
-			["process.list", 3],
+			["process.list", {}],
+			["process.list", { from: 3 }],
+			["process.list", { from: 6 }],
 		],
 	);
 	client.close();
 });
 
 test("listProcesses returns the daemon's error as a result", async () => {
-	const { client } = fake((request, daemon) => daemon.error(request, "invalid", "bad offset"));
-	assert.deepEqual(await listProcesses(client), { ok: false, error: { code: "invalid", message: "bad offset" } });
+	const { client } = fake((request, daemon) => daemon.error(request, "invalid", "bad from"));
+	assert.deepEqual(await listProcesses(client), { ok: false, error: { code: "invalid", message: "bad from" } });
 	client.close();
 });

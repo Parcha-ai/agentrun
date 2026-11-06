@@ -300,15 +300,17 @@ export interface ProcessInfo extends ProcessExit {
 }
 
 export interface ProcessListParams {
-	/** Skip this many processes: pass the count already listed to get the next page. */
-	offset?: number;
+	/** Where the page starts: the page before's next, or 0 (the default) for the first page. */
+	from?: number;
 }
 
 export interface ProcessListResult {
 	/** In start order. */
 	processes: ProcessInfo[];
-	/** More follow: list again with offset + processes.length. */
+	/** More follow: list again with from: next. */
 	truncated: boolean;
+	/** Where the page after this one starts. A process dropped from the table between pages moves no other past it. */
+	next: number;
 }
 
 export interface ProcessWaitParams {
