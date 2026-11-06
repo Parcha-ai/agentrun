@@ -326,7 +326,7 @@ test("codex: a call of the dynamic MCP tool priced $0.05 under a $0.04 cap is re
   const { api } = await serve(t, { faux: undefined });
   const fake = await addFake(t, api, { paid: 0.05 });
   assert.equal((await allowFake(api)).status, 200);
-  const runId = await started(api, "codex-tight", ["mcp:fake/paid"], 'call mcp__fake__paid {"query":"ada"}', { extra: { harness: "codex" }, run: { max_cost_usd: 0.04 } });
+  const runId = await started(api, "codex-tight", ["mcp:fake/paid"], 'call mcp_fake__paid {"query":"ada"}', { extra: { harness: "codex" }, run: { max_cost_usd: 0.04 } });
   await follow(api, runId, ["input_required"], { deadlineMs: 120_000 });
   pausedForRoom((await api("GET", `/runs/${runId}`)).body, fake);
 });

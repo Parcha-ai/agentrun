@@ -432,11 +432,11 @@ test("codex: a run that grants nothing from the server is given none of its tool
   const fake = await addFake(t, api);
   const before = fake.log.length;
   assert.equal((await api("POST", "/agents", agent("codex-plain", { harness: "codex", tools: [] }))).status, 201);
-  const runId = await runOf(api, "codex-plain", 'call mcp__fake__add {"a":2,"b":3}');
+  const runId = await runOf(api, "codex-plain", 'call mcp_fake__add {"a":2,"b":3}');
   const { last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 60_000 });
   assert.equal(last.status, "completed");
   const offered = (await rolloutOf(data, runId)).filter((line) => line.type === "session_meta").flatMap((line) => line.payload.dynamic_tools ?? []);
-  assert.deepEqual(offered.filter((tool) => tool.name.startsWith("mcp__")), [], "no MCP tool among the session's dynamic tools");
+  assert.deepEqual(offered.filter((tool) => tool.name.startsWith("mcp")), [], "no MCP tool among the session's dynamic tools");
   assert.deepEqual(fake.log.slice(before), [], "the server saw nothing of the run");
 });
 
@@ -444,7 +444,7 @@ test("codex: a run killed mid-call resumes with the call answered interrupted, a
   const { api, data } = await codexServe(t);
   const fake = await addFake(t, api);
   assert.equal((await api("POST", "/agents", agent("codex-writer", { harness: "codex", tools: ["mcp:fake/slow_write"], tool_settings: ALLOW_FAKE }))).status, 201);
-  const runId = await runOf(api, "codex-writer", 'call mcp__fake__slow_write {"line":"once","seconds":30}');
+  const runId = await runOf(api, "codex-writer", 'call mcp_fake__slow_write {"line":"once","seconds":30}');
   for (let i = 0; calls(fake, "slow_write").length === 0; i++) {
     assert.ok(i < 600, "the call reaches the server");
     await sleep(100);
@@ -455,7 +455,7 @@ test("codex: a run killed mid-call resumes with the call answered interrupted, a
   assert.equal(last.status, "completed", JSON.stringify(rows.at(-1)));
   // What the model reads of the call in the resumed thread: its output says it was interrupted.
   const log = await rolloutOf(data, runId);
-  const callId = log.find((line) => line.type === "response_item" && line.payload.type === "function_call" && line.payload.name === "mcp__fake__slow_write")?.payload.call_id;
+  const callId = log.find((line) => line.type === "response_item" && line.payload.type === "function_call" && line.payload.name === "mcp_fake__slow_write")?.payload.call_id;
   const outputs = log.filter((line) => line.type === "response_item" && line.payload.type === "function_call_output" && line.payload.call_id === callId).map((line) => String(line.payload.output));
   assert.ok(outputs.some((output) => /interrupted/i.test(output)), JSON.stringify(outputs));
   assert.equal(calls(fake, "slow_write").length, 1, "the call was never sent again");
@@ -472,9 +472,9 @@ test("codex: a saved credential that can't be opened refuses the call before any
   await writeFile(file, JSON.stringify(doc));
   assert.equal((await api("POST", "/agents", agent("codex-unopened", { harness: "codex", tools: ["mcp:fake/add"], tool_settings: ALLOW_FAKE }))).status, 201);
   const before = fake.log.length;
-  const runId = await runOf(api, "codex-unopened", 'call mcp__fake__add {"a":2,"b":3}');
+  const runId = await runOf(api, "codex-unopened", 'call mcp_fake__add {"a":2,"b":3}');
   const { last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 60_000 });
   assert.equal(last.status, "completed");
-  assert.equal((await api("GET", `/runs/${runId}`)).body.result?.final_answer, "mcp__fake__add failed: The MCP server fake's credential can't be opened on this server (sealed under another seal key, or damaged); update it in Settings → MCP servers.");
+  assert.equal((await api("GET", `/runs/${runId}`)).body.result?.final_answer, "mcp_fake__add failed: The MCP server fake's credential can't be opened on this server (sealed under another seal key, or damaged); update it in Settings → MCP servers.");
   assert.deepEqual(fake.log.slice(before).filter((entry) => ["tools/call", "initialize", "server/discover"].includes(entry.method)), [], "nothing reached the server");
 });

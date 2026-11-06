@@ -78,13 +78,20 @@ export interface CodexAdapterOptions {
   fetch?: typeof fetch;
 }
 
-/** The kernel's tool for a host tool: the same name, schema and replay policy; a host's error result is the call's failure.
+/** A host tool's name on Codex's wire. Codex 0.164 refuses a dynamic tool named `mcp` or `mcp__…` at thread/start ("dynamic
+ *  tool name is reserved", app-server thread_processor.rs at rust-v0.164.0): a remote MCP server's tool, which a host names
+ *  `mcp__<server>__<tool>`, goes as `mcp_<server>__<tool>`, and the session's events name it as the host does. Every
+ *  other name goes as it is. */
+export const codexToolName = (name: string): string => (name === "mcp" ? "mcp_" : name.startsWith("mcp__") ? `mcp_${name.slice("mcp__".length)}` : name);
+
+/** The kernel's tool for a host tool: the same schema and replay policy, under its name on Codex's wire (codexToolName); a
+ *  host's error result is the call's failure.
  *  The call runs as a kernel effect, whose intent is durable in the session's records before `execute` is entered, so a
  *  crash inside a `never` tool is always reported, never repeated. The copied harness's wait for Codex's own `function_call`
  *  line before it runs such a tool is a second guard (the transcript Codex resumes from), not the one that protects it. */
 function kernelTool(tool: HostTool): KernelTool {
   return {
-    name: tool.name,
+    name: codexToolName(tool.name),
     // Codex strips some keywords from the schema its model is given: they are said in plain words in the description
     // (the schema itself is the host's, and every call is checked against it).
     description: describedDescription(tool.description, tool.inputSchema),
@@ -118,12 +125,13 @@ export function codexToolProblems(name: string, inputSchema: unknown): string[] 
   }
 }
 
-/** The adapter's event for a harness live event, if it has one. */
-function adapterEvent(event: unknown): AdapterEvent | undefined {
+/** The adapter's event for a harness live event, if it has one: a tool named as the host named it (`hostName`, from its name on
+ *  Codex's wire). */
+function adapterEvent(event: unknown, hostName: (wire: string) => string = (wire) => wire): AdapterEvent | undefined {
   const e = event as { type?: string; delta?: unknown; name?: unknown; callId?: unknown; args?: unknown; isError?: unknown; truncated?: unknown };
   if (e?.type === "text" && typeof e.delta === "string") return { type: "text", delta: e.delta };
-  if (e?.type === "tool_start" && typeof e.name === "string") return { type: "tool_start", callId: String(e.callId ?? ""), name: e.name, args: e.args };
-  if (e?.type === "tool_end" && typeof e.name === "string") return { type: "tool_end", callId: String(e.callId ?? ""), name: e.name, isError: e.isError === true, ...(e.truncated === true ? { truncated: true as const } : {}) };
+  if (e?.type === "tool_start" && typeof e.name === "string") return { type: "tool_start", callId: String(e.callId ?? ""), name: hostName(e.name), args: e.args };
+  if (e?.type === "tool_end" && typeof e.name === "string") return { type: "tool_end", callId: String(e.callId ?? ""), name: hostName(e.name), isError: e.isError === true, ...(e.truncated === true ? { truncated: true as const } : {}) };
   return undefined;
 }
 
@@ -177,9 +185,10 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
       const seen = new Set<string>();
       for (const tool of spec.tools) {
         if (!TOOL_NAME.test(tool.name)) problems.push(`the tool name ${JSON.stringify(tool.name.slice(0, 80))} is not one Codex accepts (letters, digits, _ and -, at most 64)`);
-        if (seen.has(tool.name)) problems.push(`the tool ${tool.name} is given twice`);
+        // Twice by its name on Codex's wire too: mcp__a__b and mcp_a__b are one name there (codexToolName).
+        if (seen.has(codexToolName(tool.name))) problems.push(`the tool ${tool.name} is given twice`);
         if (skills.length && tool.name === READ_SKILL_FILE) problems.push(`the tool name ${READ_SKILL_FILE} is the adapter's own when it has skills`);
-        seen.add(tool.name);
+        seen.add(codexToolName(tool.name));
         problems.push(...codexToolProblems(tool.name, tool.inputSchema));
       }
       return problems;
@@ -223,7 +232,7 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
             ...(options.webSearch ? { webSearch: options.webSearch } : {}),
             proxy: {
               hooks: io.models,
-              tools: tools.map((t) => t.name),
+              tools: tools.map((t) => codexToolName(t.name)),
               ...(options.log ? { log: options.log } : {}),
               ...(options.price ? { price: options.price } : {}),
               ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}),
@@ -234,8 +243,9 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
       };
       const harness = checked === undefined ? codexHarness(harnessOptions) : withCheckedBinary(checked, () => codexHarness(harnessOptions));
 
+      const hostNames = new Map(tools.map((tool) => [codexToolName(tool.name), tool.name]));
       const live = (event: unknown) => {
-        const mapped = adapterEvent(event);
+        const mapped = adapterEvent(event, (wire) => hostNames.get(wire) ?? wire);
         if (mapped) io.onEvent(mapped);
       };
       // Every drive of this session writes through one serialized writer, so a drive opened after an interrupt reads only

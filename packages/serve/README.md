@@ -1231,8 +1231,8 @@ asked by default.
   makes the call with the credential. The CLI's tool search is off in such a session, so the granted tools are
   offered whole. A server the CLI cannot connect to fails the turn, never a turn without its tools.
 - **codex** is given each granted tool as one of the session's host tools, as it is given `read` or `bash` (Codex's
-  dynamic tools): `mcp__<server>__<tool>`, with the pinned description and schema, called from the run's process like
-  pi's. Codex's own MCP client is not used, and Codex holds no server or credential. A tool whose schema Codex would
+  dynamic tools): `mcp__<server>__<tool>` to the run and its timeline, `mcp_<server>__<tool>` on Codex's wire (Codex
+  reserves `mcp__` names), with the pinned description and schema, called from the run's process like pi's. Codex's own MCP client is not used, and Codex holds no server or credential. A tool whose schema Codex would
   drop or retype (a `not`, `patternProperties`, ...) is `422` at the save, naming the place and why.
 - **A call** goes to the pinned URL alone, the 2026-07-28 revision first and a 2025-era server through its
   `initialize`; on 2026-07-28 each `x-mcp-header` parameter of the pinned tool is sent as its `Mcp-Param-*` header. No

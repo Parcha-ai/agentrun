@@ -78,7 +78,7 @@ async function setup(t, harness) {
       AGENT_MODEL_API_KEY: `not-a-secret-${"gateway"}`,
     }, ["AGENT_MODEL_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"]);
     extra = { harness: "codex" };
-    content = 'call mcp__fake__add {"a":2,"b":3}';
+    content = 'call mcp_fake__add {"a":2,"b":3}';
   }
   const server = await serveOf(t, { faux: harness === "pi" ? FAUX_MCP : undefined, accounts: true, openSetup: true });
   const fake = await startFakeMcp({ token: TOKEN });
@@ -126,7 +126,7 @@ for (const harness of HARNESSES) {
       // Gated once: one approval asked, by the gateway, never again by the host tools' own gate.
       assert.equal(rows.filter((row) => row.kind === "tool_approval_requested").length, 1, JSON.stringify(rows.filter((row) => row.kind.startsWith("tool"))));
       // The turn ended at the parked result: the stand-in's next request (its answer after the call) never left.
-      assert.deepEqual(model.seen, ["Calling mcp__fake__add."]);
+      assert.deepEqual(model.seen, ["Calling mcp_fake__add."]);
     }
     assert.equal(await answer(runId, pending.id, { decision: "allow" }), 204);
     await follow(api, runId, ["completed", "failed"], { deadlineMs: 180_000 });
@@ -142,7 +142,7 @@ for (const harness of HARNESSES) {
     const runId = await run(`allow-${harness}`);
     const { last } = await follow(api, runId, ["completed", "failed", "input_required"], { deadlineMs: 180_000 });
     assert.equal(last.status, "completed");
-    assert.match(await answerOf(api, runId), harness === "codex" ? /^mcp__fake__add returned: 5$/ : /The tool said: 5/);
+    assert.match(await answerOf(api, runId), harness === "codex" ? /^mcp_fake__add returned: 5$/ : /The tool said: 5/);
     assert.equal(calls(fake).length, 1);
   });
 }
