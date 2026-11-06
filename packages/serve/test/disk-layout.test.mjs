@@ -172,3 +172,20 @@ test("a workflow run whose claim cannot be written at its launch is launched aga
   assert.equal(last.final, true);
   assert.ok(claimOf(data, run.body.run_id).claim_epoch >= 1, "claimed by its process once it could be");
 });
+
+test("a run cancelled while its launch waits on its claim gives its place back at once: the next start takes it", { timeout: 120_000 }, async (t) => {
+  const { api, data } = await serve(t, { faux: FAUX, settleRetryMs: 60_000, maxRuns: 1 });
+  assert.equal((await api("POST", "/agents", flowAgent("flow"))).status, 201);
+  const db = new DatabaseSync(join(data, "store.sqlite"));
+  t.after(() => db.isOpen && db.close());
+  db.exec("CREATE TRIGGER held_claim BEFORE UPDATE OF claim_epoch ON runs BEGIN SELECT RAISE(ABORT, 'the claim is held'); END");
+  const run = await api("POST", "/agents/flow/runs", { input: { question: "Answer soon." } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  assert.equal((await api("POST", "/agents/flow/runs", { input: { question: "Too many." } })).status, 429, "its place is kept while it waits");
+  assert.equal((await api("POST", `/runs/${run.body.run_id}/cancel`)).status, 202);
+  await follow(api, run.body.run_id, ["cancelled"], { deadlineMs: 30_000 });
+  // Well before the 60 s retry: the cancelled run holds no place.
+  const next = await api("POST", "/agents/flow/runs", { input: { question: "Now." } });
+  assert.equal(next.status, 202, JSON.stringify(next.body));
+});
+

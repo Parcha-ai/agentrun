@@ -2382,8 +2382,9 @@ export class Runs {
     const never = neverFits(harness, memory);
     if (never) throw new ApiError("agent_not_runnable", never, { details: { unbound: [], missing: {}, harness } });
     for (const deadline = Date.now() + this.killAfterMs() + 1_000; ; await sleep(50)) {
-      // A run whose launch waits on its claim (launch) keeps the place it had: nothing else takes it meanwhile.
-      const holding = [...this.runs.values()].filter((run) => this.live(run) || run.claimWait === true);
+      // A run whose launch waits on its claim (launch) keeps the place it had, nothing else taking it meanwhile, until it is
+      // cancelled or ends.
+      const holding = [...this.runs.values()].filter((run) => this.live(run) || (run.claimWait === true && !run.cancel && !run.outcome));
       const counted = max === undefined || holding.length + this.starting < max;
       const held = holding.reduce((sum, run) => sum + runMibOf(run.harness), this.startingMib);
       // With nothing held, a run that fits at all starts: pi's one place on a host smaller than a pi run (host.ts).
