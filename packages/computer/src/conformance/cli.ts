@@ -27,6 +27,8 @@ export interface CliIo {
 	signal?: AbortSignal;
 	/** Print each case to stderr as it ends. */
 	progress?: boolean;
+	/** For --provider docker: the longest `docker version` may take; default 30 s. */
+	dockerTimeoutMs?: number;
 }
 
 const USAGE = `usage: npm run conformance -w @parcha/agentrun-computer -- --provider docker|<module.js> [--image <image>] [--only <group|case>,...] [--json]
@@ -109,7 +111,7 @@ export async function main(argv: string[], io: CliIo = {}): Promise<number> {
 	let target: { provider: ComputerProvider; drifted?: () => Promise<ComputerProvider> };
 	try {
 		if (args.provider === "docker") {
-			const docker = dockerConformance();
+			const docker = dockerConformance(io.dockerTimeoutMs === undefined ? {} : { timeoutMs: io.dockerTimeoutMs });
 			target = docker;
 			close = docker.close;
 		} else {
