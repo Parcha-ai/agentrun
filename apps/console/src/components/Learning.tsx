@@ -132,8 +132,9 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent, places }: 
         <section className="border border-warning/50" aria-label="Waiting for your OK">
           <h2 className="caps flex items-baseline gap-2 border-b border-warning/50 px-4 py-3 text-[12px] font-semibold">Waiting for your OK<span className="font-mono font-normal text-muted-foreground">{waiting.length}</span></h2>
           <p className="px-4 pt-3 text-[13px] text-muted-foreground">{WAITS_WHY}</p>
-          {/* Only off the sandbox: an agent that runs in a box, its own place or the server's default for it, runs no bash on the host. */}
-          {runsWhere(agent, places)?.place.mode !== "sandbox" && <p className="px-4 pt-1 text-[13px] text-muted-foreground">{HOST_RUNS}</p>}
+          {/* Only on the host with a shell: an agent that runs on the server (its own place or the server's default for it) with
+              bash in its tools. One in a box, or with no shell, runs no bash on the host. */}
+          {runsWhere(agent, places)?.place.mode === "runner" && (agent.definition.tools ?? []).includes("bash") && <p className="px-4 pt-1 text-[13px] text-muted-foreground">{HOST_RUNS}</p>}
           <ul className="space-y-3 p-4">
             {waiting.map((x) => (
               <li key={x.file}>
