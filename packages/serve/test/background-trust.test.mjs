@@ -108,6 +108,8 @@ test("a link planted at output.log is refused in words: neither bash_output nor 
   const { said } = await boxedRun(t, plan);
   assert.deepEqual(said.map((a) => [a.tool, a.error]), plan.map((step, i) => [step.tool, i === 2]), JSON.stringify(said));
   assert.match(said[2].text, /background process 1's log is not read: background\/1\/output\.log \(or a directory on its way\) is a link or not a regular file/);
+  // The cause that applied, alone: this box has /proc, so no word of it.
+  assert.ok(!said[2].text.includes("/proc"), said[2].text);
   for (const answer of said) assert.ok(!answer.text.includes("SECRET-TEXT"), `${answer.tool}: ${answer.text}`);
   assert.match(said[3].text, /\n1: exited with code 0; 0 bytes of output;/);
 });
@@ -160,8 +162,10 @@ test("a process directory made in work/ with a forged pid and no exit is lost: n
   ];
   const { said, data } = await boxedRun(t, plan);
   assert.deepEqual(said.map((a) => [a.tool, a.error]), plan.map((step, i) => [step.tool, i === 2]), JSON.stringify(said));
-  assert.match(said[1].text, /^0 of at most 8 running\.\n99: is gone/);
-  assert.match(said[2].text, /background process 99 is gone[^]*so no signal was sent/);
+  // Its own words: no process of this box's, only files in work/; never the words for a process whose box was replaced.
+  assert.match(said[1].text, /^0 of at most 8 running\.\n99: was not started in this box \(only its files in work\/ remain\);/);
+  assert.match(said[2].text, /background process 99 was not started in this box \(only its files in work\/ remain\), so no signal was sent/);
+  assert.ok(!said[1].text.includes("box was replaced") && !said[2].text.includes("box was replaced"), `${said[1].text}\n${said[2].text}`);
   assert.equal(groupAlive(other), true, "a call never signals it");
   await until(() => liveBoxes(data).length === 0, "the box's destroy at the run's end");
   assert.equal(groupAlive(other), true, "nor the run's end");
@@ -207,4 +211,34 @@ test("a tty mark written into work/ makes no plain process a terminal one: its s
   assert.deepEqual(said.map((a) => [a.tool, a.error]), plan.map((step) => [step.tool, false]), JSON.stringify(said));
   assert.ok(!said[2].text.includes("(tty)"), said[2].text);
   assert.equal(said[3].text, "Sent INT to background process 1: it ended by signal INT (exit code 130).");
+});
+
+test("a real directory planted at a display name gets no temporary file: the copy is skipped, never moved into it", { timeout: 120_000 }, async (t) => {
+  const plan = [
+    { tool: "bash_background", args: { command: "sleep 30" } },
+    { tool: "bash", args: { command: "mkdir background/1/exit background/1/ended" } },
+  ];
+  const { said, data, work } = await boxedRun(t, plan);
+  assert.deepEqual(said.map((a) => [a.tool, a.error]), plan.map((step) => [step.tool, false]), JSON.stringify(said));
+  await until(() => liveBoxes(data).length === 0, "the box's destroy at the run's end");
+  for (const name of ["exit", "ended"]) assert.deepEqual(readdirSync(join(work, "background", "1", name)), [], `nothing was moved into the directory at ${name}`);
+  assert.deepEqual(readdirSync(join(work, "background", "1")).filter((name) => name.startsWith(".put.")), [], "no temporary file is left");
+  assert.equal(groupAlive(groupOf(said[0].text)), false, "process 1 was ended at the run's end all the same");
+});
+
+test("links planted at command and started after the start are replaced at the run's end by the process's own copies", { timeout: 120_000 }, async (t) => {
+  const outside = await scratch(t);
+  const secret = join(outside, "secret.txt");
+  await writeFile(secret, "SECRET-TEXT-OUTSIDE-WORK\n");
+  const plan = [
+    { tool: "bash_background", args: { command: "sleep 30" } },
+    { tool: "bash", args: { command: `ln -sf ${secret} background/1/command; ln -sf ${secret} background/1/started` } },
+  ];
+  const { said, data, work } = await boxedRun(t, plan);
+  assert.deepEqual(said.map((a) => [a.tool, a.error]), plan.map((step) => [step.tool, false]), JSON.stringify(said));
+  await until(() => liveBoxes(data).length === 0, "the box's destroy at the run's end");
+  for (const name of ["command", "started"]) assert.equal(lstatSync(join(work, "background", "1", name)).isFile(), true, `${name} is a file of its own again`);
+  assert.equal(readFileSync(join(work, "background", "1", "command"), "utf8"), "sleep 30");
+  assert.match(readFileSync(join(work, "background", "1", "started"), "utf8"), /^\d{4}-\d\d-\d\dT[\d:]+Z\n$/);
+  assert.equal(readFileSync(secret, "utf8"), "SECRET-TEXT-OUTSIDE-WORK\n", "the file the links named is as it was");
 });

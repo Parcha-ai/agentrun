@@ -78,9 +78,12 @@ Each row: entry point, then what makes it pass.
    `GET /v2/runs/{id}` to a terminal status (cap 300 s). Then check `GET /v2/runs/{id}/timeline` (`final: true`),
    `cost.usd`, `GET /v2/runs/{id}/files` and `GET /v2/runs/{id}/files/<path>`. Use a task that needs two files (two tool
    calls in one turn): see the open findings.
-9. **Spend cap**: a priced model and a `max_cost_usd` below its first request's worst case (see the caveats; `0.01` is
-   below it for most models) → `failed`, `error.code: spend_cap_reached`, `result: null`, no files. Check the worst
-   case first: a cap the first request fits under lets the run go on, and the check proves nothing.
+9. **Spend cap**: a priced model and a tiny `max_cost_usd`. A cap that can't buy the next request's least pauses the run:
+   `input_required` and `waiting`, `error` null, `pending.kind: "budget"` (with `cap_usd`, `spent_usd`, `needs_usd`,
+   `suggested_cap_usd`), a `spend_cap_reached` row on the timeline, the refused request unsent, no files; a higher cap
+   sends it. A cap that buys a smaller request limits it (its output is held to what the cap buys) and the run can
+   complete: e.g. `0.01` on luna completes and `0.0001` pauses. Only a refusal no cap fixes ends `failed`
+   (`spend_cap_reached`). See serve's README, "A run paused at its cap".
 10. **Cancel**: start a multi-step run, `POST /v2/runs/{id}/cancel` after its first tool_use → `cancelled` within a few
     seconds. Then `POST /v2/runs/{id}/messages {content}` → 409 `not_continuable`. The body takes `content` only.
 11. **Follow-up**: `POST /v2/runs/{id}/messages {content}` to a completed agentic run → back to `completed`. The
@@ -177,14 +180,18 @@ The journal is the `entries` table of the run's `store/run.sqlite`.
 1. **Each harness answers.** For every entry of `harnesses[]` with `available: true`, a run ends `completed` with
    `result.final_answer` set and `cost.usd` a number. Each paid request is counted once. Alone: pi through the CLI
    (`What is six times seven?`); claude-agent and codex in `harness-run`, `claude-run` and `codex-run`.
-2. **The cap refuses before anything is sent.** `max_cost_usd: 1`, below one request's worst case: `failed`,
-   `error.code: spend_cap_reached`, `result: null`, `cost.usd: 0`. The journal's only request mark is
-   `agentrun.request_started` with `capRefused: true`. Alone: pi through the CLI; claude-agent and codex in
-   `claude-run` and `codex-run`.
+2. **The cap refuses before anything is sent.** `max_cost_usd: 1`, below one request's worst case: the run pauses,
+   `input_required` and `waiting`, `error` null, `pending.kind: "budget"` (`spent_usd` 0, `needs_usd` the request's
+   least), `result: null`, `cost.usd: 0`. The journal's only request mark is `agentrun.request_started` with
+   `capRefused: true`, and a higher cap sends it (`PATCH /v2/runs/{id}` `{max_cost_usd}`). Only a refusal no cap
+   fixes (a spend nobody knows, no output ceiling, no price) ends `failed`, `spend_cap_reached`. Alone: pi through the
+   CLI, `cap-pause` and `cap-raise`; claude-agent and codex in `claude-run`, `codex-run` and `cap-raise`.
 3. **A stopped request counts at the worst case the cap held.** `Take your time.` at `max_cost_usd: 2`; once it reads
    `working`, `POST /v2/runs/{id}/stop` (`stopped: true`) leaves it `input_required`. A message is a `follow_up`, and
-   the run ends `failed`, `spend_cap_reached`, its `error.message` saying `with $1.638400 spent`. At `10` the follow-up
-   completes. `cost.usd` is `null` both ways. Read before `final`, at the first poll that shows the terminal status, it
+   the cap counts the stopped request at the worst case it held ($1.6384). Its request is limited to what is left of
+   the cap; if what is left can't buy that request's least, the run pauses at it (`input_required`,
+   `pending.kind: "budget"`, `spent_usd` 1.6384) with nothing more sent. Either way the run never ends `failed` for room.
+   At `10` the follow-up completes. `cost.usd` is `null` both ways. Read before `final`, at the first poll that shows the terminal status, it
    can still be the live figure (`0`, or `0.0004` after the follow-up). The stopped request's `agentrun.request_ended`
    mark carries `heldUsd: 1.6384`. Alone: pi through the CLI, and `cap-unknown`. For claude-agent and codex,
    `harness-cap` covers a crash mid-request and run-adapters' `held-worst-case.test.mjs` a request cut short; no test

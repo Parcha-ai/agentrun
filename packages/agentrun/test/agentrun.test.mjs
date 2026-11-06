@@ -117,6 +117,44 @@ test("with AGENTRUN_BOXES not set and Docker answering (a fake docker first on P
   assert.equal(await exited, 0, err);
 });
 
+test("a terminal that closes its pipes after the address (`| head -n 1`) ends no command: a box image line said later goes nowhere, and the server keeps running until it is stopped", { timeout: 120_000 }, async (t) => {
+  const { home, env } = bare(t);
+  delete env.AGENTRUN_BOXES;
+  const dir = mkdtempSync(join(tmpdir(), "agentrun-npx-pipe-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  mkdirSync(join(dir, "bin"));
+  mkdirSync(join(dir, "state"));
+  writeFileSync(join(dir, "bin", "docker"), `#!/bin/sh\nexec '${process.execPath}' '${FAKE_DOCKER}' "$@"\n`, { mode: 0o755 });
+  writeFileSync(join(dir, "state", "build-hold"), "");
+  const child = spawn(process.execPath, [BIN, "--no-open"], { env: { ...env, PATH: `${join(dir, "bin")}:${env.PATH}`, FAKE_DOCKER_STATE: join(dir, "state") }, stdio: ["ignore", "pipe", "pipe"] });
+  const exited = new Promise((resolve) => child.on("exit", resolve));
+  t.after(() => stopChild(child, exited));
+  let out = "";
+  let err = "";
+  child.stdout.on("data", (chunk) => (out += chunk));
+  child.stderr.on("data", (chunk) => (err += chunk));
+  // Read on either pipe: what this test checks is that a line said once the reader has gone ends nothing, wherever it goes.
+  for (let i = 0; !/^Preparing the Docker box image /m.test(out + err); i++) {
+    assert.ok(i < 1000, `the bin printed its lines: ${out}${err}`);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  // The reader goes, as `head -n 1` does once it has its line: both pipes close. The command says its later lines through
+  // console, which drops a write's error; a raw stream write there would end it on the closed pipe (EPIPE).
+  child.stdout.destroy();
+  child.stderr.destroy();
+  rmSync(join(dir, "state", "build-hold"));
+  // The build ends (the server's record of the image says so), and the server says it, a line the command passes on.
+  const record = join(STORE(home), "box-image.json");
+  for (let i = 0; !(existsSync(record) && JSON.parse(readFileSync(record, "utf8")).state === "ready"); i++) {
+    assert.ok(i < 600, "the image's build ended");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  await new Promise((resolve) => setTimeout(resolve, 2_000));
+  assert.equal(child.exitCode, null, "the command is still running after a line it said went nowhere");
+  child.kill("SIGTERM");
+  assert.equal(await exited, 0, "a stop then is a clean one");
+});
+
 test("a subcommand is the server's own, on ~/.agentrun: import --dry-run", { timeout: 60_000 }, async (t) => {
   const { home, env } = bare(t);
   const child = spawn(process.execPath, [BIN, "import", "--dry-run"], { env, stdio: ["ignore", "pipe", "pipe"] });
