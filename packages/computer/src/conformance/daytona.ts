@@ -1,5 +1,7 @@
 // Daytona for the conformance CLI: `--provider packages/computer/dist/conformance/daytona.js --image <snapshot>`. The
 // provider's settings come from the environment, by these names alone; the key is read only when createProvider() runs.
+// Every name is COMPUTER_DAYTONA_*: a bare DAYTONA_API_KEY may hold another organization's key on a host that runs other
+// Daytona work, so it is never read here, not even as a fallback.
 import { execFile } from "node:child_process";
 import { chmodSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -10,19 +12,19 @@ import { DaytonaProvider, type DaytonaProviderOptions } from "../daytona.js";
 /** The environment variables createProvider() reads, by name. */
 export const DAYTONA_ENV = {
 	/** Required: the Daytona API key. */
-	key: "DAYTONA_API_KEY",
+	key: "COMPUTER_DAYTONA_API_KEY",
 	/** Default https://app.daytona.io/api. */
-	url: "DAYTONA_API_URL",
+	url: "COMPUTER_DAYTONA_API_URL",
 	/** Default this package's dist/computerd-linux-<arch>. */
-	daemon: "AGENTRUN_DAYTONA_DAEMON",
+	daemon: "COMPUTER_DAYTONA_DAEMON",
 	/** amd64 (default) or arm64: the sandboxes' architecture. */
-	arch: "AGENTRUN_DAYTONA_ARCH",
+	arch: "COMPUTER_DAYTONA_ARCH",
 	/** The Daytona target (region); default the organization's. */
-	target: "AGENTRUN_DAYTONA_TARGET",
+	target: "COMPUTER_DAYTONA_TARGET",
 	/** container (default) or linux-vm: the class the snapshot makes. */
-	sandboxClass: "AGENTRUN_DAYTONA_CLASS",
+	sandboxClass: "COMPUTER_DAYTONA_CLASS",
 	/** uid:gid the daemon runs as; default 1000:1000. */
-	user: "AGENTRUN_DAYTONA_USER",
+	user: "COMPUTER_DAYTONA_USER",
 } as const;
 
 export interface DaytonaModuleOptions {
@@ -34,7 +36,7 @@ export interface DaytonaModuleOptions {
 
 function optionsOf({ env = process.env, fetch, webSocket }: DaytonaModuleOptions): DaytonaProviderOptions {
 	const apiKey = env[DAYTONA_ENV.key];
-	if (apiKey === undefined || apiKey === "") throw new Error(`set ${DAYTONA_ENV.key} to a Daytona API key: the Daytona provider reads it there and nowhere else`);
+	if (apiKey === undefined || apiKey === "") throw new Error(`set ${DAYTONA_ENV.key} to a Daytona API key: the Daytona provider reads it there and nowhere else, never from DAYTONA_API_KEY`);
 	const arch = env[DAYTONA_ENV.arch] || "amd64";
 	if (arch !== "amd64" && arch !== "arm64") throw new Error(`${DAYTONA_ENV.arch} is amd64 or arm64, not ${arch}`);
 	const sandboxClass = env[DAYTONA_ENV.sandboxClass] || "container";

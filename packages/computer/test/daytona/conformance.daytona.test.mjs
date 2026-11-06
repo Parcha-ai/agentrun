@@ -1,19 +1,20 @@
 // The conformance suite on real Daytona, one test per case: only when both AGENTRUN_COMPUTER_LIVE_DAYTONA=1 and
-// DAYTONA_API_KEY are set, and AGENTRUN_DAYTONA_SNAPSHOT names the snapshot every computer starts from. The key is read
-// only past that first check. Needs `npm run build` and `npm run build:daemon`, and Go on PATH for the drift case. The
-// runner deletes every computer it made; the after hook deletes any computer left with this run's label.
+// COMPUTER_DAYTONA_API_KEY are set, and COMPUTER_DAYTONA_SNAPSHOT names the snapshot every computer starts from. The key
+// is read only past that first check, and never from DAYTONA_API_KEY, which may hold another organization's key. Needs
+// `npm run build` and `npm run build:daemon`, and Go on PATH for the drift case. The runner deletes every computer it
+// made; the after hook deletes any computer left with this run's label.
 import assert from "node:assert/strict";
 import { after, before, describe, it } from "node:test";
 import { conformanceCases, formatReport, runConformance } from "../../dist/index.js";
 import { createDriftedProvider, createProvider } from "../../dist/conformance/daytona.js";
 
-const LIVE = process.env.AGENTRUN_COMPUTER_LIVE_DAYTONA === "1" && Boolean(process.env.DAYTONA_API_KEY);
-const SNAPSHOT = LIVE ? process.env.AGENTRUN_DAYTONA_SNAPSHOT : undefined;
+const LIVE = process.env.AGENTRUN_COMPUTER_LIVE_DAYTONA === "1" && Boolean(process.env.COMPUTER_DAYTONA_API_KEY);
+const SNAPSHOT = LIVE ? process.env.COMPUTER_DAYTONA_SNAPSHOT : undefined;
 const skip = !LIVE
-	? "set AGENTRUN_COMPUTER_LIVE_DAYTONA=1 and DAYTONA_API_KEY (an OKed key) to run on real Daytona"
+	? "set AGENTRUN_COMPUTER_LIVE_DAYTONA=1 and COMPUTER_DAYTONA_API_KEY (an OKed key) to run on real Daytona"
 	: SNAPSHOT
 		? false
-		: "set AGENTRUN_DAYTONA_SNAPSHOT to the Daytona snapshot every computer starts from";
+		: "set COMPUTER_DAYTONA_SNAPSHOT to the Daytona snapshot every computer starts from";
 
 describe("the conformance suite on Daytona", { skip }, () => {
 	let report;

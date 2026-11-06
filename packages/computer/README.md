@@ -472,9 +472,11 @@ capability), `/proc/self/status` (Uid and Gid the daemon user's four times, no g
 ### Conformance on Daytona
 
 `dist/conformance/daytona.js` exports `createProvider()` and `createDriftedProvider()` (which builds a daemon of
-another version with Go). It reads these variables, by name, when it runs: `DAYTONA_API_KEY` (required),
-`DAYTONA_API_URL`, `AGENTRUN_DAYTONA_DAEMON`, `AGENTRUN_DAYTONA_ARCH` (`amd64` or `arm64`), `AGENTRUN_DAYTONA_TARGET`,
-`AGENTRUN_DAYTONA_CLASS` (`container` or `linux-vm`) and `AGENTRUN_DAYTONA_USER`.
+another version with Go). It reads these variables, by name, when it runs: `COMPUTER_DAYTONA_API_KEY` (required),
+`COMPUTER_DAYTONA_API_URL`, `COMPUTER_DAYTONA_DAEMON`, `COMPUTER_DAYTONA_ARCH` (`amd64` or `arm64`),
+`COMPUTER_DAYTONA_TARGET`, `COMPUTER_DAYTONA_CLASS` (`container` or `linux-vm`) and `COMPUTER_DAYTONA_USER`. It never
+reads `DAYTONA_API_KEY` or `DAYTONA_API_URL`, not even as a fallback: on a host that runs other Daytona work they may
+hold another organization's key.
 
 ```sh
 npm run conformance -w @parcha/agentrun-computer -- --provider packages/computer/dist/conformance/daytona.js --image <snapshot>
@@ -637,7 +639,7 @@ npm run build:daemon -w @parcha/agentrun-computer   # dist/computerd-linux-amd64
 npm test -w @parcha/agentrun-computer               # unit tests: no Go, no Docker
 cd packages/computer/daemon && go vet ./... && go test ./...
 AGENTRUN_COMPUTER_LIVE_DOCKER=1 npm run test:docker -w @parcha/agentrun-computer
-AGENTRUN_COMPUTER_LIVE_DAYTONA=1 DAYTONA_API_KEY=... AGENTRUN_DAYTONA_SNAPSHOT=<snapshot> npm run test:daytona -w @parcha/agentrun-computer
+AGENTRUN_COMPUTER_LIVE_DAYTONA=1 COMPUTER_DAYTONA_API_KEY=... COMPUTER_DAYTONA_SNAPSHOT=<snapshot> npm run test:daytona -w @parcha/agentrun-computer
 ```
 
 The live tests run the conformance suite on Docker, one test per case, and the CLI against `alpine:3.20`; the rest of
