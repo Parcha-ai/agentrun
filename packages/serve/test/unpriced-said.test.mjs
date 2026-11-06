@@ -95,6 +95,21 @@ test("capabilities say a gateway default with no price has none (models.priced f
   assert.equal((await api("POST", "/agents/no-price/runs", { input: { content: "Say hi." } })).status, 202, "without a cap it starts");
 });
 
+// The 409 says where the refusal is and how to fix it, as the save's warning and a 422 do: its `fields` entry names the
+// field (definition.model), the reason, the message and the fix (AGENT_MODEL_PRICE), never the message alone (#1822 review).
+test("a capped run refused before it starts on a gateway model with no price names the field and its fix in the 409's fields, as a 422 names each", { timeout: 60_000 }, async (t) => {
+  const gw = await gateway(t);
+  withEnv(t, { AGENT_MODEL_BASE_URL: `${gw.url}/v1`, AGENT_MODEL_API_KEY: KEY, AGENT_MODEL: NO_PRICE }, NAMES);
+  const { api } = await serve(t, { faux: undefined });
+  assert.equal((await api("POST", "/agents", agent("no-price-fields"))).status, 201);
+  const capped = await api("POST", "/agents/no-price-fields/runs", { input: { content: "Say hi." }, max_cost_usd: 0.25 });
+  assert.deepEqual([capped.status, capped.body.error?.code], [409, "agent_not_runnable"], JSON.stringify(capped.body));
+  const [issue] = capped.body.error.fields ?? [];
+  assert.deepEqual([issue?.field, issue?.reason, issue?.message], ["definition.model", "not_set_up_here", `The model ${NO_PRICE} has no price here, so a run's spend cap cannot be kept on it.`]);
+  assert.match(issue.fix, /^Set AGENT_MODEL_PRICE /);
+  assert.equal(gw.requests.length, 0, "nothing reached the gateway");
+});
+
 test("capabilities read a gateway default the catalog prices (gpt-5-4-mini, flipped) as priced", { timeout: 60_000 }, async (t) => {
   const gw = await gateway(t);
   withEnv(t, { AGENT_MODEL_BASE_URL: `${gw.url}/v1`, AGENT_MODEL_API_KEY: KEY, AGENT_MODEL: PRICED }, NAMES);
