@@ -94,12 +94,12 @@ async function serve(t, args, env = {}, data = undefined) {
 }
 
 test("with accounts off (AGENTRUN_ACCOUNTS=0), the AGENTRUN_PUBLIC_URL name is served on loopback as with them on, and another name is still refused", { timeout: 120_000 }, async (t) => {
-  const free = createServer();
-  await new Promise((resolve) => free.listen(0, "127.0.0.1", resolve));
-  const port = free.address().port;
-  await new Promise((resolve) => free.close(resolve));
-  const { out } = await serve(t, ["--port", String(port)], { AGENTRUN_ACCOUNTS: "0", AGENTRUN_PUBLIC_URL: "https://agentrun.example.com" });
+  // Port 0: the server's own listen picks the port, so no other process can take it between a pick and the listen. The
+  // banner's first line names the local address; AGENTRUN_BASE_URL names the public one.
+  const { out } = await serve(t, ["--port", "0"], { AGENTRUN_ACCOUNTS: "0", AGENTRUN_PUBLIC_URL: "https://agentrun.example.com" });
   assert.match(out, /^Open https:\/\/agentrun\.example\.com\//m, out);
+  const port = Number(/^agentrun-serve on http:\/\/127\.0\.0\.1:(\d+)\/v2 /m.exec(out)?.[1]);
+  assert.ok(port > 0, `the banner names the local port: ${out}`);
   const { request } = await import("node:http");
   const status = (name) =>
     new Promise((resolve, reject) => {

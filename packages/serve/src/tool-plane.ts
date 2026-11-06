@@ -23,6 +23,7 @@ import { readFileSync } from "node:fs";
 import { isToolSettingsKey } from "@parcha/pi-durable-agent";
 import { join } from "node:path";
 import { decisionKeysOf, PARALLEL_KEY_ENV } from "./decisions.js";
+import { keyNeeded } from "./key-words.js";
 import type { InputIssue } from "./errors.js";
 import { writeDurableSync } from "./files.js";
 import { DEFAULT_HARNESS, HARNESSES, type HarnessId } from "./harness.js";
@@ -72,7 +73,7 @@ export const SERVE_OWN_TOOLS: readonly string[] = ["learned_workflow"];
  *  `mcp:<server>/<tool>`), or an MCP server's wildcard (`mcp:<server>/*`), which sets each of its tools. */
 const isSettingsKey = (name: string): boolean => isToolSettingsKey(name) && ((TABLE_TOOLS.includes(name) && !Object.hasOwn(LEGACY_NAMES, name)) || SERVE_OWN_TOOLS.includes(name) || isCatalogTool(name) || /^mcp:[^/]+\/\*$/.test(name));
 /** One tool's settings: its provider (a capability that has a choice) and its permission. */
-export type ToolSetting = { provider?: string; permission?: Permission };
+export type ToolSetting = { provider?: string; permission?: Permission; /** Read as a stand-in for a value not offered (readToolSettings); never shown or written. */ fallback?: true; /** The stand-in's value as written in the file, which a save that keeps the stand-in writes back (ToolSettings.put). Never shown. */ raw?: unknown };
 /** The tools' settings, the server's (`/v2/settings/tools`) and an agent's own (`definition.tool_settings`), one shape:
  *  by settings key. */
 export type ToolSettingsMap = Partial<Record<string, ToolSetting>>;
@@ -149,7 +150,7 @@ export function explainCapability(capability: Pickable, input: ResolveInput): { 
   const key = `your Parallel key (${input.parallelKeyFrom ?? "server"})`;
   if (input.permission === "deny") return { resolves: DENIED, why: "set to deny: the gate refuses each call" };
   if (chosen === "off") return { resolves: SEARCH_OFF, why: "turned off in settings" };
-  if (chosen === "parallel") return input.parallelKey ? { resolves: "parallel", why: `Parallel, ${picked}: ${key}` } : { resolves: NO_PARALLEL_KEY, why: "Parallel is picked, and no PARALLEL_API_KEY is set or saved" };
+  if (chosen === "parallel") return input.parallelKey ? { resolves: "parallel", why: `Parallel, ${picked}: ${key}` } : { resolves: NO_PARALLEL_KEY, why: `Parallel is picked, and it needs ${keyNeeded([PARALLEL_KEY_ENV])}` };
   if (capability === "web_fetch") return { resolves: "kernel", why: "the guarded direct fetch" };
   if (capability === "browser") return browserBy(chosen, picked, input.browserKeys);
   if (chosen === "exa-keyless") return { resolves: "exa-keyless", why: `keyless Exa, ${picked}: Exa's free search, no key` };
@@ -172,7 +173,14 @@ export const resolveCapability = (capability: Pickable, input: ResolveInput): Re
 
 export const isUnavailable = (resolution: Resolution | undefined): resolution is `unavailable: ${string}` => resolution?.startsWith("unavailable: ") === true;
 /** Why a resolution is unavailable: its words after "unavailable: " (any other resolution as it is). */
-export const whyUnavailable = (resolution: string): string => resolution.replace(/^unavailable: /, "");
+/** Why `resolution` is unavailable, in words. A vendor picked whose key this server does not hold (its value, kept in a
+ *  run's meta and read back, names the variables) names where to save the key first, then the variable to set. */
+export const whyUnavailable = (resolution: string): string => {
+  if (resolution === NO_BROWSER_KEY) return `it needs ${keyNeeded(BROWSER_KEYS.browserbase)}, or ${keyNeeded(BROWSER_KEYS.kernel)}`;
+  const why = resolution.replace(/^unavailable: /, "");
+  const picked = /^(\S+) picked, no (.+)$/.exec(why);
+  return picked ? `${picked[1]} is picked, and it needs ${keyNeeded(picked[2]!.split(" and "))}` : why;
+};
 
 /** The keys each of the browser's vendors needs, by name: a tool key's fields (tool-keys.ts), set or saved. Its plane
  *  value is the vendor's id: `kernel` on browser is Kernel's hosted browser, never the guarded fetch web_fetch calls so. */
@@ -195,7 +203,7 @@ export const NO_CHROME: Resolution = "unavailable: a local Chrome is not set up 
  *  is unavailable by name. */
 function browserBy(chosen: string, picked: string, keys: Record<BrowserVendor, boolean> = { browserbase: false, kernel: false }): { resolves: Resolution; why: string } {
   if (chosen === "chrome") return { resolves: NO_CHROME, why: whyUnavailable(NO_CHROME) };
-  if (isVendor(chosen)) return keys[chosen] ? { resolves: chosen, why: `${LABELS[chosen]}, ${picked}` } : { resolves: noBrowserKey(chosen), why: `${LABELS[chosen]} is picked, and no ${BROWSER_KEYS[chosen].join(" and ")} is set or saved` };
+  if (isVendor(chosen)) return keys[chosen] ? { resolves: chosen, why: `${LABELS[chosen]}, ${picked}` } : { resolves: noBrowserKey(chosen), why: `${LABELS[chosen]} is picked, and it needs ${keyNeeded(BROWSER_KEYS[chosen])}` };
   if (keys.browserbase) return { resolves: "browserbase", why: "Browserbase: its key is set or saved" };
   if (keys.kernel) return { resolves: "kernel", why: "Kernel: its key is set or saved, and Browserbase's is not" };
   return { resolves: NO_BROWSER_KEY, why: whyUnavailable(NO_BROWSER_KEY) };
@@ -342,7 +350,8 @@ export function settingsIssues(value: unknown, at = ""): InputIssue[] {
 
 /** `map` with each capability's provider, its default where none is picked; a permission where one is set. */
 export const withDefaults = (map: ToolSettingsMap): ToolSettingsMap & Record<Pickable, { provider: string; permission?: Permission }> => ({
-  ...map,
+  // As served: what is in force, never the internal mark of a stand-in.
+  ...Object.fromEntries(Object.entries(map).map(([name, setting]) => [name, setting && { ...(setting.provider ? { provider: setting.provider } : {}), ...(setting.permission ? { permission: setting.permission } : {}) }])),
   ...(Object.fromEntries(PICKABLE.map((name) => [name, { provider: map[name]?.provider ?? PROVIDERS[name][0], ...(map[name]?.permission ? { permission: map[name]!.permission } : {}) }])) as Record<Pickable, { provider: string; permission?: Permission }>),
 });
 
@@ -379,7 +388,13 @@ export function readToolSettings(dir: string): { settings: ToolSettingsMap; prob
     if (typeof setting.provider === "string" && !settingsIssues({ [name]: { provider: setting.provider } }).length) kept.provider = setting.provider;
     if (setting.permission !== undefined) {
       const offered = permissionsOf(isMcpTool(name) ? name : name.replace(/\/\*$/, "/_"));
-      kept.permission = offered.includes(setting.permission as Permission) ? (setting.permission as Permission) : offered.includes("ask") ? "ask" : "deny";
+      if (offered.includes(setting.permission as Permission)) kept.permission = setting.permission as Permission;
+      else {
+        // Its fail-closed stand-in, marked so: an ask nobody set lets nothing run unasked (tool-gate.ts SHELL_WATCHERS).
+        kept.permission = offered.includes("ask") ? "ask" : "deny";
+        kept.fallback = true;
+        kept.raw = setting.permission;
+      }
     }
     if (Object.keys(kept).length) settings[name] = kept;
   }
@@ -402,10 +417,16 @@ export class ToolSettings {
   /** Replaces the settings: a tool `map` leaves out takes its defaults. Durable before it returns. */
   put(map: ToolSettingsMap): ToolSettingsMap {
     const kept: ToolSettingsMap = Object.fromEntries(Object.entries(map).flatMap(([name, setting]) => {
-      const set = { ...(setting?.provider ? { provider: setting.provider } : {}), ...(setting?.permission ? { permission: setting.permission } : {}) };
+      const set: ToolSetting = { ...(setting?.provider ? { provider: setting.provider } : {}), ...(setting?.permission ? { permission: setting.permission } : {}) };
+      // A stand-in sent back as served (a client saves the whole map) is no choice: it stays a stand-in, and the file keeps
+      // the value as written, so neither this save nor a restart turns it into a permission set (tool-gate.ts
+      // SHELL_WATCHERS). A different permission is a choice, written as given.
+      const before = this.current[name];
+      if (before?.fallback && set.permission === before.permission) Object.assign(set, { fallback: true, raw: before.raw });
       return Object.keys(set).length ? [[name, set]] : [];
     }));
-    writeDurableSync(join(this.dir, ToolSettings.FILE), `${JSON.stringify(kept)}\n`);
+    const written = Object.fromEntries(Object.entries(kept).map(([name, setting]) => [name, { ...(setting!.provider ? { provider: setting!.provider } : {}), ...(setting!.fallback ? { permission: setting!.raw } : setting!.permission ? { permission: setting!.permission } : {}) }]));
+    writeDurableSync(join(this.dir, ToolSettings.FILE), `${JSON.stringify(written)}\n`);
     this.current = kept;
     return this.get();
   }
