@@ -1135,14 +1135,15 @@ export class Runs {
 
   /** The server takes run `run` back once no process holds it: its claim's epoch is bumped, with the server as its
    *  holder (the disk's revoke, disk.ts), and only then its database checkpointed (run-db.ts), its WAL emptied into the
-   *  database file. A run whose process still lives is not taken. A take-back that fails (the agent store held past its
-   *  retries, or not writable) only warns: the run settles all the same, its database read with its WAL, and the next
+   *  database file. A run whose process still lives is not taken. A take-back that fails (the agent store held by another
+   *  writer, or not writable) only warns: the run settles all the same, its database read with its WAL, and the next
    *  settle or start takes it back. */
   private async takeBack(run: Run): Promise<void> {
     if (this.live(run)) return;
     await this.runDb(run, async () => {
-      // A store another writer holds is waited on, as the run's end is: no checkpoint before the claim is the server's.
-      await whenFree(() => this.disk.revoke(run.id), this.busyDelays(), this.onBusy(run.id, "the agent store"));
+      // Tried once: a store another writer holds is not waited on, since what follows (a relaunch, a message) must not wait
+      // on it; the next take-back tries again. No checkpoint before the claim is the server's.
+      await this.disk.revoke(run.id);
       const file = this.storeFile(run);
       if (await stat(file).catch(() => null)) await checkpointRunDb(file, this.live(run));
     }).catch((error: Error) => warn(run.id, `it was not taken back (${error.message}); its database keeps its WAL until the next take-back`));
