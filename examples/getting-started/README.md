@@ -31,7 +31,8 @@ above pulls from npm. Your own Claude Code or Codex is a convenience for doing t
 **Workflows.** A workflow's model nodes run on the model key. Its decision nodes (`judge`, `pick`, `sift`, `route`,
 `ask`) run on Jev with `TYPESAFE_API_KEY`, or through OpenRouter on `OPENROUTER_API_KEY`. A node that says
 `provider: "openrouter"` runs OpenRouter's decision models on that same key; `provider: "parallel"` needs
-`PARALLEL_API_KEY`. [Decision workflows](../../packages/serve/README.md#decision-workflows).
+`PARALLEL_API_KEY`. Three workflows that run on the OpenRouter key alone, with no agent loop, are in
+[workflows/](workflows/). [Decision workflows](../../packages/serve/README.md#decision-workflows).
 
 **Tools.** `web_search` and `web_fetch` need no key: the harness's own search where it has one, else keyless Exa.
 `PARALLEL_API_KEY` picks Parallel for search and fetch. `MONID_API_KEY` unlocks monid's paid data tools. `browser`
@@ -80,3 +81,6 @@ It checks Node and Docker, starts AgentRun, asks before each step that changes y
 
 [first-agent/](first-agent/): two agent definitions and the two prompts that show an agent learning a rule in one
 run and following it in the next.
+
+[workflows/](workflows/): three decision workflows with no agent in them. A decision model answers typed questions,
+code applies the thresholds, a route sends the case on. Each is one JSON body to create and one line to run.

@@ -56,7 +56,8 @@ That starts AgentRun on `127.0.0.1:7340`, keeps everything in `~/.agentrun` and 
 Linux). Where Docker answers, every new agent gets a shell in a Docker box of its own. The first start builds the box
 image, 5 to 10 minutes; you can make agents while it does, and a run started early waits for it.
 
-Step-by-step setups and example agents: [examples/getting-started/](examples/getting-started/).
+Step-by-step setups, example agents and three decision workflows with no agent in them:
+[examples/getting-started/](examples/getting-started/).
 
 **Claude Code and Codex agents.** They need their harness beside the server. On what npm serves today (`@parcha/agentrun`
 0.3.6, server 0.1.0-beta.31) start with it named:
