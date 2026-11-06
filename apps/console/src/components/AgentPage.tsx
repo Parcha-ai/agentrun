@@ -62,6 +62,8 @@ export function AgentPage({ v2, agentId, defaultModel, modelSource, routePrefix,
   // The agent's stats over the Analytics tab's first range: undefined until read, null when the read failed. A read that
   // landed gives the tab, which opens on this answer, never a second read of it.
   const [stats, setStats] = useState<Stats | null | undefined>(undefined);
+  // A read of the agent after a save on the page failed: the page shows the save's answer, and says so, with a retry.
+  const [stale, setStale] = useState(false);
   useEffect(() => {
     let live = true;
     setAgent(null); setError(null); setStats(undefined);
@@ -69,9 +71,11 @@ export function AgentPage({ v2, agentId, defaultModel, modelSource, routePrefix,
     v2.statsOver({ from: rangeFrom(FIRST_RANGE), agent: agentId }).then((r) => { if (live) setStats(r); }, () => { if (live) setStats(null); });
     return () => { live = false; };
   }, [v2, agentId, tries]);
-  // After a save on the page (the Learning tab's switch, a new revision): the agent read again, never the save's answer,
-  // which carries no `tools` (only GET /v2/agents/{id} serves them, and a save can change them).
-  const reread = () => void v2.getAgent(agentId).then((r) => setAgent(r.agent), () => undefined);
+  // After a save on the page (the Learning tab's switch, a new revision): the agent read again, since the save's answer
+  // carries no `tools` (only GET /v2/agents/{id} serves them). Until that read lands the page shows the save's answer with
+  // the tools it showed (the switch changes no tool); a read that fails says so, with a retry.
+  const reread = () => void v2.getAgent(agentId).then((r) => { setAgent(r.agent); setStale(false); }, () => setStale(true));
+  const onAgent = (saved: Agent) => { setAgent((a) => ({ ...saved, tools: a?.tools ?? [] })); reread(); };
   const analytics = stats === undefined ? undefined : stats !== null;
   if (error) return error.cause instanceof ClientError && error.cause.status === 404
     ? <NotHere what="agent" id={agentId} list={{ href: "#/agents", label: "Open the agents list" }} />
@@ -139,6 +143,12 @@ export function AgentPage({ v2, agentId, defaultModel, modelSource, routePrefix,
             </div>
           )}
         </dl>
+        {stale && (
+          <p role="alert" className="mt-3 flex items-center gap-3 text-[13px] text-warning-text">
+            Couldn't refresh this agent.
+            <Button size="sm" variant="outline" onClick={reread}>Retry</Button>
+          </p>
+        )}
         {offText && <p className="mt-3 font-mono text-[12px] text-warning-text" role="status" aria-label="Harness not available">{offText}</p>}
       </header>
       {!agent.archived_at && <RunBar agent={agent} efforts={efforts} v2={v2} go={go} blocked={offText} limits={limits} />}
@@ -151,7 +161,7 @@ export function AgentPage({ v2, agentId, defaultModel, modelSource, routePrefix,
         ))}
       </div>
       <div role="tabpanel" aria-label={waiting ? undefined : at.label} className="min-h-0 flex-1 overflow-auto px-5 py-6 md:px-8">
-        {waiting ? <ListSkeleton label="Loading the tab" rows={4} /> : <at.Body agent={agent} v2={v2} go={go} stats={stats} focus={notes} learning={learning} onAgent={reread} />}
+        {waiting ? <ListSkeleton label="Loading the tab" rows={4} /> : <at.Body agent={agent} v2={v2} go={go} stats={stats} focus={notes} learning={learning} onAgent={onAgent} />}
       </div>
     </div>
   );
