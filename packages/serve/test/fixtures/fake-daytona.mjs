@@ -1,6 +1,6 @@
 // A fake Daytona API on loopback, for the tests: no provider call runs. `fakeDaytona(t, answer)` takes each request to
 // `answer` (a probe's answers); `daytonaSandboxes(t, options)` is a Daytona that keeps sandboxes and runs each toolbox
-// command in a real local shell, in a directory of its own per sandbox: a box path (/run/agentrun/..., the spool under
+// command in a real local shell, in a directory of its own per sandbox: a box path (/workspace/..., /run/agentrun/..., the spool under
 // /tmp/pi-transport) is that directory's, so a box writes nothing else of this machine. It is as faithful as the shell
 // scripts pi-transport's provider sends. Each request is kept, with the key it came on.
 import { spawn } from "node:child_process";
@@ -9,6 +9,7 @@ import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:
 import { createServer } from "node:http";
 import { dirname, join } from "node:path";
 import { scratch } from "../support.mjs";
+import { sudoStandIn } from "./sudo-stand-in.mjs";
 
 /** A Daytona API that `answer` answers: each request is kept in `seen`. */
 export async function fakeDaytona(t, answer) {
@@ -23,7 +24,7 @@ export async function fakeDaytona(t, answer) {
 }
 
 // A box path in a command or a file call: where it starts a word, a quoted word or a variable's value.
-const BOX_PATH = /(^|[\s'"=:])(\/run\/agentrun|\/tmp\/pi-transport)(?=[/'"\s]|$)/g;
+const BOX_PATH = /(^|[\s'"=:])(\/run\/agentrun|\/workspace|\/tmp\/pi-transport)(?=[/'"\s]|$)/g;
 
 /**
  * A Daytona that keeps sandboxes. Options: `key`, the only key it takes; `blocks` (default true), false for an
@@ -39,9 +40,16 @@ const BOX_PATH = /(^|[\s'"=:])(\/run\/agentrun|\/tmp\/pi-transport)(?=[/'"\s]|$)
  * `idle(id)` is Daytona's idle stop, `pause(id)` a pause; `/start` starts a stopped or paused sandbox, and a toolbox call
  * to one that is not started is refused.
  */
-export async function daytonaSandboxes(t, { key, blocks = true, lists = true, refusesLists, hostileTar, failDeletes = 0, failListings = [] } = {}) {
+export async function daytonaSandboxes(t, { key, blocks = true, lists = true, refusesLists, hostileTar, failDeletes = 0, failListings = [], sudoProbe = false } = {}) {
   const root = join(await scratch(t), "daytona");
   mkdirSync(root, { recursive: true });
+  // Every box command runs with a sudo stand-in first on its PATH (sudoStandIn); one it met fails the test, unless the
+  // test probes the stand-in itself (`sudoProbe`).
+  const sudo = sudoStandIn(root);
+  t.after(() => {
+    const calls = sudo.calls();
+    if (calls.length && !sudoProbe) throw new Error(`a box command ran sudo on this machine (the stand-in refused it): ${calls.join("; ")}`);
+  });
   const sandboxes = new Map();
   const requests = [];
   const state = { blocks, lists, refusesLists, failDeletes, listings: 0, redirect: undefined, hostile: Boolean(hostileTar) };
@@ -78,9 +86,10 @@ export async function daytonaSandboxes(t, { key, blocks = true, lists = true, re
   const json = (res, status, value) => res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(value));
   const shell = (sandbox, command, timeoutS) =>
     new Promise((resolve) => {
+      if (sudo.refuses(command)) return resolve({ exitCode: 97, result: "the fake refuses a command that names an absolute sudo" });
       const child = spawn("sh", ["-c", inBox(sandbox.id, command)], {
         cwd: boxDir(sandbox.id),
-        env: { PATH: `${hostileBin && state.hostile ? `${hostileBin}:` : ""}${process.env.PATH ?? "/usr/bin:/bin"}`, ...sandbox.env, TMPDIR: join(boxDir(sandbox.id), "tmp") },
+        env: { ...sandbox.env, PATH: `${sudo.bin}:${hostileBin && state.hostile ? `${hostileBin}:` : ""}${sandbox.env?.PATH ?? process.env.PATH ?? "/usr/bin:/bin"}`, TMPDIR: join(boxDir(sandbox.id), "tmp") },
         stdio: ["ignore", "pipe", "pipe"],
       });
       const parts = [];
@@ -187,6 +196,8 @@ export async function daytonaSandboxes(t, { key, blocks = true, lists = true, re
     url: `${base}/api`,
     toolboxUrl: `${base}/toolbox`,
     root,
+    /** What the sudo stand-in was asked, each call's arguments. */
+    sudoCalls: sudo.calls,
     sandboxes,
     requests,
     state,

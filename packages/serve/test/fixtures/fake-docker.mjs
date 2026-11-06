@@ -1,6 +1,7 @@
 // A fake `docker` for run-box.test.mjs, run by a `docker` script first on PATH: it never reaches a daemon. Each call's
 // arguments go to `$FAKE_DOCKER_STATE/argv.jsonl`, and each container is a file under `containers/`. `exec` runs the
-// command on this machine, the container's mount targets mapped to their sources and its `--env` its whole environment
+// command on this machine, the container's mount targets mapped to their sources (one with no mount at /workspace has a
+// /workspace of its own under the state directory, never this machine's) and its `--env` its whole environment
 // (with a TMPDIR of its own), so pi-transport's box environment works over it. Like Docker's, a killed `exec` client
 // leaves its command running. With `fail-run` in the state directory, `run` leaves a running container behind and fails,
 // as a client cut off while the daemon made the container would.
@@ -299,7 +300,10 @@ switch (args[0]) {
       if (existsSync(join(state, "relay-dead"))) fail(readFileSync(join(state, "relay-dead"), "utf8").trim(), 124);
       process.exit(0);
     }
-    const map = (text) => container.mounts.reduce((mapped, mount) => mapped.split(mount.target).join(mount.source), text);
+    // A container that mounts nothing at /workspace has its own there, under the state directory: never this machine's.
+    const own = join(state, "fs", container.Id, "workspace");
+    const mounts = container.mounts.some((mount) => mount.target === "/workspace") ? container.mounts : (mkdirSync(own, { recursive: true }), [...container.mounts, { source: own, target: "/workspace" }]);
+    const map = (text) => mounts.reduce((mapped, mount) => mapped.split(mount.target).join(mount.source), text);
     const tmp = join(state, "tmp", container.Id.slice(0, 12));
     mkdirSync(tmp, { recursive: true });
     const env = { PATH: "/usr/local/bin:/usr/bin:/bin", TMPDIR: tmp, ...Object.fromEntries(container.env.map((pair) => [pair.slice(0, pair.indexOf("=")), pair.slice(pair.indexOf("=") + 1)])) };
