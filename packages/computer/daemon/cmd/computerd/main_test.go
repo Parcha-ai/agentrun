@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -96,5 +97,111 @@ func TestInitTakesTheProvidersDeadline(t *testing.T) {
 	code, stderr := computerd(t, 30*time.Second, "init", "--deadline", time.Now().Add(-time.Second).UTC().Format("2006-01-02T15:04:05.000Z"))
 	if code != 0 {
 		t.Fatalf("exit code %d, want 0 at a deadline already past; stderr: %s", code, stderr)
+	}
+}
+
+// computerdOut runs main with args and returns its exit code, stdout and stderr; it is killed after bound.
+func computerdOut(t *testing.T, bound time.Duration, args ...string) (int, string, string) {
+	t.Helper()
+	encoded, _ := json.Marshal(append([]string{"computerd"}, args...))
+	ctx, cancel := context.WithTimeout(context.Background(), bound)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0])
+	cmd.Env = append(os.Environ(), argsEnv+"="+string(encoded))
+	var stdout, stderr strings.Builder
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if ctx.Err() != nil {
+		t.Fatalf("computerd %q still ran after %v; stderr: %s", args, bound, stderr.String())
+	}
+	var exit *exec.ExitError
+	if errors.As(err, &exit) {
+		return exit.ExitCode(), stdout.String(), stderr.String()
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return 0, stdout.String(), stderr.String()
+}
+
+func TestInitRefusesAUserThatIsNotUidAndGidInNumbers(t *testing.T) {
+	deadline := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	for _, args := range [][]string{
+		{"init", "--deadline", deadline, "--user"},
+		{"init", "--deadline", deadline, "--user", "alice"},
+		{"init", "--deadline", deadline, "--user", "1000"},
+		{"init", "--deadline", deadline, "--user", "1000:"},
+		{"init", "--deadline", deadline, "--user", "-1:0"},
+		{"init", "--deadline", deadline, "--user", "1000:1000", "--user", "0:0"},
+	} {
+		code, stderr := computerd(t, 30*time.Second, args...)
+		if code == 0 {
+			t.Errorf("computerd %q exited 0; want a refusal", args)
+		}
+		if !strings.Contains(stderr, "--user") || !strings.Contains(stderr, "uid:gid") {
+			t.Errorf("computerd %q: stderr does not say why in words: %q", args, stderr)
+		}
+	}
+}
+
+func TestInitWithAUserMustStartAsRoot(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("runs as root: init would drop this test's privileges; the drop is a live case")
+	}
+	deadline := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	code, stderr := computerd(t, 30*time.Second, "init", "--user", "1000:1000", "--deadline", deadline)
+	if code == 0 || !strings.Contains(stderr, "root") {
+		t.Fatalf("init --user as uid %d: exit %d, stderr %q; want a refusal that says init must start as root", os.Geteuid(), code, stderr)
+	}
+}
+
+func TestProbePrintsOneJSONLineOfWhatItReached(t *testing.T) {
+	listener, err := net.Listen("tcp", ":0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			_ = conn.Close()
+		}
+	}()
+	address := listener.Addr().String()
+	code, stdout, stderr := computerdOut(t, 30*time.Second, "probe", "--connect", address)
+	if code != 0 {
+		t.Fatalf("probe: exit %d, stderr %q", code, stderr)
+	}
+	var report struct {
+		UID     *int     `json:"uid"`
+		GID     *int     `json:"gid"`
+		Kernel  string   `json:"kernel"`
+		Reached []string `json:"reached"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &report); err != nil || strings.Count(stdout, "\n") != 1 {
+		t.Fatalf("probe wrote %q; want one JSON line (%v)", stdout, err)
+	}
+	if report.UID == nil || *report.UID != os.Getuid() || report.GID == nil || *report.GID != os.Getgid() || report.Kernel == "" {
+		t.Fatalf("probe reported %+v; want this process's uid and gid and the kernel", report)
+	}
+	if len(report.Reached) != 1 || report.Reached[0] != address {
+		t.Fatalf("probe reached %q; want [%s]", report.Reached, address)
+	}
+}
+
+func TestProbeRefusesATargetThatIsNotHostAndPort(t *testing.T) {
+	for _, args := range [][]string{
+		{"probe", "--connect"},
+		{"probe", "--connect", "example.com"},
+		{"probe", "example.com:443"},
+	} {
+		code, _, stderr := computerdOut(t, 30*time.Second, args...)
+		if code != 2 || !strings.Contains(stderr, "host:port") {
+			t.Errorf("computerd %q: exit %d, stderr %q; want exit 2 and a refusal in words", args, code, stderr)
+		}
 	}
 }
