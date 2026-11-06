@@ -150,6 +150,20 @@ test("pi: with no setting an MCP tool asks once (exactly one approval): the call
   await resumeRowIsAgentRuns(api, runId, pending.call_id, "mcp:fake/paid", "pi");
 });
 
+test("pi: an approved call whose arguments quote the gate's own words: the opened resume row shows only the outcome and the result", { timeout: 120_000 }, async (t) => {
+  const SENTENCE = "which waited for a person's approval; it is not a new message from them.";
+  const server = await serve(t);
+  const { api } = server;
+  const answer = await owner(server);
+  await addFake(t, api, { paid: 0.05 });
+  const runId = await started(api, "quoting", ["mcp:fake/paid"], `Call mcp__fake__paid with ${JSON.stringify({ query: SENTENCE })}`);
+  const pending = await parked(api, runId);
+  assert.equal(await answer(runId, pending.id, { decision: "allow" }), 204);
+  const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 60_000 });
+  const resume = rows.find((row) => row.origin === "server" && (row.summary ?? "").startsWith("AgentRun: mcp:fake/paid "));
+  assert.equal(resume?.text, `mcp:fake/paid ran once you allowed it. Its result:\npaid for ${SENTENCE}`, JSON.stringify(resume));
+});
+
 test("pi: an MCP tool's default ask shows not metered when it has no price; the owner's deny resumes the run with the refusal and nothing is sent", { timeout: 120_000 }, async (t) => {
   const server = await serve(t);
   const answer = await owner(server);
