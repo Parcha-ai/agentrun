@@ -391,8 +391,7 @@ and read back by the drift check:
 Each is a whole number, 0 or more; the constructor refuses anything else in words. Daytona's idle timer counts toolbox
 calls (the daemon's connections are toolbox calls) but not the daemon's own work, so a computer left with no connection
 for `autoStopMinutes` stops. With `autoDeleteMinutes: 0` a stop deletes: the provider then keeps no stopped computer,
-`release(ref, "stop")` returns once the sandbox is gone, and `list()` never shows a stopped one. The capabilities have
-no field that says so yet; the conformance module says it in its note (below).
+`release(ref, "stop")` returns once the sandbox is gone, and `list()` never shows a stopped one.
 
 ### How the daemon gets in, and how it is reached
 
@@ -465,16 +464,29 @@ Daytona's container class runs code as root, and the open runner runs it privile
   read back from the sandbox, and, when it is started, the daemon's; a computer that drifts is refused and left as it
   is. It returns `spec`: the snapshot, the daemon's user, the network, `cpus`, `memoryMb` (Daytona's GiB times 1024),
   `/work` when the daemon was checked, and the deadline.
-- `list(labels)` asks Daytona for `agentrun.computer=1` alone, every page, and filters the other labels itself; a
-  sandbox being destroyed is left out, `started` and the states on the way to it are `running`, and the rest
-  `stopped`. A listed sandbox with no network fields is read on its own.
+- `list(labels)` asks Daytona for `agentrun.computer=1` alone, every page, and filters the other labels itself. A
+  sandbox that is `destroying` or `destroyed`, or whose desired state is `destroyed`, is going and left out.
+  `started`, the states on the way to it, and `stopping` and `pausing` (on the way from it) are `running`: a stopping
+  computer is reported stopped only once Daytona reads it `stopped`. The rest (`stopped`, `archived`, `paused`,
+  `error`, ...) are `stopped`. A listed sandbox with no network fields is read on its own.
 - `network(ref)` reads the network back. `network(ref, policy)` sends `POST /sandbox/{id}/network-settings` and reads
   it back whatever the answer: as asked, it is returned; unchanged, the change is refused in Daytona's words; anything
   else is put back, or, if that fails, the network is blocked, and the change is refused. A network is never left
   wider than asked.
 - `release(ref, "delete")` deletes as pi-transport does: retried on a 5xx, checked against the sandbox, with a forced
-  stop before the last attempt. `release(ref, "stop")` stops and waits for `stopped`. Both are idempotent, and both
-  refuse a sandbox that is not this provider's.
+  stop before the last attempt. `release(ref, "stop")` stops. Both are idempotent, and both refuse a sandbox that is
+  not this provider's.
+- Daytona is asynchronous: it answers a delete by setting the sandbox's desired state to `destroyed` and a stop by
+  setting it to `stopped`, and the sandbox gets there later, through `destroying` or `stopping`. Its listing trails
+  both: in the first live run, `list()` still showed a computer right after its delete returned, and showed a stopped
+  one `running`. So release waits until Daytona reads the computer as release left it, twice running, by
+  `GET /sandbox/{id}` and by the label listing alike: after a delete, a 404 and no listed computer; after a stop, a
+  `stopped` read and a computer listed `stopped`, or, when the stop deletes (`autoDeleteMinutes: 0`), a 404 and no
+  listed computer. A stop that is not under way is asked for again. It polls with pauses that double from `pollMs` up
+  to 5 s, bounded by the `goneMs` timeout for a delete and `stopMs` for a stop (120 s each, unset), and by the signal
+  `release(ref, how, { signal })` takes. When the bound runs out, or the sandbox goes to `error`, release fails in
+  words naming the last state Daytona read: it never reports a release it has not seen done. A create that deletes
+  the sandbox it made (a failure, a mismatch, an abort) waits the same way before it returns.
 - `connect(ref)` refuses a computer that is not `started`, and a daemon whose hello is not the provider's.
 - Every call has its own timeout and takes the caller's signal; reads, the upload and deletes are retried (three tries,
   backoff), as in pi-transport; creates, session commands, input and network changes are not.
@@ -550,8 +562,9 @@ replaces. These need a live probe:
   connection's log may grow: every reply stays in the session's log on the sandbox's disk until `close()`;
 - `autoStopInterval` and `autoDeleteInterval` as read back, how soon after a stop `autoDeleteInterval: 0` deletes,
   which snapshot Daytona names for a sandbox made with none, and how soon after `autoDestroyAt` Daytona destroys;
-- how soon `GET /sandbox/{id}` answers 404 after a delete;
-- how soon the label listing shows a new sandbox, and hides a deleted one;
+- how long `GET /sandbox/{id}` takes to answer 404 after a delete, and the listing to hide the sandbox (release waits
+  for both, up to `goneMs`); how long a stop takes to read `stopped`;
+- how soon the label listing shows a new sandbox;
 - the ports a CIDR list opens on the production runner, and whether a domain list blocks every port but 80 and 443;
 - `network: none` against the live bypass cases (ruling 9), on each class;
 - the linux-vm class end to end.
@@ -567,7 +580,9 @@ repository's main; the docs were read on 2026-11-05.
 | `POST /sandbox`, `GET` and `DELETE /sandbox/{sandboxIdOrName}` | `daytona/clients@8006f63e:openapi-specs/api.json:2702`, `daytona/clients@8006f63e:openapi-specs/api.json:3163` |
 | `CreateSandbox`: `name`, `snapshot`, `env`, `labels`, `public`, `networkBlockAll`, `networkAllowList`, `domainAllowList`, `target`, `autoStopInterval`, `autoDeleteInterval`, `ttlMinutes` | `daytona/clients@8006f63e:openapi-specs/api.json:12069-12208` |
 | `Sandbox` read back: `snapshot`, `labels`, `public`, `networkBlockAll`, `kvm`, `networkAllowList`, `domainAllowList`, `outboundProxyUrl`, `cpu`, `gpu`, `memory`, `state`, `errorReason`, `autoStopInterval`, `autoDeleteInterval`, `autoDestroyAt`, `volumes`, `sandboxClass`, `linkedSandboxId`, `toolboxProxyUrl` | `daytona/clients@8006f63e:openapi-specs/api.json:12295-12593` |
-| `SandboxState` values | `daytona/clients@8006f63e:openapi-specs/api.json:11704` |
+| `SandboxState` values, among them `stopping`, `pausing`, `destroying`, `destroyed` and `error` | `daytona/clients@8006f63e:openapi-specs/api.json:11704` |
+| a delete sets the desired state `destroyed` and leaves the state to change later; a stop sets the desired state `stopped`, or, with `autoDeleteInterval` 0, deletes the same way | `daytonaio/daytona@b5a5d9e7:apps/api/src/sandbox/services/sandbox.service.ts:2013-2039`, `daytonaio/daytona@b5a5d9e7:apps/api/src/sandbox/services/sandbox.service.ts:2151-2185`, `daytonaio/daytona@b5a5d9e7:apps/api/src/sandbox/entities/sandbox.entity.ts:317-324`, `daytonaio/daytona@b5a5d9e7:apps/api/src/sandbox/utils/ephemeral.util.ts:6-8` |
+| a read by id or name may come from a lookup cache of 10 s | `daytonaio/daytona@b5a5d9e7:apps/api/src/sandbox/services/sandbox.service.ts:1755-1758`, `daytonaio/daytona@b5a5d9e7:apps/api/src/sandbox/utils/sandbox-lookup-cache.util.ts:6` |
 | `GET /sandbox?labels=<JSON>&limit&cursor`, a page of `items` and `nextCursor` | `daytona/clients@8006f63e:openapi-specs/api.json:2702`, `daytona/clients@8006f63e:openapi-specs/api.json:2717`, `daytona/clients@8006f63e:openapi-specs/api.json:2756`, `daytona/clients@8006f63e:openapi-specs/api.json:12000` |
 | `POST /sandbox/{sandboxIdOrName}/stop`, `force` | `daytona/clients@8006f63e:openapi-specs/api.json:3393`, `daytona/clients@8006f63e:openapi-specs/api.json:3416` |
 | `POST /sandbox/{sandboxIdOrName}/network-settings` | `daytona/clients@8006f63e:openapi-specs/api.json:4573`, `daytona/clients@8006f63e:openapi-specs/api.json:12721` |

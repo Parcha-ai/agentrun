@@ -34,7 +34,9 @@ export interface DaytonaTimeouts {
 	startMs: number;
 	/** One DELETE. */
 	deleteMs: number;
-	/** From the stop's answer to a stopped sandbox. */
+	/** From the delete's answer to a sandbox Daytona reads as gone (404) and no longer lists. */
+	goneMs: number;
+	/** From the stop's answer to a sandbox Daytona reads, and lists, as stopped (or gone, when a stop deletes). */
 	stopMs: number;
 	/** The daemon's upload. */
 	uploadMs: number;
@@ -146,6 +148,7 @@ const DEFAULTS: DaytonaTimeouts = {
 	createMs: 120_000,
 	startMs: 120_000,
 	deleteMs: 120_000,
+	goneMs: 120_000,
 	stopMs: 120_000,
 	uploadMs: 120_000,
 	execMs: 60_000,
@@ -159,6 +162,8 @@ const RETRY_ATTEMPTS = 3;
 const DELETE_ATTEMPTS = 4;
 const LISTED_ROUNDS = 2;
 const LISTED_POLL_MS = 150;
+/** The longest pause between two reads while release waits: the pauses double from pollMs up to it. */
+const RELEASE_POLL_MAX_MS = 5_000;
 const MAX_PAGES = 1000;
 const NAME = /^computer-[0-9a-f]{12}$/;
 const USER = /^(\d+):(\d+)$/;
@@ -180,6 +185,8 @@ const QUOTA = /quota|capacity|limit exceeded|too many/i;
 const STARTING = new Set(["creating", "restoring", "starting", "pending_build", "building_snapshot", "pulling_snapshot", "resizing", "snapshotting", "forking", "resuming", "unknown"]);
 const GONE = new Set(["destroyed", "destroying"]);
 const STOPPED = new Set(["stopped", "archived", "paused"]);
+/** On the way from started to stopped or paused: still running until Daytona reads it stopped. */
+const LEAVING = new Set(["stopping", "pausing"]);
 const OUT = Buffer.from([1, 1, 1]);
 const ERR = Buffer.from([2, 2, 2]);
 /** A line the client wrote, echoed back: a request or a notification is never a daemon's reply. */
@@ -342,7 +349,18 @@ function deadlineOf(sb: Sandbox): Date | undefined {
 }
 
 function stateOf(sb: Sandbox): "running" | "stopped" {
-	return sb.state === "started" || STARTING.has(sb.state ?? "") ? "running" : "stopped";
+	const state = sb.state ?? "";
+	return state === "started" || STARTING.has(state) || LEAVING.has(state) ? "running" : "stopped";
+}
+
+/** Whether a sandbox is going: Daytona is destroying it, or has been asked to. list() leaves such a one out. */
+const going = (sb: Sandbox) => GONE.has(sb.state ?? "") || sb.desiredState === "destroyed";
+
+/** A state as Daytona reported it, for words: the state, and the desired state when it differs. */
+function stateWords(sb: Sandbox | undefined): string {
+	if (sb === undefined) return "gone (404)";
+	const state = sb.state ?? "in no state";
+	return sb.desiredState !== undefined && sb.desiredState !== sb.state ? `${state} (desired ${sb.desiredState})` : state;
 }
 
 function codeOf(status: number, text: string): ComputerErrorCode {
@@ -733,7 +751,9 @@ export class DaytonaProvider implements ComputerProvider {
 	}
 
 	async #abandon(ref: ComputerRef, error: ComputerError): Promise<Result<never>> {
-		const removed = await this.#delete(ref.id);
+		// Never signalled: the cleanup of an aborted create must outlive the abort. Bounded by goneMs.
+		const deleted = await this.#delete(ref.id);
+		const removed = deleted.ok ? await this.#settle(ref, "gone", "delete") : deleted;
 		const after = removed.ok ? "was deleted" : `could not be deleted (${removed.error.message}); Daytona ends it at its TTL`;
 		return fail(error.code, `the computer ${ref.name} ${after}: ${error.message}`);
 	}
@@ -940,7 +960,7 @@ export class DaytonaProvider implements ComputerProvider {
 		const found = await this.#rest.get(ref.id, signal);
 		if (!found.ok) return found;
 		const sb = found.value;
-		if (!ours(sb) || sb.name !== ref.name || GONE.has(sb.state ?? "") || sb.desiredState === "destroyed") return fail("not_found", `no Daytona computer is ${ref.name} (${ref.id})`);
+		if (!ours(sb) || sb.name !== ref.name || going(sb)) return fail("not_found", `no Daytona computer is ${ref.name} (${ref.id})`);
 		return ok(sb);
 	}
 
@@ -968,7 +988,7 @@ export class DaytonaProvider implements ComputerProvider {
 			const found = await this.#rest.get(id, signal);
 			if (!found.ok) return found;
 			const sb = found.value;
-			if (!ours(sb) || (sb.id !== id && sb.name !== id) || GONE.has(sb.state ?? "") || sb.desiredState === "destroyed") return fail("not_found", `no Daytona computer has the id ${id}`);
+			if (!ours(sb) || (sb.id !== id && sb.name !== id) || going(sb)) return fail("not_found", `no Daytona computer has the id ${id}`);
 			return this.#attached(sb, signal);
 		}
 		const problem = filterProblem(given.labels);
@@ -1080,7 +1100,7 @@ export class DaytonaProvider implements ComputerProvider {
 		if (!listed.ok) return listed;
 		const infos: ComputerInfo[] = [];
 		for (const item of listed.value) {
-			if (!ours(item) || GONE.has(item.state ?? "") || item.desiredState === "destroyed") continue;
+			if (!ours(item) || going(item)) continue;
 			if (!Object.entries(labels).every(([key, value]) => item.labels?.[key] === value)) continue;
 			let sb: Sandbox = item;
 			// A listing may leave the network out: the sandbox's own read says.
@@ -1139,35 +1159,84 @@ export class DaytonaProvider implements ComputerProvider {
 		return this.#rest.json("POST", this.#rest.sandbox(ref.id, "/network-settings"), { json: body }, signal);
 	}
 
-	async release(ref: ComputerRef, how: "stop" | "delete"): Promise<Result<void>> {
+	/**
+	 * Daytona answers a delete or a stop before the sandbox is gone or stopped, and its listing trails both: release
+	 * returns once Daytona reads the computer as release left it, or fails naming the last state it read.
+	 */
+	async release(ref: ComputerRef, how: "stop" | "delete", { signal }: CallContext = {}): Promise<Result<void>> {
 		if (!NAME.test(ref?.name ?? "") || typeof ref?.id !== "string" || ref.id === "") return fail("invalid", `${ref?.name} is not a Daytona computer's ref ({ id, name: computer-<12 hex digits> })`);
 		if (how !== "stop" && how !== "delete") return fail("invalid", `release is "stop" or "delete", not ${String(how)}`);
-		const found = await this.#rest.get(ref.id);
+		const found = await this.#rest.get(ref.id, signal);
 		if (!found.ok) return found;
 		const sb = found.value;
-		if (sb === undefined || GONE.has(sb.state ?? "") || sb.desiredState === "destroyed") return ok(undefined);
+		if (sb === undefined) return ok(undefined);
+		// Already going (a second delete, or Daytona's own end): only the wait is left. Daytona renames a sandbox it
+		// destroys, so the name is not held to the ref's here.
+		if (going(sb)) return this.#settle(ref, "gone", how, signal);
 		if (!ours(sb) || sb.name !== ref.name) return fail("not_found", `no Daytona computer is ${ref.name} (${ref.id}): the sandbox is not this provider's, so it is left as it is`);
-		return how === "delete" ? this.#delete(ref.id) : this.#stop(sb);
+		if (how === "stop") return this.#stop(ref, sb, signal);
+		const deleted = await this.#delete(ref.id);
+		return deleted.ok ? this.#settle(ref, "gone", how, signal) : deleted;
 	}
 
-	async #stop(sb: Sandbox): Promise<Result<void>> {
+	async #stop(ref: ComputerRef, sb: Sandbox, signal?: AbortSignal): Promise<Result<void>> {
 		if (!STOPPED.has(sb.state ?? "")) {
-			const stopped = await this.#rest.call("POST", this.#rest.sandbox(sb.id, "/stop"), {});
+			const stopped = await this.#rest.call("POST", this.#rest.sandbox(sb.id, "/stop"), {}, signal);
 			if (!stopped.ok && stopped.error.code !== "invalid" && stopped.error.code !== "not_found") return stopped;
 		}
-		const end = Date.now() + this.#timeouts.stopMs;
-		for (;;) {
-			const read = await this.#rest.get(sb.id);
-			if (!read.ok) return read;
-			const state = read.value?.state ?? "destroyed";
-			if (read.value === undefined || STOPPED.has(state) || GONE.has(state)) return ok(undefined);
-			if (state === "error") return fail("daytona", `${sb.name} went to error while it stopped${read.value.errorReason ? `: ${read.value.errorReason}` : ""}`);
-			if (state !== "stopping") {
-				const again = await this.#rest.call("POST", this.#rest.sandbox(sb.id, "/stop"), {});
-				if (!again.ok && again.error.code !== "invalid" && again.error.code !== "not_found") return again;
+		// With autoDeleteInterval 0, Daytona deletes a sandbox as it stops: such a stop is done once the computer is gone.
+		return this.#settle(ref, this.#autoDelete === 0 ? "gone" : "stopped", "stop", signal);
+	}
+
+	/**
+	 * Waits until Daytona reads the sandbox as wanted, twice running, by its own read and by the listing alike: "gone" is a
+	 * 404 and no listed computer; "stopped" is stopped (or gone) and listed stopped (or not at all, when gone). Polls with
+	 * pauses that double from pollMs, bounded by goneMs or stopMs and the caller's signal. A stop not under way (neither
+	 * stopping nor stopped) is asked for again.
+	 */
+	async #settle(ref: ComputerRef, want: "gone" | "stopped", how: "stop" | "delete", signal?: AbortSignal): Promise<Result<void>> {
+		const boundMs = how === "stop" ? this.#timeouts.stopMs : this.#timeouts.goneMs;
+		const end = Date.now() + boundMs;
+		let pause = this.#timeouts.pollMs;
+		let last = "unread";
+		for (let agreed = 0; ; ) {
+			if (signal?.aborted) return fail("aborted", `release ${how} of ${ref.name} was aborted while it waited for Daytona; it last read ${last}`);
+			const read = await this.#rest.get(ref.id, signal);
+			if (!read.ok) {
+				if (read.error.code === "aborted") continue;
+				return fail(read.error.code, `release ${how} of ${ref.name}: reading it back failed (${read.error.message}); it last read ${last}`);
 			}
-			if (Date.now() >= end) return fail("timeout", `${sb.name} did not stop within ${this.#timeouts.stopMs / 1000} s (state ${state})`);
-			await sleep(this.#timeouts.pollMs);
+			const sb = read.value;
+			last = stateWords(sb);
+			if (sb !== undefined && (sb.state === "error" || sb.state === "build_failed") && sb.desiredState !== "destroyed") {
+				return fail("daytona", `release ${how} of ${ref.name}: it went to ${sb.state}${sb.errorReason ? `: ${sb.errorReason}` : ""}`);
+			}
+			const gone = sb === undefined || sb.state === "destroyed";
+			const reached = gone ? "gone" : want === "stopped" && STOPPED.has(sb.state ?? "") ? "stopped" : undefined;
+			if (reached === undefined) {
+				agreed = 0;
+				if (how === "stop" && sb !== undefined && !going(sb) && !LEAVING.has(sb.state ?? "")) {
+					const again = await this.#rest.call("POST", this.#rest.sandbox(ref.id, "/stop"), {}, signal);
+					if (!again.ok && again.error.code !== "invalid" && again.error.code !== "not_found" && again.error.code !== "aborted") return again;
+				}
+			} else {
+				const listed = await this.#listOwn(signal);
+				if (!listed.ok) {
+					if (listed.error.code !== "aborted") return fail(listed.error.code, `release ${how} of ${ref.name}: the listing failed (${listed.error.message}); it last read ${last}`);
+				} else {
+					const item = listed.value.find((one) => one.id === ref.id);
+					const shown = item === undefined || !ours(item) || going(item) ? undefined : stateOf(item);
+					if (reached === "gone" ? shown === undefined : shown === "stopped") {
+						if (++agreed >= LISTED_ROUNDS) return ok(undefined);
+					} else {
+						agreed = 0;
+						last = `${last}, listed ${shown ?? "not at all"}`;
+					}
+				}
+			}
+			if (Date.now() >= end) return fail("timeout", `${ref.name} was not ${want} within ${boundMs / 1000} s of its release ${how}; Daytona last read it ${last}`);
+			await sleep(pause, signal);
+			pause = Math.min(pause * 2, RELEASE_POLL_MAX_MS);
 		}
 	}
 

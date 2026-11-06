@@ -86,7 +86,8 @@ export async function main(argv: string[], io: SweepIo = {}): Promise<number> {
 	try {
 		args = parse(argv);
 		if (args.mode === "after") before = beforeIds(args.file);
-		provider = createProvider({ env, ...(io.fetch ? { fetch: io.fetch } : {}), ...(io.webSocket ? { webSocket: io.webSocket } : {}) });
+		// A release waits for the sandbox to go, for as long as the sweep's own wait.
+		provider = createProvider({ env, timeouts: { goneMs: waitMs, pollMs }, ...(io.fetch ? { fetch: io.fetch } : {}), ...(io.webSocket ? { webSocket: io.webSocket } : {}) });
 	} catch (error) {
 		await write(stderr, `${(error as Error).message}\n${error instanceof Usage ? `${USAGE}\n` : ""}`);
 		return 2;

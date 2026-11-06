@@ -507,7 +507,8 @@ test("drift: an allowlist Daytona did not keep is refused and deleted", async ()
 test("an abort during create deletes the sandbox, and create never returns ok once aborted", async () => {
 	const steps = [/^\/api\/sandbox\/[^/]+$/, /\/files\/upload-v2$/, /\/process\/execute$/, /\/process\/session\/agentrun-computerd\/exec$/, /\/command\/[^/]+\/input$/];
 	for (const path of steps) {
-		const { provider, fake } = setup({ hang: [{ method: path.source.includes("api") ? "GET" : "POST", path }] });
+		// The read hangs once, while create waits for the start: the delete after the abort reads the sandbox back.
+		const { provider, fake } = setup({ hang: [{ method: path.source.includes("api") ? "GET" : "POST", path, ...(path.source.includes("api") ? { times: 1 } : {}) }] });
 		const controller = new AbortController();
 		const pending = provider.create(SPEC, { signal: controller.signal });
 		await new Promise((resolve) => setTimeout(resolve, 30));

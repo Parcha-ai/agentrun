@@ -74,7 +74,8 @@ const abortError = (signal) => signal?.reason ?? new DOMException("This operatio
  * - `startAfterReads` (1): single reads before a creating sandbox is started; `stuck`: it stays in pending_build;
  *   `startError`: it goes to error with that reason.
  * - `fail`: [{ method, path: RegExp, status, body?, times }]: answer that status for the first `times` matches.
- * - `hang`: [{ method, path: RegExp }]: never answer, until the request's signal aborts.
+ * - `hang`: [{ method, path: RegExp, times? }]: never answer, until the request's signal aborts; for the first `times`
+ *   matches when given, else every one.
  * - `readBack(sandbox)`: fields merged over each single read; `listBack(item)`: over each listed item.
  * - `uploadStatus`: the daemon upload's answer. `install`: { exitCode, result } of the install script, or `installSha`.
  * - `initFails`: init writes that to stderr and exits 1. `bridgeStderr`: a line the bridge writes to stderr at start.
@@ -406,7 +407,9 @@ export function fakeDaytona(initial = {}) {
 		if (!HOSTS.includes(url.host)) throw new TypeError(`fake Daytona: no host ${url.host}`);
 		const failed = failure(method, url.pathname);
 		if (failed) return failed;
-		if ((knobs.hang ?? []).some((rule) => rule.method === method && rule.path.test(url.pathname))) {
+		const hung = (knobs.hang ?? []).find((rule) => rule.method === method && rule.path.test(url.pathname) && (rule.times ?? 1) > 0);
+		if (hung !== undefined) {
+			if (hung.times !== undefined) hung.times--;
 			return new Promise((_, reject) => {
 				if (signal === undefined) return;
 				signal.addEventListener("abort", () => reject(abortError(signal)), { once: true });

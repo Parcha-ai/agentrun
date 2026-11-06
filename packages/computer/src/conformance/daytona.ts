@@ -49,9 +49,11 @@ export interface DaytonaModuleOptions {
 	env?: Record<string, string | undefined>;
 	fetch?: DaytonaProviderOptions["fetch"];
 	webSocket?: DaytonaProviderOptions["webSocket"];
+	/** The provider's bounds; the sweep sets how long a release waits. */
+	timeouts?: DaytonaProviderOptions["timeouts"];
 }
 
-function optionsOf({ env = process.env, fetch, webSocket }: DaytonaModuleOptions): DaytonaProviderOptions {
+function optionsOf({ env = process.env, fetch, webSocket, timeouts }: DaytonaModuleOptions): DaytonaProviderOptions {
 	const apiKey = env[DAYTONA_ENV.key];
 	if (apiKey === undefined || apiKey === "") throw new Error(`set ${DAYTONA_ENV.key} to a Daytona API key: the Daytona provider reads it there and nowhere else, never from DAYTONA_API_KEY`);
 	const arch = env[DAYTONA_ENV.arch] || "amd64";
@@ -71,6 +73,7 @@ function optionsOf({ env = process.env, fetch, webSocket }: DaytonaModuleOptions
 		autoDeleteMinutes: CONFORMANCE_AUTO_DELETE_MINUTES,
 		...(fetch ? { fetch } : {}),
 		...(webSocket ? { webSocket } : {}),
+		...(timeouts ? { timeouts } : {}),
 	};
 }
 
