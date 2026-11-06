@@ -1,17 +1,17 @@
 // Files in and out of a computer past one call's limit: whole files in chunks, and tar archives both ways.
 import type { DaemonClient } from "./client.js";
-import { MAX_CHUNK_BYTES, TAR_DATA_METHOD, type TarDataParams, type TarPullResult, type TarPushEndResult } from "./protocol.js";
-import { fail, ok, type Result } from "./result.js";
+import { MAX_CHUNK_BYTES, type TarPushEndResult } from "./protocol.js";
+import { type ComputerError, fail, ok, type Result } from "./result.js";
 
 export interface PulledTar {
-	/** The archive's bytes as they come. Read them: the pull waits while too many are unread. */
+	/**
+	 * The archive's bytes, one tar.pull.read each time the loop asks, so nothing is read ahead of it. A pull that fails
+	 * throws its error's message, with the error as the cause.
+	 */
 	chunks: AsyncIterable<Uint8Array>;
-	/** How the pull ended. It settles once the chunks are read, or the loop over them is left (which cancels the pull). */
-	done: Promise<Result<TarPullResult>>;
+	/** How the pull ended: settled once the loop ends, is left, or the signal aborts. */
+	done: Promise<Result<{ bytes: number }>>;
 }
-
-/** Unread chunks a pull holds before it stops reading from the daemon. */
-const HIGH_WATER = 4;
 
 const base64 = (bytes: Uint8Array) => Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64");
 
@@ -59,6 +59,7 @@ export async function writeFile(
 /**
  * Extracts a tar archive into dir in the computer (made when missing), sent in chunks of MAX_CHUNK_BYTES, each after
  * the last one's reply. An entry outside dir is refused (`denied`) and ends the push; what was written before it stays.
+ * A push that begins is always ended, aborted or not, so it never holds one of the connection's 8 pushes.
  */
 export async function pushTar(
 	client: DaemonClient,
@@ -66,9 +67,12 @@ export async function pushTar(
 	tar: Uint8Array | AsyncIterable<Uint8Array>,
 	options: { signal?: AbortSignal } = {},
 ): Promise<Result<TarPushEndResult>> {
-	const begun = await client.call("tar.push.begin", { path: dir }, options);
+	const { signal } = options;
+	if (signal?.aborted) return fail("aborted", `the push into ${dir} was aborted`);
+	const begun = await client.call("tar.push.begin", { path: dir });
 	if (!begun.ok) return begun;
 	const { id } = begun.value;
+	if (signal?.aborted) return abandon(client, id, fail("aborted", `the push into ${dir} was aborted`));
 	const pending = Buffer.alloc(MAX_CHUNK_BYTES);
 	let filled = 0;
 	const send = async (): Promise<Result<unknown>> => {
