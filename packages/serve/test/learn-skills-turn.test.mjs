@@ -9,6 +9,7 @@ import { test } from "node:test";
 import * as dsl from "@parcha/agentrun-dsl";
 import * as checks from "../dist/learn/check.js";
 import * as grading from "../dist/learn/grade.js";
+import * as notes from "../dist/learn/notes.js";
 import * as reflect from "../dist/learn/reflect.js";
 import * as skills from "../dist/learn/skills.js";
 import * as words from "../dist/learning-words.js";
@@ -162,6 +163,28 @@ test("the prompt stays within its cap with every note, a skill and a draft at th
   const prompt = gradePrompt({ run: RUN, instructions: "I".repeat(1 << 20), active: [], superseded: [], proposed: notes, files: [big(SKILL_PATH, CAPS.file), { file: DRAFT_PATH, text: "x".repeat(CAPS.file) }, big(README_PATH, CAPS.readme)] });
   assert.ok(prompt.includes(`: ${SKILL_PATH}, new -----`) && prompt.includes(`: ${DRAFT_PATH}, new -----`), "the skill and the draft whole in it");
   assert.ok(prompt.length <= grading.GRADE_CAPS.prompt, `${prompt.length}`);
+});
+
+test("the largest proposal of every kind beside forty messages at their cap: the prompt never throws, stays within its cap, and names the messages left out", () => {
+  const { INDEX_LINES, parseNoteFile } = notes;
+  const full = (name, cap, extra = "") => {
+    const head = note({ name, description: "D".repeat(1000), extra, body: "" });
+    return `${head}${`body of ${name} `.padEnd(cap - Buffer.byteLength(head) - 1, ".")}\n`;
+  };
+  const texts = Object.fromEntries(Array.from({ length: INDEX_LINES }, (_, i) => [`note-${i}.md`, full(`N${String(i).padStart(3, "0")}${"n".repeat(996)}`, CAPS.note)]));
+  const active = Object.entries(texts).map(([file, text]) => parseNoteFile(file, text));
+  const replaced = Object.keys(texts).slice(0, CAPS.supersedes);
+  const proposed = replaced.map((old, i) => ({ file: `new-${i}.md`, text: full(`New ${i}`, CAPS.runNote, `supersedes: [${old}]\n`) }));
+  const superseded = replaced.map((file) => ({ file, text: texts[file] }));
+  const big = (file, cap) => ({ file, text: `${file === README_PATH ? README : skill()}${"x".repeat(cap - Buffer.byteLength(file === README_PATH ? README : skill()))}` });
+  const files = [big(SKILL_PATH, CAPS.file), { file: DRAFT_PATH, text: "x".repeat(CAPS.file) }, big(README_PATH, CAPS.readme)];
+  const { GRADE_CAPS } = grading;
+  const asked = Array.from({ length: GRADE_CAPS.askedTotal / GRADE_CAPS.askedMessage }, (_, i) => `${i + 1} `.padEnd(GRADE_CAPS.askedMessage, "m"));
+  let prompt;
+  assert.doesNotThrow(() => (prompt = gradePrompt({ run: RUN, instructions: "I".repeat(1 << 20), active, superseded, proposed, files, asked })));
+  assert.ok(prompt.length <= GRADE_CAPS.prompt, `${prompt.length}`);
+  assert.match(prompt, new RegExp(`Left out for length: messages? 2( to \\d+)? of the ${asked.length}\\.`));
+  assert.ok(prompt.includes(`1. 1 m`) && prompt.includes(`${asked.length}. ${asked.length} m`), "the first and the newest");
 });
 
 test("the verdict is read per item: a note's file, a skill's SKILL.md and a draft's workflow.json; one dropped is left out and the rest merges, one missing merges nothing", () => {
