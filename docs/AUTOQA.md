@@ -230,18 +230,18 @@ land (native and picked web search and tool settings, monid on every harness, th
   `node --test packages/serve/test/{fetch-page,web-fetch,host-tools,harness-run,monid,tool-keys,secret-custody}.test.mjs`
   runs the plane end to end that way.
 - **On a QA server.** `--faux MODULE` scripts the model's tool calls (see "The faux model" in `packages/serve/README.md`),
-  so a run calls `web_fetch` (or `fetch_page`, its legacy name), `read`, `write` and `edit` with no model key.
+  so a run calls `web_fetch`, `read`, `write` and `edit` with no model key.
   `web_fetch` then reads real public pages; nothing else leaves the box.
 
 **Checks when the tool plane changed.**
 1. Every name in `GET /v2/settings/tool-keys` `unlocks` is a tool `GET /v2/capabilities` binds, on the harnesses it lists,
    and `missing` names the key each tool still needs.
-2. `web_fetch`, under either name (`fetch_page` is its legacy one, no longer a tool of its own), refuses loopback,
+2. `web_fetch` refuses loopback,
    private, link-local and metadata addresses and ports other than 80/443, at the first hop and after a redirect; a
    refused URL is never sent to Parallel.
 3. A tool key reaches only a run that names a tool it unlocks, over the pipe, never in any process's environment; a saved
    key exists on disk only sealed (no plaintext under the data directory).
-4. On claude-agent and codex, the host tools (`read`, `write`, `edit`, `web_fetch`, also as `fetch_page`, and
+4. On claude-agent and codex, the host tools (`read`, `write`, `edit`, `web_fetch`, and
    `web_search` where it is not the harness's own) run and are journaled with their replay class; a `write` cut off by a
    crash comes back interrupted, never re-run.
 5. A `monid.run` is sent once and never retried; a wallet refusal (402) or a workspace control (`BLOCKED`) comes back
