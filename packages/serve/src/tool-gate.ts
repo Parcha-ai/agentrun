@@ -226,8 +226,12 @@ export const NOT_RUN = "It was not run: nothing was sent and nothing was charged
 export const denyPlace = (from: SettingFrom = "server"): string => (from === "agent" ? "for this agent" : from === "default" ? "by default" : "on this server");
 /** The refusal of a call whose tool is set to deny; of one held to another tool's setting (`heldTo`, a shell tool's
  *  bash), naming the setting to change and where it was set (`from`: this agent's settings or this server's). */
-export const deniedText = (tool: string, heldTo?: string, from: SettingFrom = "server"): string =>
-  heldTo && heldTo !== tool ? `Permission denied: ${tool} follows ${heldTo}'s setting, which is deny ${denyPlace(from)}. ${NOT_RUN} Don't retry it.` : `Permission denied: ${tool} is set to deny ${denyPlace(from)}. ${NOT_RUN} Don't retry it.`;
+export const deniedText = (tool: string, heldTo?: string, from: SettingFrom = "server", ran: "no" | "unknown" = "no"): string => {
+  // `ran`: "unknown" for an approved call whose intent is in the journal with no outcome (a crash cut it): it may have
+  // been sent, so the words never claim it wasn't.
+  const what = ran === "no" ? NOT_RUN : `It had started before the deny, and whether it took effect is not known.`;
+  return heldTo && heldTo !== tool ? `Permission denied: ${tool} follows ${heldTo}'s setting, which is deny ${denyPlace(from)}. ${what} Don't retry it.` : `Permission denied: ${tool} is set to deny ${denyPlace(from)}. ${what} Don't retry it.`;
+};
 /** The refusal of an ask where no one can approve it: a server with accounts off, whose answer route takes no token. */
 export const noApproverText = (tool: string): string => `Permission denied: ${tool} needs the owner's approval, and this server has accounts off (AGENTRUN_ACCOUNTS=0), so no one can give it: set the tool to allow or deny in the agent's Tools. ${NOT_RUN}`;
 /** Set by the server in a run's environment when no one can approve here (accounts off): the gate refuses each ask. */
@@ -542,7 +546,7 @@ export class RunGate {
           continue;
         }
         // An allow runs the call, unless its tool was set to deny since it asked.
-        const result = decision === "deny" ? { text: refusedText(held.tool, answer.note), isError: true } : this.policy(held.tool) === "deny" ? { text: deniedText(held.tool, settingsKeyOf(this.where.harness ?? "pi", held.tool, this.where.mcpServers), this.denyFrom(held.tool)), isError: true } : await this.run(held);
+        const result = decision === "deny" ? { text: refusedText(held.tool, answer.note), isError: true } : this.policy(held.tool) === "deny" ? await this.ranOrDenied(held) : await this.run(held);
         // A test's seam, unset in a server (AGENTRUN_SERVE_TEST_CRASH_AFTER_CALL, a file that marks it once): an approved
         // call that ran and whose outcome is in the journal, then the process goes before its resume, once the test says go
         // (<file>.go), as a crash between the two would leave the run.
@@ -591,12 +595,8 @@ export class RunGate {
     held.resolved = true;
   }
 
-  /** The approved call, run once by the kernel through the journal any host tool's call goes through, as an effect of
-   *  the run's own `approvals:` session, on the run's coding source: its intent is durable before it runs, its outcome
-   *  after; a replay-safe call a crash cut off runs again, any other is answered interrupted and never runs again. */
-  private async run(held: ApprovalRequest): Promise<ToolAnswer> {
-    const runner = await this.runnerOf(held);
-    if ("refused" in runner) return { text: runner.refused, isError: true };
+  /** The run's own `approvals:` session, the journal every approved call runs through: opened once. */
+  private journal(): Promise<Drive> {
     this.drive ??= durableSessions(this.durable!.harness, this.context!)
       .open(`approvals:${this.where.runId}`)
       .then((writer) => openDrive({ writer, signal: this.stop.signal }))
@@ -604,6 +604,28 @@ export class RunGate {
         this.drive = undefined;
         throw error;
       });
+    return this.drive;
+  }
+
+  /** An approved call whose tool was set to deny before the gate acted on the answer. A call whose outcome is in the
+   *  journal RAN (a crash came between it and its resume): the model gets that outcome, as any allowed call's, and nothing
+   *  runs again; a later deny can't un-run it. One with an intent and no outcome may have been sent: denied, with no claim
+   *  either way. One the journal never saw is denied, not run and not charged. */
+  private async ranOrDenied(held: ApprovalRequest): Promise<ToolAnswer> {
+    const drive = await this.journal();
+    const key = `approval:${held.id}`;
+    if (drive.isMemoized(key)) return this.run(held);
+    const heldTo = settingsKeyOf(this.where.harness ?? "pi", held.tool, this.where.mcpServers);
+    return { text: deniedText(held.tool, heldTo, this.denyFrom(held.tool), drive.state().effects.has(key) ? "unknown" : "no"), isError: true };
+  }
+
+  /** The approved call, run once by the kernel through the journal any host tool's call goes through, as an effect of
+   *  the run's own `approvals:` session, on the run's coding source: its intent is durable before it runs, its outcome
+   *  after; a replay-safe call a crash cut off runs again, any other is answered interrupted and never runs again. */
+  private async run(held: ApprovalRequest): Promise<ToolAnswer> {
+    const runner = await this.runnerOf(held);
+    if ("refused" in runner) return { text: runner.refused, isError: true };
+    this.journal();
     try {
       // Its own abort beside the drive's: a stop or a cancel of the run cuts this call, which runs outside any turn.
       const cut = new AbortController();
