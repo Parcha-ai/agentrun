@@ -140,7 +140,8 @@ test("through a run whose process never opens it: one line naming the cause, its
     return write.call(this, chunk, ...rest);
   };
   t.after(() => (process.stderr.write = write));
-  const { api } = await serve(t, { faux: NEVER_OPENS, readyTimeoutMs: 2_000 });
+  // The open time is its own: a request's wait (readyTimeoutMs) is shorter than a slow launch may need, and never stops one.
+  const { api } = await serve(t, { faux: NEVER_OPENS, openTimeoutMs: 2_000, readyTimeoutMs: 1_000 });
   assert.equal((await api("POST", "/agents", { definition: { id: "slow", name: "slow", instructions: "Answer." } })).status, 201);
   const run = await api("POST", "/agents/slow/runs", { input: { content: "Answer soon." } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
@@ -159,6 +160,7 @@ test("through a run whose process never opens it: one line naming the cause, its
     assert.ok(i < 1200, `the run failed after its last launch, ${JSON.stringify(failed)}`);
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
-  assert.match(failed.error.message, /went 4 times before the run ended: its process did not open the run within 2 s \(its door last answered 503 OPENING\)/);
+  // A later launch's door may not answer by the deadline at all ("no answer"): the cause is the same either way.
+  assert.match(failed.error.message, /went 4 times before the run ended: its process did not open the run within 2 s \(its door last answered (503 OPENING|no answer)\)$/);
   assert.equal(said().length, 4, said().join(""));
 });
