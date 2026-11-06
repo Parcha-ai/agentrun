@@ -16,7 +16,7 @@ export type McpRefresh = { added: string[]; removed: string[]; changed: string[]
 /** What a preview or save sends as `auth`: a credential only when one was typed (none: keep the sealed one). */
 export type McpAuth = { type: Exclude<McpAuthType, "oauth"> | "oauth"; token?: string; headers?: Record<string, string> };
 /** Capabilities' `features.mcp_client`. */
-export type McpClientFeature = { routes: boolean; auth?: string[]; at_rest?: "sealed" | "unavailable"; harnesses?: string[] };
+export type McpClientFeature = { auth?: string[]; at_rest?: "sealed" | "unavailable"; harnesses?: string[] };
 
 /** The grant `definition.tools` holds for a server's tool, and the server and tool a grant names (null: not one). */
 export const mcpGrant = (server: string, tool: string) => `mcp:${server}/${tool}`;
