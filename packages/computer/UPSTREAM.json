@@ -42,6 +42,55 @@
       "lines": "14-50",
       "license": "Apache-2.0",
       "changes": "expand kept; ExpandAndResolve as resolveCwd with no default workdir, and a missing or non-directory cwd answered as not_found or invalid."
+    },
+    {
+      "path": "daemon/internal/files/entry.go",
+      "from": "e2b-dev/infra@ff3922213f0201299602ad7fad4d6ca367363710:packages/shared/pkg/filesystem/entry.go",
+      "lines": "58-123, 155-159",
+      "license": "Apache-2.0",
+      "changes": "GetEntryInfoWithResolver, getEntryType and getBase as entryOf and typeOf: a symlink is reported as a symlink with its target as written (os.Readlink), not as its target's type; the mode keeps setuid, setgid and sticky from Stat_t; mtime in milliseconds; no access or change times, permission string or xattr metadata."
+    },
+    {
+      "path": "daemon/internal/files/entry.go",
+      "from": "e2b-dev/infra@ff3922213f0201299602ad7fad4d6ca367363710:packages/envd/internal/services/filesystem/utils.go",
+      "lines": "43-69",
+      "license": "Apache-2.0",
+      "changes": "entryInfo as Stat: Lstat unless follow is asked; uid and gid as numbers, not looked-up names; the protocol's error kinds instead of Connect codes."
+    },
+    {
+      "path": "daemon/internal/files/entry.go",
+      "from": "e2b-dev/infra@ff3922213f0201299602ad7fad4d6ca367363710:packages/envd/internal/services/filesystem/dir.go",
+      "lines": "17-54, 100-184",
+      "license": "Apache-2.0",
+      "changes": "ListDir, followSymlink, checkIfDirectory and walkDir as List: the listed directory is followed if it is a symlink and paths keep the asked path; depth from 1 to 16; an offset to page, and a stop at 1000 entries or 768 KiB of JSON with truncated set; an unreadable directory stays listed without its contents; not_dir instead of invalid argument."
+    },
+    {
+      "path": "daemon/internal/files/ops.go",
+      "from": "e2b-dev/infra@ff3922213f0201299602ad7fad4d6ca367363710:packages/envd/internal/services/filesystem/move.go",
+      "lines": "15-58",
+      "license": "Apache-2.0",
+      "changes": "Move without a user, without making the destination's parents, and without returning the entry; overwrite and the checks below come from sandboxd."
+    },
+    {
+      "path": "daemon/internal/files/ops.go",
+      "from": "kubernetes-sigs/agent-sandbox@bfc85052f8dbc3414c366a1bc86621ea19d0779b:packages/sandboxd/pkg/server/filesystem.go",
+      "lines": "154-165, 549-587, 899-970, 988-1060, 1079-1082",
+      "license": "Apache-2.0",
+      "changes": "writeFSError and writeMakeDirectoryError as fsError, with the protocol's kinds (not_found, denied, exists, not_dir, is_dir, unsupported for EXDEV, limit for ENOSPC) instead of HTTP statuses; makeDirectory kept, a directory already there being fine only with parents; handleDeleteFile as Remove with no sandbox root to clear; handleFileAction's move checks (same path, into itself, exists without overwrite) as Move, replacing as rename(2) does; no copy."
+    },
+    {
+      "path": "daemon/internal/files/tar.go",
+      "from": "kubernetes-sigs/agent-sandbox@bfc85052f8dbc3414c366a1bc86621ea19d0779b:packages/sandboxd/pkg/server/filesystem.go",
+      "lines": "665-700, 776-897",
+      "license": "Apache-2.0",
+      "changes": "extractTar, extractEntry, replaceSymlink and writeViaTemp as functions: the target directory is the root; an entry that is absolute or has a .. part is refused before cleaning; the count of entries written is returned; no gzip, no entry or byte cap, no fsync per file; writeExtractError folded into errors of the protocol's kinds that name the entry (denied for an escape, exists for a type clash, invalid for a bad archive)."
+    },
+    {
+      "path": "daemon/internal/files/tar.go",
+      "from": "kubernetes-sigs/agent-sandbox@bfc85052f8dbc3414c366a1bc86621ea19d0779b:packages/sandboxd/pkg/pathutil/sandbox.go",
+      "lines": "40-82, 141-146",
+      "license": "Apache-2.0",
+      "changes": "SanitizePath as sanitizePath on a root already resolved and a relative path, so joinUnderRoot is not needed; a dangling symlink on the way is refused instead of resolved lexically."
     }
   ]
 }
