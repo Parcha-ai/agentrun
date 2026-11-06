@@ -361,7 +361,9 @@ test("pi: a saved header named unopened is a header like any other: the call is 
   assert.deepEqual(calls(fake).map((entry) => [entry.tool, entry.authorization]), [["add", true]]);
   const timeline = JSON.stringify((await api("GET", `/runs/${runId}/timeline?limit=500`)).body);
   assert.ok(!timeline.includes(value), "the header's value is in no row");
-  const leaked = (await filesUnder(join(data, "runs", runId))).filter((file) => file.text.includes(value)).map((file) => file.path);
+  const files = await filesUnder(runDir(data, runId));
+  assert.ok(files.length > 0, "the run's directory is read");
+  const leaked = files.filter((file) => file.text.includes(value)).map((file) => file.path);
   assert.deepEqual(leaked, [], "no file of the run holds the header's value");
 });
 
@@ -399,7 +401,7 @@ async function codexServe(t, standInEnv = {}) {
 }
 
 /** The config.toml Codex was given for a run, from the run's own directory. */
-const codexConfigOf = async (data, runId) => (await filesUnder(join(data, "runs", runId))).filter((file) => file.path.endsWith("/config.toml")).map((file) => file.text);
+const codexConfigOf = async (data, runId) => (await filesUnder(runDir(data, runId))).filter((file) => file.path.endsWith("/config.toml")).map((file) => file.text);
 
 test("codex: an agent granted mcp:fake/add calls it through the session's proxy; the timeline reads fake · add, the fake saw the bearer, no file holds it", { timeout: 90_000 }, async (t) => {
   const { api, data } = await codexServe(t);
@@ -418,7 +420,9 @@ test("codex: an agent granted mcp:fake/add calls it through the session's proxy;
   assert.deepEqual(calls(fake).map((entry) => [entry.tool, entry.authorization]), [["add", true]], "one call, with the bearer");
   const configs = await codexConfigOf(data, runId);
   assert.ok(configs.some((text) => /^\[mcp_servers\.fake\]$/m.test(text) && /^default_tools_approval_mode = "approve"$/m.test(text) && /^enabled_tools = \["add"\]$/m.test(text)), `Codex was given the server, its grant and approve mode: ${configs.join("\n---\n")}`);
-  const leaked = (await filesUnder(join(data, "runs", runId))).filter((file) => file.text.includes(TOKEN)).map((file) => file.path);
+  const files = await filesUnder(runDir(data, runId));
+  assert.ok(files.length > 0, "the run's directory is read");
+  const leaked = files.filter((file) => file.text.includes(TOKEN)).map((file) => file.path);
   assert.deepEqual(leaked, [], "no file of the run, Codex's own home among them, holds the token");
 });
 
@@ -455,7 +459,7 @@ test("codex: a run killed mid-call resumes with the call answered interrupted, a
     assert.ok(i < 600, "the call reaches the server");
     await sleep(100);
   }
-  const { holder } = JSON.parse(await readFile(join(data, "runs", runId, "run.json"), "utf8"));
+  const { holder } = runRecordOf(data, runId);
   process.kill(holder.pid, "SIGKILL");
   const { rows, last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 90_000 });
   assert.equal(last.status, "completed", JSON.stringify(rows.at(-1)));
