@@ -24,7 +24,7 @@
 // run's own (decision keep, origin run) and names it Risky, and the rest, "Grade: you <file>." keeps that one as what
 // the user asked in their own words (decision keep, origin you), and the rest, "Grade: shop <file>." drops that one on
 // General with the user's origin (a weak grader's call on a shop's policy) and merges none, "Grade: sly." says merge and keeps
-// none, "Grade: garbage." is no JSON, "Grade: fail." fails the call, "Grade: drop at length." keeps no note for a reason
+// none, "Grade: garbage." is no JSON, "Grade: garbage once." no JSON to a prompt's first ask alone, "Grade: garbage saying <text>." no JSON with <text> in it, "Grade: fail." fails the call, "Grade: drop at length." keeps no note for a reason
 // and a why whose first sentence runs past 140 characters, "Grade: drop saying <text>." keeps no note for a reason and a
 // why that name <text>, "Grade: omit <file>." gives that file no item; anything else keeps every note. "Grade once <file> exists." holds the answer until the test makes that file
 // (or the call is aborted). With
@@ -84,6 +84,10 @@ function grade(prompt, faux) {
   const files = /^Give one item for each of these files, each once, and for no other: (.*)\.$/m.exec(prompt)?.[1].split(", ") ?? [];
   if (process.env.AGENTRUN_TEST_FAUX_GRADE_HOLD === "never") return new Promise(() => {});
   if (process.env.AGENTRUN_TEST_FAUX_GRADE_HOLD) return slow(faux, 600_000, "");
+  // "Grade: garbage once.": no JSON to the first ask of a prompt alone; the host's one more ask is answered as any other.
+  const asked = (ASKS.get(prompt) ?? 0) + 1;
+  ASKS.set(prompt, asked);
+  if (rules.includes("Grade: garbage once.") && asked === 1) return faux.message("Looks fine to me, once.");
   const gate = /Grade once (\S+) exists\./.exec(rules)?.[1];
   if (gate) {
     return (async () => {
@@ -97,10 +101,16 @@ function grade(prompt, faux) {
   return verdictOf(rules, files, faux);
 }
 
+/** How many times the grader was asked each prompt (the host asks again, with the same prompt, an answer it could not read). */
+const ASKS = new Map();
+
 /** The grader's verdict on `files`, by the agent's instructions `rules`. */
 function verdictOf(rules, files, faux) {
   if (rules.includes("Grade: fail.")) return faux.message("", { stopReason: "error", errorMessage: "the faux grader failed on purpose" });
   if (rules.includes("Grade: garbage.")) return faux.message("Looks fine to me.");
+  // "Grade: garbage saying <text>.": no JSON, with <text> in it, to every ask.
+  const babble = /Grade: garbage saying (\S+)\./.exec(rules)?.[1];
+  if (babble) return faux.message(`Looks fine to me. ${babble}`);
   const long = rules.includes("Grade: drop at length.");
   const saying = /Grade: drop saying (\S+)\./.exec(rules)?.[1];
   const keep = !rules.includes("Grade: drop.") && !rules.includes("Grade: sly.") && !long && !saying;

@@ -45,10 +45,54 @@ test("the grader's verdict decides: a drop, a merge that keeps no note and an an
     const { learning } = await savedOf(data, runId);
     assert.deepEqual(learning.verdict, verdict, rule);
     assert.equal(git(repoOf(data, id), ["rev-list", "--count", "main"]), "1", `${rule}: nothing merged`);
-    // Asked once, whatever it answered; its cost kept, unknown when the call failed.
+    // Its cost kept, unknown when the call failed; an answer that could not be read, read twice, is kept as it came.
     assert.equal(learning.cost_usd.grade === null, reason === "grade_failed", JSON.stringify(learning.cost_usd));
+    assert.equal(learning.unread, rule === "Grade: garbage." ? "Looks fine to me." : undefined, rule);
   }
-  assert.equal(callsIn(calls).filter((call) => call.kind === "grade").length, cases.length, "one grader call a run");
+  // One grader call a run, and one more for the answer that could not be read.
+  assert.equal(callsIn(calls).filter((call) => call.kind === "grade").length, cases.length + 1, "one grader call a run, two for the unread one");
+});
+
+test("an answer the host cannot read is asked once more with the same prompt: a readable second answer decides, and each ask's spend is booked once; two unreadable answers drop, with the last kept on the run cut of secrets and in size, and never served", { timeout: 150_000 }, async (t) => {
+  const calls = join(await scratch(t), "calls.jsonl");
+  // A value saved as a tool key before the runs: the grader's answer holds it, and the run's learning never does.
+  const value = `zq${process.pid}${Date.now().toString(36)}${randomBytes(16).toString("hex")}`.slice(0, 64);
+  withEnv(t, { AGENTRUN_TEST_FAUX_CALLS: calls, AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, ["AGENTRUN_SEAL_KEY", "PARALLEL_API_KEY", "AGENTRUN_TEST_FAUX_GRADE_HOLD", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY"]);
+  const { api, data } = await serve(t, { learning: "on", faux: LEARN });
+  assert.equal((await api("PUT", "/settings/tool-keys/parallel", { values: { PARALLEL_API_KEY: value } })).status, 204);
+  const grades = () => callsIn(calls).filter((call) => call.kind === "grade").length;
+
+  // Once unreadable, then a verdict: it merges, on two asks, both booked, once each.
+  await made(api, learner("plain", { plan: PLAN }));
+  const plain = await ended(api, await started(api, "plain"));
+  settled(plain.view, plain.rows, "merged");
+  assert.equal(grades(), 1, "a readable answer is asked once");
+  await made(api, learner("once", { instructions: "Grade: garbage once.", plan: PLAN }));
+  const once = await ended(api, await started(api, "once"));
+  settled(once.view, once.rows, "merged");
+  assert.equal(grades(), 3, "an unreadable answer is asked once more, and no more");
+  const [one, two] = [(await savedOf(data, plain.view.run_id)).learning, (await savedOf(data, once.view.run_id)).learning];
+  assert.equal(two.unread, undefined, "a verdict read on the second ask keeps no answer");
+  // The same prompt asked twice: twice the input tokens of one ask, near enough (the prompts differ by their run's id).
+  assert.ok(two.tokens.grade.input > 1.8 * one.tokens.grade.input && two.tokens.grade.input < 2.2 * one.tokens.grade.input, JSON.stringify([one.tokens, two.tokens]));
+  assert.ok(two.cost_usd.grade > one.cost_usd.grade, JSON.stringify([one.cost_usd, two.cost_usd]));
+  const booked = ledgerOf(data).filter((line) => line.run === once.view.run_id);
+  assert.deepEqual(booked.map(({ cost, tokens }) => ({ cost, tokens })), [{ cost: two.cost_usd.grade, tokens: two.tokens.grade }], "one ledger line, with both asks");
+
+  // Unreadable twice, past any bound and holding the key: dropped, with the last answer kept cut of the key and in size.
+  const babble = `${value}-${"x".repeat(5_000)}-end`;
+  await made(api, learner("babble", { instructions: `Grade: garbage saying ${babble}.`, plan: PLAN }));
+  const dropped = await ended(api, await started(api, "babble"));
+  settled(dropped.view, dropped.rows, "dropped", "grader");
+  assert.equal(grades(), 5, "two asks");
+  const { learning } = await savedOf(data, dropped.view.run_id);
+  assert.deepEqual(learning.verdict, { merge: false, reason: "the grader's verdict could not be read", items: [] });
+  assert.ok(learning.unread.startsWith("Looks fine to me. [redacted]-xxx") && learning.unread.endsWith("xxx-end"), learning.unread.slice(0, 80));
+  assert.ok(learning.unread.length <= 2_000, `${learning.unread.length} characters`);
+  assert.ok(!learning.unread.includes(value.slice(0, 24)) && !learning.unread.includes(value.slice(-24)));
+  // Kept on the run's file for a person to diagnose; no read serves it.
+  const served = JSON.stringify([(await api("GET", `/runs/${dropped.view.run_id}`)).body, (await api("GET", `/runs/${dropped.view.run_id}/learning`)).body, (await api("GET", "/runs")).body, (await api("GET", "/agents/babble/runs")).body, dropped.rows]);
+  assert.ok(!served.includes("Looks fine to me") && !served.includes("xxxxxxxx"), "the answer is never served");
 });
 
 test("the grader runs on the model the server names for it, --grade-model (AGENTRUN_SERVE_GRADE_MODEL) before its strong tier (AGENT_MODEL_STRONG), whatever the agent's own model; with neither, on the agent's own", { timeout: 180_000 }, async (t) => {
