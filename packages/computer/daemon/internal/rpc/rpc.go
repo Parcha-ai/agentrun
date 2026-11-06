@@ -11,10 +11,14 @@ import (
 	"io"
 	"log"
 	"sync"
+	"time"
 )
 
 // MaxLine is the longest line, in bytes without its newline, read or written.
 const MaxLine = 1 << 20
+
+// shutdownGrace is how long Serve waits for its handlers after it cancels them, before it closes w.
+const shutdownGrace = 2 * time.Second
 
 // CancelMethod is the notification that cancels a request by id.
 const CancelMethod = "$/cancelRequest"
@@ -117,7 +121,8 @@ type session struct {
 // Serve reads requests from r and writes replies to w until r ends or ctx is done, then cancels what still runs and
 // returns once every handler has. It returns nil at the end of r or on ctx; a read error otherwise. On ctx it closes r
 // when r is an io.Closer, which ends the read; the read of an r that cannot be closed ends when its input does, and any
-// line it reads after Serve returned is dropped.
+// line it reads after Serve returned is dropped. A handler still writing a reply after a short grace (no one reads w)
+// is ended by closing w, when w is an io.Closer.
 func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -152,7 +157,21 @@ loop:
 		}
 	}
 	cancel()
-	sess.wg.Wait()
+	// A handler can be stuck writing a reply no one reads. After a grace, closing w (when it can be closed) fails that
+	// write, so shutdown cannot hang on it.
+	handled := make(chan struct{})
+	go func() {
+		sess.wg.Wait()
+		close(handled)
+	}()
+	select {
+	case <-handled:
+	case <-time.After(shutdownGrace):
+		if closer, ok := w.(io.Closer); ok {
+			_ = closer.Close()
+		}
+		<-handled
+	}
 	if errors.Is(err, io.EOF) {
 		return nil
 	}
