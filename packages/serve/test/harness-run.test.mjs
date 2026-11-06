@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { startServe } from "../dist/index.js";
-import { agent, client, FAUX, follow, printed, runDir, scratch, serve, withEnv } from "./support.mjs";
+import { agent, client, FAUX, follow, printed, runDir, runRecordOf, scratch, serve, withEnv } from "./support.mjs";
 import { KEY as MONID_KEY } from "./fixtures/faux-monid.mjs";
 import { CANARY as PARALLEL_CANARY } from "./fixtures/faux-parallel.mjs";
 import { LONG_ANSWER } from "./fixtures/faux-harness.mjs";
@@ -62,7 +62,7 @@ test("a run whose process dies mid-turn after a paid request resumes on the next
     assert.ok(i < 300, "the first request's tool row");
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  const { holder } = JSON.parse(await readFile(join(runDir(data, runId), "run.json"), "utf8"));
+  const { holder } = runRecordOf(data, runId);
   await writeFile(go, "");
   process.kill(holder.pid, "SIGKILL");
   const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
@@ -81,7 +81,7 @@ test("a run that the server stopped mid-turn goes on at the next start, and its 
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   await first.close();
-  const left = JSON.parse(await readFile(join(runDir(data, runId), "run.json"), "utf8"));
+  const left = runRecordOf(data, runId);
   assert.deepEqual([left.status, left.detail?.reason], ["sleeping", "drained"], "drained, not crashed");
   const next = await serve(t, { data, fauxHarness: FAUX_HARNESS });
   await writeFile(go, "");
@@ -158,7 +158,7 @@ function storeRecords(data, runId, kind) {
 const storeCount = (data, runId, kind) => storeRecords(data, runId, kind).length;
 
 const killRun = async (data, runId) => {
-  const { holder } = JSON.parse(await readFile(join(runDir(data, runId), "run.json"), "utf8"));
+  const { holder } = runRecordOf(data, runId);
   process.kill(holder.pid, "SIGKILL");
 };
 

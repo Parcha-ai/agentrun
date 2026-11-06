@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { fileURLToPath } from "node:url";
-import { agent, follow, runDir, scratch, serve } from "./support.mjs";
+import { agent, follow, runDir, runRecordOf, scratch, serve } from "./support.mjs";
 
 /** The gateway's key in these tests: no real one. */
 const GATEWAY_KEY = `not-a-secret-${"gateway"}`;
@@ -166,7 +166,7 @@ test("a codex run whose process dies while its request is in flight leaves no Co
   const child = await processOf(standIn);
   assert.ok(child, "Codex's process runs");
   t.after(() => alive(child.pid) && process.kill(child.pid, "SIGKILL"));
-  const { holder } = JSON.parse(await readFile(join(runDir(data, run.body.run_id), "run.json"), "utf8"));
+  const { holder } = runRecordOf(data, run.body.run_id);
   process.kill(holder.pid, "SIGKILL");
   for (let i = 0; alive(child.pid); i++) {
     assert.ok(i < 20, `the dead process's Codex (pid ${child.pid}) is gone within 2 s`);

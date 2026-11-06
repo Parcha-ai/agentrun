@@ -13,7 +13,7 @@ import { processAlive } from "@parcha/agentrun-kernel/host";
 import { REQUEST_STARTED } from "@parcha/pi-durable-agent/timeline";
 import { spentIn } from "../dist/cap.js";
 import { startServe } from "../dist/index.js";
-import { agent, client, follow, letGo, runDir, scratch, serve, withEnv } from "./support.mjs";
+import { agent, client, follow, letGo, runDir, runRecordOf, scratch, serve, withEnv } from "./support.mjs";
 
 /** The tests' faux model priced on output only, $100 a million: a request's least (1,024 tokens) is $0.1024. */
 const OUTPUT_PRICED = new URL("./fixtures/faux-output-priced.mjs", import.meta.url).pathname;
@@ -120,7 +120,7 @@ const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pat
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 const CONTINUE = (cap) => `The cap was raised to ${cap}; continue the task.`;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-const holderPid = (data, runId) => JSON.parse(readFileSync(join(runDir(data, runId), "run.json"), "utf8")).holder.pid;
+const holderPid = (data, runId) => runRecordOf(data, runId).holder.pid;
 /** What the person's side of the run says, in order: its user messages' text. */
 /** The run's messages in order: the person's (user_message) and the server's own (its "AgentRun: …" row, MessageOrigin). */
 const said = (rows) => rows.filter((row) => row.kind === "user_message" || (row.kind === "phase" && row.summary?.startsWith("AgentRun:"))).map((row) => row.text);

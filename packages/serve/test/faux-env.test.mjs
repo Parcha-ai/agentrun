@@ -6,7 +6,7 @@ import { readFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
-import { agent, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
+import { agent, follow, runDir, runRecordOf, scratch, serve, withEnv } from "./support.mjs";
 
 const MARKER_MODULE = new URL("./fixtures/faux-marker.mjs", import.meta.url).pathname;
 
@@ -63,7 +63,7 @@ test("a faux name in the server's own environment, with no faux option, enables 
     assert.ok(Date.now() < deadline, "the run's request reached the gateway in 30 s");
   }
   // The run's process, alive while its request waits: its environment as the kernel holds it.
-  const { holder } = JSON.parse(await readFile(join(runDir(data, started.body.run_id), "run.json"), "utf8"));
+  const { holder } = runRecordOf(data, started.body.run_id);
   const names = (await readFile(`/proc/${holder.pid}/environ`, "utf8")).split("\0").map((line) => line.slice(0, line.indexOf("=")));
   assert.deepEqual(names.filter((name) => name.startsWith("AGENTRUN_SERVE_FAUX")), [], "the run's process carries no faux name");
   endpoint.release();

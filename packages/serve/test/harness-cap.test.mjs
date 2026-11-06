@@ -9,7 +9,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { after, before, test } from "node:test";
-import { agent, follow, runDir, scratch, serve } from "./support.mjs";
+import { agent, follow, runDir, runRecordOf, scratch, serve } from "./support.mjs";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const OUTPUT_PRICED = new URL("./fixtures/faux-output-priced.mjs", import.meta.url).pathname;
@@ -59,7 +59,7 @@ async function cutByCrash(t, harness, cap) {
   }
   await writeFile(go, "");
   // This run's own process, by its own record: never this test's process (which the server runs in) or another run's.
-  const { holder } = JSON.parse(await readFile(join(runDir(data, runId), "run.json"), "utf8"));
+  const { holder } = runRecordOf(data, runId);
   assert.ok(Number.isInteger(holder.pid) && holder.pid !== process.pid, JSON.stringify(holder));
   process.kill(holder.pid, "SIGKILL");
   return { api, runId };

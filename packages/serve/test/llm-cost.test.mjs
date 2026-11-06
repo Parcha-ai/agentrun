@@ -10,7 +10,7 @@ import { REQUEST_COST, REQUEST_STARTED, runMetricsOf } from "@parcha/pi-durable-
 import { spentIn } from "../dist/cap.js";
 import { markRequests } from "../dist/request-start.js";
 import { processAlive } from "@parcha/agentrun-kernel/host";
-import { flowAgent, follow, runDir, scratch, serve, storeRun } from "./support.mjs";
+import { flowAgent, follow, runDir, runRecordOf, scratch, serve, storeRun } from "./support.mjs";
 
 const FAUX_PRICED = new URL("./fixtures/faux-priced.mjs", import.meta.url).pathname;
 
@@ -104,10 +104,10 @@ test("a workflow resumed after its process died counts an llm call it made befor
   // Its completion committed (its node's end, logged after), the run waits at the pause; its process dies, and the server
   // opens it again.
   await until(async () => (await log()).some((line) => line.t === "node.end" && line.path === answered.path), "the call's node's end");
-  const { holder, generation } = JSON.parse(await readFile(join(dir, "run.json"), "utf8"));
+  const { holder, generation } = runRecordOf(data, body.run_id);
   t.after(() => processAlive(holder.pid) && process.kill(holder.pid, "SIGKILL"));
   process.kill(holder.pid, "SIGKILL");
-  await until(async () => { const next = JSON.parse(await readFile(join(dir, "run.json"), "utf8").catch(() => "{}")); return next.generation > generation && next.holder?.pid !== holder.pid && processAlive(next.holder.pid) && next; }, "the run opened again");
+  await until(async () => { const next = runRecordOf(data, body.run_id); return next.generation > generation && next.holder?.pid !== holder.pid && processAlive(next.holder.pid) && next; }, "the run opened again");
   const graph = (await api("GET", `/runs/${body.run_id}/graph`)).body;
   assert.deepEqual([graph.run.status, graph.totals.cost_usd], ["paused", paid], "the earlier call once: in the rows read at the death, not again from the node log");
   assert.equal((await api("POST", `/runs/${body.run_id}/cancel`)).status, 202);

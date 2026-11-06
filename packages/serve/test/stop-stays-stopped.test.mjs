@@ -10,7 +10,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { agent, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
+import { agent, follow, runDir, runRecordOf, scratch, serve, withEnv } from "./support.mjs";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 // The faux harness in a process a test can hold at the write of a turn's end (TURN_END_ARM, TURN_END_HELD).
@@ -31,7 +31,7 @@ function storeEntries(data, runId) {
     }
   }
 }
-const holderOf = (data, runId) => JSON.parse(readFileSync(join(runDir(data, runId), "run.json"), "utf8")).holder?.pid;
+const holderOf = (data, runId) => runRecordOf(data, runId).holder?.pid;
 const gone = (pid) => { try { process.kill(pid, 0); return false; } catch { return true; } };
 
 /** Waits for `check`, up to `ms`; fails naming `what`. */
@@ -51,7 +51,7 @@ for (const harness of ["claude-agent", "codex", "opencode"]) {
     await follow(api, runId, ["input_required"], { deadlineMs: 60_000 });
     // The stopped run's process goes before the follow-up; the follow-up's process opens the session anew.
     await writeFile(go, "");
-    const { pid } = JSON.parse(readFileSync(join(runDir(data, runId), "run.json"), "utf8")).holder;
+    const { pid } = runRecordOf(data, runId).holder;
     process.kill(pid, "SIGKILL");
     await until("the run's process is gone", () => { try { process.kill(pid, 0); return false; } catch { return true; } });
     assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "go on" })).status, 202);

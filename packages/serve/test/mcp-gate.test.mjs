@@ -16,7 +16,7 @@ import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { noApproverText } from "../dist/tool-gate.js";
 import { schemaProblems } from "./schema-support.mjs";
-import { agent, call, cookieOf, follow, runDir, serve as serveOf, withEnv } from "./support.mjs";
+import { agent, call, cookieOf, follow, runDir, runRecordOf, serve as serveOf, withEnv } from "./support.mjs";
 
 const FAUX_MCP = new URL("./fixtures/faux-mcp.mjs", import.meta.url).pathname;
 const TOKEN = `not-a-secret-${"mcp-gate-bearer-0123"}`;
@@ -159,7 +159,7 @@ test("pi: the run's process killed while a call is parked loses nothing: the sam
   const fake = await addFake(t, api);
   const runId = await started(api, "crash", ["mcp:fake/add"], ADD);
   const pending = await parked(api, runId);
-  const record = JSON.parse(await readFile(join(runDir(data, runId), "run.json"), "utf8"));
+  const record = runRecordOf(data, runId);
   if (record.holder?.pid) process.kill(record.holder.pid, "SIGKILL");
   const again = await parked(api, runId);
   assert.equal(again.id, pending.id, "the same approval");

@@ -10,7 +10,7 @@ import { createRequire, syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
 import { test } from "node:test";
 import { BOX_QUARANTINE, Quarantine, settleBox, startTimeOf, sweepBoxes } from "../dist/box/sweep.js";
-import { agent, follow, runDir, serve } from "./support.mjs";
+import { agent, follow, runDir, runRecordOf, serve } from "./support.mjs";
 
 const linux = { skip: process.platform !== "linux" && "reads start times from /proc" };
 /** This process: a writer that is alive. */
@@ -328,7 +328,7 @@ test("a run the server finds left running is opened again only after the start s
   const id = (await first.api("POST", "/agents/asks/runs", { input: { content: "Pick a region." } })).body.run_id;
   await follow(first.api, id, ["input_required"]);
   // Its process killed with the server's: the run is left running, for the next start to open again.
-  const pid = JSON.parse(await readFile(join(runDir(data, id), "run.json"), "utf8")).holder.pid;
+  const pid = runRecordOf(data, id).holder.pid;
   process.kill(pid, "SIGKILL");
   await first.close();
   await writeFile(join(runDir(data, id), "box.json"), JSON.stringify({ id: "box-left", pid: 4242, startTime: "9", writer: await goneWriter() }));
@@ -380,7 +380,7 @@ test("an archived run that is still live has its box let go when its process exi
   const go = join(data, "go-live");
   const id = (await api("POST", "/agents/busy/runs", { input: { content: `Answer once ${go} exists.` } })).body.run_id;
   for (const deadline = Date.now() + 10_000; ; await new Promise((resolve) => setTimeout(resolve, 50))) {
-    const record = JSON.parse(await readFile(join(runDir(data, id), "run.json"), "utf8").catch(() => "null"));
+    const record = runRecordOf(data, id);
     if (record?.holder?.pid) break;
     assert.ok(Date.now() < deadline, "the run's process came up");
   }
@@ -487,7 +487,7 @@ test("an archived run whose process dies while it waits for the person has its b
   assert.equal((await api("POST", "/agents", agent("asks", { tools: ["ask_person"] }))).status, 201);
   const id = (await api("POST", "/agents/asks/runs", { input: { content: "Pick a region." } })).body.run_id;
   await follow(api, id, ["input_required"]);
-  const pid = JSON.parse(await readFile(join(runDir(data, id), "run.json"), "utf8")).holder.pid;
+  const pid = runRecordOf(data, id).holder.pid;
   await writeFile(join(runDir(data, id), "box.json"), JSON.stringify({ id: "box-waiting", pid: 4242, startTime: "9", writer: await goneWriter() }));
   assert.equal((await api("POST", `/runs/${id}/archive`)).status, 200);
   assert.deepEqual(reaped, [], "its process lives, so its box is its own");
@@ -509,7 +509,7 @@ test("a box that cannot be let go never holds up its run's end: an archived run 
   const go = join(data, "go-stuck");
   const id = (await api("POST", "/agents/busy/runs", { input: { content: `Answer once ${go} exists.` } })).body.run_id;
   for (const deadline = Date.now() + 10_000; ; await new Promise((resolve) => setTimeout(resolve, 50))) {
-    const record = JSON.parse(await readFile(join(runDir(data, id), "run.json"), "utf8").catch(() => "null"));
+    const record = runRecordOf(data, id);
     if (record?.holder?.pid) break;
     assert.ok(Date.now() < deadline, "the run's process came up");
   }

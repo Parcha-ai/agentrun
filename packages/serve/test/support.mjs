@@ -10,6 +10,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { openStoreReader } from "@parcha/pi-durable-agent";
 import { startServe } from "../dist/index.js";
+import { readRunDbSync } from "../dist/run-db.js";
 
 export const FAUX = new URL("./fixtures/faux-model.mjs", import.meta.url).pathname;
 
@@ -170,6 +171,42 @@ export function storeRun(data, runId) {
   }
 }
 
+/** Run `runId` as its claim and its process say it: the record the process keeps in its store (its status, `detail` and
+ *  the epoch it ran under as `generation`), and its holder from the run's row (the process's `pid`, its door as
+ *  `serve`); `{}` when there is neither yet. What run.json once held, read from where it is now. */
+export function runRecordOf(data, runId) {
+  let claim;
+  try {
+    const db = new DatabaseSync(join(data, "store.sqlite"), { readOnly: true, timeout: 5_000 });
+    try {
+      claim = db.prepare("SELECT claim_epoch, claim_holder FROM runs WHERE id = ?").get(runId);
+    } finally {
+      db.close();
+    }
+  } catch {
+    claim = undefined;
+  }
+  let holder;
+  if (typeof claim?.claim_holder === "string" && claim.claim_holder.startsWith("{")) {
+    const named = JSON.parse(claim.claim_holder);
+    holder = { ...named, ...(named.door ? { serve: named.door } : {}) };
+  }
+  let record = {};
+  const file = join(runDir(data, runId), "store", "run.sqlite");
+  if (existsSync(file)) {
+    try {
+      record = readRunDbSync(file, false, (db) => {
+        const row = db.prepare("SELECT record FROM pda_run_status WHERE id = 1").get();
+        return row ? JSON.parse(row.record) : {};
+      });
+    } catch {
+      record = {};
+    }
+  }
+  const { holder: _kept, ...rest } = record;
+  return { ...rest, ...(holder ? { holder } : {}), ...(claim ? { epoch: Number(claim.claim_epoch) } : {}) };
+}
+
 /** Create agent `id` and start one run of it with `content`. */
 export async function startRun(api, id, content, extra = {}, skills) {
   assert.equal((await api("POST", "/agents", { ...agent(id, extra), ...(skills ? { skills } : {}) })).status, 201);
@@ -274,9 +311,6 @@ export function call(port, { method = "GET", path = "/", headers = {}, body } = 
 /** The Cookie header for the cookies an answer set. */
 export const cookieOf = (res) => (res.headers["set-cookie"] ?? []).map((line) => line.split(";")[0]).join("; ");
 
-/** Once the process that held run `runId` (its run.json's holder) has exited: only then is the run's store free to read.
- *  A paused run's process marks the run released itself (sleeping) before it closes its store and exits, so run.json's
- *  status is not that signal; the process gone is, as it is for the server (runs.ts, a run no longer live). */
 /** Whether the server took run `runId` back: its row's claim is the server's, and its WAL is checkpointed. */
 function takenBack(data, runId) {
   let holder;
@@ -300,22 +334,22 @@ function takenBack(data, runId) {
   }
 }
 
+/** Once the process that held run `runId` (its row's holder) has exited and the server took the run back: only then is
+ *  the run's store free to read. A paused run's process marks itself released (sleeping) before it closes its store and
+ *  exits, so its status is not that signal; the process gone is, as it is for the server (runs.ts, a run no longer live). */
 export async function letGo(data, runId, { deadlineMs = 20_000 } = {}) {
-  const file = join(runDir(data, runId), "run.json");
+  let pid;
   let gone;
   for (const end = Date.now() + deadlineMs; ; await new Promise((resolve) => setTimeout(resolve, 50))) {
-    let record = null;
-    try {
-      record = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : null;
-    } catch {
-      // Read while it was rewritten: read again.
-    }
-    const pid = record?.holder?.pid;
-    // Its process gone, and a live server's take-back done (the claim is the server's, its WAL checkpointed), so a reader
-    // of its store meets no lock; with no server to take it back (one killed), 5 s after its process went.
+    const record = runRecordOf(data, runId);
+    // The last process its row named: a take-back names the server in its place.
+    pid = record.holder?.pid ?? pid;
+    // A live server's take-back done (the claim is the server's, its WAL checkpointed), so a reader of its store meets no
+    // lock; with no server to take it back (one killed), 5 s after its process went.
+    if (takenBack(data, runId)) return;
     if (Number.isInteger(pid) && !processAlive(pid)) {
       gone ??= Date.now();
-      if (takenBack(data, runId) || Date.now() - gone > 5_000) return;
+      if (Date.now() - gone > 5_000) return;
     }
     assert.ok(Date.now() < end, `the run's process did not exit: ${JSON.stringify(record)}`);
   }

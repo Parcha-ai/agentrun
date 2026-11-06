@@ -16,7 +16,7 @@ import { startServe } from "../dist/index.js";
 import { learningTestHooks } from "../dist/learning.js";
 import { answerWith, note } from "./fixtures/faux-learn.mjs";
 import { copyOf, ended, git, LEARN, learner, learningRows, made, onMain, reflectRows, repoOf, savedOf, settled, sleep, started, turnOf } from "./learn-support.mjs";
-import { agent, client, follow, runDir, scratch, serve, storeRun } from "./support.mjs";
+import { agent, client, follow, runDir, runRecordOf, scratch, serve, storeRun } from "./support.mjs";
 
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 const OUTPUT_PRICED = new URL("./fixtures/faux-output-priced.mjs", import.meta.url).pathname;
@@ -60,7 +60,7 @@ test("a server that goes while a run reflects: the next one asks the turn again 
   assert.equal((await first.api("GET", `/runs/${runId}`)).body.learning.state, "reflecting");
   first.child.kill("SIGKILL");
   await new Promise((resolve) => first.child.once("exit", resolve));
-  pid = JSON.parse(readFileSync(join(runDir(data, runId), "run.json"), "utf8")).holder.pid;
+  pid = runRecordOf(data, runId).holder.pid;
   assert.ok(processAlive(pid), "the run's process outlived its server, mid-turn");
   next = await startServe({ data, port: 0, faux: LEARN, drainTimeout: "5s" });
   const api = client(next.baseUrl, next.token);

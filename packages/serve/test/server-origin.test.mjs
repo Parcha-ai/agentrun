@@ -12,12 +12,12 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import * as disk from "@parcha/pi-durable-disk";
 import * as timeline from "@parcha/pi-durable-agent/timeline";
-import { agent, follow, runDir, scratch, serve } from "./support.mjs";
+import { agent, follow, runDir, runRecordOf, scratch, serve } from "./support.mjs";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const FAUX_WEB_HOLD = new URL("./fixtures/faux-web-hold.mjs", import.meta.url).pathname;
 const RAISED = "The cap was raised to $5; continue the task.";
-const recordOf = (data, runId) => JSON.parse(readFileSync(join(runDir(data, runId), "run.json"), "utf8"));
+const recordOf = (data, runId) => runRecordOf(data, runId);
 const shown = (rows) => JSON.stringify(rows.map((r) => [r.kind, r.summary]));
 
 /** POST /submit to the run's own door, as serve's submit sends a message, with `origin`. */
