@@ -191,6 +191,26 @@ test('a recorded event stream (.sse) is archived and scanned as text: a machine 
   assert.ok(blocked.findings.some(finding => finding.path === path));
 });
 
+test('a /home/ or /Users/ right after a path parameter is an API route, not a machine path; a real one still stops the export', async t => {
+  const f = await fixture(t);
+  const route = 'packages/x/lib/routes.mjs';
+  await f.write(route, 'export const path = "/agents/{agent_id}/home/files/{path}";\n');
+  await f.run();
+  const home = ['', 'home', 'someone', 'x'].join('/');
+  const users = ['x ', 'Users', 'someone', 'y'].join('/');
+  // A `}` that closes no route parameter does not excuse what follows: an interpolation, a bare brace, an encoded one.
+  const interpolated = ['${root}', 'home', 'someone', '.config', ''].join('/');
+  const braced = ['done {} }', 'Users', 'someone', 'x', ''].join('/');
+  const encoded = ['%7D', 'home', 'someone', 'y', ''].join('%2F');
+  for (const [path, text] of [['packages/x/lib/home.mjs', `"${home}"\n`], ['packages/x/lib/users.mjs', `"${users}"\n`], ['packages/x/lib/interpolated.mjs', `\`${interpolated}\`\n`], ['packages/x/lib/braced.mjs', `"${braced}"\n`], ['packages/x/lib/encoded.mjs', `"${encoded}"\n`]]) {
+    await f.write(path, text);
+    await assert.rejects(f.run(), /Source export blocked/);
+    const blocked = JSON.parse(await readFile(join(f.root, '.release/source-export-receipt.json'), 'utf8'));
+    assert.deepEqual(blocked.findings.map(finding => [finding.path, finding.rule]), [[path, 'machine_path']]);
+    await rm(join(f.root, path));
+  }
+});
+
 test('a PDF is archived only when one line of ASSETS.md names it with its SHA-256', async t => {
   const f = await fixture(t);
   const pdf = '%PDF-1.4\n% fixture\n%%EOF\n';
