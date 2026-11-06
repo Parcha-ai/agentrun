@@ -32,7 +32,7 @@ const json = (status: number, body: unknown) => new Response(JSON.stringify(body
 const refusal = (status: number, code: string, message: string, extra: Record<string, unknown> = {}) => json(status, { error: { code, message, retryable: false, ...extra } });
 
 /** A server: GET the list answers `lists` in turn (the last again after); every other request is `answer`'s. */
-function server(lists: McpServer[][], answer: (call: Sent) => Response | undefined = () => undefined) {
+function server(lists: McpServer[][], answer: (call: Sent) => Response | Promise<Response> | undefined = () => undefined) {
   const calls: Sent[] = [];
   let read = 0;
   const fetch = (async (url: string, init?: RequestInit) => {

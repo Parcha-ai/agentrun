@@ -246,7 +246,7 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
      *  nothing; a save with no credential in `auth` keeps the sealed one. */
     listMcpServers: () => call<{ servers: McpServer[]; file_unreadable?: true }>("GET", "/settings/mcp-servers"),
     previewMcpServer: (url: string, auth: McpAuth) => call<McpPreview>("POST", "/settings/mcp-servers/preview", { body: { url, auth } }),
-    saveMcpServer: (name: string, url: string, auth: McpAuth) => call<McpServer>("PUT", mcpServer(name), { body: { url, auth } }),
+    saveMcpServer: (name: string, url: string, auth: McpAuth, prices?: Record<string, number>) => call<McpServer>("PUT", mcpServer(name), { body: { url, auth, ...(prices ? { prices } : {}) } }),
     refreshMcpServer: (name: string) => call<McpRefresh>("POST", `${mcpServer(name)}/refresh`, { body: {} }),
     deleteMcpServer: (name: string) => call<unknown>("DELETE", mcpServer(name)),
     /** Starts an OAuth sign-in to the server at `url`: the page the person opens to approve it. */

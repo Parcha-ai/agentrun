@@ -59,7 +59,8 @@ export function McpServersPage({ v2, atRest, signIn, open = (url) => location.as
             <button type="button" onClick={load} className="caps mt-3 border px-3 py-2 text-[12px] hover:bg-accent">Try again</button>
           </div>
         )}
-        {form && <ServerForm key={form.saved?.name ?? "new"} v2={v2} saved={form.saved} cantStore={cantStore} signIn={startSignIn} onCancel={() => setForm(null)} onSaved={() => { setForm(null); load(); }} />}
+        {/* A save that lands after its form was closed (Cancel, or another Change) closes no form opened since. */}
+        {form && <ServerForm key={form.saved?.name ?? "new"} v2={v2} saved={form.saved} cantStore={cantStore} signIn={startSignIn} onCancel={() => setForm(null)} onSaved={((mine) => () => { setForm((open) => (open === mine ? null : open)); load(); })(form)} />}
         {servers && (servers.length
           ? <ul className="border">{servers.map((s) => <ServerRow key={s.name} v2={v2} server={s} signIn={startSignIn} onChange={() => setForm({ saved: s })} onChanged={load} />)}</ul>
           : <p className="border px-3 py-4 font-mono text-[13px] text-muted-foreground">No MCP server is saved here yet.</p>)}
@@ -170,7 +171,11 @@ function ServerForm({ v2, saved, cantStore, signIn, onCancel, onSaved }: { v2: C
   const submit = (e: FormEvent) => {
     e.preventDefault();
     if (type === "oauth" && (!saved || needsSignIn)) return void startSignIn();
-    void act(async () => { await v2.saveMcpServer(name.trim(), url.trim(), auth()); form.current?.reset(); onSaved(); });
+    // A save replaces the server's record: its tools' prices go with it, for the tools it still lists at the same address
+    // (a new address is another server, whose prices are its own).
+    const listed = preview?.tools ?? saved?.tools ?? [];
+    const kept = saved?.prices && url.trim() === saved.url ? Object.fromEntries(Object.entries(saved.prices).filter(([tool]) => listed.some((t) => t.name === tool))) : {};
+    void act(async () => { await v2.saveMcpServer(name.trim(), url.trim(), auth(), Object.keys(kept).length ? kept : undefined); form.current?.reset(); onSaved(); });
   };
   const canSave = !busy && !!name.trim() && !!url.trim() && (!!saved || !!preview);
   const keepNote = (what: string) => saved?.credential === "sealed" && saved.auth.type === type && <span className="-mt-1 mb-2 block text-[12px] text-muted-foreground">Saved. {what}</span>;
