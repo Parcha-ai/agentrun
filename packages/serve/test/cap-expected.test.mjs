@@ -285,3 +285,31 @@ test("pi: side requests sent side by side (completeSimple, inside tool calls pi 
   assert.ok(starts.every((data) => typeof data.requestId === "string" && data.boundUsd > 0), `each with its bound: ${JSON.stringify(starts)}`);
   assert.equal(sent.length, 3);
 });
+
+test("least_cap_usd under each cap_mode is the least cap that sends the refused request: a cap at it admits the request at what that mode prices it at, a cent under it refuses it", async (t) => {
+  t.after(() => useSpend(undefined));
+  // A warm conversation: its last answer, on the same model, read the conversation's prompt from the cache just now.
+  const context = conversation();
+  const previous = { role: "assistant", content: [{ type: "toolCall", id: "call-0", name: "read", arguments: { path: "page-0.txt" } }], api: SONNET.api, provider: SONNET.provider, model: SONNET.id, usage: usageOf(3, 0, promptTokens(context) - 3, 300), stopReason: "toolUse", timestamp: Date.now() };
+  context.messages.push(previous, resultOf(0));
+  /** Request `context` under `cap` with $0.40 spent: the figures of its refusal, or none when it was sent. */
+  const ask = async (cap, mode) => {
+    let figures;
+    const { models, sent } = sonnetModels();
+    const capped = await capModels(models, cap, 0.4, { mode, refused: async (f) => void (figures = f) });
+    const answer = await capped.streamSimple(SONNET, context).result();
+    await settle();
+    return { sent: sent.length === 1, refused: answer.stopReason === "error", figures, words: answer.errorMessage };
+  };
+  const least = {};
+  for (const mode of ["expected", "strict"]) {
+    const refused = await ask(0.401, mode);
+    assert.ok(refused.refused && refused.figures, `${mode}: refused at a $0.401 cap`);
+    const at = refused.figures.leastCapUsd;
+    assert.ok(refused.words.includes(`Raise the cap to at least $${at.toFixed(2)}`), `${mode}: the cap its words name: ${refused.words}`);
+    assert.equal((await ask(at, mode)).sent, true, `${mode}: a cap at $${at} sends it`);
+    assert.equal((await ask(at - 0.01, mode)).sent, false, `${mode}: a cent under it does not`);
+    least[mode] = at;
+  }
+  assert.ok(least.expected < least.strict, `expected mode's least cap is the expected cost's, below strict's worst case: ${JSON.stringify(least)}`);
+});
