@@ -128,6 +128,20 @@ test("take over and hand back over the proxied socket: input outside a hold is d
   ws.destroy();
 });
 
+test("taking over gets the Host check every route gets: a page that rebound a name of its own cannot reach the viewer's socket to take the browser, whatever its Origin and cookie; this machine's name on another port (a tunnel) takes over", { timeout: 120_000 }, async (t) => {
+  const w = await watched(t, { faux: BROWSE_ASK });
+  const at = (name) => ({ origin: `http://${name}`, headers: { host: name, cookie: w.cookie } });
+  const rebound = await connect(`ws://127.0.0.1:${w.server.port}${w.wsPath}`, at(`rebound.example:${w.server.port}`));
+  assert.equal(rebound.status, 403, "a rebound name never reaches the socket");
+  const tunnel = await connect(`ws://127.0.0.1:${w.server.port}${w.wsPath}`, at(`localhost:${w.server.port + 1}`));
+  assert.equal(tunnel.status, 101, "a tunnel's port is this machine's name");
+  tunnel.ws.sendJson({ type: "hello", token: w.handed.token });
+  assert.equal(JSON.parse((await tunnel.ws.next(5_000)).data).type, "ready");
+  tunnel.ws.sendJson({ type: "take" });
+  assert.deepEqual(await w.next(tunnel.ws, "hold"), { type: "hold", held: true });
+  tunnel.ws.destroy();
+});
+
 test("only the owner's signed-in page takes over or answers: a token, or no credential, never opens the socket or the hand-back", { timeout: 120_000 }, async (t) => {
   const w = await watched(t, { faux: BROWSE_ASK });
   assert.equal((await w.viewer({ cookie: null })).status, 401, "no session: no socket, so no take");
