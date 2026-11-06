@@ -19,6 +19,7 @@
 // harness's own search (inside its CLI, where no call can wait for a person) gives way to the kernel's. A run is never
 // told a deny: its Plane resolves a denied capability as under ask, and the gate, which reads the permission at each
 // call, is the one place that refuses it, so a deny lifted mid-run is lifted at the next call.
+import { blurbOf } from "./tool-blurbs.js";
 import { readFileSync } from "node:fs";
 import { isToolSettingsKey } from "@parcha/pi-durable-agent";
 import { join } from "node:path";
@@ -436,10 +437,13 @@ export function agentTools(env: NodeJS.ProcessEnv, settings: ToolSettingsMap, ag
   return [...new Set(agent.tools)].sort((a, b) => rank(a) - rank(b)).map((name) => {
     const { permission, from } = permissionFrom(name, settings as never, (agent.overrides ?? {}) as never);
     const gate = { permission, permission_from: from, default_permission: permissionOf(name, settings as never), permissions: [...permissionsOf(name)] };
-    if (!Object.hasOwn(PROVIDERS, name)) return { name, ...gate };
+    // One short line for people (tool-blurbs.ts), as capabilities serves it.
+    const blurb = blurbOf(name);
+    const shown = { name, ...(blurb ? { blurb } : {}) };
+    if (!Object.hasOwn(PROVIDERS, name)) return { ...shown, ...gate };
     const pick = name as Pickable;
     const own = agent.overrides?.[pick]?.provider;
     const server = settings[pick]?.provider;
-    return { name, ...gate, provider: own ?? server ?? PROVIDERS[pick][0], provider_from: own ? "agent" : server ? "server" : "default", default_provider: server ?? PROVIDERS[pick][0], resolved: plane[pick]! };
+    return { ...shown, ...gate, provider: own ?? server ?? PROVIDERS[pick][0], provider_from: own ? "agent" : server ? "server" : "default", default_provider: server ?? PROVIDERS[pick][0], resolved: plane[pick]! };
   });
 }

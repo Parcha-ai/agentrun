@@ -59,6 +59,10 @@ test("an approval a person's message declined shows two rows: the server's resum
     ["phase", `AgentRun: [tool approval] This answers your web_fetch call call_1 (arguments {"url":"https://api.example/"}), which waited for a person's approval; it is not a new message from them.`],
     ["user_message", "You: No, not that one. Use http://127.0.0.1:7340/#/runs/01a1a88c-4f2e-7abc-8def-0123456789ab and [redacted] instead."],
   ], "the person's words are never hidden: a row of theirs, their console link's fragment kept, their pasted key redacted");
+  // The server's row says it is the server's (origin "server", as any server message's row), and the turn took one
+  // message, the person's: the server's row beside it is not a second one.
+  assert.equal(rows.find((r) => r.kind === "phase")?.origin, "server", "the server's row is served as the server's");
+  assert.deepEqual(rows.filter(timeline.isMessageRow).map((r) => r.kind), ["user_message", "user_message"], "one message per turn: the server's row beside the person's words is not one");
 });
 
 test("a guard: a declined approval with no words of the person's is no origin (its message stays the person's)", () => {
