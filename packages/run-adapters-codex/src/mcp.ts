@@ -10,7 +10,7 @@
 //    for nothing of ours, so the proxy writes the call's intent in the session's records itself, by Codex's own call id
 //    (`_meta.callId`), before anything is sent, and its outcome after. A call a crash cut off is then answered
 //    interrupted from the records, never sent twice.
-import type { McpCallResult, McpClient, SessionMcp } from "@parcha/agentrun-kernel";
+import { HOST_RESULT_MAX_CHARS, type McpCallResult, type McpClient, type SessionMcp } from "@parcha/agentrun-kernel";
 import type { TomlValue } from "./config.js";
 import type { DriveContext } from "./host/kernel.js";
 import { BuiltinCalls, type CallHooks, toolKey } from "./host/process.js";
@@ -41,7 +41,9 @@ const said = (text: string, isError: boolean): McpCallResult => ({ content: [{ t
  *  its intent once `barrier` has its line in the log and before it is sent, its outcome once it answers. A call id the
  *  records already hold is answered from them. */
 export function recorded(mcp: SessionMcp, ctx: DriveContext, hooks: () => CallHooks | undefined): SessionMcp {
-  const calls = new BuiltinCalls(ctx);
+  // Each outcome is kept whole, up to the host's bound on a tool result, the most the door hands Codex: a call answered
+  // again from the records reads what the server said, never the step's default cut.
+  const calls = new BuiltinCalls(ctx, { outputChars: HOST_RESULT_MAX_CHARS });
   return {
     servers: mcp.servers,
     async call(server, tool, args, context) {
