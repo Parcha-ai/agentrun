@@ -8,7 +8,8 @@ import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { localRun } from "../src/local-run.ts";
 import { readLocalRunStatus } from "../src/index.ts";
-import { openDurableRun, RunError } from "../src/run.ts";
+import { openDurableRun, RUN_STATUS_TABLE, RunError } from "../src/run.ts";
+import { DatabaseSync } from "node:sqlite";
 import { parseRunRecord, RUN_JSON, type BoxMode } from "../src/status.ts";
 import { reapOrRefuse } from "../src/commands.ts";
 import { BoxUnavailableError, FencedError, HeldError } from "../src/errors.ts";
@@ -371,6 +372,36 @@ describe("localRun", () => {
       const run2 = await openDurableRun(ref, { ...localRun(root), harness: { models: scripted.models, registry: scripted.registry } });
       assert.equal(run2.generation, 2);
       await run2.release();
+    } finally {
+      dir.remove();
+    }
+  });
+
+  it("under its host's epoch: no owner.lock and no run.json; its record is in its store, the epoch its generation, the previous one read back, and a second open while the first holds the store is refused by the store's own lock", async () => {
+    const dir = scratchRoot("local-epoch");
+    const root = join(dir.root, "runs", "run-1");
+    try {
+      const scripted = scriptedHarness();
+      const options = { ...localRun(root), harness: { models: scripted.models, registry: scripted.registry } };
+      const run1 = await openDurableRun(ref, { ...options, epoch: 7 });
+      assert.equal(run1.generation, 7);
+      await assert.rejects(openDurableRun(ref, { ...options, epoch: 8 }), "the store's exclusive lock keeps a second writer out");
+      await run1.setStatus("done", { workflow: "complete" });
+      await run1.release();
+      assert.deepEqual(readdirSync(root).filter((name) => ["run.json", "run.json.tmp", "owner.lock"].includes(name)), [], "no lease file");
+      const db = new DatabaseSync(join(root, "store", "run.sqlite"), { readOnly: true });
+      const kept = JSON.parse((db.prepare(`SELECT record FROM ${RUN_STATUS_TABLE} WHERE id = 1`).get() as { record: string }).record);
+      db.close();
+      assert.deepEqual([kept.status, kept.generation, kept.detail], ["done", 7, { workflow: "complete" }]);
+      let previous: unknown;
+      const run2 = await openDurableRun(ref, { ...options, epoch: 9, beforeResume: async (hook) => void (previous = hook.previous) });
+      assert.equal(run2.generation, 9);
+      assert.deepEqual([(previous as { status: string }).status, (previous as { generation: number }).generation], ["done", 7], "the previous incarnation's record, from the store");
+      await run2.release();
+      const after = new DatabaseSync(join(root, "store", "run.sqlite"), { readOnly: true });
+      const released = JSON.parse((after.prepare(`SELECT record FROM ${RUN_STATUS_TABLE} WHERE id = 1`).get() as { record: string }).record);
+      after.close();
+      assert.deepEqual([released.status, released.generation], ["paused", 9], "a release of a running run leaves it paused");
     } finally {
       dir.remove();
     }

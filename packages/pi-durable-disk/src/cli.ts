@@ -46,7 +46,7 @@ class UsageError extends PdaError {
 }
 
 const USAGE = `usage:
-  pi-durable-disk run --dir PATH --app MODULE [--id ID] [any run flag below but the Archil ones]
+  pi-durable-disk run --dir PATH --app MODULE [--id ID] [--epoch N] [any run flag below but the Archil ones]
   pi-durable-disk run --disk D --region R --id ID --app MODULE [--mount-root DIR] [--archil BIN]
                         [--heartbeat-ms N] [--lease-expiry-ms N] [--lease-margin-ms N] [--on-sigterm resume|pause]
                         [--token-stdin] [--run-as USER] [--serve PORT] [--serve-host H] [--serve-url URL]
@@ -262,6 +262,11 @@ async function runInstance(values: Record<string, unknown>): Promise<number> {
   if (boxMode !== undefined && !(BOX_MODES as readonly string[]).includes(boxMode)) throw new UsageError(`--box-mode is one of ${BOX_MODES.join(", ")}`);
   // No box to run in: refused by name (exit 78) before anything here starts, as openDurableRun refuses it.
   if (boxMode === "unavailable") throw new BoxUnavailableError();
+  // A host that holds the run's claim on a record of its own (agentrun-serve's run row) hands its epoch: a local
+  // directory's run then takes no owner lock and writes no run.json (openDurableRun's `epoch`).
+  const epochFlag = str(values.epoch);
+  if (epochFlag !== undefined && (!/^\d{1,15}$/.test(epochFlag) || dir === undefined)) throw new UsageError("--epoch takes a whole number, with --dir");
+  const epoch = epochFlag === undefined ? undefined : Number(epochFlag);
   const ms = (name: string) => durationFlag(values, name);
   const lease = { heartbeatMs: ms("heartbeat-ms"), expiryMs: ms("lease-expiry-ms"), marginMs: ms("lease-margin-ms") };
   const parkMs = ms("park-threshold") || undefined;
@@ -302,6 +307,7 @@ async function runInstance(values: Record<string, unknown>): Promise<number> {
       // This process ends by process.exit (main, below), so its store's close checkpoints nothing: the WAL stays, and
       // whoever takes the run back next checkpoints it.
       keepWal: true,
+      ...(epoch === undefined ? {} : { epoch }),
       ...(boxMode === undefined ? {} : { boxMode: boxMode as BoxMode }),
       // A local directory is its own claim (no mount, no token); a disk's run is mounted with a token.
       ...(dir === undefined ? { mountToken: await readToken(values), mountRoot, host: { archil: str(values.archil) } } : localRun(dir)),
@@ -330,6 +336,8 @@ async function runInstance(values: Record<string, unknown>): Promise<number> {
   }
   server?.attach(run, app!.door);
   log("running", { generation: run.generation, steps, ...(server ? { serve: server.url } : {}) });
+  // Under a host's epoch nothing else says where this run serves: its host reads this one line on stdout.
+  if (epoch !== undefined) process.stdout.write(`${JSON.stringify({ event: "running", run: ref.id, epoch, pid: process.pid, ...(server ? { serve: server.url } : {}) })}\n`);
   const { onOpen, wake: appWake } = app!;
   return serveUntilDone(run, onOpen, onSigterm, log, process, {
     drainMs,
@@ -762,6 +770,7 @@ export async function main(argv: string[]): Promise<number> {
             "drain-timeout": { type: "string" },
             "run-as": { type: "string" },
             "box-mode": { type: "string" },
+            epoch: { type: "string" },
           }),
         );
       case "supervise":
