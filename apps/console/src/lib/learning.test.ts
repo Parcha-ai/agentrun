@@ -284,3 +284,20 @@ describe("what a run's learning changed", () => {
   });
 });
 
+
+// A drop's sentence is the server's, shown as it is: "Looked back: " before it, nothing taken out of it, so a sentence
+// that starts "Not kept, with the skill …" or "Not kept, the skill …" says "Not kept" once, as "Not kept: …" does.
+describe("lookedBack, a run that kept nothing for a reason", () => {
+  const SHAPES = [
+    "Not kept: It's about one shop's returns portal, not a rule other shops share.",
+    "Not kept, with the skill weekly-summary: it's about one shop's returns portal.",
+    "Not kept, the skill find-policies: it named a value the server keeps secret.",
+  ];
+  for (const detail of SHAPES) {
+    it(`says the server's sentence as it is: ${detail.slice(0, 40)}…`, () => {
+      const said = lookedBack({ state: "dropped", reason: "grader", detail });
+      expect(said).toBe(`Looked back: ${detail}`);
+      expect(said.match(/Not kept/g)).toHaveLength(1);
+    });
+  }
+});

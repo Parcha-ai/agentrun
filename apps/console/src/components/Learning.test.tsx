@@ -921,3 +921,23 @@ describe("text in angle brackets in what it learned", () => {
     expect(flow.textContent).toContain("Customer: <name>, Amount: $<amount>");
   });
 });
+
+// The panel of runs that kept nothing shows each run's sentence as the server says it, under a title that does not say
+// "Not kept" again: whatever shape the sentence takes, "Not kept" appears once a row.
+describe("the Learning tab's runs that kept nothing", () => {
+  const SHAPES = [
+    "Not kept: It's about one shop's returns portal, not a rule other shops share.",
+    "Not kept, with the skill weekly-summary: it's about one shop's returns portal.",
+    "Not kept, the skill find-policies: it named a value the server keeps secret.",
+  ];
+  it("lists each sentence as served, saying Not kept once in each row and not in the title", async () => {
+    const runs = SHAPES.map((detail, i) => runOf(`run-d${i}`, `shop${i}.com`, { state: "dropped", reason: "grader", detail }));
+    const t = await open(agent(true), { learning: async () => view(), runs });
+    const panel = [...t.host.querySelectorAll("aside section")].find((s) => SHAPES.some((d) => s.textContent?.includes(d))) as HTMLElement;
+    expect(panel).toBeTruthy();
+    expect(panel.querySelector("h2")!.textContent).not.toContain("Not kept");
+    const rows = [...panel.querySelectorAll("li")].map((li) => li.querySelector("span")!.textContent ?? "");
+    expect(rows).toEqual(SHAPES);
+    for (const row of rows) expect(row.match(/Not kept/g)).toHaveLength(1);
+  });
+});
