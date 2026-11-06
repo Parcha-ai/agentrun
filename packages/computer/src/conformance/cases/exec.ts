@@ -1,5 +1,6 @@
 // exec.run: argv not a shell, split streams, the exit code, a timeout and an abort that end the whole tree, truncation,
-// cwd and a minimal environment, and a user that is honoured or refused, never ignored.
+// cwd and a minimal environment, a user that is not root with no capabilities, and a user switch honoured or refused,
+// never ignored.
 import type { Case } from "../types.js";
 import { alive } from "./util.js";
 
@@ -66,6 +67,13 @@ export const execCases: Case[] = [
 		const pid = Number(ran.out.trim());
 		t.assert(pid > 1, `the escapee's pid, from ${JSON.stringify(ran.out)}`);
 		t.equal((await t.exec(["sh", "-c", alive([pid])])).out, "", "a child that left the program's session, after the program ended: gone");
+	}),
+	// The suite's specs never ask for root, so a computer's programs run as another user with no capabilities.
+	exec("unprivileged", async (t) => {
+		const uid = (await t.exec(["id", "-u"])).out.trim();
+		t.assert(uid !== "" && uid !== "0", `id -u: the computer's user is ${uid === "0" ? "root" : JSON.stringify(uid)}, though the spec did not ask for root`);
+		const status = (await t.exec(["cat", "/proc/self/status"])).out;
+		t.equal(/^CapEff:\s*([0-9a-f]+)$/m.exec(status)?.[1], "0000000000000000", "CapEff in /proc/self/status: no effective capabilities");
 	}),
 	exec("user", async (t) => {
 		const own = (await t.exec(["id", "-u"])).out.trim();

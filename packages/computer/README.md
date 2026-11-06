@@ -266,7 +266,8 @@ What a provider module implements:
 
 Core and Full follow the Kubernetes agent-sandbox conformance levels (KEP-539.2):
 
-- **Core** is what every computer does: hello and ping, `exec.run`, the `files.*` and `tar.*` methods, the `process.*`
+- **Core** is what every computer does: hello and ping, `exec.run` as a user other than root with no effective
+  capabilities (the suite's specs never ask for root), the `files.*` and `tar.*` methods, the `process.*`
   methods, a computer with network `none`, `check`, `create`, `attach`, `list`, `network` read-back and `release`, and
   the drift checks. Core passes when every Core case passes and the run leaves no computer behind.
 - **Full** is each optional capability a provider declares: network `open`, a network allowlist, and the janitor for
