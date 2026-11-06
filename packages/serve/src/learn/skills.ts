@@ -200,6 +200,9 @@ const toolingNodes = (dsl: DraftReader, doc: unknown): DraftProblem[] =>
     return Array.isArray(tools) && tools.length ? [{ rule: "workflow" as const, detail: `the model node at ${node.path} names a tool (${tools.map(String).join(", ").slice(0, 200)}): ${MODEL_NODE_TOOLS}` }] : [];
   });
 
+/** What a learned draft whose output names no path is refused with. */
+export const LEARNED_OUTPUT_PATH = "its output names no path: a learned workflow's output is the value at output.path";
+
 /** What a learned workflow is refused with when a node needs more than its runner gives the DSL (learned-workflow.ts:
  *  runNode and runEffect alone): a judge, pick or sift node, a route by question, a verify or an ask needs a decision
  *  provider (runJudge) a run is not given. Refused at learn time and before a call runs any node, never after. */
@@ -276,6 +279,17 @@ export function draftProblems(dsl: DraftReader, text: string, tools?: readonly s
   let out: DraftProblem[];
   try {
     out = [...toolingNodes(dsl, doc), ...executableNodes(dsl, doc), ...unrunnableNodes(dsl, doc), ...longNodes(dsl, doc), ...gatedNodes(dsl, doc, gated)];
+    // A learned workflow answers the value at its output's path: one that names none would answer its whole state, which
+    // fails its output schema when the call ends, after every node spent.
+    const path = (doc as { output?: { path?: unknown } } | null)?.output?.path;
+    if (typeof path !== "string" || !path) out.push({ rule: "workflow", detail: LEARNED_OUTPUT_PATH });
+    // A composed workflow node's child too: its output is the value at its own output.path, or it fails the same way.
+    for (const node of dsl.inspectWorkflow(doc).nodes) {
+      if (node.kind !== "workflow") continue;
+      const child = (at(doc, node.path) as { workflow?: { output?: { path?: unknown } } } | undefined)?.workflow;
+      const childPath = child?.output?.path;
+      if (typeof childPath !== "string" || !childPath) out.push({ rule: "workflow", detail: `the workflow node at ${node.path}: ${LEARNED_OUTPUT_PATH}` });
+    }
   } catch (error) {
     // The inspection reads the whole document, as validation need not: what it cannot read is refused, never passed.
     return [{ rule: "workflow", detail: `the workflow DSL cannot inspect it: ${(error as Error).message.slice(0, 200)}` }];

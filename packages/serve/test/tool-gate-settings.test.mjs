@@ -37,5 +37,6 @@ test("a settings file that stops reading (cut off mid-write) keeps the last good
 
 test("a settings file that never read asks for every tool", async (t) => {
   const { gate } = await gateOn(t, '{"bash":{"permission":"de');
-  for (const tool of ["read", "web_fetch", "bash"]) assert.equal(gate.policy(tool), "ask", tool);
+  // The shell tools too, the watchers among them: an ask nothing read is never lifted to allow.
+  for (const tool of ["read", "web_fetch", "bash", "bash_background", "bash_input", "bash_output", "bash_list", "bash_signal"]) assert.equal(gate.policy(tool), "ask", tool);
 });
