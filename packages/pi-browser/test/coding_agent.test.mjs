@@ -458,11 +458,10 @@ test("the coding agent: a dropped connection that will not come back is retried 
   assert.deepEqual(next.result.details?.previous_session, { released: true, reason: "lost", at: ended.endedAt });
 });
 
-/** A driver factory whose reconnect meets an earlier init still running in the extension and waits for it, as
- *  stagehandDriver does (up to its 60 s in-flight wait, here `waitMs`), honouring the attach's signal; a wait that ends
- *  starts a second init. */
-function initStillRunning(base, waitMs) {
-  const seen = { attaches: 0, secondInits: 0, waitAborted: false };
+/** A driver factory whose reconnect waits on the browser (its connection held on the way: Stagehand's connect waits up to its
+ *  60 s init deadline, here `waitMs`), honouring the attach's signal, as stagehandDriver does; a wait that ends attaches. */
+function attachHeld(base, waitMs) {
+  const seen = { attaches: 0, lateAttaches: 0, waitAborted: false };
   const factory = async (target, signal, options) => {
     seen.attaches += 1;
     if (seen.attaches === 1) return base(target, signal, options);
@@ -470,15 +469,15 @@ function initStillRunning(base, waitMs) {
       const timer = setTimeout(resolve, waitMs);
       signal?.addEventListener("abort", () => { clearTimeout(timer); seen.waitAborted = true; reject(signal.reason ?? new Error("aborted")); }, { once: true });
     });
-    seen.secondInits += 1;
+    seen.lateAttaches += 1;
     return base(target, signal, options);
   };
   return { factory, seen };
 }
 
-test("the coding agent: an attach given a deadline stops waiting on an earlier init at that deadline, starts no second init, and the session is then released as lost", async () => {
+test("the coding agent: an attach given a deadline stops waiting on the browser at that deadline, nothing attaches late, and the session is then released as lost", async () => {
   const backend = fake();
-  const stuck = initStillRunning(fakeDriver(backend), 3_000);
+  const stuck = attachHeld(fakeDriver(backend), 3_000);
   const custody = new LocalCustody({
     config: { label: "", run: "run-deadline", policy: { proxies: false, verified: false, captcha: false, geolocation: null, region: null, contextId: null, sessionTimeoutS: 1800, idleReleaseS: 180, batchTimeoutMs: 60_000 } },
     provider: async () => backend.provider, driver: stuck.factory, keep: () => {}, redact: (text) => text, signal: new AbortController().signal,
@@ -488,8 +487,8 @@ test("the coding agent: an attach given a deadline stops waiting on an earlier i
   const started = Date.now();
   await assert.rejects(custody.session(AbortSignal.timeout(300)), "the reconnect's attach ends at its deadline");
   assert.ok(Date.now() - started < 300 + 1_000, `it ended near the deadline, not after the attach's wait (${Date.now() - started} ms)`);
-  assert.equal(stuck.seen.secondInits, 0, "no second init started");
-  assert.ok(stuck.seen.waitAborted, "the wait for the earlier init was cut by the deadline");
+  assert.equal(stuck.seen.lateAttaches, 0, "nothing attached late");
+  assert.ok(stuck.seen.waitAborted, "the wait was cut by the deadline");
   assert.equal((await custody.unreachable()).released, true, "then released as lost");
   assert.equal(backend.tally().releases, 1, "the provider released it once: nothing keeps billing");
   await custody.close("close");
