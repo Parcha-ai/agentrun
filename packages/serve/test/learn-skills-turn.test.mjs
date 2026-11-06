@@ -188,3 +188,9 @@ test("the prompt's example workflow draft is a whole, valid draft the learned ru
     if (!tools.includes("web_fetch")) assert.deepEqual(doc.schemas[doc.input.schemaId].required, ["text"], "the model-only example reads the page's text");
   }
 });
+
+test("the end-of-run prompt says what the run was told about learning is no lesson, and a job kept as a skill needs no note beside it", () => {
+  const prompt = reflect.reflectPrompt({ dir: ".learning", active: 0, tools: ["web_fetch", "read"] }).replace(/\s+/g, " ");
+  assert.match(prompt, /What you were told about learning itself is not a lesson: never make a note of it\./);
+  assert.match(prompt, /A job you keep a skill for needs no note beside it\./);
+});

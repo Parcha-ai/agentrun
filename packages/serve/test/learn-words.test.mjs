@@ -191,3 +191,14 @@ test("a note's name and a grader's reason holding a long value that becomes a se
   const shown = JSON.stringify(reads);
   for (const part of parts) assert.ok(!shown.includes(part), `no part of the value is shown: ${part}`);
 });
+
+test("a verdict that keeps nothing names the skill or workflow draft lost with it, so a lost skill is never silent", () => {
+  const verdict = { reason: "r", items: [
+    { file: "confirmation-line.md", keep: false, why: "It adds an acknowledgement line the user never asked for." },
+    { file: "skills/weekly-summary/SKILL.md", keep: true, why: "The skill restates the user's format." },
+    { file: "workflows/price-report/README.md", keep: true, why: "ok" },
+    { file: "workflows/price-report/workflow.json", keep: true, why: "ok" },
+  ] };
+  assert.equal(notKept(verdict), "Not kept: It adds an acknowledgement line the user never asked for. The skill weekly-summary and the workflow price-report were not kept either.");
+  assert.equal(notKept({ reason: "r", items: [{ file: "a.md", keep: false, why: "Too specific." }] }), "Not kept: Too specific.", "a verdict with no skill or draft says no more");
+});
