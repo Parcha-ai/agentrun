@@ -97,7 +97,7 @@ test("a take-over kept alive past its hold holds the person's time again each ho
   const clock = fakeClock();
   const holdMs = 15 * 60_000;
   const gates = createDrivingGates({ timers: clock.timers, holdIdleMs: holdMs });
-  const { person, held } = hands(root, { gates, timers: clock.timers, holdMs });
+  const { person, held } = hands(root, { gates, timers: clock.timers, holdMs, now: clock.now });
   t.after(() => person.close());
   const tag = "ar-run-5-1";
   const ends = [];
@@ -123,7 +123,8 @@ test("after a re-hold the cap refused, the take-over and the ask it was shared w
   const clock = fakeClock();
   const holdMs = 15 * 60_000;
   const gates = createDrivingGates({ timers: clock.timers, holdIdleMs: holdMs });
-  const { person, held } = hands(root, { gates, timers: clock.timers, holdMs });
+  // The ledger on the same clock as the timers: fifteen minutes pass for both.
+  const { person, held } = hands(root, { gates, timers: clock.timers, holdMs, now: clock.now });
   t.after(() => person.close());
   const tag = "ar-run-6-1";
   gates(tag).setPresent(true);
