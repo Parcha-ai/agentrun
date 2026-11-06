@@ -21,6 +21,27 @@ function output(argv, { uid, caps, users, user }) {
 	return `${argv.slice(1).join(" ")}\n`;
 }
 
+/** process.start, wait, signal and list over a computer's table: echo ends at once, anything else runs until a signal. */
+function processes(computer, method, params) {
+	const table = computer.processes;
+	if (method === "process.start") {
+		const entry = { id: `p${table.length + 1}`, pid: 100 + table.length, argv: params.argv, argvClipped: false, pty: params.pty !== undefined, startedAt: Date.now() };
+		Object.assign(entry, params.argv[0] === "echo" ? { running: false, exitCode: 0, signal: null, endedAt: Date.now() } : { running: true, exitCode: null, signal: null, endedAt: null });
+		table.push(entry);
+		return { id: entry.id, pid: entry.pid };
+	}
+	const entry = table.find((one) => one.id === params.id);
+	if (method === "process.list") {
+		const from = params.from ?? 0;
+		const page = table.slice(from, from + computer.listPage);
+		return { processes: page, truncated: from + page.length < table.length, next: from + page.length };
+	}
+	if (entry === undefined) return undefined;
+	if (method === "process.signal") Object.assign(entry, entry.running ? { running: false, signal: params.signal, endedAt: Date.now() } : {});
+	if (method === "process.signal") return {};
+	return { running: entry.running, exitCode: entry.exitCode, signal: entry.signal };
+}
+
 /** A daemon's end of a connection: answers each request line. */
 function fakeDaemon(hello, computer) {
 	const toDaemon = new PassThrough();
@@ -40,6 +61,11 @@ function fakeDaemon(hello, computer) {
 				const stdout = output(request.params.argv, { ...computer, user: request.params.user });
 				reply({ result: { exitCode: 0, stdout: b64(stdout), stderr: "", timedOut: false, truncated: false } });
 			} else if (request.method === "files.mkdir") reply({ result: {} });
+			else if (["process.start", "process.wait", "process.signal", "process.list"].includes(request.method)) {
+				const result = processes(computer, request.method, request.params);
+				if (result === undefined) reply({ error: { code: -32000, message: `no process ${request.params.id}`, data: { kind: "not_found" } } });
+				else reply({ result });
+			}
 			else reply({ error: { code: -32601, message: `${request.method} is not a method` } });
 		}
 	});
@@ -52,6 +78,8 @@ function fakeDaemon(hello, computer) {
  * - `createHangs`, `releaseHangs`: those calls never answer. `createDelays`: ms before each create answers, by call.
  * - `connectThrows`: connect throws that message. `uid`: the default user's uid; `users`: names to uids.
  * - `capsForUser`: a computer whose spec asked for a user has every capability.
+ * - `createRejects`: create rejects with that message. `createIgnoresCheck`: create makes a computer check refuses.
+ * - `listPage`: how many processes one process.list page holds.
  */
 export function fakeComputers({
 	id = "fake",
@@ -70,6 +98,9 @@ export function fakeComputers({
 	uid = 1000,
 	users = {},
 	capsForUser = false,
+	createRejects,
+	createIgnoresCheck = false,
+	listPage = 100,
 } = {}) {
 	const computers = new Map();
 	const made = [];
@@ -89,11 +120,12 @@ export function fakeComputers({
 		},
 		async create(spec) {
 			if (createHangs) return new Promise(() => {});
+			if (createRejects) throw new Error(createRejects);
 			const wait = createDelays[next] ?? 0;
 			if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
 			if (failCreate) return fail("refused", failCreate);
 			const refusals = provider.check(spec);
-			if (refusals.length > 0) return fail("refused", refusals.map((r) => r.message).join("; "));
+			if (refusals.length > 0 && !createIgnoresCheck) return fail("refused", refusals.map((r) => r.message).join("; "));
 			const name = `fake-${++next}`;
 			const record = {
 				ref: { id: `id-${next}`, name },
@@ -101,7 +133,13 @@ export function fakeComputers({
 				network: spec.network,
 				deadline: new Date(Date.now() + spec.lifetimeMs),
 				state: "running",
-				daemon: { uid: spec.user ?? String(uid), caps: capsForUser && spec.user !== undefined ? ALL_CAPABILITIES : NO_CAPABILITIES, users },
+				daemon: {
+					uid: spec.user ?? String(uid),
+					caps: capsForUser && spec.user !== undefined ? ALL_CAPABILITIES : NO_CAPABILITIES,
+					users,
+					processes: [],
+					listPage,
+				},
 			};
 			computers.set(name, record);
 			made.push({ name, labels: record.labels });

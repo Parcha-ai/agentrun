@@ -19,7 +19,14 @@ const statuses = (report) => Object.fromEntries(report.results.map((r) => [r.id,
 const reasons = (report) => Object.fromEntries(report.results.filter((r) => r.reason).map((r) => [r.id, r.reason]));
 const sink = () => {
 	let text = "";
-	return { write: (chunk) => (text += chunk), text: () => text };
+	return {
+		write: (chunk, done) => {
+			text += chunk;
+			done?.();
+			return true;
+		},
+		text: () => text,
+	};
 };
 
 test("a case that passes is pass; one that throws is fail, with what it found as the reason", async () => {
@@ -34,12 +41,12 @@ test("a case that passes is pass; one that throws is fail, with what it found as
 				},
 			}),
 			pass("exec.two", { run: async (t) => t.equal(1, 2, "one and two") }),
-			pass("exec.refused", { run: async (t) => t.ok(await t.client.call("process.list", {}), "process.list") }),
+			pass("exec.refused", { run: async (t) => t.ok(await t.client.call("process.read", { id: "p1", stream: "stdout", offset: 0 }), "process.read") }),
 		],
 	});
 	assert.deepEqual(statuses(report), { "health.echo": "pass", "exec.two": "fail", "exec.refused": "fail" });
 	assert.equal(reasons(report)["exec.two"], "one and two: expected 2, got 1");
-	assert.match(reasons(report)["exec.refused"], /^process\.list: unsupported: process\.list is not a method/);
+	assert.match(reasons(report)["exec.refused"], /^process\.read: unsupported: process\.read is not a method/);
 	assert.equal(report.core, "fail");
 	assert.equal(report.provider, "fake");
 	assert.equal(report.providerVersion, "1.0.0");
@@ -401,4 +408,78 @@ test("a files case that makes a directory needs exec too: a daemon with files an
 	for (const result of report.results.filter((r) => r.id !== "files.relative-path")) {
 		assert.deepEqual([result.id, result.status, result.reason], [result.id, "skip", "the provider does not declare exec"]);
 	}
+});
+
+test("a create or connect that rejects fails its case, and no rejection goes unhandled", async () => {
+	const unhandled = [];
+	const listen = (reason) => unhandled.push(reason);
+	process.on("unhandledRejection", listen);
+	try {
+		const rejecting = fakeComputers({ createRejects: "the vendor API is down" });
+		const report = await runConformance(rejecting.provider, {
+			image: IMAGE,
+			cases: [pass("provider.rejects", { computer: "none", run: async (t) => void (await t.create()) }), pass("provider.after", { computer: "none" })],
+		});
+		assert.deepEqual(statuses(report), { "provider.rejects": "fail", "provider.after": "pass" });
+		assert.match(reasons(report)["provider.rejects"], /the vendor API is down/);
+		const throwing = fakeComputers({ connectThrows: "the socket closed" });
+		const connected = await runConformance(throwing.provider, {
+			image: IMAGE,
+			cases: [pass("provider.connects", { computer: "none", run: async (t) => void (await t.connect(await t.create())) })],
+		});
+		assert.match(reasons(connected)["provider.connects"], /the socket closed/);
+		await sleep(50);
+	} finally {
+		process.off("unhandledRejection", listen);
+	}
+	assert.deepEqual(unhandled.map(String), [], "no unhandled rejection");
+});
+
+test("the CLI's main resolves only once its report is written out", async () => {
+	const events = [];
+	const slow = {
+		write: (chunk, done) => {
+			setTimeout(() => {
+				events.push("written");
+				done?.();
+			}, 200);
+			return false;
+		},
+	};
+	const finished = main(["--provider", "./fixtures/fake-provider.mjs", "--json"], { stdout: slow, cwd: HERE, cases: [pass("health.ping")] }).then((code) => {
+		events.push("resolved");
+		return code;
+	});
+	assert.equal(await finished, 0);
+	assert.deepEqual(events, ["written", "resolved"]);
+});
+
+test("the CLI as a process prints a report of more than 1 MiB whole through a pipe", async () => {
+	const { code, stdout, stderr } = await new Promise((resolve) => {
+		execFile(
+			process.execPath,
+			[CLI, "--provider", "./fixtures/big-report-provider.mjs", "--only", "health", "--json"],
+			{ cwd: HERE, env: { ...process.env, INIT_CWD: HERE }, maxBuffer: 64 * 1024 * 1024 },
+			(error, stdout, stderr) => resolve({ code: error ? error.code : 0, stdout, stderr }),
+		);
+	});
+	assert.equal(code, 1, stderr);
+	assert.ok(stdout.length > 1024 * 1024, `${stdout.length} bytes`);
+	const report = JSON.parse(stdout);
+	assert.equal(report.results.length, 3);
+	for (const result of report.results) assert.ok(result.reason.length > 512 * 1024, result.id);
+});
+
+test("provider.check-refuses deletes a computer that create made though check refused its spec, and fails", async () => {
+	const fake = fakeComputers({ createIgnoresCheck: true, lifetime: "vendor" });
+	const report = await runConformance(fake.provider, { image: IMAGE, cases: byId("provider.check-refuses") });
+	assert.equal(statuses(report)["provider.check-refuses"], "fail");
+	assert.match(reasons(report)["provider.check-refuses"], /expected an error \(refused\), got ok/);
+	assert.deepEqual(fake.alive(), [], "the computer the wrong create made was deleted");
+});
+
+test("process.list passes a daemon whose pages hold one process each", async () => {
+	const fake = fakeComputers({ listPage: 1 });
+	const report = await runConformance(fake.provider, { image: IMAGE, cases: byId("process.list") });
+	assert.equal(statuses(report)["process.list"], "pass", reasons(report)["process.list"]);
 });
