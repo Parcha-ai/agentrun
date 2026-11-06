@@ -138,12 +138,18 @@ test("a run's learning end with a reason this server does not give (an older ser
   settled(view, rows, "dropped", "empty");
   await savedOf(data, runId);
   await first.close();
-  // Its ledger line says tool_denied, a reason no server gives now: read as any reason it does not know.
+  // Its serve.json and its ledger line say tool_denied, a reason no server gives now: read as any reason it does not know.
+  const meta = JSON.parse(readFileSync(join(runDir(data, runId), "serve.json"), "utf8"));
+  writeFileSync(join(runDir(data, runId), "serve.json"), JSON.stringify({ ...meta, learning: { ...meta.learning, reason: "tool_denied" } }));
   const ledger = join(data, "learning-usage.jsonl");
   writeFileSync(ledger, readFileSync(ledger, "utf8").replaceAll('"reason":"empty"', '"reason":"tool_denied"'));
   assert.ok(readFileSync(ledger, "utf8").includes('"tool_denied"'));
   const again = await serve(t, { learning: "on", faux: LEARN, data });
-  assert.deepEqual((await again.api("GET", "/stats?agent=older")).body.learning, { runs: 0, merged: 0, dropped: {}, in_progress: 0 }, "not counted");
+  const none = { runs: 0, merged: 0, dropped: {}, in_progress: 0 };
+  assert.deepEqual((await again.api("GET", "/stats?agent=older")).body.learning, none, "not counted from the ledger");
+  // Read, the run is held with its learning as stored, and still not counted.
+  assert.equal((await again.api("GET", `/runs/${runId}`)).body.learning.reason, "tool_denied", "shown as stored");
+  assert.deepEqual((await again.api("GET", "/stats?agent=older")).body.learning, none, "nor once the run is held");
 });
 
 test("the grader reads what the user said in the run, in order and cut of the server's secrets, and never the end-of-run turn's message", { timeout: 150_000 }, async (t) => {
