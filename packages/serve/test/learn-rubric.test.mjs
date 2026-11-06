@@ -314,6 +314,13 @@ test("a trigger's input is shown apart from what the user said, each in its own 
   const many = Array.from({ length: GRADE_CAPS.askedTotal / per }, (_, i) => ({ source: "webhook", text: `${i + 1} `.padEnd(per, "w") }));
   const full = gradePrompt(input({ asked: ["Write today's report."], triggered: many }));
   assert.match(full, new RegExp(`Left out for length: trigger inputs? \\d+( to \\d+)? of the ${many.length}\\.`));
+
+  // The user's messages filling the budget leave no room: a trigger's input is left out whole, never shown past the total.
+  const asked = Array.from({ length: GRADE_CAPS.askedTotal / per }, (_, i) => `${i + 1} `.padEnd(per, "u"));
+  const one = [{ source: "webhook", text: "T ".padEnd(per, "t") }];
+  const filled = gradePrompt(input({ asked, triggered: one }));
+  assert.ok(!filled.includes(one[0].text), "no room left: the trigger's input is not shown");
+  assert.match(filled, /Left out for length: trigger input 1 of the 1\./);
 });
 
 test("a note that claims the user's words in a middle message is graded with that message in view: a run of seven messages shows the grader every one, the third among them", () => {

@@ -48,6 +48,13 @@ test("a run sent the person's message, their follow-up and a trigger's message: 
   assert.deepEqual(heard([...entries, ...entries]), expected, "a snapshot sends them again");
 });
 
+test("a marker sent again by a snapshot before its message arrived names that message once: a later message of the same text from the person stays theirs", () => {
+  const text = `Weekly report. ${ALWAYS}`;
+  // The connection drops after the marker: the next snapshot sends it again, then its message, then the person writes the same words.
+  const entries = [marker(1, text, fired("webhook", false)), marker(1, text, fired("webhook", false)), user(2, text), user(3, text)];
+  assert.deepEqual(heard(entries), [{ text, source: "webhook" }, { text }]);
+});
+
 test("the run's kept turn holds a trigger's input apart from what the user said, and reads back the same", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "heard-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
