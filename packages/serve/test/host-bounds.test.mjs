@@ -25,7 +25,7 @@ import * as codex from "@parcha/agentrun-harness-codex";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { codingSource, CodingTools } from "../dist/coding-tools.js";
-import * as pages from "../dist/fetch-page.js";
+import * as pages from "../dist/web-fetch-direct.js";
 import * as background from "../dist/background.js";
 import * as hosts from "../dist/host-tools.js";
 import { CLIP, monidText } from "../dist/monid.js";

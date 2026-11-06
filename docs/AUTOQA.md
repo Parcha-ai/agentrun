@@ -227,7 +227,7 @@ land (native and picked web search and tool settings, monid on every harness, th
 - **Tests.** `startServe({ faux, fauxWeb, fauxParallel, fauxMonid })` in `packages/serve/test` replaces the model, the
   resolver and HTTP for fetches, Parallel and monid with `test/fixtures/faux-*.mjs`. The faux harness
   (`faux-harness.mjs`) stands in for claude-agent and codex.
-  `node --test packages/serve/test/{fetch-page,web-fetch,host-tools,harness-run,monid,tool-keys,secret-custody}.test.mjs`
+  `node --test packages/serve/test/{web-fetch-direct,web-fetch,host-tools,harness-run,monid,tool-keys,secret-custody}.test.mjs`
   runs the plane end to end that way.
 - **On a QA server.** `--faux MODULE` scripts the model's tool calls (see "The faux model" in `packages/serve/README.md`),
   so a run calls `web_fetch`, `read`, `write` and `edit` with no model key.

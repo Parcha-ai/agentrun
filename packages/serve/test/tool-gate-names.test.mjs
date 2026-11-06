@@ -124,7 +124,3 @@ test("an MCP call enters this gate once on every harness: the host tools bind no
   assert.deepEqual(runGate.extension([registration]).wraps.map((wrap) => wrap.tool), ["mcp__srv__echo"], "unmarked: wrapped here");
   assert.equal(entered, 0);
 });
-
-test("fetch_page, web_fetch's old name, maps to no settings key on any harness, so the gate asks: nothing runs it by that name", () => {
-  for (const harness of ["pi", "claude-agent", "codex"]) assert.equal(keyOf(harness, "fetch_page"), undefined, harness);
-});

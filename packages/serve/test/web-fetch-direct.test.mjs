@@ -6,7 +6,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { fetchPage } from "../dist/fetch-page.js";
+import { fetchPage } from "../dist/web-fetch-direct.js";
 import { network } from "./fixtures/fake-network.mjs";
 import { answerFlow, client, follow, scratch, serve } from "./support.mjs";
 
@@ -101,7 +101,6 @@ test("an agentic run's web_fetch, in its own process: every hostile target refus
   t.after(() => (saved === undefined ? delete process.env.FAUX_WEB_LOG : (process.env.FAUX_WEB_LOG = saved)));
   const { api, baseUrl, data } = await serve(t, { fauxWeb: FAUX_WEB });
   const tools = (await client(baseUrl)("GET", "/capabilities")).body.tools;
-  assert.equal(tools.find((tool) => tool.name === "fetch_page"), undefined, "fetch_page is no tool");
   const listed = tools.find((tool) => tool.name === "web_fetch");
   assert.deepEqual([listed.available, listed.nodes, listed.calls, listed.missing], [true, true, true, undefined], "no key needed");
   assert.equal((await api("POST", "/agents", { definition: { id: "reader", name: "reader", instructions: "Read.", tools: ["web_fetch"] } })).status, 201);

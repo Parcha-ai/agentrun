@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
-import * as pages from "../dist/fetch-page.js";
+import * as pages from "../dist/web-fetch-direct.js";
 import * as web from "../dist/web-fetch.js";
 import { fetchFor, PARALLEL_EXTRACT_URL, parallelExtract, webFetch } from "../dist/web-fetch.js";
 import { bookedIn, PARALLEL_EXTRACT_USD } from "../dist/paid-calls.js";

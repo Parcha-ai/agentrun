@@ -3,6 +3,7 @@
 // a setting for it is refused like any unknown tool.
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { settingsKeyOf } from "../dist/tool-gate.js";
 import { agent, serve } from "./support.mjs";
 
 test("a revision naming fetch_page is refused like any unknown tool: 422 not_an_option at its tools[i]", async (t) => {
@@ -25,4 +26,8 @@ test("a tool setting for fetch_page is refused like any unknown tool", async (t)
   const { api } = await serve(t);
   const put = await api("PUT", "/settings/tools", { fetch_page: { permission: "ask" } });
   assert.equal(put.status, 422, JSON.stringify(put.body));
+});
+
+test("fetch_page maps to no settings key on any harness, so the gate fails closed (asks): nothing runs it by that name", () => {
+  for (const harness of ["pi", "claude-agent", "codex", "opencode"]) assert.equal(settingsKeyOf(harness, "fetch_page"), undefined, harness);
 });

@@ -197,7 +197,7 @@ test("a pi agent that names no model and picks native search runs on a server wh
 test("settings are checked before anything is kept: an unknown tool, a provider for a tool with no choice or not offered for it, and a permission not offered (tool-gate.test.mjs has the rest); the gate's names of the table are the table's", async () => {
   assert.deepEqual(settingsIssues({ web_search: { provider: "exa-keyless" }, web_fetch: {} }), []);
   assert.deepEqual(settingsIssues({ ask_person: { provider: "native" } }).map((i) => [i.field, i.reason]), [["ask_person.provider", "not_allowed"]]);
-  assert.deepEqual(settingsIssues({ fetch_pages: {} }).map((i) => [i.field, i.reason]), [["fetch_pages", "not_allowed"]]);
+  assert.deepEqual(settingsIssues({ read_pages: {} }).map((i) => [i.field, i.reason]), [["read_pages", "not_allowed"]]);
   assert.deepEqual(settingsIssues({ web_fetch: { provider: "native" } }).map((i) => [i.field, i.reason, i.message]), [["web_fetch.provider", "not_an_option", "web_fetch.provider is one of kernel, parallel"]]);
   assert.deepEqual(settingsIssues({ web_search: { permission: "deny" } }, "definition.tool_settings"), []);
   assert.deepEqual(settingsIssues({ web_search: { permission: "never" } }, "definition.tool_settings").map((i) => [i.field, i.reason, i.message]), [["definition.tool_settings.web_search.permission", "not_an_option", "definition.tool_settings.web_search.permission is one of allow, ask, deny"]]);
@@ -242,7 +242,6 @@ test("GET and PUT /v2/settings/tools: the defaults, a PUT that replaces them, ke
   assert.deepEqual(tools.web_search, { pi: "exa-keyless", "claude-agent": "exa-keyless", codex: "exa-keyless", opencode: "exa-keyless" }, "recomputed with no restart");
   assert.deepEqual((await api("GET", "/capabilities")).body.tools.filter((tool) => tool.providers).map((tool) => [tool.provider, tool.default_provider]), [["kernel", "kernel"], ["exa-keyless", "auto"], ["auto", "auto"]], "the server's pick, and the built-in default");
   assert.equal(tools.read, undefined, "a tool with no provider choice resolves nothing");
-  assert.equal("fetch_page" in tools, false, "fetch_page is no tool");
   assert.equal((await stat(join(first.data, "tool-settings.json"))).mode & 0o777, 0o600);
 
   // An agent's own settings: over the server's, kept in its revision and shown in its definition.

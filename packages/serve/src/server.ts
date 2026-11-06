@@ -16,7 +16,7 @@ import type { NewRevision, Revision, RunOrigin } from "@parcha/pi-durable-agent"
 import { agentView, Agents, etagOf, homeBusy, revisionView, storeBusy, type AgentEntry } from "./agents.js";
 import { WORKFLOW_ADAPTERS } from "./app.js";
 import { DECISION_ADAPTER, decisionsOf, FAUX_JEV_ENV, FAUX_OPENROUTER_ENV, FAUX_PARALLEL_ENV } from "./decisions.js";
-import { FAUX_WEB_ENV } from "./fetch-page.js";
+import { FAUX_WEB_ENV } from "./web-fetch-direct.js";
 import { FAUX_MONID_ENV } from "./monid.js";
 import { FAUX_EXA_ENV } from "./exa-keyless.js";
 import { FAUX_BROWSER_ENV, NODE_TOOLS, toolingOf, toolOf, toolsView } from "./tools.js";

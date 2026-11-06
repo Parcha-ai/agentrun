@@ -14,7 +14,7 @@ import type { Revision } from "@parcha/pi-durable-agent";
 import { BACKGROUND_LOG_BYTES, BACKGROUND_MAX, BACKGROUND_PAGE_BYTES } from "./background.js";
 import type { CodingSource } from "./coding-tools.js";
 import { writeInWork } from "./workspace.js";
-import { fetchOptions, HTML_READ_CHARS, TEXT_CAP } from "./fetch-page.js";
+import { fetchOptions, HTML_READ_CHARS, TEXT_CAP } from "./web-fetch-direct.js";
 import { DEFAULT_HARNESS, HARNESSES } from "./harness.js";
 import { REPLAY } from "./host-tools.js";
 import { type Complete, LLM_TOOL } from "./llm.js";
