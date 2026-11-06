@@ -1,41 +1,171 @@
-// Files in and out of a computer, past one call's limit: whole files in chunks, and tar archives both ways.
+// Files in and out of a computer past one call's limit: whole files in chunks, and tar archives both ways.
 import type { DaemonClient } from "./client.js";
-import type { TarPullResult, TarPushEndResult } from "./protocol.js";
-import { fail, type Result } from "./result.js";
+import { MAX_CHUNK_BYTES, TAR_DATA_METHOD, type TarDataParams, type TarPullResult, type TarPushEndResult } from "./protocol.js";
+import { fail, ok, type Result } from "./result.js";
 
 export interface PulledTar {
+	/** The archive's bytes as they come. Read them: the pull waits while too many are unread. */
 	chunks: AsyncIterable<Uint8Array>;
+	/** How the pull ended. It settles once the chunks are read, or the loop over them is left (which cancels the pull). */
 	done: Promise<Result<TarPullResult>>;
 }
 
-const notBuilt = () => fail("unsupported", "files are not built yet");
+/** Unread chunks a pull holds before it stops reading from the daemon. */
+const HIGH_WATER = 4;
 
-export async function readFile(_client: DaemonClient, _path: string, _options: { signal?: AbortSignal } = {}): Promise<Result<Uint8Array>> {
-	return notBuilt();
+const base64 = (bytes: Uint8Array) => Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64");
+
+/** Reads a whole file, MAX_CHUNK_BYTES per call. */
+export async function readFile(client: DaemonClient, path: string, options: { signal?: AbortSignal } = {}): Promise<Result<Uint8Array>> {
+	const parts: Buffer[] = [];
+	let offset = 0;
+	for (;;) {
+		const read = await client.call("files.read", { path, offset, length: MAX_CHUNK_BYTES }, options);
+		if (!read.ok) return read;
+		const data = Buffer.from(read.value.data, "base64");
+		parts.push(data);
+		offset += data.length;
+		if (read.value.eof || data.length === 0) return ok(Buffer.concat(parts));
+	}
 }
 
+/** Writes a whole file: the first call replaces it (with mode and parents), the rest write at their offsets. */
 export async function writeFile(
-	_client: DaemonClient,
-	_path: string,
-	_bytes: Uint8Array,
-	_options: { mode?: number; parents?: boolean; signal?: AbortSignal } = {},
+	client: DaemonClient,
+	path: string,
+	bytes: Uint8Array,
+	options: { mode?: number; parents?: boolean; signal?: AbortSignal } = {},
 ): Promise<Result<{ size: number }>> {
-	return notBuilt();
+	const { mode, parents, signal } = options;
+	let offset = 0;
+	let size = 0;
+	do {
+		const data = base64(bytes.subarray(offset, offset + MAX_CHUNK_BYTES));
+		const wrote = await client.call("files.write", offset === 0 ? { path, data, mode, parents } : { path, data, offset }, { signal });
+		if (!wrote.ok) return wrote;
+		size = wrote.value.size;
+		offset += MAX_CHUNK_BYTES;
+	} while (offset < bytes.length);
+	return ok({ size });
 }
 
+/**
+ * Extracts a tar archive into dir in the computer (made when missing), sent in chunks of MAX_CHUNK_BYTES, each after
+ * the last one's reply. An entry outside dir is refused (`denied`) and ends the push; what was written before it stays.
+ */
 export async function pushTar(
-	_client: DaemonClient,
-	_dir: string,
-	_tar: Uint8Array | AsyncIterable<Uint8Array>,
-	_options: { signal?: AbortSignal } = {},
+	client: DaemonClient,
+	dir: string,
+	tar: Uint8Array | AsyncIterable<Uint8Array>,
+	options: { signal?: AbortSignal } = {},
 ): Promise<Result<TarPushEndResult>> {
-	return notBuilt();
+	const begun = await client.call("tar.push.begin", { path: dir }, options);
+	if (!begun.ok) return begun;
+	const { id } = begun.value;
+	const pending = Buffer.alloc(MAX_CHUNK_BYTES);
+	let filled = 0;
+	const send = async (): Promise<Result<unknown>> => {
+		const wrote = await client.call("tar.push.write", { id, data: base64(pending.subarray(0, filled)) }, options);
+		filled = 0;
+		// A refused write ended the push in the daemon; an aborted one did not.
+		return !wrote.ok && wrote.error.code === "aborted" ? abandon(client, id, wrote) : wrote;
+	};
+	try {
+		for await (const piece of tar instanceof Uint8Array ? [tar] : tar) {
+			for (let at = 0; at < piece.length; ) {
+				const take = Math.min(MAX_CHUNK_BYTES - filled, piece.length - at);
+				pending.set(piece.subarray(at, at + take), filled);
+				filled += take;
+				at += take;
+				if (filled === MAX_CHUNK_BYTES) {
+					const wrote = await send();
+					if (!wrote.ok) return wrote;
+				}
+			}
+		}
+	} catch (error) {
+		return abandon(client, id, fail("invalid", `the tar source failed: ${error instanceof Error ? error.message : String(error)}`));
+	}
+	if (filled > 0) {
+		const wrote = await send();
+		if (!wrote.ok) return wrote;
+	}
+	return client.call("tar.push.end", { id }, options);
 }
 
-export function pullTarStream(_client: DaemonClient, _path: string, _options: { signal?: AbortSignal } = {}): PulledTar {
-	return { chunks: (async function* () {})(), done: Promise.resolve(notBuilt()) };
+/** Ends a push this side gave up on, then returns why. */
+async function abandon<T>(client: DaemonClient, id: string, why: Result<T>): Promise<Result<T>> {
+	await client.call("tar.push.end", { id });
+	return why;
 }
 
-export async function pullTar(_client: DaemonClient, _path: string, _options: { signal?: AbortSignal } = {}): Promise<Result<Uint8Array>> {
-	return notBuilt();
+/** Pulls the tar of a file or directory in the computer, as chunks while they come. */
+export function pullTarStream(client: DaemonClient, path: string, options: { signal?: AbortSignal } = {}): PulledTar {
+	const stop = new AbortController();
+	const signal = options.signal ? AbortSignal.any([options.signal, stop.signal]) : stop.signal;
+	const queue: Buffer[] = [];
+	let received = 0;
+	let finished = false;
+	let wake: (() => void) | undefined;
+	let room: (() => void) | undefined;
+	const nudge = () => {
+		wake?.();
+		wake = undefined;
+	};
+	const free = () => {
+		room?.();
+		room = undefined;
+	};
+	const done = client
+		.call(
+			"tar.pull",
+			{ path },
+			{
+				signal,
+				onNotification: ({ method, params }) => {
+					if (method !== TAR_DATA_METHOD) return;
+					const data = Buffer.from((params as TarDataParams).data, "base64");
+					received += data.length;
+					queue.push(data);
+					nudge();
+					if (queue.length >= HIGH_WATER) return new Promise<void>((resolve) => (room = resolve));
+				},
+			},
+		)
+		.then((result): Result<TarPullResult> => {
+			finished = true;
+			nudge();
+			if (result.ok && result.value.bytes !== received) {
+				return fail("invalid", `the pull of ${path} sent ${received} bytes, and its reply says ${result.value.bytes}`);
+			}
+			return result;
+		});
+	async function* chunks(): AsyncGenerator<Uint8Array> {
+		try {
+			for (;;) {
+				const next = queue.shift();
+				if (next !== undefined) {
+					if (queue.length < HIGH_WATER) free();
+					yield next;
+				} else if (finished) {
+					return;
+				} else {
+					await new Promise<void>((resolve) => (wake = resolve));
+				}
+			}
+		} finally {
+			if (!finished) stop.abort();
+			free();
+		}
+	}
+	return { chunks: chunks(), done };
+}
+
+/** Pulls the tar of a file or directory in the computer, whole. */
+export async function pullTar(client: DaemonClient, path: string, options: { signal?: AbortSignal } = {}): Promise<Result<Uint8Array>> {
+	const { chunks, done } = pullTarStream(client, path, options);
+	const parts: Uint8Array[] = [];
+	for await (const chunk of chunks) parts.push(chunk);
+	const ended = await done;
+	return ended.ok ? ok(Buffer.concat(parts)) : ended;
 }

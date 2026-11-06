@@ -53,12 +53,15 @@ function fromReply(error: ReplyError): ComputerError {
 /**
  * Calls a daemon's methods. Each call gets its own id; replies may come in any order. An aborted call sends
  * $/cancelRequest and returns `aborted` at once; the daemon still ends what the call started. When the stream ends,
- * every pending and later call fails with `gone`.
+ * every pending and later call fails with `gone`. A daemon notification naming a pending call's id in params.request
+ * goes to that call's onNotification; any other is dropped.
  */
 export class DaemonClient {
 	readonly #writable: Writable;
 	readonly #readable: Readable;
 	readonly #pending = new Map<number, (result: Result<unknown>) => void>();
+	readonly #listeners = new Map<number, NonNullable<CallOptions["onNotification"]>>();
+	#holding = 0;
 	#nextId = 1;
 	#chunks: Buffer[] = [];
 	#buffered = 0;
@@ -79,7 +82,7 @@ export class DaemonClient {
 		params: DaemonMethods[M]["params"],
 		options: CallOptions = {},
 	): Promise<Result<DaemonMethods[M]["result"]>> {
-		const { signal } = options;
+		const { signal, onNotification } = options;
 		if (this.#gone) return { ok: false, error: this.#gone };
 		if (signal?.aborted) return fail("aborted", `${method} was aborted before it was sent`);
 		const id = this.#nextId++;
@@ -88,13 +91,16 @@ export class DaemonClient {
 		return new Promise((resolve) => {
 			const onAbort = () => {
 				if (!this.#pending.delete(id)) return;
+				this.#listeners.delete(id);
 				this.#write({ jsonrpc: "2.0", method: CANCEL_METHOD, params: { id } });
 				resolve(fail("aborted", `${method} was aborted`));
 			};
 			this.#pending.set(id, (result) => {
+				this.#listeners.delete(id);
 				signal?.removeEventListener("abort", onAbort);
 				resolve(result as Result<DaemonMethods[M]["result"]>);
 			});
+			if (onNotification) this.#listeners.set(id, onNotification);
 			signal?.addEventListener("abort", onAbort, { once: true });
 			this.#writable.write(line);
 		});
@@ -137,17 +143,37 @@ export class DaemonClient {
 	}
 
 	#line(text: string): void {
-		let message: { id?: unknown; result?: unknown; error?: ReplyError | null };
+		let message: { id?: unknown; method?: unknown; params?: { request?: unknown }; result?: unknown; error?: ReplyError | null };
 		try {
 			message = JSON.parse(text);
 		} catch {
 			return;
 		}
+		if (message?.id === undefined && typeof message?.method === "string") return this.#notify(message.method, message.params);
 		if (typeof message?.id !== "number") return;
 		const settle = this.#pending.get(message.id);
 		if (settle === undefined) return;
 		this.#pending.delete(message.id);
 		settle(message.error != null ? { ok: false, error: fromReply(message.error) } : ok(message.result));
+	}
+
+	/** A notification goes to the call its params.request names. A promise it returns holds back reading until it settles. */
+	#notify(method: string, params: { request?: unknown } | undefined): void {
+		const listener = typeof params?.request === "number" ? this.#listeners.get(params.request) : undefined;
+		if (listener === undefined) return;
+		let held: void | Promise<void>;
+		try {
+			held = listener({ method, params });
+		} catch {
+			return;
+		}
+		if (!(held instanceof Promise)) return;
+		if (this.#holding++ === 0) this.#readable.pause();
+		held
+			.catch(() => {})
+			.finally(() => {
+				if (--this.#holding === 0 && !this.#gone) this.#readable.resume();
+			});
 	}
 
 	#end(why: string): void {
@@ -156,6 +182,7 @@ export class DaemonClient {
 		this.#gone = gone;
 		const pending = [...this.#pending.values()];
 		this.#pending.clear();
+		this.#listeners.clear();
 		for (const settle of pending) settle({ ok: false, error: gone });
 	}
 }
