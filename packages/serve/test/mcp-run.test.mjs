@@ -50,7 +50,7 @@ const runOf = async (api, id, content) => {
 };
 
 test("pi: an agent granted mcp:fake/add calls it with the server's bearer; the timeline reads fake · add; the run's environment and work/ hold no token", { timeout: 90_000 }, async (t) => {
-  const { api, data } = await serve(t, { faux: FAUX_MCP, claudeSdk: true });
+  const { api, data } = await serve(t, { faux: FAUX_MCP, harnesses: true });
   const fake = await addFake(t, api);
   assert.equal((await api("POST", "/agents", agent("adder", { tools: ["mcp:fake/add"], tool_settings: ALLOW_FAKE }))).status, 201);
   const runId = await runOf(api, "adder", 'Call mcp__fake__add with {"a":2,"b":3}');
@@ -68,7 +68,7 @@ test("pi: an agent granted mcp:fake/add calls it with the server's bearer; the t
 
 // The fake's SDK server cannot list a tool named toString itself; mcp-gateway.test.mjs pins one, mcp-route.test.mjs serves one.
 test("pi: a server named like an object's own property (constructor) grants, launches and calls through", { timeout: 90_000 }, async (t) => {
-  const { api } = await serve(t, { faux: FAUX_MCP, claudeSdk: true });
+  const { api } = await serve(t, { faux: FAUX_MCP, harnesses: true });
   const fake = await addFake(t, api, "constructor");
   assert.equal((await api("POST", "/agents", agent("proto", { tools: ["mcp:constructor/add"], tool_settings: { "mcp:constructor/*": { permission: "allow" } } }))).status, 201);
   const runId = await runOf(api, "proto", 'Call mcp__constructor__add with {"a":2,"b":3}');
@@ -80,7 +80,7 @@ test("pi: a server named like an object's own property (constructor) grants, lau
 });
 
 test("pi: the credential reaches only a run whose revision grants one of the server's tools", { timeout: 90_000 }, async (t) => {
-  const { api } = await serve(t, { faux: FAUX_MCP, claudeSdk: true });
+  const { api } = await serve(t, { faux: FAUX_MCP, harnesses: true });
   const fake = await addFake(t, api);
   assert.equal((await api("POST", "/agents", agent("granted", { tools: ["mcp:fake/add"] }))).status, 201);
   assert.equal((await api("POST", "/agents", agent("plain", { tools: [] }))).status, 201);
@@ -95,7 +95,7 @@ test("pi: the credential reaches only a run whose revision grants one of the ser
 });
 
 test("a save that grants a tool the server does not have is refused, naming the server's tools", async (t) => {
-  const { api } = await serve(t, { faux: FAUX_MCP, claudeSdk: true });
+  const { api } = await serve(t, { faux: FAUX_MCP, harnesses: true });
   await addFake(t, api);
   const refused = await api("POST", "/agents", agent("nope", { tools: ["mcp:fake/nope"] }));
   assert.equal(refused.status, 422, JSON.stringify(refused.body));
@@ -115,7 +115,7 @@ test("a save that grants a tool the server does not have is refused, naming the 
 });
 
 test("a tool whose schema the Claude CLI would drop (a root anyOf) is refused on claude-agent at the save, in words; on pi it saves and runs", { timeout: 90_000 }, async (t) => {
-  const { api } = await serve(t, { faux: FAUX_MCP, claudeSdk: true });
+  const { api } = await serve(t, { faux: FAUX_MCP, harnesses: true });
   const fake = await startFakeMcp({ token: TOKEN });
   const either = { type: "object", properties: { a: { type: "string" }, b: { type: "string" } }, anyOf: [{ required: ["a"] }, { required: ["b"] }] };
   fake.tools.pick = { description: "Picks one.", input: either, run: ({ a, b }) => ({ content: [{ type: "text", text: `picked ${a ?? b}` }] }) };
@@ -149,7 +149,7 @@ test("a tool whose schema Codex would drop or retype (a not) is refused on codex
 });
 
 test("a tool whose header declaration a refresh made unsendable refuses the run in words, naming it, and nothing is sent", { timeout: 90_000 }, async (t) => {
-  const { api } = await serve(t, { faux: FAUX_MCP, claudeSdk: true });
+  const { api } = await serve(t, { faux: FAUX_MCP, harnesses: true });
   const fake = await startFakeMcp({ token: TOKEN });
   fake.tools.tagged = { description: "Tagged.", input: { type: "object", properties: { region: { type: "string", "x-mcp-header": "Region" } } }, run: () => ({ content: [{ type: "text", text: "ok" }] }) };
   await addFake(t, api, "fake", fake);
@@ -163,7 +163,7 @@ test("a tool whose header declaration a refresh made unsendable refuses the run 
 });
 
 test("a granted tool whose server was deleted, or whose tool a refresh removed, before the run's pin is made again fails the relaunch in words, and the call is never sent again", { timeout: 180_000 }, async (t) => {
-  const { api, data } = await serve(t, { faux: FAUX_MCP, claudeSdk: true });
+  const { api, data } = await serve(t, { faux: FAUX_MCP, harnesses: true });
   const fake = await addFake(t, api, "fake");
   const other = await addFake(t, api, "other");
   // Each run holds a slow call; its process is killed with its pin gone, so the relaunch makes the pin again, as a first
@@ -195,7 +195,7 @@ test("a granted tool whose server was deleted, or whose tool a refresh removed, 
 });
 
 test("a save that checks a deeply nested tool schema leaves the server answering: /health meanwhile, and a readable refusal past the bounds", { timeout: 90_000 }, async (t) => {
-  const { api } = await serve(t, { faux: FAUX_MCP, claudeSdk: true });
+  const { api } = await serve(t, { faux: FAUX_MCP, harnesses: true });
   const fake = await startFakeMcp({ token: TOKEN });
   let deep = { type: "string" };
   for (let i = 0; i < 80; i++) deep = { type: "object", properties: { [`p${i}`]: { type: "string" } }, additionalProperties: deep };
@@ -210,7 +210,7 @@ test("a save that checks a deeply nested tool schema leaves the server answering
 });
 
 test("pi: a run killed mid-call resumes with the call answered interrupted, and the server saw the call once", { timeout: 120_000 }, async (t) => {
-  const { api, data } = await serve(t, { faux: FAUX_MCP, claudeSdk: true });
+  const { api, data } = await serve(t, { faux: FAUX_MCP, harnesses: true });
   const fake = await addFake(t, api);
   assert.equal((await api("POST", "/agents", agent("writer", { tools: ["mcp:fake/slow_write"], tool_settings: ALLOW_FAKE }))).status, 201);
   const runId = await runOf(api, "writer", 'Call mcp__fake__slow_write with {"line":"once","seconds":30}');
@@ -232,7 +232,7 @@ test("pi: a run killed mid-call resumes with the call answered interrupted, and 
 });
 
 test("pi: a server whose address changed after the run started answers the run's calls with that, and nothing is sent", { timeout: 90_000 }, async (t) => {
-  const { api } = await serve(t, { faux: FAUX_MCP, claudeSdk: true });
+  const { api } = await serve(t, { faux: FAUX_MCP, harnesses: true });
   const fake = await addFake(t, api);
   assert.equal((await api("POST", "/agents", agent("mover", { tools: ["mcp:fake/add"], tool_settings: ALLOW_FAKE }))).status, 201);
   const runId = await runOf(api, "mover", "Hello.");

@@ -39,9 +39,9 @@ export type TimelineEvent = {
   session?: string;
   /** The file a "Saved" phase row is about. */
   path?: string;
-  /** `server` on the row of a message the server wrote into the run (origin.ts): a `phase` row, which counts, as a
-   *  person's `user_message` does, as the message its turn took (`isMessageRow`). */
-  origin?: "server";
+  /** `server` on the row of a message the server wrote into the run, `trigger` on a trigger's (origin.ts): a `phase` row,
+   *  which counts, as a person's `user_message` does, as the message its turn took (`isMessageRow`). */
+  origin?: "server" | "trigger";
   /** `true` on an `error` row that is a spend cap's refusal for room (serve): the request was not sent and the run paused
    *  for a raise; a pause, never a failure, whether the run waits on its cap now or was raised since. */
   paused?: true;
@@ -802,8 +802,10 @@ function createProjector(options: TimelineOptions) {
       // A person's message that declined the call: their words are the message the turn took, a row of theirs under a
       // person's rules, with the entry's own id; the server's resume beside it is the server's (`origin: "server"`) but
       // not a message (an id of its own, BESIDE_SUFFIX, which isMessageRow passes over). Any other: the server's row is
-      // that message, with the entry's id and `origin: "server"`.
-      if (origin.reason === "approval_declined") {
+      // that message, with the entry's id and `origin: "server"`. A trigger's message: "Trigger <its id>: …", `origin:
+      // "trigger"`, never the person's.
+      if (origin.kind === "trigger") add(make("phase", conv, base, { summary: `Trigger ${origin.trigger_id}: ${firstLine(text)}`, text, origin: "trigger" }));
+      else if (origin.reason === "approval_declined") {
         const said = redactText(origin.said.trim());
         add(make("phase", conv, `${base}${BESIDE_SUFFIX}`, { summary: `AgentRun: ${firstLine(text)}`, text, origin: "server" }));
         add(make("user_message", conv, base, { summary: `You: ${firstLine(said)}`, text: said }));
