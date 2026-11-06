@@ -7,7 +7,7 @@ import { createServer, request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { mcpRoute, startModelProxy } from "@parcha/agentrun-kernel/host";
+import { startModelProxy } from "@parcha/agentrun-kernel/host";
 import { useSpend } from "../dist/cap.js";
 import { HEADER_SCAN_DEPTH, isParked, MCP_CLIP, mcpCredentialsOf, mcpGateway, mcpHeaderProblem, mcpPinOf, mcpRegistrations } from "../dist/mcp-gateway.js";
 import { deniedText, GATED_BY_GATEWAY, gateOf, waitingText } from "../dist/tool-gate.js";
@@ -211,7 +211,7 @@ test("at the session proxy's /mcp/<server>: a client that drops a held tools/cal
   const { fake, gateway, cancelled } = await setup(t);
   const key = "session-key-for-tests";
   const policy = { id: "test", routes: [], keyOf: (headers) => String(headers.authorization ?? "").replace(/^Bearer /, ""), authHeaders: () => ({}), apply: (body) => body, usageOf: () => undefined };
-  const proxy = await startModelProxy({ policy, model: "m", origin: "https://provider.invalid", credential: () => "c", hooks: { beforeRequest: async () => {}, afterRequest: async () => {} }, mcp: mcpRoute(gateway) }, key);
+  const proxy = await startModelProxy({ policy, model: "m", origin: "https://provider.invalid", credential: () => "c", hooks: { beforeRequest: async () => {}, afterRequest: async () => {} }, mcp: { session: gateway, client: { callIdMeta: "claudecode/toolUseId" } } }, key);
   t.after(() => proxy.close());
   const gone = new AbortController();
   const body = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "slow_write", arguments: { line: "x", seconds: 30 } } });

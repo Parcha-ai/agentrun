@@ -1,6 +1,7 @@
 // A session's remote MCP servers on Codex, written for AgentRun. Codex's own MCP client calls each one at the session's
-// model proxy (`<modelUrl>/mcp/<server>`, @parcha/agentrun-kernel/host mcpRoute), with the session's key as its bearer,
-// so it never holds a server's credential. The session's machine (host/machine.ts) does both halves:
+// model proxy (`<modelUrl>/mcp/<server>`, which the kernel's proxy mounts from the session's MCP and CODEX_MCP_CLIENT),
+// with the session's key as its bearer, so it never holds a server's credential. The session's machine
+// (host/machine.ts) does both halves:
 //  - it writes each server in Codex's `mcp_servers` (an app may not: config.ts RESERVED_CONFIG_KEYS), with only the
 //    granted tools. Each call is allowed without asking (`default_tools_approval_mode = "approve"`): the proxy is the
 //    one gate, and under Codex's default a tool with no `readOnlyHint` is refused when nobody is there to approve it.
@@ -9,10 +10,14 @@
 //    for nothing of ours, so the proxy writes the call's intent in the session's records itself, by Codex's own call id
 //    (`_meta.callId`), before anything is sent, and its outcome after. A call a crash cut off is then answered
 //    interrupted from the records, never sent twice.
-import type { McpCallResult, SessionMcp } from "@parcha/agentrun-kernel";
+import type { McpCallResult, McpClient, SessionMcp } from "@parcha/agentrun-kernel";
 import type { TomlValue } from "./config.js";
 import type { DriveContext } from "./host/kernel.js";
 import { BuiltinCalls, type CallHooks, toolKey } from "./host/process.js";
+
+/** Codex's own MCP client: it sends a call's id in tools/call's `_meta.callId`, its `mcpToolCall` item's id
+ *  (codex-rs core/src/mcp_tool_call.rs at rust-v0.164.0), the id the drive records the call by. */
+export const CODEX_MCP_CLIENT: McpClient = { callIdMeta: "callId" };
 
 /** What a call answers when its line never reached the log: nothing was sent, and it may be made again. */
 const LAGGING = "Not sent: the session's log had not caught up with this call yet. Nothing reached the MCP server; make the same call again.";

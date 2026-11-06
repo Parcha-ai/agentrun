@@ -246,6 +246,16 @@ export interface AdapterSession {
 export interface AdapterCapabilities {
   /** Whether the adapter can start a session from another's transcript. */
   fork: boolean;
+  /** Its harness's own MCP client, when it has one: it calls `spec.mcp`'s servers at the session proxy's `/mcp/<server>`,
+   *  which the kernel's model proxy mounts from the session's MCP and this fact (ModelProxyOptions.mcp). */
+  mcpClient?: McpClient;
+}
+
+/** A harness's own MCP client, as its adapter declares it: the `_meta` key of a `tools/call` that carries the harness's
+ *  own id for the call (Claude Code's `claudecode/toolUseId`, Codex's `callId`), the id its timeline and gate know the
+ *  call by. The route reads that key and no other. */
+export interface McpClient {
+  callIdMeta: string;
 }
 
 export interface AgentAdapter {

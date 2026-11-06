@@ -17,6 +17,7 @@ import { abortedOutcome, openDrive, SessionHalt, type Drive, type HostTool as Ke
 import { pendingSubmissions } from "@parcha/agentrun-kernel/kernel";
 import { NativeJournal, recoveryNote, settleTurn, transcriptOf } from "@parcha/agentrun-kernel/process";
 import { CODEX_VERSION } from "./binary.js";
+import { CODEX_MCP_CLIENT } from "./mcp.js";
 import { codexSchemaProblems, describedDescription } from "./schema.js";
 import { withCheckedBinary } from "./host/sandbox.js";
 import { verifyCodex } from "./verify.js";
@@ -150,7 +151,7 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
   return {
     id: "codex",
     version: CODEX_VERSION,
-    capabilities: () => ({ fork: false }),
+    capabilities: () => ({ fork: false, mcpClient: CODEX_MCP_CLIENT }),
     check(spec) {
       const problems: string[] = [];
       if (spec.context === "fork") problems.push("Codex sessions cannot fork another session's transcript; declare context: \"fresh\"");

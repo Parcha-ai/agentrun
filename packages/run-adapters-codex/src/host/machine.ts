@@ -21,11 +21,11 @@ import { FileTail } from "@parcha/agentrun-kernel/process";
 import type { AcquireMachine, CallHooks, CacheDir, CacheFile, KillSignal, MachineSpawn, MachineTail, SessionMachine, SessionProcess } from "./process.js";
 import { brandMachine } from "./process.js";
 import type { SessionMcp } from "@parcha/agentrun-kernel";
-import { mcpRoute, parentWatched, startModelProxy, type ModelProxyHooks, type ModelProxyOptions, type ParentWatch } from "@parcha/agentrun-kernel/host";
+import { parentWatched, startModelProxy, type ModelProxyHooks, type ModelProxyOptions, type ParentWatch } from "@parcha/agentrun-kernel/host";
 import { codexPolicy, withWebSearches } from "./policy.js";
 import type { TomlValue } from "../config.js";
 import { UNWATCHED } from "../scripts.js";
-import { mcpServersConfig, recorded } from "../mcp.js";
+import { CODEX_MCP_CLIENT, mcpServersConfig, recorded } from "../mcp.js";
 
 /** The variables a child takes from this process, when they are set. */
 export const INHERITED_ENV = Object.freeze(["PATH", "LANG", "TZ"] as const);
@@ -267,7 +267,8 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
       origin: route.target,
       credential: async () => (await route.credential()) ?? "",
       ...(price ? { price } : {}),
-      ...(options.mcp ? { mcp: mcpRoute(recorded(options.mcp, ctx, () => calls)) } : {}),
+      // The kernel's proxy mounts the session's MCP door for Codex's own client; each call is recorded first (recorded).
+      ...(options.mcp ? { mcp: { session: recorded(options.mcp, ctx, () => calls), client: CODEX_MCP_CLIENT } } : {}),
       ...(options.proxy.log ? { log: options.proxy.log } : {}),
       ...(options.proxy.fetch ? { fetch: options.proxy.fetch } : {}),
       // The provider stopped the turn's answer on its content filter: no retry of it can pass, so the turn ends at once.

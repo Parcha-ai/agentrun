@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import { request } from 'node:http';
 import { test } from 'node:test';
-import { mcpRoute, startModelProxy } from '@parcha/agentrun-kernel/host';
+import { startModelProxy } from '@parcha/agentrun-kernel/host';
 
 const KEY = 'session-key-for-tests';
 const policy = {
@@ -21,7 +21,7 @@ const ADD = { name: 'add', description: 'Add two numbers.', inputSchema: { type:
 async function proxy(t, call, options = {}) {
   const calls = [];
   const mcp = { servers: [{ name: 'fake', tools: [ADD, { ...ADD, name: 'slow' }] }], call: async (server, tool, args, context) => (calls.push({ server, tool, args, ...context }), call(server, tool, args, context)) };
-  const p = await startModelProxy({ policy, model: 'm', origin: 'https://provider.invalid', credential: () => 'provider-secret', hooks: { beforeRequest: async () => {}, afterRequest: async () => {} }, mcp: mcpRoute(mcp, options) }, KEY);
+  const p = await startModelProxy({ policy, model: 'm', origin: 'https://provider.invalid', credential: () => 'provider-secret', hooks: { beforeRequest: async () => {}, afterRequest: async () => {} }, mcp: { session: mcp, client: { callIdMeta: 'claudecode/toolUseId' }, ...options } }, KEY);
   t.after(() => p.close());
   return { p, calls };
 }
@@ -93,7 +93,7 @@ test('a client that disconnects, or cancels, aborts its call; a cancel of a call
 test("a server and a tool named like an object's own properties are served like any other", async (t) => {
   const tool = { ...ADD, name: "toString" };
   const mcp = { servers: [{ name: "constructor", tools: [tool] }], call: async (server, name) => ({ content: [{ type: "text", text: `${server}/${name}` }] }) };
-  const p = await startModelProxy({ policy, model: 'm', origin: 'https://provider.invalid', credential: () => 'c', hooks: { beforeRequest: async () => {}, afterRequest: async () => {} }, mcp: mcpRoute(mcp) }, KEY);
+  const p = await startModelProxy({ policy, model: 'm', origin: 'https://provider.invalid', credential: () => 'c', hooks: { beforeRequest: async () => {}, afterRequest: async () => {} }, mcp: { session: mcp, client: { callIdMeta: 'claudecode/toolUseId' } } }, KEY);
   t.after(() => p.close());
   assert.deepEqual(JSON.parse((await send(p.url, { path: '/mcp/constructor', body: rpc('tools/list') })).text).result.tools.map((t) => t.name), ['toString']);
   assert.deepEqual(messagesOf((await send(p.url, { path: '/mcp/constructor', body: rpc('tools/call', { name: 'toString', arguments: {} }) })).text).at(-1).result.content[0].text, 'constructor/toString');

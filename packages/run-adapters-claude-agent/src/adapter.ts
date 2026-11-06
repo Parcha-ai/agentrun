@@ -16,12 +16,12 @@ import { READ_SKILL_FILE, readSkillFileTool, skillProblems, type AdapterSession,
 import { abortedOutcome, openDrive, pendingSubmissions, Restart, SessionHalt, type Drive, type HostTool as KernelTool } from "@parcha/agentrun-kernel/kernel";
 import { toolSchemaProblems } from "@parcha/agentrun-kernel";
 import { NativeJournal, recoveryNote, settleTurn, transcriptOf } from "@parcha/agentrun-kernel/process";
-import { checkedOnce, hostHeaderProblems, mcpRoute, type ModelProxyOptions, sha256OfFile } from "@parcha/agentrun-kernel/host";
+import { checkedOnce, hostHeaderProblems, type ModelProxyOptions, sha256OfFile } from "@parcha/agentrun-kernel/host";
 import { findClaudeExecutable, platformSuffix } from "./binary.js";
 import { CLAUDE_AGENT_PACKAGE, ClaudeAgentNotInstalled, ClaudeAgentPinMismatch, ClaudeAgentThinkingOff } from "./errors.js";
 import { type ClaudeAgentSdk, claudeCodeHarness, lostPrompts } from "./harness.js";
 import { JournalSessionStore } from "./store.js";
-import { type ConfineChild, localMachine } from "./host/machine.js";
+import { CLAUDE_MCP_CLIENT, type ConfineChild, localMachine } from "./host/machine.js";
 import { serialWriter } from "./serial.js";
 import { MCP_SERVER } from "./transcript.js";
 import { CLAUDE_AGENT_SDK_INSTALL, CLAUDE_AGENT_SDK_VERSION, CLAUDE_CODE_VERSION, installedVersion } from "./versions.js";
@@ -354,7 +354,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
   return {
     id: CLAUDE_AGENT_ID,
     version: CLAUDE_AGENT_SDK_VERSION,
-    capabilities: () => ({ fork: false }),
+    capabilities: () => ({ fork: false, mcpClient: CLAUDE_MCP_CLIENT }),
     check(spec) {
       const problems: string[] = [];
       if (spec.context === "fork") problems.push("Claude Agent sessions cannot fork another session's transcript; declare context: \"fresh\"");
@@ -410,7 +410,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
           ...(options.provider.headers ? { headers: options.provider.headers } : {}),
           ...(options.log ? { log: options.log } : {}),
           ...(options.fetch ? { fetch: options.fetch } : {}),
-          ...(spec.mcp ? { mcp: { handler: mcpRoute(spec.mcp), tools: [...mcpNames] } } : {}),
+          ...(spec.mcp ? { mcp: { session: spec.mcp, tools: [...mcpNames] } } : {}),
         },
       });
       // The SDK this session runs on (the host's, or the one installed beside this package, checked above), thinking at
