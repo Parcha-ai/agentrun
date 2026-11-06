@@ -10,28 +10,29 @@
 // run whose place is a box.
 //
 // Docker's box is made here, in the run's process, as this server's user, with work/ bound. A Daytona box is remote: it
-// cannot bind work/, and its key is the server's alone. The server makes it (through the box relay, box-relay.ts), seeds
-// it with work/, pulls work/ back at each turn's end and once more before the run's end is recorded, and destroys it
-// after that pull; the run's process reaches it through the relay, which holds the key. What the run's own host tools
-// file in work/ meanwhile (writeInWork) is copied into the box too, so its tools read it. The VM box is remote the same
-// way: the server makes, seeds, pulls and ends it with its own client, and the run's process runs pi-transport's VM
-// provider over the relay's VM half (box-relay-vm.ts), which holds the client and the token. It has no network.
+// cannot bind work/, and its key is the server's alone. The server makes it (through the box relay, box-relay.ts), and
+// the box mounts the run's work/ from the owner's Archil disk at /workspace (disk.ts archilDisk): nothing is copied in
+// or out. At each turn's end the server has the box sync it; at the run's end, sync and check it in, and then destroys
+// the box. The run's process reaches it through the relay, which holds the key, and what its own host tools file in
+// work/ goes in through the box (writeInWork), which holds the folder. The VM box is remote the same way: the server
+// makes, mounts and ends it with its own client, and the run's process runs pi-transport's VM provider over the relay's
+// VM half (box-relay-vm.ts), which holds the client and the token. It has no network.
 import { createHash } from "node:crypto";
-import { appendFile, lstat, readFile, realpath } from "node:fs/promises";
+import { lstat, realpath } from "node:fs/promises";
 import { isAbsolute, join, posix, relative, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT as BACKGROUND } from "@earendil-works/chord/context";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import type { Box, BoxProvider, BoxSpec } from "@parcha/pi-transport";
-import type { Manifest, PullReceipt } from "@parcha/pi-transport/sync";
 import { type BoxEgress, type DockerNetwork, EGRESS_MOUNT, egressBlockedBy, forwarderStart, hostEgress, PROXY_ENV, relayFailed, runBoxAllowOf } from "./box-egress.js";
 import { runBoxVolumeOf, vmDocker, vmEgress } from "./box-egress-vm.js";
 import { awaitImage, boxImageOf } from "./box-image.js";
 import { egressParentOf, runBoxPathsOf } from "./box-paths.js";
 import { RELAYED_KEY, relayedBox, relayFetch } from "./box-relay.js";
+import { FolderHeld } from "./archil.js";
 import { VM_PROVIDER } from "./boxes.js";
-import { readJson, writeDurable } from "./files.js";
+import type { DiskAdapter } from "./disk.js";
 import { FAUX_ENV } from "./model.js";
 import { agentWorkDir, BOX_WORK, type Place } from "./place.js";
 
@@ -152,15 +153,6 @@ export async function boxNetworkOf(env: NodeJS.ProcessEnv, options: Parameters<t
  *  place of Docker (the tests' faux box). */
 export const FAUX_BOX_ENV = "AGENTRUN_SERVE_FAUX_BOX";
 
-/** A remote box's sync mark in its run's directory: the box's id and the listing its seed or last pull left. The
- *  server alone writes it. */
-export const BOX_SYNC_FILE = "box-sync.json";
-/** What the run's process copied into its remote box after the seed (a file its host tools filed in work/): one JSON line
- *  per file, `{path, sha256, bytes}`, appended by that process alone. The mark has one writer, the server, so the
- *  process never writes it; a pull folds these lines into the mark it compares against, for paths the mark lacks, so
- *  the box's later edit of such a file comes back instead of reading as a change the server made. */
-export const BOX_MIRRORED_FILE = "box-mirrored.jsonl";
-
 type Mount = NonNullable<BoxSpec["mounts"]>[number];
 
 /** `source`, when it is below `root` through no link and is its own canonical path; else a refusal naming the link.
@@ -226,10 +218,10 @@ export const fauxBoxes = async (module: string, root: string): Promise<BoxProvid
 /** A run's box, as its tools' environment: found by its label or made on the first call, once; made again on the call
  *  after it was lost. A box that cannot be had fails that call; nothing falls back to this machine. Before a local box is
  *  made, its provider's `ready` is waited on (its image), and the call that opens it gives the `note` for its timeline
- *  row; a remote box is the server's to make (ensureRemoteBox), and never waits on that. `mirror`, on a remote box: copies
- *  a file the run's host tools filed in work/ (at `path`, relative to it) into the box, now when the box is open, else at
- *  its open. */
-export type RunBox = { env(context: Context, note?: (summary: string) => Promise<void> | void): Promise<ExecutionEnv>; hostWork: string; bound(): Promise<boolean>; leftEnded(context: Context): Promise<void>; mirror?: (path: string, data: string | Uint8Array) => Promise<void>; /** BOX_REPLACED_NOTE once, after this process replaced an earlier process's box; else nothing. */ replaced(): string | undefined };
+ *  row; a remote box is the server's to make (ensureRemoteBox), and never waits on that. `file`, on a remote box: files
+ *  what the run's host tools write in work/ (at `path`, relative to it) through the box, which holds the folder, opening
+ *  it when it is not open. */
+export type RunBox = { env(context: Context, note?: (summary: string) => Promise<void> | void): Promise<ExecutionEnv>; hostWork: string; bound(): Promise<boolean>; leftEnded(context: Context): Promise<void>; file?: (path: string, data: string | Uint8Array) => Promise<void>; /** BOX_REPLACED_NOTE once, after this process replaced an earlier process's box; else nothing. */ replaced(): string | undefined };
 
 /** Where a run's box comes from: a provider of this process's own (Docker, or the tests' faux box), or, for a remote box,
  *  the server's relay in data root `relay`. A bare function is a provider of this process's own. */
@@ -241,9 +233,6 @@ export function runBox(given: BoxSource | (() => Promise<RunBoxes>), run: { id: 
   // Whether this process destroyed a box of an earlier one, until its model is told (replaced).
   let replaced: "untold" | "told" | undefined;
   const fenced = (destroyed: number) => void (destroyed > 0 && replaced === undefined && (replaced = "untold"));
-  // What the host tools filed while no box was open in this process: a box a process before it made has no seed now, so
-  // these go in when it opens (and to a new box, whose seed carries them anyway, again: the same bytes).
-  const filed = new Map<string, Uint8Array>();
   const open = async (context: Context, note: (summary: string) => Promise<void> | void): Promise<{ env: ExecutionEnv; box: Box }> => {
     const { boxEnv, endLeftCommands } = await import("@parcha/pi-transport/hands");
     const opened = "relay" in source ? await relayedRunBox(source.relay, run, context) : await localRunBox(await source.provider(), run, context, note, fenced);
@@ -255,13 +244,6 @@ export function runBox(given: BoxSource | (() => Promise<RunBoxes>), run: { id: 
       // A process before this one left it: what it still runs is killed first, since its calls were answered interrupted.
       const ended = await endLeftCommands(box, context);
       if (!ended.ok) throw new Error(`the run's box could not be taken over: ${ended.error.message}`);
-    }
-    if (filed.size) {
-      const queued = [...filed];
-      filed.clear();
-      const sent = await box.upload(queued.map(([path, bytes]) => ({ path: posix.join(BOX_WORK, path), bytes })), context);
-      if (!sent.ok) mirrorFailed(queued.map(([path]) => path).join(", "), sent.error);
-      else for (const [path, bytes] of queued) await mirrored(run.dir, path, bytes);
     }
     return { box, env: boxEnv(box, { maxExecMs: BASH_TIMEOUT_MS, onLost: () => void (held = undefined) }) as unknown as ExecutionEnv };
   };
@@ -276,7 +258,7 @@ export function runBox(given: BoxSource | (() => Promise<RunBoxes>), run: { id: 
   let checked: Promise<void> | undefined;
   const env = async (context: Context, note?: (summary: string) => Promise<void> | void): Promise<ExecutionEnv> => (await opened(context, note)).env;
   return {
-    // The bind's source, or what a remote box is seeded from: a path another harness names under it is the same file in
+    // The bind's source, or the folder a remote box mounts: a path another harness names under it is the same file in
     // the box (coding-tools.ts boxPath).
     hostWork: join(run.dir, "work"),
     env,
@@ -319,51 +301,16 @@ export function runBox(given: BoxSource | (() => Promise<RunBoxes>), run: { id: 
     },
     ...("relay" in source
       ? {
-          // An open (or opening) box is written now; with none, the file waits for the box's open.
-          mirror: async (path: string, data: string | Uint8Array) => {
+          // Written in the box, which holds the folder: never here, where its hold refuses the write.
+          file: async (path: string, data: string | Uint8Array) => {
             const bytes = typeof data === "string" ? new TextEncoder().encode(data) : data;
-            const box = held && (await held.catch(() => undefined))?.box;
-            if (!box) return void filed.set(path, bytes);
+            const { box } = await opened(BACKGROUND);
             const sent = await box.upload([{ path: posix.join(BOX_WORK, path), bytes }], BACKGROUND);
             if (!sent.ok) throw sent.error;
-            await mirrored(run.dir, path, bytes);
           },
         }
       : {}),
   };
-}
-
-/** Notes in BOX_MIRRORED_FILE that `bytes` at `path` (below work/) went into the run's box: one appended line. */
-async function mirrored(runDir: string, path: string, bytes: Uint8Array): Promise<void> {
-  const line = { path, sha256: createHash("sha256").update(bytes).digest("hex"), bytes: bytes.length };
-  await appendFile(join(runDir, BOX_MIRRORED_FILE), `${JSON.stringify(line)}\n`, { mode: 0o600 });
-}
-
-/** `mark` with each file the run's process mirrored into the box since (BOX_MIRRORED_FILE) that it lacks: as the bytes
- *  both sides held, so the box's edit of it is a change to fetch and this machine's copy is not a change of its own. */
-async function withMirrored(runDir: string, mark: Manifest): Promise<Manifest> {
-  const text = await readFile(join(runDir, BOX_MIRRORED_FILE), "utf8").catch(() => "");
-  const held = new Set(mark.entries.map((entry) => entry.path));
-  const added = new Map<string, Manifest["entries"][number]>();
-  for (const line of text.split("\n")) {
-    let entry: { path?: unknown; sha256?: unknown; bytes?: unknown };
-    try {
-      entry = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    if (typeof entry.path !== "string" || typeof entry.sha256 !== "string" || typeof entry.bytes !== "number" || held.has(entry.path)) continue;
-    // The newest line for a path wins; its listed fields never match the box's, so the pull lists it as changed.
-    added.set(entry.path, { path: entry.path, kind: "file", bytes: entry.bytes, sha256: entry.sha256, mode: 0o644, mtime: "0" });
-  }
-  if (!added.size) return mark;
-  const entries = [...mark.entries, ...added.values()].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
-  return { entries, bytes: entries.reduce((sum, entry) => sum + entry.bytes, 0) };
-}
-
-/** Said in the run's process log: a file the host tools filed in work/ that its remote box did not get. */
-function mirrorFailed(paths: string, error: Error): void {
-  process.stderr.write(`${JSON.stringify({ at: new Date().toISOString(), event: "box_mirror_failed", message: `${paths} filed in work/ but not copied into the run's box: ${error.message}` })}\n`);
 }
 
 /** Said in the run's process log: one of its egress proxy's decisions (the host, port, address and class). */
@@ -474,11 +421,13 @@ export const memoryMbOf = (memory: string): number => {
   return size ? Math.floor((Number(size[1]) * SIZE_UNITS[size[2]!.toLowerCase()]!) / MIB) : 0;
 };
 
-/** The spec of a run's remote box: its work/ comes with its seed, never a mount; its network the hosts `allow` names, or
- *  none; its limits, where its provider takes them. */
-const remoteSpec = (runId: string, allow: readonly string[] | "none", limits: RemoteLimits = {}): BoxSpec => ({
+/** The spec of a run's remote box: its work/ is the run's folder on the Archil disk, which the box mounts (FUSE, so the
+ *  VM box asks for the VM runtime: gVisor cannot mount it); its network the hosts `allow` names, or none; its limits,
+ *  where its provider takes them. */
+const remoteSpec = (runId: string, allow: readonly string[] | "none", limits: RemoteLimits = {}, vm = false): BoxSpec => ({
   env: BOX_ENV, workspace: BOX_WORK, labels: { [RUN_LABEL]: runId, [KIND_LABEL]: "run" }, network: allow === "none" ? "none" : { allow }, maxLifetimeMs: BOX_LIFETIME_MS,
   ...(limits.cpus === undefined ? {} : { cpus: limits.cpus }), ...(limits.memoryMb ? { memoryMb: limits.memoryMb } : {}),
+  ...(vm ? { isolation: "vm" as const, capabilities: ["fuse" as const] } : {}),
 });
 
 /** Whether a box's hosts, as its provider reads them (undefined: it does not say), are the hosts asked, as a set. */
@@ -494,61 +443,57 @@ const sameHosts = (hosts: readonly string[] | undefined, asked: readonly string[
  *  none). Never a refusal a closed box would meet too, such as a timeout. */
 const NO_LIST: ReadonlySet<string> = new Set(["unsupported", "invalid", "unauthorized"]);
 
-type SyncMark = { box: string; mark: Manifest };
-const markOf = async (runDir: string): Promise<SyncMark | undefined> => {
-  const kept = (await readJson(join(runDir, BOX_SYNC_FILE))) as Partial<SyncMark> | null;
-  return typeof kept?.box === "string" && kept.mark && Array.isArray(kept.mark.entries) ? (kept as SyncMark) : undefined;
-};
-const keepMark = (runDir: string, mark: SyncMark) => writeDurable(join(runDir, BOX_SYNC_FILE), `${JSON.stringify(mark)}\n`);
+/** A remote run's folder on the disk: the adapter that mounts it (disk.ts archilDisk), its disk and its path below it. */
+export type RemoteFolder = { readonly adapter: DiskAdapter; readonly disk: string; readonly subpath: string };
 
-/** The server's side of a remote box: run `run`'s box, found by its label or made, with its work/ seeded once (its mark
- *  says so); its id, and whether it was made now. A box is made with the host list `allow` names, or with no network when
- *  it is `none`; a create the provider refuses for its list (NO_LIST) is said to `onNoList` at once, with its refusal's
- *  code and words (so a closed box or a seed that then fails leaves it said), and made again with no network, never open.
- *  A found box is kept when it has no network, or the list asked (the same hosts, in any order, as its provider reads
- *  them); any other (open, unknown, another list or one it does not say, or a list when `none` was asked) is copied back
- *  whole, then destroyed and made again, so a narrower list holds after a restart. One whose copy back fails or is not
- *  whole is kept, and the call fails. A box whose seed fails is destroyed, and the call fails. */
-/** What ensureRemoteBox takes beyond the run: the wake of a box Daytona stopped, the hosts the box may reach (`none` for
- *  none), who hears a refused list, and the copy back a found box gets before it is replaced (pullRemoteBox). */
+/** What ensureRemoteBox takes beyond the run: the run's folder, the wake of a box Daytona stopped, the hosts the box may
+ *  reach (`none` for none), who hears a refused list, the box's limits where its provider takes them (remoteSpec), and
+ *  whether it is the VM box. */
 export type RemoteBoxOptions = {
+  folder: RemoteFolder;
   wake?: () => Promise<number>;
   allow?: readonly string[] | "none";
   onNoList?: (code: string, message: string) => void;
-  pull?: (boxes: BoxProvider, run: { id: string; dir: string }, context: Context, wake?: () => Promise<number>) => Promise<unknown>;
-  /** The box's limits, where its provider takes them (remoteSpec). */
   limits?: RemoteLimits;
+  vm?: boolean;
 };
 
-export async function ensureRemoteBox(boxes: BoxProvider, run: { id: string; dir: string }, context: Context, options: RemoteBoxOptions = {}): Promise<{ id: string; made: boolean; replaced?: boolean }> {
-  const { wake, allow = "none", onNoList, pull = pullRemoteBox, limits } = options;
+/** The server's side of a remote box: run `run`'s box, found by its label or made, with the run's folder mounted at
+ *  /workspace; its id, and whether it was made now. A box is made with the host list `allow` names, or with no network
+ *  when it is `none`; a create the provider refuses for its list (NO_LIST) is said to `onNoList` at once, with its
+ *  refusal's code and words, and made again with no network, never open. A found box is kept when it has no network, or
+ *  the list asked (the same hosts, in any order, as its provider reads them); any other (open, unknown, another list or
+ *  one it does not say, or a list when `none` was asked, or its work/ elsewhere) lets go of the folder first (a sync and a
+ *  checkin), then is destroyed and made again, so a narrower list holds after a restart; one that cannot let go is kept,
+ *  and the call fails. The folder another client holds is taken back (the adapter's revoke, then the mount again) only
+ *  when no other box of the run lives: a box of it that is gone left its hold. A made box whose mount fails is destroyed. */
+export async function ensureRemoteBox(boxes: BoxProvider, run: { id: string; dir: string }, context: Context, options: RemoteBoxOptions): Promise<{ id: string; made: boolean; replaced?: boolean }> {
+  const { folder, wake, allow = "none", onNoList, limits, vm = false } = options;
   let asked: "none" | "allowlist" = allow === "none" ? "none" : "allowlist";
   let box = await runningRunBox(boxes, run.id, context, wake);
   let made = false;
   let replaced = false;
   const facts = box?.facts();
-  // Kept with its network as asked, and its work/ where every box has it now (BOX_WORK): one made when boxes had it
-  // elsewhere is pulled from there, whole, and made again.
   const keep = facts?.workspace === BOX_WORK && (facts?.network === "none" || (facts?.network === "allowlist" && allow !== "none" && sameHosts(facts.allow, allow)));
   if (box && !keep) {
-    // Its files first, whole: a box replaced here holds nothing only it had. One whose copy back fails, or is not whole,
-    // is kept for a later copy, and the call refused, so no tool runs in it.
+    // Its writes first, and the folder let go: a box replaced here takes nothing of the run's with it. One that cannot
+    // let go is kept, and the call refused, so no tool runs in it.
     try {
-      await pull(boxes, run, context, wake);
+      await folder.adapter.unmount(mountedIn(folder, box, context));
     } catch (error) {
-      throw new Error(`the run's box has another host list than this server's now (or a network it does not ask for, or its files outside /workspace), and its files could not all be copied back, so it is kept and not used: ${(error as Error).message}`);
+      throw new Error(`the run's box has another host list than this server's now (or a network it does not ask for, or its files outside /workspace), and it could not let go of the run's folder, so it is kept and not used: ${(error as Error).message}`);
     }
     await destroyRunBoxes(boxes, run.id, context);
     box = undefined;
     replaced = true;
   }
   if (!box) {
-    let created = await boxes.create(remoteSpec(run.id, allow, limits), context);
+    let created = await boxes.create(remoteSpec(run.id, allow, limits, vm), context);
     if (!created.ok && asked === "allowlist" && NO_LIST.has(created.error.code)) {
       asked = "none";
       onNoList?.(created.error.code, created.error.message);
       await destroyRunBoxes(boxes, run.id, context).catch(() => undefined);
-      created = await boxes.create(remoteSpec(run.id, "none", limits), context);
+      created = await boxes.create(remoteSpec(run.id, "none", limits, vm), context);
     }
     if (!created.ok) {
       await destroyRunBoxes(boxes, run.id, context).catch(() => undefined);
@@ -561,68 +506,53 @@ export async function ensureRemoteBox(boxes: BoxProvider, run: { id: string; dir
       throw new Error(`the run's box was made with its network ${box.facts().network ?? "unknown"}, not ${asked === "none" ? "closed" : "its host list"}, so it is not used`);
     }
   }
-  // A box found without its seed's mark was made by a server that went down before it seeded it: seeded now.
-  if ((await markOf(run.dir))?.box !== box.id) {
-    const { seedDir } = await import("@parcha/pi-transport/sync");
-    const seeded = await seedDir(box, { from: join(run.dir, "work"), to: BOX_WORK }, context);
-    if (!seeded.ok) {
-      await box.destroy(context).catch(() => undefined);
-      throw new Error(`the run's files could not be copied into its box: ${seeded.error.message}`);
-    }
-    await keepMark(run.dir, { box: box.id, mark: seeded.value.mark });
+  try {
+    await mountIn(boxes, run, folder, box, context);
+  } catch (error) {
+    if (made) await box.destroy(context).catch(() => undefined);
+    throw new Error(`the run's folder could not be mounted in its box: ${(error as Error).message}`);
   }
   // `replaced`: a box the run had was destroyed for this one, and what it held outside the run's files with it.
   return { id: box.id, made, ...(replaced ? { replaced } : {}) };
 }
 
-/** What a pull of a remote box brought back; undefined when the run has no box (none made, or it is gone). */
-export type RemotePull = { -readonly [K in "changed" | "files" | "bytes" | "removed"]: PullReceipt[K] };
+/** The run's folder as mounted in `box`, for the adapter's sync and unmount. */
+const mountedIn = (folder: RemoteFolder, box: Box, context: Context) => ({ subpath: folder.subpath, path: BOX_WORK, mode: "tools" as const, box, context });
 
-/** A pull that did not bring the box's work/ back whole: what it wrote is kept, with its mark, and the box must stay.
- *  `lasting`: a stop another pull will meet again (an archive the extractor cannot read, or a limit a pull that wrote
- *  nothing reached); else the copy failed, and a later pull may land. */
-export class PullIncomplete extends Error {
-  readonly lasting: boolean;
-  /** The box that keeps what did not come back. */
-  readonly box: string;
-  constructor(message: string, lasting: boolean, box: string) {
-    super(message);
-    this.lasting = lasting;
-    this.box = box;
+/** Mounts the run's folder in `box` (one already mounted there answers at once). Held by another client: taken back only
+ *  when `box` is the run's only box, since then the holder is one of its boxes that is gone. */
+async function mountIn(boxes: BoxProvider, run: { id: string }, folder: RemoteFolder, box: Box, context: Context): Promise<void> {
+  const mount = () => folder.adapter.mount(folder.disk, folder.subpath, { box, path: BOX_WORK, context }, "tools");
+  try {
+    await mount();
+  } catch (error) {
+    if (!(error instanceof FolderHeld)) throw error;
+    const listed = await boxes.list({ [RUN_LABEL]: run.id }, context);
+    if (!listed.ok) throw listed.error;
+    const others = listed.value.filter((ref) => ref.id !== box.id);
+    if (others.length) throw new Error(`another box of the run (${others.map((ref) => ref.id).join(", ")}) still holds its folder`);
+    await folder.adapter.revoke(run.id);
+    await mount();
   }
 }
 
-/** How many pulls one copy back takes at most: each pull past a limit brings the next part, up to the limit again. */
-const PULL_ROUNDS = 8;
-
-/** The server's side of a remote box: what changed in the box's work/ since its mark, pulled into the run's work/ by the
- *  safe extractor (nothing outside work/, no link, safe names only). A file this machine changed since the mark stays
- *  (`if_unchanged`), and what the box removed is removed here too. A pull a limit stopped after it wrote something is
- *  followed by another, which asks only for the rest. Throws when the copy fails (the mark kept), and PullIncomplete when
- *  it is not whole: a caller then keeps the box. */
-export async function pullRemoteBox(boxes: BoxProvider, run: { id: string; dir: string }, context: Context, wake?: () => Promise<number>): Promise<RemotePull | undefined> {
+/** The server's side of a remote box at a turn's end: what the box wrote in the run's folder made durable (the adapter's
+ *  sync), so the server reads it. Nothing when the run has no running box. */
+export async function syncRemoteBox(boxes: BoxProvider, run: { id: string }, folder: RemoteFolder, context: Context, wake?: () => Promise<number>): Promise<boolean> {
   const box = await runningRunBox(boxes, run.id, context, wake);
-  if (!box) return undefined;
-  const { pullDir } = await import("@parcha/pi-transport/sync");
-  const total: RemotePull = { changed: 0, files: 0, bytes: 0, removed: 0 };
-  for (let round = 1; ; round++) {
-    const kept = await markOf(run.dir);
-    const since = kept?.box === box.id ? await withMirrored(run.dir, kept.mark) : undefined;
-    // From where this box has the run's work/: BOX_WORK, or, for one made before every box had it there, its own.
-    const pulled = await pullDir(box, { from: box.facts().workspace ?? BOX_WORK, to: join(run.dir, "work"), ...(since ? { since } : {}), mirrorDeletes: true, overwrite: "if_unchanged" }, context);
-    if (!pulled.ok) throw new Error(`the run's files could not be copied back from its box: ${pulled.error.message}`);
-    // What it wrote is whole and in the mark, a stopped pull's too: the next pull asks only for the rest.
-    await keepMark(run.dir, { box: box.id, mark: pulled.value.mark });
-    const { changed, files, directories, bytes, removed, stopped } = pulled.value;
-    if (round === 1) total.changed = changed;
-    total.files += files;
-    total.bytes += bytes;
-    total.removed += removed;
-    if (!stopped) return total;
-    const wrote = files + directories + removed > 0;
-    if (stopped.reason === "copy_failed") throw new PullIncomplete(`the copy back from the run's box stopped: ${stopped.message}`, false, box.id);
-    if (stopped.reason === "malformed" || !wrote || round >= PULL_ROUNDS) throw new PullIncomplete(`the copy back from the run's box stopped (${stopped.reason}): ${stopped.message}`, true, box.id);
-  }
+  if (!box) return false;
+  await folder.adapter.sync(mountedIn(folder, box, context));
+  return true;
+}
+
+/** The server's side of a remote box at its run's end, before it is destroyed: its writes made durable and the run's
+ *  folder let go (the adapter's unmount: a sync, then a checkin). Nothing when the run has no running box: one that is gone
+ *  left its hold, which the run's next box takes back. Throws when the box could not let go: a caller then keeps it. */
+export async function releaseRemoteBox(boxes: BoxProvider, run: { id: string }, folder: RemoteFolder, context: Context, wake?: () => Promise<number>): Promise<boolean> {
+  const box = await runningRunBox(boxes, run.id, context, wake);
+  if (!box) return false;
+  await folder.adapter.unmount(mountedIn(folder, box, context));
+  return true;
 }
 
 /** The running box labelled with run `runId`; with none running, one `wake` started (Daytona stopped or paused it), else none. */

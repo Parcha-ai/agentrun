@@ -1,6 +1,7 @@
 // The VM box for sandbox runs, on a fake of the VM provider's SDK client (fixtures/fake-vm.mjs, loaded in place of the SDK
-// under --faux): no provider call runs. The server holds the token and the client: it makes a run's box, seeds it with
-// the run's work/, pulls work/ back at each turn's end and once more before the run's end is recorded, then ends it. The
+// under --faux), over a fake Archil disk (fixtures/fake-archil.mjs): no provider call and no Archil call runs. The server
+// holds the token and the client: it makes a run's box, which mounts the run's work/ from the disk, syncs it at each
+// turn's end, syncs and checks it in at the run's end, then ends it. The
 // run's process holds no token: its calls to its box go through the server's box relay, which takes only the calls a run's
 // tools make of that run's own box. The VM box has no network: the provider takes a host list, but the server cannot read
 // a box's list back to check that it holds, so it never asks for one, and never leaves the provider's open default.
@@ -14,6 +15,7 @@ import { VM_PROVIDER } from "../dist/boxes.js";
 import { BOX_RELAY_FILE, startBoxRelay } from "../dist/box-relay.js";
 import * as relayVm from "../dist/box-relay-vm.js";
 import { BOX_ENV } from "../dist/run-box.js";
+import { fakeArchil, TOKEN as DISK_TOKEN } from "./fixtures/fake-archil.mjs";
 import { ModalClient as FakeClient, vm } from "./fixtures/fake-vm.mjs";
 import { follow, runDir, scratch, serve, withEnv } from "./support.mjs";
 
@@ -38,12 +40,17 @@ function answers(data, runId) {
   }
 }
 
-/** A server with the VM box listed, its token planted (or `keys`), on the fake client and the probe model. */
+/** A server with the VM box listed, its token planted (or `keys`), on the fake client and the probe model, over a fake
+ *  Archil disk (fixtures/fake-archil.mjs) whose client, helper and sudo each sandbox has (`vm.archil`). */
 async function onVm(t, { keys = TOKENS, env = {}, ...extra } = {}) {
   vm.reset();
   t.after(() => vm.reset());
-  withEnv(t, { AGENTRUN_BOXES: VM, ...keys, OPENAI_API_KEY: planted("model"), ...env }, [...VM_PROVIDER.keys, "AGENTRUN_BOX_ALLOW"]);
-  return serve(t, { faux: PROBE, fauxVm: FAKE_VM, ...extra });
+  const data = join(await scratch(t), "agents");
+  const disk = await fakeArchil(t, { data });
+  vm.archil = disk;
+  withEnv(t, { AGENTRUN_BOXES: VM, ...keys, OPENAI_API_KEY: planted("model"), ...disk.env, ...env }, [...VM_PROVIDER.keys, "AGENTRUN_BOX_ALLOW", "AGENTRUN_ARCHIL_DISK", "AGENTRUN_ARCHIL_REGION", "AGENTRUN_ARCHIL_TOKEN", "AGENTRUN_ARCHIL_GID"]);
+  const server = await serve(t, { faux: PROBE, fauxVm: FAKE_VM, data, archilMounts: disk.serverMounts, ...extra });
+  return Object.assign(server, { disk });
 }
 
 async function probe(api, agent, plan) {
@@ -61,7 +68,7 @@ const until = async (done, what, ms = 30_000) => {
   }
 };
 
-test("demo: a VM place runs bash, write, edit and read in the run's VM box: work/ seeded in, bash's out.txt back in the run's files, no network, no token in the box, the box ended at the run's end", { timeout: 180_000 }, async (t) => {
+test("demo: a VM place runs bash, write, edit and read in the run's VM box: work/ mounted from the disk, the token on the helper's stdin, bash's out.txt in the run's files, no network, no token in the box, the box ended at the run's end", { timeout: 180_000 }, async (t) => {
   const server = await onVm(t);
   const { api, data } = server;
   assert.deepEqual(await vmOffer(api), { id: VM, available: true, state: "ready", reason: "configured; not probed at start", network: "none", network_reason: NO_LIST });
@@ -83,13 +90,22 @@ test("demo: a VM place runs bash, write, edit and read in the run's VM box: work
   assert.deepEqual(said.map((a) => [a.tool, a.error]), plan.map((step) => [step.tool, false]), JSON.stringify(said));
   assert.match(said[0].text.trim(), /\/workspace$/, "bash starts in the box's work/");
   assert.equal(said[4].text, "edited in the box");
-  // The run's files: what the box wrote, pulled back.
+  // The run's files: what the box wrote, in the run's folder on the disk itself.
   assert.deepEqual(await fileList(api, run.run_id), ["note.txt", "out.txt"]);
   assert.equal((await api("GET", `/runs/${run.run_id}/files/out.txt`)).body, "hello from the box\n");
   // The box the provider was asked for: the network blocked, never a list; the fixed environment; the run's labels.
   assert.equal(vm.sandboxes.length, 1);
   const params = vm.sandboxes[0].params;
   assert.deepEqual([params.blockNetwork, params.outboundDomainAllowlist, params.outboundCidrAllowlist], [true, undefined, undefined]);
+  // The disk's folder, mounted through the helper with the token on its stdin (a real descriptor here), never an
+  // argument; synced and checked in at the end.
+  const calls = server.disk.calls();
+  assert.deepEqual(calls.map((c) => c.verb).filter((verb) => verb !== "sync"), ["mount", "checkin"]);
+  assert.equal(calls[0].tokenInEnv, true);
+  assert.equal(calls[0].psWithToken, 0);
+  assert.deepEqual(calls[0].filesWithToken, []);
+  for (const sandbox of vm.sandboxes) for (const exec of sandbox.execs) assert.ok(!exec.command.some((part) => String(part).includes(DISK_TOKEN)), exec.command.join(" "));
+  assert.ok(!said[5].text.includes(DISK_TOKEN), "the disk token reached the box's tools");
   assert.deepEqual(params.env, BOX_ENV);
   assert.equal(params.tags["agentrun.run"], run.run_id);
   // The client was made with the server's token, which reached neither the box nor the run's process.
@@ -102,8 +118,9 @@ test("demo: a VM place runs bash, write, edit and read in the run's VM box: work
   assert.deepEqual(vm.running(), [], "the box is ended at the run's end");
 });
 
-test("a run's box that is gone is made again: the call that met it fails saying so, and the next call runs in a new box seeded with the run's work/", { timeout: 180_000 }, async (t) => {
-  const { api, data } = await onVm(t);
+test("a run's box that is gone is made again: the call that met it fails saying so, and the next call runs in a new box that takes the run's folder back from the gone one", { timeout: 180_000 }, async (t) => {
+  const server = await onVm(t);
+  const { api, data } = server;
   assert.equal((await api("POST", "/agents", { definition: { id: "asker", name: "asker", instructions: "Probe.", place: PLACE, tools: ["bash", "ask_person"] } })).status, 201);
   const plan = [
     { tool: "bash", args: { command: "printf one > turn1.txt" } },
@@ -113,7 +130,7 @@ test("a run's box that is gone is made again: the call that met it fails saying 
   ];
   const run = await probe(api, "asker", plan);
   await follow(api, run.run_id, ["input_required"], { deadlineMs: 120_000 });
-  assert.deepEqual(await fileList(api, run.run_id), ["turn1.txt"], "the turn's end pulled what its box wrote");
+  assert.deepEqual(await fileList(api, run.run_id), ["turn1.txt"], "what its box wrote is in the run's folder");
   assert.equal(vm.running().length, 1, "the box lives while the run waits");
   const first = vm.running()[0].sandboxId;
   await vm.end(first);
@@ -123,7 +140,10 @@ test("a run's box that is gone is made again: the call that met it fails saying 
   assert.deepEqual(said.map((a) => [a.tool, a.error]), [["bash", false], ["ask_person", false], ["bash", true], ["bash", false]], JSON.stringify(said));
   assert.match(said[2].text, /gone|ended/, "the call that met the gone box says so");
   assert.equal(vm.sandboxes.length, 2, "made again, once");
-  assert.equal((await api("GET", `/runs/${run.run_id}/files/turn2.txt`)).body, "one", "the new box was seeded with what the run had");
+  assert.equal((await api("GET", `/runs/${run.run_id}/files/turn2.txt`)).body, "one", "the new box has what the run had");
+  // The gone box held the folder: the new box's mount is refused, and its revoke takes it back.
+  const takes = server.disk.calls().filter((c) => c.verb === "mount" || c.verb === "revoke").map((c) => [c.verb, c.box, c.refused ?? c.revoked]);
+  assert.deepEqual(takes.map(([verb, box, why]) => [verb, box === first ? "first" : "second", why === first ? "first" : why]), [["mount", "first", undefined], ["mount", "second", "held"], ["revoke", "second", "first"]]);
   assert.deepEqual(vm.running(), [], "and the new one is ended at the run's end");
 });
 
@@ -143,7 +163,8 @@ test("a cancel ends the run's box", { timeout: 180_000 }, async (t) => {
 });
 
 test("a run's end lets the relay's hold on its programs go even when its box is kept: a program it holds is no longer read", { timeout: 180_000 }, async (t) => {
-  const { api, data } = await onVm(t);
+  const server = await onVm(t);
+  const { api, data } = server;
   assert.equal((await api("POST", "/agents", { definition: { id: "asker", name: "asker", instructions: "Probe.", place: PLACE, tools: ["bash", "ask_person"] } })).status, 201);
   const run = await probe(api, "asker", [{ tool: "bash", args: { command: "true" } }, { tool: "ask_person", args: { question: "Go on?" } }]);
   await follow(api, run.run_id, ["input_required"], { deadlineMs: 120_000 });
@@ -155,10 +176,8 @@ test("a run's end lets the relay's hold on its programs go even when its box is 
   assert.equal(started.status, 200);
   const held = box.execs.find((exec) => exec.command[0] === "sleep");
   assert.deepEqual(held.released, []);
-  // Its last copy back cannot be read (a file changed in the box since the turn's pull, and its archive is no archive),
-  // so the box is kept at the run's end.
-  writeFileSync(join(box.dir, "workspace", "late.txt"), "changed in the box");
-  vm.hostileTar = Buffer.from("this is not an archive ".repeat(64));
+  // Its writes cannot reach the disk (its sync fails), so it cannot let go of the folder: the box is kept at the run's end.
+  server.disk.failSyncs(true);
   assert.equal((await api("POST", `/runs/${run.run_id}/cancel`)).status, 202);
   await follow(api, run.run_id, ["cancelled"], { deadlineMs: 120_000 });
   assert.deepEqual(vm.running().map((sandbox) => sandbox.sandboxId), [box.sandboxId], "the box is kept");
@@ -167,19 +186,19 @@ test("a run's end lets the relay's hold on its programs go even when its box is 
 });
 
 test("a program that is still starting when its run ends is let go as it lands, never held", { timeout: 180_000 }, async (t) => {
-  const { api, data } = await onVm(t);
+  const server = await onVm(t);
+  const { api, data } = server;
   assert.equal((await api("POST", "/agents", { definition: { id: "asker", name: "asker", instructions: "Probe.", place: PLACE, tools: ["bash", "ask_person"] } })).status, 201);
   const run = await probe(api, "asker", [{ tool: "bash", args: { command: "true" } }, { tool: "ask_person", args: { question: "Go on?" } }]);
   await follow(api, run.run_id, ["input_required"], { deadlineMs: 120_000 });
   const [box] = vm.running();
   const { url } = JSON.parse(readFileSync(join(data, BOX_RELAY_FILE), "utf8"));
   const door = readFileSync(join(runDir(data, run.run_id), "door-token"), "utf8").trim();
-  // Its start takes a while; the run ends meanwhile, its box kept (its last copy back cannot be read).
+  // Its start takes a while; the run ends meanwhile, its box kept (it cannot let go of the folder).
   vm.execDelayMs = (command) => (command[0] === "sleep" ? 20_000 : 0);
   const starting = fetch(`${url}/runs/${run.run_id}/vm/sandbox/${box.sandboxId}/exec`, { method: "POST", headers: { authorization: `Bearer ${door}`, "content-type": "application/json" }, body: JSON.stringify({ command: ["sleep", "30"] }) });
   await until(() => box.execs.some((exec) => exec.command[0] === "sleep"), "the start under way");
-  writeFileSync(join(box.dir, "workspace", "late.txt"), "changed in the box");
-  vm.hostileTar = Buffer.from("this is not an archive ".repeat(64));
+  server.disk.failSyncs(true);
   assert.equal((await api("POST", `/runs/${run.run_id}/cancel`)).status, 202);
   await follow(api, run.run_id, ["cancelled"], { deadlineMs: 120_000 });
   assert.equal(box.execs.find((exec) => exec.command[0] === "sleep").released, undefined, "the run ended before the start landed");
@@ -221,7 +240,8 @@ test("a missing token keeps the VM box unavailable with today's reason, and its 
 });
 
 test("the relay takes a run's VM calls only for that run's own box, and never one that ends, tags or makes a box", { timeout: 180_000 }, async (t) => {
-  const { api, data } = await onVm(t);
+  const server = await onVm(t);
+  const { api, data } = server;
   assert.equal((await api("POST", "/agents", { definition: { id: "asker", name: "asker", instructions: "Probe.", place: PLACE, tools: ["bash", "ask_person"] } })).status, 201);
   const plan = [{ tool: "bash", args: { command: "true" } }, { tool: "ask_person", args: { question: "Go on?" } }];
   const a = await probe(api, "asker", plan);

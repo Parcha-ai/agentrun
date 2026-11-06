@@ -279,7 +279,8 @@ serves a data root, and the agent disk under it (`<data>/disk`): a second server
 ## Sandbox
 
 A sandbox agent's `bash` runs in a box, a machine apart from this server: today a Docker container made for each run,
-which binds the run's `work/` and nothing else, or a Daytona sandbox, which gets a copy of it. Neither holds a key. A
+which binds the run's `work/` and nothing else, or a Daytona or Modal sandbox, which mounts it from the owner's
+[Archil disk](#a-box-on-another-machine-the-archil-disk). Neither holds a key. A
 Docker box on Linux reaches the package registries and GitHub through a proxy, and nothing else; a Daytona box reaches
 them through Daytona's domain list. Its `read`, `write` and `edit` work on that same `work/`: on this server, where the box binds it and this server
 holds directory handles (Docker on Linux), else in the box. The agent's loop, its log, its model calls and every key stay
@@ -563,44 +564,34 @@ since nothing binds `work/` there):
 - A sandbox Daytona does not report blocked, when blocked was asked, is deleted, and the tool call fails saying so. An
   organization on Daytona's tier 1 or 2 keeps its own network policy, which a sandbox cannot override, so a run there
   gets no Daytona box unless that policy blocks it.
-- A sandbox cannot bind `work/`. The server copies `work/` into it at `/workspace` when it makes it, and
-  copies what changed back at each turn's end (a read of the run's files waits for that copy) and once more before the
-  run's end is recorded. Daytona's answer is never trusted: the copy back writes regular files and directories only,
-  never a link and nothing outside `work/`, and a file this server changed since the last copy stays as this server
-  has it. A file the box removed is removed here too. What the server files in `work/` during the run (monid's long
-  answers) is copied into the sandbox as well. The copy's mark is `box-sync.json` beside the run, which the server alone
-  writes; the run's process notes each file it copied in, in `box-mirrored.jsonl` beside it, and a copy back counts
-  those as held by both sides, so an edit the box makes to one comes back.
-- The sandbox is destroyed after the last copy back, and only once that copy is whole: when the run ends, and when it
-  is archived (a copy that fails at an archive keeps the sandbox for the run's end). A copy that fails at the run's end
-  is tried again, and the end waits for it. One that stops for good (an archive the server cannot read, or a limit a copy
-  that brought nothing reached) keeps the sandbox, says so in the log (`event=box_kept` with its id), and lets the run
-  end with what did come back. A start pulls a run it finds waiting for the person, and copies back, then destroys, the
-  sandbox of every run that has ended or is archived. One whose copy fails is kept for the next start.
-- A kept sandbox has Daytona's auto-delete turned off (a sandbox is made with auto-delete at 0, which deletes it as it
-  stops) and is set to stop after 15 minutes without activity, so once stopped it costs its disk alone (3 GiB on
-  Daytona's default snapshot, at Daytona's storage price) and no compute; its files stay. The next start wakes it, copies
-  back again, and destroys it once that copy is whole; else its 24-hour lifetime ends it. To remove one sooner, delete
-  the sandbox in Daytona's dashboard or API: it carries the labels `agentrun.box=run` and `agentrun.run=<run id>`.
+- A sandbox cannot bind `work/`: it mounts the run's `work/` from the owner's Archil disk at `/workspace` ([a box on
+  another machine](#a-box-on-another-machine-the-archil-disk)). Nothing is copied in or out: what the box writes is in
+  the run's folder on the disk, which this server reads through its own mount. At each turn's end the box syncs the
+  folder (a read of the run's files waits for that sync). What the server files in `work/` during the run (monid's long
+  answers) goes in through the sandbox, which holds the folder.
+- At the run's end, a cancel included, and at an archive, the sandbox syncs the folder and checks it in (Daytona cannot
+  unmount), and only then is it destroyed. One that cannot let go at the run's end is tried again, and the end waits for
+  it; at an archive, it is kept for the run's end. A start has the sandbox of every run that has ended or is archived
+  let go of its folder, then destroys it; one that cannot is kept for the next start, its 24-hour lifetime bounding it.
 - A run's sandbox that Daytona stopped, paused (a sandbox class that pauses when idle, while the run waits for its
   person) or archived (a stopped one it moved away) is started again, an archived one restored, when the server next
-  needs it: for the run's next tool call, a copy back, or the start's sweep. One still stopping, pausing or archiving
+  needs it: for the run's next tool call, a sync, or the start's sweep. One still stopping, pausing or archiving
   is waited for (a minute at most) first. It is never replaced by a new one, so
   what only it holds stays.
-- The sandbox is Daytona's default snapshot, made as its user, with `sudo -n` making `/workspace`.
+- The sandbox is Daytona's default snapshot, made as its user, with `sudo -n` making `/workspace`. That snapshot must
+  ship the Archil client, the helper and the tool user ([the box's image](#a-box-on-another-machine-the-archil-disk)).
 
 ### A run in a Modal sandbox
 
 With `modal` listed in `AGENTRUN_BOXES`, its token set and its SDK installed, a run whose place is
 `{"mode": "sandbox", "box": "modal"}` gets one Modal sandbox, made on its first `read`, `write`, `edit` or `bash` call. It
-is Modal's default sandbox runtime (gVisor), not a virtual machine: the server does not ask Modal for its VM runtime. It works like a
+is Modal's VM runtime: gVisor, its default, cannot mount the run's folder (FUSE). It works like a
 [Daytona box](#a-run-in-a-daytona-box): the same tools, path rules, environment and labels, and its `read`, `write` and
 `edit` run in the sandbox too. What differs:
 
-- The token and the SDK's client are this server's alone. The server makes the sandbox, copies `work/` into it at
-  `/workspace`, copies what changed back at each turn's end and once more before the run's end is recorded,
-  and ends it after that last copy, at the run's end, a cancel included, and at an archive. The copy rules (no link,
-  nothing outside `work/`, a file this server changed stays as it has it) are Daytona's.
+- The token and the SDK's client are this server's alone. The server makes the sandbox, which mounts the run's `work/`
+  from the Archil disk at `/workspace`, has it sync at each turn's end, and sync and check it in before it ends it, at
+  the run's end, a cancel included, and at an archive, as for Daytona. The disk token goes in on the helper's stdin.
 - The run's process holds no token. Its calls to its sandbox go through the server's box relay, on loopback, with that
   run's own door token. The relay makes only the calls a run's tools make of their own sandbox, with the server's
   client: finding it, reading its state and tags, and starting a program in it with that program's input, output and
@@ -609,13 +600,51 @@ is Modal's default sandbox runtime (gVisor), not a virtual machine: the server d
   its SDK cannot read a sandbox's list back, so this server cannot check that a box holds the list it asked for (as it
   does for Daytona). Each box is made with its network blocked, never with the provider's open default. Capabilities
   show the box's `network` as `none`, with `network_reason`, unless the setting is `none`.
-- A sandbox that is gone (it ended, or its lifetime ran out) is made again on the run's next tool call and seeded
-  with the run's `work/`. The call that met the gone box fails, saying so.
+- A sandbox that is gone (it ended, or its lifetime ran out) is made again on the run's next tool call, and takes the
+  run's folder back from the gone one (its hold forced off; no other box of the run lives). The call that met the gone
+  box fails, saying so.
 - Each Modal sandbox reserves 2 CPUs and 4 GiB of memory by default, which the provider bills for while the box lives:
   the Docker box's defaults, asked of the provider as the sandbox's CPU and memory. `AGENTRUN_BOX_CPUS` and
   `AGENTRUN_BOX_MEMORY` change both boxes alike (such as `AGENTRUN_BOX_CPUS=1 AGENTRUN_BOX_MEMORY=1g`). The provider has
   no process limit, so `AGENTRUN_BOX_PIDS` does not apply. Its lifetime is 24 hours, as every box's is.
-- A start copies back, then ends, the sandbox of every run that has ended or is archived.
+- A start has the sandbox of every run that has ended or is archived let go of its folder, then ends it.
+
+### A box on another machine: the Archil disk
+
+A Daytona or Modal sandbox runs on another machine, which cannot bind this server's folders, and nothing is copied in
+or out. So the run's folders are on the owner's [Archil](https://archil.com) disk, which both this server and the box
+mount. Without one, a remote box is unavailable, and capabilities say so before anyone saves an agent there: "remote
+boxes keep their run folder on an Archil disk: configure AGENTRUN_ARCHIL_DISK, AGENTRUN_ARCHIL_REGION and
+AGENTRUN_ARCHIL_TOKEN, or use the docker box". A save of a Daytona or Modal place is refused with those words, and a run
+of one saved before is refused 409 `agent_not_runnable`.
+
+- **The settings.** `AGENTRUN_ARCHIL_DISK` (the disk's id, `dsk-` and 16 hex digits, or `owner/name`),
+  `AGENTRUN_ARCHIL_REGION` (such as `aws-us-east-1`) and `AGENTRUN_ARCHIL_TOKEN` (a disk token: a secret this server
+  holds, as it holds the boxes' keys; no run's process gets it). `AGENTRUN_ARCHIL_GID` (default 2510) is the group the
+  box's tool user and this server's user share: Archil keeps a file's uid and gid as they are, with no mapping between
+  machines, so each run's `work/` is that group's, `2770`, and every folder above it this server's user's alone (`0700`).
+  This server's user must be in that group.
+- **This server's mount.** The operator mounts the disk at `<data>/disk`, conditional, before the server starts; the
+  server runs nothing as root and only checks the mount table. With systemd, or `/etc/fstab`:
+  `<disk> <data>/disk archil _netdev,region=<region>,conditional,defaults 0 0`. With the settings set and no such mount,
+  remote boxes are unavailable, saying to mount it.
+- **The box's image or snapshot** ships what the server does not install: the `archil` client at `/usr/bin/archil`;
+  the root helper, this package's `box/agentrun-archil`, at `/usr/local/sbin/agentrun-archil`, `root:root 0755`; a user
+  `agentrun-tool` in the shared group, with no sudo; and these sudoers lines for the box's own user (Daytona's
+  `daytona`; the Modal sandbox runs as root and needs none), with no other grant:
+  `daytona ALL=(root) NOPASSWD: /usr/local/sbin/agentrun-archil` and `daytona ALL=(agentrun-tool) NOPASSWD: ALL`. A box
+  without the helper is refused, saying so. Every box needs outbound TCP 8100 and 32050 to Archil.
+- **The mount.** The box mounts exactly its run's `work/` (`agents/<agent>/runs/<run>/work` on the disk) at
+  `/workspace`, exclusively, so no other client writes it. The helper takes four verbs and nothing else: `mount` and
+  `revoke` (a mount with `--force`, which takes the folder back from a box that is gone) with the disk, region and
+  folder, `sync` and `checkin`. It checks every argument itself: any other folder, a `.` or `..`, an absolute path, a
+  link, a mountpoint that is not empty, or a token of any other shape refuses and runs nothing.
+- **The token never reaches a tool.** It goes into the box only on the helper's fd 0, which hands it to the archil
+  client in that one root program's environment. On a Modal sandbox it is the helper's stdin. On Daytona, whose stdin
+  travels as arguments, it is a file in a new `0700` folder of the box's own user, opened as fd 0 and removed, folder and
+  all, before the helper starts. The run's tools run as `agentrun-tool` (`sudo -n -u agentrun-tool --` before each of
+  their programs), which has no sudo, cannot enter that folder, and cannot read a root process's `/proc` entries.
+
 
 ### The box's image
 

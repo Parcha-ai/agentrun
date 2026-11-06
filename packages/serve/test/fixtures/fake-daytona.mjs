@@ -24,7 +24,7 @@ export async function fakeDaytona(t, answer) {
 }
 
 // A box path in a command or a file call: where it starts a word, a quoted word or a variable's value.
-const BOX_PATH = /(^|[\s'"=:])(\/run\/agentrun|\/workspace|\/tmp\/pi-transport)(?=[/'"\s]|$)/g;
+const BOX_PATH = /(^|[\s'"=:])(\/run\/agentrun|\/workspace|\/tmp\/pi-transport|\/tmp\/agentrun-archil)(?=[/'"\s.]|$)/g;
 
 /**
  * A Daytona that keeps sandboxes. Options: `key`, the only key it takes; `blocks` (default true), false for an
@@ -38,9 +38,10 @@ const BOX_PATH = /(^|[\s'"=:])(\/run\/agentrun|\/workspace|\/tmp\/pi-transport)(
  * true when `hostileTar` is given) turns the lying `tar` off and on. A sandbox keeps the `autoDeleteInterval` it was
  * made with or last set, and `autoStopInterval`: as Daytona does, a stop of one whose auto-delete is 0 deletes it.
  * `idle(id)` is Daytona's idle stop, `pause(id)` a pause; `/start` starts a stopped or paused sandbox, and a toolbox call
- * to one that is not started is refused.
+ * to one that is not started is refused. `archil` (fake-archil.mjs): each sandbox has the Archil client, the root helper
+ * and the sudo of a box image that ships them.
  */
-export async function daytonaSandboxes(t, { key, blocks = true, lists = true, refusesLists, hostileTar, failDeletes = 0, failListings = [], sudoProbe = false } = {}) {
+export async function daytonaSandboxes(t, { key, blocks = true, lists = true, refusesLists, hostileTar, failDeletes = 0, failListings = [], sudoProbe = false, archil } = {}) {
   const root = join(await scratch(t), "daytona");
   mkdirSync(root, { recursive: true });
   // Every box command runs with a sudo stand-in first on its PATH (sudoStandIn); one it met fails the test, unless the
@@ -89,7 +90,7 @@ export async function daytonaSandboxes(t, { key, blocks = true, lists = true, re
       if (sudo.refuses(command)) return resolve({ exitCode: 97, result: "the fake refuses a command that names an absolute sudo" });
       const child = spawn("sh", ["-c", inBox(sandbox.id, command)], {
         cwd: boxDir(sandbox.id),
-        env: { ...sandbox.env, PATH: `${sudo.bin}:${hostileBin && state.hostile ? `${hostileBin}:` : ""}${sandbox.env?.PATH ?? process.env.PATH ?? "/usr/bin:/bin"}`, TMPDIR: join(boxDir(sandbox.id), "tmp") },
+        env: { ...sandbox.env, PATH: `${sandbox.archil ? `${sandbox.archil.bin}:` : ""}${sudo.bin}:${hostileBin && state.hostile ? `${hostileBin}:` : ""}${sandbox.env?.PATH ?? process.env.PATH ?? "/usr/bin:/bin"}`, TMPDIR: join(boxDir(sandbox.id), "tmp") },
         stdio: ["ignore", "pipe", "pipe"],
       });
       const parts = [];
@@ -109,7 +110,15 @@ export async function daytonaSandboxes(t, { key, blocks = true, lists = true, re
     if (route === "process/execute") {
       const { command, timeout } = JSON.parse(body.toString("utf8"));
       if (command.includes("-mindepth 1 -printf") && failListings.includes(++state.listings)) return json(res, 500, { message: "the fake refuses this listing" });
-      return json(res, 200, await shell(sandbox, command, timeout));
+      const ran = await shell(sandbox, command, timeout);
+      // `state.crashAfter`: a box that is lost once a command holding these words ran, as a box Daytona loses is: gone
+      // with whatever it held, its Archil folder left checked out.
+      if (state.crashAfter && command.includes(state.crashAfter)) {
+        state.crashAfter = undefined;
+        sandboxes.delete(sandbox.id);
+        rmSync(boxDir(sandbox.id), { recursive: true, force: true });
+      }
+      return json(res, 200, ran);
     }
     if (route === "files/upload-v2") {
       const form = await new Response(body, { headers: { "content-type": type } }).formData();
@@ -153,7 +162,9 @@ export async function daytonaSandboxes(t, { key, blocks = true, lists = true, re
       const spec = JSON.parse(body.toString("utf8"));
       if (typeof spec.domainAllowList === "string" && state.refusesLists) return json(res, state.refusesLists, { statusCode: state.refusesLists, message: "domainAllowList is not available for your organization's tier" });
       const made = { id: randomUUID(), state: "started", labels: spec.labels ?? {}, env: spec.env ?? {}, spec, autoDeleteInterval: spec.autoDeleteInterval ?? -1, autoStopInterval: spec.autoStopInterval ?? 15, ...(spec.networkBlockAll === true && state.blocks ? { networkBlockAll: true } : {}), ...(typeof spec.domainAllowList === "string" && state.lists ? { domainAllowList: spec.domainAllowList } : {}) };
-      mkdirSync(boxDir(made.id));
+      mkdirSync(join(boxDir(made.id), "tmp"), { recursive: true });
+      // With a fake Archil: the box's archil client, its root helper and its sudo (fake-archil.mjs).
+      if (archil) made.archil = archil.box(made.id, boxDir(made.id), sudo.bin);
       sandboxes.set(made.id, made);
       return json(res, 200, info(made));
     }

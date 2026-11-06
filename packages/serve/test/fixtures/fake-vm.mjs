@@ -34,6 +34,9 @@ export const vm = {
   failExec: undefined,
   /** The bytes every `tar -c` in a box prints in place of its archive (a box whose copy back cannot be read). */
   hostileTar: undefined,
+  /** A fake Archil disk (fake-archil.mjs) whose client, root helper and sudo each new sandbox has, as a box image that
+   *  ships them; none, a sandbox has none. */
+  archil: undefined,
   /** Ends sandbox `id` as the provider would at its lifetime: its programs killed, its directory gone. */
   end: (id) => vm.sandboxes.find((sandbox) => sandbox.sandboxId === id)?.terminate({ wait: true }),
   /** What the sudo stand-in first on every program's PATH was asked (fake-daytona.mjs sudoStandIn). */
@@ -49,6 +52,7 @@ export const vm = {
     vm.failExec = undefined;
     vm.hostileTar = undefined;
     vm.lookupDelayMs = 0;
+    vm.archil = undefined;
     for (const sandbox of vm.sandboxes) sandbox.terminate({ wait: true });
     vm.clients.length = 0;
     vm.sandboxes.length = 0;
@@ -78,6 +82,7 @@ class FakeSandbox {
     this.dir = join(vm.root, sandboxId);
     mkdirSync(join(this.dir, "tmp"), { recursive: true });
     this.children = new Set();
+    this.archil = vm.archil?.box(sandboxId, this.dir, sudoStandIn(vm.root).bin);
   }
 
   inBox(text) {
@@ -99,7 +104,7 @@ class FakeSandbox {
     const [program, ...rest] = probed ? ["printf", "%s", "disk=104857600\nptrace=1\nfuse_dev=1\n"] : command.map((part) => this.inBox(part));
     const cwd = params.workdir ? this.inBox(params.workdir) : this.dir;
     mkdirSync(cwd, { recursive: true });
-    const child = spawn(program ?? "", rest, { cwd, env: { ...this.params.env, PATH: `${sudoStandIn(vm.root).bin}:${vm.hostileTar ? `${hostileBin()}:` : ""}${this.params.env?.PATH ?? process.env.PATH ?? ""}`, TMPDIR: join(this.dir, "tmp") }, stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn(program ?? "", rest, { cwd, env: { ...this.params.env, PATH: `${this.archil ? `${this.archil.bin}:` : ""}${sudoStandIn(vm.root).bin}:${vm.hostileTar ? `${hostileBin()}:` : ""}${this.params.env?.PATH ?? process.env.PATH ?? ""}`, TMPDIR: join(this.dir, "tmp") }, stdio: ["pipe", "pipe", "pipe"] });
     // Whoever reads the program's output and lets it go before its end (return()) is noted, so a test sees it.
     entry.released = [];
     const noted = (name, stream) => ({

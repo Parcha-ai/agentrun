@@ -16,6 +16,7 @@ import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { BoxProvider } from "@parcha/pi-transport";
+import { ARCHIL_KEYS } from "./archil.js";
 import { withoutSecrets } from "./secrets.js";
 
 /** Why the VM box has no network, said in capabilities whenever the server's host list is set: its provider's SDK takes
@@ -75,8 +76,9 @@ export function daytonaApi(env: NodeJS.ProcessEnv): { apiKey: string; apiUrl: st
   const apiKey = env[DAYTONA_KEY];
   return apiKey ? { apiKey, apiUrl: env.DAYTONA_API_URL || DAYTONA_API_URL } : undefined;
 }
-/** The boxes' keys: secrets the server holds and the probes read, which no run's process is handed (runs.ts). */
-export const BOX_KEYS: readonly string[] = [DAYTONA_KEY, ...VM_PROVIDER.keys];
+/** The boxes' keys: secrets the server holds and the probes read, and the Archil disk's token, which no run's process is
+ *  handed (runs.ts). */
+export const BOX_KEYS: readonly string[] = [DAYTONA_KEY, ...VM_PROVIDER.keys, ...ARCHIL_KEYS];
 
 /** How long one box's probe may take; the probes run at once, so this bounds them all. */
 export const PROBE_TIMEOUT_MS = 5_000;

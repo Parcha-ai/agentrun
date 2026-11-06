@@ -13,7 +13,8 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { startServe } from "../dist/index.js";
 import { checkpointRunDb, HeldRunDbError, MonotonicReads, BehindReadError, observeRunDbOpens, runDbTestHooks } from "../dist/run-db.js";
-import { localDisk } from "../dist/disk.js";
+import { archilDisk, localDisk } from "../dist/disk.js";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { learningRepo } from "../dist/learning.js";
 import { agent, FAUX, flowAgent, follow, runDir, scratch, serve } from "./support.mjs";
 
@@ -127,7 +128,7 @@ test("the local disk adapter: mount gives a runner the folder itself, below the 
   mkdirSync(work, { recursive: true });
   const claimed = [];
   const disk = localDisk(data, { runClaim: () => ({ epoch: claimed.length + 1, holder: null }), claimRun: (runId, holder, from) => (claimed.push([runId, holder, from]), from + 1) });
-  const mounted = await disk.mount("agents/a-0123456789abcdef/runs/r1/work", undefined, "tools");
+  const mounted = await disk.mount("local", "agents/a-0123456789abcdef/runs/r1/work", undefined, "tools");
   assert.deepEqual(mounted, { subpath: "agents/a-0123456789abcdef/runs/r1/work", path: work, mode: "tools" });
   // Its files and folders, nested, are synced; a link in it is never followed.
   mkdirSync(join(work, "a", "b"), { recursive: true });
@@ -137,10 +138,60 @@ test("the local disk adapter: mount gives a runner the folder itself, below the 
   await disk.unmount(mounted);
   assert.equal(await disk.revoke("r1"), 2);
   assert.deepEqual(claimed, [["r1", "server", 1]], "claimed from the epoch it read");
-  for (const bad of ["", "/etc", "agents/../../x", "agents/./a"]) await assert.rejects(disk.mount(bad, undefined, "tools"), /is not a path below the disk/, bad);
+  for (const bad of ["", "/etc", "agents/../../x", "agents/./a"]) await assert.rejects(disk.mount("local", bad, undefined, "tools"), /is not a path below the disk/, bad);
   symlinkSync(work, join(data, "disk", "agents", "linked"));
-  await assert.rejects(disk.mount("agents/linked", undefined, "tools"), /is a link/);
-  await assert.rejects(disk.mount("agents/a-0123456789abcdef/runs/r1/work", "/workspace", "tools"), /mounts .* where it is, not at \/workspace/);
+  await assert.rejects(disk.mount("local", "agents/linked", undefined, "tools"), /is a link/);
+  await assert.rejects(disk.mount("local", "agents/a-0123456789abcdef/runs/r1/work", "/workspace", "tools"), /mounts .* where it is, not at \/workspace/);
+});
+
+/** A box whose programs are noted, each exiting `code(command)`, its stdin kept: a box that takes a real stdin. */
+function notingBox(code = () => 0) {
+  const ran = [];
+  return {
+    ran,
+    box: {
+      id: "box-1",
+      facts: () => ({ provider: "fake", workspace: "/workspace", secretsVia: "fd" }),
+      exec: async (command) => {
+        const entry = { command: [...command], stdin: "" };
+        ran.push(entry);
+        const empty = (async function* () {})();
+        return { ok: true, value: { stdin: { write: async (bytes) => void (entry.stdin += new TextDecoder().decode(bytes)), close: async () => {} }, stdout: empty, stderr: (async function* () { if (code(command)) yield new TextEncoder().encode("sudo: a password is required"); })(), wait: async () => ({ ok: true, value: code(command) }) } };
+      },
+    },
+  };
+}
+
+test("the Archil disk adapter: a box mounts its run's work/ alone, through the helper by its fixed path, the token on its stdin; the folder is the shared group's; a revoke makes the next mount force a gone box's hold off; an unmount syncs, then checks in", async (t) => {
+  const data = realpathSync(await scratch(t));
+  const folder = "agents/a-0123456789abcdef/runs/r1/work";
+  mkdirSync(join(data, "disk", folder), { recursive: true });
+  const archil = { disk: "dsk-00000000000baf76", region: "aws-us-east-1", token: "planted-archil-token-0123456789", gid: process.getgid() };
+  const disk = archilDisk(data, archil, { runClaim: () => ({ epoch: 4, holder: "launch" }) });
+  const { box, ran } = notingBox();
+  const target = { box, path: "/workspace", context: BACKGROUND_CONTEXT };
+  const mounted = await disk.mount(archil.disk, folder, target, "tools");
+  assert.equal(mounted.path, "/workspace");
+  assert.deepEqual(ran.map((r) => [r.command, r.stdin]), [[["sudo", "-n", "/usr/local/sbin/agentrun-archil", "mount", archil.disk, archil.region, folder], `${archil.token}\n`]]);
+  assert.equal(statSync(join(data, "disk", folder)).mode & 0o7777, 0o2770);
+  assert.equal(await disk.revoke("r1"), 4, "the run's claim is not bumped: its process holds it");
+  await disk.mount(archil.disk, folder, target, "tools");
+  assert.equal(ran[1].command[3], "revoke", "the mount after a revoke forces the hold off");
+  await disk.mount(archil.disk, folder, target, "tools");
+  assert.equal(ran[2].command[3], "mount", "and only that one");
+  await disk.unmount(mounted);
+  assert.deepEqual(ran.slice(3).map((r) => r.command.slice(3)), [["sync"], ["checkin"]]);
+  for (const r of ran) assert.ok(!r.command.some((part) => part.includes(archil.token)), "never an argument");
+  // Refused before any box call: another disk, a folder that is not a run's work/, a path of this machine, a loop.
+  const before = ran.length;
+  await assert.rejects(disk.mount("dsk-0000000000000001", folder, target, "tools"), /not dsk-0000000000000001/);
+  for (const bad of ["agents/a-0123456789abcdef/runs/r1", "agents/a-0123456789abcdef/runs/r1/store", "agents/a-0123456789abcdef/learning", "agents/../runs/r1/work"]) await assert.rejects(disk.mount(archil.disk, bad, target, "tools"), /mounts its run's work\/ alone/, bad);
+  await assert.rejects(disk.mount(archil.disk, folder, "/workspace", "tools"), /in a box, not at a path of this machine/);
+  await assert.rejects(disk.mount(archil.disk, folder, target, "loop"), /mounts its run's work\/ alone/);
+  assert.equal(ran.length, before);
+  // A box whose image has no helper its user may run: said, with what to do.
+  const bare = notingBox(() => 1);
+  await assert.rejects(disk.mount(archil.disk, folder, { ...target, box: bare.box }, "tools"), /the box has no Archil helper its user may run as root at \/usr\/local\/sbin\/agentrun-archil: use an image or snapshot that ships it/);
 });
 
 test("an agent's learning folder is on the disk, in its folder: <data>/disk/agents/<agent>/learning", () => {

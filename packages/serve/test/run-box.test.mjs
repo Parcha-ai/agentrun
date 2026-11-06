@@ -249,11 +249,30 @@ test("an AGENTRUN_BOX_ALLOW that is not a list of host names refuses the start, 
   assert.equal(await refused(Array.from({ length: 101 }, (_, i) => `h${i}.example.com`).join(",")), "AGENTRUN_BOX_ALLOW names 101 hosts; it takes at most 100");
 });
 
-test("a remote box found at its run's next call: one with no network is kept when a list is asked; one with a list is destroyed and made again when none is", async (t) => {
-  const { ensureRemoteBox, BOX_SYNC_FILE } = await import("../dist/run-box.js");
-  // A box replaced here is copied back first; the copy is this stand-in, which counts its calls.
-  const pulls = [];
-  const pull = async (_boxes, run) => void pulls.push(run.id);
+/** A stand-in for the run's folder on the disk (disk.ts archilDisk): it notes each mount, unmount and revoke, by box. A
+ *  mount it is told is held throws as the helper's refusal does, until a revoke. */
+async function remoteFolder({ held = false, unmount } = {}) {
+  const { FolderHeld } = await import("../dist/archil.js");
+  const calls = [];
+  let taken = held;
+  let revoked = false;
+  const adapter = {
+    mount: async (disk, subpath, target) => {
+      calls.push(["mount", target.box.id]);
+      if (taken && !revoked) throw new FolderHeld("another client holds the run's folder");
+      revoked = false;
+      taken = false;
+    },
+    sync: async (mounted) => void calls.push(["sync", mounted.box.id]),
+    unmount: unmount ?? (async (mounted) => void calls.push(["unmount", mounted.box.id])),
+    revoke: async (runId) => (calls.push(["revoke", runId]), (revoked = true), 1),
+  };
+  return { calls, folder: { adapter, disk: "dsk-00000000000baf76", subpath: "agents/a/runs/r/work" } };
+}
+
+test("a remote box found at its run's next call: one with no network is kept when a list is asked; one with a list lets go of the run's folder, is destroyed and made again when none is", async (t) => {
+  const { ensureRemoteBox } = await import("../dist/run-box.js");
+  const { calls, folder } = await remoteFolder();
   const runDir = await scratch(t);
   const made = [];
   const destroyed = [];
@@ -269,32 +288,28 @@ test("a remote box found at its run's next call: one with no network is kept whe
     create: async (spec) => {
       made.push(spec.network);
       found = box(`made-${made.length}`, spec.network === "none" ? "none" : "allowlist");
-      await writeFile(join(runDir, BOX_SYNC_FILE), JSON.stringify({ box: found.id, mark: { entries: [] } }));
       return { ok: true, value: found };
     },
   };
-  // Kept: the box is more closed than asked, and holds the run's files.
+  // Kept: the box is more closed than asked; its folder is mounted already, which the mount answers at once.
   found = box("closed", "none");
-  await writeFile(join(runDir, BOX_SYNC_FILE), JSON.stringify({ box: "closed", mark: { entries: [] } }));
-  assert.deepEqual(await ensureRemoteBox(boxes, { id: "r", dir: runDir }, BACKGROUND_CONTEXT, { allow: ["pypi.org"], pull }), { id: "closed", made: false });
+  assert.deepEqual(await ensureRemoteBox(boxes, { id: "r", dir: runDir }, BACKGROUND_CONTEXT, { allow: ["pypi.org"], folder }), { id: "closed", made: false });
   assert.deepEqual([made, destroyed], [[], []]);
   // Destroyed: a list when none is asked, and an open or unknown network whatever is asked.
   found = box("listed", "allowlist");
-  await writeFile(join(runDir, BOX_SYNC_FILE), JSON.stringify({ box: "listed", mark: { entries: [] } }));
-  assert.deepEqual(await ensureRemoteBox(boxes, { id: "r", dir: runDir }, BACKGROUND_CONTEXT, { allow: "none", pull }), { id: "made-1", made: true, replaced: true });
+  assert.deepEqual(await ensureRemoteBox(boxes, { id: "r", dir: runDir }, BACKGROUND_CONTEXT, { allow: "none", folder }), { id: "made-1", made: true, replaced: true });
   assert.deepEqual([made, destroyed], [["none"], ["listed"]]);
   found = box("open", "open");
-  await writeFile(join(runDir, BOX_SYNC_FILE), JSON.stringify({ box: "open", mark: { entries: [] } }));
-  assert.deepEqual(await ensureRemoteBox(boxes, { id: "r", dir: runDir }, BACKGROUND_CONTEXT, { allow: ["pypi.org"], pull }), { id: "made-2", made: true, replaced: true });
+  assert.deepEqual(await ensureRemoteBox(boxes, { id: "r", dir: runDir }, BACKGROUND_CONTEXT, { allow: ["pypi.org"], folder }), { id: "made-2", made: true, replaced: true });
   assert.deepEqual([made, destroyed], [["none", { allow: ["pypi.org"] }], ["listed", "open"]]);
+  // Each replaced box let go of the folder before it went; each box the run uses has it mounted. Nothing is copied.
+  assert.deepEqual(calls, [["mount", "closed"], ["unmount", "listed"], ["mount", "made-1"], ["unmount", "open"], ["mount", "made-2"]]);
 });
 
-test("a remote box made when boxes had the run's work/ at /run/agentrun/run/work is copied back from there, whole, then destroyed and made again at /workspace; never kept with its files elsewhere", async (t) => {
-  const { ensureRemoteBox, BOX_SYNC_FILE } = await import("../dist/run-box.js");
-  const pulled = [];
-  // The copy back stand-in: notes which box it copied from, and where that box has the run's files.
+test("a remote box made when boxes had the run's work/ at /run/agentrun/run/work lets go of the folder, then is destroyed and made again at /workspace", async (t) => {
+  const { ensureRemoteBox } = await import("../dist/run-box.js");
+  const { calls, folder } = await remoteFolder();
   let found;
-  const pull = async () => void pulled.push([found.id, found.facts().workspace]);
   const runDir = await scratch(t);
   const destroyed = [];
   const box = (id, workspace) => ({ id, facts: () => ({ provider: "fake", workspace, network: "none" }), destroy: async () => (destroyed.push(id), found?.id === id && (found = undefined), { ok: true, value: undefined }) });
@@ -305,23 +320,19 @@ test("a remote box made when boxes had the run's work/ at /run/agentrun/run/work
     create: async (spec) => {
       specs.push(spec);
       found = box("new", spec.workspace);
-      await writeFile(join(runDir, BOX_SYNC_FILE), JSON.stringify({ box: "new", mark: { entries: [] } }));
       return { ok: true, value: found };
     },
   };
   found = box("old", "/run/agentrun/run/work");
-  await writeFile(join(runDir, BOX_SYNC_FILE), JSON.stringify({ box: "old", mark: { entries: [] } }));
-  assert.deepEqual(await ensureRemoteBox(boxes, { id: "r", dir: runDir }, BACKGROUND_CONTEXT, { allow: "none", pull }), { id: "new", made: true, replaced: true }, "replaced: its model is told so (run-box.ts BOX_REPLACED_NOTE)");
-  assert.deepEqual(pulled, [["old", "/run/agentrun/run/work"]], "copied back from the old box, before it went");
+  assert.deepEqual(await ensureRemoteBox(boxes, { id: "r", dir: runDir }, BACKGROUND_CONTEXT, { allow: "none", folder }), { id: "new", made: true, replaced: true }, "replaced: its model is told so (run-box.ts BOX_REPLACED_NOTE)");
+  assert.deepEqual(calls, [["unmount", "old"], ["mount", "new"]]);
   assert.deepEqual(destroyed, ["old"]);
   assert.equal(specs[0].workspace, "/workspace");
 });
 
-test("a remote box found with a host list is kept only when its list is the one asked, as a set: another list, or one it does not say, is destroyed and made again", async (t) => {
-  const { ensureRemoteBox, BOX_SYNC_FILE } = await import("../dist/run-box.js");
-  // A box replaced here is copied back first; the copy is this stand-in, which counts its calls.
-  const pulls = [];
-  const pull = async (_boxes, run) => void pulls.push(run.id);
+test("a remote box found with a host list is kept only when its list is the one asked, as a set: another list, or one it does not say, is destroyed and made again; one that cannot let go of the folder is kept and not used", async (t) => {
+  const { ensureRemoteBox } = await import("../dist/run-box.js");
+  const { calls, folder } = await remoteFolder();
   const runDir = await scratch(t);
   const made = [];
   const destroyed = [];
@@ -337,32 +348,50 @@ test("a remote box found with a host list is kept only when its list is the one 
     create: async (spec) => {
       made.push(spec.network);
       found = box(`made-${made.length}`, { network: "allowlist", allow: spec.network.allow });
-      await writeFile(join(runDir, BOX_SYNC_FILE), JSON.stringify({ box: found.id, mark: { entries: [] } }));
       return { ok: true, value: found };
     },
   };
-  const finding = async (id, facts) => {
-    found = box(id, facts);
-    await writeFile(join(runDir, BOX_SYNC_FILE), JSON.stringify({ box: id, mark: { entries: [] } }));
-  };
   const asked = ["pypi.org", "github.com"];
-  await finding("same", { network: "allowlist", allow: ["github.com", "pypi.org"] });
-  assert.deepEqual(await ensureRemoteBox(boxes, { id: "r", dir: runDir }, BACKGROUND_CONTEXT, { allow: asked, pull }), { id: "same", made: false });
-  await finding("wider", { network: "allowlist", allow: ["pypi.org", "github.com", "example.com"] });
-  assert.deepEqual(await ensureRemoteBox(boxes, { id: "r", dir: runDir }, BACKGROUND_CONTEXT, { allow: asked, pull }), { id: "made-1", made: true, replaced: true });
-  await finding("unsaid", { network: "allowlist" });
-  assert.deepEqual(await ensureRemoteBox(boxes, { id: "r", dir: runDir }, BACKGROUND_CONTEXT, { allow: asked, pull }), { id: "made-2", made: true, replaced: true });
+  found = box("same", { network: "allowlist", allow: ["github.com", "pypi.org"] });
+  assert.deepEqual(await ensureRemoteBox(boxes, { id: "r", dir: runDir }, BACKGROUND_CONTEXT, { allow: asked, folder }), { id: "same", made: false });
+  found = box("wider", { network: "allowlist", allow: ["pypi.org", "github.com", "example.com"] });
+  assert.deepEqual(await ensureRemoteBox(boxes, { id: "r", dir: runDir }, BACKGROUND_CONTEXT, { allow: asked, folder }), { id: "made-1", made: true, replaced: true });
+  found = box("unsaid", { network: "allowlist" });
+  assert.deepEqual(await ensureRemoteBox(boxes, { id: "r", dir: runDir }, BACKGROUND_CONTEXT, { allow: asked, folder }), { id: "made-2", made: true, replaced: true });
   assert.deepEqual(destroyed, ["wider", "unsaid"]);
   assert.deepEqual(made, [{ allow: asked }, { allow: asked }]);
-  assert.equal(pulls.length, 2, "each replaced box was copied back first");
-  // A copy back that fails keeps the box, and the call fails: nothing only it holds is lost.
-  await finding("unpulled", { network: "allowlist", allow: ["example.com"] });
-  const failing = async () => {
-    throw new Error("the copy back from the run's box stopped");
-  };
-  await assert.rejects(ensureRemoteBox(boxes, { id: "r", dir: runDir }, BACKGROUND_CONTEXT, { allow: asked, pull: failing }), /another host list.*could not all be copied back, so it is kept and not used: the copy back from the run's box stopped/);
+  assert.deepEqual(calls.filter(([verb]) => verb === "unmount").map(([, id]) => id), ["wider", "unsaid"], "each replaced box let go of the folder first");
+  // One that cannot let go keeps the box, and the call fails: what it has not made durable is not lost.
+  found = box("stuck", { network: "allowlist", allow: ["example.com"] });
+  const stuck = await remoteFolder({ unmount: async () => { throw new Error("archil sync in the box failed (exit 1)"); } });
+  await assert.rejects(ensureRemoteBox(boxes, { id: "r", dir: runDir }, BACKGROUND_CONTEXT, { allow: asked, folder: stuck.folder }), /another host list.*could not let go of the run's folder, so it is kept and not used: archil sync in the box failed/);
   assert.deepEqual(destroyed, ["wider", "unsaid"]);
   assert.equal(made.length, 2);
+});
+
+test("a remote box's folder that a box gone held is taken back: the mount is refused as held, the folder revoked, and mounted again; with another box of the run alive, it is never revoked", async (t) => {
+  const { ensureRemoteBox } = await import("../dist/run-box.js");
+  const runDir = await scratch(t);
+  const live = [];
+  const box = (id) => ({ id, facts: () => ({ provider: "fake", workspace: "/workspace", network: "none" }), destroy: async () => ({ ok: true, value: undefined }) });
+  const boxes = {
+    list: async () => ({ ok: true, value: live.map((b) => ({ id: b.id, labels: {} })) }),
+    attach: async () => ({ ok: true, value: undefined }),
+    create: async () => {
+      const made = box(`made-${live.length + 1}`);
+      live.push(made);
+      return { ok: true, value: made };
+    },
+  };
+  const taken = await remoteFolder({ held: true });
+  assert.deepEqual(await ensureRemoteBox(boxes, { id: "r", dir: runDir }, BACKGROUND_CONTEXT, { allow: "none", folder: taken.folder }), { id: "made-1", made: true });
+  assert.deepEqual(taken.calls, [["mount", "made-1"], ["revoke", "r"], ["mount", "made-1"]]);
+  // A second box of the run alive (one whose destroy failed): its hold is never forced off, and the new box goes.
+  live.length = 0;
+  live.push(box("alive"));
+  const other = await remoteFolder({ held: true });
+  await assert.rejects(ensureRemoteBox(boxes, { id: "r", dir: runDir }, BACKGROUND_CONTEXT, { allow: "none", folder: other.folder }), /could not be mounted in its box: another box of the run \(alive\) still holds its folder/);
+  assert.deepEqual(other.calls.map(([verb]) => verb), ["mount"]);
 });
 
 test("a remote box's refused host list is said as it is refused, before the closed box is made: a closed box that then fails still leaves it said", async (t) => {
@@ -379,7 +408,8 @@ test("a remote box's refused host list is said as it is refused, before the clos
       return { ok: false, error };
     },
   };
-  await assert.rejects(ensureRemoteBox(boxes, { id: "r", dir: runDir }, BACKGROUND_CONTEXT, { allow: ["pypi.org"], onNoList: (code, message) => said.push([code, message]) }), /could not be made: no room for a box/);
+  const { folder } = await remoteFolder();
+  await assert.rejects(ensureRemoteBox(boxes, { id: "r", dir: runDir }, BACKGROUND_CONTEXT, { allow: ["pypi.org"], folder, onNoList: (code, message) => said.push([code, message]) }), /could not be made: no room for a box/);
   assert.deepEqual(asked, [{ allow: ["pypi.org"] }, "none"]);
   assert.deepEqual(said, [["unsupported", "Daytona did not keep this sandbox's domain list"]]);
 });

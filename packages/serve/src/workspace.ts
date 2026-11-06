@@ -303,8 +303,7 @@ const NO_LINK_DIR = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOF
 const NEW_FILE = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW;
 
 /** Whether the run whose work/ is `work` runs in a box that binds it, by the place its start kept (serve.json beside
- *  work/). A remote box's commands never reach this machine's work/: what comes back from it is pulled, and a pull writes
- *  no link. */
+ *  work/). A remote box's run files what its host tools write through the box (fileThroughBox), never here. */
 function boxedRun(work: string): boolean {
   try {
     const place = storedPlace((JSON.parse(readFileSync(join(dirname(work), RUN_META), "utf8")) as { place?: unknown }).place);
@@ -314,12 +313,13 @@ function boxedRun(work: string): boolean {
   }
 }
 
-type Mirror = (path: string, data: string | Uint8Array) => Promise<void>;
-const mirrors = new Map<string, Mirror>();
-/** In a run's process whose box is remote: each file writeInWork files below `work` is copied into the box as well, at the
- *  same path below its work/ (run-box.ts), so the run's tools there read what its host tools filed. */
-export function mirrorWrites(work: string, mirror: Mirror): void {
-  mirrors.set(resolve(work), mirror);
+type Through = (path: string, data: string | Uint8Array) => Promise<void>;
+const throughBox = new Map<string, Through>();
+/** In a run's process whose box is remote: each file writeInWork files below `work` is written in the box, at the same
+ *  path below its /workspace (run-box.ts RunBox.file), and not here. The box holds the run's folder on the disk, so a
+ *  write from this machine would be refused; the box's own is the record. */
+export function fileThroughBox(work: string, file: Through): void {
+  throughBox.set(resolve(work), file);
 }
 
 /** Writes `data` as a new file `name` in `dirs` below a run's `work`, never through a link: a box's command can plant one
@@ -330,6 +330,8 @@ export function mirrorWrites(work: string, mirror: Mirror): void {
  *  turn: there a run whose place is a box gets no write (ENOTSUP), and a runner run, whose tools make no link, still
  *  writes by path. */
 export async function writeInWork(work: string, dirs: readonly string[], name: string, data: string | Uint8Array): Promise<void> {
+  const through = throughBox.get(resolve(work));
+  if (through) return through([...dirs, name].join("/"), data);
   const byHandle = writesHeld();
   if (!byHandle && boxedRun(work)) throw Object.assign(new Error("this host reaches a run's directories by path, which a box's command could turn through a link"), { code: "ENOTSUP" });
   let dir = await open(work, NO_LINK_DIR);
@@ -353,8 +355,4 @@ export async function writeInWork(work: string, dirs: readonly string[], name: s
   } finally {
     await dir.close();
   }
-  // The box's copy is a convenience to its tools; the file filed here is the record, and stands whatever the copy does.
-  await mirrors.get(resolve(work))?.([...dirs, name].join("/"), data).catch((error: Error) => {
-    process.stderr.write(`${JSON.stringify({ at: new Date().toISOString(), event: "box_mirror_failed", message: `${[...dirs, name].join("/")} was filed in work/ but not copied into the run's box: ${error?.message ?? String(error)}` })}\n`);
-  });
 }

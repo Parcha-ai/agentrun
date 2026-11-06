@@ -1,0 +1,96 @@
+#!/bin/sh
+# agentrun-archil: the root helper of a box on another machine, which keeps one run's work folder on the owner's Archil
+# disk at /workspace. It does four things and nothing else, each with fixed arguments to the archil client alone:
+#
+#   mount  <disk> <region> agents/<agent>/runs/<run>/work   the disk token as one line on fd 0
+#   revoke <disk> <region> agents/<agent>/runs/<run>/work   the disk token as one line on fd 0
+#   sync
+#   checkin
+#
+# mount   archil mount <disk>:/<path> /workspace --region <region>: exclusive, so no other client writes the folder.
+# revoke  the same with --force: takes the folder back from a box that is gone and left its delegation behind.
+# sync    archil sync /workspace: every write so far is durable when it returns.
+# checkin archil checkin /workspace: lets go of the folder (a box that cannot unmount syncs, then checks in).
+#
+# Install it root:root 0755 at /usr/local/sbin/agentrun-archil, with one sudoers line for the box's own user and no
+# other: `<user> ALL=(root) NOPASSWD: /usr/local/sbin/agentrun-archil`. The run's tools run as another user, which has
+# no sudo at all.
+#
+# The token is read from fd 0 and handed to archil only in the environment of its exec (archil reads it nowhere else),
+# never as an argument and never in a file. Every argument is checked here, whoever calls: a wrong verb or count, a
+# newline, a disk, region or folder of any other shape (an absolute path, `.` or `..`, an empty or extra segment), a
+# mountpoint that is a link or not empty, or a token of any other shape exits 2 and runs nothing. A sync or checkin with
+# nothing mounted exits 3 and runs nothing.
+set -eu
+umask 077
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+
+ARCHIL=/usr/bin/archil
+MP=/workspace
+MOUNTS=/proc/self/mounts
+
+refuse() {
+  printf 'agentrun-archil: %s\n' "$1" >&2
+  exit 2
+}
+
+# A newline in any argument is refused before anything reads one: the checks below are line by line.
+nl='
+'
+for arg in "$@"; do
+  case "$arg" in *"$nl"*) refuse "an argument holds a newline" ;; esac
+done
+
+matches() { printf '%s\n' "$1" | grep -Eqx -- "$2"; }
+
+# Whether $MP is in the mount table, as an archil mount (fuse.archil) or as anything (any).
+listed() { awk -v m="$MP" -v t="$1" '$2 == m && (t == "any" || $3 == t) { f = 1 } END { exit !f }' "$MOUNTS"; }
+
+take() {
+  [ "$#" -eq 3 ] || refuse "$verb takes <disk> <region> agents/<agent>/runs/<run>/work"
+  disk=$1 region=$2 folder=$3
+  matches "$disk" 'dsk-[0-9a-f]{16}|[A-Za-z0-9][A-Za-z0-9._@+-]{0,127}/[A-Za-z0-9][A-Za-z0-9._-]{0,127}' || refuse "the disk is a disk id (dsk-...) or owner/name"
+  matches "$region" '[a-z0-9][a-z0-9-]{0,63}' || refuse "the region is lowercase letters, digits and dashes"
+  matches "$folder" 'agents/[A-Za-z0-9][A-Za-z0-9_-]{0,127}/runs/[A-Za-z0-9][A-Za-z0-9_-]{0,127}/work' || refuse "the folder is agents/<agent>/runs/<run>/work, nothing else"
+  if listed fuse.archil; then
+    # This folder, mounted here already (a box the server finds again): nothing to do. Any other is refused.
+    awk -v m="$MP" -v a="$disk:/$folder" -v b="$disk:/$folder[$region]" '$2 == m && $3 == "fuse.archil" && ($1 == a || $1 == b) { f = 1 } END { exit !f }' "$MOUNTS" || refuse "$MP holds another archil mount"
+    printf 'agentrun-archil: %s is mounted already\n' "$MP" >&2
+    exit 0
+  fi
+  listed any && refuse "$MP is another mount"
+  [ ! -L "$MP" ] && [ -d "$MP" ] || refuse "$MP is not a real directory"
+  [ "$(realpath -e "$MP")" = "$MP" ] || refuse "$MP is not its own real path"
+  [ -z "$(ls -A "$MP")" ] || refuse "$MP is not empty"
+  token=
+  IFS= read -r token || [ -n "$token" ] || refuse "no token on fd 0"
+  [ "${#token}" -ge 16 ] && [ "${#token}" -le 4096 ] || refuse "the token is not a disk token"
+  case "$token" in *[!A-Za-z0-9._~+/=-]*) refuse "the token is not a disk token" ;; esac
+  # In the environment of archil's exec alone (this shell's own was fixed at its start and never holds it), and archil
+  # runs as root, so no other user reads it there.
+  ARCHIL_MOUNT_TOKEN=$token
+  export ARCHIL_MOUNT_TOKEN
+  exec "$ARCHIL" mount $force "$disk:/$folder" "$MP" --region "$region"
+}
+
+# sync and checkin act on the archil mount at $MP; with none there (a box made before it had one, or whose mount went),
+# nothing is held, and they say so with exit 3.
+held() {
+  [ "$#" -eq 0 ] || refuse "$verb takes no argument"
+  if ! listed fuse.archil; then
+    printf 'agentrun-archil: nothing is mounted at %s\n' "$MP" >&2
+    exit 3
+  fi
+}
+
+[ "$#" -ge 1 ] || refuse "say mount, revoke, sync or checkin"
+verb=$1
+shift
+case "$verb" in
+  mount) force= && take "$@" ;;
+  revoke) force=--force && take "$@" ;;
+  sync) held "$@" && exec "$ARCHIL" sync "$MP" ;;
+  checkin) held "$@" && exec "$ARCHIL" checkin "$MP" ;;
+  *) refuse "say mount, revoke, sync or checkin" ;;
+esac
