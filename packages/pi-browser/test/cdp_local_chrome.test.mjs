@@ -102,8 +102,9 @@ test("a guarded session: every client reaches the browser through its guard, Sta
     // Stagehand drives the page through it.
     let browser;
     try {
-      browser = await localBrowser.connect({ cdpUrl: target.sdkCdpUrl, ...(target.extensionId ? { extensionId: target.extensionId } : {}) });
-      stagehand = await Stagehand.create({ browser, logging: { level: "off" }, telemetry: LOCAL_TELEMETRY });
+      assert.equal(target.extensionCdpUrl, target.sdkCdpUrl, "the extension dials the guard too");
+      browser = await localBrowser.connect({ cdpUrl: target.sdkCdpUrl, extensionCdpUrl: target.extensionCdpUrl });
+      stagehand = await Stagehand.create({ browser, logging: { level: "off" } });
     } catch (error) { if (skipIncapable(t, error)) return; throw error; }
     const [page] = await browser.context.pages();
     await page.goto(`http://127.0.0.1:${server.address().port}/`);
@@ -115,6 +116,14 @@ test("a guarded session: every client reaches the browser through its guard, Sta
     const answer = await new Promise((ok) => { socket.addEventListener("message", (event) => ok(JSON.parse(event.data))); socket.send(JSON.stringify({ id: 7, method: "Target.createTarget", params: { url: "chrome://settings" } })); });
     socket.close();
     assert.deepEqual([answer.id, answer.error?.message], [7, GUARD_REFUSAL]);
+    // Stagehand 4.4 finds its extension by name through the guard: the list it gets names no path on this machine.
+    const lister = new WebSocket(target.sdkCdpUrl);
+    await new Promise((ok, fail) => (lister.addEventListener("open", ok), lister.addEventListener("error", fail)));
+    const listed = await new Promise((ok) => { lister.addEventListener("message", (event) => ok(JSON.parse(event.data))); lister.send(JSON.stringify({ id: 3, method: "Extensions.getExtensions" })); });
+    lister.close();
+    const runtimes = listed.result.extensions.filter((extension) => extension.name === "Stagehand Runtime");
+    assert.equal(runtimes.length, 1, "the confined copy alone");
+    assert.deepEqual([...new Set(listed.result.extensions.map((extension) => extension.path))], [""], "no path");
     // Nothing of the machine through it: the browser's command line and system information are refused.
     for (const method of ["SystemInfo.getInfo", "Browser.getBrowserCommandLine", "Target.attachToBrowserTarget"]) {
       const asked = new WebSocket(target.sdkCdpUrl);

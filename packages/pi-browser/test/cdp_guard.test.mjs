@@ -35,7 +35,7 @@ test("what makes the browser read or write this machine's files, or hand the pro
     { method: "Page.handleFileChooser", params: { action: "accept", files: ["/etc/passwd"] } },
     { method: "Browser.setDownloadBehavior", params: { behavior: "allow", downloadPath: "/srv" } },
     { method: "Page.setDownloadBehavior", params: { behavior: "allow", downloadPath: "/srv" } },
-    { method: "Extensions.loadUnpacked", params: { path: "/srv" } },
+    { method: "Extensions.loadUnpacked", params: { path: "/opt/x" } },
     { method: "Extensions.uninstall", params: { id: "x" } },
     { method: "Target.exposeDevToolsProtocol", params: { targetId: "t" } },
     { method: "Target.setRemoteLocations", params: { locations: [{ host: "localhost", port: 9222 }] } },
@@ -50,7 +50,12 @@ test("what makes the browser read or write this machine's files, or hand the pro
     { method: "SystemInfo.getProcessInfo" },
     { method: "SystemInfo.getFeatureState", params: { featureState: "x" } },
     { method: "Browser.getBrowserCommandLine" },
-    { method: "Browser.getVersion" },
+    { method: "Browser.close" },
+    { method: "Extensions.loadUnpacked", params: { path: "/opt/stagehand/extension" } },
+    { method: "Extensions.uninstall", params: { id: "x" } },
+    { method: "Network.loadNetworkResource", params: { url: "https://example.com/map.js" } },
+    { method: "Input.dispatchDragEvent", params: { type: "drop", x: 1, y: 1, data: { items: [], dragOperationsMask: 1 } } },
+    { method: "Target.sendMessageToTarget", params: { sessionId: "s", message: JSON.stringify({ id: 1, method: "Page.navigate", params: { url: "https://example.com/" } }) } },
     { method: "Browser.getHistograms" },
     { method: "Target.attachToBrowserTarget" },
     { method: "Target.sendMessageToTarget", params: { sessionId: "s", message: JSON.stringify({ id: 1, method: "SystemInfo.getInfo" }) } },
@@ -65,12 +70,20 @@ test("what makes the browser read or write this machine's files, or hand the pro
     { method: "Runtime.evaluate", params: { expression: "location.href = 'file:///etc/passwd'" } },
     { method: "Fetch.continueRequest", params: { requestId: "1" } },
     { method: "Fetch.continueRequest", params: { requestId: "1", url: "https://example.com/" } },
-    { method: "Network.loadNetworkResource", params: { url: "https://example.com/map.js" } },
-    { method: "Input.dispatchDragEvent", params: { type: "drop", x: 1, y: 1, data: { items: [], dragOperationsMask: 1 } } },
     { method: "Browser.setDownloadBehavior", params: { behavior: "allow" } },
     { method: "Page.setDownloadBehavior", params: { behavior: "deny" } },
-    { method: "Target.sendMessageToTarget", params: { sessionId: "s", message: JSON.stringify({ id: 1, method: "Page.navigate", params: { url: "https://example.com/" } }) } },
     { method: "Page.captureScreenshot", params: {} },
+    // Stagehand 4.4's: its heartbeat, its connect (the extension found by name, the client's hidden marker page), and its
+    // extension's reads.
+    { method: "Browser.getVersion" },
+    { method: "Extensions.getExtensions" },
+    { method: "Target.getTargetInfo", params: { targetId: "t" } },
+    { method: "Target.createTarget", params: { url: "about:blank#stagehand-client-connection", hidden: true } },
+    { method: "DOM.resolveNode", params: { backendNodeId: 1 } },
+    { method: "Page.printToPDF", params: {} },
+    { method: "Runtime.releaseObjectGroup", params: { objectGroup: "g" } },
+    { method: "WebMCP.enable" },
+    { method: "WebMCP.invokeTool", params: { toolName: "t", input: "{}" } },
     { method: "Target.attachToTarget", params: { targetId: "t", flatten: true } },
     { method: "DOM.getDocument" },
   ];
@@ -78,6 +91,7 @@ test("what makes the browser read or write this machine's files, or hand the pro
 });
 
 test("the list is pi-browser's and Stagehand's commands alone: no domain that tells of the host, loads an extension or hands the protocol on", () => {
-  for (const method of ALLOWED_METHODS) assert.doesNotMatch(method, /^(SystemInfo|Extensions|PWA|Tethering|Cast|Tracing|Memory|IO|HeapProfiler|Profiler|Debugger|ServiceWorker|FileSystem)\./, method);
-  for (const method of ["Browser.getBrowserCommandLine", "Browser.getVersion", "Browser.executeBrowserCommand", "Target.attachToBrowserTarget", "Target.exposeDevToolsProtocol", "Target.setRemoteLocations", "Target.openDevTools", "DOM.setFileInputFiles"]) assert.equal(ALLOWED_METHODS.has(method), false, method);
+  for (const method of ALLOWED_METHODS) assert.doesNotMatch(method, /^(SystemInfo|PWA|Tethering|Cast|Tracing|Memory|IO|HeapProfiler|Profiler|Debugger|ServiceWorker|FileSystem)\./, method);
+  assert.deepEqual([...ALLOWED_METHODS].filter((method) => method.startsWith("Extensions.")), ["Extensions.getExtensions"], "the list alone, never a load or a removal");
+  for (const method of ["Browser.getBrowserCommandLine", "Browser.close", "Browser.executeBrowserCommand", "Extensions.loadUnpacked", "Extensions.uninstall", "Target.attachToBrowserTarget", "Target.sendMessageToTarget", "Target.exposeDevToolsProtocol", "Target.setRemoteLocations", "Target.openDevTools", "DOM.setFileInputFiles"]) assert.equal(ALLOWED_METHODS.has(method), false, method);
 });

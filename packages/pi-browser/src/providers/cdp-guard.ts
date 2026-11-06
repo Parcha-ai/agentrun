@@ -6,18 +6,21 @@
 //
 // What it passes (cdpRefusal): an allowlist, ALLOWED_METHODS, of the commands pi-browser's driver, its effect observer
 // and live view, and Stagehand (in Node and in its extension) send, measured across pi-browser's real-Chrome suites and
-// serve's with the guard on, and named in their sources. Every other command is refused: among them each one that tells
-// of the machine the browser runs on (SystemInfo.*, Browser.getBrowserCommandLine, its processes), an attach to the
-// browser's own target, Extensions.*, PWA.*, Tethering.*, Cast.*, Target.exposeDevToolsProtocol, setRemoteLocations,
-// openDevTools, Browser.executeBrowserCommand and DOM.setFileInputFiles. Of the commands it passes, these are held to
-// what they may name:
-//  - a navigation or a new target to anything but http, https or about:blank (and the extension's own pages, which the
-//    driver opens to wake its worker): file:, chrome:, devtools:, view-source:, filesystem:, blob:, data:, javascript: and
-//    every other scheme (Page.navigate, Target.createTarget);
-//  - a request rewritten or fetched by the browser to such a URL (Fetch.continueRequest's url, Network.loadNetworkResource);
-//  - a file of this machine handed to a page (a drag's files, Page.handleFileChooser's files);
-//  - downloads sent to a directory the command names (Browser/Page.setDownloadBehavior with downloadPath);
-//  - each of these inside Target.sendMessageToTarget's message as well.
+// serve's with the guard on, and named in their sources (Stagehand 4.4, its WebMCP page tools among them). Every other command is refused: among them each
+// one that tells of the machine the browser runs on (SystemInfo.*, Browser.getBrowserCommandLine, its processes), an
+// attach to the browser's own target, a protocol message for another target (Target.sendMessageToTarget), an extension
+// loaded or removed (Extensions.loadUnpacked: Stagehand 4.4 sends it with its own, unconfined directory when it finds no
+// extension, and the provider loads the confined copy first; Extensions.uninstall, which the provider sends on its own
+// socket), Browser.close, PWA.*, Tethering.*, Cast.*, Target.exposeDevToolsProtocol, setRemoteLocations, openDevTools,
+// Browser.executeBrowserCommand, DOM.setFileInputFiles, a drop of files, a file chooser's files and
+// Network.loadNetworkResource. Of the commands it passes, these are held to what they may name:
+//  - a navigation or a new target to anything but http, https or about:blank (Stagehand 4.4's client marker,
+//    about:blank#stagehand-client-connection, is about:blank; and the extension's own pages): file:, chrome:, devtools:,
+//    view-source:, filesystem:, blob:, data:, javascript: and every other scheme (Page.navigate, Target.createTarget);
+//  - a request rewritten by the browser to such a URL (Fetch.continueRequest's url);
+//  - downloads sent to a directory the command names (Browser/Page.setDownloadBehavior with downloadPath).
+// And what one answers is held to what it may tell: Extensions.getExtensions (Stagehand 4.4 finds its extension by name
+// with it on each connect) is answered without each extension's path on this machine.
 // A page's own navigation to such a scheme (a link, location.href, window.open from an http page) is Chrome's to refuse,
 // and it does: "Not allowed to load local resource". An extension's page is not held to that rule (it may move itself,
 // or open a tab, on a file), so no client may drive one: attaching to a target, and every command on a session, is
@@ -37,18 +40,21 @@ const LOOPBACK = "127.0.0.1"; // key-gate: loopback-rule the guard and the brows
  *  pi-browser's and serve's real-Chrome suites sent through the guard, which named none outside them). */
 const ALLOWED_BY_DOMAIN: Readonly<Record<string, readonly string[]>> = {
   Accessibility: ["enable", "getFullAXTree"],
-  Browser: ["cancelDownload", "close", "grantPermissions", "setDownloadBehavior"],
-  DOM: ["describeNode", "enable", "getBoxModel", "getDocument", "getFrameOwner", "getNodeForLocation", "querySelector", "requestNode", "scrollIntoViewIfNeeded"],
+  Browser: ["cancelDownload", "getVersion", "grantPermissions", "setDownloadBehavior"],
+  DOM: ["describeNode", "enable", "getBoxModel", "getDocument", "getFrameOwner", "getNodeForLocation", "querySelector", "requestNode", "resolveNode", "scrollIntoViewIfNeeded"],
   DOMStorage: ["enable", "getDOMStorageItems", "setDOMStorageItem"],
+  Extensions: ["getExtensions"],
   Emulation: ["setDefaultBackgroundColorOverride", "setDeviceMetricsOverride", "setVisibleSize"],
   Fetch: ["continueRequest", "disable", "enable", "failRequest", "fulfillRequest"],
-  Input: ["dispatchDragEvent", "dispatchKeyEvent", "dispatchMouseEvent", "insertText"],
-  Network: ["enable", "getResponseBody", "loadNetworkResource", "setExtraHTTPHeaders"],
+  Input: ["dispatchKeyEvent", "dispatchMouseEvent", "insertText"],
+  Network: ["enable", "getResponseBody", "setExtraHTTPHeaders"],
   Overlay: ["enable", "hideHighlight", "highlightNode"],
-  Page: ["addScriptToEvaluateOnNewDocument", "bringToFront", "captureScreenshot", "createIsolatedWorld", "enable", "getFrameTree", "getLayoutMetrics", "getNavigationHistory", "handleFileChooser", "handleJavaScriptDialog", "navigate", "navigateToHistoryEntry", "reload", "screencastFrameAck", "setDownloadBehavior", "setLifecycleEventsEnabled", "startScreencast", "stopScreencast"],
-  Runtime: ["addBinding", "callFunctionOn", "enable", "evaluate", "releaseObject", "runIfWaitingForDebugger"],
+  Page: ["addScriptToEvaluateOnNewDocument", "bringToFront", "captureScreenshot", "createIsolatedWorld", "enable", "getFrameTree", "getLayoutMetrics", "getNavigationHistory", "handleJavaScriptDialog", "navigate", "navigateToHistoryEntry", "printToPDF", "reload", "screencastFrameAck", "setDownloadBehavior", "setLifecycleEventsEnabled", "startScreencast", "stopScreencast"],
+  Runtime: ["addBinding", "callFunctionOn", "enable", "evaluate", "releaseObject", "releaseObjectGroup", "runIfWaitingForDebugger"],
   Storage: ["clearCookies", "getCookies", "setCookies"],
-  Target: ["activateTarget", "attachToTarget", "closeTarget", "createTarget", "detachFromTarget", "getTargetInfo", "getTargets", "sendMessageToTarget", "setAutoAttach", "setDiscoverTargets"],
+  // Stagehand 4.4's page tools a page declares itself (document.modelContext): its own, nothing of the machine's.
+  WebMCP: ["cancelInvocation", "enable", "invokeTool"],
+  Target: ["activateTarget", "attachToTarget", "closeTarget", "createTarget", "detachFromTarget", "getTargetInfo", "getTargets", "setAutoAttach", "setDiscoverTargets"],
 };
 const ALLOWED_LIST = Object.entries(ALLOWED_BY_DOMAIN).flatMap(([domain, methods]) => methods.map((method) => `${domain}.${method}`));
 /** What a refused command is told. */
@@ -80,22 +86,11 @@ export function cdpRefusal(message: { method?: unknown; params?: unknown }, exte
     case "Page.navigate":
     case "Target.createTarget":
       return allowedUrl(params.url, extension) ? null : GUARD_REFUSAL;
-    case "Network.loadNetworkResource":
-      return allowedUrl(params.url) && !/^about:/i.test(String(params.url ?? "")) ? null : GUARD_REFUSAL;
     case "Fetch.continueRequest":
       return params.url === undefined || (allowedUrl(params.url) && !/^about:/i.test(String(params.url))) ? null : GUARD_REFUSAL;
-    case "Input.dispatchDragEvent":
-      return Array.isArray(params.data?.files) && params.data.files.length > 0 ? GUARD_REFUSAL : null;
-    case "Page.handleFileChooser":
-      return Array.isArray(params.files) && params.files.length > 0 ? GUARD_REFUSAL : null;
     case "Browser.setDownloadBehavior":
     case "Page.setDownloadBehavior":
       return params.downloadPath === undefined ? null : GUARD_REFUSAL;
-    case "Target.sendMessageToTarget": {
-      let inner: unknown;
-      try { inner = JSON.parse(String(params.message)); } catch { return GUARD_REFUSAL; }
-      return typeof inner === "object" && inner !== null ? cdpRefusal(inner as { method?: unknown; params?: unknown }, extension) : GUARD_REFUSAL;
-    }
     default:
       return null;
   }
@@ -224,6 +219,8 @@ function relay(client: Socket, upstreamPort: number, upstreamHost: string, exten
   const sessions = new Map<string, string>();
   /** The attaches sent and not yet answered: their session and id, to the target each names. */
   const attaching = new Map<string, string>();
+  /** The extension lists asked for and not yet answered, by session and id: each answer loses its paths. */
+  const listing = new Set<string>();
   let queue: Promise<void> = Promise.resolve();
 
   /** Whether `command` may pass: the method rule, then the target it names or drives. */
@@ -239,7 +236,7 @@ function relay(client: Socket, upstreamPort: number, upstreamHost: string, exten
       if (!allowedTarget(await targets.info(command.params?.targetId))) return false;
       attaching.set(`${String(command.sessionId ?? "")}|${String(command.id)}`, String(command.params.targetId));
     }
-    if (command.method === "Target.attachToBrowserTarget") attaching.set(`${String(command.sessionId ?? "")}|${String(command.id)}`, "browser");
+    if (command.method === "Extensions.getExtensions") listing.add(`${String(command.sessionId ?? "")}|${String(command.id)}`);
     return true;
   };
 
@@ -291,6 +288,19 @@ function relay(client: Socket, upstreamPort: number, upstreamHost: string, exten
     }
   });
 
+  /** An answer to an extension list this client asked for, each extension's path on this machine taken out (Stagehand
+   *  reads its name, id and state); null for any other message, which passes as it came. */
+  const withoutPaths = (payload: Buffer): string | null => {
+    if (payload.length > 1_048_576) return null;
+    let answer: any;
+    try { answer = JSON.parse(payload.toString("utf8")); } catch { return null; }
+    const key = `${String(answer?.sessionId ?? "")}|${String(answer?.id)}`;
+    if (answer?.id === undefined || !listing.has(key)) return null;
+    listing.delete(key);
+    if (Array.isArray(answer.result?.extensions)) answer.result.extensions = answer.result.extensions.map((extension: Record<string, unknown>) => ({ ...extension, path: "" }));
+    return JSON.stringify(answer);
+  };
+
   /** What the browser tells this client of its sessions: each one opened, to its target, and each one closed. */
   const learn = (payload: Buffer) => {
     if (payload.length > 65_536) return;
@@ -332,8 +342,11 @@ function relay(client: Socket, upstreamPort: number, upstreamHost: string, exten
         // A whole message: what it says of sessions is learned before the client reads it.
         const frames = browserMessage;
         browserMessage = [];
-        if (frames[0]!.opcode === 0x1) learn(Buffer.concat(frames.map((f) => f.payload)));
-        for (const f of frames) client.write(f.raw);
+        const text = frames[0]!.opcode === 0x1 ? Buffer.concat(frames.map((f) => f.payload)) : null;
+        if (text) learn(text);
+        const told = text && listing.size > 0 ? withoutPaths(text) : null;
+        if (told) client.write(textFrame(told));
+        else for (const f of frames) client.write(f.raw);
       } else client.write(Buffer.from(frame.raw));
       flushPending();
     }
