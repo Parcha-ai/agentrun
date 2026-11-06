@@ -63,7 +63,8 @@ await docker.release(made.value, "delete");
   does not support. `create` never throws on a spec `check` passes.
 - `create` runs `docker run` as a non-root user (`--user`, below), with every capability dropped (`--cap-drop ALL`),
   `--security-opt no-new-privileges`, `--network none` or `bridge`, serve's sizes unless the spec gives its own (2
-  CPUs, 4 GiB with swap the same, 1024 pids), and the daemon bind-mounted read-only at `/opt/agentrun/computerd` as
+  CPUs as a quota, `--cpu-period 100000 --cpu-quota 200000`, so a host with fewer CPUs still runs one; 4 GiB with swap
+  the same; 1024 pids), and the daemon bind-mounted read-only at `/opt/agentrun/computerd` as
   the entrypoint, `computerd init --deadline <time>`, which is PID 1 and reaps orphans. The label
   `agentrun.computer.deadline` holds the time `lifetimeMs` ends, and init gets the same time: then it sends SIGTERM to
   every process in the computer, waits up to 2 s, and exits 0, which stops the container. Init refuses to start with no
@@ -73,6 +74,9 @@ await docker.release(made.value, "delete");
   in numbers (a name is refused: the image may not have it; a uid alone is its own gid). The spec's `user` wins, then
   the provider's `user` option, then this process's uid:gid, or `1000:1000` when this process is root. The provider
   option refuses root; only a spec's `user: "0"` runs a computer as root, and that root has no capability either.
+- `/work` is the computer's home (`HOME=/work`) and its workdir unless the spec names one: a tmpfs owned by the
+  computer's user, mode 700, the one place a non-root user can surely write. It is memory: what it holds counts against
+  the memory limit, and it does not survive a stop. Storage that lasts is the agent disk's job, not this package's.
 - `connect` runs `docker exec -i <name> /opt/agentrun/computerd stdio` and says hello.
 - `release(ref, "stop" | "delete")` runs `docker stop`, or `docker rm --force --volumes`. A computer already gone is ok.
 
