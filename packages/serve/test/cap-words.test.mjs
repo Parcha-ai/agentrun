@@ -35,6 +35,9 @@ test("a budget pause's waiting row reads \"Waiting for you to raise the cap\", a
   const { pending } = (await api("GET", `/runs/${run_id}`)).body;
   const waiting = rows.findLast((row) => row.kind === "waiting");
   assert.deepEqual([waiting?.summary, waiting?.text, pending?.said?.startsWith("Not sent: ")], ["Waiting for you to raise the cap", "Waiting for you to raise the cap", true], JSON.stringify([waiting, pending]));
+  // The marker is the refusal's alone: the waiting row, made from the refusal's row, is no refusal (#1768 review).
+  const refusal = rows.findLast((row) => row.kind === "error");
+  assert.deepEqual([refusal?.paused, Object.hasOwn(waiting ?? {}, "paused")], [true, false], JSON.stringify([refusal, waiting]));
 });
 
 // Output at $100 a million: 3,072 tokens, a request's least, are $0.3072.
