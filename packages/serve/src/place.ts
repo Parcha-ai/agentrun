@@ -12,7 +12,7 @@
 // (newAgentPlace). The place is written on the revision then, never resolved at run time, so a revision saved with none
 // (before this, or where docker was not there) runs on the runner, whatever the server has now.
 import { join } from "node:path";
-import { BOX_IDS, type BoxId, type BoxOffer } from "./boxes.js";
+import { BOX_IDS, BOXES_ENV, type BoxId, type BoxOffer, VM_PROVIDER } from "./boxes.js";
 import { type InputIssue, sentence } from "./errors.js";
 
 export const PLACE_MODES = ["runner", "sandbox"] as const;
@@ -21,8 +21,8 @@ export const DEFAULT_PLACE_MODE: PlaceMode = "runner";
 
 export type Place = { mode: "runner" } | { mode: "sandbox"; box: BoxId };
 
-/** The boxes runs execute in so far. */
-export const RUN_BOXES: readonly BoxId[] = ["docker", "daytona"];
+/** The boxes runs execute in so far: Docker, Daytona and the VM box. */
+export const RUN_BOXES: readonly BoxId[] = ["docker", "daytona", VM_PROVIDER.id];
 
 /** The boxes this server gives runs, from what its registry set up at its start (boxes.ts): a box runs execute in
  *  that the registry has, and no other. */
@@ -58,8 +58,9 @@ export function noBoxReason(registry: readonly BoxOffer[]): string | undefined {
 
 /** The start banner's words on the boxes: which are ready for a sandbox agent's tools, which are still preparing (an
  *  available box whose `state` says so, with its reason: what it is pulling), then why each box is not that
- *  AGENTRUN_BOXES lists (`listed`), or, when none is ready or preparing, each box runs execute in, with what to do. */
-export function boxesLine(registry: readonly BoxOffer[], listed: ReadonlySet<BoxId>, allow: readonly string[] | "none" = "none"): string {
+ *  AGENTRUN_BOXES lists (`listed`), or, when none is ready or preparing, each box runs execute in, with what to do.
+ *  `byDefault`, with AGENTRUN_BOXES not set at all: short, docker alone, said to be on by default, or why it is not. */
+export function boxesLine(registry: readonly BoxOffer[], listed: ReadonlySet<BoxId>, allow: readonly string[] | "none" = "none", byDefault = false): string {
   const boxes = boxAvailability(registry);
   const preparing = (box: BoxOffer) => (box as { state?: unknown }).state === "preparing";
   const ready = boxes.filter((box) => box.available && !preparing(box)).map((box) => box.id);
@@ -74,6 +75,12 @@ export function boxesLine(registry: readonly BoxOffer[], listed: ReadonlySet<Box
   const hosts = new Intl.ListFormat("en", { type: "conjunction" }).format(allow === "none" ? [] : allow);
   const reach = boxes.filter((box) => box.available && box.network).map((box) =>
     box.network === "allowlist" ? sentence(`${box.id} boxes reach only ${hosts}`) : sentence(`${box.id} boxes have no network${box.network_reason ? `: ${box.network_reason}` : ""}`));
+  if (byDefault) {
+    const docker = boxes.find((box) => box.id === "docker");
+    if (!docker?.available) return `Boxes: none, so new agents run on the runner. ${sentence(docker?.reason ?? "Docker is not set up")}`;
+    const coming = preparing(docker) ? ` docker is preparing${docker.reason ? ` (${docker.reason})` : ""}.` : "";
+    return [`Boxes: docker (on by default; set ${BOXES_ENV} to change).${coming}`, ...reach].join(" ");
+  }
   return ["Boxes:", ...(none ? ["none is ready, so sandbox agents do not run here."] : said), ...reach, ...why.map((box) => sentence(`${box.id}: ${box.reason ?? "not available"}`))].join(" ");
 }
 
@@ -109,7 +116,7 @@ export const BOX_WORK = "/run/agentrun/run/work";
 
 /** The boxes that cannot bind a run's work/, being on another machine: its work/ is seeded at the box's making and
  *  pulled back (run-box.ts). */
-export const REMOTE_BOXES: readonly BoxId[] = ["daytona"];
+export const REMOTE_BOXES: readonly BoxId[] = ["daytona", VM_PROVIDER.id];
 export const remotePlace = (place: Place): boolean => place.mode === "sandbox" && REMOTE_BOXES.includes(place.box);
 
 /** The run's work/ as its agent's tools see it: on the runner, `<runDir>/work`; in any box, BOX_WORK. */

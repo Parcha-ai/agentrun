@@ -13,7 +13,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { startServe } from "../dist/index.js";
 import { writesHeld } from "../dist/workspace.js";
 import fauxBoxes, { fauxRoot } from "./fixtures/faux-box.mjs";
-import { client, flowAgent, follow, scratch, serve, withEnv } from "./support.mjs";
+import { client, flowAgent, follow, jsonLines, scratch, serve, withEnv } from "./support.mjs";
 
 const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;
 const FAUX_BOX = new URL("./fixtures/faux-box.mjs", import.meta.url).pathname;
@@ -42,7 +42,7 @@ function answers(data, runId) {
   }
 }
 
-const lines = (file) => (existsSync(file) ? readFileSync(file, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)) : []);
+const lines = (file) => jsonLines(file);
 const specs = (data) => lines(join(fauxRoot(data), "specs.jsonl"));
 const execs = (data) => lines(join(fauxRoot(data), "execs.jsonl"));
 /** The faux boxes that live now: a local box keeps its record while it lives. */

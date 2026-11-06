@@ -49,7 +49,7 @@ describe("NeedsYouStrip, a run waiting on an approval", () => {
 
   it("Allow answers that run's approval by its id", async () => {
     const { host, approvals } = mount();
-    const allow = [...host.querySelectorAll("li[data-run='a1'] button")].find((b) => b.textContent === "Allow") as HTMLButtonElement;
+    const allow = [...host.querySelectorAll("li[data-run='a1'] button")].find((b) => b.textContent === "Allow once") as HTMLButtonElement;
     await act(async () => { allow.click(); });
     expect(approvals).toEqual([["a1", "ap_0123456789abcdef", "allow", undefined]]);
   });

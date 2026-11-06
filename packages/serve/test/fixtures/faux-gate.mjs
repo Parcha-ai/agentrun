@@ -27,6 +27,16 @@ export default function reply(context, faux) {
     })();
     return faux.message(`Saw: ${textOf(context.messages.at(-1))}`);
   }
+  // "Fetch <url> once <file> exists.": the turn works until the file exists, then calls web_fetch on the url; then "Saw: "
+  // and the last thing it was told.
+  const later = /Fetch (\S+) once (\S+) exists\./.exec(textOf(context.messages.find((m) => m.role === "user")));
+  if (later) {
+    if (context.messages.some((m) => m.role === "toolResult")) return faux.message(`Saw: ${textOf(context.messages.at(-1))}`);
+    return (async () => {
+      while (!(await access(later[2]).then(() => true, () => false))) await new Promise((resolve) => setTimeout(resolve, 20));
+      return faux.message(faux.toolCall("web_fetch", { url: later[1] }), { stopReason: "toolUse" });
+    })();
+  }
   const url = urlOf(textOf(context.messages.find((m) => m.role === "user")));
   if (!url) return faux.message("Nothing to do.");
   // "Slowly, please." as the last message: a turn that streams for 8 s, unless it is stopped.

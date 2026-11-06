@@ -18,6 +18,7 @@ import { join, posix } from "node:path";
 import { ANSWER_MAX, INDEX_FILE, parseNoteFile, redactSecrets, type Verdict } from "./learn/index.js";
 import type { AnalyticsFilter, Revision, RunRow, StartedRun } from "@parcha/pi-durable-agent";
 import type { TimelineEvent } from "@parcha/pi-durable-agent/timeline";
+import { learnedWorkflowsOff } from "./adapters.js";
 import { CAP_REFUSAL_PREFIX, SPEND_CAP_REACHED } from "./cap.js";
 import { readJson, RUN_META, runDoorToken } from "./files.js";
 import { activeOf, detailShown, dropSeed, gradeModelOf, keepTurn, KEPT_LEARNING, layLearned, layPinnedSkills, LEARNED_DIR, type LearnedFile, type Learning, LEARNING_BUDGET, LEARNING_LABEL, learningBlocker, type LearningReason, type LearningState, learningTestHooks, learningView, type NoteLearned, pinSeed, type Proposal, PROPOSAL, readPin, readTurn, secretsShown, type Seed, seedAt, seedOf, shortLearning, type Shown, skillsAt, type Turn, withAgentGrade } from "./learning.js";
@@ -33,7 +34,7 @@ import { REFLECT_REQUEST } from "./turns.js";
  *  after it (its rows are those between), its deadline, and how it ended. */
 export type Reflect = { outcome: Status; after: number; until?: number; deadline: string; ended?: true; timedOut?: true };
 /** Who sent the end-of-run turn: the server, never a person, and no request field sets it. The one value it is sent
- *  with, at its one call (reflectTurn); the tool gate reads it there (tool-gate.ts's carve-out). */
+ *  with, at its one call (reflectTurn); the tool gate reads it there and refuses that turn's writes under work/.learning/ (tool-gate.ts NOTE_ONLY_TEXT). */
 const REFLECT_ORIGIN = "reflect";
 export type TurnOrigin = typeof REFLECT_ORIGIN;
 /** The run asked its end-of-run turn and has not ended since. */
@@ -88,6 +89,19 @@ export function notesRead(reflect: Reflect | undefined, rows: readonly TimelineE
   }
   return [...read];
 }
+
+/** How much of a grader's answer the host could not read a run keeps: its start and its end, where such an answer goes
+ *  wrong (words before its JSON, or JSON cut off). */
+const UNREAD_MAX = 2_000;
+/** How much of an answer redactSecrets reads before it gives up on it whole: more than the grader's answer can hold
+ *  (GRADE_MAX_TOKENS). */
+const UNREAD_SCAN = 256 * 1024;
+/** `text` cut of `values` (redactSecrets), whole, and then in size at whitespace. Cut of secrets first: a key may hold a
+ *  space, or be written in spaced parts, and a cut before could leave a part of it. */
+const unreadShown = (text: string, values: readonly string[]): string => {
+  const cut = redactSecrets(text, values, UNREAD_SCAN);
+  return cut.length <= UNREAD_MAX ? cut : `${cut.slice(0, 1_500).replace(/\S*$/, "")}\n…\n${cut.slice(-(UNREAD_MAX - 1_503)).replace(/^\S*/, "")}`;
+};
 
 /** `verdict` with its reason, and each item's question and why, cut of `values` (learn/secrets.ts redactSecrets). */
 const cutVerdict = (verdict: Verdict, values: readonly string[]): Verdict => ({
@@ -296,9 +310,13 @@ export class LearningRuns {
       if ("seed" in seeded) {
         try {
           const own = revision.kind === "agentic" ? Object.keys(revision.body.skills) : [];
-          const pin = await pinSeed(started.dir, started.workspace, seeded.seed, { budget: this.options.learningBudget ?? LEARNING_BUDGET, read, shown: this.shown(), own });
+          // Its harness's requests going where a learned workflow's could not follow: it is offered none (fail closed).
+          const workflowsOff = revision.kind === "agentic" ? await learnedWorkflowsOff(revision.body.harness, this.hostEnv(), revision.body.model) : undefined;
+          const pin = await pinSeed(started.dir, started.workspace, seeded.seed, { budget: this.options.learningBudget ?? LEARNING_BUDGET, read, shown: this.shown(), own, ...(workflowsOff ? { workflowsOff } : {}) });
           for (const path of seeded.seed.skipped) warn(started.runId, `its learning folder's ${path} was not read`);
           for (const name of pin.skills_left_out ?? []) warn(started.runId, `starts without the skill ${name} its agent learned: it is over what is left of the learned skills' budget, or holds a secret`);
+          if (pin.workflows_off) warn(started.runId, `starts without the workflows its agent learned (${(pin.workflows_left_out ?? []).join(", ")}): ${pin.workflows_off}`);
+          else for (const name of pin.workflows_left_out ?? []) warn(started.runId, `starts without the workflow ${name} its agent learned: its line is over what is left of the learned_workflow tool's description budget, or it holds a secret`);
         } catch (error) {
           warn(started.runId, `starts with nothing learned: ${(error as Error).message}`);
           failed = said.stopped(STOPPED.notCopied);
@@ -348,9 +366,9 @@ export class LearningRuns {
 
   /** A run's process launched, handed the secrets named `names`: what each held then, as handover read it, kept beside
    *  the run while its learning is under way (a key replaced since stays refused in its notes). */
-  onLaunch(run: Run, names: readonly string[]): void {
+  onLaunch(run: Run, names: readonly string[], also: readonly string[] = []): void {
     if (!run.meta.learning || ended(run.meta.learning)) return;
-    const values = names.flatMap((name) => secret(name, this.options.storedKeys) ?? []);
+    const values = [...names.flatMap((name) => secret(name, this.options.storedKeys) ?? []), ...also];
     if (!values.length) return;
     const kept = this.handed.get(run.id) ?? new Set<string>();
     for (const value of values) kept.add(value);
@@ -612,7 +630,7 @@ export class LearningRuns {
       const seed = await seedAt(this.options.agents.dir, run.agentId, pin.seed);
       await this.kernel.save(run);
       const { reflectPrompt } = await import("./learn/index.js");
-      const tools = await this.draftTools(run);
+      const { tools } = await this.draftTools(run);
       // The one call that sends the end-of-run turn, with its origin. Only while the run is finishing with no outcome yet,
       // read in the same tick the origin's write starts in (toLiveDoor writes it before its first await): a message
       // waits while the run is finishing (runs.ts message), so a write starts only before that wait ends. One whose
@@ -682,13 +700,18 @@ export class LearningRuns {
     return once(this.proposing, run.id, () => this.propose(run));
   }
 
-  /** The tools a run's workflow draft may name: its revision's granted tools a workflow node runs here (tools.ts
-   *  learnedWorkflowTools); none for a revision not found, so a draft that names one is refused. */
-  private async draftTools(run: Run): Promise<string[]> {
+  /** The tools a run's workflow draft may name: its revision's granted tools a workflow's call node runs here that the
+   *  gate allows, under the server's tool settings and the agent's own (tools.ts learnedDraftTools); `gated`, those set to
+   *  ask or deny, which a draft that calls one is refused for. None for a revision not found, so a draft that names one is
+   *  refused. */
+  private async draftTools(run: Run): Promise<{ tools: string[]; gated: Record<string, string> }> {
     const known = await this.options.agents.revision(run.agentId, run.revision);
-    if (known?.revision.kind !== "agentic") return [];
-    const { learnedWorkflowTools } = await import("./tools.js");
-    return learnedWorkflowTools(known.revision.body.tools);
+    if (known?.revision.kind !== "agentic") return { tools: [], gated: {} };
+    const [{ learnedDraftTools }, { permissionOf }, { readToolSettings }] = await Promise.all([import("./tools.js"), import("./tool-gate.js"), import("./tool-plane.js")]);
+    // The server's settings, beside the agent store, as the run's gate reads them, and the agent's own.
+    const server = readToolSettings(this.options.agents.dir).settings;
+    const agent = (known.revision.body.toolSettings ?? {}) as never;
+    return learnedDraftTools(known.revision.body.tools, (name) => permissionOf(name, server as never, agent));
   }
 
   private async propose(run: Run): Promise<void> {
@@ -699,7 +722,7 @@ export class LearningRuns {
       const { proposeRun } = await import("./propose.js");
       // The secrets this server holds, wherever its launcher put them, the keys saved on it, what each launch handed the
       // run, and its own tokens. How the job ended, before its end-of-run turn: only a completed run keeps a skill.
-      const proposed = await proposeRun({ data: this.options.agents.dir, agentId: run.agentId, runDir: run.dir, seed: pin.seed, turn: await readTurn(run.dir), refuse: this.refused(run), ...(run.meta.reflect ? { outcome: run.meta.reflect.outcome } : {}), tools: await this.draftTools(run) });
+      const proposed = await proposeRun({ data: this.options.agents.dir, agentId: run.agentId, runDir: run.dir, seed: pin.seed, turn: await readTurn(run.dir), refuse: this.refused(run), ...(run.meta.reflect ? { outcome: run.meta.reflect.outcome } : {}), ...(await this.draftTools(run)) });
       // What the checks left out goes on with it (`problems`), to be said with what it learned.
       if (proposed.state === "proposed") this.setLearning(run, "proposed", null, said.proposed(proposed.notes, proposed.skills, proposed.workflows), proposed.left ? { problems: proposed.left } : {});
       else if (proposed.reason === "empty") this.setLearning(run, "dropped", "empty", said.empty);
@@ -758,7 +781,17 @@ export class LearningRuns {
         // Kept cut of every secret the run's notes were checked against, the keys its launches handed it included, which a
         // read no longer knows: its reason and its items' words are what the run's words are said from again (wordsOf).
         kept.verdict = cutVerdict(judged.verdict, this.refused(run));
-        if (!kept.verdict.merge) return await end("dropped", "grader", notKept(kept.verdict));
+        if (!kept.verdict.merge) {
+          // What it proposed is lost whole: its skill and its draft are named, from the proposal (a verdict the host
+          // refused has no items), and the line cut of every secret the verdict was.
+          const lost = (proposal.files ?? []).flatMap(({ file }) => {
+            const place = /^(?:skills\/([^/]+)\/SKILL\.md|workflows\/([^/]+)\/workflow\.json)$/.exec(file);
+            return place ? [{ file, name: (place[1] ?? place[2])! }] : [];
+          });
+          // Two answers it could not read: the last kept, in size and cut of every secret, to diagnose it by.
+          const unread = "unread" in judged && judged.unread !== undefined ? { unread: unreadShown(judged.unread, this.refused(run)) } : {};
+          return await end("dropped", "grader", redactSecrets(notKept(kept.verdict, lost), this.refused(run)), { ...(lost.length ? { lost } : {}), ...unread });
+        }
         // Kept before the merge, with the blobs it judged superseded: a restart merges on this verdict, never asks the
         // grader again, and checks the same blobs.
         kept.graded = main.graded;

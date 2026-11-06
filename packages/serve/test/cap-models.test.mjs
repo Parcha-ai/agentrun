@@ -2,10 +2,16 @@
 // (two model requests in flight at once, as a workflow's parallel nodes would) and prices a run cannot choose (a cache
 // write dearer than input), checked on the exact worst case.
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { estimateContextTokens } from "@earendil-works/pi-ai/utils/estimate";
-import { capModels, paidCall, sideRequests, useSpend } from "../dist/cap.js";
+import * as capModule from "../dist/cap.js";
+import { capBefore, capModels, paidCall, paidHolds, sideRequests, spentIn, useSpend } from "../dist/cap.js";
+const sideSpend = () => capModule.sideSpend();
 import { chargeOf, monidClient } from "../dist/monid.js";
 import fakeMonid, { KEY as MONID_KEY } from "./fixtures/faux-monid.mjs";
 import { bookedIn, PARALLEL_EXTRACT_USD, PARALLEL_SEARCH_USD } from "../dist/paid-calls.js";
@@ -402,4 +408,66 @@ test("under a cap, a page's one Parallel extract is held as any Parallel request
   const later = await bookedIn(ledger, () => webFetch("http://public.example/", { ...net, parallel: extract, pages, offset: 20_000 }));
   assert.deepEqual([later.via, later.offset, asked], ["parallel", 20_000, [1_000_001]], "a later part from what the run read: no request");
   assert.deepEqual(records, [["agentrun.tool_started", PARALLEL_EXTRACT_USD], ["agentrun.tool_cost", PARALLEL_EXTRACT_USD]], "held and charged once");
+});
+
+// On claude-agent and codex the run's own model requests (a learned workflow's, a hosted search's) go through capModels
+// `joined` to the harness's spend: one total, one set of holds.
+test("joined to another harness's spend: the run's own request is judged against the harness's total, held where the harness's check sees it, and its cost counted beside the harness's", async (t) => {
+  // $1 per million output tokens and 1,000 of them: each request's worst case and least are $0.001.
+  const priced = model({ input: 0, output: 1, cacheRead: 0, cacheWrite: 0 });
+  const { models, sent } = fakeModels();
+  let harness = 0.0006;
+  const added = [];
+  useSpend({ cap: 0.0015, spent: () => harness + sideSpend(), add: (usd) => added.push(usd), now: () => harness + sideSpend() });
+  t.after(() => useSpend(undefined));
+  const capped = await capModels(models, 0.0015, 0.0001, { joined: true });
+  assert.equal(sideSpend(), 0.0001, "what the run's own requests cost in earlier processes");
+  // The harness's $0.0006 and the earlier $0.0001 leave $0.0008 of $0.0015: not the request's least.
+  const refused = await capped.streamSimple(priced, context).result();
+  assert.equal(wentOut(sent), 0, "refused on the harness's total");
+  assert.match(refused.errorMessage, /^spend_cap_reached \(out of budget\): Not sent: the run has spent \$0\.0007 of its \$0\.0015 cap/);
+  harness = 0;
+  const request = capped.streamSimple(priced, context);
+  assert.equal(sent.length, 1, "with the harness at $0, it fits");
+  assert.equal(paidHolds(), 0.001, "held where the harness's check sees it");
+  const guard = await capBefore(0.0015, priced);
+  assert.ok("refuse" in guard.beforeRequest({ spentUsd: 0, inFlight: [], inputTokensMax: 10 }), "the harness's next request does not fit beside it");
+  sent[0].end(0.0003);
+  await request.result();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(paidHolds(), 0, "its hold goes once it answered");
+  assert.ok(Math.abs(sideSpend() - 0.0004) < 1e-12, `its cost joins what the run's own requests spent, which the harness adds to its booking: ${sideSpend()}`);
+  assert.deepEqual(added, [], "never as a paid tool's charge");
+});
+
+test("spentIn's sides: what a run's own side requests spent in earlier processes, the cut one at its hold, none of its harness's requests or paid tools; unknown when one's cost is", () => {
+  const dir = mkdtempSync(join(tmpdir(), "sides-"));
+  try {
+    const store = (file, records) => {
+      const db = new DatabaseSync(join(dir, file));
+      db.exec("CREATE TABLE entries (record TEXT)");
+      for (const record of records) db.prepare("INSERT INTO entries (record) VALUES (?)").run(JSON.stringify(record));
+      db.close();
+      return join(dir, file);
+    };
+    const harness = [
+      { kind: "agentrun.request_started", data: { key: "run:x", request: 1, heldUsd: 0.9 } },
+      { kind: "pi.assistant", model: [{ role: "assistant", content: [], stopReason: "stop", usage: usage(0.5), timestamp: 0 }] },
+      { kind: "agentrun.tool_started", data: { call: "c", heldUsd: 0.01 } },
+      { kind: "agentrun.tool_cost", data: { call: "c", usd: 0.01 } },
+    ];
+    const sides = [
+      { kind: "agentrun.request_started", data: { request: "learned_workflow", heldUsd: 0.2 } },
+      { kind: "agentrun.request_cost", data: { request: "learned_workflow", usd: 0.05 } },
+      { kind: "agentrun.request_started", data: { request: "learned_workflow", heldUsd: 0.3 } },
+    ];
+    const file = store("known.sqlite", [...harness, ...sides]);
+    assert.ok(Math.abs(spentIn(file, { sides: true }) - 0.35) < 1e-9, `${spentIn(file, { sides: true })}`);
+    assert.ok(spentIn(file) > 0.35, "the run's whole spend counts the rest");
+    const unknown = store("unknown.sqlite", [...harness, sides[0], { kind: "agentrun.request_cost", data: { request: "learned_workflow", usd: null } }]);
+    assert.equal(spentIn(unknown, { sides: true }), null);
+    assert.equal(spentIn(store("none.sqlite", harness), { sides: true }), 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
