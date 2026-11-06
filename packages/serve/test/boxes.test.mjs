@@ -52,12 +52,22 @@ const offerOf = (registry, id) => registry.offers().find((offer) => offer.id ===
 test("with nothing listed, nothing is probed and every box is unavailable: bwrap is not in this release, the rest are not enabled", async (t) => {
   const docker = await fakeDocker(t, ANSWERS);
   const daytona = await fakeDaytona(t, takes(`${CANARY}-${DAYTONA_KEY}`));
-  for (const listed of [undefined, "", " , "]) {
+  for (const listed of ["", " , ", "none", " none "]) {
     const registry = await boxRegistry({ PATH: docker.PATH, ...keys(), DAYTONA_API_URL: daytona.url, ...(listed === undefined ? {} : { AGENTRUN_BOXES: listed }) });
     assert.deepEqual(registry.offers(), BOX_IDS.map((id) => ({ id, available: false, reason: id === "bwrap" ? NOT_YET : notEnabled(id) })));
     for (const id of BOX_IDS) assert.equal(registry.provider(id), undefined, `no provider for ${id}`);
   }
   assert.deepEqual(docker.calls(), [], "docker was never run");
+  assert.deepEqual(daytona.seen, [], "Daytona was never asked");
+});
+
+test("with AGENTRUN_BOXES not set at all, docker alone is probed, as if listed; every other box stays unlisted", async (t) => {
+  const docker = await fakeDocker(t, ANSWERS);
+  const daytona = await fakeDaytona(t, takes(`${CANARY}-${DAYTONA_KEY}`));
+  const registry = await boxRegistry({ PATH: docker.PATH, ...keys(), DAYTONA_API_URL: daytona.url });
+  assert.deepEqual(registry.offers(), BOX_IDS.map((id) => (id === "docker" ? { id, available: true } : { id, available: false, reason: id === "bwrap" ? NOT_YET : notEnabled(id, ["docker"]) })));
+  assert.ok(registry.provider("docker"), "docker's provider");
+  assert.deepEqual(docker.calls(), ["version --format {{.Server.Version}}"]);
   assert.deepEqual(daytona.seen, [], "Daytona was never asked");
 });
 
@@ -101,7 +111,7 @@ test("docker listed: a docker that fails, or none on PATH, leaves it unavailable
   const failed = await boxRegistry({ PATH: docker.PATH, AGENTRUN_BOXES: "docker" });
   const offer = offerOf(failed, "docker");
   assert.equal(offer.available, false);
-  assert.equal(offer.reason, "docker version failed (exit 1): start Docker, or add this server's user to the docker group, then restart this server");
+  assert.equal(offer.reason, "Docker isn't running on this machine, or this user may not use it (docker version failed: exit 1): start Docker, or add this user to the docker group, then restart AgentRun");
   assert.ok(!offer.reason.includes("\n") && !/\bat .*:\d+/.test(offer.reason) && !offer.reason.includes("RAW-DOCKER-STDERR"), offer.reason);
   assert.equal(failed.provider("docker"), undefined);
   assert.equal(docker.calls().length, 1);
@@ -109,7 +119,7 @@ test("docker listed: a docker that fails, or none on PATH, leaves it unavailable
   const empty = join(await scratch(t), "empty");
   await mkdir(empty);
   const none = await boxRegistry({ PATH: empty, AGENTRUN_BOXES: "docker" });
-  assert.deepEqual(offerOf(none, "docker"), { id: "docker", available: false, reason: "no docker command on this server's PATH: install Docker, then restart this server" });
+  assert.deepEqual(offerOf(none, "docker"), { id: "docker", available: false, reason: "Docker isn't running on this machine (no docker command on PATH): install or start Docker, then restart AgentRun" });
 });
 
 test("each probe is bounded and they run at once: a docker and a Daytona that never answer leave both unavailable within one timeout", async (t) => {
@@ -119,7 +129,8 @@ test("each probe is bounded and they run at once: a docker and a Daytona that ne
   const registry = await boxRegistry({ PATH: docker.PATH, AGENTRUN_BOXES: "docker,daytona", [DAYTONA_KEY]: `${CANARY}-${DAYTONA_KEY}`, DAYTONA_API_URL: daytona.url }, { timeoutMs: 1_000 });
   const elapsed = Date.now() - started;
   assert.ok(elapsed < 1_900, `both probes ended in ${elapsed} ms: at once, not one after the other`);
-  for (const id of ["docker", "daytona"]) assert.deepEqual(offerOf(registry, id), { id, available: false, reason: "its probe did not finish within 1000 ms" });
+  assert.deepEqual(offerOf(registry, "docker"), { id: "docker", available: false, reason: "Docker isn't answering on this machine (docker version took over 1000 ms): start Docker, then restart AgentRun" });
+  assert.deepEqual(offerOf(registry, "daytona"), { id: "daytona", available: false, reason: "its probe did not finish within 1000 ms" });
   assert.ok(daytona.seen.length >= 1, "Daytona was asked; the provider may try a failed connection again within the timeout");
 });
 
@@ -205,7 +216,7 @@ test("no key's value is in an offer, a reason or the start's log line, which say
   const registry = await boxRegistry({ ...process.env });
   const boxes = lines.filter((line) => / event=boxes /.test(line));
   assert.equal(boxes.length, 1, lines.join("\n"));
-  assert.match(boxes[0], new RegExp(` available=none unavailable=${BOX_IDS.join(",")} docker="docker version failed \\(exit 1\\): [^"]+" ${VM}="(needs|install) [^"]+" daytona="Daytona refused DAYTONA_API_KEY"$`));
+  assert.match(boxes[0], new RegExp(` available=none unavailable=${BOX_IDS.join(",")} docker="Docker isn't running on this machine, or this user may not use it \\(docker version failed: exit 1\\): [^"]+" ${VM}="(needs|install) [^"]+" daytona="Daytona refused DAYTONA_API_KEY"$`));
   const said = JSON.stringify([registry.offers(), lines]);
   for (const [name, value] of Object.entries(values)) assert.ok(!said.includes(value) && !said.includes(CANARY), `${name}'s value is said nowhere`);
   assert.ok(!said.includes("RAW-"), "no answer's body and no command's output");

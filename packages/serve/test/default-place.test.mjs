@@ -138,8 +138,8 @@ test("a new agent that names its tools gets exactly those in the box; one that n
   assert.deepEqual([edited.body.definition.place, edited.body.definition.tools], [DOCKER, ["read", "bash"]]);
 });
 
-test("with no docker, a new agent is saved as before, with no place, and runs on the runner; capabilities say why: docker not enabled, or its image failed", { timeout: 60_000 }, async (t) => {
-  withEnv(t, {}, ["AGENTRUN_BOXES"]);
+test("with no docker, a new agent is saved as before, with no place, and runs on the runner; capabilities say why: docker turned off (AGENTRUN_BOXES=none), or its image failed", { timeout: 60_000 }, async (t) => {
+  withEnv(t, { AGENTRUN_BOXES: "none" });
   const { api, data } = await serve(t, { faux: PROBE });
   const places = await placesOf(api);
   assert.equal(places.default, "runner");
@@ -169,7 +169,7 @@ test("a docker whose image failed is no default: a new agent goes to the runner,
 });
 
 test("an agent saved before, with no place, runs where it ran before on a server that now has docker: the runner, no box made; an edit that names no place keeps none", { timeout: 90_000 }, async (t) => {
-  withEnv(t, {}, ["AGENTRUN_BOXES"]);
+  withEnv(t, { AGENTRUN_BOXES: "none" });
   const data = join(await scratch(t), "agents");
   const first = await startServe({ data, port: 0, faux: PROBE, drainTimeout: "5s" });
   const before = await client(first.baseUrl, first.token)("POST", "/agents", fresh("old"));

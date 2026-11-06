@@ -757,9 +757,6 @@ function EarlierLearned({ kind, items, from }: { kind: "skill" | "workflow"; ite
   );
 }
 
-/** A reason under the panel's own title says it once: "Not kept: too specific" reads "Too specific". */
-const untitled = (words: string) => words.replace(/^Not kept:\s*(.)/, (_, c: string) => c.toUpperCase());
-
 /** The latest runs that kept nothing, and why, in plain words: notes turned away, skips and stops, newest first. Runs
  *  with nothing new to remember are counted, not listed. */
 function NotKept({ runs }: { runs: Run[] }) {
@@ -768,13 +765,15 @@ function NotKept({ runs }: { runs: Run[] }) {
   const nothing = dropped.length - dropped.filter((r) => dropKind(r.learning!.reason) !== "nothing").length;
   if (!dropped.length) return null;
   return (
-    <Panel title="Not kept">
+    // Each run's sentence as the server says it ("Not kept: …", "Not kept, with the skill …: …"), under a title that does
+    // not say it again.
+    <Panel title="Kept nothing">
       {listed.length > 0 && (
         <ul>
           {listed.map((r) => (
             <li key={r.run_id} className="border-b last:border-b-0">
               <a href={`#/runs/${encodeURIComponent(r.run_id)}`} className="block px-4 py-3 hover:bg-accent">
-                <span className="block text-[13px]">{untitled(dropWords(r.learning!))}</span>
+                <span className="block text-[13px]">{dropWords(r.learning!)}</span>
                 <span className="mt-1 flex items-center gap-2 font-mono text-[11px] text-muted-foreground"><span className="min-w-0 truncate" title={r.title}>{r.title}</span><span className="shrink-0">· {when(r.created_at)}</span></span>
               </a>
             </li>
