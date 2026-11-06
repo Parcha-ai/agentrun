@@ -83,6 +83,9 @@ function fakeDaemon(hello, computer) {
  * - `networkSwitches`: network() applies a change to a network the provider declares, instead of refusing every change.
  *   Each network() call that asks for a policy is in `calls` as ["network", name, policy].
  * - `attachSpec`: merged over the spec attach reports (null: attach reports none).
+ * - `release`, `stopDeletes`: what capabilities() declares (release ["stop", "delete"]; stopDeletes left out unless given).
+ *   `onStop`: what release(ref, "stop") does: "stop" (default) keeps the computer, stopped; "delete" deletes it;
+ *   "nothing" leaves it running; "refuse" answers unsupported, in words.
  */
 export function fakeComputers({
 	id = "fake",
@@ -106,6 +109,9 @@ export function fakeComputers({
 	listPage = 100,
 	networkSwitches = false,
 	attachSpec = {},
+	release = ["stop", "delete"],
+	stopDeletes,
+	onStop = "stop",
 } = {}) {
 	const computers = new Map();
 	const made = [];
@@ -115,7 +121,7 @@ export function fakeComputers({
 	const provider = {
 		id,
 		version,
-		capabilities: () => ({ lifetime, network, isolation: "container", os: "linux", daemon, ...(user ? { user } : {}) }),
+		capabilities: () => ({ lifetime, network, isolation: "container", os: "linux", daemon, ...(user ? { user } : {}), release, ...(stopDeletes === undefined ? {} : { stopDeletes }) }),
 		check(spec) {
 			const refusals = [];
 			if (!(Number.isSafeInteger(spec.lifetimeMs) && spec.lifetimeMs > 0)) refusals.push({ field: "lifetimeMs", message: "lifetimeMs is required" });
@@ -195,7 +201,9 @@ export function fakeComputers({
 			calls.push(["release", ref.name, how]);
 			if (releaseHangs) return new Promise(() => {});
 			const record = computers.get(ref.name);
-			if (record && how === "stop") record.state = "stopped";
+			if (how === "stop" && onStop === "refuse") return fail("unsupported", "this provider does not stop a computer: release it with delete");
+			if (record && how === "stop" && onStop === "stop") record.state = "stopped";
+			if (record && how === "stop" && onStop === "delete") computers.delete(ref.name);
 			if (record && how === "delete" && !keepOnRelease) computers.delete(ref.name);
 			return ok(undefined);
 		},

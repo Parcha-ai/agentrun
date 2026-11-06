@@ -116,14 +116,18 @@ test("createProvider() bounds every sandbox's life besides the TTL: autoStopMinu
 	assert.equal(fake.sandboxes.size, 0, "a stop deletes it");
 });
 
-test("the module's note for the run's report says a stop deletes, and which cases that fails", () => {
+test("the module's note for the run's report says a stop deletes, that the provider declares it, and what each case does with it", () => {
 	const notes = daytonaModule.conformanceNotes;
 	assert.ok(Array.isArray(notes) && notes.length > 0 && notes.every((note) => typeof note === "string"), "the module exports conformanceNotes, strings");
 	const text = notes.join(" ");
 	assert.match(text, /autoStopMinutes 30/);
 	assert.match(text, /autoDeleteMinutes 0/);
+	assert.match(text, /stopDeletes/);
 	assert.match(text, /provider\.stop/);
 	assert.match(text, /provider\.janitor/);
+	assert.doesNotMatch(text, /expected to fail|fails/, "no case is expected to fail by design");
+	const provider = createProvider({ env: { [DAYTONA_ENV.key]: KEY, [DAYTONA_ENV.url]: API, [DAYTONA_ENV.daemon]: DAEMON } });
+	assert.deepEqual([provider.capabilities().release, provider.capabilities().stopDeletes], [["stop", "delete"], true], "the run's provider declares that its stop deletes");
 });
 
 test("the CLI loads the Daytona module and fails in words, exit 1, without a key", async () => {

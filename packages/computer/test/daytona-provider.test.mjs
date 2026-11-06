@@ -11,7 +11,7 @@ import { DaytonaProvider } from "../dist/index.js";
 import { API, DEFAULT_SNAPSHOT, fakeDaytona, HOSTS, KEY, PROXY, scriptOf, statusText, VERSION } from "./fake-daytona.mjs";
 
 const SPEC = { image: "agentrun-debian", lifetimeMs: 600_000, network: "none" };
-const FAST = { requestMs: 2000, createMs: 2000, startMs: 300, deleteMs: 2000, stopMs: 500, uploadMs: 2000, execMs: 2000, helloMs: 1000, pollMs: 1, retryMs: 1, listedMs: 2000, listedStableMs: 0 };
+const FAST = { requestMs: 2000, createMs: 2000, startMs: 300, deleteMs: 2000, stopMs: 500, goneMs: 500, uploadMs: 2000, execMs: 2000, helloMs: 1000, pollMs: 1, retryMs: 1, listedMs: 2000, listedStableMs: 0 };
 const NAME = /^computer-[0-9a-f]{12}$/;
 
 const dir = mkdtempSync(join(tmpdir(), "computer-daytona-test-"));
@@ -69,7 +69,7 @@ const of = (fake, method, path) => fake.requests.filter((r) => r.method === meth
 const deleted = (fake) => of(fake, "DELETE", /^\/api\/sandbox\/[^/]+$/);
 const created = (fake) => of(fake, "POST", "/api/sandbox");
 
-test("capabilities: a vendor lifetime, network none, open and allow with the ports each list opens, a container, linux, and the daemon's three", () => {
+test("capabilities: a vendor lifetime, network none, open and allow with the ports each list opens, a container, linux, the daemon's three, and stop and delete", () => {
 	const { provider, fake } = setup();
 	assert.equal(provider.id, "daytona");
 	assert.equal(provider.version, VERSION);
@@ -80,8 +80,12 @@ test("capabilities: a vendor lifetime, network none, open and allow with the por
 		isolation: "container",
 		os: "linux",
 		daemon: ["exec", "files", "processes"],
+		release: ["stop", "delete"],
+		stopDeletes: false,
 	});
 	assert.equal(setup({}, { sandboxClass: "linux-vm" }).provider.capabilities().isolation, "vm");
+	assert.equal(setup({}, { autoDeleteMinutes: 0 }).provider.capabilities().stopDeletes, true, "autoDeleteMinutes 0: Daytona deletes a sandbox as it stops");
+	assert.equal(setup({}, { autoDeleteMinutes: 30 }).provider.capabilities().stopDeletes, false, "a stopped computer is kept for 30 minutes");
 	assert.equal(fake.requests.length, 0);
 });
 
@@ -238,10 +242,14 @@ test('image "default" sends no snapshot field, so Daytona makes the sandbox from
 	assert.equal(made.ok, true, JSON.stringify(made));
 	const [post] = created(fake);
 	assert.equal(Object.hasOwn(post.body, "snapshot"), false, "no snapshot key at all for the default snapshot");
+	assert.equal(post.body.labels["agentrun.computer.image"], "default", "the image asked for, in the provider's own label");
 	assert.equal(fake.sandboxes.get(made.value.id).snapshot, DEFAULT_SNAPSHOT, "Daytona reports its own default's name");
-	const attached = await provider.attach({ id: made.value.id });
-	assert.equal(attached.ok, true, JSON.stringify(attached));
-	assert.equal(attached.value.spec.image, DEFAULT_SNAPSHOT, "attach returns the snapshot Daytona reports");
+	for (const ref of [{ id: made.value.id }, { labels: {} }]) {
+		const attached = await provider.attach(ref.labels ? { labels: { "agentrun.computer.image": "default" } } : ref);
+		assert.equal(attached.ok, true, JSON.stringify(attached));
+		assert.equal(attached.value.spec.image, "default", "attach reports the image create asked for");
+		assert.equal(attached.value.spec.snapshot, DEFAULT_SNAPSHOT, "and, apart, the snapshot Daytona resolved it to");
+	}
 
 	const named = setup();
 	assert.equal((await named.provider.create(SPEC)).ok, true);
@@ -270,6 +278,24 @@ test('drift: a "default" computer is not held to a snapshot name, and is held to
 	const { provider } = setup({ readBack: () => ({ snapshot: "other" }) });
 	const named = await provider.create(SPEC);
 	assert.match(named.error.message, /snapshot: declared "agentrun-debian", read back "other"/, "a named snapshot still drifts on its name");
+	const relabelled = setup({ readBack: (sb) => ({ labels: { ...sb.labels, "agentrun.computer.image": "agentrun-debian" } }) });
+	const lost = await relabelled.provider.create({ ...SPEC, image: "default" });
+	assert.equal(lost.ok, false);
+	assert.match(lost.error.message, /label agentrun\.computer\.image: declared "default", read back "agentrun-debian"/, "the image label is held as written");
+});
+
+test('attach of a computer with no image label reports the snapshot as its image, as before the label was written', async () => {
+	const { provider, fake } = setup();
+	const deadline = new Date(Date.now() + 600_000).toISOString();
+	const sb = fake.seed({ name: "computer-0000000000af", autoDestroyAt: deadline, labels: { "agentrun.computer": "1", "agentrun.computer.deadline": deadline } });
+	const attached = await provider.attach({ id: sb.id });
+	assert.equal(attached.ok, true, JSON.stringify(attached));
+	assert.equal(attached.value.spec.image, "agentrun-debian");
+	assert.equal(attached.value.spec.snapshot, "agentrun-debian");
+	const named = fake.seed({ name: "computer-0000000000b0", autoDestroyAt: deadline, labels: { "agentrun.computer": "1", "agentrun.computer.deadline": deadline, "agentrun.computer.image": "other" } });
+	const drifted = await provider.attach({ id: named.id });
+	assert.equal(drifted.ok, false, "a named image the snapshot does not match is drift");
+	assert.match(drifted.error.message, /snapshot: declared "other", read back "agentrun-debian"/);
 });
 
 test("the constructor takes autoStopMinutes and autoDeleteMinutes as whole minutes, 0 or more, and refuses anything else in words", () => {
@@ -559,7 +585,7 @@ test("attach() by id, by name and by labels returns the spec read back, with the
 	for (const ref of [{ id: made.value.id }, { id: made.value.name }, { labels: { team: "a" } }]) {
 		const attached = await provider.attach(ref);
 		assert.equal(attached.ok, true, `${JSON.stringify(ref)}: ${JSON.stringify(attached)}`);
-		assert.deepEqual(attached.value, { ...made.value, spec: { image: SPEC.image, user: "1000:1000", network: "none", cpus: 1, memoryMb: 1024, workdir: "/work", deadline: new Date(deadline) } });
+		assert.deepEqual(attached.value, { ...made.value, spec: { image: SPEC.image, snapshot: SPEC.image, user: "1000:1000", network: "none", cpus: 1, memoryMb: 1024, workdir: "/work", deadline: new Date(deadline) } });
 	}
 	const missing = await provider.attach({ id: "nothing-by-this-id" });
 	assert.equal(missing.error.code, "not_found");
@@ -765,6 +791,91 @@ test("release(): delete and stop are idempotent, retried where the prior art ret
 	assert.ok(fake.sandboxes.has(theirs.id), "another's sandbox is left as it is");
 	assert.equal((await provider.release(ref, "pause")).error.code, "invalid");
 	assert.equal((await provider.release({ id: "x", name: "x" }, "delete")).error.code, "invalid");
+});
+
+test("release(): delete waits until Daytona answers 404 and the listing leaves the computer out", async () => {
+	const { provider, fake } = setup({ lingerReads: 3, listStale: 2 });
+	const made = await provider.create(SPEC);
+	assert.equal(made.ok, true, JSON.stringify(made));
+	fake.requests.length = 0;
+	assert.deepEqual(await provider.release(made.value, "delete"), { ok: true, value: undefined });
+	assert.equal(fake.sandboxes.has(made.value.id), false, "GET /sandbox/{id} answers 404 once release returns");
+	assert.ok(of(fake, "GET", `/api/sandbox/${made.value.id}`).length >= 4, "read past the three reads of destroying");
+	assert.deepEqual(await provider.list({}), { ok: true, value: [] }, "listed after delete: none");
+	assert.equal((await provider.attach({ id: made.value.id })).error.code, "not_found");
+	assert.deepEqual(await provider.release(made.value, "delete"), { ok: true, value: undefined }, "a second delete");
+});
+
+test("release(): stop waits until Daytona reads stopped and the listing agrees; a stopping computer is listed running", async () => {
+	const { provider, fake } = setup({ stoppingReads: 3, listStale: 2 });
+	const made = await provider.create(SPEC);
+	assert.equal(made.ok, true, JSON.stringify(made));
+	assert.deepEqual(await provider.release(made.value, "stop"), { ok: true, value: undefined });
+	assert.equal(fake.sandboxes.get(made.value.id).state, "stopped");
+	const listed = await provider.list({});
+	assert.deepEqual(listed.value.map((info) => [info.ref.name, info.state]), [[made.value.name, "stopped"]], "a stopped computer is listed, stopped");
+
+	const seeded = setup();
+	const deadline = new Date(Date.now() + 600_000).toISOString();
+	const labels = { "agentrun.computer": "1", "agentrun.computer.deadline": deadline };
+	for (const [name, state] of [
+		["computer-0000000000c1", "stopping"],
+		["computer-0000000000c2", "pausing"],
+		["computer-0000000000c3", "stopped"],
+		["computer-0000000000c4", "destroying"],
+		["computer-0000000000c5", "destroyed"],
+	]) {
+		seeded.fake.seed({ name, state, labels });
+	}
+	const states = Object.fromEntries((await seeded.provider.list({})).value.map((info) => [info.ref.name, info.state]));
+	assert.deepEqual(states, { "computer-0000000000c1": "running", "computer-0000000000c2": "running", "computer-0000000000c3": "stopped" }, "stopping is running until it is stopped; destroying and destroyed are left out");
+});
+
+test("release(): with autoDeleteMinutes 0, a stop waits until the computer is gone, through stopping and destroying", async () => {
+	const { provider, fake } = setup({ stoppingReads: 2, lingerReads: 2, listStale: 2 }, { autoStopMinutes: 30, autoDeleteMinutes: 0 });
+	const made = await provider.create(SPEC);
+	assert.equal(made.ok, true, JSON.stringify(made));
+	assert.deepEqual(await provider.release(made.value, "stop"), { ok: true, value: undefined });
+	assert.equal(fake.sandboxes.has(made.value.id), false, "GET /sandbox/{id} answers 404 once release returns");
+	assert.deepEqual(await provider.list({}), { ok: true, value: [] });
+	assert.equal((await provider.attach({ id: made.value.id })).error.code, "not_found");
+});
+
+test("release(): a create that fails after the sandbox exists waits until it is gone, so no listing shows it", async () => {
+	const { provider, fake } = setup({ hello: { version: "0.0.1" }, lingerReads: 2, listStale: 2 });
+	const made = await provider.create(SPEC);
+	assert.equal(made.ok, false);
+	assert.match(made.error.message, /was deleted: .*version 0\.0\.1/);
+	assert.equal(fake.sandboxes.size, 0);
+	assert.deepEqual(await provider.list({}), { ok: true, value: [] }, "the drifted computer is not listed");
+});
+
+test("release(): when the bound runs out it fails in words, naming the last state Daytona read, and never claims done", async () => {
+	for (const [what, knobs, how, words] of [
+		["a delete that stays destroying", { lingerReads: Number.POSITIVE_INFINITY }, "delete", /not gone within 0\.05 s.*destroying/],
+		["a delete the listing keeps showing", { listStale: Number.POSITIVE_INFINITY }, "delete", /not gone within 0\.05 s.*listed running/],
+		["a stop that stays stopping", { stoppingReads: Number.POSITIVE_INFINITY }, "stop", /not stopped within 0\.05 s.*stopping/],
+		["a stop the listing shows running", { listStale: Number.POSITIVE_INFINITY }, "stop", /not stopped within 0\.05 s.*listed running/],
+	]) {
+		const { provider } = setup(knobs, { timeouts: { ...FAST, goneMs: 50, stopMs: 50 } });
+		const made = await provider.create(SPEC);
+		assert.equal(made.ok, true, `${what}: ${JSON.stringify(made)}`);
+		const released = await provider.release(made.value, how);
+		assert.equal(released.ok, false, what);
+		assert.equal(released.error.code, "timeout", what);
+		assert.match(released.error.message, words, what);
+	}
+});
+
+test("release(): the wait honours the caller's signal, and says where it was", async () => {
+	const { provider } = setup({ lingerReads: Number.POSITIVE_INFINITY }, { timeouts: { ...FAST, goneMs: 60_000, pollMs: 5 } });
+	const made = await provider.create(SPEC);
+	const started = Date.now();
+	const released = await provider.release(made.value, "delete", { signal: AbortSignal.timeout(50) });
+	assert.ok(Date.now() - started < 5_000, "the abort ends the wait");
+	assert.equal(released.ok, false);
+	assert.equal(released.error.code, "aborted");
+	assert.match(released.error.message, /destroying/);
 });
 
 test("release(): a DELETE that keeps failing is reported in words, with a forced stop before the last attempt", async () => {

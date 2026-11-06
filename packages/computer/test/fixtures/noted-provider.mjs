@@ -9,4 +9,4 @@ export function conformanceImage() {
 	return "module-image";
 }
 
-export const conformanceNotes = ["a stop deletes on this configuration: provider.stop is expected to fail"];
+export const conformanceNotes = ["a stop deletes on this configuration: the provider declares stopDeletes"];

@@ -81,10 +81,13 @@ const abortError = (signal) => signal?.reason ?? new DOMException("This operatio
  * - `hello`, `status`, `cwd`, `exe`: what the daemon reports. `echoInput`: input is echoed to stdout, as with
  *   suppressInputEcho unset. `pageSize`: items a listing page holds. `sandboxClass` ("container").
  * - `networkStatus`: the answer to a network-settings change; `networkIgnored`: it answers 200 and changes nothing.
- * - `stopStopped` (400): the answer to a stop of a stopped sandbox.
+ * - `stopStopped` (400): the answer to a stop of a stopped sandbox. `stoppingReads`: after a stop the sandbox reads back,
+ *   and is listed, as stopping for that many single reads, then stopped (Infinity: it never stops).
  * - `deleteIgnored`: a DELETE answers 200 and the sandbox stays, started. `lingerReads`: after a DELETE the sandbox reads
- *   back as destroying for that many single reads, then is gone (404).
- * A sandbox whose autoDeleteInterval is 0 is deleted as soon as it stops (api.json:12199).
+ *   back, and is listed, as destroying for that many single reads, then is gone (404) (Infinity: it never goes).
+ * - `listStale`: the listing shows a sandbox as it was before its last stop or delete for that many listings, as
+ *   Daytona's listing trails a change (Infinity: it never catches up).
+ * A sandbox whose autoDeleteInterval is 0 is deleted as soon as it stops (api.json:12199), destroying for `lingerReads`.
  */
 export function fakeDaytona(initial = {}) {
 	const knobs = { startAfterReads: 1, pageSize: 100, sandboxClass: "container", stopStopped: 400, ...initial };
@@ -92,6 +95,8 @@ export function fakeDaytona(initial = {}) {
 	const sockets = [];
 	const sandboxes = new Map();
 	const inside = new Map();
+	/** Listing items as they were before a stop or a delete, and how many more listings show them. */
+	const stale = new Map();
 	let next = 0;
 
 	const find = (idOrName) => sandboxes.get(idOrName) ?? [...sandboxes.values()].find((sb) => sb.name === idOrName);
@@ -139,8 +144,28 @@ export function fakeDaytona(initial = {}) {
 		};
 	}
 
+	/** The listing keeps showing sb as it is now, for `listStale` listings. */
+	function remember(sb) {
+		if (knobs.listStale > 0) stale.set(sb.id, { item: listItem(sb), listings: knobs.listStale });
+	}
+
+	/** Daytona destroys sb: at once, or after `lingerReads` reads of destroying. */
+	function destroy(sb) {
+		if (knobs.lingerReads > 0) Object.assign(sb, { state: "destroying", desiredState: "destroyed", lingering: knobs.lingerReads });
+		else sandboxes.delete(sb.id);
+	}
+
 	function single(sb) {
 		const box = inside.get(sb.id);
+		if (sb.stopping !== undefined) {
+			if (sb.stopping > 0) sb.stopping--;
+			else {
+				delete sb.stopping;
+				sb.state = "stopped";
+				if (sb.autoDeleteInterval === 0) destroy(sb);
+				if (!sandboxes.has(sb.id)) return undefined;
+			}
+		}
 		if (sb.lingering !== undefined) {
 			if (sb.lingering <= 0) {
 				sandboxes.delete(sb.id);
@@ -298,10 +323,18 @@ export function fakeDaytona(initial = {}) {
 		}
 		if (method === "GET" && path === "/api/sandbox") {
 			const wanted = JSON.parse(url.searchParams.get("labels") ?? "{}");
-			const all = [...sandboxes.values()].filter((sb) => Object.entries(wanted).every(([k, v]) => sb.labels[k] === v));
+			const shown = new Map([...sandboxes.values()].map((sb) => [sb.id, listItem(sb)]));
+			for (const [id, entry] of stale) {
+				if (entry.listings <= 0) stale.delete(id);
+				else {
+					entry.listings--;
+					shown.set(id, entry.item);
+				}
+			}
+			const all = [...shown.values()].filter((item) => Object.entries(wanted).every(([k, v]) => item.labels[k] === v));
 			const from = Number(url.searchParams.get("cursor") ?? 0);
 			const limit = Math.min(Number(url.searchParams.get("limit") ?? 100), knobs.pageSize);
-			const items = all.slice(from, from + limit).map(listItem);
+			const items = all.slice(from, from + limit);
 			return json(200, { items, nextCursor: from + limit < all.length ? String(from + limit) : null });
 		}
 		const match = /^\/api\/sandbox\/([^/]+)(?:\/(.+))?$/.exec(path);
@@ -316,17 +349,22 @@ export function fakeDaytona(initial = {}) {
 		if (method === "GET" && rest === "toolbox-proxy-url") return json(200, { url: PROXY });
 		if (method === "DELETE" && rest === "") {
 			if (knobs.deleteIgnored) return json(200, sb);
+			remember(sb);
 			endAll(inside.get(sb.id));
-			if (knobs.lingerReads > 0) Object.assign(sb, { state: "destroying", desiredState: "destroyed", lingering: knobs.lingerReads });
-			else sandboxes.delete(sb.id);
+			destroy(sb);
 			return json(200, { ...sb, state: "destroying", desiredState: "destroyed" });
 		}
 		if (method === "POST" && rest.startsWith("stop")) {
 			if (sb.state === "stopped") return json(knobs.stopStopped, { statusCode: knobs.stopStopped, message: "Sandbox is already stopped" });
+			if (sb.state === "stopping" || sb.state === "destroying") return json(409, { statusCode: 409, message: "Sandbox state change in progress" });
+			remember(sb);
 			endAll(inside.get(sb.id));
-			sb.state = "stopped";
-			if (sb.autoDeleteInterval === 0) sandboxes.delete(sb.id);
-			return json(200, sb);
+			if (knobs.stoppingReads > 0) Object.assign(sb, { state: "stopping", desiredState: "stopped", stopping: knobs.stoppingReads });
+			else {
+				Object.assign(sb, { state: "stopped", desiredState: "stopped" });
+				if (sb.autoDeleteInterval === 0) destroy(sb);
+			}
+			return json(200, { ...sb });
 		}
 		if (method === "POST" && rest === "network-settings") {
 			if (knobs.networkStatus) return json(knobs.networkStatus, { statusCode: knobs.networkStatus, message: "Network settings cannot be overridden on this tier" });
