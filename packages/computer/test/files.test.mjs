@@ -402,6 +402,41 @@ test("a push aborted after its source ends still ends, so the connection's 8 pus
 	client.close();
 });
 
+test("a push whose source stalls ends at once on abort, and the source is let go", async () => {
+	const { client, seen, pushes } = tarDaemon();
+	const controller = new AbortController();
+	let released = false;
+	const source = {
+		[Symbol.asyncIterator]() {
+			let first = true;
+			return {
+				next() {
+					if (first) {
+						first = false;
+						return Promise.resolve({ value: Buffer.from("x"), done: false });
+					}
+					return new Promise(() => {});
+				},
+				return() {
+					released = true;
+					return Promise.resolve({ value: undefined, done: true });
+				},
+			};
+		},
+	};
+	const pushing = pushTar(client, "/dst", source, { signal: controller.signal });
+	await tick();
+	await tick();
+	controller.abort();
+	const result = await within(pushing, 10_000, "the push of a stalled source");
+	assert.equal(result.ok, false);
+	assert.equal(result.error.code, "aborted");
+	assert.ok(seen.some((r) => r.method === "tar.push.end"), "the push was never ended");
+	assert.equal(pushes.size, 0, "the push still holds a slot");
+	assert.ok(released, "the stalled source was not let go");
+	client.close();
+});
+
 test("a push aborted while it begins still ends what it began", async () => {
 	const { client, seen, pushes } = tarDaemon({ lateBegin: true });
 	const controller = new AbortController();
