@@ -11,7 +11,7 @@ import { scratch } from "./support.mjs";
 
 test("a scratch directory is still there when the process that writes into it, started afterwards, is stopped", { timeout: 60_000 }, async (t) => {
   const dir = await scratch(t);
-  const child = spawn(process.execPath, ["-e", 'const fs = require("node:fs"); setInterval(() => fs.writeFileSync(require("node:path").join(process.argv[1], "alive"), String(Date.now())), 10);', dir], { stdio: "ignore" });
+  const child = spawn(process.execPath, ["-e", 'const fs = require("node:fs"); setInterval(() => fs.writeFileSync(require("node:path").join(process.env.WRITE_INTO, "alive"), String(Date.now())), 10);'], { stdio: "ignore", env: { ...process.env, WRITE_INTO: dir } });
   const exited = new Promise((resolve) => child.once("exit", resolve));
   // The stop, added after the directory was made, as every helper adds a server's or child's stop, and before anything
   // that could fail: a stop never added would leave the child writing while the file's end removes the directory.
