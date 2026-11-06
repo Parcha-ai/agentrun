@@ -55,10 +55,10 @@ test("harness answers out of order: each closes its own request's bound (its BOO
   assert.equal(bounds.ended(), 0);
 });
 
-test("a harness answer booked before its cost is no longer in flight; its bound waits apart and ends with its late cost", () => {
+test("a harness answer booked before its cost keeps its bound served as in flight until its late cost lands, and ends with it", () => {
   const bounds = new RequestBounds();
   bounds.note([harnessStart(1, 0.2), ...harnessAnswer(1, { unpriced: true })], CAP);
-  assert.equal(bounds.inFlight(), 0, "its answer is in: only its cost is not");
+  assert.ok(close(bounds.inFlight(), 0.2), `its cost may still be a miss: served until it lands: ${bounds.inFlight()}`);
   assert.equal(bounds.ended(), 0, "nor has its bound ended: its cost has not come");
   bounds.note([{ id: next(), kind: REQUEST_COST_LATE, data: { key: KEY, request: 1, usd: 0.3 } }], CAP);
   assert.equal(bounds.inFlight(), 0);
@@ -156,12 +156,12 @@ test("pi: a side request its process died inside (an OOM kill in the tool call, 
   }
 });
 
-test("a harness request booked before its cost, whose late cost never comes, pins nothing: it is not in flight, the ended bounds start afresh past it, and a run past its cap with no miss ends as it would", () => {
+test("a harness request booked before its cost, whose late cost has not come, pins nothing: it stays served as in flight, but the ended bounds start afresh past it, and a run past its cap with no miss ends as it would", () => {
   const entries = [harnessStart(1, 0.2), ...harnessAnswer(1, { unpriced: true })];
   for (let request = 2; request <= 6; request++) entries.push(harnessStart(request, 0.2), ...harnessAnswer(request, { usd: 0.15 }));
   entries.push(charge(0.3));
   for (const [how, bounds] of both(entries, 1)) {
-    assert.equal(bounds.inFlight(), 0, `${how}: its answer is in; only its cost is not`);
+    assert.ok(close(bounds.inFlight(), 0.2), `${how}: served until its cost lands: ${bounds.inFlight()}`);
     assert.equal(bounds.ended(), 0, `${how}: $1.05 spent of a $1 cap, by a charge, no miss: ${bounds.ended()}`);
   }
 });
