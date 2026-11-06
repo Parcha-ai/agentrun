@@ -60,7 +60,10 @@ export interface CaseContext {
 	equal(actual: unknown, expected: unknown, what: string): void;
 	deepEqual(actual: unknown, expected: unknown, what: string): void;
 	match(text: string, pattern: RegExp, what: string): void;
-	assert(condition: unknown, what: string): asserts condition;
+	/** Fails the case with what when condition is false. */
+	assert(condition: unknown, what: string): void;
+	/** The value, or the case fails with what when it is undefined or null. */
+	present<T>(value: T | undefined | null, what: string): T;
 	/** Calls fn until it returns a value other than undefined or false, for up to patience. */
 	until<T>(fn: () => Promise<T | undefined | false>, what: string): Promise<T>;
 	/** Ends the case as a skip, with the reason. */
@@ -75,6 +78,8 @@ export interface Case {
 	needs: Capability[];
 	/** "shared" (default): the run's computer; "fresh": one of its own; "none": no computer. */
 	computer?: "shared" | "fresh" | "none";
+	/** The longest this case may run, when it needs longer than the run's default. */
+	timeoutMs?: number;
 	run(t: CaseContext): Promise<void>;
 }
 

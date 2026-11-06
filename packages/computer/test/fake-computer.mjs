@@ -8,7 +8,7 @@ const ok = (value) => ({ ok: true, value });
 const b64 = (text) => Buffer.from(text).toString("base64");
 
 /** A daemon's end of a connection: answers each request line. */
-function fakeDaemon(hello, onClose) {
+function fakeDaemon(hello) {
 	const toDaemon = new PassThrough();
 	const fromDaemon = new PassThrough();
 	let buffered = "";
@@ -28,7 +28,6 @@ function fakeDaemon(hello, onClose) {
 			else reply({ error: { code: -32601, message: `${request.method} is not a method` } });
 		}
 	});
-	toDaemon.on("finish", onClose);
 	return { readable: fromDaemon, writable: toDaemon };
 }
 
@@ -96,13 +95,13 @@ export function fakeComputers({
 			const value = { version, os: "linux", arch: "amd64", capabilities: daemon, ...hello };
 			connections++;
 			let closed = false;
-			const client = new DaemonClient(
-				fakeDaemon(value, () => {
-					if (!closed) connections--;
-					closed = true;
-				}),
-			);
-			return ok({ client, hello: value, close: async () => client.close() });
+			const client = new DaemonClient(fakeDaemon(value));
+			const close = async () => {
+				client.close();
+				if (!closed) connections--;
+				closed = true;
+			};
+			return ok({ client, hello: value, close });
 		},
 		async release(ref, how) {
 			calls.push(["release", ref.name, how]);
