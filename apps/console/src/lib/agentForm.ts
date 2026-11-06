@@ -1,4 +1,4 @@
-import type { Place } from "./place";
+import type { Place, Places } from "./place";
 import type { ClientError } from "./client";
 import type { NoteProblem } from "./learning";
 import type { AgentTool, ToolSettings } from "./v2";
@@ -131,6 +131,13 @@ export const sandboxReason = (tool: ToolOffer, place: unknown): string | undefin
 /** The tools the server refuses in a sandbox place (serve's runnable.ts, `runnerOnly`): the browser, which files the run's
  *  work/ from the server by path. The server's own rule, until its capabilities mark them. */
 const RUNNER_ONLY: ReadonlySet<string> = new Set(["browser"]);
+
+/** Where a revision that names no place runs, as the server resolves it at each run: this mirrors the server's
+ *  defaultPlaceOf (packages/serve/src/place.ts), which the server does not report per revision. The runner for a workflow,
+ *  and for one that names a tool that runs only there (the browser); else this server's default_place. The editor's
+ *  picker and its tool checks both read it, so they agree with the server and with each other. */
+export const defaultPlaceOf = (workflow: boolean, tools: readonly string[], places: Places | null | undefined): Place =>
+  workflow || tools.some((tool) => RUNNER_ONLY.has(tool)) ? { mode: "runner" } : (places?.defaultPlace ?? { mode: "runner" });
 
 /** A new agent's tools: on by default, every tool its harness runs here that the server can run now. In a sandbox `place`
  *  (the server's default for a new agent, where it has a box) a sandbox-only one (bash) too, and never a runner-only one

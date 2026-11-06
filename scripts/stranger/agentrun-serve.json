@@ -47,7 +47,7 @@
   ],
   "expect": {
     "exitCode": 0,
-    "pattern": "^ok: pi runs; claude-agent and codex say how to install them; the console is served$"
+    "pattern": "^ok: pi runs; claude-agent installs on first use; codex says how to install it; the console is served$"
   },
   "timeoutMs": 300000
 }

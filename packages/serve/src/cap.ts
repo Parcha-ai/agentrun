@@ -32,7 +32,7 @@
 // fits the cap, and whenever the spend is unknown; paid calls go one at a time, so each check sees the charge before
 // it. A call sent holds its figure until its charge joins the spend (paidHolds), so a model request judged meanwhile, on
 // pi or on another harness, counts it beside the spend, as a paid call's check counts the model requests in flight.
-import { DatabaseSync } from "node:sqlite";
+import { readRunDbSync } from "./run-db.js";
 import { existsSync } from "node:fs";
 import { providerInputOverhead } from "@parcha/agentrun-kernel/host";
 import { bookRequest, type Ended, isConnectCode, isGatewayTimeout, rejectionCode } from "@parcha/agentrun-kernel";
@@ -300,20 +300,20 @@ function openFigures(entries: readonly EntryLike[]): { generation: Figure[]; com
  *  harness spent beside its harness's own requests and its paid tools, which that harness's booking does not hold. */
 export function spentIn(storeFile: string, { sides = false }: { sides?: boolean } = {}): number | null {
   if (!existsSync(storeFile)) return 0;
-  const db = new DatabaseSync(storeFile, { readOnly: true });
+  // Fresh, read-only and lock-free (run-db.ts): its process may hold it.
   const entries: EntryLike[] = [];
   // The store's own entries, as read (without the answers written below for a stopped request): openFigures reads them.
   const read: EntryLike[] = [];
   let marked = false;
   const rows: EntryLike[] = [];
-  try {
+  readRunDbSync(storeFile, false, (db) => {
+    // A read made again (its file changed during it) starts from none.
+    rows.length = 0;
     for (const row of db.prepare("SELECT record FROM entries ORDER BY rowid").iterate()) {
       const entry = JSON.parse(String((row as { record: string }).record)) as EntryLike;
       if (!sides || ([REQUEST_STARTED, REQUEST_ENDED, REQUEST_COST, REQUEST_COST_LATE].includes(entry.kind) && typeof (entry.data as { request?: unknown } | undefined)?.request === "string")) rows.push(entry);
     }
-  } finally {
-    db.close();
-  }
+  });
   // pi's error entry for a request that ended on an error after its response began is left out, as an aborted one is: its
   // end mark (`error`) counts it at its hold. pi writes the entry as the mark is written, before it or after, so each such
   // mark takes the nearest error entry not yet taken among those after the earliest start holding its figure (a request's
@@ -436,8 +436,7 @@ export function metersIn(storeFile: string): Meters {
  *  unknown cost is known to have spent on each (server.ts /usage). */
 export function meterFiguresIn(storeFile: string): Meters & { known: { tokens: number; browser: number; others: number } } {
   if (!existsSync(storeFile)) return { tools: 0, tokens: null, browser: { usd: 0, seconds: 0 }, others: 0, known: { tokens: 0, browser: 0, others: 0 } };
-  const db = new DatabaseSync(storeFile, { readOnly: true, timeout: 2_000 });
-  try {
+  return readRunDbSync(storeFile, false, (db) => {
     const rows = db.prepare("SELECT conversation_id AS conversation, record FROM entries ORDER BY rowid").all().map((row) => ({ conversation: Number(row.conversation), entry: JSON.parse(String(row.record)) as EntryLike }));
     const root = rows.reduce((min, row) => Math.min(min, row.conversation), Infinity);
     const marks = new Set<unknown>();
@@ -465,9 +464,7 @@ export function meterFiguresIn(storeFile: string): Meters & { known: { tokens: n
     known.tokens = usage ? (usage.usage?.usd ?? usage.usage?.so_far_usd ?? 0) : 0;
     const notMetered = usage?.usage?.not_metered;
     return { tools, tokens: usage ? (usage.usage?.usd ?? null) : 0, browser, others: otherTools, known, ...(notMetered ? { notMetered } : {}) };
-  } finally {
-    db.close();
-  }
+  });
 }
 
 /** What the paid tools of `entries` (TOOL_STARTED and TOOL_COST) spent, as the cap counts it: each charge, and a call

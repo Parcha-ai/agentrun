@@ -1,8 +1,8 @@
 // What an agent learns, as the server's learning routes give it (GET /v2/agents/{id}/learning, a run's `learning`), and
 // the words the console says it in. The notes are Claude Code's auto-memory files: front matter (`name`, `description`,
-// `type`) and a markdown body. A newer server adds what a run read and what it kept (`used`, `learned`), the agent's
-// before and after (`impact`) and a plain sentence for each outcome (`detail`); each is read only when it is there, so an
-// older server's answer shows less and never breaks.
+// `type`) and a markdown body. A run's learning names what it started with, opened and kept (`given`, `read`, `learned`),
+// each absent when there is none; the agent's view adds its before and after (`impact`), each note's run counts (`runs`)
+// and a plain sentence for each outcome (`detail`).
 
 import { cost } from "./format";
 import { elapsed } from "./runGraph";
@@ -17,7 +17,8 @@ export type NoteType = "user" | "feedback" | "project" | "reference";
 export type NoteStatus = "active" | "superseded" | "retired" | "pending";
 export type Page<T> = { items: T[]; total: number; next_cursor: string | null };
 
-/** A note a run read (`used`) or kept (`learned`, with the older notes it replaces), by its file and its name. */
+/** A note a run started with (`given`), opened (`read`) or kept (`learned`, with the older notes it replaces), by its file
+ *  and its name. */
 export type NoteRef = { file: string; name: string };
 export type LearnedRef = NoteRef & { supersedes?: string[] };
 
@@ -28,7 +29,10 @@ export type RunLearning = {
   reason: string | null;
   detail?: string | null;
   at?: string;
-  used?: NoteRef[];
+  /** The notes it started with, under `# Learned` (absent when it started with nothing learned). */
+  given?: NoteRef[];
+  /** The note files it opened, once it settled (absent when it opened none). */
+  read?: NoteRef[];
   learned?: LearnedRef[];
   /** A newer server's: the notes the run kept that wait for the owner's OK. */
   pending?: NoteRef[];
@@ -57,7 +61,8 @@ export const statusFile = (item: Pick<LearnedItem, "file" | "readme">) => item.r
 
 /** `etag`: the note's version, the same value as the file read's ETag, so an edit or a retire is made on the version a
  *  card showed without reading it again (absent from an older server's). */
-export type LearningNote = { file: string; name: string; description: string; type: NoteType; status: NoteStatus; superseded_by: string | null; text: string; etag?: string; origin?: "you" | "run"; retired?: Retired; last_change?: LastChange };
+/** `runs`: how many runs it was given to, and read in, as the server counts them. */
+export type LearningNote = { file: string; name: string; description: string; type: NoteType; status: NoteStatus; superseded_by: string | null; text: string; etag?: string; origin?: "you" | "run"; retired?: Retired; last_change?: LastChange; runs: { given: number; read: number } };
 /** One change to what the agent learned, newest first: a run's (`by.run`; `reason`, why it was kept) or a person's. */
 export type LearningChange = { by: { run: string } | { user: true }; commit: string; at: string; reason: string; files: string[] };
 export type LearningCounts = { merged: number; dropped: Record<string, number>; in_progress: number };
@@ -116,8 +121,9 @@ export const underWay = (l: RunLearning | undefined) => !!l && UNDER_WAY.include
 
 /** The notes in a list the server sent, each a file and a name; anything else in it is skipped. */
 const refs = <T extends NoteRef>(raw: unknown): T[] => (Array.isArray(raw) ? raw.filter((x): x is T => !!x && typeof x === "object" && typeof (x as NoteRef).file === "string" && typeof (x as NoteRef).name === "string") : []);
-/** The notes a run read, and the notes it kept: empty from a server that does not say. */
-export const usedBy = (l: RunLearning | undefined): NoteRef[] => refs(l?.used);
+/** The notes a run started with, the notes it opened, and the notes it kept: empty when the server names none. */
+export const givenBy = (l: RunLearning | undefined): NoteRef[] => refs(l?.given);
+export const readBy = (l: RunLearning | undefined): NoteRef[] => refs(l?.read);
 export const learnedBy = (l: RunLearning | undefined): LearnedRef[] => (l?.state === "merged" ? refs<LearnedRef>(l.learned) : []);
 /** The notes a run kept that wait for the owner's OK; a run waiting with none named says so by its state alone. */
 export const pendingBy = (l: RunLearning | undefined): NoteRef[] => refs(l?.pending);
@@ -409,12 +415,12 @@ function sides(patch: string): { before: DiffLine[]; after: DiffLine[] } {
 }
 
 /** What a run's learning changed, note by note, in a person's words: each note it added, replaced (with the note that
- *  replaces it), retired or removed, by its name (as the run's `learned` and `used` name it, else its own `name:` line,
+ *  replaces it), retired or removed, by its name (as the run's `learned`, `given` and `read` name it, else its own `name:` line,
  *  else its file), added first. The index (MEMORY.md) is not a note, and is left out. */
 export function noteChanges(diff: LearningDiff, learning: RunLearning | undefined): NoteChange[] {
   const files = diff.files.filter((f) => f.path !== "MEMORY.md");
   const parts = new Map(files.map((f) => [f.path, f.patch === undefined ? null : sides(f.patch)]));
-  const known = new Map([...refs(learning?.used), ...learnedBy(learning)].map((r) => [r.file, r.name]));
+  const known = new Map([...givenBy(learning), ...readBy(learning), ...learnedBy(learning)].map((r) => [r.file, r.name]));
   const nameOf = (file: string) => {
     const p = parts.get(file);
     const line = [...(p?.after ?? []), ...(p?.before ?? [])].find((l) => l.mark !== "gap" && /^name:\s*\S/.test(l.text));

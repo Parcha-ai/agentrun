@@ -23,7 +23,7 @@ import { permissionsOf, resolveCapability, settingsIssues } from "../dist/tool-p
 import { TOOLS } from "../dist/tools.js";
 import { schemaProblems } from "./schema-support.mjs";
 import { KEY as MONID_KEY } from "./fixtures/faux-monid.mjs";
-import { agent, call, cookieOf, follow, scratch, serve, withEnv } from "./support.mjs";
+import { agent, call, cookieOf, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
 
 const fixture = (name) => new URL(`./fixtures/${name}`, import.meta.url).pathname;
 const GATE = { faux: fixture("faux-gate.mjs"), fauxHarness: fixture("faux-gate.mjs"), fauxWeb: fixture("faux-gate-web.mjs"), accounts: true, openSetup: true };
@@ -145,7 +145,8 @@ test("the end-of-run turn writes no file under work/.learning/: its write or edi
   assert.equal(gate.policy("web_fetch"), "deny", "the revision's own over it");
   assert.equal(gate.policy("mcp:srv/echo"), "deny", "an MCP server's wildcard");
   assert.equal(gate.policy("mcp:other/echo"), "ask", "another server's tool: the default");
-  assert.deepEqual(await gate.enter("web_fetch", { url: PAGE }, "c1", park), { text: deniedText("web_fetch"), isError: true });
+  // The deny is the revision's own (the agent's settings), so the words name the agent.
+  assert.deepEqual(await gate.enter("web_fetch", { url: PAGE }, "c1", park), { text: deniedText("web_fetch", undefined, "agent"), isError: true });
   await writeFile(join(root, TURN_ORIGIN_FILE), JSON.stringify({ origin: "reflect" }));
   assert.deepEqual(await gate.enter("write", { path: ".learning/notes.md", content: "x" }, "c2", park), { text: NOTE_ONLY, isError: true }, "a reflect write in work/.learning/ is refused");
   assert.deepEqual(written, []);
@@ -362,8 +363,10 @@ test("a deny refuses the call at once and the run goes on, on every harness; a w
   for (const { harness, runId } of denied) {
     const { answer, rows } = await resumed(api, runId);
     const result = rows.find((row) => row.kind === "tool_result");
-    assert.deepEqual([result.tool_status, result.tool_result_preview], ["failed", deniedText("web_fetch")], harness);
-    assert.equal(answer, harness === "pi" ? `Saw: ${deniedText("web_fetch")}` : "Fetched once.", `${harness}: the run went on`);
+    // Denied in the agent's own tool settings: the words name the agent, not the server.
+    assert.deepEqual([result.tool_status, result.tool_result_preview], ["failed", deniedText("web_fetch", undefined, "agent")], harness);
+    assert.match(result.tool_result_preview, /is set to deny for this agent/, harness);
+    assert.equal(answer, harness === "pi" ? `Saw: ${deniedText("web_fetch", undefined, "agent")}` : "Fetched once.", `${harness}: the run went on`);
   }
   assert.deepEqual(await dialled(), [], "a denied call never ran");
 
@@ -380,6 +383,11 @@ test("a deny refuses the call at once and the run goes on, on every harness; a w
   assert.equal((await api("PUT", "/settings/tools", { web_fetch: { permission: "deny" } })).status, 200);
   const saved = await api("POST", "/agents", { definition: { id: "site", name: "site", workflow: flow, tools: ["web_fetch"] } });
   assert.deepEqual([saved.status, saved.body.warnings?.map((w) => w.message)], [201, ["This workflow's call node calls web_fetch, which is set to deny on this server."]]);
+  // The same deny set in the agent's own tool settings names the agent.
+  assert.equal((await api("PUT", "/settings/tools", {})).status, 200);
+  const own = await api("POST", "/agents", { definition: { id: "site-own", name: "site-own", workflow: flow, tools: ["web_fetch"], tool_settings: { web_fetch: { permission: "deny" } } } });
+  assert.deepEqual([own.status, own.body.warnings?.map((w) => w.message)], [201, ["This workflow's call node calls web_fetch, which is set to deny for this agent."]]);
+  assert.equal((await api("PUT", "/settings/tools", { web_fetch: { permission: "deny" } })).status, 200);
   const refused = await api("POST", "/agents/site/runs", { input: { website: PAGE } });
   assert.deepEqual([refused.status, refused.body.error.code, refused.body.error.details.denied], [409, "agent_not_runnable", ["web_fetch"]]);
   // Ask too: a call node cannot wait for an approval, so it never runs unapproved (fails closed).
@@ -485,7 +493,7 @@ for (const switched of ["deny", "ask"]) test(`a workflow's call node reads its t
   const run = (await api("GET", `/runs/${started.body.run_id}`)).body;
   assert.equal(run.status, "failed", "the second call node is refused");
   assert.match(run.error?.message ?? "", /failed at Second read/, "at its second call node");
-  const ended = (await readFile(join(server.data, "runs", started.body.run_id, "nodes.jsonl"), "utf8")).split("\n").filter(Boolean).map((line) => JSON.parse(line)).filter((line) => line.t === "effect.end");
+  const ended = (await readFile(join(runDir(server.data, started.body.run_id), "nodes.jsonl"), "utf8")).split("\n").filter(Boolean).map((line) => JSON.parse(line)).filter((line) => line.t === "effect.end");
   assert.deepEqual(ended.map((line) => [line.label, line.status]), [["First read", "done"], ["Second read", "failed"]]);
   assert.equal(ended[1].error, switched === "deny" ? deniedText("web_fetch") : "This web_fetch call needs a person's approval, which a workflow's call node cannot wait for; it was not run.", "in the gate's words");
   assert.deepEqual((await dialled()).filter((dial) => dial.endsWith("notes.txt")), [], "and never dials");
@@ -658,7 +666,7 @@ test("a stop of a parked run withdraws the call: stopped, no pending approval, i
   assert.equal((await first.api("POST", `/runs/${cancelRun}/cancel`)).status, 202);
   await follow(first.api, cancelRun, ["cancelled"], { deadlineMs: 30_000 });
   // A cancel with no answered call in flight waits on nothing: its serve.json says no such wait.
-  assert.equal(JSON.parse(await readFile(join(first.data, "runs", cancelRun, "serve.json"), "utf8")).cancel_waits_for, undefined, "a plain cancel waits on nothing");
+  assert.equal(JSON.parse(await readFile(join(runDir(first.data, cancelRun), "serve.json"), "utf8")).cancel_waits_for, undefined, "a plain cancel waits on nothing");
   const cancelRow = (await first.api("GET", `/runs/${cancelRun}/timeline`)).body.rows.find((r) => r.kind === "tool_approval_requested");
   assert.match(cancelRow.summary, /^Withdrawn/);
   ownRowsSay((await first.api("GET", `/runs/${cancelRun}/timeline`)).body.rows, cancelParked.result.tool_use_id, "Not run: the run was cancelled while it waited", "cancelled");
@@ -764,7 +772,7 @@ test("an answer or a stop that lands while a declining message is on its way sta
     release();
     assert.ok([200, 202].includes((await sent).status), `${lands}: the message is taken`);
     const { rows } = await follow(api, runId, ["completed", "input_required"], { deadlineMs: 55_000 });
-    const kept = JSON.parse(await readFile(join(server.data, "runs", runId, "serve.json"), "utf8")).approvals[id];
+    const kept = JSON.parse(await readFile(join(runDir(server.data, runId), "serve.json"), "utf8")).approvals[id];
     const resumes = resumeRows(rows);
     if (lands === "allow") {
       assert.deepEqual([kept.decision, kept.by], ["allow", undefined], "the allow stands: first answer wins");
@@ -807,7 +815,7 @@ test("a declining message is held to the call it read: when that call is answere
   release();
   assert.ok([200, 202].includes((await sent).status), "the message is taken");
   await follow(api, runId, ["input_required"], { deadlineMs: 55_000 });
-  const kept = JSON.parse(await readFile(join(server.data, "runs", runId, "serve.json"), "utf8")).approvals;
+  const kept = JSON.parse(await readFile(join(runDir(server.data, runId), "serve.json"), "utf8")).approvals;
   assert.deepEqual([kept[first]?.decision, kept[second]], ["allow", undefined], "the call it read keeps its allow, and the new one is not declined");
   assert.equal((await api("GET", `/runs/${runId}`)).body.pending?.id, second, "the new call still waits for its own answer");
 });
@@ -845,7 +853,7 @@ test("a stop or a cancel that lands after an answer, before the run's process ac
   const answer = await ownerAgain(again);
   const { api } = again;
   const timeline = async (runId) => (await api("GET", `/runs/${runId}/timeline`)).body.rows;
-  const meta = async (runId) => JSON.parse(await readFile(join(first.data, "runs", runId, "serve.json"), "utf8"));
+  const meta = async (runId) => JSON.parse(await readFile(join(runDir(first.data, runId), "serve.json"), "utf8"));
 
   // (a) allow, then stop at once.
   const a = runs["allow-stop"];
@@ -910,7 +918,7 @@ test("a stop or a cancel cuts an approved call in flight: the tool sees the abor
     else {
       assert.equal((await api("POST", `/runs/${runId}/cancel`)).status, 202);
       // The cancel overrode an answer the run's process was acting on, and waited for its gate to cut that call.
-      assert.deepEqual(JSON.parse(await readFile(join(server.data, "runs", runId, "serve.json"), "utf8")).cancel_waits_for, [view.pending.id], "the cancel says it waits for the approved call to be cut");
+      assert.deepEqual(JSON.parse(await readFile(join(runDir(server.data, runId), "serve.json"), "utf8")).cancel_waits_for, [view.pending.id], "the cancel says it waits for the approved call to be cut");
     }
     for (const until = Date.now() + 15_000; !(await calls()).slice(before).some((call) => /^\/v1\/runs\/[^/]+\/stop$/.test(call.path)); await sleep(50)) assert.ok(Date.now() < until, `${end}: the tool saw the abort, and monid was asked to stop the run`);
     await sleep(2_000);
