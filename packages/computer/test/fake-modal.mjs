@@ -5,12 +5,21 @@
 // asked for (sandbox.ts:1116-1139); a sandbox's getTags, poll (null while it runs), terminate (idempotent here; the
 // sandbox finishes with 137, guide/sandboxes "Return Codes") and exec, which throws ConflictError once the sandbox has
 // finished (sandbox.ts:2149-2154). exec of the daemon's stdio bridge answers hello, ping and exec.run of the probe as
-// computerd would. No Modal client is ever constructed here, and nothing reaches the network.
+// computerd would. exec of the provider's upload command reads the daemon from stdin, as `cat` would, prints its sha256
+// and installs it only when it is the one the command names, as the script does; a sandbox whose command is the
+// provider's entrypoint has no daemon until then. No Modal client is ever constructed here, and nothing reaches the
+// network.
+import { createHash } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 
 export const VERSION = JSON.parse(await (await import("node:fs/promises")).readFile(new URL("../package.json", import.meta.url), "utf8")).version;
 export const DAEMON = "/opt/agentrun/computerd";
 export const DAEMON_IMAGE = `ghcr.io/example/computerd@sha256:${"a".repeat(64)}`;
+/** The first line of each script the provider sends, by which the fake knows it. */
+export const ENTRYPOINT_MARK = "# agentrun-computer: entrypoint";
+export const UPLOAD_MARK = "# agentrun-computer: upload";
+/** A command that is the provider's script: sh -c <script> sh <args>. */
+const isScript = (command, mark) => command?.[0] === "sh" && command[1] === "-c" && typeof command[2] === "string" && command[2].startsWith(`${mark}\n`);
 export const HELLO = { version: VERSION, os: "linux", arch: "amd64", capabilities: ["exec", "files", "processes"] };
 /** What computerd probe reports in a VM sandbox: Modal's docs show `uname -srn` there as "Linux modal 7.2.6". */
 export const VM_KERNEL = "7.2.6";
@@ -90,7 +99,10 @@ function bridge(box, fake) {
 		stderr.end();
 		exited.resolve(code);
 	};
-	if (!box.daemon) {
+	// Init not yet listening: the bridge finds no socket, as when it runs before init has made one.
+	const listening = box.daemon && !(box.notListening > 0);
+	if (box.daemon && box.notListening > 0) box.notListening--;
+	if (!listening) {
 		stderr.push(bytesOf(`computerd stdio: no daemon listens at /run/agentrun/computerd.sock (connect: no such file or directory)\n`));
 		queueMicrotask(() => end(1));
 	}
@@ -123,7 +135,7 @@ function bridge(box, fake) {
 				while ((at = buffered.indexOf("\n")) >= 0) {
 					const request = JSON.parse(buffered.slice(0, at));
 					buffered = buffered.slice(at + 1);
-					if (typeof request.id === "number" && box.daemon && !box.silent) answer(request);
+					if (typeof request.id === "number" && listening && !box.silent) answer(request);
 				}
 			},
 			async close() {
@@ -140,6 +152,57 @@ function bridge(box, fake) {
 }
 
 /**
+ * The provider's upload command in one sandbox, as a ContainerProcess in binary mode: stdin is the daemon, and closing
+ * it runs the rest of the script. `how` is the fake's upload option.
+ */
+function uploader(found, command, fake, how) {
+	const stdout = queue();
+	const stderr = queue();
+	const exited = deferred();
+	const chunks = [];
+	let closed = false;
+	const [daemon, expected] = command.slice(4);
+	const finish = (code) => {
+		stdout.end();
+		stderr.end();
+		exited.resolve(code);
+	};
+	return {
+		stdin: {
+			async writeBytes(bytes) {
+				if (closed) throw new Error("the stream is closed");
+				if (!(bytes instanceof Uint8Array)) throw new TypeError("a binary-mode stdin takes Uint8Array");
+				chunks.push(Buffer.from(bytes));
+			},
+			async close() {
+				closed = true;
+				let bytes = Buffer.concat(chunks);
+				fake.uploads.push({ sandbox: found.id, bytes, sizes: chunks.map((chunk) => chunk.length), argv: command });
+				if (how === "hang") return;
+				if (how === "exit") {
+					stdout.push(bytesOf(`writing the daemon to /opt/agentrun/.computerd.part failed\n`));
+					stderr.push(bytesOf("cat: write error: No space left on device\n"));
+					return finish(4);
+				}
+				if (how === "corrupt") bytes = Buffer.concat([bytes, Buffer.from("x")]);
+				const sha = createHash("sha256").update(bytes).digest("hex");
+				stdout.push(bytesOf(`sha256 ${how === "lie" ? "0".repeat(64) : sha}\n`));
+				if (sha !== expected) {
+					stdout.push(bytesOf(`the daemon written to /opt/agentrun/.computerd.part reads sha256 ${sha}, not ${expected}, so it is not moved into place\n`));
+					return finish(5);
+				}
+				found.box.daemon = true;
+				found.installed = { path: daemon, bytes };
+				finish(0);
+			},
+		},
+		stdout,
+		stderr,
+		wait: () => exited.promise,
+	};
+}
+
+/**
  * A fake Modal client. Options:
  *  - create: "ok" (default), "fail" (throws InvalidError), "slow" (never settles until fake.release()), or "late"
  *    (settles with a sandbox only when fake.release() is called, after the provider gave up);
@@ -147,13 +210,19 @@ function bridge(box, fake) {
  *    command's --user, nothing reached when network is none);
  *  - tags: tags a new sandbox reports over those it was given (a value of undefined drops one);
  *  - sandboxes: sandboxes there before the test, each { tags, running, box };
+ *  - sandboxes: sandboxes there before the test, each { tags, running, box, stuck, appId }; a stuck one runs on
+ *    after terminate;
  *  - terminate: "ok" (default) or "fail";
- *  - running: whether a new sandbox runs (default true).
+ *  - running: whether a new sandbox runs (default true);
+ *  - upload: what the upload command does: "ok" (default), "throw" (exec fails), "exit" (the script exits 4 in words),
+ *    "corrupt" (the bytes written differ from those sent), "lie" (prints a sha256 that is not the file's, exits 0), or
+ *    "hang" (never exits);
+ *  - list: "ok" (default) or "fail" (the listing throws InvalidError).
  */
-export function fakeModal({ create = "ok", box = {}, tags: tagPatch = {}, sandboxes: seeded = [], terminate = "ok", running = true } = {}) {
+export function fakeModal({ create = "ok", box = {}, tags: tagPatch = {}, sandboxes: seeded = [], terminate = "ok", running = true, upload = "ok", list = "ok" } = {}) {
 	const calls = [];
 	const sandboxes = new Map();
-	const fake = { calls, sandboxes, execRuns: [], stdinClosed: 0, held: [], constructed: 0 };
+	const fake = { calls, sandboxes, execRuns: [], stdinClosed: 0, held: [], constructed: 0, uploads: [] };
 	const record = (...call) => calls.push(call);
 
 	const boxOf = (id, params, extra) => {
@@ -161,7 +230,8 @@ export function fakeModal({ create = "ok", box = {}, tags: tagPatch = {}, sandbo
 		const [uid, gid] = user.split(":").map(Number);
 		return {
 			id,
-			daemon: true,
+			// A sandbox started by the provider's entrypoint has no daemon until the upload puts one there.
+			daemon: !isScript(params?.command, ENTRYPOINT_MARK),
 			hello: { ...HELLO },
 			kernel: VM_KERNEL,
 			uid,
@@ -171,9 +241,9 @@ export function fakeModal({ create = "ok", box = {}, tags: tagPatch = {}, sandbo
 			...extra,
 		};
 	};
-	const add = ({ tags = {}, running: on = true, box: extra = {}, params, appId = "ap-computers" } = {}) => {
+	const add = ({ tags = {}, running: on = true, box: extra = {}, params, appId = "ap-computers", stuck = false } = {}) => {
 		const id = newId();
-		sandboxes.set(id, { id, appId, tags: { ...tags }, running: on, exitCode: on ? null : 0, params, box: boxOf(id, params, extra), terminated: 0 });
+		sandboxes.set(id, { id, appId, tags: { ...tags }, running: on, exitCode: on ? null : 0, params, box: boxOf(id, params, extra), terminated: 0, stuck });
 		return id;
 	};
 	for (const one of seeded) add(one);
@@ -198,7 +268,7 @@ export function fakeModal({ create = "ok", box = {}, tags: tagPatch = {}, sandbo
 			if (!found) throw new NotFoundError(`Sandbox ${id} not found`);
 			if (terminate === "fail") throw new Error("terminate failed on the server");
 			found.terminated++;
-			if (found.running) Object.assign(found, { running: false, exitCode: 137 });
+			if (found.running && !found.stuck) Object.assign(found, { running: false, exitCode: 137 });
 		},
 		async exec(command, params) {
 			record("sandbox.exec", id, command, params);
@@ -206,6 +276,10 @@ export function fakeModal({ create = "ok", box = {}, tags: tagPatch = {}, sandbo
 			if (!found) throw new NotFoundError(`Sandbox ${id} not found`);
 			if (!found.running) throw new ConflictError(`Sandbox ${id} has already finished`);
 			if (command[0] === DAEMON && command[1] === "stdio" && command.length === 2) return bridge(found.box, fake);
+			if (isScript(command, UPLOAD_MARK)) {
+				if (upload === "throw") throw new Error("exec failed on the server: task command router unavailable");
+				return uploader(found, command, fake, upload);
+			}
 			throw new Error(`the fake runs only the daemon's stdio bridge, not ${command.join(" ")}`);
 		},
 	});
@@ -265,6 +339,7 @@ export function fakeModal({ create = "ok", box = {}, tags: tagPatch = {}, sandbo
 					(one) => one.running && one.appId === params.appId && Object.entries(params.tags ?? {}).every(([k, v]) => one.tags[k] === v),
 				);
 				return (async function* () {
+					if (list === "fail") throw new InvalidError("sandbox list refused: permission denied for this app");
 					for (const one of matches) yield handle(one.id);
 				})();
 			},

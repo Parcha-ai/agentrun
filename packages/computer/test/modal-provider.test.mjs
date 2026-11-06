@@ -1,13 +1,15 @@
 // ModalProvider against a fake of the Modal SDK slice it takes (test/fake-modal.mjs): every call is recorded and
 // answered as the SDK documents. No Modal client is constructed, no token is read and nothing reaches the network.
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { createHash, randomBytes } from "node:crypto";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { ModalProvider, sweep } from "../dist/index.js";
-import { DAEMON, DAEMON_IMAGE, deferred, fakeModal, GVISOR_KERNEL, HELLO, VERSION } from "./fake-modal.mjs";
+import * as modal from "../dist/modal.js";
+import { DAEMON, DAEMON_IMAGE, deferred, ENTRYPOINT_MARK, fakeModal, GVISOR_KERNEL, HELLO, UPLOAD_MARK, VERSION } from "./fake-modal.mjs";
 
 const SPEC = { image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none" };
 const APP = "computers";
@@ -302,7 +304,7 @@ test("create: tags that do not read back as given are drift", async () => {
 
 test("create: a sandbox that is not running after create, or has no daemon, is refused", async () => {
 	await driftedCreate({ running: false }, /finished/);
-	await driftedCreate({ box: { daemon: false } }, /no daemon listens/);
+	await driftedCreate({ box: { daemon: false } }, /no daemon listens/, SPEC, { timeouts: { helloMs: 300 } });
 	await driftedCreate({ box: { probe: "fails" } }, /probe/);
 	await driftedCreate({ box: { probe: "garbled" } }, /probe/);
 });
@@ -327,6 +329,253 @@ test("create: an abort once the sandbox exists terminates it", async () => {
 	assert.equal(created.error?.code, "aborted");
 	assert.match(created.error.message, /was terminated/);
 	assert.equal(only(fake).running, false);
+});
+
+// The daemon by upload: no daemonImage, so the binary is streamed in through exec's stdin right after create.
+
+/** A stand-in daemon binary of more than two of the SDK's 256 KiB stdin chunks, in a directory of its own. */
+const UPLOAD_DIR = mkdtempSync(join(tmpdir(), "computer-modal-upload-"));
+const BINARY = randomBytes(700_000);
+const BINARY_PATH = join(UPLOAD_DIR, "computerd-linux-amd64");
+writeFileSync(BINARY_PATH, BINARY);
+const BINARY_SHA = createHash("sha256").update(BINARY).digest("hex");
+const CHUNK = 256 * 1024;
+test.after(() => rmSync(UPLOAD_DIR, { recursive: true, force: true }));
+
+function uploadSetup(options = {}, fakeOptions = {}) {
+	const fake = fakeModal(fakeOptions);
+	const provider = new ModalProvider({ sdk: fake.sdk, app: APP, daemonPath: BINARY_PATH, ...options });
+	return { fake, provider };
+}
+/** The provider's commands; looked up at the call, so a build without them fails each test that uses them. */
+const modalCommands = (options) => modal.modalCommands(options);
+const execsOf = (fake) => fake.calls.filter(([name]) => name === "sandbox.exec");
+
+test("modalCommands: the entrypoint and the upload are POSIX sh scripts, each marked, with their arguments after them", () => {
+	const deadline = "2026-11-06T12:00:00.000Z";
+	const commands = modalCommands({ deadline, user: "1000:1000", waitSeconds: 360, sha256: BINARY_SHA });
+	assert.deepEqual(commands.entrypoint.slice(0, 2), ["sh", "-c"]);
+	assert.ok(commands.entrypoint[2].startsWith(`${ENTRYPOINT_MARK}\n`));
+	assert.deepEqual(commands.entrypoint.slice(3), ["sh", DAEMON, "360", "/work", "init", "--deadline", deadline, "--user", "1000:1000"]);
+	assert.deepEqual(commands.upload.slice(0, 2), ["sh", "-c"]);
+	assert.ok(commands.upload[2].startsWith(`${UPLOAD_MARK}\n`));
+	assert.deepEqual(commands.upload.slice(3), ["sh", DAEMON, BINARY_SHA]);
+	assert.deepEqual(commands.stdio, [DAEMON, "stdio"]);
+	for (const script of [commands.entrypoint[2], commands.upload[2]]) {
+		assert.doesNotMatch(script, /\bbash\b|\[\[|\bsudo\b|\bcurl\b|\bwget\b/, "plain POSIX sh, nothing the image may lack, no network");
+	}
+	assert.match(commands.upload[2], /cat > "\$p"/);
+	assert.match(commands.upload[2], /sha256sum/);
+	assert.match(commands.upload[2], /mv -f "\$p" "\$d"/);
+	assert.match(commands.entrypoint[2], /exec "\$d" "\$@"/, "init replaces the shell: it is the sandbox's main process");
+});
+
+test("create without daemonImage: the command is the entrypoint, the image has no COPY --from, and the daemon is streamed in through exec's stdin with its sha256 checked", async () => {
+	const { provider, fake } = uploadSetup();
+	const before = Date.now();
+	const created = await provider.create({ ...SPEC, labels: { team: "a" } });
+	const after = Date.now();
+	assert.equal(created.ok, true, JSON.stringify(created));
+	const made = only(fake);
+	assert.deepEqual(fake.names(), [
+		"apps.fromName",
+		"images.fromRegistry",
+		"image.dockerfileCommands",
+		"sandboxes.create",
+		"sandbox.exec",
+		"sandbox.poll",
+		"sandbox.getTags",
+		"sandbox.exec",
+	]);
+	assert.deepEqual(fake.calls[2], ["image.dockerfileCommands", ["ENV HOME=/work", "WORKDIR /work"]]);
+	assert.doesNotMatch(JSON.stringify(fake.calls), /COPY/, "no layer copies the daemon from a registry");
+	const params = createdParams(fake);
+	const deadline = params.tags[DEADLINE];
+	const at = Date.parse(deadline);
+	assert.ok(at >= before + SPEC.lifetimeMs && at <= after + SPEC.lifetimeMs, `deadline ${deadline}`);
+	const commands = modalCommands({ deadline, user: "1000:1000", waitSeconds: 360, sha256: BINARY_SHA });
+	assert.deepEqual(params.command, commands.entrypoint, "the sandbox's command is the entrypoint that waits for the daemon");
+	assert.equal(params.timeoutMs, SPEC.lifetimeMs, "Modal's timeout is the lifetime");
+	assert.equal(params.blockNetwork, true, "network none: the upload needs no network in the sandbox");
+	const [upload, stdio] = execsOf(fake);
+	assert.deepEqual(upload.slice(1), [made.id, commands.upload, { mode: "binary" }]);
+	assert.deepEqual(stdio.slice(1), [made.id, [DAEMON, "stdio"], { mode: "binary" }]);
+	assert.equal(fake.uploads.length, 1);
+	assert.ok(fake.uploads[0].bytes.equals(BINARY), "the bytes streamed in are the daemon's");
+	assert.deepEqual(fake.uploads[0].sizes, [CHUNK, CHUNK, BINARY.length - 2 * CHUNK], "in the SDK's 256 KiB stdin chunks");
+	assert.deepEqual(made.installed?.path, DAEMON);
+	assert.equal(made.running, true);
+	assert.equal(made.terminated, 0);
+});
+
+test("create without daemonImage: the entrypoint waits as long as the upload's bound and a call's", async () => {
+	const { provider, fake } = uploadSetup({ timeouts: { uploadMs: 90_000, callMs: 15_500 } });
+	assert.equal((await provider.create(SPEC)).ok, true);
+	assert.equal(createdParams(fake).command[5], "106", "ceil((90 s + 15.5 s)) whole seconds");
+});
+
+test("create: an upload that fails, exits nonzero or does not read back its sha256 terminates the sandbox and refuses in words", async () => {
+	for (const [upload, pattern] of [
+		["throw", /upload.*task command router unavailable/],
+		["exit", /upload exited with 4: writing the daemon .* failed.*No space left on device/s],
+		["corrupt", /upload exited with 5.*not moved into place/],
+		["lie", /sha256 .*reads back "0{64}"/],
+	]) {
+		const { provider, fake } = uploadSetup({}, { upload });
+		const created = await provider.create(SPEC);
+		assert.equal(created.ok, false, upload);
+		assert.match(created.error.message, pattern, upload);
+		assert.match(created.error.message, /was terminated/, upload);
+		const made = only(fake);
+		assert.equal(made.running, false, `${upload}: the sandbox does not outlive create`);
+		assert.equal(made.terminated, 1, upload);
+		assert.equal(execsOf(fake).length, 1, `${upload}: no bridge is opened to a daemon that was not installed`);
+	}
+});
+
+test("create: an upload that never ends is a timeout within uploadMs, and the sandbox is terminated", async () => {
+	const { provider, fake } = uploadSetup({ timeouts: { uploadMs: 60 } }, { upload: "hang" });
+	const created = await provider.create(SPEC);
+	assert.equal(created.error?.code, "timeout");
+	assert.match(created.error.message, /upload.*did not answer within 0\.06 s/);
+	assert.equal(only(fake).running, false);
+});
+
+test("create: an abort during the upload terminates the sandbox", async () => {
+	const { provider, fake } = uploadSetup({}, { upload: "hang" });
+	const controller = new AbortController();
+	const creating = provider.create(SPEC, { signal: controller.signal });
+	await new Promise((resolve) => setTimeout(resolve, 30));
+	controller.abort();
+	const created = await creating;
+	assert.equal(created.error?.code, "aborted");
+	assert.match(created.error.message, /was terminated/);
+	assert.equal(only(fake).running, false);
+});
+
+test("create: a daemon binary that is not there is not_found in words, before any SDK call", async () => {
+	const { provider, fake } = uploadSetup({ daemonPath: join(UPLOAD_DIR, "absent") });
+	const created = await provider.create(SPEC);
+	assert.equal(created.error?.code, "not_found");
+	assert.match(created.error.message, /no daemon binary at .*absent.*build:daemon/);
+	assert.deepEqual(fake.calls, []);
+});
+
+test("create: init not yet listening when the upload ends is waited for, within helloMs; a daemon that never listens is refused", async () => {
+	const { provider, fake } = uploadSetup({}, { box: { notListening: 2 } });
+	const created = await provider.create(SPEC);
+	assert.equal(created.ok, true, JSON.stringify(created));
+	assert.equal(execsOf(fake).length, 4, "the upload, two bridges that found no socket, and the one that said hello");
+	const never = uploadSetup({ timeouts: { helloMs: 300 } }, { box: { notListening: 1_000 } });
+	const refused = await never.provider.create(SPEC);
+	assert.equal(refused.ok, false);
+	assert.match(refused.error.message, /no daemon listens/);
+	assert.equal(only(never.fake).running, false);
+});
+
+test("the constructor takes daemonImage or daemonPath, not both; with daemonImage the COPY --from layer and the daemon as the command stay", async () => {
+	const fake = fakeModal();
+	assert.throws(() => new ModalProvider({ sdk: fake.sdk, app: APP, daemonImage: DAEMON_IMAGE, daemonPath: BINARY_PATH }), /daemonImage or daemonPath, not both/);
+	assert.deepEqual(fake.calls, []);
+	const { provider, fake: imageFake } = setup();
+	assert.equal((await provider.create(SPEC)).ok, true);
+	assert.deepEqual(createdParams(imageFake).command.slice(0, 2), [DAEMON, "init"]);
+	assert.deepEqual(imageFake.uploads, [], "nothing is uploaded when the image holds the daemon");
+	assert.equal(execsOf(imageFake).length, 1, "only the drift check's bridge");
+});
+
+test("lifetime: maxLifetimeMs caps what check takes, in words; Modal's timeout is the lifetime", async () => {
+	const fake = fakeModal();
+	const make = (maxLifetimeMs) => () => new ModalProvider({ sdk: fake.sdk, app: APP, daemonPath: BINARY_PATH, maxLifetimeMs });
+	for (const bad of [0, -1, 1.5, DAY_MS + 1, "1800000"]) assert.throws(make(bad), /maxLifetimeMs/, String(bad));
+	const capped = make(30 * 60_000)();
+	assert.deepEqual(capped.check({ ...SPEC, lifetimeMs: 30 * 60_000 }), []);
+	const refusals = capped.check({ ...SPEC, lifetimeMs: 30 * 60_000 + 1 });
+	assert.deepEqual(refusals.map((r) => r.field), ["lifetimeMs"]);
+	assert.match(refusals[0].message, /at most 30 minutes \(1800000 ms\)/);
+	const refused = await capped.create({ ...SPEC, lifetimeMs: 60 * 60_000 });
+	assert.equal(refused.error?.code, "refused");
+	assert.match(refused.error.message, /lifetimeMs: .*30 minutes/);
+	assert.deepEqual(fake.calls, [], "refused before any SDK call");
+	const created = await capped.create({ ...SPEC, lifetimeMs: 29 * 60_000 + 500 });
+	assert.equal(created.ok, true, JSON.stringify(created));
+	assert.equal(createdParams(fake).timeoutMs, 29 * 60_000 + 1000, "whole seconds, rounded up");
+});
+
+/** Runs a command's argv with sh on this machine, as Modal would in the sandbox; resolves with its exit and output. */
+function runLocally(argv, { input, onSpawn } = {}) {
+	return new Promise((resolve) => {
+		const child = spawn(argv[0], argv.slice(1), { stdio: ["pipe", "pipe", "pipe"] });
+		let stdout = "";
+		let stderr = "";
+		child.stdout.on("data", (chunk) => (stdout += chunk));
+		child.stderr.on("data", (chunk) => (stderr += chunk));
+		child.on("close", (code) => resolve({ code, stdout, stderr, pid: child.pid }));
+		onSpawn?.(child);
+		child.stdin.end(input);
+	});
+}
+
+test("the entrypoint's wait is bounded: with no daemon it exits nonzero in words once its seconds run out", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "computer-modal-entry-"));
+	try {
+		const daemon = join(dir, "opt", "computerd");
+		const started = Date.now();
+		const ran = await runLocally(modalCommands({ deadline: "2026-11-06T12:00:00Z", waitSeconds: 1, daemon, home: join(dir, "home") }).entrypoint);
+		const took = Date.now() - started;
+		assert.equal(ran.code, 3, JSON.stringify(ran));
+		assert.match(ran.stderr, /the daemon did not arrive at .*computerd within 1 s/);
+		assert.ok(took >= 900 && took < 5_000, `it waited ${took} ms`);
+		// A file there that is not executable is not the daemon: still bounded.
+		mkdirSync(join(dir, "opt"));
+		writeFileSync(daemon, "not yet\n", { mode: 0o644 });
+		const half = await runLocally(modalCommands({ waitSeconds: 1, daemon }).entrypoint);
+		assert.equal(half.code, 3, JSON.stringify(half));
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("the entrypoint execs the daemon once it is moved into place: same process, its arguments, HOME", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "computer-modal-entry-"));
+	try {
+		mkdirSync(join(dir, "opt"));
+		const daemon = join(dir, "opt", "computerd");
+		const part = join(dir, "opt", ".computerd.part");
+		const deadline = "2026-11-06T12:00:00.000Z";
+		const ran = await runLocally(modalCommands({ deadline, user: "1000:1000", waitSeconds: 20, daemon, home: join(dir, "home") }).entrypoint, {
+			onSpawn: () =>
+				setTimeout(() => {
+					writeFileSync(part, '#!/bin/sh\necho "pid $$ home $HOME args $*"\n', { mode: 0o755 });
+					renameSync(part, daemon);
+				}, 400),
+		});
+		assert.equal(ran.code, 0, JSON.stringify(ran));
+		assert.equal(ran.stdout, `pid ${ran.pid} home ${join(dir, "home")} args init --deadline ${deadline} --user 1000:1000\n`);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("the upload script writes stdin to a part file, prints its sha256, and moves it into place, 0755, only when it matches", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "computer-modal-upload-sh-"));
+	try {
+		const daemon = join(dir, "opt", "agentrun", "computerd");
+		const ok = await runLocally(modalCommands({ sha256: BINARY_SHA, daemon }).upload, { input: BINARY });
+		assert.equal(ok.code, 0, JSON.stringify({ ...ok, stdout: ok.stdout.slice(0, 300) }));
+		assert.equal(ok.stdout, `sha256 ${BINARY_SHA}\n`);
+		assert.ok(readFileSync(daemon).equals(BINARY));
+		assert.equal(statSync(daemon).mode & 0o777, 0o755);
+		assert.equal(existsSync(join(dir, "opt", "agentrun", ".computerd.part")), false, "the part file was moved, not copied");
+
+		const other = join(dir, "other", "computerd");
+		const bad = await runLocally(modalCommands({ sha256: "f".repeat(64), daemon: other }).upload, { input: BINARY });
+		assert.equal(bad.code, 5);
+		assert.match(bad.stdout, new RegExp(`^sha256 ${BINARY_SHA}\\n.*not moved into place`, "s"));
+		assert.equal(existsSync(other), false, "a daemon whose sha256 does not match is never where the entrypoint looks");
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
 });
 
 test("connect: the daemon's stdio bridge over exec is the client's stream, hello checked", async () => {
@@ -579,9 +828,9 @@ test("no real Modal client: the provider and the conformance module import nothi
 		tokenSecret: "COMPUTER_MODAL_TOKEN_SECRET",
 		app: "COMPUTER_MODAL_APP",
 		daemonImage: "COMPUTER_MODAL_DAEMON_IMAGE",
-		driftedDaemonImage: "COMPUTER_MODAL_DRIFTED_DAEMON_IMAGE",
 		serverUrl: "COMPUTER_MODAL_SERVER_URL",
 	});
+	assert.equal(module.CONFORMANCE_MAX_LIFETIME_MS, 30 * 60_000);
 });
 
 /** The names a host may hold a production token under, with values that must never be used. */
@@ -590,8 +839,15 @@ const DEV_TOKEN = { COMPUTER_MODAL_TOKEN_ID: "fake-dev-id", COMPUTER_MODAL_TOKEN
 const MODAL_SETTINGS = {
 	AGENTRUN_COMPUTER_LIVE_MODAL: "1",
 	COMPUTER_MODAL_APP: APP,
-	COMPUTER_MODAL_DAEMON_IMAGE: DAEMON_IMAGE,
-	COMPUTER_MODAL_DRIFTED_DAEMON_IMAGE: DAEMON_IMAGE,
+};
+/** The module's options a unit test adds: the stand-in daemon, and a drifted build that runs no Go. */
+const builds = [];
+const MODULE_TEST = {
+	daemonPath: BINARY_PATH,
+	buildDaemon: async (version) => {
+		builds.push(version);
+		return BINARY_PATH;
+	},
 };
 
 /**
@@ -628,7 +884,7 @@ test("the conformance module refuses MODAL_TOKEN_ID and MODAL_TOKEN_SECRET: it n
 	const { createProvider, createDriftedProvider } = await import("../dist/conformance/modal.js");
 	for (const make of [createProvider, createDriftedProvider]) {
 		const { ModalClient, made } = fakeClient();
-		await assert.rejects(make({ env: { ...MODAL_SETTINGS, ...PROD_TOKEN }, ModalClient }), (error) => {
+		await assert.rejects(make({ env: { ...MODAL_SETTINGS, ...PROD_TOKEN }, ModalClient, ...MODULE_TEST }), (error) => {
 			assert.match(error.message, /needs COMPUTER_MODAL_TOKEN_ID and COMPUTER_MODAL_TOKEN_SECRET/);
 			assert.match(error.message, /never MODAL_TOKEN_ID or MODAL_TOKEN_SECRET/);
 			assert.doesNotMatch(error.message, /prod-(id|token)-must-not-be-used/);
@@ -642,7 +898,7 @@ test("the conformance module passes the COMPUTER_MODAL_ token to the client expl
 	const { createProvider, createDriftedProvider } = await import("../dist/conformance/modal.js");
 	for (const make of [createProvider, createDriftedProvider]) {
 		const { ModalClient, made } = fakeClient();
-		const provider = await make({ env: { ...MODAL_SETTINGS, ...PROD_TOKEN, ...DEV_TOKEN }, ModalClient });
+		const provider = await make({ env: { ...MODAL_SETTINGS, ...PROD_TOKEN, ...DEV_TOKEN }, ModalClient, ...MODULE_TEST });
 		assert.equal(provider.id, "modal");
 		assert.deepEqual(made, [{ tokenId: "fake-dev-id", tokenSecret: "fake-dev-secret" }]);
 		assert.doesNotMatch(JSON.stringify(made), /prod-(id|token)-must-not-be-used/);
@@ -675,7 +931,7 @@ test("the conformance module pins the client's server: an ambient MODAL_PROFILE 
 					[{ COMPUTER_MODAL_SERVER_URL: "https://dev.example.invalid:443" }, "https://dev.example.invalid:443"],
 				]) {
 					const { ModalClient, made, servers } = fakeClient();
-					await make({ env: { ...MODAL_SETTINGS, ...DEV_TOKEN, MODAL_PROFILE: "prod", MODAL_CONFIG_PATH: toml, ...chosen }, ModalClient });
+					await make({ env: { ...MODAL_SETTINGS, ...DEV_TOKEN, MODAL_PROFILE: "prod", MODAL_CONFIG_PATH: toml, ...chosen }, ModalClient, ...MODULE_TEST });
 					assert.deepEqual(made, [{ tokenId: "fake-dev-id", tokenSecret: "fake-dev-secret" }]);
 					assert.deepEqual(servers, [server], "the client is made with the server the module chose");
 					assert.equal(process.env.MODAL_SERVER_URL, undefined, "and process.env is put back after");
@@ -692,11 +948,63 @@ test("the conformance module refuses an ambient MODAL_SERVER_URL in words, befor
 	for (const make of [createProvider, createDriftedProvider]) {
 		const { ModalClient, made } = fakeClient();
 		const env = { ...MODAL_SETTINGS, ...DEV_TOKEN, MODAL_SERVER_URL: "https://prod.example.invalid:443" };
-		await assert.rejects(make({ env, ModalClient }), (error) => {
+		await assert.rejects(make({ env, ModalClient, ...MODULE_TEST }), (error) => {
 			assert.match(error.message, /MODAL_SERVER_URL is set/);
 			assert.match(error.message, /COMPUTER_MODAL_SERVER_URL/);
 			return true;
 		});
 		assert.deepEqual(made, [], "no client is made while MODAL_SERVER_URL is set");
 	}
+});
+
+/** A ModalClient stand-in that answers with one given fake. */
+const clientOf = (fake) =>
+	function ModalClient() {
+		return fake.sdk;
+	};
+
+test("the conformance module uploads the daemon when COMPUTER_MODAL_DAEMON_IMAGE is unset, and copies it from the image when set", async () => {
+	const { createProvider } = await import("../dist/conformance/modal.js");
+	const uploading = fakeModal();
+	const provider = await createProvider({ env: { ...MODAL_SETTINGS, ...DEV_TOKEN }, ModalClient: clientOf(uploading), daemonPath: BINARY_PATH });
+	assert.equal((await provider.create(SPEC)).ok, true);
+	assert.deepEqual(createdParams(uploading).command.slice(0, 2), ["sh", "-c"]);
+	assert.ok(createdParams(uploading).command[2].startsWith(ENTRYPOINT_MARK));
+	assert.equal(uploading.uploads.length, 1);
+	assert.ok(uploading.uploads[0].bytes.equals(BINARY));
+	assert.doesNotMatch(JSON.stringify(uploading.calls), /COPY/);
+
+	const copying = fakeModal();
+	const imaged = await createProvider({ env: { ...MODAL_SETTINGS, ...DEV_TOKEN, COMPUTER_MODAL_DAEMON_IMAGE: DAEMON_IMAGE }, ModalClient: clientOf(copying), daemonPath: BINARY_PATH });
+	assert.equal((await imaged.create(SPEC)).ok, true);
+	assert.deepEqual(copying.calls.find(([name]) => name === "image.dockerfileCommands")[1][0], `COPY --from=${DAEMON_IMAGE} /computerd ${DAEMON}`);
+	assert.deepEqual(copying.uploads, []);
+});
+
+test("the conformance module caps every computer's lifetime at 30 minutes, refused longer in words, Modal's timeout the lifetime", async () => {
+	const { createProvider, createDriftedProvider } = await import("../dist/conformance/modal.js");
+	for (const make of [createProvider, createDriftedProvider]) {
+		const fake = fakeModal();
+		const provider = await make({ env: { ...MODAL_SETTINGS, ...DEV_TOKEN }, ModalClient: clientOf(fake), ...MODULE_TEST });
+		assert.deepEqual(provider.check({ ...SPEC, lifetimeMs: 30 * 60_000 }), []);
+		const refusals = provider.check({ ...SPEC, lifetimeMs: 30 * 60_000 + 1000 });
+		assert.deepEqual(refusals.map((r) => r.field), ["lifetimeMs"]);
+		assert.match(refusals[0].message, /at most 30 minutes/);
+		const refused = await provider.create({ ...SPEC, lifetimeMs: 2 * 60 * 60_000 });
+		assert.equal(refused.error?.code, "refused");
+		assert.deepEqual(fake.calls, []);
+		assert.equal((await provider.create({ ...SPEC, lifetimeMs: 30 * 60_000 })).ok, true);
+		assert.equal(createdParams(fake).timeoutMs, 30 * 60_000);
+	}
+});
+
+test("the drifted provider uploads a daemon built as <version>-drift, and needs no second image", async () => {
+	const { createDriftedProvider } = await import("../dist/conformance/modal.js");
+	const fake = fakeModal();
+	builds.length = 0;
+	const drifted = await createDriftedProvider({ env: { ...MODAL_SETTINGS, ...DEV_TOKEN }, ModalClient: clientOf(fake), ...MODULE_TEST });
+	assert.deepEqual(builds, [`${VERSION}-drift`]);
+	assert.equal((await drifted.create(SPEC)).ok, true);
+	assert.equal(fake.uploads.length, 1, "the drifted daemon is uploaded like any other");
+	assert.doesNotMatch(JSON.stringify(fake.calls), /COPY/);
 });
