@@ -14,24 +14,27 @@ export const AS_TOOL: readonly string[] = Object.freeze(["sudo", "-n", "-u", TOO
 
 /** `boxes`, each box it attaches with its programs started as the tool user (asToolUser): for the server's own calls
  *  that act on the tools' programs, such as ending their background processes. */
-export function asToolProvider(boxes: BoxProvider): BoxProvider {
+export function asToolProvider(boxes: BoxProvider, env: Readonly<Record<string, string>> = {}): BoxProvider {
   return {
     name: boxes.name,
     create: (spec, context) => boxes.create(spec, context),
     list: (labels, context) => boxes.list(labels, context),
     attach: async (id, context) => {
       const found = await boxes.attach(id, context);
-      return found.ok && found.value ? { ok: true, value: asToolUser(found.value) } : found;
+      return found.ok && found.value ? { ok: true, value: asToolUser(found.value, env) } : found;
     },
   };
 }
 
-/** `box`, its programs started as the tool user; every other call is the box's own. */
-export function asToolUser(box: Box): Box {
+/** `box`, its programs started as the tool user, with `env` (the box's fixed environment) passed on the command line:
+ *  sudo resets the environment, so only what `env` names reaches them. Every other call is the box's own. */
+export function asToolUser(box: Box, env: Readonly<Record<string, string>> = {}): Box {
+  const pass = Object.entries(env).map(([name, value]) => `${name}=${value}`);
+  const wrap = (command: readonly string[]) => [...AS_TOOL, ...(pass.length ? ["env", ...pass] : []), ...command];
   return {
     id: box.id,
     facts: () => box.facts(),
-    exec: (command, options, context) => box.exec([...AS_TOOL, ...command], options, context),
+    exec: (command, options, context) => box.exec(wrap(command), options, context),
     upload: (files, context) => box.upload(files, context),
     download: (paths, context) => box.download(paths, context),
     status: (context) => box.status(context),

@@ -104,8 +104,9 @@ const POLL_SCRIPT = [
 
 const WRITE_INPUT_SCRIPT = 'printf %s "$2" | base64 -d > "$1/in/tmp" && mv "$1/in/tmp" "$1/in/$3"';
 const CLOSE_INPUT_SCRIPT = ': > "$1/in/END"';
+// After the directory and whether to kill, the words the kill runs under (DaytonaBoxesOptions.killAs), if any.
 const CLEANUP_SCRIPT =
-	'p=$(cat "$1/pid" 2>/dev/null); if [ "$2" = kill ] && [ -n "$p" ]; then kill -9 -- "-$p" 2>/dev/null || kill -9 "$p" 2>/dev/null; fi; rm -rf -- "$1"';
+	'd=$1; m=$2; shift 2; p=$(cat "$d/pid" 2>/dev/null); if [ "$m" = kill ] && [ -n "$p" ]; then "$@" kill -9 -- "-$p" 2>/dev/null || "$@" kill -9 "$p" 2>/dev/null; fi; rm -rf -- "$d"';
 // The workspace, made by the sandbox's user, or through `sudo -n` when it lies where that user may not write (a path
 // below `/run`), and then given to that user. A snapshot without a passwordless sudo fails the create, naming the path.
 const MKDIR_SCRIPT = [
@@ -143,6 +144,11 @@ export type DaytonaBoxesOptions = {
 	readonly namePrefix?: string;
 	/** Directory in the box where running programs keep their input and output files. Default `/tmp/pi-transport`. */
 	readonly spoolDir?: string;
+	/**
+	 * The words a timed-out or aborted program's kill runs under, for programs started as another user (such as
+	 * `["sudo", "-n", "-u", "<user>", "--"]`), whom only that user may signal. Default none: the box's own user kills.
+	 */
+	readonly killAs?: readonly string[];
 	/** Poll period for a running program's output. Default 150 ms. */
 	readonly execPollMs?: number;
 };
@@ -536,6 +542,7 @@ function startProcess(
 	options: BoxExecOptions | undefined,
 	pollMs: number,
 	context: Context,
+	killAs: readonly string[] = [],
 ): BoxProcess {
 	const stdout = new Pipe();
 	const stderr = new Pipe();
@@ -559,7 +566,7 @@ function startProcess(
 		void rest
 			.execute(
 				box.info,
-				shellCommand(CLEANUP_SCRIPT, [dir, kill ? "kill" : "keep"]),
+				shellCommand(CLEANUP_SCRIPT, [dir, kill ? "kill" : "keep", ...killAs]),
 				CLEANUP_TIMEOUT_S,
 				BACKGROUND_CONTEXT,
 			)
@@ -707,7 +714,7 @@ class DaytonaBox implements Box {
 				new BoxError("spawn", `could not start the program: ${launched.value.result.trim().slice(0, 300)}`),
 			);
 		}
-		return ok(startProcess(this, this.#rest, dir, options, this.#options.execPollMs ?? EXEC_POLL_MS, context));
+		return ok(startProcess(this, this.#rest, dir, options, this.#options.execPollMs ?? EXEC_POLL_MS, context, this.#options.killAs));
 	}
 
 	async upload(files: readonly BoxFile[], context: Context): Promise<Result<void, BoxError>> {

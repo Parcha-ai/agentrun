@@ -55,7 +55,7 @@ import { GRAPH_CACHE_BYTES, PartCache, type PartKind, servedPart } from "./graph
 import { CONTENT_FILTER_WORDS, contentFiltered, MODERATED } from "./content-filter.js";
 import { BOX_KEYS, VM_PROVIDER } from "./boxes.js";
 import { type Place, remotePlace, storedPlace } from "./place.js";
-import { destroyRunBoxes, ensureRemoteBox, releaseRemoteBox, type RemoteFolder, RUN_LABEL, sweepRunBoxes, syncRemoteBox } from "./run-box.js";
+import { BOX_ENV, destroyRunBoxes, ensureRemoteBox, releaseRemoteBox, type RemoteFolder, RUN_LABEL, sweepRunBoxes, syncRemoteBox } from "./run-box.js";
 import { BACKGROUND_DIR, endBackground } from "./background.js";
 import { removeEgressDir, RUN_BOX_ALLOW_ENV } from "./box-egress.js";
 import { BehindReadError, checkpointRunDb, MonotonicReads, readRunDb } from "./run-db.js";
@@ -1677,7 +1677,7 @@ export class Runs {
     if (remote || existsSync(join(run.dir, "work", BACKGROUND_DIR))) {
       try {
         // A remote box's tools run as their own user (tool-user.ts), which alone may signal what they started.
-        const ended = await endBackground(remote ? asToolProvider(boxes) : boxes, { [RUN_LABEL]: run.id }, boxContext());
+        const ended = await endBackground(remote ? asToolProvider(boxes, BOX_ENV) : boxes, { [RUN_LABEL]: run.id }, boxContext());
         if (ended) this.options.log?.("background_ended", { run: run.id, ended });
       } catch (error) {
         warn(run.id, `its background processes were not ended before its box goes (${(error as Error).message}); destroying the box ends them`);

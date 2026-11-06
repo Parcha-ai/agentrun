@@ -94,12 +94,13 @@ export async function fakeArchil(t, { data, token = TOKEN } = {}) {
         .replace("\nMOUNTS=/proc/self/mounts\n", `\nMOUNTS=${mounts}\n`);
       writeFileSync(helper, source);
       chmodSync(helper, 0o755);
-      // The tool user's PATH: the refusing stand-in first, so a tool's sudo meets it (that user has no sudo).
+      // The tool user's PATH: the refusing stand-in first, so a tool's sudo meets it (that user has no sudo). Its
+      // environment is reset, as sudo's env_reset does: only what the command line passes on reaches the program.
       const asTool = join(dir, ".as-tool");
       writeFileSync(join(bin, "sudo"), [
         "#!/bin/sh",
         `if [ "$#" -ge 2 ] && [ "$1" = -n ] && [ "$2" = '${HELPER_PATH}' ]; then shift 2; exec '${helper}' "$@"; fi`,
-        `if [ "$#" -ge 5 ] && [ "$1" = -n ] && [ "$2" = -u ] && [ "$3" = '${TOOL_USER}' ] && [ "$4" = -- ]; then shift 4; printf '%s\\n' "$1" >> '${asTool}'; PATH='${refusing}:/usr/local/bin:/usr/bin:/bin' exec "$@"; fi`,
+        `if [ "$#" -ge 5 ] && [ "$1" = -n ] && [ "$2" = -u ] && [ "$3" = '${TOOL_USER}' ] && [ "$4" = -- ]; then shift 4; printf '%s\\n' "$1" >> '${asTool}'; exec env -i PATH='${refusing}:/usr/local/bin:/usr/bin:/bin' "$@"; fi`,
         `exec '${join(refusing, "sudo")}' "$@"`,
         "",
       ].join("\n"));

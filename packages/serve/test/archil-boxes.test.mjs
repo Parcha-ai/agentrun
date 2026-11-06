@@ -225,6 +225,7 @@ test("two users: every tool command runs as the tool user, which has no sudo, an
     { tool: "bash", args: { command: "sudo -n true; echo sudo=$?" } },
     { tool: "bash", args: { command: `sudo -n ${HELPER_PATH} checkin; echo helper=$?` } },
     { tool: "bash", args: { command: "touch made-by-tool && echo writable" } },
+    { tool: "bash", args: { command: "echo home=$HOME lang=$LANG" } },
   ];
   const run = (await api("POST", "/agents/remote/runs", { input: { content: JSON.stringify({ probe: plan }) } })).body;
   await follow(api, run.run_id, ["completed"], { deadlineMs: 120_000 });
@@ -232,6 +233,7 @@ test("two users: every tool command runs as the tool user, which has no sudo, an
   assert.match(said[0].text, /sudo=97/, "a tool's sudo is refused");
   assert.match(said[1].text, /helper=97/, "a tool cannot run the helper");
   assert.match(said[2].text, /writable/, "/workspace stays writable for the tool user");
+  assert.match(said[3].text, /home=\/tmp lang=C\.UTF-8/, "the box's fixed environment reaches the tool user's programs past sudo's reset");
   assert.deepEqual(fake.sudoCalls(), ["-n true", `-n ${HELPER_PATH} checkin`], "the refusing stand-in met both, so neither ran");
   // Every command a tool ran went through `sudo -n -u agentrun-tool --`, noted by the box's sudo.
   const commands = fake.requests.filter((r) => r.path.endsWith("/process/execute")).map((r) => JSON.parse(r.body).command);

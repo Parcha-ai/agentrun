@@ -1,5 +1,5 @@
 ---
-packages: @parcha/agentrun-serve, @parcha/pi-durable-disk
+packages: @parcha/agentrun-serve, @parcha/pi-durable-disk, @parcha/pi-transport, @parcha/pi-durable-agent
 kind: breaking
 ---
 A Daytona or Modal sandbox now mounts its run's `work/` from the owner's Archil disk instead of getting a copy of it, and nothing is copied in or out. The seed, the pull at each turn's end and at the run's end, the per-file mirror, `box-sync.json` and `box-mirrored.jsonl` are gone. Who breaks: a server that runs remote boxes. To keep them, set `AGENTRUN_ARCHIL_DISK`, `AGENTRUN_ARCHIL_REGION` and `AGENTRUN_ARCHIL_TOKEN`, mount the disk at `<data>/disk` with `--conditional`, and use a box image or snapshot that ships the archil client, the root helper (`box/agentrun-archil`, at `/usr/local/sbin/agentrun-archil`), the `agentrun-tool` user and their sudoers lines (the README's "A box on another machine"). Without Archil, capabilities show both boxes unavailable with what to do, a save of such a place is refused in the same words, and a run of one is refused 409 `agent_not_runnable`.
@@ -8,3 +8,5 @@ A Daytona or Modal sandbox now mounts its run's `work/` from the owner's Archil 
 - A run's `work/` on the disk is the shared group's (`AGENTRUN_ARCHIL_GID`, default 2510), mode 2770: Archil keeps ids as they are between machines.
 - The Modal sandbox is now made on Modal's VM runtime with FUSE, which an Archil mount needs.
 - pi-durable-disk: a run's process fsyncs `store/run.sqlite`, then its folder, as soon as the store opens, before the run is reported started.
+- pi-transport: a Daytona box takes `killAs`, the words a timed-out or aborted program's kill runs under, for programs started as another user.
+- pi-durable-agent: a run's folder, every folder above it up to the disk, and its store folder are made 0700 whatever the umask, and a folder found looser is tightened.

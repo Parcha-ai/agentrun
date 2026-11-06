@@ -30,7 +30,7 @@ import { runBoxVolumeOf, vmDocker, vmEgress } from "./box-egress-vm.js";
 import { awaitImage, boxImageOf } from "./box-image.js";
 import { egressParentOf, runBoxPathsOf } from "./box-paths.js";
 import { RELAYED_KEY, relayedBox, relayFetch } from "./box-relay.js";
-import { asToolUser } from "./tool-user.js";
+import { AS_TOOL, asToolUser } from "./tool-user.js";
 import { FolderHeld } from "./archil.js";
 import { VM_PROVIDER } from "./boxes.js";
 import type { DiskAdapter } from "./disk.js";
@@ -406,7 +406,7 @@ async function startRelay(box: Box, socket: string, context: Context, note: (sum
   if (ended.value !== 0) await Promise.resolve(note(relayFailed(ended.value, said))).catch(() => undefined);
 }
 
-/** A remote box, which the server finds or makes and seeds (ensureRemoteBox), reached through its relay: this process's
+/** A remote box, which the server finds or makes with the run's folder mounted (ensureRemoteBox), reached through its relay: this process's
  *  provider holds no key, and every call it makes goes to the relay, which sends it on with the server's (Daytona's key;
  *  the VM box's client, box-relay-vm.ts). */
 async function relayedRunBox(root: string, run: { id: string; dir: string; place: Place }, context: Context): Promise<{ box: Box; made: boolean; replaced?: boolean }> {
@@ -417,14 +417,15 @@ async function relayedRunBox(root: string, run: { id: string; dir: string; place
   if (!attached.ok) throw new Error(`the run's box could not be reached: ${attached.error.message}`);
   if (!attached.value) throw new Error(`the run's box ${given.id} is not running`);
   // Its tools' programs run as the tool user, never the box's own (tool-user.ts), which holds the helper's sudo.
-  return { box: asToolUser(attached.value), made: given.made, ...(given.replaced ? { replaced: true } : {}) };
+  return { box: asToolUser(attached.value, BOX_ENV), made: given.made, ...(given.replaced ? { replaced: true } : {}) };
 }
 
 /** The run's process's Daytona provider: its calls go to the relay, which adds the key. */
 async function relayedDaytona(root: string, runDir: string, runId: string, apiUrl: string | undefined): Promise<BoxProvider> {
   if (!apiUrl) throw new Error("the server gave the run's Daytona box no API address");
   const { daytonaBoxes } = await import("@parcha/pi-transport/box/daytona");
-  return daytonaBoxes({ apiKey: RELAYED_KEY, apiUrl, fetch: relayFetch(root, runDir, runId) });
+  // A program a tool started runs as the tool user, whom only that user may signal: a timed-out one is killed as it.
+  return daytonaBoxes({ apiKey: RELAYED_KEY, apiUrl, fetch: relayFetch(root, runDir, runId), killAs: AS_TOOL });
 }
 
 /** The run's process's VM provider: pi-transport's, over the relay's client (box-relay-vm.ts). It only attaches. */
@@ -616,7 +617,7 @@ export async function destroyRunBoxes(boxes: BoxProvider, runId: string, context
   return destroyListed(boxes, { [RUN_LABEL]: runId }, () => true, context);
 }
 
-/** The start's sweep: destroys every run's box whose run `ended` says is over, once `before` (a remote box's pull) for its
+/** The start's sweep: destroys every run's box whose run `ended` says is over, once `before` (a remote box's release of its folder) for its
  *  run says it may go. A box of a run this server does not know is left to its lifetime: another server's, or one being
  *  made. */
 export async function sweepRunBoxes(boxes: BoxProvider, ended: (runId: string) => boolean, context: Context, before?: (runId: string, boxId: string) => Promise<boolean>): Promise<number> {

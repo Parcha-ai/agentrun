@@ -1016,6 +1016,28 @@ describe("daytona boxes", () => {
 		);
 	});
 
+	it("kills a timed-out program through `killAs` when given: the user it runs as is the one that may signal it", async () => {
+		const box = (
+			await daytonaBoxes({ apiKey: API_KEY, apiUrl: `${fake.url}/api`, spoolDir: fake.path("spool-kill-as"), workspace: fake.path("workspace"), pollMs: 10, execPollMs: 20, listedStableMs: 50, destroyRetryMs: 10, killAs: ["env", "KILLED_AS=tool-user"] }).create(spec(), context)
+		);
+		if (!box.ok) throw box.error;
+		try {
+			const before = fake.requests.length;
+			const slow = await box.value.exec(["sleep", "30"], { timeoutMs: 200 }, context);
+			if (!slow.ok) throw slow.error;
+			void readStream(slow.value.stdout);
+			await slow.value.wait();
+			let cleanup: string | undefined;
+			for (let waited = 0; waited < 3000 && cleanup === undefined; waited += 50) {
+				cleanup = fake.requests.slice(before).map((r) => (r.path.endsWith("/process/execute") ? (JSON.parse(r.body) as { command: string }).command : "")).find((c) => c.includes("kill -9"));
+				if (cleanup === undefined) await new Promise((resolve) => setTimeout(resolve, 50));
+			}
+			expect(cleanup).toContain("KILLED_AS=tool-user");
+		} finally {
+			await box.value.destroy(context);
+		}
+	});
+
 	it("resolves relative paths against the workspace and sets a file's mode", async () => {
 		await withBox(async (box) => {
 			const uploaded = await box.upload(

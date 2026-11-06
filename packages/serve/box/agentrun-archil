@@ -26,6 +26,9 @@ set -eu
 umask 077
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
+IFS=' 	
+'
+unset ENV CDPATH
 
 ARCHIL=/usr/bin/archil
 MP=/workspace

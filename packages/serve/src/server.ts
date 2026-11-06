@@ -868,7 +868,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   } else await clearImage(data);
   boxOffers = offersNow();
   const runBoxes = fauxBox ?? boxes.provider("docker");
-  // Daytona's boxes are made, seeded, pulled and destroyed here, with the key this server holds; a run's process reaches
+  // Daytona's boxes are made, mounted and destroyed here, with the key this server holds; a run's process reaches
   // its own through the relay below, which holds the key for it (box-relay.ts).
   const remoteBoxes = boxes.provider("daytona");
   // And the VM box's, the same way, with this server's SDK client: the relay's VM half makes a run's calls with it.
@@ -1928,7 +1928,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       }
       case "listRunFiles": {
         const run = await needRun(id);
-        // A remote box's turn just ended: its pull lands first, so the list shows what the box wrote.
+        // A remote box's turn just ended: its sync lands first, so the list shows what the box wrote.
         await runs.synced(run.id);
         const { files, deep } = await walk(join(run.dir, "work"));
         files.sort((a, b) => a.path.localeCompare(b.path));

@@ -3,7 +3,7 @@
 // its own (relayedVmSdk) whose every call comes here, on loopback with its run's own door token (box-relay.ts checks it),
 // and is made here with the server's client only when it is one of the calls a run's tools make of that run's own box:
 // find it, read its state and its tags, start a program in it, and that program's input, output and exit. Nothing else
-// passes: no create, listing, end or tag change (the server makes and seeds the box, pulls its work/ back and ends it),
+// passes: no create, listing, end or tag change (the server makes the box, has it mount the run's folder, and ends it),
 // and no call to a sandbox that does not carry the run's label. The SDK speaks gRPC, so the relay carries its calls, not
 // its bytes on the wire: each program started here is held by an id of its own until its exit is read and its output
 // streams are done.

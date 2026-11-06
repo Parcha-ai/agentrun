@@ -121,11 +121,12 @@ export function storedPlace(value: unknown): Place {
   return { mode: "sandbox", box: value.box as BoxId };
 }
 
-/** Where a box has the run's work/ (bound, or seeded), and where its tools start: the same in every box. */
+/** Where a box has the run's work/ (bound, or mounted from the Archil disk), and where its tools start: the same in
+ *  every box. */
 export const BOX_WORK = "/workspace";
 
-/** The boxes that cannot bind a run's work/, being on another machine: its work/ is seeded at the box's making and
- *  pulled back (run-box.ts). */
+/** The boxes that cannot bind a run's work/, being on another machine: they mount it from the owner's Archil disk
+ *  (disk.ts archilDisk, run-box.ts ensureRemoteBox). */
 export const REMOTE_BOXES: readonly BoxId[] = ["daytona", VM_PROVIDER.id];
 export const remotePlace = (place: Place): boolean => place.mode === "sandbox" && REMOTE_BOXES.includes(place.box);
 
