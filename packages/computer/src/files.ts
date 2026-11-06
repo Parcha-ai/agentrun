@@ -101,6 +101,7 @@ export async function pushTar(
 		const wrote = await send();
 		if (!wrote.ok) return wrote;
 	}
+	if (signal?.aborted) return abandon(client, id, fail("aborted", `the push into ${dir} was aborted`));
 	return client.call("tar.push.end", { id }, options);
 }
 
