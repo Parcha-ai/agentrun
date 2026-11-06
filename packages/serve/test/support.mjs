@@ -125,8 +125,18 @@ export function client(baseUrl, token) {
     try {
       json = JSON.parse(text);
     } catch {}
+    if (method === "PATCH" && res.status === 200 && json?.resumed === true) await raisedReadsQueued(baseUrl, token, path);
     return { status: res.status, headers: res.headers, body: json ?? text };
   };
+}
+
+/** A guard on every raise a test makes: a raise that resumed a paused run (PATCH /runs/{id}, `resumed: true`) leaves it
+ *  reading as a run that goes on, at once. Never input_required with no pending, which `agentrun runs wait` and the
+ *  client's runs.wait take as a run that needs someone; its follow-up turn is still to go (runs.ts statusOf). */
+async function raisedReadsQueued(baseUrl, token, path) {
+  if (!/^(?:\/v2)?\/runs\/[^/?]+$/.test(path)) return;
+  const run = await (await fetch(`${baseUrl}${path}`, { headers: token ? { authorization: `Bearer ${token}` } : {} })).json();
+  assert.ok(!(run?.status === "input_required" && run?.pending === null), `PATCH ${path} resumed the run, which then reads input_required with no pending: ${JSON.stringify(run)}`);
 }
 
 export const agent = (id, extra = {}) => ({ definition: { id, version: 1, name: id, instructions: "Answer.", skills: [], tools: [], ...extra } });
