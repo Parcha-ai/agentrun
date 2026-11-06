@@ -147,6 +147,18 @@ export default function reply(context, faux) {
   }
   // Quotes a key read from a file the test names (so the prompt never holds it): in its thinking, in its text (base64),
   // in a tool call's arguments, then in its answer (timeline-redact-all.test.mjs holds that value as a key).
+  // A long streamed turn (hundreds of text deltas) and a read; then, once the gate file exists, a streamed answer quoting
+  // the value in the key file, which the test saves as a key in between (live-keys-memo.test.mjs).
+  const streamed = /^Stream (at length|briefly), then once (\S+) exists quote the key in (\S+)$/.exec(first);
+  if (streamed) {
+    if (results === 0) return faux.message([faux.text("Reading the notes first, word by word. ".repeat(streamed[1] === "briefly" ? 1 : 250)), faux.toolCall("read", { path: "notes.txt" })], { stopReason: "toolUse" });
+    return untilExists(streamed[2]).then(() => {
+      const key = process.getBuiltinModule("node:fs").readFileSync(streamed[3], "utf8").trim();
+      // The key about 200 characters in, then about 2 KB more: a live row shows the key's place once the stream is past its
+      // held-back tail (a live block's first few characters can be missing from it, so the key is not at its very start).
+      return faux.message([faux.thinking(`I hold ${key} now.`), faux.text(`${"Answering at length. ".repeat(10)}The key is ${key}. ${"Answering at length. ".repeat(90)}Done.`)]);
+    });
+  }
   // Records the first message it was given, exactly as the model received it, then answers (user-row-redact.test.mjs).
   const record = /Record what you got in (\S+) now\.$/.exec(first);
   if (record) {

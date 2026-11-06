@@ -1367,8 +1367,17 @@ export class Runs {
    *  server's secrets wherever its launcher put them and the keys saved on it, what each launch handed the run, and the
    *  server's own tokens. */
   private refusedValues(run: Run): string[] {
-    return [...hostSecrets(process.env, this.options.storedKeys), ...(run.handed ?? []), this.options.token, this.options.doorToken];
+    return [...hostSecrets(process.env, this.savedKey), ...(run.handed ?? []), this.options.token, this.options.doorToken];
   }
+
+  /** The keys saved on this server, by name, as refusedValues reads them: opened once and kept until one is saved or
+   *  deleted (keysChanged). A streaming block is redacted at each delta, and each read of tool-keys.json opens the file and
+   *  unseals; a run's launch, which hands the keys over, still reads them as they are then (storedKeys). */
+  private readonly savedKeys = new Map<string, string | undefined>();
+  private readonly savedKey: StoredKeys = (name) => {
+    if (!this.savedKeys.has(name)) this.savedKeys.set(name, this.options.storedKeys?.(name));
+    return this.savedKeys.get(name);
+  };
 
   /** A run's model error in a person's words when its provider refused the run's key (key-refusal.ts): the key its
    *  harness's route sends, by this server's settings and keys, and no secret's value. */
@@ -3257,6 +3266,7 @@ export class Runs {
    *  of the keys as they are now (learning-run.ts shown, decision-rows.ts), as its view and its lists already are from
    *  the next read on. */
   keysChanged(): void {
+    this.savedKeys.clear();
     this.learning.keysChanged();
     // A run's learning row and its decision rows are shown again with the keys as they are now (show): a key saved after
     // a workflow ended is redacted from its decisions on the next read, learning or not.
