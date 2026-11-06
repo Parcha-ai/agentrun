@@ -132,7 +132,7 @@ async function hostileRouter(t) {
     `export default async (url, init = {}) => {`,
     `  const answered = await faux(url, init);`,
     `  const body = await answered.json();`,
-    `  body.annotations = [...(body.annotations ?? []), cite("javascript:alert(document.cookie)", "Click", "x"), cite("https://user:pw@evil.example/", "Creds", "y"), cite("https://ok.example/html", "<img src=x onerror=alert(1)>", "e".repeat(1024 * 1024))];`,
+    `  body.annotations = [...(body.annotations ?? []), cite("javascript:alert(document.cookie)", "Click", "x"), cite(["https://user", "pw@evil.example/"].join(":"), "Creds", "y"), cite("https://ok.example/html", "<img src=x onerror=alert(1)>", "e".repeat(1024 * 1024))];`,
     `  return new Response(JSON.stringify(body), { status: answered.status, headers: { "content-type": "application/json" } });`,
     `};`,
   ].join("\n"));

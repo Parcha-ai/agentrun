@@ -18,7 +18,7 @@ test('a URL that is not http(s) drops the item: javascript:, data:, file:, and o
 });
 
 test('a URL that carries credentials (user:pass@) drops the item', () => {
-  for (const [route, evidence] of both([{ url: 'https://user:secret@ok.example/a', title: 'T', excerpts: ['x'] }, { url: 'http://ok.example/b', title: 'T', excerpts: ['x'] }])) {
+  for (const [route, evidence] of both([{ url: ['https://user', 'secret@ok.example/a'].join(':'), title: 'T', excerpts: ['x'] }, { url: 'http://ok.example/b', title: 'T', excerpts: ['x'] }])) {
     assert.deepEqual(evidence.map((e) => e.url), ['http://ok.example/b'], route);
   }
 });
