@@ -129,7 +129,8 @@ export class DockerProvider implements ComputerProvider {
 		if (signal?.aborted) return fail("aborted", "create was aborted before Docker was called");
 		const name = `computer-${randomBytes(6).toString("hex")}`;
 		const args = ["run", "--detach", "--name", name, "--label", `${COMPUTER_LABEL}=1`];
-		args.push("--label", `${DEADLINE_LABEL}=${new Date(Date.now() + spec.lifetimeMs).toISOString()}`);
+		const deadline = new Date(Date.now() + spec.lifetimeMs).toISOString();
+		args.push("--label", `${DEADLINE_LABEL}=${deadline}`);
 		for (const [key, value] of Object.entries(spec.labels ?? {})) args.push("--label", `${key}=${value}`);
 		args.push("--user", userOf(spec.user) ?? this.#user);
 		args.push("--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", String(spec.pids ?? DEFAULT_PIDS));
@@ -140,7 +141,8 @@ export class DockerProvider implements ComputerProvider {
 		args.push("--memory", memory, "--memory-swap", memory);
 		args.push("--mount", `type=bind,src=${this.#daemonPath},dst=${DAEMON_IN_COMPUTER},readonly`, "--entrypoint", DAEMON_IN_COMPUTER);
 		if (spec.workdir !== undefined) args.push("--workdir", spec.workdir);
-		args.push(spec.image, "init");
+		// PID 1 ends the computer at the deadline the label holds, so a computer the janitor misses still stops.
+		args.push(spec.image, "init", "--deadline", deadline);
 
 		const started = await this.#run(args, signal);
 		if (!started.ok || started.value.exitCode !== 0) {
