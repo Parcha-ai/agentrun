@@ -4,7 +4,8 @@
 //	                    run as the computer's first process: hold every process and serve the protocol on a unix socket
 //	                    (AGENTRUN_COMPUTERD_SOCKET, default /run/agentrun/computerd.sock) until SIGTERM or the deadline.
 //	                    With --user, init starts as root, gives HOME and the socket's directory to uid:gid and becomes
-//	                    it: for a vendor that runs every computer as root (Modal)
+//	                    it: for a vendor that runs every computer as root (Modal), or whose images' privilege tools
+//	                    cannot be relied on (Daytona)
 //	computerd stdio     bridge stdin and stdout to init's socket (stdout carries protocol lines only; stderr is the log)
 //	computerd probe [--connect <host:port>]...
 //	                    print one JSON line: this process's uid and gid, the kernel's release, and the addresses a TCP

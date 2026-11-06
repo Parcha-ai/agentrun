@@ -20,7 +20,8 @@ const CAPS = ["CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"];
 
 /**
  * Each image, and how a setuid-root `id` is made in it before the daemon starts: coreutils' id copied, or BusyBox's
- * binary copied under the name id, so BusyBox runs its id applet.
+ * binary copied under the name id, so BusyBox runs its id applet. Run by uid 1000 without no_new_privs, coreutils' copy
+ * prints 0; BusyBox's id applet drops a setuid root itself, so on Alpine the check holds either way.
  */
 const IMAGES = [
 	{ image: "debian:bookworm-slim", suid: "/tmp/suid-id", copy: "cp /usr/bin/id /tmp/suid-id" },

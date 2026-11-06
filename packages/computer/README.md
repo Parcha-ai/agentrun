@@ -52,6 +52,11 @@ capabilities are `["exec", "files", "processes"]`.
   user's alone, or is not writable by it.
   Every connection is served by the same daemon with one process table, which is how a process outlives the call and
   the connection that started it. A socket left by an init that is gone is replaced; a live one is refused.
+- `computerd init --deadline <time> --user <uid:gid>` is for a vendor whose computers run as root and whose images'
+  privilege tools cannot be relied on (Daytona). Started as root, init makes `HOME` and the socket's directory
+  uid:gid's alone (mode 0700, refusing a symbolic link or a file), sets `no_new_privs` and empties the capability
+  bounding set on every thread, drops the supplementary groups, becomes uid:gid, and empties the inheritable set: the
+  same daemon a Docker computer runs, with nothing to raise it. Started as anyone but root it refuses, in words.
 - `computerd stdio` is a thin bridge: it connects to the socket (waiting up to 3 s for a computer that has just
   started) and copies bytes both ways until either side ends. With no daemon to reach it says so on stderr and exits 1;
   it never serves on its own.
@@ -396,14 +401,19 @@ So the provider pushes it in at create and starts it as a long-lived command, an
 
 1. Upload the static binary through the toolbox's file upload, to `/tmp/agentrun-computerd-<random>`.
 2. Install it with `/process/execute` (the command is piped to the sandbox's shell): root-owned, mode 755, at
-   `/opt/agentrun/computerd`; `/work` (its home) and `/run/agentrun` (its socket's directory) owned by the daemon's
-   user, mode 700. As root, or through passwordless `sudo`; a sandbox with neither, or with no `setpriv`, is refused in
-   the script's words. The script prints the installed binary's sha256, which must be the uploaded one's.
-3. Start `computerd init --deadline <time>` as a session command (`runAsync`) in the session `agentrun-computerd`,
-   through `setpriv`: uid and gid 1000 (the `daemonUser` option), no supplementary groups, every capability set
-   cleared, the bounding set included, and `no_new_privs`, so a setuid program such as `sudo` cannot raise them; a
-   clean environment, and `/work` as its directory. The provider never deletes that session: deleting it ends init.
-4. `connect()` starts `computerd stdio` the same way, in a session of its own. Its stdin is the command's input
+   `/opt/agentrun/computerd`, and make `/work` (its home) and `/run/agentrun` (its socket's directory). As root, or
+   through passwordless `sudo`; a sandbox with neither is refused in the script's words. The script prints the
+   installed binary's sha256 (`sha256sum`, BusyBox's or coreutils'), which must be the uploaded one's.
+3. Start `computerd init --deadline <time> --user 1000:1000` (the `daemonUser` option) as a session command
+   (`runAsync`) in the session `agentrun-computerd`, as root (through `sudo -n` when the session's user is not root),
+   in a clean environment and with `/work` as its directory. Init drops itself: it gives `/work` and `/run/agentrun`
+   to the daemon's user (mode 700, never through a symbolic link), sets `no_new_privs` and empties the capability
+   bounding set on every thread, so a setuid program such as `sudo` cannot raise it, then becomes uid and gid 1000
+   with no supplementary groups and empties the inheritable set. The provider relies on no privilege tool of the
+   snapshot's: Daytona's default snapshot has BusyBox's `setpriv`, which has no `--reuid`. The provider never deletes
+   that session: deleting it ends init.
+4. `connect()` starts `computerd stdio` as root the same way, in a session of its own, to reach a socket in a
+   directory that is the daemon's user's alone; it only carries bytes. Its stdin is the command's input
    (`POST .../input`, whole lines, one call after another), and its stdout is the command's log stream, a WebSocket
    with `follow=true`, in which Daytona prefixes each stdout line with `01 01 01` and each stderr line with `02 02 02`
    (split output, asked for with `X-Daytona-Split-Output: true`). Input is sent with `suppressInputEcho`; a line that
@@ -529,9 +539,11 @@ name is not this provider's: release refuses it, and it is reported still there.
 
 ### Not yet known
 
-Nothing here has run against real Daytona. These need a live probe once a key is OKed:
+One live run reached the default snapshot: the install passed (its toolbox user is root or has passwordless sudo, and
+its `sha256sum` read back the uploaded binary), and the start failed on BusyBox's `setpriv`, which init's own drop now
+replaces. These need a live probe:
 
-- whether the default snapshot's toolbox user is root or has passwordless sudo, and has `setpriv` and `sha256sum`;
+- the start, the bridge and the drift check on the default snapshot, with init's own drop;
 - whether the production toolbox honors `suppressInputEcho` and `X-Daytona-Split-Output`, and keeps a session's
   command running between calls;
 - whether a session's labeller (a shell `read` per line) carries 1 MiB lines at a usable speed, and how big a

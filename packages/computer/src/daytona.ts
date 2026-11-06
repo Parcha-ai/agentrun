@@ -186,43 +186,44 @@ const ERR = Buffer.from([2, 2, 2]);
 const ECHO = /^\{"jsonrpc":"2\.0",("id":\d+,)?"method":/;
 const CAPS = ["CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"];
 
-/** The setpriv line both scripts run: the uid:gid, no groups, no capabilities in any set, and no_new_privs, so a setuid
- *  program (sudo) cannot raise them; a clean environment, then the daemon from its home. */
-const DROP = [
-	'$p setpriv --reuid="$u" --regid="$g" --clear-groups --inh-caps=-all --bounding-set=-all --no-new-privs',
-	`env -i PATH=${PATH} HOME="$h" AGENTRUN_COMPUTERD_SOCKET="$r/computerd.sock"`,
-	`sh -c 'cd "$HOME" && exec "$@"' sh`,
-].join(" ");
+/** Root for what follows: the session's own user when it is root, else passwordless sudo, which the install checked. */
 const ROOT = 'p=; [ "$(id -u)" = 0 ] || p="sudo -n"';
 
-/** Installs the uploaded daemon root-owned and read-only to its user, makes its home and socket directory that user's
- *  alone, and prints the installed binary's sha256. As root, or through passwordless sudo; else it says why. */
+/** Installs the uploaded daemon root-owned and read-only to its user, makes its home and socket directory (init gives
+ *  them to the daemon's user), and prints the installed binary's sha256. As root, or through passwordless sudo; else
+ *  it says why. Every tool is in BusyBox and in coreutils alike: no privilege tool of the snapshot's is relied on. */
 const INSTALL_SCRIPT = [
 	"# agentrun-computer: install",
-	"s=$1; d=$2; u=$3; g=$4; h=$5; r=$6",
+	"s=$1; d=$2; h=$3; r=$4",
 	'if [ "$(id -u)" = 0 ]; then p=; elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then p="sudo -n"; else echo "the sandbox user $(id -un) is not root and has no passwordless sudo, so the daemon cannot be installed"; exit 3; fi',
-	'command -v setpriv >/dev/null 2>&1 || { echo "the snapshot has no setpriv (util-linux), which starts the daemon with no capabilities"; exit 4; }',
-	'$p mkdir -p "${d%/*}" "$h" "$r" && $p install -m 0755 -o 0 -g 0 "$s" "$d" && $p chown "$u:$g" "$h" "$r" && $p chmod 0700 "$h" "$r" || { echo "installing the daemon at $d failed"; exit 5; }',
+	'$p mkdir -p "${d%/*}" "$h" "$r" && $p install -m 0755 -o 0 -g 0 "$s" "$d" || { echo "installing the daemon at $d failed"; exit 5; }',
 	'rm -f "$s"',
 	'echo "sha256 $($p sha256sum "$d" | cut -c1-64)"',
 ].join("\n");
 
-/** Starts init, the long-lived session command: it holds every process and ends them at the deadline. */
-const INIT_SCRIPT = ["# agentrun-computer: init", "d=$1; t=$2; u=$3; g=$4; h=$5; r=$6", ROOT, `${DROP} "$d" init --deadline "$t"`].join("\n");
+/** Starts init, the long-lived session command, as root in a clean environment from its home: `init --user` gives HOME
+ *  and the socket's directory to the daemon's user, sets no_new_privs and empties every capability set on every
+ *  thread, and becomes that user with no groups. Init holds every process and ends them at the deadline. */
+const INIT_SCRIPT = [
+	"# agentrun-computer: init",
+	"d=$1; t=$2; w=$3; h=$4; r=$5",
+	ROOT,
+	`exec $p env -i PATH=${PATH} HOME="$h" AGENTRUN_COMPUTERD_SOCKET="$r/computerd.sock" sh -c 'cd "$HOME" && exec "$@"' sh "$d" init --deadline "$t" --user "$w"`,
+].join("\n");
 
-/** The bridge one connection runs: stdin and stdout to init's socket, as the daemon's user. */
-const STDIO_SCRIPT = ["# agentrun-computer: stdio", "d=$1; u=$2; g=$3; h=$4; r=$5", ROOT, `${DROP} "$d" stdio`].join("\n");
+/** The bridge one connection runs: stdin and stdout to init's socket. As root, to reach a socket in a directory that is
+ *  the daemon's user's alone; it only carries bytes, and the session's user is root or has passwordless sudo already. */
+const STDIO_SCRIPT = ["# agentrun-computer: stdio", "d=$1; r=$2", ROOT, `exec $p env -i PATH=${PATH} AGENTRUN_COMPUTERD_SOCKET="$r/computerd.sock" "$d" stdio`].join("\n");
 
 /**
  * The three commands the provider sends into a sandbox, exactly: install (through /process/execute), init and stdio
  * (each a session command). Exported so a test can run them where Daytona would, in a root container.
  */
 export function daytonaCommands({ staging = "", deadline = "", user = "1000:1000" }: { staging?: string; deadline?: string; user?: string } = {}) {
-	const [uid = "1000", gid = "1000"] = user.split(":");
 	return {
-		install: shellCommand(INSTALL_SCRIPT, [staging, DAEMON_IN_COMPUTER, uid, gid, WORK, SOCKET_DIR]),
-		init: shellCommand(INIT_SCRIPT, [DAEMON_IN_COMPUTER, deadline, uid, gid, WORK, SOCKET_DIR]),
-		stdio: shellCommand(STDIO_SCRIPT, [DAEMON_IN_COMPUTER, uid, gid, WORK, SOCKET_DIR]),
+		install: shellCommand(INSTALL_SCRIPT, [staging, DAEMON_IN_COMPUTER, WORK, SOCKET_DIR]),
+		init: shellCommand(INIT_SCRIPT, [DAEMON_IN_COMPUTER, deadline, user, WORK, SOCKET_DIR]),
+		stdio: shellCommand(STDIO_SCRIPT, [DAEMON_IN_COMPUTER, SOCKET_DIR]),
 	};
 }
 
