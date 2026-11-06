@@ -342,6 +342,25 @@ test("pi: a saved credential that can't be opened refuses the call before anythi
   assert.deepEqual(calls(open).map((entry) => [entry.tool, entry.authorization]), [["add", false]]);
 });
 
+test("pi: a saved header named unopened is a header like any other: the call is sent with it, and its value reaches no answer or file", { timeout: 90_000 }, async (t) => {
+  const { api, data } = await serve(t, { faux: FAUX_MCP });
+  const fake = await startFakeMcp({ token: TOKEN });
+  t.after(() => fake.close());
+  const value = `not-a-secret-${"unopened-header-value"}`;
+  const saved = await api("PUT", "/settings/mcp-servers/fake", { url: fake.url, auth: { type: "headers", headers: { Authorization: `Bearer ${TOKEN}`, unopened: value } } });
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  assert.equal((await api("POST", "/agents", agent("named-unopened", { tools: ["mcp:fake/add"], tool_settings: ALLOW_FAKE }))).status, 201);
+  const runId = await runOf(api, "named-unopened", 'Call mcp__fake__add with {"a":2,"b":3}');
+  const { last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 60_000 });
+  assert.equal(last.status, "completed");
+  assert.equal((await api("GET", `/runs/${runId}`)).body.result?.final_answer, "The tool said: 5");
+  assert.deepEqual(calls(fake).map((entry) => [entry.tool, entry.authorization]), [["add", true]]);
+  const timeline = JSON.stringify((await api("GET", `/runs/${runId}/timeline?limit=500`)).body);
+  assert.ok(!timeline.includes(value), "the header's value is in no row");
+  const leaked = (await filesUnder(join(data, "runs", runId))).filter((file) => file.text.includes(value)).map((file) => file.path);
+  assert.deepEqual(leaked, [], "no file of the run holds the header's value");
+});
+
 /** serve's gateway on loopback: each Responses request answered with the text it carries, and its usage. */
 async function echoGateway(t) {
   const server = createServer(async (req, res) => {
