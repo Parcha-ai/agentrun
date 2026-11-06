@@ -23,6 +23,12 @@ export interface ComputerCapabilities {
 	/** Who ends a computer at its deadline: the vendor, or our janitor by label. */
 	lifetime: "vendor" | "janitor";
 	network: Array<"none" | "open" | "allow">;
+	/**
+	 * Whether network() reads the policy back from outside the computer, from the vendor's own report of it. false: the
+	 * vendor has no read-back, so only a probe from inside the computer stands for one, and an allowlist counts only
+	 * once the live bypass cases pass (ruling 9).
+	 */
+	networkReadBack?: boolean;
 	isolation: "container" | "gvisor" | "microvm" | "vm" | "machine";
 	os: "linux" | "windows" | "macos" | "android" | "ios";
 	/** What the daemon in each computer must offer. */
