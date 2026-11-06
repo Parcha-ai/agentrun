@@ -2,7 +2,9 @@
 // answered as the SDK documents. No Modal client is constructed, no token is read and nothing reaches the network.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { ModalProvider, sweep } from "../dist/index.js";
 import { DAEMON, DAEMON_IMAGE, deferred, fakeModal, GVISOR_KERNEL, HELLO, VERSION } from "./fake-modal.mjs";
@@ -578,6 +580,7 @@ test("no real Modal client: the provider and the conformance module import nothi
 		app: "COMPUTER_MODAL_APP",
 		daemonImage: "COMPUTER_MODAL_DAEMON_IMAGE",
 		driftedDaemonImage: "COMPUTER_MODAL_DRIFTED_DAEMON_IMAGE",
+		serverUrl: "COMPUTER_MODAL_SERVER_URL",
 	});
 });
 
@@ -591,14 +594,34 @@ const MODAL_SETTINGS = {
 	COMPUTER_MODAL_DRIFTED_DAEMON_IMAGE: DAEMON_IMAGE,
 };
 
-/** A stand-in for the SDK's ModalClient constructor: it records the params it is given and answers with the fake slice. */
+/**
+ * A stand-in for the SDK's ModalClient constructor: it records the params it is given, and the MODAL_SERVER_URL its
+ * getProfile would read at that moment (it beats a profile's server_url: modal-client@64880502:js/src/config.ts:140-143),
+ * and answers with the fake slice.
+ */
 function fakeClient() {
 	const made = [];
+	const servers = [];
 	function ModalClient(params) {
 		made.push(params);
+		servers.push(process.env.MODAL_SERVER_URL);
 		return fakeModal().sdk;
 	}
-	return { ModalClient, made };
+	return { ModalClient, made, servers };
+}
+
+/** Runs fn with these names set in process.env, where the SDK reads them, and puts back what was there. */
+async function withProcessEnv(values, fn) {
+	const before = Object.fromEntries(Object.keys(values).map((name) => [name, process.env[name]]));
+	Object.assign(process.env, values);
+	try {
+		return await fn();
+	} finally {
+		for (const [name, value] of Object.entries(before)) {
+			if (value === undefined) delete process.env[name];
+			else process.env[name] = value;
+		}
+	}
 }
 
 test("the conformance module refuses MODAL_TOKEN_ID and MODAL_TOKEN_SECRET: it names the COMPUTER_MODAL_ token it needs", async () => {
@@ -637,4 +660,43 @@ test("the live Modal suite skips when only MODAL_TOKEN_ID and MODAL_TOKEN_SECRET
 	assert.match(run.stdout, /# SKIP .*COMPUTER_MODAL_TOKEN_ID and COMPUTER_MODAL_TOKEN_SECRET/);
 	assert.match(run.stdout, /^# fail 0$/m);
 	assert.match(run.stdout, /^# pass 0$/m);
+});
+
+test("the conformance module pins the client's server: an ambient MODAL_PROFILE or MODAL_CONFIG_PATH cannot redirect the key", async () => {
+	const { createProvider, createDriftedProvider } = await import("../dist/conformance/modal.js");
+	const dir = mkdtempSync(join(tmpdir(), "modal-profile-"));
+	const toml = join(dir, "modal.toml");
+	writeFileSync(toml, '[prod]\nactive = true\nserver_url = "https://prod.example.invalid:443"\ntoken_id = "prod-id-must-not-be-used"\n');
+	try {
+		await withProcessEnv({ MODAL_PROFILE: "prod", MODAL_CONFIG_PATH: toml }, async () => {
+			for (const make of [createProvider, createDriftedProvider]) {
+				for (const [chosen, server] of [
+					[{}, "https://api.modal.com:443"],
+					[{ COMPUTER_MODAL_SERVER_URL: "https://dev.example.invalid:443" }, "https://dev.example.invalid:443"],
+				]) {
+					const { ModalClient, made, servers } = fakeClient();
+					await make({ env: { ...MODAL_SETTINGS, ...DEV_TOKEN, MODAL_PROFILE: "prod", MODAL_CONFIG_PATH: toml, ...chosen }, ModalClient });
+					assert.deepEqual(made, [{ tokenId: "fake-dev-id", tokenSecret: "fake-dev-secret" }]);
+					assert.deepEqual(servers, [server], "the client is made with the server the module chose");
+					assert.equal(process.env.MODAL_SERVER_URL, undefined, "and process.env is put back after");
+				}
+			}
+		});
+	} finally {
+		rmSync(dir, { recursive: true });
+	}
+});
+
+test("the conformance module refuses an ambient MODAL_SERVER_URL in words, before any client", async () => {
+	const { createProvider, createDriftedProvider } = await import("../dist/conformance/modal.js");
+	for (const make of [createProvider, createDriftedProvider]) {
+		const { ModalClient, made } = fakeClient();
+		const env = { ...MODAL_SETTINGS, ...DEV_TOKEN, MODAL_SERVER_URL: "https://prod.example.invalid:443" };
+		await assert.rejects(make({ env, ModalClient }), (error) => {
+			assert.match(error.message, /MODAL_SERVER_URL is set/);
+			assert.match(error.message, /COMPUTER_MODAL_SERVER_URL/);
+			return true;
+		});
+		assert.deepEqual(made, [], "no client is made while MODAL_SERVER_URL is set");
+	}
 });
