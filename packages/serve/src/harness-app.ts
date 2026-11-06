@@ -190,7 +190,9 @@ export function adapterRun(
   // to the session's next main-model request (ModelPort.note) and in a row of the server's on the root (CAP_WRAPUP), which
   // also keeps it to once per cap across processes. `costs`: the session's own model's priced requests, side calls left
   // out; `note`: the words armed for the proxy, taken once.
-  const wrap: { costs: number[]; sent: boolean; note?: string } = { costs: [], sent: false };
+  // `row`: its root entry, held while the turn it is told in has its person's (or the server's) message still to be
+  // written (`entryDue`, sendOf), so the Timeline shows that message first and the note after it.
+  const wrap: { costs: number[]; sent: boolean; note?: string; entryDue: boolean; row?: JsonObject } = { costs: [], sent: false, entryDue: false };
   const guard = (request: Parameters<CapGuard["beforeRequest"]>[0]) => {
     const byCancel = cancelled();
     // What the run spent: the booking's, its paid tools' charges, and its own model requests' beside the harness's (a
@@ -222,7 +224,8 @@ export function adapterRun(
         wrap.sent = true;
         wrap.note = wrapUpWords(due.leftUsd);
         const data = { key: spec.key, capUsd: budgetUsd, leftUsd: due.leftUsd, words: wrap.note };
-        later(() => commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: CAP_WRAPUP, data })))).catch(() => undefined);
+        if (wrap.entryDue) wrap.row = data;
+        else later(() => commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: CAP_WRAPUP, data })))).catch(() => undefined);
       }
     }
     // Admitted, limited to the output what is left of the cap buys (which the runner hands the model proxy): what the cap
@@ -459,11 +462,26 @@ export function adapterRun(
     argsOf.clear();
     await message.recorded;
     taking = message.id;
-    await session!.send(message.content);
+    wrap.entryDue = true;
+    try {
+      await session!.send(message.content);
+    } catch (error) {
+      // No message entry follows: a row held for it is written as it is.
+      const row = wrap.row;
+      wrap.entryDue = false;
+      wrap.row = undefined;
+      if (row) later(() => commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: CAP_WRAPUP, data: row })))).catch(() => undefined);
+      throw error;
+    }
     await later(() =>
       commit(async (tx) => {
         await tx.appendEntry(UserEntry, ROOT_CONVERSATION_ID, { model: [{ role: "user", content: [{ type: "text", text: message.content }], timestamp: now() } as never], ...(message.origin ? { data: { origin: message.origin } } : {}) } as never);
         await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: MESSAGE_END, data: { key: spec.key, id: message.id, sent: true } });
+        // A wrap-up told in this turn's first request: its row after the message it answers.
+        const row = wrap.row;
+        wrap.entryDue = false;
+        wrap.row = undefined;
+        if (row) await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: CAP_WRAPUP, data: row });
       }).then(() => undefined),
     );
   };
