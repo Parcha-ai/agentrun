@@ -11,7 +11,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { BACKGROUND_LOG_BYTES, BACKGROUND_MAX } from "../dist/background.js";
 import { fauxRoot } from "./fixtures/faux-box.mjs";
-import { follow, serve } from "./support.mjs";
+import { follow, runDir, serve } from "./support.mjs";
 
 const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;
 const FAUX_BOX = new URL("./fixtures/faux-box.mjs", import.meta.url).pathname;
@@ -20,7 +20,7 @@ const TOOLS = ["bash", "bash_background", "bash_output", "bash_input", "bash_sig
 
 /** Each tool call of run `runId` and its answer, in order, from its store. */
 function answers(data, runId) {
-  const db = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { readOnly: true });
+  const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true });
   try {
     return db.prepare("SELECT record FROM entries ORDER BY id").all()
       .flatMap((row) => JSON.parse(row.record).model ?? [])
@@ -58,7 +58,7 @@ async function boxedRun(t, plan) {
   const run = await api("POST", "/agents/bg/runs", { input: { content: JSON.stringify({ probe: plan }) } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
   await follow(api, run.body.run_id, ["completed"], { deadlineMs: 90_000 });
-  const work = join(server.data, "runs", run.body.run_id, "work");
+  const work = join(runDir(server.data, run.body.run_id), "work");
   return { ...server, runId: run.body.run_id, said: answers(server.data, run.body.run_id), work, logged };
 }
 

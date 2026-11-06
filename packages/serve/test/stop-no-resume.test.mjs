@@ -7,11 +7,11 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { agent, follow, serve } from "./support.mjs";
+import { agent, follow, runDir, serve } from "./support.mjs";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const resumedRows = (rows) => rows.filter((r) => r.kind === "phase" && r.summary.startsWith("Resumed")).map((r) => r.summary);
-const recordOf = (data, runId) => { try { return JSON.parse(readFileSync(join(data, "runs", runId, "run.json"), "utf8")); } catch { return null; } };
+const recordOf = (data, runId) => { try { return JSON.parse(readFileSync(join(runDir(data, runId), "run.json"), "utf8")); } catch { return null; } };
 const shown = (rows) => JSON.stringify(rows.map((r) => [r.kind, r.summary]));
 
 /** Waits for `check`, up to `ms`; fails naming `what`. */

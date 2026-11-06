@@ -13,7 +13,7 @@ import { FAUX_ENV } from "../dist/model.js";
 import { keptFromBefore, keptVendor, NO_BROWSER_KEY, NO_CHROME, planeFor, recheckPlane, resolveCapability, settingsIssues, TOOL_PLANE_ENV } from "../dist/tool-plane.js";
 import { FAUX_BROWSER_ENV, TOOLS } from "../dist/tools.js";
 import { calls as kernelCalls, KEY as KERNEL_KEY } from "./fixtures/faux-kernel-check.mjs";
-import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
+import { agent, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
 
 const FAUX_BROWSER = new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname;
 const FAUX_KERNEL = new URL("./fixtures/faux-kernel-check.mjs", import.meta.url).pathname;
@@ -134,7 +134,7 @@ test("pick the browser through the API: a Kernel key saved and checked, Kernel p
     assert.equal(started.status, 202, JSON.stringify(started.body));
     await follow(api, started.body.run_id, ["completed"]);
     const ops = (await readFile(log, "utf8")).trim().split("\n").slice(before).map((line) => JSON.parse(line));
-    const meta = JSON.parse(await readFile(join(data, "runs", started.body.run_id, "serve.json"), "utf8"));
+    const meta = JSON.parse(await readFile(join(runDir(data, started.body.run_id), "serve.json"), "utf8"));
     return { answer: (await api("GET", `/runs/${started.body.run_id}`)).body.result.final_answer, vendor: ops.find((op) => op.op === "vendor"), ops: ops.map((op) => op.op), plane: meta.tool_plane };
   };
   const kern = await browse("kern");
@@ -204,7 +204,7 @@ test("an older run reopened while Browserbase's keys are missing reads its brows
   assert.equal(started.status, 202, JSON.stringify(started.body));
   let { after } = await follow(first.api, started.body.run_id, ["completed"]);
   await first.close();
-  const file = join(first.data, "runs", started.body.run_id, "serve.json");
+  const file = join(runDir(first.data, started.body.run_id), "serve.json");
   const { tool_plane: _, ...meta } = JSON.parse(await readFile(file, "utf8"));
   await writeFile(file, JSON.stringify(meta));
   const { api } = await serve(t, { data: first.data, fauxBrowser: FAUX_BROWSER });
@@ -231,7 +231,7 @@ test("a run an earlier server saved with Browserbase's missing-key refusal runs 
   const { after } = await follow(first.api, started.body.run_id, ["completed"]);
   await first.close();
   // As the server before this fix kept it, reopened while Browserbase's keys were missing.
-  const file = join(first.data, "runs", started.body.run_id, "serve.json");
+  const file = join(runDir(first.data, started.body.run_id), "serve.json");
   const meta = JSON.parse(await readFile(file, "utf8"));
   await writeFile(file, JSON.stringify({ ...meta, tool_plane: { ...meta.tool_plane, browser: "unavailable: browserbase picked, no BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID" } }));
   const { api } = await serve(t, { data: first.data, fauxBrowser: FAUX_BROWSER });
@@ -253,7 +253,7 @@ test("a run made before the browser was pickable keeps Browserbase when it is la
   const { after } = await follow(first.api, started.body.run_id, ["completed"]);
   await first.close();
   // As a run made before this server kept its browser: no plane in its serve.json.
-  const file = join(first.data, "runs", started.body.run_id, "serve.json");
+  const file = join(runDir(first.data, started.body.run_id), "serve.json");
   const { tool_plane: _, ...meta } = JSON.parse(await readFile(file, "utf8"));
   await writeFile(file, JSON.stringify(meta));
   const { api } = await serve(t, { data: first.data, fauxBrowser: FAUX_BROWSER, fauxKernel: FAUX_KERNEL });

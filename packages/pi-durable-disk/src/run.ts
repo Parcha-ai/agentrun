@@ -182,6 +182,11 @@ export interface OpenDurableRunOptions<Tool extends ToolRegistration = ToolRegis
   /** Default `exclusive`. */
   readonly profile?: Profile;
   /**
+   * The store's close leaves its WAL in place (store.ts `keepWal`): for a run's own process, which then ends by
+   * process.exit, so the release checkpoints nothing and whoever takes the run back next checkpoints it. Default off.
+   */
+  readonly keepWal?: boolean;
+  /**
    * pi's Harness options; the registry holds every extension before the Harness opens (recovered tasks need them).
    * Required, here or from `afterClaim`.
    */
@@ -1051,6 +1056,7 @@ class Run implements DurableRun {
     this.#store = await step("store", () =>
       openArchilStore(file, this.#options.profile ?? "exclusive", {
         onFenced: (error) => void lease.fence(error),
+        ...(this.#options.keepWal ? { keepWal: true } : {}),
         ...(this.#options.decorateStore === undefined ? {} : { decorate: this.#options.decorateStore }),
       }),
     );

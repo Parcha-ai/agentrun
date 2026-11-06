@@ -12,7 +12,7 @@ import { once } from "node:events";
 import { existsSync, readFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { homedir } from "node:os";
-import type { NewRevision, Revision, RunOrigin } from "@parcha/pi-durable-agent";
+import { type NewRevision, type Revision, runDirIn, type RunOrigin, STORE_FILE } from "@parcha/pi-durable-agent";
 import { agentView, Agents, etagOf, homeBusy, revisionView, storeBusy, type AgentEntry } from "./agents.js";
 import { WORKFLOW_ADAPTERS } from "./app.js";
 import { DECISION_ADAPTER, decisionsOf, FAUX_JEV_ENV, FAUX_OPENROUTER_ENV, FAUX_PARALLEL_ENV } from "./decisions.js";
@@ -602,6 +602,24 @@ async function oldHomes(data: string): Promise<string[]> {
   return found.sort();
 }
 
+/** Why the data directory is one an earlier version wrote, which keeps its runs outside the disk: a `runs/` folder at
+ *  its top (0.1.0-beta.27 to this version's last, `<data>/runs/<id>/`), or a store.sqlite of store version 1. This
+ *  version keeps every run on the disk (`<data>/disk/agents/<agent>/runs/<run>/`), and moves nothing: undefined when
+ *  neither is there. */
+async function oldLayout(data: string): Promise<string | undefined> {
+  if (await stat(join(data, "runs")).then((info) => info.isDirectory(), () => false)) return `${join(data, "runs")} holds runs in an earlier version's layout`;
+  const file = join(data, STORE_FILE);
+  if (!(await stat(file).then((info) => info.isFile(), () => false))) return undefined;
+  const { DatabaseSync } = await import("node:sqlite");
+  const db = new DatabaseSync(file, { readOnly: true });
+  try {
+    const version = Number((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version);
+    return version === 1 ? `${file} is an earlier version's store (store version 1)` : undefined;
+  } finally {
+    db.close();
+  }
+}
+
 export async function startServe(options: ServeOptions): Promise<Serve> {
   await mkdir(resolve(options.data), { recursive: true, mode: 0o700 });
   // Canonical once, here: a box's mount source below it must then be its own canonical path, through no link (run-box.ts).
@@ -612,6 +630,8 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
     const named = homes.length > 5 ? [...homes.slice(0, 5), `and ${homes.length - 5} more`] : homes;
     throw new Error(`this data directory holds agent homes from AgentRun Server 0.1.0-beta.26 or earlier (${named.join(", ")}), which this version does not read: started here, it would show none of their agents or runs. Keep them with the earlier version, or move those directories out of ${data} to start this one; see "Upgrading from 0.1.0-beta.26" in the serve README.`);
   }
+  const old = await oldLayout(data);
+  if (old) throw new Error(`this data directory was written by an earlier version of AgentRun Server, which kept its runs outside the disk (${old}): this version keeps every run under ${join(data, "disk")} and does not read or move the old ones. Keep this directory with the earlier version, or start this one on a new data directory (an empty folder, or a new volume).`);
   if (options.token !== undefined && (options.token.length < 32 || /\s/.test(options.token))) throw new Error("the token must be 32 characters or more, with no whitespace");
   if (options.drainTimeout !== undefined && durationMs(options.drainTimeout) === undefined) throw new Error(`the drain timeout ${options.drainTimeout} is not a duration such as 8s`);
   enabledBoxes(process.env);
@@ -916,7 +936,11 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       // ended run (summaryOfRow): never its own store, whose read can fail, so a busy store loses no end. The same body a
       // live end's notice has.
       await webhooks.catchUp(rows, async (id) => {
-        const meta = await readJson(join(agents.dir, "runs", id, RUN_META));
+        // Its folder on the disk by its row's agent, which a run never changes: the listed row's, or the store's for a run
+        // listed after the list.
+        const listed = rows.find((row) => row.id === id) ?? (await agents.request(() => agents.store.readRun(id)));
+        if (!listed) return null;
+        const meta = await readJson(join(runDirIn(agents.dir, listed.agent, id), RUN_META));
         // Read last, so nothing but this read stands between the run as it is now and its end's queuing.
         const row = await agents.request(() => agents.store.readRun(id));
         if (!row) return null;

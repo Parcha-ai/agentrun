@@ -16,7 +16,7 @@
 import { lstat, readFile } from "node:fs/promises";
 import { join, posix } from "node:path";
 import { ANSWER_MAX, INDEX_FILE, parseNoteFile, redactSecrets, type Verdict } from "./learn/index.js";
-import type { AnalyticsFilter, Revision, RunRow, StartedRun } from "@parcha/pi-durable-agent";
+import { type AnalyticsFilter, type Revision, runDirIn, type RunRow, type StartedRun } from "@parcha/pi-durable-agent";
 import type { TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { learnedWorkflowsOff } from "./adapters.js";
 import { CAP_REFUSAL_PREFIX, SPEND_CAP_REACHED } from "./cap.js";
@@ -444,7 +444,7 @@ export class LearningRuns {
       for (const row of rows) {
         if (this.closing) return;
         if (row.state === "running" || row.importedFrom || row.kind !== "agentic") continue;
-        const meta = (await readJson(join(this.options.agents.dir, "runs", row.id, RUN_META))) as Partial<Run["meta"]> | null;
+        const meta = (await readJson(join(runDirIn(this.options.agents.dir, row.agent, row.id), RUN_META))) as Partial<Run["meta"]> | null;
         const learning = isObject(meta?.learning) ? meta.learning : undefined;
         await this.onSaved({ id: row.id, agentId: row.agent }, learning);
         if (!awaitsPropose(meta) && learning?.state !== "proposed") continue;
