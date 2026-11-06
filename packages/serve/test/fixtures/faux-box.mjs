@@ -4,7 +4,8 @@
 // so every path the box's environment uses or reports is the box's, as on Docker. A local box
 // shares this machine (its files, /proc and network), so what it proves is the wiring: what the spec asks, which
 // environment a command gets, and when a box is made, found and destroyed. Every spec, and every command a box runs, is
-// written down under `<data>/faux-boxes/` for the tests to read.
+// written down under `<data>/faux-boxes/` for the tests to read. A test that writes a directory's path to
+// `<data>/faux-boxes/path-prefix` gets that directory first on its boxes' PATH (a program of its own, such as a slow one).
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { localBoxes } from "@parcha/pi-transport/box/local";
@@ -43,7 +44,10 @@ export default function fauxBoxes(data) {
       note("specs.jsonl", spec);
       const work = spec.mounts?.find((mount) => mount.target === spec.workspace);
       const { mounts: _mounts, network: _network, workspace: _workspace, ...rest } = spec;
-      const made = await local.create({ ...rest, ...(work ? { workspace: work.source } : {}) }, context);
+      // A test may put programs of its own ahead of the box's: a directory named in <root>/path-prefix, read at create.
+      const prefix = existsSync(join(root, "path-prefix")) ? readFileSync(join(root, "path-prefix"), "utf8").trim() : "";
+      const env = prefix ? { ...(rest.env ?? {}), PATH: `${prefix}:/usr/local/bin:/usr/bin:/bin` } : rest.env;
+      const made = await local.create({ ...rest, ...(env ? { env } : {}), ...(work ? { workspace: work.source } : {}) }, context);
       if (made.ok && work) mounts.set(made.value.id, work);
       return made.ok ? { ok: true, value: counted(made.value, work) } : made;
     },

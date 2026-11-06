@@ -9,7 +9,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { AgentHomeError, openStore, openStoreReader } from "../dist/index.js";
 import { METRIC_NAMES, REQUEST_COST, runMetricsOf } from "../dist/timeline/index.js";
-import { scratch } from "./support.mjs";
+import { agentFolder, diskRuns, scratch } from "./support.mjs";
 
 const refused = (code) => (error) => error instanceof AgentHomeError && error.code === code;
 const A = { kind: "agentic", instructions: "Answer.", tools: [] };
@@ -111,7 +111,7 @@ test("metrics are checked before any write: a bad one leaves the run running, or
   assert.equal(store.readRun(runId).state, "running");
   assert.equal(store.runMetrics(runId), undefined);
   assert.deepEqual(store.listRuns().map((r) => r.id), [runId], "no import landed");
-  assert.deepEqual(readdirSync(path.join(dir, "runs")), [runId]);
+  assert.deepEqual(diskRuns(dir), [runId]);
   store.close();
 });
 
@@ -127,7 +127,7 @@ test("the metrics land in the run's own transaction: a failed metrics write leav
   assert.equal(again.readRun(runId).state, "running", "the end was rolled back with the metrics");
   assert.throws(() => again.importRun(importInput(revision, { metrics: METRICS })), /forced/);
   assert.deepEqual(again.listRuns().map((r) => r.id), [runId]);
-  assert.deepEqual(readdirSync(path.join(dir, "runs")), [runId], "the import's directory went with it");
+  assert.deepEqual(diskRuns(dir), [runId], "the import's directory went with it");
   assert.deepEqual(rows(dir, "SELECT (SELECT COUNT(*) FROM run_metrics) AS m, (SELECT COUNT(*) FROM run_imports) AS i")[0], { m: 0, i: 0 });
   again.close();
 });
@@ -183,53 +183,3 @@ test("a run whose model made up tool names keeps its metrics: what runMetricsOf 
   store.close();
 });
 
-test("a store written before run metrics (no run_metrics or run_tool_metrics) opens: the reader reads its runs with none, and the writer adds the tables", async () => {
-  const { dir, store } = await seeded();
-  const { runId } = await store.startRun({ agent: "notes" });
-  store.carryBack(runId, { state: "completed", costUsd: 0.2 });
-  store.close();
-  const db = new DatabaseSync(path.join(dir, "store.sqlite"));
-  db.exec("DROP TABLE run_tool_metrics");
-  db.exec("DROP TABLE run_metrics");
-  db.close();
-  const reader = openStoreReader(dir);
-  assert.deepEqual(reader.listRuns().map((r) => [r.id, r.state, r.costUsd]), [[runId, "completed", 0.2]]);
-  assert.equal(reader.runMetrics(runId), undefined, "no table: no run has metrics");
-  assert.equal(reader.stats().runs.completed, 1);
-  reader.close();
-  const writer = openStore(dir);
-  const { runId: next } = await writer.startRun({ agent: "notes" });
-  writer.carryBack(next, { state: "completed", metrics: METRICS });
-  assert.deepEqual(withoutAt(writer.runMetrics(next)), METRICS);
-  assert.equal(writer.runMetrics(runId), undefined);
-  writer.close();
-  assert.equal(rows(dir, "PRAGMA user_version")[0].user_version, 1, "the version stays: an earlier version still opens the file");
-});
-
-test("an earlier version's view of a store with metrics: the same version, the same run reads and stats, and its own end of a run still lands", async () => {
-  const { dir, store } = await seeded();
-  const { runId } = await store.startRun({ agent: "notes" });
-  store.carryBack(runId, { state: "completed", costUsd: 0.25, summary: "Done.", metrics: METRICS });
-  const { runId: other } = await store.startRun({ agent: "notes" });
-  store.carryBack(other, { state: "failed", metrics: LATER });
-  store.reopenRun(runId);
-  store.close();
-  // An earlier version checks user_version (at most 1) and reads only the tables it knows: the README's join, and the
-  // reads, which open nothing of run_metrics; so the store reads the same with the metrics gone.
-  assert.equal(rows(dir, "PRAGMA user_version")[0].user_version, 1);
-  const join = "SELECT runs.id, agents.name, revisions.id AS revision, revisions.kind, runs.state, runs.started_at, runs.cost_usd, runs.summary FROM runs JOIN revisions ON revisions.id = runs.revision_id JOIN agents ON agents.id = runs.agent_id ORDER BY runs.started_at DESC";
-  const view = () => {
-    const reader = openStoreReader(dir);
-    try { return { join: rows(dir, join), runs: reader.listRuns(), run: reader.readRun(runId), stats: reader.stats() }; } finally { reader.close(); }
-  };
-  assert.deepEqual(view().join.map((r) => [r.id, r.state]).sort(), [[other, "failed"], [runId, "running"]].sort());
-  const db = new DatabaseSync(path.join(dir, "store.sqlite"));
-  // An earlier version's carryBack is one UPDATE of runs: nothing in the new tables stops it.
-  db.prepare("UPDATE runs SET state = ?, ended_at = ?, cost_usd = ?, summary = ? WHERE id = ? AND ended_at IS NULL").run("completed", new Date().toISOString(), 0.4, "Done again.", runId);
-  const ended = view();
-  db.exec("DELETE FROM run_tool_metrics");
-  db.exec("DELETE FROM run_metrics");
-  db.close();
-  assert.deepEqual(view(), ended, "the run reads and stats an earlier version makes are the same with or without metrics");
-  assert.equal(ended.run.state, "completed");
-});

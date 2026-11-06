@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { approval, bodyOf, change, dropKind, dropWords, fileFor, impactWords, isPending, learnedBy, learningHash, learningLabel, learningSteps, type LearningDiff, lookedBack, money, noteChanges, noteParts, noteText, originOf, pendingBy, provenance, type RunLearning, shortTitle, shownImpact, took, typeLabel, underWay, usedBy, waitsForOk, waitWords } from "./learning";
+import { approval, bodyOf, change, dropKind, dropWords, fileFor, impactWords, isPending, learnedBy, learningHash, learningLabel, learningSteps, type LearningDiff, lookedBack, money, noteChanges, noteParts, noteText, originOf, pendingBy, provenance, type RunLearning, shortTitle, shownImpact, took, typeLabel, underWay, givenBy, readBy, waitsForOk, waitWords } from "./learning";
 import { recorded } from "@/fixtures";
 import type { TimelineRow } from "./v2";
 
@@ -36,12 +36,14 @@ describe("a note's parts", () => {
 
 describe("a run's learning, read tolerantly", () => {
   it("what it read and kept come from a newer server; an older one's short form shows nothing", () => {
-    expect(usedBy({ state: "merged", reason: null })).toEqual([]);
+    expect(readBy({ state: "merged", reason: null })).toEqual([]);
     expect(learnedBy({ state: "merged", reason: null })).toEqual([]);
-    expect(usedBy(null)).toEqual([]);
-    expect(usedBy(undefined)).toEqual([]);
-    const l = { state: "merged" as const, reason: null, used: [{ file: "a.md", name: "A" }, { file: 3 } as never], learned: [{ file: "b.md", name: "B", supersedes: ["a.md"] }] };
-    expect(usedBy(l)).toEqual([{ file: "a.md", name: "A" }]);
+    expect(readBy(null)).toEqual([]);
+    expect(readBy(undefined)).toEqual([]);
+    const l = { state: "merged" as const, reason: null, given: [{ file: "a.md", name: "A" }], read: [{ file: "a.md", name: "A" }, { file: 3 } as never], learned: [{ file: "b.md", name: "B", supersedes: ["a.md"] }] };
+    expect(readBy(l)).toEqual([{ file: "a.md", name: "A" }]);
+    expect(givenBy(l)).toEqual([{ file: "a.md", name: "A" }]);
+    expect(givenBy({ state: "merged", reason: null })).toEqual([]);
     expect(learnedBy(l)).toEqual([{ file: "b.md", name: "B", supersedes: ["a.md"] }]);
   });
   it("only a run whose learning was kept has learned anything", () => {
@@ -93,7 +95,7 @@ describe("the before and after", () => {
 });
 
 describe("where a note came from", () => {
-  it("the run that first kept it, and the latest change a person made, from the changes newest first", () => {
+  it("the run that first kept it, from the changes newest first; a person's change names no one (the server's last_change does)", () => {
     const log = [
       { by: { user: true as const }, commit: "c3", at: "2026-11-03T16:55:00Z", reason: "edited by a person", files: ["b.md", "MEMORY.md"] },
       { by: { run: "r2" }, commit: "c2", at: "2026-11-03T16:52:30Z", reason: "General and new.", files: ["a.md", "b.md", "MEMORY.md"] },
@@ -101,7 +103,7 @@ describe("where a note came from", () => {
     ];
     const from = provenance(log);
     expect(from.get("a.md")).toEqual({ run: { id: "r1", at: "2026-11-03T16:52:00Z", reason: "Holds for other shops." } });
-    expect(from.get("b.md")).toEqual({ run: { id: "r2", at: "2026-11-03T16:52:30Z", reason: "General and new." }, edited: "2026-11-03T16:55:00Z" });
+    expect(from.get("b.md")).toEqual({ run: { id: "r2", at: "2026-11-03T16:52:30Z", reason: "General and new." } });
   });
   it("a link names the agent's Learning tab and each note to point at", () => {
     expect(learningHash("refund finder", ["a.md", "b.md"])).toBe("#/agents/refund%20finder/learning?note=a.md&note=b.md");
@@ -217,7 +219,7 @@ describe("the look-back on a run's timeline", () => {
   it("says when there was nothing new to keep, and why a note was not kept", () => {
     expect(learningSteps([LOOK, ...WRITES, ended({ state: "dropped", reason: "empty", detail: "Nothing new to remember from this run." })], { state: "dropped", reason: "empty" })[0]!.summary).toBe("Looked back: nothing new to keep");
     const graded = { state: "dropped" as const, reason: "grader", detail: "Not kept: It's about one shop's returns portal, not a rule other shops share." };
-    expect(learningSteps([LOOK, ...WRITES, ended(graded)], graded)[0]!.summary).toBe("Looked back: kept nothing. It's about one shop's returns portal, not a rule other shops share.");
+    expect(learningSteps([LOOK, ...WRITES, ended(graded)], graded)[0]!.summary).toBe("Looked back: Not kept: It's about one shop's returns portal, not a rule other shops share.");
   });
   it("while it looks back or checks its notes, says so, in one row that grows", () => {
     const going = learningSteps([ASKED, LOOK, WRITES[0]!], { state: "reflecting", reason: null });
@@ -284,3 +286,20 @@ describe("what a run's learning changed", () => {
   });
 });
 
+
+// A drop's sentence is the server's, shown as it is: "Looked back: " before it, nothing taken out of it, so a sentence
+// that starts "Not kept, with the skill …" or "Not kept, the skill …" says "Not kept" once, as "Not kept: …" does.
+describe("lookedBack, a run that kept nothing for a reason", () => {
+  const SHAPES = [
+    "Not kept: It's about one shop's returns portal, not a rule other shops share.",
+    "Not kept, with the skill weekly-summary: it's about one shop's returns portal.",
+    "Not kept, the skill find-policies: it named a value the server keeps secret.",
+  ];
+  for (const detail of SHAPES) {
+    it(`says the server's sentence as it is: ${detail.slice(0, 40)}…`, () => {
+      const said = lookedBack({ state: "dropped", reason: "grader", detail });
+      expect(said).toBe(`Looked back: ${detail}`);
+      expect(said.match(/Not kept/g)).toHaveLength(1);
+    });
+  }
+});

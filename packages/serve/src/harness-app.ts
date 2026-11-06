@@ -35,6 +35,7 @@ import type { DoorContext, DoorEvent, DoorHook, DurableRun } from "@parcha/pi-du
 import { type ConfineChild, confineOf } from "./adapters.js";
 import { hostTools, type ToolResults } from "./host-tools.js";
 import { endsTurn, type Park, type ParkedCall, type Resume, type RunGate } from "./tool-gate.js";
+import type { McpGateway } from "./mcp-gateway.js";
 import { CAP_REFUSAL_CODE, CAP_REFUSED_FIELD, type CapGuard, capToolSpend, holdsInFlight, type RefusalFigures, type RunSpend, sideSpend, takePaidRefusal, useSpend } from "./cap.js";
 import { durableSessions } from "./sessions.js";
 import { handsParallel, planeOf } from "./tool-plane.js";
@@ -171,11 +172,11 @@ export function adapterRun(
     // A paid call the cap just refused for room (cap.ts takePaidRefusal): this request is refused in its words, so the
     // turn ends there and the run waits on a raise, as at a model request's refusal. A refusal no cap fixes comes first.
     const paid = byCancel || !cap || request.spentUsd === null ? undefined : takePaidRefusal(spend);
-    const answer = byCancel ? { refuse: CANCELLED } : paid ? { refuse: `${CAP_REFUSAL_CODE}${paid.words}`, spentUsd: paid.figures.spentUsd, needsUsd: paid.figures.needsUsd } : cap?.beforeRequest({ ...request, spentUsd: plus(plus(request.spentUsd, charged), sideSpend()) });
+    const answer = byCancel ? { refuse: CANCELLED } : paid ? { refuse: `${CAP_REFUSAL_CODE}${paid.words}`, spentUsd: paid.figures.spentUsd, needsUsd: paid.figures.needsUsd, leastCapUsd: paid.figures.leastCapUsd } : cap?.beforeRequest({ ...request, spentUsd: plus(plus(request.spentUsd, charged), sideSpend()) });
     if (answer && "refuse" in answer) {
       refused = answer.refuse;
       capRefused = !byCancel;
-      refusedFigures = !byCancel && "needsUsd" in answer && typeof answer.needsUsd === "number" && typeof answer.spentUsd === "number" ? { spentUsd: answer.spentUsd, needsUsd: answer.needsUsd } : undefined;
+      refusedFigures = !byCancel && "needsUsd" in answer && typeof answer.needsUsd === "number" && typeof answer.spentUsd === "number" && typeof answer.leastCapUsd === "number" ? { spentUsd: answer.spentUsd, needsUsd: answer.needsUsd, leastCapUsd: answer.leastCapUsd } : undefined;
       return answer;
     }
     // Admitted, limited to the output what is left of the cap buys (which the runner hands the model proxy, and holds it
@@ -477,7 +478,7 @@ export function adapterRun(
           await flush(true, cut ? undefined : async (tx) => {
             if (why !== undefined) {
               // A refusal of the cap's: a start mark of its own first, as pi's is, so the run's usage counts no request for it.
-              if (unsent) await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: REQUEST_STARTED, data: { [CAP_REFUSED_FIELD]: true, ...(figures ? { spentUsd: figures.spentUsd, needsUsd: figures.needsUsd } : {}) } });
+              if (unsent) await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: REQUEST_STARTED, data: { [CAP_REFUSED_FIELD]: true, ...(figures ? { spentUsd: figures.spentUsd, needsUsd: figures.needsUsd, leastCapUsd: figures.leastCapUsd } : {}) } });
               await tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [assistantMessage(harness, undefined, undefined, "", [], why) as never] });
             }
             const data: TurnEndData = {
@@ -509,10 +510,11 @@ export function adapterRun(
   const CRASH_SEAM = process.env.AGENTRUN_SERVE_TEST_CRASH_AFTER_ANSWER;
   let answerRecorded: (() => void) | undefined;
   const answerIn = new Promise<void>((resolve) => (answerRecorded = resolve));
-  const resume: Resume = async (id, content, mark) => {
+  const resume: Resume = async (id, content, mark, origin) => {
     await opened;
-    const message: Message = { id: `approval-${id}`, content, recorded: commit(async (tx) => {
-      await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: MESSAGE, data: { key: spec.key, id: `approval-${id}`, content } });
+    // The server's message: its origin is written on its user entry, so the Timeline never shows it as the person's.
+    const message: Message = { id: `approval-${id}`, content, ...(origin ? { origin } : {}), recorded: commit(async (tx) => {
+      await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: MESSAGE, data: { key: spec.key, id: `approval-${id}`, content, ...(origin ? { origin } : {}) } });
       await mark(tx);
     }) };
     await message.recorded;
@@ -658,7 +660,15 @@ export function adapterRun(
       // The park every gated call of the run's takes, built once: the host tools' here, and the MCP gateway's, which takes
       // the same object beside them (`{ gate, park }`). A call parked by its id or by its tool and arguments ends its turn.
       const park: Park = { commit: (change) => commit(change as never) as never, parked: (callId) => void (parked = { callId }), parkedBy: (match) => void (parked = match), turn: () => taking };
-      session = await adapter.open({ ...spec, tools: hostTools(durable, tools, context, results, coding, gate ? { gate, park } : undefined, extra) }, { writer, models: booking.models, signal: stop.signal, onEvent, ...(dir ? { dir } : {}), ...(cwd ? { cwd } : {}) });
+      // An MCP call from the harness's own client takes the same park, and its result is kept by its call id too, for the
+      // root's record of it, as a host tool's is.
+      const gateway = spec.mcp as McpGateway | undefined;
+      const mcp = gateway && { ...gateway, call: async (...[server, tool, args, call]: Parameters<McpGateway["call"]>) => {
+        const result = await gateway.call(server, tool, args, { ...call, ...(gate ? { park } : {}) });
+        if (call.callId) results.set(call.callId, { text: result.content.map((block) => block.text).join("\n\n"), isError: result.isError === true });
+        return result;
+      } };
+      session = await adapter.open({ ...spec, ...(mcp ? { mcp } : {}), tools: hostTools(durable, tools, context, results, coding, gate ? { gate, park } : undefined, extra) }, { writer, models: booking.models, signal: stop.signal, onEvent, ...(dir ? { dir } : {}), ...(cwd ? { cwd } : {}) });
       // A turn the person stopped is still open in the session (an interrupt writes no end there), and it is not resumed.
       // The run's stop record names the person's newest message when they stopped: with no message on the root newer than
       // it, the open turn is the stopped one. The session settles it, ended interrupted, and the next message is a turn of

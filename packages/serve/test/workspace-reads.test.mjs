@@ -9,7 +9,7 @@ import { test } from "node:test";
 import { confineTestHooks as confineHooks } from "@parcha/pi-durable-disk/internals";
 import { promptOf } from "../dist/app.js";
 import { assertHardlinkProtection, openWorkFile, walkWork, workspaceTestHooks } from "../dist/workspace.js";
-import { agent, follow, scratch, serve } from "./support.mjs";
+import { agent, follow, runDir, scratch, serve } from "./support.mjs";
 
 const CANARY = `not-a-secret-canary-${process.pid}`;
 
@@ -19,7 +19,7 @@ async function served(t) {
   assert.equal((await server.api("POST", "/agents", agent("files"))).status, 201);
   const { body: run } = await server.api("POST", "/agents/files/runs", { input: { content: "hi" } });
   await follow(server.api, run.run_id, ["completed"], { deadlineMs: 55_000 });
-  const work = join(server.data, "runs", run.run_id, "work");
+  const work = join(runDir(server.data, run.run_id), "work");
   await mkdir(work, { recursive: true });
   const secret = join(server.data, "server-own.txt");
   await writeFile(secret, CANARY);
@@ -30,7 +30,7 @@ async function served(t) {
  *  holds a file of the server's own (the canary) outside work/. */
 async function unserved(t) {
   const data = join(await scratch(t), "agents");
-  const work = join(data, "runs", "run-1", "work");
+  const work = join(data, "disk", "agents", "a-0123456789abcdef", "runs", "run-1", "work");
   await mkdir(work, { recursive: true });
   const secret = join(data, "server-own.txt");
   await writeFile(secret, CANARY);
