@@ -79,20 +79,22 @@ test("an answer the host cannot read is asked once more with the same prompt: a 
   const booked = ledgerOf(data).filter((line) => line.run === once.view.run_id);
   assert.deepEqual(booked.map(({ cost, tokens }) => ({ cost, tokens })), [{ cost: two.cost_usd.grade, tokens: two.tokens.grade }], "one ledger line, with both asks");
 
-  // Unreadable twice, past any bound and holding the key: dropped, with the last answer kept cut of the key and in size.
-  const babble = `${value}-${"x".repeat(5_000)}-end`;
+  // Unreadable twice, past any bound, holding the key at its start and across where its start is cut: dropped, with the
+  // last answer kept in size, cut at whitespace, and cut of the key, in whole and in part.
+  const babble = `${value}_${"word_".repeat(277)}${value}_${"word_".repeat(1_000)}end`;
   await made(api, learner("babble", { instructions: `Grade: garbage saying ${babble}.`, plan: PLAN }));
   const dropped = await ended(api, await started(api, "babble"));
   settled(dropped.view, dropped.rows, "dropped", "grader");
   assert.equal(grades(), 5, "two asks");
   const { learning } = await savedOf(data, dropped.view.run_id);
   assert.deepEqual(learning.verdict, { merge: false, reason: "the grader's verdict could not be read", items: [] });
-  assert.ok(learning.unread.startsWith("Looks fine to me. [redacted]-xxx") && learning.unread.endsWith("xxx-end"), learning.unread.slice(0, 80));
+  assert.ok(learning.unread.startsWith("Looks fine to me. [redacted] word word") && learning.unread.endsWith("word word end"), learning.unread.slice(0, 80));
+  assert.match(learning.unread, /word \n…\n word/);
   assert.ok(learning.unread.length <= 2_000, `${learning.unread.length} characters`);
-  assert.ok(!learning.unread.includes(value.slice(0, 24)) && !learning.unread.includes(value.slice(-24)));
+  for (const part of [value.slice(0, 8), value.slice(8, 16), value.slice(-8)]) assert.ok(!learning.unread.includes(part), "no part of the key");
   // Kept on the run's file for a person to diagnose; no read serves it.
   const served = JSON.stringify([(await api("GET", `/runs/${dropped.view.run_id}`)).body, (await api("GET", `/runs/${dropped.view.run_id}/learning`)).body, (await api("GET", "/runs")).body, (await api("GET", "/agents/babble/runs")).body, dropped.rows]);
-  assert.ok(!served.includes("Looks fine to me") && !served.includes("xxxxxxxx"), "the answer is never served");
+  assert.ok(!served.includes("Looks fine to me") && !served.includes("word word"), "the answer is never served");
 });
 
 test("the grader runs on the model the server names for it, --grade-model (AGENTRUN_SERVE_GRADE_MODEL) before its strong tier (AGENT_MODEL_STRONG), whatever the agent's own model; with neither, on the agent's own", { timeout: 180_000 }, async (t) => {

@@ -24,7 +24,7 @@
 // run's own (decision keep, origin run) and names it Risky, and the rest, "Grade: you <file>." keeps that one as what
 // the user asked in their own words (decision keep, origin you), and the rest, "Grade: shop <file>." drops that one on
 // General with the user's origin (a weak grader's call on a shop's policy) and merges none, "Grade: sly." says merge and keeps
-// none, "Grade: garbage." is no JSON, "Grade: garbage once." no JSON to a prompt's first ask alone, "Grade: garbage saying <text>." no JSON with <text> in it, "Grade: fail." fails the call, "Grade: drop at length." keeps no note for a reason
+// none, "Grade: garbage." is no JSON, "Grade: garbage once." no JSON to a prompt's first ask alone, "Grade: garbage saying <text>." no JSON with <text> in it (each _ a space), "Grade: fail." fails the call, "Grade: drop at length." keeps no note for a reason
 // and a why whose first sentence runs past 140 characters, "Grade: drop saying <text>." keeps no note for a reason and a
 // why that name <text>, "Grade: omit <file>." gives that file no item; anything else keeps every note. "Grade once <file> exists." holds the answer until the test makes that file
 // (or the call is aborted). With
@@ -108,9 +108,9 @@ const ASKS = new Map();
 function verdictOf(rules, files, faux) {
   if (rules.includes("Grade: fail.")) return faux.message("", { stopReason: "error", errorMessage: "the faux grader failed on purpose" });
   if (rules.includes("Grade: garbage.")) return faux.message("Looks fine to me.");
-  // "Grade: garbage saying <text>.": no JSON, with <text> in it, to every ask.
+  // "Grade: garbage saying <text>.": no JSON, with <text> in it, each _ a space, to every ask.
   const babble = /Grade: garbage saying (\S+)\./.exec(rules)?.[1];
-  if (babble) return faux.message(`Looks fine to me. ${babble}`);
+  if (babble) return faux.message(`Looks fine to me. ${babble.replaceAll("_", " ")}`);
   const long = rules.includes("Grade: drop at length.");
   const saying = /Grade: drop saying (\S+)\./.exec(rules)?.[1];
   const keep = !rules.includes("Grade: drop.") && !rules.includes("Grade: sly.") && !long && !saying;
