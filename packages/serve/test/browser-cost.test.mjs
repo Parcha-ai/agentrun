@@ -6,7 +6,7 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
-import { BROWSER_PRICES, browserPrice, browserSpend } from "../dist/browser-cost.js";
+import { BROWSER_PRICES, browserPrice, browserSpend, priceEnvOf } from "../dist/browser-cost.js";
 import { paidHolds, useSpend } from "../dist/cap.js";
 import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
 
@@ -14,6 +14,8 @@ const START = "https://example.test/start";
 const T0 = Date.UTC(2026, 10, 5, 12, 0, 0);
 const BROWSERBASE = { usdPerHour: 0.12, minimumS: 60 };
 const KEYS = { BROWSERBASE_API_KEY: "fake-test-key", BROWSERBASE_PROJECT_ID: "fake-project" };
+/** The operator's Browserbase price, in USD an hour (browser-cost.ts BROWSER_PRICE_ENV). */
+const PRICE_ENV = priceEnvOf("browserbase");
 
 /** A pi run in this process whose model calls browser_read `reads` times, thinking `thinkS` between calls, each read
  *  taking `readS`, on a `provider` browser at `price`, under `cap` (none: no cap). `seen()` runs at every moment the
@@ -417,7 +419,10 @@ test("through the API: an uncapped run's browser minutes are its cost, folded in
 });
 
 test("through the API, live: each browser call's row carries its charge as it runs, /usage reads it as browser time, and the release's charge after the answer is an update of the last call's row, never a row of its own", { timeout: 120_000 }, async (t) => {
-  withEnv(t, KEYS, ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "FAUX_BROWSER_PROVIDER"]);
+  // The calls' charges are what their sessions ran, a few milliseconds here: at the list price ($0.12 an hour) two of
+  // them can come to less than half a micro-dollar, which the run's cost rounds to $0, and /usage then has no meters to
+  // split. At $36 an hour every millisecond is $0.00001, so what the live run has spent is never rounded away.
+  withEnv(t, { ...KEYS, [PRICE_ENV]: "36" }, ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "FAUX_BROWSER_PROVIDER", PRICE_ENV]);
   const gate = join(await scratch(t), "gate");
   const { api, data } = await serve(t, { faux: new URL("./fixtures/faux-browse-gated.mjs", import.meta.url).pathname, fauxBrowser: new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname });
   assert.equal((await api("POST", "/agents", agent("browse", { tools: ["browser"] }))).status, 201);
@@ -461,8 +466,9 @@ test("through the API, live: each browser call's row carries its charge as it ru
   const booked = toolCosts(data, runId);
   assert.equal(booked.at(-1).final, true);
   assertFolded([...new Map([...view.values(), ...rows].map((row) => [row.id, row])).values()], booked);
-  assert.equal(pico(booked.reduce((sum, charge) => sum + charge.usd, 0)), 0.002);
-  assert.equal((await api("GET", `/runs/${runId}`)).body.cost.usd, 0.002, "the run's cost counts each charge once");
+  // One session of well under a minute, topped up to Browserbase's 60 s minimum: $0.60 at $36 an hour.
+  assert.equal(pico(booked.reduce((sum, charge) => sum + charge.usd, 0)), 0.6);
+  assert.equal((await api("GET", `/runs/${runId}`)).body.cost.usd, 0.6, "the run's cost counts each charge once");
 });
 
 test("through the API: a capped run whose next browser call would pass its cap is refused before it in the cap's words, its session released and its booked spend within the cap", async (t) => {
