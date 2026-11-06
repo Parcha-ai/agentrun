@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { REQUEST_STARTED } from "@parcha/pi-durable-agent/timeline";
-import { agent, follow, letGo, serve } from "./support.mjs";
+import { agent, follow, letGo, runDir, serve } from "./support.mjs";
 
 const CACHE = new URL("./fixtures/faux-sonnet-cache.mjs", import.meta.url).pathname;
 /** An amount in a row's words: up to the cent above. */
@@ -32,7 +32,7 @@ test("pi: a cache miss passes the cap by no more than the bound it was sent with
   assert.ok(over > 0, `the miss passed the cap: $${run.cost.usd}`);
   assert.equal(run.cost.overshoot_bound_usd, 0, "no request in flight");
   await letGo(data, runId);
-  const db = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { readOnly: true });
+  const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true });
   const starts = db.prepare("SELECT record FROM entries").all().map((row) => JSON.parse(String(row.record))).filter((entry) => entry.kind === REQUEST_STARTED && entry.data?.capRefused !== true);
   db.close();
   // The miss is the last request sent: its bound, on its start mark.

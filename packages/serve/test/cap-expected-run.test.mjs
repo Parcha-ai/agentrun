@@ -11,7 +11,7 @@ import { DatabaseSync } from "node:sqlite";
 import { after, before, test } from "node:test";
 import { REQUEST_STARTED } from "@parcha/pi-durable-agent/timeline";
 import { grown } from "./fixtures/faux-harness.mjs";
-import { agent, follow, letGo, scratch, serve } from "./support.mjs";
+import { agent, follow, letGo, runDir, scratch, serve } from "./support.mjs";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const SONNET_PRICED = new URL("./fixtures/faux-sonnet-priced.mjs", import.meta.url).pathname;
@@ -43,7 +43,7 @@ after(async () => {
 /** The run's store's entries of `kind`, read once its process has let it go. */
 function records(runId, kind) {
   for (let tries = 0; ; tries++) {
-    const db = new DatabaseSync(join(server.data, "runs", runId, "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
+    const db = new DatabaseSync(join(runDir(server.data, runId), "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
     try {
       return db.prepare("SELECT record FROM entries").all().map((row) => JSON.parse(String(row.record))).filter((entry) => entry.kind === kind);
     } catch (error) {
@@ -115,7 +115,7 @@ test("claude-agent: a restart mid-request reads the request in flight at the exp
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   await writeFile(go, "");
-  const { holder } = JSON.parse(await readFile(join(data, "runs", runId, "run.json"), "utf8"));
+  const { holder } = JSON.parse(await readFile(join(runDir(data, runId), "run.json"), "utf8"));
   assert.ok(Number.isInteger(holder.pid) && holder.pid !== process.pid, JSON.stringify(holder));
   process.kill(holder.pid, "SIGKILL");
   await follow(api, runId, ["input_required", "completed", "failed"], { deadlineMs: 120_000 });
