@@ -8,13 +8,16 @@ without sudo), and ssh from your laptop. Rather hand this to Claude Code? Paste 
 
 ## Install
 
-1. The key file, mode 600. Put your key after the `=` of one line and leave the others empty:
+1. The key file, mode 600, in a folder with mode 700. Put your key after the `=` of one line and leave the others empty:
 
    ```sh
-   mkdir -p ~/.config/agentrun ~/.config/systemd/user
+   mkdir -p -m 700 ~/.config/agentrun && mkdir -p ~/.config/systemd/user
    cp agentrun.env.example ~/.config/agentrun/agentrun.env && chmod 600 ~/.config/agentrun/agentrun.env
    nano ~/.config/agentrun/agentrun.env
    ```
+
+   The folder's mode matters: the server refuses its seal key in a folder others can read, and then keeps no key you
+   save in the console.
 
 2. The unit. Copy [agentrun.service](agentrun.service) to `~/.config/systemd/user/agentrun.service` and replace
    `<node bin>` with the directory `which node` prints. systemd does not load nvm, so that directory has to be on the
@@ -31,9 +34,13 @@ without sudo), and ssh from your laptop. Rather hand this to Claude Code? Paste 
 
    Watch the journal for `AgentRun is running at http://127.0.0.1:<port>/`; the port is 7340 unless 7340 was busy.
    On the first start with Docker the next lines say `Preparing the Docker box image (first start only, a few
-   minutes)...` and, 5 to 10 minutes later, `The Docker box image is ready.` You can make agents meanwhile; a run
-   started before the image is ready waits for it, with no spend. No `Preparing` line within a minute means the image
-   was already built. Then `curl -s http://127.0.0.1:<port>/v2/health`.
+   minutes)...` and then `The Docker box image is ready.`, about a minute later on a fast machine and 5 to 10 elsewhere.
+   You can make agents meanwhile; a run started before the image is ready waits for it, with no spend. No `Preparing`
+   line within a minute means the image was already built. Then `curl -s http://127.0.0.1:<port>/v2/health`.
+
+   If the `Boxes:` line says `none` or that docker failed while `docker ps` works in your shell, your systemd user
+   manager started before you joined the `docker` group, and linger keeps it alive, so logging out and back in doesn't
+   help. Run `sudo systemctl restart user@$(id -u)` (or reboot), then `systemctl --user restart agentrun`.
 
 ## Open the console and set the password
 
@@ -43,14 +50,16 @@ The console listens on the VM's loopback only. From your laptop:
 ssh -L 7340:localhost:<port> <vm>
 ```
 
-then open `http://localhost:7340/` and set the owner password, 12 characters or more, before the first run: a learned
+On an OrbStack VM the Mac reaches the VM's localhost directly, so you may not need the tunnel. Then
+open `http://localhost:7340/` and set the owner password, 12 characters or more, before the first run: a learned
 note the grader holds back waits for the owner's OK, and only the owner signed in with the password can give it. Then
 Settings → Model keys if you would rather add the key there than in the env file, and on to
 [../first-agent/](../first-agent/).
 
 ## If it goes wrong
 
-- `docker ps` is denied: `sudo usermod -aG docker $USER`, then log out and back in.
+- `docker ps` is denied: `sudo usermod -aG docker $USER`, then log out and back in. A service already enabled needs
+  `sudo systemctl restart user@$(id -u)` too, as above.
 - The service fails at once: `journalctl --user -u agentrun -n 50` says why. The usual cause is a `PATH` line without
   node.
 - `sudo` asks for a password and you handed the steps to Claude Code: run `sudo loginctl enable-linger $USER` yourself.

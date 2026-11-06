@@ -51,8 +51,8 @@ grep 'AgentRun is running at' agentrun.log || { echo "AgentRun did not start:"; 
 
 It prints `AgentRun is running at http://127.0.0.1:<port>/`, where its data is (`~/.agentrun`) and where its token is
 (`~/.agentrun/.token`). Read the port off that line: it is 7340 unless 7340 was busy. On the first start with Docker it
-then says `Preparing the Docker box image (first start only, a few minutes)...` and, 5 to 10 minutes later,
-`The Docker box image is ready.` Agents can be made meanwhile; a run started before that waits for the image and shows
+then says `Preparing the Docker box image (first start only, a few minutes)...` and then `The Docker box image is
+ready.`, about a minute later on a fast machine and 5 to 10 elsewhere. Agents can be made meanwhile; a run started before that waits for the image and shows
 "working", with no model spend. If it did not start, its last lines say why: tell the person, and stop.
 
 ## 3. On a Linux server or VM
@@ -61,9 +61,10 @@ Run it as a systemd user service instead of step 2's background process. Ask bef
 the env file below are also in the repository, with these steps as a page for a person:
 https://github.com/Parcha-ai/agentrun/tree/main/examples/getting-started/linux-server
 
-1. Write `~/.config/agentrun/agentrun.env` with mode 600, holding one line, `ANTHROPIC_API_KEY=` (or the variable their
-   harness needs, step 5). Then stop and ask the person to paste the key into that file themselves, with `nano`, say.
-   Don't read it back.
+1. Make the folder with `mkdir -p -m 700 ~/.config/agentrun` (the mode matters: the server refuses its seal key in a
+   folder others can read, and then keeps no key saved in the console). Write `~/.config/agentrun/agentrun.env` there
+   with mode 600, holding one line, `ANTHROPIC_API_KEY=` (or the variable their harness needs, step 5). Then stop and
+   ask the person to paste the key into that file themselves, with `nano`, say. Don't read it back.
 2. Write `~/.config/systemd/user/agentrun.service`, with `<node bin>` replaced by the directory `which node` is in:
 
    ```ini
@@ -95,12 +96,17 @@ https://github.com/Parcha-ai/agentrun/tree/main/examples/getting-started/linux-s
    ```
 
    Watch the journal until `AgentRun is running at http://127.0.0.1:<port>/` and tell the person the port. Keep
-   watching until `The Docker box image is ready.` (5 to 10 minutes on the first start). Then
-   `curl -s http://127.0.0.1:<port>/v2/health`. A service that fails at once says why in the journal; the usual cause
-   is a `PATH` line without node.
+   watching until `The Docker box image is ready.` (about a minute on a fast machine, 5 to 10 elsewhere, on the first
+   start). Then `curl -s http://127.0.0.1:<port>/v2/health`. A service that fails at once says why in the journal; the
+   usual cause is a `PATH` line without node.
+
+   If the `Boxes:` line says `none` or that docker failed while `docker ps` works in the person's shell, their systemd
+   user manager started before they joined the `docker` group, and linger keeps it alive, so logging out and back in
+   doesn't help. Ask, then run `sudo systemctl restart user@$(id -u)` (or reboot) and `systemctl --user restart
+   agentrun`, and watch the journal again.
 4. The console listens on the VM's loopback only. The person opens it from their laptop over
    `ssh -L 7340:localhost:<port> <vm>`, then `http://localhost:7340/`, and sets the password there (step 4) before the
-   first run.
+   first run. On an OrbStack VM the Mac reaches the VM's localhost directly, so the tunnel may be unnecessary.
 5. HTTPS, only after the password is set: Caddy on the VM with `reverse_proxy 127.0.0.1:<port>`, and
    `AGENTRUN_PUBLIC_URL=https://<host>` added to `agentrun.env`, then `systemctl --user restart agentrun`. A server
    with a public URL and no password yet asks for a setup code that the service's output does not show, so the
