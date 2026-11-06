@@ -277,8 +277,14 @@ function takenBack(data, runId) {
   } catch {
     return false;
   }
-  const wal = join(runDir(data, runId), "store", "run.sqlite-wal");
-  return holder === "server" && (!existsSync(wal) || statSync(wal).size === 0);
+  if (holder !== "server") return false;
+  // Its size read once: a checkpoint may remove the WAL between two looks.
+  try {
+    return statSync(join(runDir(data, runId), "store", "run.sqlite-wal")).size === 0;
+  } catch (error) {
+    if (error.code === "ENOENT") return true;
+    throw error;
+  }
 }
 
 export async function letGo(data, runId, { deadlineMs = 20_000 } = {}) {
