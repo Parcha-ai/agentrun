@@ -14,7 +14,7 @@ import { secret } from "../dist/secrets.js";
 import { readingOf } from "../dist/server.js";
 import { rowUnlocks, TOOL_KEYS, unlockedBy } from "../dist/tool-keys.js";
 import { schemaProblems } from "./schema-support.mjs";
-import { agent, call, claudeData, client, cookieOf, FAUX, follow, printed, scratch, serve, withEnv } from "./support.mjs";
+import { agent, call, harnessData, client, cookieOf, FAUX, follow, printed, scratch, serve, withEnv } from "./support.mjs";
 
 const LAUNCHER = new URL("../launcher/agentrun-serve", import.meta.url).pathname;
 const FAUX_BROWSER = new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname;
@@ -162,10 +162,9 @@ test("each key unlocks only what capabilities bind, a tool or a decision provide
   assert.deepEqual(rowUnlocks(model("openrouter"), later, [], [{ id: "pi", available: true }, { id: "claude-agent", available: false }, { id: "codex", available: false }]).harnesses, ["pi"], "unavailable for another reason (not installed): left out");
 });
 
-test("before any model key is saved, a model key's row names every harness the key runs that this server could run: OpenRouter's all four, Anthropic's pi and claude-agent; one not installed, one that does not fit and one the key alone does not fix are left out", { timeout: 180_000 }, async (t) => {
+test("before any model key is saved, a model key's row names every harness the key runs that this server could run: OpenRouter's all four, Anthropic's pi and claude-agent; one off its pins, one that does not fit and one the key alone does not fix are left out", { timeout: 180_000 }, async (t) => {
   const standIn = await codexStandIn(t);
-  // A path where nothing is installed, and a CLI that is not the pinned build.
-  const nothing = join(await scratch(t), "nothing");
+  // A CLI that is not the pinned build.
   const unpinned = join(await scratch(t), "claude");
   writeFileSync(unpinned, "#!/bin/sh\necho 0.0.1\n", { mode: 0o755 });
   const cases = [
@@ -174,7 +173,9 @@ test("before any model key is saved, a model key's row names every harness the k
     ["claude-agent not installed yet", ROOMY_MIB, { AGENTRUN_SERVE_CODEX_STANDIN: standIn }, OWN, false],
     // Claude Code's CLI off its pins: no key runs it.
     ["claude-agent's CLI off its pins", ROOMY_MIB, { AGENTRUN_SERVE_CODEX_STANDIN: standIn }, { anthropic: ["pi"], openai: ["pi", "codex", "opencode"], openrouter: ["pi", "codex", "opencode"] }, { cli: unpinned }],
-    ["codex not installed", ROOMY_MIB, { CODEX_BIN: nothing }, { anthropic: ["pi", "claude-agent"], openai: ["pi", "opencode"], openrouter: ["pi", "claude-agent", "opencode"] }],
+    // Codex not installed yet installs on first use too; its binary off its pins: no key runs it.
+    ["codex not installed yet", ROOMY_MIB, {}, OWN, { codex: false }],
+    ["codex's binary off its pins", ROOMY_MIB, {}, { anthropic: ["pi", "claude-agent"], openai: ["pi", "opencode"], openrouter: ["pi", "claude-agent", "opencode"] }, { codexBin: unpinned }],
     // 384 MiB holds the server's 128 and one codex run (192), never a claude-agent run (288) or an opencode run (704): no
     // key would run them.
     ["a host too small for a claude-agent run", 384, { AGENTRUN_SERVE_CODEX_STANDIN: standIn }, { anthropic: ["pi"], openai: ["pi", "codex"], openrouter: ["pi", "codex"] }],
@@ -183,11 +184,11 @@ test("before any model key is saved, a model key's row names every harness the k
     // An endpoint claude-agent refuses (plain http to another machine): its key alone would not run it.
     ["claude-agent on an endpoint it refuses", ROOMY_MIB, { AGENTRUN_SERVE_CODEX_STANDIN: standIn, ANTHROPIC_BASE_URL: "http://gateway.example" }, { anthropic: ["pi"], openai: ["pi", "codex", "opencode"], openrouter: ["pi", "codex", "opencode"] }],
   ];
-  for (const [label, mib, vars, rows, claudeSdk = true] of cases) {
+  for (const [label, mib, vars, rows, harnesses = true] of cases) {
     await t.test(label, async (st) => {
       withEnv(st, { AGENTRUN_SEAL_KEY: sealKey(), ...vars }, [...KEYS, ...HARNESS_VARS]);
       withMemory(st, mib);
-      const { api } = await serve(st, { claudeSdk });
+      const { api } = await serve(st, { harnesses });
       const caps = (await api("GET", "/capabilities")).body;
       const offers = Object.fromEntries(caps.harnesses.map((offer) => [offer.id, offer]));
       // No model key here: claude-agent and codex do not run now, whatever is installed.
@@ -441,7 +442,7 @@ test("a key a harness reads, saved later, makes the harness available with no re
   let saved;
   const stored = (name) => (name === "ANTHROPIC_API_KEY" ? saved : undefined);
   // Its data holds Claude Code, as a first use installs it.
-  const base = { PATH: process.env.PATH, HOME: process.env.HOME, AGENTRUN_SERVE_DATA: await claudeData(t) };
+  const base = { PATH: process.env.PATH, HOME: process.env.HOME, AGENTRUN_SERVE_DATA: await harnessData(t) };
   const claude = async () => (await readingOf(base, 4, stored)).caps.harnesses.find((offer) => offer.id === "claude-agent");
   assert.deepEqual([(await claude()).available, (await claude()).reason], [false, "claude-agent needs ANTHROPIC_API_KEY or OPENROUTER_API_KEY."]);
   saved = ["not-a-secret", "anthropic"].join("-");
