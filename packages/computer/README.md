@@ -219,9 +219,8 @@ returns `{ deleted, kept }`. It never touches a container the provider does not 
 `agentrun.computer=1` and a computer's name. A computer it cannot delete does not stop it; the result is then an error
 naming it and what was deleted.
 
-This package does not schedule the janitor. Whoever runs computers runs `sweep` on a schedule, at least as often as
-the shortest lifetime it allows overruns acceptably (a cron job, or a timer in a long-lived service), with Docker's
-CLI on its PATH.
+This package does not schedule the janitor. Whoever runs computers runs `sweep` on a schedule (a cron job, or a timer
+in a long-lived service), with Docker's CLI on its PATH; a computer may outlive its deadline by up to one interval.
 
 ```ts
 import { DockerProvider, sweep } from "@parcha/agentrun-computer";
