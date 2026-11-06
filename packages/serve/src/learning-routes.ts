@@ -22,8 +22,8 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { join } from "node:path";
 import { approve, buildIndex, CAPS, checkNote, draftProblems, frontKeys, INDEX_FILE, INDEX_LINES, isHeld, LEARNED_KEYS, type LearnedNote, learnedFront, learnedName, learnedPlace, learnedStatus, NOTE_FILE, NOTE_STATUSES, parseNoteFile, type Problem, printable, released, retire, retiredLearned, skillProblems, SKILLS_DIR, supersede, unstorable, WORKFLOWS_DIR } from "./learn/index.js";
 import { ApiError, invalid } from "./errors.js";
-import { homeOf, readJson } from "./files.js";
-import { agentFolder, checkOut, detailShown, git, line, mainOf, notesView, openAgentRepo, PROPOSAL, readBlobs, readFolder, readPin, secretsShown, type Shown, withAgentRepo } from "./learning.js";
+import { agentFolderOf, readJson } from "./files.js";
+import { agentFolder, changedOrder, checkOut, detailShown, git, line, mainOf, notesView, openAgentRepo, PROPOSAL, readBlobs, readFolder, readPin, secretsShown, type Shown, withAgentRepo } from "./learning.js";
 import type { Impact } from "./learning-run.js";
 import type { Run } from "./runs.js";
 import { isObject } from "./validate.js";
@@ -93,7 +93,7 @@ const changesAt = new Recent<number>(64);
 
 /** Where a read finds the agent's folder: through readFolder, so a link at its home, its `learning/` or its `.git` is
  *  an error, never followed, and a folder never made reads as empty. */
-const placeOf = async (data: string, agentId: string) => ({ home: homeOf(data, agentId), repo: await readFolder(data, agentId) });
+const placeOf = async (data: string, agentId: string) => ({ home: agentFolderOf(data, agentId), repo: await readFolder(data, agentId) });
 export const etagOf = (oid: string) => `"${oid}"`;
 const EMPTY: Page<never> = { items: [], total: 0, next_cursor: null };
 
@@ -541,7 +541,7 @@ export async function writeNote(data: string, agentId: string, raw: string, inpu
     if (!note) throw refused(problems);
     given = note.text;
   }
-  const home = homeOf(data, agentId);
+  const home = agentFolderOf(data, agentId);
   return withAgentRepo(data, agentId, async () => {
     // The folder through agentFolder, as a run's merge reaches it: a link at the agent's home, its learning/ or its
     // .git is refused (an error, nothing written), never followed. `check` checks again once a create has made .git.

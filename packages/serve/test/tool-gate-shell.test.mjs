@@ -15,7 +15,7 @@ import { test } from "node:test";
 import { BACKGROUND_TOOLS } from "../dist/background.js";
 import { permissionFrom, RunGate, settingsKeyOf, waitingText } from "../dist/tool-gate.js";
 import { settingsIssues } from "../dist/tool-plane.js";
-import { agent, call, cookieOf, follow, scratch, serve } from "./support.mjs";
+import { agent, call, cookieOf, follow, runDir, scratch, serve } from "./support.mjs";
 
 /** pi's registration `name`, wrapped by a run's gate on `data`'s settings: what its call answers, whether it ran, and
  *  the requests the gate kept. */
@@ -216,7 +216,7 @@ const pw = (name) => `not-a-secret-${name}`;
 
 /** Each tool call of run `runId` and its answer, in order, from its store. */
 function answers(data, runId) {
-  const db = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { readOnly: true });
+  const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true });
   try {
     return db.prepare("SELECT record FROM entries ORDER BY id").all()
       .flatMap((row) => JSON.parse(row.record).model ?? [])
@@ -299,7 +299,7 @@ test("the watchers reach only this run's own processes: another run's id, live i
   assert.equal(other.status, 201, JSON.stringify(other.body));
   // Run A starts a process and stays up while run B looks for it.
   const runA = await probe(server, "bg", [{ tool: "bash_background", args: { command: "echo a-secret-line; sleep 30" } }, { tool: "bash", args: { command: "sleep 25" } }]);
-  const pidFile = join(server.data, "runs", runA, "work", "background", "1", "pid");
+  const pidFile = join(runDir(server.data, runA), "work", "background", "1", "pid");
   for (const end = Date.now() + 30_000; !existsSync(pidFile); ) {
     assert.ok(Date.now() < end, "run A's process started");
     await new Promise((resolve) => setTimeout(resolve, 50));

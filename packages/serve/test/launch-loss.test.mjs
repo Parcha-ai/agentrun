@@ -8,7 +8,7 @@ import { test } from "node:test";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { LAUNCH_COUNT_ENV, LAUNCH_JAM_ENV, LAUNCH_KILL_ENV } from "./fixtures/faux-launch-kills-server.mjs";
 import { schemaProblems } from "./schema-support.mjs";
-import { agent, client, printed, scratch, storeRun } from "./support.mjs";
+import { agent, client, printed, runIds, scratch, storeRun } from "./support.mjs";
 
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 const FAUX_LAUNCH = new URL("./fixtures/faux-launch-kills-server.mjs", import.meta.url).pathname;
@@ -53,7 +53,7 @@ test("a run whose launch took its server down is failed by the next start, once,
   await first.api("POST", "/agents/calc/runs", { input: { content: "Answer soon." } }).catch(() => undefined);
   await exited(first.child);
   assert.equal(first.child.signalCode, "SIGKILL", "the run's launch took its server down");
-  const [runId, ...others] = await readdir(join(data, "runs"));
+  const [runId, ...others] = runIds(data);
   assert.deepEqual(others, []);
   assert.equal(await launchCount(env[LAUNCH_COUNT_ENV]), 1, "the run's process came up once");
 

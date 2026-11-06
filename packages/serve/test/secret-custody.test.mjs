@@ -18,7 +18,7 @@ import { BOX_KEYS } from "../dist/boxes.js";
 import { ToolKeys } from "../dist/tool-keys.js";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
-import { agent, answerFlow, client, FAUX, flowAgent, follow, linkClaudeSdk, printed, responsesEndpoint, scratch } from "./support.mjs";
+import { agent, answerFlow, client, FAUX, flowAgent, follow, linkClaudeSdk, printed, responsesEndpoint, runDir, scratch } from "./support.mjs";
 import { CANARY as JEV_CANARY } from "./fixtures/faux-jev.mjs";
 import { CANARY as PARALLEL_CANARY } from "./fixtures/faux-parallel.mjs";
 import { reported } from "./fixtures/custody-report.mjs";
@@ -727,7 +727,7 @@ test("on codex, with every secret set and its turn held inside Codex's own proce
   for (const value of [foo, password]) assert.ok(onlyTheServerHolds(root, value).some((cmdline) => cmdline.includes(standIn)), "neither holds a key-shaped variable no list names");
   // Everything the run has kept by its model request, read for a key while Codex holds the turn: its store, its log and
   // Codex's own files (its home, its config, its rollout).
-  const { files, holding } = filesHolding(join(data, "runs", started.body.run_id), canary, unlisted);
+  const { files, holding } = filesHolding(join(runDir(data, started.body.run_id)), canary, unlisted);
   assert.ok(files.some((path) => path.endsWith("process.log")) && files.some((path) => path.includes("/harness/")), `the run's log and Codex's files are among those read: ${files.length} files`);
   assert.deepEqual(holding, [], "no file of the run's holds a key");
 });

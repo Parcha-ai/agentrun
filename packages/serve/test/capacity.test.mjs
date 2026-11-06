@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { startServe } from "../dist/index.js";
-import { agent, client, FAUX, follow, scratch, serve, storeRun, withEnv } from "./support.mjs";
+import { agent, client, FAUX, follow, runDir, scratch, serve, storeRun, withEnv } from "./support.mjs";
 
 const MiB = 2 ** 20;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -181,7 +181,7 @@ test("a run whose process fails at its start is never started again while its en
   store.exec("ROLLBACK");
   store.close();
   await follow(api, run.body.run_id, ["failed"]);
-  const log = await readFile(join(data, "runs", run.body.run_id, "process.log"), "utf8");
+  const log = await readFile(join(runDir(data, run.body.run_id), "process.log"), "utf8");
   assert.equal(log.split("has no default export").length - 1, 1, `one process for the run:\n${log}`);
   const next = await api("POST", "/agents/broken/runs", { input: { content: "hi" } });
   assert.equal(next.status, 202, `its place is free: ${JSON.stringify(next.body)}`);
@@ -190,7 +190,7 @@ test("a run whose process fails at its start is never started again while its en
   await follow(api, next.body.run_id, ["failed"]);
   let after = "";
   for (const until = Date.now() + 2_000; Date.now() < until && after.split("has no default export").length - 1 < 2; await sleep(100)) {
-    after = await readFile(join(data, "runs", run.body.run_id, "process.log"), "utf8");
+    after = await readFile(join(runDir(data, run.body.run_id), "process.log"), "utf8");
   }
   assert.equal(after.split("has no default export").length - 1, 1, `the failed run was never started again:\n${after}`);
 });
@@ -205,7 +205,7 @@ test("a message that waits on a run's settle answers 503 at its deadline, not wh
   const store = new DatabaseSync(join(data, "store.sqlite"), { timeout: 0 });
   store.exec("BEGIN IMMEDIATE");
   t.after(() => store.isOpen && (store.isTransaction && store.exec("ROLLBACK"), store.close()));
-  const log = join(data, "runs", run.body.run_id, "process.log");
+  const log = join(runDir(data, run.body.run_id), "process.log");
   // A loaded machine is slow to start a process; the deadline under test starts at the message.
   for (let i = 0; !(await readFile(log, "utf8").catch(() => "")).includes("has no default export"); i++) {
     if (i >= 1_200) assert.fail(`the run's process did not fail at its start within 60 s; its log:\n${await readFile(log, "utf8").catch((error) => String(error))}`);
@@ -355,7 +355,7 @@ test("a message to a run whose process was killed is answered at once: a dead pr
   assert.equal((await api("POST", "/agents", agent("asks", { tools: ["ask_person"] }))).status, 201);
   const { body: run } = await api("POST", "/agents/asks/runs", { input: { content: "Pick a region." } });
   await follow(api, run.run_id, ["input_required"]);
-  const pid = JSON.parse(await readFile(join(data, "runs", run.run_id, "run.json"), "utf8")).holder.pid;
+  const pid = JSON.parse(await readFile(join(runDir(data, run.run_id), "run.json"), "utf8")).holder.pid;
   process.kill(pid, "SIGKILL");
   for (let i = 0; ; i++) {
     try {

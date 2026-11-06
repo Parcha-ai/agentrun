@@ -11,7 +11,7 @@ import { test } from "node:test";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
 import { answerWith, note } from "./fixtures/faux-learn.mjs";
 import { ended, git, learner, made, onMain, reflectRows, repoOf, savedOf, settled, started, turnOf } from "./learn-support.mjs";
-import { serve, withEnv } from "./support.mjs";
+import { runDir, serve, withEnv } from "./support.mjs";
 
 const MODEL = "claude-haiku-4-5";
 const UNITS = note("Check units", "Convert every amount to one unit before comparing", "Amounts in one answer came in cents and in dollars.\n");
@@ -57,7 +57,7 @@ test("on claude-agent's real adapter, with no tool of its own, the end-of-run tu
   assert.equal(view.status, "completed");
   assert.equal(view.result.final_answer, "Claude answered.", "the answer is the job's, never the turn's");
   assert.ok(cwd, "the CLI told its model its working directory");
-  assert.equal(realpathSync(cwd), realpathSync(join(data, "runs", runId, "work")), "the CLI works in the run's workspace");
+  assert.equal(realpathSync(cwd), realpathSync(join(runDir(data, runId), "work")), "the CLI works in the run's workspace");
   assert.equal(turns, 1, "one end-of-run turn");
   assert.deepEqual(reflectRows(rows).filter((row) => row.kind === "tool_use" || row.kind === "tool_result"), [], "it called no tool");
   settled(view, rows, "merged");
@@ -68,7 +68,7 @@ test("on claude-agent's real adapter, with no tool of its own, the end-of-run tu
   assert.doesNotMatch(prompt, /(?:^|[\s`'"(\[])\/[^\s/]/m, "the message holds no absolute path");
   assert.ok(!prompt.includes(data), "nor the data directory");
   assert.deepEqual(reflectRows(rows).filter((row) => row.kind === "user_message").map((row) => [row.summary, row.text]), [["Looking back on this run.", "Looking back on this run."]]);
-  const proposal = JSON.parse(readFileSync(join(data, "runs", runId, "learning-proposal.json"), "utf8"));
+  const proposal = JSON.parse(readFileSync(join(runDir(data, runId), "learning-proposal.json"), "utf8"));
   assert.deepEqual(proposal.notes, [{ file: "check-units.md", text: UNITS }, { file: "cite-sources.md", text: SOURCES }]);
 
   // Graded once, at the endpoint the run's own requests went to, and merged onto the folder's main.

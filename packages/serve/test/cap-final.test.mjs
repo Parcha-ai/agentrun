@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { agent, follow, responsesEndpoint, serve, withEnv } from "./support.mjs";
+import { agent, follow, responsesEndpoint, runDir, serve, withEnv } from "./support.mjs";
 
 const GATEWAY_VARS = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_PRICE", "AGENT_MODEL_API_KEY"];
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
@@ -17,7 +17,7 @@ const CAP = 0.4295;
 
 function records(data, runId, kind) {
   for (let tries = 0; ; tries++) {
-    const db = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
+    const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
     try {
       return db.prepare("SELECT record FROM entries").all().map((row) => JSON.parse(String(row.record))).filter((entry) => entry.kind === kind);
     } catch (error) {

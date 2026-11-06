@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { fileURLToPath } from "node:url";
-import { agent, follow, scratch, serve } from "./support.mjs";
+import { agent, follow, runDir, scratch, serve } from "./support.mjs";
 
 /** The gateway's key in these tests: no real one. */
 const GATEWAY_KEY = `not-a-secret-${"gateway"}`;
@@ -110,7 +110,7 @@ test("a run on codex goes through the adapter's proxy to serve's gateway, priced
   assert.ok(child, "Codex's process runs");
   assert.equal(field(child.status, "NoNewPrivs"), "1", "under setpriv --no-new-privs, as pi's commands are");
   assert.equal(field(child.status, "Uid")?.split(/\s+/)[0], String(process.getuid()), "as the run's own user");
-  assert.equal(await readlink(`/proc/${child.pid}/cwd`), realpathSync(join(data, "runs", run.body.run_id, "work")), "in the run's workspace, where its file tools write");
+  assert.equal(await readlink(`/proc/${child.pid}/cwd`), realpathSync(join(runDir(data, run.body.run_id), "work")), "in the run's workspace, where its file tools write");
   gw.release();
   const { rows } = await follow(api, run.body.run_id, ["completed"], { deadlineMs: 60_000 });
   assert.equal(gw.seen[0].path, "/v1/responses");
@@ -166,7 +166,7 @@ test("a codex run whose process dies while its request is in flight leaves no Co
   const child = await processOf(standIn);
   assert.ok(child, "Codex's process runs");
   t.after(() => alive(child.pid) && process.kill(child.pid, "SIGKILL"));
-  const { holder } = JSON.parse(await readFile(join(data, "runs", run.body.run_id, "run.json"), "utf8"));
+  const { holder } = JSON.parse(await readFile(join(runDir(data, run.body.run_id), "run.json"), "utf8"));
   process.kill(holder.pid, "SIGKILL");
   for (let i = 0; alive(child.pid); i++) {
     assert.ok(i < 20, `the dead process's Codex (pid ${child.pid}) is gone within 2 s`);
@@ -184,7 +184,7 @@ test("a codex run's model proxy reports a refusal in the run's log: one harness 
   const { api, data, standIn } = await codexServe(t, gw);
   const run = await api("POST", "/agents/coder/runs", { input: { content: "Say what you did." } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
-  const dir = join(data, "runs", run.body.run_id);
+  const dir = join(runDir(data, run.body.run_id));
   // Codex's own request, not another local process calling the gateway's port.
   for (let i = 0; !gw.seen.some((s) => s.path?.startsWith("/v1/")); i++) {
     assert.ok(i < 300, "the turn's model request reaches the gateway");

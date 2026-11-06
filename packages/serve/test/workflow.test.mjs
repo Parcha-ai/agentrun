@@ -7,7 +7,7 @@ import { test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import { readWorkflowRun } from "@parcha/pi-durable-agent/workflow";
 import { startServe } from "../dist/index.js";
-import { answerFlow, client, FAUX, flowAgent, follow, serve, storeRun } from "./support.mjs";
+import { answerFlow, client, FAUX, flowAgent, follow, runDir, serve, storeRun } from "./support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 
 const start = async (api, id, input, workflow = answerFlow()) => {
@@ -29,7 +29,7 @@ test("a workflow run executes its model node and completes with the workflow's o
   assert.deepEqual([run.status, run.kind, run.result, run.review], ["completed", "workflow", { output: { answer: 42 }, final_answer: null }, null], "a run that did not escalate has no review");
   const row = storeRun(data, started.run_id);
   assert.deepEqual([row.state, row.kind, row.summary], ["completed", "workflow", "answer"]);
-  const view = await readWorkflowRun({ runId: started.run_id, storePath: join(data, "runs", started.run_id, "store", "run.sqlite"), revision: { body: { workflow: answerFlow() } }, state: row.state });
+  const view = await readWorkflowRun({ runId: started.run_id, storePath: join(runDir(data, started.run_id), "store", "run.sqlite"), revision: { body: { workflow: answerFlow() } }, state: row.state });
   assert.deepEqual(view.output, { answer: 42 });
   assert.deepEqual((await api("GET", "/runs?agent=flow")).body.runs.map((r) => [r.kind, r.status]), [["workflow", "completed"]]);
 });
@@ -73,7 +73,7 @@ test("each model node runs on its tier's model: fast on AGENT_MODEL_FAST, the re
   tiered.root.steps.unshift({ node: "extract", label: "draft", instructions: "Draft an answer.", out: "Answer", as: "draft", tier: "fast" });
   const started = await start(api, "tiered", { question: "What is six times seven?" }, tiered);
   await follow(api, started.run_id, ["completed"]);
-  const store = new DatabaseSync(join(data, "runs", started.run_id, "store", "run.sqlite"), { readOnly: true });
+  const store = new DatabaseSync(join(runDir(data, started.run_id), "store", "run.sqlite"), { readOnly: true });
   t.after(() => store.close());
   const models = store.prepare("SELECT record FROM entries ORDER BY id").all().map((r) => JSON.parse(r.record)).filter((e) => e.kind === "pi.assistant").map((e) => e.model[0].model);
   assert.deepEqual([...new Set(models)], ["faux-fast", "faux-1"], "the fast node ran first, on the fast model; the default node on the default");
@@ -128,7 +128,7 @@ test("a run loads only the tiers its revision uses: a fast-only workflow runs on
   assert.equal((await api("POST", "/agents", flowAgent("default-too"))).status, 201);
   assert.match((await api("POST", "/agents/default-too/runs", { input: { question: "x" } })).body.error.message, /No model yet: name the gateway's model in AGENT_MODEL/, "a default-tier node still needs AGENT_MODEL");
   // The run's process loaded its app (no default asked for) and opened the run.
-  const log = join(data, "runs", started.body.run_id, "process.log");
+  const log = join(runDir(data, started.body.run_id), "process.log");
   for (let i = 0; !(await readFile(log, "utf8").catch(() => "")).includes('"event":"running"'); i++) {
     assert.ok(i < 200, `the run's process opened the run: ${await readFile(log, "utf8").catch(() => "")}`);
     await new Promise((resolve) => setTimeout(resolve, 100));

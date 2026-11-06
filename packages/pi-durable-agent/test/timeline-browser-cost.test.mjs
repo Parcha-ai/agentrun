@@ -4,7 +4,7 @@
 // charge once, as before. Other tools' charges keep their own row.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { renderText, timelineOf, timelineReducer, TOOL_COST } from "../dist/timeline/index.js";
+import { BROWSER_CHARGE, chargedTool, renderText, timelineOf, timelineReducer, TOOL_COST } from "../dist/timeline/index.js";
 import { assistant, call, custom, result, user } from "./timeline-support.mjs";
 
 /** A browser charge as serve books it: on the root (conversation 1 here), naming the call, its session and conversation. */
@@ -108,4 +108,60 @@ test("other tools' counts do not change: one monid call is 1 paid tool call, two
   const monid = (call, usd = 0.003) => custom(TOOL_COST, { tool: "monid.run", charged_by: "monid", call, usd });
   assert.match(timelineOf([assistant([call("m1", "monid_run")], 0), monid("m1"), result("m1", "monid_run", "ok", 1)]).at(-1).summary, / and 1 paid tool call$/);
   assert.match(timelineOf([assistant([call("m1", "monid_run"), call("m2", "monid_run")], 0), monid("m1"), monid("m2"), result("m1", "monid_run", "ok", 1), result("m2", "monid_run", "ok", 1)]).at(-1).summary, / and 2 paid tool calls$/);
+});
+
+test("a run that mixes browser and monid charges: the browser's fold into its calls' rows ($0.0018), monid's keeps its own Tool cost row ($0.003), and the run's cost counts each once: $0.0448 over 3 paid tool calls", () => {
+  // Four model requests at $0.01 each (timeline-support's assistant) and four charges: b1 $0.0001, monid $0.003, b2 $0.0001,
+  // the release $0.0016. $0.04 + $0.0048 = $0.0448.
+  const monid = custom(TOOL_COST, { tool: "monid.run", charged_by: "monid", call: "m1", usd: 0.003 });
+  const rows = timelineOf([
+    user("Open the page, look the company up, open it again", 0),
+    assistant([call("b1", "snapshot")], 1),
+    charge(0.0001, "b1"),
+    result("b1", "snapshot", "[1-1] page", 2),
+    assistant([call("m1", "monid_run", { endpoint: "company" })], 3),
+    monid,
+    result("m1", "monid_run", "{\"ok\":true}", 4),
+    assistant([call("b2", "browser_read", { what: "markdown" })], 5),
+    charge(0.0001, "b2"),
+    result("b2", "browser_read", "url: https://example.test/\ntitle: Example\n---\nbody", 6),
+    assistant([{ type: "text", text: "Done." }], 7),
+    charge(0.0016, "b2", { final: true }),
+  ]);
+  const usage = rows.at(-1);
+  assert.deepEqual([usage.kind, usage.usage, usage.summary], ["usage", { usd: 0.0448, requests: 4 }, "Cost so far: $0.0448 over 4 model requests and 3 paid tool calls"], "b1, monid and b2: three calls, the release under b2 adding a charge, never a call");
+  const browser = rows.filter((row) => row.kind === "tool_use" && row.usage);
+  assert.deepEqual(browser.map((row) => [row.tool_name, row.usage.usd]), [["snapshot", 0.0001], ["browser_read", 0.0017]]);
+  assert.equal(pico(browser.reduce((sum, row) => sum + row.usage.usd, 0)), 0.0018);
+  const costRows = rows.filter((row) => /^Tool cost/.test(row.summary ?? ""));
+  assert.deepEqual(costRows.map((row) => [row.kind, row.summary, row.tool_name, row.tool_use_id, row.usage]), [["phase", "Tool cost: monid charged $0.0030 for monid.run", "monid.run", "m1", { usd: 0.003, requests: 0 }]], "monid's alone; no browser Tool cost row");
+  assert.equal(rows.find((row) => row.tool_use_id === "m1" && row.kind === "tool_use").usage, undefined, "monid's call row carries nothing");
+  assert.deepEqual(rows.filter((row) => chargedTool(row) !== undefined).map((row) => [chargedTool(row), row.usage.usd]), [[BROWSER_CHARGE, 0.0001], ["monid.run", 0.003], [BROWSER_CHARGE, 0.0017]], "each charge's tool, read from its row");
+});
+
+test("chargedTool names the browser only for a browser step's row: another tool's row carrying usage is not the browser's", () => {
+  const row = (tool_name, usage = { usd: 0.002, requests: 0 }) => ({ id: "1:1:0", kind: "tool_use", tool_name, usage });
+  for (const name of ["snapshot", "run", "screenshot", "browser_read", "browser_release", "browser_relaunch", "browser_upload", "browser_downloads", "browser_request_handoff"]) assert.equal(chargedTool(row(name)), BROWSER_CHARGE, name);
+  for (const name of ["monid_run", "web_fetch", "bash", "some_future_tool"]) assert.equal(chargedTool(row(name)), undefined, name);
+  assert.equal(chargedTool({ id: "1:1:0", kind: "tool_use", tool_name: "snapshot" }), undefined, "a row with no usage carries no charge");
+  assert.equal(chargedTool({ id: "1:2", kind: "phase", tool_name: "monid.run", usage: { usd: 0.003, requests: 0 } }), "monid.run");
+  assert.equal(chargedTool({ id: "1:usage", kind: "usage", tool_name: null, usage: { usd: 0.05, requests: 4 } }), undefined, "the usage row is no charge");
+});
+
+test("a browser charge folds only into a browser step's row: one naming another tool's call goes to its conversation's latest browser call, else keeps its own row", () => {
+  const rows = timelineOf([assistant([call("b1", "snapshot")], 0), result("b1", "snapshot", "a", 1), assistant([call("x1", "bash", { command: "ls" })], 2), charge(0.0002, "x1", { tag: "s7" }), result("x1", "bash", "ok", 3)]);
+  assert.deepEqual(rows.filter((row) => row.usage && row.kind !== "usage").map((row) => [row.tool_name, row.usage.usd]), [["snapshot", 0.0002]]);
+  const alone = timelineOf([assistant([call("x1", "bash", { command: "ls" })], 0), charge(0.0002, "x1", { tag: "s7" }), result("x1", "bash", "ok", 1)]);
+  assert.deepEqual(alone.filter((row) => row.usage && row.kind !== "usage").map((row) => [row.kind, row.summary]), [["phase", "Tool cost: browserbase charged $0.0002 for browser"]], "with no browser call to fold into, its own row, as before");
+  assert.equal(alone.find((row) => row.kind === "tool_use").usage, undefined);
+});
+
+test("a browser call's row counts its charges with no price as the usage row does: one call, one not priced, however many it booked", () => {
+  const rows = timelineOf([assistant([call("b1", "snapshot")], 0), charge(null, "b1"), result("b1", "snapshot", "a", 1), assistant([{ type: "text", text: "Done." }], 2), charge(null, "b1", { final: true })]);
+  assert.deepEqual(browserRows(rows)[0].usage, { usd: null, requests: 0, so_far_usd: 0, unpriced: 1 }, "the call's row: 1, as on the usage row");
+  assert.deepEqual(rows.at(-1).usage, { usd: null, requests: 2, so_far_usd: 0.02, unpriced: 1 });
+  assert.equal(rows.at(-1).summary, "Cost so far: $0.0200 known, 1 not priced, over 2 model requests and 1 paid tool call");
+  // A known charge and an unknown one on the same call: what is known, and the call not priced once.
+  const mixed = timelineOf([assistant([call("b1", "snapshot")], 0), charge(0.0001, "b1"), result("b1", "snapshot", "a", 1), charge(null, "b1", { final: true }), charge(null, "b1", { final: true })]);
+  assert.deepEqual(browserRows(mixed)[0].usage, { usd: null, requests: 0, so_far_usd: 0.0001, unpriced: 1 });
 });

@@ -9,7 +9,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { after, before, test } from "node:test";
-import { agent, follow, scratch, serve } from "./support.mjs";
+import { agent, follow, runDir, scratch, serve } from "./support.mjs";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const OUTPUT_PRICED = new URL("./fixtures/faux-output-priced.mjs", import.meta.url).pathname;
@@ -30,7 +30,7 @@ after(async () => {
 /** The run's runner records of `kind`, read from its store once its process has let it go. */
 function records(runId, kind) {
   for (let tries = 0; ; tries++) {
-    const db = new DatabaseSync(join(server.data, "runs", runId, "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
+    const db = new DatabaseSync(join(runDir(server.data, runId), "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
     try {
       return db.prepare("SELECT record FROM entries").all().map((row) => JSON.parse(String(row.record))).filter((entry) => entry.kind === kind);
     } catch (error) {
@@ -59,7 +59,7 @@ async function cutByCrash(t, harness, cap) {
   }
   await writeFile(go, "");
   // This run's own process, by its own record: never this test's process (which the server runs in) or another run's.
-  const { holder } = JSON.parse(await readFile(join(data, "runs", runId, "run.json"), "utf8"));
+  const { holder } = JSON.parse(await readFile(join(runDir(data, runId), "run.json"), "utf8"));
   assert.ok(Number.isInteger(holder.pid) && holder.pid !== process.pid, JSON.stringify(holder));
   process.kill(holder.pid, "SIGKILL");
   return { api, runId };

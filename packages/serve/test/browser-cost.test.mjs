@@ -8,7 +8,7 @@ import { test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import { BROWSER_PRICES, browserPrice, browserSpend, priceEnvOf } from "../dist/browser-cost.js";
 import { paidHolds, useSpend } from "../dist/cap.js";
-import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
+import { agent, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
 
 const START = "https://example.test/start";
 const T0 = Date.UTC(2026, 10, 5, 12, 0, 0);
@@ -370,7 +370,7 @@ test("capped, a reopened run holds every session its custody still tracks, not o
 
 /** Every TOOL_COST in a run's store, as written. */
 const toolCosts = (data, runId) => {
-  const db = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { readOnly: true });
+  const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true });
   try {
     return db.prepare("SELECT record FROM entries ORDER BY rowid").all().map((row) => JSON.parse(String(row.record))).filter((entry) => entry.kind === "agentrun.tool_cost").map((entry) => entry.data);
   } finally {
@@ -534,4 +534,31 @@ test("through the API: a browser call counts once among the run's paid tool call
     assert.ok(usage.summary.endsWith(` and ${said}`), usage.summary);
     assert.deepEqual(usage.usage, { usd: 0.002, requests: times + 1 }, "the charges still count in full: the session's 60 s minimum");
   }
+});
+
+test("a run that mixes browser and monid charges, as serve books them, reads from its rows as booked: $0.0448 in all, $0.0018 browser time, $0.003 monid's, each charge once", async () => {
+  const [{ timelineOf, TOOL_COST }, { costOf, knownToolCostOf, toolCostOf }] = await Promise.all([import("@parcha/pi-durable-agent/timeline"), import("../dist/runs.js")]);
+  let id = 1;
+  const at = (s) => Date.UTC(2026, 10, 5, 12, 0, s);
+  // Each model request costs $0.01; four of them.
+  const answer = (content, s) => ({ kind: "pi.assistant", id: id++, conversationId: 1, model: [{ role: "assistant", content, stopReason: content.some((c) => c.type === "toolCall") ? "toolUse" : "stop", usage: { input: 10, output: 5, cost: { total: 0.01 } }, timestamp: at(s) }] });
+  const callOf = (callId, name, args = {}) => ({ type: "toolCall", id: callId, name, arguments: args });
+  const resultOf = (callId, name, text, s) => ({ kind: "pi.tool-result", id: id++, conversationId: 1, model: [{ role: "toolResult", toolCallId: callId, toolName: name, content: [{ type: "text", text }], isError: false, timestamp: at(s) }] });
+  // browser-cost.ts's Booked, and monid.ts's settle: the TOOL_COSTs serve writes on the root.
+  const browser = (usd, call, final = false) => ({ kind: TOOL_COST, id: id++, conversationId: 1, data: { tool: "browser", charged_by: "browserbase", call, usd, seconds: final ? 48 : 3, tag: "run-1-s1", conversation: 1, at: new Date(at(0)).toISOString(), final } });
+  const monid = (usd, call) => ({ kind: TOOL_COST, id: id++, conversationId: 1, data: { tool: "monid.run", charged_by: "monid", call, usd } });
+  const rows = timelineOf([
+    answer([callOf("b1", "snapshot")], 1), browser(0.0001, "b1"), resultOf("b1", "snapshot", "[1-1] page", 2),
+    answer([callOf("m1", "monid_run", { endpoint: "company" })], 3), monid(0.003, "m1"), resultOf("m1", "monid_run", "{\"ok\":true}", 4),
+    answer([callOf("b2", "browser_read", { what: "markdown" })], 5), browser(0.0001, "b2"), resultOf("b2", "browser_read", "url: https://example.test/\n---\nbody", 6),
+    answer([{ type: "text", text: "Done." }], 7), browser(0.0016, "b2", true),
+  ], { settled: true });
+  assert.equal(costOf(rows), 0.0448, "$0.04 of requests and $0.0048 of charges");
+  assert.equal(rows.at(-1).summary, "Cost so far: $0.0448 over 4 model requests and 3 paid tool calls", "b1, monid and b2: three calls, the release under b2 adding a charge, never a call");
+  assert.equal(pico(toolCostOf(rows)), 0.0048);
+  assert.equal(pico(toolCostOf(rows, "browser")), 0.0018, "the browser's rows: /usage's browser_time");
+  assert.equal(pico(toolCostOf(rows, "browser", true)), 0.003, "every other tool's: /usage's tools");
+  assert.deepEqual([pico(knownToolCostOf(rows, "browser")), pico(knownToolCostOf(rows, "browser", true))], [0.0018, 0.003]);
+  assert.deepEqual(rows.filter((row) => /^Tool cost/.test(row.summary ?? "")).map((row) => [row.summary, row.usage.usd]), [["Tool cost: monid charged $0.0030 for monid.run", 0.003]], "monid's own row; no browser Tool cost row");
+  assert.deepEqual(rows.filter((row) => row.kind === "tool_use" && row.usage).map((row) => [row.tool_name, row.usage.usd]), [["snapshot", 0.0001], ["browser_read", 0.0017]]);
 });
