@@ -108,7 +108,9 @@ export const proposeRun = (input: { data: string; agentId: string; runDir: strin
   // leave a part of itself that no longer matches. The whole message is read, however long (a message is bounded by
   // the run's own request limits), so a long one is not lost to the grader as one "[redacted]".
   const asked = input.turn.asked.map((message) => shortMessage(redactSecrets(message, input.refuse, Number.POSITIVE_INFINITY)));
-  const proposal: Proposal = { seed: input.seed, notes: checked.notes.map(({ file, text }) => ({ file, text })), ...(passing.length ? { files: passing } : {}), asked };
+  // A trigger's input, apart from what the user said, cut and shortened the same way.
+  const triggered = (input.turn.triggered ?? []).map(({ source, text }) => ({ source, text: shortMessage(redactSecrets(text, input.refuse, Number.POSITIVE_INFINITY)) }));
+  const proposal: Proposal = { seed: input.seed, notes: checked.notes.map(({ file, text }) => ({ file, text })), ...(passing.length ? { files: passing } : {}), asked, ...(triggered.length ? { triggered } : {}) };
   await writeDurable(join(input.runDir, PROPOSAL), `${JSON.stringify(proposal)}\n`);
   const count = (suffix: string) => passing.filter(({ file }) => file.endsWith(suffix)).length;
   return { state: "proposed", notes: proposal.notes.length, skills: count("/SKILL.md"), workflows: count("/workflow.json"), ...(left.length ? { left } : {}) };

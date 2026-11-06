@@ -326,7 +326,7 @@ test("a note that claims the user's words in a middle message is graded with tha
 });
 
 test("past the total, the grader is told plainly which messages were left out, the first and the newest kept; and the rubric says what cannot be found in the messages shown is not the user's", () => {
-  assert.match(GRADE_RUBRIC.replace(/\s+/g, " "), /check it against the user's messages\. What cannot be found in the messages shown is not the user's\./);
+  assert.match(GRADE_RUBRIC.replace(/\s+/g, " "), /check it against the user's messages\. What cannot be found in the user's messages shown is not the user's\./);
   const per = GRADE_CAPS.askedMessage;
   const asked = Array.from({ length: Math.ceil(GRADE_CAPS.askedTotal / per) + 5 }, (_, i) => `${i + 1} `.padEnd(per, "m"));
   const prompt = gradePrompt(input({ asked }));
