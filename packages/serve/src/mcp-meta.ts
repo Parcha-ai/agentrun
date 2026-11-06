@@ -41,7 +41,8 @@ export const MCP_META_TOOLS: readonly MetaTool[] = [
   { name: "portal_codemode_execute", source: "developers.cloudflare.com mcp-portals code mode" },
 ];
 
-const hostOf = (url: string): string | undefined => URL.parse(url)?.hostname.toLowerCase();
+/** A URL's host as compared here: lowercase, and with no final dot (`klavis.ai.` names the same host as `klavis.ai`). */
+const hostOf = (url: string): string | undefined => URL.parse(url)?.hostname.toLowerCase().replace(/\.$/, "");
 
 /** The known meta tool `tool` of the server at `url` is, with why it is not granted; undefined for any other tool. */
 export function metaToolOf(url: string, tool: string): { reason: string } | undefined {

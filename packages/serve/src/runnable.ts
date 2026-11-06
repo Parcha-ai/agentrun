@@ -141,6 +141,13 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
     else if ("refused" in resolved) out.push({ field: revision.model ? "definition.model" : "definition.harness", reason: NOT_SET_UP, message: resolved.refused, host: true, harness });
     return out;
   }
+  // A workflow's own grants hold a known MCP meta tool to the same rule (mcp-meta.ts): refused at the save, never a
+  // workflow that cannot launch.
+  (revision.tools ?? []).forEach((tool, index) => {
+    const named = tool.startsWith("mcp:") ? mcpNameOf(tool) : undefined;
+    const listed = named ? mcp?.(named.server)?.find((t) => t.name === named.tool) : undefined;
+    if (listed?.grantable === false) out.push({ field: `definition.tools[${index}]`, reason: "not_an_option", message: `${tool} can't be granted: ${listed.reason}`, host: false, tool });
+  });
   // A workflow's model nodes run on pi here; on another harness they are not bound yet, and never run on pi instead.
   if (harness !== DEFAULT_HARNESS) out.push({ field: "definition.workflow", reason: NOT_SET_UP, message: `A workflow runs on pi here; on ${harness} its model nodes are not bound yet.`, host: true, harness });
   const { inspectWorkflow } = await import("@parcha/agentrun-dsl");
