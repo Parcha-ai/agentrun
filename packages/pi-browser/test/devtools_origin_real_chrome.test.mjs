@@ -9,6 +9,7 @@ import path from "node:path";
 import test from "node:test";
 import { stagehandDriver } from "../dist/driver/stagehand.js";
 import { extensionOrigin } from "../dist/providers/chrome-args.js";
+import { cdpCall } from "../dist/providers/cdp-call.js";
 import { cdpProvider } from "../dist/providers/cdp.js";
 import { CHROME, NO_CHROME, skipIncapable } from "./fixtures/local-chrome.mjs";
 
@@ -50,6 +51,13 @@ function startProbePage() {
   return new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve({ url: `http://127.0.0.1:${server.address().port}/`, close })));
 }
 
+/** The id of the one Stagehand extension the browser holds: the lease's confined copy. */
+async function stagehandId(url) {
+  const listed = await cdpCall(url, "Extensions.getExtensions", {}, 20_000);
+  listed.close();
+  return listed.result.extensions.find((extension) => extension.name === "Stagehand Runtime" && extension.enabled).id;
+}
+
 test("a page the agent visits cannot open the browser's DevTools socket, and Stagehand still drives the page", { skip: NO_CHROME, timeout: 120_000 }, async (t) => {
   const dir = await mkdtemp(path.join(process.env.TMPDIR || tmpdir(), "devtools-origin-"));
   const provider = cdpProvider({ chrome: { executablePath: CHROME, profileRoot: path.join(dir, "profiles") } });
@@ -80,7 +88,7 @@ test("a page the agent visits cannot open the browser's DevTools socket, and Sta
   // web page's Origin is refused.
   assert.deepEqual({
     none: await upgradeStatus(target.sdkCdpUrl, null),
-    extension: await upgradeStatus(target.sdkCdpUrl, `chrome-extension://${target.extensionId}`),
+    extension: await upgradeStatus(target.sdkCdpUrl, `chrome-extension://${await stagehandId(target.sdkCdpUrl)}`),
     page: await upgradeStatus(target.sdkCdpUrl, page.url.replace(/\/$/, "")),
   }, { none: 101, extension: 101, page: 403 });
   // Stagehand's own connections are unaffected: the same driver still reads the page.

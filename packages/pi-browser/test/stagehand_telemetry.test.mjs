@@ -24,7 +24,7 @@ const spec = (tag) => ({ tag, maxLifetimeS: 600, idleTimeoutS: 60, proxies: fals
 /** Stagehand as its default creates it: the control. */
 async function bare(target, pageUrl) {
   const { localBrowser, Stagehand } = await import("@browserbasehq/stagehand");
-  const browser = await localBrowser.connect({ cdpUrl: target.sdkCdpUrl, ...(target.extensionId ? { extensionId: target.extensionId } : {}) });
+  const browser = await localBrowser.connect({ cdpUrl: target.sdkCdpUrl });
   const stagehand = await Stagehand.create({ browser, logging: { level: "off" } });
   const page = await stagehand.browser.context.activePage();
   await page.goto(pageUrl);

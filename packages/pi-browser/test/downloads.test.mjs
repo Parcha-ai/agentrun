@@ -221,7 +221,7 @@ test("a real Chrome downloads a file; the cdp provider lists it once finished, a
     let browser;
     try {
       const attached = await provider.attach(ref);
-      browser = await localBrowser.connect({ cdpUrl: attached.sdkCdpUrl, ...(attached.extensionId ? { extensionId: attached.extensionId } : {}) });
+      browser = await localBrowser.connect({ cdpUrl: attached.sdkCdpUrl });
       stagehand = await Stagehand.create({ browser, logging: { level: "off" }, telemetry: LOCAL_TELEMETRY });
     } catch (error) { if (skipIncapable(t, error)) return; throw error; }
     const [page] = await browser.context.pages();

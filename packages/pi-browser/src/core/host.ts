@@ -57,7 +57,6 @@ export type AttachTarget = {
   sdkCdpUrl: string;
   /** `expiresAt` (epoch ms): the dial's credential ends then, so a socket opened on it is closed at that moment. */
   dial?: { url: string; headers?: Record<string, string>; expiresAt?: number };
-  extensionId?: string;
 };
 
 export type ProviderCaps = {

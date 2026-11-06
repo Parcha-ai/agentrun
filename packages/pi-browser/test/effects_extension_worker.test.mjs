@@ -3,7 +3,7 @@ import http from "node:http";
 import test from "node:test";
 import { EffectObserver, effectDecider } from "@parcha/pi-browser";
 import { openDial } from "../dist/core/dial.js";
-import { extensionDirectory } from "../dist/providers/chrome-args.js";
+import { extensionDirectory, extensionOrigin } from "../dist/providers/chrome-args.js";
 import { cdpCall } from "../dist/providers/cdp-call.js";
 import { stagehandDriver } from "../dist/driver/stagehand.js";
 import { cdpProvider } from "../dist/providers/cdp.js";
@@ -265,7 +265,7 @@ test("confined, the extension is the only Stagehand Runtime and everything the d
   const reply = await new Promise((resolve) => { ws.onmessage = (event) => { const m = JSON.parse(String(event.data)); if (m.id === 1) resolve(m); }; ws.send(JSON.stringify({ id: 1, method: "Extensions.getExtensions" })); });
   const runtimes = reply.result.extensions.filter((x) => x.name === "Stagehand Runtime" && x.enabled);
   assert.equal(runtimes.length, 1, "one enabled Stagehand Runtime");
-  assert.equal(w.target.extensionId, runtimes[0].id, "and the attach target names it");
+  assert.notEqual(`chrome-extension://${runtimes[0].id}`, extensionOrigin(), "and it is the lease's copy, not Stagehand's own directory");
   await driver.run({ code: `await page.goto(${JSON.stringify(`${site.origin}/page`)}); return await page.title();` });
   assert.match(await driver.snapshot(), /next/);
   await driver.run({ code: `await page.locator("#next").click(); await page.waitForLoadState("domcontentloaded"); return await page.url();` });
@@ -286,7 +286,7 @@ test("confined, a page's own POST is not affected: the page stays under the obse
   assert.deepEqual(w.site.sent(), ["POST /from-page"]);
 });
 
-test("confined, a stale unconfined Stagehand extension already in the browser is not the one the attach names", { skip: NO_CHROME, timeout: 180_000 }, async (t) => {
+test("confined, a stale unconfined Stagehand extension already in the browser is uninstalled at attach, so the driver runs in the confined one", { skip: NO_CHROME, timeout: 180_000 }, async (t) => {
   const dir = await scratch(t, "pi-browser-stale-extension-");
   const provider = cdpProvider({ chrome: { executablePath: CHROME, profileRoot: dir } });
   const signal = new AbortController().signal;
@@ -301,7 +301,11 @@ test("confined, a stale unconfined Stagehand extension already in the browser is
   loaded.close();
   assert.equal(typeof loaded.result.id, "string", "the stale copy is loaded");
   const target = await provider.attach(ref);
-  assert.notEqual(target.extensionId, loaded.result.id, "the attach names the lease's own copy, not the one already there");
+  const listed = await cdpCall(version.webSocketDebuggerUrl, "Extensions.getExtensions", {}, 20_000);
+  listed.close();
+  const runtimes = listed.result.extensions.filter((extension) => extension.name === "Stagehand Runtime");
+  assert.equal(runtimes.length, 1, "one Stagehand Runtime is left");
+  assert.notEqual(runtimes[0].id, loaded.result.id, "the lease's own copy, not the one already there");
   let driver;
   try { driver = await stagehandDriver()(target, signal); } catch (error) { if (skipIncapable(t, error)) return; throw error; }
   t.after(() => driver.close().catch(() => undefined), { timeout: 30_000 });

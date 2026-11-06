@@ -26,9 +26,9 @@ export function stagehandDriver(): DriverFactory<PageDriver> {
     const { localBrowser, Stagehand } = await import("@browserbasehq/stagehand");
     const host = new URL(target.dial?.url ?? target.sdkCdpUrl).host;
     const step = attachStep(host);
-    // An id the provider supplies names a held extension too, so its worker is reset as well.
-    const extensionId = await step(installedExtension(target.sdkCdpUrl, signal, target.extensionId));
-    const browser = await step(localBrowser.connect({ cdpUrl: target.sdkCdpUrl, ...(extensionId ? { extensionId } : {}) }));
+    // Stagehand 4.4 ignores an extension id and finds its extension by name: the provider leaves the browser one.
+    const extensionId = await step(installedExtension(target.sdkCdpUrl, signal));
+    const browser = await step(localBrowser.connect({ cdpUrl: target.sdkCdpUrl }));
     const stagehand = await createSealed(() => Stagehand.create({ browser, ...SEALED_STAGEHAND }),
       () => step(installedExtension(target.sdkCdpUrl, signal, extensionId ?? undefined, IN_FLIGHT_INIT_MS)), host, signal);
     return pageDriver(stagehand, { batchMs: options?.batchTimeoutMs ?? 60_000 });
