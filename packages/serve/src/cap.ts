@@ -302,7 +302,7 @@ const notSentHere = (entry: EntryLike): boolean => {
 /** The cost an entry adds to what a run spent, as the timeline counts it: a pi answer's total (none for one stopped
  *  before its end), and the usd of a cost written apart from an answer, a paid tool's charge among them; 0 for anything
  *  else, or for a cost that is not a number (which makes the whole spend unknown, by the timeline's verdict). */
-const costOf = (entry: EntryLike): number => {
+export const costOf = (entry: EntryLike): number => {
   const message = entry.kind === "pi.assistant" ? (entry.model?.[0] as { stopReason?: unknown; usage?: { cost?: { total?: unknown } } } | undefined) : undefined;
   const cost = message ? (message.stopReason === "aborted" ? undefined : message.usage?.cost?.total)
     : entry.kind === REQUEST_COST || entry.kind === REQUEST_COST_LATE || entry.kind === TOOL_COST ? (entry.data as { usd?: unknown } | undefined)?.usd : undefined;

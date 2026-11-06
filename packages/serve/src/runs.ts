@@ -416,7 +416,7 @@ function noteTurns(run: Run, entries: readonly unknown[], submissions: readonly 
   }
   const reflect = (id: number) => reflects(run.meta.reflect, id);
   run.turns.note(entries, submissions, reflect);
-  (run.bounds ??= new RequestBounds()).note(entries);
+  (run.bounds ??= new RequestBounds()).note(entries, run.meta.max_cost_usd);
   if (snapshot) run.turns.snapshot(snapshot, reflect);
 }
 
@@ -1170,9 +1170,6 @@ export class Runs {
   /** `keep`: rows that stay served though `rows` no longer holds them (the live path's committed rows). */
   private take(run: Run, rows: TimelineEvent[], keep?: (id: string) => boolean): void {
     run.rows = withOverCap(labelled(run.meta.reflect, withApprovals(withAsks(rows.filter((r) => !QUIET.test(r.id))), run, this.redactor(run))), run.meta.max_cost_usd, run.bounds?.ended());
-    // Its cost fits its cap: the requests that ended so far explain no overshoot to come (bounds.ts).
-    const cost = costOf(run.rows);
-    if (run.bounds && (run.meta.max_cost_usd === undefined || (cost !== null && cost <= run.meta.max_cost_usd + FIT_TOLERANCE))) run.bounds.fit();
     // Counted by id: a snapshot of a compacted conversation shows fewer user messages than before, which is not more
     // messages waiting, so a count of rows would leave the run working forever.
     const arrived = run.rows.filter((r) => isMessageRow(r) && !run.users.has(r.id));

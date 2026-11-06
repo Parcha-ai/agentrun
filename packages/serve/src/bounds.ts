@@ -12,8 +12,11 @@
 // answer's tool calls and sends the next (agent-loop.js runLoop). pi's side requests (a label for `request`: a summary, a
 // hosted search's, a learned workflow node's) run inside tool calls, which pi runs side by side (agent.js toolExecution
 // "parallel"): each closes by its own `requestId`, on its end mark or its cost. A refusal's own start mark holds none.
+//
+// The bounds that ended count from the newest entry at which what the run had spent (the cap's own reading of an entry's
+// cost, cap.ts costOf) fit its cap: read live or whole after a restart, the same entries keep the same bounds.
 import { REQUEST_COST, REQUEST_COST_LATE, REQUEST_ENDED, REQUEST_STARTED } from "@parcha/pi-durable-agent/timeline";
-import { BOUND_FIELD, CAP_REFUSED_FIELD } from "./cap.js";
+import { BOUND_FIELD, CAP_REFUSED_FIELD, costOf, FIT_TOLERANCE } from "./cap.js";
 import { ADAPTER_API, BOOKED } from "./turn-end.js";
 import { isObject, type Json } from "./validate.js";
 
@@ -27,11 +30,13 @@ export class RequestBounds {
   private harness = new Map<string, number>();
   /** pi's one generation request in flight: its bound. */
   private pi: number | undefined;
-  /** The bounds of the requests that ended since the run's cost last fit its cap (fit), together. */
+  /** The bounds of the requests that ended since the run's cost last fit its cap, together. */
   private since = 0;
+  /** What the run has spent by the entries read, as the cap reads each entry's cost. */
+  private spent = 0;
 
-  /** Reads `entries` of the run's root, each once. */
-  note(entries: readonly unknown[]): void {
+  /** Reads `entries` of the run's root, each once, against the run's `cap` (none: no overshoot to explain). */
+  note(entries: readonly unknown[], cap?: number): void {
     for (const value of entries) {
       if (!isObject(value)) continue;
       if (typeof value.id === "number") {
@@ -39,6 +44,9 @@ export class RequestBounds {
         this.seen = value.id;
       }
       this.noteOne(value);
+      this.spent += costOf(value as never);
+      // The run's cost fits its cap here: the bounds that ended so far explain no overshoot to come.
+      if (cap === undefined || this.spent <= cap + FIT_TOLERANCE) this.since = 0;
     }
   }
 
@@ -86,8 +94,4 @@ export class RequestBounds {
     return this.since;
   }
 
-  /** The run's cost fits its cap: the requests that ended so far explain no overshoot to come. */
-  fit(): void {
-    this.since = 0;
-  }
 }
