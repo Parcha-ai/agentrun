@@ -59,7 +59,7 @@ test("a refused credential says where to update it and never shows it; an answer
   const { gateway: refused } = await setup(t, { token: `not-a-secret-${"wrong-token-0123456"}` });
   const said = await refused.call("fake", "add", { a: 1, b: 1 }, { signal: signal() });
   assert.equal(said.isError, true);
-  assert.equal(textOf(said), "The MCP server fake refused its credential; update it in Settings → MCP servers.");
+  assert.equal(textOf(said), "The MCP server fake refused its credential (its sign-in expired or was revoked, or its key changed): sign in again in Settings → MCP servers, or update its credential there.");
   const { gateway, work } = await setup(t);
   const long = textOf(await gateway.call("fake", "long", {}, { signal: signal() }));
   const filed = /evidence\/mcp\/fake\/(\S+\.json)\]$/.exec(long)?.[1];
@@ -145,7 +145,9 @@ test("a call the gate parks answers its waiting text, marked parked, with the ha
   const parked = [];
   const park = { commit: async (change) => change({}), parked: (id) => parked.push(id) };
   const said = await gateway.call("fake", "add", { a: 1, b: 1 }, { signal: signal(), callId: "c1", park });
-  assert.deepEqual([textOf(said), said.isError, isParked(said), JSON.stringify(said).includes("parked")], [waitingText("mcp:fake/add"), undefined, true, false]);
+  // The gateway's answer carries `parked` for the harness's session; the door never sends it to a harness's own client
+  // (run-adapters mcp-route.test.mjs: "never the host's parked flag").
+  assert.deepEqual([textOf(said), said.isError, isParked(said), said.parked], [waitingText("mcp:fake/add"), undefined, true, true]);
   assert.deepEqual([parks[0] === park, parked], [true, ["c1"]], "the harness's park, told the call parked");
   assert.equal(isParked(await setup(t).then(({ gateway: plain }) => plain.call("fake", "add", { a: 1, b: 1 }, { signal: signal() }))), false);
   assert.equal(fake.log.filter((entry) => entry.method === "tools/call").length, 0);

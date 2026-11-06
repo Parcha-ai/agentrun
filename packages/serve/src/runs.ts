@@ -15,7 +15,7 @@ import { processAlive } from "@parcha/agentrun-kernel/host";
 import { doorKey, doorTook } from "@parcha/pi-durable-disk";
 import { RUN_STATUS_TABLE } from "@parcha/pi-durable-disk/internals";
 import { AgentHomeError, type Revision, runDirIn, type RevisionKind, type RunOrigin, type RunRow, type RunState, type StoredMetrics } from "@parcha/pi-durable-agent";
-import { chargedTool, isMessageRow, MESSAGE_ORIGIN, type MessageOrigin, registerLabel, registerTurnEnding, REQUEST_STARTED, type RunMetrics, runMetricsWithDecisions, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
+import { chargedTool, isMessageRow, MESSAGE_ORIGIN, type MessageOrigin, registerLabel, registerTurnEnding, REQUEST_STARTED, type RunMetrics, runMetricsWithDecisions, scrubUrls, type TimelineEvent, timelineOf, timelineReducer } from "@parcha/pi-durable-agent/timeline";
 import { HARNESS_LOG_EVENT, harnessModelKeys, thinkingFor } from "./adapters.js";
 import { runLink } from "./console-links.js";
 import { DEFAULT_HARNESS, harnessOfBody, steersMidTurn } from "./harness.js";
@@ -25,7 +25,7 @@ import { hostMemory, memoryFull, neverFits, runMibOf, runsMemoryMib } from "./ho
 import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from "./agents.js";
 import { INSTALLING_CLAUDE } from "./claude-sdk.js";
 import { DATA_ENV, dataOfRun, FOLLOW_UP_OPEN_ENV, LAUNCH_LOST, readJson, RUN_CANCELLED, RUN_DOOR_TOKEN, RUN_LAUNCHING, RUN_META, runDoorToken, SETUP_LOST, writeDurableSync, writeWhole } from "./files.js";
-import { MCP_PIN, mcpCredentialsOf, type McpPin, mcpPinOf, type McpServerSource } from "./mcp-gateway.js";
+import { MCP_PIN, mcpCredentialsOf, mcpNameOf, type McpPin, mcpPinOf, type McpServerSource } from "./mcp-gateway.js";
 import { META_REASON, metaToolOf } from "./mcp-meta.js";
 import { type DaytonaApi, KEPT_AUTOSTOP_MINUTES, keepWhenIdle, wakeBoxes } from "./daytona-api.js";
 import { type Learning, LEARNING_LABEL, type LearningMode, type LearningReason, type LearningState, shortOf } from "./learning.js";
@@ -42,7 +42,7 @@ import { DEFAULT_MODEL_ENV, EFFORT_ENV, GATEWAY_KEY_ENV, hostModel, llmTiers, mo
 import { llmAnswers, pausedIn, readNodeLog, RUN_PAUSED } from "./pause.js";
 import { durationMs } from "./print.js";
 import { handsParallel, keptFromBefore, keptVendor, LOCAL_CHROME_ENV, type Plane, planeFor, recheckPlane, relaunchPlane, TOOL_PLANE_ENV, type Tooling, type ToolSettingsMap } from "./tool-plane.js";
-import { APPROVAL_ENTRY, APPROVAL_ROW, NO_APPROVER_ENV, type PendingApproval, permissionOf, previewOf, RESUME_PREFIX, TURN_ORIGIN_FILE } from "./tool-gate.js";
+import { APPROVAL_ENTRY, APPROVAL_ROW, NO_APPROVER_ENV, type PendingApproval, permissionOf, previewOf, RESUME_PREFIX, resumeHead, TURN_ORIGIN_FILE } from "./tool-gate.js";
 import { ChangeClock, type Page, RowLog } from "./rows.js";
 import { TOOL_KEYS } from "./tool-keys.js";
 import { isObject, type Json } from "./validate.js";
@@ -525,7 +525,7 @@ function withApprovals(rows: readonly TimelineEvent[], run: Pick<Run, "approvals
   return rows.flatMap((row) => {
     // The gate's resume, the server's row: it says what came of the answer, never the head the model reads.
     const resumed = row.kind === "phase" && row.text?.startsWith(RESUME_PREFIX) ? resumedBy(row.text, byCall) : undefined;
-    if (resumed) return [{ ...row, summary: resumeSays(resumed, run.meta.approvals?.[resumed.id], row.text!) }];
+    if (resumed) return [{ ...row, summary: resumeSays(resumed, run.meta.approvals?.[resumed.id], row.text!), text: resumeShows(resumed, run.meta.approvals?.[resumed.id], row.text!, redact) }];
     const own = (row.kind === "tool_use" || row.kind === "tool_result") && row.tool_use_id ? byCall.get(row.tool_use_id) : undefined;
     // The call's own rows: what it answered at the park is not what it did, so they say what came of the approval.
     const called = own ? { ...row, summary: parkedCallSays(own, run, waiting), tool_status: null } : row;
@@ -563,10 +563,28 @@ function resumeSays(approval: Approval, given: { decision: string; by?: string }
   if (given?.decision === "deny") return `AgentRun: ${approval.tool} was refused: ${given.by === "message" ? "your message declined it" : "you declined it"}`;
   return `AgentRun: ${approval.tool} ran once you allowed it${text.includes(" They allowed it, and it ran and failed.") ? ", and failed" : ""}`;
 }
+/** What a person reads when they open a resume's row: the outcome, then the call's result or the refusal's words, from the
+ *  model's message (already redacted whole, as the row's text is), with its head left out. The head is rebuilt exactly as
+ *  the gate wrote it (tool-gate.ts resumeHead, from the stored answer's arguments), never searched for, so arguments that
+ *  quote the gate's words can't move it; a row whose text doesn't start with it shows the outcome alone. The model's own
+ *  message is unchanged. */
+function resumeShows(approval: Approval, given: { decision: string; by?: string; args_shown?: string } | undefined, text: string, redact: (text: string) => string): string {
+  const said = resumeSays(approval, given, text).replace(/^AgentRun: /, "");
+  // The row's text is the message as the Timeline shows it: redacted whole (the run's redactor) and its links scrubbed
+  // (scrubUrls), so the gate's head is compared after the same two steps.
+  const written = resumeHead(approval, given?.args_shown ?? "(not shown)");
+  const head = [scrubUrls(redact(written)), redact(written), scrubUrls(written), written].find((h) => text.startsWith(h));
+  if (head === undefined) return `${said}.`;
+  const rest = text.slice(head.length);
+  if (given?.decision === "deny") return `${said}.${rest.trim() ? `\n${rest.trim()}` : ""}`;
+  return `${said}. Its result:\n${rest.replace(/^ They allowed it, and it ran(?: and failed)?\. Its result:\n?/, "")}`;
+}
 /** A dollar figure to a millionth, as the timeline's cost.usd is. */
 const micro = (usd: number): number => Math.round(usd * 1e6) / 1e6;
 /** A bound to a millionth, rounded up, so "at most" holds. */
 const microUp = (usd: number): number => Math.ceil(usd * 1e6 - 1e-9) / 1e6;
+/** For tests only: how long each launch path waits where it refreshes a run's MCP OAuth tokens (mcpFresh). */
+export const REFRESH_DELAY_ENV = "AGENTRUN_SERVE_TEST_REFRESH_DELAY_MS";
 /** How many tries a raised run's follow-up gets, and the waits between them, before the run fails with why. */
 const CONTINUE_TRIES = 3;
 const CONTINUE_RETRY_MS = [1_000, 3_000];
@@ -2020,7 +2038,7 @@ export class Runs {
   }
 
   /** The door of a run that is not finished, starting or waking its process when it is not live. */
-  private async ensureLive(run: Run, timeoutMs = this.options.readyTimeoutMs ?? READY_TIMEOUT_MS): Promise<string> {
+  private async ensureLive(run: Run, timeoutMs = this.options.readyTimeoutMs ?? READY_TIMEOUT_MS, refresh = false): Promise<string> {
     let deadline = Date.now() + timeoutMs;
     // A run brought up by a request (a message before the start's recovery reached it) waits for the sweep as well.
     await this.sweepOnce();
@@ -2038,7 +2056,7 @@ export class Runs {
       await installing;
       deadline = Date.now() + timeoutMs;
     }
-    for (let launched = false; ; await sleep(100)) {
+    for (let launched = false, refreshed = !refresh; ; await sleep(100)) {
       // Checked first: a settle may have ended the run, and nothing starts a run that ended.
       if (run.outcome || run.finishing || run.cancel) throw this.finished(run);
       const door = this.doorOf(run);
@@ -2065,10 +2083,24 @@ export class Runs {
         // restart on a smaller one) is not started: said, never tried.
         const never = fresh ? undefined : neverFits(run.harness, this.memory);
         if (never) throw new ApiError("agent_not_runnable", never, { details: { unbound: [], missing: {}, harness: run.harness } });
-        // Its sign-in pinned only for a launch: a run whose process still serves keeps the one it was handed.
+        // Only for a launch: its MCP OAuth tokens near expiry refreshed (when this path may: a message's, an approval's
+        // answer, never a stop's) and its sign-in pinned; a run whose process still serves keeps what it was handed. Looked at again
+        // after the waits: they may have let another path launch it.
         if (!fresh) {
+          if (!refreshed) {
+            refreshed = true;
+            const refreshing = this.mcpFresh(run);
+            // A wait here lets the rest of the server go on: a recovery may start settling the run (recover's settle of
+            // a process an earlier server left), or another path launch it. Every check above is read again first.
+            if (refreshing) {
+              await refreshing;
+              continue;
+            }
+          }
           await this.pinSignIn(run);
-          if (run.outcome || run.finishing || run.cancel || this.live(run)) continue;
+          // A settle that began during a wait owns the run until it ends: launching under it would start a process the
+          // settle then ends, so it is waited for (the top of the loop), as one under way before the waits is.
+          if (run.outcome || run.finishing || run.cancel || this.live(run) || run.settles > 0) continue;
           this.launch(run);
           launched = true;
         }
@@ -2131,10 +2163,10 @@ export class Runs {
     }
   }
 
-  private async toDoor(run: Run, path: string, body?: Json, readyMs?: number): Promise<{ status: number; body: Json | null }> {
+  private async toDoor(run: Run, path: string, body?: Json, readyMs?: number, refresh = false): Promise<{ status: number; body: Json | null }> {
     const deadline = Date.now() + 30_000;
     for (;;) {
-      const door = await this.ensureLive(run, readyMs);
+      const door = await this.ensureLive(run, readyMs, refresh);
       const res = await fetch(new URL(path, door), {
         method: body === undefined ? "GET" : "POST",
         headers: this.headers(run, body !== undefined),
@@ -2154,6 +2186,36 @@ export class Runs {
     if (this.needs.has(run.revision)) return;
     const revision = given ?? (await whenFree(() => this.store.readRevision(run.revision), this.busyDelays(), this.onBusy(run.id, "the agent store")));
     this.needs.set(run.revision, await needsOf(revision));
+  }
+
+  /** Just before a launch that spawns the run's process (after pinNeeds): its MCP servers' OAuth tokens near expiry are
+   *  refreshed in serve (mcp-servers.ts headersForRun), so the synchronous launch hands it a fresh access token, never a
+   *  refresh token. Never on a path that only reaches a live process, nor on a stop's: an authorization server that is
+   *  slow to answer never holds an abort. */
+  private mcpFresh(run: Run): Promise<void> | undefined {
+    // A test's seam, unset in a server (REFRESH_DELAY_ENV): every launch path waits this long here, as one whose
+    // authorization server is slow to answer does.
+    // Capped, so a stray value never holds a launch for long; inert unless set.
+    const delay = Math.min(Number(process.env[REFRESH_DELAY_ENV]) || 0, 1_000);
+    if (delay > 0) return new Promise<void>((resolve) => setTimeout(resolve, delay)).then(() => this.mcpFreshNow(run));
+    return this.mcpFreshNow(run);
+  }
+
+  private mcpFreshNow(run: Run): Promise<void> | undefined {
+    const source = this.options.mcpServers;
+    if (!source?.refresh) return undefined;
+    // The servers its pin names, or, before its first launch makes the pin (which may refuse the launch in words, there
+    // alone), the ones its granted tools name: read only, never pinned here.
+    const file = join(run.dir, MCP_PIN);
+    let names: string[] = [];
+    try {
+      names = existsSync(file) ? Object.keys(JSON.parse(readFileSync(file, "utf8")) as McpPin) : [...new Set((this.needs.get(run.revision)?.tools ?? []).flatMap((tool) => mcpNameOf(tool)?.server ?? []))];
+    } catch {
+      return undefined;
+    }
+    // Nothing to refresh, nothing awaited: a launch path with no OAuth server takes not one tick more than it did.
+    if (!names.length) return undefined;
+    return Promise.all(names.map((name) => source.refresh!(name))).then(() => undefined);
   }
 
   /** `run`'s pinned MCP tools: read from its directory, or at its first launch made from the granted `tools` and the
@@ -2207,7 +2269,14 @@ export class Runs {
     // to be installed whole first (harnessReady), holding its place meanwhile (waitsInstall), and launches once it is:
     // never a process that would load a missing SDK.
     const installing = this.harnessReady(run);
-    if (installing) return void installing.then((installed) => installed && this.launch(run, followUp));
+    // After the install, its MCP OAuth tokens are refreshed again: the wait (up to the install's bound) may have outlived
+    // what the refresh before it gave (mcpFresh); launch() reads every check again.
+    if (installing) return void installing.then(async (installed) => {
+      if (!installed) return;
+      const refreshing = this.mcpFresh(run);
+      if (refreshing) await refreshing;
+      this.launch(run, followUp);
+    });
     run.waitsInstall = undefined;
     // Taken by this launch only: a later launch (a relaunch after its process went) opens the run as any other.
     run.followUpOpen = undefined;
@@ -2349,7 +2418,11 @@ export class Runs {
       run.claimWait = true;
       run.claimWaitWhy = storeBusy(error) ? "the agent store is busy (another writer holds it)" : /cannot be (checked|looked for)/.test((error as Error).message) ? "the process listing cannot be read, so its holder cannot be checked" : (error as Error).message;
       warn(run.id, `its process is not started: its claim was not written (${(error as Error).message}); trying again in ${every / 1000} s`);
-      setTimeout(() => {
+      setTimeout(async () => {
+        if (this.closing) return;
+        // Refreshed again before the retry, as after any wait (mcpFresh); launch() reads every check again.
+        const refreshing = this.mcpFresh(run);
+        if (refreshing) await refreshing.catch(() => undefined);
         if (this.closing) return;
         try {
           this.launch(run);
@@ -2634,6 +2707,8 @@ export class Runs {
       const never = neverFits(run.harness, this.memory);
       if (!never && run.relaunches < MAX_RELAUNCHES) {
         await this.pinNeeds(run);
+        const refreshing = this.mcpFresh(run);
+        if (refreshing) await refreshing;
         await this.pinSignIn(run);
         return this.relaunch(run);
       }
@@ -2910,6 +2985,8 @@ export class Runs {
     const run = this.blank({ id: started.runId, agent: entry.agent.id, revision: revision.id, kind: revision.kind }, started.dir, meta, version, harnessOfBody(revision.body), tooling, revision);
     // Before the run is known here, so nothing launches it first.
     await this.pinNeeds(run, revision);
+    const refreshing = this.mcpFresh(run);
+    if (refreshing) await refreshing;
     await this.pinSignIn(run);
     this.runs.set(run.id, run);
     // A seed that failed is a learning row from the start, and its learning's end is in the ledger.
@@ -2975,7 +3052,7 @@ export class Runs {
    *  turn that may end so; decided at the door's admission, past every wait here. */
   private async submit(run: Run, content: string, whenBusy: "steer" | "followUp", requestId: string, readyMs?: number, origin?: MessageOrigin, answers = true): Promise<void> {
     await this.beforeSubmit?.(run.id, content);
-    const answer = await this.toDoor(run, "/submit", { requestId, content, whenBusy, ...(origin ? { origin } : {}), ...(answers ? {} : { answers: false, asks: [ASK_TOOL], parks: [APPROVAL_ENTRY] }) }, readyMs);
+    const answer = await this.toDoor(run, "/submit", { requestId, content, whenBusy, ...(origin ? { origin } : {}), ...(answers ? {} : { answers: false, asks: [ASK_TOOL], parks: [APPROVAL_ENTRY] }) }, readyMs, true);
     if (answer.status === 409 && answer.body?.error === "WAITING") throw new ApiError("not_continuable", WAITS_ON_A_PERSON, { details: { reason: "waiting" } });
     if (answer.status === 409 && answer.body?.error === "BUSY" && !answers) throw new ApiError("rate_limited", "The run is working: a message that may not answer it waits until it is idle.", { retry_after_ms: 5_000, details: { reason: "working" } });
     if (answer.status >= 400) throw new ApiError(answer.status === 409 ? "not_continuable" : "internal", String(answer.body?.message ?? answer.body?.error ?? "the run refused the message"));
@@ -3236,6 +3313,9 @@ export class Runs {
   private async reopen(run: Run): Promise<void> {
     await this.sweepOnce();
     await this.pinNeeds(run);
+    // Before its place is taken: the launch below follows the place with no wait.
+    const refreshing = this.mcpFresh(run);
+    if (refreshing) await refreshing;
     const row = this.store.readRun(run.id);
     if (row?.archivedAt) throw new ApiError("not_continuable", "This run is archived: unarchive it to continue it.");
     // Its end could not be written yet (persistLater tries again): it opens once the store has it.
@@ -3319,7 +3399,7 @@ export class Runs {
     await this.saveMeta(run);
     this.restate(run);
     this.refresh(run);
-    if (!run.outcome && !run.finishing && !run.cancel) void this.ensureLive(run).catch((error: Error) => warn(run.id, `its declined approval waits for its process: ${error.message}`));
+    if (!run.outcome && !run.finishing && !run.cancel) void this.ensureLive(run, undefined, true).catch((error: Error) => warn(run.id, `its declined approval waits for its process: ${error.message}`));
     return { mode: "answer", messageId: `m${Date.now().toString(36)}${randomBytes(4).toString("hex")}` };
   }
 
@@ -3401,7 +3481,7 @@ export class Runs {
     await this.saveMeta(run);
     this.restate(run);
     this.refresh(run);
-    if (!run.outcome && !run.finishing && !run.cancel) void this.ensureLive(run).catch((error: Error) => warn(run.id, `its answered approval waits for its process: ${error.message}`));
+    if (!run.outcome && !run.finishing && !run.cancel) void this.ensureLive(run, undefined, true).catch((error: Error) => warn(run.id, `its answered approval waits for its process: ${error.message}`));
   }
 
   /** Record the cancel and signal the run. An agentic run reads `cancelled` from here on (the first end a run comes to is

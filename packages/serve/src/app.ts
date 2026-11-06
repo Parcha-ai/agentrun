@@ -193,7 +193,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     const dir = join(where.root, "harness");
     await mkdir(dir, { recursive: true, mode: 0o700 });
     // Built at the open: the harness's own process runs under the run's confinement, the prefix pi's commands get there.
-    const make = (confine?: ConfineChild) => adapterFor(harness, env, { model: model!, models: chosen.models as never, ...(confine ? { confine } : {}), ...(native.length ? { skills: native } : {}) });
+    const make = (confine?: ConfineChild) => adapterFor(harness, env, { model: model!, models: chosen.models as never, unpriced: chosen.unpriced, ...(confine ? { confine } : {}), ...(native.length ? { skills: native } : {}) });
     // The run's cap, checked before each of the harness's requests: the same ceiling rule as pi's (cap.ts).
     // claude-agent's run is capped at the price of whoever bills it (claudeProvider's priceModel), as its adapter prices it.
     const priced = harness === "claude-agent" && !env[FAUX_HARNESS_ENV] ? claudePriceModel(env, model!) : model!;

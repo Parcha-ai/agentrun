@@ -18,7 +18,7 @@ import { boundResult, openTurn, recoveryNote, recoverySystemNote, recoveryUserTu
 // load in either order and the repair reads repairOutput"). A host loads harness.js first, so at that point none of its const bindings is set.
 import { repairOutput } from "./harness.js";
 import { type RolloutSummary, summarizeRollout } from "./rollout.js";
-import { callKey, completedNested, execRecoveryOutput, NESTED_CALL, type NestedFact, outputTextOf, recoveryFacts, Scripts, settle, UNWATCHED } from "./scripts.js";
+import { callKey, completedNested, execRecoveryOutput, NESTED_CALL, type NestedFact, outputTextOf, parkedKey, recoveryFacts, Scripts, settle, UNWATCHED } from "./scripts.js";
 
 /** The stream that ties each nested call to the `exec` it ran under: `{ callId, exec, since }` (`since`: the turn it ran in), written before the call runs. */
 export const NESTED_STREAM = "codex.nested";
@@ -95,6 +95,7 @@ function factOf(state: SessionState, rolled: ReturnType<typeof completedNested>,
     ...(e ? { store: { status: e.status === "completed" ? "completed" : e.status === "failed" ? "failed" : "started", text: e.status === "failed" ? (e.error?.message ?? "") : outputTextOf(e.output), ...(e.error?.interrupted ? { interrupted: true } : {}) } as NonNullable<NestedFact["store"]> } : {}),
     ...(rolled.has(tie.callId) ? { rollout: rolled.get(tie.callId)! } : {}),
     ...(status ? { told: status } : {}),
+    ...(state.effects.get(parkedKey(tie.callId))?.status === "completed" ? { parked: true as const } : {}),
   };
 }
 
