@@ -128,7 +128,7 @@ test("a capped workflow's decision on Parallel that would cross the cap is not s
   assert.deepEqual((await lines(calls)).map((call) => call.path), ["/v1/decisions"], "sent once, after the raise");
 });
 
-test("a capped workflow's decision on an OpenRouter model the catalog lists no price for is not sent: the run fails, spend_cap_reached, naming the node", async (t) => {
+test("a capped workflow start whose decision pins an OpenRouter model the catalog lists no price for is refused 409, with fields naming the node's model and the fix; nothing is sent", async (t) => {
   withEnv(t, { OPENROUTER_API_KEY: `not-a-secret-${"openrouter"}`, AGENTRUN_FAUX_SYSTEM_ONE_DELAY_MS: "0" }, KEYS);
   const dir = await scratch(t);
   const sent = join(dir, "sent.jsonl");
@@ -141,14 +141,11 @@ test("a capped workflow's decision on an OpenRouter model the catalog lists no p
   const { api } = await serve(t, { fauxOpenrouter });
   assert.equal((await api("POST", "/agents", flowAgent("unlisted", judgeFlow("ask", "openrouter", "acme/unlisted-decider")))).status, 201);
   const started = await api("POST", "/agents/unlisted/runs", { input: { doc: "Certificate of incorporation of Acme Widgets" }, max_cost_usd: 1 });
-  assert.equal(started.status, 202, JSON.stringify(started.body));
-  const runId = started.body.run_id;
-  await follow(api, runId, ENDED, { deadlineMs: 60_000 });
-  // No decision request was sent.
+  assert.deepEqual([started.status, started.body.error?.code], [409, "agent_not_runnable"]);
+  const issues = (started.body.error.fields ?? []).filter((issue) => issue.message.includes("acme/unlisted-decider"));
+  assert.deepEqual(issues.map((issue) => [issue.field, issue.reason, issue.message, issue.fix]), [["definition.workflow", "not_set_up_here", "The decision model acme/unlisted-decider has no price in OpenRouter's catalog, so a run's spend cap cannot be kept on it. This workflow's node ask asks it.", "Pick a Decisions model OpenRouter's catalog prices, or run without a spend cap."]]);
+  // No decision request was sent: only the catalog was read.
   assert.deepEqual((await lines(sent)).filter((call) => call.path.endsWith("/systemone")).map((call) => call.path), []);
-  const run = await view(api, runId);
-  assert.deepEqual([run.status, run.error?.code], ["failed", "spend_cap_reached"], JSON.stringify(run));
-  assert.match(run.error.message, /^ask: Not sent: ask's decision on acme\/unlisted-decider: acme\/unlisted-decider has no price here, so the run's cap of \$1 cannot be kept: the run is out of budget\.$/);
 });
 
 test("a capped workflow's paid tool call in a collecting map is not sent when it would cross the cap: the run waits for a raise at the call, never completing with its items failed, and the raise sends each", async (t) => {
