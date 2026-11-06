@@ -319,7 +319,7 @@ test("capabilities lists the decision providers: jev available where its key is 
   process.env.PARALLEL_API_KEY = PARALLEL_CANARY;
   const parallel = (await (await serve(t)).api("GET", "/capabilities")).body.workflows;
   assert.deepEqual(parallel.decisions.providers.map((p) => [p.id, p.available]), [["jev", false], ["parallel", true], ["openrouter", false]]);
-  assert.deepEqual(parallel.decisions.providers[1], { id: "parallel", available: true });
+  assert.deepEqual(parallel.decisions.providers[1], { id: "parallel", available: true, route: "parallel" });
   assert.ok(parallel.adapters.includes("runJudge"), "Parallel's key alone runs typed questions");
 });
 
@@ -698,7 +698,7 @@ test("with no Parallel key, a node naming parallel saves with a warning, and its
   assert.equal(refused.body.error.code, "agent_not_runnable");
   assert.match(refused.body.error.message, /PARALLEL_API_KEY/);
   assert.deepEqual(refused.body.error.details.adapters, ["runJudge"]);
-  assert.deepEqual(refused.body.error.details.decisions, { parallel: { reason: "not_set_up_here", needs: ["PARALLEL_API_KEY"] } }, "Jev's key is set: only Parallel is missing");
+  assert.deepEqual(refused.body.error.details.decisions, { parallel: { reason: "not_set_up_here", needs: ["PARALLEL_API_KEY", "OPENROUTER_API_KEY"] } }, "Jev's key is set: only Parallel is missing");
 });
 
 test("the missing-key 409's details, decisions included, meet what the served document gives agent_not_runnable", async (t) => {

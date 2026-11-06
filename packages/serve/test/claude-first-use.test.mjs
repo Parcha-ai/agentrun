@@ -5,7 +5,7 @@
 // CLI is the pinned binary itself, so a run that starts is a real Claude run against a fake Anthropic endpoint.
 import assert from "node:assert/strict";
 import { execFile, execFileSync, spawn } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -15,6 +15,8 @@ import { after, test } from "node:test";
 import { claudeAgentExecutable, CLAUDE_AGENT_SDK_VERSION } from "@parcha/agentrun-harness-claude";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
 import { agent, client, follow, scratch, serve } from "./support.mjs";
+import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
+import { startFakeOAuth } from "./fixtures/fake-oauth-server.mjs";
 
 const SDK = "@anthropic-ai/claude-agent-sdk";
 const PIN = "0.3.286";
@@ -35,14 +37,14 @@ const skip = (!CLI && "no pinned Claude CLI here") || (!existsSync("/usr/bin/set
  *  a fresh directory beside the data's harnesses, `npm ci` there with no install script, then that directory put in place
  *  of the harnesses (made writable first: the server leaves its install read-only). `lock`: the lock the server installs by. */
 const manualLine = (data, lock) => {
-  const dir = join(data, "harnesses");
+  const dir = join(data, "harnesses", "claude-agent");
   const next = `${dir}.new`;
   return `rm -rf ${next} && mkdir -p ${next} && cp ${join(dirname(lock), "package.json")} ${lock} ${next}/ && npm ci --prefix ${next} --ignore-scripts --include=optional && (chmod -R u+w ${dir} 2>/dev/null || true) && rm -rf ${dir} && mv ${next} ${dir}`;
 };
 /** The SDK's version as installed in the data's harnesses, or undefined. */
 const installedIn = (data) => {
   try {
-    return JSON.parse(readFileSync(join(data, "harnesses", "node_modules", ...SDK.split("/"), "package.json"), "utf8")).version;
+    return JSON.parse(readFileSync(join(data, "harnesses", "claude-agent", "node_modules", ...SDK.split("/"), "package.json"), "utf8")).version;
   } catch {
     return undefined;
   }
@@ -164,8 +166,8 @@ async function firstUseEnv(t, registry, anthropic) {
 
 /** A server on `data` (else a fresh directory) that holds no Claude Agent SDK, installing on `registry`'s lock (the test's
  *  stand-in for the one AgentRun ships), with an agent on claude-agent. */
-async function firstUseServe(t, registry, data) {
-  const served = await serve(t, { faux: undefined, claudeSdk: false, claudeLock: registry.lock, ...(data ? { data } : {}) });
+async function firstUseServe(t, registry, data, more = {}) {
+  const served = await serve(t, { faux: undefined, harnesses: false, harnessLocks: { "claude-agent": registry.lock }, ...(data ? { data } : {}), ...more });
   assert.equal((await served.api("POST", "/agents", agent("claude", { harness: "claude-agent", model: `anthropic/${MODEL}` }))).status, 201);
   return served;
 }
@@ -217,7 +219,7 @@ test("the pin is the one the harness package names", () => {
   assert.equal(CLAUDE_AGENT_SDK_VERSION, PIN);
 });
 
-test("the first claude-agent run installs exactly 0.3.286 into <data>/harnesses/ and starts on it", { timeout: 300_000, skip }, async (t) => {
+test("the first claude-agent run installs exactly 0.3.286 into <data>/harnesses/claude-agent and starts on it", { timeout: 300_000, skip }, async (t) => {
   const registry = await fakeRegistry(t);
   const anthropic = await anthropicEndpoint(t);
   await firstUseEnv(t, registry, anthropic.fake);
@@ -230,7 +232,7 @@ test("the first claude-agent run installs exactly 0.3.286 into <data>/harnesses/
   await until("a model request reaches the endpoint", () => anthropic.asked() > 0, 240_000);
   const paths = await cliPaths();
   anthropic.release();
-  assert.deepEqual(paths, [join(data, "harnesses", "node_modules", ...PLATFORM.split("/"), "claude")], "the run's CLI is the one installed in <data>/harnesses");
+  assert.deepEqual(paths, [join(data, "harnesses", "claude-agent", "node_modules", ...PLATFORM.split("/"), "claude")], "the run's CLI is the one installed in <data>/harnesses/claude-agent");
   assert.equal(installedIn(data), PIN, "the pinned SDK is installed in <data>/harnesses, not the registry's latest");
   const { rows, last } = await follow(api, run.body.run_id, ["completed", "failed"], { deadlineMs: 120_000 });
   assert.equal(last.status, "completed", JSON.stringify(rows.slice(-3)));
@@ -252,14 +254,14 @@ test("a second run doesn't reinstall: on the same data, after a restart, it star
   const answered = anthropic.asked();
   // The same data under a new server.
   anthropic.hold();
-  const second = await serve(t, { faux: undefined, claudeSdk: false, claudeLock: registry.lock, data });
+  const second = await serve(t, { faux: undefined, harnesses: false, harnessLocks: { "claude-agent": registry.lock }, data });
   t.after(() => second.close());
   const again = await second.api("POST", "/agents/claude/runs", { input: { content: "Say hello again." } });
   assert.equal(again.status, 202, JSON.stringify(again.body));
   await until("the second run's model request reaches the endpoint", () => anthropic.asked() > answered);
   const paths = await cliPaths();
   anthropic.release();
-  assert.deepEqual(paths, [join(data, "harnesses", "node_modules", ...PLATFORM.split("/"), "claude")], "the second run's CLI is the installed one");
+  assert.deepEqual(paths, [join(data, "harnesses", "claude-agent", "node_modules", ...PLATFORM.split("/"), "claude")], "the second run's CLI is the installed one");
   assert.equal((await follow(second.api, again.body.run_id, ["completed", "failed"], { deadlineMs: 120_000 })).last.status, "completed");
   // A package's metadata or tarball, that is: npm's own requests for the registry's root ("/") are not an install's.
   assert.deepEqual(registry.hits.slice(asked).filter((hit) => hit !== "/"), [], "no registry request for the second run");
@@ -307,6 +309,36 @@ test("while it installs, the run reads \"Installing Claude Code (first use)…\"
   assert.equal(registry.tarballs().length, 1, "still one install");
 });
 
+test("a launch that waited for the install refreshes its MCP OAuth tokens again just before it starts, as its wait may have outlived them", { timeout: 300_000, skip }, async (t) => {
+  let letGo;
+  const hold = new Promise((resolve) => (letGo = resolve));
+  t.after(() => letGo());
+  const registry = await fakeRegistry(t, { hold });
+  const anthropic = await anthropicEndpoint(t);
+  await firstUseEnv(t, registry, anthropic.fake);
+  process.env.AGENTRUN_SEAL_KEY = randomBytes(32).toString("base64");
+  const { api } = await firstUseServe(t, registry);
+  // Every access token is within a launch's refresh margin (a minute left): each launch refreshes.
+  const as = await startFakeOAuth({ expiresIn: 60 });
+  const mcp = await startFakeMcp({ token: as.accepts, oauth: as.issuer });
+  t.after(() => Promise.all([as.close(), mcp.close()]));
+  const started = await api("POST", "/settings/mcp-servers/docs/oauth/start", { url: mcp.url });
+  assert.equal(started.status, 200, JSON.stringify(started.body));
+  const asked = await fetch(started.body.authorization_url, { redirect: "manual" });
+  const back = await fetch(asked.headers.get("location"), { redirect: "manual", headers: { cookie: started.headers.get("set-cookie")?.split(";")[0] ?? "" } });
+  assert.equal(back.headers.get("location"), "/#/settings/mcp?server=docs&sign_in=ok");
+  assert.equal((await api("POST", "/agents", agent("claude-docs", { harness: "claude-agent", model: `anthropic/${MODEL}`, tools: ["mcp:docs/add"], tool_settings: { "mcp:docs/*": { permission: "allow" } } }))).status, 201);
+  const refreshes = () => as.log.filter((entry) => entry.form.grant_type === "refresh_token").length;
+  const run = await api("POST", "/agents/claude-docs/runs", { input: { content: "Say hello." } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  await until("the run waits for the install", async () => (await api("GET", `/runs/${run.body.run_id}/timeline`)).body.rows?.some((r) => r.kind === "phase" && r.summary === INSTALLING), 60_000);
+  const before = refreshes();
+  letGo();
+  const { last } = await follow(api, run.body.run_id, ["completed", "failed"], { deadlineMs: 240_000 });
+  assert.equal(last.status, "completed");
+  assert.ok(refreshes() > before, `the launch after the install refreshed again (${before} refreshes before the install ended, ${refreshes()} after)`);
+});
+
 test("capabilities say claude-agent installs on first use until it is installed", { timeout: 300_000, skip }, async (t) => {
   let letGo;
   const hold = new Promise((resolve) => (letGo = resolve));
@@ -327,7 +359,8 @@ test("capabilities say claude-agent installs on first use until it is installed"
 
 /** The SDK's package.json wherever an install under `data` put it: in its harnesses, or in any directory beside them. */
 async function sdkAnywhere(data) {
-  const roots = [join(data, "harnesses"), ...(await readdir(data).catch(() => [])).filter((name) => name.startsWith(".harnesses")).map((name) => join(data, name))];
+  const harnesses = join(data, "harnesses");
+  const roots = [join(harnesses, "claude-agent"), ...(await readdir(harnesses).catch(() => [])).filter((name) => name.startsWith(".claude-agent")).map((name) => join(harnesses, name))];
   return roots.map((root) => join(root, "node_modules", ...SDK.split("/"), "package.json")).find((file) => existsSync(file));
 }
 
@@ -378,7 +411,7 @@ test("a release of a package in the tree published after the lock is not taken: 
   const run = await api("POST", "/agents/claude/runs", { input: { content: "Say hello." } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
   await follow(api, run.body.run_id, ["completed", "failed"], { deadlineMs: 240_000 });
-  const mcp = JSON.parse(readFileSync(join(data, "harnesses", "node_modules", ...MCP.split("/"), "package.json"), "utf8"));
+  const mcp = JSON.parse(readFileSync(join(data, "harnesses", "claude-agent", "node_modules", ...MCP.split("/"), "package.json"), "utf8"));
   assert.equal(mcp.version, "1.32.2", "the MCP library at the lock's version, not the release published after it");
   assert.ok(!registry.hits.some((hit) => decodeURIComponent(hit) === `/-/${MCP}/${LATE_MCP}.tgz`), "its tarball never asked");
 });
@@ -425,7 +458,7 @@ test("the manual command the error names installs as the server does: the lock's
   // Not execFileSync: the registry answers from this process.
   await new Promise((resolve, reject) => execFile("sh", ["-c", line], { env: { ...process.env, SCRIPT_MARKER: marker } }, (error, stdout, stderr) => (error ? reject(new Error(`${line}: ${stderr}`)) : resolve())));
   assert.equal(existsSync(marker), false, "no package's install script ran");
-  assert.equal(JSON.parse(readFileSync(join(data, "harnesses", "node_modules", ...MCP.split("/"), "package.json"), "utf8")).version, "1.32.2", "the lock's MCP library, not the later release");
+  assert.equal(JSON.parse(readFileSync(join(data, "harnesses", "claude-agent", "node_modules", ...MCP.split("/"), "package.json"), "utf8")).version, "1.32.2", "the lock's MCP library, not the later release");
   assert.equal(installedIn(data), PIN);
 });
 
@@ -446,7 +479,7 @@ test("a server that closes while it installs stops npm and waits for it before i
   assert.equal(await sdkAnywhere(data), undefined, "nothing left beside the harnesses either");
   letGo();
   // The next server on the same data installs Claude Code whole, alone.
-  const next = await serve(t, { faux: undefined, claudeSdk: false, claudeLock: registry.lock, data });
+  const next = await serve(t, { faux: undefined, harnesses: false, harnessLocks: { "claude-agent": registry.lock }, data });
   t.after(() => next.close());
   const run = await next.api("POST", "/agents/claude/runs", { input: { content: "Say hello." } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
@@ -463,7 +496,7 @@ test("a partial tree is not Claude Code: one whose MCP library would resolve fro
   const data = join(await scratch(t), "agents here");
   const repo = new URL("../../../node_modules/", import.meta.url).pathname;
   // The SDK alone in the harnesses, with no CLI and no MCP library; the MCP library one level up, where a walk would find it.
-  for (const [name, at] of [[SDK, join(data, "harnesses", "node_modules")], [MCP, join(data, "node_modules")]]) {
+  for (const [name, at] of [[SDK, join(data, "harnesses", "claude-agent", "node_modules")], [MCP, join(data, "node_modules")]]) {
     mkdirSync(dirname(join(at, name)), { recursive: true });
     symlinkSync(join(repo, name), join(at, name));
   }
@@ -473,7 +506,7 @@ test("a partial tree is not Claude Code: one whose MCP library would resolve fro
   const { rows, last } = await follow(api, run.body.run_id, ["completed", "failed"], { deadlineMs: 240_000 });
   assert.equal(registry.tarballs().length, 1, "installed again: the SDK's tarball asked");
   assert.equal(last.status, "completed", JSON.stringify(rows.slice(-3)));
-  assert.ok(existsSync(join(data, "harnesses", "node_modules", ...MCP.split("/"), "package.json")), "the MCP library is in the harnesses now");
+  assert.ok(existsSync(join(data, "harnesses", "claude-agent", "node_modules", ...MCP.split("/"), "package.json")), "the MCP library is in the harnesses now");
 });
 
 test("runs that wait for the install keep their places: at max_concurrent_runs 1, a second run during the install is refused, so no two run at once after it", { timeout: 300_000, skip }, async (t) => {
@@ -483,7 +516,7 @@ test("runs that wait for the install keep their places: at max_concurrent_runs 1
   const registry = await fakeRegistry(t, { hold });
   const anthropic = await anthropicEndpoint(t);
   await firstUseEnv(t, registry, anthropic.fake);
-  const { api } = await serve(t, { faux: undefined, claudeSdk: false, claudeLock: registry.lock, maxRuns: 1 });
+  const { api } = await serve(t, { faux: undefined, harnesses: false, harnessLocks: { "claude-agent": registry.lock }, maxRuns: 1 });
   assert.equal((await api("POST", "/agents", agent("claude", { harness: "claude-agent", model: `anthropic/${MODEL}` }))).status, 201);
   const first = await api("POST", "/agents/claude/runs", { input: { content: "Say hello." } });
   assert.equal(first.status, 202, JSON.stringify(first.body));
@@ -503,11 +536,11 @@ test("the manual command replaces an install the server made, read-only as it le
   assert.equal((await follow(api, run.body.run_id, ["completed", "failed"], { deadlineMs: 240_000 })).last.status, "completed");
   assert.equal(installedIn(data), PIN, "the server installed it");
   // The server's own line (the one its errors name), not this test's copy of it.
-  const { installLine } = await import("../dist/claude-sdk.js");
-  const line = installLine(join(data, "harnesses"), registry.lock);
+  const { installLine } = await import("../dist/harness-install.js");
+  const line = installLine(join(data, "harnesses", "claude-agent"), registry.lock);
   await new Promise((resolve, reject) => execFile("sh", ["-c", line], (error, stdout, stderr) => (error ? reject(new Error(`${line}: ${stderr}`)) : resolve())));
   assert.equal(installedIn(data), PIN);
-  assert.ok(existsSync(join(data, "harnesses", "node_modules", ...MCP.split("/"), "package.json")), "a whole install: the MCP library too");
+  assert.ok(existsSync(join(data, "harnesses", "claude-agent", "node_modules", ...MCP.split("/"), "package.json")), "a whole install: the MCP library too");
 });
 
 test("a run cancelled while it waits for the install gives its place back at once: at max_concurrent_runs 1, a pi run starts", { timeout: 300_000, skip }, async (t) => {
@@ -517,7 +550,7 @@ test("a run cancelled while it waits for the install gives its place back at onc
   const registry = await fakeRegistry(t, { hold });
   const anthropic = await anthropicEndpoint(t);
   await firstUseEnv(t, registry, anthropic.fake);
-  const { api } = await serve(t, { faux: undefined, claudeSdk: false, claudeLock: registry.lock, maxRuns: 1 });
+  const { api } = await serve(t, { faux: undefined, harnesses: false, harnessLocks: { "claude-agent": registry.lock }, maxRuns: 1 });
   assert.equal((await api("POST", "/agents", agent("claude", { harness: "claude-agent", model: `anthropic/${MODEL}` }))).status, 201);
   assert.equal((await api("POST", "/agents", agent("plain"))).status, 201);
   const waiting = await api("POST", "/agents/claude/runs", { input: { content: "Say hello." } });
@@ -542,7 +575,7 @@ test("a server killed while it installs leaves its waiting run to the next serve
   // The first server in a process of its own, so a test can kill it as a crash would.
   const script = join(dir, "serve.mjs");
   writeFileSync(script, `import { startServe } from ${JSON.stringify(new URL("../dist/index.js", import.meta.url).href)};
-const served = await startServe({ data: ${JSON.stringify(data)}, port: 0, claudeLock: ${JSON.stringify(registry.lock)}, drainTimeout: "5s" });
+const served = await startServe({ data: ${JSON.stringify(data)}, port: 0, harnessLocks: { "claude-agent": ${JSON.stringify(registry.lock)} }, drainTimeout: "5s" });
 console.log(JSON.stringify({ url: served.baseUrl, token: served.token }));
 `);
   const child = spawn(process.execPath, [script], { stdio: ["ignore", "pipe", "inherit"], env: process.env });
@@ -567,7 +600,7 @@ console.log(JSON.stringify({ url: served.baseUrl, token: served.token }));
   letGo();
   assert.equal(installedIn(data), undefined, "the crash left Claude Code uninstalled");
   // The next server recovers the run: it installs Claude Code before the run's process starts, and the run answers.
-  const next = await serve(t, { faux: undefined, claudeSdk: false, claudeLock: registry.lock, data });
+  const next = await serve(t, { faux: undefined, harnesses: false, harnessLocks: { "claude-agent": registry.lock }, data });
   const { rows, last } = await follow(next.api, run.body.run_id, ["completed", "failed"], { deadlineMs: 240_000 });
   assert.equal(last.status, "completed", JSON.stringify(rows.slice(-3)));
   assert.equal(rows.findLast((row) => row.kind === "final_answer")?.text, "Claude answered.");
@@ -586,5 +619,57 @@ test("a person's npm config that omits optional packages still installs Claude C
   assert.equal(run.status, 202, JSON.stringify(run.body));
   const { rows, last } = await follow(api, run.body.run_id, ["completed", "failed"], { deadlineMs: 240_000 });
   assert.equal(last.status, "completed", JSON.stringify(rows.slice(-3)));
-  assert.ok(existsSync(join(data, "harnesses", "node_modules", ...PLATFORM.split("/"), "claude")), "the platform package's CLI is installed");
+  assert.ok(existsSync(join(data, "harnesses", "claude-agent", "node_modules", ...PLATFORM.split("/"), "claude")), "the platform package's CLI is installed");
+});
+
+/** The layout an earlier build installed Claude Code in: the SDK's tree at the top of `<data>/harnesses` itself (its
+ *  package.json, lock and node_modules), read-only as that build left it. `more`: other entries beside it. */
+async function flatTree(harnesses, more = []) {
+  mkdirSync(join(harnesses, "node_modules", ...SDK.split("/")), { recursive: true });
+  writeFileSync(join(harnesses, "package.json"), `${JSON.stringify({ name: "agentrun-claude-code", private: true, dependencies: { [SDK]: PIN } })}\n`);
+  writeFileSync(join(harnesses, "package-lock.json"), "{}\n");
+  writeFileSync(join(harnesses, "node_modules", ...SDK.split("/"), "package.json"), JSON.stringify({ name: SDK, version: PIN }));
+  for (const entry of more) mkdirSync(join(harnesses, entry), { recursive: true });
+  execFileSync("chmod", ["-R", "a-w", harnesses]);
+}
+
+test("a data dir that holds Claude Code as an earlier build installed it (read-only, at the top of <data>/harnesses) gets a working install under harnesses/claude-agent, nothing of the old tree left, and says so once", { timeout: 300_000, skip }, async (t) => {
+  const registry = await fakeRegistry(t);
+  const anthropic = await anthropicEndpoint(t);
+  await firstUseEnv(t, registry, anthropic.fake);
+  const data = join(await scratch(t), "agents");
+  const harnesses = join(data, "harnesses");
+  await flatTree(harnesses);
+  const lines = [];
+  const { api } = await firstUseServe(t, registry, data, { log: (line) => lines.push(line) });
+  const run = await api("POST", "/agents/claude/runs", { input: { content: "Say hello." } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  const { rows, last } = await follow(api, run.body.run_id, ["completed", "failed"], { deadlineMs: 240_000 });
+  assert.equal(last.status, "completed", JSON.stringify(rows.slice(-3)));
+  assert.equal(installedIn(data), PIN, "installed under harnesses/claude-agent");
+  assert.deepEqual((await readdir(harnesses)).sort(), ["claude-agent"], "nothing of the earlier install is left beside it");
+  const said = lines.filter((line) => line.includes(`removed the earlier Claude Code install at ${harnesses}: it installs again under harnesses/claude-agent`));
+  assert.equal(said.length, 1, lines.join("\n"));
+});
+
+test("only that exact layout is removed: a harnesses directory that also holds anything else is left as it is", { timeout: 60_000 }, async (t) => {
+  const install = await import("../dist/harness-install.js");
+  assert.equal(typeof install.removeFlatInstall, "function", "harness-install.ts exports removeFlatInstall");
+  for (const more of [["codex"], ["claude-agent"], [".claude-agent-x1"], ["notes"]]) {
+    const harnesses = join(await scratch(t), "harnesses");
+    await flatTree(harnesses, more);
+    assert.equal(await install.removeFlatInstall(harnesses), false, `beside ${more}: not removed`);
+    assert.deepEqual((await readdir(harnesses)).sort(), [...more, "node_modules", "package-lock.json", "package.json"].sort(), `beside ${more}: as it was`);
+  }
+  // No harnesses directory, an empty one, or one with the per-harness layout alone: nothing to remove.
+  const root = await scratch(t);
+  assert.equal(await install.removeFlatInstall(join(root, "none")), false);
+  mkdirSync(join(root, "harnesses", "codex"), { recursive: true });
+  assert.equal(await install.removeFlatInstall(join(root, "harnesses")), false);
+  assert.deepEqual(await readdir(join(root, "harnesses")), ["codex"]);
+  // The layout alone, read-only: removed whole.
+  const flat = join(await scratch(t), "harnesses");
+  await flatTree(flat);
+  assert.equal(await install.removeFlatInstall(flat), true);
+  assert.deepEqual(await readdir(flat), [], "the directory stays, empty, for the per-harness installs");
 });

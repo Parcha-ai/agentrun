@@ -50,7 +50,7 @@ const runOf = async (api, id, content) => {
 };
 
 test("pi: an agent granted mcp:fake/add calls it with the server's bearer; the timeline reads fake · add; the run's environment and work/ hold no token", { timeout: 90_000 }, async (t) => {
-  const { api, data } = await serve(t, { faux: FAUX_MCP, claudeSdk: true });
+  const { api, data } = await serve(t, { faux: FAUX_MCP, harnesses: true });
   const fake = await addFake(t, api);
   assert.equal((await api("POST", "/agents", agent("adder", { tools: ["mcp:fake/add"], tool_settings: ALLOW_FAKE }))).status, 201);
   const runId = await runOf(api, "adder", 'Call mcp__fake__add with {"a":2,"b":3}');
@@ -68,7 +68,7 @@ test("pi: an agent granted mcp:fake/add calls it with the server's bearer; the t
 
 // The fake's SDK server cannot list a tool named toString itself; mcp-gateway.test.mjs pins one, mcp-route.test.mjs serves one.
 test("pi: a server named like an object's own property (constructor) grants, launches and calls through", { timeout: 90_000 }, async (t) => {
-  const { api } = await serve(t, { faux: FAUX_MCP, claudeSdk: true });
+  const { api } = await serve(t, { faux: FAUX_MCP, harnesses: true });
   const fake = await addFake(t, api, "constructor");
   assert.equal((await api("POST", "/agents", agent("proto", { tools: ["mcp:constructor/add"], tool_settings: { "mcp:constructor/*": { permission: "allow" } } }))).status, 201);
   const runId = await runOf(api, "proto", 'Call mcp__constructor__add with {"a":2,"b":3}');
@@ -80,7 +80,7 @@ test("pi: a server named like an object's own property (constructor) grants, lau
 });
 
 test("pi: the credential reaches only a run whose revision grants one of the server's tools", { timeout: 90_000 }, async (t) => {
-  const { api } = await serve(t, { faux: FAUX_MCP, claudeSdk: true });
+  const { api } = await serve(t, { faux: FAUX_MCP, harnesses: true });
   const fake = await addFake(t, api);
   assert.equal((await api("POST", "/agents", agent("granted", { tools: ["mcp:fake/add"] }))).status, 201);
   assert.equal((await api("POST", "/agents", agent("plain", { tools: [] }))).status, 201);
@@ -95,7 +95,7 @@ test("pi: the credential reaches only a run whose revision grants one of the ser
 });
 
 test("a save that grants a tool the server does not have is refused, naming the server's tools", async (t) => {
-  const { api } = await serve(t, { faux: FAUX_MCP, claudeSdk: true });
+  const { api } = await serve(t, { faux: FAUX_MCP, harnesses: true });
   await addFake(t, api);
   const refused = await api("POST", "/agents", agent("nope", { tools: ["mcp:fake/nope"] }));
   assert.equal(refused.status, 422, JSON.stringify(refused.body));
@@ -115,7 +115,7 @@ test("a save that grants a tool the server does not have is refused, naming the 
 });
 
 test("a tool whose schema the Claude CLI would drop (a root anyOf) is refused on claude-agent at the save, in words; on pi it saves and runs", { timeout: 90_000 }, async (t) => {
-  const { api } = await serve(t, { faux: FAUX_MCP, claudeSdk: true });
+  const { api } = await serve(t, { faux: FAUX_MCP, harnesses: true });
   const fake = await startFakeMcp({ token: TOKEN });
   const either = { type: "object", properties: { a: { type: "string" }, b: { type: "string" } }, anyOf: [{ required: ["a"] }, { required: ["b"] }] };
   fake.tools.pick = { description: "Picks one.", input: either, run: ({ a, b }) => ({ content: [{ type: "text", text: `picked ${a ?? b}` }] }) };
@@ -149,7 +149,7 @@ test("a tool whose schema Codex would drop or retype (a not) is refused on codex
 });
 
 test("a tool whose header declaration a refresh made unsendable refuses the run in words, naming it, and nothing is sent", { timeout: 90_000 }, async (t) => {
-  const { api } = await serve(t, { faux: FAUX_MCP, claudeSdk: true });
+  const { api } = await serve(t, { faux: FAUX_MCP, harnesses: true });
   const fake = await startFakeMcp({ token: TOKEN });
   fake.tools.tagged = { description: "Tagged.", input: { type: "object", properties: { region: { type: "string", "x-mcp-header": "Region" } } }, run: () => ({ content: [{ type: "text", text: "ok" }] }) };
   await addFake(t, api, "fake", fake);
@@ -163,7 +163,7 @@ test("a tool whose header declaration a refresh made unsendable refuses the run 
 });
 
 test("a granted tool whose server was deleted, or whose tool a refresh removed, before the run's pin is made again fails the relaunch in words, and the call is never sent again", { timeout: 180_000 }, async (t) => {
-  const { api, data } = await serve(t, { faux: FAUX_MCP, claudeSdk: true });
+  const { api, data } = await serve(t, { faux: FAUX_MCP, harnesses: true });
   const fake = await addFake(t, api, "fake");
   const other = await addFake(t, api, "other");
   // Each run holds a slow call; its process is killed with its pin gone, so the relaunch makes the pin again, as a first
@@ -195,7 +195,7 @@ test("a granted tool whose server was deleted, or whose tool a refresh removed, 
 });
 
 test("a save that checks a deeply nested tool schema leaves the server answering: /health meanwhile, and a readable refusal past the bounds", { timeout: 90_000 }, async (t) => {
-  const { api } = await serve(t, { faux: FAUX_MCP, claudeSdk: true });
+  const { api } = await serve(t, { faux: FAUX_MCP, harnesses: true });
   const fake = await startFakeMcp({ token: TOKEN });
   let deep = { type: "string" };
   for (let i = 0; i < 80; i++) deep = { type: "object", properties: { [`p${i}`]: { type: "string" } }, additionalProperties: deep };
@@ -210,7 +210,7 @@ test("a save that checks a deeply nested tool schema leaves the server answering
 });
 
 test("pi: a run killed mid-call resumes with the call answered interrupted, and the server saw the call once", { timeout: 120_000 }, async (t) => {
-  const { api, data } = await serve(t, { faux: FAUX_MCP, claudeSdk: true });
+  const { api, data } = await serve(t, { faux: FAUX_MCP, harnesses: true });
   const fake = await addFake(t, api);
   assert.equal((await api("POST", "/agents", agent("writer", { tools: ["mcp:fake/slow_write"], tool_settings: ALLOW_FAKE }))).status, 201);
   const runId = await runOf(api, "writer", 'Call mcp__fake__slow_write with {"line":"once","seconds":30}');
@@ -232,7 +232,7 @@ test("pi: a run killed mid-call resumes with the call answered interrupted, and 
 });
 
 test("pi: a server whose address changed after the run started answers the run's calls with that, and nothing is sent", { timeout: 90_000 }, async (t) => {
-  const { api } = await serve(t, { faux: FAUX_MCP, claudeSdk: true });
+  const { api } = await serve(t, { faux: FAUX_MCP, harnesses: true });
   const fake = await addFake(t, api);
   assert.equal((await api("POST", "/agents", agent("mover", { tools: ["mcp:fake/add"], tool_settings: ALLOW_FAKE }))).status, 201);
   const runId = await runOf(api, "mover", "Hello.");
@@ -310,10 +310,22 @@ test("claude-agent: a run killed mid-call resumes with the call reported interru
     assert.ok(i < 1200, "the call reaches the server");
     await sleep(100);
   }
+  // While the call runs, the Timeline has its row, as on codex.
+  const isCall = (row) => row.tool_name === "mcp__fake__slow_write";
+  let running = [];
+  for (let i = 0; i < 50 && !running.some((row) => row.kind === "tool_use" && isCall(row)); i++) {
+    if (i) await sleep(100);
+    running = (await api("GET", `/runs/${runId}/timeline`)).body.rows ?? [];
+  }
+  assert.ok(running.some((row) => row.kind === "tool_use" && isCall(row)), `the running call has its row: ${JSON.stringify(running.map((row) => [row.kind, row.summary]))}`);
   const record = async () => runRecordOf(data, runId);
   process.kill((await record()).holder.pid, "SIGKILL");
   const { rows, last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 180_000 });
   assert.equal(last.status, "completed", JSON.stringify(rows.filter((row) => row.kind === "error" || row.kind.startsWith("tool"))));
+  // After the cut, its row stays, once, and its result reads interrupted.
+  const tools = rows.filter((row) => row.kind.startsWith("tool") && isCall(row));
+  assert.equal(tools.filter((row) => row.kind === "tool_use").length, 1, JSON.stringify(tools));
+  assert.match(JSON.stringify(tools.find((row) => row.kind === "tool_result") ?? null), /interrupted/i, JSON.stringify(tools));
   // The resumed session's model is told the call was cut and not run again, in the harness's recovery note.
   const resumed = anthropic.messages().filter((request) => request.tools.includes("mcp__fake__slow_write")).slice(1);
   assert.ok(resumed.some((request) => /interrupted[\s\S]*none was run again[\s\S]*mcp__fake__slow_write/.test(JSON.stringify(request.body.system ?? ""))), "the recovery note names the interrupted call");
@@ -336,7 +348,7 @@ test("pi: a saved credential that can't be opened refuses the call before anythi
   const runId = await runOf(api, "unopened", 'Call mcp__fake__add with {"a":2,"b":3}');
   const { last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 60_000 });
   assert.equal(last.status, "completed");
-  assert.equal((await api("GET", `/runs/${runId}`)).body.result?.final_answer, "The tool said: The MCP server fake's credential can't be opened on this server (sealed under another seal key, or damaged); update it in Settings → MCP servers.");
+  assert.equal((await api("GET", `/runs/${runId}`)).body.result?.final_answer, "The tool said: The MCP server fake's credential can't be used right now: it was sealed under another seal key, or damaged; update it in Settings → MCP servers.");
   // A save's own preview may still be closing its exchange: what the run would send is a call or a handshake.
   assert.deepEqual(fake.log.slice(before).filter((entry) => ["tools/call", "initialize", "server/discover"].includes(entry.method)), [], "nothing reached the server");
   assert.equal((await api("POST", `/runs/${runId}/messages`, { content: 'Call mcp__open__add with {"a":2,"b":3}' })).status, 202);
@@ -451,7 +463,7 @@ test("codex: a door Codex's client can't reach fails the run, naming the server,
   assert.match(JSON.stringify(view.error ?? view), /MCP servers failed to initialize: fake\b/);
 });
 
-test("codex: a run killed mid-call resumes with the call answered interrupted, and the server saw the call once", { timeout: 120_000 }, async (t) => {
+test("codex: a run killed mid-call shows the call's row while it runs and its interrupted result after, resumes with the call answered interrupted, and the server saw the call once", { timeout: 120_000 }, async (t) => {
   const { api, data } = await codexServe(t);
   const fake = await addFake(t, api);
   assert.equal((await api("POST", "/agents", agent("codex-writer", { harness: "codex", tools: ["mcp:fake/slow_write"], tool_settings: ALLOW_FAKE }))).status, 201);
@@ -460,10 +472,23 @@ test("codex: a run killed mid-call resumes with the call answered interrupted, a
     assert.ok(i < 600, "the call reaches the server");
     await sleep(100);
   }
+  // While the call runs, the Timeline has its row: the call's intent is in the session before it is sent.
+  const isCall = (row) => row.tool_name === "mcp__fake__slow_write";
+  let running = [];
+  for (let i = 0; i < 50 && !running.some((row) => row.kind === "tool_use" && isCall(row)); i++) {
+    if (i) await sleep(100);
+    running = (await api("GET", `/runs/${runId}/timeline`)).body.rows ?? [];
+  }
+  assert.ok(running.some((row) => row.kind === "tool_use" && isCall(row) && row.summary === "fake · slow_write"), `the running call has its row: ${JSON.stringify(running.map((row) => [row.kind, row.summary]))}`);
   const { holder } = runRecordOf(data, runId);
   process.kill(holder.pid, "SIGKILL");
   const { rows, last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 90_000 });
   assert.equal(last.status, "completed", JSON.stringify(rows.at(-1)));
+  // After the cut, the call's row stays, once, and its result reads interrupted, from the session's record of the call.
+  const tools = rows.filter((row) => row.kind.startsWith("tool") && isCall(row));
+  assert.equal(tools.filter((row) => row.kind === "tool_use").length, 1, JSON.stringify(tools));
+  const result = tools.find((row) => row.kind === "tool_result");
+  assert.match(`${result?.summary} ${result?.tool_result_preview}`, /interrupted[\s\S]*may or may not have taken effect/i, JSON.stringify(tools));
   // What the model reads of the call in the resumed thread: Codex was told it was interrupted.
   assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "outputs" })).status, 202);
   await sleep(500);

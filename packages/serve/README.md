@@ -733,7 +733,8 @@ to `AGENT_MODEL`. Capabilities show the mapping in `models` (`{source, route_pre
 model ids (`agent-model`), which a client takes off to show the gateway's own id, and null with any other source.
 `models` also says `ready`, whether a revision that names no model runs here, and when it does not, `needs`: `key` (no
 model provider's key, or none for the default's provider) or `model` (`AGENT_MODEL` names one this server does not
-know). Where the models come from:
+know); and `priced`, whether that model has a price here, which a run's `max_cost_usd` needs (false for a gateway
+model with no price set that the catalog does not list in any form; null while `ready` is false, with no model to price). Where the models come from:
 
 - `--faux MODULE`: every model is the module's (below), with no key and no network: `faux-1`, or for a tier the model
   id its variable names.
@@ -751,8 +752,13 @@ know). Where the models come from:
   `null`, never $0. A model the catalog lists at $0, or one `AGENT_MODEL_PRICE=0,0` prices, is a known $0. A revision's `provider/model-id` takes that provider's
   entry when it is paid; a bare id, a provider the catalog does not list for it, or one it lists at $0 takes the highest
   price any provider lists (one entry's whole price, the most input plus output; a $0 entry never wins over a paid one),
-  as the gateway does not say whose model answers. A run's `max_cost_usd` therefore now stops a gateway run on such a model with
-  `spend_cap_reached`; at $0 it never did.
+  as the gateway does not say whose model answers. A run with `max_cost_usd` on a model with no price is refused before it
+  starts: 409 `agent_not_runnable`, whose `error.fields` entry names `definition.model`, the reason `not_set_up_here`, "The
+  model <id> has no price here, so a run's spend cap cannot be kept on it." and the `fix` naming `AGENT_MODEL_PRICE`, as
+  every 409 `agent_not_runnable` names each thing that keeps a run from starting; an agent saved with a default cap on one
+  gets that as a warning. One
+  without a cap runs, on every harness, with each request's cost unknown: codex's and opencode's proxy books it unknown,
+  never $0, so the run's `cost.usd` is `null` and `/usage` counts it in `unpriced_runs`.
 - Otherwise pi-ai's providers serve them, each with its key from the environment (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`,
   `GEMINI_API_KEY`, `DEEPSEEK_API_KEY`, Bedrock's `AWS_*` keys, ...), and its catalog prices the run. The `AGENT_MODEL`
   variables are then `provider/model-id` too. The launcher holds every key pi-ai reads, as it holds the rest, and a run's
@@ -1220,7 +1226,8 @@ Streamable HTTP with the official MCP SDK client (`@modelcontextprotocol/client`
 `instructions` and every tool `tools/list` gives, all pages, each with its name, title, description, `input_schema`,
 `output_schema` and `annotations` (the server's own claims, not checked). It stores nothing. `auth` is `{type: "none"}`
 (or absent), `{type: "bearer", token}` (sent as `Authorization: Bearer <token>`) or `{type: "headers", headers: {Name:
-value}}` (up to 8). `oauth` is refused for now (`422`, reason `not_yet`). `url` is `https`, or `http` on loopback.
+value}}` (up to 8). An `oauth` server is signed in to first ([below](#signing-in-with-oauth)), then previewed by name.
+`url` is `https`, or `http` on loopback.
 
 What can go wrong, told apart:
 
@@ -1254,6 +1261,46 @@ annotations differ. `DELETE .../{name}` forgets the server and its credential. A
 another format) is never written over: the list answers `servers: []` with `file_unreadable: true`, and every other
 route is `409 store_unreadable` until the file is restored or removed. Capabilities' `features.mcp_client`
 says `transports: ["streamable-http"]`, the `auth` types and `at_rest` (`sealed`, or `unavailable` with no seal key).
+
+### Signing in with OAuth
+
+A server whose preview answers `details.auth: "oauth"` is signed in to by this server, which keeps the tokens: the
+agent's machine never sees one. `POST /v2/settings/mcp-servers/{name}/oauth/start` with `{url, scopes?, client_id?,
+client_secret?}` answers `{authorization_url}`, the page the owner opens. It runs the official MCP SDK's OAuth: the
+server's protected-resource metadata (RFC 9728), then its authorization server's (RFC 8414); PKCE S256; the server's URL
+as the RFC 8707 `resource`. The client is, in this order, the `client_id` (and `client_secret`) you give; else, signing in again to the same
+origin, the client kept sealed from the last sign-in (so a pre-registered client's id and secret are given once); else this
+server's client metadata document, `GET /v2/settings/mcp-servers/oauth/client.json`, when this server's address
+(`AGENTRUN_PUBLIC_URL`) is public `https` and the authorization server takes one; else dynamic client registration.
+
+The authorization server sends the browser back to `GET /v2/settings/mcp-servers/oauth/callback`, which takes no token:
+its `state` is random, bound to the server's name, used once and good for 10 minutes (else `400`), and the PKCE verifier
+never left this server. It finishes only in the browser that started the sign-in: the start's answer sets a cookie
+for that sign-in alone (named by its state, so two tabs do not replace each other's; `HttpOnly; SameSite=Lax`, path
+the callback, 10 minutes, cleared when it finishes), and a callback without it is `403` with nothing exchanged. So a
+start must come to the address the callback is under: one that came to another (the console opened under another
+name for this machine than the server's own address) is `409 wrong_origin`, with `details.open` the console's MCP
+page there.
+The redirect URI never changes with the address a request came to, so a registered client's stays valid. Behind a
+proxy on a public https address, set `AGENTRUN_PUBLIC_URL` to that address and have the proxy pass the `Host` header
+and `X-Forwarded-Proto: https`: without them a start reads as another address (or plain http) than the callback's,
+and every start answers `409 wrong_origin`. For an MCP server whose URL is not loopback, every endpoint its authorization server names (and
+every request to one) must be `https` and resolve to no private, loopback or link-local address, or the sign-in or
+refresh is refused with words and nothing is sent; a loopback MCP server may name loopback endpoints. The callback exchanges the code, seals the token set (access and refresh tokens, expiry,
+scopes, the client and its secret) under `AGENTRUN_SEAL_KEY`, bound to the server's name, lists the tools as a `PUT`
+does, and redirects to the console's MCP servers page, `/#/settings/mcp?server=<name>&sign_in=ok` (or
+`sign_in=failed&error=<code>`). The redirect URI is this server's own callback under its address: on loopback, the
+plain `http` address and port it listens on.
+
+Reads show `auth.type: "oauth"`, `credential: "sealed"` and `oauth: {expires_at, scopes, client, client_id}`, where
+`client` is `pre-registered`, `metadata-document` or `dynamic`; never a token or a client secret. A `PUT` with `auth: {type: "oauth"}` keeps the token
+set. Refresh tokens never leave this server: a run's launch refreshes an access token that expires within 5 minutes
+(one refresh at a time per server, so a rotating refresh token is spent once; one given with no expiry is taken to last an hour) and hands the run the access token
+alone. A refresh the authorization server refuses (revoked, expired) makes the server read `credential: "expired"`,
+and a preview, refresh or run says to sign in again in Settings → MCP servers. A token that expires during a run is not
+refreshed in that run: its calls fail as unauthorized, and the run's next launch refreshes it. A server that stops aborts any
+refresh or code exchange under way and writes nothing after; if the authorization server had already rotated that
+refresh token, the next start reads `credential: "expired"` and asks for a sign-in again.
 
 `test/fixtures/fake-mcp-server.mjs` is a loopback MCP server for trying this: `startFakeMcp({era, token, oauth})`
 answers `{url, log, tools, close}`; it serves `add`, `slow_write`, `delete_thing` and `paid`, and logs each request's
@@ -1307,8 +1354,9 @@ asked by default.
   redirect is followed, at most 4 MiB is read, and it may take 120 s. The
   model reads the text blocks joined; past 60,000 characters, or with blocks that are not text, the whole answer is
   filed under the run's `evidence/mcp/<server>/` and the text says where. A tool's own error (`isError`) reaches the
-  model as its error. A refused credential (401, 403) reads "the MCP server <name> refused its credential; update it
-  in Settings → MCP servers"; another failure names the server and the HTTP status, never a header. A stop, or a
+  model as its error. A refused credential (401, 403) reads "the MCP server <name> refused its credential (its sign-in
+  expired or was revoked, or its key changed): sign in again in Settings → MCP servers, or update its credential
+  there"; another failure names the server and the HTTP status, never a header. A stop, or a
   client that goes away, cancels the call at the server. A call a crash cut off is answered interrupted on the
   resumed run and never sent again.
 - **The gate.** Every call passes the run's one tool gate as `mcp:<server>/<tool>`, on every harness. Set
@@ -1449,6 +1497,12 @@ firing and starts nothing. The agent gets the trigger's input,
 then the body, cut at 16 KiB, inside `<trigger-payload source="webhook" untrusted>...</trigger-payload>`: whatever the
 sender wrote is data, not an instruction.
 
+A trigger's input, a started run's first message or a firing's message, is the trigger's, never the person's: it carries
+the origin `{kind: "trigger", trigger_id, source, owner}`, `owner` decided by the trigger's definition as it fires and
+never by its payload (true for a schedule, fired on time or by hand; false for a webhook, its body empty or not). The
+model reads the very text it did; the run's timeline shows it as a `phase` row, "Trigger <its id>: <its first line>",
+with `origin: "trigger"`, never as "You: ...", and what the run learns reads it as the trigger's.
+
 A trigger's target may also be `{kind: "message_run", run_id, input: {content}}`, with a webhook or a schedule source:
 each firing sends its input to that run as `POST /v2/runs/{id}/messages` would (a steer, or a follow-up that opens a
 completed run again), under its own cap. The run must have a cap (`422` on `target.run_id` otherwise, and a firing to a
@@ -1487,7 +1541,7 @@ with `Retry-After: 30`, recording nothing, and a schedule's time is `skipped`.
 | `POST /runs/{id}/pause`, `POST /runs/{id}/resume` | A workflow run: what is in flight finishes, and no node, model call or decision starts until it is resumed. Its status reads `paused`, and stays so across a server restart. An agentic run is `501`, an ended one `409`. |
 | `POST /workflows/validate` | `{workflow, tools?}`: every issue a save would refuse (`[{path, code, message}]`, the DSL's validation with code not run) and what this host lacks as `warnings`. Writes nothing. A refused save's `422` carries each issue as a field under `definition.workflow`, with its `code`. |
 | `GET /settings/tool-keys`, `PUT` and `DELETE /settings/tool-keys/{id}` | [Tool keys](#tool-keys), this server's own routes (`x-agentrun-serve: "toolkeys/1"`): each key's fields by name and where each is set, never a value; save one sealed, or forget it. |
-| `GET /settings/mcp-servers`, `POST /settings/mcp-servers/preview`, `GET`, `PUT` and `DELETE /settings/mcp-servers/{name}`, `POST .../{name}/refresh` | [MCP servers](#mcp-servers), this server's own routes (`x-agentrun-serve: "mcpservers/1"`): preview a remote MCP server's tools, save it with its credential sealed, read it back without the credential, refresh its tools, or forget it. |
+| `GET /settings/mcp-servers`, `POST /settings/mcp-servers/preview`, `GET`, `PUT` and `DELETE /settings/mcp-servers/{name}`, `POST .../{name}/refresh`, `POST .../{name}/oauth/start`, `GET /settings/mcp-servers/oauth/callback` and `GET .../oauth/client.json` | [MCP servers](#mcp-servers), this server's own routes (`x-agentrun-serve: "mcpservers/1"`): preview a remote MCP server's tools, save it with its credential sealed, read it back without the credential, refresh its tools, forget it, or [sign in to it with OAuth](#signing-in-with-oauth) (the callback and the client document take no token). |
 | `GET /settings/tools`, `PUT /settings/tools` | This server's own: the providers of `web_search`, `web_fetch` and `browser` ([search and fetch](#search-and-fetch)). |
 | `GET`, `PUT` and `DELETE /settings/webhook`, `POST /settings/webhook/test`, `GET /settings/webhook/deliveries` and `POST .../deliveries/{webhook_id}/redeliver` | [Webhooks](#webhooks), this server's own routes (`x-agentrun-serve: "webhook/1"`): the URL run notices are POSTed to, signed by the Standard Webhooks spec; never its secret but once. |
 | `GET` and `POST /triggers`, `GET`, `PATCH` and `DELETE /triggers/{id}`, `POST /triggers/{id}/fire`, `GET /triggers/{id}/firings`, `POST /triggers/{id}/secret`, `POST /hooks/{id}` (no token: [signed](#webhook-triggers)) | [Schedules](#schedules), this server's own routes (`x-agentrun-serve: "trigger/1"`): schedules that start an agent's capped runs, each firing once, and their history. |
@@ -1617,21 +1671,27 @@ model). A definition naming a
 harness this server does not run yet saves with a warning on `definition.harness`, and a run of it is
 `409 agent_not_runnable` with `details.harness`; it never runs on pi instead. This server runs pi always, and
 `claude-agent`, `codex` and `opencode` when each adapter's package, pins and provider endpoint check out; the harness's
-`reason` says what is missing. `claude-agent` installs Claude Code on first use: AgentRun never ships the Claude Agent
-SDK, and the first run on claude-agent (or the first agent saved on it) installs the version AgentRun pins
-(`@anthropic-ai/claude-agent-sdk@0.3.286`) from npm into `<data>/harnesses`, with the npm that runs the server, once.
-The install is pinned by the lock the server ships, `harnesses/claude-agent/` (a package.json that names the SDK at the pin, and npm's lock for it: every package of the tree, its
-CLI's platform packages and its peers' dependencies included, by sha512), which `npm ci --ignore-scripts` holds every
-tarball to, from whichever registry the person's npm config names. It lands whole or not at all: npm writes into a fresh
-directory beside `<data>/harnesses`, the result is checked there (the SDK at the pin, its entry, this platform's CLI and
-the MCP library), then it is renamed into place and made read-only. `node scripts/claude-lock.mjs` makes the lock again
-when the pin moves (`--check` checks it).
-Every run that needs it waits for that one install, its ready time counted from the install's end, and shows a `phase`
-row, `Installing Claude Code (first use)…`, while it does. Each run then loads the SDK, its CLI and the MCP library from
-there and nowhere else. Until it is installed, capabilities list claude-agent with `installs: "on_first_use"`. When npm fails, the run fails and its error names the command that installs it by hand, the same locked install: the
-shipped `package.json` and `package-lock.json` copied into a fresh `<data>/harnesses.new`, `npm ci --ignore-scripts --include=optional` there,
-then that directory put in place of `<data>/harnesses` (made writable first: the server leaves its install read-only). Each run loads the SDK, its CLI and the MCP library only from their own packages inside
-`<data>/harnesses`, never from a `node_modules` above it; a tree that is not whole is installed again. A server that stops
+`reason` says what is missing. `claude-agent` and `codex` install themselves on first use: AgentRun never ships the
+Claude Agent SDK or the Codex CLI, and the first run on each (or the first agent saved on it) installs the version AgentRun
+pins (`@anthropic-ai/claude-agent-sdk@0.3.286`, `@openai/codex@0.164.0`) from npm into `<data>/harnesses/claude-agent`
+or `<data>/harnesses/codex`, with the npm that runs the server, once. Each install is pinned by the lock the server
+ships, `harnesses/claude-agent/` or `harnesses/codex/` (a package.json that names the package at the pin, and npm's lock
+for it: every package of the tree, the platform packages that hold the Claude CLI or the Codex binary and the peers'
+dependencies included, by sha512), which `npm ci --ignore-scripts --include=optional` holds every tarball to, from
+whichever registry the person's npm config names; a config that omits optional packages still gets this platform's CLI.
+It lands whole or not at all: npm writes into a fresh directory beside the install's own, the result is checked there
+(the package at the pin, its entry, this platform's CLI or binary, and for Claude the MCP library), then it is renamed
+into place and made read-only. `node scripts/harness-locks.mjs` makes the locks again when a pin moves (`--check`
+checks them). Every run that needs one waits for that one install, its ready time counted from the install's end, and
+shows a `phase` row, `Installing Claude Code (first use)…` or `Installing Codex (first use)…`, while it does. Each run
+then loads the harness from its own packages inside its install and nowhere else, never from a `node_modules` above it;
+a tree that is not whole is installed again. Claude Code as an earlier build installed it, at the top of `<data>/harnesses`
+itself, is removed before the first install (the server logs `harness_install_removed`), and it installs again; a
+`harnesses` directory that holds anything else is left as it is. Until it is installed, capabilities list the harness with `installs:
+"on_first_use"`. When npm fails, the run fails and its error names the command that installs it by hand, the same locked
+install: the shipped `package.json` and `package-lock.json` copied into a fresh `<data>/harnesses/<harness>.new`, `npm ci
+--ignore-scripts --include=optional` there, then that directory put in place of `<data>/harnesses/<harness>` (made
+writable first: the server leaves its install read-only). A server that stops
 mid-install stops its npm (SIGTERM). `opencode` needs `opencode-ai@1.19.5` installed beside the server (an exact optional peer of
 it), and its model goes where codex's does: the gateway at `AGENT_MODEL_BASE_URL`, or
 OpenAI with `OPENAI_API_KEY`, on the Responses API. The packages and pins are checked once, at the start
@@ -1686,17 +1746,23 @@ typed answers and their probabilities.
   for Jev through OpenRouter, and so does a model gateway on OpenRouter: with `AGENT_MODEL_BASE_URL` on the host
   `openrouter.ai` and neither key set, Jev runs on `AGENT_MODEL_API_KEY`.
 - Parallel Decisions, through `@parcha/agentrun-decisions`, answers a node that says `provider: "parallel"`, with web
-  citations as its evidence. Set `PARALLEL_API_KEY`. Each request is booked at Parallel's list price as an estimate,
-  and one whose outcome was lost after sending is never sent again: the run escalates it as interrupted.
+  citations as its evidence. It runs on one of two routes. With `PARALLEL_API_KEY` set, on Parallel's own API: each
+  request is booked at Parallel's list price as an estimate. Without it, on Parallel's model through OpenRouter,
+  `parallel/decisions-fast`, on the OpenRouter key (below): only an OpenRouter key is needed. Its citations (OpenRouter's
+  `url_citation` annotations) are the same evidence, and its cost is the one OpenRouter reports. A request whose outcome
+  was lost after sending is never sent again on either route: the run escalates it as interrupted. Capabilities say which
+  route it runs on (`route: "parallel"` or `"openrouter"`).
 - OpenRouter's Decisions models answer a node that says `provider: "openrouter"` and names its model in `model`
   (`liquid/d1`, `perplexity/pplx-decider-v1.2`, `cloudflare/clef`, `typesafe/jev-1.14`). They run on the OpenRouter key
   Jev's OpenRouter route reads (`OPENROUTER_API_KEY`, else `AGENT_MODEL_API_KEY` with `AGENT_MODEL_BASE_URL` on
   openrouter.ai), handed to the run's process on the decision descriptor as Jev's is. That key is also the model
-  gateway's, which a run's process holds. Images to them are experimental.
+  gateway's, which a run's process holds. Images to them are experimental. A model that cites the web returns
+  `url_citation` annotations, which become the node's evidence. A cost OpenRouter reports above 0 is booked; 0 (a model its
+  catalog prices at 0) or none is unknown, never $0.
 - A decision node's `images` are files of the run's `work/`, such as the pages `pdf_pages` draws: the run's process
   reads them and sends them with the request. The receipt keeps each image's SHA-256, never its bytes.
 - `GET /capabilities` lists the providers in `workflows.decisions.providers` (`[{id: "jev" | "parallel" | "openrouter", available,
-  reason?, note?}]`), and `runJudge` is among `workflows.adapters` once any of them runs here. On the OpenRouter route,
+  reason?, note?, route?}]`, `route` on parallel), and `runJudge` is among `workflows.adapters` once any of them runs here. On the OpenRouter route,
   jev's `note` names the variable Jev runs on (`OPENROUTER_API_KEY` or `AGENT_MODEL_API_KEY`) and says that it is the
   model gateway's key.
 - With no key for a provider a workflow's nodes name, the workflow saves with a `not_set_up_here` warning on
@@ -2168,7 +2234,21 @@ an edit that leaves it out), else `expected`; only a run with a cap takes one (`
   stopped, lost) counts at what it was held at, its expected cost, in this process and after a restart alike.
 - `strict`: every input token at the higher of the input and cache-write prices (the provider may bill any of the input as
   a cache write), the worst case: no request passes the cap, and a run whose requests read the cache pauses well before
-  it has spent its cap. Under a cap each request is limited to the
+  it has spent its cap.
+
+Near its cap, a run's model is told once to finish: when what is left (the cap less what was spent and what requests
+in flight are held at) is under three times the run's typical request, the next request of the run's own model carries
+"About $X left of this run's budget: finish now with your answer." at its end, and the Timeline shows it as the server's
+row ("AgentRun: About $X left …"). The typical request is the median of the run's own model's priced requests after the
+first (the first writes the cache), else that one, else the next request's expected cost; side calls on another model
+and paid tools count in what is left, never in the typical request. Told before the run's own model has a priced request
+(a small cap on a pricey model can be due at its first), the words say the budget instead: "This run's budget is about
+$X, enough for little work: answer as soon as you can." On pi the words go into that one request's context;
+on claude-agent, codex and opencode the model proxy adds them to the body (after everything the CLI sent, so its cached
+prefix is unchanged). Neither CLI nor pi keeps them in its transcript, and no message is queued, so nothing runs after
+the model's answer. Once per cap, across restarts; a raise re-arms it.
+
+Under a cap each request is limited to the
 output tokens what is left of the cap can buy, thinking included, never more than it asks for or than the model's
 ceiling (its max output tokens, else its context window, clamped to what the window leaves): on pi through the request's
 own options (its max tokens, and on Anthropic's API its thinking budget), on claude-agent, codex and opencode written into its body

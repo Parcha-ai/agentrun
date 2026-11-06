@@ -210,6 +210,71 @@ describe("the HTTP front", () => {
     }
   });
 
+  it("a trigger's origin is taken in its own shape, on a guarded input too; a guarded one refused busy takes its marker back, so nothing is left open for a later message with its text", async () => {
+    const disk = new LocalDisk("serve-trigger-origin");
+    const counters = newCounters();
+    let open!: () => void;
+    const gate = new Promise<void>((resolve) => (open = resolve));
+    let server: RunServer | undefined;
+    let run: DurableRun | undefined;
+    try {
+      ({ server, run } = await served(disk, counters, { gate }));
+      const origin = { kind: "trigger", trigger_id: "trg_1", source: "webhook", owner: false };
+      for (const bad of [{ ...origin, source: "email" }, { ...origin, owner: "false" }, { ...origin, trigger_id: 7 }, { ...origin, extra: 1 }, { kind: "trigger", trigger_id: "trg_1", source: "webhook" }]) {
+        const refused = await call(server!, "POST", "/submit", { requestId: "bad", content: "A new event came in.", origin: bad });
+        assert.deepEqual([refused.status, refused.body.error], [400, "BAD_REQUEST"], JSON.stringify(bad));
+      }
+      const taken = await call(server!, "POST", "/submit", { requestId: "t1", content: "A new event came in.", origin, answers: false, asks: ["ask_person"], wait: true });
+      assert.equal(taken.status, 200, JSON.stringify(taken.body));
+      // Busy: a turn holds at the gate tool, and a guarded input is refused, after its marker went in.
+      const gated = await call(server!, "POST", "/submit", { requestId: "g1", content: "gate" });
+      assert.equal(gated.body.submission.status, "placed");
+      await until("the gate tool", () => counters.gate === 1);
+      const busy = await call(server!, "POST", "/submit", { requestId: "t2", content: "Another event came in.", origin, answers: false, asks: ["ask_person"] });
+      assert.deepEqual([busy.status, busy.body.error], [409, "BUSY"]);
+      // The writes queue behind the turn: they are in once it is done.
+      open();
+      const root = await run!.harness.root(ctx);
+      // In the order they were written (the page is newest first).
+      const markersNow = async () => (await root.entries({}, 500, undefined, ctx)).items.filter((entry) => entry.kind === MESSAGE_ORIGIN_KIND).sort((a, b) => Number(a.id) - Number(b.id)).map((entry) => entry.data);
+      await until("the refused try's marker and its withdrawal", async () => (await markersNow()).length === 3);
+      const markers = await markersNow();
+      assert.deepEqual(markers, [
+        { origin, text: "A new event came in." },
+        { origin, text: "Another event came in." },
+        { origin, text: "Another event came in.", withdrawn: true },
+      ], "the taken one's marker, and the refused one's with its withdrawal");
+      assert.equal((await userEntries(run!, "A new event came in.")).length, 1, "the trigger's message reached the run");
+    } finally {
+      await run?.release();
+      await server?.close();
+      disk.remove();
+    }
+  });
+
+  it("a trigger's guarded message refused WAITING writes no marker: the waiting check comes before it; a server origin on a guarded input is refused", async () => {
+    const disk = new LocalDisk("serve-trigger-waiting");
+    let server: RunServer | undefined;
+    let run: DurableRun | undefined;
+    try {
+      ({ server, run } = await served(disk, newCounters()));
+      const PARK = "agentrun.tool_approval";
+      const root = await run!.harness.root(ctx);
+      await run!.harness.commit((tx) => tx.appendEntry(root.id, { kind: PARK, data: { phase: "requested", id: "ap_9", tool: "web_fetch", call_id: "call_9" } as never }), ctx);
+      const origin = { kind: "trigger", trigger_id: "trg_1", source: "schedule", owner: true };
+      const waiting = await call(server!, "POST", "/submit", { requestId: "w1", content: "Check the queue.", origin, answers: false, asks: ["ask_person"], parks: [PARK] });
+      assert.deepEqual([waiting.status, waiting.body.error], [409, "WAITING"], JSON.stringify(waiting.body));
+      const server_ = await call(server!, "POST", "/submit", { requestId: "s1", content: "The cap was raised.", origin: { kind: "server", reason: "cap_raised" }, answers: false });
+      assert.deepEqual([server_.status, server_.body.error], [400, "BAD_REQUEST"], "a server origin is never on a guarded input");
+      const markers = (await root.entries({}, 500, undefined, ctx)).items.filter((entry) => entry.kind === MESSAGE_ORIGIN_KIND);
+      assert.deepEqual(markers, [], "no marker written");
+    } finally {
+      await run?.release();
+      await server?.close();
+      disk.remove();
+    }
+  });
+
   it("dedup is per conversation, as pi's submissionByRequest is: the same requestId on another conversation is a new submission", async () => {
     const disk = new LocalDisk("serve-perconv");
     const counters = newCounters();

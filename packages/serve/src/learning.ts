@@ -179,7 +179,7 @@ export const LEARNING_LABEL = "learning";
 /** A run's proposal, in its directory (propose.ts): the seed it was checked against, each new note's file and text, its
  *  skill's and workflow draft's files by path and text (`files`: a SKILL.md, a workflow.json and its README.md; absent
  *  when it gives none), and what the user said in the run as the grader reads it (each message cut of the host's
- *  secrets, then shortened to GRADE_CAPS.askedMessage; absent in a proposal kept before the grader read them). */
+ *  secrets, then shortened to its head and tail, shortMessage; absent in a proposal kept before the grader read them). */
 export const PROPOSAL = "learning-proposal.json";
 export type Proposal = { seed: string; notes: { file: string; text: string }[]; files?: { file: string; text: string }[]; asked?: string[] };
 

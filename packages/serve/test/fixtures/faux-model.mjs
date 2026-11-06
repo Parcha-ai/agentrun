@@ -1,5 +1,10 @@
 // A faux model for the tests and the conformance scenarios: replies chosen from the conversation, no key, no network.
 const textOf = (message) => (typeof message?.content === "string" ? message.content : (message?.content ?? []).map((c) => (c.type === "text" ? c.text : "")).join(""));
+/** A user message that is only a `<system-reminder>` (the spend cap's wrap-up note): the server's words, which a model
+ *  reads as an aside, never as the person's. The replies below count and quote the person's messages only. */
+export const isReminder = (message) => message?.role === "user" && /^<system-reminder>[\s\S]*<\/system-reminder>$/.test(textOf(message).trim());
+/** The person's messages: the user messages that are not a reminder. */
+export const personOf = (context) => context.messages.filter((m) => m.role === "user" && !isReminder(m));
 
 /** Resolves after `ms`, or as an aborted reply as soon as the turn is stopped. */
 const slow = (faux, ms, text) =>
@@ -17,7 +22,7 @@ const untilExists = async (file) => {
 const CUT_KEY = `not-a-secret-${"cut-key-0123456789abcdef"}`;
 
 export default function reply(context, faux) {
-  const users = context.messages.filter((m) => m.role === "user").map(textOf);
+  const users = personOf(context).map(textOf);
   const [first = "", last = ""] = [users[0], users.at(-1)];
   const answered = context.messages.at(-1)?.role === "toolResult";
   // A workflow's model node: it delivers its record through `submit`, slowly when its input says so.
@@ -135,7 +140,7 @@ export default function reply(context, faux) {
   }
   // A follow-up that fetches the public page once more with web_fetch, then says so.
   if (users.length > 1 && last === "Fetch again.") {
-    const since = context.messages.length - 1 - context.messages.findLastIndex((m) => m.role === "user");
+    const since = context.messages.length - 1 - context.messages.findLastIndex((m) => m.role === "user" && !isReminder(m));
     return since === 0 ? faux.message(faux.toolCall("web_fetch", { url: "http://public.example/" }), { stopReason: "toolUse" }) : faux.message("Fetched again.");
   }
   // Runs monid's /slow, which holds until it is stopped; then, or on a follow-up (the run stopped), says so.

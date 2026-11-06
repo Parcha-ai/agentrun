@@ -23,7 +23,7 @@ const made = () => `not-a-secret-${randomBytes(12).toString("hex")}`;
 /** Each form a value could plausibly leak in: as text, base64, base64url and hex, and its random part's first 8. */
 const formsOf = (value) => [value, ...["base64", "base64url", "hex"].map((code) => Buffer.from(value).toString(code)), value.slice(13, 21)];
 const holdsNone = (bytes, forms, where) => { for (const form of forms) assert.ok(!Buffer.from(bytes).includes(form), `${where} holds the key`); };
-// Files only: the Claude Code a first use installs (linked here from this repository: support.mjs linkClaudeSdk) is not the server's writing.
+// Files only: the Claude Code a first use installs (linked here from this repository: support.mjs linkHarnesses) is not the server's writing.
 const filesUnder = (dir) => readdirSync(dir, { withFileTypes: true }).flatMap((entry) => (entry.isDirectory() ? filesUnder(join(dir, entry.name)) : entry.isFile() ? [join(dir, entry.name)] : []));
 const keyed = (...ids) => Object.fromEntries(MODEL_KEYS.filter((row) => ids.includes(row.id)).map((row) => [row.field, made()]));
 
@@ -201,7 +201,7 @@ test("a model key saved with no restart: a server with none says no model runs a
   const lines = [];
   const { api, data } = await serve(t, { faux: undefined, log: (line) => lines.push(line) });
   const models = async () => (await api("GET", "/capabilities")).body.models;
-  assert.deepEqual(await models(), { source: "gateway", route_prefix: "agent-model", fast: null, default: null, strong: null, ready: false, needs: "key" });
+  assert.deepEqual(await models(), { source: "gateway", route_prefix: "agent-model", fast: null, default: null, strong: null, ready: false, needs: "key", priced: null });
   assert.equal((await api("POST", "/agents", agent("plain"))).status, 201);
   const refused = await api("POST", "/agents/plain/runs", { input: { content: "hi" } });
   assert.deepEqual([refused.status, refused.body.error.code], [409, "agent_not_runnable"]);
@@ -210,7 +210,7 @@ test("a model key saved with no restart: a server with none says no model runs a
   // OpenAI's key: a save does not check it with its provider (key-check.ts' NOT_CHECKED), so this reaches no network.
   assert.equal((await api("PUT", "/settings/tool-keys/openai", { values: { OPENAI_API_KEY: value } })).status, 204);
   const model = "openai/gpt-6.1-sol";
-  assert.deepEqual(await models(), { source: "gateway", route_prefix: "agent-model", fast: `agent-model/${model}`, default: `agent-model/${model}`, strong: `agent-model/${model}`, ready: true, needs: null }, "no restart");
+  assert.deepEqual(await models(), { source: "gateway", route_prefix: "agent-model", fast: `agent-model/${model}`, default: `agent-model/${model}`, strong: `agent-model/${model}`, ready: true, needs: null, priced: true }, "no restart");
   const offered = (await api("GET", "/capabilities")).body.harnesses.filter((harness) => harness.available).map((harness) => harness.id);
   const row = (await api("GET", "/settings/tool-keys")).body.keys.find((key) => key.id === "openai");
   assert.deepEqual([row.kind, row.unlocks, row.harnesses, row.fields], ["model", [], ["pi", "codex", "opencode"].filter((id) => offered.includes(id)), [{ name: "OPENAI_API_KEY", set: true, source: "stored" }]]);
@@ -226,7 +226,7 @@ test("a model key saved with no restart: a server with none says no model runs a
   for (const file of filesUnder(data)) holdsNone(readFileSync(file), formsOf(value), file);
 
   assert.equal((await api("DELETE", "/settings/tool-keys/openai")).status, 204);
-  assert.deepEqual(await models(), { source: "gateway", route_prefix: "agent-model", fast: null, default: null, strong: null, ready: false, needs: "key" }, "deleted, none again");
+  assert.deepEqual(await models(), { source: "gateway", route_prefix: "agent-model", fast: null, default: null, strong: null, ready: false, needs: "key", priced: null }, "deleted, none again");
 });
 
 // Behind a gateway, AGENT_MODEL is the gateway's own string, for codex as for pi (#1571: no provider is read out of a

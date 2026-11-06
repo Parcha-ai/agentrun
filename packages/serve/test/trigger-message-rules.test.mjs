@@ -9,6 +9,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { test } from "node:test";
+import { isMessageRow } from "@parcha/pi-durable-agent/timeline";
 import { hookRefusal } from "../dist/trigger-secrets.js";
 import { follow, runDir, scratch, serve, withEnv } from "./support.mjs";
 import { firings, made } from "./trigger-support.mjs";
@@ -51,7 +52,7 @@ test("a message_run target must be a capped run: refused at create and at PATCH 
   assert.equal(failed.status, "failed", JSON.stringify(failed));
   assert.match(failed.error.message, /no spend cap/);
   const { rows } = await follow(second.api, capped.run_id, ["completed"]);
-  assert.equal(rows.filter((row) => row.kind === "user_message").length, 1, "nothing sent");
+  assert.equal(rows.filter(isMessageRow).length, 1, "nothing sent");
 });
 
 test("a firing never answers a run that waits on a person: it is skipped with why, and the run still waits for its answer", { timeout: 120_000 }, async (t) => {
@@ -133,7 +134,7 @@ test("a run that comes to wait on a person between the firing's check and its do
   const read = (await api("GET", `/runs/${run.run_id}`)).body;
   assert.deepEqual([read.status, read.state, read.pending?.kind], ["input_required", "waiting", "question"], "the question stands, unanswered");
   const { rows } = await follow(api, run.run_id, ["input_required"]);
-  assert.equal(rows.filter((row) => row.kind === "user_message").length, 1, "no message reached it");
+  assert.equal(rows.filter(isMessageRow).length, 1, "no message reached it");
   assert.equal((await api("POST", `/runs/${run.run_id}/cancel`)).status, 202);
 });
 
@@ -164,7 +165,7 @@ test("a run that comes to wait on a tool call's approval between the firing's ch
   const read = (await api("GET", `/runs/${run.run_id}`)).body;
   assert.deepEqual([read.status, read.state, read.pending?.kind, read.pending?.tool], ["input_required", "waiting", "approval", "web_fetch"], "the approval stands, unanswered");
   const { rows } = await follow(api, run.run_id, ["input_required"]);
-  assert.equal(rows.filter((row) => row.kind === "user_message").length, 1, "no message reached it");
+  assert.equal(rows.filter(isMessageRow).length, 1, "no message reached it");
   assert.equal((await api("POST", `/runs/${run.run_id}/cancel`)).status, 202);
 });
 

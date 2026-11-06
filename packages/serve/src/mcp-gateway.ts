@@ -28,6 +28,7 @@ import { TOOL_COST, TOOL_STARTED, TOOL_UNMETERED } from "@parcha/pi-durable-agen
 import { paidCall } from "./cap.js";
 import { wireName } from "./catalog.js";
 import { metaToolOf } from "./mcp-meta.js";
+import { SIGN_IN_AGAIN } from "./mcp-oauth.js";
 import { type Gate, GATED_BY_GATEWAY, mcpToolName, type Park } from "./tool-gate.js";
 import { forModel } from "./result.js";
 import { writeInWork } from "./workspace.js";
@@ -55,6 +56,8 @@ export interface McpServerSource {
   /** The server's credential, opened now: its headers, or why it does not open, each under its own tag; undefined when
    *  it has none. */
   headers(name: string): { headers: Record<string, string> } | { unopened: string } | undefined;
+  /** Before a launch: an OAuth access token near its expiry refreshed (mcp-servers.ts headersForRun). Never throws. */
+  refresh?(name: string): Promise<void>;
 }
 
 /** `mcp:<server>/<tool>` read, or undefined for a name that is not one. */
@@ -290,7 +293,8 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
       // The next call connects again (a server that dropped its session, say); this one is never sent again.
       clients.delete(server);
       const status = statuses.get(server)?.last;
-      if (status === 401 || status === 403) return said(`The MCP server ${server} refused its credential; update it in Settings → MCP servers.`, true);
+      // An OAuth token that expired mid-run is not refreshed here (no channel to serve for it): the next launch does.
+      if (status === 401 || status === 403) return said(`The MCP server ${server} refused its credential (its sign-in expired or was revoked, or its key changed): ${SIGN_IN_AGAIN}, or update its credential there.`, true);
       const why = scrub(String((error as Error)?.message ?? error), headers).slice(0, 300);
       return said(`The MCP server ${server} failed${status && status >= 400 ? ` (HTTP ${status})` : ""}: ${why}`, true);
     }
@@ -309,7 +313,8 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
     if (!now) return `The MCP server ${server} is no longer saved on this server; nothing was sent.`;
     if (now.url !== pinned.url) return `The MCP server ${server}'s address changed since this run started; nothing was sent. Start a new run to use it at its new address.`;
     // A credential that does not open is never a call without it.
-    if (now.unopened !== undefined) return `The MCP server ${server}'s credential can't be opened on this server (${now.unopened}); update it in Settings → MCP servers.`;
+    // The reason carries its own remedy (mcp-servers.ts UNUSABLE): nothing is added to it here.
+    if (now.unopened !== undefined) return `The MCP server ${server}'s credential can't be used right now: ${now.unopened}.`;
     return undefined;
   };
 
@@ -387,7 +392,7 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
           if (error instanceof CannotPark) return cannot;
           return said(`The ${name} call was not sent: the tool gate failed (${String((error as Error)?.message ?? error).slice(0, 200)}).`, true);
         }
-        if (entered?.parked) return park === given ? Object.assign(said(entered.text), { [PARKED]: true }) : cannot;
+        if (entered?.parked) return park === given ? { ...said(entered.text), parked: true } : cannot;
         if (entered) return said(entered.text, entered.isError);
         const result = await sent(server, tool, args, id, signal);
         const text = result.content.map((block) => block.text).join("\n\n");
@@ -400,12 +405,12 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
   return gateway;
 }
 
-const PARKED = Symbol("agentrun.mcp.parked");
 /** A park refused: the call came from a harness that cannot end its turn on a parked call. */
 class CannotPark extends Error {}
-/** Whether the gateway's answer is a call the gate parked for a person's approval: the harness ends the turn on it. A
- *  symbol, so it never reaches a harness's MCP client in the answer's JSON. */
-export const isParked = (result: McpCallResult): boolean => (result as { [PARKED]?: true })[PARKED] === true;
+/** Whether the gateway's answer is a call the gate parked for a person's approval: the harness ends the turn on it, and
+ *  a harness's session records the call as one that did not run (McpCallResult's `parked`). The door that serves a
+ *  harness's own MCP client sends the answer's content and error only. */
+export const isParked = (result: McpCallResult): boolean => result.parked === true;
 
 /** pi's tools for the gateway's servers: each granted tool under its wire name (`mcp__<server>__<tool>`), with the pinned
  *  description and schema, never run again after a crash. */
