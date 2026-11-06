@@ -1,0 +1,123 @@
+// The conformance suite's shapes: a case is data that names its level, its group and the capabilities it needs.
+import type { DaemonClient } from "../client.js";
+import type { DaemonCapability, DaemonMethod, DaemonMethods, ExecRunParams, HelloResult } from "../protocol.js";
+import type { ComputerConnection, ComputerProvider, ComputerRef, ComputerSpec } from "../provider.js";
+import type { ComputerError, ComputerErrorCode, Result } from "../result.js";
+
+/** Core: what every computer must do. Full: an optional capability, tested only where it is declared. */
+export type Level = "core" | "full";
+export type Group = "health" | "exec" | "files" | "process" | "provider" | "drift";
+
+/**
+ * What a case needs: a daemon capability (declared by both the provider's capabilities().daemon and the daemon's
+ * hello), a network the provider declares, or the janitor as the keeper of deadlines.
+ */
+export type Capability = DaemonCapability | "network:none" | "network:open" | "network:allow" | "lifetime:janitor";
+
+/** What every computer must declare: a provider without one of these cannot pass Core. */
+export const CORE_CAPABILITIES: readonly Capability[] = ["exec", "files", "processes", "network:none"];
+
+/** exec.run's result with its streams decoded. */
+export interface Ran {
+	exitCode: number | null;
+	signal?: string;
+	out: string;
+	err: string;
+	timedOut: boolean;
+	truncated: boolean;
+}
+
+/** What a case is given. Every computer and connection made through it is ended when the case ends. */
+export interface CaseContext {
+	readonly provider: ComputerProvider;
+	readonly image: string;
+	/** Aborts when the run is aborted or the case runs past its time. */
+	readonly signal: AbortSignal;
+	/** The case's computer: the run's shared one, or one made for this case alone. */
+	readonly ref: ComputerRef;
+	/** A connection of the case's own to that computer, after hello. */
+	readonly client: DaemonClient;
+	readonly hello: HelloResult;
+	/** The label every computer of this run carries. */
+	readonly runLabels: Record<string, string>;
+	/** How long a case waits on a program before it fails: a bound, never a claim about speed. */
+	readonly patience: number;
+	/** A spec with this run's label, the image, a lifetime and network none, with extra over it. */
+	spec(extra?: Partial<ComputerSpec>): ComputerSpec;
+	/** Makes a computer for this case; fails the case when create refuses. */
+	create(extra?: Partial<ComputerSpec>): Promise<ComputerRef>;
+	/** A further connection, to the case's computer or another; fails the case when connect refuses. */
+	connect(ref?: ComputerRef): Promise<ComputerConnection>;
+	/** A new directory for this case in the computer, writable by the computer's user. */
+	dir(): Promise<string>;
+	/** The same provider with a daemon that reports another version; skips the case when none was given. */
+	drifted(): Promise<ComputerProvider>;
+	exec(argv: string[], extra?: Partial<ExecRunParams>, client?: DaemonClient): Promise<Ran>;
+	call<M extends DaemonMethod>(method: M, params: DaemonMethods[M]["params"], client?: DaemonClient): Promise<DaemonMethods[M]["result"]>;
+	ok<T>(result: Result<T>, what: string): T;
+	/** Asserts the result is an error, with one of these codes when given. */
+	refused(result: Result<unknown>, what: string, codes?: ComputerErrorCode[]): ComputerError;
+	equal(actual: unknown, expected: unknown, what: string): void;
+	deepEqual(actual: unknown, expected: unknown, what: string): void;
+	match(text: string, pattern: RegExp, what: string): void;
+	assert(condition: unknown, what: string): asserts condition;
+	/** Calls fn until it returns a value other than undefined or false, for up to patience. */
+	until<T>(fn: () => Promise<T | undefined | false>, what: string): Promise<T>;
+	/** Ends the case as a skip, with the reason. */
+	skip(reason: string): never;
+}
+
+export interface Case {
+	/** `<group>.<name>`. */
+	id: string;
+	level: Level;
+	group: Group;
+	needs: Capability[];
+	/** "shared" (default): the run's computer; "fresh": one of its own; "none": no computer. */
+	computer?: "shared" | "fresh" | "none";
+	run(t: CaseContext): Promise<void>;
+}
+
+export interface CaseResult {
+	id: string;
+	level: Level;
+	group: Group;
+	status: "pass" | "fail" | "skip";
+	reason?: string;
+}
+
+export interface ConformanceReport {
+	/** The provider's id. */
+	provider: string;
+	providerVersion: string;
+	image: string;
+	/** What the daemon of the run's computer said in hello; null when no computer could be made. */
+	daemon: { version: string; arch: string } | null;
+	/** The groups or case ids the run was limited to, when it was. */
+	only?: string[];
+	results: CaseResult[];
+	/** pass when every Core case ran and passed, and the run left no computer behind. */
+	core: "pass" | "fail";
+	/** Capabilities Full cases needed that the provider or the daemon does not declare. */
+	undeclared: Capability[];
+	/** The computers of this run deleted at its end, those still there after it, and what went wrong. */
+	cleanup: { deleted: string[]; left: string[]; errors: string[] };
+}
+
+export interface ConformanceOptions {
+	/** The image every computer of the run starts from. */
+	image: string;
+	/** Run only these groups or case ids. */
+	only?: string[];
+	signal?: AbortSignal;
+	/** The cases to run; default every case of the suite. */
+	cases?: Case[];
+	/** The same provider with a daemon that reports another version, for the drift cases. */
+	drifted?: () => Promise<ComputerProvider> | ComputerProvider;
+	/** Called as each case ends. */
+	onResult?: (result: CaseResult) => void;
+	/** The longest one case may run; default 180 s. */
+	caseTimeoutMs?: number;
+	/** How long a case waits on a program; default 30 s. */
+	patience?: number;
+}
