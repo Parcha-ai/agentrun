@@ -47,7 +47,7 @@ test(`${harness}: two tool calls in one answer, then the closing answer: the run
   assert.equal(rows.findLast((r) => r.kind === "usage")?.usage.requests, 2, "two model requests: the one that asked for both calls, and the answer");
 });
 
-test("claude-agent: two tool calls that end before their answer is paid: their results are stored first, and each still reads as its call's, once, none interrupted, and the run's metrics count two calls, none failed", async (t) => {
+test("claude-agent: two tool calls that end before their answer is paid: each call is stored before its result, at a cost still to come, and reads as its call's, once, none interrupted, and the run's metrics count two calls, none failed", async (t) => {
   const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
   assert.equal((await api("POST", "/agents", agent("streamed", { harness: "claude-agent", instructions: "Write two files while answering.", tools: ["read", "write", "edit"] }))).status, 201);
   const started = await api("POST", "/agents/streamed/runs", { input: { content: "Write the word alpha to a.md and the word beta to b.md." } });
@@ -57,7 +57,8 @@ test("claude-agent: two tool calls that end before their answer is paid: their r
   assert.deepEqual([last.status, last.final], ["completed", true], `${last.status}/${last.state}`);
   const shown = JSON.stringify(rows.map((r) => [r.seq, r.kind, r.summary]));
 
-  // The store: each result entry before the answer entry that holds its call, as the bridge writes a result at once.
+  // The store: each call before its result, the answer that holds it written at a cost still to come: the Timeline
+  // never shows a result above its call.
   const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
   const entries = db.prepare("SELECT id, record FROM entries WHERE conversation_id = 1 ORDER BY id").all().map((r) => ({ id: r.id, ...JSON.parse(r.record) }));
   db.close();
@@ -65,10 +66,12 @@ test("claude-agent: two tool calls that end before their answer is paid: their r
   for (const e of entries) if (e.kind === "pi.assistant") for (const b of e.model?.[0]?.content ?? []) if (b.type === "toolCall") callAt.set(b.id, e.id);
   const stored = entries.filter((e) => e.kind === "pi.tool-result").map((e) => [e.model[0].toolCallId, callAt.get(e.model[0].toolCallId), e.id]);
   assert.equal(stored.length, 2, JSON.stringify(stored));
-  for (const [call, at, result] of stored) assert.ok(at !== undefined && result < at, `the result of ${call} (entry ${result}) is stored before its call (entry ${at})`);
+  for (const [call, at, result] of stored) assert.ok(at !== undefined && at < result, `the call ${call} (entry ${at}) is stored before its result (entry ${result})`);
+  // And in the rows a reader sees: each call above its result.
+  for (const use of rows.filter((r) => r.kind === "tool_use")) assert.ok(rows.findIndex((r) => r.kind === "tool_result" && r.tool_use_id === use.tool_use_id) > rows.indexOf(use), `${use.tool_use_id}: its call above its result: ${JSON.stringify(rows.map((r) => [r.seq, r.kind, r.tool_use_id]))}`);
 
   // The timeline reads each such result as its call's: each call once, with its one result, which names its file;
-  // nothing interrupted. (Live, a result stored before its call shows above it, as on main.)
+  // nothing interrupted.
   const uses = rows.filter((r) => r.kind === "tool_use");
   const results = rows.filter((r) => r.kind === "tool_result");
   assert.deepEqual(uses.map((r) => r.tool_input_preview), ["a.md", "b.md"], shown);

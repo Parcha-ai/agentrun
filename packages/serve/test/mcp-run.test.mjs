@@ -497,3 +497,20 @@ test("codex: a run killed mid-call shows the call's row while it runs and its in
   assert.match((await api("GET", `/runs/${runId}`)).body.result?.final_answer ?? "", /interrupted/i);
   assert.equal(calls(fake, "slow_write").length, 1, "the call was never sent again");
 });
+
+test("codex: a call refused before anything is sent lists its call row before its failed result, as a sent call does", { timeout: 90_000 }, async (t) => {
+  const { api, data } = await codexServe(t);
+  await addFake(t, api);
+  // The sealed bearer damaged at rest: the gateway refuses the call at once, unsent.
+  const file = join(data, "mcp-servers.json");
+  const doc = JSON.parse(await readFile(file, "utf8"));
+  doc.servers.fake.auth.sealed.authorization = Buffer.from("not what was sealed").toString("base64");
+  await writeFile(file, JSON.stringify(doc));
+  assert.equal((await api("POST", "/agents", agent("codex-refused", { harness: "codex", tools: ["mcp:fake/add"], tool_settings: ALLOW_FAKE }))).status, 201);
+  const runId = await runOf(api, "codex-refused", 'mcp fake add {"a":2,"b":3}');
+  const { rows, last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 60_000 });
+  assert.equal(last.status, "completed", JSON.stringify(rows.at(-1)));
+  const call = rows.filter((row) => row.tool_name === "mcp__fake__add").map((row) => [row.kind, row.seq]);
+  assert.deepEqual(call.map(([kind]) => kind), ["tool_use", "tool_result"], JSON.stringify(call));
+  assert.ok(call[0][1] < call[1][1], `the call row first: ${JSON.stringify(call)}`);
+});
