@@ -181,6 +181,8 @@ if (process.argv[2] === "import") process.exit(0);
 // STUB_FAIL: print why and exit before any "Open " line; STUB_OPEN: the URL its "Open " line names; STUB_SIGTERM=die: no
 // handler, so a SIGTERM ends it by the signal, as a real server's can.
 if (process.env.STUB_FAIL) { console.log("listen EADDRINUSE: 127.0.0.1:7340 is in use (stub)"); process.exit(1); }
+// STUB_FAIL_STDERR: say why on stderr only (as a lock refusal does) and exit before any line on stdout.
+if (process.env.STUB_FAIL_STDERR) { console.error("agentrun-serve: another server holds this data root (stub)"); process.exit(1); }
 console.log("agentrun-serve on http://127.0.0.1:7399/v2 (stub)");
 console.log("Open " + (process.env.STUB_OPEN || "http://127.0.0.1:7399/"));
 if (process.env.STUB_SIGTERM !== "die") process.on("SIGTERM", () => process.exit(0));
@@ -213,6 +215,12 @@ test("with AGENTRUN_PUBLIC_URL it starts and names that address; a stop it forwa
   assert.equal(failed.code, 1, failed.err);
   assert.match(failed.err, /^AgentRun did not start\. The server's last lines:$/m, failed.err);
   assert.match(failed.err, /listen EADDRINUSE: 127\.0\.0\.1:7340 is in use \(stub\)/, failed.err);
+  // A server that says why on stderr only: that line comes through, and this command doesn't claim it said nothing.
+  const quiet = await throughStub(t, ["--no-open"], { STUB_FAIL_STDERR: "1" });
+  assert.equal(quiet.code, 1, quiet.err);
+  assert.match(quiet.err, /^agentrun-serve: another server holds this data root \(stub\)$/m, quiet.err);
+  assert.doesNotMatch(quiet.err, /printed nothing/, quiet.err);
+  assert.match(quiet.err, /^AgentRun did not start; the server's own message, if it gave one, is above\.$/m, quiet.err);
 });
 
 test("the command passes its arguments through to the server, with its store (~/.agentrun unless --data names one) and --open unless --no-open; it picks no port or model of its own", { timeout: 60_000 }, async (t) => {

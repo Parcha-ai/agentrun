@@ -182,7 +182,7 @@ export async function main(argv, env = process.env) {
   if (url === undefined) {
     child.kill("SIGTERM");
     // Its stdout is kept out of this terminal, so its last lines are shown here: with its stderr above, they say why.
-    console.error(seen.length > 0 ? `AgentRun did not start. The server's last lines:\n${seen.map((line) => `  ${line}`).join("\n")}` : "AgentRun did not start, and the server printed nothing.");
+    console.error(seen.length > 0 ? `AgentRun did not start. The server's last lines:\n${seen.map((line) => `  ${line}`).join("\n")}` : "AgentRun did not start; the server's own message, if it gave one, is above.");
     return (await exited) || 1;
   }
   console.log(`AgentRun is running at ${url}`);
