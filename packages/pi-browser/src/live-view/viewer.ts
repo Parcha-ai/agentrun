@@ -71,6 +71,7 @@ body { display: flex; flex-direction: column; }
 #dialog-prompt { width: 100%; margin: 0 0 12px; background: #111; color: #eee; border: 1px solid #444; border-radius: 4px; padding: 5px 8px; font: inherit; }
 #dialog-buttons { display: flex; gap: 8px; justify-content: flex-end; }
 #dialog-buttons button { background: #333; color: #eee; border: 1px solid #444; border-radius: 4px; padding: 5px 14px; cursor: pointer; }
+#dialog-buttons button:disabled, #dialog-prompt:disabled, #bar button:disabled, #url:disabled { opacity: 0.5; cursor: not-allowed; }
 `;
 
 const js = `"use strict";
@@ -126,9 +127,11 @@ const js = `"use strict";
   var readOnly = false;
   var noPage = false;
   var NO_PAGE = "No page yet: the browser has not opened a page. It shows here once it does.";
+  // The controls that act on the browser: the address bar and its buttons, and a page's dialog (its answer, OK or Cancel).
+  var CONTROLS = ["back", "reload", "url", "dialog-accept", "dialog-dismiss", "dialog-prompt"];
   function viewOnly() {
     document.body.classList.add("view-only");
-    ["back", "reload", "url"].forEach(function (id) { $(id).disabled = true; });
+    CONTROLS.forEach(function (id) { $(id).disabled = true; });
   }
   // A take-over viewer drives only while it holds the browser: Take over asks for it, Hand back gives it back.
   var takeOver = false;
@@ -140,8 +143,9 @@ const js = `"use strict";
     handsEl.textContent = holding ? "Hand back" : "Take over";
     handsEl.className = holding ? "holding" : "";
     document.body.classList.toggle("not-held", takeOver && !holding);
-    // A view-only viewer's controls stay off (viewOnly); a take-over one's are on only while it holds the browser.
-    if (takeOver) ["back", "reload", "url"].forEach(function (id) { $(id).disabled = !holding; });
+    // A view-only viewer's controls stay off (viewOnly); a take-over one's are on only while it holds the browser, a page's
+    // dialog's among them, so no button looks live that cannot act.
+    if (takeOver) CONTROLS.forEach(function (id) { $(id).disabled = !holding; });
   }
   handsEl.addEventListener("click", function () {
     if (!ready || !takeOver || ws.readyState !== 1) return;

@@ -609,3 +609,44 @@ test("a take-over viewer: Take over and Hand back in its own bar send take and g
   assert.equal((await state()).hands, "Take over");
   assert.deepEqual(web.received.filter((m) => !["hello", "take", "give", "key", "mouse"].includes(m.type)), [], "nothing else was sent");
 });
+
+test("a page's dialog in the viewer: its OK, Cancel and prompt are off whenever the person cannot drive (view only, or a take-over viewer not holding the browser), and on while they hold it", { skip: NO_CHROME, timeout: 100_000 }, async (t) => {
+  const TOKEN = randomBytes(32).toString("base64url");
+  const web = await viewerServer(TOKEN);
+  const root = await mkdtemp(path.join(tmpdir(), "lv-viewer-"));
+  const provider = cdpProvider({ chrome: { executablePath: CHROME, profileRoot: root } });
+  let ref = null;
+  const tabs = [];
+  t.after(async () => { for (const tab of tabs) tab.close(); if (ref) await within(20_000, provider.release(ref)); await within(5_000, web.close()); await within(5_000, rm(root, { recursive: true, force: true })); }, { timeout: 40_000 });
+  ref = await within(60_000, provider.create({ tag: "lv-viewer-dialog", maxLifetimeS: 600, idleTimeoutS: 60, proxies: false, verified: false, captcha: false, viewport: { width: 1000, height: 700 }, metadata: {} }, new AbortController().signal));
+  assert.ok(ref, "the browser started");
+  const attached = await within(30_000, provider.attach(ref));
+  const open = async () => {
+    const viewer = await openTab(attached.sdkCdpUrl, `${web.base}/v/${web.id}#t=${TOKEN}`);
+    tabs.push(viewer);
+    return viewer;
+  };
+  const controls = (viewer) => viewer.evaluate(`["dialog-accept", "dialog-dismiss", "dialog-prompt"].map((id) => document.getElementById(id).disabled)`);
+  const shown = (viewer) => viewer.evaluate(`!document.getElementById("dialog").hidden`);
+  const dialog = { type: "dialog", kind: "prompt", message: "Your name?", defaultPrompt: "" };
+
+  const taking = await open();
+  assert.ok(await until(() => web.received.length >= 1), "the viewer spoke");
+  web.send({ type: "ready", drive: "idle", takeOver: true, held: false });
+  web.send(dialog);
+  assert.ok(await until(() => shown(taking)), "the dialog shows");
+  assert.deepEqual(await controls(taking), [true, true, true], "not holding: its controls are off");
+  web.send({ type: "hold", held: true });
+  assert.ok(await until(async () => (await controls(taking)).every((off) => !off)), "holding: on");
+  web.send({ type: "hold", held: false, reason: "given" });
+  assert.ok(await until(async () => (await controls(taking)).every((off) => off)), "handed back: off again");
+  taking.close();
+  web.closeSockets();
+
+  const watching = await open();
+  assert.ok(await until(() => web.sockets() === 1), "the read-only viewer connected");
+  web.send({ type: "ready", drive: "idle", readOnly: true });
+  web.send(dialog);
+  assert.ok(await until(() => shown(watching)));
+  assert.deepEqual(await controls(watching), [true, true, true], "view only: off");
+});
