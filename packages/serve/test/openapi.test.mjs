@@ -359,10 +359,11 @@ test("capabilities(), the exported helper, gives a document that passes the publ
   assert.notDeepEqual(schemaProblems(doc, shape, { ...caps, harnesses: caps.harnesses.map(({ default_model, ...offer }) => offer) }), []);
 });
 
-test("the decision providers' widening to parallel is its own addition, decisions/2, and info lists it", async (t) => {
+test("the decision providers' widening is its own addition, decisions/3 (parallel, then its route), and info lists it", async (t) => {
   const { doc } = await served(t);
   const decisions = doc.components.schemas.Capabilities.properties.workflows.properties.decisions;
-  assert.equal(decisions["x-agentrun-serve"], "decisions/2", "a client that validates against decisions/1 refuses parallel, so the widening is a new mark");
+  assert.equal(decisions["x-agentrun-serve"], "decisions/3", "a client that validates against decisions/2 refuses route, so the widening is a new mark");
+  assert.deepEqual(decisions.properties.providers.items.properties.route.enum, ["parallel", "openrouter"]);
   assert.deepEqual(decisions.properties.providers.items.properties.id.enum, ["jev", "parallel", "openrouter"]);
   assert.ok(doc.info["x-agentrun-serve"].fields.includes("Capabilities.workflows.decisions"), "info names it among the marked properties");
 });

@@ -59,15 +59,24 @@ export async function verifyDoor(door: string, nonce: string, headers: Record<st
   }
 }
 
-/** Resolves true once the door at `door` serves its run (GET /status answers 200: the run opened, its app loaded), false
- *  once `gone()` says its process went first. A door listens before its run opens, answering 503 OPENING until then: the
- *  run is not taken for up, nor its launch for come through, before it serves. */
-export async function untilOpened(door: string, headers: Record<string, string>, gone: () => boolean, everyMs = 100): Promise<boolean> {
+/** How a wait for a door to serve its run ended: it serves, its process went first, or the deadline came, with the
+ *  door's last answer to GET /status in words. */
+export type Opened = { opened: true } | { opened: false; why: "gone" } | { opened: false; why: "deadline"; last: string };
+
+/** Waits until the door at `door` serves its run (GET /status answers 200: the run opened, its app loaded), its process
+ *  goes (`gone()`), or `deadline` (ms since the epoch) passes: no poll after it. A door listens before its run opens,
+ *  answering 503 OPENING until then: the run is not taken for up, nor its launch for come through, before it serves. */
+export async function untilOpened(door: string, headers: Record<string, string>, gone: () => boolean, deadline: number, everyMs = 100): Promise<Opened> {
+  let last = "no answer";
   for (;;) {
-    if (gone()) return false;
-    const res = await fetch(new URL("/status", door), { headers, signal: AbortSignal.timeout(5_000) }).catch(() => undefined);
-    if (res?.status === 200) return true;
-    await res?.body?.cancel().catch(() => undefined);
+    if (gone()) return { opened: false, why: "gone" };
+    if (Date.now() > deadline) return { opened: false, why: "deadline", last };
+    const res = await fetch(new URL("/status", door), { headers, signal: AbortSignal.timeout(Math.max(1, Math.min(5_000, deadline - Date.now()))) }).catch(() => undefined);
+    if (res?.status === 200) return { opened: true };
+    if (res) {
+      const code = await res.json().then((body: { error?: unknown }) => (typeof body?.error === "string" ? ` ${body.error}` : ""), () => "");
+      last = `${res.status}${code}`;
+    } else if (Date.now() < deadline) last = "no answer"; // one the deadline cut keeps the answer before it
     await new Promise((resolve) => setTimeout(resolve, everyMs));
   }
 }

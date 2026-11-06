@@ -296,3 +296,19 @@ test("--timeout takes a fraction of a second: the wait goes on to its timeout, e
     assert.match(waited.err, /^Run r1 is still working after [\d.]+ s; it goes on/, seconds);
   }
 });
+
+test("runs start --wait and runs get print the run's console page, on the port the server took", { timeout: 120_000 }, async (t) => {
+  const server = await serve(t);
+  const cli = cliOf(server.env, []);
+  const data = ["--data", server.data];
+  writeFileSync(join(server.dir, "agent.json"), JSON.stringify({ definition: { id: "demo", version: 1, name: "demo", instructions: "Answer.", skills: [], tools: [] } }));
+  assert.equal((await cli(["agents", "create", "--body", `@${join(server.dir, "agent.json")}`, ...data])).code, 0);
+  const origin = server.base.replace(/\/v2$/, "");
+  assert.notEqual(new URL(origin).port, "7340", "a port the server took, not the default");
+  const done = await cli(["runs", "start", "demo", "--wait", "--body", JSON.stringify({ input: { content: "What is the answer?" } }), ...data]);
+  assert.equal(done.code, 0, done.err);
+  const run = done.json();
+  assert.equal(run.console_url, `${origin}/#/runs/${run.run_id}`);
+  const got = await cli(["runs", "get", run.run_id, ...data]);
+  assert.equal(got.json().console_url, `${origin}/#/runs/${run.run_id}`);
+});

@@ -43,6 +43,7 @@ export const ERROR_STATUS = {
   not_mcp: 422,
   upstream_failed: 424,
   store_unreadable: 409,
+  wrong_origin: 409,
   sign_in_held: 409,
 } as const;
 
