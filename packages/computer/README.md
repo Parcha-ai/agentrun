@@ -251,7 +251,9 @@ await docker.release(made.value, "delete");
   (the default bridge alone), or `{ other: "<words>" }` for anything else, which is never reported as a policy.
   `network(ref, policy)` returns the policy when it is the computer's; any change is refused: a Docker computer's
   network is fixed at create, since Docker cannot move a container with no network onto one.
-- `release(ref, "stop" | "delete")` runs `docker stop`, or `docker rm --force --volumes`. A computer already gone is ok.
+- `release(ref, "stop" | "delete")` runs `docker stop`, or `docker rm --force --volumes`; `capabilities().release`
+  declares both, and `stopDeletes` is false: a stopped container is kept until it is deleted. A computer already gone is
+  ok.
 - Only containers with the label `agentrun.computer=1` and a computer's name count for `attach`, `list` and `network`;
   any other container is `not_found`.
 
@@ -393,7 +395,8 @@ and read back by the drift check:
 Each is a whole number, 0 or more; the constructor refuses anything else in words. Daytona's idle timer counts toolbox
 calls (the daemon's connections are toolbox calls) but not the daemon's own work, so a computer left with no connection
 for `autoStopMinutes` stops. With `autoDeleteMinutes: 0` a stop deletes: the provider then keeps no stopped computer,
-`release(ref, "stop")` returns once the sandbox is gone, and `list()` never shows a stopped one.
+declares `stopDeletes: true`, `release(ref, "stop")` returns once the sandbox is gone, and `list()` never shows a
+stopped one.
 
 ### How the daemon gets in, and how it is reached
 
@@ -443,6 +446,8 @@ Daytona's container class runs code as root, and the open runner runs it privile
 | `os` | `linux` | Linux classes only; Windows and macOS are not offered here |
 | `daemon` | `exec`, `files`, `processes` | the daemon's own, checked against its hello |
 | `user` | none | the daemon runs as the provider's `daemonUser`; a spec cannot name a user |
+| `release` | `stop`, `delete` | `POST /sandbox/{id}/stop` and `DELETE /sandbox/{id}` |
+| `stopDeletes` | `true` with `autoDeleteMinutes: 0`, else `false` | `autoDeleteInterval` 0 deletes a sandbox as soon as it stops |
 
 ### What the provider does
 
@@ -525,11 +530,11 @@ another version with Go). It reads these variables, by name, when it runs: `COMP
 another organization's key.
 
 Every sandbox of a run has a bounded life besides its TTL: the module always sets `autoStopMinutes: 30` and
-`autoDeleteMinutes: 0`, whatever the environment says. A stop therefore deletes, and the run is expected to show it:
-Core `provider.stop` fails (the stopped computer is gone, not listed as stopped), and Full `provider.janitor` is skipped
-(the lifetime is `vendor`) and would fail for the same reason. The module exports `conformanceImage()` and
-`conformanceNotes`; the CLI takes the image from it when `--image` names none, and prints the note above the verdict
-(`notes` in `--json`).
+`autoDeleteMinutes: 0`, whatever the environment says. A stop therefore deletes, and the provider declares it
+(`stopDeletes: true`): Core `provider.stop` holds it to that and passes when the stopped computer is gone, neither
+listed nor attachable. Full `provider.janitor`, which needs a stopped computer kept, is skipped (the lifetime is
+`vendor`, and a stop keeps none). The module exports `conformanceImage()` and `conformanceNotes`; the CLI takes the
+image from it when `--image` names none, and prints the note above the verdict (`notes` in `--json`).
 
 ```sh
 npm run conformance -w @parcha/agentrun-computer -- --provider packages/computer/dist/conformance/daytona.js [--image <snapshot>]
@@ -555,11 +560,15 @@ name is not this provider's: release refuses it, and it is reported still there.
 
 ### Not yet known
 
-One live run reached the default snapshot: the install passed (its toolbox user is root or has passwordless sudo, and
-its `sha256sum` read back the uploaded binary), and the start failed on BusyBox's `setpriv`, which init's own drop now
-replaces. These need a live probe:
+Two live runs reached the default snapshot. In the first the install passed (its toolbox user is root or has
+passwordless sudo, and its `sha256sum` read back the uploaded binary), and the start failed on BusyBox's `setpriv`,
+which init's own drop now replaces. The second, with that drop, passed Core 48 of 52: every health, exec, files and
+process case, and create's drift check, the start and the bridge with them. Of the four Core cases it failed, three
+(`provider.create-release`, `provider.stop`, `drift.version`), and the computer its cleanup found still listed, met a
+delete or a stop Daytona had answered but not yet done, which release now waits for; the fourth, `provider.attach`,
+reported the resolved snapshot as the image, which the image label now answers. Neither fix has run live yet. These
+need a live probe:
 
-- the start, the bridge and the drift check on the default snapshot, with init's own drop;
 - whether the production toolbox honors `suppressInputEcho` and `X-Daytona-Split-Output`, and keeps a session's
   command running between calls;
 - whether a session's labeller (a shell `read` per line) carries 1 MiB lines at a usable speed, and how big a
@@ -675,13 +684,17 @@ Core and Full follow the Kubernetes agent-sandbox conformance levels (KEP-539.2)
   `files.*` and `tar.*` methods, the `process.*` methods, a computer with network `none` (`network:none`: a provider
   that cannot make one fails Core, and the suite never asks for a wider network instead), `check`, `create`, `attach`
   (with the spec it reads back: the network and image create asked for, and a non-root `user` as `uid:gid`), `list`,
-  `network` read-back and `release`, a change to a network the provider does not declare refused with the
+  `network` read-back and `release`, `release(ref, "stop")` as declared (a provider whose `capabilities().release` holds
+  `"stop"` lists the computer stopped until it is deleted, or, when it also declares `stopDeletes`, leaves it neither
+  listed nor attachable; one that does not refuses stop as `unsupported`, in words, and the computer stays listed and
+  running), a change to a network the provider does not declare refused with the
   network unchanged (Core asks for no network the provider could give), a computer that does not run past its deadline
   (after a sweep, for a janitor provider), and the drift checks. Core passes when every Core case passes and the run leaves no computer
   behind.
 - **Full** is each optional capability a provider declares: network `open` (`network:open`), a network allowlist
   (`network:allow`), each with a change of a computer's network to it and back to `none`, refused or applied
-  truthfully, on a computer of the case's own (`provider.network-switch`, `provider.network-switch-allow`), the janitor for a provider whose lifetime is `"janitor"` (`lifetime:janitor`), and a spec that
+  truthfully, on a computer of the case's own (`provider.network-switch`, `provider.network-switch-allow`), the janitor for a provider whose lifetime is `"janitor"` and that stops computers and keeps them
+  (`lifetime:janitor`, `release:stop`, and no `stopDeletes`), and a spec that
   asks for root (`user:root`, from `capabilities().user` holding `"root"`) or another uid (`user:uid`), still with no
   capabilities.
 

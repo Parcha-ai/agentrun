@@ -1,7 +1,7 @@
 // Daytona for the conformance CLI: `--provider packages/computer/dist/conformance/daytona.js [--image <snapshot>]`. The
 // provider's settings come from the environment, by these names alone; the key is read only when createProvider() runs.
 // Every sandbox of a run has a bounded life besides its TTL: Daytona stops one after 30 minutes with no outside activity
-// and deletes it as soon as it stops, so a stop deletes (see conformanceNotes).
+// and deletes it as soon as it stops, so a stop deletes, and the provider declares it (stopDeletes; see conformanceNotes).
 // Every name is COMPUTER_DAYTONA_*: a bare DAYTONA_API_KEY may hold another organization's key on a host that runs other
 // Daytona work, so it is never read here, not even as a fallback.
 import { execFile } from "node:child_process";
@@ -37,11 +37,11 @@ export const CONFORMANCE_AUTO_STOP_MINUTES = 30;
 export const CONFORMANCE_AUTO_DELETE_MINUTES = 0;
 
 /**
- * For the run's report: what this configuration means for the suite. The provider has no capability that says it keeps
- * no stopped computer, so the note says it.
+ * For the run's report: what this configuration means for the suite. The provider declares it (stopDeletes), and the
+ * note says it in words.
  */
 export const conformanceNotes: string[] = [
-	`daytona: every sandbox runs with autoStopMinutes ${CONFORMANCE_AUTO_STOP_MINUTES} and autoDeleteMinutes ${CONFORMANCE_AUTO_DELETE_MINUTES}, besides its TTL: Daytona deletes a sandbox as soon as it stops, so this configuration keeps no stopped computer. Core provider.stop is expected to fail (a stopped computer is gone, not listed as stopped); Full provider.janitor is skipped, the lifetime being vendor, and would fail for the same reason.`,
+	`daytona: every sandbox runs with autoStopMinutes ${CONFORMANCE_AUTO_STOP_MINUTES} and autoDeleteMinutes ${CONFORMANCE_AUTO_DELETE_MINUTES}, besides its TTL: Daytona deletes a sandbox as soon as it stops, so this configuration keeps no stopped computer, and the provider declares stopDeletes. Core provider.stop holds it to that: a stopped computer is gone, neither listed nor attachable. Full provider.janitor, which needs a stopped computer kept, is skipped (the lifetime being vendor).`,
 ];
 
 export interface DaytonaModuleOptions {

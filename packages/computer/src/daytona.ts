@@ -677,6 +677,9 @@ export class DaytonaProvider implements ComputerProvider {
 			isolation: this.#class === "linux-vm" ? "vm" : "container",
 			os: "linux",
 			daemon: ["exec", "files", "processes"],
+			release: ["stop", "delete"],
+			// autoDeleteInterval 0: Daytona deletes a sandbox as soon as it stops, so a stop keeps no computer.
+			stopDeletes: this.#autoDelete === 0,
 		};
 	}
 

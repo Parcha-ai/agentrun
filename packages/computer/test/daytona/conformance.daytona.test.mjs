@@ -1,9 +1,9 @@
 // The conformance suite on real Daytona, one test per case: only when both AGENTRUN_COMPUTER_LIVE_DAYTONA=1 and
 // COMPUTER_DAYTONA_API_KEY are set. COMPUTER_DAYTONA_SNAPSHOT names the snapshot every computer starts from; unset, it is
 // "default", Daytona's default snapshot (the create sends no snapshot field). The module bounds every sandbox's life
-// (autoStopMinutes 30, autoDeleteMinutes 0), so a stop deletes: its note, printed with the report, names the cases that
-// fail for it. The key
-// is read only past that first check, and never from DAYTONA_API_KEY, which may hold another organization's key. Needs
+// (autoStopMinutes 30, autoDeleteMinutes 0), so a stop deletes, and the provider declares it (stopDeletes): its note,
+// printed with the report, says what provider.stop and provider.janitor do with that. The key is read only past that
+// first check, and never from DAYTONA_API_KEY, which may hold another organization's key. Needs
 // `npm run build` and `npm run build:daemon`, and Go on PATH for the drift case. The runner deletes every computer it
 // made; the after hook deletes any computer left with this run's label.
 import assert from "node:assert/strict";

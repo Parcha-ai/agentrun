@@ -42,10 +42,20 @@ export interface ComputerCapabilities {
 	allow?: AllowCapability;
 	isolation: "container" | "gvisor" | "microvm" | "vm" | "machine";
 	os: "linux" | "windows" | "macos" | "android" | "ios";
+	/**
+	 * With release "stop": true when a stop ends in deletion (Daytona with autoDeleteMinutes 0), so release(ref, "stop")
+	 * leaves no computer, listed or attachable. Absent or false: a stopped computer is kept, listed stopped, until deleted.
+	 */
+	stopDeletes?: boolean;
 	/** What the daemon in each computer must offer. */
 	daemon: DaemonCapability[];
 	/** What spec.user may ask for instead of the non-root default: root ("0"), another uid. Absent: neither. */
 	user?: Array<"root" | "uid">;
+	/**
+	 * How release may end a computer. "stop" keeps it, listed as stopped, until it is deleted; a provider that does not
+	 * declare it refuses release(ref, "stop") in words and leaves the computer as it was.
+	 */
+	release: Array<"stop" | "delete">;
 }
 
 /** Why a spec is refused, in words, before any vendor call. */
@@ -122,6 +132,6 @@ export interface ComputerProvider {
 	network(ref: ComputerRef, policy?: NetworkSpec, context?: CallContext): Promise<Result<NetworkPolicy>>;
 	/** Checks hello against this provider's version and daemon capabilities, and refuses on a mismatch. */
 	connect(ref: ComputerRef): Promise<Result<ComputerConnection>>;
-	/** Idempotent: a computer already gone is ok. */
+	/** Idempotent: a computer already gone is ok. A "stop" capabilities().release does not declare is refused in words. */
 	release(ref: ComputerRef, how: "stop" | "delete"): Promise<Result<void>>;
 }

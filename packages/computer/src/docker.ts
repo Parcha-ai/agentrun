@@ -117,7 +117,7 @@ export class DockerProvider implements ComputerProvider {
 	}
 
 	capabilities(): ComputerCapabilities {
-		return { lifetime: "janitor", network: ["none", "open"], isolation: "container", os: "linux", daemon: ["exec", "files", "processes"], user: ["root", "uid"] };
+		return { lifetime: "janitor", network: ["none", "open"], isolation: "container", os: "linux", daemon: ["exec", "files", "processes"], user: ["root", "uid"], release: ["stop", "delete"], stopDeletes: false };
 	}
 
 	/** The spec's refusals, and the host's once create, attach or host() has read it. */
