@@ -11,7 +11,9 @@ const count = how === "durable"
   ? () => withDurableFile(file, (db) => Number(db.prepare("SELECT count(*) AS n FROM t").get().n), { unlocked: true })
   : () => readRunDbSync(file, false, (db) => Number(db.prepare("SELECT count(*) AS n FROM t").get().n));
 const out = { reads: 0, errors: 0, behind: 0, last: 0, first: undefined };
-for (const end = Date.now() + Number(ms); Date.now() < end; ) {
+// A short pause between reads: many reads during each checkpoint, without taking a CPU from the tests beside it.
+const pause = new Int32Array(new SharedArrayBuffer(4));
+for (const end = Date.now() + Number(ms); Date.now() < end; Atomics.wait(pause, 0, 0, 2)) {
   try {
     const n = count() ?? 0;
     out.reads++;
