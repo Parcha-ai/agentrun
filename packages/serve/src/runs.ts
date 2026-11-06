@@ -15,7 +15,7 @@ import { processAlive } from "@parcha/agentrun-kernel/host";
 import { doorKey, doorTook } from "@parcha/pi-durable-disk";
 import { RUN_STATUS_TABLE } from "@parcha/pi-durable-disk/internals";
 import { AgentHomeError, type Revision, runDirIn, type RevisionKind, type RunOrigin, type RunRow, type RunState, type StoredMetrics } from "@parcha/pi-durable-agent";
-import { chargedTool, isMessageRow, MESSAGE_ORIGIN, type MessageOrigin, registerLabel, registerTurnEnding, REQUEST_STARTED, type RunMetrics, runMetricsWithDecisions, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
+import { chargedTool, type EntryLike, isMessageRow, isUserEntry, MESSAGE_ORIGIN, type MessageOrigin, originMatcher, registerLabel, registerTurnEnding, REQUEST_STARTED, type RunMetrics, runMetricsWithDecisions, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { HARNESS_LOG_EVENT, harnessModelKeys, thinkingFor } from "./adapters.js";
 import { runLink } from "./console-links.js";
 import { DEFAULT_HARNESS, harnessOfBody, steersMidTurn } from "./harness.js";
@@ -272,6 +272,12 @@ export type Run = {
   /** The whole text of each assistant message of its end-of-run turn, by store entry: what the turn answered, whose
    *  notes learning reads (learning-run.ts). */
   turnText?: Map<number, string>;
+  /** What the person said to the run, whole, by store entry: its first message and each one sent to it after, read from
+   *  the store's user entries (a timeline row cuts a message at 2,000 characters), the server's own messages left out.
+   *  Learning's grader reads them, the end-of-run turn's left out (learning-run.ts). */
+  said?: Map<number, string>;
+  /** Reads which user entries the server wrote, across the run's stream, as the timeline does (originMatcher). */
+  saidBy?: (entry: EntryLike) => MessageOrigin | undefined;
   child?: ChildProcess;
   /** The pid of a run process an earlier server started that still serves the run: supervised by the holder its row names. */
   orphan?: number;
@@ -440,6 +446,13 @@ export function withOverCap(rows: TimelineEvent[], cap: number | undefined, boun
   return [...rows.slice(0, at + 1), over, ...rows.slice(at + 1)];
 }
 
+/** A user message's text parts, joined as the timeline joins them. */
+const userText = (message: unknown): string => {
+  const content = isObject(message) ? message.content : undefined;
+  const blocks = typeof content === "string" ? [{ type: "text", text: content }] : Array.isArray(content) ? content.filter(isObject) : [];
+  return blocks.filter((block) => block.type === "text").map((block) => String(block.text ?? "")).join("\n").trim();
+};
+
 /** Notes the messages the run's turns took and how each turn ended, from `entries` (its root's), `submissions` (pi's
  *  input submissions) and a reconnect's `snapshot` of them (the door's `inputs`, the run's whole state of them), and the
  *  newest entry (learning-run.ts reads it). The end-of-run learning turn's entries are no turn of the run's: none of
@@ -452,6 +465,14 @@ function noteTurns(run: Run, entries: readonly unknown[], submissions: readonly 
     const data = value.kind === REQUEST_STARTED && isObject(value.data) && value.data[CAP_REFUSED_FIELD] === true ? value.data : undefined;
     if (data) run.capMark = value.id;
     if (data) run.capRefusal = typeof data.spentUsd === "number" && typeof data.needsUsd === "number" && typeof data.leastCapUsd === "number" ? { spentUsd: data.spentUsd, needsUsd: data.needsUsd, leastCapUsd: data.leastCapUsd, ...(typeof data.boundUsd === "number" && data.boundUsd > 0 ? { boundUsd: data.boundUsd } : {}) } : undefined;
+    // What the person said, whole, by entry, each entry once (a snapshot sends them again): a user entry the server did
+    // not write, or the person's own words in one it did (a declined approval). Its text parts only: an image or a file
+    // the message carries is no words.
+    const by = (run.saidBy ??= originMatcher())(value as EntryLike);
+    if (isUserEntry(value as EntryLike) && !run.said?.has(value.id)) {
+      const words = by === undefined ? userText((value as EntryLike).model?.[0]) : by.reason === "approval_declined" ? by.said.trim() : undefined;
+      if (words !== undefined) (run.said ??= new Map()).set(value.id, words);
+    }
     // The end-of-run turn's assistant messages, whole, by entry: what the turn answered, whose notes learning reads
     // (learning-run.ts). The ledger skips them; this is their only reader here.
     if (value.kind === "pi.assistant" && reflects(run.meta.reflect, value.id) && Array.isArray(value.model) && isObject(value.model[0])) {

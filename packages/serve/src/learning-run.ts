@@ -160,10 +160,11 @@ const nameOf = (file: string, text: string) => {
 
 /** What run `run`'s end-of-run turn answered, and what the user said in the run, as beforeSettle keeps them: the whole
  *  text of each of the turn's assistant messages, in order (its notes may come in more than one), cut once past
- *  ANSWER_MAX, which the parser refuses; and each message the run was sent before the turn. */
+ *  ANSWER_MAX, which the parser refuses; and each message the person sent the run before the turn, whole, in order. */
 function turnOf(run: Run): Turn {
   const answer = [...(run.turnText ?? new Map<number, string>())].sort(([a], [b]) => a - b).map(([, text]) => text).filter(Boolean).join("\n\n");
-  const asked = run.rows.filter((row) => row.kind === "user_message" && row.agent_label !== LEARNING_LABEL && !reflects(run.meta.reflect, row.id)).map((row) => row.text ?? "");
+  // From the run's store, whole (runs.ts noteTurns): a timeline row cuts a message at 2,000 characters.
+  const asked = [...(run.said ?? new Map<number, string>())].filter(([id]) => !reflects(run.meta.reflect, id)).sort(([a], [b]) => a - b).map(([, text]) => text);
   return { answer: answer.length > ANSWER_MAX ? answer.slice(0, ANSWER_MAX + 1) : answer, asked };
 }
 
