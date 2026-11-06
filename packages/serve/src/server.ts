@@ -36,12 +36,13 @@ import { openapiDocument, servedOpenapi, UNSUPPORTED } from "./openapi.js";
 import { boxesLine, NEW_AGENT_TOOLS, newAgentPlace, noBoxReason, type Place, placesOf, resolvePlace } from "./place.js";
 import { BOX_ALLOW_ENV, boxAllowOf, boxLimitsOf, boxNetworkOf, FAUX_BOX_ENV, fauxBoxes } from "./run-box.js";
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
-import { answerPage, byOwnerSession, isJson, ownerCookie, ownOrigin, signedIn } from "./page.js";
+import { answerPage, byOwnerSession, isJson, ownerCookie, ownOrigin, sendHostRefused, signedIn } from "./page.js";
+import { HOST_FIX, hostName, loopbackNames } from "./host-check.js";
 import { durationMs, logLine } from "./print.js";
 import { type CarryBackRetry, knownToolCostOf, type Run, Runs, STATUSES, type Status, statusOf, toolCostOf, WAITS_ON_A_PERSON } from "./runs.js";
 import { runLines } from "./usage-lines.js";
 import { BOX_QUARANTINE, type BoxHost, Quarantine } from "./box/sweep.js";
-import { type BoxOffer, boxesLog, boxRegistry, daytonaApi, enabledBoxes, VM_NO_LIST, VM_PROVIDER } from "./boxes.js";
+import { type BoxOffer, boxesByDefault, boxesLog, boxRegistry, daytonaApi, enabledBoxes, VM_NO_LIST, VM_PROVIDER } from "./boxes.js";
 import { type DockerNetwork, FAUX_EGRESS_ENV, sweepEgressDirs } from "./box-egress.js";
 import { boxImageOf, clearImage, type DockerImage, dockerImage, type ImageState, withImage } from "./box-image.js";
 import { startBoxRelay } from "./box-relay.js";
@@ -49,7 +50,7 @@ import { vmRelay, type VmSdk } from "./box-relay-vm.js";
 import { memoryMbOf } from "./run-box.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
 import { meterFiguresIn } from "./cap.js";
-import { type Blocker, blockersOf, CODE_NODES_ENV, issueOf, type RevisionShape } from "./runnable.js";
+import { type Blocker, blockersOf, CODE_NODES_ENV, issueOf, MCP_HARNESSES, type RevisionShape } from "./runnable.js";
 import { hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from "./secrets.js";
 import { redactedOutput } from "./key-refusal.js";
 import { analyticsFilter, analyticsView, pendingOf, statsView } from "./stats.js";
@@ -57,6 +58,7 @@ import { outcomes } from "./usage.js";
 import { keyOf, SEAL_KEY_ENV, sealKeyOf, TOOL_FIELDS, ToolKeys } from "./tool-keys.js";
 import { SIGN_INS_DIR, SignIns, vendorsOver } from "./sign-ins.js";
 import { MCP_AUTH_TYPES, McpServers } from "./mcp-servers.js";
+import type { McpServerSource } from "./mcp-gateway.js";
 import { WEBHOOK_EVENTS, Webhooks } from "./webhooks.js";
 import { HOOK_TOLERANCE_S, hookHeadersRefusal, hookRefusal, TriggerSecrets } from "./trigger-secrets.js";
 import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, OVERLAP, PAYLOAD_KEPT_BYTES, type RunTrigger, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
@@ -180,7 +182,7 @@ export type ServeOptions = {
   /** Under `faux`: a module whose default export gives a box's egress proxy its `lookup` and `dial` (box-egress.ts), the
    *  tests' fake network. */
   fauxEgress?: string;
-  /** Extra `Host` names to accept besides the loopback ones. */
+  /** Extra `Host` names to accept besides the loopback ones, on any port (host-check.ts). */
   allowHosts?: string[];
   /** The console's built files, answered at / (default dist/console beside the server, which this package's build copies
    *  from apps/console/dist). */
@@ -196,6 +198,9 @@ export type ServeOptions = {
   settleRetryMs?: number;
   /** Where the log lines go (print.ts); none without it. AGENTRUN_LOG=quiet leaves out the request lines. */
   log?: (line: string) => void;
+  /** Told the Docker box image's state at the start, when this server has a Docker box, then each change (box-image.ts):
+   *  the CLI says a first build in words, as it starts and as it ends. */
+  onBoxImage?: (state: ImageState) => void;
   /** The lines a person reads about a stop on this data root: this server's, as its close begins and runs' processes are
    *  left to finish their turn, and this start's, when it waits for a server that is stopping (server-lock.ts). Default:
    *  standard error, after `agentrun-serve: `. */
@@ -376,6 +381,7 @@ export const ROUTES: readonly Route[] = [
   { method: "PUT", pattern: /^\/agents\/([^/]+)\/learning\/files\/([^/]+)$/, name: "writeLearningFile" },
   { method: "POST", pattern: /^\/agents\/([^/]+)\/learning\/files\/([^/]+)\/retire$/, name: "retireLearningFile" },
   { method: "POST", pattern: /^\/agents\/([^/]+)\/learning\/files\/([^/]+)\/approve$/, name: "approveLearningFile" },
+  { method: "POST", pattern: /^\/agents\/([^/]+)\/learning\/files\/([^/]+)\/restore$/, name: "restoreLearningFile" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/learning$/, name: "getRunLearning" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/learning\/diff$/, name: "getRunLearningDiff" },
 ];
@@ -532,7 +538,7 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
       tool_keys: { routes: true, at_rest: sealKeyOf(env[SEAL_KEY_ENV]) ? "sealed" : "unavailable" },
       /** /settings/mcp-servers: remote MCP servers previewed and saved, each credential sealed under the same seal key
        *  (mcp-servers.ts); with none, only servers that take no credential are kept. */
-      mcp_client: { routes: true, transports: ["streamable-http"], auth: [...MCP_AUTH_TYPES], at_rest: sealKeyOf(env[SEAL_KEY_ENV]) ? "sealed" : "unavailable" },
+      mcp_client: { routes: true, transports: ["streamable-http"], auth: [...MCP_AUTH_TYPES], at_rest: sealKeyOf(env[SEAL_KEY_ENV]) ? "sealed" : "unavailable", harnesses: [...MCP_HARNESSES] },
       /** This server's learning switch (`--learning`): on, a run learns when its agent says `learning: true`; off, none does. */
       learning,
       /** /settings/webhook: one URL POSTed, signed by the Standard Webhooks spec, when a run needs its person and when it
@@ -675,6 +681,19 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   // A stored key that does not open is said once at the start, never a refusal to start.
   toolKeys.view();
   const mcpServers = new McpServers(data, withSecrets(base, "own"), VERSION);
+  // What a run's grants are checked against, its pin made from and its credentials read from (runs.ts, runnable.ts).
+  const mcpSource: McpServerSource = {
+    server: (name) => {
+      try {
+        const saved = mcpServers.get(name);
+        return { url: saved.url, tools: saved.tools.map(({ name: tool, title, description, input_schema, annotations }) => ({ name: tool, ...(title ? { title } : {}), ...(description ? { description } : {}), inputSchema: input_schema as Record<string, unknown>, ...(annotations ? { annotations: annotations as Record<string, unknown> } : {}) })), ...(saved.prices ? { prices: saved.prices } : {}) };
+      } catch {
+        return undefined;
+      }
+    },
+    headers: (name) => mcpServers.headers(name),
+  };
+  const mcpTools = (server: string) => mcpSource.server(server)?.tools;
   // The server's tool settings, beside the agent store: capabilities say what they resolve to, again after a PUT.
   const settings = new ToolSettings(data);
   // The server's reading, in parts: `env`, its environment with its secrets, saved keys among them (storedKeys);
@@ -722,7 +741,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     if (offersFrom && inputs.length === offersFrom.length && inputs.every((value, i) => value === offersFrom![i])) recompose();
     else await probe("key");
   };
-  // The boxes AGENTRUN_BOXES lists, each probed once (boxes.ts); runs execute in Docker's (place.ts). Under --faux, a faux
+  // The boxes AGENTRUN_BOXES lists, docker when it is not set, each probed once (boxes.ts); runs execute in Docker's (place.ts). Under --faux, a faux
   // box stands in for Docker, and nothing asks Docker.
   // Under --faux, the tests' fake stands in for the VM provider's SDK (startServe's `fauxVm`), never the provider.
   const boxes = await boxRegistry(env, options.faux && options.fauxVm ? { vmSdk: () => import(pathToFileURL(resolve(options.fauxVm!)).href) as Promise<Record<string, unknown>> } : {});
@@ -756,12 +775,14 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       onChange: (state, ms) => {
         boxOffers = offersNow();
         imageLog(state, { ms });
+        options.onBoxImage?.(state);
         // The box's state is in caps alone, not in the offers: recomposed now, or, while the start's probe of the offers
         // has not ended, by that probe, which reads the box offers when it does.
         if (offers) recompose();
       },
     });
     stops.push(async () => void (await image?.close()));
+    options.onBoxImage?.(image.state());
   } else await clearImage(data);
   boxOffers = offersNow();
   const runBoxes = fauxBox ?? boxes.provider("docker");
@@ -804,7 +825,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   if (swept > 0) log?.(logLine("uploads_swept", { removed: swept }));
   const documents = options.documents ?? process.env[DOCUMENTS_ENV];
   if (documents !== undefined && !(await stat(documents).then((info) => info.isDirectory(), () => false))) throw new Error(`the documents directory ${documents} is not a directory`);
-  const runs = new Runs({ dockerAllow: boxNetwork.allow, agents, token, storedKeys, doorTokenFile, doorToken, learning, learningBudget, ...(documents ? { documents: resolve(documents) } : {}), fauxEnv: fauxEnvOf(options), toolSettings: () => settings.get(), ...(runBoxes ? { runBoxes } : {}), ...(remoteBoxes ? { remoteBoxes } : {}), ...(vmBoxes && vmRelayHalf ? { vmBoxes, vmLimits, vmRelay: vmRelayHalf } : {}), ...(remoteBoxes && daytonaApi(env) ? { remoteApi: daytonaApi(env)! } : {}), ...(remoteBoxes ? { boxAllow, onNoBoxList } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(options.reflectTimeoutMs ? { reflectTimeoutMs: options.reflectTimeoutMs } : {}), ...(options.gradeTimeoutMs ? { gradeTimeoutMs: options.gradeTimeoutMs } : {}), ...(options.gradeModel ? { gradeModel: options.gradeModel } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}), notify: (event, run, marker) => webhooks.emit(event, run, marker), ownSecrets: () => triggerSecrets?.values() ?? [], signIns, approvers: options.accounts === true });
+  const runs = new Runs({ dockerAllow: boxNetwork.allow, agents, token, storedKeys, mcpServers: mcpSource, doorTokenFile, doorToken, learning, learningBudget, ...(documents ? { documents: resolve(documents) } : {}), fauxEnv: fauxEnvOf(options), toolSettings: () => settings.get(), ...(runBoxes ? { runBoxes } : {}), ...(remoteBoxes ? { remoteBoxes } : {}), ...(vmBoxes && vmRelayHalf ? { vmBoxes, vmLimits, vmRelay: vmRelayHalf } : {}), ...(remoteBoxes && daytonaApi(env) ? { remoteApi: daytonaApi(env)! } : {}), ...(remoteBoxes ? { boxAllow, onNoBoxList } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(options.reflectTimeoutMs ? { reflectTimeoutMs: options.reflectTimeoutMs } : {}), ...(options.gradeTimeoutMs ? { gradeTimeoutMs: options.gradeTimeoutMs } : {}), ...(options.gradeModel ? { gradeModel: options.gradeModel } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}), notify: (event, run, marker) => webhooks.emit(event, run, marker), ownSecrets: () => triggerSecrets?.values() ?? [], signIns, approvers: options.accounts === true });
   const daytona = daytonaApi(env);
   const relay = (remoteBoxes && daytona) || vmRelayHalf ? await startBoxRelay({ root: data, tokenOf: (id) => runs.relayToken(id), ...(remoteBoxes && daytona ? daytona : {}), ...(vmRelayHalf ? { vm: vmRelayHalf } : {}), serves: (id) => runs.servesBox(id), ensure: (id) => runs.ensureBox(id) }) : undefined;
   if (relay) stops.push(() => relay.close());
@@ -1116,7 +1137,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
    *  does not have yet. `capped`: the run has a spend cap, which a web tool's resolution reads (tool-plane.ts). */
   async function runnable(revision: Revision, place: Place, { capped = false }: { capped?: boolean } = {}): Promise<void> {
     const shape = { ...shapeOf(revision), place };
-    const blockers = await blockersOf(env, shape, settings.get(), { capped, boxes: boxOffers, offers });
+    const blockers = await blockersOf(env, shape, settings.get(), { capped, boxes: boxOffers, offers, mcp: mcpTools });
     if (!blockers.length) return;
     const message = blockers.map((b) => b.message).join(" ");
     const unbound = blockers.flatMap((b) => (b.tool ? [b.tool] : []));
@@ -1135,14 +1156,14 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   /** A definition being saved: refused (422 by field) when it can never run here; else what this host still lacks. */
   async function saveable(revision: NewRevision): Promise<InputIssue[]> {
     const shape = revision.kind === "agentic" ? revision : workflowShape(revision);
-    const blockers = await blockersOf(env, shape, settings.get(), { boxes: boxOffers, offers });
+    const blockers = await blockersOf(env, shape, settings.get(), { boxes: boxOffers, offers, mcp: mcpTools });
     // An agent's default cap caps each run started without one of its own, and a web tool resolves by the cap: what a cap
     // alone keeps from running under the definition's own picks, whatever this host's settings, would keep every such run
     // from running, so the save is refused, not each run (claude-agent's or codex's own search, picked, under a cap).
     if (revision.kind === "agentic" && (revision.maxCostUsd ?? 0) > 0) {
       const key = (b: Blocker) => `${b.field}\n${b.message}`;
-      const plain = new Set((await blockersOf(env, shape, {}, { boxes: boxOffers, offers })).map(key));
-      const capped = await blockersOf(env, shape, {}, { capped: true, boxes: boxOffers, offers });
+      const plain = new Set((await blockersOf(env, shape, {}, { boxes: boxOffers, offers, mcp: mcpTools })).map(key));
+      const capped = await blockersOf(env, shape, {}, { capped: true, boxes: boxOffers, offers, mcp: mcpTools });
       blockers.push(...capped.filter((b) => !plain.has(key(b))).map((b) => ({ ...b, reason: "not_an_option", fix: "Pick another provider for this tool in definition.tool_settings, or clear the agent's default cap (max_cost_usd: 0).", host: false })));
     }
     const never = blockers.filter((b) => !b.host);
@@ -1416,6 +1437,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     const group = url.searchParams.get("group_by") ?? "meter";
     if (!["meter", "agent", "key", "day", "region"].includes(group)) throw new ApiError("bad_request", "group_by is meter, agent, key, day or region");
     const lines = new Map<string, { usd: number; unpriced: number }>();
+    // Tool calls run with no price (an MCP tool its owner set none for): outside every cost, counted on `tools`.
+    let notMetered = 0;
     const total = { usd: 0, unpriced: 0 };
     // The browser_time line's seconds: its ended runs' (their stores keep each charge's), none once a live run is in it.
     let browserSeconds: number | null = 0;
@@ -1449,6 +1472,11 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       const meters = group === "meter" && usd !== 0 ? read : undefined;
       if (meters && meters.browser.usd !== 0) browserSeconds = browserSeconds === null || meters.browser.seconds === null ? null : browserSeconds + meters.browser.seconds;
       // Its parts of the lines (usage-lines.ts): an unknown one counts the run unpriced there and adds what is known of it.
+      // An unpriced MCP call is in none of them: counted apart as not metered on the tools line, which a $0 run shows only
+      // when it made one.
+      const unmetered = group !== "meter" ? 0 : ((live ? live.rows.find((one) => one.kind === "usage")?.usage?.not_metered : metersOf(row).notMetered) ?? 0);
+      notMetered += unmetered;
+      if (unmetered && !lines.has("tools")) lines.set("tools", { usd: 0, unpriced: 0 });
       for (const part of runLines({ usd, soFar, key, meters })) {
         const line = lines.get(part.name) ?? lines.set(part.name, { usd: 0, unpriced: 0 }).get(part.name)!;
         line.usd += part.usd;
@@ -1465,7 +1493,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     const round = (v: number) => Math.round(v * 1e6) / 1e6;
     return {
       from: new Date(from).toISOString(), to: new Date(to).toISOString(), currency: "USD", basis: "estimate", group_by: group, total_usd: round(total.usd), unpriced_runs: total.unpriced,
-      lines: [...lines].map(([key, line]) => ({ group: key, ...(group === "meter" ? { meter: key } : {}), ...(key === "browser_time" && group === "meter" && browserSeconds !== null ? { quantity: round(browserSeconds), unit: "second" } : {}), usd: round(line.usd), unpriced_runs: line.unpriced })),
+      lines: [...lines].map(([key, line]) => ({ group: key, ...(group === "meter" ? { meter: key } : {}), ...(key === "browser_time" && group === "meter" && browserSeconds !== null ? { quantity: round(browserSeconds), unit: "second" } : {}), usd: round(line.usd), unpriced_runs: line.unpriced, ...(group === "meter" && key === "tools" && notMetered ? { not_metered_calls: notMetered } : {}) })),
       account: null,
     };
   }
@@ -1583,6 +1611,11 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     // page cookie a token can mint (accounts off). The page's cookie stands in for the token only on its own origin
     // with a JSON body (page.ts), so this is CSRF-checked as every page write is. With no credential at all it is 401,
     // as every route is.
+    // Restoring a retired one puts it back in every later run, as an approval does: the same owner's session alone.
+    if (found.name === "restoreLearningFile" && !byOwnerSession(req) && req.headers.authorization !== undefined) {
+      authFailed(`/v2${path}`, "restore_without_session");
+      throw new ApiError("forbidden", owner ? "Restoring a retired note takes the owner's password sign-in in the console, never a token." : "Restoring a retired note takes the owner's password sign-in, and this server has no accounts (AGENTRUN_ACCOUNTS=0).");
+    }
     if (found.name === "approveLearningFile" && !byOwnerSession(req) && req.headers.authorization !== undefined) {
       authFailed(`/v2${path}`, "approve_without_session");
       throw new ApiError("forbidden", owner ? "Approving a note takes the owner's password sign-in in the console, never a token." : "Approving a note takes the owner's password sign-in, and this server has no accounts (AGENTRUN_ACCOUNTS=0).");
@@ -1954,11 +1987,12 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         return sendNote(res, 200, await readNote(data, id, second!, secretsShown(learningSecrets())));
       case "writeLearningFile":
       case "retireLearningFile":
-      case "approveLearningFile": {
+      case "approveLearningFile":
+      case "restoreLearningFile": {
         await needAgent(id);
         const header = (name: string) => (typeof req.headers[name] === "string" ? (req.headers[name] as string) : undefined);
         const body = found.name === "writeLearningFile" ? await noteBody(req, MAX_BODY) : undefined;
-        const written = await writeNote(data, id, second!, { ifMatch: header("if-match"), ifNoneMatch: header("if-none-match"), body, refuse: learningSecrets(), approve: found.name === "approveLearningFile" });
+        const written = await writeNote(data, id, second!, { ifMatch: header("if-match"), ifNoneMatch: header("if-none-match"), body, refuse: learningSecrets(), approve: found.name === "approveLearningFile", restore: found.name === "restoreLearningFile" });
         // A name holding a secret (one the checks let by) is never echoed, not even as where the note is.
         const shown = secretsShown(learningSecrets());
         const located = written.status === 201 && shown.name(written.file) === written.file;
@@ -2053,8 +2087,12 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     } catch {
       return fail(new ApiError("bad_request", "the request target is not a URL"));
     }
-    // On loopback, a Host that is not a loopback name is a page that rebound a name of its own to this address.
-    if (names && !names.has(String(req.headers.host ?? "").toLowerCase())) return fail(new ApiError("forbidden", "unexpected Host header"));
+    // On loopback, a Host that is not one of its names (host-check.ts) is a page that rebound a name of its own to this
+    // address. A browser is shown a page that says which names work; a script, the same in the error.
+    if (names && !names.has(hostName(req.headers.host) ?? "")) {
+      if (/\btext\/html\b/i.test(String(req.headers.accept ?? ""))) return sendHostRefused(req, res);
+      return fail(new ApiError("forbidden", `unexpected Host header: ${HOST_FIX}`));
+    }
     // Routed on the path as sent: a parsed URL folds `..` and `%2E%2E` segments away, and a file path must see them.
     const raw = (req.url ?? "/").split("?")[0]!;
     // Before the page: its cookie must not stand in for the token on the owner's own routes, nor on the MCP endpoint.
@@ -2093,7 +2131,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   if (offersImport && existsSync(importAsked)) void importAtSetup();
   else if (offersImport && options.countSessions && owner && !owner.hasPassword()) countSessions();
   const address = server.address() as AddressInfo;
-  if (isLoopback(host)) names = new Set(["localhost", "127.0.0.1", "[::1]", host, ...(options.allowHosts ?? [])].map((h) => `${h.toLowerCase()}:${address.port}`));
+  if (isLoopback(host)) names = loopbackNames(host, options.allowHosts, options.publicUrl);
   // An address of every interface is reached on this machine at its loopback one.
   const shown = host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host;
   const url = `http://${shown.includes(":") ? `[${shown}]` : shown}:${address.port}`;
@@ -2144,7 +2182,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     tokenFile,
     tokenMade: stored?.made ?? false,
     ...(setupUrl ? { setupUrl } : {}),
-    boxesLine: boxesLine(boxOffers, enabledBoxes(env), boxAllow),
+    boxesLine: boxesLine(boxOffers, enabledBoxes(env), boxAllow, boxesByDefault(env)),
     // Once: a second call, at any time, is the first one's promise, so a close repeated after the next server started
     // never writes this data root's record again (the next server's, by then).
     close: () => (stopped ??= stop()),

@@ -90,6 +90,19 @@ export function notesRead(reflect: Reflect | undefined, rows: readonly TimelineE
   return [...read];
 }
 
+/** How much of a grader's answer the host could not read a run keeps: its start and its end, where such an answer goes
+ *  wrong (words before its JSON, or JSON cut off). */
+const UNREAD_MAX = 2_000;
+/** How much of an answer redactSecrets reads before it gives up on it whole: more than the grader's answer can hold
+ *  (GRADE_MAX_TOKENS). */
+const UNREAD_SCAN = 256 * 1024;
+/** `text` cut of `values` (redactSecrets), whole, and then in size at whitespace. Cut of secrets first: a key may hold a
+ *  space, or be written in spaced parts, and a cut before could leave a part of it. */
+const unreadShown = (text: string, values: readonly string[]): string => {
+  const cut = redactSecrets(text, values, UNREAD_SCAN);
+  return cut.length <= UNREAD_MAX ? cut : `${cut.slice(0, 1_500).replace(/\S*$/, "")}\n…\n${cut.slice(-(UNREAD_MAX - 1_503)).replace(/^\S*/, "")}`;
+};
+
 /** `verdict` with its reason, and each item's question and why, cut of `values` (learn/secrets.ts redactSecrets). */
 const cutVerdict = (verdict: Verdict, values: readonly string[]): Verdict => ({
   ...verdict,
@@ -353,9 +366,9 @@ export class LearningRuns {
 
   /** A run's process launched, handed the secrets named `names`: what each held then, as handover read it, kept beside
    *  the run while its learning is under way (a key replaced since stays refused in its notes). */
-  onLaunch(run: Run, names: readonly string[]): void {
+  onLaunch(run: Run, names: readonly string[], also: readonly string[] = []): void {
     if (!run.meta.learning || ended(run.meta.learning)) return;
-    const values = names.flatMap((name) => secret(name, this.options.storedKeys) ?? []);
+    const values = [...names.flatMap((name) => secret(name, this.options.storedKeys) ?? []), ...also];
     if (!values.length) return;
     const kept = this.handed.get(run.id) ?? new Set<string>();
     for (const value of values) kept.add(value);
@@ -768,7 +781,17 @@ export class LearningRuns {
         // Kept cut of every secret the run's notes were checked against, the keys its launches handed it included, which a
         // read no longer knows: its reason and its items' words are what the run's words are said from again (wordsOf).
         kept.verdict = cutVerdict(judged.verdict, this.refused(run));
-        if (!kept.verdict.merge) return await end("dropped", "grader", notKept(kept.verdict));
+        if (!kept.verdict.merge) {
+          // What it proposed is lost whole: its skill and its draft are named, from the proposal (a verdict the host
+          // refused has no items), and the line cut of every secret the verdict was.
+          const lost = (proposal.files ?? []).flatMap(({ file }) => {
+            const place = /^(?:skills\/([^/]+)\/SKILL\.md|workflows\/([^/]+)\/workflow\.json)$/.exec(file);
+            return place ? [{ file, name: (place[1] ?? place[2])! }] : [];
+          });
+          // Two answers it could not read: the last kept, in size and cut of every secret, to diagnose it by.
+          const unread = "unread" in judged && judged.unread !== undefined ? { unread: unreadShown(judged.unread, this.refused(run)) } : {};
+          return await end("dropped", "grader", redactSecrets(notKept(kept.verdict, lost), this.refused(run)), { ...(lost.length ? { lost } : {}), ...unread });
+        }
         // Kept before the merge, with the blobs it judged superseded: a restart merges on this verdict, never asks the
         // grader again, and checks the same blobs.
         kept.graded = main.graded;
