@@ -102,6 +102,9 @@ test("SKILL.md: its front matter, its size, and each recipe block run in order a
   assert.match(of(4)[0].out, /^# Europe$/m, "recipe 4 read what the run that asked wrote: its person's answer");
   const [stopped, raised] = of(5);
   assert.ok(raised, "recipe 5 raises a cap: the table has the command");
+  // Strict, so no request goes past the cap, and the recipe says what the default allows.
+  assert.match(stopped.code, /^agentrun runs start .* --cap-mode strict /m);
+  assert.match(readFileSync(join(SKILL, "SKILL.md"), "utf8"), /`--cap-mode strict`.*no request is sent that the cap cannot cover.*`expected`.*`cost\.overshoot_bound_usd`/);
   assert.deepEqual([stopped.run.status, stopped.run.pending?.kind, stopped.run.cost.cap_usd], ["input_required", "budget", 0.05], "it stopped at its cap");
   assert.deepEqual([raised.run.run_id, raised.run.status, raised.run.pending, raised.run.cost.cap_usd], [stopped.run.run_id, "completed", null, 1], "raised, the same run went on and completed under the new cap");
   const read = spawnSync("sh", ["-c", `agentrun runs read-file ${raised.run.run_id} moon.md`], { cwd: work, env: server.env, encoding: "utf8" });

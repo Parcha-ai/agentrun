@@ -82,10 +82,10 @@ agentrun runs get "$run" > run.json && node -p 'JSON.stringify(require("./run.js
 
 A run stopped at its spend cap, or waiting for a tool call to be approved, exits 8 with `pending.kind` `budget` or `approval` in run.json.
 
-A cap too small for the task stops the run before the request it cannot pay for, and nothing is spent past it:
+A cap too small for the task stops the run before a request it cannot pay for. With `--cap-mode strict` no request is sent that the cap cannot cover; under the default, `expected`, a request that misses the cache can go over by at most the run's `cost.overshoot_bound_usd`:
 
 ```sh
-agentrun runs start notes --max-cost-usd 0.05 --body '{"input": {"content": "Write moon.md with everything known about the Moon."}}' --wait > run.json
+agentrun runs start notes --max-cost-usd 0.05 --cap-mode strict --body '{"input": {"content": "Write moon.md with everything known about the Moon."}}' --wait > run.json
 # exit 8 once it stops at its cap: run.json has pending.kind budget, with cap_usd, spent_usd and suggested_cap_usd; 0 if the cap was enough
 ```
 
