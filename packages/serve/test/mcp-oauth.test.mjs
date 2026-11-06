@@ -7,11 +7,13 @@
 import assert from "node:assert/strict";
 import { createHash, createHmac, randomBytes } from "node:crypto";
 import dns from "node:dns/promises";
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
 import { seal } from "@parcha/pi-durable-agent";
+import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
+import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
 import { McpServers } from "../dist/mcp-servers.js";
 import { systemNetwork } from "../dist/mcp-oauth.js";
 import { network as fakeNetwork } from "./fixtures/fake-network.mjs";
@@ -546,3 +548,60 @@ test("pi: an OAuth server's tool with no setting asks: the call parks, nothing r
   assert.equal(calls(), 1, `run exactly once, with the sealed token: ${JSON.stringify({ status: last.status, result: view.result, error: view.error, rows: rows.filter((row) => row.kind?.startsWith("tool")).map((row) => row.summary) })}`);
   assert.match(view.result?.final_answer ?? "", /5/);
 });
+
+/** serve for `harness`, its model scripted to call the docs server's add with {a: 2, b: 3} and then say what the tool
+ *  said: pi on the faux model, claude-agent on the pinned Agent SDK and CLI against a scripted Messages endpoint, codex on
+ *  the stand-in for Codex's app-server (its "model" the turn's text, through serve's gateway). */
+async function harnessServe(t, harness) {
+  if (harness === "pi") return { server: await serve(t, { faux: FAUX_MCP }), extra: {}, content: 'Call mcp__docs__add with {"a":2,"b":3}' };
+  if (harness === "claude-agent") {
+    const anthropic = await fakeAnthropic({ reply: (request) => (Object.keys(request.results).length ? { text: `The tool said: ${Object.values(request.results)[0]}` } : request.tools.includes("mcp__docs__add") ? { tool: { name: "mcp__docs__add", input: { a: 2, b: 3 } } } : { text: "Noted." }) });
+    t.after(() => anthropic.close());
+    withEnv(t, { ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}`, ANTHROPIC_BASE_URL: anthropic.url, AGENT_MODEL: "anthropic/claude-haiku-4-5" }, ["AGENT_MODEL_BASE_URL"]);
+    return { server: await serve(t, { faux: undefined }), extra: { harness: "claude-agent", model: "anthropic/claude-haiku-4-5" }, content: "Add 2 and 3 with the add tool." };
+  }
+  const standIn = join(await scratch(t), "codex-stand-in.mjs");
+  await copyStandIn(standIn);
+  const gateway = createServer(async (req, res) => {
+    if (!req.url?.startsWith("/v1/")) return void res.writeHead(404).end();
+    let body = "";
+    for await (const chunk of req) body += chunk;
+    const text = JSON.parse(body || "{}").input?.[0]?.content?.[0]?.text ?? "";
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    res.end(`data: ${JSON.stringify({ type: "response.output_text.delta", delta: text })}\n\ndata: ${JSON.stringify({ type: "response.completed", response: { usage: { input_tokens: 10, output_tokens: 10 } } })}\n\ndata: [DONE]\n\n`);
+  });
+  await new Promise((resolve) => gateway.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => gateway.close(resolve)));
+  withEnv(t, {
+    AGENTRUN_CODEX_STANDIN: "1",
+    AGENTRUN_SERVE_CODEX_STANDIN: JSON.stringify({ command: process.execPath, args: [standIn], env: { FAKE_CODEX_MODEL: "remote" } }),
+    AGENT_MODEL_BASE_URL: `http://127.0.0.1:${gateway.address().port}`,
+    AGENT_MODEL: "gpt-test",
+    AGENT_MODEL_API_KEY: `not-a-secret-${"gateway"}`,
+  }, ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"]);
+  return { server: await serve(t, { faux: undefined }), extra: { harness: "codex" }, content: 'mcp docs add {"a":2,"b":3}' };
+}
+
+for (const harness of ["pi", ...(existsSync("/usr/bin/setpriv") ? ["claude-agent"] : []), "codex"]) {
+  test(`${harness}: a sign-in whose refresh is refused at launch refuses the call unsent, in words: the MCP server sees no call at all`, { timeout: 240_000 }, async (t) => {
+    withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() });
+    const { server: { api }, extra, content } = await harnessServe(t, harness);
+    // A token within the launch's refresh margin, and every refresh token spent: the launch's refresh is refused.
+    const { as, mcp } = await fakes(t, { expiresIn: 60 });
+    const started = await api("POST", "/settings/mcp-servers/docs/oauth/start", { url: mcp.url });
+    assert.equal((await approve(started)).status, 302);
+    assert.equal((await api("POST", "/agents", agent(`expired-${harness}`, { tools: ["mcp:docs/add"], tool_settings: { "mcp:docs/*": { permission: "allow" } }, ...extra }))).status, 201);
+    as.revoke();
+    const before = mcp.log.length;
+    const made = await api("POST", `/agents/expired-${harness}/runs`, { input: { content } });
+    assert.equal(made.status, 202, JSON.stringify(made.body));
+    const { last } = await follow(api, made.body.run_id, ["completed", "failed", "input_required"], { deadlineMs: 180_000 });
+    const view = (await api("GET", `/runs/${made.body.run_id}`)).body;
+    assert.ok(as.log.some((entry) => entry.form.grant_type === "refresh_token"), "the launch asked for a refresh, and was refused");
+    assert.equal((await api("GET", "/settings/mcp-servers/docs")).body.credential, "expired");
+    // Nothing reached the MCP server: no call, with or without a credential, and no handshake for one.
+    assert.deepEqual(mcp.log.slice(before).filter((entry) => ["tools/call", "initialize", "server/discover"].includes(entry.method)), [], "the MCP server saw nothing of the run");
+    assert.equal(last.status, "completed", JSON.stringify(view.error ?? view.result));
+    assert.match(view.result?.final_answer ?? "", /The MCP server docs's credential can't be opened on this server \(its sign-in expired or was revoked: sign in again in Settings → MCP servers\)/);
+  });
+}
