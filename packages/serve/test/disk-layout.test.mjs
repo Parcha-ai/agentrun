@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { startServe } from "../dist/index.js";
-import { checkpointRunDb, HeldRunDbError, MonotonicReads, BehindReadError, observeRunDbOpens } from "../dist/run-db.js";
+import { checkpointRunDb, HeldRunDbError, MonotonicReads, BehindReadError, observeRunDbOpens, runDbTestHooks } from "../dist/run-db.js";
 import { localDisk } from "../dist/disk.js";
 import { learningRepo } from "../dist/learning.js";
 import { agent, FAUX, flowAgent, follow, runDir, scratch, serve } from "./support.mjs";
@@ -85,6 +85,24 @@ test("a read-write open while held is refused before any open; a read behind one
   reads.accept("r2", 1);
   reads.forget("r1");
   reads.accept("r1", 1);
+});
+
+test("a run's read guard goes at its end: after runs that ended, the server keeps none of their reads", { timeout: 120_000 }, async (t) => {
+  const made = [];
+  runDbTestHooks.madeReads = (reads) => made.push(reads);
+  t.after(() => delete runDbTestHooks.madeReads);
+  const { api } = await serve(t, { faux: PROBE });
+  assert.equal(made.length, 1, "the server's one guard");
+  const [reads] = made;
+  let accepted = 0;
+  const accept = reads.accept.bind(reads);
+  reads.accept = (...args) => (accepted++, accept(...args));
+  for (const content of ["one", "two"]) {
+    const runId = await probeRun(api, [{ tool: "write", args: { path: `${content}.txt`, content } }]);
+    await follow(api, runId, ["completed"], { deadlineMs: 60_000 });
+  }
+  assert.ok(accepted >= 2, `its reads were guarded (${accepted})`);
+  assert.equal(reads.size, 0, "no ended run's reads are kept");
 });
 
 test("the local disk adapter: mount gives a runner the folder itself, below the disk and through no link; sync and unmount; revoke bumps the run's epoch with the server as holder", async (t) => {

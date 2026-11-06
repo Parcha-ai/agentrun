@@ -1024,6 +1024,23 @@ test("an import the process left without its transcript is finished by the next 
   assert.equal(store.listRuns().length, 5, "no second run for it");
 });
 
+for (const at of ["run's folder", "store folder"]) {
+  test(`an import left without its transcript whose ${at} is now a symbolic link is refused, and nothing is written through the link`, async (t) => {
+    const { h, data, store, report } = await imported(t);
+    const run = runsOf(store, report.agents[0].id)[0];
+    const dir = join(runDir(data, run.id));
+    const elsewhere = join(await scratch(t), "elsewhere");
+    mkdirSync(elsewhere);
+    const link = at === "store folder" ? join(dir, "store") : dir;
+    rmSync(link, { recursive: true });
+    symlinkSync(elsewhere, link);
+    const refused = await runImport(store, await planImport(options(h), store), options(h)).then(() => null, (error) => error);
+    assert.deepEqual(readdirSync(elsewhere, { recursive: true }), [], "nothing was written where the link points");
+    assert.match(String(refused?.message), /symbolic link/);
+    assert.equal(store.listRuns().length, 5, "no second run for it");
+  });
+}
+
 test("a session file this user cannot read is named and passed over; the rest still import", { skip: process.getuid?.() === 0 ? "root reads a mode 000 file" : false }, async (t) => {
   const root = await scratch(t);
   const h = home(root);

@@ -1007,6 +1007,8 @@ export class Runs {
     // Only a store no live instance holds is opened: released, or left by an instance whose lease lapsed.
     if (row.state !== "running" || !this.doorOf(record)) await this.storeWhenFree(run);
     if (row.state !== "running") {
+      // An ended run's one read is done: no guard is kept for it.
+      this.reads.forget(row.id);
       run.endedAt = row.endedAt;
       // An ended run the store kept no cost for has an unknown cost, never $0.
       run.costUsd = row.costUsd ?? null;
@@ -2250,6 +2252,8 @@ export class Runs {
   /** Ends the run in the agent store, once: how it ended, its cost, a line for the list and its metrics. A store held by
    *  another writer is tried again with backoff; past the last try the run stays unsettled, and the next start carries it back. */
   private async carryBack(run: Run, outcome: Status, state?: Ended, summary?: string): Promise<void> {
+    // Its reads ended with its end's read (settleOnce): their guard goes. A follow-up's process starts it again from none.
+    this.reads.forget(run.id);
     // Ended, it saves to its agent's sign-in no more; but a process that went without letting its sessions go may have
     // left one live at the vendor, so its lease then ends by the gone rule. One never launched (letGo unset) has none.
     await this.releaseSignIn(run, run.letGo !== false);

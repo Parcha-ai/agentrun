@@ -537,6 +537,16 @@ export class AgentStoreReader {
   }
   /** `<run's folder>/store/run.sqlite`, for a run's timeline. It does not check that the file exists. */
   runStorePath(runId: string): string { return runStoreIn(this.runDir(runId)); }
+  /** Run `runId`'s folder and its store folder, made where missing (0700, each mode set after its mkdir), for a write into
+   *  them (an import's transcript, finished): a link or a non-directory at any level of them below the data directory is
+   *  AgentHomeError `invalid`, before anything is made or written there. */
+  runFolders(runId: string): { runId: string; dir: string; storePath: string } {
+    const dir = this.runDir(runId);
+    const storePath = runStoreIn(dir);
+    refuseLinks(this.dir, path.dirname(storePath));
+    ownedDirs(this.dir, path.dirname(storePath));
+    return { runId, dir, storePath };
+  }
   /** Run `runId`'s claim, as its row holds it: the epoch, bumped at each claim, and who holds it (null before the first). */
   runClaim(runId: string): { epoch: number; holder: string | null } {
     const row = this.db.prepare("SELECT claim_epoch, claim_holder FROM runs WHERE id = ?").get(checkId(runId, "run")) as { claim_epoch: number; claim_holder: string | null } | undefined;

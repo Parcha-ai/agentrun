@@ -6,7 +6,7 @@
 // the owner's only. Read again, it imports only the sessions it has not.
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync, type Stats } from "node:fs";
-import { chmod, lstat, mkdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, lstat, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, sep } from "node:path";
 import { parseArgs } from "node:util";
@@ -981,8 +981,8 @@ export async function runImport(store: AgentStore, plan: Plan, options: ImportOp
         const estimate = session.costUsd === undefined ? await estimateOf([...entries, ...subagents.flatMap(entriesOf)], catalog) : undefined;
         if (estimate !== undefined) Object.assign(metrics, { costUsdEst: estimate, costBasis: "catalog" });
         if (heldRun !== undefined) {
-          started = { runId: heldRun, dir: store.runDir(heldRun), storePath: store.runStorePath(heldRun) };
-          if ((await mkdir(dirname(started.storePath), { recursive: true })) !== undefined) for (const made of [started.dir, dirname(started.storePath)]) await chmod(made, 0o700);
+          // Its folders as the store makes a run's: never through a link (a link there refuses the import).
+          started = store.runFolders(heldRun);
         } else {
           const answer = session.turns.findLast((t) => t.role === "assistant" && t.text)?.text;
           started = await store.importRun({
