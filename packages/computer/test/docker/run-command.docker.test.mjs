@@ -144,9 +144,18 @@ describe("run a command in a Docker computer", { skip: LIVE ? false : "set AGENT
 		assert.ok(!left.includes("sleep 301"), `sleep 301 still runs: ${left}`);
 	});
 
-	it("deletes the computer, and a second delete is ok", async () => {
+	it("stops the computer at once: the daemon as PID 1 ends on SIGTERM, and the container stays", async () => {
 		await connection.close();
 		connection = undefined;
+		const started = Date.now();
+		assert.deepEqual(await provider.release(ref, "stop"), { ok: true, value: undefined });
+		assert.ok(Date.now() - started < 5000, `stop took ${Date.now() - started} ms`);
+		const [inspected] = JSON.parse(docker("inspect", ref.name));
+		assert.equal(inspected.State.Running, false);
+		assert.equal(inspected.State.ExitCode, 0);
+	});
+
+	it("deletes the computer, and a second delete is ok", async () => {
 		assert.deepEqual(await provider.release(ref, "delete"), { ok: true, value: undefined });
 		assert.deepEqual(await provider.release(ref, "delete"), { ok: true, value: undefined });
 		assert.equal(ours().includes(ref.name), false);

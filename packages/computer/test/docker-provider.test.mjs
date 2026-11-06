@@ -1,7 +1,7 @@
 // DockerProvider against a fake docker program under the test's temp dir: it records each call's argv and answers as
 // the docker CLI does. No Docker and no daemon binary are needed.
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
@@ -22,6 +22,7 @@ function fakeDocker({ running = true, gone = false } = {}) {
 	const log = join(dir, "calls.jsonl");
 	const daemonPath = join(dir, "computerd");
 	writeFileSync(daemonPath, "not a real daemon");
+	chmodSync(daemonPath, 0o755);
 	const program = join(dir, "docker");
 	const config = JSON.stringify({ log, running, gone });
 	writeFileSync(
@@ -167,6 +168,16 @@ test("create() with no daemon binary is not_found, with no docker call", async (
 	assert.equal(result.ok, false);
 	assert.equal(result.error.code, "not_found");
 	assert.match(result.error.message, /build:daemon/);
+	assert.deepEqual(calls(), []);
+});
+
+test("create() with a daemon only its owner may run is refused, with no docker call", async () => {
+	const { provider, calls, daemonPath } = fakeDocker();
+	chmodSync(daemonPath, 0o700);
+	const result = await provider.create(SPEC);
+	assert.equal(result.ok, false);
+	assert.equal(result.error.code, "invalid");
+	assert.match(result.error.message, /mode 700.*chmod 755/);
 	assert.deepEqual(calls(), []);
 });
 

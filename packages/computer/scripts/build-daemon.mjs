@@ -1,7 +1,7 @@
 // `npm run build:daemon`: the daemon as static binaries for Linux, dist/computerd-linux-amd64 and dist/computerd-linux-arm64,
 // stamped with this package's version. Needs Go on PATH.
 import { execFileSync } from "node:child_process";
-import { accessSync, constants, mkdirSync, readFileSync, statSync } from "node:fs";
+import { accessSync, chmodSync, constants, mkdirSync, readFileSync, statSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -36,5 +36,7 @@ for (const arch of ["amd64", "arm64"]) {
 		env: { ...process.env, CGO_ENABLED: "0", GOOS: "linux", GOARCH: arch },
 		stdio: "inherit",
 	});
+	// Every computer drops every capability, so its root runs the mounted binary only if everyone may.
+	chmodSync(out, 0o755);
 	console.log(`build:daemon: ${out} (${statSync(out).size} bytes, ${version})`);
 }
