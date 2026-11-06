@@ -32,6 +32,9 @@ export function BudgetPaused({ pending }: { pending: BudgetPending }) {
  *  console computes none, and with none served (an older server) the raise starts empty. */
 export const suggestedCap = (pending: Pick<BudgetPending, "suggested_cap_usd"> | null | undefined): number | null =>
   typeof pending?.suggested_cap_usd === "number" && Number.isFinite(pending.suggested_cap_usd) ? pending.suggested_cap_usd : null;
+/** The least cap that sends the refused request (`pending.least_cap_usd`), as served; none for a pause that names no least. */
+export const leastCap = (pending: Pick<BudgetPending, "least_cap_usd"> | null | undefined): number | null =>
+  typeof pending?.least_cap_usd === "number" && Number.isFinite(pending.least_cap_usd) ? pending.least_cap_usd : null;
 
 /** Why a raise was not taken, in words: the server's own for a 422 (what it wants of the cap), an ended run and a run
  *  it no longer has in the console's, anything else by its message. */
@@ -51,7 +54,7 @@ function raiseRefusal(e: unknown): string {
  *  else a working run's ("Raise the cap"). Sent once (PATCH /v2/runs/{id}; a click while it posts sends nothing more).
  *  A refusal is said under the input and the cap stays to change; a working run's `note` is said. `onRaise` reads the
  *  run again once raised, which ends a pause. */
-export function RaiseCap({ cap, suggested, paused, onRaise }: { cap: number; suggested: number | null; paused: boolean; onRaise: (usd: number) => Promise<RaiseAnswer> }) {
+export function RaiseCap({ cap, suggested, least = null, paused, onRaise }: { cap: number; suggested: number | null; least?: number | null; paused: boolean; onRaise: (usd: number) => Promise<RaiseAnswer> }) {
   const [value, setValue] = useState(suggested === null ? "" : String(suggested));
   const [busy, setBusy] = useState(false);
   const [refused, setRefused] = useState<string | null>(null);
@@ -85,7 +88,15 @@ export function RaiseCap({ cap, suggested, paused, onRaise }: { cap: number; sug
         </label>
         <Button type="submit" size="sm" variant="solid" disabled={busy || !named}>{busy ? "Raising" : paused ? "Raise the cap and continue" : "Raise the cap"}</Button>
       </div>
-      {suggested !== null && <p className="mt-2 text-[12px] text-muted-foreground">The server's suggestion; change it before you raise, if you like.</p>}
+      {/* The least that sends the refused request and the raise offered, apart and labelled: side by side unnamed, the
+          server's "at least $X" and a larger prefill read as a contradiction. */}
+      {(least !== null || suggested !== null) && (
+        <ul className="mt-2 space-y-0.5 font-mono text-[12px]" aria-label="Cap figures">
+          {least !== null && <li data-cap-figure="least">Least to continue: {capWords(least)}</li>}
+          {suggested !== null && <li data-cap-figure="suggested">Suggested: {capWords(suggested)}</li>}
+        </ul>
+      )}
+      {suggested !== null && <p className="mt-1 text-[12px] text-muted-foreground">The suggestion is prefilled; change it before you raise, if you like.</p>}
       {refused && <p className="mt-2 text-[13px] text-destructive-text" role="alert">{refused}</p>}
       {note && <p className="mt-2 text-[13px] text-muted-foreground" role="status">{note}</p>}
     </form>
