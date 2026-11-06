@@ -1,8 +1,9 @@
 // What only Docker shows of a computer, on real Docker (AGENTRUN_COMPUTER_LIVE_DOCKER=1 only): the hardening flags and
-// the daemon mount in docker inspect, hello's arch against Docker's, no interface but lo with network none, no user
-// switch without capabilities, and the daemon as PID 1 exiting 0 on docker stop. What every provider must do is in the
-// conformance suite (conformance.docker.test.mjs). Needs `npm run build` and `npm run build:daemon` first, and the image
-// pulled. Every container this file makes is removed by its exact name in the after hook, pass or fail.
+// the daemon mount in docker inspect, hello's arch against Docker's, no interface but lo with network none and still
+// none after a refused change, no user switch without capabilities, and the daemon as PID 1 exiting 0 on docker stop.
+// What every provider must do is in the conformance suite (conformance.docker.test.mjs). Needs `npm run build` and
+// `npm run build:daemon` first, and the image pulled. Every container this file makes is removed by its exact name in
+// the after hook, pass or fail.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -86,6 +87,14 @@ describe("a Docker computer, as Docker shows it", { skip: LIVE ? false : "set AG
 	it("has no interface but lo with network none", async () => {
 		const result = await run(["sh", "-c", "ls /sys/class/net"]);
 		assert.deepEqual(result.out.split("\n").filter(Boolean), ["lo"]);
+	});
+
+	it("refuses a network change, fixed at create, and docker inspect still shows network none", async () => {
+		const opened = await provider.network(ref, "open");
+		assert.equal(opened.ok, false);
+		assert.equal(opened.error.code, "refused");
+		assert.match(opened.error.message, /fixed at create; create a new computer/);
+		assert.equal(docker("inspect", "--format", "{{.HostConfig.NetworkMode}}", ref.name).trim(), "none");
 	});
 
 	it("cannot switch users with every capability dropped, and says so", async () => {
