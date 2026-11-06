@@ -86,3 +86,37 @@ for (const [host, settings] of [
     assert.deepEqual(gw.requests, [], "nothing reached the gateway");
   });
 }
+
+// Anthropic's route refused is Anthropic's alone: a host whose ANTHROPIC_BASE_URL a key may not go to still runs its
+// other providers' models (#1810 review), and its Anthropic models are refused in gatewayBase's words.
+const REFUSED_BASE = "http://gateway.example/anthropic";
+const REFUSAL = "ANTHROPIC_BASE_URL must be an https URL of a gateway";
+
+/** The net guard's refusals in `log`: each connect or lookup a run's process tried off this machine. */
+const refusals = (log) => readFileSync(log, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)).filter((line) => line.kind === "refused");
+
+test("an OpenAI default with a refused ANTHROPIC_BASE_URL is ready and runs: capabilities read it ready, the run starts, and its request goes to OpenAI's route (refused here by the net guard), never to the gateway", { timeout: 90_000 }, async (t) => {
+  const guardLog = join(await mkdtemp(join(process.env.TMPDIR ?? "/tmp", "net-guard-")), "guard.jsonl");
+  withEnv(t, { ANTHROPIC_BASE_URL: REFUSED_BASE, ANTHROPIC_API_KEY: KEY("anthropic"), OPENAI_API_KEY: KEY("openai"), AGENT_MODEL: "openai/gpt-6.1-sol", NET_GUARD_LOG: guardLog, NODE_OPTIONS: `--import=${GUARD.href}` }, NAMES);
+  const { api } = await serve(t, { faux: undefined });
+  const { models } = (await api("GET", "/capabilities")).body;
+  assert.deepEqual([models.default, models.ready, models.needs], ["openai/gpt-6.1-sol", true, null], JSON.stringify(models));
+  assert.equal((await api("POST", "/agents", agent("pi-openai-refused-anthropic"))).status, 201);
+  const started = await api("POST", "/agents/pi-openai-refused-anthropic/runs", { input: { content: "Say hi." } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  await follow(api, started.body.run_id, ["completed", "failed"], { deadlineMs: 60_000 });
+  const hosts = new Set(refusals(guardLog).map((line) => line.host));
+  assert.ok(hosts.has("api.openai.com"), `OpenAI's route was taken: ${JSON.stringify([...hosts])}`);
+  assert.ok(!hosts.has("gateway.example"), "nothing went to the refused gateway");
+});
+
+test("an Anthropic default under the same refused ANTHROPIC_BASE_URL reads not ready, and its run is refused in gatewayBase's words, nothing sent", { timeout: 60_000 }, async (t) => {
+  withEnv(t, { ANTHROPIC_BASE_URL: REFUSED_BASE, ANTHROPIC_API_KEY: KEY("anthropic"), OPENAI_API_KEY: KEY("openai"), AGENT_MODEL: MODEL }, NAMES);
+  const { api } = await serve(t, { faux: undefined });
+  const { models } = (await api("GET", "/capabilities")).body;
+  assert.deepEqual([models.default, models.ready, models.needs], [MODEL, false, "key"], JSON.stringify(models));
+  assert.equal((await api("POST", "/agents", agent("pi-anthropic-refused"))).status, 201);
+  const started = await api("POST", "/agents/pi-anthropic-refused/runs", { input: { content: "Say hi." } });
+  assert.notEqual(started.status, 202, JSON.stringify(started.body));
+  assert.ok(JSON.stringify(started.body).includes(REFUSAL), JSON.stringify(started.body));
+});
