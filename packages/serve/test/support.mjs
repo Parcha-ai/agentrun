@@ -114,7 +114,9 @@ export function client(baseUrl, token) {
       req.once("error", reject).end();
     });
   return Object.assign(api, { fresh });
-  async function api(method, path, body, headers = {}) {
+  /** `raiseCheck: false`: no raise guard read after this request (raisedReadsQueued), for a test whose server goes away
+   *  once the raise is answered. */
+  async function api(method, path, body, headers = {}, { raiseCheck = true } = {}) {
     const res = await fetch(`${baseUrl}${path}`, {
       method,
       headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), ...(body === undefined ? {} : { "content-type": "application/json" }), ...headers },
@@ -125,7 +127,7 @@ export function client(baseUrl, token) {
     try {
       json = JSON.parse(text);
     } catch {}
-    if (method === "PATCH" && res.status === 200 && json?.resumed === true) await raisedReadsQueued(baseUrl, token, path);
+    if (raiseCheck && method === "PATCH" && res.status === 200 && json?.resumed === true) await raisedReadsQueued(baseUrl, token, path);
     return { status: res.status, headers: res.headers, body: json ?? text };
   };
 }
