@@ -5,6 +5,7 @@ import {
 	type DaemonErrorKind,
 	type DaemonMethod,
 	type DaemonMethods,
+	type DaemonNotification,
 	JSONRPC_CODES,
 	MAX_LINE_BYTES,
 } from "./protocol.js";
@@ -15,9 +16,29 @@ export interface DaemonStream {
 	writable: Writable;
 }
 
+export interface CallOptions {
+	signal?: AbortSignal;
+	/**
+	 * The daemon's notifications for this call (those whose params.request is its id), in order, until its reply. A
+	 * promise returned holds back reading from the daemon until it settles.
+	 */
+	onNotification?: (notification: DaemonNotification) => void | Promise<void>;
+}
+
 type ReplyError = { code?: unknown; message?: unknown; data?: { kind?: unknown } };
 
-const KINDS: ReadonlySet<string> = new Set<DaemonErrorKind>(["not_found", "invalid", "timeout", "aborted", "denied", "limit", "unsupported"]);
+const KINDS: ReadonlySet<string> = new Set<DaemonErrorKind>([
+	"not_found",
+	"invalid",
+	"timeout",
+	"aborted",
+	"denied",
+	"limit",
+	"unsupported",
+	"exists",
+	"not_dir",
+	"is_dir",
+]);
 
 /** A daemon's error reply as a ComputerError: its kind when it names one, else what its JSON-RPC code means. */
 function fromReply(error: ReplyError): ComputerError {
@@ -56,7 +77,7 @@ export class DaemonClient {
 	async call<M extends DaemonMethod>(
 		method: M,
 		params: DaemonMethods[M]["params"],
-		options: { signal?: AbortSignal } = {},
+		options: CallOptions = {},
 	): Promise<Result<DaemonMethods[M]["result"]>> {
 		const { signal } = options;
 		if (this.#gone) return { ok: false, error: this.#gone };

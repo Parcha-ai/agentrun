@@ -63,11 +63,11 @@ switch (args[0]) {
 /** The value after each occurrence of a flag. */
 const valuesOf = (args, flag) => args.flatMap((arg, i) => (arg === flag ? [args[i + 1]] : []));
 
-test("capabilities: a container whose lifetime the janitor enforces, network none or open, and a daemon with exec", () => {
+test("capabilities: a container whose lifetime the janitor enforces, network none or open, and a daemon with exec and files", () => {
 	const { provider } = fakeDocker();
 	assert.equal(provider.id, "docker");
 	assert.match(provider.version, /^\d+\.\d+\.\d+/);
-	assert.deepEqual(provider.capabilities(), { lifetime: "janitor", network: ["none", "open"], isolation: "container", os: "linux", daemon: ["exec"] });
+	assert.deepEqual(provider.capabilities(), { lifetime: "janitor", network: ["none", "open"], isolation: "container", os: "linux", daemon: ["exec", "files"] });
 });
 
 test("check() refuses in words, field by field, with no docker call", () => {

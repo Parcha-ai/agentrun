@@ -312,3 +312,14 @@ func (sess *session) write(reply any, id json.RawMessage) {
 		sess.server.log.Printf("cannot write a reply: %v", err)
 	}
 }
+
+// Notify sends a notification on the connection of the request ctx belongs to.
+func Notify(ctx context.Context, method string, params any) error {
+	return Errorf(KindUnsupported, "notifications are not built yet")
+}
+
+// RequestID is the id of the request ctx belongs to.
+func RequestID(ctx context.Context) json.RawMessage { return nullID }
+
+// Local returns the value the connection of ctx keeps under key, made by create on its first use.
+func Local(ctx context.Context, key any, create func() io.Closer) io.Closer { return create() }

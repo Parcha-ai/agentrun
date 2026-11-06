@@ -253,3 +253,89 @@ func TestHandlerErrorsKeepTheirKind(t *testing.T) {
 		t.Fatalf("want a server error, got %+v", r)
 	}
 }
+
+func TestNotificationsLeaveBeforeTheReplyAndNameTheRequest(t *testing.T) {
+	c := start(t, map[string]rpc.Handler{
+		"count": func(ctx context.Context, _ json.RawMessage) (any, error) {
+			for i := range 3 {
+				if err := rpc.Notify(ctx, "count.tick", map[string]any{"request": rpc.RequestID(ctx), "n": i}); err != nil {
+					return nil, err
+				}
+			}
+			return "done", nil
+		},
+	})
+	c.send(`{"jsonrpc":"2.0","id":"c1","method":"count"}` + "\n")
+	for i := range 3 {
+		line := <-c.lines
+		var note struct {
+			JSONRPC string          `json:"jsonrpc"`
+			ID      json.RawMessage `json:"id"`
+			Method  string          `json:"method"`
+			Params  struct {
+				Request json.RawMessage `json:"request"`
+				N       int             `json:"n"`
+			} `json:"params"`
+		}
+		if err := json.Unmarshal(line, &note); err != nil || note.JSONRPC != "2.0" || note.ID != nil || note.Method != "count.tick" || string(note.Params.Request) != `"c1"` || note.Params.N != i {
+			t.Fatalf("want notification %d for c1, got %s", i, line)
+		}
+	}
+	if r := c.next(); string(r.ID) != `"c1"` || string(r.Result) != `"done"` {
+		t.Fatalf("want the reply after the notifications, got %+v", r)
+	}
+}
+
+func TestANotificationOverTheLineLimitIsRefused(t *testing.T) {
+	c := start(t, map[string]rpc.Handler{
+		"big": func(ctx context.Context, _ json.RawMessage) (any, error) {
+			return nil, rpc.Notify(ctx, "big.data", strings.Repeat("z", rpc.MaxLine))
+		},
+	})
+	c.send(`{"jsonrpc":"2.0","id":1,"method":"big"}` + "\n")
+	if r := c.next(); string(r.ID) != "1" || r.Error == nil || r.Error.Data.Kind != "limit" {
+		t.Fatalf("want a limit error and no notification, got %+v", r)
+	}
+}
+
+type closer struct{ closed chan struct{} }
+
+func (c *closer) Close() error { close(c.closed); return nil }
+
+func TestLocalValuesAreKeptPerConnectionAndClosedAtItsEnd(t *testing.T) {
+	made := make(chan *closer, 4)
+	c := start(t, map[string]rpc.Handler{
+		"local": func(ctx context.Context, _ json.RawMessage) (any, error) {
+			value := rpc.Local(ctx, "k", func() io.Closer {
+				v := &closer{closed: make(chan struct{})}
+				made <- v
+				return v
+			})
+			return fmt.Sprintf("%p", value), nil
+		},
+	})
+	c.send(`{"jsonrpc":"2.0","id":1,"method":"local"}` + "\n")
+	first := c.next()
+	c.send(`{"jsonrpc":"2.0","id":2,"method":"local"}` + "\n")
+	second := c.next()
+	if first.Error != nil || string(first.Result) != string(second.Result) || len(made) != 1 {
+		t.Fatalf("want one value for the connection, got %s and %s (%d made)", first.Result, second.Result, len(made))
+	}
+	value := <-made
+	select {
+	case <-value.closed:
+		t.Fatal("the value was closed while the connection is open")
+	default:
+	}
+	_ = c.in.Close()
+	select {
+	case <-c.done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Serve did not return at end of input")
+	}
+	select {
+	case <-value.closed:
+	default:
+		t.Fatal("Serve returned before closing the connection's value")
+	}
+}

@@ -48,7 +48,18 @@ func Handlers(version string) map[string]rpc.Handler {
 		"ping": func(context.Context, json.RawMessage) (any, error) {
 			return struct{}{}, nil
 		},
-		"exec.run": execRun,
+		"exec.run":       execRun,
+		"files.read":     filesRead,
+		"files.write":    filesWrite,
+		"files.stat":     filesStat,
+		"files.list":     filesList,
+		"files.mkdir":    filesMkdir,
+		"files.move":     filesMove,
+		"files.remove":   filesRemove,
+		"tar.pull":       tarPull,
+		"tar.push.begin": tarPushBegin,
+		"tar.push.write": tarPushWrite,
+		"tar.push.end":   tarPushEnd,
 	}
 }
 
