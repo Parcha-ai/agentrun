@@ -21,7 +21,7 @@ import { FAUX_MONID_ENV } from "./monid.js";
 import { FAUX_EXA_ENV } from "./exa-keyless.js";
 import { FAUX_BROWSER_ENV, NODE_TOOLS, toolingOf, toolOf, toolsView } from "./tools.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
-import { deref, explain, type Told } from "./explain.js";
+import { deref, explain } from "./explain.js";
 import { DATA_ENV, DOOR_TOKEN_FILE, HOME_HOST_OWNED, HOMES_DIR, homeOf, readJson, RUN_META, SETUP_LOST, syncDir, TOKEN_FILE, writeDurable } from "./files.js";
 import { checkedPath, decodedPath, homePath, hostOwnedOf, hostOwnedRefusal, type OwnedReadAt, ownedByIdentity } from "./home-path.js";
 import { chooseModel, EFFORTS, FAUX_ENV, FAUX_UPSTREAM_ENV, MODEL_NODES, type ModelNeeds, modelSource, THINKING_LEVELS, withoutFaux } from "./model.js";
@@ -979,7 +979,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       if (!entry.revision) return [{ field: "target.agent_id", reason: "invalid", message: `the agent ${target.agent_id} has no current revision` }];
       if (entry.revision.kind === "workflow") return [{ field: "target.agent_id", reason: "not_allowed", message: "A trigger's runs are capped, and a workflow run's spend is not capped here: name an agent that is not a workflow." }];
       const uncapped = target.max_cost_usd === undefined && entry.revision.body.maxCostUsd === undefined ? [{ field: "target.max_cost_usd", reason: "missing", message: `Every run a trigger starts is capped: give the target a max_cost_usd or set the agent's (the agent ${target.agent_id} has none).` }] : [];
-      return [...uncapped, ...explain(await inputIssuesOf(entry.revision, target.input), openapi, runBodySchema(entry.revision), runTold({ input: target.input }, entry.revision)).map((issue) => ({ ...issue, field: `target.${issue.field}` }))];
+      return [...uncapped, ...(await explainRun(await inputIssuesOf(entry.revision, target.input), { input: target.input }, entry.revision)).map((issue) => ({ ...issue, field: `target.${issue.field}` }))];
     },
     async start(target, input, trigger) {
       const entry = await needAgent(target.agent_id);
@@ -1263,28 +1263,35 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     return blockers.map(issueOf);
   }
 
-  /** The body a run of `revision` takes, as its 422s are told from (explain.ts): the document's RunCreate, its input the
-   *  one this server checks, an agentic run's `{content: string}` (a workflow's is its workflow's, an object here). */
-  function runBodySchema(revision: Revision | null | undefined): Json {
-    const body = deref(openapi, { $ref: "#/components/schemas/RunCreate" }) ?? {};
-    return { ...body, properties: { ...(body.properties as Json), input: revision?.kind === "workflow" ? { type: "object" } : DEFAULT_INPUT_SCHEMA } };
-  }
-
-  /** How a run create's 422 checks what it suggests (explain.ts): the documented run bodies, the body sent, and this
-   *  route's own checks, an agentic run's input against `{content: string}` (a workflow's needs its workflow: none here). */
-  function runTold(body: Json, revision: Revision | null | undefined): Told {
+  /** A run create's issues told from the input this server checks (explain.ts): an agentic run's `{content: string}`,
+   *  with the documented run bodies; a workflow run's its workflow's input schema, never the agentic example. Each value
+   *  suggested must pass this route's own checks of the body, the workflow's input check among them. */
+  async function explainRun(issues: InputIssue[], body: Json, revision: Revision | null | undefined): Promise<InputIssue[]> {
+    const dsl = revision?.kind === "workflow" ? await import("@parcha/agentrun-dsl") : undefined;
+    const workflow = dsl && revision?.kind === "workflow" ? revision.body.workflow : undefined;
+    const declared = workflow?.input?.schemaId === undefined ? undefined : workflow.schemas[workflow.input.schemaId];
+    const input = !dsl ? DEFAULT_INPUT_SCHEMA : declared ? (dsl.resolveSchemaForWorkflow(workflow!, declared) as Json) : { type: "object" };
+    const base = deref(openapi, { $ref: "#/components/schemas/RunCreate" }) ?? {};
+    const schema = { ...base, properties: { ...(base.properties as Json), input } };
     const check = (sent: unknown) => {
       const value = isObject(sent) ? sent : {};
       const issues = runBodyIssues(value);
-      return revision?.kind === "agentic" && isObject(value.input) ? [...issues, ...inputIssues(value.input, DEFAULT_INPUT_SCHEMA as Json)] : issues;
+      if (!revision || !isObject(value.input)) return issues;
+      return [...issues, ...(dsl ? workflowInputIssues(dsl.validateWorkflow, revision, value.input) : inputIssues(value.input, DEFAULT_INPUT_SCHEMA as Json))];
     };
-    return { examples: examplesOf("createRun"), body, check };
+    return explain(issues, openapi, schema, { examples: dsl ? [] : examplesOf("createRun"), body, check });
   }
 
   /** A run's input: an agentic run's `{content: string}`, a workflow run's what its workflow's input schema takes. */
   async function inputIssuesOf(revision: Revision, input: Json) {
     if (revision.kind === "agentic") return inputIssues(input, DEFAULT_INPUT_SCHEMA as Json);
     const { validateWorkflow } = await import("@parcha/agentrun-dsl");
+    return workflowInputIssues(validateWorkflow, revision, input);
+  }
+
+  /** A workflow run's input against its workflow's input schema, as the DSL checks it before the first node. */
+  function workflowInputIssues(validateWorkflow: typeof import("@parcha/agentrun-dsl").validateWorkflow, revision: Revision, input: Json): InputIssue[] {
+    if (revision.kind !== "workflow") return [];
     const checked = validateWorkflow(revision.body.workflow, { executeCode: false, input });
     return checked.ok ? [] : checked.issues.map((i) => ({ field: `input${i.path ? ` at ${i.path}` : ""}`, reason: "invalid", message: `the workflow does not take this input: ${i.code}${i.path ? ` at ${i.path}` : ""}` }));
   }
@@ -1314,7 +1321,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   /** `capped`: the run must have a cap (a trigger's), its own or else its agent's default. */
   async function startRunOf(entry: AgentEntry, body: Json, { trigger, origin, capped = false }: { trigger?: RunTrigger; origin?: RunOrigin; capped?: boolean } = {}): Promise<Run> {
     const issues = runBodyIssues(body);
-    if (issues.length) throw told(invalid(explain(issues, openapi, runBodySchema(entry.revision), runTold(body, entry.revision))));
+    if (issues.length) throw told(invalid(await explainRun(issues, body, entry.revision)));
     if (body.quote_id !== undefined) throw unsupported("quotes", "This server has no billing, so it takes no quotes.");
     // Each a ready file, before anything starts: copied into the run's work/inputs/ once its directory is made.
     const files = Array.isArray(body.file_ids) ? await uploads.readyFiles(body.file_ids) : [];
@@ -1324,7 +1331,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     if (revision.kind === "workflow" && body.max_cost_usd !== undefined) throw invalid([{ field: "max_cost_usd", reason: "not_allowed", message: "A workflow run's spend is not capped here: its cost shows once it ends." }]);
     const input = body.input as Json;
     const wrong = await inputIssuesOf(revision, input);
-    if (wrong.length) throw told(invalid(explain(wrong, openapi, runBodySchema(revision), runTold(body, revision))));
+    if (wrong.length) throw told(invalid(await explainRun(wrong, body, revision)));
     // The run's own cap, else the agent's default (an agentic revision's): the caller chose its own.
     const cap = typeof body.max_cost_usd === "number" ? body.max_cost_usd : revision.kind === "agentic" ? revision.body.maxCostUsd : undefined;
     if (capped && cap === undefined) throw invalid([{ field: "max_cost_usd", reason: "missing", message: "Every run a trigger starts is capped: give the trigger's target a max_cost_usd or set the agent's." }]);

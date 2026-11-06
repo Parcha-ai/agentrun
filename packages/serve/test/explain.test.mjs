@@ -130,6 +130,7 @@ test("a suggested value is one the server takes: a bad id gets the documented on
 test("a workflow agent's run is told from its workflow's input schema: never the agentic {content}, and a suggested input starts the run", async (t) => {
   const { api } = await serve(t);
   assert.equal((await api("POST", "/agents", flowAgent("asks"))).status, 201, "its input requires question, a string");
+  let offered = 0;
   for (const body of [{}, { input: "What is 2 + 2?" }, { input: { content: "What is 2 + 2?" } }, { input: { question: 4 } }]) {
     const answer = await api("POST", "/agents/asks/runs", body);
     assert.equal(answer.status, 422, `${JSON.stringify(body)}: ${JSON.stringify(answer.body)}`);
@@ -140,8 +141,11 @@ test("a workflow agent's run is told from its workflow's input schema: never the
         continue;
       }
       assert.equal(issue.field, "input", JSON.stringify(issue));
+      assert.deepEqual(issue.example, { question: "…" }, "made from the workflow's input schema: its required question, a string");
+      offered++;
       const sent = await api("POST", "/agents/asks/runs", { ...body, input: issue.example });
       assert.equal(sent.status, 202, `${JSON.stringify(body)}: the suggested input ${JSON.stringify(issue.example)} starts the run: ${JSON.stringify(sent.body)}`);
     }
   }
+  assert.equal(offered, 4, "each of the four is offered an input the workflow takes");
 });

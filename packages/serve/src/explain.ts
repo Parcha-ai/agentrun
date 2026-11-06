@@ -125,7 +125,8 @@ function suggestion(root: Json, schema: Json, path: readonly string[], told: Tol
   const passes = (value: unknown, made: boolean) => {
     if (value === undefined) return false;
     if (!told.check || told.body === undefined) return !made && matches(root, schema, value);
-    return !told.check(withValue(told.body, path, value)).some((issue) => issue.field === field || issue.field.startsWith(`${field}.`));
+    // An issue at the field or under it: `input.content`, or a workflow's `input at /question`.
+    return !told.check(withValue(told.body, path, value)).some((issue) => issue.field === field || issue.field.startsWith(`${field}.`) || issue.field.startsWith(`${field} `));
   };
   for (const value of [...(told.examples ?? []).map((example) => valueAt(example, path)), ...explicitOf(schema)]) if (passes(value, false)) return value;
   const made = derivedOf(root, schema);
