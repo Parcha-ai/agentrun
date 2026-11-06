@@ -51,12 +51,31 @@ type initProcess struct {
 	ended  chan error
 }
 
-// startInit runs `computerd init` on a socket in a fresh directory, and waits until it answers.
+// socketIn makes a fresh directory of mode, as a provider would, and returns a socket path in it.
+func socketIn(t *testing.T, mode os.FileMode) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "run")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, mode); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	return filepath.Join(dir, "computerd.sock")
+}
+
+// startInit runs `computerd init` on a socket in a fresh 0700 directory, ending in an hour, and waits until it answers.
 func startInit(t *testing.T) *initProcess {
 	t.Helper()
-	socket := filepath.Join(t.TempDir(), "run", "computerd.sock")
+	return startInitUntil(t, time.Now().Add(time.Hour))
+}
+
+func startInitUntil(t *testing.T, deadline time.Time) *initProcess {
+	t.Helper()
+	socket := socketIn(t, 0o700)
 	in := &initProcess{socket: socket, log: &bytes.Buffer{}, ended: make(chan error, 1)}
-	in.cmd = exec.Command(os.Args[0], "init", time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano))
+	in.cmd = exec.Command(os.Args[0], "init", deadline.UTC().Format(time.RFC3339Nano))
 	in.cmd.Env = append(os.Environ(), daemon.SocketEnv+"="+socket)
 	in.cmd.Stderr = in.log
 	if err := in.cmd.Start(); err != nil {
@@ -68,8 +87,8 @@ func startInit(t *testing.T) *initProcess {
 		<-in.ended
 		in.ended <- nil
 	})
-	deadline := time.Now().Add(patience)
-	for time.Now().Before(deadline) {
+	listening := time.Now().Add(patience)
+	for time.Now().Before(listening) {
 		if conn, err := net.Dial("unix", socket); err == nil {
 			_ = conn.Close()
 			return in
@@ -395,6 +414,89 @@ func TestInitEndsEveryProcessOnSIGTERMAndExits0(t *testing.T) {
 		}
 	case <-time.After(2 * patience):
 		t.Fatalf("init did not end after SIGTERM: %s", in.log)
+	}
+	for _, pid := range pids {
+		gone(t, pid)
+	}
+}
+
+// initFails runs `computerd init` on socket and returns its log once it exits, which it must, with 1.
+func initFails(t *testing.T, socket string) string {
+	t.Helper()
+	cmd := exec.Command(os.Args[0], "init", time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano))
+	cmd.Env = append(os.Environ(), daemon.SocketEnv+"="+socket)
+	var log bytes.Buffer
+	cmd.Stderr = &log
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	ended := make(chan error, 1)
+	go func() { ended <- cmd.Wait() }()
+	select {
+	case err := <-ended:
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) || exit.ExitCode() != 1 {
+			t.Fatalf("init on %s: %v, want exit 1: %s", socket, err, log.String())
+		}
+	case <-time.After(patience):
+		_ = cmd.Process.Kill()
+		<-ended
+		t.Fatalf("init on %s still ran: %s", socket, log.String())
+	}
+	return log.String()
+}
+
+func TestInitFailsInWordsWhenItsSocketsDirectoryIsMissing(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "missing")
+	text := initFails(t, filepath.Join(dir, "computerd.sock"))
+	if !strings.Contains(text, dir+" is missing") || !strings.Contains(text, "mode=0700") {
+		t.Fatalf("init did not say the directory is missing and who must make it: %q", text)
+	}
+	if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("init made %s: %v", dir, err)
+	}
+}
+
+func TestInitFailsInWordsWhenItsSocketsDirectoryIsNotWritable(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: every directory is writable")
+	}
+	socket := socketIn(t, 0o500)
+	if text := initFails(t, socket); !strings.Contains(text, filepath.Dir(socket)+" is not writable") {
+		t.Fatalf("init did not say the directory is not writable: %q", text)
+	}
+}
+
+func TestInitRefusesASocketsDirectoryOthersMayEnter(t *testing.T) {
+	socket := socketIn(t, 0o750)
+	if text := initFails(t, socket); !strings.Contains(text, "alone (mode 0700)") {
+		t.Fatalf("init did not refuse a directory its group may enter: %q", text)
+	}
+}
+
+func TestInitEndsEveryProcessAtItsDeadlineAndExits0(t *testing.T) {
+	// Long enough for the processes to start on a loaded host; the test asserts what happens at the deadline, not when.
+	deadline := time.Now().Add(10 * time.Second)
+	in := startInitUntil(t, deadline)
+	c := dial(t, in.socket)
+	var deaf, plain started
+	c.ok("process.start", map[string]any{"argv": []string{"sh", "-c", `trap "" TERM; sleep 308 & echo $!; wait`}}, &deaf)
+	c.ok("process.start", map[string]any{"argv": []string{"sleep", "309"}}, &plain)
+	pids := append(pidsIn(t, c.readUntil(deaf.ID, "\n"), 1), deaf.Pid, plain.Pid)
+	select {
+	case err := <-in.ended:
+		in.ended <- err
+		if err != nil {
+			t.Fatalf("init at its deadline: %v: %s", err, in.log)
+		}
+	case <-time.After(time.Until(deadline) + 2*patience):
+		t.Fatalf("init did not end at its deadline: %s", in.log)
+	}
+	if time.Now().Before(deadline) {
+		t.Fatalf("init ended before its deadline: %s", in.log)
+	}
+	if !strings.Contains(in.log.String(), "deadline") {
+		t.Errorf("init did not say the deadline ended it: %s", in.log)
 	}
 	for _, pid := range pids {
 		gone(t, pid)
