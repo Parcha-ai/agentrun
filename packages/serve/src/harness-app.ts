@@ -36,13 +36,13 @@ import { type ConfineChild, confineOf } from "./adapters.js";
 import { hostTools, type ToolResults } from "./host-tools.js";
 import { endsTurn, type Park, type ParkedCall, type Resume, type RunGate } from "./tool-gate.js";
 import type { McpGateway } from "./mcp-gateway.js";
-import { BOUND_FIELD, CAP_REFUSAL_CODE, CAP_REFUSED_FIELD, type CapGuard, capToolSpend, holdsInFlight, type Previous, previousOf, type RefusalFigures, refusalFields, type RunSpend, sideSpend, takePaidRefusal, useSpend } from "./cap.js";
+import { BOUND_FIELD, CAP_REFUSAL_CODE, CAP_REFUSED_FIELD, CAP_TOLERANCE, type CapGuard, capToolSpend, holdsInFlight, type Previous, previousOf, type RefusalFigures, refusalFields, type RunSpend, paidHolds, sideSpend, takePaidRefusal, typicalCost, useSpend, wrapUpDue, wrapUpWords } from "./cap.js";
 import { durableSessions } from "./sessions.js";
 import { handsParallel, planeOf } from "./tool-plane.js";
 import { parallelOf } from "./web-fetch.js";
 import { WEB_SEARCH_TOOL } from "./web-search.js";
 import { ADAPTER_API, BOOKED, MESSAGE, MESSAGE_END, TURN_END, type TurnEndData } from "./turn-end.js";
-import { originOf, REQUEST_CONTINUED, REQUEST_COST_LATE, REQUEST_COST_PENDING, REQUEST_STARTED, TOOL_COST, TOOL_STARTED } from "@parcha/pi-durable-agent/timeline";
+import { CAP_WRAPUP, originOf, REQUEST_CONTINUED, REQUEST_COST_LATE, REQUEST_COST_PENDING, REQUEST_STARTED, TOOL_COST, TOOL_STARTED } from "@parcha/pi-durable-agent/timeline";
 
 /** The root's marker of a paid request already written as a pi.assistant entry (turn-end.ts). */
 export { BOOKED } from "./turn-end.js";
@@ -114,6 +114,21 @@ function assistantMessage(harness: string, model: string | undefined, request: P
   };
 }
 
+/** The session's own model's priced requests in its records, in order (the wrap-up's typical cost): each runner.turn whose
+ *  cost is known and above 0 and whose runner.request was not a side call. */
+function ownCosts(records: readonly { kind: string; data: unknown }[]): number[] {
+  const side = new Set<number>();
+  const costs: number[] = [];
+  for (const record of records) {
+    const data = (record.data ?? {}) as { turn?: unknown; side?: unknown; usd?: unknown; bookedUsd?: unknown };
+    if (record.kind === RUNNER_RECORDS.request && data.side === true && typeof data.turn === "number") side.add(data.turn);
+    if (record.kind !== RUNNER_RECORDS.turn || (typeof data.turn === "number" && side.has(data.turn))) continue;
+    const usd = typeof data.bookedUsd === "number" ? data.bookedUsd : data.usd;
+    if (typeof usd === "number" && Number.isFinite(usd) && usd > 0) costs.push(usd);
+  }
+  return costs;
+}
+
 export interface AdapterRun {
   readonly door: DoorHook;
   onOpen(run: DurableRun): Promise<void>;
@@ -164,13 +179,18 @@ export function adapterRun(
   // The session's previous request on each model, as the cap prices the next one by it (cap.ts Previous): each admitted
   // request's input bound and bound, from the guard (one slot: admissions run one at a time) to its start, by turn, until
   // it answers with its usage. In this process only: a new process prices its first request with nothing cached.
-  let admittedNext: { model: string; inputTokensMax?: number; boundUsd: number } | undefined;
-  const sentOf = new Map<number, { model: string; inputTokensMax?: number }>();
+  let admittedNext: { model: string; inputTokensMax?: number; boundUsd: number; side?: true } | undefined;
+  const sentOf = new Map<number, { model: string; inputTokensMax?: number; side?: true }>();
   const previous = new Map<string, Previous>();
   // The run's spend as a paid tool's check reads it (useSpend, set at the open): a paid call refused under it pauses the
   // run at this run's next request (guard).
   let spend: RunSpend | undefined;
   const plus = (a: number | null, b: number | null) => (a === null || b === null ? null : a + b);
+  // The wrap-up (cap.ts wrapUpDue): near its cap, the run's model is told once to finish, in a note the model proxy adds
+  // to the session's next main-model request (ModelPort.note) and in a row of the server's on the root (CAP_WRAPUP), which
+  // also keeps it to once per cap across processes. `costs`: the session's own model's priced requests, side calls left
+  // out; `note`: the words armed for the proxy, taken once.
+  const wrap: { costs: number[]; sent: boolean; note?: string } = { costs: [], sent: false };
   const guard = (request: Parameters<CapGuard["beforeRequest"]>[0]) => {
     const byCancel = cancelled();
     // What the run spent: the booking's, its paid tools' charges, and its own model requests' beside the harness's (a
@@ -188,8 +208,23 @@ export function adapterRun(
       return answer;
     }
     inFlight.admitted(answer?.holdUsd);
-    admittedNext = typeof model === "string" ? { model, ...(request.inputTokensMax === undefined ? {} : { inputTokensMax: request.inputTokensMax }), boundUsd: answer?.boundUsd ?? 0 } : undefined;
+    const side = (request as { side?: unknown }).side === true;
+    admittedNext = typeof model === "string" ? { model, ...(request.inputTokensMax === undefined ? {} : { inputTokensMax: request.inputTokensMax }), boundUsd: answer?.boundUsd ?? 0, ...(side ? { side } : {}) } : undefined;
     if (!answer) return undefined;
+    // Near the cap, once: what is left as admission counts it (spent, and what requests and paid calls in flight are
+    // held at) under three times the session's own model's typical request, this one's expected cost standing in for
+    // none. Never on a side call's admission: the note is for the session's own model.
+    if (budgetUsd !== undefined && !wrap.sent && !side) {
+      const spentNow = plus(plus(request.spentUsd, charged), sideSpend());
+      const held = request.inFlight.reduce((sum, r) => sum + (r.holdUsd ?? 0), paidHolds());
+      const due = spentNow === null ? undefined : wrapUpDue(budgetUsd, spentNow, held, typicalCost(wrap.costs, answer.holdUsd));
+      if (due) {
+        wrap.sent = true;
+        wrap.note = wrapUpWords(due.leftUsd);
+        const data = { key: spec.key, capUsd: budgetUsd, leftUsd: due.leftUsd, words: wrap.note };
+        later(() => commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: CAP_WRAPUP, data })))).catch(() => undefined);
+      }
+    }
     // Admitted, limited to the output what is left of the cap buys (which the runner hands the model proxy): what the cap
     // holds it at, which the runner records, and counts it at if its cost never comes in; stopped part way by its client,
     // what streamed (cap.ts Admitted), never more than its hold (the runner).
@@ -351,6 +386,8 @@ export function adapterRun(
       // or it was cut: nothing cached to count on).
       const sent = sentOf.get(event.turn);
       sentOf.delete(event.turn);
+      // A priced request of the session's own model: the wrap-up's typical cost counts it.
+      if (sent && !sent.side && typeof event.usage.usd === "number" && Number.isFinite(event.usage.usd) && event.usage.usd > 0) wrap.costs.push(event.usage.usd);
       const last = sent && event.usage.usd !== null && !event.usage.cut ? previousOf(event.usage, sent.inputTokensMax, now()) : undefined;
       if (sent) last ? previous.set(sent.model, last) : previous.delete(sent.model);
       costed.push({ request: event.turn, usage: event.usage });
@@ -610,6 +647,8 @@ export function adapterRun(
             lastUser = Number(entry.id);
           }
           if (data?.key !== spec.key) continue;
+          // The wrap-up was told under this very cap in an earlier process: once per cap (a raise's new cap re-arms it).
+          if (entry.kind === CAP_WRAPUP && budgetUsd !== undefined && typeof (data as { capUsd?: unknown }).capUsd === "number" && Math.abs((data as { capUsd: number }).capUsd - budgetUsd) <= CAP_TOLERANCE) wrap.sent = true;
           if (entry.kind === BOOKED && typeof data.request === "number") {
             written.add(data.request);
             (data.unpriced === true ? unpriced : priced).add(data.request);
@@ -631,6 +670,8 @@ export function adapterRun(
       const adapter = await make(confineOf(env.confinePrefix()));
       const writer = await sessions.open(spec.key);
       const records = await writer.read();
+      // The session's own model's priced requests in earlier processes, in order: the wrap-up's typical cost reads them.
+      wrap.costs.push(...ownCosts(records));
       // Before the cut requests are booked, which may write their entries.
       for (const [request, model] of inSession(records).asked) models.set(request, model);
       const booking = await modelPortFor(writer, {
@@ -639,6 +680,11 @@ export function adapterRun(
         ...(budgetUsd !== undefined ? { budgetUsd } : {}),
         beforeRequest: guard as never,
         onEvent: onModel,
+        note: () => {
+          const note = wrap.note;
+          wrap.note = undefined;
+          return note;
+        },
         stopped: () => halted ?? cancelStop() ?? (parked === undefined ? undefined : PARKED),
         stop: (reason, message) => {
           const error = new Error(message ?? reason);

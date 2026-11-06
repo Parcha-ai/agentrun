@@ -107,6 +107,10 @@ export interface ProviderPolicy {
    *  can buy): never more than it asked for, and never longer as sent, since its input bound was measured on it. A host
    *  that limits a request's output needs it: without it such a request is refused, never sent unlimited. */
   limitOutput?(body: Record<string, unknown>, max: number): Record<string, unknown>;
+  /** `body` with `text` added as a note the provider reads after everything the client sent (the spend cap's wrap-up),
+   *  carrying no cache marker of its own, so the prefix the client built, and cached, stays byte for byte as sent. Absent:
+   *  the policy cannot place one, and a note waits for a request whose policy can. */
+  addNote?(body: Record<string, unknown>, text: string): Record<string, unknown>;
   /** The status a request the runner refused gets: one the client does not retry. Default 400. */
   readonly refusedStatus?: number;
 }
@@ -181,6 +185,8 @@ export interface ProxyRequest {
   outputTokensAsked?: number;
   /** The least output it may be limited to and still answer (the policy's `outputLeast`). */
   outputTokensLeast?: number;
+  /** A request on another model than the session's (a client's small-model side call: a title, a summary). */
+  side?: true;
 }
 
 export interface ModelProxyHooks {
@@ -194,6 +200,9 @@ export interface ModelProxyHooks {
   /** When a paid request's response headers arrive, before its body: the ids they give it (`providerIdsOf`), so a
    *  request a crash cuts off after this point is known to have reached the provider, under those ids. */
   responded?(ids: Record<string, string>, ticket?: unknown): Promise<void>;
+  /** A note the host has for the session's next main-model request (the spend cap's wrap-up), taken by this call: the
+   *  proxy asks only for a paid request on the session's model whose policy can place one (`addNote`). */
+  note?(model: string): string | undefined;
 }
 
 export interface ModelProxyOptions {
@@ -523,6 +532,19 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     } catch (error) {
       say(`model proxy (${policy.id}): the policy could not name the request's model; it is booked as the session's`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
     }
+    // A note the host has for the session's next main-model request (the spend cap's wrap-up): a paid request on the
+    // session's model whose policy can place it takes it, once, before the body is measured, so the cap admits its bytes.
+    // One the policy fails to place is dropped, said once; the request goes as the client sent it.
+    if (!route.free && asked === model && policy.addNote && hooks.note) {
+      const note = hooks.note(asked);
+      if (note) {
+        try {
+          body = policy.addNote(body, note);
+        } catch (error) {
+          say(`model proxy (${policy.id}): the host's note could not be placed; the request goes without it`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
+        }
+      }
+    }
     // The body as it is sent, and the most input tokens it can be billed for, measured before the runner is asked.
     let sent: string;
     try {
@@ -577,7 +599,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     let ticket: unknown;
     try {
       if (!route.free) ticket = await hooks.beforeRequest({
-        model: asked, inputTokensMax,
+        model: asked, inputTokensMax, ...(asked !== model ? { side: true as const } : {}),
         ...(outputTokensAsked === undefined ? {} : { outputTokensAsked }),
         ...(outputTokensLeast === undefined ? {} : { outputTokensLeast }),
       });

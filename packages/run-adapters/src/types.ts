@@ -129,6 +129,8 @@ export interface ModelRequest {
   /** The least output it may be limited to and still answer: its answer's 1,024 tokens, plus the least thinking its
    *  provider takes when it thinks (the proxy's policy says). Absent: 1,024. */
   outputTokensLeast?: number;
+  /** On another model than the session's: a client's side call (a title, a summary), never its turn's own. */
+  side?: true;
 }
 
 /** What a paid request cost, once it completed. */
@@ -172,6 +174,9 @@ export interface ModelPort {
   afterRequest(usage: ModelUsage, ticket?: ModelTicket, ended?: Ended): Promise<void>;
   /** Records the ids a paid request's response gave it, as its headers arrive and before its answer is read. */
   responded?(ids: Record<string, string>, ticket?: ModelTicket): Promise<void>;
+  /** A note its host has for the session's next main-model request (the spend cap's wrap-up), taken by this call; the
+   *  session's model proxy adds it to that request's body (ModelProxyHooks.note). */
+  note?(model: string): string | undefined;
 }
 
 /** A paid request's admission: the turn it was admitted as, which its answer is booked under. */
