@@ -333,6 +333,8 @@ export type Run = {
   boxing?: Promise<{ id: string; made: boolean }>;
   /** Its remote box's newest pull: a read of its files waits for it. */
   pulling?: Promise<void>;
+  /** Its launch waits on its claim, tried again later (launch): it keeps its place in the server's limits (takePlace). */
+  claimWait?: boolean;
   /** The last of its database's reads and take-back checkpoint (runs.ts runDb): the next waits for it. */
   dbQueue?: Promise<void>;
   /** It stood waiting for the person when last marked: a turn's end is the change into that. */
@@ -1910,6 +1912,9 @@ export class Runs {
   }
 
   private launch(run: Run, followUp = run.followUpOpen === true): void {
+    // A launch that waited on its claim lets go of the place it kept (takePlace) as it tries again: from here it is a live
+    // run again, or not one at all.
+    run.claimWait = undefined;
     if (run.child || this.closing || run.cancel || run.outcome || run.finishing || run.preparing) return;
     // Taken by this launch only: a later launch (a relaunch after its process went) opens the run as any other.
     run.followUpOpen = undefined;
@@ -2020,6 +2025,7 @@ export class Runs {
       // What this launch took goes back, so the next one launches as this one would have.
       if (followUp) run.followUpOpen = true;
       if (first) run.firstLaunch = true;
+      run.claimWait = true;
       warn(run.id, `its process is not started: its claim was not written (${(error as Error).message}); trying again in ${every / 1000} s`);
       setTimeout(() => void (this.closing ? undefined : this.launch(run)), every).unref();
       return;
@@ -2376,7 +2382,8 @@ export class Runs {
     const never = neverFits(harness, memory);
     if (never) throw new ApiError("agent_not_runnable", never, { details: { unbound: [], missing: {}, harness } });
     for (const deadline = Date.now() + this.killAfterMs() + 1_000; ; await sleep(50)) {
-      const holding = [...this.runs.values()].filter((run) => this.live(run));
+      // A run whose launch waits on its claim (launch) keeps the place it had: nothing else takes it meanwhile.
+      const holding = [...this.runs.values()].filter((run) => this.live(run) || run.claimWait === true);
       const counted = max === undefined || holding.length + this.starting < max;
       const held = holding.reduce((sum, run) => sum + runMibOf(run.harness), this.startingMib);
       // With nothing held, a run that fits at all starts: pi's one place on a host smaller than a pi run (host.ts).

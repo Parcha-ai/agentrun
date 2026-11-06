@@ -152,8 +152,8 @@ test("a take-back whose claim cannot be written (the control plane not writable)
   }
 });
 
-test("a workflow run whose claim cannot be written at its launch is launched again once it can: it completes, never left without a process", { timeout: 120_000 }, async (t) => {
-  const { api, data } = await serve(t, { faux: FAUX, settleRetryMs: 200 });
+test("a workflow run whose claim cannot be written at its launch is launched again once it can, keeping its place in the server's limits meanwhile: it completes, never left without a process", { timeout: 120_000 }, async (t) => {
+  const { api, data } = await serve(t, { faux: FAUX, settleRetryMs: 200, maxRuns: 1 });
   assert.equal((await api("POST", "/agents", flowAgent("flow"))).status, 201);
   // The run's claim is refused (as by a store another writer holds) from its start until the test lets go.
   const db = new DatabaseSync(join(data, "store.sqlite"));
@@ -163,6 +163,9 @@ test("a workflow run whose claim cannot be written at its launch is launched aga
   assert.equal(run.status, 202, JSON.stringify(run.body));
   await new Promise((resolve) => setTimeout(resolve, 600));
   assert.equal(claimOf(data, run.body.run_id).claim_epoch, 0, "no claim written yet, so no process");
+  // Its place is kept: with a limit of one run, another start is refused while it waits on its claim.
+  const other = await api("POST", "/agents/flow/runs", { input: { question: "And another." } });
+  assert.equal(other.status, 429, JSON.stringify(other.body));
   db.exec("DROP TRIGGER held_claim");
   db.close();
   const { last } = await follow(api, run.body.run_id, ["completed"], { deadlineMs: 60_000 });
