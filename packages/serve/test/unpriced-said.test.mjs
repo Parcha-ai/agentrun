@@ -114,7 +114,9 @@ test("an agent with a default cap on a gateway model with no price saves with a 
   const created = await api("POST", "/agents", { definition });
   const warning = created.body?.warnings?.find((w) => w.field === "definition.model");
   assert.deepEqual([created.status, warning?.message, warning?.fix], [201, `The model ${NO_PRICE} has no price here, so a run's spend cap cannot be kept on it.`, "Set AGENT_MODEL_PRICE (USD per million input,output,cacheRead tokens) where AgentRun starts, or run without a spend cap."], JSON.stringify(created.body));
-  const updated = await api("PUT", "/agents/capped-no-price/definition", { definition: { ...definition, instructions: "Answer, updated." } });
+  // As every edit does: the definition as the agent serves it, without the version the server numbers.
+  const { version: _, ...current } = (await api("GET", "/agents/capped-no-price")).body.definition;
+  const updated = await api("PUT", "/agents/capped-no-price/definition", { definition: { ...current, instructions: "Answer, updated." } });
   assert.equal(updated.status, 200, JSON.stringify(updated.body));
   const started = await api("POST", "/agents/capped-no-price/runs", { input: { content: "Say hi." } });
   assert.equal(started.status, 409, JSON.stringify(started.body));
