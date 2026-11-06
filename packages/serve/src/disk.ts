@@ -3,10 +3,11 @@
 // server's), which nothing but the server opens. Every place a run works reaches its folder through one interface:
 // mount a folder of the disk at a target for a holder, sync it, unmount it, and revoke a run's folder from whoever holds
 // it. This is the local adapter, for one machine: the disk is a folder of it. A runner works in the folder itself, so a
-// mount is the folder's own path; a sync makes what was written in it durable (fsync of the folder); an unmount lets go
+// mount is the folder's own path; a sync makes what was written in it durable (each file and folder in it fsynced); an unmount lets go
 // of nothing; and a revoke is the run's claim taken by the server, its epoch bumped on its row, which is the whole lock
 // here: a holder of a lower epoch is fenced. A Docker bind of the folder, and another machine's disk, come later.
-import { lstat, open, realpath } from "node:fs/promises";
+import { constants } from "node:fs";
+import { lstat, open, readdir, realpath } from "node:fs/promises";
 import { isAbsolute, join, relative, sep } from "node:path";
 import { DISK_DIR } from "@parcha/pi-durable-agent";
 
@@ -22,7 +23,7 @@ export interface DiskAdapter {
   /** The disk's folder `subpath` (below the disk, such as `agents/<a>/runs/<r>/work`) made reachable at `target` for a
    *  holder working in `mode`. */
   mount(subpath: string, target: string | undefined, mode: DiskMode): Promise<Mounted>;
-  /** What was written in the mounted folder, made durable. */
+  /** What was written in the mounted folder, made durable: every file's bytes and every folder's entries in it. */
   sync(mounted: Mounted): Promise<void>;
   /** Lets go of the mounted folder. */
   unmount(mounted: Mounted): Promise<void>;
@@ -48,18 +49,35 @@ export function localDisk(data: string, claims: Claims): DiskAdapter {
       return { subpath, path, mode };
     },
     async sync(mounted) {
-      const handle = await open(mounted.path, "r");
-      try {
-        await handle.sync();
-      } finally {
-        await handle.close();
-      }
+      await syncTree(mounted.path);
     },
     async unmount() {},
     async revoke(runId) {
       return claims.claimRun(runId, SERVER_HOLDER);
     },
   };
+}
+
+/** Every file and folder below `dir`, and `dir` itself, synced to the disk: each file's bytes, then each folder's
+ *  entries, deepest first, so what a sync answered survives a crash of the machine. A link is never followed (it is an
+ *  entry of its folder, synced with it), and nothing but a file or a folder is opened. */
+async function syncTree(dir: string): Promise<void> {
+  for (const entry of await readdir(dir, { withFileTypes: true })) {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) await syncTree(path);
+    else if (entry.isFile()) await syncOne(path);
+  }
+  await syncOne(dir);
+}
+
+/** Syncs one file or folder, opened read-only, never through a link. */
+async function syncOne(path: string): Promise<void> {
+  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
 }
 
 /** The disk folder `subpath`, by its path: below the disk, through no link, each level a directory. */

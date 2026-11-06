@@ -2011,11 +2011,18 @@ export class Runs {
     const decisionKeys = providers ? decisionKeysFor(served, { providers, parallelWeb: handsParallel(plane) }) : {};
     const handsKey = Object.keys(decisionKeys).length > 0;
     // The run's claim, for its process: the epoch bumped and the holder named on its row, in one statement. A claim
-    // that cannot be written launches nothing; the next launch or start tries again.
+    // that cannot be written (the agent store held, or not writable) launches nothing now, and is tried again, the
+    // launch whole, every settle retry until it is written: a run never stays without a process for want of one.
     try {
       env[RUN_EPOCH_ENV] = String(this.store.claimRun(run.id, RUN_HOLDER));
     } catch (error) {
-      return warn(run.id, `its process is not started: its claim was not written (${(error as Error).message})`);
+      const every = this.options.settleRetryMs ?? SETTLE_RETRY_MS;
+      // What this launch took goes back, so the next one launches as this one would have.
+      if (followUp) run.followUpOpen = true;
+      if (first) run.firstLaunch = true;
+      warn(run.id, `its process is not started: its claim was not written (${(error as Error).message}); trying again in ${every / 1000} s`);
+      setTimeout(() => void (this.closing ? undefined : this.launch(run)), every).unref();
+      return;
     }
     this.markLaunching(run);
     const log = openSync(join(run.dir, PROCESS_LOG), "a", 0o600);

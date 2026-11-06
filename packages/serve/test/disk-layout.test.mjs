@@ -15,7 +15,7 @@ import { startServe } from "../dist/index.js";
 import { checkpointRunDb, HeldRunDbError, MonotonicReads, BehindReadError, observeRunDbOpens } from "../dist/run-db.js";
 import { localDisk } from "../dist/disk.js";
 import { learningRepo } from "../dist/learning.js";
-import { agent, follow, runDir, scratch, serve } from "./support.mjs";
+import { agent, FAUX, flowAgent, follow, runDir, scratch, serve } from "./support.mjs";
 
 const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;
 const folderOf = (id) => `${id.toLowerCase()}-${createHash("sha256").update(id, "utf8").digest("hex").slice(0, 16)}`;
@@ -95,6 +95,10 @@ test("the local disk adapter: mount gives a runner the folder itself, below the 
   const disk = localDisk(data, { claimRun: (runId, holder) => (claimed.push([runId, holder]), claimed.length + 1) });
   const mounted = await disk.mount("agents/a-0123456789abcdef/runs/r1/work", undefined, "tools");
   assert.deepEqual(mounted, { subpath: "agents/a-0123456789abcdef/runs/r1/work", path: work, mode: "tools" });
+  // Its files and folders, nested, are synced; a link in it is never followed.
+  mkdirSync(join(work, "a", "b"), { recursive: true });
+  writeFileSync(join(work, "a", "b", "f.txt"), "bytes");
+  symlinkSync("/nonexistent/elsewhere", join(work, "a", "away"));
   await disk.sync(mounted);
   await disk.unmount(mounted);
   assert.equal(await disk.revoke("r1"), 2);
@@ -146,4 +150,22 @@ test("a take-back whose claim cannot be written (the control plane not writable)
   } finally {
     await chmod(data, 0o755);
   }
+});
+
+test("a workflow run whose claim cannot be written at its launch is launched again once it can: it completes, never left without a process", { timeout: 120_000 }, async (t) => {
+  const { api, data } = await serve(t, { faux: FAUX, settleRetryMs: 200 });
+  assert.equal((await api("POST", "/agents", flowAgent("flow"))).status, 201);
+  // The run's claim is refused (as by a store another writer holds) from its start until the test lets go.
+  const db = new DatabaseSync(join(data, "store.sqlite"));
+  t.after(() => db.isOpen && db.close());
+  db.exec("CREATE TRIGGER held_claim BEFORE UPDATE OF claim_epoch ON runs BEGIN SELECT RAISE(ABORT, 'the claim is held'); END");
+  const run = await api("POST", "/agents/flow/runs", { input: { question: "Answer soon." } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  await new Promise((resolve) => setTimeout(resolve, 600));
+  assert.equal(claimOf(data, run.body.run_id).claim_epoch, 0, "no claim written yet, so no process");
+  db.exec("DROP TRIGGER held_claim");
+  db.close();
+  const { last } = await follow(api, run.body.run_id, ["completed"], { deadlineMs: 60_000 });
+  assert.equal(last.final, true);
+  assert.ok(claimOf(data, run.body.run_id).claim_epoch >= 1, "claimed by its process once it could be");
 });
