@@ -21,8 +21,8 @@ test("Codex's bundled catalog without apply_patch: that one field null on every 
 test('the config names the catalog Codex reads (model_catalog_json) when given one, and an app may not set it', () => {
   assert.equal(MODEL_CATALOG_FILE, 'model-catalog.json');
   assert.equal(codexConfig(base).model_catalog_json, undefined, 'no catalog given: Codex keeps its own');
-  const config = codexConfig({ ...base, modelCatalog: `/home/codex/${MODEL_CATALOG_FILE}` });
-  assert.equal(config.model_catalog_json, '/home/codex/model-catalog.json');
-  assert.match(toToml(config), /^model_catalog_json = "\/home\/codex\/model-catalog\.json"$/m);
+  const config = codexConfig({ ...base, modelCatalog: `/vm/codex-home/${MODEL_CATALOG_FILE}` });
+  assert.equal(config.model_catalog_json, '/vm/codex-home/model-catalog.json');
+  assert.match(toToml(config), /^model_catalog_json = "\/vm\/codex-home\/model-catalog\.json"$/m);
   assert.throws(() => checkConfig({ model_catalog_json: '/tmp/mine.json' }), /config\.model_catalog_json is set by the harness/);
 });
