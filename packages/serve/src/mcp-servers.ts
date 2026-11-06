@@ -24,8 +24,20 @@ export const MCP_SERVER_NAME = /^[a-z][a-z0-9-]{0,31}$/;
 export const RESERVED_MCP_NAMES: readonly string[] = ["hands", "monid"];
 export const MCP_AUTH_TYPES = ["none", "bearer", "headers", "oauth"] as const;
 /** A run's launch refreshes an OAuth access token that expires within this. */
-/** Why an access token past its expiry is not handed over when its refresh got no answer: try again later. */
-export const SIGN_IN_SERVER_SILENT = "the sign-in server didn't answer; try again";
+/** Where an owner updates a saved MCP server, as people read it. */
+const MCP_SETTINGS = "Settings → MCP servers";
+/** Why a saved credential can't be used for a run's calls, each with its own remedy and no other, as the model reads it
+ *  after "The MCP server <name>'s credential can't be used right now: " (mcp-gateway.ts). The one place they are said. */
+export const UNUSABLE = {
+  /** This server was started without its seal key. */
+  noSealKey: `this server was started without its seal key (${SEAL_KEY_ENV}); start it with the key the credential was saved under, or update the credential in ${MCP_SETTINGS}`,
+  /** Sealed under another seal key, or damaged. */
+  damaged: `it was sealed under another seal key, or damaged; update it in ${MCP_SETTINGS}`,
+  /** An OAuth sign-in its authorization server refused to refresh, or with no refresh token left. */
+  signedOut: `its sign-in expired or was revoked: ${SIGN_IN_AGAIN}`,
+  /** An access token past its expiry whose refresh got no answer: the sign-in itself is fine. */
+  silent: "the sign-in server didn't answer; try again",
+} as const;
 export const REFRESH_MARGIN_MS = 5 * 60_000;
 /** How long a stop waits for the refreshes and code exchanges it aborted. */
 const CLOSE_MS = 2_000;
@@ -263,15 +275,15 @@ export class McpServers {
   headers(name: string): { headers: HeaderMap } | { unopened: string } | undefined {
     const kept = this.saved(name);
     if (!kept || kept.auth.type === "none") return undefined;
-    if (kept.auth.oauth?.expired) return { unopened: `its sign-in expired or was revoked: ${SIGN_IN_AGAIN}` };
+    if (kept.auth.oauth?.expired) return { unopened: UNUSABLE.signedOut };
     // An access token past its expiry whose refresh got no answer (freshen kept the refresh token for the next launch):
     // never handed over, so the server's 401 never reads as a sign-in to make again.
     const until = kept.auth.type === "oauth" && kept.auth.oauth?.expires_at ? Date.parse(kept.auth.oauth.expires_at) : NaN;
-    if (until <= Date.now()) return { unopened: SIGN_IN_SERVER_SILENT };
+    if (until <= Date.now()) return { unopened: UNUSABLE.silent };
     const opened = this.open(name, kept);
     // Tagged, never told apart by a key a saved header could also have (`unopened` is a header name like any other).
     if ("headers" in opened) return { headers: opened.headers };
-    return { unopened: opened.unreadable === "seal_key_missing" ? `this server was handed no seal key, ${SEAL_KEY_ENV}` : "sealed under another seal key, or damaged" };
+    return { unopened: opened.unreadable === "seal_key_missing" ? UNUSABLE.noSealKey : UNUSABLE.damaged };
   }
 
   /** An OAuth server's token set refreshed when its access token expires within `margin`. Tried twice when its
