@@ -187,12 +187,31 @@ export function adapterRun(
   let spend: RunSpend | undefined;
   const plus = (a: number | null, b: number | null) => (a === null || b === null ? null : a + b);
   // The wrap-up (cap.ts wrapUpDue): near its cap, the run's model is told once to finish, in a note the model proxy adds
-  // to the session's next main-model request (ModelPort.note) and in a row of the server's on the root (CAP_WRAPUP), which
-  // also keeps it to once per cap across processes. `costs`: the session's own model's priced requests, side calls left
-  // out; `note`: the words armed for the proxy, taken once.
-  // `row`: its root entry, held while the turn it is told in has its person's (or the server's) message still to be
-  // written (`entryDue`, sendOf), so the Timeline shows that message first and the note after it.
-  const wrap: { costs: number[]; sent: boolean; note?: string; entryDue: boolean; row?: JsonObject } = { costs: [], sent: false, entryDue: false };
+  // to a main-model request (ModelPort.note, takeNote) and in a row of the server's on the root (CAP_WRAPUP), which also
+  // keeps it to once per cap across processes. Both are decided as the proxy takes the note into a request, with what is
+  // left then, and the row is written, and the note counted sent, only once that request is admitted carrying it
+  // (`noted`), as pi's judge does: nothing is recorded for a note no request carried.
+  // `costs`: the session's own model's priced requests, side calls left out. `due`: an admission found the wrap-up due
+  // with that request's expected cost standing in for a typical one (none priced yet), which the proxy measures only
+  // after it has placed a note: the next request takes it. In memory only, as nothing was told: a process opened again
+  // reads the costs. `taken`: the row of the note the proxy last took, until its request's admission. `row`: that row
+  // once admitted, held while the turn it is told in has its person's (or the server's) message still to be written
+  // (`entryDue`, sendOf), so the Timeline shows that message first and the note after it.
+  type WrapRow = { key: string; capUsd: number; leftUsd: number; words: string };
+  const wrap: { costs: number[]; sent: boolean; due: boolean; taken?: WrapRow; entryDue: boolean; row?: WrapRow } = { costs: [], sent: false, due: false, entryDue: false };
+  /** The note for the request the model proxy is placing it in (ModelPort.note), when the wrap-up is due: what is left
+   *  of the cap as admission counts it now (`spentUsd`: what the run spent; what its requests and paid calls in flight
+   *  are held at) under three times the session's own model's typical request, or an earlier admission found it due. */
+  const takeNote = (spentUsd: number | null): string | undefined => {
+    wrap.taken = undefined;
+    if (budgetUsd === undefined || wrap.sent || spentUsd === null) return undefined;
+    const held = inFlight.total() + paidHolds();
+    const due = wrap.costs.length > 0 ? wrapUpDue(budgetUsd, spentUsd, held, typicalCost(wrap.costs, 0)) : undefined;
+    if (!due && !wrap.due) return undefined;
+    const leftUsd = due?.leftUsd ?? budgetUsd - spentUsd - held;
+    wrap.taken = { key: spec.key, capUsd: budgetUsd, leftUsd, words: wrapUpWords(leftUsd) };
+    return wrap.taken.words;
+  };
   const guard = (request: Parameters<CapGuard["beforeRequest"]>[0]) => {
     const byCancel = cancelled();
     // What the run spent: the booking's, its paid tools' charges, and its own model requests' beside the harness's (a
@@ -206,6 +225,8 @@ export function adapterRun(
     if (answer && "refuse" in answer) {
       refused = answer.refuse;
       capRefused = !byCancel;
+      // A note this request carried was never sent: the next request that can take it is told, with what is left then.
+      wrap.taken = undefined;
       refusedFigures = !byCancel && "needsUsd" in answer && typeof answer.needsUsd === "number" && typeof answer.spentUsd === "number" && typeof answer.leastCapUsd === "number" ? { spentUsd: answer.spentUsd, needsUsd: answer.needsUsd, leastCapUsd: answer.leastCapUsd, ...("boundUsd" in answer && typeof answer.boundUsd === "number" && answer.boundUsd > 0 ? { boundUsd: answer.boundUsd } : {}) } : undefined;
       return answer;
     }
@@ -213,20 +234,21 @@ export function adapterRun(
     const side = (request as { side?: unknown }).side === true;
     admittedNext = typeof model === "string" ? { model, ...(request.inputTokensMax === undefined ? {} : { inputTokensMax: request.inputTokensMax }), boundUsd: answer?.boundUsd ?? 0, ...(side ? { side } : {}) } : undefined;
     if (!answer) return undefined;
-    // Near the cap, once: what is left as admission counts it (spent, and what requests and paid calls in flight are
-    // held at) under three times the session's own model's typical request, this one's expected cost standing in for
-    // none. Never on a side call's admission: the note is for the session's own model.
-    if (budgetUsd !== undefined && !wrap.sent && !side) {
+    // Admitted carrying the note: it is sent, once per cap, and its row says so.
+    const data = (request as { noted?: unknown }).noted === true && !side ? wrap.taken : undefined;
+    wrap.taken = undefined;
+    // None priced yet: this request's expected cost is the typical one, and what is left as its admission counts it
+    // (spent, and what requests and paid calls in flight are held at) under three times it makes the note due for the
+    // next request. Never a side call's: the note is for the session's own model.
+    if (!data && !side && budgetUsd !== undefined && !wrap.sent && wrap.costs.length === 0) {
       const spentNow = plus(plus(request.spentUsd, charged), sideSpend());
       const held = request.inFlight.reduce((sum, r) => sum + (r.holdUsd ?? 0), paidHolds());
-      const due = spentNow === null ? undefined : wrapUpDue(budgetUsd, spentNow, held, typicalCost(wrap.costs, answer.holdUsd));
-      if (due) {
-        wrap.sent = true;
-        wrap.note = wrapUpWords(due.leftUsd);
-        const data = { key: spec.key, capUsd: budgetUsd, leftUsd: due.leftUsd, words: wrap.note };
-        if (wrap.entryDue) wrap.row = data;
-        else later(() => commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: CAP_WRAPUP, data })))).catch(() => undefined);
-      }
+      if (spentNow !== null && wrapUpDue(budgetUsd, spentNow, held, answer.holdUsd)) wrap.due = true;
+    }
+    if (data && !wrap.sent) {
+      wrap.sent = true;
+      if (wrap.entryDue) wrap.row = data;
+      else later(() => commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: CAP_WRAPUP, data })))).catch(() => undefined);
     }
     // Admitted, limited to the output what is left of the cap buys (which the runner hands the model proxy): what the cap
     // holds it at, which the runner records, and counts it at if its cost never comes in; stopped part way by its client,
@@ -698,11 +720,7 @@ export function adapterRun(
         ...(budgetUsd !== undefined ? { budgetUsd } : {}),
         beforeRequest: guard as never,
         onEvent: onModel,
-        note: () => {
-          const note = wrap.note;
-          wrap.note = undefined;
-          return note;
-        },
+        note: () => takeNote(plus(plus(booking.spentUsd(), charged), sideSpend())),
         stopped: () => halted ?? cancelStop() ?? (parked === undefined ? undefined : PARKED),
         stop: (reason, message) => {
           const error = new Error(message ?? reason);

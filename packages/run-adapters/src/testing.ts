@@ -156,7 +156,7 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
             // A note its host has for this request, taken before it is measured, as the model proxy takes it.
             const note = io.models.note?.("faux");
             if (note) await append(FAUX_RECORDS.note, { text: note });
-            const ticket = await io.models.beforeRequest({ model: "faux", inputTokensMax: measured });
+            const ticket = await io.models.beforeRequest({ model: "faux", inputTokensMax: measured, ...(note ? { noted: true as const } : {}) });
             if ("cut" in action) { stats.requests += 1; return await hang(signal); }
             if ("cutBooked" in action) {
               stats.requests += 1;

@@ -187,6 +187,8 @@ export interface ProxyRequest {
   outputTokensLeast?: number;
   /** A request on another model than the session's (a client's small-model side call: a title, a summary). */
   side?: true;
+  /** It carries the host's note (`ModelProxyHooks.note`), placed in its body: the host's to record once it is admitted. */
+  noted?: true;
 }
 
 export interface ModelProxyHooks {
@@ -535,11 +537,13 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     // A note the host has for the session's next main-model request (the spend cap's wrap-up): a paid request on the
     // session's model whose policy can place it takes it, once, before the body is measured, so the cap admits its bytes.
     // One the policy fails to place is dropped, said once; the request goes as the client sent it.
+    let noted = false;
     if (!route.free && asked === model && policy.addNote && hooks.note) {
       const note = hooks.note(asked);
       if (note) {
         try {
           body = policy.addNote(body, note);
+          noted = true;
         } catch (error) {
           say(`model proxy (${policy.id}): the host's note could not be placed; the request goes without it`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
         }
@@ -599,7 +603,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     let ticket: unknown;
     try {
       if (!route.free) ticket = await hooks.beforeRequest({
-        model: asked, inputTokensMax, ...(asked !== model ? { side: true as const } : {}),
+        model: asked, inputTokensMax, ...(asked !== model ? { side: true as const } : {}), ...(noted ? { noted: true as const } : {}),
         ...(outputTokensAsked === undefined ? {} : { outputTokensAsked }),
         ...(outputTokensLeast === undefined ? {} : { outputTokensLeast }),
       });

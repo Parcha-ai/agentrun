@@ -55,6 +55,8 @@ test('the note goes after everything the client sent: the forwarded body is the 
   assert.deepEqual(body?.messages?.at(-1), { role: 'note', text: NOTE }, 'the note, last');
   assert.equal(JSON.stringify(body.messages.slice(0, -1)), JSON.stringify(client.messages), 'the client\'s messages as sent: the cached prefix unchanged');
   assert.ok(noted.asked[0].inputTokensMax - plain.asked[0].inputTokensMax >= Buffer.byteLength(NOTE), `the note's bytes are measured: ${noted.asked[0].inputTokensMax} vs ${plain.asked[0].inputTokensMax}`);
+  // The host records the note as told only once the request carrying it is admitted: its admission says it carries one.
+  assert.deepEqual([noted.asked[0].noted, plain.asked[0].noted], [true, undefined], 'the admission of the request that carries the note says so');
 });
 
 test('a token count and a small-model side call take no note; the next main-model request takes it, once', async (t) => {
@@ -65,6 +67,7 @@ test('a token count and a small-model side call take no note; the next main-mode
   await p.send(client);
   await p.send(client);
   assert.deepEqual(p.forwarded.map((b) => b.messages.at(-1).role), ['user', 'user', 'note', 'user'], 'the main request after them carries it, the next does not');
+  assert.deepEqual(p.asked.map((r) => r.noted ?? false), [false, true, false], 'only the admission of the request that carries it says it does');
 });
 
 test('a policy that cannot place a note forwards the body as sent and leaves the note armed', async (t) => {

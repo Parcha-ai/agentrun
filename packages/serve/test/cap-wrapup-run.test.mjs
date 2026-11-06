@@ -1,8 +1,10 @@
 // The wrap-up end to end. pi: near its cap the run's model is told once, inside the request it is about to send ("About
 // $X left of this run's budget: finish now with your answer."), and one row of the server's says so; pi's transcript never
 // holds it and no input is queued, so the model's answer ends the turn. A next turn under the same cap is told nothing
-// again. Another harness (the faux harness standing in for claude-agent): its guard arms the same words for the
-// session's next main-model request, taken once (the model proxy adds them to its body), with the same row.
+// again. Another harness (the faux harness standing in for claude-agent): the same words go in a main-model request (the
+// model proxy adds them to its body), once, worked out with what is left as the request takes them, and the row is
+// written only once a request carrying them is admitted: never for a note no request carried, across a crash or a
+// turn's end.
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
@@ -77,7 +79,7 @@ test("pi: the final-answer request that carries the note is the run's last: no f
   assert.equal(requests().length, answered.length, "none after the restart either");
 });
 
-test("claude-agent on the faux harness: near its cap the guard arms the words for the session's next main-model request, taken once, and one row says so", { timeout: 180_000 }, async (t) => {
+test("claude-agent on the faux harness: near its cap a main-model request carries the words, once, and one row says so", { timeout: 180_000 }, async (t) => {
   const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS, faux: WRAPUP });
   assert.equal((await api("POST", "/agents", agent("wrap-h", { harness: "claude-agent", instructions: "Grow a cached context." }))).status, 201);
   const started = await api("POST", "/agents/wrap-h/runs", { input: { content: "go" }, max_cost_usd: 0.5 });

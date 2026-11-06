@@ -131,6 +131,8 @@ export interface ModelRequest {
   outputTokensLeast?: number;
   /** On another model than the session's: a client's side call (a title, a summary), never its turn's own. */
   side?: true;
+  /** It carries the host's note (ModelPort.note) in its body: the note is delivered once this request is admitted. */
+  noted?: true;
 }
 
 /** What a paid request cost, once it completed. */

@@ -58,6 +58,8 @@ export type BeforeRequest = (request: {
   outputTokensLeast?: number;
   /** On another model than the session's (ModelRequest.side): a client's side call. */
   side?: true;
+  /** It carries the host's note (ModelRequest.noted). */
+  noted?: true;
   /** This session's paid requests admitted and not yet answered (in this process), oldest first, each with its own
    *  `inputTokensMax`, the output limit it was admitted with (`outputTokensMax`) and what its host held for it
    *  (`holdUsd`): a budget holds each one until it answers, since `spentUsd` counts answered requests only. Requests are
@@ -223,14 +225,14 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
   let failed: Error | undefined;
   const end = (reason: "turn_limit" | "refused" | "model_error", message?: string): Error =>
     options.stop ? options.stop(reason, message) : new HarnessRunError(reason, turns, 0, { maxTurns: limit, ...(message === undefined ? {} : { message }) });
-  const admit = async ({ model, inputTokensMax, outputTokensAsked, outputTokensLeast, side }: ModelRequest): Promise<ModelTicket> => {
+  const admit = async ({ model, inputTokensMax, outputTokensAsked, outputTokensLeast, side, noted }: ModelRequest): Promise<ModelTicket> => {
     const stopped = options.stopped?.() ?? failed;
     if (stopped) throw stopped;
     const pausing = options.draining?.();
     if (pausing) throw pausing;
     if (limit !== null && turns >= limit) throw end("turn_limit");
     const verdict = await options.beforeRequest?.({ ...node, model, turn: turns + 1, maxTurns: limit, ...(options.budgetUsd === undefined ? {} : { budgetUsd: options.budgetUsd }), spentUsd, inFlight: open.map((f) => ({ ...f })), inputTokensMax,
-      ...(outputTokensAsked === undefined ? {} : { outputTokensAsked }), ...(outputTokensLeast === undefined ? {} : { outputTokensLeast }), ...(side ? { side } : {}) });
+      ...(outputTokensAsked === undefined ? {} : { outputTokensAsked }), ...(outputTokensLeast === undefined ? {} : { outputTokensLeast }), ...(side ? { side } : {}), ...(noted ? { noted } : {}) });
     if (verdict && "refuse" in verdict) throw end("refused", verdict.refuse);
     const hold = verdict && "holdUsd" in verdict ? heldFigure(verdict.holdUsd) : undefined;
     // The output limit the host admits it with goes into its body. A limit that is no whole number of tokens above 0 (a
