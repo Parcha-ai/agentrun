@@ -65,6 +65,39 @@ export function boxPath(path: string, hostWork?: string): string | undefined {
   return at === BOX_WORK || at.startsWith(`${BOX_WORK}/`) ? named : undefined;
 }
 
+/** bash's timeout, in seconds: the default when a call names none, and the most any call gets (Claude Code's own 120 s
+ *  and 600 s). A command that needs longer is a background process (bash_background). */
+export const BASH_DEFAULT_TIMEOUT_S = 120;
+export const BASH_MAX_TIMEOUT_S = 600;
+const BASH_TIMEOUT_WORDS = `Timeout in seconds: ${BASH_DEFAULT_TIMEOUT_S} s by default, at most ${BASH_MAX_TIMEOUT_S} s; for longer work use bash_background.`;
+const BASH_TIMEOUT_SENTENCE = ` Each command is stopped after ${BASH_DEFAULT_TIMEOUT_S} s by default, at most ${BASH_MAX_TIMEOUT_S} s; for longer work use bash_background.`;
+const capWords = (asked: number) => `bash runs a command for at most ${BASH_MAX_TIMEOUT_S} s: this one ran with ${BASH_MAX_TIMEOUT_S} s, not the ${asked} s asked. For longer work use bash_background.`;
+
+/** pi's bash with its timeout said and kept: the description and the timeout's own words name the default and the
+ *  ceiling, a call with none runs at the default, and one asking for more runs at the ceiling and says so (a diagnostic
+ *  when it ends, its error when it times out). Its schema's shape is pi's; only words change. */
+function boundedBash(tool: ToolRegistration): ToolRegistration {
+  const parameters = tool.parameters as { properties?: Record<string, Record<string, unknown>> };
+  const timeout = parameters.properties?.timeout;
+  return {
+    ...tool,
+    description: `${tool.description}${BASH_TIMEOUT_SENTENCE}`,
+    parameters: (timeout ? { ...parameters, properties: { ...parameters.properties, timeout: { ...timeout, description: BASH_TIMEOUT_WORDS } } } : parameters) as typeof tool.parameters,
+    execute: async (args, api, context) => {
+      const asked = (args as { timeout?: unknown } | null)?.timeout;
+      const capped = typeof asked === "number" && asked > BASH_MAX_TIMEOUT_S;
+      const timeoutS = typeof asked === "number" ? Math.min(asked, BASH_MAX_TIMEOUT_S) : BASH_DEFAULT_TIMEOUT_S;
+      try {
+        const result = await tool.execute({ ...(args as object), timeout: timeoutS } as typeof args, api, context);
+        return capped ? { ...result, diagnostics: [...(result.diagnostics ?? []), { severity: "warn" as const, code: "timeout_capped", message: capWords(asked as number) }] } : result;
+      } catch (error) {
+        if (capped && error instanceof Error && /timed out/i.test(error.message)) throw new Error(`${error.message}. ${capWords(asked as number)}`, { cause: error });
+        throw error;
+      }
+    },
+  };
+}
+
 /** A run's coding tools by its place: on the runner, CodingTools (no bash); in a box, pi's read, write, edit and bash,
  *  each with its arguments, output and replay as pi ships it and its environment the box's, and the background tools
  *  (background.ts), each call a command in the box. A file tool's path stays in the box's work dir; bash's command is
@@ -73,7 +106,8 @@ export function codingSource(place: Place, box?: BoxedEnv): CodingSource {
   if (place.mode === "runner") return { extension: CodingTools, tools: CodingTools.tools ?? [] };
   if (!box) throw new Error("a run whose place is a box needs its box for its coding tools");
   const here = box.hostWork && writesHeld() ? boundFiles(box.hostWork) : undefined;
-  const tools = asGivenRefusals([...(pis.tools ?? []).filter((tool) => PI_BOXED.includes(tool.name)), ...backgroundTools()].map((tool): ToolRegistration => ({
+  const boxed = (pis.tools ?? []).filter((tool) => PI_BOXED.includes(tool.name)).map((tool) => (tool.name === "bash" ? boundedBash(tool) : tool));
+  const tools = asGivenRefusals([...boxed, ...backgroundTools()].map((tool): ToolRegistration => ({
     ...tool,
     execute: async (args, api, context) => {
       // A file tool's path in the box's words, or refused as the confined tools refuse (refuseOutsideWorkspace): named
