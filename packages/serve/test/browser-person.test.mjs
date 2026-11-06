@@ -71,8 +71,8 @@ test("the person's time on one session is held once: a take then an ask shares t
 });
 
 /** A clock the test moves: `set` and `clear` as timers take them, `tick(ms)` fires what is due. */
-function fakeClock() {
-  let now = 0;
+function fakeClock(start = 0) {
+  let now = start;
   let next = 1;
   const due = new Map();
   return {
@@ -365,4 +365,30 @@ test("an ask that joins a take-over and cannot hold its extra time is refused in
   await person.take(tag);
   await clock.tick(5 * 60_000);
   assert.deepEqual(await person.handoff.request(ask(23, tag)), { refused: "no room for the ask's extra time" });
+});
+
+test("an ask a restarted process takes up holds through its own expiry: joining a take-over that holds through T+15, an ask expiring at T+25 holds the ten minutes between", async (t) => {
+  const { createDrivingGates } = await import("@parcha/pi-browser/live-view");
+  const root = await scratch(t);
+  const tag = "ar-run-24-1";
+  // The process that asked, before the restart: its ask expires 25 minutes on.
+  const before = hands(root, { holdMs: 25 * 60_000 });
+  const asked = await before.person.handoff.request(ask(24, tag));
+  before.person.close();
+  // The next process, its clock at T: the owner takes over (held through T+15), and at T+10 the resumed wait polls.
+  const clock = fakeClock(Date.now());
+  const holdMs = 15 * 60_000;
+  const gates = createDrivingGates({ timers: clock.timers, holdIdleMs: holdMs });
+  const held = [];
+  const after = personHands({ root, gates, timers: clock.timers, now: clock.now, holdMs, pollMs: 60_000, note: async () => {}, personTime: async (what, seconds) => (held.push([what, Math.round(seconds)]), { drop() {} }) });
+  t.after(() => after.close());
+  gates(tag).setPresent(true);
+  const take = await after.take(tag);
+  gates(tag).take((why) => take.end(why));
+  for (let minute = 0; minute < 10; minute += 1) { gates(tag).input(); await clock.tick(60_000); }
+  assert.equal(await after.handoff.outcome(asked.interactionId), "pending");
+  await sleep(10);
+  assert.equal(held.length, 2, JSON.stringify(held));
+  assert.equal(held[1][0], "handing the browser to you");
+  assert.ok(Math.abs(held[1][1] - 600) <= 2, `the ten minutes from T+15 to its expiry at T+25 are held: ${JSON.stringify(held)}`);
 });
