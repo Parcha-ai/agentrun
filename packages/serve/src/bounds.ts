@@ -19,9 +19,12 @@
 // its next turn or harness request: pi-agent-core awaits the turn's tool calls (agent-loop.js:165, `await
 // executeToolCalls`, inside which every side request runs) before it sends the next (:141), so one still open then died
 // with its process (an OOM kill inside the tool call, before its cost mark): its hold is booked, it has no cost to come, and
-// its bound is dropped, never summed. A harness request booked before its cost is no longer in flight (its answer is in):
-// its bound waits apart for its late cost, and joins the ended bounds in the very entry that brings that cost, so it
-// counts when, and only when, its cost does, whatever came between (harness answers and late costs come in any order).
+// its bound is dropped, never summed. A harness request booked before its cost keeps its bound served as in flight (its
+// cost may still be a miss), apart from the requests whose answers are still to come: it never holds the ended bounds
+// back from starting afresh, since its bound joins them in the very entry that brings its late cost, so it counts when,
+// and only when, its cost does, whatever came between (harness answers and late costs come in any order). That cost
+// always comes while the run lives: in its process (harness-app.ts priceLate), or at the next open, which writes every
+// booked request the root has at unknown cost before any new request; a run no process holds serves no bound (runs.ts).
 //
 // The bounds that ended count from the newest entry at which what the run had spent (the cap's own reading of an entry's
 // cost, cap.ts costOf) fit its cap with no request in flight: read live or whole after a restart, the same entries keep
@@ -39,7 +42,8 @@ export class RequestBounds {
   /** Each request in flight that names itself: a harness request, by `<key>:<request>`, and a pi side request, by
    *  `side:<requestId>`; its bound. */
   private harness = new Map<string, number>();
-  /** Each harness request booked before its cost, by `<key>:<request>`: its bound, until its late cost comes. */
+  /** Each harness request booked before its cost, by `<key>:<request>`: its bound, served as in flight until its late
+   *  cost comes, and never holding the ended bounds back. */
   private awaiting = new Map<string, number>();
   /** pi's one generation request in flight: its bound. */
   private pi: number | undefined;
@@ -106,9 +110,9 @@ export class RequestBounds {
     this.pi = undefined;
   }
 
-  /** The bounds of the requests in flight, together. */
+  /** The bounds of the requests in flight, together: those whose cost may still be a miss. */
   inFlight(): number {
-    return [...this.harness.values()].reduce((sum, usd) => sum + usd, this.pi ?? 0);
+    return [...this.harness.values(), ...this.awaiting.values()].reduce((sum, usd) => sum + usd, this.pi ?? 0);
   }
 
   /** The bounds of the requests that ended since the run's cost last fit its cap, together: how far a cache miss among
