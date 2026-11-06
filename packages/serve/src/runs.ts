@@ -324,6 +324,9 @@ export type Run = {
   installRow?: string;
   /** Its first launch, once its harness is installed (start): its place is held until it is done. */
   afterInstall?: Promise<void>;
+  /** Gives back the place create() held for it while it waited for that install: once, at that launch or at its end
+   *  (a cancel, a failure), whichever comes first. */
+  givePlaceBack?: () => void;
   settled: boolean;
   settling?: Promise<void>;
   /** The newest write of its serve.json: one at a time, in order. */
@@ -2182,6 +2185,8 @@ export class Runs {
     // A run whose files are still being copied has had no process yet: its start launches it, and only a cancel ends it
     // first (a recovery that lists it meanwhile must not fail it for its launch mark).
     if (run.preparing && !run.cancel) return;
+    // Its end gives back a place it held while it waited for its harness's install (a failed install ends it here).
+    run.givePlaceBack?.();
     run.feed?.abort();
     run.feed = undefined;
     run.working = false;
@@ -2466,7 +2471,14 @@ export class Runs {
       // `afterInstall`), so no other start takes it meanwhile and no two launch past the limit once the install is in.
       if (run.afterInstall) {
         held = true;
-        void run.afterInstall.finally(release);
+        let given = false;
+        run.givePlaceBack = () => {
+          if (given) return;
+          given = true;
+          run.givePlaceBack = undefined;
+          release();
+        };
+        void run.afterInstall.finally(() => run.givePlaceBack?.());
       }
       return run;
     } finally {
@@ -3017,6 +3029,8 @@ export class Runs {
     // Finishing is already ending with its outcome (an answer, a failure, the cap): a run's first end is its last.
     if (run.outcome || run.finishing) return false;
     run.cancel = true;
+    // A run cancelled while it waits for its harness's install gives its place back now, not when the install ends.
+    run.givePlaceBack?.();
     // A tool call that waits for approval is canceled with its run: an answer after this one is refused.
     const waiting = waitingApproval(run);
     if (waiting) {

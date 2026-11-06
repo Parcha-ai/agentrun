@@ -49,9 +49,13 @@ export const harnessesOf = (data: string): string => join(data, HARNESSES_DIR);
 const shellWord = (word: string): string => (/^[\w@%+=:,./-]+$/.test(word) ? word : `'${word.replaceAll("'", "'\\''")}'`);
 
 /** The command that installs Claude Code by hand into `dir`, as a first use does: the lock and the package.json it locks
- *  copied in, then `npm ci` with no package's install script. */
-export const installLine = (dir: string, lock: string = CLAUDE_LOCK): string =>
-  `mkdir -p ${shellWord(dir)} && cp ${shellWord(join(dirname(lock), "package.json"))} ${shellWord(lock)} ${shellWord(dir)}/ && npm ci --prefix ${shellWord(dir)} --ignore-scripts`;
+ *  copied into a fresh directory beside `dir`, `npm ci` there with no package's install script, and only then that
+ *  directory put in place of `dir`, made writable first (an install this server made is read-only). A step that fails
+ *  stops it, `dir` as it was. */
+export function installLine(dir: string, lock: string = CLAUDE_LOCK): string {
+  const [at, next] = [shellWord(dir), shellWord(`${dir}.new`)];
+  return `rm -rf ${next} && mkdir -p ${next} && cp ${shellWord(join(dirname(lock), "package.json"))} ${shellWord(lock)} ${next}/ && npm ci --prefix ${next} --ignore-scripts && (chmod -R u+w ${at} 2>/dev/null || true) && rm -rf ${at} && mv ${next} ${at}`;
+}
 
 /** Where `specifier` (a package, or a file of one) resolves from `dir`'s node_modules, only when it is that package's own
  *  file there: undefined when the package is not in `dir`, or its file resolves outside it (a node_modules above `dir`,
