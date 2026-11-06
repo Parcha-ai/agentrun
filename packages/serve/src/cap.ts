@@ -424,9 +424,9 @@ export function spentIn(storeFile: string, { sides = false }: { sides?: boolean 
 /** /usage's meters for a run that ended, from its store: `tools`, each TOOL_COST's `usd`, unknown (null) when one is,
  *  or when a call was cut (marked, never settled: what it charged no one knows); and `tokens`, the rest of its root
  *  conversation as its settled timeline prices it; `browser`, the part of `tools` that is browser session time
- *  (browser-cost.ts), with its seconds; and `others`, the rest of `tools`, each unknown (null) apart. A mark is never a charge here (the cap's alone). Never for a live run: its process
+ *  (browser-cost.ts), with its seconds; and `others`, the rest of `tools`, each unknown (null) apart; and `notMetered`, the tool calls it ran with no price (TOOL_UNMETERED, an MCP tool its owner set none for), outside every figure here (absent when none). A mark is never a charge here (the cap's alone). Never for a live run: its process
  *  holds the store exclusively. */
-export type Meters = { tools: number | null; tokens: number | null; browser: { usd: number | null; seconds: number }; others: number | null };
+export type Meters = { tools: number | null; tokens: number | null; browser: { usd: number | null; seconds: number }; others: number | null; notMetered?: number };
 export function metersIn(storeFile: string): Meters {
   const { known: _, ...meters } = meterFiguresIn(storeFile);
   return meters;
@@ -464,7 +464,8 @@ export function meterFiguresIn(storeFile: string): Meters & { known: { tokens: n
     const usage = timelineOf(rest, { settled: true }).find((row) => row.kind === "usage");
     const otherTools = marks.size || others.some((usd) => usd === undefined) ? null : (others as number[]).reduce((sum, usd) => sum + usd, 0);
     known.tokens = usage ? (usage.usage?.usd ?? usage.usage?.so_far_usd ?? 0) : 0;
-    return { tools, tokens: usage ? (usage.usage?.usd ?? null) : 0, browser, others: otherTools, known };
+    const notMetered = usage?.usage?.not_metered;
+    return { tools, tokens: usage ? (usage.usage?.usd ?? null) : 0, browser, others: otherTools, known, ...(notMetered ? { notMetered } : {}) };
   } finally {
     db.close();
   }
