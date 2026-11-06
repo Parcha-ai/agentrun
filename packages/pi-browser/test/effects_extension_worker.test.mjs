@@ -183,18 +183,14 @@ test("with no decider, everything the driver does itself journals nothing: the s
   assert.deepEqual(w.site.sent(), []);
 });
 
-test("the closed trace port is exempt by its exact URL only: a near miss sent from the worker is held and journaled", { skip: NO_CHROME, timeout: 120_000 }, async (t) => {
+test("no trace URL is exempt: a POST from the worker to the closed port the trace exporter once used is held and journaled like any other", { skip: NO_CHROME, timeout: 120_000 }, async (t) => {
   const w = await world(t, { policy: "deny" });
   if (!w) return;
-  const near = ["http://127.0.0.1:9/v1/traces?x=1", "http://127.0.0.1:9/v1/tracez", "http://127.0.0.1:9/v1/traces/", "http://127.0.0.1:10/v1/traces"];
-  for (const url of near) assert.equal(await w.driver.run({ code: post(url) }), "failed", url);
-  await w.rows.until(() => w.rows.latest().filter((row) => row.held === "denied").length === near.length, "a denied row for each near miss");
+  const urls = ["http://127.0.0.1:9/v1/traces", "http://127.0.0.1:9/v1/traces?x=1", "http://127.0.0.1:10/v1/traces"];
+  for (const url of urls) assert.equal(await w.driver.run({ code: post(url) }), "failed", url);
+  await w.rows.until(() => w.rows.latest().filter((row) => row.held === "denied").length === urls.length, "a denied row for each");
   const seen = view(w.rows.latest()).map((row) => `${row.origin}${row.path} ${row.held}`).sort();
-  assert.deepEqual(seen, ["http://127.0.0.1:10/v1/traces denied", "http://127.0.0.1:9/v1/traces denied", "http://127.0.0.1:9/v1/traces/ denied", "http://127.0.0.1:9/v1/tracez denied"]);
-  // The exact URL goes nowhere and leaves no row.
-  assert.equal(await w.driver.run({ code: post("http://127.0.0.1:9/v1/traces") }), "failed");
-  await w.observer.flush();
-  assert.equal(w.rows.latest().length, near.length, "the exact URL adds no row");
+  assert.deepEqual(seen, ["http://127.0.0.1:10/v1/traces denied", "http://127.0.0.1:9/v1/traces denied", "http://127.0.0.1:9/v1/traces denied"]);
 });
 
 test("a request a website's own worker sends is not labeled as run code", { skip: NO_CHROME, timeout: 120_000 }, async (t) => {

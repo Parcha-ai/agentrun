@@ -8,7 +8,7 @@ import test from "node:test";
 import { setDownloadBehavior } from "../dist/providers/browserbase.js";
 import { cdpProvider } from "../dist/providers/cdp.js";
 import { stopWatchingChromeStderr, watchedChromeStderr } from "../dist/providers/chrome-stderr.js";
-import { CHROME, commandLine, isRunning, LOCAL_TELEMETRY, NO_CHROME, skipIncapable } from "./fixtures/local-chrome.mjs";
+import { CHROME, commandLine, isRunning, NO_CHROME, skipIncapable } from "./fixtures/local-chrome.mjs";
 import { CHROME_SINGLETON, scratch, scratchShort } from "./fixtures/scratch.mjs";
 
 const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
@@ -34,7 +34,7 @@ test("a local Chrome is created, driven through Stagehand's extension over the p
     let browser;
     try {
       browser = await localBrowser.connect({ cdpUrl: target.sdkCdpUrl });
-      stagehand = await Stagehand.create({ browser, logging: { level: "off" }, telemetry: LOCAL_TELEMETRY });
+      stagehand = await Stagehand.create({ browser, logging: { level: "off" } });
     } catch (error) { if (skipIncapable(t, error)) return; throw error; }
     const [page] = await browser.context.pages();
     await page.goto(`http://127.0.0.1:${server.address().port}/`);
@@ -98,7 +98,7 @@ test("Browser.setDownloadBehavior lasts as long as the socket that sent it: a do
     let browser;
     try {
       browser = await localBrowser.connect({ cdpUrl: target.sdkCdpUrl });
-      stagehand = await Stagehand.create({ browser, logging: { level: "off" }, telemetry: LOCAL_TELEMETRY });
+      stagehand = await Stagehand.create({ browser, logging: { level: "off" } });
     } catch (error) { if (skipIncapable(t, error)) return; throw error; }
     const [page] = await browser.context.pages();
     await page.goto(`http://127.0.0.1:${server.address().port}/`);

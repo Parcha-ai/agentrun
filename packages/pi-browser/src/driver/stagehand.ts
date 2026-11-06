@@ -1,19 +1,16 @@
 // Stagehand is created sealed: no inference leaves through it (act, extract and observe are refused), nothing is cached
 // server side, and the driver never ends the browser: custody releases it through the provider.
 import { type DriverFactory } from "../core/custody.js";
-import { INERT_TRACE_ENDPOINT } from "../core/effects.js";
 import type { PageDriver } from "../core/tools.js";
 import { pageDriver } from "./page-driver.js";
 import { attachStep, throwIfCancelled, untilCancelled } from "./sealed.js";
 
-/** A closed loopback port, so no span leaves the host: Stagehand 4.1.0 cannot turn its trace exporter off. */
-export const STAGEHAND_TELEMETRY = { traces: { endpoint: INERT_TRACE_ENDPOINT } } as const;
 export const STAGEHAND_INFERENCE_REFUSED = "Stagehand inference is off in this harness: act, extract and observe are unavailable. Drive the page with run code or snapshot IDs.";
+/** No telemetry is given, and Stagehand 4.4 starts its trace exporter only for an endpoint it is given: no span is sent. */
 export const SEALED_STAGEHAND = {
   logging: { level: "off" },
   cache: false,
   model: { generate: async (): Promise<never> => { throw new Error(STAGEHAND_INFERENCE_REFUSED); } },
-  telemetry: STAGEHAND_TELEMETRY,
 } as const;
 
 /** The batch deadline comes from `DriverOptions`; a caller that passes none gets the facade's 60 s. Stagehand allows one

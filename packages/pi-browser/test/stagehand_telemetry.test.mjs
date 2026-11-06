@@ -1,7 +1,9 @@
-// Chrome resolves example.com (Stagehand's default trace endpoint) to a local TLS trap: the sealed driver must leave it
-// silent while a bare create, on the same rig, reaches it. Both arms attach to a Chrome the cdp provider starts, as the
-// driver does in production, so they differ only in how Stagehand is created. Stagehand's close flushes its trace
-// exporter before it answers, so once close resolves every export it will ever send has reached the trap or failed.
+// Chrome resolves example.com to a local TLS trap. Stagehand 4.4 starts its trace exporter only for an endpoint it is given:
+// the control, given the trap's, reaches it, so the rig can see an export; Stagehand's default and the sealed driver leave it
+// silent. Every arm attaches to a Chrome the cdp provider starts, as the driver does in production, with the extension's
+// connect policy off (it would refuse the export itself), so they differ only in how Stagehand is created. Stagehand's close
+// flushes its trace exporter before it answers, so once the close resolves every export it will ever send has reached the
+// trap or failed.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
@@ -21,16 +23,17 @@ const SKIP = NO_CHROME || (!REQUIRED && !HAS_OPENSSL ? "needs openssl" : false);
 const listen = (server) => new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(server.address().port)));
 const spec = (tag) => ({ tag, maxLifetimeS: 600, idleTimeoutS: 60, proxies: false, verified: false, captcha: false, viewport: { width: 800, height: 600 }, metadata: {} });
 
-/** Stagehand as its default creates it: the control. */
-async function bare(target, pageUrl) {
+/** Stagehand created directly, with `options` beside its browser. */
+const bare = (options) => async (target, pageUrl) => {
   const { localBrowser, Stagehand } = await import("@browserbasehq/stagehand");
   const browser = await localBrowser.connect({ cdpUrl: target.sdkCdpUrl });
-  const stagehand = await Stagehand.create({ browser, logging: { level: "off" } });
+  const stagehand = await Stagehand.create({ browser, logging: { level: "off" }, ...options });
   const page = await stagehand.browser.context.activePage();
   await page.goto(pageUrl);
   await page.locator("input").fill("typed value");
-  return () => stagehand.close();
-}
+  return () => browser.disconnect();
+};
+const TRAP = { telemetry: { traces: { endpoint: "https://example.com/v1/traces" } } };
 
 async function viaDriver(target, pageUrl) {
   const driver = await stagehandDriver()(target, new AbortController().signal, { batchTimeoutMs: 30_000 });
@@ -39,7 +42,7 @@ async function viaDriver(target, pageUrl) {
 }
 
 /** The POSTs to the trap's /v1/traces once `drive`'s Stagehand has closed. */
-async function exportsFor(drive, confineExtension = true) {
+async function exportsFor(drive) {
   const dir = await mkdtemp(path.join(process.env.TMPDIR || tmpdir(), "stagehand-telemetry-"));
   const cleanups = [() => rm(dir, { recursive: true, force: true })];
   try {
@@ -57,7 +60,7 @@ async function exportsFor(drive, confineExtension = true) {
     const provider = cdpProvider({ chrome: { executablePath: CHROME, profileRoot: path.join(dir, "profiles"), headless: true, args: [
       "--ignore-certificate-errors",
       `--host-resolver-rules=MAP example.com 127.0.0.1:${trapPort}, MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost`,
-    ], confineExtension } });
+    ], confineExtension: false } });
     const signal = new AbortController().signal;
     const ref = await provider.create(spec("telemetry"), signal);
     cleanups.unshift(() => provider.release(ref));
@@ -69,13 +72,13 @@ async function exportsFor(drive, confineExtension = true) {
   }
 }
 
-test("Stagehand's default exports its trace to example.com; the driver's sealed Stagehand keeps it on this host", { skip: SKIP, timeout: 120_000 }, async (t) => {
+test("Stagehand exports a trace only to an endpoint it is given: its default and the driver's sealed Stagehand send none", { skip: SKIP, timeout: 180_000 }, async (t) => {
   let control;
-  // The control runs without the extension's connect policy, which would refuse the export itself: it is of the rig.
-  try { control = await exportsFor(bare, false); } catch (error) {
+  try { control = await exportsFor(bare(TRAP)); } catch (error) {
     if (skipIncapable(t, error)) return;
     throw error;
   }
-  assert.ok(control > 0, "control: the default reaches the example.com trap, so the rig can see an export");
+  assert.ok(control > 0, "control: given the trap's endpoint, Stagehand reaches it, so the rig can see an export");
+  assert.equal(await exportsFor(bare({})), 0, "Stagehand's default sends no trace: the driver relies on it");
   assert.equal(await exportsFor(viaDriver), 0, "the driver's Stagehand leaves the trap silent");
 });
