@@ -101,24 +101,6 @@ function kernelTool(tool: HostTool): KernelTool {
   };
 }
 
-/** What keeps Codex from taking a tool named `name` with `inputSchema` as it is, one problem each, `<name>: <pointer>: <why>`:
- *  what no harness takes (an object root, valid 2020-12, no remote $ref), then what Codex would drop or retype in the
- *  schema. A place the first already refused is not refused again by the second. The adapter refuses a host tool so at the
- *  open; a host may refuse sooner a remote MCP server's tool, whose schema Codex's own MCP client parses the same way (an
- *  MCP grant, at its save). Nothing in it throws: a schema that cannot be checked is a problem at "/", naming the tool. */
-export function codexToolProblems(name: string, inputSchema: unknown): string[] {
-  try {
-    const shared = toolSchemaProblems(name, inputSchema);
-    // A schema the shared check refuses as a whole (its root, or that it is not JSON: a cycle only code can build) is not
-    // walked again: Codex's rules would never reach the end of a cycle.
-    const wholly = shared.some((problem) => problem.startsWith(`${name}: /:`));
-    const refusedAt = new Set(shared.map((problem) => /^[^:]*: (\S+):/.exec(problem)?.[1]));
-    return [...shared, ...(wholly ? [] : codexSchemaProblems(name, inputSchema).filter((problem) => !refusedAt.has(/^[^:]*: (\S+):/.exec(problem)?.[1])))];
-  } catch (error) {
-    return [`${name}: /: the tool's schema could not be checked (${String((error as Error)?.message ?? error).slice(0, 120)})`];
-  }
-}
-
 /** The adapter's event for a harness live event, if it has one. */
 function adapterEvent(event: unknown): AdapterEvent | undefined {
   const e = event as { type?: string; delta?: unknown; name?: unknown; callId?: unknown; args?: unknown; isError?: unknown; truncated?: unknown };
@@ -179,7 +161,20 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
         if (seen.has(tool.name)) problems.push(`the tool ${tool.name} is given twice`);
         if (skills.length && tool.name === READ_SKILL_FILE) problems.push(`the tool name ${READ_SKILL_FILE} is the adapter's own when it has skills`);
         seen.add(tool.name);
-        problems.push(...codexToolProblems(tool.name, tool.inputSchema));
+        // What no harness takes (an object root, valid 2020-12, no remote $ref), then what Codex would drop or retype in
+        // the tool's schema: refused here, by name, not found out mid-turn. A place the first already refused is not
+        // refused again by the second.
+        // Nothing in it may throw: a tool whose schema cannot be checked is a problem at "/", naming the tool.
+        try {
+          const shared = toolSchemaProblems(tool.name, tool.inputSchema);
+          // A schema the shared check refuses as a whole (its root, or that it is not JSON: a cycle only code can build)
+          // is not walked again: Codex's rules would never reach the end of a cycle.
+          const wholly = shared.some((problem) => problem.startsWith(`${tool.name}: /:`));
+          const refusedAt = new Set(shared.map((problem) => /^[^:]*: (\S+):/.exec(problem)?.[1]));
+          problems.push(...shared, ...(wholly ? [] : codexSchemaProblems(tool.name, tool.inputSchema).filter((problem) => !refusedAt.has(/^[^:]*: (\S+):/.exec(problem)?.[1]))));
+        } catch (error) {
+          problems.push(`${tool.name}: /: the tool's schema could not be checked (${String((error as Error)?.message ?? error).slice(0, 120)})`);
+        }
       }
       return problems;
     },

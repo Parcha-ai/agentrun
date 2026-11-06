@@ -65,10 +65,10 @@ export const NOT_SET_UP = "not_set_up_here";
  *  `new Function` transform, which is no sandbox. Off by default. */
 export const CODE_NODES_ENV = "AGENTRUN_SERVE_CODE_NODES";
 
-/** The Codex adapter's check of a tool's schema (codexToolProblems), loaded once from @parcha/agentrun-harness-codex; none
- *  where that package is not installed, where codex runs nothing anyway (its offer says why). */
+/** The shapes of a tool's schema Codex drops or retypes (@parcha/agentrun-harness-codex codexSchemaProblems), loaded once;
+ *  none where that package is not installed, where codex runs nothing anyway (its offer says why). */
 let codexCheck: Promise<((name: string, schema: unknown) => string[]) | undefined> | undefined;
-const codexToolCheck = () => (codexCheck ??= import("@parcha/agentrun-harness-codex").then((codex) => codex.codexToolProblems, () => undefined));
+const codexToolCheck = () => (codexCheck ??= import("@parcha/agentrun-harness-codex").then((codex) => codex.codexSchemaProblems, () => undefined));
 
 /** What keeps `revision` from running in `env` under the server's tool `settings` (tool-plane.ts). `boxes`: what this
  *  server's box registry set up at its start (boxes.ts); none, every box is unavailable. `offers`: the harnesses' offers
@@ -100,8 +100,11 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
   }
   if (revision.kind === "agentic") {
     if (!revision.instructions.trim()) out.push({ field: "definition.instructions", reason: "too_short", message: "definition.instructions is empty: an agentic revision needs instructions.", host: false });
-    // Codex's own MCP client parses a tool's schema as it parses a host tool's, dropping or retyping what the adapter
-    // refuses in a host tool (codexToolProblems): a grant of such a tool is refused here, at the save, in those words.
+    // Codex's own MCP client builds the model's copy of a server's tool with parse_tool_input_schema (codex-rs
+    // tools/src/mcp_tool.rs at rust-v0.164.0), the parser its host tools go through: a shape it drops or retypes
+    // (codexSchemaProblems, measured on the pinned binary) would offer the model another tool than the one granted, so its
+    // grant is refused here, at the save, as on claude-agent. A bound or a format it only strips is not: the server still
+    // checks it, and its error reaches the model.
     const codexProblems = harness === "codex" && (revision.tools ?? []).some((tool) => tool.startsWith("mcp:")) ? await codexToolCheck() : undefined;
     (revision.tools ?? []).forEach((tool, index) => {
       // A remote MCP server's tool: one its saved snapshot lists, on a harness that binds them.

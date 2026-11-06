@@ -142,6 +142,10 @@ test("a tool whose schema Codex would drop or retype (a not) is refused on codex
   assert.equal(refused.status, 422, JSON.stringify(refused.body));
   assert.match(JSON.stringify(refused.body), /tool greet cannot be offered on codex: \/properties\/name\/not: not is not supported by Codex 0\.164\.0 \(it drops or retypes it\)/);
   assert.equal((await api("POST", "/agents", agent("pi-greet", { tools: ["mcp:fake/greet"] }))).status, 201, "pi takes the schema whole");
+  // A nearby shape Codex takes: a bound it only strips (minLength) is no refusal; the server still checks it.
+  fake.tools.name = { description: "Names anyone.", input: { type: "object", properties: { name: { type: "string", minLength: 2 } }, required: ["name"] }, run: ({ name }) => ({ content: [{ type: "text", text: `named ${name}` }] }) };
+  assert.equal((await api("POST", "/settings/mcp-servers/fake/refresh", {})).status, 200);
+  assert.equal((await api("POST", "/agents", agent("codex-name", { harness: "codex", tools: ["mcp:fake/name"] }))).status, 201, "codex takes a bound it only strips");
 });
 
 test("a tool whose header declaration a refresh made unsendable refuses the run in words, naming it, and nothing is sent", { timeout: 90_000 }, async (t) => {

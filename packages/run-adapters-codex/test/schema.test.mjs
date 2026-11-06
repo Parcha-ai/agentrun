@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import { after } from 'node:test';
 import { toolSchemaProblems } from '@parcha/agentrun-kernel';
 import { memorySessionStore, SCHEMA_CHECK_CASES } from '@parcha/agentrun-kernel/testing';
-import { codexAdapter, codexToolProblems } from '@parcha/agentrun-harness-codex';
+import { codexAdapter, codexSchemaProblems as codexSchemaProblemsOfPackage } from '@parcha/agentrun-harness-codex';
 import { findCodex } from '../dist/binary.js';
 import { verifyCodexBinary } from '../dist/verify.js';
 import { codexSchemaProblems, describeDropped, describedDescription, DESCRIBED_HEADING, stripDescribed } from '../dist/schema.js';
@@ -121,12 +121,10 @@ test("the adapter declares Codex's own MCP client: the kernel's proxy mounts the
   assert.deepEqual(codex.capabilities(), { fork: false, mcpClient: { callIdMeta: 'callId' } });
 });
 
-test('codexToolProblems is the check the adapter runs on a host tool, for a host to run on a remote MCP tool sooner', () => {
-  const codex = codexAdapter({ model: 'luna-test', provider: { origin: 'https://provider.invalid', credential: () => 'k' }, sessionsDir: '/nonexistent', standIn: { command: process.execPath, args: ['-e', ''] } });
-  const tool = (name, inputSchema) => ({ name, description: 'd', inputSchema, replay: 'never', call: async () => ({ text: 'ok' }) });
-  const spec = { key: 'step:mcp', label: 'x', system: [], tools: [tool('greet', P({ not: {} }))], context: 'fresh' };
-  assert.deepEqual(codexToolProblems('greet', P({ not: {} })), codex.check(spec));
-  assert.deepEqual(codexToolProblems('add', P({ type: 'number' })), []);
+test('the package gives the shapes check() refuses for Codex (codexSchemaProblems), for a host to refuse a remote MCP tool sooner', () => {
+  assert.equal(codexSchemaProblemsOfPackage, codexSchemaProblems);
+  assert.match(codexSchemaProblemsOfPackage('greet', P({ not: {} }))[0], /^greet: \/properties\/p\/not: not is not supported by Codex 0\.164\.0/);
+  assert.deepEqual(codexSchemaProblemsOfPackage('greet', P({ type: 'string', minLength: 2 })), [], 'a bound Codex only strips is no refusal');
 });
 
 test('the recorded column: a schema the adapter does not refuse comes out of Codex as the original less exactly the described keywords', () => {
