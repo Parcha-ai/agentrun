@@ -441,3 +441,25 @@ test("the fake's rm ends the proxy it started on a machine with no /proc (macOS)
   const gone = await Promise.race([exited.then(() => true), new Promise((resolve) => setTimeout(() => resolve(false), 5_000))]);
   assert.equal(gone, true, "the proxy's process ended");
 });
+
+test("a close whose cleanup fails says so: the proxy may still run, and how to remove it by this server's label", { timeout: 30_000 }, async (t) => {
+  const { startEgressContainer } = await import("../dist/box-egress-vm.js");
+  const data = await scratch(t);
+  const key = keyOf(data);
+  const made = "e".repeat(64);
+  const base = healthy(key, made);
+  // Docker answers until the close, then refuses its removal and does not list in time.
+  let closing = false;
+  const { docker } = scriptedDocker((args) => {
+    if (closing && args[0] === "rm") return { code: 1, stderr: "Error response from daemon: the fake refused" };
+    if (closing && args[0] === "ps") return { code: "timeout" };
+    return base(args);
+  });
+  const warned = [];
+  const proxy = await startEgressContainer({ env: process.env, data, allow: ["pypi.org"], uid: 1, gid: 1, docker, watchMs: 60_000, warn: (message) => warned.push(message) });
+  assert.equal(proxy.state().state, "ready");
+  closing = true;
+  await proxy.close();
+  assert.ok(warned.length > 0, "the failure is said");
+  for (const message of warned) assert.match(message, new RegExp(`^the box network proxy may still be running \\(.+\\): remove the containers labelled agentrun\\.egress=${key} with docker rm -f$`), message);
+});

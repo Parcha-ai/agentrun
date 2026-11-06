@@ -199,7 +199,7 @@ const CONTAINER_ID = /^[0-9a-f]{64}$/;
  * is gone or stopped. `onChange` is told each new state. `close` stops the watch and removes the container; its volume
  * stays, for boxes still mounting it and the next start.
  */
-export async function startEgressContainer(options: { env: NodeJS.ProcessEnv; data: string; allow: readonly string[]; uid: number; gid: number; onChange?: (state: EgressState) => void; docker?: DockerCall; watchMs?: number; readyMs?: number; pullMs?: number }): Promise<EgressContainer> {
+export async function startEgressContainer(options: { env: NodeJS.ProcessEnv; data: string; allow: readonly string[]; uid: number; gid: number; onChange?: (state: EgressState) => void; warn?: (message: string) => void; docker?: DockerCall; watchMs?: number; readyMs?: number; pullMs?: number }): Promise<EgressContainer> {
   if (!options.allow.length) throw new Error("the box network proxy needs a host list: one with none would reach every public host");
   const docker = options.docker ?? dockerCall(options.env);
   const key = egressKeyOf(await realpath(options.data));
@@ -332,10 +332,16 @@ export async function startEgressContainer(options: { env: NodeJS.ProcessEnv; da
       // What was under way ends first (a pull or a wait is aborted; a start checks `closed`), so nothing of this server's
       // touches Docker after its close.
       await busy?.catch(() => undefined);
-      await removeOurs();
+      // Best effort, but never silent: a failure says the proxy may still run, and how to remove it.
+      const left = (why: string) => options.warn?.(`the box network proxy may still be running (${why}): remove the containers labelled ${EGRESS_LABEL}=${key} with docker rm -f`);
+      if (ours) {
+        const removed = await docker(["rm", "--force", ours], 10_000);
+        if (removed.code !== 0 && !/no such container/i.test(removed.stderr)) left(`docker rm failed (${removed.code})`);
+        ours = undefined;
+      }
       // And any other container of this server's own label, by its id: one a start made though its docker run gave no
       // answer (a client cut off). Never by name: a container that is not this server's carries no such label.
-      await sweep().catch(() => undefined);
+      await sweep().catch((error: Error) => left(error.message));
     },
   };
 }
