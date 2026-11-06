@@ -83,6 +83,9 @@ export function script(spec) {
   // The wrap-up due after a $0.40 request, then an answer whose input (5,990 tokens, $0.599 on input-priced faux) fits
   // what is left of a $1 cap only without the note's bytes.
   if (/Wrap up with no room for the note\./.test(text)) return [{ call: "read", args: { path: "a.txt" }, usd: 0.4 }, { say: "Answered.", inputTokensMax: 5_990, usd: 0.01 }];
+  // The wrap-up due after a $0.40 request; the next request, which takes the note, has a side call admitted and answered
+  // between that take and its own admission; then one request more.
+  if (/Wrap up with a side call in between\./.test(text)) return [{ call: "read", args: { path: "a.txt" }, usd: 0.4 }, { call: "read", args: { path: "b.txt" }, usd: 0.01, sideAfterNote: { usd: 0.0001 } }, { say: "Done.", usd: 0.01 }];
   // The wrap-up due only after a turn's one request ($0.40): the next turn's first request is the first that can take it.
   if (/Wrap up in the next turn\./.test(text)) return [{ end: true, usd: 0.4 }, { say: "Second.", usd: 0.01 }];
   if (/Make three requests\./.test(text)) return [{ call: "read", args: { path: "a.txt" }, usd: 0.001 }, { call: "read", args: { path: "b.txt" }, usd: 0.002 }, { say: "Read it.", usd: 0.004 }];
