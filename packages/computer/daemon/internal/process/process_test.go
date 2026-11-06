@@ -73,7 +73,7 @@ func off(v int64) *int64 { return &v }
 
 func start(t *testing.T, tbl *process.Table, params process.StartParams) process.StartResult {
 	t.Helper()
-	res, err := tbl.Start(params)
+	res, err := tbl.Start(context.Background(), params)
 	if err != nil {
 		t.Fatalf("start %q: %v", params.Argv, err)
 	}
@@ -477,7 +477,7 @@ func TestResizeRefusals(t *testing.T) {
 		t.Fatalf("resize without a pty: %v", err)
 	}
 	for _, size := range []*process.Size{{Cols: 0, Rows: 24}, {Cols: 80, Rows: 70000}} {
-		if _, err := tbl.Start(process.StartParams{Argv: []string{"true"}, Pty: size}); err == nil || kindOf(t, err) != rpc.KindInvalid {
+		if _, err := tbl.Start(context.Background(), process.StartParams{Argv: []string{"true"}, Pty: size}); err == nil || kindOf(t, err) != rpc.KindInvalid {
 			t.Fatalf("pty %+v: %v", size, err)
 		}
 	}
@@ -535,7 +535,7 @@ func TestTheTableIsBounded(t *testing.T) {
 		t.Fatalf("the oldest ended process should be evicted: %v", err)
 	}
 	fourth := start(t, tbl, process.StartParams{Argv: []string{"sleep", "300"}})
-	if _, err := tbl.Start(process.StartParams{Argv: []string{"true"}}); err == nil || kindOf(t, err) != rpc.KindLimit {
+	if _, err := tbl.Start(context.Background(), process.StartParams{Argv: []string{"true"}}); err == nil || kindOf(t, err) != rpc.KindLimit {
 		t.Fatalf("a start past the bound with every process running: %v", err)
 	}
 	list, _ := tbl.List(process.ListParams{})
@@ -554,12 +554,25 @@ func TestStartRefusals(t *testing.T) {
 		"no program": {process.StartParams{Argv: []string{"no-such-program-here"}}, rpc.KindNotFound},
 		"no cwd":     {process.StartParams{Argv: []string{"true"}, Cwd: "/no/such/dir"}, rpc.KindNotFound},
 	} {
-		if _, err := tbl.Start(c.params); err == nil || kindOf(t, err) != c.kind {
+		if _, err := tbl.Start(context.Background(), c.params); err == nil || kindOf(t, err) != c.kind {
 			t.Errorf("%s: want %s, got %v", name, c.kind, err)
 		}
 	}
 	if list, _ := tbl.List(process.ListParams{}); len(list.Processes) != 0 {
 		t.Fatalf("a refused start left %+v", list)
+	}
+}
+
+// A process.start whose call is already cancelled is aborted, and starts nothing.
+func TestACancelledStartIsAborted(t *testing.T) {
+	tbl := table(t, process.Options{})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := tbl.Start(ctx, process.StartParams{Argv: []string{"sleep", "300"}}); err == nil || kindOf(t, err) != rpc.KindAborted {
+		t.Fatalf("want an aborted error, got %v", err)
+	}
+	if list, _ := tbl.List(process.ListParams{}); len(list.Processes) != 0 {
+		t.Fatalf("a cancelled start left %+v", list)
 	}
 }
 
@@ -587,7 +600,7 @@ func TestARefusedStartIntoAFullTableKeepsEveryEntryAndItsOutput(t *testing.T) {
 		"no user":    {Argv: []string{"true"}, User: "no-such-user-here"},
 		"bad pty":    {Argv: []string{"true"}, Pty: &process.Size{Cols: 0, Rows: 24}},
 	} {
-		if _, err := tbl.Start(params); err == nil {
+		if _, err := tbl.Start(context.Background(), params); err == nil {
 			t.Fatalf("%s: started", name)
 		}
 		if got := readAll(t, tbl, first.ID, "stdout"); got != "first" {
@@ -690,7 +703,7 @@ func TestPagingWhileAnotherGoroutineStartsNeverSkipsARunningProcess(t *testing.T
 		defer wg.Done()
 		defer close(done)
 		for range 30 {
-			p, err := tbl.Start(process.StartParams{Argv: []string{"sh", "-c", "exit 0", "sh", filler}})
+			p, err := tbl.Start(context.Background(), process.StartParams{Argv: []string{"sh", "-c", "exit 0", "sh", filler}})
 			if err != nil {
 				t.Errorf("start: %v", err)
 				return

@@ -19,3 +19,9 @@ func SetEndHooks(t *testing.T, began, termed func()) {
 		admission.Unlock()
 	})
 }
+
+// SetGuardArgs has Start add what args returns for p to the guard's argv, after GuardCommand, for the test's duration.
+func SetGuardArgs(t *testing.T, args func(p Program) []string) {
+	guardArgs = args
+	t.Cleanup(func() { guardArgs = nil })
+}

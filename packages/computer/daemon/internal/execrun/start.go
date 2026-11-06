@@ -1,6 +1,7 @@
 package execrun
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -64,6 +65,10 @@ func Guards() []int {
 // afterAdmit and afterStarted are nil outside tests: they run in Start once it is let in, and once its program runs.
 var afterAdmit, afterStarted func(p Program)
 
+// guardArgs is nil outside tests: what it returns for p follows GuardCommand in the guard's argv, so a test can start a
+// guard of its own making in the guard's place.
+var guardArgs func(p Program) []string
+
 // endingBegan and guardsTermed are nil outside tests: they run in EndAll once it refuses new starts, and once every
 // guard has been sent SIGTERM.
 var endingBegan, guardsTermed func()
@@ -120,7 +125,7 @@ func EndAll(slack time.Duration) {
 // Start starts p under a guard of its own (guard.go), with stdin (nil is /dev/null), stdout and stderr, and returns once
 // the program has started. The caller closes its own copies of the three files. A program that cannot start is an
 // error of the protocol's kinds; once EndAll has begun, every start is refused as unsupported.
-func Start(p Program, stdin, stdout, stderr *os.File) (*Guarded, error) {
+func Start(ctx context.Context, p Program, stdin, stdout, stderr *os.File) (*Guarded, error) {
 	if !admit() {
 		return nil, rpc.Errorf(rpc.KindUnsupported, "the computer is shutting down: it starts no program now")
 	}
@@ -157,9 +162,13 @@ func Start(p Program, stdin, stdout, stderr *os.File) (*Guarded, error) {
 		closeAll(specReader, specWriter)
 		return nil, fmt.Errorf("cannot make a pipe: %w", err)
 	}
+	args := []string{"computerd", GuardCommand}
+	if guardArgs != nil {
+		args = append(args, guardArgs(p)...)
+	}
 	cmd := &exec.Cmd{
 		Path:        "/proc/self/exe",
-		Args:        []string{"computerd", GuardCommand},
+		Args:        args,
 		Env:         []string{},
 		Stdout:      stdout,
 		Stderr:      stderr,

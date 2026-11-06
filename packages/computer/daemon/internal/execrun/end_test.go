@@ -1,6 +1,7 @@
 package execrun_test
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -76,7 +77,7 @@ func TestEndAllTermsAStartInFlightAndRefusesALaterOne(t *testing.T) {
 
 	firstDone := make(chan startOutcome, 1)
 	go func() {
-		g, err := execrun.Start(first, nil, null, null)
+		g, err := execrun.Start(context.Background(), first, nil, null, null)
 		firstDone <- startOutcome{g, err}
 	}()
 	select {
@@ -86,7 +87,7 @@ func TestEndAllTermsAStartInFlightAndRefusesALaterOne(t *testing.T) {
 	}
 	var after startOutcome
 	execrun.SetEndHooks(t, func() { close(release) }, func() {
-		g, err := execrun.Start(later, nil, null, null)
+		g, err := execrun.Start(context.Background(), later, nil, null, null)
 		after = startOutcome{g, err}
 	})
 	ended := make(chan struct{})

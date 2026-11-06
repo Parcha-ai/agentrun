@@ -67,7 +67,7 @@ func Run(ctx context.Context, spec Spec) (Result, error) {
 	if ctx.Err() != nil {
 		return Result{}, rpc.Errorf(rpc.KindAborted, "exec.run was cancelled before it started")
 	}
-	g, err := Start(Program{Argv: spec.Argv, Cwd: spec.Cwd, Env: spec.Env, User: spec.User}, nil, stdout.writer, stderr.writer)
+	g, err := Start(ctx, Program{Argv: spec.Argv, Cwd: spec.Cwd, Env: spec.Env, User: spec.User}, nil, stdout.writer, stderr.writer)
 	stdout.collect()
 	stderr.collect()
 	if err != nil {

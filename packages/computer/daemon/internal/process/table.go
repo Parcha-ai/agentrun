@@ -124,7 +124,7 @@ func (p *proc) hasEnded() bool {
 	}
 }
 
-func (t *Table) Start(params StartParams) (StartResult, error) {
+func (t *Table) Start(ctx context.Context, params StartParams) (StartResult, error) {
 	if params.Pty != nil {
 		if err := checkSize(*params.Pty); err != nil {
 			return StartResult{}, err
@@ -171,7 +171,7 @@ func (t *Table) Start(params StartParams) (StartResult, error) {
 			theirs = append(theirs, r)
 		}
 	}
-	g, err := execrun.Start(execrun.Program{Argv: params.Argv, Cwd: params.Cwd, Env: params.Env, User: params.User, Terminal: p.pty}, stdin, stdout, stderr)
+	g, err := execrun.Start(ctx, execrun.Program{Argv: params.Argv, Cwd: params.Cwd, Env: params.Env, User: params.User, Terminal: p.pty}, stdin, stdout, stderr)
 	closeAll(theirs...)
 	if err != nil {
 		p.release()
