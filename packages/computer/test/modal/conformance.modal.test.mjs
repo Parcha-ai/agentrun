@@ -32,7 +32,8 @@ describe(
 				if (created.ok) made.set(created.value.id, created.value);
 				return created;
 			};
-			report = await runConformance(provider, { image: IMAGE, drifted: createDriftedProvider });
+			// Release waits up to 120 s for Modal to read a terminated sandbox finished; cleanup gives it more.
+			report = await runConformance(provider, { image: IMAGE, cleanupTimeoutMs: 150_000, drifted: createDriftedProvider });
 			console.log(formatReport(report));
 		});
 

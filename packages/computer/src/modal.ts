@@ -21,6 +21,7 @@ import type {
 	Refusal,
 } from "./provider.js";
 import { type ComputerErrorCode, fail, ok, type Result } from "./result.js";
+import { waitUntil } from "./wait.js";
 
 /** The App sandboxes are made in (modal-client@64880502:js/src/app.ts:32-61). */
 export interface ModalApp {
@@ -95,6 +96,13 @@ export interface ModalTimeouts {
 	listMs: number;
 	/** The daemon's upload, from the exec's start to its exit. The entrypoint waits this long and one call more. */
 	uploadMs: number;
+	/**
+	 * How long release delete waits, after the terminate, for poll to read the sandbox finished: Modal ends a sandbox
+	 * asynchronously, and lists it until then.
+	 */
+	releaseMs: number;
+	/** The first pause between two of release's polls; the pauses double up to 5 s. */
+	releasePollMs: number;
 }
 
 export interface ModalProviderOptions {
@@ -145,7 +153,9 @@ const CPU_REQUEST = 0.125;
 const MEMORY_REQUEST_MIB = 128;
 /** "1 core = 2 vCPUs" (guide/sandbox-resources): a spec's cpus are CPUs, Modal's cpu is physical cores. */
 const CPUS_PER_CORE = 2;
-const DEFAULT_TIMEOUTS: ModalTimeouts = { createMs: 600_000, callMs: 60_000, helloMs: 30_000, probeMs: 30_000, listMs: 120_000, uploadMs: 300_000 };
+const DEFAULT_TIMEOUTS: ModalTimeouts = { createMs: 600_000, callMs: 60_000, helloMs: 30_000, probeMs: 30_000, listMs: 120_000, uploadMs: 300_000, releaseMs: 120_000, releasePollMs: 500 };
+/** The longest pause between two of release's polls. */
+const RELEASE_POLL_MAX_MS = 5_000;
 /** The daemon this package builds for Modal's architecture: images must be linux/amd64 (guide/existing-images). */
 const DEFAULT_DAEMON_PATH = fileURLToPath(new URL("./computerd-linux-amd64", import.meta.url));
 /** The SDK's own bytes per stdin message when it streams (task_command_router_client.ts:193): each writeBytes is one call. */
@@ -862,7 +872,12 @@ export class ModalProvider implements ComputerProvider {
 		return ok({ ...ref, spec: { image, user: `${probe.uid}:${probe.gid}`, network, cpus, memoryMb, workdir, deadline } });
 	}
 
-	/** Every running computer this provider made that carries all of these labels. Modal lists running sandboxes only. */
+	/**
+	 * Every running computer this provider made that carries all of these labels. Modal's list asks for running sandboxes
+	 * only (includeFinished: false, sandbox.ts:1135-1140), yet a sandbox terminated a moment ago is still listed: each one
+	 * listed is polled, and one that poll reads finished (an exit code, not null, sandbox.ts:2761-2771) or no longer
+	 * finds is left out.
+	 */
 	async list(labels: Record<string, string>, { signal }: CallContext = {}): Promise<Result<ComputerInfo[]>> {
 		const problem = filterProblem(labels);
 		if (problem) return fail("invalid", problem);
@@ -893,6 +908,12 @@ export class ModalProvider implements ComputerProvider {
 				return stop(tags);
 			}
 			if (!ours(tags.value) || !Object.entries(labels).every(([key, value]) => tags.value[key] === value)) continue;
+			const polled = await call(`poll of ${sandbox.sandboxId}`, () => sandbox.poll(), Math.min(this.#timeouts.callMs, left()), signal);
+			if (!polled.ok) {
+				if (polled.error.code === "not_found") continue;
+				return stop(polled);
+			}
+			if (polled.value !== null) continue;
 			infos.push({
 				ref: { id: sandbox.sandboxId, name: tags.value[NAME_TAG] as string },
 				labels: { ...tags.value },
@@ -931,7 +952,13 @@ export class ModalProvider implements ComputerProvider {
 		return fail("refused", `${ref.name} was asked to keep network ${policy}, and reads back: ${typeof read === "string" ? read : JSON.stringify(read)}`);
 	}
 
-	/** delete terminates, and is idempotent: a sandbox already finished, or one Modal no longer knows, is ok. */
+	/**
+	 * delete terminates, and is idempotent: a sandbox already finished, or one Modal no longer knows, is ok. Modal ends a
+	 * sandbox asynchronously (terminate returns before it has finished unless asked to wait, sandbox.ts:1292-1296 and
+	 * 2238-2251), so delete then polls, with pauses that double from releasePollMs to 5 s, until poll reads an exit code
+	 * (null while it runs, sandbox.ts:2761-2771) or Modal no longer knows it, within releaseMs and the caller's signal.
+	 * Past releaseMs it is a timeout that says what poll last read, never done.
+	 */
 	async release(ref: ComputerRef, how: "stop" | "delete", { signal }: CallContext = {}): Promise<Result<void>> {
 		const problem = refProblem(ref);
 		if (problem) return fail("invalid", problem);
@@ -942,10 +969,26 @@ export class ModalProvider implements ComputerProvider {
 		if (!ours(found.value.tags, ref.name)) return fail("not_found", `no Modal computer named ${ref.name} has the id ${ref.id}`);
 		const { sandbox } = found.value;
 		const ended = await call(`terminate of ${ref.name}`, () => sandbox.terminate(), this.#timeouts.callMs, signal);
-		if (ended.ok || ended.error.code === "not_found") return ok(undefined);
-		if (ended.error.code === "timeout" || ended.error.code === "aborted") return ended;
-		const polled = await call(`poll of ${ref.name}`, () => sandbox.poll(), this.#timeouts.callMs, signal);
-		return polled.ok && polled.value !== null ? ok(undefined) : ended;
+		if (!ended.ok && ended.error.code === "not_found") return ok(undefined);
+		if (!ended.ok && (ended.error.code === "timeout" || ended.error.code === "aborted")) return ended;
+		if (!ended.ok) {
+			const polled = await call(`poll of ${ref.name}`, () => sandbox.poll(), this.#timeouts.callMs, signal);
+			return polled.ok && polled.value !== null ? ok(undefined) : ended;
+		}
+		const finished = await waitUntil(
+			(readSignal) => call(`poll of ${ref.name}`, () => sandbox.poll(), this.#timeouts.callMs, readSignal),
+			(polled) => (polled.ok && polled.value !== null) || (!polled.ok && polled.error.code === "not_found"),
+			{
+				boundMs: this.#timeouts.releaseMs,
+				signal,
+				minMs: Math.min(this.#timeouts.releasePollMs, RELEASE_POLL_MAX_MS),
+				maxMs: RELEASE_POLL_MAX_MS,
+				what: `${ref.name} to finish after its terminate`,
+				describe: (polled) => (!polled.ok ? polled.error.message : polled.value === null ? "poll read null: it still runs" : `poll read exit code ${polled.value}`),
+			},
+		);
+		if (finished.ok) return ok(undefined);
+		return fail(finished.error.code, `release delete of ${ref.name} is not done: ${finished.error.message}`);
 	}
 }
 

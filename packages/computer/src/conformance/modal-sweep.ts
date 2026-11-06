@@ -21,6 +21,7 @@ import { readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { COMPUTER_LABEL } from "../drift.js";
 import type { ModalSandbox, ModalSdk } from "../modal.js";
+import { waitUntil } from "../wait.js";
 import { MODAL_ENV, type ModalModuleOptions, modalClient } from "./modal.js";
 
 /** A stream as main writes to it: done is called once the text is handed on. */
@@ -57,7 +58,6 @@ exit: 0 every swept sandbox has finished, 1 one still runs, 2 usage error, unrea
 class Usage extends Error {}
 
 const write = (stream: Writer, text: string) => new Promise<void>((resolve) => void stream.write(text, () => resolve()));
-const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 const words = (error: unknown) => {
 	const name = (error as { name?: unknown } | null)?.name;
 	const message = error instanceof Error ? error.message : String(error);
@@ -170,19 +170,13 @@ export async function main(argv: string[], io: SweepIo = {}): Promise<number> {
 	const gone = await Promise.all(
 		fresh.map(async ({ sandboxId: id }) => {
 			const end = Date.now() + waitMs;
-			let last = "no answer yet";
-			for (;;) {
-				const left = Math.max(1, Math.min(callMs, end - Date.now()));
-				const polled = await bounded(`poll of ${id}`, async () => (await sdk.sandboxes.fromId(id)).poll(), left);
-				if (polled.ok && polled.value !== null) return true;
-				if (!polled.ok && notFound(polled.error)) return true;
-				last = polled.ok ? "poll answered null, so it runs" : words(polled.error);
-				if (Date.now() + pollMs >= end) {
-					await write(stderr, `${id} is still running after ${waitMs / 1000} s: ${last}\n`);
-					return false;
-				}
-				await sleep(pollMs);
-			}
+			const waited = await waitUntil(
+				() => bounded(`poll of ${id}`, async () => (await sdk.sandboxes.fromId(id)).poll(), Math.max(1, Math.min(callMs, end - Date.now()))),
+				(polled) => (polled.ok && polled.value !== null) || (!polled.ok && notFound(polled.error)),
+				{ boundMs: waitMs, minMs: pollMs, maxMs: pollMs, what: `${id} to finish`, describe: (polled) => (polled.ok ? "poll answered null, so it runs" : words(polled.error)) },
+			);
+			if (!waited.ok) await write(stderr, `${id} is still running after ${waitMs / 1000} s: ${waited.error.message}\n`);
+			return waited.ok;
 		}),
 	);
 	const stillThere = fresh.filter((_, i) => !gone[i]).map((sandbox) => sandbox.sandboxId);
