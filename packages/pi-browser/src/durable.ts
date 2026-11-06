@@ -9,7 +9,7 @@ import { forModel } from "./durable/result.js";
 import type { Decisions } from "./core/decisions.js";
 import type { EvidenceSink } from "./core/evidence.js";
 import { EffectObserver, effectDecider, observerFailure } from "./core/effects.js";
-import { browserFailure, classifyBrowserError, isRefusal } from "./core/failures.js";
+import { AttachFailureError, browserFailure, classifyBrowserError, isRefusal } from "./core/failures.js";
 import { workspaceFiles } from "./core/files.js";
 import type { RepeatGuard } from "./core/guard.js";
 import { drivingGuarded } from "./core/driving-guard.js";
@@ -308,7 +308,10 @@ async function connect<D extends PageDriver>(c: Custody<D>, scope: Scope, provid
   const config = await scopeConfig(c, scope);
   const { actions: policy, batchTimeoutMs } = config.policy;
   c.owned.set(ref.tag, { cid: scope.cid, provider, ref });
-  const target = await provider.attach(ref, scope.signal);
+  // A provider's own failure to attach names no address to the model (an aborted call stays as it is).
+  const target = await provider.attach(ref, scope.signal).catch((error: unknown) => {
+    throw error instanceof BrowserFailureError || (error as { name?: unknown } | null)?.name === "AbortError" ? error : new AttachFailureError(error);
+  });
   // A kept sign-in is put back before the driver, and so before any page, attaches.
   if (afterAttach) await afterAttach(target);
   const driver = await c.options.driver(target, scope.signal, { batchTimeoutMs });

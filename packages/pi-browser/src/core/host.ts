@@ -76,6 +76,10 @@ export type ProviderCaps = {
   settings?: Partial<SessionSettingsSupport>;
   /** The host assigned the run this one session: there is no other to relaunch onto. */
   fixedSession?: boolean;
+  /** A session of this provider is usable only from the process that started it (a host that reaches its browser through
+   *  something that process held, such as a local proxy relay): one found running when a run reopens is released and its
+   *  conversation told it ended during an interruption, never kept. */
+  processBound?: boolean;
   /** The provider enforces a navigation policy's `allow` list (only the listed sites load). A provider without it cannot apply an
    *  allow list, and a session under one is refused. */
   navigationAllow?: boolean;

@@ -1,10 +1,12 @@
-// The steps of attaching a sealed Stagehand that can fail on their own: naming where a failed step went, and stopping a
+// The steps of attaching a sealed Stagehand that can fail on their own: saying what failed (never where), and stopping a
 // cancelled attach without leaving anything attached to the browser.
+import { AttachFailureError } from "../core/failures.js";
 
-/** A failed attach step names where it went: Stagehand reports a failed open as "[object Object]", and the socket's error
- *  has no address. */
+/** A failed attach step says what failed, never where: the host it went to (a local browser's loopback port, a vendor's
+ *  connect host) goes to the operator's log and stays in the cause (failures.ts AttachFailureError). Stagehand reports a
+ *  failed open as "[object Object]", and the socket's error has no address. */
 export const attachStep = (host: string) => <T>(step: Promise<T>): Promise<T> => step.catch((error) => {
-  throw new Error(`attaching to the browser at ${host} failed: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
+  throw new AttachFailureError(error, host);
 });
 
 const cancelled = (signal: AbortSignal): Error =>

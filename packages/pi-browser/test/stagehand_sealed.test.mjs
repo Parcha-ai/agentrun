@@ -9,11 +9,12 @@ import { stagehandDriver } from "../dist/driver/stagehand.js";
 const later = () => { let resolve, reject; const promise = new Promise((y, n) => { resolve = y; reject = n; }); return { promise, resolve, reject }; };
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 
-test("a failed attach step names the host it went to and keeps the original as its cause; a step that succeeds is untouched", async () => {
+test("a failed attach step says what failed and never where: the host stays in the cause, the text has no address; a step that succeeds is untouched", async () => {
   const step = attachStep("cdp.example.com:9222");
   const cause = { toString: () => "[object Object]" };
-  await assert.rejects(step(Promise.reject(cause)), (error) => error.message === "attaching to the browser at cdp.example.com:9222 failed: [object Object]" && error.cause === cause);
-  await assert.rejects(step(Promise.reject(new Error("ECONNREFUSED"))), (error) => error.message === "attaching to the browser at cdp.example.com:9222 failed: ECONNREFUSED");
+  await assert.rejects(step(Promise.reject(cause)), (error) => error.message === "attaching to the browser failed: [object Object]" && error.cause === cause);
+  await assert.rejects(step(Promise.reject(new Error("ECONNREFUSED"))), (error) => error.message === "attaching to the browser failed: ECONNREFUSED");
+  await assert.rejects(step(Promise.reject(new Error("the CDP socket to 127.0.0.1:9222 failed"))), (error) => error.message === "attaching to the browser failed: the CDP socket to the browser failed");
   assert.equal(await step(Promise.resolve(7)), 7);
 });
 

@@ -168,6 +168,16 @@ test("a release task cut before or after the provider released: it resumes and r
   }
 });
 
+test("a process-bound provider's session found running at a reopen is released, never kept, though its conversation continues: the next call opens a fresh one and is told the last ended during an interruption", async (t) => {
+  const bound = { PROCESS_BOUND: "1" };
+  const { result, seen, tally } = await scenario(t, { script: ["browser_read"], script2: ["browser_read", "browser_read", "browser_release"], env: bound, env2: bound });
+  assert.deepEqual([result.reconcile.kept.length, result.reconcile.released.length], [0, 1]);
+  assert.equal(result.sessions.sessions[0].releaseReason, "lost");
+  assert.match(failure(seen[1]).notice, /ended during an interruption/);
+  assert.doesNotMatch(failure(seen[1]).notice, /survived an interruption/);
+  assert.deepEqual([tally.creates, tally.releases, tally.liveAtEnd], [2, 2, 0], "the old session released, a fresh one made and released");
+});
+
 test("a host pause: a conversation that continues keeps its session; one that is done has it released", async (t) => {
   const kept = await scenario(t, { script: ["browser_read"], script2: ["browser_read", "browser_read", "browser_release"] });
   assert.equal(kept.result.reconcile.kept.length, 1);

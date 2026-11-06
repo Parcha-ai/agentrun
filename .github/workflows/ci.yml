@@ -498,6 +498,14 @@ jobs:
       - name: The build job's output, for this tree and this Node
         run: node scripts/ci-build-output.mjs unpack "$RUNNER_TEMP/build"
       - run: npm run test:chrome -w @parcha/pi-browser
+      # serve's local Chrome on the same Chrome, its sandbox on: a page that steers it to the server's own port, a cloud's
+      # metadata address and private ranges is refused by the egress proxy, and a browser context sent around the proxy
+      # reaches nothing.
+      - name: serve's local Chrome is held to public addresses
+        working-directory: packages/serve
+        env:
+          AGENTRUN_REQUIRE_LOCAL_CHROME: '1'
+        run: node --test --test-timeout=300000 test/browser-chrome-egress.test.mjs
       # The assembled reference job on the same Chrome: its record and ledger must be the fixed ones (the receipt name and token counts are not).
       - run: node scripts/check-reference-chrome.mjs
 

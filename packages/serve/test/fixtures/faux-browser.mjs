@@ -1,10 +1,11 @@
 // The `browser` tool's provider and driver for the tests: pi-browser's fake backend, with one page and no network or
 // key. Each call it answers is appended to $FAUX_BROWSER_LOG, so a test reads what the run's process did; its first
 // line says whether the Browserbase variables reached it in the env the real provider gets (never their values), its
-// second which vendor the run's plane named (`browserbase`, `kernel`, or why it is unavailable) and whether Kernel's key
-// reached it. The page names the vendor too, so the run's answer says which browser it got. Kernel's provider keeps
-// no downloads, and neither does this one when the vendor is Kernel. Its provider is named for the vendor, so the run
-// prices its session time as that vendor's, or $FAUX_BROWSER_PROVIDER's. A run handed its agent's saved sign-in (over
+// second which vendor the run's plane named (`browserbase`, `kernel`, `chrome`, or why it is unavailable) and whether
+// Kernel's key reached it; on `chrome`, a third names the Chrome the server handed it. The page names the vendor too, so
+// the run's answer says which browser it got. Kernel's provider keeps no downloads, and neither does this one when the
+// vendor is Kernel. Its provider is named for the vendor, so the run prices its session time as that vendor's, or
+// $FAUX_BROWSER_PROVIDER's. A run handed its agent's saved sign-in (over
 // its pipe) gets a line naming it, and whether that ref is anywhere in its environment (process.env, the env the
 // provider gets with its hidden properties, and the environment the kernel shows); each session that asks for a
 // profile logs the profile's name and whether it saves. Profiles are kept, as Browserbase's and Kernel's are.
@@ -17,6 +18,8 @@ export default function browser(env = process.env, vendor = "browserbase", signI
   const seen = (name) => (env[name] ? "set" : "unset");
   if (log) appendFileSync(log, `${JSON.stringify({ op: "env", BROWSERBASE_API_KEY: seen("BROWSERBASE_API_KEY"), BROWSERBASE_PROJECT_ID: seen("BROWSERBASE_PROJECT_ID") })}\n`);
   if (log) appendFileSync(log, `${JSON.stringify({ op: "vendor", vendor, KERNEL_API_KEY: seen("KERNEL_API_KEY") })}\n`);
+  // A local Chrome's run: the Chrome the server handed its process, if any.
+  if (log && vendor === "chrome") appendFileSync(log, `${JSON.stringify({ op: "chrome", path: env.AGENTRUN_SERVE_BROWSER_CHROME ?? null })}\n`);
   if (log && signIn) {
     const values = (object) => Object.getOwnPropertyNames(object).map((name) => String(object[name]));
     const kernelEnv = (() => { try { return readFileSync("/proc/self/environ", "utf8"); } catch { return ""; } })();

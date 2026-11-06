@@ -12,7 +12,7 @@ import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { statSync } from "node:fs";
 import { lstat, mkdir, readdir, rm } from "node:fs/promises";
-import { connect } from "node:net";
+import { type AddressInfo, connect, createServer, type Socket } from "node:net";
 import { release } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -130,6 +130,61 @@ async function runProxy(runId: string, allow: readonly string[], env: NodeJS.Pro
   const fresh = (await proxy).fresh && !opened.has(runId);
   opened.add(runId);
   return { dir, fresh };
+}
+
+/** A local Chrome's proxy (local-chrome.ts): connections open at once, and in all. Chrome holds at most 32 sockets to one
+ *  proxy at once, and a page opens a connection to each host it loads from, so a run's browser opens far more over its
+ *  life than a box's tools do. */
+export const BROWSER_MAX_TUNNELS = 128;
+export const BROWSER_MAX_CONNECTIONS = 100_000;
+/** Where a local Chrome's relay to its proxy listens: this machine's loopback, which the proxy itself refuses. */
+const RELAY_HOST = "127.0.0.1"; // key-gate: loopback-rule the local Chrome relay to its egress proxy listens here
+
+/** The way out of run `runId`'s local Chrome (local-chrome.ts): the same egress proxy a box's is, with no host list, so
+ *  every public host is reached and nothing else (loopback, private, link-local and metadata addresses, and this host's own,
+ *  each refused after its lookup), on a Unix socket in a directory of its own (egressDir, 0700). Chrome takes a proxy over
+ *  TCP alone, so a relay on an ephemeral loopback port passes each connection to the socket unread: the proxy, which
+ *  decides, is unchanged. Its decisions go to `log`. `close` stops the relay and the proxy and removes the directory. */
+export async function browserEgress(runId: string, env: NodeJS.ProcessEnv, log: (line: string) => void): Promise<{ url: string; close(): Promise<void> }> {
+  const dir = egressDir(`browser:${runId}`);
+  await ownParent(join(dir, ".."));
+  await mkdir(dir, { mode: 0o700 }).catch((error: NodeJS.ErrnoException) => {
+    if (error.code !== "EEXIST") throw error;
+  });
+  const socketPath = join(dir, EGRESS_SOCKET);
+  const proxy = await startEgressProxy({ socketPath, maxTunnels: BROWSER_MAX_TUNNELS, maxConnections: BROWSER_MAX_CONNECTIONS, log, ...(await fauxSeams(env)) });
+  const open = new Set<Socket>();
+  const relay = createServer((client) => {
+    const upstream = connect(socketPath);
+    for (const socket of [client, upstream]) {
+      open.add(socket);
+      socket.once("close", () => open.delete(socket));
+      socket.on("error", () => {
+        client.destroy();
+        upstream.destroy();
+      });
+    }
+    client.pipe(upstream).pipe(client);
+  });
+  try {
+    await new Promise<void>((ok, fail) => relay.once("error", fail).listen(0, RELAY_HOST, () => ok()));
+  } catch (error) {
+    await proxy.close();
+    throw error;
+  }
+  const { port } = relay.address() as AddressInfo;
+  log("egress start browser");
+  return {
+    url: `http://${RELAY_HOST}:${port}`,
+    async close() {
+      await new Promise<void>((ok) => {
+        relay.close(() => ok());
+        for (const socket of open) socket.destroy();
+      });
+      await proxy.close();
+      await rm(dir, { recursive: true, force: true });
+    },
+  };
 }
 
 type Seams = Pick<EgressProxyOptions, "lookup" | "dial">;

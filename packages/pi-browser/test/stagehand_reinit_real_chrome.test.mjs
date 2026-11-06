@@ -1,7 +1,8 @@
 // Reattaching after a connection drop, with a proxy between the driver and the browser that cuts or holds connections as a
 // network would. Stagehand 4.4 lets one client attach to a browser at a time, and its extension sees a client leave only
 // through its own connection to the browser: the cdp provider names the browser's own URL for that connection, so a drop
-// on the driver's side never cuts it, and the next attach finds the browser free.
+// on the driver's side never cuts it, and the next attach finds the browser free. Each case runs on a guarded session too
+// (cdp-guard.ts), where both connections go through the guard, each on an upstream connection of its own.
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -17,7 +18,7 @@ const SPEC = { tag: "reinit", maxLifetimeS: 600, idleTimeoutS: 60, proxies: fals
 
 /** A browser (its extension confined, as in production), a proxy in front of it, and a driver attached through the proxy
  *  that has set a value the page keeps. Null when this Chrome cannot run the extension. */
-async function proxiedDriver(t) {
+async function proxiedDriver(t, guarded) {
   const dir = await mkdtemp(path.join(tmpdir(), "pi-browser-reinit-"));
   const drivers = [];
   let provider, ref, proxy;
@@ -27,10 +28,10 @@ async function proxiedDriver(t) {
     if (ref) await provider.release(ref);
     await rm(dir, { recursive: true, force: true });
   }, { timeout: 60_000 });
-  provider = cdpProvider({ chrome: { executablePath: CHROME, profileRoot: dir } });
+  provider = cdpProvider({ chrome: { executablePath: CHROME, profileRoot: dir, ...(guarded ? { guard: true } : {}) } });
   ref = await provider.create(SPEC, new AbortController().signal);
   const own = await provider.attach(ref);
-  assert.equal(own.extensionCdpUrl, own.sdkCdpUrl, "the extension dials the browser's own URL");
+  assert.equal(own.extensionCdpUrl, own.sdkCdpUrl, guarded ? "the extension dials the guard, as the driver does" : "the extension dials the browser's own URL");
   const address = new URL(own.sdkCdpUrl);
   proxy = await heldProxy({ host: address.hostname, port: Number(address.port), path: address.pathname });
   const viaProxy = { ...own, sdkCdpUrl: `ws://127.0.0.1:${proxy.port}${address.pathname}` };
@@ -48,73 +49,77 @@ async function proxiedDriver(t) {
 
 const KEPT = (site) => `await page.goto(${JSON.stringify(`${site.base}/a`)}); return await page.evaluate(() => localStorage.getItem("gre3649"));`;
 
-test("a drop that cuts the driver's connection leaves the extension's own: the next attach runs at once on the same session with its state", { skip: NO_CHROME, timeout: 180_000 }, async (t) => {
-  const rig = await proxiedDriver(t);
-  if (!rig) return;
-  const { provider, ref, own, proxy, attach, site } = rig;
-  proxy.drop();
-  const started = Date.now();
-  const again = await attach();
-  assert.ok(Date.now() - started < 15_000, `the attach after the drop took ${Date.now() - started} ms: it waited on something`);
-  assert.equal(await again.run({ code: KEPT(site) }), "kept", "the page state from before the drop is still there");
-  assert.equal(await provider.status(ref), "running", "the lease is untouched");
-  assert.equal((await provider.attach(ref)).sdkCdpUrl, own.sdkCdpUrl, "the same browser");
-});
+for (const guarded of [false, true]) {
+const on = guarded ? "guarded: " : "";
 
-test("an attach cancelled while its connection is held stops at once, and lets go of the connection that arrives later", { skip: NO_CHROME, timeout: 180_000 }, async (t) => {
-  const rig = await proxiedDriver(t);
-  if (!rig) return;
-  const { proxy, attach, site } = rig;
-  proxy.drop();
-  proxy.hold();
-  const call = new AbortController();
-  const started = Date.now();
-  const cancelled = attach(call.signal);
-  const deadline = Date.now() + 20_000;
-  while (proxy.waiting() === 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
-  assert.equal(proxy.waiting(), 1, "the attach's connection is held at the proxy");
-  call.abort();
-  await assert.rejects(cancelled, (error) => error?.name === "AbortError");
-  assert.ok(Date.now() - started < 15_000, "it stopped with the cancel");
-  // The held connection now goes through and attaches; the cancelled attach lets it go, so the next is not refused.
-  proxy.release();
-  let next = null;
-  for (const until = Date.now() + 30_000; !next && Date.now() < until; ) {
-    next = await attach().catch((error) => { if (!/already connected/.test(String(error?.message))) throw error; return null; });
-    if (!next) await new Promise((resolve) => setTimeout(resolve, 250));
-  }
-  assert.ok(next, "an attach after the late connection was let go");
-  assert.equal(await next.run({ code: KEPT(site) }), "kept");
-});
+  test(`${on}a drop that cuts the driver's connection leaves the extension's own: the next attach runs at once on the same session with its state`, { skip: NO_CHROME, timeout: 180_000 }, async (t) => {
+    const rig = await proxiedDriver(t, guarded);
+    if (!rig) return;
+    const { provider, ref, own, proxy, attach, site } = rig;
+    proxy.drop();
+    const started = Date.now();
+    const again = await attach();
+    assert.ok(Date.now() - started < 15_000, `the attach after the drop took ${Date.now() - started} ms: it waited on something`);
+    assert.equal(await again.run({ code: KEPT(site) }), "kept", "the page state from before the drop is still there");
+    assert.equal(await provider.status(ref), "running", "the lease is untouched");
+    assert.equal((await provider.attach(ref)).sdkCdpUrl, own.sdkCdpUrl, "the same browser");
+  });
 
-test("an attach cancelled while Stagehand.create is still running disconnects before it fails, so the next attach is not refused", { skip: NO_CHROME, timeout: 180_000 }, async (t) => {
-  const rig = await proxiedDriver(t);
-  if (!rig) return;
-  const { proxy, viaProxy, attach, drivers, site } = rig;
-  proxy.drop();
-  // The real Stagehand, but its create waits at a gate the test opens: the connect has already succeeded when it is held.
-  let entered; const reached = new Promise((resolve) => { entered = resolve; });
-  let open; const gate = new Promise((resolve) => { open = resolve; });
-  let late;
-  const held = stagehandDriver({ stagehand: async () => {
-    const real = await import("@browserbasehq/stagehand");
-    return { localBrowser: real.localBrowser, Stagehand: { create: (options) => { entered(); late = gate.then(() => real.Stagehand.create(options)); return late; } } };
-  } });
-  t.after(() => open(), { timeout: 30_000 });
-  const call = new AbortController();
-  const attaching = held(viaProxy, call.signal);
-  await reached;
-  const started = Date.now();
-  call.abort();
-  await assert.rejects(attaching, (error) => error?.name === "AbortError");
-  const took = Date.now() - started;
-  t.diagnostic(`the cancelled attach failed ${took} ms after the cancel, the disconnect included`);
-  assert.ok(took < 12_000, `the cancelled attach failed ${took} ms after the cancel: past Stagehand's 10 s detach bound`);
-  // Disconnected before it failed: the next attach takes the browser at once, with no retry.
-  const next = await attach();
-  assert.equal(await next.run({ code: KEPT(site) }), "kept");
-  // The held create, let go now, finds its browser disconnected and fails; nothing else is attached.
-  open();
-  await assert.rejects(late);
-  assert.equal(drivers.length, 2, "only the first driver and the next one attached");
-});
+  test(`${on}an attach cancelled while its connection is held stops at once, and lets go of the connection that arrives later`, { skip: NO_CHROME, timeout: 180_000 }, async (t) => {
+    const rig = await proxiedDriver(t, guarded);
+    if (!rig) return;
+    const { proxy, attach, site } = rig;
+    proxy.drop();
+    proxy.hold();
+    const call = new AbortController();
+    const started = Date.now();
+    const cancelled = attach(call.signal);
+    const deadline = Date.now() + 20_000;
+    while (proxy.waiting() === 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(proxy.waiting(), 1, "the attach's connection is held at the proxy");
+    call.abort();
+    await assert.rejects(cancelled, (error) => error?.name === "AbortError");
+    assert.ok(Date.now() - started < 15_000, "it stopped with the cancel");
+    // The held connection now goes through and attaches; the cancelled attach lets it go, so the next is not refused.
+    proxy.release();
+    let next = null;
+    for (const until = Date.now() + 30_000; !next && Date.now() < until; ) {
+      next = await attach().catch((error) => { if (!/already connected/.test(String(error?.message))) throw error; return null; });
+      if (!next) await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    assert.ok(next, "an attach after the late connection was let go");
+    assert.equal(await next.run({ code: KEPT(site) }), "kept");
+  });
+
+  test(`${on}an attach cancelled while Stagehand.create is still running disconnects before it fails, so the next attach is not refused`, { skip: NO_CHROME, timeout: 180_000 }, async (t) => {
+    const rig = await proxiedDriver(t, guarded);
+    if (!rig) return;
+    const { proxy, viaProxy, attach, drivers, site } = rig;
+    proxy.drop();
+    // The real Stagehand, but its create waits at a gate the test opens: the connect has already succeeded when it is held.
+    let entered; const reached = new Promise((resolve) => { entered = resolve; });
+    let open; const gate = new Promise((resolve) => { open = resolve; });
+    let late;
+    const held = stagehandDriver({ stagehand: async () => {
+      const real = await import("@browserbasehq/stagehand");
+      return { localBrowser: real.localBrowser, Stagehand: { create: (options) => { entered(); late = gate.then(() => real.Stagehand.create(options)); return late; } } };
+    } });
+    t.after(() => open(), { timeout: 30_000 });
+    const call = new AbortController();
+    const attaching = held(viaProxy, call.signal);
+    await reached;
+    const started = Date.now();
+    call.abort();
+    await assert.rejects(attaching, (error) => error?.name === "AbortError");
+    const took = Date.now() - started;
+    t.diagnostic(`the cancelled attach failed ${took} ms after the cancel, the disconnect included`);
+    assert.ok(took < 12_000, `the cancelled attach failed ${took} ms after the cancel: past Stagehand's 10 s detach bound`);
+    // Disconnected before it failed: the next attach takes the browser at once, with no retry.
+    const next = await attach();
+    assert.equal(await next.run({ code: KEPT(site) }), "kept");
+    // The held create, let go now, finds its browser disconnected and fails; nothing else is attached.
+    open();
+    await assert.rejects(late);
+    assert.equal(drivers.length, 2, "only the first driver and the next one attached");
+  });
+}

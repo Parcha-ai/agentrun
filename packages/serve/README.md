@@ -72,6 +72,7 @@ An edit is a new revision: `PUT $AGENTRUN_BASE_URL/agents/calc/definition` with
 | `--allow-code-nodes` | off (`AGENTRUN_SERVE_CODE_NODES=1` turns it on) | Run workflows' `code` nodes. They run in the run's process through the DSL's `new Function` transform, which is no sandbox, so only turn it on for workflows you wrote. Off, a workflow with a code node saves with a `not_set_up_here` warning and its runs are `409 agent_not_runnable` with `details.code: true`. A call `via: "shell"` or `"executor"` is refused either way. |
 | `--learning on\|off` | on (`AGENTRUN_SERVE_LEARNING`) | Whether runs [learn](#learning). On, a run of an agent whose definition says `learning: true` starts from what that agent learned and adds to it; off, no run does, whatever its agent says. Any other value refuses the start. Capabilities report it as `features.learning`. |
 | `--learning-budget BYTES` | `8000` (`AGENTRUN_SERVE_LEARNING_BUDGET`) | How much of what an agent learned its runs' instructions hold under `# Learned`, in UTF-8 bytes: every note whole while they fit, else the index and the notes changed last, whole, while they fit ([learning](#learning)). `0` gives the index alone. A value that is not a whole number of bytes refuses the start. |
+| `--browser-chrome PATH` | off (`AGENTRUN_SERVE_BROWSER_CHROME`) | A Chrome or Chromium binary on this machine the `browser` tool may run on, where `chrome` is picked ([local Chrome](#local-chrome)). Checked at the start: a path that is not an executable file, or a Chrome that cannot start with its sandbox on here, refuses it. Off, `chrome` is unavailable. |
 | `--drain-timeout D` | `30s` (the image: `6s`) | How long a busy run may finish its turn when the server stops (`8s`, `500ms`, `1m`). A turn cut off resumes at the next start; its model request is sent again. The server keeps its data directory until its runs' processes have exited (up to this and a second), and says so as it stops; a server started on the same `--data` meanwhile waits for it, saying so, then starts. |
 
 `AGENTRUN_TOKEN`, when set, is the token (32 characters or more), and the server prints `$AGENTRUN_TOKEN` in its
@@ -1000,16 +1001,18 @@ snippet of at most 3,000 characters and its date when Exa knows it, then a line 
 relies on. Keyless Exa is the default for a harness with no native search when the server holds no Parallel key; `off`
 turns `web_search` off, keyless Exa included.
 
-The `browser` tool runs hosted sessions, at Browserbase or at Kernel, never a Chrome on this machine. Which one is
-picked like `web_search`'s provider: the agent's own (`definition.tool_settings.browser.provider`) over the server's
-(`PUT /settings/tools`), one of `auto` (the default), `browserbase`, `kernel` and `chrome`. `auto` is Browserbase where
-the server holds its keys (`BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID`), else Kernel where it holds
-`KERNEL_API_KEY`, else unavailable, saying which keys would do. A vendor picked is that vendor alone: without its key
-it is unavailable, never the other one. `chrome`, a Chrome on the server's own host, is in the list but not set up on
-any server yet: it reads unavailable (`a local Chrome is not set up on this server`), and a run that would get it is
-`409`. Capabilities' `tools[]` give the browser's providers, the server's pick and what it resolves to; a run keeps the
-vendor its first launch resolved for its life, and one whose vendor's key is gone since is refused each browser call,
-saying why. Kernel's browsers run headless, and keep no downloads, so a run on Kernel has no `browser_downloads`. The keys come from the server's environment or Tool keys and reach the
+The `browser` tool runs hosted sessions, at Browserbase or at Kernel, or, where the operator turns it on, a headless
+Chrome on this machine ([local Chrome](#local-chrome)). Which one is picked like `web_search`'s provider: the agent's
+own (`definition.tool_settings.browser.provider`) over the server's (`PUT /settings/tools`), one of `auto` (the
+default), `browserbase`, `kernel` and `chrome`. `auto` is Browserbase where the server holds its keys
+(`BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID`), else Kernel where it holds `KERNEL_API_KEY`, else unavailable,
+saying which keys would do; it never picks the local Chrome. A vendor picked is that vendor alone: without its key it is
+unavailable, never the other one. `chrome` is the local Chrome on a server started with `--browser-chrome`, and on any
+other unavailable (`a local Chrome is not set up on this server`): a run that would get it is `409`. Capabilities'
+`tools[]` give the browser's providers, the server's pick and what it resolves to, and `features.browser` names it
+(`browserbase`, `kernel`, `chrome` or `none`); a run keeps the browser its first launch resolved for its life, and one
+whose vendor's key is gone since, or whose local Chrome the server is no longer given, is refused each browser call,
+saying why, never moved to another browser. Kernel's browsers run headless, and keep no downloads, so a run on Kernel has no `browser_downloads`. The keys come from the server's environment or Tool keys and reach the
 run's process over its pipe, as the rest do. A session's custody (its lease, its tag, what it was
 doing) is kept in the run's own store, so a run opened again on its directory reconciles the sessions it held. Each
 page it reads is filed under the run's `work/evidence/`, each read in a file of its own (`0001-browser_read.md`, ...),
@@ -1034,6 +1037,66 @@ its new `usage`), never a new row. Prices are by provider (pi-browser's provider
 A variable gives the provider's price in US dollars an hour (a contract rate; the minimum stays). A provider with no price,
 or a variable that is not a non-negative decimal, has no price: its time is booked as an unknown cost, and under a cap
 every browser call is refused. Under a cap the browser's time is held before it runs (see [Spend cap](#spend-cap)).
+
+### Local Chrome
+
+Off by default, and only the operator's to turn on: `--browser-chrome PATH` (or `AGENTRUN_SERVE_BROWSER_CHROME`) names
+a Chrome or Chromium binary on this machine, and `chrome` picked, for the server or for an agent, then runs each
+browser session on it. Nothing else turns it on: `auto` never picks it, and no agent or setting can name a binary.
+
+- **Chrome's sandbox, always.** The start checks the Chrome once: headless, sandbox on, a blank page, a proxy nothing
+  reaches. One that cannot start its sandbox here refuses the start, and so does AgentRun running as root (Chrome's
+  sandbox does not start as root). On Ubuntu 23.10 and later a Chrome with no AppArmor profile cannot, since
+  unprivileged user namespaces are confined: give it a profile, or use a Chrome whose setuid sandbox helper is installed.
+  The server never turns the sandbox off, and no setting or variable does (`PI_BROWSER_NO_SANDBOX` is ignored); a
+  session whose Chrome cannot start it later is refused, saying so.
+- **A Chrome of the run's own.** Each session starts a fresh Chrome, headless, on a fresh profile under the run's
+  directory that its release removes (nothing is loaded into it: no cookies, no storage, no saved profile), with its
+  DevTools socket on a loopback port picked for it, which nothing in the browser can reach (everything else goes
+  through the guard in front of it, below). Its release stops
+  that Chrome by its exact pid. It never attaches to a Chrome that is already running (a shared one on port 9222
+  included), and no port or endpoint is taken from a setting. A run whose process dies while its Chrome is open (a
+  crash) releases that Chrome when it opens again: it reaches nothing once its relay is gone, so it is stopped, its
+  profile removed, and the next browser call opens a fresh one, told the last session ended.
+- **No saved sign-ins.** A local Chrome keeps none: its cookies would sit on this server's disk. No sign-in is made,
+  leased or handed to a run on it, a session that asks for a profile is refused by name, and capabilities say
+  `sign_ins: false` while the server's browser is the local Chrome. Saved sign-ins are Browserbase's and Kernel's.
+- **Public addresses only.** Every request the Chrome makes goes through the kernel's egress proxy (the one a Docker
+  box's tools use), run in the run's process with no host list, on a Unix socket in a 0700 directory of its own and
+  reached over a relay on an ephemeral loopback port. Chrome is started with `--proxy-server` at that relay and
+  `--proxy-bypass-list=<-loopback>`, which takes away the bypass Chrome gives loopback and link-local addresses by
+  default, so they go through the proxy too, with one exception: the guard on its DevTools socket (below). The proxy
+  resolves each name itself and refuses, after the lookup, every address that is not public: loopback (this server's
+  own port among them), private ranges, link-local addresses, the clouds' metadata addresses and this machine's own
+  addresses. A page that steers the browser to one, by a link, a redirect, a script or an embed, gets the proxy's
+  refusal (`egress refused: loopback`). Chrome resolves no name or address itself but the relay's and the guard's
+  (`--host-resolver-rules`), so a request sent around the proxy, a browser context given its own proxy setting
+  included, reaches nothing. QUIC is off (`--disable-quic`), and WebRTC sends nothing past the proxy
+  (`--webrtc-ip-handling-policy=disable_non_proxied_udp`: it gathers no ICE candidate, and no STUN packet leaves). A
+  run's browser may hold 128 connections open at once and open 100,000 in all. The proxy's decisions (host, port,
+  address and class, never a path) are `browser_egress` lines in the run's `process.log`.
+- **No files of this machine.** The browser runs on this server's disk, so nothing it is driven by may open a file
+  there. Every client of its DevTools socket (the driver, and the code a model runs in the browser through Stagehand's
+  extension) goes through pi-browser's guard (`cdp-guard.ts`), a relay in front of the socket that reads each command
+  and passes only the ones pi-browser and Stagehand send (an allowlist: nothing that tells of this machine, such as
+  the browser's command line, system information or processes, gets an answer). Of those it passes, a navigation or a
+  new tab to anything but `http`, `https` or `about:blank` (`file:`, `chrome:`, `view-source:`, `data:`, `javascript:`
+  and the rest), a file handed to a page (an upload by path, a drop), a download sent to a directory, an extension
+  loaded or the protocol handed to a page is refused, in words that name no path. No client may drive an extension's
+  page, which could move itself onto a file, and a page the guard sees on a file or a browser-internal URL is closed.
+  The extension's own APIs that would go around the guard (opening or moving a tab or a window, the debugger API, its
+  worker's clients, any offscreen page but Stagehand's heartbeat, a request rule that does more than allow or block)
+  are taken away in its copy, under both of its namespaces (`chrome` and `browser`), before any code runs there. Code
+  run beside them cannot loosen what is left by replacing a built-in or handing over an object that lies: each call is
+  checked on fields read once and passed on as a new object. A web page's own move to a file (a link, a script,
+  `window.open`) is Chrome's to refuse, and it does. The browser's own socket is on a port nothing in the browser can
+  reach.
+- **What it can't do.** No saved sign-ins; no vendor proxies, verified browsing, geolocation or region, which a vendor's
+  browser offers and this one has none of; and nothing on this machine or a private network, however the page or the
+  model asks. Its downloads stay in a folder of the session's own under the run's directory, after its release too,
+  until `browser_downloads` copies them into `work/`.
+- **Its cost.** Free by default (`cdp`, $0 an hour): its minutes book nothing. `AGENTRUN_BROWSER_USD_PER_HOUR_CDP`
+  gives this machine's time a price, which the run's spend and its cap then count like a vendor's.
 
 ### Saved sign-ins
 
