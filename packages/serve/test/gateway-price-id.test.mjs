@@ -91,3 +91,23 @@ test("a capped pi run on the gateway's gpt-5-4-mini completes, priced at the cat
   const each = (USAGE.input * CATALOG_PRICE.input + USAGE.output * CATALOG_PRICE.output) / 1e6;
   assert.deepEqual(rows.findLast((r) => r.kind === "usage")?.usage, { usd: Math.round(posts.length * each * 1e6) / 1e6, requests: posts.length });
 });
+
+// A date-suffixed id. Flipped pair by pair, its version flips and its date never does: claude-sonnet-4-5-20991231's one
+// flipped form is claude-sonnet-4.5-20991231 (the "5" of 4-5 is taken, so 5-2 of the date is not a pair). So a dated id
+// is priced as itself, or as that same dated model, or not at all: never as its undated sibling (claude-sonnet-4-5).
+test("a date-suffixed id: the exact entry wins when listed; unlisted, it is priced only as its own dated form flipped (claude-sonnet-4.5-20991231), never as the undated sibling, and stays unpriced when that form is not listed", async () => {
+  const catalog = await modelModule.catalogPrices();
+  const listed = catalog.get("claude-sonnet-4-5-20250929")?.find((entry) => entry.provider === "anthropic")?.cost;
+  assert.ok(listed && modelModule.catalogPrice(catalog, "claude-sonnet-4-5", undefined), "the catalog lists the dated model and its undated sibling");
+  assert.deepEqual([modelModule.catalogPrice(catalog, "claude-sonnet-4-5-20250929", undefined), modelModule.catalogPrice(catalog, "claude-sonnet-4-5-20991231", undefined)], [listed, undefined]);
+  // On a stub: the dated form flipped is the one looked up (never a date flipped too, never the undated sibling).
+  const dated = cost(2, 10);
+  const stub = new Map([
+    ["claude-sonnet-4.5-20991231", [{ provider: "one", cost: dated }]],
+    ["claude-sonnet-4.5.20991231", [{ provider: "decoy", cost: cost(9, 9) }]],
+    ["claude-sonnet-4.5", [{ provider: "one", cost: cost(3, 15) }]],
+    ["claude-sonnet-4-5", [{ provider: "one", cost: cost(3, 15) }]],
+  ]);
+  const undatedOnly = new Map([...stub].filter(([id]) => !id.includes("2099")));
+  assert.deepEqual([modelModule.catalogPrice(stub, "claude-sonnet-4-5-20991231", undefined), modelModule.catalogPrice(undatedOnly, "claude-sonnet-4-5-20991231", undefined)], [dated, undefined]);
+});
