@@ -94,9 +94,21 @@ describe("the Learning tab's notes", () => {
     const t = await open(agent(true), { learning: async () => view({ log }), runs: [] });
     const label = (name: string, id: string) => t.card(name)!.querySelector(`a[href="#/runs/${id}"]`)?.textContent ?? "";
     const [a, b] = [label("Try /policies/refund-policy first", A), label("Keep it to three lines", B)];
-    expect(a).toMatch(/^run \S+$/);
-    expect(b).toMatch(/^run \S+$/);
-    expect(a).not.toBe(b);
+    // The short id, as the console names a run everywhere: its last 8 characters.
+    expect(a).toBe(A.slice(-8));
+    expect(b).toBe(B.slice(-8));
+  });
+  it("names the run that learned a note by its short id, linked to the run, with its whole title only on hover", async () => {
+    const ID = "01a1a88f-5f5c-7ce4-a912-fb765b62e88b";
+    const TITLE = "Install the Python toolchain, then write the weekly report for the team with the agreed rule";
+    const log: AgentLearning["log"] = { items: [{ by: { run: ID }, commit: "c1", at: "2026-11-06T15:13:00Z", reason: "Kept.", files: [FIRST, "MEMORY.md"] }], total: 1, next_cursor: null };
+    const t = await open(agent(true), { learning: async () => view({ log }), runs: [runOf(ID, TITLE, null)] });
+    const link = t.card("Try /policies/refund-policy first")!.querySelector<HTMLAnchorElement>(`a[href="#/runs/${ID}"]`)!;
+    expect(link).toBeTruthy();
+    expect(link.textContent).toBe("5b62e88b");
+    expect(link.getAttribute("href")).toBe(`#/runs/${ID}`);
+    expect(link.getAttribute("title")).toBe(TITLE);
+    expect(link.textContent).not.toContain("…");
   });
   it("shows each note in use with its type, its body, the run that learned it and how many runs it was given to and read in", async () => {
     // The server names the person's note's newest change (last_change): created by them.
@@ -111,7 +123,8 @@ describe("the Learning tab's notes", () => {
     expect(first.querySelector('[title="feedback"]')).toBeNull();
     expect(first.textContent).toContain("The body of Try /policies/refund-policy first.");
     expect(first.textContent).toContain("Learned in");
-    expect(first.querySelector('a[href="#/runs/run-b"]')?.textContent).toBe("brooklinen.com");
+    expect(first.querySelector('a[href="#/runs/run-b"]')?.textContent).toBe("run-b");
+    expect(first.querySelector('a[href="#/runs/run-b"]')?.getAttribute("title")).toBe("brooklinen.com");
     expect(first.textContent).toContain("Given to 3 runs");
     expect(first.textContent).toContain("Read in 3 runs");
     const mine = t.card("Keep it to three lines")!;
@@ -597,7 +610,7 @@ describe("pages past the first", () => {
       log: async () => ({ items: [{ by: { run: "run-z" }, commit: "c0", at: "2026-11-03T15:00:00Z", reason: "General.", files: ["older.md", "MEMORY.md"] }], total: 4, next_cursor: null }),
     });
     expect(t.calls).toContain("log after l1");
-    expect(t.card("An older note")!.querySelector('a[href="#/runs/run-z"]')?.textContent).toBe("rei.com");
+    expect(t.card("An older note")!.querySelector('a[href="#/runs/run-z"]')?.textContent).toBe("run-z");
   });
   it("a page that fails says so; a good Try again clears it, and a linked note's pages are read on", async () => {
     let pages = 0;
@@ -638,10 +651,10 @@ describe("the Learning tab's skills and workflows", () => {
     expect(skills.contains(skill)).toBe(true);
     expect(skill.textContent).toContain("Find a store's policies");
     expect(skill.textContent).toContain("Learned in");
-    expect(skill.querySelector('a[href="#/runs/run-b"]')?.textContent).toBe("brooklinen.com");
+    expect(skill.querySelector('a[href="#/runs/run-b"]')?.textContent).toBe("run-b");
     const flow = t.card("check-refunds")!;
     expect(workflows.contains(flow)).toBe(true);
-    expect(flow.querySelector('a[href="#/runs/run-a"]')?.textContent).toBe("taylorstitch.com");
+    expect(flow.querySelector('a[href="#/runs/run-a"]')?.textContent).toBe("run-a");
     // Its text, read when opened.
     expect(t.calls.some((c) => c.startsWith(`read ${SKILL_FILE}`))).toBe(false);
     await t.click(/^Show the skill find-policies$/);
@@ -850,6 +863,29 @@ describe("the Learning tab's \"What the next run reads\"", () => {
   const skillsOnly = () => view({ index: "", notes: { items: [], total: 0, next_cursor: null }, skills: [skill("find-policies", "active"), skill("issue-refunds", "pending")] } as Partial<AgentLearning>);
   const panel = (t: Awaited<ReturnType<typeof open>>) => t.host.querySelector('section[aria-label="What the next run reads"]') as HTMLElement;
 
+  it("renders the notes it reads as Markdown: a heading and a list as elements, a relative link as its text", async () => {
+    const index = "# Notes\n\n- [Try the refund page first](try-refund-page.md) — When a store has one\n- [Keep it to three lines](keep-short.md) — Every answer\n";
+    const t = await open(agent(true), { learning: async () => view({ index }) });
+    const p = panel(t);
+    await act(async () => { p.querySelector("button")!.click(); });
+    expect(p.querySelector("pre")).toBeNull();
+    expect(p.querySelector("h1")?.textContent).toBe("Notes");
+    const items = [...p.querySelectorAll("ul > li")].map((li) => li.textContent);
+    expect(items).toEqual(["Try the refund page first — When a store has one", "Keep it to three lines — Every answer"]);
+    expect(p.textContent).not.toContain("](");
+    // A note's file is no address in the console: its link reads as text, never a dead link.
+    expect(p.querySelector('a[href="try-refund-page.md"]')).toBeNull();
+  });
+
+  it("keeps a note's HTML as text: a <script> in what a run wrote reads as written and never runs", async () => {
+    const index = "- [Quote](quote.md) — It said <script>alert(1)</script> once\n";
+    const t = await open(agent(true), { learning: async () => view({ index }) });
+    const p = panel(t);
+    await act(async () => { p.querySelector("button")!.click(); });
+    expect(p.querySelector("script")).toBeNull();
+    expect(p.querySelector("li")?.textContent).toContain("<script>alert(1)</script>");
+  });
+
   it("counts and names the active skill it is given when no note is in use, and leaves out a pending one", async () => {
     const t = await open(agent(true), { learning: async () => skillsOnly() });
     const p = panel(t);
@@ -943,7 +979,7 @@ describe("the Learning tab's retired notes and skills, opened", () => {
     expect(earlier.textContent).toContain("The body of Keep it to three lines.");
     expect(earlier.textContent).toContain("When keep it to three lines applies");
     expect(earlier.textContent).toContain("Learned in");
-    expect(earlier.querySelector('a[href="#/runs/run-a"]')?.textContent).toBe("taylorstitch.com");
+    expect(earlier.querySelector('a[href="#/runs/run-a"]')?.textContent).toBe("run-a");
     expect(earlier.textContent).toMatch(/Retired by you · \S/);
     expect(t.button(/^Edit Keep it to three lines$/)).toBeUndefined();
     expect(t.button(/^Retire Keep it to three lines$/)).toBeUndefined();
@@ -961,7 +997,7 @@ describe("the Learning tab's retired notes and skills, opened", () => {
     await t.click(/^Show the skill find-policies$/);
     expect(t.calls).toContain(`read ${SKILL_FILE}`);
     expect(earlier.textContent).toContain("Open the policies page first.");
-    expect(earlier.querySelector('a[href="#/runs/run-b"]')?.textContent).toBe("brooklinen.com");
+    expect(earlier.querySelector('a[href="#/runs/run-b"]')?.textContent).toBe("run-b");
     expect(earlier.textContent).toContain("Retired");
     expect(t.button(/^Retire find-policies$/)).toBeUndefined();
     expect(t.button(/^Approve find-policies$/)).toBeUndefined();
