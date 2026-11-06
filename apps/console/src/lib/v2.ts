@@ -61,8 +61,29 @@ export type Run = {
   pending?: PendingQuestion | PendingApproval | BudgetPending | null;
   /** Imported history: where the run was run (`claude-code`, `codex` or `pi`) and its session there; else null. */
   imported_from?: { source: string; session: string } | null;
+  /** The schedule that started it and its firing (serve's trigger/1); null for a run a caller started, absent from an
+   *  older server. The schedule may have been deleted since. */
+  trigger?: { id: string; firing_key: string } | null;
 };
 
+/** When a schedule fires (serve's trigger/1): a five-field cron line in an IANA zone, one time, or every N seconds (60
+ *  or more) on the grid from `start_at`. */
+export type TriggerSource =
+  | { kind: "schedule"; cron: string; timezone: string }
+  | { kind: "schedule"; at: string }
+  | { kind: "schedule"; every_s: number; start_at: string };
+/** What a firing does: start a run of `agent_id` with `input`, capped at `max_cost_usd`. */
+/** `max_cost_usd` absent: each run takes the agent's default cap per run (its definition's max_cost_usd). */
+export type TriggerTarget = { kind: "start_run"; agent_id: string; input: { content?: string } & Record<string, unknown>; max_cost_usd?: number; effort?: string };
+/** `sent`: a firing of a trigger that sends a message to a run (not a schedule this console shows). */
+export type FiringStatus = "due" | "started" | "sent" | "skipped" | "failed" | "missed";
+/** One firing: by the schedule or by hand (Run now), for `nominal_at`, and what came of it. `count`: a missed row's
+ *  times; `attempts` and `retry_at`: a due one a full server keeps for later. */
+export type Firing = { key: string; by: "schedule" | "manual"; nominal_at: string; status: FiringStatus; at: string; run_id: string | null; reason: string | null; error: { code: string; message: string } | null; count?: number; attempts?: number; retry_at?: string };
+/** A schedule (GET /v2/triggers): `next_at` null when it is paused or has no time left; `last_firing` null until it fires. */
+export type Trigger = { id: string; name: string; enabled: boolean; source: TriggerSource; target: TriggerTarget; created_at: string; updated_at: string; next_at: string | null; overlap: "skip"; last_firing: Firing | null };
+/** A create's or an edit's body: the parts the form holds. */
+export type TriggerInput = { name?: string; enabled?: boolean; source?: TriggerSource | { kind: "schedule"; every_s: number; start_at?: string }; target?: TriggerTarget };
 /** A question the run asked a person (ask_person): a message answers it. */
 export type PendingQuestion = { kind: "question"; question: string; asked_at: string };
 /** A tool call set to ask, waiting for the owner's approval (approvals/1): POST /v2/runs/{id}/approvals/{id} answers it.
@@ -100,6 +121,9 @@ export type TimelineRow = {
   tool_input_preview?: string | null;
   tool_result_preview?: string | null;
   agent_label?: string | null;
+  /** `server` on the row of a message the server wrote into the run (an approval's resume, a raised cap's follow-up): a
+   *  `phase` row whose summary is "AgentRun: <its first line>". It is the message the turn took, never the person's. */
+  origin?: "server";
 };
 
 export type TimelinePage = {
@@ -148,5 +172,12 @@ export type WebhooksFeature = { routes: boolean; events: string[]; signing: stri
 /** A recorded response: what the server answered, exactly. */
 export type Recorded<T> = { request: { method: string; path: string }; status: number; headers?: Record<string, string>; body: T };
 
+/** PATCH /v2/runs/{id} {max_cost_usd}'s answer: the cap now. `resumed`: a run paused at its cap goes on (its follow-up
+ *  turn, `message_id`, is sent once its process has been let go). `note`: a working run's live process keeps its old cap
+ *  until its next one. */
+export type RaiseAnswer = { run_id: string; max_cost_usd: number; resumed: boolean; message_id?: string; status: RunStatus; state: RunState; note?: string };
+
 /** A run paused at its spend cap: what is left of its cap cannot buy its next request's least, which was not sent. */
-export type BudgetPending = { kind: "budget"; cap_usd: number; spent_usd?: number; needs_usd?: number; said: string; at: string };
+export type BudgetPending = { kind: "budget"; cap_usd: number; spent_usd?: number; needs_usd?: number; said: string; at: string;
+  /** The server's suggested new cap, always strictly above `cap_usd` (a newer server's; absent from an older one). */
+  suggested_cap_usd?: number };

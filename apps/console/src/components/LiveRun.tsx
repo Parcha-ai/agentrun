@@ -95,6 +95,13 @@ export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: str
     } catch (e) { setError(failure(e)); }
     setBusy(null); void refresh();
   };
+  // A raise is taken from its answer only by reading the run again (the pause gives way), and the timeline is followed
+  // anew; a refusal goes back to the raise control, which says it there.
+  const raiseCap = async (usd: number) => {
+    const answer = await v2.raiseCap(runId, usd);
+    await refresh(); setFollows((n) => n + 1);
+    return answer;
+  };
   const message = async (text: string) => {
     let ok = true;
     // The same text sent again after a lost or refused answer goes under the same key: the server never takes it twice.
@@ -130,7 +137,7 @@ export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: str
         graphView={run.kind === "workflow" && !noGraph ? <LiveGraph v2={v2} runId={runId} graph={graph} onMoved={() => { void refresh(); }} /> : undefined}
         costText={run.kind === "workflow" && !FINAL_RUN.has(run.status) && graph.data ? graphCostText(graph.data) : undefined}
         rows={rows} files={files} readFile={(f) => v2.readFile(runId, f.path)} readLearningDiff={() => v2.runLearningDiff(runId)} onMessage={message} onApprove={approve}
-        actions={{ onStop: () => void act("stop"), onCancel: () => void act("cancel"), onArchive: () => void archive(), busy }} />
+        actions={{ onStop: () => void act("stop"), onCancel: () => void act("cancel"), onArchive: () => void archive(), onRaiseCap: raiseCap, busy }} />
     </div>
   );
 }

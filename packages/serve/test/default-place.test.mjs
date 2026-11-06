@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { startServe } from "../dist/index.js";
-import { agent, client, flowAgent, follow, scratch, serve, withEnv } from "./support.mjs";
+import { agent, client, flowAgent, follow, jsonLines, scratch, serve, withEnv } from "./support.mjs";
 
 const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;
 const FAKE = new URL("./fixtures/fake-docker.mjs", import.meta.url).pathname;
@@ -35,7 +35,7 @@ async function fakeDocker(t, marks = {}) {
   for (const [name, text] of Object.entries(marks)) await writeFile(join(state, name), text);
   withEnv(t, { PATH: `${bin}:${process.env.PATH}`, FAKE_DOCKER_STATE: state, AGENTRUN_BOXES: "docker" }, ["AGENTRUN_DOCKER_IMAGE", "AGENTRUN_BOX_ALLOW"]);
   assert.equal(spawnSync("sh", ["-c", "command -v docker"], { encoding: "utf8" }).stdout.trim(), join(bin, "docker"), "the fake is the docker on PATH");
-  const calls = () => (existsSync(join(state, "argv.jsonl")) ? readFileSync(join(state, "argv.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line)) : []);
+  const calls = () => jsonLines(join(state, "argv.jsonl"));
   return { runs: () => calls().filter((args) => args[0] === "run"), execs: () => calls().filter((args) => args[0] === "exec"), release: () => rm(join(state, "build-hold"), { force: true }) };
 }
 
@@ -162,8 +162,8 @@ test("a new agent that names its tools gets exactly those in the box; one that n
   assert.deepEqual([edited.body.definition.place, edited.body.definition.tools], [DOCKER, ["read", "bash"]]);
 });
 
-test("with no docker, a new agent is saved as before, with no place, and runs on the runner; capabilities say why: docker not enabled, or its image failed", { timeout: 60_000 }, async (t) => {
-  withEnv(t, {}, ["AGENTRUN_BOXES"]);
+test("with no docker, a new agent is saved as before, with no place, and runs on the runner; capabilities say why: docker turned off (AGENTRUN_BOXES=none), or its image failed", { timeout: 60_000 }, async (t) => {
+  withEnv(t, { AGENTRUN_BOXES: "none" });
   const { api, data } = await serve(t, { faux: PROBE });
   const places = await placesOf(api);
   assert.equal(places.default, "runner");
@@ -193,7 +193,7 @@ test("a docker whose image failed is no default: a new agent goes to the runner,
 });
 
 test("an agent saved before, with no place, runs where it ran before on a server that now has docker: the runner, no box made; an edit that names no place keeps none", { timeout: 90_000 }, async (t) => {
-  withEnv(t, {}, ["AGENTRUN_BOXES"]);
+  withEnv(t, { AGENTRUN_BOXES: "none" });
   const data = join(await scratch(t), "agents");
   const first = await startServe({ data, port: 0, faux: PROBE, drainTimeout: "5s" });
   const before = await client(first.baseUrl, first.token)("POST", "/agents", fresh("old"));

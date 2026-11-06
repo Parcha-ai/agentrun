@@ -13,7 +13,7 @@ import { isIP, type AddressInfo } from "node:net";
 import type { Context, JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { ConversationBusy, ROOT_CONVERSATION_ID, watchEvents } from "@earendil-works/pi-durable";
-import type { Conversation, ConversationId, EntryId, Harness, JsonObject, SubmissionId, SubmissionRecord, UserInput } from "@earendil-works/pi-durable";
+import type { Conversation, ConversationId, Cursor, EntryId, Harness, JsonObject, SubmissionId, SubmissionRecord, Tx, UserInput } from "@earendil-works/pi-durable";
 import type { RunRef } from "./claim.ts";
 import { DOOR_TIMEOUT, openDoor, type Door, type DoorHook, type DoorRecord, type DoorTimeouts } from "./door.ts";
 import { PdaError } from "./errors.ts";
@@ -178,15 +178,32 @@ const optionalId = (value: unknown, name: string): number | undefined => {
   return value as number;
 };
 
-/** Whether `conversation`'s last model message is the result of a tool in `asks`: its turn ended on that tool, waiting
- *  for a person's answer. Entries with no model message (the host's own records) are passed over. */
-async function waitsOnPerson(conversation: Conversation, asks: readonly string[], context: Context): Promise<boolean> {
-  if (!asks.length) return false;
-  for (let cursor: Parameters<Conversation["entries"]>[2] = undefined; ; ) {
-    const page = await conversation.entries({}, 50, cursor, context);
+/** Whether the conversation waits on a person, read newest first back to its last user message (its turn's start): its
+ *  last model message is the result of a tool in `asks` (one that ends a turn to wait on a person: ask_person), or a
+ *  call waits in a park named in `parks`, an entry of that kind saying `{phase: "requested", id}` with no `{phase:
+ *  "resolved", id}` after it (a tool call waiting on its owner's approval, which parks on every harness). A door hook's
+ *  conversation holds no user model messages, so its park is looked for back to the conversation's start. Read in one
+ *  transaction (`tx`): the step that admits the input, or the one just before it, so no park is written mid-read. */
+async function waitsOnPerson(tx: Tx, conversationId: ConversationId, asks: readonly string[], parks: readonly string[]): Promise<boolean> {
+  if (!asks.length && !parks.length) return false;
+  const resolved = new Set<string>();
+  let modelSeen = false;
+  for (let cursor: Cursor | undefined = undefined; ; ) {
+    const page = await tx.scanEntries({ conversationId }, 50, cursor);
     for (const item of page.items) {
+      const parked = parks.includes(item.kind) ? (item.data as { phase?: unknown; id?: unknown } | undefined) : undefined;
+      if (typeof parked?.id === "string") {
+        if (parked.phase === "resolved") resolved.add(parked.id);
+        else if (parked.phase === "requested" && !resolved.has(parked.id)) return true;
+      }
       const last = (item.model as readonly { role?: string; toolName?: string }[] | undefined)?.at(-1);
-      if (last) return last.role === "toolResult" && asks.includes(String(last.toolName));
+      if (!last) continue;
+      if (!modelSeen) {
+        modelSeen = true;
+        if (last.role === "toolResult" && asks.includes(String(last.toolName))) return true;
+        if (!parks.length) return false;
+      }
+      if (last.role === "user") return false;
     }
     if (page.next === undefined) return false;
     cursor = page.next;
@@ -283,12 +300,15 @@ export async function serveRun(options: ServeOptions = {}): Promise<RunServer> {
 
   /** `answers: false`: the input may not answer a question the conversation waits on. It is refused (409 WAITING) when
    *  the conversation's last model message is the result of a tool in `asks` (one that ends a turn to wait on a person,
-   *  ask_person), and refused when busy (409 BUSY), never queued behind a turn that may end on such a tool. A door hook
-   *  (another harness) has no such tool: it takes only the busy refusal. */
+   *  ask_person), or a call waits in a park of a kind in `parks` (a tool call waiting on its owner's approval), and
+   *  refused when busy (409 BUSY), never queued behind a turn that may end on such a tool. A door hook (another harness)
+   *  has no ask_person of pi's: it takes the park's refusal and the busy one. */
   async function submit(body: Record<string, unknown>, context: Context): Promise<{ status: number; body: unknown }> {
-    const { requestId, content, whenBusy, wait, origin, answers, asks } = body;
+    const { requestId, content, whenBusy, wait, origin, answers, asks, parks } = body;
     if (answers !== undefined && answers !== false) throw new HttpError(400, "BAD_REQUEST", "answers is false, or absent");
     if (asks !== undefined && !(Array.isArray(asks) && asks.every((name) => typeof name === "string"))) throw new HttpError(400, "BAD_REQUEST", "asks is a list of tool names");
+    if (parks !== undefined && !(Array.isArray(parks) && parks.every((kind) => typeof kind === "string"))) throw new HttpError(400, "BAD_REQUEST", "parks is a list of entry kinds");
+    const waiting = (tx: Tx, conversationId: ConversationId) => waitsOnPerson(tx, conversationId, (asks as string[] | undefined) ?? [], (parks as string[] | undefined) ?? []);
     const guarded = answers === false;
     // A guarded input could be refused after its origin's entry is queued (a busy run): the server's messages carry none.
     if (guarded && origin !== undefined) throw new HttpError(400, "BAD_REQUEST", "an input with answers false takes no origin");
@@ -300,13 +320,18 @@ export async function serveRun(options: ServeOptions = {}): Promise<RunServer> {
     if (door) {
       if (body.conversationId !== undefined) throw new HttpError(400, "BAD_REQUEST", "a door hook takes its input in the root conversation: no conversationId");
       const root = await conversationOf(undefined, context);
+      // A hook has no ask_person of pi's, but a call of its may wait in a park: read in the commit that admits the input,
+      // after its requestId's record, which answers a retry of one the door took.
       const input = { requestId, content: content as UserInput, whenBusy: guarded ? "reject" : (whenBusy ?? "followUp"), ...(origin ? { origin: origin as JsonObject } : {}) } as const;
-      return doorAnswer(requestId, await door.submit(root.id, input, context));
+      return doorAnswer(requestId, await door.submit(root.id, input, context, guarded ? (tx) => waiting(tx, root.id) : undefined));
     }
     const conversation = await conversationOf(optionalId(body.conversationId, "conversationId"), context);
-    // Read, then admitted with nothing between but pi's own commit: a busy conversation is refused by that commit, so the
-    // only way to come to wait between them is a whole turn run in that gap.
-    if (guarded && (await waitsOnPerson(conversation, (asks as string[] | undefined) ?? [], context))) throw new HttpError(409, "WAITING", "the conversation waits on a person: this input may not answer it");
+    // Read in one commit, then admitted with nothing between but pi's own commit: a busy conversation is refused by that
+    // commit, so the only way to come to wait between them is a whole turn run in that gap. A requestId pi took already
+    // is not read for: its submission answers the retry.
+    if (guarded && (await conversation.commit(async (tx) => !(await tx.submissionByRequest(conversation.id, requestId)) && (await waiting(tx, conversation.id)), context))) {
+      throw new HttpError(409, "WAITING", "the conversation waits on a person: this input may not answer it");
+    }
     // A message the server wrote: pi writes its user entry with no data, so its origin goes first as an entry of its own,
     // queued with it, which the Timeline matches to it by its text (MESSAGE_ORIGIN_KIND).
     // A retry of a message whose input is already in (a plain retry, or one first sent before an upgrade, whose marker went
@@ -326,6 +351,7 @@ export async function serveRun(options: ServeOptions = {}): Promise<RunServer> {
     const { status, message } = record;
     if (status === "ADMITTED" || status === "ACCEPTED") return { status: status === "ADMITTED" ? 202 : 200, body: { run: run!.ref.id, generation: run!.generation, requestId, status } };
     if (status === "REJECTED_BUSY") throw new HttpError(409, "BUSY", message ?? "the harness is busy", { status });
+    if (status === "REJECTED_WAITING") throw new HttpError(409, "WAITING", message ?? "the conversation waits on a person: this input may not answer it", { status });
     throw new HttpError(status === "FAILED" ? 500 : 504, status === "FAILED" ? "FAILED" : "UNKNOWN", message ?? status, { status });
   }
 

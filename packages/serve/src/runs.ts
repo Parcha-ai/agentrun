@@ -14,14 +14,16 @@ import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { doorTook } from "@parcha/pi-durable-disk";
 import { AgentHomeError, type Revision, type RevisionKind, type RunOrigin, type RunRow, type RunState, type StoredMetrics } from "@parcha/pi-durable-agent";
-import { isMessageRow, type MessageOrigin, registerLabel, registerTurnEnding, REQUEST_STARTED, type RunMetrics, runMetricsWithDecisions, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
+import { chargedTool, isMessageRow, type MessageOrigin, registerLabel, registerTurnEnding, REQUEST_STARTED, type RunMetrics, runMetricsWithDecisions, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { HARNESS_LOG_EVENT, harnessModelKeys, thinkingFor } from "./adapters.js";
 import { DEFAULT_HARNESS, harnessOfBody, steersMidTurn } from "./harness.js";
 import type { RUN_EVENTS, RunNotice } from "./webhooks.js";
 import type { RunTrigger } from "./triggers.js";
 import { hostMemory, memoryFull, neverFits, runMibOf, runsMemoryMib } from "./host.js";
 import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from "./agents.js";
-import { FOLLOW_UP_OPEN_ENV, LAUNCH_LOST, readJson, RUN_CANCELLED, RUN_DOOR_TOKEN, RUN_LAUNCHING, RUN_META, runDoorToken, SETUP_LOST, writeWhole } from "./files.js";
+import { FOLLOW_UP_OPEN_ENV, LAUNCH_LOST, readJson, RUN_CANCELLED, RUN_DOOR_TOKEN, RUN_LAUNCHING, RUN_META, runDoorToken, SETUP_LOST, writeDurableSync, writeWhole } from "./files.js";
+import { MCP_PIN, mcpCredentialsOf, type McpPin, mcpPinOf, type McpServerSource } from "./mcp-gateway.js";
+import { META_REASON, metaToolOf } from "./mcp-meta.js";
 import { type DaytonaApi, KEPT_AUTOSTOP_MINUTES, keepWhenIdle, wakeBoxes } from "./daytona-api.js";
 import { type Learning, LEARNING_LABEL, type LearningMode, type LearningReason, type LearningState, shortOf } from "./learning.js";
 import { labelled, LearningRuns, type Reflect, reflecting, reflects, type TurnOrigin, withLearning } from "./learning-run.js";
@@ -43,18 +45,20 @@ import { TOOL_KEYS } from "./tool-keys.js";
 import { isObject, type Json } from "./validate.js";
 import { firstMessage } from "./run-manifest.js";
 import { REFLECT_REQUEST, Turns } from "./turns.js";
-import { DECISION_KEYS, handover, handoverSignIn, hostSecrets, secret, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, type StoredKeys, withoutSecrets, withSecrets } from "./secrets.js";
+import { DECISION_KEYS, handover, handoverSignIn, hostSecrets, mcpHandover, mcpSecretValues, secret, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, type StoredKeys, withoutSecrets, withSecrets } from "./secrets.js";
 import type { HandedSignIn, SignIns } from "./sign-ins.js";
 import { MIN_SECRET } from "./learn/secrets.js";
 import { keyRefusal, redacted, redactedAnswer, redactedLive, redactedOutput, runKeyOf, withoutLoopback } from "./key-refusal.js";
 import { GRAPH_CACHE_BYTES, PartCache, type PartKind, servedPart } from "./graph-served.js";
 import { CONTENT_FILTER_WORDS, contentFiltered, MODERATED } from "./content-filter.js";
-import { BOX_KEYS } from "./boxes.js";
+import { BOX_KEYS, VM_PROVIDER } from "./boxes.js";
 import { type Place, remotePlace, storedPlace } from "./place.js";
 import { destroyRunBoxes, ensureRemoteBox, PullIncomplete, pullRemoteBox, RUN_LABEL, sweepRunBoxes } from "./run-box.js";
 import { BACKGROUND_DIR, endBackground } from "./background.js";
 import { removeEgressDir, RUN_BOX_ALLOW_ENV } from "./box-egress.js";
+import { RUN_BOX_VOLUME_ENV } from "./box-egress-vm.js";
 import type { BoxProvider } from "@parcha/pi-transport";
+import type { RemoteLimits } from "./run-box.js";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { Emitted } from "./webhooks.js";
 
@@ -518,11 +522,21 @@ export const costOf = (rows: readonly TimelineEvent[]): number | null => {
   const usage = usageOf(rows);
   return usage ? (usage.usage?.usd ?? null) : 0;
 };
-/** What a run's paid tools charged (`tool`'s alone, when given), from the same rows its cost is read from: each charge's
- *  line carries it (`usage` on a `phase` row); null when one is unknown. A call still marked, in flight or cut, is no
- *  charge here. */
-export const toolCostOf = (rows: readonly TimelineEvent[], tool?: string): number | null =>
-  rows.reduce<number | null>((sum, row) => (row.kind !== "phase" || !row.usage || (tool !== undefined && row.tool_name !== tool) ? sum : sum === null || row.usage.usd === null ? null : sum + row.usage.usd), 0);
+/** Whether `row` carries a paid tool's charge counted here: `tool`'s alone when given, every other tool's with `others`
+ *  (chargedTool: a charge's own `phase` row, or a browser call's row its charges fold into). */
+const chargeOf = (row: TimelineEvent, tool: string | undefined, others: boolean): boolean => {
+  const charged = chargedTool(row);
+  return charged !== undefined && (tool === undefined || (others ? charged !== tool : charged === tool));
+};
+/** What a run's paid tools charged (`tool`'s alone, when given; every other tool's with `others`), from the same rows its
+ *  cost is read from: each charge's line carries it (`usage` on a `phase` row), and a browser call's row what its charges
+ *  came to; null when one is unknown. A call still marked, in flight or cut, is no charge here. */
+export const toolCostOf = (rows: readonly TimelineEvent[], tool?: string, others = false): number | null =>
+  rows.reduce<number | null>((sum, row) => (!chargeOf(row, tool, others) ? sum : sum === null || row.usage!.usd === null ? null : sum + row.usage!.usd), 0);
+/** What a run's paid tools are known to have charged (`tool`'s alone, when given; every other tool's with `others`): each
+ *  charge's line that names its cost, a charge of unknown cost adding nothing (a browser call's row, what is known of it). */
+export const knownToolCostOf = (rows: readonly TimelineEvent[], tool?: string, others = false): number =>
+  rows.reduce((sum, row) => (!chargeOf(row, tool, others) ? sum : sum + (row.usage!.usd ?? row.usage!.so_far_usd ?? 0)), 0);
 /** A run's cost for its views: its usage row's, else what the store kept when it carried the run back (0 before any
  *  request). A usage row that says unknown, or says nothing, stays unknown: what the store kept dates from before a
  *  follow-up. */
@@ -693,7 +707,7 @@ export type StartOptions = { input: Json; title: string; place: Place; effort?: 
 /** `maxRuns`: the most runs with a live process at once; `settleRetryMs`: how often a carry back the store refused is
  *  tried again; `readyTimeoutMs`: how long a request to a run waits for its door (a run's first message, sent by its
  *  start, always waits READY_TIMEOUT_MS); `log` takes a run's start and end (print.ts). */
-export type RunsOptions = { /** What a run's Docker box reaches, as the server resolved it (run-box.ts boxNetworkOf): the list, or none. Absent, none. */ dockerAllow?: readonly string[] | "none"; agents: Agents; token: string; /** The server's saved tool keys, read by name for its runs alone (secrets.ts). */ storedKeys?: StoredKeys; documents?: string; doorTokenFile: string; doorToken: string; /** The test switches a run's process gets (server.ts fauxEnvOf): empty outside tests. */ fauxEnv?: NodeJS.ProcessEnv; runBoxes?: BoxProvider; /** The server's Daytona provider, with its key: remote boxes are made, seeded, pulled and destroyed with it, here alone (box-relay.ts). */ remoteBoxes?: BoxProvider; /** Daytona's API and the same key, for what the provider does not do: a kept box's idle stop, and its wake at a start (daytona-api.ts). */ remoteApi?: DaytonaApi; /** The hosts a remote box may reach (run-box.ts boxAllowOf); `none`, or absent, for none. */ boxAllow?: readonly string[] | "none"; /** Called once, with the provider's refusal's code and words, when it cannot keep that list here: from then on each remote box is made with no network. */ onNoBoxList?: (code: string, message: string) => void; toolSettings?: () => ToolSettingsMap; /** Whether anyone can answer a tool call's approval here (accounts on); false, the run's gate refuses each ask (tool-gate.ts). */ approvers?: boolean; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; reflectTimeoutMs?: number; gradeTimeoutMs?: number; /** The grader's model (`--grade-model`), before AGENTRUN_SERVE_GRADE_MODEL and the strong tier (grade.ts gradeModelOf). */ gradeModel?: string; /** How much of what a run learned its instructions hold, in bytes (`--learning-budget`, learning.ts learnedOf). */ learningBudget?: number; log?: (event: string, fields: Record<string, string | number>) => void; notify?: RunNotify; learning?: LearningMode; /** Each agent's saved sign-ins (sign-ins.ts): absent, no run gets one. */ signIns?: SignIns; /** The secrets this server makes and keeps sealed while it runs (each webhook trigger's), read at each check, so a rotation is seen at once: what a run's learning refuses and cuts, as it does the saved keys. */ ownSecrets?: () => readonly string[] };
+export type RunsOptions = { /** What a run's Docker box reaches, as the server resolved it (run-box.ts boxNetworkOf): the list, or none. Absent, none. */ dockerAllow?: readonly string[] | "none"; /** On a Mac, the server's proxy container's volume a run's Docker box mounts (box-egress-vm.ts). */ dockerVolume?: string; agents: Agents; token: string; /** The server's saved tool keys, read by name for its runs alone (secrets.ts). */ storedKeys?: StoredKeys; /** The server's saved MCP servers (mcp-servers.ts): a run's pin and its credentials come from them at each launch. */ mcpServers?: McpServerSource; documents?: string; doorTokenFile: string; doorToken: string; /** The test switches a run's process gets (server.ts fauxEnvOf): empty outside tests. */ fauxEnv?: NodeJS.ProcessEnv; runBoxes?: BoxProvider; /** The server's Daytona provider, with its key: remote boxes are made, seeded, pulled and destroyed with it, here alone (box-relay.ts). */ remoteBoxes?: BoxProvider; /** Daytona's API and the same key, for what the provider does not do: a kept box's idle stop, and its wake at a start (daytona-api.ts). */ remoteApi?: DaytonaApi; /** The server's VM box provider, with its client: a VM run's box is made, seeded, pulled and ended with it, here alone, as a Daytona one is (box-relay-vm.ts); it has no network. */ vmBoxes?: BoxProvider; /** A VM box's limits (run-box.ts RemoteLimits), from the box settings. */ vmLimits?: RemoteLimits; /** The relay's VM half, which lets go of a run's programs at its end. */ vmRelay?: { drop(runId: string): void }; /** The hosts a remote box may reach (run-box.ts boxAllowOf); `none`, or absent, for none. */ boxAllow?: readonly string[] | "none"; /** Called once, with the provider's refusal's code and words, when it cannot keep that list here: from then on each remote box is made with no network. */ onNoBoxList?: (code: string, message: string) => void; toolSettings?: () => ToolSettingsMap; /** Whether anyone can answer a tool call's approval here (accounts on); false, the run's gate refuses each ask (tool-gate.ts). */ approvers?: boolean; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; reflectTimeoutMs?: number; gradeTimeoutMs?: number; /** The grader's model (`--grade-model`), before AGENTRUN_SERVE_GRADE_MODEL and the strong tier (grade.ts gradeModelOf). */ gradeModel?: string; /** How much of what a run learned its instructions hold, in bytes (`--learning-budget`, learning.ts learnedOf). */ learningBudget?: number; log?: (event: string, fields: Record<string, string | number>) => void; notify?: RunNotify; learning?: LearningMode; /** Each agent's saved sign-ins (sign-ins.ts): absent, no run gets one. */ signIns?: SignIns; /** The secrets this server makes and keeps sealed while it runs (each webhook trigger's), read at each check, so a rotation is seen at once: what a run's learning refuses and cuts, as it does the saved keys. */ ownSecrets?: () => readonly string[] };
 /** Told of a run's moment each time it is seen (webhooks.ts' emit, which queues each one once): a wait it reached, and an
  *  end once the agent store has it. `marker` names the moment (the person's turn it waits at, the end's time), the same
  *  when another server sees it again. It says what came of it: `unsaved`, not in the outbox on disk yet. */
@@ -895,6 +909,8 @@ export class Runs {
   /** A test's seam (startServe's `beforeReopenLaunch`): awaited by a reopen after the run reads open again and before its
    *  launch, so a test can hold a reopen there. */
   beforeReopenLaunch?: (runId: string) => Promise<void> | void;
+  /** A test's seam (startServe's `onRunLoad`): told each run read in from its store, its timeline with it. */
+  onRunLoad?: (runId: string) => void;
   /** A test's seam (startServe's `beforeSubmit`): awaited by a message before it goes to the run's door. */
   beforeSubmit?: (runId: string, content: string) => Promise<void> | void;
   /** A test's seam (startServe's `beforeMetaSave`): awaited before a run's serve.json is written; one that throws fails
@@ -935,6 +951,7 @@ export class Runs {
   }
 
   private async load(row: RunRow): Promise<Run> {
+    this.onRunLoad?.(row.id);
     const dir = join(this.options.agents.dir, "runs", row.id);
     const stored = (await readJson(join(dir, RUN_META))) as Partial<RunMeta> | null;
     const trigger = triggerOf(stored);
@@ -1374,8 +1391,8 @@ export class Runs {
   /** Every run's box let go that nothing owns, and every run cgroup no record names: once, before any run of this server
    *  starts, opens again or relaunches, so a box or cgroup being made is never swept away. */
   private sweepOnce(): Promise<void> {
-    const { box, runBoxes, remoteBoxes } = this.options;
-    if (!box && !runBoxes && !remoteBoxes) return Promise.resolve();
+    const { box, runBoxes, remoteBoxes, vmBoxes } = this.options;
+    if (!box && !runBoxes && !remoteBoxes && !vmBoxes) return Promise.resolve();
     this.swept ??= (async () => {
       const rows = await this.options.agents.request(() => this.store.listRuns());
       // The boxes of sandbox runs, by their label: one whose run has ended, or is archived, is destroyed. A failure only
@@ -1386,21 +1403,24 @@ export class Runs {
       }
       // A remote box of an ended run is pulled first, so what it changed after its run's last pull is kept, and goes only
       // once that pull landed: one that fails keeps the box for the next start, its lifetime bounding it.
+      const dirOf = (id: string) => join(this.options.agents.dir, "runs", id);
+      const pulledFirst = (boxes: BoxProvider, daytona: boolean) => (id: string, boxId: string) =>
+        pullRemoteBox(boxes, { id, dir: dirOf(id) }, boxContext(REMOTE_SYNC_MS)).then(
+          () => true,
+          async (error: Error) => {
+            warn(id, `its box is kept: its pull failed (${error.message}); the next start tries again`);
+            await this.keepBox(id, boxId, daytona);
+            return false;
+          },
+        );
+      if (vmBoxes) {
+        await sweepRunBoxes(vmBoxes, (id) => ended.has(id), boxContext(REMOTE_SYNC_MS), pulledFirst(vmBoxes, false)).catch((error: Error) => warn("-", `its start's sweep of Modal sandboxes failed (${error.message}); the next start sweeps again`));
+      }
       if (remoteBoxes) {
-        const dirOf = (id: string) => join(this.options.agents.dir, "runs", id);
-        const pulledFirst = (id: string, boxId: string) =>
-          pullRemoteBox(remoteBoxes, { id, dir: dirOf(id) }, boxContext(REMOTE_SYNC_MS)).then(
-            () => true,
-            async (error: Error) => {
-              warn(id, `its box is kept: its pull failed (${error.message}); the next start tries again`);
-              await this.keepBox(id, boxId);
-              return false;
-            },
-          );
         // A box kept at a run's end that Daytona stopped once idle is woken first, so this sweep pulls it like the rest.
         const api = this.options.remoteApi;
         if (api) await wakeBoxes(api, (id) => ended.has(id)).catch((error: Error) => warn("-", `the stopped boxes of ended runs were not woken (${error.message}); the next start tries again`));
-        await sweepRunBoxes(remoteBoxes, (id) => ended.has(id), boxContext(REMOTE_SYNC_MS), pulledFirst).catch((error: Error) => warn("-", `its start's sweep of remote run boxes failed (${error.message}); the next start sweeps again`));
+        await sweepRunBoxes(remoteBoxes, (id) => ended.has(id), boxContext(REMOTE_SYNC_MS), pulledFirst(remoteBoxes, true)).catch((error: Error) => warn("-", `its start's sweep of remote run boxes failed (${error.message}); the next start sweeps again`));
       }
       if (!box) return;
       const settled = await sweepBoxes(box.host, box.quarantine, rows.map((row) => ({ id: row.id, dir: join(this.options.agents.dir, "runs", row.id) })));
@@ -1423,8 +1443,11 @@ export class Runs {
   private async dropBox(run: Run, ending = false): Promise<void> {
     const place = run.meta.place;
     if (place?.mode !== "sandbox") return;
+    // The relay's hold on the run's programs (box-relay-vm.ts) ends with the run, whatever becomes of its box: one kept
+    // for a later pull, or one whose destroy failed, still lets them go, and their output with them.
+    this.options.vmRelay?.drop(run.id);
     const remote = remotePlace(place);
-    const boxes = remote ? this.options.remoteBoxes : this.options.runBoxes;
+    const boxes = remote ? this.remoteOf(place) : this.options.runBoxes;
     if (!boxes) return;
     // Its background processes first (background.ts), so each one's exit code and whole log are in work/ before the
     // pull and the destroy. A bound box with no work/background/ started none, and costs no command here. A failure only
@@ -1442,7 +1465,7 @@ export class Runs {
         await this.pullBox(run, true);
       } catch (error) {
         if (error instanceof PullIncomplete && error.lasting) {
-          await this.keepBox(run.id, error.box);
+          await this.keepBox(run.id, error.box, place.box === "daytona");
           return warn(run.id, `its box is kept, not destroyed: ${error.message}; what came back is in its files, and the box stops after ${KEPT_AUTOSTOP_MINUTES} idle minutes, its files kept for the next start's pull`);
         }
         const why = `its box's last pull failed (${(error as Error).message})`;
@@ -1461,28 +1484,30 @@ export class Runs {
 
   /** A remote box kept because its copy back is not whole: said in the log, and set to stop once idle, so it costs its
    *  disk alone until the next start's pull (which wakes it) or its lifetime. */
-  private async keepBox(runId: string, boxId: string): Promise<void> {
+  private async keepBox(runId: string, boxId: string, daytona = true): Promise<void> {
     this.options.log?.("box_kept", { run: runId, box: boxId, reason: "pull_incomplete" });
-    const api = this.options.remoteApi;
+    // A VM box keeps its lifetime alone: the provider has no idle stop to set.
+    const api = daytona ? this.options.remoteApi : undefined;
     if (api) await keepWhenIdle(api, boxId).catch((error: Error) => warn(runId, `its kept box was not kept from deletion or set to stop when idle (${error.message})`));
   }
 
   /** What wakes run `runId`'s remote box when Daytona stopped or paused it (a class that pauses when idle, while the run
    *  waited for a person): how many it woke. */
-  private wakeOf(runId: string): (() => Promise<number>) | undefined {
-    const api = this.options.remoteApi;
+  private wakeOf(runId: string, place?: Place): (() => Promise<number>) | undefined {
+    // Only Daytona stops or pauses a box: a VM box that ended is made again.
+    const api = place?.mode === "sandbox" && place.box !== "daytona" ? undefined : this.options.remoteApi;
     return api && (() => wakeBoxes(api, (id) => id === runId));
   }
 
   /** Pulls run `run`'s remote box into its work/, after any pull already running: at a turn's end in the background (a
    *  failure warns, and the next pull brings it), or awaited (`strict`: a failure throws). */
   private pullBox(run: Run, strict = false): Promise<void> {
-    const boxes = this.options.remoteBoxes;
     const place = run.meta.place;
-    if (!boxes || !place || !remotePlace(place)) return Promise.resolve();
+    const boxes = place && remotePlace(place) ? this.remoteOf(place) : undefined;
+    if (!boxes || !place) return Promise.resolve();
     // After any pull already running, and after the box's making and seed when one is under way.
     const pull = Promise.all([run.pulling, run.boxing?.catch(() => undefined)]).then(async () => {
-      const pulled = await pullRemoteBox(boxes, run, boxContext(REMOTE_SYNC_MS), this.wakeOf(run.id));
+      const pulled = await pullRemoteBox(boxes, run, boxContext(REMOTE_SYNC_MS), this.wakeOf(run.id, place));
       if (pulled) this.options.log?.("box_pulled", { run: run.id, changed: pulled.changed, files: pulled.files, bytes: pulled.bytes, removed: pulled.removed });
     });
     const settled = pull.catch((error: Error) => {
@@ -1507,19 +1532,27 @@ export class Runs {
   /** Whether run `id` is one this server holds in a remote box and has not ended: the relay serves no other. */
   servesBox(id: string): boolean {
     const run = this.runs.get(id);
-    return Boolean(this.options.remoteBoxes && run && !run.outcome && run.meta.place && remotePlace(run.meta.place));
+    return Boolean(run && !run.outcome && run.meta.place && remotePlace(run.meta.place) && this.remoteOf(run.meta.place));
+  }
+
+  /** The server's provider of a remote place's boxes: the VM box's, or Daytona's. */
+  private remoteOf(place: Place): BoxProvider | undefined {
+    return place.mode === "sandbox" && place.box === VM_PROVIDER.id ? this.options.vmBoxes : this.options.remoteBoxes;
   }
 
   /** Run `id`'s remote box, found or made and seeded: what its process asks the relay for at its first tool call. */
   ensureBox(id: string): Promise<{ id: string; made: boolean }> {
     const run = this.runs.get(id);
-    const boxes = this.options.remoteBoxes;
-    if (!run || !boxes || !this.servesBox(id)) return Promise.reject(new Error(`no run ${id} of this server is in a remote box`));
+    const place = run?.meta.place;
+    const boxes = place && this.remoteOf(place);
+    if (!run || !place || !boxes || !this.servesBox(id)) return Promise.reject(new Error(`no run ${id} of this server is in a remote box`));
+    // The VM box has no network (its provider's host list cannot be read back), and takes the box limits.
+    const vm = place.mode === "sandbox" && place.box === VM_PROVIDER.id;
     // After any pull of this run's box, so a seed never meets a pull.
     run.boxing ??= (run.pulling ?? Promise.resolve())
       .then(() =>
-        ensureRemoteBox(boxes, run, boxContext(REMOTE_SYNC_MS), {
-          wake: this.wakeOf(run.id),
+        ensureRemoteBox(boxes, run, boxContext(REMOTE_SYNC_MS), vm ? { allow: "none", ...(this.options.vmLimits ? { limits: this.options.vmLimits } : {}) } : {
+          wake: this.wakeOf(run.id, place),
           allow: (this.remoteAllow ??= this.options.boxAllow ?? "none"),
           onNoList: (code, message) => {
             if (this.remoteAllow === "none") return;
@@ -1548,7 +1581,7 @@ export class Runs {
   /** After an archive (a run's, or an agent's, which archives its runs): the box of every run now archived is let go,
    *  now when its process is gone, else when it exits. */
   async archived(): Promise<void> {
-    if (!this.options.box && !this.options.runBoxes && !this.options.remoteBoxes) return;
+    if (!this.options.box && !this.options.runBoxes && !this.options.remoteBoxes && !this.options.vmBoxes) return;
     for (const row of await this.options.agents.request(() => this.store.listRuns())) {
       if (!row.archivedAt) continue;
       // A run's box needs only the runs this server holds: one it has not read has ended, or was swept at its start.
@@ -1770,7 +1803,7 @@ export class Runs {
 
   /** One request to the door of a run whose process lives, never waking it (toDoor wakes no run that is finishing): again
    *  while it opens or parks. `turnOrigin`: who sent a turn this request sends (learning-run.ts's REFLECT_ORIGIN), kept in
-   *  the run's directory before it goes, where the tool gate reads it (tool-gate.ts's carve-out); a person's message
+   *  the run's directory before it goes, where the tool gate reads it (tool-gate.ts NOTE_ONLY_TEXT); a person's message
    *  removes it. */
   private async toLiveDoor(run: Run, path: string, body?: Json, turnOrigin?: TurnOrigin): Promise<Json | null> {
     if (turnOrigin) await (run.originWrite = writeWhole(join(run.dir, TURN_ORIGIN_FILE), `${JSON.stringify({ origin: turnOrigin })}\n`));
@@ -1810,6 +1843,26 @@ export class Runs {
     this.needs.set(run.revision, await needsOf(revision));
   }
 
+  /** `run`'s pinned MCP tools: read from its directory, or at its first launch made from the granted `tools` and the
+   *  servers saved now, and written before its process starts. Undefined when it grants none. */
+  private mcpPin(run: Run, tools: readonly string[] | undefined): McpPin | undefined {
+    const file = join(run.dir, MCP_PIN);
+    if (existsSync(file)) {
+      const pinned = JSON.parse(readFileSync(file, "utf8")) as McpPin;
+      // A pin made before meta tools were refused (mcp-meta.ts) is checked at each launch, never rewritten: one it holds
+      // refuses the launch, as making the pin does.
+      for (const [server, { url, tools: listed }] of Object.entries(pinned)) {
+        for (const tool of listed) if (metaToolOf(url, tool.name)) throw new Error(`mcp:${server}/${tool.name} can't be granted: ${META_REASON}`);
+      }
+      return pinned;
+    }
+    if (!tools?.some((name) => name.startsWith("mcp:")) || !this.options.mcpServers) return undefined;
+    const pin = mcpPinOf(tools, this.options.mcpServers);
+    if (!Object.keys(pin).length) return undefined;
+    writeDurableSync(file, JSON.stringify(pin));
+    return pin;
+  }
+
   /** The saved sign-in the run's browser starts from (sign-ins.ts), resolved before each launch: made at the vendor when
    *  its agent has none, and leased to this run to save unless another run of the agent holds the lease. One that cannot
    *  be had (the vendor not answering, a seal key changed) leaves its browser signed out, said in its log. */
@@ -1841,21 +1894,38 @@ export class Runs {
     const served = withSecrets(process.env, "all", this.options.storedKeys);
     const needs = this.needs.get(run.revision);
     const handed = needs ? keysFor(needs, served) : NO_TOOL_KEYS;
+    // Its MCP servers: the tools it grants, pinned at its first launch in its directory (mcp-gateway.ts), and the
+    // credentials of those servers alone, read now, on the same pipe.
+    let pin: McpPin | undefined;
+    try {
+      pin = this.mcpPin(run, needs?.tools);
+    } catch (error) {
+      // A granted tool that cannot be pinned refuses the launch in words, rather than a run without the tool.
+      run.error = { code: "run_failed", message: (error as Error).message, retryable: false };
+      run.finishing = "failed";
+      void this.settle(run, 1, true);
+      return;
+    }
+    const mcp = pin && this.options.mcpServers ? mcpCredentialsOf(pin, this.options.mcpServers) : undefined;
     // And its saved sign-in, on the same pipe after them (pinSignIn): a pointer its browser opens, never in its environment.
-    const secrets = run.signIn ? Buffer.concat([handover(handed, this.options.storedKeys), handoverSignIn(run.signIn)]) : handover(handed, this.options.storedKeys);
+    const secrets = Buffer.concat([handover(handed, this.options.storedKeys), ...(mcp ? [mcpHandover(mcp)] : []), ...(run.signIn ? [handoverSignIn(run.signIn)] : [])]);
     // What it was handed, for the check of what its end-of-run turn writes (learning-run.ts).
-    this.learning.onLaunch(run, handed);
+    this.learning.onLaunch(run, handed, mcpSecretValues(mcp ?? {}));
     // And for what its errors show (refusedValues): each value handed, kept past a key's rotation.
     run.handed ??= new Set();
     for (const name of handed) {
       const value = secret(name, this.options.storedKeys);
       if (value && value.length >= MIN_SECRET) run.handed.add(value);
     }
+    for (const value of mcpSecretValues(mcp ?? {})) if (value.length >= MIN_SECRET) run.handed.add(value);
     if (run.signIn && run.signIn.ref.length >= MIN_SECRET) run.handed.add(run.signIn.ref);
     const env: NodeJS.ProcessEnv = {
       ...childEnv(process.env, this.options.token),
       // The run's box's network, as the server resolved it: never the setting itself, which the run's process ignores.
       [RUN_BOX_ALLOW_ENV]: this.options.dockerAllow === undefined || this.options.dockerAllow === "none" ? "none" : this.options.dockerAllow.join(","),
+      // And, on a Mac, its proxy's volume: set always, empty for none, so a stale value in the server's own environment
+      // never reaches a run.
+      [RUN_BOX_VOLUME_ENV]: this.options.dockerVolume ?? "",
       [SECRETS_FD_ENV]: "3",
       [SECRETS_LEN_ENV]: String(secrets.length),
       ...this.fauxEnv(),
@@ -2404,11 +2474,12 @@ export class Runs {
   /** One message to the run's door. `origin`: who wrote it when the person did not (a raised cap's follow-up, an
    *  approval's resume), carried to its user entry so the Timeline shows it as the server's (pi-durable-agent's
    *  MessageOrigin); the model reads the same text either way. `answers: false`: the run's door refuses the message
-   *  (WAITING) when the run's turn ended on ask_person, and when the run is busy (BUSY), so it is never queued behind a
+   *  (WAITING) when the run's turn ended on ask_person or a tool call of it waits for its owner's approval (the gate's
+   *  park, APPROVAL_ENTRY), and when the run is busy (BUSY), so it is never queued behind a
    *  turn that may end so; decided at the door's admission, past every wait here. */
   private async submit(run: Run, content: string, whenBusy: "steer" | "followUp", requestId: string, readyMs?: number, origin?: MessageOrigin, answers = true): Promise<void> {
     await this.beforeSubmit?.(run.id, content);
-    const answer = await this.toDoor(run, "/submit", { requestId, content, whenBusy, ...(origin ? { origin } : {}), ...(answers ? {} : { answers: false, asks: [ASK_TOOL] }) }, readyMs);
+    const answer = await this.toDoor(run, "/submit", { requestId, content, whenBusy, ...(origin ? { origin } : {}), ...(answers ? {} : { answers: false, asks: [ASK_TOOL], parks: [APPROVAL_ENTRY] }) }, readyMs);
     if (answer.status === 409 && answer.body?.error === "WAITING") throw new ApiError("not_continuable", WAITS_ON_A_PERSON, { details: { reason: "waiting" } });
     if (answer.status === 409 && answer.body?.error === "BUSY" && !answers) throw new ApiError("rate_limited", "The run is working: a message that may not answer it waits until it is idle.", { retry_after_ms: 5_000, details: { reason: "working" } });
     if (answer.status >= 400) throw new ApiError(answer.status === 409 ? "not_continuable" : "internal", String(answer.body?.message ?? answer.body?.error ?? "the run refused the message"));
@@ -2639,7 +2710,7 @@ export class Runs {
     return { mode, messageId };
   }
 
-  /** A person's turn is sent next: no turn from here on is the server's own end-of-run turn (tool-gate.ts's carve-out),
+  /** A person's turn is sent next: no turn from here on is the server's own end-of-run turn (tool-gate.ts NOTE_ONLY_TEXT),
    *  so its origin goes, right before the turn is sent. */
   private async personsTurn(run: Run): Promise<void> {
     // A write of the origin still in flight lands first, then goes: none starts from here (learning-run.ts reflectTurn).

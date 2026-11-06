@@ -43,11 +43,11 @@ async function setting(t, extra = {}) {
 const resolves = async (api) => Object.fromEntries((await api("GET", "/capabilities")).body.tools.filter((tool) => tool.resolves && tool.name !== "browser").map((tool) => [tool.name, tool.resolves]));
 
 /** Runs agent `id` (made from `definition`) to its end: its tool results, its usage row and its report.md. */
-async function research(api, id, definition, fields = {}) {
+async function research(api, id, definition, fields = {}, until = ["completed"]) {
   assert.equal((await api("POST", "/agents", agent(id, { tools: ["web_search", "web_fetch", "write"], ...definition }))).status, 201);
   const started = await api("POST", `/agents/${id}/runs`, { input: { content: "Research widgets on the web and write report.md." }, ...fields });
   assert.equal(started.status, 202, JSON.stringify(started.body));
-  const { rows } = await follow(api, started.body.run_id, ["completed"], { deadlineMs: 55_000 });
+  const { rows } = await follow(api, started.body.run_id, until, { deadlineMs: 55_000 });
   const results = Object.fromEntries(rows.filter((row) => row.kind === "tool_result").map((row) => [row.tool_name, row.tool_result_preview]));
   const report = await api("GET", `/runs/${started.body.run_id}/files/report.md`);
   return { runId: started.body.run_id, results, rows, usage: rows.findLast((row) => row.kind === "usage")?.usage, report: report.body };
@@ -170,7 +170,10 @@ test("a capped pi run whose auto search is Parallel, under a cap just short of o
   const { api } = await serve(t, FAUX);
   assert.equal((await api("PUT", "/settings/tool-keys/parallel", { values: { PARALLEL_API_KEY: PARALLEL_CANARY } })).status, 204);
   const checked = (await seen()).parallel.length; // the save checks the key against Parallel first (#1508): the run's requests are the ones after
-  const run = await research(api, "auto-capped", {}, { max_cost_usd: 0.0009 });
+  // Refused for room, the run pauses at its cap (paid-pause.test.mjs), the search's figures its pending ones.
+  const run = await research(api, "auto-capped", {}, { max_cost_usd: 0.0009 }, ["input_required", "completed"]);
+  const paused = (await api("GET", `/runs/${run.runId}`)).body;
+  assert.deepEqual([paused.status, paused.state, paused.pending?.kind, paused.pending?.needs_usd], ["input_required", "waiting", "budget", 0.001], JSON.stringify(paused));
   assert.equal(run.results.web_search, JSON.stringify({ error: "spend_cap_reached: Not sent: the run has spent $0 of its $0.0009 cap, and Parallel's search could cost up to $0.001 (Parallel's list price for a fast search). Raise the cap to at least $0.01 to run it." }));
   const calls = await seen();
   assert.deepEqual([calls.parallel.slice(checked), calls.exa], [[], []], "nothing sent to Parallel, nor to Exa instead");
@@ -210,5 +213,5 @@ test("a pi run whose model goes through a gateway searches keyless Exa, as claud
   assert.deepEqual((await resolves(api)).web_search, each("unavailable: parallel picked, no PARALLEL_API_KEY"));
   const refused = await api("POST", "/agents/gateway-pi/runs", { input: { content: "Research widgets on the web and write report.md." } });
   assert.deepEqual([refused.status, refused.body.error?.code, refused.body.error?.details?.missing], [409, "agent_not_runnable", { web_search: ["PARALLEL_API_KEY"] }]);
-  assert.match(refused.body.error.message, /web_search does not run here on pi: parallel picked, no PARALLEL_API_KEY/);
+  assert.match(refused.body.error.message, /web_search\ does\ not\ run\ here\ on\ pi:\ parallel\ is\ picked,\ and\ it\ needs\ a\ Parallel\ key:\ save\ one\ in\ Settings\ →\ Tool\ keys\ \(or\ set\ PARALLEL_API_KEY\ where\ the\ server\ starts\)/);
 });

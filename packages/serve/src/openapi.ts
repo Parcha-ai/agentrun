@@ -211,6 +211,8 @@ const MCP_TOOL = {
     input_schema: { type: "object", description: "The JSON Schema of the tool's arguments, as the server gave it." },
     output_schema: { type: "object", description: "The JSON Schema of its structured result, when the server gives one." },
     annotations: { type: "object", description: "The server's own claims about the tool (read-only, destructive, and so on): the server's word, not checked." },
+    grantable: { const: false, description: "Present, and false, on a known meta tool: one that runs other actions by name (Composio's COMPOSIO_MULTI_EXECUTE_TOOL, Klavis Strata's execute_action, Zapier's execute actions, Arcade's UseTool, Docker's mcp-exec, Cloudflare's portal_execute and code mode). A grant of it could not name the real action, so none is granted: a save that grants it is 422 with `reason`, and a run that pinned one is refused at its launch. Absent on every other tool.", "x-agentrun-serve": "mcpservers/1" },
+    reason: { type: "string", description: "Beside `grantable: false`: why the tool can't be granted.", "x-agentrun-serve": "mcpservers/1" },
   },
 };
 const MCP_LISTING = {
@@ -220,6 +222,11 @@ const MCP_LISTING = {
   tools: { type: "array", items: MCP_TOOL, description: "Every tool it lists, all pages." },
 };
 const MCP_PREVIEW = { type: "object", additionalProperties: false, required: ["protocol", "server_info", "tools"], properties: MCP_LISTING };
+/** The owner's declared prices of a server's tools. */
+const MCP_PRICES = {
+  type: "object", additionalProperties: { type: "number", minimum: 0 },
+  description: "Each tool's price in USD a call, as the owner declared it, for tools the server lists (a refresh drops the price of a tool it no longer lists). A priced call is held at its price under a run's cap (refused unsent when the cap cannot take it) and booked as the run's tool cost, as any paid call; a tool with none runs, shown \"not metered\" on the run's timeline and in GET /usage, outside the run's cost and its cap. A run keeps the prices its first launch saw.",
+};
 const MCP_SERVER_VIEW = {
   type: "object", additionalProperties: false, required: ["name", "url", "auth", "credential", "protocol", "server_info", "tools", "listed_at", "updated_at"],
   properties: {
@@ -227,6 +234,7 @@ const MCP_SERVER_VIEW = {
     auth: { type: "object", additionalProperties: false, required: ["type"], properties: { type: { enum: [...MCP_AUTH_TYPES] }, headers: { type: "array", items: { type: "string" }, description: "For `headers`: the names of the headers kept (lowercase), never a value." } } },
     credential: { enum: ["sealed", "seal_key_missing", "unreadable", null], description: "`sealed`: kept sealed and opens here; `seal_key_missing`: the server was handed no seal key, so it does not open; `unreadable`: sealed under another seal key, or damaged: a PUT with the credential seals it again. Null for `auth.type` none. Never a value." },
     ...MCP_LISTING,
+    prices: MCP_PRICES,
     listed_at: { type: "string", format: "date-time", description: "When its tools were last listed (a PUT or a refresh)." },
     updated_at: { type: "string", format: "date-time", description: "When it was last saved." },
   },
@@ -359,7 +367,7 @@ const LEARNING_REASON = {
 const NULL_STRING = { type: ["string", "null"] };
 const MARK = { "x-agentrun-serve": "learning/1" };
 const PAGE = (item: Json, description: string) => closed({ items: { type: "array", items: item }, total: { ...COUNT, description: "How many there are in all, at the commit the page was read at." }, next_cursor: { ...NULL_STRING, description: "The next page, read at the same commit of main as this one: opaque. Null on the last." } }, description);
-const LEARNING_NOTE = closed({
+const LEARNING_NOTE_REQUIRED = closed({
   file: { type: "string", description: "The note's file name, `<slug>.md`, at the folder's top; `[redacted]` when it holds one of the host's secrets as they are now (its route still answers the real name)." },
   name: { type: "string" }, description: { type: "string" }, type: { enum: [...NOTE_TYPES] },
   status: { enum: [...NOTE_STATUSES], description: "Absent from the note's front matter: active. Only an active note is in MEMORY.md. `pending`: a rule the grader held as risky, the user's or the run's own, to wait for its owner's OK; no run reads it." },
@@ -368,6 +376,18 @@ const LEARNING_NOTE = closed({
   text: { type: "string", description: "The note's whole file, front matter included." },
   etag: { type: "string", description: "The note's version on main, the same ETag as `GET .../learning/files/{file}` answers: send it as `If-Match` to edit or retire the version shown, and a 412 means it changed since.", "x-agentrun-serve": "learning/2" },
 });
+/** When a retired note, skill or draft was retired, and by whom: on a retired one alone. */
+const RETIRED = closed({
+  at: { type: "string", format: "date-time", description: "When: the commit that retired it." },
+  by: { enum: ["person", "run"], description: "`person`: its owner, in the console or with POST .../retire (the time of that retire; an edit since moves it not); `run`: anything else that set it." },
+}, "When and by whom it was retired; absent unless `status` is `retired`. POST .../restore makes it active again.");
+/** The newest change to a note, skill or draft, from the newest commit on its file. */
+const LAST_CHANGE = closed({
+  kind: { enum: ["approved", "edited", "created", "retired", "restored", "learned"], description: "What the change was: a person's approval, edit, creation, retire or restore (named by its commit), or `learned`, a run's merge." },
+  by: { enum: ["person", "run"], description: "`person`: its owner, in the console or through the API; `run`: a run's merge." },
+  at: { type: "string", format: "date-time", description: "When: the commit's time." },
+}, "The item's last change: the newest commit on its file (a note's file, a skill's SKILL.md, a draft's README.md), a person's (named by its subject's fixed prefix, `learning: <kind> by a person: `) or a run's merge (its Run-Id: `learned`). Absent when that commit is neither (the folder's own first commit, or one made outside the server).");
+const LEARNING_NOTE = { ...LEARNING_NOTE_REQUIRED, properties: { ...LEARNING_NOTE_REQUIRED.properties, retired: RETIRED, last_change: LAST_CHANGE } };
 const LEARNING_CHANGE = closed({
   by: { oneOf: [closed({ run: { type: "string" } }), { type: "object", additionalProperties: false, required: ["user"], properties: { user: { type: "boolean", const: true }, via: { type: "string", description: "On an approval: how it came, `console` (the owner's signed-in page)." } } }], description: "A run's merge (its commit's `Run-Id` trailer), or a person's edit, creation, retirement or approval through this API (`Changed-By: user`, and `Approved-Via` on an approval)." },
   commit: { type: "string" }, at: { type: "string", format: "date-time" },
@@ -400,6 +420,8 @@ const LEARNED_ITEM = (kind: "skill" | "workflow") => ({
     run: { ...NULL_STRING, description: "The run whose merge last changed it; null when no merge names one." },
     bytes: { ...COUNT, description: `The size of its ${kind === "skill" ? "SKILL.md" : "workflow.json"} on main.` },
     etag: { type: "string", description: `The version of its ${kind === "skill" ? "SKILL.md" : "README.md"} on main, as its file's GET answers it: an approval sends it as If-Match.` },
+    retired: RETIRED,
+    last_change: LAST_CHANGE,
   },
   "x-agentrun-serve": "learning/3",
 });
@@ -657,6 +679,15 @@ const LEARNING_EXTENSIONS: Record<string, Record<string, Json>> = {
       security: [{ ownerSession: [] }],
       requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, maxProperties: 0 } } } },
       parameters: [AGENT_ID, NOTE_PARAM, IF_MATCH], responses: { "200": NOTE_TEXT("The note, approved."), ...WRITE_ERRORS, ...errors(403) }, ...MARK,
+    },
+  },
+  "/agents/{agent_id}/learning/files/{file}/restore": {
+    post: {
+      operationId: "restoreLearningFile", tags: ["agents"], summary: "Restore a retired note, skill or workflow draft: active again for the next run",
+      description: "A retired note is made active, a skill (its SKILL.md) or a workflow draft (its README.md) is given to every later run again, in one commit on main (`learning: restored by a person: <file>`, Changed-By: user) with MEMORY.md rebuilt. The text is checked again as a new note or skill is (a secret's shape, the host's own values, a hidden character, its format), so a value a retire took out of every run never comes back: such a note stays retired, and the answer names the rule, never the value. Only a retired one is restored (else 400). The owner's password session alone, as an approval.",
+      security: [{ ownerSession: [] }],
+      requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, maxProperties: 0 } } } },
+      parameters: [AGENT_ID, NOTE_PARAM, IF_MATCH], responses: { "200": NOTE_TEXT("The note, restored."), ...WRITE_ERRORS, ...errors(403) }, ...MARK,
     },
   },
   "/runs/{run_id}/learning": {
@@ -935,9 +966,9 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     put: {
       operationId: "saveMcpServer", tags: ["local"], summary: "Preview a remote MCP server, then save it with the tools listed and its credential sealed",
-      description: `Each credential header's value is sealed under the server's seal key and bound to the server's name and the header, and kept in the data directory as ciphertext alone. 409 no_sealing_key when the server was handed no seal key and \`auth.type\` is not none (nothing is contacted). A body with no credential keeps the sealed one while the type and the URL's origin stay the same; else it is 422. 422 too for a bad name, URL or auth. ${MCP_CONNECTS} Nothing is saved unless the listing succeeds.`,
+      description: `Each credential header's value is sealed under the server's seal key and bound to the server's name and the header, and kept in the data directory as ciphertext alone. 409 no_sealing_key when the server was handed no seal key and \`auth.type\` is not none (nothing is contacted). A body with no credential keeps the sealed one while the type and the URL's origin stay the same; else it is 422. 422 too for a bad name, URL or auth, or a price that is not a finite number 0 or more or names a tool the server does not list. ${MCP_CONNECTS} Nothing is saved unless the listing succeeds.`,
       parameters: [MCP_NAME],
-      requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["url"], properties: { url: MCP_URL, auth: MCP_AUTH } } } } },
+      requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["url"], properties: { url: MCP_URL, auth: MCP_AUTH, prices: MCP_PRICES } } } } },
       responses: { "200": json(MCP_SERVER_VIEW, "The server, as saved."), ...errors(400, 401, 409, 415, 422, 429, 500), ...MCP_FAILED },
       "x-agentrun-serve": "mcpservers/1",
     },
@@ -1241,7 +1272,7 @@ const PENDING: Json = {
         said: { type: "string", description: "The cap's refusal, in its words: what was spent, what the refused request needs at the least, and the cap that would run it. At most 2000 characters." },
         at: { type: "string", format: "date-time", description: "When the request was refused." },
       },
-      description: "A run paused at its spend cap (status input_required, state waiting): what is left of the cap cannot buy its next request's least, which was not sent. A message is 409 budget_reached until the cap is raised. Only a refusal for room pauses a run; one no cap fixes (an unknown spend, a model with no price or no output ceiling, an input not measured) still ends it failed, spend_cap_reached.",
+      description: "A run paused at its spend cap (status input_required, state waiting): what is left of the cap cannot buy its next request's least, which was not sent. A message is 409 budget_reached until the cap is raised. Only a refusal for room pauses a run, a paid tool call's as a model request's (its hold is needs_usd); one no cap fixes (an unknown spend, a model with no price or no output ceiling, an input not measured) still ends it failed, spend_cap_reached.",
       "x-agentrun-serve": "cappause/1",
     },
     { type: "null" },
@@ -1259,7 +1290,7 @@ const RUN_PLACE: Json = {
     { type: "object", additionalProperties: false, required: ["mode"], properties: { mode: { const: "runner" } } },
     { type: "object", additionalProperties: false, required: ["mode", "box"], properties: { mode: { const: "sandbox" }, box: { enum: [...BOX_IDS] } } },
   ],
-  description: "Where the run executes, as its start resolved it: its revision's place, else runner. In a sandbox place the agent's bash runs in the box, which binds only the run's work/ and has no network and no key; read, write and edit run in the box too, or on this server's copy of that work/ where the box binds it and this server holds directory handles (Docker on Linux), following no link. Its loop, its log and every key stay on the server.",
+  description: "Where the run executes, as its start resolved it: its revision's place, else runner. In a sandbox place the agent's bash runs in the box, which binds only the run's work/ and has no network and no key; read, write and edit run in the box too, or on this server's copy of that work/ where the box binds it and this server holds directory handles (Docker on Linux), following no link. Its loop, its log and every key stay on the server. The Modal sandbox (box `modal`, Modal's default gVisor runtime, not a VM) never has a network: Modal takes a host list, but this server cannot read a sandbox's list back to check that it holds, so each is made blocked, and capabilities.places.boxes says so in its network_reason (unless AGENTRUN_BOX_ALLOW is none).",
   "x-agentrun-serve": "place/1",
 };
 /** costsofar/1: a cost no one fully knows, said as what is known and how much is not, with no ceiling claimed. */
@@ -1269,7 +1300,8 @@ const SO_FAR = {
 };
 const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
   Cost: SO_FAR,
-  TimelineUsage: SO_FAR,
+  TimelineUsage: { ...SO_FAR, not_metered: { type: "integer", minimum: 1, description: "Set when the run made tool calls with no price (an MCP tool its owner set none for): how many. They ran outside the run's cost and its cap, and never make `usd` unknown.", "x-agentrun-serve": "mcpservers/1" } },
+  UsageLine: { unpriced_runs: { type: "integer", minimum: 0, description: "How many of the runs counted on this line have a cost no one knows on it: they add no dollars to `usd`, so no sum passes them off as $0.", "x-agentrun-serve": "costsofar/1" }, not_metered_calls: { type: "integer", minimum: 1, description: "On the `tools` meter's line, set when the runs counted made tool calls with no price (an MCP tool its owner set none for): how many. They are outside `usd`.", "x-agentrun-serve": "mcpservers/1" } },
   Run: {
     ...RUN_FIELDS,
     last_progress_at: {
@@ -1360,6 +1392,14 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     revision: { type: ["string", "null"], description: "The current revision's id; null before the agent has one.", "x-agentrun-serve": "serve/1" },
     revisions: { type: "integer", minimum: 0, description: "How many revisions the agent has.", "x-agentrun-serve": "serve/1" },
     archived_at: { type: ["string", "null"], description: "When the agent was archived, while it is; else null.", "x-agentrun-serve": "serve/1" },
+    learning: {
+      type: "object", additionalProperties: false, required: ["pending"],
+      description: "For an agent that learns (its current revision `learning: true`, on a server whose learning is on): what waits on it. Absent for any other agent, and from an older server.",
+      properties: {
+        pending: { type: "integer", minimum: 0, description: "How many of its learned items wait for its owner's OK: notes, skills and workflow drafts held with `status: pending` on its learning folder's main (approve them on GET /agents/{agent_id}/learning)." },
+      },
+      "x-agentrun-serve": "serve/1",
+    },
   },
   Capabilities: {
     learning: {
@@ -1378,7 +1418,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       properties: {
         modes: { type: "array", items: { enum: [...PLACE_MODES] } },
         default: { enum: [...PLACE_MODES], description: "Where a revision that names no place runs: `runner`. It stays `runner` because a revision saved with no place (an agent made before new agents were given a box, or where docker was unavailable, or a workflow) keeps running where it ran. What a NEW agent gets is `default_place`." },
-        boxes: { type: "array", items: { type: "object", additionalProperties: false, required: ["id", "available", "state"], properties: { id: { enum: [...BOX_IDS] }, available: { type: "boolean" }, state: { enum: [...BOX_STATES], description: "`ready`; `preparing`, available while the server builds (or pulls) the Docker box's image at its start (a sandbox run's first box waits for it, with a timeline row); `unavailable`, with the `reason`." }, reason: { type: "string", description: "Why the box is unavailable, or what a preparing one waits for." }, network: { enum: [...BOX_NETWORKS], description: "What an available box reaches: `allowlist`, the hosts in `allow`, and nothing else (a Docker box through its egress proxy, on Linux with a daemon of that machine's own; a program that skips the proxy has no route; a Daytona box through Daytona's domain list, whose proxy re-signs TLS with Daytona's CA), or `none`. A Docker box's `none` comes with `network_reason`, and so does a Daytona box's when Daytona could not keep a list here (a tier that takes none); neither has one when AGENTRUN_BOX_ALLOW is `none`.", "x-agentrun-serve": "place/2" }, network_reason: { type: "string", description: "Why an available box has no network for a cause of its own, naming what the server found: a Docker in a VM, a daemon on another machine, docker info that did not answer; or a Daytona that could not keep its domain list.", "x-agentrun-serve": "place/2" } } } },
+        boxes: { type: "array", items: { type: "object", additionalProperties: false, required: ["id", "available", "state"], properties: { id: { enum: [...BOX_IDS] }, available: { type: "boolean" }, state: { enum: [...BOX_STATES], description: "`ready`; `preparing`, available while the server builds (or pulls) the Docker box's image at its start (a sandbox run's first box waits for it, with a timeline row); `unavailable`, with the `reason`." }, reason: { type: "string", description: "Why the box is unavailable, or what a preparing one waits for. Docker is set up by default (AGENTRUN_BOXES not set), so docker's reason says first, in plain words, what is wrong on this machine, then what to do (`Docker isn't running on this machine (no docker command on PATH): install or start Docker, then restart AgentRun`); every other box AGENTRUN_BOXES does not list says the setting that lists it." }, network: { enum: [...BOX_NETWORKS], description: "What an available box reaches: `allowlist`, the hosts in `allow`, and nothing else (a Docker box through its egress proxy, on Linux with a daemon of that machine's own; a program that skips the proxy has no route; a Daytona box through Daytona's domain list, whose proxy re-signs TLS with Daytona's CA), or `none`. A Docker box's `none` comes with `network_reason`, and so does a Daytona box's when Daytona could not keep a list here (a tier that takes none); neither has one when AGENTRUN_BOX_ALLOW is `none`.", "x-agentrun-serve": "place/2" }, network_reason: { type: "string", description: "Why an available box has no network for a cause of its own, naming what the server found: a Docker in a VM, a daemon on another machine, docker info that did not answer; or a Daytona that could not keep its domain list.", "x-agentrun-serve": "place/2" } } } },
       },
       description: "The places a revision may name, this host's default, each box (whether this server has it, its state: ready, preparing or unavailable, and when not, why) and the hosts a box may reach.",
       "x-agentrun-serve": "place/1",
@@ -1451,7 +1491,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       description: "The place a NEW agentic agent that names none is saved with, written on its revision at its create: the Docker box (`{\"mode\": \"sandbox\", \"box\": \"docker\"}`) where this server has docker, ready or preparing (its first run waits for the image, with a timeline row), with tools [\"bash\", \"bash_background\", \"bash_output\", \"bash_input\", \"bash_signal\", \"bash_list\"] when the definition names no tools; else the runner, with `default_reason`. It is not `default`: that one is where a revision saved with no place runs, and stays `runner`, so an agent made before keeps running where it ran.",
       "x-agentrun-serve": "place/3",
     },
-    default_reason: { type: "string", description: "Why a new agent is not given a box here, when `default_place` is the runner, in docker's own words: `new agents run on the runner, because the docker box is unavailable here: <docker's reason>`.", "x-agentrun-serve": "place/3" },
+    default_reason: { type: "string", description: "Why a new agent is not given a box here, when `default_place` is the runner, in docker's own words: `new agents run on the runner, because the docker box is unavailable here: <docker's reason>`, such as `Docker isn't running on this machine (no docker command on PATH): install or start Docker, then restart AgentRun`, or, with AGENTRUN_BOXES set to a list without docker, empty or `none`, the setting that turns it on.", "x-agentrun-serve": "place/3" },
     allow: { type: "array", items: { type: "string" }, description: "The hosts a box whose `network` is `allowlist` may reach: AGENTRUN_BOX_ALLOW's, else the package registries and GitHub; empty when it is `none`.", "x-agentrun-serve": "place/2" },
   },
   "Capabilities/workflows": {
@@ -1487,8 +1527,8 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       "x-agentrun-serve": "toolkeys/1",
     },
     mcp_client: {
-      type: "object", additionalProperties: false, required: ["routes", "transports", "auth", "at_rest"],
-      properties: { routes: { type: "boolean" }, transports: { type: "array", items: { const: "streamable-http" } }, auth: { type: "array", items: { enum: [...MCP_AUTH_TYPES] } }, at_rest: { enum: ["sealed", "unavailable"] } },
+      type: "object", additionalProperties: false, required: ["routes", "transports", "auth", "at_rest", "harnesses"],
+      properties: { routes: { type: "boolean" }, transports: { type: "array", items: { const: "streamable-http" } }, auth: { type: "array", items: { enum: [...MCP_AUTH_TYPES] } }, at_rest: { enum: ["sealed", "unavailable"] }, harnesses: { type: "array", items: { type: "string" }, description: "The harnesses whose agents call a saved server's tools, each granted as mcp:<server>/<tool> in definition.tools."} },
       description: "/settings/mcp-servers: remote MCP servers over Streamable HTTP, previewed and saved with the auth types listed; a credential kept `sealed` under the seal key the server was handed, `unavailable` with none, when only servers that take no credential are kept.",
       "x-agentrun-serve": "mcpservers/1",
     },
@@ -1589,7 +1629,10 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   }
   // A contract field this server takes with a meaning of its own, said on it.
   definition.properties.max_cost_usd = { ...definition.properties.max_cost_usd, "x-agentrun-serve-note": "The agent's default cap of each run started without a max_cost_usd of its own (a run's own wins), kept with its revision: above 0 sets it, 0 clears it (no default), and an edit that leaves the field out keeps the agent's, so leaving a field out never removes a spend limit. An agentic definition only: on a workflow's, above 0 is 422 not_allowed, as a workflow run is not capped here." };
-  const noted = ["DefinitionInput.max_cost_usd"];
+  // A row's usage: the contract's shape, on more rows here than the usage row (pi-durable-agent's timeline, BROWSER_CHARGE).
+  const timelineRow = schemas.TimelineRow as Json & { properties: Record<string, Json> };
+  timelineRow.properties.usage = { ...timelineRow.properties.usage, "x-agentrun-serve-note": "On the `usage` row, the run's cost so far. On a paid tool's charge row (a `phase` row, \"Tool cost: monid charged $0.0030 for monid.run\", `tool_name` the tool, `tool_use_id` the call), that charge alone. On a browser call's `tool_use` row (`tool_name` one of the browser's tools: snapshot, run, browser_read, ...), the browser session time booked under that call: what the session ran since its last charge, and, on the session's last call, its release's charge topped up to the provider's minimum. A browser charge has no row of its own. A charge booked after the row was served (a release after the answer) is served as a change of that row, with the same `id` and its new `usage`. `requests` is 0 on every row but the usage row; `usd` is null once a charge on the row has no price, with `so_far_usd` and `unpriced` saying what is known. The run's cost counts each charge once, wherever it shows: summing every row's `usage` but the usage row's gives what its paid tools charged." };
+  const noted = ["DefinitionInput.max_cost_usd", "TimelineRow.usage"];
   // PUT .../definition takes the contract's body (the definition itself) or this server's own, POST /agents' body with a
   // note: exactly one, as only this server's holds `definition` and both are closed. If-Match is the contract's
   // precondition for its body; this server's own body may leave it out.
