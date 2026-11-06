@@ -130,6 +130,20 @@ test("a tool whose schema the Claude CLI would drop (a root anyOf) is refused on
   assert.equal((await api("GET", `/runs/${runId}`)).body.result?.final_answer, "The tool said: picked x");
 });
 
+test("a tool whose schema Codex would drop or retype (a not) is refused on codex at the save, in words; on pi it saves", async (t) => {
+  const { api } = await serve(t);
+  const fake = await startFakeMcp({ token: TOKEN });
+  const odd = { type: "object", properties: { name: { type: "string", not: { const: "root" } } }, required: ["name"] };
+  fake.tools.greet = { description: "Greets anyone but root.", input: odd, run: ({ name }) => ({ content: [{ type: "text", text: `hello ${name}` }] }) };
+  await addFake(t, api, "fake", fake);
+  const listed = (await api("GET", "/settings/mcp-servers/fake")).body.tools.find((tool) => tool.name === "greet");
+  assert.ok(listed?.input_schema?.properties?.name?.not, `the server listed the not: ${JSON.stringify(listed)}`);
+  const refused = await api("POST", "/agents", agent("codex-greet", { harness: "codex", tools: ["mcp:fake/greet"] }));
+  assert.equal(refused.status, 422, JSON.stringify(refused.body));
+  assert.match(JSON.stringify(refused.body), /tool greet cannot be offered on codex: \/properties\/name\/not: not is not supported by Codex 0\.164\.0 \(it drops or retypes it\)/);
+  assert.equal((await api("POST", "/agents", agent("pi-greet", { tools: ["mcp:fake/greet"] }))).status, 201, "pi takes the schema whole");
+});
+
 test("a tool whose header declaration a refresh made unsendable refuses the run in words, naming it, and nothing is sent", { timeout: 90_000 }, async (t) => {
   const { api } = await serve(t, { faux: FAUX_MCP });
   const fake = await startFakeMcp({ token: TOKEN });
