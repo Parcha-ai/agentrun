@@ -227,13 +227,17 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 			sawHello(once.hello);
 			return once;
 		};
-		const create = async (extra?: Partial<ComputerSpec>) => {
-			const creating = provider.create(spec(extra), { signal: caseSignal }).then((created) => {
-				if (created.ok) track(created.value);
+		/** create through by, kept: what it gives is deleted when the case ends, or as it comes after that. */
+		const attempt = (whole: ComputerSpec, by: ComputerProvider = provider) => {
+			const creating = by.create(whole, { signal: caseSignal }).then((created) => {
+				if (created.ok) track(created.value, by);
 				return created;
 			});
 			keep(creating);
-			const created = await creating;
+			return creating;
+		};
+		const create = async (extra?: Partial<ComputerSpec>) => {
+			const created = await attempt(spec(extra));
 			if (!created.ok) throw new Error(createError(created));
 			return created.value;
 		};
@@ -271,6 +275,7 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 				},
 				spec,
 				create,
+				attempt,
 				track,
 				connect: (ref) => connect(ref ?? needComputer().ref),
 				async home() {
@@ -368,7 +373,13 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 	} finally {
 		if (shared !== undefined) await shared;
 		if (sharedRef !== undefined) await release(sharedRef);
-		await bounded(Promise.allSettled([...pending]), cleanupTimeoutMs);
+		// A kept call may keep another as it settles (a late create, then its release): wait until none is left.
+		await bounded(
+			(async () => {
+				while (pending.size > 0) await Promise.allSettled([...pending]);
+			})(),
+			cleanupTimeoutMs,
+		);
 		await cleanup(provider, capabilities.lifetime, runLabels, report, deleted, cleanupTimeoutMs);
 	}
 	const core = report.results.filter((r) => r.level === "core");

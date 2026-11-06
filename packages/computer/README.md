@@ -414,7 +414,10 @@ provider with lifetime `"janitor"` it then sweeps that label, and it lists the l
 that runs past 3 minutes fails and its computers are deleted. Every provider call is bounded: a create or connect for
 the shared computer that does not answer within 3 minutes fails the cases that need it, a release, sweep or list
 that does not answer within a minute is named in `cleanup.errors`, and a computer or connection that arrives after
-its case ended is deleted or closed as it arrives and named in `cleanup.late`. With `--provider docker`, a `docker
+its case ended is deleted or closed as it arrives and named in `cleanup.late`; the run waits, bounded, for every
+create a case started, a refused one included, so a late computer is deleted before the report returns. A case calls
+`t.create(extra)` for a computer it needs, or `t.attempt(spec, by?)` for create's result as it is (a refusal it
+expects, or the drifted provider's computer). With `--provider docker`, a `docker
 version` that does not answer within 30 s is killed and the run fails, naming the call. The CLI exits once the report
 is out. Cases do not assume root: the suite assumes only that the
 computer's `HOME`, which the provider sets, is a directory its user can write, and works under

@@ -53,6 +53,11 @@ export interface CaseContext {
 	spec(extra?: Partial<ComputerSpec>): ComputerSpec;
 	/** Makes a computer for this case; fails the case when create refuses. */
 	create(extra?: Partial<ComputerSpec>): Promise<ComputerRef>;
+	/**
+	 * Calls create with this whole spec, through by (default the provider), and gives its result as it is. The runner
+	 * waits for it: a computer it makes is deleted when the case ends, or as it comes after that, named in cleanup.late.
+	 */
+	attempt(spec: ComputerSpec, by?: ComputerProvider): Promise<Result<ComputerRef>>;
 	/** A computer the case made through another provider (the drifted one): deleted through it when the case ends. */
 	track(ref: ComputerRef, by?: ComputerProvider): void;
 	/** A further connection, to the case's computer or another; fails the case when connect refuses. */

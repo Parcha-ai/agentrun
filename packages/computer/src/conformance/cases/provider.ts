@@ -17,11 +17,9 @@ const names = async (t: CaseContext, labels: Record<string, string>) =>
 const kindOf = (policy: NetworkSpec) => (typeof policy === "string" ? policy : "allow");
 const POLICIES: NetworkSpec[] = ["none", "open", { allow: ["example.com"] }];
 
-/** Asserts create refuses spec; a computer it makes anyway is handed to the runner first, so it is deleted. */
+/** Asserts create refuses spec; a computer it makes anyway, even after the case ended, is deleted by the runner. */
 async function refusedCreate(t: CaseContext, spec: ComputerSpec, what: string) {
-	const created = await t.provider.create(spec);
-	if (created.ok) t.track(created.value);
-	t.refused(created, what, ["refused"]);
+	t.refused(await t.attempt(spec), what, ["refused"]);
 }
 
 const provider = (name: string, run: Case["run"], extra: Partial<Case> = {}): Case => ({
