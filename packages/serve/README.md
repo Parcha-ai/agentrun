@@ -1935,7 +1935,10 @@ As the run settles, before it reads ended and before a follow-up can open it aga
 answered, the whole text of each of its messages, and what the user said in the run, in `runs/<id>/learning-turn.json`.
 Once the run has ended, in the agent's queue, the server reads the notes from that answer alone (`parseReflection`, in
 `src/learn/reflect.ts`): an answer with no note is `empty`, and one that gives notes out of format (a note outside a
-block, a block not closed, with no file name, or a name given twice) is `unparsed`, nothing kept. `checkProposal`
+block, a block with no file name, or one name given twice with other words) is `unparsed`, nothing kept. A block opens
+with the fence asked for (```` ```note ```` or four backticks for a note, four for a skill or a draft) and runs to the
+next line that is that fence; a shorter fence is text, a longer one an example, and an opening never closed is left out
+alone. `checkProposal`
 (`src/learn/check.ts`) then refuses, before anything is written anywhere, a note that reuses an existing note's name, a
 path that is not a `.md` file at the top, a bad name, front matter out of shape or setting `status`, a `supersedes`
 naming a note that is not active, more than 8 notes superseded, more than 8 new notes or a note over 4068 bytes (4096,
