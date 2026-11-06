@@ -1,19 +1,21 @@
 // The conformance suite on real Modal, one test per case. It is skipped unless AGENTRUN_COMPUTER_LIVE_MODAL=1 and both
-// MODAL_TOKEN_ID and MODAL_TOKEN_SECRET are in the environment: a key the lead has OKed by name, never set by a test or
-// a script. It also needs AGENTRUN_COMPUTER_MODAL_APP, AGENTRUN_COMPUTER_MODAL_DAEMON_IMAGE (this version's daemon for
-// linux/amd64, pinned by digest), the modal package installed where Node finds it, and `npm run build`. The runner
-// deletes every computer it made; the after hook terminates any sandbox still made by this run, pass or fail.
+// COMPUTER_MODAL_TOKEN_ID and COMPUTER_MODAL_TOKEN_SECRET are in the environment: a key the lead has OKed by name, never
+// set by a test or a script. MODAL_TOKEN_ID and MODAL_TOKEN_SECRET never count: a host may hold a production token under
+// those names. It also needs COMPUTER_MODAL_APP, COMPUTER_MODAL_DAEMON_IMAGE (this version's daemon for linux/amd64,
+// pinned by digest), the modal package installed where Node finds it, and `npm run build`. The runner deletes every
+// computer it made; the after hook terminates any sandbox still made by this run, pass or fail.
 import assert from "node:assert/strict";
 import { after, before, describe, it } from "node:test";
 import { conformanceCases, formatReport, runConformance } from "../../dist/index.js";
 
 /** Presence only: no token value is read here. The live switch is checked first, so without it nothing else is. */
-const LIVE = process.env.AGENTRUN_COMPUTER_LIVE_MODAL === "1" && "MODAL_TOKEN_ID" in process.env && "MODAL_TOKEN_SECRET" in process.env;
+const LIVE =
+	process.env.AGENTRUN_COMPUTER_LIVE_MODAL === "1" && "COMPUTER_MODAL_TOKEN_ID" in process.env && "COMPUTER_MODAL_TOKEN_SECRET" in process.env;
 const IMAGE = "debian:bookworm-slim";
 
 describe(
 	"the conformance suite on Modal (VM runtime)",
-	{ skip: LIVE ? false : "set AGENTRUN_COMPUTER_LIVE_MODAL=1 with MODAL_TOKEN_ID and MODAL_TOKEN_SECRET (a key the lead OKed) to run on real Modal" },
+	{ skip: LIVE ? false : "set AGENTRUN_COMPUTER_LIVE_MODAL=1 with COMPUTER_MODAL_TOKEN_ID and COMPUTER_MODAL_TOKEN_SECRET (a key the lead OKed) to run on real Modal" },
 	() => {
 		let report;
 		let provider;

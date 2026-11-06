@@ -472,7 +472,8 @@ unless they start with `modal_proto/`. Docs: modal.com, read 2026-11-05.
 | No read-back of a sandbox's network policy | `modal_proto/task_command_router.proto:434-437`, `modal_proto/api.proto:5936-5937` (setters only; searched both for a getter: none) |
 | `updateNetworkPolicy` cannot change a sandbox made with `blockNetwork`, and updates only an allowlist set at create | [guide/sandbox-networking#dynamic-policy-limitations](https://modal.com/docs/guide/sandbox-networking#dynamic-policy-limitations); `sandbox.ts:2631` |
 | No stopped state: terminate is the only end, so `release` declares `["delete"]` and refuses `stop` | `sandbox.ts:2238-2262`; [guide/sandboxes#lifecycle](https://modal.com/docs/guide/sandboxes#lifecycle) |
-| The client reads `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET` itself | `config.ts:144-145` |
+| The client reads `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`, else the active `~/.modal.toml` profile, itself | `config.ts:125-145`; `client.ts:123` |
+| A `tokenId` and `tokenSecret` passed to `ModalClient` replace both, and clear any OAuth credentials | `client.ts:124-148` |
 | With a profile's `sandboxV2`, create and list go to the V2 backend, and list then covers both | `sandbox.ts:808-815`, `884-889`, `1116-1122`, `1161-1175` |
 
 ### What waits for a live probe
@@ -493,10 +494,11 @@ Core `provider.stop` expects Modal's refusal (it declares no stop), and the Full
 (`lifetime:janitor`, `release:stop`).
 
 `createProvider()` in `dist/conformance/modal.js` builds a real client, and only with `AGENTRUN_COMPUTER_LIVE_MODAL=1`,
-`MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET` set; it also reads `AGENTRUN_COMPUTER_MODAL_APP`,
-`AGENTRUN_COMPUTER_MODAL_DAEMON_IMAGE` and, for `createDriftedProvider()`,
-`AGENTRUN_COMPUTER_MODAL_DRIFTED_DAEMON_IMAGE` (the daemon built as version `<version>-drift`). The modal package is
-the host's; it is imported only when a provider is made.
+`COMPUTER_MODAL_TOKEN_ID` and `COMPUTER_MODAL_TOKEN_SECRET` set. It passes that pair to `ModalClient` explicitly, and
+never uses `MODAL_TOKEN_ID` or `MODAL_TOKEN_SECRET`: a host may hold a production token under those names, and with
+only them set it refuses, naming the `COMPUTER_MODAL_` pair. It also reads `COMPUTER_MODAL_APP`,
+`COMPUTER_MODAL_DAEMON_IMAGE` and, for `createDriftedProvider()`, `COMPUTER_MODAL_DRIFTED_DAEMON_IMAGE` (the daemon
+built as version `<version>-drift`). The modal package is the host's; it is imported only when a provider is made.
 
 ## Conformance
 
@@ -600,7 +602,7 @@ npm run build:daemon -w @parcha/agentrun-computer   # dist/computerd-linux-amd64
 npm test -w @parcha/agentrun-computer               # unit tests: no Go, no Docker
 cd packages/computer/daemon && go vet ./... && go test ./...
 AGENTRUN_COMPUTER_LIVE_DOCKER=1 npm run test:docker -w @parcha/agentrun-computer
-AGENTRUN_COMPUTER_LIVE_MODAL=1 npm run test:modal -w @parcha/agentrun-computer   # also needs a Modal key the lead OKed
+AGENTRUN_COMPUTER_LIVE_MODAL=1 npm run test:modal -w @parcha/agentrun-computer   # also needs COMPUTER_MODAL_TOKEN_ID/SECRET, a key the lead OKed
 ```
 
 The live tests run the conformance suite on Docker, one test per case, and the CLI against `alpine:3.20`; the rest of

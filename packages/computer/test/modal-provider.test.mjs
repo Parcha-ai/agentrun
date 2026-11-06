@@ -581,7 +581,7 @@ test("no real Modal client: the provider and the conformance module import nothi
 	});
 });
 
-/** The names a host running the Grep platform may hold a production token under, with values that must never be used. */
+/** The names a host may hold a production token under, with values that must never be used. */
 const PROD_TOKEN = { MODAL_TOKEN_ID: "prod-id-must-not-be-used", MODAL_TOKEN_SECRET: "prod-token-must-not-be-used" };
 const DEV_TOKEN = { COMPUTER_MODAL_TOKEN_ID: "fake-dev-id", COMPUTER_MODAL_TOKEN_SECRET: "fake-dev-secret" };
 const MODAL_SETTINGS = {
