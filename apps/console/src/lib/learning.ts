@@ -42,14 +42,22 @@ export type LearnedFileRef = { file: string; name: string; pending?: true };
  *  workflow's README, `readme`, is the file an approval or a retire names), what it is for, whether it waits for the
  *  owner's OK or a person retired it (no later run is given it), the run that kept it, its size, and the version an
  *  approval or a retire names (`etag`). */
-export type LearnedItem = { name: string; file: string; readme?: string; description: string; status: "active" | "pending" | "retired"; run: string | null; bytes: number; etag: string };
+export type LearnedItem = { name: string; file: string; readme?: string; description: string; status: "active" | "pending" | "retired"; run: string | null; bytes: number; etag: string; retired?: Retired; last_change?: LastChange };
+/** When a retired one was retired, and by whom (absent on one not retired): its retire commit, kept across later
+ *  changes. */
+export type Retired = { at: string; by: "person" | "run" };
+/** The newest change to an item's file, as the server names it (absent when it names none). */
+export type LastChange = { kind: "approved" | "edited" | "created" | "retired" | "restored" | "learned"; by: "person" | "run"; at: string };
+const VERBS: Record<LastChange["kind"], string> = { approved: "Approved", edited: "Edited", created: "Created", retired: "Retired", restored: "Restored", learned: "Learned" };
+/** A change in words: "Approved by you", "Retired by a run". */
+export const changeWords = (kind: LastChange["kind"], by: LastChange["by"]) => `${VERBS[kind]} by ${by === "person" ? "you" : "a run"}`;
 /** The file that says whether a skill or a workflow is in use, which an approval and a retire name: a skill's SKILL.md, a
  *  workflow's README.md (never its workflow.json). */
 export const statusFile = (item: Pick<LearnedItem, "file" | "readme">) => item.readme ?? item.file;
 
 /** `etag`: the note's version, the same value as the file read's ETag, so an edit or a retire is made on the version a
  *  card showed without reading it again (absent from an older server's). */
-export type LearningNote = { file: string; name: string; description: string; type: NoteType; status: NoteStatus; superseded_by: string | null; text: string; etag?: string; origin?: "you" | "run" };
+export type LearningNote = { file: string; name: string; description: string; type: NoteType; status: NoteStatus; superseded_by: string | null; text: string; etag?: string; origin?: "you" | "run"; retired?: Retired; last_change?: LastChange };
 /** One change to what the agent learned, newest first: a run's (`by.run`; `reason`, why it was kept) or a person's. */
 export type LearningChange = { by: { run: string } | { user: true }; commit: string; at: string; reason: string; files: string[] };
 export type LearningCounts = { merged: number; dropped: Record<string, number>; in_progress: number };
@@ -79,6 +87,10 @@ export async function seenVersion(note: Pick<LearningNote, "text" | "etag">, rea
 export const NO_VERSION = "Can't tell which version this is: reload.";
 /** Said when the note changed since a card showed it. */
 export const CHANGED = "It changed since you opened it.";
+/** What a restore says before it is made: what it changes. */
+export const RESTORES = "It becomes active again for the next run.";
+/** A restore made by a token, not the owner's password sign-in: the server refuses it (403). */
+export const RESTORE_SIGN_IN = "Restoring takes your password sign-in in the console.";
 
 /** Why the server's checks refused a note a person wrote: each problem, printable. */
 export type NoteProblem = { rule: string; path?: string; detail: string };
@@ -424,14 +436,14 @@ export function noteChanges(diff: LearningDiff, learning: RunLearning | undefine
 }
 
 /** The run that first kept each note, and the last time a person changed it, from the changes on the page read. */
-export function provenance(log: readonly LearningChange[]): Map<string, { run?: { id: string; at: string; reason: string }; edited?: string }> {
-  const out = new Map<string, { run?: { id: string; at: string; reason: string }; edited?: string }>();
-  // Newest first: the last run seen for a file is its first, and the first person's change seen is the latest.
+export function provenance(log: readonly LearningChange[]): Map<string, { run?: { id: string; at: string; reason: string } }> {
+  const out = new Map<string, { run?: { id: string; at: string; reason: string } }>();
+  // Newest first: the last run seen for a file is its first. Every file a change names is in the map (its source read),
+  // a person's too; who changed it since is the server's to name (last_change), never read from here.
   for (const c of log) {
     for (const f of c.files) {
       const at = out.get(f) ?? {};
       if ("run" in c.by) at.run = { id: c.by.run, at: c.at, reason: c.reason };
-      else if (!at.edited) at.edited = c.at;
       out.set(f, at);
     }
   }

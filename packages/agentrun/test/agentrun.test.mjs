@@ -182,6 +182,8 @@ if (process.argv[2] === "import") process.exit(0);
 // handler, so a SIGTERM ends it by the signal, as a real server's can.
 if (process.env.STUB_FAIL) { console.log("listen EADDRINUSE: 127.0.0.1:7340 is in use (stub)"); process.exit(1); }
 console.log("agentrun-serve on http://127.0.0.1:7399/v2 (stub)");
+// STUB_SETUP: the setup-code line a server with a public URL and no password yet prints.
+if (process.env.STUB_SETUP) console.log("Set up this server: " + process.env.STUB_SETUP);
 console.log("Open " + (process.env.STUB_OPEN || "http://127.0.0.1:7399/"));
 if (process.env.STUB_SIGTERM !== "die") process.on("SIGTERM", () => process.exit(0));
 setInterval(() => {}, 1000);
@@ -282,6 +284,14 @@ test("the lines after the Open line go on, one whole line at a time, however the
   }
   assert.deepEqual(after.filter((line) => start.SAID.test(line)), ["Boxes: docker (on by default; set AGENTRUN_BOXES to change).", "Preparing the Docker box image (first start only, a few minutes); agents can be made now, and their first run waits for it.", "The Docker box image is ready."]);
   assert.equal(start.SAID.test("GET /v2/health 200"), false);
+});
+
+test("with a public URL and no password yet, the server's setup-code line reaches the person (stderr), not stdout", { timeout: 60_000 }, async (t) => {
+  const setup = "https://agentrun.example.com/setup#code=AbCdEfGhIjKlMnOpQrStUv";
+  const run = await throughStub(t, ["--no-open"], { AGENTRUN_PUBLIC_URL: "https://agentrun.example.com", STUB_OPEN: "https://agentrun.example.com/", STUB_SETUP: setup });
+  assert.equal(run.out, "AgentRun is running at https://agentrun.example.com/\n", "stdout stays the one line");
+  assert.match(run.err, new RegExp(`^Set up this server: ${setup.replace(/[.?#/]/g, "\\$&")}$`, "m"), run.err);
+  assert.ok(start.SAID.test(`Set up this server: ${setup}`));
 });
 
 test("an Open line's URL is its first word, an http(s) URL on the server's loopback address; nothing else is", () => {

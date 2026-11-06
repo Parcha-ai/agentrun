@@ -84,6 +84,6 @@ test(`${harness}: a capped run whose process dies mid-request, when the held wor
   const run = (await api("GET", `/runs/${runId}`)).body;
   assert.deepEqual([run.status, run.state, run.error, run.pending?.kind], ["input_required", "waiting", null, "budget"], JSON.stringify(run));
   // To run it the cap would have to be $1.6404 spent and the next request's least, $0.1024: $1.75 up to the cent.
-  assert.match(run.pending.said, /^Not sent: the run has spent \$1\.6404 of its \$1\.7404 cap, and its next \S+ request needs at least \$0\.11\. Raise the cap to at least \$1\.75 to run it\.$/);
+  assert.match(run.pending.said, /^Not sent: this run has spent \$1\.64 of its \$1\.7404 cap, and the next step needs at least \$0\.11\. Raise the cap to at least \$1\.75 to continue\.$/);
   assert.equal(records(runId, "runner.request").length, 2, "the third request is refused before its record");
 });
