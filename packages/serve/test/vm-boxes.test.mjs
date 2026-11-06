@@ -133,10 +133,13 @@ test("a cancel ends the run's box", { timeout: 180_000 }, async (t) => {
   const run = await probe(api, "asker", [{ tool: "bash", args: { command: "printf one > kept.txt" } }, { tool: "ask_person", args: { question: "Go on?" } }]);
   await follow(api, run.run_id, ["input_required"], { deadlineMs: 120_000 });
   assert.equal(vm.running().length, 1);
+  // The turn's end copied it back already (a files read waits for that copy): what the cancel then keeps is that.
+  assert.deepEqual(await fileList(api, run.run_id), ["kept.txt"], "the turn's end brought it back");
+  const boxes = () => JSON.stringify(vm.sandboxes.map((sandbox) => [sandbox.sandboxId, sandbox.exitCode, sandbox.params.tags["agentrun.run"]]));
   assert.equal((await api("POST", `/runs/${run.run_id}/cancel`)).status, 202);
   await follow(api, run.run_id, ["cancelled"], { deadlineMs: 60_000 });
   await until(() => vm.running().length === 0, "the box's end");
-  assert.deepEqual(await fileList(api, run.run_id), ["kept.txt"], "what the box wrote came back first");
+  assert.deepEqual(await fileList(api, run.run_id), ["kept.txt"], `what the box wrote is kept through the cancel; boxes: ${boxes()}`);
 });
 
 test("a run's end lets the relay's hold on its programs go even when its box is kept: a program it holds is no longer read", { timeout: 180_000 }, async (t) => {
