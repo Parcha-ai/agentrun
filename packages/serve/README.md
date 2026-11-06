@@ -1482,6 +1482,12 @@ firing and starts nothing. The agent gets the trigger's input,
 then the body, cut at 16 KiB, inside `<trigger-payload source="webhook" untrusted>...</trigger-payload>`: whatever the
 sender wrote is data, not an instruction.
 
+A trigger's input, a started run's first message or a firing's message, is the trigger's, never the person's: it carries
+the origin `{kind: "trigger", trigger_id, source, owner}`, `owner` decided by the trigger's definition as it fires and
+never by its payload (true for a schedule, fired on time or by hand; false for a webhook, its body empty or not). The
+model reads the very text it did; the run's timeline shows it as a `phase` row, "Trigger <its id>: <its first line>",
+with `origin: "trigger"`, never as "You: ...", and what the run learns reads it as the trigger's.
+
 A trigger's target may also be `{kind: "message_run", run_id, input: {content}}`, with a webhook or a schedule source:
 each firing sends its input to that run as `POST /v2/runs/{id}/messages` would (a steer, or a follow-up that opens a
 completed run again), under its own cap. The run must have a cap (`422` on `target.run_id` otherwise, and a firing to a

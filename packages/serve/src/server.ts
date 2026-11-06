@@ -998,13 +998,13 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       const uncapped = target.max_cost_usd === undefined && entry.revision.body.maxCostUsd === undefined ? [{ field: "target.max_cost_usd", reason: "missing", message: `Every run a trigger starts is capped: give the target a max_cost_usd or set the agent's (the agent ${target.agent_id} has none).` }] : [];
       return [...uncapped, ...(await explainRun(await inputIssuesOf(entry.revision, target.input), { input: target.input }, entry.revision)).map((issue) => ({ ...issue, field: `target.${issue.field}` }))];
     },
-    async start(target, input, trigger) {
+    async start(target, input, trigger, from) {
       const entry = await needAgent(target.agent_id);
       // The target's cap, else the agent's default as it stands now: a run a trigger starts is never uncapped.
-      const run = await startRunOf(entry, { input, ...(target.max_cost_usd !== undefined ? { max_cost_usd: target.max_cost_usd } : {}), ...(target.effort ? { effort: target.effort } : {}) }, { trigger, origin: { key: trigger.firing_key }, capped: true });
+      const run = await startRunOf(entry, { input, ...(target.max_cost_usd !== undefined ? { max_cost_usd: target.max_cost_usd } : {}), ...(target.effort ? { effort: target.effort } : {}) }, { trigger, origin: { key: trigger.firing_key }, capped: true, from });
       return { run_id: run.id };
     },
-    async message(target, input, key) {
+    async message(target, input, key, from) {
       const run = await needRun(target.run_id);
       if (run.kind === "workflow") throw unsupported("messages.steer_workflow_runs", "A workflow run takes no messages here.");
       // A store held past its retries is a busy store: the firing stays due and is tried again, never failed.
@@ -1015,7 +1015,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       const { status, state } = statusOf(run);
       if (status === "input_required" && state === "waiting") return { skipped: WAITS_ON_A_PERSON };
       try {
-        await runs.message(run, String(input.content), key, { answers: false });
+        await runs.message(run, String(input.content), key, { answers: false, origin: from });
       } catch (error) {
         if (error instanceof ApiError && error.message === WAITS_ON_A_PERSON) return { skipped: WAITS_ON_A_PERSON };
         throw error;
@@ -1357,7 +1357,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
    *  trigger's firing's, which names itself as the run's `trigger`. Under `origin`, a key that already started a run
    *  gets that run (the agent store's run_origins). */
   /** `capped`: the run must have a cap (a trigger's), its own or else its agent's default. */
-  async function startRunOf(entry: AgentEntry, body: Json, { trigger, origin, capped = false }: { trigger?: RunTrigger; origin?: RunOrigin; capped?: boolean } = {}): Promise<Run> {
+  /** `from`: who the run's first message is from when the person did not write it (a trigger's firing). */
+  async function startRunOf(entry: AgentEntry, body: Json, { trigger, origin, capped = false, from }: { trigger?: RunTrigger; origin?: RunOrigin; capped?: boolean; from?: MessageOrigin } = {}): Promise<Run> {
     const issues = runBodyIssues(body);
     if (issues.length) {
       // Told from the revision the run would start on (a pinned one, else the current), once it reads as one: a pin that
@@ -1387,7 +1388,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     // value redacted before a long one is cut (a cut key could no longer be found), and the run gets its input as given.
     const shown = redactedOutput(input, learningSecrets());
     const title = revision.kind === "workflow" ? workflowTitle(entry.agent.name || entry.agent.id, isObject(shown) ? shown : {}) : typeof input.content === "string" ? input.content : (Object.values(input).find((v): v is string => typeof v === "string") ?? JSON.stringify(input));
-    return runs.create(entry, revision, version, { input, title, place, ...(typeof body.effort === "string" ? { effort: body.effort } : {}), ...(cap !== undefined ? { maxCostUsd: cap } : {}), ...(capMode !== undefined ? { capMode } : {}), ...(trigger ? { trigger } : {}), ...(origin ? { origin } : {}), ...(files.length ? { inputs: (work: string) => uploads.copyInto(work, files) } : {}) });
+    return runs.create(entry, revision, version, { input, title, place, ...(typeof body.effort === "string" ? { effort: body.effort } : {}), ...(cap !== undefined ? { maxCostUsd: cap } : {}), ...(capMode !== undefined ? { capMode } : {}), ...(trigger ? { trigger } : {}), ...(origin ? { origin } : {}), ...(from ? { from } : {}), ...(files.length ? { inputs: (work: string) => uploads.copyInto(work, files) } : {}) });
   }
 
   /** The revision a run of `entry` starts on: the one `body.revision` pins, else the agent's current; undefined when the
