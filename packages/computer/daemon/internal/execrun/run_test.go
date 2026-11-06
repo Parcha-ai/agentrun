@@ -286,3 +286,12 @@ func TestAProgramThatCannotStartIsAnError(t *testing.T) {
 		t.Fatalf("want invalid naming the exec format error, got %v", err)
 	}
 }
+
+func TestTheDaemonsOwnHomeWinsOverItsPasswdEntry(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	res := run(t, execrun.Spec{Argv: []string{"sh", "-c", `printf %s "$HOME"`}})
+	if got := string(res.Stdout); got != home {
+		t.Fatalf("want HOME %q, the daemon's own, got %q", home, got)
+	}
+}

@@ -222,6 +222,22 @@ describe("run a command in a Docker computer", { skip: LIVE ? false : "set AGENT
 		assert.deepEqual(await provider.release(created.value, "delete"), { ok: true, value: undefined });
 	});
 
+	it("keeps HOME at /work for a user the image knows (nobody), so ~ is writable", async () => {
+		const created = await provider.create({ image: IMAGE, lifetimeMs: 10 * 60_000, network: "none", user: "65534", labels: { "agentrun.test": "run-command" } });
+		assert.equal(created.ok, true, JSON.stringify(created));
+		made.push(created.value.name);
+		const connected = await provider.connect(created.value);
+		assert.equal(connected.ok, true, JSON.stringify(connected));
+		try {
+			const result = await connected.value.client.call("exec.run", { argv: ["sh", "-c", 'echo "$HOME"; echo ok > ~/x && cat ~/x'], timeoutMs: 20_000 });
+			assert.equal(result.ok, true, JSON.stringify(result));
+			assert.equal(decode(result.value.stdout), "/work\nok\n", decode(result.value.stderr));
+		} finally {
+			await connected.value.close();
+		}
+		assert.deepEqual(await provider.release(created.value, "delete"), { ok: true, value: undefined });
+	});
+
 	it("ends itself at its deadline: PID 1 exits 0 with no janitor", async () => {
 		const created = await provider.create({ image: IMAGE, lifetimeMs: 3000, network: "none", labels: { "agentrun.test": "run-command" } });
 		assert.equal(created.ok, true, JSON.stringify(created));
