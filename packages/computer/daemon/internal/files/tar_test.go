@@ -115,11 +115,12 @@ func TestASymlinkOnTheWayIsNeverFollowed(t *testing.T) {
 		}
 	}
 	for _, name := range []string{"out/f", "in/f", "in/deeper/f", "out/"} {
-		flag := byte(tar.TypeReg)
+		entry := header{name: name, flag: tar.TypeReg, body: "x"}
 		if strings.HasSuffix(name, "/") {
-			name, flag = name+"d/", tar.TypeDir
+			name = name + "d/"
+			entry = header{name: name, flag: tar.TypeDir, mode: 0o755}
 		}
-		_, err := extractTar(bytes.NewReader(archive(t, header{name: name, flag: flag, body: "x"})), root)
+		_, err := extractTar(bytes.NewReader(archive(t, entry)), root)
 		wantKind(t, err, rpc.KindDenied, name)
 	}
 	empty(t, outside)

@@ -68,11 +68,10 @@ Tar archives move whole trees without holding an archive in memory, and no line 
   next bytes (send each after the last one's reply), and extraction runs as they come; `tar.push.end {id}` returns
   `{entries}`. Files, directories and symlinks are extracted with their modes and never chowned; a directory keeps
   owner access until the archive ends, then gets its mode, deepest first, whether the push made it or found it. An
-  entry that is
-  absolute, has a `..` part, or would be written through a symlink that leads out of the directory is `denied`, and
-  ends the push; entries before it stay. A file is written beside its target and renamed into place, so a failed or
-  abandoned push leaves no half file. Hard links, devices and pipes are `invalid`. A connection has at most 8 pushes
-  open, and those still open when it ends are ended with it.
+  entry that is absolute, has a `..` part, or has a symlink or a file on its way is `denied`, and ends the push;
+  entries before it stay. A symlink at an entry's own name is replaced, never followed. A file is written beside its
+  target and renamed into place, so a failed or abandoned push leaves no half file. Hard links, devices and pipes are
+  `invalid`. A connection has at most 8 pushes open, and those still open when it ends are ended with it.
 
 `src/files.ts` has the helpers that go past one call: `readFile(client, path)`, `writeFile(client, path, bytes)` (a
 `mode` is set with the last chunk, so a read-only file over 512 KiB can be written),
@@ -80,7 +79,20 @@ Tar archives move whole trees without holding an archive in memory, and no line 
 `pullTarStream(client, path, {signal})` (`{chunks, done}`: one `tar.pull.read` each time the loop asks for a chunk,
 and how the pull ended). Every call is a request and its reply: a slow reader holds back only its own pull, so
 `pushTar(client, dir, pullTarStream(client, path).chunks)` copies a tree on one connection. A push or pull that began
-is always ended, whether it finished, failed, was left or was aborted.
+is always ended, whether it finished, failed, was left or was aborted. `pushTar` owns its source: unless the source is
+read to its end, the push calls its `return()` however it ends, so a pull piped into a push that fails is ended too.
+
+### Security
+
+- A push confines every write to its directory at the moment of the write, even while other pushes, or programs in
+  the computer running as another user, change the tree under it. The daemon opens the directory once and reaches
+  each entry from that descriptor one name at a time, never following a symlink (`openat` with `O_NOFOLLOW`, `mkdirat`,
+  `renameat`, `symlinkat`, `fchmod` on a descriptor). No path is checked and then used by name, so a directory swapped
+  for a symlink between two steps refuses the entry instead of redirecting it.
+- `files.write`, `files.mkdir`, `files.move` and `files.remove` act on the absolute path the caller chose and make no
+  promise to confine it: they resolve it by name, as any program in the computer would, and follow a symlink on the
+  way. The computer is their boundary. A caller that needs a write held inside one directory against a concurrent
+  actor pushes a tar into that directory.
 
 `src/protocol.ts` and `daemon/internal/methods` are the two definitions of these methods, TypeScript and Go (the Go
 params and results of `files.*` and `tar.*` sit beside their code in `daemon/internal/files`).
