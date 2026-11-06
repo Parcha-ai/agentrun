@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { openStoreReader } from "@parcha/pi-durable-agent";
-import { agent, follow, serve } from "./support.mjs";
+import { agent, follow, runDir, serve } from "./support.mjs";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 // Under the faux harness claude-agent and codex run one path (the id is only a label), so codex stands for both.
@@ -27,8 +27,8 @@ test(`${harness}: two tool calls in one answer, then the closing answer: the run
   assert.deepEqual([last.status, last.final], ["completed", true], `${last.status}/${last.state}`);
   const run = (await api("GET", `/runs/${runId}`)).body;
   assert.deepEqual([run.status, run.result?.final_answer], ["completed", "Wrote a.md and b.md."], JSON.stringify(run));
-  assert.equal(await readFile(join(data, "runs", runId, "work", "a.md"), "utf8"), "alpha");
-  assert.equal(await readFile(join(data, "runs", runId, "work", "b.md"), "utf8"), "beta");
+  assert.equal(await readFile(join(runDir(data, runId), "work", "a.md"), "utf8"), "alpha");
+  assert.equal(await readFile(join(runDir(data, runId), "work", "b.md"), "utf8"), "beta");
 
   const uses = rows.filter((r) => r.kind === "tool_use");
   const results = rows.filter((r) => r.kind === "tool_result");
@@ -58,7 +58,7 @@ test("claude-agent: two tool calls that end before their answer is paid: their r
   const shown = JSON.stringify(rows.map((r) => [r.seq, r.kind, r.summary]));
 
   // The store: each result entry before the answer entry that holds its call, as the bridge writes a result at once.
-  const db = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
+  const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
   const entries = db.prepare("SELECT id, record FROM entries WHERE conversation_id = 1 ORDER BY id").all().map((r) => ({ id: r.id, ...JSON.parse(r.record) }));
   db.close();
   const callAt = new Map();

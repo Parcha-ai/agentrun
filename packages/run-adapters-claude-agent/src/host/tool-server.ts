@@ -44,12 +44,18 @@ export const MCP_OUTPUT_TOKENS = HOST_RESULT_MAX_CHARS;
  *  its result size. */
 export const listedTools = (tools: readonly ServedTool[]) => tools.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema, _meta: { [RESULT_SIZE_KEY]: HOST_RESULT_MAX_CHARS } }));
 
-/** The SDK's in-process server config for `tools`: `call(name, args, toolUseId)` answers each call. */
-export async function toolServer(name: string, tools: readonly ServedTool[], call: (tool: string, args: unknown, toolUseId: unknown) => Promise<ServedResult>) {
-  const [{ McpServer }, { CallToolRequestSchema, ListToolsRequestSchema }] = await Promise.all([
-    import("@modelcontextprotocol/sdk/server/mcp.js"),
-    import("@modelcontextprotocol/sdk/types.js"),
-  ]);
+/** The MCP library the server is built with, as a host loaded it from where it installed the Agent SDK (its peer):
+ *  `@modelcontextprotocol/sdk`'s `server/mcp.js` and `types.js`. */
+export type ToolServerModules = { server: unknown; types: unknown };
+
+/** The SDK's in-process server config for `tools`: `call(name, args, toolUseId)` answers each call. Built with `modules`,
+ *  else with the MCP library imported by name, beside this package. */
+export async function toolServer(name: string, tools: readonly ServedTool[], call: (tool: string, args: unknown, toolUseId: unknown) => Promise<ServedResult>, modules?: ToolServerModules) {
+  type Server = typeof import("@modelcontextprotocol/sdk/server/mcp.js");
+  type Types = typeof import("@modelcontextprotocol/sdk/types.js");
+  const [{ McpServer }, { CallToolRequestSchema, ListToolsRequestSchema }] = modules
+    ? [modules.server as Server, modules.types as Types]
+    : await Promise.all([import("@modelcontextprotocol/sdk/server/mcp.js"), import("@modelcontextprotocol/sdk/types.js")]);
   const server = new McpServer({ name, version: "1.0.0" }, { capabilities: { tools: {} } });
   const listed = listedTools(tools);
   const names = new Set(tools.map((t) => t.name));

@@ -31,7 +31,7 @@ test("a paid call under way holds what it is held at here too: a request that fi
   const paid = paidCall("monid_run", () => ((call.sent = true), answer), (charged) => charged, { usd: 0.6, basis: "the price monid_inspect quoted" });
   t.after(() => call.settle(0));
   while (!call.sent) await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(cap.beforeRequest({ spentUsd: 0, inFlight: [], inputTokensMax: 0 })?.refuse, "spend_cap_reached (out of budget): Not sent: the run has spent $0 and holds $0.60 for requests still answering, of its $1 cap, and its next m request needs at least $0.60. Raise the cap to at least $1.20 to run it.");
+  assert.equal(cap.beforeRequest({ spentUsd: 0, inFlight: [], inputTokensMax: 0 })?.refuse, "spend_cap_reached (out of budget): Not sent: this run has spent $0 and holds $0.60 for steps still running, of its $1 cap, and the next step needs at least $0.60. Raise the cap to at least $1.20 to continue.");
   call.settle(0.1);
   assert.deepEqual(await paid, { result: 0.1 });
   assert.deepEqual(cap.beforeRequest({ spentUsd: spent, inFlight: [], inputTokensMax: 0 }), { outputTokensMax: 1000 }, "once its $0.1 charge is in, the request goes");
@@ -45,7 +45,7 @@ test("a request's input bound is priced, at the dearer of input and cache write:
   // 400 tokens at the cache write's $2 a million is $0.0008, within $0.001; 600 is $0.0012, past it.
   assert.deepEqual(cap.beforeRequest({ spentUsd: 0, inFlight: [], inputTokensMax: 400 }), { outputTokensMax: 1000 }, "an input within the cap goes");
   // $0.0012 at the cache-write price, past $0.001: the least in the words is rounded up to the cent.
-  assert.match(cap.beforeRequest({ spentUsd: 0, inFlight: [], inputTokensMax: 600 })?.refuse ?? "", /^spend_cap_reached \(out of budget\): Not sent: this run's cap of \$0\.001 can't cover one m request \(at least \$0\.01\)\. Raise the cap to at least \$0\.01 to run it\.$/, "an input past it is refused, at the cache-write price");
+  assert.match(cap.beforeRequest({ spentUsd: 0, inFlight: [], inputTokensMax: 600 })?.refuse ?? "", /^spend_cap_reached \(out of budget\): Not sent: the next step needs at least \$0\.01, and this run's cap is \$0\.001\. Raise the cap to at least \$0\.01 to continue\.$/, "an input past it is refused, at the cache-write price");
   assert.match(cap.beforeRequest({ spentUsd: 0.0005, inFlight: [], inputTokensMax: 400 })?.refuse ?? "", /^spend_cap_reached \(out of budget\): Not sent: /, "and past what is left once the run has spent");
 });
 

@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { note } from "./fixtures/faux-learn.mjs";
 import { copyOf, ended, git, LEARN, learner, made, mergesOf, objects, onMain, reflectRows, repoOf, savedOf, settled, sleep, started } from "./learn-support.mjs";
-import { client, scratch, serve, withEnv } from "./support.mjs";
+import { client, runDir, scratch, serve, withEnv } from "./support.mjs";
 import { learningTestHooks } from "../dist/learning.js";
 
 const LAUNCHER = new URL("../launcher/agentrun-serve", import.meta.url).pathname;
@@ -193,7 +193,7 @@ test("a commit that lands on main between the merge's read of main and its move 
   const repo = repoOf(data, "raced");
   const other = readFileSync(once, "utf8").trim();
   const main = git(repo, ["rev-parse", "main"]);
-  const seed = JSON.parse(readFileSync(join(data, "runs", runId, "learning.json"), "utf8")).seed;
+  const seed = JSON.parse(readFileSync(join(runDir(data, runId), "learning.json"), "utf8")).seed;
   assert.equal((await savedOf(data, runId)).learning.merged, main);
   assert.deepEqual(git(repo, ["rev-list", "--first-parent", "main"]).split("\n"), [main, other, seed], "the other commit kept, the merge on it");
   assert.equal(git(repo, ["show", "main:MEMORY.md"]), "- [Alpha](alpha.md) — A rule merged after a race");
@@ -209,7 +209,7 @@ test("an edit to a note that was there is refused as checker: nothing is kept, a
   const { learning } = await savedOf(data, runId);
   assert.deepEqual(learning.problems, [{ rule: "edited", path: "refunds.md", detail: "a run never edits a note: to replace one, it adds a new note that supersedes it" }]);
   assert.equal(git(repo, ["rev-parse", "main"]), main);
-  assert.equal(existsSync(join(data, "runs", runId, "learning-proposal.json")), false);
+  assert.equal(existsSync(join(runDir(data, runId), "learning-proposal.json")), false);
 });
 
 test("MEMORY.md as the run wrote it is ignored: alone it is empty, and beside a new note the host's index is what merges", { timeout: 120_000 }, async (t) => {
@@ -243,11 +243,11 @@ test("a note that holds the run's own door token is refused as secret_value: no 
   await made(api, learner("doorman", { instructions: `Answer once ${go} exists.` }));
   const runId = await started(api, "doorman");
   // The token the run's own door takes, which its process holds, asked to be kept as a person (or the run) could ask.
-  for (let i = 0; !existsSync(join(data, "runs", runId, "door-token")); i++) {
+  for (let i = 0; !existsSync(join(runDir(data, runId), "door-token")); i++) {
     assert.ok(i < 600, "the run is launched");
     await sleep(50);
   }
-  const token = readFileSync(join(data, "runs", runId, "door-token"), "utf8").trim();
+  const token = readFileSync(join(runDir(data, runId), "door-token"), "utf8").trim();
   const sent = await api("POST", `/runs/${runId}/messages`, { content: `Remember for next time: The door takes ${token}` });
   assert.equal(sent.status, 202, JSON.stringify(sent.body));
   writeFileSync(go, "");
@@ -333,7 +333,7 @@ test("a note that holds a key the server saved through its settings API is refus
   assert.equal(existsSync(calls) ? readFileSync(calls, "utf8").trim() : "", "", "the grader was never asked, so its prompt never held the note");
   const held = objects(repoOf(data, "keeper"));
   assert.ok(!held.includes(saved), "no git object holds the key");
-  assert.equal(existsSync(join(data, "runs", runId, "learning-proposal.json")), false, "no proposal was kept");
+  assert.equal(existsSync(join(runDir(data, runId), "learning-proposal.json")), false, "no proposal was kept");
   const shown = JSON.stringify([view.learning, rows.filter((row) => row.kind === "learning"), learning.problems]);
   assert.ok(!shown.includes(saved), "the key is nowhere the run's learning is shown");
 });
@@ -380,7 +380,7 @@ test("under the launcher's custody, a note that holds the model key it handed ov
   assert.deepEqual(learning.problems, [{ rule: "secret_value", path: "send-first.md", detail: "it holds a value the host named as secret" }]);
   const held = objects(repoOf(data, "keeper"));
   assert.ok(!held.includes(key) && !held.includes(wrapped), "no git object holds the key");
-  assert.equal(existsSync(join(data, "runs", runId, "learning-proposal.json")), false, "no proposal was kept");
+  assert.equal(existsSync(join(runDir(data, runId), "learning-proposal.json")), false, "no proposal was kept");
   const shown = JSON.stringify([view, rows, (await api("GET", "/runs")).body, learning]);
   assert.ok(!shown.includes(key), "the key is nowhere the run is shown");
   await stop();
@@ -423,7 +423,7 @@ test("an edit to a note that was there, holding a secret's shape or an unseen ch
     assert.ok(learning.problems.some((problem) => problem.rule === rule && problem.path === "refunds.md"), JSON.stringify(learning.problems));
     assert.ok(!JSON.stringify(learning).includes(shaped), "the secret is never printed");
     assert.equal(git(repo, ["rev-parse", "main"]), main, "nothing merged");
-    assert.equal(existsSync(join(data, "runs", runId, "learning-proposal.json")), false, "nothing proposed");
+    assert.equal(existsSync(join(runDir(data, runId), "learning-proposal.json")), false, "nothing proposed");
   }
 });
 

@@ -1,26 +1,56 @@
 // A server on a fresh data directory with the faux model, and a client for its /v2 routes. No key, no network.
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, copyFile, lstat, mkdir, mkdtemp, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer, request } from "node:http";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { existsSync, readFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
+import { createHash } from "node:crypto";
+import { DatabaseSync } from "node:sqlite";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { claudeAgentExecutable } from "@parcha/agentrun-harness-claude";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { openStoreReader } from "@parcha/pi-durable-agent";
 import { startServe } from "../dist/index.js";
+import { readRunDbSync } from "../dist/run-db.js";
 
 export const FAUX = new URL("./fixtures/faux-model.mjs", import.meta.url).pathname;
 
 // No test reaches a box provider: the boxes the environment running the suite lists are not the tests'. A server here,
-// or one a test starts in a process of its own, probes none; a test that wants a box lists it itself, with its endpoint
-// on loopback (boxes.test.mjs).
-delete process.env.AGENTRUN_BOXES;
+// or one a test starts in a process of its own, probes none, Docker included (on by default when AGENTRUN_BOXES is not
+// set, boxes.ts): a test that wants a box lists it itself, with its endpoint on loopback (boxes.test.mjs), or unsets the
+// setting over a fake docker (docker-by-default.test.mjs).
+process.env.AGENTRUN_BOXES = "none";
+// No test reaches npm's registry: a server whose data holds no Claude Code would install it on first use (claude-sdk.ts)
+// from the registry npm is configured for. A test that installs names its own fake (claude-first-use.test.mjs); any other
+// such install fails at once on this closed port rather than downloading Claude Code.
+for (const name of ["npm_config_registry", "NPM_CONFIG_REGISTRY"]) process.env[name] = "http://127.0.0.1:9/";
+// And gives up there at once: no retry with npm's backoff, a short timeout, so a test can never wait on such an install.
+for (const [name, value] of [["fetch_retries", "0"], ["fetch_timeout", "5000"]]) for (const spelling of [`npm_config_${name}`, `NPM_CONFIG_${name.toUpperCase()}`]) process.env[spelling] = value;
+
+/** The records of a log another process appends to (a line of JSON each, as the fake docker's): only its whole lines,
+ *  each ended by its newline. A file just made and still empty, or a last line still being written, is read as the
+ *  records before it, never parsed half. None when there is no file. */
+export function jsonLines(file) {
+  if (!existsSync(file)) return [];
+  const text = readFileSync(file, "utf8");
+  return text.slice(0, text.lastIndexOf("\n") + 1).split("\n").filter(Boolean).map((line) => JSON.parse(line));
+}
 
 export async function scratch(t) {
   const dir = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "agentrun-serve-"));
-  // Retried: a server that is still closing can write into it during the rm (ENOTEMPTY).
-  t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+  // Retried: a server that is still closing can write into it during the rm (ENOTEMPTY). Writable first: a first use
+  // leaves Claude Code read-only (claude-sdk.ts).
+  t.after(() => writableTree(dir).then(() => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })));
   return dir;
+}
+
+/** Every directory under `dir` (no link followed) made writable by its owner, so the tree can be removed. */
+export async function writableTree(dir) {
+  const st = await lstat(dir).catch(() => undefined);
+  if (!st?.isDirectory()) return;
+  await chmod(dir, st.mode | 0o700);
+  for (const name of await readdir(dir)) await writableTree(join(dir, name));
 }
 
 /** Resolves once `child`, a server in a process of its own, has printed a whole line on stdout that `ready` matches (the
@@ -75,14 +105,49 @@ export async function builtConsole(t) {
   return root;
 }
 
-/** A server for test `t`, stopped after it, before its scratch directory goes. */
-export async function serve(t, options = {}) {
+/** The packages a first use installs into `<data>/harnesses` (claude-sdk.ts), linked there from this repository's own
+ *  (the Claude Agent SDK, a dev dependency, its CLI's platform package and the MCP library), so a server on `data` runs
+ *  claude-agent as one whose Claude Code is installed, with no npm. `cli`: the file its platform package holds as the
+ *  CLI instead (one off its pins, or a path where nothing is). Nothing when the pinned CLI is not here. */
+export async function linkClaudeSdk(data, { cli } = {}) {
+  const pinned = claudeAgentExecutable();
+  if (!pinned) return;
+  const from = fileURLToPath(new URL("../../../node_modules/", import.meta.url));
+  const to = join(data, "harnesses", "node_modules");
+  const platform = `@anthropic-ai/${basename(dirname(pinned))}`;
+  const link = (target, path) => symlink(target, path).catch((error) => (error.code === "EEXIST" ? undefined : Promise.reject(error)));
+  for (const name of ["@anthropic-ai/claude-agent-sdk", "@modelcontextprotocol/sdk", ...(cli ? [] : [platform])]) {
+    await mkdir(dirname(join(to, name)), { recursive: true });
+    await link(join(from, name), join(to, name));
+  }
+  if (cli) {
+    // Its own file in the tree, as an install would leave it (one that is not there is a tree without its CLI).
+    await mkdir(join(to, platform), { recursive: true });
+    await writeFile(join(to, platform, "package.json"), readFileSync(join(from, platform, "package.json")));
+    if (existsSync(cli)) await copyFile(cli, join(to, platform, basename(pinned)));
+  }
+}
+
+/** A data directory for test `t` holding Claude Code as a first use installs it (linkClaudeSdk), for a test that makes
+ *  claude-agent's adapter itself (adapters.ts claudeOf, which loads the SDK from the data its env names). */
+export async function claudeData(t) {
+  const data = await scratch(t);
+  await linkClaudeSdk(data);
+  return data;
+}
+
+/** A server for test `t`, stopped after it, before its scratch directory goes. On the real models (`faux: undefined`) its
+ *  data holds Claude Code as a first use installs it (linkClaudeSdk; `claudeSdk: { cli }` with that CLI); `claudeSdk`
+ *  says so for any server, `false` for none. */
+export async function serve(t, { claudeSdk: asked, ...options } = {}) {
+  const claudeSdk = asked ?? (Object.hasOwn(options, "faux") && options.faux === undefined);
   const dir = options.data ? undefined : await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "agentrun-serve-"));
   const data = options.data ?? join(dir, "agents");
+  if (claudeSdk) await linkClaudeSdk(data, claudeSdk === true ? {} : claudeSdk);
   const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", ...options });
   t.after(async () => {
     await server.close();
-    if (dir) await rm(dir, { recursive: true, force: true });
+    if (dir) await writableTree(dir).then(() => rm(dir, { recursive: true, force: true }));
   });
   return { ...server, data, api: client(server.baseUrl, server.token) };
 }
@@ -104,7 +169,9 @@ export function client(baseUrl, token) {
       req.once("error", reject).end();
     });
   return Object.assign(api, { fresh });
-  async function api(method, path, body, headers = {}) {
+  /** `raiseCheck: false`: no raise guard read after this request (raisedReadsQueued), for a test whose server goes away
+   *  once the raise is answered. */
+  async function api(method, path, body, headers = {}, { raiseCheck = true } = {}) {
     const res = await fetch(`${baseUrl}${path}`, {
       method,
       headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), ...(body === undefined ? {} : { "content-type": "application/json" }), ...headers },
@@ -116,20 +183,30 @@ export function client(baseUrl, token) {
       json = JSON.parse(text);
     } catch {}
     budgetSaysItsLeast(json, `${method} ${path}`);
+    if (raiseCheck && method === "PATCH" && res.status === 200 && json?.resumed === true) await raisedReadsQueued(baseUrl, token, path);
     return { status: res.status, headers: res.headers, body: json ?? text };
   };
 }
 
-/** A guard on every pause a test reads: a run paused at its cap with its figures carries `least_cap_usd`, the very cap its
- *  words name ("Raise the cap to at least $X to run it.", runs.ts budgetPending), so the figure and the sentence are never
- *  apart. A pause with no figures (a refusal an older server wrote) has neither. */
+/** A guard on every pause a test reads: a run paused at its cap that serves its figures serves `least_cap_usd` with them,
+ *  the very cap its words name ("Raise the cap to at least $X", runs.ts budgetPending), so the figure and the sentence are
+ *  never apart. A pause serves its figures whole or not at all (no refusal mark: none). */
 function budgetSaysItsLeast(body, where) {
   const pendings = [body?.pending, ...(Array.isArray(body?.runs) ? body.runs.map((run) => run?.pending) : [])];
   for (const pending of pendings) {
     if (pending?.kind !== "budget" || pending.spent_usd === undefined) continue;
-    const named = Number(/Raise the cap to at least \$(\d+\.\d\d) to run it\.$/.exec(pending.said ?? "")?.[1]);
+    const named = Number(/Raise the cap to at least \$(\d+\.\d\d)\b/.exec(pending.said ?? "")?.[1]);
     assert.equal(pending.least_cap_usd, named, `${where}: least_cap_usd is the cap its words name: ${JSON.stringify(pending)}`);
   }
+}
+
+/** A guard on every raise a test makes: a raise that resumed a paused run (PATCH /runs/{id}, `resumed: true`) leaves it
+ *  reading as a run that goes on, at once. Never input_required with no pending, which `agentrun runs wait` and the
+ *  client's runs.wait take as a run that needs someone; its follow-up turn is still to go (runs.ts statusOf). */
+async function raisedReadsQueued(baseUrl, token, path) {
+  if (!/^(?:\/v2)?\/runs\/[^/?]+$/.test(path)) return;
+  const run = await (await fetch(`${baseUrl}${path}`, { headers: token ? { authorization: `Bearer ${token}` } : {} })).json();
+  assert.ok(!(run?.status === "input_required" && run?.pending === null), `PATCH ${path} resumed the run, which then reads input_required with no pending: ${JSON.stringify(run)}`);
 }
 
 export const agent = (id, extra = {}) => ({ definition: { id, version: 1, name: id, instructions: "Answer.", skills: [], tools: [], ...extra } });
@@ -157,6 +234,42 @@ export function storeRun(data, runId) {
   } finally {
     reader.close();
   }
+}
+
+/** Run `runId` as its claim and its process say it: the record the process keeps in its store (its status, `detail` and
+ *  the epoch it ran under as `generation`), and its holder from the run's row (the process's `pid`, its door as
+ *  `serve`); `{}` when there is neither yet. What run.json once held, read from where it is now. */
+export function runRecordOf(data, runId) {
+  let claim;
+  try {
+    const db = new DatabaseSync(join(data, "store.sqlite"), { readOnly: true, timeout: 5_000 });
+    try {
+      claim = db.prepare("SELECT claim_epoch, claim_holder FROM runs WHERE id = ?").get(runId);
+    } finally {
+      db.close();
+    }
+  } catch {
+    claim = undefined;
+  }
+  let holder;
+  if (typeof claim?.claim_holder === "string" && claim.claim_holder.startsWith("{")) {
+    const named = JSON.parse(claim.claim_holder);
+    holder = { ...named, ...(named.door ? { serve: named.door } : {}) };
+  }
+  let record = {};
+  const file = join(runDir(data, runId), "store", "run.sqlite");
+  if (existsSync(file)) {
+    try {
+      record = readRunDbSync(file, false, (db) => {
+        const row = db.prepare("SELECT record FROM pda_run_status WHERE id = 1").get();
+        return row ? JSON.parse(row.record) : {};
+      });
+    } catch {
+      record = {};
+    }
+  }
+  const { holder: _kept, ...rest } = record;
+  return { ...rest, ...(holder ? { holder } : {}), ...(claim ? { epoch: Number(claim.claim_epoch) } : {}) };
 }
 
 /** Create agent `id` and start one run of it with `content`. */
@@ -263,20 +376,74 @@ export function call(port, { method = "GET", path = "/", headers = {}, body } = 
 /** The Cookie header for the cookies an answer set. */
 export const cookieOf = (res) => (res.headers["set-cookie"] ?? []).map((line) => line.split(";")[0]).join("; ");
 
-/** Once the process that held run `runId` (its run.json's holder) has exited: only then is the run's store free to read.
- *  A paused run's process marks the run released itself (sleeping) before it closes its store and exits, so run.json's
- *  status is not that signal; the process gone is, as it is for the server (runs.ts, a run no longer live). */
-export async function letGo(data, runId, { deadlineMs = 20_000 } = {}) {
-  const file = join(data, "runs", runId, "run.json");
-  for (const end = Date.now() + deadlineMs; ; await new Promise((resolve) => setTimeout(resolve, 50))) {
-    let record = null;
+/** Whether the server took run `runId` back: its row's claim is the server's, and its WAL is checkpointed. */
+function takenBack(data, runId) {
+  let holder;
+  try {
+    const db = new DatabaseSync(join(data, "store.sqlite"), { readOnly: true, timeout: 1_000 });
     try {
-      record = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : null;
-    } catch {
-      // Read while it was rewritten: read again.
+      holder = db.prepare("SELECT claim_holder FROM runs WHERE id = ?").get(runId)?.claim_holder;
+    } finally {
+      db.close();
     }
-    const pid = record?.holder?.pid;
-    if (Number.isInteger(pid) && !processAlive(pid)) return;
+  } catch {
+    return false;
+  }
+  if (holder !== "server") return false;
+  // Its size read once: a checkpoint may remove the WAL between two looks.
+  try {
+    return statSync(join(runDir(data, runId), "store", "run.sqlite-wal")).size === 0;
+  } catch (error) {
+    if (error.code === "ENOENT") return true;
+    throw error;
+  }
+}
+
+/** Once the process that held run `runId` (its row's holder) has exited and the server took the run back: only then is
+ *  the run's store free to read. A paused run's process marks itself released (sleeping) before it closes its store and
+ *  exits, so its status is not that signal; the process gone is, as it is for the server (runs.ts, a run no longer live). */
+export async function letGo(data, runId, { deadlineMs = 20_000 } = {}) {
+  let pid;
+  let gone;
+  for (const end = Date.now() + deadlineMs; ; await new Promise((resolve) => setTimeout(resolve, 50))) {
+    const record = runRecordOf(data, runId);
+    // The last process its row named: a take-back names the server in its place.
+    pid = record.holder?.pid ?? pid;
+    // A live server's take-back done (the claim is the server's, its WAL checkpointed), so a reader of its store meets no
+    // lock; with no server to take it back (one killed), 5 s after its process went.
+    if (takenBack(data, runId)) return;
+    if (Number.isInteger(pid) && !processAlive(pid)) {
+      gone ??= Date.now();
+      if (Date.now() - gone > 5_000) return;
+    }
     assert.ok(Date.now() < end, `the run's process did not exit: ${JSON.stringify(record)}`);
   }
+}
+
+/** Run `runId`'s folder on the disk of data directory `data`: `<data>/disk/agents/<agent>/runs/<run>`, its agent read from
+ *  the run's row in store.sqlite (read-only). A run the store does not know yet gets a folder no run has. */
+export function runDir(data, runId) {
+  let agent;
+  try {
+    const db = new DatabaseSync(join(data, "store.sqlite"), { readOnly: true });
+    try {
+      agent = db.prepare("SELECT agent_id FROM runs WHERE id = ?").get(runId)?.agent_id;
+    } finally {
+      db.close();
+    }
+  } catch {}
+  const folder = agent === undefined ? "unknown-agent" : `${agent.toLowerCase()}-${createHash("sha256").update(agent, "utf8").digest("hex").slice(0, 16)}`;
+  return join(data, "disk", "agents", folder, "runs", runId);
+}
+
+/** The run folders' names on the disk of data directory `data`, across its agents' folders. */
+export function runIds(data) {
+  const agents = join(data, "disk", "agents");
+  return (existsSync(agents) ? readdirSync(agents) : []).flatMap((agent) => (existsSync(join(agents, agent, "runs")) ? readdirSync(join(agents, agent, "runs")) : [])).sort();
+}
+
+/** Each agent's runs/ folder on the disk of data directory `data`. */
+export function runsFolders(data) {
+  const agents = join(data, "disk", "agents");
+  return (existsSync(agents) ? readdirSync(agents) : []).map((agent) => join(agents, agent, "runs")).filter((folder) => existsSync(folder));
 }
