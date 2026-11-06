@@ -6,7 +6,7 @@
 // OpenRouter. The requests go through each adapter's real model proxy to a fake upstream (a fetch standing in for
 // openrouter.ai); nothing leaves this machine and no real key is used.
 import assert from "node:assert/strict";
-import { copyFile, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -16,7 +16,8 @@ import { memorySessionStore } from "@parcha/agentrun-kernel/testing";
 import { fakeAnthropic, fakeSdk } from "@parcha/agentrun-harness-claude/testing";
 // The module whole, so a function it does not export yet fails its own test, not the file.
 import * as adapters from "../dist/adapters.js";
-import { agent, scratch, serve, withEnv } from "./support.mjs";
+import { agent, harnessData, scratch, serve, withEnv } from "./support.mjs";
+import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
 
 /** OpenRouter's key in these tests: no real one. */
 const KEY = `not-a-secret-${"openrouter"}`;
@@ -82,15 +83,16 @@ test("or-3: the harness's own settings win over OpenRouter, as on a host without
   assert.throws(() => adapters.codexProvider({}, openai), refused(/OPENAI_API_KEY.*OPENROUTER_API_KEY/));
 });
 
-test("or-7: a claude-agent run through OpenRouter is priced by OpenRouter's catalog entry for the model, direct by Anthropic's, whichever pi-ai catalog is installed", async () => {
+test("or-7: a claude-agent run through OpenRouter is priced by OpenRouter's catalog entry for the model, direct by Anthropic's, whichever pi-ai catalog is installed", async (t) => {
   const { builtinModels } = await import("@earendil-works/pi-ai/providers/all");
   const real = await import("@parcha/agentrun-harness-claude");
   const catalog = builtinModels();
   // Every kind of token, each a different count, so a price names one entry's whole cost.
   const usage = { input: 1_000_000, output: 2_000_000, cacheRead: 3_000_000, cacheWrite: 4_000_000 };
+  const data = await harnessData(t);
   const priceOn = async (env, model) => {
     let price;
-    await adapters.claudeOf(env, { model, models: catalog }, async () => ({ ...real, claudeAgentAdapter: (options) => ((price = options.price), { id: "claude-agent" }) }));
+    await adapters.claudeOf({ ...env, AGENTRUN_SERVE_DATA: data }, { model, models: catalog }, async () => ({ ...real, claudeAgentAdapter: (options) => ((price = options.price), { id: "claude-agent" }) }));
     return price("any", usage);
   };
   const atEntry = (provider, id) => {
@@ -135,7 +137,7 @@ test("or-4: claude-agent on OpenRouter alone: each request through its proxy to 
   const load = async () => ({ ...real, claudeAgentAdapter: (options) => real.claudeAgentAdapter({ ...options, sdk, standIn: { command: process.execPath }, sessionsDir: sessions, fetch: upstream }) });
   const chosen = adapters.claudeModel(ONLY, "anthropic/claude-sonnet-5.5");
   assert.ok("model" in chosen, JSON.stringify(chosen));
-  const adapter = await adapters.claudeOf(ONLY, { model: chosen.model, models: { getModel: () => undefined } }, load);
+  const adapter = await adapters.claudeOf({ ...ONLY, AGENTRUN_SERVE_DATA: await harnessData(t) }, { model: chosen.model, models: { getModel: () => undefined } }, load);
   const result = await runWorkflow(doc, {}, { runNode: createHarnessRunner(adapter, { store: memorySessionStore(), tools: [] }) });
   assert.equal(result.status, "complete", JSON.stringify(result.error ?? null));
   assert.ok(seen.length >= 1, "a model request reached OpenRouter");
@@ -168,7 +170,7 @@ test("or-5: codex on OpenRouter alone: each request through its proxy to https:/
 
 test("or-6: a server with only OPENROUTER_API_KEY runs every harness, each with its default model on OpenRouter, and a definition naming Anthropic's or OpenAI's model saves with no warning", { timeout: 60_000 }, async (t) => {
   const standIn = join(await scratch(t), "codex-stand-in.mjs");
-  await copyFile(STAND_IN, standIn);
+  await copyStandIn(standIn);
   // No request leaves the test: capabilities and saves check the harnesses, they never call a model.
   withEnv(t, { ...ONLY, AGENTRUN_CODEX_STANDIN: "1", AGENTRUN_SERVE_CODEX_STANDIN: JSON.stringify({ command: process.execPath, args: [standIn] }) }, SOURCES);
   const { api } = await serve(t, { faux: undefined });
@@ -208,7 +210,7 @@ test("or-9: on OpenRouter's key alone, the host's AGENT_MODEL named on OpenRoute
 
 test("or-10: a server on OpenRouter's key alone names the host's OpenRouter model as each harness's default, and a revision naming one there saves clean and runs it", { timeout: 60_000 }, async (t) => {
   const standIn = join(await scratch(t), "codex-stand-in.mjs");
-  await copyFile(STAND_IN, standIn);
+  await copyStandIn(standIn);
   withEnv(t, { ...ONLY, AGENT_MODEL: "openrouter/anthropic/claude-haiku-5.5", AGENTRUN_CODEX_STANDIN: "1", AGENTRUN_SERVE_CODEX_STANDIN: JSON.stringify({ command: process.execPath, args: [standIn] }) }, SOURCES);
   const { api } = await serve(t, { faux: undefined });
   const harnesses = (await api("GET", "/capabilities")).body.harnesses;
@@ -237,7 +239,7 @@ test("or-11: claude-agent on the host's OpenRouter model sends Anthropic's nativ
   const sdk = fakeSdk({ remoteModel: true, script: [SUBMIT] });
   const load = async () => ({ ...real, claudeAgentAdapter: (options) => real.claudeAgentAdapter({ ...options, sdk, standIn: { command: process.execPath }, sessionsDir: sessions, fetch: upstream }) });
   const chosen = adapters.claudeModel(host, undefined);
-  const adapter = await adapters.claudeOf(host, { model: chosen.model, models: { getModel: () => undefined } }, load);
+  const adapter = await adapters.claudeOf({ ...host, AGENTRUN_SERVE_DATA: await harnessData(t) }, { model: chosen.model, models: { getModel: () => undefined } }, load);
   const result = await runWorkflow(doc, {}, { runNode: createHarnessRunner(adapter, { store: memorySessionStore(), tools: [] }) });
   assert.equal(result.status, "complete", JSON.stringify(result.error ?? null));
   assert.ok(seen.length >= 1);

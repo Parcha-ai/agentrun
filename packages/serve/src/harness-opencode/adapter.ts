@@ -16,7 +16,7 @@ import { abortedOutcome, openDrive, pendingSubmissions, SessionHalt, type Drive,
 import { recoveryNote, settleTurn, transcriptOf } from "@parcha/agentrun-kernel/process";
 import { serialWriter, type ModelProxyOptions } from "@parcha/agentrun-kernel/host";
 import { OPENCODE_VERSION } from "./binary.js";
-import { openCodeHarness, type DriveControl } from "./harness.js";
+import { openCodeHarness, sentSubmissions, type DriveControl } from "./harness.js";
 import { TOOL_PREFIX } from "./host/policy.js";
 import type { ConfineChild } from "./host/server.js";
 import { verifyOpenCode } from "./verify.js";
@@ -253,12 +253,17 @@ export function openCodeAdapter(options: OpenCodeAdapterOptions): AgentAdapter {
           await ready();
           void run();
         },
-        async settleOpenTurn() {
+        async settleOpenTurn(options = {}) {
           if (state !== "open_turn") throw new Error("opencode: there is no turn to settle");
           await ready();
           // The turn's end in the session's own transcript, as a turn that ends writes it: the next open finds no open turn,
-          // and the next turn carries no recovery of this one. Nothing is sent, and OpenCode is not started.
-          await settleTurn(drive);
+          // and the next turn carries no recovery of this one. Nothing is sent, and OpenCode is not started. A prompt the turn
+          // placed and OpenCode was never sent (no send mark: the stop came between the two) is carried into the next
+          // message, as an unplaced one is; a follow-up's own is not.
+          const folded = drive.state();
+          const sent = sentSubmissions(folded);
+          const unsent = (recoveryNote(folded)?.turn.placed ?? []).filter((id) => !sent.has(id));
+          await settleTurn(drive, { unsent, ...(options.opening === undefined ? {} : { host: options.opening }) });
           state = "idle";
         },
         async turnEnd() {

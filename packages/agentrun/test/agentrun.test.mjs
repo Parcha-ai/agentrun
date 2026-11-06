@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import * as start from "../lib/start.mjs";
 import { openLineUrl, openUrl } from "../lib/start.mjs";
+import { removeAtEnd } from "./support.mjs";
 
 const PACKAGE = new URL("..", import.meta.url).pathname;
 const BIN = join(PACKAGE, "bin", "agentrun.mjs");
@@ -19,6 +20,8 @@ const VERSION = MANIFEST.version;
 const SERVE_VERSION = JSON.parse(readFileSync(new URL("../../serve/package.json", import.meta.url), "utf8")).version;
 /** This command's store, under the fresh home `bare` makes: ~/.agentrun, handed to the server as --data. */
 const STORE = (home) => join(home, ".agentrun");
+/** The serve suite's fake docker: it never reaches a daemon (packages/serve/test/fixtures/fake-docker.mjs). */
+const FAKE_DOCKER = new URL("../../serve/test/fixtures/fake-docker.mjs", import.meta.url).pathname;
 /** The server's own default store (agentrun-serve with no --data), which this command never uses. */
 const SERVE_STORE = (home) => join(home, ".local", "share", "agentrun", "agents");
 const MODEL_KEYS = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL", "AGENT_MODEL_FAST", "AGENT_MODEL_STRONG", "AGENT_MODEL_BASE_URL", "AGENT_MODEL_API_KEY", "AGENTRUN_TOKEN"];
@@ -39,15 +42,16 @@ async function stopChild(child, exited) {
   await within(exited, 5_000);
 }
 
-/** This environment with a fresh home, no model key, and no browser. */
+/** This environment with a fresh home, no model key, no box, and no browser. */
 function bare(t) {
   const home = mkdtempSync(join(tmpdir(), "agentrun-npx-"));
-  t.after(() => rmSync(home, { recursive: true, force: true }));
+  removeAtEnd(home);
   const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !MODEL_KEYS.includes(name)));
-  return { home, env: { ...env, HOME: home, XDG_CONFIG_HOME: join(home, ".config"), XDG_DATA_HOME: join(home, ".local", "share"), CI: "1" } };
+  // AGENTRUN_BOXES=none: the server it starts asks no Docker (on by default when the setting is not set).
+  return { home, env: { ...env, HOME: home, XDG_CONFIG_HOME: join(home, ".config"), XDG_DATA_HOME: join(home, ".local", "share"), CI: "1", AGENTRUN_BOXES: "none" } };
 }
 
-test("demo: with no model key, the bin starts on a free loopback port and prints one line, the address the server says to open; the server has no model and the console asks for its first password", { timeout: 120_000 }, async (t) => {
+test("demo: with no model key, the bin starts on a free loopback port and prints one line, the address the server says to open, on stdout, and its boxes line on stderr; the server has no model and the console asks for its first password", { timeout: 120_000 }, async (t) => {
   const { home, env } = bare(t);
   const child = spawn(process.execPath, [BIN], { env, stdio: ["ignore", "pipe", "pipe"] });
   const exited = new Promise((resolve) => child.on("exit", resolve));
@@ -56,11 +60,12 @@ test("demo: with no model key, the bin starts on a free loopback port and prints
   let err = "";
   child.stdout.on("data", (chunk) => (out += chunk));
   child.stderr.on("data", (chunk) => (err += chunk));
-  for (let i = 0; !out.includes("\n"); i++) {
-    assert.ok(i < 1000, `the bin printed its line: ${out}${err}`);
+  for (let i = 0; !/^Boxes: .*\n/m.test(err); i++) {
+    assert.ok(i < 1000, `the bin printed its lines: ${out}${err}`);
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   const match = /^AgentRun is running at (http:\/\/127\.0\.0\.1:(\d+))\/\S*\n$/.exec(out);
+  assert.match(err, /^Boxes: none is ready, so sandbox agents do not run here\. [^\n]+$/m, "the boxes line is for the person, on stderr");
   assert.ok(match, `one line, the server's address to open, on loopback: ${JSON.stringify(out)}`);
   assert.ok(Number(match[2]) >= 7340, "the server's first free port from its default");
   const base = match[1];
@@ -74,6 +79,81 @@ test("demo: with no model key, the bin starts on a free loopback port and prints
   child.kill("SIGTERM");
   assert.equal(await exited, 0, err);
   assert.equal(out.split("\n").filter(Boolean).length, 1, "nothing more on stdout");
+});
+
+test("with AGENTRUN_BOXES not set and Docker answering (a fake docker first on PATH), the bin says on stderr that the Docker box is on by default, and the box image's first build as it starts and as it ends; stdout stays the one running line", { timeout: 120_000 }, async (t) => {
+  const { env } = bare(t);
+  delete env.AGENTRUN_BOXES;
+  const dir = mkdtempSync(join(tmpdir(), "agentrun-npx-docker-"));
+  removeAtEnd(dir);
+  mkdirSync(join(dir, "bin"));
+  mkdirSync(join(dir, "state"));
+  writeFileSync(join(dir, "bin", "docker"), `#!/bin/sh\nexec '${process.execPath}' '${FAKE_DOCKER}' "$@"\n`, { mode: 0o755 });
+  // The build holds until the test lets it go: the start's line comes first, and the end's only once it ends.
+  writeFileSync(join(dir, "state", "build-hold"), "");
+  const child = spawn(process.execPath, [BIN, "--no-open"], { env: { ...env, PATH: `${join(dir, "bin")}:${env.PATH}`, FAKE_DOCKER_STATE: join(dir, "state") }, stdio: ["ignore", "pipe", "pipe"] });
+  const exited = new Promise((resolve) => child.on("exit", resolve));
+  t.after(() => stopChild(child, exited));
+  let out = "";
+  let err = "";
+  child.stdout.on("data", (chunk) => (out += chunk));
+  child.stderr.on("data", (chunk) => (err += chunk));
+  const until = async (pattern) => {
+    for (let i = 0; !pattern.test(err); i++) {
+      assert.ok(i < 1000, `the bin printed ${pattern}: ${out}${err}`);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  };
+  await until(/^Preparing the Docker box image .*\n/m);
+  const said = () => err.split("\n").filter((line) => start.SAID.test(line));
+  assert.match(out, /^AgentRun is running at http:\/\/127\.0\.0\.1:\d+\/\n$/, "stdout is the one running line a script reads");
+  assert.match(said()[0], /^Boxes: docker \(on by default; set AGENTRUN_BOXES to change\)\. docker is preparing \(building the box image [^\n]*\)\./);
+  assert.equal(said()[1], "Preparing the Docker box image (first start only, a few minutes); agents can be made now, and their first run waits for it.");
+  assert.equal(said().length, 2, err);
+  rmSync(join(dir, "state", "build-hold"));
+  await until(/^The Docker box image is ready\.\n/m);
+  assert.deepEqual(said().slice(2), ["The Docker box image is ready."], "one line as the build ends, nothing else");
+  assert.match(out, /^AgentRun is running at http:\/\/127\.0\.0\.1:\d+\/\n$/, "still the one line on stdout");
+  child.kill("SIGTERM");
+  assert.equal(await exited, 0, err);
+});
+
+test("a terminal that closes its pipes after the address (`| head -n 1`) ends no command: a box image line said later goes nowhere, and the server keeps running until it is stopped", { timeout: 120_000 }, async (t) => {
+  const { home, env } = bare(t);
+  delete env.AGENTRUN_BOXES;
+  const dir = mkdtempSync(join(tmpdir(), "agentrun-npx-pipe-"));
+  removeAtEnd(dir);
+  mkdirSync(join(dir, "bin"));
+  mkdirSync(join(dir, "state"));
+  writeFileSync(join(dir, "bin", "docker"), `#!/bin/sh\nexec '${process.execPath}' '${FAKE_DOCKER}' "$@"\n`, { mode: 0o755 });
+  writeFileSync(join(dir, "state", "build-hold"), "");
+  const child = spawn(process.execPath, [BIN, "--no-open"], { env: { ...env, PATH: `${join(dir, "bin")}:${env.PATH}`, FAKE_DOCKER_STATE: join(dir, "state") }, stdio: ["ignore", "pipe", "pipe"] });
+  const exited = new Promise((resolve) => child.on("exit", resolve));
+  t.after(() => stopChild(child, exited));
+  let out = "";
+  let err = "";
+  child.stdout.on("data", (chunk) => (out += chunk));
+  child.stderr.on("data", (chunk) => (err += chunk));
+  // Read on either pipe: what this test checks is that a line said once the reader has gone ends nothing, wherever it goes.
+  for (let i = 0; !/^Preparing the Docker box image /m.test(out + err); i++) {
+    assert.ok(i < 1000, `the bin printed its lines: ${out}${err}`);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  // The reader goes, as `head -n 1` does once it has its line: both pipes close. The command says its later lines through
+  // console, which drops a write's error; a raw stream write there would end it on the closed pipe (EPIPE).
+  child.stdout.destroy();
+  child.stderr.destroy();
+  rmSync(join(dir, "state", "build-hold"));
+  // The build ends (the server's record of the image says so), and the server says it, a line the command passes on.
+  const record = join(STORE(home), "box-image.json");
+  for (let i = 0; !(existsSync(record) && JSON.parse(readFileSync(record, "utf8")).state === "ready"); i++) {
+    assert.ok(i < 600, "the image's build ended");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  await new Promise((resolve) => setTimeout(resolve, 2_000));
+  assert.equal(child.exitCode, null, "the command is still running after a line it said went nowhere");
+  child.kill("SIGTERM");
+  assert.equal(await exited, 0, "a stop then is a clean one");
 });
 
 test("a subcommand is the server's own, on ~/.agentrun: import --dry-run", { timeout: 60_000 }, async (t) => {
@@ -102,7 +182,7 @@ test("a subcommand is the server's own, on ~/.agentrun: import --dry-run", { tim
 
 test("npm exec of the packed package runs this package's own agentrun bin", { timeout: 120_000 }, (t) => {
   const dir = mkdtempSync(join(tmpdir(), "agentrun-pack-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  removeAtEnd(dir);
   // npm's own settings from the npm that runs this suite (a workspace, a -c command) are not this npm's.
   const clean = Object.fromEntries(Object.entries(process.env).filter(([name]) => !/^npm_/i.test(name)));
   const npm = (args) => execFileSync("npm", args, { cwd: dir, encoding: "utf8", env: { ...clean, npm_config_cache: join(dir, "cache"), npm_config_update_notifier: "false" } });
@@ -128,7 +208,7 @@ test("the server is this package's one dependency, at the exact version of the s
 // A stand-in server installed beside a copy of this package records what it was started with.
 async function throughStub(t, args, env = {}) {
   const dir = mkdtempSync(join(tmpdir(), "agentrun-stub-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  removeAtEnd(dir);
   for (const part of ["bin", "lib", "package.json"]) cpSync(join(PACKAGE, part), join(dir, "pkg", part), { recursive: true });
   const serve = join(dir, "pkg", "node_modules", "@parcha", "agentrun-serve");
   mkdirSync(join(serve, "launcher"), { recursive: true });
@@ -137,15 +217,24 @@ async function throughStub(t, args, env = {}) {
   writeFileSync(join(serve, "launcher", "agentrun-serve"), `#!${process.execPath}
 require("node:fs").writeFileSync(${JSON.stringify(served)}, JSON.stringify({ args: process.argv.slice(2), npx: process.env.AGENTRUN_NPX_PACKAGE, model: process.env.AGENT_MODEL ?? null }));
 if (process.argv[2] === "import") process.exit(0);
+// STUB_FAIL: print why and exit before any "Open " line; STUB_OPEN: the URL its "Open " line names; STUB_SIGTERM=die: no
+// handler, so a SIGTERM ends it by the signal, as a real server's can.
+if (process.env.STUB_FAIL) { console.log("listen EADDRINUSE: 127.0.0.1:7340 is in use (stub)"); process.exit(1); }
+// STUB_FAIL_STDERR: say why on stderr only (as a lock refusal does) and exit before any line on stdout.
+if (process.env.STUB_FAIL_STDERR) { console.error("agentrun-serve: another server holds this data root (stub)"); process.exit(1); }
 console.log("agentrun-serve on http://127.0.0.1:7399/v2 (stub)");
-console.log("Open http://127.0.0.1:7399/");
-process.on("SIGTERM", () => process.exit(0));
+// STUB_SETUP: the setup-code line a server with a public URL and no password yet prints.
+if (process.env.STUB_SETUP) console.log("Set up this server: " + process.env.STUB_SETUP);
+console.log("Open " + (process.env.STUB_OPEN || "http://127.0.0.1:7399/"));
+if (process.env.STUB_SIGTERM !== "die") process.on("SIGTERM", () => process.exit(0));
 setInterval(() => {}, 1000);
 `);
   chmodSync(join(serve, "launcher", "agentrun-serve"), 0o755);
   const { home, env: base } = bare(t);
   const child = spawn(process.execPath, [join(dir, "pkg", "bin", "agentrun.mjs"), ...args], { env: { ...base, ...env }, stdio: ["ignore", "pipe", "pipe"] });
   const exited = new Promise((resolve) => child.on("exit", resolve));
+  // Both pipes drained: stderr comes on a pipe of its own, so it is read only once the child has closed them.
+  const closed = new Promise((resolve) => child.on("close", resolve));
   t.after(() => stopChild(child, exited));
   let out = "";
   let err = "";
@@ -153,16 +242,54 @@ setInterval(() => {}, 1000);
   child.stderr.on("data", (chunk) => (err += chunk));
   for (let i = 0; !out.includes("\n") && child.exitCode === null && i < 300; i++) await new Promise((resolve) => setTimeout(resolve, 100));
   child.kill("SIGTERM");
-  return { home, out, err, code: await exited, ...(existsSync(served) ? JSON.parse(readFileSync(served, "utf8")) : {}) };
+  const code = await exited;
+  await closed;
+  return { home, out, err, code, ...(existsSync(served) ? JSON.parse(readFileSync(served, "utf8")) : {}) };
 }
+
+test("with AGENTRUN_PUBLIC_URL it starts and names that address; a stop it forwards ends it with 0; a server that can't start is shown with its own last lines", { timeout: 60_000 }, async (t) => {
+  const pub = await throughStub(t, ["--no-open"], { AGENTRUN_PUBLIC_URL: "https://agentrun.example.com", STUB_OPEN: "https://agentrun.example.com/" });
+  assert.equal(pub.out, "AgentRun is running at https://agentrun.example.com/\n", pub.err);
+  const died = await throughStub(t, ["--no-open"], { STUB_SIGTERM: "die" });
+  assert.equal(died.code, 0, `a SIGTERM this command passed on is a clean stop: ${died.err}`);
+  const failed = await throughStub(t, ["--no-open"], { STUB_FAIL: "1" });
+  assert.equal(failed.code, 1, failed.err);
+  assert.match(failed.err, /^AgentRun did not start\. The server's last lines:$/m, failed.err);
+  assert.match(failed.err, /listen EADDRINUSE: 127\.0\.0\.1:7340 is in use \(stub\)/, failed.err);
+  // A server that says why on stderr only: that line comes through, and this command doesn't claim it said nothing.
+  const quiet = await throughStub(t, ["--no-open"], { STUB_FAIL_STDERR: "1" });
+  assert.equal(quiet.code, 1, quiet.err);
+  assert.match(quiet.err, /^agentrun-serve: another server holds this data root \(stub\)$/m, quiet.err);
+  assert.doesNotMatch(quiet.err, /printed nothing/, quiet.err);
+  assert.match(quiet.err, /^AgentRun did not start; the server's own message, if it gave one, is above\.$/m, quiet.err);
+});
 
 test("the command passes its arguments through to the server, with its store (~/.agentrun unless --data names one) and --open unless --no-open; it picks no port or model of its own", { timeout: 60_000 }, async (t) => {
   const plain = await throughStub(t, [], { ANTHROPIC_API_KEY: "sk-test" });
   assert.deepEqual([plain.args, plain.model, plain.npx], [["--open", "--data", STORE(plain.home)], null, `@parcha/agentrun@${VERSION}`], plain.err);
   assert.equal(plain.out, "AgentRun is running at http://127.0.0.1:7399/\n");
+  // A person reads how to stop it and where its data is; stdout stays the one line a script reads.
+  assert.match(plain.err, new RegExp(`^Press Ctrl-C to stop it\\. Its data is in ${STORE(plain.home).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\.$`, "m"), plain.err);
+  // And where the API's bearer token is: the server's own line saying so stays out of this terminal.
+  assert.match(plain.err, new RegExp(`^The API token is in ${STORE(plain.home).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/\\.token\\.$`, "m"), plain.err);
+  const tokened = await throughStub(t, ["--no-open"], { AGENTRUN_TOKEN: "t".repeat(40) });
+  assert.match(tokened.err, /^The API token is the AGENTRUN_TOKEN this command was started with\.$/m, tokened.err);
   assert.equal(plain.code, 0, plain.err);
   const given = await throughStub(t, ["--no-open", "--port", "7400", "--data", "/srv/agents"]);
   assert.deepEqual(given.args, ["--data", "/srv/agents", "--port", "7400"], given.err);
+  // --data=<dir> is the same option, and the last --data wins, as the server reads them: the server gets one --data, and
+  // the hint names the directory it uses.
+  const equals = await throughStub(t, ["--no-open", "--data=/srv/agents"]);
+  assert.deepEqual(equals.args, ["--data", "/srv/agents"], equals.err);
+  assert.match(equals.err, /^Press Ctrl-C to stop it\. Its data is in \/srv\/agents\.$/m, equals.err);
+  const twice = await throughStub(t, ["--no-open", "--data", "/srv/first", "--data=/srv/second"]);
+  assert.deepEqual(twice.args, ["--data", "/srv/second"], twice.err);
+  assert.match(twice.err, /^Press Ctrl-C to stop it\. Its data is in \/srv\/second\.$/m, twice.err);
+  // A directory whose name starts with a dash keeps the equals form: the server's parser reads "--data -store" as a
+  // missing value.
+  const dash = await throughStub(t, ["--no-open", "--data=-store"]);
+  assert.deepEqual(dash.args, ["--data=-store"], dash.err);
+  assert.match(dash.err, /^Press Ctrl-C to stop it\. Its data is in -store\.$/m, dash.err);
   const sub = await throughStub(t, ["--data", "/srv/agents", "import", "--dry-run"]);
   assert.deepEqual(sub.args, ["import", "--data", "/srv/agents", "--dry-run"], "a subcommand first, on the same data directory");
   const own = await throughStub(t, ["import", "--dry-run"]);
@@ -171,7 +298,7 @@ test("the command passes its arguments through to the server, with its store (~/
 
 test("with the server missing from beside it, the command says so in one line and exits 1", (t) => {
   const dir = mkdtempSync(join(tmpdir(), "agentrun-alone-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  removeAtEnd(dir);
   for (const part of ["bin", "lib", "package.json"]) cpSync(join(PACKAGE, part), join(dir, part), { recursive: true });
   const run = spawnSync(process.execPath, [join(dir, "bin", "agentrun.mjs"), "--no-open"], { encoding: "utf8", env: bare(t).env });
   assert.deepEqual([run.status, run.stdout, run.stderr], [1, "", `AgentRun's server (@parcha/agentrun-serve) is not installed beside this command; run it as npx @parcha/agentrun@${VERSION}.\n`]);
@@ -193,8 +320,34 @@ test("the address to open is the URL on the server's first \"Open \" line, howev
   assert.equal(await openUrl(elsewhere.stdout), "http://127.0.0.1:7343/", "only an http(s) URL on the loopback address this command started the server on");
 });
 
+test("the lines after the Open line go on, one whole line at a time, however the output is cut; the bin says the boxes and box image lines among them", async (t) => {
+  const server = stub(["agentrun-serve on http://127.0.0.1:7344/v2\nOpen http://127.0.0.1:7344/\nBox", "es: docker (on by default; set AGENTRUN_BOXES to change).\nGET /v2/health 200\n", "Preparing the Docker box image (first start only, a few minutes); agents can be made now, and their first run waits for it.\n", "The Docker box image is ready.\n"]);
+  t.after(() => server.kill());
+  const after = [];
+  assert.equal(await openUrl(server.stdout, undefined, [], (line) => after.push(line)), "http://127.0.0.1:7344/");
+  for (let i = 0; after.length < 4; i++) {
+    assert.ok(i < 100, JSON.stringify(after));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.deepEqual(after.filter((line) => start.SAID.test(line)), ["Boxes: docker (on by default; set AGENTRUN_BOXES to change).", "Preparing the Docker box image (first start only, a few minutes); agents can be made now, and their first run waits for it.", "The Docker box image is ready."]);
+  assert.equal(start.SAID.test("GET /v2/health 200"), false);
+});
+
+test("with a public URL and no password yet, the server's setup-code line reaches the person (stderr), not stdout", { timeout: 60_000 }, async (t) => {
+  const setup = "https://agentrun.example.com/setup#code=AbCdEfGhIjKlMnOpQrStUv";
+  const run = await throughStub(t, ["--no-open"], { AGENTRUN_PUBLIC_URL: "https://agentrun.example.com", STUB_OPEN: "https://agentrun.example.com/", STUB_SETUP: setup });
+  assert.equal(run.out, "AgentRun is running at https://agentrun.example.com/\n", "stdout stays the one line");
+  assert.match(run.err, new RegExp(`^Set up this server: ${setup.replace(/[.?#/]/g, "\\$&")}$`, "m"), run.err);
+  assert.ok(start.SAID.test(`Set up this server: ${setup}`));
+});
+
 test("an Open line's URL is its first word, an http(s) URL on the server's loopback address; nothing else is", () => {
   assert.equal(openLineUrl("Open http://127.0.0.1:7340/"), "http://127.0.0.1:7340/");
+  // With AGENTRUN_PUBLIC_URL the server's "Open " line names that address: it's taken when it is that origin, and only then.
+  assert.equal(openLineUrl("Open https://agentrun.example.com/", "https://agentrun.example.com"), "https://agentrun.example.com/");
+  assert.equal(openLineUrl("Open https://agentrun.example.com/pair?code=x", "https://agentrun.example.com/"), "https://agentrun.example.com/pair?code=x");
+  assert.equal(openLineUrl("Open https://agentrun.example.com/"), undefined, "no public URL given");
+  assert.equal(openLineUrl("Open https://elsewhere.example.com/", "https://agentrun.example.com"), undefined, "another origin");
   assert.equal(openLineUrl("Open http://127.0.0.1:7340/pair?code=a.b-c (signs this browser in, once)"), "http://127.0.0.1:7340/pair?code=a.b-c");
   for (const line of ["Open https://agents.example.com/", "Open ftp://127.0.0.1/", "Open javascript:alert(1)", "Open ", "Opening http://127.0.0.1:7340/", "open http://127.0.0.1:7340/", " Open http://127.0.0.1:7340/"]) {
     assert.equal(openLineUrl(line), undefined, line);

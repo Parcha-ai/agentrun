@@ -17,7 +17,7 @@ import { test } from "node:test";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { awaitImage, BOX_RECIPE, DEFAULT_DOCKER_IMAGE, dockerImage, IMAGE_STATE_FILE, RECIPE_HASH, RECIPE_LABEL, STALE_AFTER_MS } from "../dist/box-image.js";
 import { startTimeOf } from "../dist/box/sweep.js";
-import { client, follow, scratch, serve, withEnv } from "./support.mjs";
+import { client, follow, jsonLines, runDir, scratch, serve, withEnv } from "./support.mjs";
 import { daytonaSandboxes } from "./fixtures/fake-daytona.mjs";
 import { startServe } from "../dist/index.js";
 
@@ -43,12 +43,12 @@ async function fakeDocker(t, marks = {}, vars = {}) {
   for (const [name, text] of Object.entries(marks)) await writeFile(join(state, name), text);
   withEnv(t, { PATH: `${bin}:${process.env.PATH}`, FAKE_DOCKER_STATE: state, AGENTRUN_BOXES: "docker", ...vars }, ["AGENTRUN_DOCKER_IMAGE"]);
   assert.equal(spawnSync("sh", ["-c", "command -v docker"], { encoding: "utf8" }).stdout.trim(), join(bin, "docker"), "the fake is the docker on PATH");
-  const calls = () => (existsSync(join(state, "argv.jsonl")) ? readFileSync(join(state, "argv.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line)) : []);
-  const made = () => (existsSync(join(state, "made.jsonl")) ? readFileSync(join(state, "made.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line)) : []);
+  const calls = () => jsonLines(join(state, "argv.jsonl"));
+  const made = () => jsonLines(join(state, "made.jsonl"));
   return {
     state, calls, made,
     pulls: () => calls().filter((args) => args[0] === "pull"),
-    builds: () => (existsSync(join(state, "builds.jsonl")) ? readFileSync(join(state, "builds.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line)) : []),
+    builds: () => jsonLines(join(state, "builds.jsonl")),
     runs: () => calls().filter((args) => args[0] === "run"),
     release: () => Promise.all(["pull-hold", "build-hold"].map((mark) => rm(join(state, mark), { force: true }))),
     keep: async (name, labels) => (await mkdir(join(state, "images"), { recursive: true }), writeFile(join(state, "images", `${encodeURIComponent(name)}.json`), JSON.stringify({ labels }))),
@@ -84,7 +84,7 @@ async function rowsOf(api, runId) {
   }
 }
 function answers(data, runId) {
-  const db = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { readOnly: true });
+  const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true });
   try {
     return db.prepare("SELECT record FROM entries ORDER BY id").all()
       .flatMap((row) => JSON.parse(row.record).model ?? [])
@@ -115,7 +115,29 @@ const logged = () => {
   return { lines, log: (line) => void lines.push(line), of: (event) => lines.filter((line) => line.includes(` event=${event} `)) };
 };
 
-test("the default image is built on first use, once, from a private context directory holding the recipe alone, removed after; tagged with the recipe's hash and labelled with it; present with that hash, it is ready with no build", { skip: process.env.CI && !process.env.AGENTRUN_RUN_QUARANTINED && "quarantined F35 (tl-places) until 2026-11-06T10:06Z, scripts/quarantine.json" }, async (t) => {
+test("a log's reader takes whole lines only: a file just made and empty is no records, and a last line still being written is left for the next read", async (t) => {
+  const file = join(await scratch(t), "log.jsonl");
+  await writeFile(file, "");
+  assert.deepEqual(jsonLines(file), []);
+  await writeFile(file, '{"a":1}\n{"b":');
+  assert.deepEqual(jsonLines(file), [{ a: 1 }]);
+  await writeFile(file, '{"a":1}\n{"b":2}\n');
+  assert.deepEqual(jsonLines(file), [{ a: 1 }, { b: 2 }]);
+});
+
+test("the fake's logs are read by whole lines only: with each record written in two halves, as a busy machine can leave one mid-write, the build is seen once, whole", async (t) => {
+  const docker = await fakeDocker(t, { "build-hold": "", "torn-writes": "" });
+  const data = await scratch(t);
+  const image = await dockerImage(process.env, data, DEFAULT_DOCKER_IMAGE);
+  await until(() => docker.builds().length === 1, "the build");
+  assert.equal(docker.builds()[0].tag, DEFAULT_DOCKER_IMAGE);
+  await docker.release();
+  assert.deepEqual(await image.settled, { state: "ready" });
+  assert.equal(docker.builds().length, 1);
+  assert.ok(docker.calls().some((args) => args[0] === "build"));
+});
+
+test("the default image is built on first use, once, from a private context directory holding the recipe alone, removed after; tagged with the recipe's hash and labelled with it; present with that hash, it is ready with no build", async (t) => {
   const docker = await fakeDocker(t, { "build-hold": "" });
   const data = await scratch(t);
   assert.equal(DEFAULT_DOCKER_IMAGE, `agentrun-box:${RECIPE_HASH.slice(0, 12)}`);
@@ -450,7 +472,7 @@ test("the start's banner says of the Docker box what capabilities say: preparing
 
 test("with no Docker box (none listed, or the tests' faux box), no image is asked for, and a record an earlier start left is removed", async (t) => {
   const docker = await fakeDocker(t);
-  withEnv(t, {}, ["AGENTRUN_BOXES"]);
+  withEnv(t, { AGENTRUN_BOXES: "none" });
   const dir = await scratch(t);
   const data = join(dir, "agents");
   await mkdir(data, { recursive: true });
@@ -580,7 +602,7 @@ test("demo, a server killed mid-build: the run it left fails its call at once, i
   // The run's process, left behind, holds its store to itself; that the call ended shows as a write to it after the
   // kill (the run waits until then, so nothing writes between the mark and the kill). It ends with the server gone,
   // before any server is back: the next is started only once the run has had time to read the record again.
-  const store = join(data, "runs", runId, "store");
+  const store = join(runDir(data, runId), "store");
   const touched = () => Math.max(...readdirSync(store).map((name) => statSync(join(store, name)).mtimeMs));
   const before = touched();
   child.kill("SIGKILL");

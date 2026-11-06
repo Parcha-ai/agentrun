@@ -1,5 +1,5 @@
 import { type ReactNode, useState } from "react";
-import { type ToolOffer } from "@/lib/agentForm";
+import { defaultPlaceOf, type ToolOffer } from "@/lib/agentForm";
 import { type Place, type Places, placeOf } from "@/lib/place";
 import { cn } from "@/lib/utils";
 
@@ -13,7 +13,8 @@ export function PlaceSetting({ value, saved, places, tools, picked, onChange, er
   onChange: (patch: { place: Place; tools?: string[] }) => void; error?: string; warning?: string;
 }) {
   const place = value ?? placeOf(saved);
-  const mode = place?.mode ?? places.default;
+  // No place runs where the server resolves it: the runner for a tool that runs only there, else default_place.
+  const mode = (place ?? defaultPlaceOf(false, picked, places)).mode;
   // A box this server can run; an agent saved in one it lacks keeps it. With none at all, Sandbox can't be picked: the
   // server stays the place, and each box says why it isn't set up.
   const runnable = places.boxes.find((b) => b.available)?.id;

@@ -1,5 +1,10 @@
 // A faux model for the tests and the conformance scenarios: replies chosen from the conversation, no key, no network.
 const textOf = (message) => (typeof message?.content === "string" ? message.content : (message?.content ?? []).map((c) => (c.type === "text" ? c.text : "")).join(""));
+/** A user message that is only a `<system-reminder>` (the spend cap's wrap-up note): the server's words, which a model
+ *  reads as an aside, never as the person's. The replies below count and quote the person's messages only. */
+export const isReminder = (message) => message?.role === "user" && /^<system-reminder>[\s\S]*<\/system-reminder>$/.test(textOf(message).trim());
+/** The person's messages: the user messages that are not a reminder. */
+export const personOf = (context) => context.messages.filter((m) => m.role === "user" && !isReminder(m));
 
 /** Resolves after `ms`, or as an aborted reply as soon as the turn is stopped. */
 const slow = (faux, ms, text) =>
@@ -17,7 +22,7 @@ const untilExists = async (file) => {
 const CUT_KEY = `not-a-secret-${"cut-key-0123456789abcdef"}`;
 
 export default function reply(context, faux) {
-  const users = context.messages.filter((m) => m.role === "user").map(textOf);
+  const users = personOf(context).map(textOf);
   const [first = "", last = ""] = [users[0], users.at(-1)];
   const answered = context.messages.at(-1)?.role === "toolResult";
   // A workflow's model node: it delivers its record through `submit`, slowly when its input says so.
@@ -26,7 +31,14 @@ export default function reply(context, faux) {
   const browse = first.includes("Browse the example page");
   // Files the page as evidence with browser_read, then delivers the record.
   const read = first.includes("Read the example page");
-  if (context.messages.some((m) => m.role === "system" && m.toolsAdded?.some((tool) => tool.name === "submit"))) {
+  // "Use the learned workflow <name> on <question>.": the run's learned_workflow, then its answer as the tool said it.
+  const learned = /Use the learned workflow (\S+) on (.+?)\.$/.exec(first);
+  if (learned && !context.messages.some((m) => m.role === "system" && m.toolsAdded?.some((tool) => tool.name === "submit")) && !context.tools?.some((tool) => tool.name === "submit")) {
+    return results === 0 ? faux.message(faux.toolCall("learned_workflow", { name: learned[1], input: { question: learned[2] } }), { stopReason: "toolUse" }) : faux.message(`Ran: ${textOf(context.messages.at(-1))}`);
+  }
+  // A workflow's model node on pi-durable (its submit tool added by a system message), or in a session of its own (a
+  // learned workflow's: agentrun-pi's host runner, its tools in the context).
+  if (context.messages.some((m) => m.role === "system" && m.toolsAdded?.some((tool) => tool.name === "submit")) || context.tools?.some((tool) => tool.name === "submit")) {
     // A node that says whether anything it can reach holds a decision key (Jev's or Parallel's): this process's
     // environment (as its tools get it), the environment the kernel shows, the descriptor the server hands the keys on,
     // and a program it starts.
@@ -99,7 +111,11 @@ export default function reply(context, faux) {
     if ((browse || read) && results === 0) return faux.message(faux.toolCall(read ? "browser_read" : "snapshot", {}), { stopReason: "toolUse" });
     if ((browse || read) && results === 1) return faux.message(faux.toolCall("submit", { answer: 42 }), { stopReason: "toolUse" });
     if (answered) return faux.message("Submitted.");
-    const submit = faux.message(faux.toolCall("submit", { answer: 42 }), { stopReason: "toolUse" });
+    // In a session of its own (agentrun-pi's host runner), submit takes the DSL's envelope: the record under `value`.
+    const submitTool = [...context.messages.flatMap((m) => m.toolsAdded ?? []), ...(context.tools ?? [])].find((tool) => tool.name === "submit");
+    const params = submitTool?.parameters;
+    const enveloped = Boolean(params?.properties?.value && Object.keys(params.properties).length === 1 && params.required?.includes("value"));
+    const submit = faux.message(faux.toolCall("submit", enveloped ? { value: { answer: 42 } } : { answer: 42 }), { stopReason: "toolUse" });
     // "Answer once <file> exists.": the node submits when the test has made that file.
     const gate = /Answer once (\S+?) exists\./.exec(first)?.[1];
     if (gate) return untilExists(gate).then(() => submit);
@@ -124,7 +140,7 @@ export default function reply(context, faux) {
   }
   // A follow-up that fetches the public page once more with web_fetch, then says so.
   if (users.length > 1 && last === "Fetch again.") {
-    const since = context.messages.length - 1 - context.messages.findLastIndex((m) => m.role === "user");
+    const since = context.messages.length - 1 - context.messages.findLastIndex((m) => m.role === "user" && !isReminder(m));
     return since === 0 ? faux.message(faux.toolCall("web_fetch", { url: "http://public.example/" }), { stopReason: "toolUse" }) : faux.message("Fetched again.");
   }
   // Runs monid's /slow, which holds until it is stopped; then, or on a follow-up (the run stopped), says so.
@@ -153,6 +169,17 @@ export default function reply(context, faux) {
     const key = process.getBuiltinModule("node:fs").readFileSync(quote[1], "utf8").trim();
     if (results === 0) return faux.message([faux.thinking(`I hold ${key} now.`), faux.text(`The key is ${Buffer.from(key).toString("base64")}.`), faux.toolCall("read", { path: `notes/${key}.txt` })], { stopReason: "toolUse" });
     return faux.message(`Done with ${key}.`);
+  }
+  // Runs monid's /person/enrich (priced at once), then /slow (held until stopped, or cut by a crash), then answers.
+  if (first.includes("Run monid's /person/enrich, then its slow endpoint.")) {
+    const steps = [["monid_run", { provider: "faux", endpoint: "/person/enrich", input: { name: "Ada" } }], ["monid_run", { provider: "faux", endpoint: "/slow", input: {} }]];
+    return results < steps.length ? faux.message(faux.toolCall(...steps[results]), { stopReason: "toolUse" }) : faux.message("Ran.");
+  }
+  // Runs monid's /person/enrich with no inspect first (held at the run allowance): one call in the first turn, then, in
+  // each turn after it (a raised cap's follow-up), one more call, or two with "twice"; then answers with the last result.
+  if (first.includes("Run monid's /person/enrich, called again after a raise")) {
+    const calls = first.includes("twice") ? 2 * users.length - 1 : users.length;
+    return results < calls ? faux.message(faux.toolCall("monid_run", { provider: "faux", endpoint: "/person/enrich", input: { name: "Ada" } }), { stopReason: "toolUse" }) : faux.message(`Ran: ${textOf(context.messages.at(-1))}`);
   }
   // Finds, reads and runs a monid endpoint, a call per turn, under the tools' wire names; then answers with the run's result.
   if (first.includes("Enrich with monid")) {
@@ -203,7 +230,8 @@ export default function reply(context, faux) {
   if (browse && users.length > 1 && last === "Browse the example page again.") return answered ? faux.message(`Seen again: ${textOf(context.messages.at(-1))}`) : faux.message(faux.toolCall("snapshot", {}), { stopReason: "toolUse" });
   // "Browse the example page once <file> exists." answers, its browser still open, only once the test has made that file.
   const browseGate = /^Browse the example page once (\S+) exists\.$/.exec(first)?.[1];
-  if (browse && results > 0 && browseGate) return untilExists(browseGate).then(() => faux.message(`Seen: ${textOf(context.messages.at(-1))}`));
+  // With `<file>.echo` there too, it answers that file's text instead (a model that repeats what it was given).
+  if (browse && results > 0 && browseGate) return untilExists(browseGate).then(async () => faux.message(await (await import("node:fs/promises")).readFile(`${browseGate}.echo`, "utf8").catch(() => `Seen: ${textOf(context.messages.at(-1))}`)));
   if (browse) return results === 0 ? faux.message(faux.toolCall("snapshot", {}), { stopReason: "toolUse" }) : faux.message(`Seen: ${textOf(context.messages.at(-1))}`);
   // A follow-up whose answer starts only after a minute: a stop before then cuts it before its first content.
   if (users.length > 1 && last === "Slowly, please.") return slow(faux, 60_000, "Done slowly.");

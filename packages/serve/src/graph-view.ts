@@ -15,10 +15,8 @@ type NodeView = { status: GraphNodeStatus; startedAt?: string; endedAt?: string;
 
 export type GraphInput = {
   run: { id: string; agent: string; revision: string; status: string; paused: boolean; startedAt: string; endedAt: string | null };
-  /** The run has ended: a node it never reached is `not_run`, not `pending`, and its store is read. */
+  /** The run has ended: a node it never reached is `not_run`, not `pending`, and its store is read, lock-free. */
   ended: boolean;
-  /** Read the live view even though the run ended: its store was busy. */
-  liveOnly?: boolean;
   workflow: unknown;
   storeFile: string;
   /** The run's directory: its node log is there. */
@@ -36,8 +34,8 @@ type Frame = { done?: string[]; states?: Record<string, unknown>; inputs?: Recor
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const at = (state: unknown, path: string): unknown => path.split(".").reduce<unknown>((value, key) => (isObject(value) ? value[key] : undefined), state);
-/** A map item's label: the item, or its name, whole. The server redacts it, then cuts it (runs.ts servedGraph): a view kept
- *  for a busy store's read holds what was written, so a key saved after it is still found whole. */
+/** A map item's label: the item, or its name, whole. The server redacts it, then cuts it (runs.ts servedGraph), so the
+ *  whole label is what redaction sees: a key saved since an earlier poll is still found in it. */
 const labelOf = (item: unknown): string | undefined => {
   if (typeof item === "string") return item;
   if (typeof item === "number") return String(item);
@@ -60,10 +58,11 @@ export async function runGraph(given: GraphInput) {
   let pin: Frame;
   let receipts: Array<Record<string, unknown>>;
   let readAt = new Date().toISOString();
-  if (given.ended && !given.liveOnly) {
-    view = await readWorkflowRun({ runId: id, storePath: given.storeFile, revision: { body: { workflow: given.workflow } } as never });
-    pin = ((readJournal(given.storeFile, id)?.state as { pin?: Frame } | undefined)?.pin) ?? {};
-    receipts = durableDecisions(given.storeFile);
+  if (given.ended) {
+    // Lock-free, as every server read of a run's database (run-db.ts): nothing made beside it, never a lock to wait on.
+    view = await readWorkflowRun({ runId: id, storePath: given.storeFile, revision: { body: { workflow: given.workflow } } as never }, { unlocked: true });
+    pin = ((readJournal(given.storeFile, id, { unlocked: true })?.state as { pin?: Frame } | undefined)?.pin) ?? {};
+    receipts = durableDecisions(given.storeFile, { unlocked: true });
   } else {
     const live = await readLiveView(given.root);
     pin = (live?.pin as Frame | undefined) ?? {};

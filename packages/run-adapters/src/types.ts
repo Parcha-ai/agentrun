@@ -46,10 +46,37 @@ export interface HostTool {
   /** `safe`: may run again after a crash. `never`: at most once; a call a crash cut off is reported, never repeated. */
   replay: "safe" | "never";
   /** The tool's answer: its text (cut at HOST_RESULT_MAX_CHARS on its way to the harness), and any images it shows (a
-   *  screenshot), which a harness that can show them sends the model with the text. `sessionDir` is the runner's own,
+   *  screenshot), which a harness that can show them sends the model with the text; `parked`: the host parked the call
+   *  for a person's approval, so it did not run, and the text says it waits. `sessionDir` is the runner's own,
    *  when it has one: a tool that runs a node of its own (the delegate) gives its child a private directory the same
    *  way, by the child's key. */
-  call(args: unknown, context: { callId: string; signal: AbortSignal; sessionDir?: (key: string) => string }): Promise<{ text: string; isError?: boolean; images?: readonly ToolImage[] }>;
+  call(args: unknown, context: { callId: string; signal: AbortSignal; sessionDir?: (key: string) => string }): Promise<{ text: string; isError?: boolean; images?: readonly ToolImage[]; parked?: true }>;
+}
+
+/** A tool of a remote MCP server, as the server listed it when its owner saved it (the run's pinned copy). */
+export interface McpTool {
+  name: string;
+  title?: string;
+  description?: string;
+  inputSchema: Record<string, unknown>;
+  annotations?: Record<string, unknown>;
+}
+
+/** What an MCP tool call answers the model: its text, and whether the tool said it failed. */
+export interface McpCallResult {
+  content: { type: "text"; text: string }[];
+  isError?: boolean;
+  /** The host parked the call for a person's approval: it did not run, and the text says it waits. The harness's own
+   *  client never sees this flag (the door sends `content` and `isError`). */
+  parked?: true;
+}
+
+/** A session's remote MCP servers: each one's granted tools, and the call that reaches them through the host, which holds
+ *  their credentials. A harness with its own MCP client points it at the session's model proxy (`/mcp/<server>`). */
+export interface SessionMcp {
+  servers: readonly { name: string; tools: readonly McpTool[] }[];
+  /** Never throws: a failure is an `isError` result the model reads. `callId` is the harness's id for the call. */
+  call(server: string, tool: string, args: Record<string, unknown>, context: { signal: AbortSignal; callId?: string }): Promise<McpCallResult>;
 }
 
 /** One durable record of a session, in the order it was appended. */
@@ -87,6 +114,8 @@ export interface SessionSpec {
   system: string[];
   /** Exactly these tools; the harness's own stay off. */
   tools: HostTool[];
+  /** The remote MCP servers it may call, for a harness that has its own MCP client. */
+  mcp?: SessionMcp;
   context: "fresh" | "fork";
   tier?: NodeRequest["tier"];
   effort?: NodeRequest["effort"];
@@ -104,6 +133,12 @@ export interface ModelRequest {
   /** The least output it may be limited to and still answer: its answer's 1,024 tokens, plus the least thinking its
    *  provider takes when it thinks (the proxy's policy says). Absent: 1,024. */
   outputTokensLeast?: number;
+  /** On another model than the session's: a client's side call (a title, a summary), never its turn's own. */
+  side?: true;
+  /** It carries the host's note (ModelPort.note) in its body: the note is delivered once this request is admitted.
+   *  `inputTokensMaxWithoutNote`: its input measured as its client sent it, before the note was placed. */
+  noted?: true;
+  inputTokensMaxWithoutNote?: number;
 }
 
 /** What a paid request cost, once it completed. */
@@ -147,6 +182,9 @@ export interface ModelPort {
   afterRequest(usage: ModelUsage, ticket?: ModelTicket, ended?: Ended): Promise<void>;
   /** Records the ids a paid request's response gave it, as its headers arrive and before its answer is read. */
   responded?(ids: Record<string, string>, ticket?: ModelTicket): Promise<void>;
+  /** A note its host has for the session's next main-model request (the spend cap's wrap-up), taken by this call; the
+   *  session's model proxy adds it to that request's body (ModelProxyHooks.note). */
+  note?(model: string): string | undefined;
 }
 
 /** A paid request's admission: the turn it was admitted as, which its answer is booked under. */
@@ -155,6 +193,9 @@ export interface ModelTicket {
   /** The most output tokens, thinking included, the request may be sent with: what is left of its host's spend cap can
    *  buy. The session's model proxy writes it into the body; absent, the request goes as asked. */
   outputTokensMax?: number;
+  /** Admitted only without its host's note (ModelRequest.noted): its bytes did not fit what is left of the cap. The
+   *  request goes as its client sent it, and the note waits for another request. */
+  noteDropped?: true;
 }
 
 /** What the host lends a session. */
@@ -202,8 +243,9 @@ export interface AdapterSession {
   /** Record the open turn as ended, interrupted, and send nothing: the turn is not to be resumed (a person stopped it, and
    *  an interrupt writes no end in the session). Only when `state` is `open_turn`; the session is `idle` after, here and
    *  when a later process opens it, and the next `send` is a turn of its own. A follow-up closes a cut turn the same way
-   *  (kernel/follow-up.ts, FollowUpTarget.settleOpenTurn). */
-  settleOpenTurn(): Promise<void>;
+   *  (kernel/follow-up.ts, FollowUpTarget.settleOpenTurn), naming its own prompt (`opening`): that one is withdrawn and
+   *  never carried, and the rest is left as it is. */
+  settleOpenTurn(options?: { opening?: string }): Promise<void>;
   /** Resolves when the turn in flight ends. */
   turnEnd(): Promise<{ status: TurnStatus; error?: string }>;
   /** Stop the turn in flight; calls it left open end interrupted. With `drainMs`, a pause: no new turn is sent, and the
@@ -220,6 +262,16 @@ export interface AdapterSession {
 export interface AdapterCapabilities {
   /** Whether the adapter can start a session from another's transcript. */
   fork: boolean;
+  /** Its harness's own MCP client, when it has one: it calls `spec.mcp`'s servers at the session proxy's `/mcp/<server>`,
+   *  which the kernel's model proxy mounts from the session's MCP and this fact (ModelProxyOptions.mcp). */
+  mcpClient?: McpClient;
+}
+
+/** A harness's own MCP client, as its adapter declares it: the `_meta` key of a `tools/call` that carries the harness's
+ *  own id for the call (Claude Code's `claudecode/toolUseId`, Codex's `callId`), the id its timeline and gate know the
+ *  call by. The route reads that key and no other. */
+export interface McpClient {
+  callIdMeta: string;
 }
 
 export interface AgentAdapter {

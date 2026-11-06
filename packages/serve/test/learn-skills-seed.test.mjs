@@ -11,12 +11,12 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
 import { claudeSkillCheck } from "../dist/adapters.js";
-import { homeOf } from "../dist/files.js";
+import { agentFolderOf } from "../dist/files.js";
 // One namespace, so each test reads what it needs of it as it runs.
 import * as learning from "../dist/learning.js";
 import { systemOf } from "../dist/skills.js";
 import { ended, git } from "./learn-support.mjs";
-import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
+import { agent, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
 
 const SYSTEM = new URL("./fixtures/faux-system.mjs", import.meta.url).pathname;
 const KIB = 1024;
@@ -39,7 +39,7 @@ const asLearned = (skills) => Object.fromEntries(Object.entries(skills).flatMap(
 async function folderWith(data, id, files, links = {}) {
   mkdirSync(data, { recursive: true });
   await seedOf(data, id);
-  const repo = join(homeOf(data, id), "learning");
+  const repo = join(agentFolderOf(data, id), "learning");
   for (const [path, text] of Object.entries(files)) {
     mkdirSync(dirname(join(repo, path)), { recursive: true });
     writeFileSync(join(repo, path), text);
@@ -66,8 +66,8 @@ async function runWith(t, files) {
 }
 
 const skillsDir = (work) => join(work, ".agents", "skills");
-const pinOf = (data, runId) => JSON.parse(readFileSync(join(data, "runs", runId, "learning.json"), "utf8"));
-const workOf = (data, runId) => join(data, "runs", runId, "work");
+const pinOf = (data, runId) => JSON.parse(readFileSync(join(runDir(data, runId), "learning.json"), "utf8"));
+const workOf = (data, runId) => join(runDir(data, runId), "work");
 const inlined = (prompt) => [...prompt.matchAll(/<skill name="([^"]+)">/g)].map((match) => match[1]);
 /** A model request's system prompt, as text. */
 const systemText = (body) => (typeof body?.system === "string" ? body.system : (body?.system ?? []).map((block) => block?.text ?? "").join("\n"));
@@ -202,7 +202,7 @@ for (const [where, links] of [["a SKILL.md", { "skills/evil/SKILL.md": "OUTSIDE"
     await folderWith(data, id, where === "the skills folder" ? {} : asLearned({ "check-units": { "SKILL.md": UNITS } }), Object.fromEntries(Object.entries(links).map(([path, target]) => [path, targets[target]])));
     const { runId, prompt, view } = await ranWithCite(api, id, "pi");
     assert.deepEqual([view.learning?.state, view.learning?.reason], ["dropped", "seed_failed"], JSON.stringify(view.learning));
-    assert.equal(existsSync(join(data, "runs", runId, "learning.json")), false, "no pin");
+    assert.equal(existsSync(join(runDir(data, runId), "learning.json")), false, "no pin");
     assert.ok(!prompt.includes(CANARY) && !prompt.includes("# Learned"), prompt);
     assert.deepEqual(inlined(prompt), ["cite"], "the revision's skill alone");
     assert.deepEqual(readdirSync(skillsDir(workOf(data, runId))), ["cite"]);

@@ -46,9 +46,15 @@ function capRecipe(commands) {
   const lines = [intro, ''];
   if (raise) {
     const field = (usd) => (raise.flags.find((f) => f.name === '--max-cost-usd') ? `--max-cost-usd ${usd}` : `--body '{"max_cost_usd": ${usd}}'`);
-    lines.push('A cap too small for the task stops the run before the request it cannot pay for, and nothing is spent past it:', '',
+    // --cap-mode strict when the start takes it: then no request goes past the cap, which the text says, with what the
+    // default allows.
+    const start = find(commands, 'createRun');
+    const strict = start?.flags.some((f) => f.name === '--cap-mode') ?? false;
+    lines.push(strict
+      ? 'A cap too small for the task stops the run before a request it cannot pay for. With `--cap-mode strict` no request is sent that the cap cannot cover; under the default, `expected`, a request that misses the cache can go over by at most the run\'s `cost.overshoot_bound_usd`:'
+      : 'A cap too small for the task stops the run before a request it cannot pay for:', '',
       '```sh',
-      `agentrun runs start notes --max-cost-usd 0.05 --body '{"input": {"content": "Write moon.md with everything known about the Moon."}}' --wait > run.json`,
+      `agentrun runs start notes --max-cost-usd 0.05${strict ? ' --cap-mode strict' : ''} --body '{"input": {"content": "Write moon.md with everything known about the Moon."}}' --wait > run.json`,
       '# exit 8 once it stops at its cap: run.json has pending.kind budget, with cap_usd, spent_usd and suggested_cap_usd; 0 if the cap was enough',
       '```', '',
       'Only the person who set the cap raises it: ask them for the new cap (`pending.suggested_cap_usd` is one that lets it go on). Then the run goes on from where it stopped:', '',
@@ -80,7 +86,7 @@ const RECIPES = (commands) => [
   '### 2. Start a run with a spend cap and wait for it',
   '',
   '```sh',
-  `agentrun runs start notes --max-cost-usd 0.5 --body '{"input": {"content": "Write notes.md with three facts about the Moon."}}' --wait > run.json`,
+  `agentrun runs start notes --max-cost-usd 5 --body '{"input": {"content": "Write notes.md with three facts about the Moon."}}' --wait > run.json`,
   '# exit 0 completed (result.final_answer); 1 failed or cancelled (error says why); 8 it waits on a person (recipe 3)',
   '```',
   '',
@@ -89,7 +95,7 @@ const RECIPES = (commands) => [
   '### 3. Answer a run that asks',
   '',
   '```sh',
-  `agentrun runs start notes --max-cost-usd 0.5 --body '{"input": {"content": "Ask me which region to cover, then write region.md about it."}}' --wait > run.json`,
+  `agentrun runs start notes --max-cost-usd 5 --body '{"input": {"content": "Ask me which region to cover, then write region.md about it."}}' --wait > run.json`,
   '# exit 8: it waits on a person; run.json has pending.kind question and pending.question, what it asks',
   '```',
   '',

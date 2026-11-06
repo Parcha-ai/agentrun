@@ -1,5 +1,5 @@
 export {
-  AGENT_STORE_FILE, type AgentDefinitionInput, type AgentHome, type AgentHomeState, createAgentHome, openAgentHome,
+  AGENT_STORE_FILE, type AgentDefinitionInput, type AgentHome, type AgentHomeState, agentDirName, agentDiskDir, createAgentHome, DISK_DIR, openAgentHome, runDirIn,
   homeRevision, type HomeAccess, localAccess, type PromptVariantInput, readAgentHome, refreshAgentHome, setAlias, setBindings, setPrompts,
 } from "./home.js";
 export type { AgentAlias, AgentDefinition, AgentIdentity, AgentSource, BrowserProfile, ProfileLease, PromptRule, PromptVariant, RunRecord, SkillFile, ToolBindings } from "./kinds.js";

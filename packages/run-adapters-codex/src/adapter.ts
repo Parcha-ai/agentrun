@@ -15,12 +15,15 @@ import { HOST_RESULT_MAX_CHARS, READ_SKILL_FILE, readSkillFileTool, skillProblem
 import type { AdapterEvent, AdapterSession, AgentAdapter, HostTool, SessionIO, SessionSpec, TurnStatus } from "@parcha/agentrun-kernel";
 import { abortedOutcome, openDrive, SessionHalt, type Drive, type HostTool as KernelTool } from "@parcha/agentrun-kernel/kernel";
 import { pendingSubmissions } from "@parcha/agentrun-kernel/kernel";
-import { recoveryNote, settleTurn, transcriptOf } from "@parcha/agentrun-kernel/process";
+import { NativeJournal, recoveryNote, settleTurn, transcriptOf } from "@parcha/agentrun-kernel/process";
 import { CODEX_VERSION } from "./binary.js";
+import { CODEX_MCP_CLIENT } from "./mcp.js";
 import { codexSchemaProblems, describedDescription } from "./schema.js";
+import { markParked } from "./scripts.js";
 import { withCheckedBinary } from "./host/sandbox.js";
 import { verifyCodex } from "./verify.js";
-import { codexHarness, type CodexHarnessOptions } from "./harness.js";
+import { codexHarness, type CodexHarnessOptions, owedSubmissions } from "./harness.js";
+import { isRolloutPath, isSessionMeta, rolloutStream, summarizeRollout, THREAD_STREAM } from "./rollout.js";
 import { type ConfineChild, localMachine, type MachineSeed, sessionDir } from "./host/machine.js";
 import { serialWriter, type ModelProxyOptions } from "@parcha/agentrun-kernel/host";
 
@@ -73,6 +76,9 @@ export interface CodexAdapterOptions {
   log?: (message: string, fields?: Record<string, unknown>) => void;
   /** For tests: a command that speaks app-server's protocol instead of Codex (needs AGENTRUN_CODEX_STANDIN=1 under a test runner). */
   standIn?: { command: string; args?: string[]; env?: Record<string, string> };
+  /** The Codex binary to run, as the host installed it (its path, and its platform package's version): checked against
+   *  the pins as one found here is. Default: found beside this package (findCodex). */
+  binary?: { path: string; packageVersion?: string };
   /** For tests: the fetch the model proxy forwards with. */
   fetch?: typeof fetch;
 }
@@ -81,7 +87,7 @@ export interface CodexAdapterOptions {
  *  The call runs as a kernel effect, whose intent is durable in the session's records before `execute` is entered, so a
  *  crash inside a `never` tool is always reported, never repeated. The copied harness's wait for Codex's own `function_call`
  *  line before it runs such a tool is a second guard (the transcript Codex resumes from), not the one that protects it. */
-function kernelTool(tool: HostTool): KernelTool {
+export function kernelTool(tool: HostTool): KernelTool {
   return {
     name: tool.name,
     // Codex strips some keywords from the schema its model is given: they are said in plain words in the description
@@ -93,6 +99,8 @@ function kernelTool(tool: HostTool): KernelTool {
       // The effect's step is `tool:<Codex call id>#<attempt>`: the host sees Codex's call id.
       const callId = (io.stepId ?? "").replace(/^tool:/, "").replace(/#\d+$/, "");
       const result = await tool.call(input, { callId, signal: io.signal });
+      // A call the host parked for a person's approval did not run: recorded so before its answer, the waiting text.
+      if (result.parked) await markParked(io.ctx, callId);
       if (result.isError) throw new Error(result.text);
       return result.text;
     },
@@ -119,6 +127,18 @@ function skillsSeed(skills: readonly HostSkill[]): MachineSeed {
   return { dir: "codex-home", files: Object.fromEntries(skills.flatMap((skill) => Object.entries(skill.files).map(([path, text]) => [`${SKILLS_DIR}/${skill.name}/${path}`, text]))) };
 }
 
+/**
+ * The mirrored rollout the next drive resumes Codex from, by the harness's own rule (harness.ts, `resume`: the last
+ * thread, its first line `session_meta`, its path the one the harness derives); none when it would start a new thread.
+ * The settle reads only this, so it and the next Codex agree on what Codex has. The copied harness keeps its own copy
+ * of the rule: its own patch budget has no room for a call here.
+ */
+export async function resumedRollout(journal: NativeJournal): Promise<string[]> {
+  const thread = journal.records<{ threadId: string; path: string }>(THREAD_STREAM).at(-1)?.data;
+  const restored = thread ? (await journal.read<string>(rolloutStream(thread.threadId))).map((r) => r.data) : [];
+  return thread && isSessionMeta(restored[0]) && isRolloutPath(thread.path, thread.threadId) ? restored : [];
+}
+
 export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
   if (options.webSearch !== undefined && options.webSearch !== "live") throw new TypeError("agentrun-harness-codex: webSearch is \"live\" or absent");
   // The skills first: a skill Codex would skip or list under another name is the host's to fix, binary or not.
@@ -128,7 +148,7 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
   const seed = skills.length ? skillsSeed(skills) : undefined;
   // The binary is checked once, here, against the pins: a mismatch or a missing binary is the host's to report, before
   // any run starts (CodexPinMismatch, CodexNotInstalled). A test's stand-in runs no Codex.
-  const checked = options.standIn ? undefined : verifyCodex().path;
+  const checked = options.standIn ? undefined : verifyCodex(options.binary).path;
   const modelFor = (spec: SessionSpec): string => {
     if (typeof options.model === "string") return options.model;
     return (spec.tier && spec.tier !== "default" ? options.model[spec.tier] : undefined) ?? options.model.default;
@@ -137,7 +157,7 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
   return {
     id: "codex",
     version: CODEX_VERSION,
-    capabilities: () => ({ fork: false }),
+    capabilities: () => ({ fork: false, mcpClient: CODEX_MCP_CLIENT }),
     check(spec) {
       const problems: string[] = [];
       if (spec.context === "fork") problems.push("Codex sessions cannot fork another session's transcript; declare context: \"fresh\"");
@@ -201,6 +221,8 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
             ...(options.confine ? { confine: options.confine } : {}),
             ...(seed ? { seed } : {}),
             ...(options.webSearch ? { webSearch: options.webSearch } : {}),
+            // A granted MCP server's tools: Codex's own MCP client calls them at the proxy (mcp.ts).
+            ...(spec.mcp?.servers.length ? { mcp: spec.mcp } : {}),
             proxy: {
               hooks: io.models,
               tools: tools.map((t) => t.name),
@@ -276,12 +298,19 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
           await ready();
           void run();
         },
-        async settleOpenTurn() {
+        async settleOpenTurn(options = {}) {
           if (state !== "open_turn") throw new Error("agentrun-harness-codex: there is no turn to settle");
           await ready();
           // The turn's end in the session's own transcript, as a turn that ends writes it: the next open finds no open turn,
-          // and the next turn carries no recovery of this one. Nothing is sent.
-          await settleTurn(drive);
+          // and the next turn carries no recovery of this one. Nothing is sent. A prompt the turn placed that Codex never
+          // recorded (the stop came before its rollout held it: Codex answers turn/start first) is carried into the next
+          // message, as an unplaced one is; a follow-up's own is not. The record is the rollout as the session keeps it (its
+          // mirror, which a stopped drive adds nothing to), the rollout the next Codex is resumed from: a prompt it lacks the
+          // next turn's model never saw, so carrying it never sends it twice.
+          const folded = drive.state();
+          const rollout = await resumedRollout(new NativeJournal(drive));
+          const unsent = owedSubmissions(folded, recoveryNote(folded)?.turn.placed ?? [], summarizeRollout(rollout).clientIds).map((s) => s.id);
+          await settleTurn(drive, { unsent, ...(options.opening === undefined ? {} : { host: options.opening }) });
           state = "idle";
         },
         async turnEnd() {

@@ -1,4 +1,4 @@
-import { Brain, ChevronRight, CircleAlert, CircleDollarSign, FileText, Flag, LoaderCircle, MessageCircleQuestion, MessageSquareText, Scale, User, Wrench } from "lucide-react";
+import { Brain, ChevronRight, CircleAlert, CircleDollarSign, FileText, Flag, LoaderCircle, MessageCircleQuestion, MessageSquareText, Scale, ShieldQuestion, User, Wrench } from "lucide-react";
 import { useState } from "react";
 import { BROWSER_TOOL_NAMES } from "@pi-browser/contract";
 import { nameOf } from "@timeline/labels";
@@ -11,11 +11,20 @@ import type { TimelineRow } from "@/lib/v2";
 const ICON: Record<string, typeof Brain> = {
   user_message: User, thinking: Brain, tool_use: Wrench, tool_result: Wrench, waiting: MessageCircleQuestion,
   usage: CircleDollarSign, final_answer: FileText, phase: Flag, error: CircleAlert, decision: Scale, text_block: MessageSquareText,
+  tool_approval_requested: ShieldQuestion,
 };
+/** What a declining message that a stop or a cancel overtook said, never sent: the server keeps it in the approval row's
+ *  text, after its arguments ("Not sent: the run was stopped. Your message: …"). */
+const notSent = (row: TimelineRow) => (row.kind === "tool_approval_requested" ? /\n\n(Not sent: [\s\S]*)$/.exec(row.text ?? "")?.[1] : undefined);
+/** A tool call's approval row while the call still waits: its summary (the server's) says so. */
+const awaitsApproval = (row: TimelineRow) => row.kind === "tool_approval_requested" && row.summary.startsWith("Waiting for your approval");
 
-/** The title a row shows: its summary without the kind's own prefix ("Thinking: ", "You: "). */
+/** A message the server wrote into the run (served `origin: "server"`): AgentRun's, never the person's. */
+const fromServer = (row: TimelineRow) => row.origin === "server";
+/** The title a row shows: its summary without the kind's own prefix ("Thinking: ", "You: ", a server message's
+ *  "AgentRun: "). */
 const title = (row: TimelineRow) => {
-  const text = row.summary.replace(/^(You|Thinking|Asked you|Waiting for you):\s*/, "");
+  const text = row.summary.replace(fromServer(row) ? /^AgentRun:\s*/ : /^(You|Thinking|Asked you|Waiting for you):\s*/, "");
   // A workflow run's input is a JSON object: show its fields, not its braces.
   if (row.kind === "user_message" && text.startsWith("{")) {
     try { return Object.entries(JSON.parse(text) as Record<string, unknown>).map(([k, v]) => `${k}: ${typeof v === "string" ? v : JSON.stringify(v)}`).join(" · "); } catch { /* not whole JSON: as is */ }
@@ -34,8 +43,8 @@ const took = (ms: number) => (ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)
  *  timeline library gives each (nameOf: "Open or act on a page in the browser", as a run's tool counts show it). */
 const BROWSER = new Set<string>(BROWSER_TOOL_NAMES);
 const toolName = (tool: string | null | undefined) => (tool && BROWSER.has(tool) ? nameOf(tool) : tool);
-const label = (row: TimelineRow) =>
-  ({ user_message: "You", thinking: "Thinking", tool_use: toolName(row.tool_name) ?? "Tool", tool_result: toolName(row.tool_name) ?? "Result", waiting: "Waiting for you", usage: "Usage", final_answer: "Answer", phase: "Phase", error: "Error", decision: "Decision", text_block: "Text" })[row.kind] ?? row.kind;
+const label = (row: TimelineRow) => fromServer(row) ? "AgentRun" :
+  ({ user_message: "You", thinking: "Thinking", tool_use: toolName(row.tool_name) ?? "Tool", tool_result: toolName(row.tool_name) ?? "Result", waiting: "Waiting for you", usage: "Usage", final_answer: "Answer", phase: "Phase", error: "Error", decision: "Decision", text_block: "Text", tool_approval_requested: "Your approval" })[row.kind] ?? row.kind;
 
 /** One step. With one row per action, a call's row carries its own outcome: `running` until it ends (a spinner), a
  *  failed or interrupted one reads as failed, and a missing one (a read that found nothing the run wrote) is grey. */
@@ -52,7 +61,7 @@ function Row({ step, last }: { step: Step; last: boolean }) {
   return (
     <li className="relative flex gap-3">
       <div className="flex w-7 shrink-0 flex-col items-center">
-        <span className={cn("mt-3 flex size-7 items-center justify-center border bg-background", row.kind === "waiting" && "border-warning/60 text-warning-text", failed && "border-destructive/60 text-destructive-text", missing && "text-muted-foreground")}>
+        <span className={cn("mt-3 flex size-7 items-center justify-center border bg-background", (row.kind === "waiting" || awaitsApproval(row)) && "border-warning/60 text-warning-text", failed && "border-destructive/60 text-destructive-text", missing && "text-muted-foreground")}>
           <Icon className={cn("size-3.5", running && "animate-spin text-run-active")} aria-hidden />
         </span>
         {!last && <span className="w-px flex-1 bg-border" aria-hidden />}
@@ -63,13 +72,15 @@ function Row({ step, last }: { step: Step; last: boolean }) {
             <span className="flex items-center gap-2 text-[13px] text-muted-foreground">
               {label(row)}
               {row.kind === "waiting" && <Chip tone="warning">Input required</Chip>}
+              {awaitsApproval(row) && <Chip tone="warning">Approval required</Chip>}
               {failed && <Chip tone="error">{interrupted ? "Interrupted" : "Error"}</Chip>}
               {row.agent_label && <Chip>{row.agent_label}</Chip>}
               {step.ms !== undefined && <span className="font-mono text-[11px]">{took(step.ms)}</span>}
               {step.times && <span className="font-mono text-[11px]">{step.times} times{step.until ? ` over ${took(Math.max(0, Date.parse(step.until) - Date.parse(row.timestamp)))}` : ""}</span>}
             </span>
-            <span className={cn("mt-0.5 block break-words text-[15px] leading-snug", missing && "text-muted-foreground")}>{step.above ? "Asked you the question above." : title(row)}</span>
+            <span className={cn("mt-0.5 block break-words text-[15px] leading-snug", (missing || fromServer(row)) && "text-muted-foreground")}>{step.above ? (row.kind === "tool_approval_requested" ? "Waits for your approval above." : "Asked you the question above.") : title(row)}</span>
             {step.saved && <span className="mt-0.5 block font-mono text-[12px] text-muted-foreground">saved {step.saved}</span>}
+            {notSent(row) && <span className="mt-0.5 block break-words text-[13px] text-muted-foreground">{notSent(row)}</span>}
           </span>
           <span className="caps shrink-0 pt-0.5 text-[11px] text-muted-foreground">{clock(row.timestamp)}</span>
           {detail && <ChevronRight className={cn("mt-0.5 size-4 shrink-0 text-muted-foreground transition-transform", open && "rotate-90")} aria-hidden />}
