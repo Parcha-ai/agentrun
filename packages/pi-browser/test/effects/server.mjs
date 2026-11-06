@@ -13,21 +13,26 @@ export async function startServer() {
   const held = new Set();
   const waiting = [];
   const watchers = [];
-  /** By path, how many more preflights (OPTIONS) to cut before answering: the browser then drops the request it precedes. */
-  const cutPreflights = new Map();
+  /** By path, how many more preflights (OPTIONS) to refuse (a 403 with no CORS headers): the browser then drops the request
+   *  it precedes, and never tries that preflight again itself, as it may after a connection the server cut. */
+  const failPreflights = new Map();
+  /** By path, how long to keep the next preflight's answer back, once: the request it precedes waits that long to be sent. */
+  const slowPreflights = new Map();
   let port = 0;
   const server = http.createServer((req, res) => {
     let url = null;
     try { url = new URL(req.url, "http://x"); } catch {}
     if (!url || !PATHS.has(url.pathname)) { req.resume(); res.writeHead(404); return res.end(); }
-    if (req.method === "OPTIONS" && (cutPreflights.get(url.pathname) ?? 0) > 0) { cutPreflights.set(url.pathname, cutPreflights.get(url.pathname) - 1); return req.socket.destroy(); }
+    if (req.method === "OPTIONS" && (failPreflights.get(url.pathname) ?? 0) > 0) { failPreflights.set(url.pathname, failPreflights.get(url.pathname) - 1); req.resume(); res.writeHead(403); return res.end(); }
     req.resume();
     req.on("end", () => {
       const key = `${req.method} ${url.pathname}`;
       counts.set(key, (counts.get(key) ?? 0) + 1);
       for (const w of watchers.splice(0)) if (!w.done()) watchers.push(w);
       const answer = () => respond(req, res, url, `http://localhost:${port}`);
-      if (held.has(url.pathname)) waiting.push(answer); else answer();
+      const slow = req.method === "OPTIONS" ? slowPreflights.get(url.pathname) : undefined;
+      if (slow !== undefined) { slowPreflights.delete(url.pathname); setTimeout(answer, slow); }
+      else if (held.has(url.pathname)) waiting.push(answer); else answer();
     });
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -44,7 +49,8 @@ export async function startServer() {
     }),
     reset: () => counts.clear(),
     hold: (path) => held.add(path),
-    cutPreflights: (path, n) => cutPreflights.set(path, n),
+    failPreflights: (path, n) => failPreflights.set(path, n),
+    slowPreflight: (path, ms) => slowPreflights.set(path, ms),
     release: () => { held.clear(); for (const answer of waiting.splice(0)) answer(); },
     close: () => new Promise((resolve) => { held.clear(); waiting.length = 0; server.closeAllConnections?.(); server.close(() => resolve()); }),
   };
