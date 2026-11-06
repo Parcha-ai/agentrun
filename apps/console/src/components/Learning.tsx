@@ -16,7 +16,9 @@ import { cn } from "@/lib/utils";
 import type { Run } from "@/lib/v2";
 
 /** `server`: the server's own learning switch (capabilities `features.learning`); "off" means no run learns there. */
-export type LearningProps = { agent: Agent; v2: Client; focus?: string[]; server?: "on" | "off" | null; onAgent?: (agent: Agent) => void };
+/** `onChanged`: a write of the tab's own landed (an approve, a retire, an edit, a new note), so what waits for the owner's
+ *  OK may have moved; the page around the tab reads its count again. Never for the tab's first read. */
+export type LearningProps = { agent: Agent; v2: Client; focus?: string[]; server?: "on" | "off" | null; onAgent?: (agent: Agent) => void; onChanged?: () => void };
 
 /** A failed write in the problem card's words, under its own title ("The note was not saved."). */
 const failed = (e: unknown, what: string, title: string) => ({ ...problem(e, what), title });
@@ -33,7 +35,7 @@ const field = "w-full border bg-background px-3 py-2 font-mono text-[13px] outli
  *  shows where it came from and how often it was used, and a person edits it (its version named, so a change made since
  *  is never written over), retires it, or adds one. Beside them: the learning switch, what runs did not keep and why, the
  *  before and after once there is one, and what the next run reads. */
-export function LearningTab({ agent, v2, focus = [], server, onAgent }: LearningProps) {
+export function LearningTab({ agent, v2, focus = [], server, onAgent, onChanged }: LearningProps) {
   const [view, setView] = useState<AgentLearning | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [runs, setRuns] = useState<Run[]>([]);
@@ -60,6 +62,8 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent }: Learning
     return learning;
   };
   useEffect(() => { void read(); }, [v2, agent.agent_id]); // eslint-disable-line react-hooks/exhaustive-deps
+  // After a write of the tab's own: the tab reads again, and the page is told.
+  const changed = (): Promise<void> => { onChanged?.(); return read(); };
   // The next page of notes, for this read only: a page asked for before a refresh (an edit, a retire) never lands after
   // it, so old and new versions never mix and the cursor is always the current read's.
   const more = () => {
@@ -142,7 +146,7 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent }: Learning
           <ul className="space-y-3 p-4">
             {waiting.map((x) => (
               <li key={x.file}>
-                <NoteCard note={x} v2={v2} agentId={agent.agent_id} readOnly={readOnly} focused={focus.includes(x.file)} from={from.get(x.file)} runs={byRun} usedIn={usedIn.get(x.file)} usedOf={allRuns ? undefined : runs.length} onChanged={read} approves={approves} />
+                <NoteCard note={x} v2={v2} agentId={agent.agent_id} readOnly={readOnly} focused={focus.includes(x.file)} from={from.get(x.file)} runs={byRun} usedIn={usedIn.get(x.file)} usedOf={allRuns ? undefined : runs.length} onChanged={changed} approves={approves} />
               </li>
             ))}
           </ul>
@@ -161,11 +165,11 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent }: Learning
           </div>
           {stale}
           {!on && <Off server={server} />}
-          {adding && <NoteEditor key="new" title="New note" v2={v2} agentId={agent.agent_id} taken={all.map((x) => x.file)} onDone={(saved) => { setAdding(false); if (saved) read(); }} />}
+          {adding && <NoteEditor key="new" title="New note" v2={v2} agentId={agent.agent_id} taken={all.map((x) => x.file)} onDone={(saved) => { setAdding(false); if (saved) void changed(); }} />}
           <ul className="space-y-3">
             {active.map((x) => (
               <li key={x.file}>
-                <NoteCard note={x} v2={v2} agentId={agent.agent_id} readOnly={readOnly} focused={focus.includes(x.file)} from={from.get(x.file)} runs={byRun} usedIn={usedIn.get(x.file)} usedOf={allRuns ? undefined : runs.length} onChanged={read} />
+                <NoteCard note={x} v2={v2} agentId={agent.agent_id} readOnly={readOnly} focused={focus.includes(x.file)} from={from.get(x.file)} runs={byRun} usedIn={usedIn.get(x.file)} usedOf={allRuns ? undefined : runs.length} onChanged={changed} />
               </li>
             ))}
           </ul>
@@ -188,7 +192,7 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent }: Learning
               </div>
               {inUse.length > 0 && (
                 <ul className="space-y-3">
-                  {inUse.map((x) => <li key={x.file}><LearnedCard item={x} kind={kind} v2={v2} agentId={agent.agent_id} readOnly={readOnly} runs={byRun} approves={approves} onChanged={read} /></li>)}
+                  {inUse.map((x) => <li key={x.file}><LearnedCard item={x} kind={kind} v2={v2} agentId={agent.agent_id} readOnly={readOnly} runs={byRun} approves={approves} onChanged={changed} /></li>)}
                 </ul>
               )}
               {gone.length > 0 && <EarlierLearned kind={kind} items={gone} from={from} />}

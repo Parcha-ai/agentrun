@@ -27,6 +27,7 @@ import { trackHistory } from "@/lib/back";
 import { allPages, type Capabilities, ClientError, createClient, type ImportOffer, type ImportState, problemOf, type RunsFilter } from "@/lib/client";
 import { createConnection } from "@/lib/connection";
 import { appendRuns, keeper, keepersByRun, sendOnce, uuid } from "@/lib/idempotency";
+import { waitingOf } from "@/lib/learning";
 import { asksPerson, hasOwnRun, mergeNeeds, type Needs, pollSettled, rerunBody } from "@/lib/needs";
 import { placesOf } from "@/lib/place";
 import { type Problem, problem } from "@/lib/problem";
@@ -206,6 +207,8 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   // gone, and shows as its id.
   const [namesRead, setNamesRead] = useState(false);
   const namesAsked = useRef(0);
+  // The active agents whose learned items wait for their owner's OK, with how many (Needs you).
+  const [learningWaits, setLearningWaits] = useState<{ agent_id: string; name: string; pending: number }[]>([]);
   // The `refreshed` the names were last read for.
   const namesAfter = useRef(-1);
   const [error, setError] = useState<Problem | null>(null);
@@ -246,11 +249,12 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   const readCaps = () => { const n = ++capsAsked.current; return v2.capabilities().then((x) => { if (n === capsAsked.current) setCaps(x); return true; }, () => false); };
   useEffect(() => { readCaps(); }, [v2]); // eslint-disable-line react-hooks/exhaustive-deps
   // The agents' names, every page of the active ones and of the archived: read at the start, and again each time a runs
-  // view opens (the list, one agent's runs, a run's page), so an agent made since, here or elsewhere, is named at once, and
-  // again when an import at setup ends while this page watches (`refreshed`).
+  // view or Mission Control opens (the list, one agent's runs, a run's page), so an agent made since, here or elsewhere,
+  // is named at once, and again when an import at setup ends while this page watches (`refreshed`). The same read of the
+  // active ones says which wait for their owner's OK on what they learned (`learning.pending`), for Needs you.
   // Only the newest read lands.
   useEffect(() => {
-    if (namesAsked.current && where.section !== "runs" && namesAfter.current === refreshed) return;
+    if (namesAsked.current && where.section !== "runs" && where.section !== "mission" && namesAfter.current === refreshed) return;
     namesAfter.current = refreshed;
     const n = ++namesAsked.current;
     setNamesRead(false);
@@ -263,6 +267,8 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
       const whole = reads.every((r) => r.status === "fulfilled");
       setNames((held) => (whole ? fresh : { ...held, ...fresh }));
       setNamesRead(whole);
+      // A failed read of the active agents keeps the last answer.
+      if (reads[0]?.status === "fulfilled") setLearningWaits(reads[0].value.filter((a) => waitingOf(a) > 0).map((a) => ({ agent_id: a.agent_id, name: a.definition.name ?? a.agent_id, pending: waitingOf(a) })));
     });
   }, [v2, where, refreshed]);
   const runsFilter: RunsFilter = { status: where.status, archived: where.archived };
@@ -466,7 +472,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
               <MissionControl view={mission} error={missionError} onRetry={() => setMissionTry((n) => n + 1)}
                 scope={{ range: statsRange, onRange: setStatsRange, agent: statsAgent, onAgent: setStatsAgent, refreshing: missionReading && mission !== null }}
                 asking={needs && askingRead ? needs.asking.length : null}
-                needsYou={needs && <NeedsYouStrip asking={needs.asking} failed={needs.failed} live={needs.live} problem={needsProblem} agentName={agentName} onAnswer={answer} onApprove={approve} onRunAgain={runAgain} onStop={stop} />}
+                needsYou={needs && <NeedsYouStrip asking={needs.asking} failed={needs.failed} live={needs.live} learning={learningWaits} problem={needsProblem} agentName={agentName} onAnswer={answer} onApprove={approve} onRunAgain={runAgain} onStop={stop} />}
                 startHere={ownRun === false ? <StartHere harnesses={editorCaps.harnesses} tools={editorCaps.tools} onTry={tryIt} imported={importedRuns}
                   keyCard={keyCardSavesModel} /> : undefined} />
             </div>

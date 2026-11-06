@@ -9,13 +9,14 @@ import { RunBar } from "@/components/RunBar";
 import { AgentSkeleton, ListSkeleton } from "@/components/Skeleton";
 import { StatusBadge } from "@/components/StatusBadge";
 import { LearningTab } from "@/components/Learning";
-import { LearningChips } from "@/components/LearningChips";
+import { LearningChips, WaitingCount } from "@/components/LearningChips";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { GraphLegend, WorkflowGraph } from "@/components/WorkflowGraph";
 import type { Agent } from "@/lib/agentForm";
 import { type Client, ClientError } from "@/lib/client";
 import { cost, soFar, when } from "@/lib/format";
+import { waitingOf } from "@/lib/learning";
 import { appendRuns } from "@/lib/idempotency";
 import { harnessDefault, type HarnessInfo, modelLabel, NO_MODEL_YET } from "@/lib/models";
 import { placeLabel, placeOf } from "@/lib/place";
@@ -33,7 +34,7 @@ type Server = { analytics: boolean };
 /** What the Learning tab takes beside a tab's own: the notes an address points at (`focus`), the server's learning
  *  switch, and the agent as the tab's write left it (`onAgent`, a new revision). `learning` beside the server's: whether
  *  it has learning at all, undefined until its capabilities are read. */
-type LearningTabProps = { focus?: string[]; learning?: "on" | "off" | null; onAgent?: (agent: Agent) => void };
+type LearningTabProps = { focus?: string[]; learning?: "on" | "off" | null; onAgent?: (agent: Agent) => void; onChanged?: () => void };
 type LearningServer = { learning?: boolean };
 
 /** The page's tabs, in order, each at `#/agents/{id}/{tab}`. A tab shows only on an agent it has content for; a new one
@@ -41,7 +42,7 @@ type LearningServer = { learning?: boolean };
 const TABS: { id: string; label: string; shows: (a: Agent, server: Server & LearningServer) => boolean; Body: (p: TabProps & LearningTabProps) => JSX.Element }[] = [
   { id: "runs", label: "Runs", shows: () => true, Body: RunsTab },
   { id: "workflow", label: "Workflow", shows: (a) => a.kind === "workflow", Body: WorkflowTab },
-  { id: "learning", label: "Learning", shows: (a, server) => a.kind === "agentic" && server.learning !== false, Body: (p) => <LearningTab agent={p.agent} v2={p.v2} focus={p.focus} server={p.learning} onAgent={p.onAgent} /> },
+  { id: "learning", label: "Learning", shows: (a, server) => a.kind === "agentic" && server.learning !== false, Body: (p) => <LearningTab agent={p.agent} v2={p.v2} focus={p.focus} server={p.learning} onAgent={p.onAgent} onChanged={p.onChanged} /> },
   { id: "analytics", label: "Analytics", shows: (_, server) => server.analytics, Body: AnalyticsTab },
 ];
 
@@ -68,6 +69,15 @@ export function AgentPage({ v2, agentId, defaultModel, modelSource, routePrefix,
     v2.statsOver({ from: rangeFrom(FIRST_RANGE), agent: agentId }).then((r) => { if (live) setStats(r); }, () => { if (live) setStats(null); });
     return () => { live = false; };
   }, [v2, agentId, tries]);
+  // Learned items that wait for the owner's OK, counted on the Learning tab from the agent's own `learning.pending`: no
+  // read of what it learned for it. A write on the tab (an approve, a retire, an edit) reads the agent again for it.
+  const itemsWaiting = waitingOf(agent);
+  // Only the newest re-read lands: one asked after an earlier write and answered last never puts back its older count.
+  const reread = useRef(0);
+  const onChanged = () => {
+    const n = ++reread.current;
+    v2.getAgent(agentId).then((r) => { if (n === reread.current) setAgent((cur) => (cur && cur.agent_id === r.agent.agent_id ? r.agent : cur)); }, () => {});
+  };
   const analytics = stats === undefined ? undefined : stats !== null;
   if (error) return error.cause instanceof ClientError && error.cause.status === 404
     ? <NotHere what="agent" id={agentId} list={{ href: "#/agents", label: "Open the agents list" }} />
@@ -126,11 +136,12 @@ export function AgentPage({ v2, agentId, defaultModel, modelSource, routePrefix,
           <button key={t.id} type="button" role="tab" aria-selected={at.id === t.id} onClick={() => go(agentHash(agent.agent_id, t.id))}
             className={cn("caps -mb-px border-b-2 px-3 py-3 text-[12px]", at.id === t.id ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground")}>
             {t.label}
+            {t.id === "learning" && <WaitingCount n={itemsWaiting} className="ml-1.5" />}
           </button>
         ))}
       </div>
       <div role="tabpanel" aria-label={waiting ? undefined : at.label} className="min-h-0 flex-1 overflow-auto px-5 py-6 md:px-8">
-        {waiting ? <ListSkeleton label="Loading the tab" rows={4} /> : <at.Body agent={agent} v2={v2} go={go} stats={stats} focus={notes} learning={learning} onAgent={setAgent} />}
+        {waiting ? <ListSkeleton label="Loading the tab" rows={4} /> : <at.Body agent={agent} v2={v2} go={go} stats={stats} focus={notes} learning={learning} onAgent={setAgent} onChanged={onChanged} />}
       </div>
     </div>
   );
