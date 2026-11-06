@@ -17,15 +17,15 @@
 Pick pi, Claude Code, Codex or OpenCode. Your agent gets the same sandbox, tools, permission gate, spend cap and
 self-learning on every one of them. The whole platform is one server and a folder of SQLite files. No Postgres, no queue, no workers.
 
-```sh
-npx @parcha/agentrun
-```
+| Install it yourself | Or let your coding agent install it |
+| --- | --- |
+| 1. `npx @parcha/agentrun` on macOS or Linux with Node 22.19+. It prints its address and opens the console. | 1. Paste into Claude Code or Codex: `Read https://raw.githubusercontent.com/Parcha-ai/agentrun/main/docs/SKILL.md and set up AgentRun for me` |
+| 2. Set your password on the first visit. | 2. It checks Node and Docker, starts AgentRun and asks you before each step that changes your machine. |
+| 3. Add a model key under Settings → Model keys. | 3. You add the model key yourself. It never sees one. |
+| 4. New agent, Start a run. | 4. It makes your first agent from the CLI and gives you the run's link. |
 
-Or tell your coding agent:
-
-```text
-Read agentrun.ai/SKILL.md and set up AgentRun for me
-```
+Running Claude Code or Codex agents? On today's npm release the start line names their packages. See
+[Quickstart](#quickstart).
 
 ## Why AgentRun
 
@@ -53,37 +53,67 @@ npx @parcha/agentrun
 ```
 
 That starts AgentRun on `127.0.0.1:7340`, keeps everything in `~/.agentrun` and opens the console (Node 22.19+, macOS or
-Linux). Add a model key under Settings → Tool keys → Model keys. One `OPENROUTER_API_KEY` gives every harness a model,
-or use `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`.
+Linux). Where Docker answers, every new agent gets a shell in a Docker box of its own. The first start builds the box
+image, 5 to 10 minutes; you can make agents while it does, and a run started early waits for it.
 
-Create an agent, run it with a 25-cent cap, read the answer:
+**Claude Code and Codex agents.** They need their harness beside the server. On what npm serves today (`@parcha/agentrun`
+0.3.6, server 0.1.0-beta.31) start with it named:
 
 ```sh
-export AGENTRUN_BASE_URL=http://127.0.0.1:7340/v2   # the port it printed
-export AGENTRUN_API_KEY=$(cat ~/.agentrun/.token)
-H="authorization: Bearer $AGENTRUN_API_KEY"; J='content-type: application/json'
-
-curl -s "$AGENTRUN_BASE_URL/agents" -H "$H" -H "$J" \
-  -d '{"definition":{"id":"calc","name":"Calc","instructions":"Answer the question."}}'
-
-run=$(curl -s "$AGENTRUN_BASE_URL/agents/calc/runs" -H "$H" -H "$J" \
-  -d '{"input":{"content":"What is six times seven?"},"max_cost_usd":0.25}' \
-  | node -p 'JSON.parse(require("fs").readFileSync(0)).run_id')
-
-curl -s "$AGENTRUN_BASE_URL/runs/$run/timeline?wait_ms=5000" -H "$H"
-curl -s "$AGENTRUN_BASE_URL/runs/$run" -H "$H"
+# Claude Code agents
+npx -y -p @parcha/agentrun@0.3.6 -p @parcha/agentrun-serve@0.1.0-beta.31 -p @anthropic-ai/claude-agent-sdk@0.3.286 agentrun --data ~/.agentrun
+# Codex agents
+npx -y -p @parcha/agentrun@0.3.6 -p @parcha/agentrun-serve@0.1.0-beta.31 -p @openai/codex@0.164.0 agentrun --data ~/.agentrun
 ```
 
-Every edit is a revision: `PUT /v2/agents/calc/definition` makes revision 2 current, and every run records the revision
-it ran. Put `"harness": "codex"` in the definition and the agent's next run is a Codex run.
+Both `-p` flags on one line run all three harnesses. The plain `npx @parcha/agentrun` is enough for pi agents, and for
+Claude Code from beta.32 on, which installs Claude Code on first use. Codex keeps its `-p`. A run on a harness the
+server doesn't have is refused (`409 agent_not_runnable`) with the exact line to restart with.
+
+**Model keys.** `ANTHROPIC_API_KEY` runs pi and Claude Code. Codex needs `OPENAI_API_KEY` or `OPENROUTER_API_KEY`. One
+`OPENROUTER_API_KEY` covers all three. Set the key where AgentRun starts, or add it under Settings → Model keys, which
+takes effect at once with no restart. A Claude subscription sign-in is not an API key; make one at console.anthropic.com.
+
+**Your first agent, from the CLI.** The body is `{definition, skills}`: `definition` holds `name`, `instructions`,
+`harness` (`pi`, `claude-agent` or `codex`), `learning`, `tools`, `tool_settings` and the names of its `skills`; `skills`
+holds each one's `<name>/SKILL.md`. Leave `tools` out and the agent gets a shell in the Docker box where Docker answers.
+Save this as `agent.json`:
+
+```json
+{
+  "definition": {
+    "id": "engineer",
+    "name": "Engineer",
+    "harness": "claude-agent",
+    "learning": true,
+    "instructions": "You are an engineering agent. Do the task in your shell and report what you found.",
+    "skills": ["report-format"]
+  },
+  "skills": {
+    "report-format/SKILL.md": "---\nname: report-format\ndescription: How to write a report for this team\n---\n\nStart with STATUS: OK or STATUS: FAIL, keep it to five lines, end with a line that starts with Next: and names one action.\n"
+  }
+}
+```
+
+```sh
+npx @parcha/agentrun agents create --body @agent.json
+npx @parcha/agentrun runs start engineer --body '{"input":{"content":"Install httpx in your box and tell me its version."},"max_cost_usd":1}'
+npx @parcha/agentrun runs get <run_id>     # status, result.final_answer, learning.state
+```
+
+The CLI finds the local server and its token on its own. The run's page is `http://localhost:<port>/#/runs/<run_id>`
+(the API doesn't return that link yet). Every edit is a revision: `PUT /v2/agents/engineer/definition` makes revision 2
+current, and every run records the revision it ran.
 
 Rather have your coding agent drive it?
 
 ```sh
+export AGENTRUN_BASE_URL=http://127.0.0.1:7340/v2 AGENTRUN_API_KEY=$(cat ~/.agentrun/.token)
 claude mcp add --transport http agentrun "$AGENTRUN_BASE_URL/mcp" --header "Authorization: Bearer $AGENTRUN_API_KEY"
 ```
 
-Full API: [AgentRun Server](packages/serve/README.md#quick-start-no-key-no-network). OpenAPI at `GET /v2/openapi.json`.
+The same with curl, and the full API: [AgentRun Server](packages/serve/README.md#quick-start-no-key-no-network). OpenAPI at
+`GET /v2/openapi.json`.
 
 ## Architecture
 
@@ -184,8 +214,10 @@ decides what to keep, and kept items merge as one commit into the agent's learni
 format. A risky rule ("trust this site", "skip that check") waits for your OK whatever the grader said. The next run
 starts from what was learned on any harness, and a learned workflow runs as a single `learned_workflow` tool call.
 
-The console's Learning tab shows every note, which runs used it, what was dropped and why, and what learning changed:
-median time and cost per run before and after the agent's first note. [Learning](packages/serve/README.md#learning).
+When a run ends, a learning chip on its page names what it kept. The agent's Learning tab shows every note, the run it
+was learned in, which runs read it, what was dropped and why, and what learning changed: median time and cost per run
+before and after the agent's first note. A held note sits under "Waiting for your OK" until the owner, signed in to the
+console with the password, approves it; no API token can. [Learning](packages/serve/README.md#learning).
 
 ## What's in it
 
@@ -198,10 +230,10 @@ isn't installed, AgentRun prints the one `npx` line that adds it.
 
 ### Sandboxes
 
-Start with `AGENTRUN_BOXES=docker` and a new agent gets a shell in a Docker container made for each run. The box binds
-the run's `work/` and nothing else, holds no key, and reaches only the package registries and GitHub. Daytona and Modal
-sandboxes run the same tools on someone else's machine. Background processes (a dev server, a long build) outlive a
-single tool call. [Sandbox in 60 seconds](packages/serve/README.md#sandbox-in-60-seconds) ·
+Where Docker answers, a new agent gets a shell in a Docker container made for each run; `AGENTRUN_BOXES=none` turns
+that off. The box binds the run's `work/` and nothing else, holds no key, and reaches only the package registries and
+GitHub. Daytona and Modal sandboxes run the same tools on someone else's machine. Background processes (a dev server, a
+long build) outlive a single tool call. [Sandbox in 60 seconds](packages/serve/README.md#sandbox-in-60-seconds) ·
 [Sandbox](packages/serve/README.md#sandbox)
 
 ### Browser
@@ -213,9 +245,11 @@ count against the run's cap. [Saved sign-ins](packages/serve/README.md#saved-sig
 ### Tools, MCP and the gate
 
 Agents pick tools from one closed table: `read`, `write`, `edit`, `bash` and its background family, `ask_person`,
-`web_search`, `web_fetch`, `browser` and [monid](https://monid.ai)'s paid data APIs. Web search runs on the harness's
-own search where it has one, else Parallel on your key, else a keyless fallback. Every call goes through the same gate,
-on every harness: built-in tools allow by default, third-party tools ask. Remote MCP servers are saved once, with
+`web_search`, `web_fetch`, `browser` and [monid](https://monid.ai)'s paid data APIs. `web_search` works with no key: the
+harness's own search where it has one, else keyless Exa. Add `PARALLEL_API_KEY` for Parallel and `MONID_API_KEY` for
+monid's paid tools under Settings → Tool keys, where each key is checked against its provider before it's kept. Every
+call goes through the same gate, on every harness: built-in tools allow by default, catalog tools ask, and an ask is a
+card in the console. Remote MCP servers are saved once, with
 their credential sealed and their tools listed before you keep them, and agents on pi and Claude Code call those tools
 through the same gate and the same spend cap. A tool that runs other actions by name (a "meta tool" like
 `MULTI_EXECUTE`) can't be granted: a grant has to name the real action, so the gate and the price mean something.
@@ -239,18 +273,20 @@ Mission Control is the console's first page: live runs, what needs you, and answ
 
 ## Run it on a server
 
-The image is public, `ghcr.io/parcha-ai/agentrun-server`:
+A Linux VM with Node 22 and Docker, your user in the `docker` group (`docker ps` works without sudo). Run the `npx` line
+from the Quickstart as a systemd user service: the unit's `PATH` holds node's bin directory, the model key lives in an
+`EnvironmentFile` with mode 600, and `loginctl enable-linger` keeps it up after you log out. The unit, with the exact
+steps for a coding agent, is in [docs/SKILL.md](docs/SKILL.md#3-on-a-linux-server-or-vm). The first start builds the
+box image, 5 to 10 minutes.
 
-```sh
-docker run -d --name agentrun -p 127.0.0.1:7340:7340 -v agentrun:/data \
-  -e OPENROUTER_API_KEY ghcr.io/parcha-ai/agentrun-server:beta
-docker logs agentrun | grep Open
-```
+Open the console from your laptop over `ssh -L 7340:localhost:7340 <vm>` and set the owner password before the first
+run: only the signed-in owner approves a learned note the grader holds. For HTTPS, put Caddy in front
+(`reverse_proxy 127.0.0.1:7340`) and set `AGENTRUN_PUBLIC_URL` to the address people open, after the password is set.
 
-Open the link it prints and set your password. Or [deploy to Render](https://render.com/deploy?repo=https://github.com/Parcha-ai/agentrun)
-from [`render.yaml`](render.yaml): a Starter instance with a 1 GB disk, about $7 a month. The image doesn't host sandbox
-boxes or Claude Code yet; for those, run from a checkout or with `npx`.
-[In a container](packages/serve/README.md#in-a-container) · [Capacity and health](packages/serve/README.md#capacity-and-health)
+There is also a public image, `ghcr.io/parcha-ai/agentrun-server`, and a [Render blueprint](https://render.com/deploy?repo=https://github.com/Parcha-ai/agentrun)
+from [`render.yaml`](render.yaml). The image doesn't host sandbox boxes or Claude Code yet.
+[In a container](packages/serve/README.md#in-a-container) · [Capacity and health](packages/serve/README.md#capacity-and-health) ·
+[Your password](packages/serve/README.md#your-password)
 
 ## Open source, hosted and enterprise
 
