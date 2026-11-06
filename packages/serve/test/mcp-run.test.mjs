@@ -404,17 +404,20 @@ test("codex: a granted MCP tool is one of the session's dynamic tools; its call 
   const { api, data } = await codexServe(t);
   const fake = await addFake(t, api);
   assert.equal((await api("POST", "/agents", agent("codex-dynamic", { harness: "codex", tools: ["mcp:fake/add"], tool_settings: ALLOW_FAKE }))).status, 201);
-  const runId = await runOf(api, "codex-dynamic", 'call mcp__fake__add {"a":2,"b":3}');
+  // Codex 0.164 reserves a dynamic tool named mcp or mcp__… (its app-server refuses thread/start: "dynamic tool name is
+  // reserved"), so the tool goes on Codex's wire as mcp_<server>__<tool>, and comes back to the run as mcp__fake__add.
+  const runId = await runOf(api, "codex-dynamic", 'call mcp_fake__add {"a":2,"b":3}');
   const { rows, last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 60_000 });
   const log = await rolloutOf(data, runId);
   // Codex is handed the tool as it is handed the host's own: in thread/start's dynamicTools, which its rollout records.
   const offered = log.filter((line) => line.type === "session_meta").flatMap((line) => line.payload.dynamic_tools ?? []);
-  const dynamic = offered.find((tool) => tool.name === "mcp__fake__add");
+  assert.deepEqual(offered.filter((tool) => tool.name === "mcp" || tool.name.startsWith("mcp__")).map((tool) => tool.name), [], "no name Codex reserves");
+  const dynamic = offered.find((tool) => tool.name === "mcp_fake__add");
   assert.ok(dynamic, `the session's dynamic tools: ${offered.map((tool) => tool.name).join(", ")}`);
   assert.deepEqual(dynamic.inputSchema?.required, ["a", "b"], "with the schema the server listed");
   assert.equal(last.status, "completed", JSON.stringify(rows.filter((row) => row.kind === "error" || row.kind.startsWith("tool"))));
-  assert.match((await api("GET", `/runs/${runId}`)).body.result?.final_answer ?? "", /^mcp__fake__add returned: 5$/);
-  const callId = log.find((line) => line.type === "response_item" && line.payload.type === "function_call" && line.payload.name === "mcp__fake__add")?.payload.call_id;
+  assert.match((await api("GET", `/runs/${runId}`)).body.result?.final_answer ?? "", /^mcp_fake__add returned: 5$/);
+  const callId = log.find((line) => line.type === "response_item" && line.payload.type === "function_call" && line.payload.name === "mcp_fake__add")?.payload.call_id;
   assert.ok(callId, "Codex's call of it is in its log");
   assert.deepEqual(rows.filter((row) => row.tool_name === "mcp__fake__add").map((row) => [row.kind, row.summary, row.tool_use_id]), [["tool_use", "fake · add", callId], ["tool_result", "fake · add: ok", callId]]);
   assert.deepEqual(calls(fake).map((entry) => [entry.tool, entry.authorization]), [["add", true]], "one call, with the bearer");
