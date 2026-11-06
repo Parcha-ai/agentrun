@@ -27,7 +27,7 @@ import { forModel } from "./result.js";
 import { fetchFor, runPages, WEB_FETCH_TOOL, webFetchTool } from "./web-fetch.js";
 import { searchFor, WEB_SEARCH_TOOL, webSearchTool } from "./web-search.js";
 import { browserNeeds, capabilityOf, explainsView, isUnavailable, NO_PARALLEL_KEY, permissionsOf, type Pickable, PICKABLE, planeOf, type Plane, PROVIDERS, type Tooling, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
-import { defaultPermission, permissionOf } from "./tool-gate.js";
+import { defaultPermission, permissionOf, type SettingFrom } from "./tool-gate.js";
 import { PARALLEL_KEY_ENV } from "./decisions.js";
 import { keyNeeded } from "./key-words.js";
 import { handedSignIn } from "./secrets.js";
@@ -355,15 +355,18 @@ export const learnedWorkflowTools = (granted: readonly string[], plane?: Plane):
  *  tool to now (tool-gate.ts permissionOf, or the run's gate's policy), by its capability's settings key, as the gate
  *  holds a legacy name. One set to ask or deny is left out of `tools`, so the end-of-run prompt never offers it, and named
  *  in `gated` with its setting, which the checker and a learned workflow's check before it runs refuse a draft for. */
-export const learnedDraftTools = (granted: readonly string[], permission: (name: string) => string, plane?: Plane): { tools: string[]; gated: Record<string, string> } => {
+export const learnedDraftTools = (granted: readonly string[], permission: (name: string) => string, plane?: Plane, from?: (name: string) => SettingFrom): { tools: string[]; gated: Record<string, string>; deniedBy: Record<string, SettingFrom> } => {
   const gated: Record<string, string> = {};
+  // Where each deny was set (this agent's settings or this server's), so the refusal names it.
+  const deniedBy: Record<string, SettingFrom> = {};
   const tools = learnedWorkflowTools(granted, plane).filter((name) => {
     const setting = permission(capabilityOf(name));
     if (setting === "allow") return true;
     gated[name] = setting;
+    if (setting === "deny" && from) deniedBy[name] = from(capabilityOf(name));
     return false;
   });
-  return { tools, gated };
+  return { tools, gated, deniedBy };
 };
 
 /** The tools a workflow names (`nodes` from workflowNodes): on its model nodes (`tools`), and on its `call` nodes

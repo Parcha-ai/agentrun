@@ -217,10 +217,14 @@ export interface Gate {
   spill(callId: string, text: string): string;
 }
 
+/** Where a permission was set (permissionFrom's `from`): the agent's own tool settings, the server's, or the default. */
+export type SettingFrom = "agent" | "server" | "default";
+/** Where a deny was set, in words: the place a person changes it. */
+export const denyPlace = (from: SettingFrom = "server"): string => (from === "agent" ? "for this agent" : from === "default" ? "by default" : "on this server");
 /** The refusal of a call whose tool is set to deny; of one held to another tool's setting (`heldTo`, a shell tool's
- *  bash), naming the setting to change. */
-export const deniedText = (tool: string, heldTo?: string): string =>
-  heldTo && heldTo !== tool ? `Permission denied: ${tool} follows ${heldTo}'s setting, which is deny on this server. Don't retry it.` : `Permission denied: ${tool} is set to deny on this server. Don't retry it.`;
+ *  bash), naming the setting to change and where it was set (`from`: this agent's settings or this server's). */
+export const deniedText = (tool: string, heldTo?: string, from: SettingFrom = "server"): string =>
+  heldTo && heldTo !== tool ? `Permission denied: ${tool} follows ${heldTo}'s setting, which is deny ${denyPlace(from)}. Don't retry it.` : `Permission denied: ${tool} is set to deny ${denyPlace(from)}. Don't retry it.`;
 /** The refusal of an ask where no one can approve it: a server with accounts off, whose answer route takes no token. */
 export const noApproverText = (tool: string): string => `Permission denied: ${tool} needs the owner's approval, and this server has accounts off (AGENTRUN_ACCOUNTS=0), so no one can give it: set the tool to allow or deny in the agent's Tools.`;
 /** Set by the server in a run's environment when no one can approve here (accounts off): the gate refuses each ask. */
@@ -332,18 +336,24 @@ export class RunGate {
 
   /** A tool's permission now (permissionOf): the revision's own over the server's setting, read at each call, so a change
    *  reaches a live run at its next call. */
-  readonly policy = (tool: string): Permission => {
+  readonly policy = (tool: string): Permission => this.setting(tool).permission;
+  /** Where the permission `policy` gives `tool` was set: the agent's own tool settings, the server's, or the default. */
+  readonly denyFrom = (tool: string): SettingFrom => this.setting(tool).from;
+  private setting(tool: string): { permission: Permission; from: SettingFrom } {
     const key = settingsKeyOf(this.where.harness ?? "pi", tool, this.where.mcpServers);
     // A name nothing maps fails closed: it asks (refused where no one can approve), never allows.
-    if (key === undefined) return "ask";
+    if (key === undefined) return { permission: "ask", from: "default" };
     const server = this.serverSettings();
     // No settings ever read: every tool asks, the shell watchers too (fail closed: an ask nothing read is never lifted),
     // or keeps the revision's own deny.
-    if (server === undefined) return permissionOf(key, {}, this.overrides) === "deny" ? "deny" : "ask";
+    if (server === undefined) {
+      const own = permissionFrom(key, {}, this.overrides);
+      return own.permission === "deny" ? own : { permission: "ask", from: "default" };
+    }
     // A shell tool under every harness's name for it is read as its own name, by bash's key (permissionFrom): a watcher's
     // ask is allow only where bash's ask is set as written.
-    return permissionOf(shellToolOf(tool) ?? key, server, this.overrides);
-  };
+    return permissionFrom(shellToolOf(tool) ?? key, server, this.overrides);
+  }
 
   private lastGood?: PermissionSettings;
   private readonly told = new Set<string>();
@@ -382,7 +392,7 @@ export class RunGate {
     if ((key === "write" || key === "edit") && this.turnOrigin() === "reflect" && underLearning(this.where.work, args)) return { text: NOTE_ONLY_TEXT, isError: true };
     const verdict = this.policy(name);
     if (verdict === "allow") return undefined;
-    if (verdict === "deny") return { text: deniedText(tool, key), isError: true };
+    if (verdict === "deny") return { text: deniedText(tool, key, this.denyFrom(name)), isError: true };
     // No one can answer here: refused at once with why, never parked until a cancel.
     if (!this.approvers) return { text: noApproverText(tool), isError: true };
     if (!this.parks) return { text: `This ${tool} call needs a person's approval, which a workflow's model node cannot wait for; it was not run.`, isError: true };
@@ -519,7 +529,7 @@ export class RunGate {
           continue;
         }
         // An allow runs the call, unless its tool was set to deny since it asked.
-        const result = decision === "deny" ? { text: refusedText(held.tool, answer.note), isError: true } : this.policy(held.tool) === "deny" ? { text: deniedText(held.tool, settingsKeyOf(this.where.harness ?? "pi", held.tool, this.where.mcpServers)), isError: true } : await this.run(held);
+        const result = decision === "deny" ? { text: refusedText(held.tool, answer.note), isError: true } : this.policy(held.tool) === "deny" ? { text: deniedText(held.tool, settingsKeyOf(this.where.harness ?? "pi", held.tool, this.where.mcpServers), this.denyFrom(held.tool)), isError: true } : await this.run(held);
         // And again once the call is done: a stop or a cancel while it ran drops its result, which never reaches the model.
         const after = ((await readJson(join(this.where.root, RUN_META)))?.approvals as Record<string, { decision?: string }> | undefined)?.[held.id];
         if (after?.decision === "canceled" || after?.decision === "withdrawn") {

@@ -170,7 +170,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   // A second guard beside the pin's (learning-run.ts): a run whose harness's requests go where a learned workflow's could
   // not follow gets no tool, whatever its pin says.
   const learnedTool = flows.length && revision.kind === "agentic" && !(await learnedWorkflowsOff(revision.body.harness, env, revision.body.model))
-    ? learnedWorkflowTool({ workflows: flows, granted: revision.body.tools, plane: planeOf(process.env), policy: toolGate.policy, env, work: where.work, models: models as never, modelOf: learnedModel, complete: completer(models as never, learnedModel, thinkingLevel) })
+    ? learnedWorkflowTool({ workflows: flows, granted: revision.body.tools, plane: planeOf(process.env), policy: toolGate.policy, denyFrom: toolGate.denyFrom, env, work: where.work, models: models as never, modelOf: learnedModel, complete: completer(models as never, learnedModel, thinkingLevel) })
     : undefined;
   // The run's effort, as its thinking level reads it: its note on how to work follows the instructions on every harness
   // (effort-guidance.ts). None without an effort.
@@ -306,7 +306,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
       // deny since the run started is refused in the gate's words, and one set to ask too, since a call node cannot wait
       // for an approval. Neither runs.
       const permission = toolGate.policy(node.tool!);
-      if (permission === "deny") throw new Error(deniedText(node.tool!));
+      if (permission === "deny") throw new Error(deniedText(node.tool!, undefined, toolGate.denyFrom(node.tool!)));
       if (permission === "ask") throw new Error(`This ${node.tool} call needs a person's approval, which a workflow's call node cannot wait for; it was not run.`);
       const durable = opened;
       const ledger = durable ? { call: `${node.label}@${executionPath ?? ""}${item ? `#${item.index}` : ""}`, record: rootRecordOf(durable.harness) } : undefined;
