@@ -105,13 +105,13 @@ test("a box command's sudo meets the stand-in, never this machine's: a workspace
   assert.ok(!existsSync(workspace), "and nothing made it");
 });
 
-test("a box command that names a sudo by its absolute path is refused whole, never run, and fails the test that sent it", async (t) => {
+test("a box command that names a sudo by its absolute path, quoted or not, is refused whole, never run, and fails the test that sent it (a sudo that does not exist, so nothing real could run)", async (t) => {
   const fake = await daytonaSandboxes(t, { key: KEY, sudoProbe: true });
   const made = await (await fetch(`${fake.url}/sandbox`, { method: "POST", headers: { authorization: `Bearer ${KEY}`, "content-type": "application/json" }, body: JSON.stringify({ labels: { "pi-transport": "1" } }) })).json();
-  const ran = await fetch(`${fake.toolboxUrl}/${made.id}/process/execute`, { method: "POST", headers: { authorization: `Bearer ${KEY}`, "content-type": "application/json" }, body: JSON.stringify({ command: "touch ran.txt; /usr/bin/sudo -n true", timeout: 10 }) });
+  const ran = await fetch(`${fake.toolboxUrl}/${made.id}/process/execute`, { method: "POST", headers: { authorization: `Bearer ${KEY}`, "content-type": "application/json" }, body: JSON.stringify({ command: 'touch ran.txt; "/nonexistent/bin/sudo" -n true', timeout: 10 }) });
   assert.deepEqual(await ran.json(), { exitCode: 97, result: "the fake refuses a command that names an absolute sudo" });
   assert.ok(!existsSync(join(fake.root, made.id, "ran.txt")), "no part of it ran");
-  assert.deepEqual(fake.sudoCalls(), ["refused, by its absolute path: touch ran.txt; /usr/bin/sudo -n true"]);
+  assert.deepEqual(fake.sudoCalls(), ['refused, by its absolute path: touch ran.txt; "/nonexistent/bin/sudo" -n true']);
 });
 
 test("a box made when boxes had the run's work/ at /run/agentrun/run/work is copied back from there, its own place, never from /workspace", async (t) => {
@@ -126,6 +126,13 @@ test("a box made when boxes had the run's work/ at /run/agentrun/run/work is cop
   mkdirSync(join(dir, "work"));
   await pullRemoteBox(daytonaBoxes({ apiKey: KEY, apiUrl: fake.url }), { id: runId, dir }, BACKGROUND_CONTEXT);
   assert.equal(readFileSync(join(dir, "work", "kept.txt"), "utf8"), "from the old place");
+});
+
+test("the absolute-sudo guard reads a command as a shell would: a quoted, chained or bare absolute sudo is refused; the stand-in's own files and a word that merely contains sudo are not", async (t) => {
+  const { sudoStandIn } = await import("./fixtures/sudo-stand-in.mjs");
+  const { refuses } = sudoStandIn(await scratch(t));
+  for (const command of ['"/usr/bin/sudo" -n true', "'/usr/bin/sudo' -n true", "true;/usr/bin/sudo -n true", "x && /usr/bin/sudo", "/usr/bin/sudo", "env /usr/local/bin/sudo -n id", "(/usr/bin/sudo -n id)"]) assert.equal(refuses(command), true, command);
+  for (const command of ["sudo -n mkdir -p -- /x", "command -v sudo", "cat /tmp/a/sudo.calls", "ls /tmp/a/sudo-bin", "/opt/pseudo/bin/x", "printf %s /tmp/sudoers.d"]) assert.equal(refuses(command), false, command);
 });
 
 test("demo: a Daytona place runs read, write, edit and bash in the run's box: work/ seeded in, bash's out.txt in the run's files, its network the package registries' domain list, no key in the box, the box destroyed at the end", { timeout: 180_000 }, async (t) => {

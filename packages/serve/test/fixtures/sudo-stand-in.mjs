@@ -6,8 +6,9 @@ import { join } from "node:path";
 /** A `sudo` stand-in for `dir`'s box commands, first on their PATH: a box command runs in a real shell of this machine
  *  here, so a sudo in it would be this machine's. The stand-in runs nothing: it notes its arguments in `calls` and
  *  exits 97. */
-/** A sudo named by its absolute path in a command's text: `/sudo` followed by a space or the end. */
-export const ABSOLUTE_SUDO = /\/sudo(\s|$)/m;
+/** A sudo named by its absolute path in a command's text: `/sudo` that a path does not go on from (no letter, digit,
+ *  `_`, `.`, `-` or `/` after it), so a quote, a `;`, a `)`, a space or the end each ends it, as a shell reads it. */
+export const ABSOLUTE_SUDO = /\/sudo(?![\w.\/-])/;
 
 export function sudoStandIn(dir) {
   const bin = join(dir, "sudo-bin");
