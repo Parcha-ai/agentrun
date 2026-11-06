@@ -8,7 +8,7 @@ full VM, a machine. The protocol has two layers:
 - **A daemon in every computer.** `computerd` is one small static Go program (Linux, amd64 and arm64, no cgo). It speaks
   JSON-RPC 2.0, one JSON object per line, over stdin and stdout, so it works in a computer with no network.
 - **One provisioner per vendor.** A provisioner makes, finds and ends computers, and opens a stream to the daemon
-  inside. It never runs commands itself: the daemon does. This package has the first one, for Docker.
+  inside. It never runs commands itself: the daemon does. This package has two, for Docker and Daytona.
 
 ## What it does today
 
@@ -356,6 +356,188 @@ const swept = await sweep(new DockerProvider({ daemonPath: "dist/computerd-linux
 if (swept.ok) console.log(`deleted ${swept.value.deleted.join(", ") || "none"}; kept ${swept.value.kept}`);
 ```
 
+## Daytona
+
+```ts
+import { DaytonaProvider } from "@parcha/agentrun-computer";
+
+const daytona = new DaytonaProvider({ apiKey, daemonPath: "dist/computerd-linux-amd64" });
+const made = await daytona.create({ image: "my-snapshot", lifetimeMs: 600_000, network: "none" });
+```
+
+A Daytona computer is a sandbox made through Daytona's v0 REST API with `fetch`, as pi-transport's Daytona box does:
+no SDK, and no package beyond this one. `fetch` and the WebSocket factory are options, so the tests run against a fake.
+The key is the caller's to pass: the provider never reads the environment, never sends the key over a redirect or to a
+toolbox URL that is not https, and never puts it in a computer. `image` is a Daytona snapshot, by id or name: the
+snapshot gives the sandbox its class and its size.
+
+### How the daemon gets in, and how it is reached
+
+Daytona runs its own toolbox daemon as the sandbox's first process, and a snapshot we do not build has no `computerd`.
+So the provider pushes it in at create and starts it as a long-lived command, and reaches it the same way:
+
+1. Upload the static binary through the toolbox's file upload, to `/tmp/agentrun-computerd-<random>`.
+2. Install it with `/process/execute` (the command is piped to the sandbox's shell): root-owned, mode 755, at
+   `/opt/agentrun/computerd`; `/work` (its home) and `/run/agentrun` (its socket's directory) owned by the daemon's
+   user, mode 700. As root, or through passwordless `sudo`; a sandbox with neither, or with no `setpriv`, is refused in
+   the script's words. The script prints the installed binary's sha256, which must be the uploaded one's.
+3. Start `computerd init --deadline <time>` as a session command (`runAsync`) in the session `agentrun-computerd`,
+   through `setpriv`: uid and gid 1000 (the `daemonUser` option), no supplementary groups, every capability set
+   cleared, the bounding set included, and `no_new_privs`, so a setuid program such as `sudo` cannot raise them; a
+   clean environment, and `/work` as its directory. The provider never deletes that session: deleting it ends init.
+4. `connect()` starts `computerd stdio` the same way, in a session of its own. Its stdin is the command's input
+   (`POST .../input`, whole lines, one call after another), and its stdout is the command's log stream, a WebSocket
+   with `follow=true`, in which Daytona prefixes each stdout line with `01 01 01` and each stderr line with `02 02 02`
+   (split output, asked for with `X-Daytona-Split-Output: true`). Input is sent with `suppressInputEcho`; a line that
+   is a request or a notification, never a reply, is dropped in case a toolbox echoes input anyway. `close()` deletes
+   the session, which ends the bridge and nothing else.
+
+This is the protocol's first binding, stdio over the vendor's exec stream, assembled from two halves: the session
+command's input and its log stream are each one-way, and together they are the duplex byte stream `DaemonClient`
+needs. The PTY WebSocket is one duplex stream, but a terminal: echo and line discipline would have to be turned off by
+the shell before the bridge starts, and the PTY starts a shell, not a command. Daytona's V2 API (alpha) adds argv
+processes with `writeStdin` and replayable logs, which would replace the two halves when it is GA.
+
+Daytona's container class runs code as root, and the open runner runs it privileged. The provider's daemon runs as
+1000:1000 with no capabilities, but the toolbox does not: anyone with the API key can run a command as root through it.
+
+### Capabilities
+
+| Capability | Declared | Why |
+| --- | --- | --- |
+| `lifetime` | `vendor` | `ttlMinutes` destroys the sandbox in any state once it elapses; set to the lifetime in whole minutes, rounded up. Init also ends every process at the deadline itself. |
+| `network` | `none`, `open`, `allow` | `networkBlockAll`, neither, or one allow list; each read back from the sandbox |
+| `allow.domains` | at most 100, ports 80 and 443 | the domain list is enforced on web traffic by Daytona's egress proxy, which re-signs TLS |
+| `allow.cidrs` | at most 10, IPv4, any port | in the open runner a CIDR is allowed with `-p all` |
+| `allow.mixed` | `false` | the two lists and block-all are mutually exclusive |
+| `isolation` | `container`, or `vm` with `sandboxClass: "linux-vm"` | the class comes from the snapshot, and is read back |
+| `os` | `linux` | Linux classes only; Windows and macOS are not offered here |
+| `daemon` | `exec`, `files`, `processes` | the daemon's own, checked against its hello |
+| `user` | none | the daemon runs as the provider's `daemonUser`; a spec cannot name a user |
+
+### What the provider does
+
+- `check(spec)` refuses in words, with no request: no snapshot, a lifetime that is not 1 ms to 30 days, a network
+  that is none of the three, an empty allowlist, one that mixes domains and CIDRs, more than 100 domains or 10 CIDRs,
+  an IPv6 entry, a domain with a scheme, path or port, a CIDR that is not `A.B.C.D/N`, a label in the provider's own
+  namespace (`agentrun.computer`), `cpus`, `memoryMb` or `pids` (a snapshot's size is its own), `user`, `workdir`
+  (the daemon works in `/work`), and any other field.
+- `create` sends `POST /sandbox` with the name `computer-<12 hex digits>`, the snapshot, the labels with
+  `agentrun.computer=1` and `agentrun.computer.deadline=<ISO time>`, `public: false`, `ttlMinutes`,
+  `autoStopInterval: 0` (Daytona's idle timer counts only outside traffic, so a daemon at work would be stopped), and
+  `autoDeleteInterval: -1` (a stop keeps the sandbox, which the TTL then ends). `POST /sandbox` is never retried. A
+  create that fails without a 4xx answer, or is aborted, may still have made the sandbox, so the provider deletes the
+  name it chose. Then it waits for `started` (polling `GET /sandbox/{id}`), runs the drift check on that read, pushes
+  in and starts the daemon, checks the daemon, and waits until the label listing shows the new computer steadily
+  (Daytona's listing trails a create). Any failure, mismatch or abort after the sandbox exists deletes it, and create
+  never returns ok once its signal has aborted.
+- `attach({ id })` takes a sandbox id or a computer's name; `attach({ labels })` must match exactly one computer. Only
+  a sandbox with `agentrun.computer=1` and a computer's name counts. Attach runs the same drift check, with the spec
+  read back from the sandbox, and, when it is started, the daemon's; a computer that drifts is refused and left as it
+  is. It returns `spec`: the snapshot, the daemon's user, the network, `cpus`, `memoryMb` (Daytona's GiB times 1024),
+  `/work` when the daemon was checked, and the deadline.
+- `list(labels)` asks Daytona for `agentrun.computer=1` alone, every page, and filters the other labels itself; a
+  sandbox being destroyed is left out, `started` and the states on the way to it are `running`, and the rest
+  `stopped`. A listed sandbox with no network fields is read on its own.
+- `network(ref)` reads the network back. `network(ref, policy)` sends `POST /sandbox/{id}/network-settings` and reads
+  it back whatever the answer: as asked, it is returned; unchanged, the change is refused in Daytona's words; anything
+  else is put back, or, if that fails, the network is blocked, and the change is refused. A network is never left
+  wider than asked.
+- `release(ref, "delete")` deletes as pi-transport does: retried on a 5xx, checked against the sandbox, with a forced
+  stop before the last attempt. `release(ref, "stop")` stops and waits for `stopped`. Both are idempotent, and both
+  refuse a sandbox that is not this provider's.
+- `connect(ref)` refuses a computer that is not `started`, and a daemon whose hello is not the provider's.
+- Every call has its own timeout and takes the caller's signal; reads, the upload and deletes are retried (three tries,
+  backoff), as in pi-transport; creates, session commands, input and network changes are not.
+
+### The drift check
+
+From Daytona's read of the sandbox:
+
+| Field | Must be |
+| --- | --- |
+| `snapshot` | the spec's image |
+| `networkBlockAll`, `networkAllowList`, `domainAllowList`, `outboundProxyUrl` | the network declared; an outbound proxy, both lists, or block-all with a list is drift |
+| `labels` | `agentrun.computer=1`, the deadline as written, every label the spec asked for |
+| `autoStopInterval`, `autoDeleteInterval` | `0`, negative |
+| `autoDestroyAt` | set, and no later than the deadline plus the TTL's minute and 2 minutes of clock skew |
+| `sandboxClass` | the provider's class |
+| `public`, `kvm`, `gpu`, `volumes`, `linkedSandboxId` | false, not true, 0, none, none |
+
+From the daemon, over one connection: hello (the provider's version, `linux`, the `arch` option, every daemon
+capability), `/proc/self/status` (Uid and Gid the daemon user's four times, no groups, `NoNewPrivs: 1`, `CapInh`,
+`CapPrm`, `CapEff`, `CapBnd` and `CapAmb` all zero), `/proc/self/cwd` (`/work`) and `/proc/self/exe`
+(`/opt/agentrun/computerd`); and the installed binary's sha256 from the install.
+
+### Conformance on Daytona
+
+`dist/conformance/daytona.js` exports `createProvider()` and `createDriftedProvider()` (which builds a daemon of
+another version with Go). It reads these variables, by name, when it runs: `DAYTONA_API_KEY` (required),
+`DAYTONA_API_URL`, `AGENTRUN_DAYTONA_DAEMON`, `AGENTRUN_DAYTONA_ARCH` (`amd64` or `arm64`), `AGENTRUN_DAYTONA_TARGET`,
+`AGENTRUN_DAYTONA_CLASS` (`container` or `linux-vm`) and `AGENTRUN_DAYTONA_USER`.
+
+```sh
+npm run conformance -w @parcha/agentrun-computer -- --provider packages/computer/dist/conformance/daytona.js --image <snapshot>
+```
+
+### Not yet known
+
+Nothing here has run against real Daytona. These need a live probe once a key is OKed:
+
+- whether the default snapshot's toolbox user is root or has passwordless sudo, and has `setpriv` and `sha256sum`;
+- whether the production toolbox honors `suppressInputEcho` and `X-Daytona-Split-Output`, and keeps a session's
+  command running between calls;
+- whether a session's labeller (a shell `read` per line) carries 1 MiB lines at a usable speed, and how big a
+  connection's log may grow: every reply stays in the session's log on the sandbox's disk until `close()`;
+- `autoDeleteInterval: -1` and `autoDestroyAt` as read back, and how soon after `autoDestroyAt` Daytona destroys;
+- how soon the label listing shows a new sandbox, and hides a deleted one;
+- the ports a CIDR list opens on the production runner, and whether a domain list blocks every port but 80 and 443;
+- `network: none` against the live bypass cases (ruling 9), on each class;
+- the linux-vm class end to end.
+
+### Sources
+
+Every Daytona path, field and limit above. `daytona/clients@8006f63e` is the v0 SDKs and OpenAPI specs at v0.230.0;
+`daytonaio/daytona@b5a5d9e7` is the open platform at v0.190.0, frozen in June 2026; `agentrun@7907382ed` is this
+repository's main; the docs were read on 2026-11-05.
+
+| Fact | Citation |
+| --- | --- |
+| `POST /sandbox`, `GET` and `DELETE /sandbox/{sandboxIdOrName}` | `daytona/clients@8006f63e:openapi-specs/api.json:2702`, `daytona/clients@8006f63e:openapi-specs/api.json:3163` |
+| `CreateSandbox`: `name`, `snapshot`, `env`, `labels`, `public`, `networkBlockAll`, `networkAllowList`, `domainAllowList`, `target`, `autoStopInterval`, `autoDeleteInterval`, `ttlMinutes` | `daytona/clients@8006f63e:openapi-specs/api.json:12069-12208` |
+| `Sandbox` read back: `snapshot`, `labels`, `public`, `networkBlockAll`, `kvm`, `networkAllowList`, `domainAllowList`, `outboundProxyUrl`, `cpu`, `gpu`, `memory`, `state`, `errorReason`, `autoStopInterval`, `autoDeleteInterval`, `autoDestroyAt`, `volumes`, `sandboxClass`, `linkedSandboxId`, `toolboxProxyUrl` | `daytona/clients@8006f63e:openapi-specs/api.json:12295-12593` |
+| `SandboxState` values | `daytona/clients@8006f63e:openapi-specs/api.json:11704` |
+| `GET /sandbox?labels=<JSON>&limit&cursor`, a page of `items` and `nextCursor` | `daytona/clients@8006f63e:openapi-specs/api.json:2702`, `daytona/clients@8006f63e:openapi-specs/api.json:2717`, `daytona/clients@8006f63e:openapi-specs/api.json:2756`, `daytona/clients@8006f63e:openapi-specs/api.json:12000` |
+| `POST /sandbox/{sandboxIdOrName}/stop`, `force` | `daytona/clients@8006f63e:openapi-specs/api.json:3393`, `daytona/clients@8006f63e:openapi-specs/api.json:3416` |
+| `POST /sandbox/{sandboxIdOrName}/network-settings` | `daytona/clients@8006f63e:openapi-specs/api.json:4573`, `daytona/clients@8006f63e:openapi-specs/api.json:12721` |
+| `GET /sandbox/{sandboxId}/toolbox-proxy-url`; the toolbox at `toolboxProxyUrl` + `/` + id | `daytona/clients@8006f63e:openapi-specs/api.json:5235`; `daytona/clients@8006f63e:sdk-typescript/src/Sandbox.ts:1566-1573` |
+| `Authorization: Bearer <key>` | `daytona/clients@8006f63e:sdk-typescript/src/Daytona.ts:444` |
+| `POST /files/upload-v2?path=`, multipart field `file` | `daytona/clients@8006f63e:openapi-specs/toolbox.json:2031` |
+| `POST /process/execute` `{command, timeout}` to `{exitCode, result}`; the command piped to the shell | `daytona/clients@8006f63e:openapi-specs/toolbox.json:3234`, `daytona/clients@8006f63e:openapi-specs/toolbox.json:4679`, `daytona/clients@8006f63e:openapi-specs/toolbox.json:4703`; `daytonaio/daytona@b5a5d9e7:apps/daemon/pkg/toolbox/process/execute.go:55-57` |
+| `POST /process/session` `{sessionId}`; a session's shell runs as the toolbox's own user | `daytona/clients@8006f63e:openapi-specs/toolbox.json:3636`, `daytona/clients@8006f63e:openapi-specs/toolbox.json:4525`; `daytonaio/daytona@b5a5d9e7:apps/daemon/pkg/session/create.go:20-24` |
+| `POST /process/session/{sessionId}/exec` `{command, runAsync, suppressInputEcho}` to `{cmdId}` | `daytona/clients@8006f63e:openapi-specs/toolbox.json:4017`, `daytona/clients@8006f63e:openapi-specs/toolbox.json:5922`, `daytona/clients@8006f63e:openapi-specs/toolbox.json:5935` |
+| `POST .../command/{commandId}/input` `{data}`; a newline added to data without one, and input echoed to stdout unless suppressed | `daytona/clients@8006f63e:openapi-specs/toolbox.json:3891`, `daytona/clients@8006f63e:openapi-specs/toolbox.json:5961`; `daytonaio/daytona@b5a5d9e7:apps/daemon/pkg/session/input.go:47-71` |
+| `GET .../command/{commandId}/logs?follow=true` as a WebSocket | `daytona/clients@8006f63e:openapi-specs/toolbox.json:3954`, `daytona/clients@8006f63e:openapi-specs/toolbox.json:3979`; `daytona/clients@8006f63e:sdk-typescript/src/Process.ts:437` |
+| stdout and stderr lines prefixed `01 01 01` and `02 02 02`, one prefix a line | `daytona/clients@8006f63e:sdk-typescript/src/Process.ts:26-27`; `daytonaio/daytona@b5a5d9e7:apps/daemon/pkg/session/execute.go:196-236` |
+| split output with `X-Daytona-Split-Output: true` | `daytonaio/daytona@b5a5d9e7:apps/daemon/pkg/session/common.go:17-19` |
+| `DELETE /process/session/{sessionId}` ends the session's process group and tree | `daytona/clients@8006f63e:openapi-specs/toolbox.json:3770`; `daytonaio/daytona@b5a5d9e7:apps/daemon/pkg/session/delete.go:18-70` |
+| `ttlMinutes` destroys in any state; `autoStopInterval: 0` runs indefinitely and keeps the TTL | https://www.daytona.io/docs/en/sandboxes.md#wall-clock-ttl, https://www.daytona.io/docs/en/sandboxes.md#running-indefinitely |
+| the idle timer ignores processes inside the sandbox | https://www.daytona.io/docs/en/sandboxes.md#auto-stop-sandboxes ("What does not reset the timer") |
+| `autoDeleteInterval` negative is disabled | `daytona/clients@8006f63e:openapi-specs/api.json:12199` |
+| block-all, the CIDR list and the domain list are mutually exclusive, a conflict is a 400 | https://www.daytona.io/docs/en/network-limits.md#create-sandboxes-with-network-restrictions |
+| at most 10 IPv4 CIDRs, `A.B.C.D/N`, N 0 to 32 | https://www.daytona.io/docs/en/network-limits.md#network-allow-list-format |
+| at most 100 domains, `*.` wildcards, no scheme, path or port | https://www.daytona.io/docs/en/network-limits.md#domain-allow-list-format |
+| the domain list covers web ports 80 and 443 | `daytona/clients@8006f63e:openapi-specs/api.json:12135` |
+| the domain list's proxy re-signs TLS with a Daytona CA | https://www.daytona.io/docs/en/network-limits.md#https-traffic |
+| a CIDR allowed on every protocol and port, in the open runner | `daytonaio/daytona@b5a5d9e7:apps/runner/pkg/netrules/set.go:33-41` |
+| Tier 1 and 2 cannot override the network per sandbox | https://www.daytona.io/docs/en/network-limits.md#tier-based-network-restrictions |
+| a change: block-all clears both lists, `false` alone clears both, an empty list clears one | https://www.daytona.io/docs/en/network-limits.md#update-network-settings-while-a-sandbox-is-running |
+| the container class runs code as root; classes `linux-vm`, `container`, `windows` | https://www.daytona.io/docs/en/isolation.md#runtime-isolation; `daytona/clients@8006f63e:openapi-specs/api.json:10473` |
+| non-GPU containers run privileged in the open runner | `daytonaio/daytona@b5a5d9e7:apps/runner/pkg/docker/container_configs.go:200-206` |
+| memory in GiB | https://www.daytona.io/docs/en/sandboxes.md#resources |
+| a snapshot's size is its own; delete with retries and a forced stop; the listing trails a create; no redirect followed; three tries with backoff | `agentrun@7907382ed:packages/pi-transport/src/box/daytona.ts:913`, `agentrun@7907382ed:packages/pi-transport/src/box/daytona.ts:799-817`, `agentrun@7907382ed:packages/pi-transport/src/box/daytona.ts:819-824`, `agentrun@7907382ed:packages/pi-transport/src/box/daytona.ts:343`, `agentrun@7907382ed:packages/pi-transport/src/box/daytona.ts:35-36` |
+| auto-delete off with `-1` | `agentrun@7907382ed:packages/serve/src/daytona-api.ts:37` |
+
 ## Conformance
 
 A provider for another vendor passes the same suite as Docker's, with one command. The suite is data: each case in
@@ -455,6 +637,7 @@ npm run build:daemon -w @parcha/agentrun-computer   # dist/computerd-linux-amd64
 npm test -w @parcha/agentrun-computer               # unit tests: no Go, no Docker
 cd packages/computer/daemon && go vet ./... && go test ./...
 AGENTRUN_COMPUTER_LIVE_DOCKER=1 npm run test:docker -w @parcha/agentrun-computer
+AGENTRUN_COMPUTER_LIVE_DAYTONA=1 DAYTONA_API_KEY=... AGENTRUN_DAYTONA_SNAPSHOT=<snapshot> npm run test:daytona -w @parcha/agentrun-computer
 ```
 
 The live tests run the conformance suite on Docker, one test per case, and the CLI against `alpine:3.20`; the rest of
