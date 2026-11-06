@@ -223,6 +223,9 @@ func addEntry(tw *tar.Writer, path, name string, info fs.FileInfo) error {
 	if !info.Mode().IsRegular() {
 		return nil
 	}
+	if beforeOpen != nil {
+		beforeOpen(path)
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return err

@@ -54,6 +54,10 @@ type WriteResult struct {
 // Empty is the result of a method that answers only that it is done.
 type Empty struct{}
 
+// beforeOpen is nil outside tests: it runs just before files.read, files.write or a pull opens a file by name, so a
+// test can swap it.
+var beforeOpen func(path string)
+
 // cleanPath checks a path from a request: absolute, with no NUL, and returned clean.
 func cleanPath(field, path string) (string, error) {
 	if !filepath.IsAbs(path) {
@@ -114,6 +118,9 @@ func Read(params ReadParams) (ReadResult, error) {
 	if !info.Mode().IsRegular() {
 		return ReadResult{}, rpc.Errorf(rpc.KindInvalid, "%s is not a regular file", path)
 	}
+	if beforeOpen != nil {
+		beforeOpen(path)
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return ReadResult{}, fsError(err)
@@ -155,6 +162,9 @@ func Write(spec WriteParams) (WriteResult, error) {
 	}
 	if info, err := os.Stat(path); err == nil && !info.Mode().IsRegular() && !info.IsDir() {
 		return WriteResult{}, rpc.Errorf(rpc.KindInvalid, "%s is not a regular file", path)
+	}
+	if beforeOpen != nil {
+		beforeOpen(path)
 	}
 	flags := os.O_WRONLY
 	switch {
