@@ -31,11 +31,13 @@ const PLATFORM = CLI ? `@anthropic-ai/${basename(dirname(CLI))}` : undefined;
 const skip = (!CLI && "no pinned Claude CLI here") || (!existsSync("/usr/bin/setpriv") && "no setpriv here");
 
 /** The command a person runs when the install fails, naming the data's harnesses directory. */
-/** The command a person runs when the install fails: the lock's package.json and lock copied into the data's harnesses
- *  directory, then `npm ci` with no install script, as the server installs. `lock`: the lock the server installs by. */
+/** The command a person runs when the install fails, as the server installs: the lock's package.json and lock copied into
+ *  a fresh directory beside the data's harnesses, `npm ci` there with no install script, then that directory put in place
+ *  of the harnesses (made writable first: the server leaves its install read-only). `lock`: the lock the server installs by. */
 const manualLine = (data, lock) => {
   const dir = join(data, "harnesses");
-  return `mkdir -p ${dir} && cp ${join(dirname(lock), "package.json")} ${lock} ${dir}/ && npm ci --prefix ${dir} --ignore-scripts`;
+  const next = `${dir}.new`;
+  return `rm -rf ${next} && mkdir -p ${next} && cp ${join(dirname(lock), "package.json")} ${lock} ${next}/ && npm ci --prefix ${next} --ignore-scripts && (chmod -R u+w ${dir} 2>/dev/null || true) && rm -rf ${dir} && mv ${next} ${dir}`;
 };
 /** The SDK's version as installed in the data's harnesses, or undefined. */
 const installedIn = (data) => {
@@ -490,4 +492,40 @@ test("runs that wait for the install keep their places: at max_concurrent_runs 1
   assert.deepEqual([second.status, second.body.error?.code], [429, "rate_limited"], `the waiting run holds the one place: ${JSON.stringify(second.body)}`);
   letGo();
   assert.equal((await follow(api, first.body.run_id, ["completed", "failed"], { deadlineMs: 240_000 })).last.status, "completed");
+});
+
+test("the manual command replaces an install the server made, read-only as it left it: run as shown, it puts a whole install in its place", { timeout: 300_000, skip }, async (t) => {
+  const registry = await fakeRegistry(t);
+  const anthropic = await anthropicEndpoint(t);
+  await firstUseEnv(t, registry, anthropic.fake);
+  const { api, data } = await firstUseServe(t, registry);
+  const run = await api("POST", "/agents/claude/runs", { input: { content: "Say hello." } });
+  assert.equal((await follow(api, run.body.run_id, ["completed", "failed"], { deadlineMs: 240_000 })).last.status, "completed");
+  assert.equal(installedIn(data), PIN, "the server installed it");
+  // The server's own line (the one its errors name), not this test's copy of it.
+  const { installLine } = await import("../dist/claude-sdk.js");
+  const line = installLine(join(data, "harnesses"), registry.lock);
+  await new Promise((resolve, reject) => execFile("sh", ["-c", line], (error, stdout, stderr) => (error ? reject(new Error(`${line}: ${stderr}`)) : resolve())));
+  assert.equal(installedIn(data), PIN);
+  assert.ok(existsSync(join(data, "harnesses", "node_modules", ...MCP.split("/"), "package.json")), "a whole install: the MCP library too");
+});
+
+test("a run cancelled while it waits for the install gives its place back at once: at max_concurrent_runs 1, a pi run starts", { timeout: 300_000, skip }, async (t) => {
+  let letGo;
+  const hold = new Promise((resolve) => (letGo = resolve));
+  t.after(() => letGo());
+  const registry = await fakeRegistry(t, { hold });
+  const anthropic = await anthropicEndpoint(t);
+  await firstUseEnv(t, registry, anthropic.fake);
+  const { api } = await serve(t, { faux: undefined, claudeSdk: false, claudeLock: registry.lock, maxRuns: 1 });
+  assert.equal((await api("POST", "/agents", agent("claude", { harness: "claude-agent", model: `anthropic/${MODEL}` }))).status, 201);
+  assert.equal((await api("POST", "/agents", agent("plain"))).status, 201);
+  const waiting = await api("POST", "/agents/claude/runs", { input: { content: "Say hello." } });
+  assert.equal(waiting.status, 202, JSON.stringify(waiting.body));
+  await until("the run waits for the install", async () => (await api("GET", `/runs/${waiting.body.run_id}/timeline`)).body.rows?.some((r) => r.kind === "phase" && r.summary === INSTALLING), 60_000);
+  assert.equal((await api("POST", `/runs/${waiting.body.run_id}/cancel`)).status < 300, true, "cancelled");
+  // The install still runs (held); the cancelled run's place is free now, not when it ends.
+  const pi = await api("POST", "/agents/plain/runs", { input: { content: "Hi." } });
+  assert.equal(pi.status, 202, `the place is free: ${JSON.stringify(pi.body)}`);
+  letGo();
 });
