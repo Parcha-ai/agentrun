@@ -217,7 +217,7 @@ describe("the look-back on a run's timeline", () => {
   it("says when there was nothing new to keep, and why a note was not kept", () => {
     expect(learningSteps([LOOK, ...WRITES, ended({ state: "dropped", reason: "empty", detail: "Nothing new to remember from this run." })], { state: "dropped", reason: "empty" })[0]!.summary).toBe("Looked back: nothing new to keep");
     const graded = { state: "dropped" as const, reason: "grader", detail: "Not kept: It's about one shop's returns portal, not a rule other shops share." };
-    expect(learningSteps([LOOK, ...WRITES, ended(graded)], graded)[0]!.summary).toBe("Looked back: kept nothing. It's about one shop's returns portal, not a rule other shops share.");
+    expect(learningSteps([LOOK, ...WRITES, ended(graded)], graded)[0]!.summary).toBe("Looked back: Not kept: It's about one shop's returns portal, not a rule other shops share.");
   });
   it("while it looks back or checks its notes, says so, in one row that grows", () => {
     const going = learningSteps([ASKED, LOOK, WRITES[0]!], { state: "reflecting", reason: null });
@@ -284,3 +284,20 @@ describe("what a run's learning changed", () => {
   });
 });
 
+
+// A drop's sentence is the server's, shown as it is: "Looked back: " before it, nothing taken out of it, so a sentence
+// that starts "Not kept, with the skill …" or "Not kept, the skill …" says "Not kept" once, as "Not kept: …" does.
+describe("lookedBack, a run that kept nothing for a reason", () => {
+  const SHAPES = [
+    "Not kept: It's about one shop's returns portal, not a rule other shops share.",
+    "Not kept, with the skill weekly-summary: it's about one shop's returns portal.",
+    "Not kept, the skill find-policies: it named a value the server keeps secret.",
+  ];
+  for (const detail of SHAPES) {
+    it(`says the server's sentence as it is: ${detail.slice(0, 40)}…`, () => {
+      const said = lookedBack({ state: "dropped", reason: "grader", detail });
+      expect(said).toBe(`Looked back: ${detail}`);
+      expect(said.match(/Not kept/g)).toHaveLength(1);
+    });
+  }
+});

@@ -1,13 +1,14 @@
-import { BookOpen, Hourglass, Sparkles, Workflow, Wrench } from "lucide-react";
+import { BookOpen, CircleSlash, Hourglass, Sparkles, Workflow, Wrench } from "lucide-react";
 import { Chip } from "@/components/ui/chip";
 import { Tip } from "@/components/ui/tip";
-import { counted, goingWords, learnedBy, type LearnedFileRef, learningHash, type NoteRef, notes, pendingBy, REDACTED, skillsBy, underWay, usedBy, waitsForOk, waitWords, workflowsBy } from "@/lib/learning";
+import { counted, dropKind, dropWords, goingWords, learnedBy, type LearnedFileRef, learningHash, type NoteRef, notes, pendingBy, REDACTED, skillsBy, underWay, usedBy, waitsForOk, waitWords, workflowsBy } from "@/lib/learning";
 import { cn } from "@/lib/utils";
 import type { Run } from "@/lib/v2";
 
 /** A run's learning at a glance: "Used 1 note" for the notes it read before it worked, "Learned 1 note" for the notes it
  *  kept, "Learned 1 skill" and "Learned 1 workflow" for the skill and the workflow it kept (one that waits for the
- *  owner's OK says so instead), and "Looking back" while it decides what to keep. Nothing for a run that does not learn, read nothing and kept
+ *  owner's OK says so instead), "Kept nothing" with why when its learning was turned away, refused, skipped or stopped, and
+ *  "Looking back" while it decides what to keep. Nothing for a run that does not learn, read nothing and kept
  *  nothing. `link` (the run's own page): each chip opens its notes in the agent's Learning tab, and names them in a
  *  tooltip on hover and on focus. A chip inside a row that is itself a link stays text and names them in its title. The
  *  names are never only in a tooltip: the chip's label says them, and the link opens them. A name the server cut of a
@@ -19,12 +20,16 @@ export function LearningChips({ run, link = false, className }: { run: Pick<Run,
   const waiting = pendingBy(run.learning);
   const waits = waitsForOk(run.learning);
   const kept = [...skillsBy(run.learning), ...workflowsBy(run.learning)];
-  if (!used.length && !learned.length && !going && !waits && !kept.length) return null;
+  // Kept nothing for a reason (turned away, refused, skipped, stopped): said, with the server's sentence. A run with
+  // nothing new to remember says nothing.
+  const lost = run.learning?.state === "dropped" && dropKind(run.learning.reason) !== "nothing" ? dropWords(run.learning) : null;
+  if (!used.length && !learned.length && !going && !waits && !kept.length && !lost) return null;
   return (
     <span className={cn("inline-flex flex-wrap items-center gap-2", className)} aria-label="Learning">
       {used.length > 0 && <NotesChip agentId={run.agent_id} refs={used} link={link} kind="used" />}
       {learned.length > 0 && <NotesChip agentId={run.agent_id} refs={learned} link={link} kind="learned" replaces={learned.reduce((n, l) => n + (l.supersedes?.length ?? 0), 0)} />}
       {waits && <NotesChip agentId={run.agent_id} refs={waiting} link={link} kind="pending" />}
+      {lost && <KeptNothing agentId={run.agent_id} said={lost} link={link} />}
       {(["skill", "workflow"] as const).flatMap((kind) => {
         const mine = (kind === "skill" ? skillsBy : workflowsBy)(run.learning);
         return [false, true].map((pending) => {
@@ -38,6 +43,19 @@ export function LearningChips({ run, link = false, className }: { run: Pick<Run,
           {goingWords(run.learning!.state)}
         </Chip>
       )}
+    </span>
+  );
+}
+
+/** "Kept nothing", and why in the server's own sentence (dropWords: its `detail`). `link` (the run's page): the chip opens
+ *  the agent's Learning tab, and the sentence shows beside it; in a row, which is itself a link, it is the chip's title. */
+function KeptNothing({ agentId, said, link }: { agentId: string; said: string; link: boolean }) {
+  const chip = <Chip tone="muted" className={cn(link && "cursor-pointer")}><CircleSlash className="size-3" aria-hidden />Kept nothing</Chip>;
+  if (!link) return <span title={`Kept nothing: ${said}`} aria-label={`Kept nothing: ${said}`} className="inline-flex">{chip}</span>;
+  return (
+    <span className="inline-flex flex-wrap items-center gap-2">
+      <a href={learningHash(agentId)} aria-label={`Kept nothing: ${said}`} className="inline-flex">{chip}</a>
+      <span className="text-[12px] text-muted-foreground">{said}</span>
     </span>
   );
 }
