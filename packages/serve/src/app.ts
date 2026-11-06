@@ -131,7 +131,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   const meta = await readJson(join(where.root, RUN_META));
   const place = storedPlace(meta?.place);
   const root = dataOfRun(where.root);
-  // A remote box (Daytona) is the server's to make and mount, reached through its relay; Docker's is made here.
+  // A remote box (place.ts REMOTE_BOXES) is the server's to make and mount, reached through its relay; Docker's is made here.
   // Its box carries the epoch of the claim this process was launched under (runs.ts launch): a box of an earlier one is
   // an earlier process's, destroyed before this one makes its own (run-box.ts fenceRunBoxes).
   const epoch = Number(process.env[RUN_EPOCH_ENV] ?? "0");

@@ -104,7 +104,7 @@ const POLL_SCRIPT = [
 
 const WRITE_INPUT_SCRIPT = 'printf %s "$2" | base64 -d > "$1/in/tmp" && mv "$1/in/tmp" "$1/in/$3"';
 const CLOSE_INPUT_SCRIPT = ': > "$1/in/END"';
-// After the directory and whether to kill, the words the kill runs under (DaytonaBoxesOptions.killAs), if any.
+// After the directory and whether to kill, the words the kill runs under (BoxExecOptions.killAs), if any.
 const CLEANUP_SCRIPT =
 	'd=$1; m=$2; shift 2; p=$(cat "$d/pid" 2>/dev/null); if [ "$m" = kill ] && [ -n "$p" ]; then "$@" kill -9 -- "-$p" 2>/dev/null || "$@" kill -9 "$p" 2>/dev/null; fi; rm -rf -- "$d"';
 // The workspace, made by the sandbox's user, or through `sudo -n` when it lies where that user may not write (a path
@@ -113,6 +113,14 @@ const MKDIR_SCRIPT = [
 	'mkdir -p -- "$1" 2>/dev/null && [ -w "$1" ] && exit 0',
 	'command -v sudo >/dev/null 2>&1 || { echo "$1 is not writable by $(id -un), and the box has no sudo"; exit 1; }',
 	'sudo -n mkdir -p -- "$1" && sudo -n chown "$(id -u):$(id -g)" -- "$1" && [ -w "$1" ]',
+].join("\n");
+// Whether root in the box can open /dev/fuse (a FUSE mount there is root's): the sandbox's user opens it, or root does
+// through `sudo -n`. Anything else, the device missing included, exits 1 saying what it lacks, and the create fails.
+const FUSE_SCRIPT = [
+	'[ -c /dev/fuse ] || { echo "/dev/fuse is not a character device in the box"; exit 1; }',
+	"sh -c 'exec 3<>/dev/fuse' 2>/dev/null && exit 0",
+	"command -v sudo >/dev/null 2>&1 && sudo -n sh -c 'exec 3<>/dev/fuse' 2>/dev/null && exit 0",
+	'echo "/dev/fuse is in the box, but neither its user nor root through sudo -n can open it"; exit 1',
 ].join("\n");
 
 export type DaytonaBoxesOptions = {
@@ -144,11 +152,6 @@ export type DaytonaBoxesOptions = {
 	readonly namePrefix?: string;
 	/** Directory in the box where running programs keep their input and output files. Default `/tmp/pi-transport`. */
 	readonly spoolDir?: string;
-	/**
-	 * The words a timed-out or aborted program's kill runs under, for programs started as another user (such as
-	 * `["sudo", "-n", "-u", "<user>", "--"]`), whom only that user may signal. Default none: the box's own user kills.
-	 */
-	readonly killAs?: readonly string[];
 	/** Poll period for a running program's output. Default 150 ms. */
 	readonly execPollMs?: number;
 };
@@ -542,8 +545,9 @@ function startProcess(
 	options: BoxExecOptions | undefined,
 	pollMs: number,
 	context: Context,
-	killAs: readonly string[] = [],
 ): BoxProcess {
+	// A program started as another user is killed as that user (BoxExecOptions.killAs): only it may signal the program.
+	const killAs = options?.killAs ?? [];
 	const stdout = new Pipe();
 	const stderr = new Pipe();
 	let settled = false;
@@ -683,12 +687,13 @@ class DaytonaBox implements Box {
 	readonly #options: DaytonaBoxesOptions;
 	readonly #facts: BoxFacts;
 
-	constructor(rest: Rest, options: DaytonaBoxesOptions, info: SandboxInfo) {
+	/** `fuse`: the create checked that root in the box can open /dev/fuse. A box found later reads it as unknown. */
+	constructor(rest: Rest, options: DaytonaBoxesOptions, info: SandboxInfo, fuse = false) {
 		this.id = info.id;
 		this.info = info;
 		this.#rest = rest;
 		this.#options = options;
-		this.#facts = factsOf(info, options);
+		this.#facts = { ...factsOf(info, options), ...(fuse ? { fuse: true } : {}) };
 	}
 
 	facts(): BoxFacts {
@@ -714,7 +719,7 @@ class DaytonaBox implements Box {
 				new BoxError("spawn", `could not start the program: ${launched.value.result.trim().slice(0, 300)}`),
 			);
 		}
-		return ok(startProcess(this, this.#rest, dir, options, this.#options.execPollMs ?? EXEC_POLL_MS, context, this.#options.killAs));
+		return ok(startProcess(this, this.#rest, dir, options, this.#options.execPollMs ?? EXEC_POLL_MS, context));
 	}
 
 	async upload(files: readonly BoxFile[], context: Context): Promise<Result<void, BoxError>> {
@@ -871,8 +876,11 @@ async function waitListed(
  * block all outbound traffic (`networkBlockAll`) and is refused with `unsupported`, the sandbox deleted, when the sandbox
  * Daytona made does not report it blocked. An allowlist of domains asks Daytona for a domain list (`domainAllowList`,
  * which Daytona's egress proxy enforces, re-signing TLS with its own CA) and is refused the same way when the sandbox's
- * read does not carry that list (a tier that takes none); an allowlist with a CIDR, ports and capabilities are refused
- * with `unsupported`.
+ * read does not carry that list (a tier that takes none); an allowlist with a CIDR and ports are refused with
+ * `unsupported`. The `fuse` capability is checked in the running box (root opens `/dev/fuse`, itself or through
+ * `sudo -n`), and a box that lacks it is deleted and refused with `unsupported`; any other capability is refused. Its
+ * traits: egress `in-box` (Daytona holds no list of IPv4 ranges, and a domain list cannot carry a FUSE disk's traffic),
+ * and a network disk mounts only from the `snapshot` option, which names an image that ships the disk's client.
  * `region` is the Daytona target. A box that outlives `maxLifetimeMs` is ended by Daytona (`ttlMinutes`, rounded up to
  * whole minutes).
  */
@@ -886,6 +894,16 @@ export function daytonaBoxes(options: DaytonaBoxesOptions): BoxProvider {
 
 	return {
 		name: "daytona",
+		traits: {
+			...(options.snapshot === undefined
+				? {
+						diskMount:
+							"a Daytona box mounts a network disk only from a snapshot that ships its client, and none is named: name one in the `snapshot` option",
+					}
+				: {}),
+			egress: "in-box",
+			egressWords: "enforced by an in-box firewall",
+		},
 
 		async create(spec: BoxSpec, context: Context): Promise<Result<Box, BoxError>> {
 			if (!(spec.maxLifetimeMs > 0)) return err(new BoxError("invalid", "maxLifetimeMs must be positive"));
@@ -900,9 +918,15 @@ export function daytonaBoxes(options: DaytonaBoxesOptions): BoxProvider {
 				return err(new BoxError("unsupported", "a daytona box takes a list of domains, not a CIDR"));
 			}
 			const allow = network.kind === "allowlist" ? network.domains : [];
+			// `fuse` is checked in the box once it runs (FUSE_SCRIPT); any other capability is refused.
+			const { capabilities = [], ...asked } = spec;
+			const wantsFuse = capabilities.includes("fuse");
 			const refused =
-				refuseNetworkFields(allow.length > 0 ? { ...spec, network: "open" } : spec, "daytona", true) ??
-				refuseMounts(spec, "daytona");
+				refuseNetworkFields(
+					{ ...asked, ...(allow.length > 0 ? { network: "open" as const } : {}), capabilities: capabilities.filter((c) => c !== "fuse") },
+					"daytona",
+					true,
+				) ?? refuseMounts(spec, "daytona");
 			if (refused !== undefined) return err(refused);
 			const reserved = Object.keys(spec.labels ?? {}).find(isReservedLabel);
 			if (reserved !== undefined) {
@@ -991,7 +1015,7 @@ export function daytonaBoxes(options: DaytonaBoxesOptions): BoxProvider {
 					),
 				);
 			}
-			const box = new DaytonaBox(rest, options, info);
+			const box = new DaytonaBox(rest, options, info, wantsFuse);
 			if (spec.isolation !== undefined && box.facts().isolation !== spec.isolation) {
 				return abandon(
 					new BoxError(
@@ -1006,6 +1030,15 @@ export function daytonaBoxes(options: DaytonaBoxesOptions): BoxProvider {
 				return abandon(
 					new BoxError("unknown", `could not create ${workspace}: ${made.value.result.trim().slice(0, 300)}`),
 				);
+			}
+			if (wantsFuse) {
+				const fuse = await rest.execute(info, shellCommand(FUSE_SCRIPT, []), CLEANUP_TIMEOUT_S, context);
+				if (!fuse.ok) return abandon(fuse.error);
+				if (fuse.value.exitCode !== 0) {
+					return abandon(
+						new BoxError("unsupported", `the box asked for fuse and lacks it: ${fuse.value.result.trim().slice(0, 300)}`),
+					);
+				}
 			}
 			const listed = await waitListed(rest, info.id, options, context);
 			if (!listed.ok) return abandon(listed.error);

@@ -11,6 +11,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
+import { modalBoxes } from "@parcha/pi-transport/box/modal";
 import { VM_PROVIDER } from "../dist/boxes.js";
 import { BOX_RELAY_FILE, startBoxRelay } from "../dist/box-relay.js";
 import * as relayVm from "../dist/box-relay-vm.js";
@@ -25,7 +26,10 @@ const VM = VM_PROVIDER.id;
 const PLACE = { mode: "sandbox", box: VM };
 const planted = (name) => `planted-${name}-sentinel`;
 const TOKENS = Object.fromEntries(VM_PROVIDER.keys.map((name, i) => [name, planted(`vm-token-${i}`)]));
-const NO_LIST = "remote boxes on an Archil disk: tools have no network yet; enforced by the provider's CIDR allowlist, which holds Archil's ranges alone";
+/** The VM box's provider's own answers (pi-transport's BoxTraits): how it holds a box's egress, and why its boxes mount
+ *  no network disk without an image named. */
+const TRAITS = modalBoxes({}, { appName: "words" }).traits;
+const NO_LIST = `remote boxes on an Archil disk: tools have no network yet; ${TRAITS.egressWords}`;
 const ENV_PROBE = "env; cat /proc/self/environ 2>/dev/null | tr '\\0' '\\n'";
 
 function answers(data, runId) {
@@ -231,6 +235,11 @@ test("AGENTRUN_BOX_ALLOW=none: the VM box's tools have no network, said the same
   assert.deepEqual(await vmOffer(api), { id: VM, available: true, state: "ready", reason: "configured; not probed at start", network: "none", network_reason: NO_LIST });
   const bare = await onVm(t, { env: { AGENTRUN_ARCHIL_ALLOW: "" } });
   assert.deepEqual(await vmOffer(bare.api), { id: VM, available: false, state: "unavailable", reason: "this box reaches Archil only through its provider's CIDR allowlist: set AGENTRUN_ARCHIL_ALLOW to Archil's IPv4 ranges" });
+});
+
+test("with Archil but no image that ships the helper, the VM box is unavailable in its provider's own words, with the setting that names one", { timeout: 60_000 }, async (t) => {
+  const { api } = await onVm(t, { env: { AGENTRUN_VM_IMAGE: "" } });
+  assert.deepEqual(await vmOffer(api), { id: VM, available: false, state: "unavailable", reason: `remote boxes need an image that has the archil client, the helper and the agentrun-tool user (see the README): ${TRAITS.diskMount} (AGENTRUN_VM_IMAGE on this server)` });
 });
 
 test("a missing token keeps the VM box unavailable with today's reason, and its client is never made", async (t) => {

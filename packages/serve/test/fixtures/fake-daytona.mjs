@@ -39,7 +39,9 @@ const BOX_PATH = /(^|[\s'"=:])(\/run\/agentrun|\/workspace|\/tmp\/pi-transport|\
  * made with or last set, and `autoStopInterval`: as Daytona does, a stop of one whose auto-delete is 0 deletes it.
  * `idle(id)` is Daytona's idle stop, `pause(id)` a pause; `/start` starts a stopped or paused sandbox, and a toolbox call
  * to one that is not started is refused. `archil` (fake-archil.mjs): each sandbox has the Archil client, the root helper
- * and the sudo of a box image that ships them.
+ * and the sudo of a box image that ships them. `state.fuse` (default true): a box command's `/dev/fuse` is a character
+ * device every user opens (this machine's /dev/null), or, false, a path that is none: the box lacks FUSE. Never this
+ * machine's own device.
  */
 export async function daytonaSandboxes(t, { key, blocks = true, lists = true, refusesLists, hostileTar, failDeletes = 0, failListings = [], sudoProbe = false, archil } = {}) {
   const root = join(await scratch(t), "daytona");
@@ -53,7 +55,7 @@ export async function daytonaSandboxes(t, { key, blocks = true, lists = true, re
   });
   const sandboxes = new Map();
   const requests = [];
-  const state = { blocks, lists, refusesLists, failDeletes, listings: 0, redirect: undefined, hostile: Boolean(hostileTar) };
+  const state = { blocks, lists, refusesLists, failDeletes, listings: 0, redirect: undefined, hostile: Boolean(hostileTar), fuse: true };
   let base = "";
   let hostileBin;
   if (hostileTar) {
@@ -77,7 +79,7 @@ export async function daytonaSandboxes(t, { key, blocks = true, lists = true, re
       rmSync(boxDir(sandbox.id), { recursive: true, force: true });
     } else sandbox.state = "stopped";
   };
-  const inBox = (id, text) => text.replace(BOX_PATH, (_, before, path) => `${before}${boxDir(id)}${path}`);
+  const inBox = (id, text) => text.replace(BOX_PATH, (_, before, path) => `${before}${boxDir(id)}${path}`).replaceAll("/dev/fuse", state.fuse ? "/dev/null" : join(boxDir(id), "no-fuse"));
   const info = (sandbox, single = false) => ({
     id: sandbox.id, state: sandbox.state, labels: sandbox.labels, cpu: 1, memory: 1, disk: 3, sandboxClass: "container",
     // A sandbox's own read carries its network settings; a create's answer and a listing do not.

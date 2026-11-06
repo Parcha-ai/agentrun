@@ -8,6 +8,7 @@ import { mkdtemp } from "node:fs/promises";
 import { join, relative } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
+import { daytonaBoxes } from "@parcha/pi-transport/box/daytona";
 import { DISK, fakeArchil, HELPER_PATH, REGION, TOKEN, TOOL_USER } from "./fixtures/fake-archil.mjs";
 import { daytonaSandboxes } from "./fixtures/fake-daytona.mjs";
 import { follow, runDir, scratch, serve, withEnv } from "./support.mjs";
@@ -106,16 +107,19 @@ test("Archil set but the disk not mounted at the data directory: remote boxes ar
   assert.match(daytona.reason, /is not mounted at .*disk: mount it there with --conditional/);
 });
 
-test("with Archil but no image that ships the helper, a remote box is unavailable, saying which setting names one", async (t) => {
+/** Daytona's provider's own answers (pi-transport's BoxTraits), which capabilities carry: no call is made. */
+const TRAITS = daytonaBoxes({ apiKey: KEY }).traits;
+
+test("with Archil but no image that ships the helper, a remote box is unavailable in its provider's own words, with the setting that names one", async (t) => {
   const { server } = await onArchil(t, { env: { AGENTRUN_DAYTONA_SNAPSHOT: "" } });
   const daytona = (await server.api("GET", "/capabilities")).body.places.boxes.find((box) => box.id === "daytona");
-  assert.deepEqual(daytona, { id: "daytona", available: false, state: "unavailable", reason: "remote boxes need an image that ships the Archil helper: set AGENTRUN_DAYTONA_SNAPSHOT to a Daytona snapshot that has the archil client, the helper and the agentrun-tool user (see the README)" });
+  assert.deepEqual(daytona, { id: "daytona", available: false, state: "unavailable", reason: `remote boxes need an image that has the archil client, the helper and the agentrun-tool user (see the README): ${TRAITS.diskMount} (AGENTRUN_DAYTONA_SNAPSHOT on this server)` });
 });
 
 test("demo: a Daytona run mounts exactly its run's work/ through the helper; nothing is seeded, pulled or mirrored; its end syncs and checks the folder in, then destroys the box", { timeout: 180_000 }, async (t) => {
   const { server, fake, disk } = await onArchil(t);
   const { api, data } = server;
-  assert.deepEqual((await api("GET", "/capabilities")).body.places.boxes.find((b) => b.id === "daytona"), { id: "daytona", available: true, state: "ready", network: "none", network_reason: "remote boxes on an Archil disk: tools have no network yet; enforced by an in-box firewall" });
+  assert.deepEqual((await api("GET", "/capabilities")).body.places.boxes.find((b) => b.id === "daytona"), { id: "daytona", available: true, state: "ready", network: "none", network_reason: `remote boxes on an Archil disk: tools have no network yet; ${TRAITS.egressWords}` });
   await agent(api, "remote");
   const plan = [
     { tool: "bash", args: { command: "pwd; printf 'hello from the box\\n' > out.txt" } },
@@ -250,6 +254,20 @@ for (const [what, spoil, said] of [
     assert.equal(fake.sandboxes.size, 0, "the box is destroyed");
   });
 }
+
+test("a box whose provider cannot give FUSE keeps no run folder: the call is refused in its provider's words, nothing is mounted, and no box is left", { timeout: 180_000 }, async (t) => {
+  const { server, fake, disk } = await onArchil(t);
+  const { api, data } = server;
+  fake.state.fuse = false;
+  await agent(api, "remote");
+  const run = (await api("POST", "/agents/remote/runs", { input: { content: JSON.stringify({ probe: [{ tool: "bash", args: { command: "echo never" } }] }) } })).body;
+  await follow(api, run.run_id, ["completed"], { deadlineMs: 120_000 });
+  const [answer] = answers(data, run.run_id);
+  assert.equal(answer.error, true);
+  assert.match(answer.text, /the box asked for fuse and lacks it: \S+ is not a character device in the box/);
+  assert.deepEqual(disk.calls(), [], "archil was never run");
+  assert.equal(fake.sandboxes.size, 0, "the box is deleted");
+});
 
 test("two users: every tool command runs as the tool user, which has no sudo, and the helper is the only root the box's own user runs", { timeout: 180_000 }, async (t) => {
   const { server, fake } = await onArchil(t, { daytona: { sudoProbe: true } });

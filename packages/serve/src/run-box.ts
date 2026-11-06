@@ -9,14 +9,13 @@
 // and limits on its CPUs, memory and processes. pi-transport is an optional peer of this package: it is loaded only for a
 // run whose place is a box.
 //
-// Docker's box is made here, in the run's process, as this server's user, with work/ bound. A Daytona box is remote: it
-// cannot bind work/, and its key is the server's alone. The server makes it (through the box relay, box-relay.ts), and
-// the box mounts the run's work/ from the owner's Archil disk at /workspace (disk.ts archilDisk): nothing is copied in
-// or out. At each turn's end the server has the box sync it; at the run's end, sync and check it in, and then destroys
-// the box. The run's process reaches it through the relay, which holds the key, and what its own host tools file in
-// work/ goes in through the box (writeInWork), which holds the folder. The VM box is remote the same way: the server
-// makes, mounts and ends it with its own client, and the run's process runs pi-transport's VM provider over the relay's
-// VM half (box-relay-vm.ts), which holds the client and the token. It has no network.
+// Docker's box is made here, in the run's process, as this server's user, with work/ bound. A box on another machine
+// (place.ts REMOTE_BOXES) cannot bind work/, and its provider's key or client is the server's alone. The server makes
+// it, and the box mounts the run's work/ from the owner's Archil disk at /workspace (disk.ts archilDisk): nothing is
+// copied in or out. At each turn's end the server has the box sync it; at the run's end, sync and check it in, and
+// then destroys the box. The run's process reaches it through the box relay (box-relay.ts, and its other half
+// box-relay-vm.ts), which holds the key or the client, and what its own host tools file in work/ goes in through the
+// box (writeInWork), which holds the folder. Its tools have no network yet.
 import { createHash } from "node:crypto";
 import { lstat, realpath } from "node:fs/promises";
 import { isAbsolute, join, posix, relative, sep } from "node:path";
@@ -30,7 +29,7 @@ import { runBoxVolumeOf, vmDocker, vmEgress } from "./box-egress-vm.js";
 import { awaitImage, boxImageOf } from "./box-image.js";
 import { egressParentOf, runBoxPathsOf } from "./box-paths.js";
 import { RELAYED_KEY, relayedBox, relayFetch } from "./box-relay.js";
-import { AS_TOOL, asToolUser } from "./tool-user.js";
+import { asToolUser } from "./tool-user.js";
 import { FolderHeld } from "./archil.js";
 import { VM_PROVIDER } from "./boxes.js";
 import type { DiskAdapter } from "./disk.js";
@@ -424,8 +423,7 @@ async function relayedRunBox(root: string, run: { id: string; dir: string; place
 async function relayedDaytona(root: string, runDir: string, runId: string, apiUrl: string | undefined): Promise<BoxProvider> {
   if (!apiUrl) throw new Error("the server gave the run's Daytona box no API address");
   const { daytonaBoxes } = await import("@parcha/pi-transport/box/daytona");
-  // A program a tool started runs as the tool user, whom only that user may signal: a timed-out one is killed as it.
-  return daytonaBoxes({ apiKey: RELAYED_KEY, apiUrl, fetch: relayFetch(root, runDir, runId), killAs: AS_TOOL });
+  return daytonaBoxes({ apiKey: RELAYED_KEY, apiUrl, fetch: relayFetch(root, runDir, runId) });
 }
 
 /** The run's process's VM provider: pi-transport's, over the relay's client (box-relay-vm.ts). It only attaches. */
@@ -443,14 +441,13 @@ export const memoryMbOf = (memory: string): number => {
   return size ? Math.floor((Number(size[1]) * SIZE_UNITS[size[2]!.toLowerCase()]!) / MIB) : 0;
 };
 
-/** The spec of a run's remote box: its work/ is the run's folder on the Archil disk, which the box mounts (FUSE, so the
- *  VM box asks for the VM runtime: gVisor cannot mount it); its network the hosts `allow` names, or none; its limits,
- *  where its provider takes them. */
-const remoteSpec = (runId: string, allow: readonly string[] | "none" | "open", limits: RemoteLimits = {}, vm = false, from: { image?: string; snapshot?: string } = {}): BoxSpec => ({
-  ...(from.image ? { image: from.image } : {}), ...(from.snapshot ? { snapshot: from.snapshot } : {}),
+/** The spec of a run's remote box: its work/ is the run's folder on the Archil disk, which the box mounts (FUSE: each
+ *  provider gives it its own way, or refuses); its network the hosts `allow` names, none, or open for a box that locks
+ *  its own; its limits, where its provider takes them. What it starts from is its provider's own option. */
+const remoteSpec = (runId: string, allow: readonly string[] | "none" | "open", limits: RemoteLimits = {}): BoxSpec => ({
   env: BOX_ENV, workspace: BOX_WORK, labels: { [RUN_LABEL]: runId, [KIND_LABEL]: "run" }, network: allow === "none" || allow === "open" ? allow : { allow }, maxLifetimeMs: BOX_LIFETIME_MS,
   ...(limits.cpus === undefined ? {} : { cpus: limits.cpus }), ...(limits.memoryMb ? { memoryMb: limits.memoryMb } : {}),
-  ...(vm ? { isolation: "vm" as const, capabilities: ["fuse" as const] } : {}),
+  capabilities: ["fuse"],
 });
 
 /** Whether a box's hosts, as its provider reads them (undefined: it does not say), are the hosts asked, as a set. */
@@ -469,23 +466,16 @@ const NO_LIST: ReadonlySet<string> = new Set(["unsupported", "invalid", "unautho
 /** A remote run's folder on the disk: the adapter that mounts it (disk.ts archilDisk), its disk and its path below it. */
 export type RemoteFolder = { readonly adapter: DiskAdapter; readonly disk: string; readonly subpath: string };
 
-/** What ensureRemoteBox takes beyond the run: the run's folder, the wake of a box Daytona stopped, the hosts the box may
- *  reach (`none` for none), who hears a refused list, the box's limits where its provider takes them (remoteSpec), and
- *  whether it is the VM box. */
+/** What ensureRemoteBox takes beyond the run: the run's folder, the wake of a box its provider stopped, the hosts the
+ *  box may reach (`none` for none), who hears a refused list, and the box's limits where its provider takes them
+ *  (remoteSpec). A provider whose egress is held in the box (BoxTraits `in-box`) gets an open box, which locks its tools'
+ *  network itself before the mount (the helper's netlock), root reaching Archil alone. */
 export type RemoteBoxOptions = {
   folder: RemoteFolder;
   wake?: () => Promise<number>;
   allow?: readonly string[] | "none";
   onNoList?: (code: string, message: string) => void;
   limits?: RemoteLimits;
-  vm?: boolean;
-  /** The provider leaves the box's network open, and the box locks its tools' out itself (the helper's netlock), root
-   *  reaching Archil alone: Daytona's. */
-  locked?: boolean;
-  /** What the box starts from, which ships the archil client, the helper and the tool user: the VM box's registry image,
-   *  or Daytona's snapshot. */
-  image?: string;
-  snapshot?: string;
 };
 
 /** The server's side of a remote box: run `run`'s box, found by its label or made, with the run's folder mounted at
@@ -498,17 +488,18 @@ export type RemoteBoxOptions = {
  *  and the call fails. The folder another client holds is taken back (the adapter's revoke, then the mount again) only
  *  when no other box of the run lives: a box of it that is gone left its hold. A made box whose mount fails is destroyed. */
 export async function ensureRemoteBox(boxes: BoxProvider, run: { id: string; dir: string }, context: Context, options: RemoteBoxOptions): Promise<{ id: string; made: boolean; replaced?: boolean }> {
-  const { folder, wake, onNoList, limits, vm = false, locked = false } = options;
+  const { folder, wake, onNoList, limits } = options;
+  const locked = boxes.traits?.egress === "in-box";
   const allow: readonly string[] | "none" | "open" = locked ? "open" : (options.allow ?? "none");
-  const from = { ...(options.image ? { image: options.image } : {}), ...(options.snapshot ? { snapshot: options.snapshot } : {}) };
   let asked: "none" | "allowlist" | "open" = allow === "none" || allow === "open" ? allow : "allowlist";
   let box = await runningRunBox(boxes, run.id, context, wake);
   let made = false;
   let replaced = false;
   const facts = box?.facts();
-  // A locked box is kept unless its provider blocks it (it could not reach Archil); the VM box's list is its provider's,
-  // fixed at its create and not read back, so one made with a list is kept.
-  const keep = facts?.workspace === BOX_WORK && (locked ? facts?.network !== "none" && facts?.network !== "allowlist" : facts?.network === "none" || (facts?.network === "allowlist" && Array.isArray(allow) && (vm || sameHosts(facts.allow, allow))));
+  // A locked box is kept unless its provider blocks it (it could not reach Archil). A list held by a provider that does
+  // not read it back (its facts name no hosts) is the one it was made with, fixed at its create, so it is kept.
+  const unread = facts?.allow === undefined && boxes.traits?.egress === "allowlist";
+  const keep = facts?.workspace === BOX_WORK && (locked ? facts?.network !== "none" && facts?.network !== "allowlist" : facts?.network === "none" || (facts?.network === "allowlist" && Array.isArray(allow) && (unread || sameHosts(facts.allow, allow))));
   if (box && !keep) {
     // Its writes first, and the folder let go: a box replaced here takes nothing of the run's with it. One that cannot
     // let go is kept, and the call refused, so no tool runs in it.
@@ -522,12 +513,12 @@ export async function ensureRemoteBox(boxes: BoxProvider, run: { id: string; dir
     replaced = true;
   }
   if (!box) {
-    let created = await boxes.create(remoteSpec(run.id, allow, limits, vm, from), context);
+    let created = await boxes.create(remoteSpec(run.id, allow, limits), context);
     if (!created.ok && asked === "allowlist" && NO_LIST.has(created.error.code)) {
       asked = "none";
       onNoList?.(created.error.code, created.error.message);
       await destroyRunBoxes(boxes, run.id, context).catch(() => undefined);
-      created = await boxes.create(remoteSpec(run.id, "none", limits, vm, from), context);
+      created = await boxes.create(remoteSpec(run.id, "none", limits), context);
     }
     if (!created.ok) {
       await destroyRunBoxes(boxes, run.id, context).catch(() => undefined);

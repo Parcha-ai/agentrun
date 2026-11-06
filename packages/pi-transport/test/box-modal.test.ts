@@ -565,6 +565,14 @@ describe("modal boxes", () => {
 		});
 	});
 
+	it("answers its traits: egress held by the provider's CIDR allowlist, and a network disk only from a named image", () => {
+		const bare = modalBoxes(new FakeModal(), { appName: "a" });
+		expect(bare.traits?.egress).toBe("allowlist");
+		expect(bare.traits?.egressWords).toBe("enforced by the provider's CIDR allowlist");
+		expect(bare.traits?.diskMount).toMatch(/only from an image that ships its client.*the `image` option/);
+		expect(modalBoxes(new FakeModal(), { appName: "a", image: "registry.example/with-disk-client:1" }).traits?.diskMount).toBeUndefined();
+	});
+
 	it("refuses a GPU on a vm, other isolations, a snapshot and a lifetime of zero, without calling Modal", async () => {
 		const sdk = new FakeModal();
 		const provider = modalBoxes(sdk, { appName: "a" });

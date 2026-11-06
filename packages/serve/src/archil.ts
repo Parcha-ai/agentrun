@@ -1,4 +1,4 @@
-// The owner's Archil disk, for the boxes on another machine (Daytona, the Modal sandbox). They cannot bind this machine's
+// The owner's Archil disk, for the boxes on another machine (place.ts REMOTE_BOXES). They cannot bind this machine's
 // folders, and nothing is copied in or out, so each keeps its run's work folder on the disk: the server reads and writes
 // the disk through its own mount of it at <data>/disk (the operator's, with --conditional, so every client may write
 // where no other holds a folder), and a box mounts exactly its run's work/ at /workspace, exclusively, through the root
@@ -6,9 +6,9 @@
 // mount table, and asks the box's own user to run the helper through sudo.
 //
 // The disk token is the server's (a secret, like the boxes' keys: no run's process is handed it). It goes into a box
-// only on the helper's fd 0: on a box that takes a program's stdin as a real descriptor (the Modal sandbox), on the
-// stdin of the helper's exec; on Daytona, whose stdin is sent as the arguments of commands, as a file in a new 0700
-// folder of the box's own user, opened as fd 0 and unlinked with its folder before the helper starts. The run's tools
+// only on the helper's fd 0: on a box that takes a program's stdin as a real descriptor (its facts' secretsVia `fd`), on
+// the stdin of the helper's exec; on any other, whose stdin may travel as the arguments of commands, as a file in a new
+// 0700 folder of the box's own user, opened as fd 0 and unlinked with its folder before the helper starts. The run's tools
 // run as another user, which has no sudo and no way into that folder (tool-user.ts).
 import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -29,13 +29,10 @@ export const ARCHIL_KEYS: readonly string[] = [ARCHIL_TOKEN_ENV];
 /** Why a box on another machine is unavailable when the disk is not configured: what to do, in capabilities, at a save
  *  and at a run. */
 export const NO_ARCHIL = `remote boxes keep their run folder on an Archil disk: configure ${ARCHIL_DISK_ENV}, ${ARCHIL_REGION_ENV} and ${ARCHIL_TOKEN_ENV}, or use the docker box`;
-/** The settings naming what a remote box starts from, which ships the archil client, the helper and the tool user:
- *  Daytona's snapshot, and the VM box's registry image. */
-export const DAYTONA_SNAPSHOT_ENV = "AGENTRUN_DAYTONA_SNAPSHOT";
-export const VM_IMAGE_ENV = "AGENTRUN_VM_IMAGE";
-/** Why a remote box is unavailable with Archil but no image that ships the helper: the setting to name one. */
-export const noImage = (setting: string, what: string): string =>
-  `remote boxes need an image that ships the Archil helper: set ${setting} to ${what} that has the archil client, the helper and the agentrun-tool user (see the README)`;
+/** Why a remote box is unavailable with Archil but no image that ships the helper: its provider's words (`why`), with
+ *  the setting that names one. */
+export const noDiskImage = (why: string): string =>
+  `remote boxes need an image that has the archil client, the helper and the agentrun-tool user (see the README): ${why}`;
 /** Where a box's image has the root helper, and the user its tools run as. */
 export const HELPER_PATH = "/usr/local/sbin/agentrun-archil";
 /** What Archil answers a mount of a folder another client holds. */
@@ -43,11 +40,14 @@ const HELD = "has an outstanding delegation";
 /** Why a box whose /proc does not hide each user's processes keeps no run folder (the helper's exit 4). */
 export const NO_HIDEPID = "the box's /proc is not mounted with hidepid=2 (or invisible), so its tools could see the root archil client's processes: use an image or snapshot that mounts it so (see the README); this box keeps no run folder";
 /** Why a box whose firewall could not be locked keeps no run folder (the helper's netlock, exit 4). */
-export const NO_NETLOCK = "the box could not lock its tools' network: a Daytona box's snapshot needs iptables, ip6tables and root with CAP_NET_ADMIN, and its rules must read back whole (see the README); this box keeps no run folder";
+export const NO_NETLOCK = "the box could not lock its tools' network: its image needs iptables, ip6tables and root with CAP_NET_ADMIN, and its rules must read back whole (see the README); this box keeps no run folder";
 /** What capabilities say of a remote box's network, with how it is held. */
 export const TOOLS_NO_NETWORK = "remote boxes on an Archil disk: tools have no network yet";
-/** The setting naming Archil's IPv4 ranges, the only ones the VM box's provider lets it reach. */
+/** The setting naming Archil's IPv4 ranges: the whole network of a box whose provider holds its egress list itself
+ *  (BoxTraits egress `allowlist`). */
 export const ARCHIL_ALLOW_ENV = "AGENTRUN_ARCHIL_ALLOW";
+/** Why such a box is unavailable with Archil but no ranges for it. */
+export const NO_ARCHIL_ALLOW = `this box reaches Archil only through its provider's CIDR allowlist: set ${ARCHIL_ALLOW_ENV} to Archil's IPv4 ranges`;
 const CIDR = /^(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)\/(?:3[0-2]|[12]?\d)$/;
 /** Archil's IPv4 ranges from `env` (a comma list of CIDRs), undefined when unset, or why the value is not one. */
 export function archilAllowOf(env: NodeJS.ProcessEnv): readonly string[] | undefined | { reason: string } {

@@ -9,7 +9,7 @@
 // the bump. A Docker box binds the folder (run-box.ts boxMounts). The Archil one is for a box on another machine
 // (archil.ts): the server's own mount of the owner's disk is <data>/disk, and a box mounts exactly its run's work/ at
 // /workspace, exclusively, through its root helper; a sync is the helper's, an unmount is a sync and then a checkin (a
-// Daytona box cannot unmount), and a revoke takes the folder back from a box that is gone: the next mount of it forces
+// box may have no unmount), and a revoke takes the folder back from a box that is gone: the next mount of it forces
 // the box's hold off.
 import { constants } from "node:fs";
 import { chmod, chown, lstat, open, readdir, realpath } from "node:fs/promises";
@@ -119,7 +119,7 @@ export function archilDisk(data: string, archil: Archil, claims: Pick<Claims, "r
       await helper(box, archil, "sync", context);
     },
     async unmount(mounted) {
-      // Daytona cannot unmount: the writes go first, then the folder is checked in, and the box is destroyed after.
+      // A box may have no unmount: the writes go first, then the folder is checked in, and the box is destroyed after.
       const { box, context } = boxed(mounted);
       await helper(box, archil, "sync", context);
       await helper(box, archil, "checkin", context);

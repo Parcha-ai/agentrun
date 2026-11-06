@@ -34,7 +34,7 @@ import { gradeModelOf, learningBudgetOf, type LearningMode, learningOf } from ".
 import { agentLearning, learningLog, learningNotes, noteBody, pendingCount, readNote, runDiff, runLearning, secretsShown, sendNote, writeNote } from "./learning-routes.js";
 import { answerLlms, MCP_PATH, mcpEndpoint } from "./mcp.js";
 import { openapiDocument, servedOpenapi, UNSUPPORTED } from "./openapi.js";
-import { boxesLine, defaultPlaceOf, NEW_AGENT_TOOLS, newAgentPlace, noBoxReason, type Place, placesOf, resolvePlace } from "./place.js";
+import { boxesLine, defaultPlaceOf, NEW_AGENT_TOOLS, newAgentPlace, noBoxReason, type Place, placesOf, REMOTE_BOXES, resolvePlace } from "./place.js";
 import { BOX_ALLOW_ENV, boxAllowOf, boxLimitsOf, boxNetworkOf, FAUX_BOX_ENV, fauxBoxes } from "./run-box.js";
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
 import { answerPage, byOwnerSession, isJson, ownerCookie, ownOrigin, sendHostRefused, signedIn } from "./page.js";
@@ -44,10 +44,7 @@ import { type CarryBackRetry, knownToolCostOf, type Run, Runs, STATUSES, type St
 import { runLines } from "./usage-lines.js";
 import { BOX_QUARANTINE, type BoxHost, Quarantine } from "./box/sweep.js";
 import { type BoxOffer, boxesByDefault, boxesLog, boxRegistry, daytonaApi, enabledBoxes, VM_PROVIDER } from "./boxes.js";
-import { ARCHIL_ALLOW_ENV, archilAllowOf, archilOf, DAYTONA_SNAPSHOT_ENV, noImage, TOOLS_NO_NETWORK, VM_IMAGE_ENV } from "./archil.js";
-
-/** Why the VM box is unavailable with Archil but no ranges for it: its provider lets it reach those alone. */
-const NO_ARCHIL_ALLOW = `this box reaches Archil only through its provider's CIDR allowlist: set ${ARCHIL_ALLOW_ENV} to Archil's IPv4 ranges`;
+import { archilAllowOf, archilOf, NO_ARCHIL_ALLOW, noDiskImage, TOOLS_NO_NETWORK } from "./archil.js";
 import { type DockerNetwork, egressParentTooLong, FAUX_EGRESS_ENV, MAX_EGRESS_PARENT, sweepEgressDirs } from "./box-egress.js";
 import { type EgressContainer, startEgressContainer } from "./box-egress-vm.js";
 import { type DockerPaths, dockerPathsOf, egressParentOf, FAUX_MOUNTINFO_ENV } from "./box-paths.js";
@@ -794,18 +791,19 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const archilState = await archilOf(env, data, options.faux && options.archilMounts ? { mounts: options.archilMounts } : {});
   const archil = "archil" in archilState ? archilState.archil : undefined;
   const noArchil = "reason" in archilState ? archilState.reason : undefined;
-  // What each remote box starts from, which ships the archil client, the helper and the tool user: none, it is
-  // unavailable, saying which setting names one.
+  // Each remote box's provider answers whether its boxes can mount the disk (from the image or snapshot its registry
+  // line names) and how it holds a box's egress (pi-transport's BoxTraits), in its own words: a box whose provider
+  // holds a list needs Archil's ranges for it.
   const archilAllow = archilAllowOf(env);
-  const remoteImages = { daytona: env[DAYTONA_SNAPSHOT_ENV]?.trim() || undefined, vm: env[VM_IMAGE_ENV]?.trim() || undefined };
   const remoteOffer = (offer: BoxOffer): BoxOffer => {
     if (!offer.available) return offer;
     if (noArchil) return { id: offer.id, available: false, reason: noArchil };
-    if (offer.id === "daytona" && !remoteImages.daytona) return { id: offer.id, available: false, reason: noImage(DAYTONA_SNAPSHOT_ENV, "a Daytona snapshot") };
-    if (offer.id === VM_PROVIDER.id && !remoteImages.vm) return { id: offer.id, available: false, reason: noImage(VM_IMAGE_ENV, "a registry image") };
-    if (offer.id === VM_PROVIDER.id && !Array.isArray(archilAllow)) return { id: offer.id, available: false, reason: archilAllow && "reason" in archilAllow ? archilAllow.reason : NO_ARCHIL_ALLOW };
+    const noMount = boxes.diskMount(offer.id);
+    if (noMount) return { id: offer.id, available: false, reason: noDiskImage(noMount) };
+    const traits = boxes.provider(offer.id)!.traits!;
+    if (traits.egress === "allowlist" && !Array.isArray(archilAllow)) return { id: offer.id, available: false, reason: archilAllow && "reason" in archilAllow ? archilAllow.reason : NO_ARCHIL_ALLOW };
     // The tools have no network yet, and capabilities say how that is held.
-    return { ...offer, network: "none", network_reason: `${TOOLS_NO_NETWORK}; ${offer.id === "daytona" ? "enforced by an in-box firewall" : "enforced by the provider's CIDR allowlist, which holds Archil's ranges alone"}` };
+    return { ...offer, network: "none", network_reason: `${TOOLS_NO_NETWORK}; ${traits.egressWords}` };
   };
   const fauxBox = options.faux && options.fauxBox ? await fauxBoxes(resolve(options.fauxBox), data) : undefined;
   // The Docker box's image, asked of Docker now and pulled in the background when Docker has none (box-image.ts): docker
@@ -843,7 +841,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     return proxy && proxy.state !== "ready" ? { ...offer, network: "none", network_reason: proxy.reason } : { ...offer, network: "allowlist" };
   };
   // A remote box's tools have no network yet (remoteOffer above): no domain list is asked of a provider.
-  const offersNow = (): BoxOffer[] => boxes.offers().map((offer) => (fauxBox && offer.id === "docker" ? dockerNetwork({ id: "docker", available: true, reason: "a faux box (tests)" }) : offer.id === "docker" ? dockerNetwork(image ? withImage(offer, image.state()) : offer) : offer.id === "daytona" || offer.id === VM_PROVIDER.id ? remoteOffer(offer) : offer));
+  const offersNow = (): BoxOffer[] => boxes.offers().map((offer) => (fauxBox && offer.id === "docker" ? dockerNetwork({ id: "docker", available: true, reason: "a faux box (tests)" }) : offer.id === "docker" ? dockerNetwork(image ? withImage(offer, image.state()) : offer) : REMOTE_BOXES.includes(offer.id) ? remoteOffer(offer) : offer));
   const imageLog = (state: ImageState, more: Record<string, number> = {}) => log?.(logLine("box_image", { image: image!.image, state: state.state, ...more, ...("reason" in state ? { reason: state.reason } : {}) }));
   let boxOffers: BoxOffer[] = offersNow();
   const boxImage = !fauxBox && boxes.provider("docker") ? boxImageOf(env) : undefined;
@@ -918,7 +916,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     log?.(logLine("claude_installed", { ms, dir: harnessesOf(data) }));
     void probe("claude_installed").catch(() => undefined);
   });
-  const runs = new Runs({ ...(claudeInstall ? { claudeInstall } : {}), dockerAllow: boxNetwork.allow, ...(egress?.volume ? { dockerVolume: egress.volume } : {}), ...(boxPaths ? { dockerPaths: boxPaths } : {}), agents, token, storedKeys, mcpServers: mcpSource, doorTokenFile, doorToken, learning, learningBudget, ...(documents ? { documents: resolve(documents) } : {}), fauxEnv: fauxEnvOf(options), toolSettings: () => settings.get(), ...(runBoxes ? { runBoxes } : {}), ...(remoteBoxes ? { remoteBoxes } : {}), ...(archil ? { archil, remoteImages, ...(Array.isArray(archilAllow) ? { archilAllow } : {}) } : {}), ...(vmBoxes && vmRelayHalf ? { vmBoxes, vmLimits, vmRelay: vmRelayHalf } : {}), ...(remoteBoxes && daytonaApi(env) ? { remoteApi: daytonaApi(env)! } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(options.reflectTimeoutMs ? { reflectTimeoutMs: options.reflectTimeoutMs } : {}), ...(options.gradeTimeoutMs ? { gradeTimeoutMs: options.gradeTimeoutMs } : {}), ...(options.gradeModel ? { gradeModel: options.gradeModel } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}), notify: (event, run, marker) => webhooks.emit(event, run, marker), ownSecrets: () => triggerSecrets?.values() ?? [], signIns, approvers: options.accounts === true });
+  const runs = new Runs({ ...(claudeInstall ? { claudeInstall } : {}), dockerAllow: boxNetwork.allow, ...(egress?.volume ? { dockerVolume: egress.volume } : {}), ...(boxPaths ? { dockerPaths: boxPaths } : {}), agents, token, storedKeys, mcpServers: mcpSource, doorTokenFile, doorToken, learning, learningBudget, ...(documents ? { documents: resolve(documents) } : {}), fauxEnv: fauxEnvOf(options), toolSettings: () => settings.get(), ...(runBoxes ? { runBoxes } : {}), ...(remoteBoxes ? { remoteBoxes } : {}), ...(archil ? { archil, ...(Array.isArray(archilAllow) ? { archilAllow } : {}) } : {}), ...(vmBoxes && vmRelayHalf ? { vmBoxes, vmLimits, vmRelay: vmRelayHalf } : {}), ...(remoteBoxes && daytonaApi(env) ? { remoteApi: daytonaApi(env)! } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(options.reflectTimeoutMs ? { reflectTimeoutMs: options.reflectTimeoutMs } : {}), ...(options.gradeTimeoutMs ? { gradeTimeoutMs: options.gradeTimeoutMs } : {}), ...(options.gradeModel ? { gradeModel: options.gradeModel } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}), notify: (event, run, marker) => webhooks.emit(event, run, marker), ownSecrets: () => triggerSecrets?.values() ?? [], signIns, approvers: options.accounts === true });
   const daytona = daytonaApi(env);
   const relay = (remoteBoxes && daytona) || vmRelayHalf ? await startBoxRelay({ root: data, tokenOf: (id) => runs.relayToken(id), ...(remoteBoxes && daytona ? daytona : {}), ...(vmRelayHalf ? { vm: vmRelayHalf } : {}), serves: (id) => runs.servesBox(id), ensure: (id) => runs.ensureBox(id) }) : undefined;
   if (relay) stops.push(() => relay.close());
